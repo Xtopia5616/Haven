@@ -874,6 +874,8 @@ mod tests {
     };
     use crate::config::{AppConfig, McpServerConfig, ProviderConfig, Settings};
 
+    type NumericConfigContractCase = (&'static str, u64, u64, fn(&mut AppConfig, u64));
+
     #[test]
     fn accepts_defaults_and_safe_integer_boundaries() {
         let mut config = AppConfig::default();
@@ -989,7 +991,7 @@ mod tests {
 
     #[test]
     fn media_timeout_ranges_match_settings_controls_for_config_and_settings() {
-        let cases: [(&str, u64, u64, fn(&mut AppConfig, u64)); 4] = [
+        let cases: [NumericConfigContractCase; 4] = [
             ("media.stt.timeout_secs", 5, 600, |config, value| {
                 config.media.stt.timeout_secs = value;
             }),
@@ -1163,7 +1165,7 @@ mod tests {
 
     #[test]
     fn resource_bounds_match_config_and_settings_contracts() {
-        let cases: [(&str, u64, u64, fn(&mut AppConfig, u64)); 13] = [
+        let cases: [NumericConfigContractCase; 13] = [
             (
                 "session.prompt_history_limit",
                 0,
@@ -1278,7 +1280,7 @@ mod tests {
 
     #[test]
     fn additional_resource_caps_match_config_and_settings_contracts() {
-        let cases: [(&str, u64, u64, fn(&mut AppConfig, u64)); 23] = [
+        let cases: [NumericConfigContractCase; 23] = [
             (
                 "context_limits.max_observation_chars",
                 0,

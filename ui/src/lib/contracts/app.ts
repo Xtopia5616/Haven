@@ -73,6 +73,14 @@ interface InteractionRequestBase {
 	createdAt: string;
 	expiresAt?: string;
 }
+interface ConfirmInteractionDetails {
+	toolName: string;
+	riskLevel: RiskLevel;
+	summary: string;
+	toolIndex: number;
+	permissionKey?: string;
+	toolCallId?: string;
+}
 type SessionInteractionOwner = Extract<InteractionOwnerView, { kind: 'session' }>;
 type ScheduledToolRunInteractionOwner = Extract<
 	InteractionOwnerView,
@@ -92,18 +100,26 @@ export type InteractionRequest =
 			kind: Extract<InteractionKind, 'confirm'>;
 			owner: SessionInteractionOwner;
 			sessionId: string;
-			response?: never;
-	  })
+			invocationStepId: string;
+	  } & ConfirmInteractionDetails & {
+				response?: never;
+			})
 	| (InteractionRequestBase & {
 			kind: Extract<InteractionKind, 'confirm'>;
 			owner: AppCommandInteractionOwner;
 			sessionId?: never;
-			response?: never;
-	  })
+			invocationStepId?: never;
+			toolCallId?: never;
+	  } & ConfirmInteractionDetails & {
+				response?: never;
+			})
 	| (InteractionRequestBase & {
 			kind: Extract<InteractionKind, 'scheduled_confirm'>;
 			owner: ScheduledToolRunInteractionOwner;
 			sessionId?: string;
+			toolName: string;
+			summary: string;
+			permissionKey: string;
 			response?: never;
 	  });
 
@@ -166,6 +182,10 @@ function optionalOneOfIsValid<const Values extends readonly string[]>(
 ): boolean {
 	const value = record[field];
 	return value === undefined || isOneOf(value, values);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+	return isString(value) && value.trim().length > 0;
 }
 
 export function mapInteractionOwner(
@@ -233,6 +253,24 @@ export function mapInteractionRequest(value: unknown): InteractionRequest | null
 	}
 	const owner = mapInteractionOwner(value.owner, sessionId);
 	if (!owner || !isValidInteractionKindOwnerPair(kind, owner)) return null;
+	if (kind === 'confirm') {
+		if (
+			!isNonEmptyString(value.tool_name) ||
+			!isOneOf(value.risk_level, RISK_LEVEL_VALUES) ||
+			!isNonEmptyString(value.summary) ||
+			toolIndex === undefined ||
+			(owner.kind === 'session' && !isCanonicalEntityId(value.invocation_step_id, 'step')) ||
+			(owner.kind === 'app_command' && value.invocation_step_id !== undefined)
+		)
+			return null;
+	}
+	if (
+		kind === 'scheduled_confirm' &&
+		(!isNonEmptyString(value.tool_name) ||
+			!isNonEmptyString(value.summary) ||
+			!isNonEmptyString(value.permission_key))
+	)
+		return null;
 
 	const wire = value as unknown as GeneratedInteractionRequestedEvent;
 	const normalized = {

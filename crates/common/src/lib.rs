@@ -9,6 +9,7 @@ pub mod log_file;
 pub mod mcp;
 pub mod media;
 pub mod media_detection;
+pub mod network;
 pub mod path;
 pub mod prompts;
 pub mod retry;

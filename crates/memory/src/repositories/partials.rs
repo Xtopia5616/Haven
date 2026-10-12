@@ -1,5 +1,7 @@
 use crate::db::Database;
+use crate::repositories::session_events::ensure_session_id;
 use chrono::Utc;
+use rusqlite::OptionalExtension;
 
 /// In-flight text checkpoint persisted outside the canonical transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +27,7 @@ pub struct PartialMessageCheckpoint {
 impl Database {
     /// Upsert the current partial stream text for a session.
     pub fn upsert_partial_message(&self, session_id: &str, content: &str) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
@@ -56,7 +59,11 @@ impl Database {
     /// Read and remove the partial row for a session. Atomic (single
     /// `DELETE ... RETURNING` statement), so a concurrent writer can never
     /// observe a row that was already taken.
-    pub fn take_partial_message(&self, session_id: &str) -> Option<PartialMessageCheckpoint> {
+    pub fn take_partial_message(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<PartialMessageCheckpoint>> {
+        ensure_session_id(session_id)?;
         let conn = self.conn();
         conn.query_row(
             "DELETE FROM partial_messages WHERE session_id = ?1 RETURNING content, updated_at",
@@ -68,12 +75,14 @@ impl Database {
                 })
             },
         )
-        .ok()
+        .optional()
+        .map_err(Into::into)
     }
 
     /// Drop the partial row for a session (superseded by a real message, or the
     /// stream was discarded). No-op when no row exists.
     pub fn delete_partial_message(&self, session_id: &str) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let conn = self.conn();
         conn.execute(
             "DELETE FROM partial_messages WHERE session_id = ?1",
@@ -92,7 +101,8 @@ impl Database {
     /// Returns `true` when a message was inserted. Single blocking round
     /// trip; used by ses-end promotion and the startup orphan finalizer.
     pub fn promote_partial_message(&self, session_id: &str) -> anyhow::Result<bool> {
-        let Some(checkpoint) = self.take_partial_message(session_id) else {
+        ensure_session_id(session_id)?;
+        let Some(checkpoint) = self.take_partial_message(session_id)? else {
             return Ok(false);
         };
         let PartialMessageCheckpoint {
@@ -144,7 +154,10 @@ mod tests {
             .get_partial_message(&session_id)
             .expect("partial exists after upsert");
         assert_eq!(checkpoint.content, "partial two");
-        let taken = db.take_partial_message(&session_id).expect("taken");
+        let taken = db
+            .take_partial_message(&session_id)
+            .unwrap()
+            .expect("taken");
         assert_eq!(taken.content, "partial two");
         assert!(db.get_partial_message(&session_id).is_none());
     }
@@ -156,6 +169,50 @@ mod tests {
         db.upsert_partial_message(&session_id, "hello").unwrap();
         db.delete_partial_message(&session_id).unwrap();
         assert!(db.get_partial_message(&session_id).is_none());
+    }
+
+    #[test]
+    fn partial_message_database_apis_reject_noncanonical_ids_without_mutation() {
+        let db = test_db();
+        let invalid_session_id = "ses-short";
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO sessions (id, input_text) VALUES (?1, 'invalid legacy row')",
+                [invalid_session_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO partial_messages (session_id, content, updated_at)
+                 VALUES (?1, 'preserve this checkpoint', '2026-10-13T00:00:00Z')",
+                [invalid_session_id],
+            )
+            .unwrap();
+        }
+
+        assert!(
+            db.upsert_partial_message(invalid_session_id, "must not overwrite")
+                .is_err()
+        );
+        assert!(db.take_partial_message(invalid_session_id).is_err());
+        assert!(db.delete_partial_message(invalid_session_id).is_err());
+        assert!(db.promote_partial_message(invalid_session_id).is_err());
+
+        assert_eq!(
+            db.get_partial_message(invalid_session_id)
+                .expect("invalid-id checkpoint remains untouched")
+                .content,
+            "preserve this checkpoint"
+        );
+        let message_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
+                [invalid_session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(message_count, 0);
     }
 
     #[test]

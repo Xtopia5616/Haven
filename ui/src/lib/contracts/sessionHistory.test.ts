@@ -56,31 +56,12 @@ function sessionRecord(id = sessionId): Record<string, unknown> & { session_id: 
 	};
 }
 
-function runtimeSession(): Record<string, unknown> & {
-	session_id: string;
-	status: string;
-	steps: Array<Record<string, unknown> & { step_number: number }>;
-} {
+function runtimeSession(): Record<string, unknown> & { session_id: string; status: string } {
 	return {
 		session_id: sessionId,
-		input: 'Open the project',
-		summary: 'Open project files',
+		input_text: 'Open the project',
 		title: null,
 		status: 'running',
-		steps: [
-			{
-				step_id: stepId,
-				step_number: 1,
-				tool_name: 'read_file',
-				input: { path: 'README.md' },
-				output: null,
-				status: 'running',
-				risk_level: 'safe',
-				confirmed: null,
-			},
-		],
-		created_at: '2026-10-12T08:00:00Z',
-		updated_at: '2026-10-12T08:00:01Z',
 	};
 }
 
@@ -205,8 +186,10 @@ function resumeResponse(): ResumeFixture {
 				kind: 'confirm',
 				status: 'pending',
 				invocation_step_id: stepId,
+				tool_name: 'read_file',
 				tool_index: 0,
 				risk_level: 'low',
+				summary: 'Read the project instructions',
 				created_at: '2026-10-12T08:00:04Z',
 				expires_at: '2026-10-12T08:01:04Z',
 			},
@@ -271,6 +254,17 @@ function resumeResponseWithAssets(): ResumeFixture {
 			],
 			voice: false,
 		},
+		{
+			message_id: stepId,
+			session_id: sessionId,
+			role: 'assistant',
+			content: 'Which option should I use?',
+			message_type: 'text',
+			created_at: '2026-10-12T08:00:03Z',
+			tool_call_id: null,
+			attachments: [],
+			voice: false,
+		},
 	];
 	return response;
 }
@@ -290,13 +284,19 @@ function sessionLineage() {
 }
 
 describe('session history and resume contracts', () => {
-	it('validates complete runtime sessions, closed enums, and canonical IDs', () => {
-		expect(
-			parseRuntimeSessionListResponse({ sessions: [runtimeSession()] }).sessions,
-		).toHaveLength(1);
+	it('validates the runtime session allowlist, closed enums, and canonical IDs', () => {
+		const leakedFields = runtimeSession();
+		leakedFields.summary = 'private Agent summary';
+		leakedFields.steps = [{ input: { secret: 'tool input' } }];
+		const [session] = parseRuntimeSessionListResponse({ sessions: [leakedFields] }).sessions;
+		expect(session).toMatchObject({ sessionId, inputText: 'Open the project', title: null });
+		expect(session).not.toHaveProperty('session_id');
+		expect(session).not.toHaveProperty('input_text');
+		expect(session).not.toHaveProperty('summary');
+		expect(session).not.toHaveProperty('steps');
 
 		const missingField = runtimeSession();
-		delete (missingField.steps[0] as Record<string, unknown>).risk_level;
+		delete missingField.input_text;
 		expect(() => parseRuntimeSessionListResponse({ sessions: [missingField] })).toThrow(
 			'Invalid runtime session list response shape',
 		);
@@ -314,17 +314,7 @@ describe('session history and resume contracts', () => {
 		);
 	});
 
-	it('checks u32 runtime values and waiting reason semantics', () => {
-		const maxU32 = runtimeSession();
-		maxU32.steps[0]!.step_number = 0xffff_ffff;
-		expect(parseRuntimeSessionListResponse({ sessions: [maxU32] }).sessions).toHaveLength(1);
-
-		const outsideU32 = runtimeSession();
-		outsideU32.steps[0]!.step_number = 0x1_0000_0000;
-		expect(() => parseRuntimeSessionListResponse({ sessions: [outsideU32] })).toThrow(
-			'Invalid runtime session response value',
-		);
-
+	it('checks waiting reason semantics and maps it to camelCase', () => {
 		const waitingWhileRunning = runtimeSession();
 		waitingWhileRunning.waiting_reason = 'ask';
 		expect(() => parseRuntimeSessionListResponse({ sessions: [waitingWhileRunning] })).toThrow(
@@ -334,7 +324,10 @@ describe('session history and resume contracts', () => {
 		const paused = runtimeSession();
 		paused.status = 'paused';
 		paused.waiting_reason = 'ask';
-		expect(parseRuntimeSessionListResponse({ sessions: [paused] }).sessions).toHaveLength(1);
+		expect(parseRuntimeSessionListResponse({ sessions: [paused] }).sessions[0]).toMatchObject({
+			status: 'paused',
+			waitingReason: 'ask',
+		});
 	});
 
 	it('validates complete persisted session rows and lineage rows', () => {
@@ -418,13 +411,17 @@ describe('session history and resume contracts', () => {
 				status: 'pending',
 				options: [],
 				invocationStepId: stepId,
+				toolName: 'read_file',
+				summary: 'Read the project instructions',
 				toolIndex: 0,
 				riskLevel: 'low',
 				createdAt: '2026-10-12T08:00:04Z',
 				expiresAt: '2026-10-12T08:01:04Z',
 			},
 		]);
-		expect(parseSessionResumeResponse(response, sessionId).interactions).toEqual(parsed.interactions);
+		expect(parseSessionResumeResponse(response, sessionId).interactions).toEqual(
+			parsed.interactions,
+		);
 	});
 
 	it('rejects missing fields, invalid enums, and malformed nested media shapes', () => {
@@ -504,6 +501,14 @@ describe('session history and resume contracts', () => {
 		(wrongOwner.interactions[1]!.owner as Record<string, unknown>).session_id =
 			'ses-00000000000000000000000000000006';
 		expect(() => parseSessionResumeResponse(wrongOwner)).toThrow(
+			'Invalid resumed interaction identity',
+		);
+
+		const askWithoutTranscriptMessage = resumeResponse();
+		askWithoutTranscriptMessage.messages = askWithoutTranscriptMessage.messages.filter(
+			(message) => message.message_id !== stepId,
+		);
+		expect(() => parseSessionResumeResponse(askWithoutTranscriptMessage)).toThrow(
 			'Invalid resumed interaction identity',
 		);
 	});
@@ -615,7 +620,9 @@ describe('session history and resume contracts', () => {
 			...(aggregate.usage as Record<string, unknown>),
 			cost_usd: -0.01,
 		};
-		expect(() => parseSessionResumeResponse(aggregate)).toThrow('Invalid resumed numeric value');
+		expect(() => parseSessionResumeResponse(aggregate)).toThrow(
+			'Invalid resumed numeric value',
+		);
 
 		const detail = resumeResponse();
 		detail.llm_usage[0]!.cost_usd = -0.01;

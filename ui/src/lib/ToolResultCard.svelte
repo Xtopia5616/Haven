@@ -284,13 +284,6 @@
 			if (data.scope === 'input') return 'tools';
 			return 'cpu';
 		}
-		if (rootToolName === 'haven') {
-			if (typeof data.operation === 'string' && data.operation.startsWith('tool_runs_'))
-				return 'clock';
-			if (typeof data.operation === 'string' && data.operation.startsWith('schedule_'))
-				return 'bell';
-			return 'settings';
-		}
 		if (rootToolName === 'files') return 'file';
 		if (rootToolName === 'http' || rootToolName === 'web_search') return 'globe';
 		if (rootToolName === 'agent') return 'users';

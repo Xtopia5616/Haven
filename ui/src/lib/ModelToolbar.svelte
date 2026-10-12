@@ -13,7 +13,7 @@
 	interface Props {
 		modelMenuOpen?: boolean;
 		currentModelName?: string;
-		currentModelId?: string;
+		currentModelConfigId?: string;
 		modelOptions?: ChatModelOption[];
 		onToggleMenu?: () => void;
 		onModelSelect?: (model: ChatModelOption) => void | Promise<void>;
@@ -29,7 +29,7 @@
 	let {
 		modelMenuOpen = false,
 		currentModelName = '',
-		currentModelId = '',
+		currentModelConfigId = '',
 		modelOptions = [],
 		onToggleMenu = () => {},
 		onModelSelect = () => {},
@@ -113,9 +113,9 @@
 						<MenuItem
 							className="model-item"
 							disabled={switchingModel}
-							selected={model.id === currentModelId}
+							selected={model.modelConfigId === currentModelConfigId}
 							role="menuitemradio"
-							ariaChecked={model.id === currentModelId}
+							ariaChecked={model.modelConfigId === currentModelConfigId}
 							onSelect={() => selectModel(model)}
 						>
 							{#snippet children()}
@@ -125,7 +125,7 @@
 										>{model.providerName} / {model.model}</span
 									>
 								</span>
-								{#if model.id === currentModelId}
+								{#if model.modelConfigId === currentModelConfigId}
 									<Icon name="check" size={16} />
 								{/if}
 							{/snippet}

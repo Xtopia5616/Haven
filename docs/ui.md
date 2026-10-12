@@ -141,7 +141,7 @@
 所有组件使用 Svelte 5 `$props()` 解构语法，禁止 `export let`：
 
 ```svelte
-<script>
+<script lang="ts">
  let { value = '', min = undefined, max = undefined, onChange, id = undefined } = $props();
 </script>
 ```
@@ -158,7 +158,7 @@
 容器组件使用隐式 `children` snippet：
 
 ```svelte
-<script>
+<script lang="ts">
  let { children } = $props();
 </script>
 {@render children?.()}
@@ -181,7 +181,7 @@
 ### 2.3 组件文件模板
 
 ```svelte
-<script>
+<script lang="ts">
  /**
   * ComponentName — 简短描述
   * @prop {type} propName — 描述
@@ -227,7 +227,7 @@
 | `MaterialCollapsible` | 分组、详情和辅助信息的统一展开/收起控件 | 所有区块级折叠内容；通过 `header` snippet 提供标题、状态或计数 |
 | `StatusBadge` | 成功、警告、错误、信息和中性状态 | 只表达状态，不承载动作 |
 | `MaterialCard` / `SettingsSection` / `SettingsField` | 设置页卡片、分组和字段布局 | 设置、偏好等表单型页面 |
-| `ToolCardList` / `ToolSearch` | 工具结果列表容器和搜索框 | 工具/技能/MCP 结果页 |
+| `ToolSearch` | 工具结果搜索框 | 工具/技能/MCP 结果页 |
 | `MenuItem` / `MaterialSplitButton` | 弹出菜单项和主动作 + 更多菜单 | 上下文菜单、切换菜单和确认动作 |
 
 区块级展开/收起统一使用 `MaterialCollapsible`，不要直接使用原生 `<details>/<summary>` 或另造箭头、按钮和折叠动画。整张资源卡片的展开仍由 `ExpandableContextCard` 管理；JSON 树节点等领域专用结构继续使用对应组件（如 `JsonView`）。
@@ -321,17 +321,19 @@
 ```
 component-local ($state / $derived)
     ↑  props / callbacks  ↓
-route-level ($state, invoke 调用)
+route-level ($state)
     ↑  subscribe  ↓
 shared stores (domain-specific writable stores in lib/)
 ```
+
+Route 页面通过领域 `*Commands.ts` adapter 调用已有 command；只有 `+layout.svelte` 等 App shell 可以直接调用由 shell 独占编排、且已登记 IPC owner 的跨域启动/生命周期 command。
 
 ### 4.2 组件本地状态
 
 使用 Svelte 5 runes：
 
 ```svelte
-<script>
+<script lang="ts">
  let open = $state(false);
  let count = $state(0);
  let items = $state([]);
@@ -418,44 +420,49 @@ onDestroy(unsubscribe);
 
 ### 6.1 调用规则
 
-所有 Tauri 调用通过 `$lib/tauri.ts` 的 `invoke` 函数，禁止直接使用 `@tauri-apps/api`：
+页面通过领域 command adapter 调用 Tauri；adapter 内部经 `$lib/tauri.ts` 的 `invoke`，禁止页面直接调用 `invoke` 或使用 `@tauri-apps/api`：
 
 ```ts
-import { invoke } from '$lib/tauri.ts';
+import { loadItems } from '$lib/itemsCommands.ts';
+import { reportError } from '$lib/errorHandling.ts';
 
 async function loadData() {
  try {
-  const result = await invoke('command_name', { arg1: val1 });
-  // 处理结果
- } catch {
-  // 静默失败（非 Tauri 环境）
+  return await loadItems();
+ } catch (error) {
+  reportError(error, { context: 'itemsView', message: '加载内容失败' });
+  return [];
  }
 }
 ```
 
 ### 6.2 事件监听
 
-在 `onMount` 中注册，`onDestroy` 中清理：
+在 `onMount` 中开始注册，并同步返回卸载清理函数；若组件在异步注册完成前卸载，注册完成时立即调用 unlisten：
 
-```js
-let unlisteners = [];
+```ts
+import { onMount } from 'svelte';
+import { registerListeners } from '$lib/events.ts';
 
 onMount(() => {
- const unlisten = await listen('event:name', (event) => {
-  // 处理事件
- });
- unlisteners.push(unlisten);
-});
-
-onDestroy(() => {
- unlisteners.forEach(fn => fn());
+	const listeners = registerListeners(
+		{
+			'event:name': (event) => {
+				// 处理事件
+			},
+		},
+		{ tag: 'itemsView' },
+	);
+	return () => listeners.dispose();
 });
 ```
 
+注册失败由 `events.ts` 记录并吞掉，不在页面重复上报；返回的 `dispose` 同时处理异步注册与卸载竞态。
+
 ### 6.3 错误处理
 
-- 所有 `invoke` 调用必须包裹在 `try/catch` 中
-- 非 Tauri 环境（浏览器开发）静默失败
+- 领域 command adapter 必须把调用失败映射为错误状态或 `reportError` 通知
+- 浏览器环境中的命令调用会拒绝；预期不可用的能力应显式显示不可用状态，不得把失败当成成功或静默吞掉
 - 用户可见错误使用 `addNotification` 或 UI 提示
 
 ---
@@ -500,8 +507,8 @@ ui/src/
 │   ├── MaterialCard.svelte
 │   ├── MaterialDialog.svelte
 │   ├── MaterialIconButton.svelte
+│   ├── MaterialCollapsible.svelte
 │   ├── MaterialNumberField.svelte
-│   ├── MaterialSection.svelte
 │   ├── MaterialSelect.svelte
 │   ├── MaterialSwitch.svelte
 │   ├── McpEditDialog.svelte
@@ -510,8 +517,9 @@ ui/src/
 │   ├── RecordingIndicator.svelte
 │   ├── SkillCard.svelte
 │   ├── SkillDetailDrawer.svelte
+│   ├── SessionMessageTimeline.svelte
+│   ├── SettingsSection.svelte
 │   ├── ToolRunTimelineCard.svelte
-│   ├── ConversationTimeline.svelte
 │   ├── ToolResultCard.svelte
 │   └── views/
 │       ├── SettingsView.svelte
@@ -706,7 +714,7 @@ ready + 用户修改 → dirty → saving → saved | error
 | `WorkspaceSurface` | 次级工作区的统一外框、主题背景、边框和入场动效 | 页面数据、筛选器、列表和详情内容 |
 | `SessionRail` | 新建、搜索、切换、会话级操作 | 生成循环、消息持久化 |
 | `SessionHeader` | 标题、模型、会话状态、停止/结束等会话动作 | 任务列表和全局通知 |
-| `ConversationTimeline` | 消息、思考、工具调用、确认、结果的展示编排 | 直接 `invoke` |
+| `SessionMessageTimeline` | 消息、思考、工具调用、确认、结果的展示编排 | 领域命令调用 |
 | `Composer` | 文字、语音、附件、发送/停止交互 | 决定后端任务状态 |
 | `ToolRunCenter` / `ToolRunTimelineCard` | 会话、后台任务、定时任务的统一展示和操作 | 修改消息时间线内部数据 |
 | `AsyncState` / `EmptyState` / `ErrorState` | 统一加载、空、未配置、错误反馈 | 领域数据获取 |
@@ -747,7 +755,7 @@ ready + 用户修改 → dirty → saving → saved | error
 ### 创建新组件
 
 ```svelte
-<script>
+<script lang="ts">
  /** @prop {string} title — 标题 */
  let { title = '', children } = $props();
 </script>
@@ -768,16 +776,19 @@ ready + 用户修改 → dirty → saving → saved | error
 ### 创建新页面
 
 ```svelte
-<script>
+<script lang="ts">
  import { onMount } from 'svelte';
- import { invoke } from '$lib/tauri.ts';
+ import { loadItems } from '$lib/itemsCommands.ts';
+ import { reportError } from '$lib/errorHandling.ts';
 
  let data = $state([]);
 
  onMount(async () => {
   try {
-   data = await invoke('command_name');
-  } catch {}
+   data = await loadItems();
+  } catch (error) {
+   reportError(error, { context: 'itemsView', message: '加载内容失败' });
+  }
  });
 </script>
 ```

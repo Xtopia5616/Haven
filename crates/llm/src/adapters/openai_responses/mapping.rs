@@ -71,18 +71,16 @@ impl OpenAiResponsesAdapter {
                 CanonicalRole::System => {
                     for p in &m.content {
                         if let ContentPart::Text(t) = p {
-                            if let Some((stable, session, memory)) =
-                                split_system_prompt_cache_sections(t)
-                            {
-                                if !stable.is_empty() {
-                                    instructions.push(stable.to_string());
+                            if let Some(sections) = split_system_prompt_cache_sections(t) {
+                                if !sections.stable_prompt.is_empty() {
+                                    instructions.push(sections.stable_prompt.to_string());
                                 }
                                 if developer_input_supported {
-                                    if !session.is_empty() {
-                                        session_context.push(session.to_string());
+                                    if !sections.session_context.is_empty() {
+                                        session_context.push(sections.session_context.to_string());
                                     }
-                                    if !memory.is_empty() {
-                                        volatile_system.push(memory.to_string());
+                                    if !sections.memory_context.is_empty() {
+                                        volatile_system.push(sections.memory_context.to_string());
                                     }
                                 } else {
                                     // Some Responses-compatible gateways reject
@@ -92,11 +90,13 @@ impl OpenAiResponsesAdapter {
                                     // the stable instructions prefix. A quoted
                                     // user item is the lowest-common-denominator
                                     // fallback accepted by those gateways.
-                                    if !session.is_empty() {
-                                        fallback_session_context.push(session.to_string());
+                                    if !sections.session_context.is_empty() {
+                                        fallback_session_context
+                                            .push(sections.session_context.to_string());
                                     }
-                                    if !memory.is_empty() {
-                                        fallback_volatile_system.push(memory.to_string());
+                                    if !sections.memory_context.is_empty() {
+                                        fallback_volatile_system
+                                            .push(sections.memory_context.to_string());
                                     }
                                 }
                             } else {

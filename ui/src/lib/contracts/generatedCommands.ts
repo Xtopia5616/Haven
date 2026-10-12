@@ -66,12 +66,11 @@ export interface MetricsSnapshot { phases: PhaseSnapshot[]; counters: CounterSna
 export interface PhaseSnapshot { count: number; total_ms: number; p50_ms: number; p95_ms: number }
 export interface UiMetricsSnapshotInput { frames: number; chunks: number; drops: number }
 export interface UiMetricsSnapshot { frames: number; chunks: number; drops: number }
-export interface SessionInfo { session_id: string; input: string; summary: string; title: string | null; status: SessionStatus; waiting_reason?: SessionWaitingReason; steps: StepInfo[]; created_at: string; updated_at: string }
-export interface StepInfo { step_id: string; step_number: number; tool_name: string; input: unknown; output: unknown | null; status: SessionStepStatus; risk_level: RiskLevel; confirmed: boolean | null }
 export type ProcessResult = { 'SessionCreated': { session_id: string; message_id?: string | null } } | { 'Supplemented': { session_id: string; message_id?: string | null } };
 export const BOOTSTRAP_STATUS_VALUES = ['loading', 'ready'] as const;
 export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];
-export interface RuntimeSessionListResponse { sessions: SessionInfo[] }
+export interface RuntimeSessionDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; waiting_reason?: SessionWaitingReason }
+export interface RuntimeSessionListResponse { sessions: RuntimeSessionDto[] }
 export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
 export interface MemoryFactResponse { fact_id: string; subject: string; predicate: string; object: string; source: MemoryFactSource; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
 export const MEMORY_FACT_SOURCE_INPUT_VALUES = ['user', 'inferred'] as const;
@@ -4765,11 +4764,7 @@ export const LIST_RUNTIME_SESSIONS_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'string' },
 					},
-					'input': {
-						optional: false,
-						shape: { kind: 'string' },
-					},
-					'summary': {
+					'input_text': {
 						optional: false,
 						shape: { kind: 'string' },
 					},
@@ -4784,54 +4779,6 @@ export const LIST_RUNTIME_SESSIONS_RESPONSE_SHAPE = {
 					'waiting_reason': {
 						optional: true,
 						shape: { kind: 'enum', values: SESSION_WAITING_REASON_VALUES },
-					},
-					'steps': {
-						optional: false,
-						shape: { kind: 'array', items: {
-							kind: 'object',
-							fields: {
-								'step_id': {
-									optional: false,
-									shape: { kind: 'string' },
-								},
-								'step_number': {
-									optional: false,
-									shape: { kind: 'number' },
-								},
-								'tool_name': {
-									optional: false,
-									shape: { kind: 'string' },
-								},
-								'input': {
-									optional: false,
-									shape: { kind: 'unknown' },
-								},
-								'output': {
-									optional: false,
-									shape: { kind: 'nullable', inner: { kind: 'unknown' } },
-								},
-								'status': {
-									optional: false,
-									shape: { kind: 'enum', values: SESSION_STEP_STATUS_VALUES },
-								},
-								'risk_level': {
-									optional: false,
-									shape: { kind: 'enum', values: RISK_LEVEL_VALUES },
-								},
-								'confirmed': {
-									optional: false,
-									shape: { kind: 'nullable', inner: { kind: 'boolean' } },
-								}
-							}
-						} },
-					},
-					'created_at': {
-						optional: false,
-						shape: { kind: 'string' },
-					},
-					'updated_at': {
-						optional: false,
-						shape: { kind: 'string' },
 					}
 				}
 			} },
@@ -5442,11 +5389,7 @@ export const RUNTIME_SESSION_LIST_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'string' },
 					},
-					'input': {
-						optional: false,
-						shape: { kind: 'string' },
-					},
-					'summary': {
+					'input_text': {
 						optional: false,
 						shape: { kind: 'string' },
 					},
@@ -5461,54 +5404,6 @@ export const RUNTIME_SESSION_LIST_RESPONSE_SHAPE = {
 					'waiting_reason': {
 						optional: true,
 						shape: { kind: 'enum', values: SESSION_WAITING_REASON_VALUES },
-					},
-					'steps': {
-						optional: false,
-						shape: { kind: 'array', items: {
-							kind: 'object',
-							fields: {
-								'step_id': {
-									optional: false,
-									shape: { kind: 'string' },
-								},
-								'step_number': {
-									optional: false,
-									shape: { kind: 'number' },
-								},
-								'tool_name': {
-									optional: false,
-									shape: { kind: 'string' },
-								},
-								'input': {
-									optional: false,
-									shape: { kind: 'unknown' },
-								},
-								'output': {
-									optional: false,
-									shape: { kind: 'nullable', inner: { kind: 'unknown' } },
-								},
-								'status': {
-									optional: false,
-									shape: { kind: 'enum', values: SESSION_STEP_STATUS_VALUES },
-								},
-								'risk_level': {
-									optional: false,
-									shape: { kind: 'enum', values: RISK_LEVEL_VALUES },
-								},
-								'confirmed': {
-									optional: false,
-									shape: { kind: 'nullable', inner: { kind: 'boolean' } },
-								}
-							}
-						} },
-					},
-					'created_at': {
-						optional: false,
-						shape: { kind: 'string' },
-					},
-					'updated_at': {
-						optional: false,
-						shape: { kind: 'string' },
 					}
 				}
 			} },

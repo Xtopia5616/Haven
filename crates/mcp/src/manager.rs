@@ -11,6 +11,33 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+const NOTIFICATION_LISTENER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+struct OwnedNotificationListener {
+    client: Arc<McpClient>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+async fn join_notification_listener(server_name: &str, mut task: tokio::task::JoinHandle<()>) {
+    match tokio::time::timeout(NOTIFICATION_LISTENER_SHUTDOWN_TIMEOUT, &mut task).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(
+            server = %server_name,
+            error = %error,
+            "MCP notification listener task failed"
+        ),
+        Err(_) => {
+            tracing::warn!(
+                server = %server_name,
+                timeout = ?NOTIFICATION_LISTENER_SHUTDOWN_TIMEOUT,
+                "MCP notification listener did not stop after cancellation; aborting"
+            );
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // McpManager — manages multiple MCP clients
 // ---------------------------------------------------------------------------
@@ -35,6 +62,7 @@ pub struct McpReconcile {
 pub struct McpManager {
     clients: Arc<Mutex<HashMap<String, Arc<McpClient>>>>,
     monitors: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    notification_listeners: Arc<Mutex<HashMap<usize, OwnedNotificationListener>>>,
     status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
     discovery_config: Arc<tokio::sync::RwLock<haven_common::config::McpDiscoveryConfig>>,
     limits: Arc<tokio::sync::RwLock<haven_common::config::ContextLimitsConfig>>,
@@ -50,6 +78,7 @@ impl Clone for McpManager {
         Self {
             clients: self.clients.clone(),
             monitors: self.monitors.clone(),
+            notification_listeners: self.notification_listeners.clone(),
             status_tx: self.status_tx.clone(),
             discovery_config: self.discovery_config.clone(),
             limits: self.limits.clone(),
@@ -72,6 +101,7 @@ impl McpManager {
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
             monitors: Arc::new(Mutex::new(HashMap::new())),
+            notification_listeners: Arc::new(Mutex::new(HashMap::new())),
             status_tx,
             discovery_config: Arc::new(tokio::sync::RwLock::new(
                 haven_common::config::McpDiscoveryConfig::default(),
@@ -104,12 +134,56 @@ impl McpManager {
     /// Startup and progressive `load_mcp` connections must invalidate the same
     /// catalog clock; otherwise a paged capability discovery can keep using a
     /// cursor created before the server changed its tools.
-    fn start_catalog_listener(&self, client: Arc<McpClient>) -> tokio::task::JoinHandle<()> {
+    async fn start_catalog_listener(&self, client: Arc<McpClient>) {
         let catalog_version = self.catalog_version.clone();
-        client.start_notification_listener(move |server_name: &str| {
-            tracing::info!("MCP server '{}' pushed tools/list_changed", server_name);
-            catalog_version.fetch_add(1, Ordering::Relaxed);
-        })
+        let task = client
+            .clone()
+            .start_notification_listener(move |server_name: &str| {
+                tracing::info!("MCP server '{}' pushed tools/list_changed", server_name);
+                catalog_version.fetch_add(1, Ordering::Relaxed);
+            });
+        let key = Arc::as_ptr(&client) as usize;
+        let previous = self
+            .notification_listeners
+            .lock()
+            .await
+            .insert(key, OwnedNotificationListener { client, task });
+        if let Some(previous) = previous {
+            previous.client.notification_cancel.cancel();
+            join_notification_listener(previous.client.name(), previous.task).await;
+        }
+    }
+
+    async fn stop_catalog_listener(&self, client: &Arc<McpClient>) {
+        let key = Arc::as_ptr(client) as usize;
+        let listener = self.notification_listeners.lock().await.remove(&key);
+        if let Some(listener) = listener {
+            join_notification_listener(listener.client.name(), listener.task).await;
+        }
+    }
+
+    async fn take_catalog_listeners(&self) -> Vec<OwnedNotificationListener> {
+        self.notification_listeners
+            .lock()
+            .await
+            .drain()
+            .map(|(_, listener)| listener)
+            .collect()
+    }
+
+    async fn take_catalog_listeners_for_name(
+        &self,
+        server_name: &str,
+    ) -> Vec<OwnedNotificationListener> {
+        let mut listeners = self.notification_listeners.lock().await;
+        let matching_keys = listeners
+            .iter()
+            .filter_map(|(key, listener)| (listener.client.name() == server_name).then_some(*key))
+            .collect::<Vec<_>>();
+        matching_keys
+            .into_iter()
+            .filter_map(|key| listeners.remove(&key))
+            .collect()
     }
 
     /// Replace the unified context limits (binary payload / SSE buffer caps)
@@ -176,6 +250,17 @@ impl McpManager {
                 name: name.to_string(),
                 status: McpClientStatus::Disconnected,
             });
+            self.stop_catalog_listener(&client).await;
+        }
+        for listener in self.take_catalog_listeners_for_name(name).await {
+            if let Err(error) = listener.client.shutdown().await {
+                tracing::warn!(
+                    server = %name,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "MCP client shutdown failed while removing notification listener"
+                );
+            }
+            join_notification_listener(name, listener.task).await;
         }
     }
 
@@ -352,7 +437,7 @@ impl McpManager {
                 .await
                 .insert(name.clone(), client.clone());
 
-            let _notification_listener = self.start_catalog_listener(client.clone());
+            self.start_catalog_listener(client.clone()).await;
 
             // Set authoritative client status AND broadcast before the connect
             // task so ToolsView's list_mcp_servers snapshot shows Connecting
@@ -441,10 +526,18 @@ impl McpManager {
         ));
         client.set_network_policy(self.network_policy().await).await;
 
-        let _notification_listener = self.start_catalog_listener(client.clone());
+        self.start_catalog_listener(client.clone()).await;
 
         if let Err(error) = client.connect().await {
             let safe_error = haven_common::error::sanitize_error_text(&error.to_string());
+            if let Err(shutdown_error) = client.shutdown().await {
+                tracing::warn!(
+                    server = %name,
+                    error = %haven_common::error::sanitize_error_text(&shutdown_error.to_string()),
+                    "MCP client cleanup after failed connection reported an error"
+                );
+            }
+            self.stop_catalog_listener(&client).await;
             tracing::warn!(
                 server = %name,
                 "MCP server connection failed"
@@ -528,6 +621,17 @@ impl McpManager {
             if client.shutdown().await.is_err() {
                 tracing::warn!(server = %name, "MCP client shutdown failed");
             }
+        }
+        let listeners = self.take_catalog_listeners().await;
+        for listener in listeners {
+            if let Err(error) = listener.client.shutdown().await {
+                tracing::warn!(
+                    server = %listener.client.name(),
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "MCP client shutdown failed while joining notification listener"
+                );
+            }
+            join_notification_listener(listener.client.name(), listener.task).await;
         }
     }
 
@@ -640,5 +744,48 @@ impl McpToolCaller for McpManager {
 impl Default for McpManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod notification_lifecycle_tests {
+    use super::*;
+    use haven_common::config::McpServerConfig;
+    use haven_common::mcp::McpServerTransport;
+
+    fn unreachable_http_server(name: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            transport: McpServerTransport::Http,
+            url: "http://127.0.0.1:1/mcp".to_string(),
+            ..McpServerConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_dynamic_connect_joins_its_notification_listener() {
+        let manager = McpManager::new_with_network_policy(haven_common::types::NetworkPolicy::Open);
+
+        assert!(
+            manager
+                .connect_server(&unreachable_http_server("failed-connect"))
+                .await
+                .is_err()
+        );
+
+        assert!(manager.notification_listeners.lock().await.is_empty());
+        assert!(!manager.has_client("failed-connect").await);
+    }
+
+    #[tokio::test]
+    async fn shutdown_all_joins_listeners_for_failed_config_connections() {
+        let manager = McpManager::new_with_network_policy(haven_common::types::NetworkPolicy::Open);
+        manager
+            .load_from_config(&[unreachable_http_server("offline-config")])
+            .await;
+
+        assert_eq!(manager.notification_listeners.lock().await.len(), 1);
+        manager.shutdown_all().await;
+        assert!(manager.notification_listeners.lock().await.is_empty());
     }
 }

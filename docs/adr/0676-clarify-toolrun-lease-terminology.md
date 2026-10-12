@@ -1,5 +1,7 @@
 # ADR 0676：澄清 ToolRun 持久化与 lease 术语
 
+> 状态：关于 `claim_token` 名称的决定已由 [ADR 1096](1096-name-toolrun-lease-subject-id.md) 取代；其余 ToolRun persistence 术语决定保留。
+
 ## 背景
 
 `ToolRunLease` 的模块注释称其由 tools runtime 和 “action persistence” 共用；`ToolsFacade::set_admin_context` 的注释称独立注入 “durable action storage”。两处指的都是通过 `StartupWiring::tool_run_store` 注入的 `ToolRunStore`，旧泛词使已统一为 ToolRun 的持久工作单元又出现 action 这个别名。

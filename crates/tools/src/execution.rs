@@ -57,6 +57,10 @@ impl ToolsFacade {
         self.coordinator.core.tool_circuits.reset_all();
     }
 
+    /// Inspection hook for integration tests. Production callers must execute
+    /// through the facade so authorization, schema validation, circuit gates,
+    /// retries, and cancellation policy cannot be bypassed.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn get_tool(&self, name: &str) -> Option<ToolHandle> {
         self.executor().get_tool(name).await
     }
@@ -307,7 +311,8 @@ impl AuthorizedExecutor<'_> {
         ((jitter_millis * u64::from(u32::MAX)) / 250) as u32
     }
 
-    pub async fn get_tool(&self, name: &str) -> Option<ToolHandle> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) async fn get_tool(&self, name: &str) -> Option<ToolHandle> {
         if let Some(tool) = self
             .tools
             .coordinator

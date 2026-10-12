@@ -7,6 +7,7 @@
 	import SessionRunEndBanner from '$lib/SessionRunEndBanner.svelte';
 	import ToolRunTimelineCard from '$lib/ToolRunTimelineCard.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
+	import { renderedMessageKey } from '$lib/streaming.ts';
 	import SessionActivityGroup from '$lib/SessionActivityGroup.svelte';
 	import {
 		firstWaitingBackgroundToolRunId,
@@ -76,7 +77,7 @@
 	<SessionWelcome {hotkeyBinding} animated />
 {:else}
 	<div class="message-list" role="log" aria-label="会话消息">
-		{#each timelineItems as item (item.kind === 'message' ? item.message.id : item.id)}
+		{#each timelineItems as item (item.kind === 'message' ? renderedMessageKey(item.message) : item.id)}
 			{#if item.kind === 'activity'}
 				<SessionActivityGroup
 					entries={item.entries}

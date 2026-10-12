@@ -263,6 +263,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'window', data: { operation: 'wait', condition: 'visible' } },
 			{ renderer: 'window', data: { operation: 'screenshot', format: 'jpeg' } },
 			{ renderer: 'window', data: { elements: [{ control_type: 'FutureControl' }] } },
+			{ renderer: 'window', data: { elements: [{ element_token: 1 }] } },
 			{ renderer: 'tool_runs', data: { tool_runs: [null] } },
 			{ renderer: 'tool_runs', data: { operation: 'pause' } },
 			{ renderer: 'tool_runs', data: { tool_run_id: toolRunId(1), status: 'future-status' } },
@@ -1675,6 +1676,20 @@ describe('ToolResultCard tool_runs', () => {
 });
 
 describe('ToolResultCard window', () => {
+	it('renders duplicate UI Automation names with their stable element tokens', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'window',
+			content: JSON.stringify({
+				elements: [
+					{ element_token: 'hwnd-1:0', name: 'Save', control_type: 'Button' },
+					{ element_token: 'hwnd-1:1', name: 'Save', control_type: 'Button' },
+				],
+			}),
+		});
+		await expandToolCard(container);
+		expect(screen.getAllByText('Save')).toHaveLength(2);
+	});
+
 	it('renders screenshot results with a managed asset reference and dimensions', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'system',

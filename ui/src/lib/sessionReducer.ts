@@ -20,7 +20,7 @@ export type {
 	ResumeUsage,
 	SessionAction,
 	SessionMessage,
-	SessionOptimisticMessage,
+	PendingMessageOwner,
 	SessionReducerState,
 	SessionReplayState,
 	SessionSummary,
@@ -36,13 +36,13 @@ function clearSessionMessages(state: SessionReducerState, sessionId: string): Se
 		type: 'session/messages/cleared',
 		sessionId,
 	});
-	const optimistic = Object.fromEntries(
-		Object.entries(withoutMessages.optimistic).filter(
+	const pendingMessageOwners = Object.fromEntries(
+		Object.entries(withoutMessages.pendingMessageOwners).filter(
 			([, message]) => message.sessionId !== sessionId,
 		),
 	);
-	const withoutOptimistic = { ...withoutMessages, optimistic };
-	const withoutInteractions = reduceInteraction(withoutOptimistic, {
+	const withoutPendingMessageOwners = { ...withoutMessages, pendingMessageOwners };
+	const withoutInteractions = reduceInteraction(withoutPendingMessageOwners, {
 		type: 'session/interactions-cleared',
 		sessionId,
 	});

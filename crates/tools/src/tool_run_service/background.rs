@@ -98,7 +98,7 @@ impl ToolRunService {
         // Unpredictable ToolRun ID: a sequential counter would let any
         // session's agent enumerate and read other sessions' background outputs
         // through status (which is RiskLevel::Safe).
-        let id = haven_common::types::new_id("toolrun");
+        let tool_run_id = haven_common::types::new_id("toolrun");
         let started_at = chrono::Utc::now().to_rfc3339();
         let (kill_tx, kill_rx) = oneshot::channel();
         let tail = self.output_port.new_tail().await;
@@ -150,7 +150,7 @@ impl ToolRunService {
             // reconciles any durable row that was committed before the caller
             // was cancelled.
             let persist_gate = spawn_gate;
-            let persist_id = id.clone();
+            let persist_tool_run_id = tool_run_id.clone();
             let persist_session_id = session_id.map(str::to_owned);
             let persist_command = command.to_string();
             let persist_started_at = started_at.clone();
@@ -158,7 +158,7 @@ impl ToolRunService {
             let persisted = tokio::spawn(async move {
                 let result = store
                     .save_background_tool_run_with_source(
-                        persist_id,
+                        persist_tool_run_id,
                         persist_session_id,
                         persist_command,
                         persist_started_at,
@@ -175,7 +175,7 @@ impl ToolRunService {
             spawn_gate = gate;
             if let Err(error) = result {
                 tracing::warn!(
-                    tool_run_id = %id,
+                    tool_run_id = %tool_run_id,
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to persist ToolRun spawn"
                 );
@@ -184,7 +184,7 @@ impl ToolRunService {
         }
 
         self.tool_runs.write().await.insert(
-            id.clone(),
+            tool_run_id.clone(),
             ToolRunEntry {
                 kind: ToolRunKind::Background,
                 session_id: session_id.map(str::to_owned),
@@ -208,7 +208,7 @@ impl ToolRunService {
         let containment = match haven_platform::process_containment::ProcessContainment::new() {
             Ok(containment) => containment,
             Err(error) => {
-                self.rollback_background_registration(&id).await;
+                self.rollback_background_registration(&tool_run_id).await;
                 return Err(error.into());
             }
         };
@@ -223,12 +223,12 @@ impl ToolRunService {
             Err(e) => {
                 // Spawn failed: remove the entry so the ToolRun is not left
                 // dangling as "running".
-                self.rollback_background_registration(&id).await;
+                self.rollback_background_registration(&tool_run_id).await;
                 return Err(e.into());
             }
         };
         let Some(pid) = child.id() else {
-            self.rollback_background_registration(&id).await;
+            self.rollback_background_registration(&tool_run_id).await;
             return Err(anyhow::anyhow!(
                 "background shell child did not expose a process id"
             ));
@@ -242,7 +242,7 @@ impl ToolRunService {
         let attach_result = containment.attach_and_resume(pid, ());
         if let Err(error) = attach_result {
             let _ = child.kill().await;
-            self.rollback_background_registration(&id).await;
+            self.rollback_background_registration(&tool_run_id).await;
             return Err(anyhow::anyhow!(
                 "failed to attach background shell to process containment: {}",
                 haven_common::error::sanitize_error_text(&error.to_string())
@@ -250,12 +250,12 @@ impl ToolRunService {
         }
 
         let me = self.clone();
-        let tool_run_id = id.clone();
+        let runner_tool_run_id = tool_run_id.clone();
         let shell_owned = shell.to_string();
         let command_owned = command.to_string();
         let mut created = ToolRunLifecyclePayload::new(
             ToolRunKind::Background,
-            tool_run_id.clone(),
+            runner_tool_run_id.clone(),
             ToolRunLifecycleState::Running {
                 started_at: started_at.clone(),
             },
@@ -271,69 +271,79 @@ impl ToolRunService {
         // every log line emitted while the ToolRun runs/cancels (output-log
         // writes, completion) carries the ToolRun ID — parallel background ToolRuns
         // stay distinguishable in logs.
-        let tool_run_span = tracing::info_span!("background_tool_run", tool_run_id = %tool_run_id);
+        let tool_run_span = tracing::info_span!(
+            "background_tool_run",
+            tool_run_id = %runner_tool_run_id
+        );
         let runner_tail = tail.clone();
         let emit_tool_run_id = tool_run_id.clone();
         let shutdown_token = self.shutdown_token.clone();
-        tokio::spawn(async move {
-            // Keep the Job Object alive for the entire ToolRun. Its
-            // kill-on-close flag then cleans up descendants on cancellation
-            // or application shutdown.
-            let _containment = containment;
-            // The ToolRun outlives this session: when `run` is dropped (kill signal
-            // received), kill_on_drop terminates the child.
-            let max_collect = collect_byte_cap(max_chars);
-            let stdout_tail = runner_tail.clone();
-            let stderr_tail = runner_tail.clone();
-            let stdout_fut = read_stream_text_capped(
-                child.stdout.take(),
-                max_collect,
-                Some(stdout_tail),
-            );
-            let stderr_fut = read_stream_text_capped(
-                child.stderr.take(),
-                max_collect,
-                Some(stderr_tail),
-            );
-            let run = async {
-                let (stdout, stderr) = tokio::join!(stdout_fut, stderr_fut);
-                let status = child.wait().await;
-                let truncated = stdout.overflowed || stderr.overflowed;
-                let mut combined = stdout.text;
-                if !stderr.text.is_empty() {
-                    if !combined.is_empty() {
-                        combined.push('\n');
+        tokio::spawn(
+            async move {
+                // Keep the Job Object alive for the entire ToolRun. Its
+                // kill-on-close flag then cleans up descendants on cancellation
+                // or application shutdown.
+                let _containment = containment;
+                // The ToolRun outlives this session: when `run` is dropped (kill signal
+                // received), kill_on_drop terminates the child.
+                let max_collect = collect_byte_cap(max_chars);
+                let stdout_tail = runner_tail.clone();
+                let stderr_tail = runner_tail.clone();
+                let stdout_fut =
+                    read_stream_text_capped(child.stdout.take(), max_collect, Some(stdout_tail));
+                let stderr_fut =
+                    read_stream_text_capped(child.stderr.take(), max_collect, Some(stderr_tail));
+                let run = async {
+                    let (stdout, stderr) = tokio::join!(stdout_fut, stderr_fut);
+                    let status = child.wait().await;
+                    let truncated = stdout.overflowed || stderr.overflowed;
+                    let mut combined = stdout.text;
+                    if !stderr.text.is_empty() {
+                        if !combined.is_empty() {
+                            combined.push('\n');
+                        }
+                        combined.push_str(&stderr.text);
                     }
-                    combined.push_str(&stderr.text);
-                }
-                // Strip PowerShell's NativeCommandError/CLIXML formatting so
-                // the payload carries the real message, not the noise.
-                combined = sanitize_shell_output(&combined, &shell_owned);
-                let exit_code = status.as_ref().ok().and_then(|s| s.code());
-                let success = matches!(status, Ok(s) if s.success());
-                (combined, success, exit_code, truncated)
-            };
-            tokio::pin!(run);
-            tokio::select! {
-                _ = kill_rx => {
-                    // Dropping `run` drops the pipes and the child
-                    // (kill_on_drop), terminating the command.
-                    if let Some(pid) = child_pid {
-                        kill_process_tree(pid).await;
+                    // Strip PowerShell's NativeCommandError/CLIXML formatting so
+                    // the payload carries the real message, not the noise.
+                    combined = sanitize_shell_output(&combined, &shell_owned);
+                    let exit_code = status.as_ref().ok().and_then(|s| s.code());
+                    let success = matches!(status, Ok(s) if s.success());
+                    (combined, success, exit_code, truncated)
+                };
+                tokio::pin!(run);
+                tokio::select! {
+                    _ = kill_rx => {
+                        // Dropping `run` drops the pipes and the child
+                        // (kill_on_drop), terminating the command.
+                        if let Some(pid) = child_pid {
+                            kill_process_tree(pid).await;
+                        }
+                        me.mark_cancelled(&runner_tool_run_id, &started_at).await;
                     }
-                    me.mark_cancelled(&tool_run_id, &started_at).await;
-                }
-                _ = shutdown_token.cancelled() => {
-                    if let Some(pid) = child_pid {
-                        kill_process_tree(pid).await;
+                    _ = shutdown_token.cancelled() => {
+                        if let Some(pid) = child_pid {
+                            kill_process_tree(pid).await;
+                        }
+                        me.mark_cancelled(&runner_tool_run_id, &started_at).await;
                     }
-                    me.mark_cancelled(&tool_run_id, &started_at).await;
-                }
-                (combined, success, exit_code, truncated) = &mut run => {
-                    me.mark_finished(&tool_run_id, &started_at, &shell_owned, &command_owned, combined, success, exit_code, truncated).await;
+                    (combined, success, exit_code, truncated) = &mut run => {
+                        me.mark_finished(
+                            &runner_tool_run_id,
+                            &started_at,
+                            &shell_owned,
+                            &command_owned,
+                            combined,
+                            success,
+                            exit_code,
+                            truncated,
+                        )
+                        .await;
+                    }
                 }
             }
-        }.instrument(tool_run_span));
+            .instrument(tool_run_span),
+        );
 
         // Live-output preview: emit `tool_run:output` when the bounded tail
         // changes (by value — length alone freezes once the window is full).
@@ -370,7 +380,7 @@ impl ToolRunService {
         });
 
         drop(spawn_gate);
-        Ok(id)
+        Ok(tool_run_id)
     }
 
     /// Associate a ToolRun with its owning session. Called by the session executor
@@ -481,11 +491,13 @@ impl ToolRunService {
         let service = Arc::clone(self);
         let owner = session_id.to_string();
         let selection = self
-            .cancel_owned_live_tool_runs(session_id, ToolRunKind::Background, move |id| {
+            .cancel_owned_live_tool_runs(session_id, ToolRunKind::Background, move |tool_run_id| {
                 let service = Arc::clone(&service);
                 let owner = owner.clone();
                 async move {
-                    service.cancel_owned_background_tool_run(&id, &owner).await;
+                    service
+                        .cancel_owned_background_tool_run(&tool_run_id, &owner)
+                        .await;
                 }
             })
             .await;
@@ -552,7 +564,7 @@ impl ToolRunService {
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn mark_finished(
         self: &Arc<Self>,
-        id: &str,
+        tool_run_id: &str,
         started_at: &str,
         shell: &str,
         command: &str,
@@ -568,7 +580,7 @@ impl ToolRunService {
         };
         let running = {
             let tool_runs = self.tool_runs.read().await;
-            tool_runs.get(id).is_some_and(|entry| {
+            tool_runs.get(tool_run_id).is_some_and(|entry| {
                 entry.kind == ToolRunKind::Background
                     && can_claim_terminal(entry.state.status(), next, TerminalSource::Live)
             })
@@ -585,7 +597,7 @@ impl ToolRunService {
                     // When the collected output was capped, the log file keeps
                     // the full transcript for inspection.
                     log_path: truncated.then(|| {
-                        write_output_log("tool-run-logs", id, &combined)
+                        write_output_log("tool-run-logs", tool_run_id, &combined)
                             .to_string_lossy()
                             .into_owned()
                     }),
@@ -602,7 +614,7 @@ impl ToolRunService {
                     error: combined.clone(),
                     error_reason: summarize_error(&diagnosed, 1200),
                     log_path: Some(
-                        write_output_log("tool-run-logs", id, &combined)
+                        write_output_log("tool-run-logs", tool_run_id, &combined)
                             .to_string_lossy()
                             .into_owned(),
                     ),
@@ -611,15 +623,18 @@ impl ToolRunService {
             }
         };
         debug_assert_eq!(state.status(), next);
-        match self.try_commit_background_terminal(id, &state, false).await {
+        match self
+            .try_commit_background_terminal(tool_run_id, &state, false)
+            .await
+        {
             Ok(_) => {}
             Err(error) => {
                 tracing::warn!(
-                    tool_run_id = %id,
+                    tool_run_id = %tool_run_id,
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to persist ToolRun result"
                 );
-                self.retry_background_terminal_persistence(id, state, false)
+                self.retry_background_terminal_persistence(tool_run_id, state, false)
                     .await;
             }
         }
@@ -715,13 +730,13 @@ impl ToolRunService {
 
     async fn drop_owned_terminal_background_tool_runs(&self, ids: &[String], session_id: &str) {
         let mut tool_runs = self.tool_runs.write().await;
-        for id in ids {
-            if tool_runs.get(id).is_some_and(|entry| {
+        for tool_run_id in ids {
+            if tool_runs.get(tool_run_id).is_some_and(|entry| {
                 entry.kind == ToolRunKind::Background
                     && entry.session_id.as_deref() == Some(session_id)
                     && entry.state.is_terminal()
             }) {
-                tool_runs.remove(id);
+                tool_runs.remove(tool_run_id);
             }
         }
     }

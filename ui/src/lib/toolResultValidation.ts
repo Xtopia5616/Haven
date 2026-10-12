@@ -237,6 +237,7 @@ function validWindowData(data: JsonRecord): boolean {
 		) &&
 		hasValidRecordArray(data, 'elements', (row) =>
 			hasValidOptionalFields(row, {
+				element_token: isString,
 				name: isString,
 				control_type: isToolWindowControlType,
 			}),

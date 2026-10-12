@@ -14,11 +14,11 @@ describe('ModelToolbar', () => {
 
 	it('labels chat options by configured profile and provider model', () => {
 		render(ModelToolbar, {
-			currentModelId: 'chat-profile',
+			currentModelConfigId: 'chat-profile',
 			modelMenuOpen: true,
 			modelOptions: [
 				{
-					id: 'chat-profile',
+					modelConfigId: 'chat-profile',
 					name: 'chat-profile',
 					providerName: 'primary',
 					model: 'gpt-5',

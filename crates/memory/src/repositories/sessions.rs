@@ -227,7 +227,7 @@ impl Database {
     /// Memory runtime startup uses this narrow view to identify sessions that
     /// existed before its live subscription began without loading session
     /// records or transcript projections into memory.
-    pub fn all_session_ids(&self) -> anyhow::Result<Vec<String>> {
+    pub fn list_session_ids(&self) -> anyhow::Result<Vec<String>> {
         let conn = self.conn();
         let mut stmt = conn.prepare("SELECT id FROM sessions ORDER BY id ASC")?;
         let rows = stmt.query_map([], session_id_from_row)?;
@@ -256,14 +256,14 @@ impl Database {
 
     pub fn session_ids_page(
         &self,
-        after_id: Option<&str>,
-        high_water: &str,
+        after_session_id: Option<&str>,
+        high_water_session_id: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<String>> {
-        if let Some(after_id) = after_id {
-            validate_session_id(after_id)?;
+        if let Some(after_session_id) = after_session_id {
+            validate_session_id(after_session_id)?;
         }
-        validate_session_id(high_water)?;
+        validate_session_id(high_water_session_id)?;
         anyhow::ensure!(
             (1..=MAX_MEMORY_SESSION_ID_PAGE_SIZE).contains(&limit),
             "session ID page limit must be between 1 and {MAX_MEMORY_SESSION_ID_PAGE_SIZE}"
@@ -277,7 +277,7 @@ impl Database {
              LIMIT ?3",
         )?;
         let rows = stmt.query_map(
-            rusqlite::params![after_id, high_water, limit as i64],
+            rusqlite::params![after_session_id, high_water_session_id, limit as i64],
             session_id_from_row,
         )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -326,10 +326,11 @@ impl Database {
         validate_session_id(id)?;
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
-        conn.execute(
+        let updated = conn.execute(
             "UPDATE sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
             rusqlite::params![title, now, id],
         )?;
+        anyhow::ensure!(updated == 1, "session '{id}' not found");
         self.cache_invalidate_session_history_page();
         Ok(())
     }
@@ -899,14 +900,14 @@ mod tests {
     }
 
     #[test]
-    fn all_session_ids_returns_every_id_in_stable_order() {
+    fn list_session_ids_returns_every_id_in_stable_order() {
         let db = create_db();
         let first = db.create_session("first").unwrap();
         let second = db.create_session("second").unwrap();
 
         let mut expected = vec![first.session_id, second.session_id];
         expected.sort();
-        assert_eq!(db.all_session_ids().unwrap(), expected);
+        assert_eq!(db.list_session_ids().unwrap(), expected);
     }
 
     #[test]
@@ -920,28 +921,34 @@ mod tests {
             })
             .collect::<Vec<_>>();
         expected.sort();
-        let high_water = db.session_id_high_water().unwrap().unwrap();
+        let high_water_session_id = db.session_id_high_water().unwrap().unwrap();
         let later_id = format!("ses-{}", "f".repeat(32));
         db.conn()
             .execute("INSERT INTO sessions (id) VALUES (?1)", [&later_id])
             .unwrap();
 
-        let mut after_id = None;
+        let mut after_session_id = None;
         let mut actual = Vec::new();
         loop {
             let page = db
-                .session_ids_page(after_id.as_deref(), &high_water, 64)
+                .session_ids_page(after_session_id.as_deref(), &high_water_session_id, 64)
                 .unwrap();
             assert!(page.len() <= 64);
             if page.is_empty() {
                 break;
             }
-            after_id = page.last().cloned();
+            after_session_id = page.last().cloned();
             actual.extend(page);
         }
         assert_eq!(actual, expected);
-        assert!(db.session_ids_page(None, &high_water, 0).is_err());
-        assert!(db.session_ids_page(None, &high_water, 65).is_err());
+        assert!(
+            db.session_ids_page(None, &high_water_session_id, 0)
+                .is_err()
+        );
+        assert!(
+            db.session_ids_page(None, &high_water_session_id, 65)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1120,6 +1127,18 @@ mod tests {
         let result = db.delete_session(&missing_id);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn update_session_title_nonexistent_returns_not_found() {
+        let db = create_db();
+        let missing_id = haven_common::types::new_id("ses");
+
+        let error = db
+            .update_session_title(&missing_id, "late title")
+            .unwrap_err();
+
+        assert!(error.to_string().contains("not found"));
     }
 
     #[test]
@@ -1446,7 +1465,7 @@ mod tests {
                 [&session.session_id],
             )
             .unwrap();
-        assert!(db.all_session_ids().is_err());
+        assert!(db.list_session_ids().is_err());
         assert!(db.session_id_high_water().is_err());
         assert!(db.list_persisted_sessions(50, 0).is_err());
         assert!(db.old_session_ids(1).is_err());

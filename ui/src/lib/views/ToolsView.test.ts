@@ -11,6 +11,14 @@ const { addNotification, reportError } = vi.hoisted(() => ({
 	reportError: vi.fn(),
 }));
 
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((resolvePromise) => {
+		resolve = resolvePromise;
+	});
+	return { promise, resolve };
+}
+
 vi.mock('$lib/tauri.ts', () => ({
 	invoke,
 }));
@@ -99,6 +107,7 @@ function skillInfo(name: string) {
 describe('ToolsView toolbar actions', () => {
 	beforeEach(() => {
 		registerAppListener.mockClear();
+		registerAppListener.mockImplementation(async () => ({ dispose: vi.fn() }));
 		addNotification.mockClear();
 		reportError.mockClear();
 		invoke.mockImplementation(async (command: string) => {
@@ -109,6 +118,59 @@ describe('ToolsView toolbar actions', () => {
 			}
 			return undefined;
 		});
+	});
+
+	it('stops mount setup when unmounted while the initial tool list is pending', async () => {
+		const pendingManifests = deferred<{ tools: never[] }>();
+		invoke.mockImplementation((command: string) => {
+			if (command === 'list_builtin_tool_manifests') return pendingManifests.promise;
+			return Promise.resolve(undefined);
+		});
+
+		const { unmount } = render(ToolsView);
+		expect(invoke).toHaveBeenCalledTimes(1);
+		unmount();
+		pendingManifests.resolve({ tools: [] });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(invoke).toHaveBeenCalledTimes(1);
+		expect(registerAppListener).not.toHaveBeenCalled();
+	});
+
+	it('disposes a listener handle that resolves after unmount and stops later registrations', async () => {
+		const skillsDispose = vi.fn();
+		const mcpDispose = vi.fn();
+		const pendingMcpListener = deferred<{ dispose: typeof mcpDispose }>();
+		let registrationCount = 0;
+		registerAppListener.mockImplementation(() => {
+			registrationCount += 1;
+			return registrationCount === 1
+				? Promise.resolve({ dispose: skillsDispose })
+				: pendingMcpListener.promise;
+		});
+
+		const { unmount } = render(ToolsView);
+		await waitFor(() => expect(registerAppListener).toHaveBeenCalledTimes(2));
+		unmount();
+		expect(skillsDispose).toHaveBeenCalledTimes(1);
+
+		pendingMcpListener.resolve({ dispose: mcpDispose });
+		await waitFor(() => expect(mcpDispose).toHaveBeenCalledTimes(1));
+		expect(registerAppListener).toHaveBeenCalledTimes(2);
+	});
+
+	it('does not register the MCP listener if the view is destroyed during skills listener setup', async () => {
+		const skillsDispose = vi.fn();
+		const pendingSkillsListener = deferred<{ dispose: typeof skillsDispose }>();
+		registerAppListener.mockReturnValueOnce(pendingSkillsListener.promise);
+
+		const { unmount } = render(ToolsView);
+		await waitFor(() => expect(registerAppListener).toHaveBeenCalledTimes(1));
+		unmount();
+		pendingSkillsListener.resolve({ dispose: skillsDispose });
+
+		await waitFor(() => expect(skillsDispose).toHaveBeenCalledTimes(1));
+		expect(registerAppListener).toHaveBeenCalledTimes(1);
 	});
 
 	it('places MCP and skill actions beside each section heading', async () => {

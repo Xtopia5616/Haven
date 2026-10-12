@@ -194,9 +194,9 @@ function drainQueue(lane: SubmissionLane) {
  * in flight (meaningful for voice; harmless for typed) — into the fresh
  * session, and the active session id is updated.
  *
- * On submission failure the optimistic bubble is removed from the same
- * key it landed in and the error is rethrown so the caller can surface
- * it (notification toast, etc.).
+ * On submission failure the reducer removes the optimistic bubble from its
+ * current session owner, even if a lifecycle event adopted the draft while the
+ * command was still pending. The error is rethrown so the caller can surface it.
  *
  * @param {string} text
  * @param {object} [opts]

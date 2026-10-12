@@ -7,7 +7,7 @@
 	} from '$lib/toolResultPresentation.ts';
 
 	type MemoryFact = {
-		id?: string | null;
+		fact_id: string;
 		subject?: string | null;
 		predicate?: string | null;
 		object?: string | null;
@@ -48,7 +48,7 @@
 		<ToolResultList items={facts}>
 			{#snippet children(visibleFacts)}
 				<div class="memory-list tool-result-scroll-area">
-					{#each visibleFacts as fact, index (`${fact.id ?? `${fact.subject ?? ''}:${fact.predicate ?? ''}:${index}`}`)}
+					{#each visibleFacts as fact (fact.fact_id)}
 						<div class="memory-row">
 							<div class="memory-triple">
 								<span class="memory-subject">{fact.subject || '用户'}</span>

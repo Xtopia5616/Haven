@@ -98,7 +98,8 @@ pub(crate) fn spawn_line_reader<S>(
     mut byte_stream: S,
     tx: mpsc::Sender<LinePayload>,
     mode: LineMode,
-) where
+) -> tokio::task::JoinHandle<()>
+where
     S: futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
@@ -106,7 +107,11 @@ pub(crate) fn spawn_line_reader<S>(
         let result = std::panic::AssertUnwindSafe(async {
             let mut frame = Vec::new();
             loop {
-                match byte_stream.next().await {
+                let next = tokio::select! {
+                    _ = tx.closed() => return,
+                    next = byte_stream.next() => next,
+                };
+                match next {
                     Some(Ok(bytes)) => {
                         let mut start = 0;
                         for (end, byte) in bytes.iter().enumerate() {
@@ -152,15 +157,39 @@ pub(crate) fn spawn_line_reader<S>(
                 .send(Err(LlmError::Unknown("byte stream reader panicked".into())))
                 .await;
         }
-    });
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::task::{Context, Poll};
     use std::time::Duration;
+
+    struct DropProbe(Arc<AtomicBool>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    struct PendingBody {
+        _drop_probe: DropProbe,
+        polled: Arc<AtomicUsize>,
+    }
+
+    impl futures_util::Stream for PendingBody {
+        type Item = Result<bytes::Bytes, reqwest::Error>;
+
+        fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.polled.fetch_add(1, Ordering::SeqCst);
+            Poll::Pending
+        }
+    }
 
     #[tokio::test]
     async fn sse_data_only_skips_event_lines_and_comments() {
@@ -169,7 +198,7 @@ mod tests {
         let stream =
             futures_util::stream::iter(vec![Ok::<_, reqwest::Error>(bytes::Bytes::from(body))]);
         let (tx, mut rx) = line_payload_channel();
-        spawn_line_reader(stream, tx, LineMode::SseDataOnly);
+        drop(spawn_line_reader(stream, tx, LineMode::SseDataOnly));
         let mut got = Vec::new();
         while let Some(payload) = rx.recv().await {
             got.push(payload.unwrap());
@@ -183,7 +212,7 @@ mod tests {
         let stream =
             futures_util::stream::iter(vec![Ok::<_, reqwest::Error>(bytes::Bytes::from(body))]);
         let (tx, mut rx) = line_payload_channel();
-        spawn_line_reader(stream, tx, LineMode::SseOrRaw);
+        drop(spawn_line_reader(stream, tx, LineMode::SseOrRaw));
         let mut got = Vec::new();
         while let Some(payload) = rx.recv().await {
             got.push(payload.unwrap());
@@ -203,7 +232,7 @@ mod tests {
             Err(error),
         ]);
         let (tx, mut rx) = line_payload_channel();
-        spawn_line_reader(stream, tx, LineMode::SseDataOnly);
+        drop(spawn_line_reader(stream, tx, LineMode::SseDataOnly));
 
         assert_eq!(rx.recv().await.unwrap().unwrap(), r#"{"a":1}"#);
         assert!(matches!(rx.recv().await, Some(Err(_))));
@@ -223,7 +252,7 @@ mod tests {
         let bytes = bytes::Bytes::from(vec![b'x'; MAX_STREAM_FRAME_BYTES + 1]);
         let stream = futures_util::stream::iter(vec![Ok::<_, reqwest::Error>(bytes)]);
         let (tx, mut rx) = line_payload_channel();
-        spawn_line_reader(stream, tx, LineMode::SseOrRaw);
+        drop(spawn_line_reader(stream, tx, LineMode::SseOrRaw));
 
         let error = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -250,7 +279,7 @@ mod tests {
             }
         }));
         let (tx, rx) = line_payload_channel();
-        spawn_line_reader(body, tx, LineMode::SseOrRaw);
+        let reader = spawn_line_reader(body, tx, LineMode::SseOrRaw);
 
         tokio::time::timeout(Duration::from_secs(1), async {
             while polled_chunks.load(Ordering::SeqCst) < STREAM_LINE_QUEUE_CAPACITY + 1 {
@@ -267,7 +296,37 @@ mod tests {
         );
 
         drop(rx);
-        tokio::task::yield_now().await;
+        tokio::time::timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("reader should stop when its receiver is dropped")
+            .expect("reader task should finish cleanly");
+    }
+
+    #[tokio::test]
+    async fn dropping_receiver_stops_pending_body_reader_and_drops_body() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let polled = Arc::new(AtomicUsize::new(0));
+        let body = PendingBody {
+            _drop_probe: DropProbe(Arc::clone(&dropped)),
+            polled: Arc::clone(&polled),
+        };
+        let (tx, rx) = line_payload_channel();
+        let reader = spawn_line_reader(body, tx, LineMode::SseOrRaw);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while polled.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reader should begin polling the pending body");
+
+        drop(rx);
+        tokio::time::timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("reader should stop after the receiver closes")
+            .expect("reader task should finish cleanly");
+        assert!(dropped.load(Ordering::SeqCst), "body should be dropped");
     }
 
     #[test]

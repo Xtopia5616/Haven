@@ -126,7 +126,10 @@ export function parseMemoryRecallResponses(
 	) {
 		throw new Error('Invalid memory recall identity');
 	}
+	const entityIds = new Set<string>();
 	for (const item of value) {
+		if (entityIds.has(item.entity_id)) throw new Error('Duplicate memory recall identity');
+		entityIds.add(item.entity_id);
 		const mismatch = findGeneratedWireShapeMismatch(item, MEMORY_RECALL_ITEM_RESPONSE_SHAPE);
 		if (mismatch) throw new Error(`Invalid memory recall response shape at ${mismatch}`);
 	}

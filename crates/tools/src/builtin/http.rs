@@ -1,9 +1,11 @@
 use async_trait::async_trait;
+use haven_common::network::{
+    self, MAX_HTTP_REDIRECT_HOPS, MAX_HTTP_URL_BYTES, ResolvedHttpDestination,
+};
 use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -29,8 +31,15 @@ struct HttpDestinationPolicy {
     allowed_domains: Vec<String>,
     /// Only enabled by unit tests so the canned loopback HTTP servers can be
     /// exercised without weakening production policy.
+    #[cfg(test)]
     allow_loopback: bool,
 }
+
+const MAX_HTTP_REQUEST_HEADERS: usize = 64;
+const MAX_HTTP_REQUEST_HEADER_NAME_BYTES: usize = 256;
+const MAX_HTTP_REQUEST_HEADER_VALUE_BYTES: usize = 8 * 1024;
+const MAX_HTTP_REQUEST_HEADERS_BYTES: usize = 32 * 1024;
+const MAX_HTTP_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
 /// HTTP method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -85,6 +94,8 @@ impl HttpTool {
             return Ok(ToolResult::cancelled("HTTP request cancelled"));
         }
 
+        validate_request_bounds(&params)?;
+
         let url = params.url;
         let method = params
             .method
@@ -103,18 +114,71 @@ impl HttpTool {
             return Ok(ToolResult::cancelled("HTTP request cancelled"));
         }
 
-        execute_once(
-            &url,
-            &method,
-            &headers,
-            body.as_deref(),
-            as_html,
-            timeout_secs,
-            self.max_body_bytes,
-            &self.allowed_domains,
-        )
-        .await
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Ok(ToolResult::cancelled("HTTP request cancelled")),
+            result = execute_once(
+                &url,
+                &method,
+                &headers,
+                body.as_deref(),
+                as_html,
+                timeout_secs,
+                self.max_body_bytes,
+                &self.allowed_domains,
+            ) => result,
+        }
     }
+}
+
+fn validate_request_bounds(params: &HttpRequestParams) -> anyhow::Result<()> {
+    if params.url.len() > MAX_HTTP_URL_BYTES {
+        anyhow::bail!("HTTP URL exceeds the {MAX_HTTP_URL_BYTES} byte limit");
+    }
+    if matches!(
+        params.method.unwrap_or(HttpRequestMethod::Get),
+        HttpRequestMethod::Get
+    ) && params.body.is_some()
+    {
+        anyhow::bail!("GET requests must not include a request body");
+    }
+    if let Some(body) = &params.body
+        && body.len() > MAX_HTTP_REQUEST_BODY_BYTES
+    {
+        anyhow::bail!("HTTP request body exceeds the {MAX_HTTP_REQUEST_BODY_BYTES} byte limit");
+    }
+    if let Some(headers) = &params.headers {
+        if headers.len() > MAX_HTTP_REQUEST_HEADERS {
+            anyhow::bail!("HTTP request has more than {MAX_HTTP_REQUEST_HEADERS} headers");
+        }
+        let mut total_bytes = 0usize;
+        for (name, value) in headers {
+            if name.len() > MAX_HTTP_REQUEST_HEADER_NAME_BYTES {
+                anyhow::bail!(
+                    "HTTP request header name exceeds the {MAX_HTTP_REQUEST_HEADER_NAME_BYTES} byte limit"
+                );
+            }
+            if value.len() > MAX_HTTP_REQUEST_HEADER_VALUE_BYTES {
+                anyhow::bail!(
+                    "HTTP request header value exceeds the {MAX_HTTP_REQUEST_HEADER_VALUE_BYTES} byte limit"
+                );
+            }
+            reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|error| anyhow::anyhow!("invalid HTTP request header name: {error}"))?;
+            reqwest::header::HeaderValue::from_str(value)
+                .map_err(|error| anyhow::anyhow!("invalid HTTP request header value: {error}"))?;
+            total_bytes = total_bytes
+                .saturating_add(name.len())
+                .saturating_add(value.len())
+                .saturating_add(4);
+            if total_bytes > MAX_HTTP_REQUEST_HEADERS_BYTES {
+                anyhow::bail!(
+                    "HTTP request headers exceed the {MAX_HTTP_REQUEST_HEADERS_BYTES} byte limit"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Default for HttpTool {
@@ -194,9 +258,9 @@ impl Tool for HttpTool {
             "type": "object",
             "properties": {
                 "method": { "type": "string", "enum": ["GET", "POST"], "default": "GET", "description": "GET reads a known URL; POST sends body to a known endpoint. Defaults to GET" },
-                "url": { "type": "string", "minLength": 1, "description": "Known HTTP or HTTPS URL to request; this tool does not search for URLs" },
-                "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Optional request headers as string name/value pairs" },
-                "body": { "type": "string", "description": "Request body for POST" },
+                "url": { "type": "string", "minLength": 1, "maxLength": MAX_HTTP_URL_BYTES, "description": "Known HTTP or HTTPS URL to request; this tool does not search for URLs" },
+                "headers": { "type": "object", "maxProperties": MAX_HTTP_REQUEST_HEADERS, "propertyNames": { "maxLength": MAX_HTTP_REQUEST_HEADER_NAME_BYTES }, "additionalProperties": { "type": "string", "maxLength": MAX_HTTP_REQUEST_HEADER_VALUE_BYTES }, "description": "Optional request headers as string name/value pairs" },
+                "body": { "type": "string", "maxLength": MAX_HTTP_REQUEST_BODY_BYTES, "description": "Request body for POST" },
                 "as_html": { "type": "boolean", "default": false, "description": "Return raw HTML instead of extracted readable text; defaults to false" },
                 "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120, "default": 15, "description": "Request timeout in seconds; defaults to 15, maximum 120" }
             },
@@ -206,8 +270,8 @@ impl Tool for HttpTool {
                     "additionalProperties": false,
                     "properties": {
                         "method": { "const": "GET", "default": "GET", "description": "Read the URL without sending a request body" },
-                        "url": { "type": "string", "minLength": 1, "description": "Known HTTP or HTTPS URL to request" },
-                        "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Optional HTTP headers" },
+                        "url": { "type": "string", "minLength": 1, "maxLength": MAX_HTTP_URL_BYTES, "description": "Known HTTP or HTTPS URL to request" },
+                        "headers": { "type": "object", "maxProperties": MAX_HTTP_REQUEST_HEADERS, "propertyNames": { "maxLength": MAX_HTTP_REQUEST_HEADER_NAME_BYTES }, "additionalProperties": { "type": "string", "maxLength": MAX_HTTP_REQUEST_HEADER_VALUE_BYTES }, "description": "Optional HTTP headers" },
                         "as_html": { "type": "boolean", "default": false, "description": "Return raw HTML instead of extracted readable text; defaults to false" },
                         "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120, "default": 15, "description": "Request timeout in seconds; defaults to 15" }
                     },
@@ -218,9 +282,9 @@ impl Tool for HttpTool {
                     "additionalProperties": false,
                     "properties": {
                         "method": { "const": "POST", "description": "Send a request body to this URL" },
-                        "url": { "type": "string", "minLength": 1, "description": "Known HTTP or HTTPS URL to request" },
-                        "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Optional HTTP headers" },
-                        "body": { "type": "string", "description": "Request body" },
+                        "url": { "type": "string", "minLength": 1, "maxLength": MAX_HTTP_URL_BYTES, "description": "Known HTTP or HTTPS URL to request" },
+                        "headers": { "type": "object", "maxProperties": MAX_HTTP_REQUEST_HEADERS, "propertyNames": { "maxLength": MAX_HTTP_REQUEST_HEADER_NAME_BYTES }, "additionalProperties": { "type": "string", "maxLength": MAX_HTTP_REQUEST_HEADER_VALUE_BYTES }, "description": "Optional HTTP headers" },
+                        "body": { "type": "string", "maxLength": MAX_HTTP_REQUEST_BODY_BYTES, "description": "Request body" },
                         "as_html": { "type": "boolean", "default": false, "description": "Return raw HTML instead of extracted readable text; defaults to false" },
                         "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120, "default": 15, "description": "Request timeout in seconds; defaults to 15" }
                     },
@@ -252,29 +316,21 @@ async fn execute_once(
 ) -> anyhow::Result<ToolResult> {
     let destination_policy = HttpDestinationPolicy {
         allowed_domains: allowed_domains.to_vec(),
-        allow_loopback: cfg!(test),
+        #[cfg(test)]
+        allow_loopback: true,
     };
     let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
         .redirect(reqwest::redirect::Policy::none())
+        // Requests are pinned to the address validated below. A proxy would
+        // resolve the target independently and bypass that pin.
+        .no_proxy()
         .user_agent("Haven/1.0");
-    let (validated_url, pinned_address) =
-        resolve_http_destination(url, &destination_policy).await?;
-    if let Some(address) = pinned_address
-        && let Some(host) = validated_url.host_str()
+    let resolved = resolve_http_destination(url, &destination_policy).await?;
+    if let Some(address) = resolved.pinned_address
+        && let Some(host) = resolved.url.host_str()
     {
         builder = builder.resolve(host, address);
-    }
-    // Route through a locally detected proxy so international requests work
-    // when the user runs one (e.g. 127.0.0.1:10808) — same detection as the
-    // shell tool's spawned commands. User-set env vars already short-circuit
-    // the probe (reqwest also honors them natively).
-    for (key, val) in crate::proxy_env_vars() {
-        if key == "HTTP_PROXY" || key == "http_proxy" {
-            builder = builder.proxy(reqwest::Proxy::http(&val)?);
-        } else if key == "HTTPS_PROXY" || key == "https_proxy" {
-            builder = builder.proxy(reqwest::Proxy::https(&val)?);
-        }
     }
     let client = builder.build()?;
 
@@ -339,7 +395,7 @@ async fn execute_once_with(
         // reqwest's automatic redirect policy is disabled so a redirect can
         // never bypass the SSRF check or the host allowlist.
         redirect_hops += 1;
-        if redirect_hops > MAX_REDIRECT_HOPS {
+        if redirect_hops > MAX_HTTP_REDIRECT_HOPS {
             anyhow::bail!("HTTP redirect limit exceeded");
         }
         let next_url = current_url.join(&location)?;
@@ -419,133 +475,34 @@ async fn execute_once_with(
     ))
 }
 
-const MAX_REDIRECT_HOPS: usize = 10;
-
 async fn validate_http_destination(
     raw_url: &str,
     destination_policy: &HttpDestinationPolicy,
 ) -> anyhow::Result<reqwest::Url> {
     Ok(resolve_http_destination(raw_url, destination_policy)
         .await?
-        .0)
+        .url)
 }
 
 async fn resolve_http_destination(
     raw_url: &str,
     destination_policy: &HttpDestinationPolicy,
-) -> anyhow::Result<(reqwest::Url, Option<SocketAddr>)> {
-    let url = reqwest::Url::parse(raw_url)
-        .map_err(|error| anyhow::anyhow!("invalid HTTP URL: {}", error))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        anyhow::bail!("HTTP tool only supports http and https URLs");
+) -> anyhow::Result<ResolvedHttpDestination> {
+    #[cfg(test)]
+    if destination_policy.allow_loopback {
+        return network::resolve_http_destination_for_test(
+            raw_url,
+            &destination_policy.allowed_domains,
+        )
+        .await;
     }
-    if !url.username().is_empty() || url.password().is_some() {
-        anyhow::bail!("HTTP URL userinfo is not allowed");
-    }
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("HTTP URL must include a host"))?;
-    let normalized_host = normalize_host(host);
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| anyhow::anyhow!("HTTP URL has no supported port"))?;
-
-    if is_blocked_metadata_host(&normalized_host)
-        && !(destination_policy.allow_loopback && normalized_host == "localhost")
-    {
-        anyhow::bail!("HTTP destination is a blocked metadata host");
-    }
-    if !domain_allowed(&normalized_host, &destination_policy.allowed_domains) {
-        anyhow::bail!("HTTP destination is not in the configured domain allowlist");
-    }
-
-    if let Ok(ip) = normalized_host.parse::<IpAddr>() {
-        if is_blocked_ip(ip, destination_policy.allow_loopback) {
-            anyhow::bail!("HTTP destination resolves to a blocked local or private address");
-        }
-        return Ok((url, None));
-    }
-
-    let addresses = tokio::net::lookup_host((normalized_host.as_str(), port))
-        .await
-        .map_err(|error| anyhow::anyhow!("failed to resolve HTTP host: {}", error))?;
-    let mut validated_addresses = Vec::new();
-    for address in addresses {
-        if is_blocked_ip(address.ip(), destination_policy.allow_loopback) {
-            anyhow::bail!("HTTP host resolves to a blocked local or private address");
-        }
-        validated_addresses.push(address);
-    }
-    let Some(pinned_address) = validated_addresses.first().copied() else {
-        anyhow::bail!("HTTP host did not resolve to an address");
-    };
-    Ok((url, Some(pinned_address)))
-}
-
-fn normalize_host(host: &str) -> String {
-    host.trim_end_matches('.').to_ascii_lowercase()
-}
-
-fn domain_allowed(host: &str, allowed_domains: &[String]) -> bool {
-    if allowed_domains.is_empty() {
-        return true;
-    }
-    allowed_domains.iter().any(|entry| {
-        let entry = normalize_host(entry.trim());
-        if let Some(suffix) = entry.strip_prefix("*.") {
-            host.ends_with(&format!(".{suffix}")) && host != suffix
-        } else {
-            host == entry
-        }
-    })
-}
-
-fn is_blocked_metadata_host(host: &str) -> bool {
-    matches!(
-        host,
-        "localhost"
-            | "metadata"
-            | "metadata.google.internal"
-            | "metadata.azure.internal"
-            | "metadata.internal"
-            | "instance-data"
-            | "instance-data.ec2.internal"
-    )
-}
-
-fn is_blocked_ip(ip: IpAddr, allow_loopback: bool) -> bool {
-    if allow_loopback && ip.is_loopback() {
-        return false;
-    }
-    match ip {
-        IpAddr::V4(ip) => {
-            ip.is_private()
-                || ip.is_link_local()
-                || ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-                || ip.is_broadcast()
-                || ip.octets() == [169, 254, 169, 254]
-                || ip.octets() == [100, 100, 100, 200]
-        }
-        IpAddr::V6(ip) => {
-            if let Some(mapped) = ip.to_ipv4_mapped() {
-                return is_blocked_ip(IpAddr::V4(mapped), allow_loopback);
-            }
-            let first = ip.octets()[0];
-            let second = ip.octets()[1];
-            ip.is_unspecified()
-                || ip.is_loopback()
-                || ip.is_multicast()
-                || (first & 0xfe) == 0xfc
-                || (first == 0xfe && (second & 0xc0) == 0x80)
-        }
-    }
+    network::resolve_http_destination(raw_url, &destination_policy.allowed_domains).await
 }
 
 fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
     left.scheme() == right.scheme()
-        && left.host_str().map(normalize_host) == right.host_str().map(normalize_host)
+        && left.host_str().map(network::normalize_http_host)
+            == right.host_str().map(network::normalize_http_host)
         && left.port_or_known_default() == right.port_or_known_default()
 }
 
@@ -741,6 +698,11 @@ mod tests {
     fn test_network_tool_input_schema() {
         let schema = HttpTool::default().input_schema();
         assert!(schema["properties"]["url"].is_object());
+        assert_eq!(schema["properties"]["url"]["maxLength"], MAX_HTTP_URL_BYTES);
+        assert_eq!(
+            schema["properties"]["headers"]["maxProperties"],
+            MAX_HTTP_REQUEST_HEADERS
+        );
     }
 
     #[test]
@@ -809,6 +771,24 @@ mod tests {
             let _ = sock.write_all(resp.as_bytes()).await;
         });
         format!("http://{}/", addr)
+    }
+
+    async fn stall_once() -> (
+        String,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let Ok((_sock, _)) = listener.accept().await else {
+                return;
+            };
+            let _ = accepted_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        (format!("http://{addr}/"), accepted_rx, task)
     }
 
     /// Accept one connection and drop it immediately so the client's request
@@ -1061,6 +1041,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_http_request_bounds_reject_oversized_url_body_and_headers() {
+        let tool = HttpTool::default();
+        let cases = [
+            HttpRequestParams {
+                method: None,
+                url: format!("https://example.com/{}", "a".repeat(MAX_HTTP_URL_BYTES)),
+                headers: None,
+                body: None,
+                as_html: None,
+                timeout_secs: None,
+            },
+            HttpRequestParams {
+                method: None,
+                url: "https://example.com/".into(),
+                headers: None,
+                body: Some("x".repeat(MAX_HTTP_REQUEST_BODY_BYTES + 1)),
+                as_html: None,
+                timeout_secs: None,
+            },
+            HttpRequestParams {
+                method: Some(HttpRequestMethod::Get),
+                url: "https://example.com/".into(),
+                headers: None,
+                body: Some("ignored by GET".into()),
+                as_html: None,
+                timeout_secs: None,
+            },
+            HttpRequestParams {
+                method: None,
+                url: "https://example.com/".into(),
+                headers: Some(
+                    (0..=MAX_HTTP_REQUEST_HEADERS)
+                        .map(|index| (format!("x-test-{index}"), "v".into()))
+                        .collect(),
+                ),
+                body: None,
+                as_html: None,
+                timeout_secs: None,
+            },
+        ];
+        for params in cases {
+            assert!(tool.run(params, CancellationToken::new()).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_drops_an_in_flight_http_request() {
+        let (url, accepted, server) = stall_once().await;
+        let cancel = CancellationToken::new();
+        let request_cancel = cancel.clone();
+        let request = tokio::spawn(async move {
+            HttpTool::default()
+                .run(
+                    HttpRequestParams {
+                        method: Some(HttpRequestMethod::Get),
+                        url,
+                        headers: None,
+                        body: None,
+                        as_html: None,
+                        timeout_secs: Some(30),
+                    },
+                    request_cancel,
+                )
+                .await
+        });
+        accepted.await.expect("server accepted request");
+        cancel.cancel();
+        let result = request.await.unwrap().unwrap();
+        assert_eq!(result.outcome, ToolExecutionOutcome::Cancelled);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn http_destination_policy_blocks_local_private_and_metadata_destinations() {
         let destination_policy = HttpDestinationPolicy::default();
         for url in [
@@ -1083,17 +1136,20 @@ mod tests {
 
     #[test]
     fn http_destination_policy_allowlist_supports_exact_and_subdomain_entries() {
-        assert!(domain_allowed("example.com", &[]));
-        assert!(domain_allowed(
+        assert!(network::http_domain_allowed("example.com", &[]));
+        assert!(network::http_domain_allowed(
             "api.example.com",
             &["*.example.com".to_string()]
         ));
-        assert!(!domain_allowed(
+        assert!(!network::http_domain_allowed(
             "example.com",
             &["*.example.com".to_string()]
         ));
-        assert!(domain_allowed("example.com", &["EXAMPLE.COM.".to_string()]));
-        assert!(!domain_allowed(
+        assert!(network::http_domain_allowed(
+            "example.com",
+            &["EXAMPLE.COM.".to_string()]
+        ));
+        assert!(!network::http_domain_allowed(
             "other.example.net",
             &["example.com".to_string()]
         ));

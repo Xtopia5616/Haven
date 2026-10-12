@@ -5,6 +5,7 @@
 //! rules stay in `fact_graph.rs`; maintenance policies stay in
 //! `fact_maintenance.rs`.
 
+use crate::cache::{ALL_FACTS_CACHE_KEY, fact_subject_cache_key};
 use crate::db::Database;
 use chrono::{DateTime, Utc};
 use haven_common::types::is_canonical_id;
@@ -210,7 +211,7 @@ impl Database {
         if let Some(cached) = self.cache_get_facts(subject) {
             return Ok(cached);
         }
-        let key = format!("_facts_{subject}");
+        let key = fact_subject_cache_key(subject);
         let cache_gen = self.cache_generation(&key);
         let conn = self.conn();
         let mut stmt =
@@ -256,7 +257,7 @@ impl Database {
         if let Some(cached) = self.cache_get_facts_all() {
             return Ok(cached);
         }
-        let cache_gen = self.cache_generation("_facts_all");
+        let cache_gen = self.cache_generation(ALL_FACTS_CACHE_KEY);
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts"))?;
         let rows = stmt.query_map([], fact_from_row)?;

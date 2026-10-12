@@ -442,22 +442,6 @@ impl ReActEngine {
         .await
     }
 
-    /// Verify one final event boundary before leaving the loop on a cancellation,
-    /// so the DB row is never stale when `rollback_session` / `continue_session`
-    /// read it after the handler exits. The mid-run throttle in
-    /// `save_branch_point` may have skipped the last write, and the state at
-    /// this point is always a clean step boundary (the cancelled response or
-    /// partial tool results are discarded by the exit).
-    pub(super) async fn check_event_boundary(
-        &self,
-        session_id: &str,
-        state: &ReActState,
-        step_number: u32,
-    ) -> bool {
-        self.ensure_event_boundary(session_id, state, step_number)
-            .await
-    }
-
     /// Phase 7 / C4: single cancel-exit path — verify the event boundary then
     /// return [`LoopExit::Cancelled`]. All cancel sites in the thin loop /
     /// tool batch must go through this helper.
@@ -467,8 +451,17 @@ impl ReActEngine {
         state: &ReActState,
         step_number: u32,
     ) -> LoopExit {
-        self.exit_at_boundary(session_id, state, step_number, LoopExit::Cancelled)
-            .await
+        // The turn token is already cancelled on this path. The durable event
+        // cursor is a final integrity read, so it must finish independently of
+        // the work cancellation that caused the exit.
+        self.exit_at_boundary_with_cancellation(
+            session_id,
+            state,
+            step_number,
+            LoopExit::Cancelled,
+            None,
+        )
+        .await
     }
 
     /// Verify the event boundary then return `exit`. Used by Completed / Error /
@@ -480,8 +473,26 @@ impl ReActEngine {
         step_number: u32,
         exit: LoopExit,
     ) -> LoopExit {
+        self.exit_at_boundary_with_cancellation(
+            session_id,
+            state,
+            step_number,
+            exit,
+            state.turn_cancel.clone(),
+        )
+        .await
+    }
+
+    async fn exit_at_boundary_with_cancellation(
+        &self,
+        session_id: &str,
+        state: &ReActState,
+        step_number: u32,
+        exit: LoopExit,
+        cancel: Option<CancellationToken>,
+    ) -> LoopExit {
         if self
-            .check_event_boundary(session_id, state, step_number)
+            .ensure_event_boundary_with_cancellation(session_id, state, step_number, None, cancel)
             .await
         {
             exit
@@ -586,12 +597,31 @@ impl ReActEngine {
         step_number: u32,
         error_partial_message_ids: Option<&[String]>,
     ) -> bool {
+        self.ensure_event_boundary_with_cancellation(
+            session_id,
+            state,
+            step_number,
+            error_partial_message_ids,
+            state.turn_cancel.clone(),
+        )
+        .await
+    }
+
+    async fn ensure_event_boundary_with_cancellation(
+        &self,
+        session_id: &str,
+        state: &ReActState,
+        step_number: u32,
+        error_partial_message_ids: Option<&[String]>,
+        cancel: Option<CancellationToken>,
+    ) -> bool {
         let result = self
             .read_event_boundary_with_error_partials(
                 session_id,
                 state,
                 step_number,
                 error_partial_message_ids,
+                cancel,
             )
             .await;
         if !result {
@@ -607,6 +637,7 @@ impl ReActEngine {
         state: &ReActState,
         step_number: u32,
         _error_partial_message_ids: Option<&[String]>,
+        cancel: Option<CancellationToken>,
     ) -> bool {
         // Some lifecycle callers do not carry a provider run id (for example
         // a pause boundary). There is no serialized ReAct state to write:
@@ -617,7 +648,7 @@ impl ReActEngine {
                 .start(MetricsPhase::EventBoundaryCheck, session_id, 0, step_number);
         let saved = self
             .event_store
-            .event_boundary_cursor(session_id, state.turn_cancel.clone())
+            .event_boundary_cursor(session_id, cancel)
             .await;
         match saved {
             Ok(cursor) => {
@@ -758,7 +789,7 @@ impl ReActEngine {
             } else {
                 error_partial_message_ids.push(message_id.clone());
             }
-            if let Err(error) = EventDispatcher::emit_thought_from(
+            if let Err(error) = EventDispatcher::emit_recovery_partial_thought_from(
                 &ctx.emitter,
                 &ctx.session_id,
                 text,

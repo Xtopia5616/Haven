@@ -8,7 +8,10 @@ mod contract;
 mod inbox;
 mod messaging_service;
 
-pub use contract::is_expired;
+pub use contract::{
+    MAX_MESSAGE_ENVELOPE_BYTES, MAX_MESSAGE_PAYLOAD_BYTES, MAX_MESSAGE_SUBJECT_BYTES,
+    MAX_MESSAGE_TEXT_BYTES, MAX_MESSAGE_TIMESTAMP_BYTES, is_expired, validate_message_payload_size,
+};
 pub use inbox::{AgentInfo, AgentStatus, Envelope, MessageType, SendOutcome};
 
 pub use messaging_service::{

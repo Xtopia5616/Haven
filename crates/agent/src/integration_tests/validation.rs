@@ -318,13 +318,19 @@ async fn confirmation_recovery_matches_the_full_invocation_identity() {
         executor
             .confirm_decision_for(&session.session_id, &step_id, 0, Some("call-a"))
             .await,
-        Some((true, None))
+        Some(crate::RecordedConfirmationDecision {
+            approved: true,
+            receipt: None,
+        })
     );
     assert_eq!(
         executor
             .confirm_decision_for(&session.session_id, &step_id, 1, Some("call-b"))
             .await,
-        Some((false, None))
+        Some(crate::RecordedConfirmationDecision {
+            approved: false,
+            receipt: None,
+        })
     );
     assert_eq!(
         executor

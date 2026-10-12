@@ -25,6 +25,20 @@ use crate::repositories::sessions::Session;
 /// when a long-lived process visits many sessions or fact subjects.
 pub(crate) const QUERY_CACHE_MAX_KEYS: usize = 256;
 
+/// Maximum number of invalidated query keys whose generations are retained.
+/// If this bound is reached, the cache is flushed and each query domain is
+/// advanced so no in-flight read from before the flush can repopulate it.
+pub(crate) const QUERY_CACHE_MAX_KEY_GENERATIONS: usize = QUERY_CACHE_MAX_KEYS * 4;
+
+/// Internal key for the global `list_facts` result.
+pub(crate) const ALL_FACTS_CACHE_KEY: &str = "facts:all";
+
+/// Build a subject-scoped key without allowing a subject value to alias a
+/// different query shape such as the global facts list.
+pub(crate) fn fact_subject_cache_key(subject: &str) -> String {
+    format!("facts:subject:{subject}")
+}
+
 #[derive(Clone)]
 struct CacheEntry<T: Clone> {
     data: T,
@@ -49,7 +63,7 @@ impl CacheDomain {
     fn for_key(key: &str) -> Self {
         if key == "_session_history_page" {
             Self::SessionHistory
-        } else if key == "_facts_all" || key.starts_with("_facts_") {
+        } else if key == ALL_FACTS_CACHE_KEY || key.starts_with("facts:subject:") {
             Self::Facts
         } else if key.starts_with("_embeddings_") {
             Self::Embeddings
@@ -160,6 +174,30 @@ impl CacheState {
             .unwrap_or(0)
             .saturating_add(1);
         self.key_generations.insert(key.to_string(), next);
+    }
+
+    fn ensure_key_generation_capacity(&mut self, keys: &[&str]) {
+        let mut additional = 0;
+        for (index, key) in keys.iter().enumerate() {
+            if keys[..index].contains(key) || self.key_generations.contains_key(*key) {
+                continue;
+            }
+            additional += 1;
+        }
+        if self.key_generations.len().saturating_add(additional) <= QUERY_CACHE_MAX_KEY_GENERATIONS
+        {
+            return;
+        }
+
+        // Dropping an individual tombstone could let a query that started
+        // before its invalidation write stale data back. A bounded reset
+        // instead invalidates every in-flight key while keeping domain
+        // generations small and the tombstone map finite.
+        for generation in &mut self.domain_generations {
+            *generation = generation.saturating_add(1);
+        }
+        self.entries.clear();
+        self.key_generations.clear();
     }
 
     fn bump_domain(&mut self, domain: CacheDomain) {
@@ -279,7 +317,7 @@ impl QueryResultCache {
     }
 
     pub(crate) fn get_facts(&self, subject: &str) -> Option<Vec<Fact>> {
-        let key = format!("_facts_{subject}");
+        let key = fact_subject_cache_key(subject);
         let mut state = self.state.lock().ok()?;
         let result = state
             .entries
@@ -305,7 +343,7 @@ impl QueryResultCache {
         generation: CacheGeneration,
     ) {
         self.put(
-            &format!("_facts_{subject}"),
+            &fact_subject_cache_key(subject),
             data,
             ttl_secs,
             generation,
@@ -315,7 +353,7 @@ impl QueryResultCache {
 
     pub(crate) fn get_facts_all(&self) -> Option<Vec<Fact>> {
         let mut state = self.state.lock().ok()?;
-        let key = "_facts_all";
+        let key = ALL_FACTS_CACHE_KEY;
         let result = state
             .entries
             .get(key)
@@ -338,9 +376,13 @@ impl QueryResultCache {
         ttl_secs: u64,
         generation: CacheGeneration,
     ) {
-        self.put("_facts_all", data, ttl_secs, generation, |cache, entry| {
-            cache.facts = Some(entry)
-        });
+        self.put(
+            ALL_FACTS_CACHE_KEY,
+            data,
+            ttl_secs,
+            generation,
+            |cache, entry| cache.facts = Some(entry),
+        );
     }
 
     pub(crate) fn get_embeddings(&self, entity_type: &str) -> Option<Vec<EmbeddedText>> {
@@ -426,9 +468,10 @@ impl QueryResultCache {
     }
 
     pub(crate) fn invalidate_facts(&self, subject: &str) {
-        let key = format!("_facts_{subject}");
-        self.invalidate_key(&key, |cache| cache.facts = None);
-        self.invalidate_key("_facts_all", |cache| cache.facts = None);
+        let subject_key = fact_subject_cache_key(subject);
+        self.invalidate_keys(&[&subject_key, ALL_FACTS_CACHE_KEY], |cache| {
+            cache.facts = None
+        });
     }
 
     pub(crate) fn invalidate_all_facts(&self) {
@@ -446,12 +489,23 @@ impl QueryResultCache {
     }
 
     fn invalidate_key(&self, key: &str, clear: impl Fn(&mut QueryCache)) {
+        self.invalidate_keys(&[key], clear);
+    }
+
+    fn invalidate_keys(&self, keys: &[&str], clear: impl Fn(&mut QueryCache)) {
         if let Ok(mut state) = self.state.lock() {
-            state.bump_key(key);
-            if let Some(cache) = state.entries.get_mut(key) {
-                clear(cache);
+            state.ensure_key_generation_capacity(keys);
+            for (index, key) in keys.iter().enumerate() {
+                if keys[..index].contains(key) {
+                    continue;
+                }
+                let key = *key;
+                state.bump_key(key);
+                if let Some(cache) = state.entries.get_mut(key) {
+                    clear(cache);
+                }
+                state.remove_if_empty(key);
             }
-            state.remove_if_empty(key);
         }
     }
 
@@ -469,5 +523,101 @@ impl QueryResultCache {
 impl Default for QueryResultCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fact(fact_id: &str, subject: &str) -> Fact {
+        Fact {
+            fact_id: fact_id.to_string(),
+            subject: subject.to_string(),
+            predicate: "likes".to_string(),
+            object: fact_id.to_string(),
+            source: "user".to_string(),
+            confidence: 1.0,
+            tags: Vec::new(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            mention_count: 1,
+            last_seen_at: None,
+            source_ref: None,
+            durability: 1.0,
+        }
+    }
+
+    #[test]
+    fn fact_subject_all_has_a_distinct_cache_key_from_the_global_list() {
+        let cache = QueryResultCache::new();
+        let subject_key = fact_subject_cache_key("all");
+        assert_ne!(subject_key, ALL_FACTS_CACHE_KEY);
+
+        let subject_generation = cache.generation(&subject_key);
+        let all_generation = cache.generation(ALL_FACTS_CACHE_KEY);
+        cache.put_facts(
+            "all",
+            vec![fact("subject-fact", "all")],
+            60,
+            subject_generation,
+        );
+        cache.put_facts_all(vec![fact("global-fact", "someone")], 60, all_generation);
+
+        assert_eq!(cache.get_facts("all").unwrap()[0].fact_id, "subject-fact");
+        assert_eq!(cache.get_facts_all().unwrap()[0].fact_id, "global-fact");
+    }
+
+    #[test]
+    fn fact_invalidation_clears_subject_and_global_entries_and_rejects_old_reads() {
+        let cache = QueryResultCache::new();
+        let subject = "person";
+        let subject_key = fact_subject_cache_key(subject);
+        let subject_generation = cache.generation(&subject_key);
+        let all_generation = cache.generation(ALL_FACTS_CACHE_KEY);
+        cache.put_facts(
+            subject,
+            vec![fact("subject-fact", subject)],
+            60,
+            subject_generation,
+        );
+        cache.put_facts_all(vec![fact("global-fact", subject)], 60, all_generation);
+
+        cache.invalidate_facts(subject);
+
+        assert!(cache.get_facts(subject).is_none());
+        assert!(cache.get_facts_all().is_none());
+        cache.put_facts(
+            subject,
+            vec![fact("stale-subject", subject)],
+            60,
+            subject_generation,
+        );
+        cache.put_facts_all(vec![fact("stale-global", subject)], 60, all_generation);
+        assert!(cache.get_facts(subject).is_none());
+        assert!(cache.get_facts_all().is_none());
+    }
+
+    #[test]
+    fn key_generation_tombstones_stay_bounded_without_revalidating_old_reads() {
+        let cache = QueryResultCache::new();
+        let stale_key = "session-before-generation-reset";
+        let stale_generation = cache.generation(stale_key);
+        cache.put_messages(stale_key, Vec::new(), 60, stale_generation);
+
+        for index in 0..QUERY_CACHE_MAX_KEY_GENERATIONS {
+            cache.invalidate_messages(&format!("session-{index}"));
+        }
+        cache.invalidate_messages("session-that-triggers-generation-reset");
+
+        let state = cache.state.lock().unwrap();
+        assert!(state.key_generations.len() <= QUERY_CACHE_MAX_KEY_GENERATIONS);
+        assert!(state.entries.is_empty());
+        drop(state);
+
+        cache.put_messages(stale_key, Vec::new(), 60, stale_generation);
+        assert!(
+            cache.get_messages(stale_key).is_none(),
+            "the domain epoch reset must reject reads started before the reset"
+        );
     }
 }

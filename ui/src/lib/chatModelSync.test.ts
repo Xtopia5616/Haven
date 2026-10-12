@@ -27,7 +27,7 @@ function settingsFor(
 
 function createSync(setModelOptions: (models: ChatModelOption[]) => void) {
 	const state = {
-		modelIds: [] as string[],
+		modelConfigIds: [] as string[],
 		modelNames: [] as string[],
 		efforts: [] as string[],
 		webSearch: [] as string[],
@@ -37,7 +37,7 @@ function createSync(setModelOptions: (models: ChatModelOption[]) => void) {
 	const sync = createChatModelSync({
 		isDead: () => false,
 		setModelOptions,
-		setCurrentModelId: (value) => state.modelIds.push(value),
+		setCurrentModelConfigId: (value) => state.modelConfigIds.push(value),
 		setCurrentModelName: (value) => state.modelNames.push(value),
 		setCurrentEffort: (value) => state.efforts.push(value),
 		setCurrentWebSearch: (value) => state.webSearch.push(value),
@@ -93,7 +93,7 @@ describe('chat model route sync', () => {
 
 		expect(modelOptions).toHaveBeenCalledWith([
 			{
-				id: 'chat-profile',
+				modelConfigId: 'chat-profile',
 				name: 'chat-profile',
 				providerName: 'cloud',
 				model: 'gpt-5',
@@ -104,7 +104,7 @@ describe('chat model route sync', () => {
 				webSearchSupported: true,
 			},
 			{
-				id: 'local-chat',
+				modelConfigId: 'local-chat',
 				name: 'local-chat',
 				providerName: 'local',
 				model: 'llama3',
@@ -115,7 +115,7 @@ describe('chat model route sync', () => {
 				webSearchSupported: false,
 			},
 		]);
-		expect(state.modelIds).toEqual(['chat-profile']);
+		expect(state.modelConfigIds).toEqual(['chat-profile']);
 		expect(state.modelNames).toEqual(['chat-profile']);
 		expect(state.efforts).toEqual(['high']);
 		expect(state.webSearch).toEqual(['auto']);
@@ -142,8 +142,8 @@ describe('chat model route sync', () => {
 			}),
 		);
 
-		expect(capturedOptions.map((model) => model.id)).toEqual(['chat-profile']);
-		expect(state.modelIds).toEqual(['']);
+		expect(capturedOptions.map((model) => model.modelConfigId)).toEqual(['chat-profile']);
+		expect(state.modelConfigIds).toEqual(['']);
 		expect(state.modelNames).toEqual(['']);
 	});
 
@@ -178,7 +178,7 @@ describe('chat model route sync', () => {
 		expect(state.webSearch).toEqual(['always']);
 		expect(capturedOptions).toEqual([
 			{
-				id: 'chat-profile',
+				modelConfigId: 'chat-profile',
 				name: 'chat-profile',
 				providerName: 'cloud',
 				model: 'gpt-5',
@@ -189,7 +189,7 @@ describe('chat model route sync', () => {
 				webSearchSupported: true,
 			},
 			{
-				id: 'inherits-env',
+				modelConfigId: 'inherits-env',
 				name: 'inherits-env',
 				providerName: 'other',
 				model: 'gpt-5',

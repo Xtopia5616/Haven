@@ -123,7 +123,10 @@ describe('agent IPC contract', () => {
 		expect(toolCall(-1)).toBeNull();
 		expect(toolCall(0x1_0000_0000)).toBeNull();
 
-		const toolCallChunk = (seq: unknown, previewId = 'preview-6b86b273ff34fce19d6b804eff5a3f57') =>
+		const toolCallChunk = (
+			seq: unknown,
+			previewId = 'preview-6b86b273ff34fce19d6b804eff5a3f57',
+		) =>
 			mapAgentEventContract({
 				event: 'agent:tool_call_chunk',
 				id: 1,
@@ -248,6 +251,8 @@ describe('agent IPC contract', () => {
 		for (const payload of [
 			makeUsagePayload({ cost_usd: -0.01 }),
 			makeUsagePayload({ cumulative_cost_usd: -0.01 }),
+			makeUsagePayload({ cost_usd: 0.01, has_cost: false }),
+			makeUsagePayload({ cost_usd: null, has_cost: true }),
 		]) {
 			expect(mapAgentEventContract({ event: 'agent:usage', id: 4, payload })).toBeNull();
 		}

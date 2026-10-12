@@ -227,6 +227,11 @@ describe('createAskInteractionController', () => {
 				kind: 'confirm' as const,
 				status: 'pending' as const,
 				options: [],
+				toolName: 'run_command',
+				riskLevel: 'high' as const,
+				summary: 'Run protected operation',
+				toolIndex: 0,
+				invocationStepId: 'step-00000000000000000000000000000001',
 				createdAt: '',
 			},
 			{
@@ -236,6 +241,9 @@ describe('createAskInteractionController', () => {
 				kind: 'scheduled_confirm' as const,
 				status: 'pending' as const,
 				options: [],
+				toolName: 'scheduled_tool',
+				summary: 'Run scheduled operation',
+				permissionKey: 'tool.scheduled_tool',
 				createdAt: '',
 			},
 			{

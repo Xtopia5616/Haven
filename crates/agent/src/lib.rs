@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 mod agent_tool_ports;
@@ -57,10 +56,10 @@ pub use prompt_context::{
 pub(crate) use react::ReActEngine;
 pub use react::{METRICS_PHASE_COUNT, MetricsSnapshot, ToolCatalogPort, UiMetricsSnapshot};
 pub use session::{
-    AgentToolRunPort, ConfirmResolution, ManagedAssetLeasePort, SessionInfo, SessionSupervisor,
-    SessionSupervisorEvent, SessionToolOverlayPort, SessionToolPorts, StepInfo,
-    ToolAuthorizationPort, ToolExecution, ToolExecutionContext, ToolExecutionPort,
-    ToolObservationPort, ToolRunCompletionReceiverPort,
+    AgentToolRunPort, ConfirmResolution, ManagedAssetLeasePort, RecordedConfirmationDecision,
+    SessionInfo, SessionSupervisor, SessionSupervisorEvent, SessionToolOverlayPort,
+    SessionToolPorts, StepInfo, ToolAuthorizationPort, ToolExecution, ToolExecutionContext,
+    ToolExecutionPort, ToolObservationPort, ToolRunCompletionReceiverPort,
 };
 pub use storage_error::sqlite_storage_failure_message;
 
@@ -72,7 +71,6 @@ use haven_memory::Database;
 use haven_tools::ScheduleMode;
 #[cfg(test)]
 pub(crate) use react::ParsedAgentResponse;
-use tokio::sync::Mutex;
 pub use types::ProcessResult;
 #[cfg(test)]
 pub(crate) use types::{

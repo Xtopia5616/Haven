@@ -6,16 +6,16 @@
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolRunLease<T> {
-    // Identifies the leased ToolRun or completion result, not its consumer.
-    claim_token: String,
+    // Stable identity of the lease subject: a ToolRun or its completion result.
+    lease_subject_id: String,
     expires_at: T,
     valid: bool,
 }
 
 impl<T: PartialOrd> ToolRunLease<T> {
-    pub fn new(claim_token: impl Into<String>, expires_at: T) -> Self {
+    pub fn new(lease_subject_id: impl Into<String>, expires_at: T) -> Self {
         Self {
-            claim_token: claim_token.into(),
+            lease_subject_id: lease_subject_id.into(),
             expires_at,
             valid: true,
         }
@@ -26,14 +26,14 @@ impl<T: PartialOrd> ToolRunLease<T> {
     /// the returned claim.
     pub fn try_claim(
         current: Option<&Self>,
-        claim_token: impl Into<String>,
+        lease_subject_id: impl Into<String>,
         now: &T,
         expires_at: T,
     ) -> Option<Self> {
         if !Self::can_claim(current, now) {
             return None;
         }
-        Some(Self::new(claim_token, expires_at))
+        Some(Self::new(lease_subject_id, expires_at))
     }
 
     pub fn can_claim(current: Option<&Self>, now: &T) -> bool {
@@ -44,13 +44,13 @@ impl<T: PartialOrd> ToolRunLease<T> {
         self.valid && now < &self.expires_at
     }
 
-    pub fn matches_token(&self, claim_token: &str) -> bool {
-        self.valid && self.claim_token == claim_token
+    pub fn matches_subject_id(&self, lease_subject_id: &str) -> bool {
+        self.valid && self.lease_subject_id == lease_subject_id
     }
 
-    /// Invalidate a lease only for its matching claim identity.
-    pub fn invalidate_for(&mut self, claim_token: &str) -> bool {
-        if !self.matches_token(claim_token) {
+    /// Invalidate a lease only for its matching ToolRun or completion result.
+    pub fn invalidate_for(&mut self, lease_subject_id: &str) -> bool {
+        if !self.matches_subject_id(lease_subject_id) {
             return false;
         }
         self.valid = false;
@@ -63,7 +63,7 @@ mod tests {
     use super::ToolRunLease;
 
     #[test]
-    fn active_claim_conflicts_even_when_the_token_differs() {
+    fn active_lease_conflicts_even_when_the_subject_differs() {
         let current = ToolRunLease::new("result-a", 20);
         assert!(ToolRunLease::try_claim(Some(&current), "result-a", &10, 30).is_none());
         assert!(ToolRunLease::try_claim(Some(&current), "result-b", &10, 30).is_none());
@@ -83,10 +83,10 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_token_cannot_invalidate_a_claim() {
+    fn mismatched_lease_subject_cannot_invalidate_a_lease() {
         let mut lease = ToolRunLease::new("result-a", 20);
         assert!(!lease.invalidate_for("result-b"));
         assert!(lease.is_live_at(&10));
-        assert!(lease.matches_token("result-a"));
+        assert!(lease.matches_subject_id("result-a"));
     }
 }

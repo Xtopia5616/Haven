@@ -50,7 +50,7 @@ cargo tauri build
 `cargo tauri build` 会先执行 `corepack pnpm --dir ui run build`，不依赖开发服务器；可在
 Vite 开发服务器运行时执行。Release 使用 ThinLTO 和 16 个代码生成单元，降低优化与链接成本；
 Tauri 仍会把 `ui/build` 前端资源包含在应用中。产物在 `target/release/bundle/`。请勿把 API 密钥提交到仓库；
-应用配置保存在用户数据目录。
+应用配置保存在用户数据目录。`config.toml` 最大为 4 MiB；超限时应用会报告加载错误，保留原文件且不会创建恢复副本或改用默认配置。请缩小配置文件后重试。
 
 ## 质量检查
 

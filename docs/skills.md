@@ -27,6 +27,8 @@ Describe the skill behavior here.
 
 有效 skill 的不可执行原因也会显示在列表中，例如配置 allowlist 将其禁用，或缺少 `scripts/main.py` / `scripts/<name>.py` 入口脚本。配置已启用但缺少脚本时，列表会分别说明配置状态和当前不可执行状态；可以关闭该配置，但不能在入口脚本缺失时启用。
 
+Skill 根目录最多扫描 1024 个条目；超限时刷新失败并保留上一次完整列表。可选 `requirements.txt` 最大为 1 MiB，必须解析到 Skill 根目录内的普通文件；超限或链接到根目录外时环境准备失败，且不会启动 pip。
+
 ## `skill_create` 默认 Python 脚手架
 
 创建 skill 时可以省略 `script`，Haven 会生成 `scripts/main.py` 入门模板。模板通过 `sys.stdin.buffer.read()` 读取输入，并用 `utf-8-sig` 解码后解析 JSON object；`run(params)` 应返回结构化字典，推荐把机器可用结果放在 `hashes`、`detected` 等字段，把人读说明放在 `report`。

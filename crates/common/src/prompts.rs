@@ -73,7 +73,14 @@ pub fn split_system_prompt_cache_boundary(text: &str) -> Option<(&str, &str)> {
 /// section helper also accepts either current marker on its own because
 /// provider adapters receive hand-built one-shot prompts as well as the full
 /// ReAct prompt.
-pub fn split_system_prompt_cache_sections(text: &str) -> Option<(&str, &str, &str)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemPromptCacheSections<'a> {
+    pub stable_prompt: &'a str,
+    pub session_context: &'a str,
+    pub memory_context: &'a str,
+}
+
+pub fn split_system_prompt_cache_sections(text: &str) -> Option<SystemPromptCacheSections<'_>> {
     let (stable, dynamic) = if let Some(boundary) = split_system_prompt_cache_boundary(text) {
         boundary
     } else {
@@ -88,9 +95,17 @@ pub fn split_system_prompt_cache_sections(text: &str) -> Option<(&str, &str, &st
         (&text[..index], &text[index..])
     };
     let Some(memory_start) = dynamic.rfind(MEMORY_FENCE_START) else {
-        return Some((stable, dynamic, ""));
+        return Some(SystemPromptCacheSections {
+            stable_prompt: stable,
+            session_context: dynamic,
+            memory_context: "",
+        });
     };
-    Some((stable, &dynamic[..memory_start], &dynamic[memory_start..]))
+    Some(SystemPromptCacheSections {
+        stable_prompt: stable,
+        session_context: &dynamic[..memory_start],
+        memory_context: &dynamic[memory_start..],
+    })
 }
 
 /// Main ReAct agent system prompt (default_model).
@@ -311,25 +326,40 @@ mod tests {
         let prompt = format!(
             "stable{STATIC_PROMPT_CLOSER}{SESSION_CONTEXT_FENCE_START}session{MEMORY_FENCE_START}facts"
         );
-        let (stable, session, memory) = split_system_prompt_cache_sections(&prompt).unwrap();
-        assert_eq!(stable, format!("stable{STATIC_PROMPT_CLOSER}"));
-        assert_eq!(session, format!("{SESSION_CONTEXT_FENCE_START}session"));
-        assert_eq!(memory, format!("{MEMORY_FENCE_START}facts"));
+        let sections = split_system_prompt_cache_sections(&prompt).unwrap();
+        assert_eq!(
+            sections.stable_prompt,
+            format!("stable{STATIC_PROMPT_CLOSER}")
+        );
+        assert_eq!(
+            sections.session_context,
+            format!("{SESSION_CONTEXT_FENCE_START}session")
+        );
+        assert_eq!(
+            sections.memory_context,
+            format!("{MEMORY_FENCE_START}facts")
+        );
     }
 
     #[test]
     fn cache_sections_accept_current_markers_in_one_shot_prompts() {
         let memory_only = format!("stable{MEMORY_FENCE_START}facts");
         assert!(split_system_prompt_cache_boundary(&memory_only).is_none());
-        let (stable, session, memory) = split_system_prompt_cache_sections(&memory_only).unwrap();
-        assert_eq!(stable, "stable");
-        assert_eq!(session, "");
-        assert_eq!(memory, format!("{MEMORY_FENCE_START}facts"));
+        let sections = split_system_prompt_cache_sections(&memory_only).unwrap();
+        assert_eq!(sections.stable_prompt, "stable");
+        assert_eq!(sections.session_context, "");
+        assert_eq!(
+            sections.memory_context,
+            format!("{MEMORY_FENCE_START}facts")
+        );
 
         let session_only = format!("stable{SESSION_CONTEXT_FENCE_START}session");
-        let (stable, session, memory) = split_system_prompt_cache_sections(&session_only).unwrap();
-        assert_eq!(stable, "stable");
-        assert_eq!(session, format!("{SESSION_CONTEXT_FENCE_START}session"));
-        assert_eq!(memory, "");
+        let sections = split_system_prompt_cache_sections(&session_only).unwrap();
+        assert_eq!(sections.stable_prompt, "stable");
+        assert_eq!(
+            sections.session_context,
+            format!("{SESSION_CONTEXT_FENCE_START}session")
+        );
+        assert_eq!(sections.memory_context, "");
     }
 }

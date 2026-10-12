@@ -39,14 +39,10 @@ function sessionRecord(id = sessionId) {
 function runtimeSession(id = sessionId) {
 	return {
 		session_id: id,
-		input: 'hello',
-		summary: 'Say hello',
+		input_text: 'hello',
 		title: null,
 		status: 'paused',
 		waiting_reason: 'ask',
-		steps: [],
-		created_at: '2026-10-12T08:00:00Z',
-		updated_at: '2026-10-12T08:01:00Z',
 	};
 }
 
@@ -179,7 +175,7 @@ describe('session history command boundary', () => {
 		);
 	});
 
-	it('maps active-session IDs while preserving the remaining wire field names', async () => {
+	it('maps the runtime session allowlist and drops unknown fields', async () => {
 		const response = {
 			sessions: [{ ...runtimeSession(), future_field: true }],
 		};
@@ -189,15 +185,10 @@ describe('session history command boundary', () => {
 			sessions: [
 				{
 					sessionId,
-					input: 'hello',
-					summary: 'Say hello',
+					inputText: 'hello',
 					title: null,
 					status: 'paused',
-					waiting_reason: 'ask',
-					steps: [],
-					created_at: '2026-10-12T08:00:00Z',
-					updated_at: '2026-10-12T08:01:00Z',
-					future_field: true,
+					waitingReason: 'ask',
 				},
 			],
 		});

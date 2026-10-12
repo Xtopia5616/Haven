@@ -1907,7 +1907,7 @@ impl SessionSupervisor {
         step_id: &str,
         tool_index: u32,
         tool_call_id: Option<&str>,
-    ) -> Option<(bool, Option<haven_tools::ConfirmationReceipt>)> {
+    ) -> Option<super::RecordedConfirmationDecision> {
         self.interaction_requests(session_id)
             .await
             .into_iter()
@@ -1925,7 +1925,10 @@ impl SessionSupervisor {
                         && request_tool_index == tool_index
                         && request_tool_call_id == tool_call_id.unwrap_or_default() =>
                     {
-                        decision.map(|decision| (decision, receipt))
+                        decision.map(|approved| super::RecordedConfirmationDecision {
+                            approved,
+                            receipt,
+                        })
                     }
                     _ => None,
                 }

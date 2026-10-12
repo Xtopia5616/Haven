@@ -18,8 +18,10 @@ use super::{
 use crate::types::ShellChoice;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Mutex, PoisonError};
+
+const CONFIG_CHANGE_NOTIFICATION_CAPACITY: usize = 64;
 
 /// Monotonic in-process version of the live configuration snapshot.
 pub type ConfigVersion = u64;
@@ -168,7 +170,7 @@ struct ConfigState {
 /// The single live configuration owner for an application process.
 pub struct ConfigService {
     state: Mutex<ConfigState>,
-    subscribers: Mutex<Vec<Sender<ConfigChanged>>>,
+    subscribers: Mutex<Vec<SyncSender<ConfigChanged>>>,
 }
 
 impl std::fmt::Debug for ConfigService {
@@ -297,11 +299,15 @@ impl ConfigService {
         Ok(self.lock_state()?.loader.path().to_path_buf())
     }
 
-    /// Subscribe to successful durable mutations. The receiver is detached
-    /// from the mutation lock; a slow or dropped subscriber cannot block a
-    /// config write.
+    /// Subscribe to successful durable mutations using a bounded,
+    /// non-blocking invalidation channel. Notifications identify changed
+    /// domains and versions; consumers should read the authoritative config
+    /// from [`Self::snapshot`] instead of treating notifications as state.
+    /// A subscriber that does not keep up is disconnected after the bounded
+    /// queue fills. It can drain notifications already queued before observing
+    /// the disconnect, then resubscribe and refresh its snapshot.
     pub fn subscribe(&self) -> anyhow::Result<Receiver<ConfigChanged>> {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(CONFIG_CHANGE_NOTIFICATION_CAPACITY);
         self.subscribers.lock().map_err(lock_error)?.push(sender);
         Ok(receiver)
     }
@@ -414,7 +420,10 @@ impl ConfigService {
             tracing::warn!("config change notification lock poisoned");
             return;
         };
-        subscribers.retain(|subscriber| subscriber.send(change.clone()).is_ok());
+        subscribers.retain(|subscriber| match subscriber.try_send(change.clone()) {
+            Ok(()) => true,
+            Err(mpsc::TrySendError::Full(_) | mpsc::TrySendError::Disconnected(_)) => false,
+        });
     }
 
     fn lock_state(&self) -> anyhow::Result<std::sync::MutexGuard<'_, ConfigState>> {
@@ -586,6 +595,42 @@ mod tests {
         assert!(update.change.is_none());
         assert_eq!(update.snapshot.version, 0);
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn slow_subscriber_is_disconnected_when_bounded_queue_fills() {
+        let (service, _dir) = service();
+        let receiver = service.subscribe().unwrap();
+        let mut changes = Vec::with_capacity(CONFIG_CHANGE_NOTIFICATION_CAPACITY + 1);
+
+        for _ in 0..=CONFIG_CHANGE_NOTIFICATION_CAPACITY {
+            let mut settings = service.settings().unwrap();
+            settings.session.max_steps_per_run += 1;
+            let update = service
+                .apply_patch(ConfigPatch::Settings(Box::new(settings)))
+                .unwrap();
+            changes.push(update.change.unwrap());
+        }
+
+        assert_eq!(
+            service.snapshot().unwrap().version,
+            (CONFIG_CHANGE_NOTIFICATION_CAPACITY + 1) as ConfigVersion
+        );
+        for expected in changes.iter().take(CONFIG_CHANGE_NOTIFICATION_CAPACITY) {
+            assert_eq!(receiver.recv().unwrap(), *expected);
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+
+        let fresh_receiver = service.subscribe().unwrap();
+        let mut settings = service.settings().unwrap();
+        settings.session.max_steps_per_run += 1;
+        let update = service
+            .apply_patch(ConfigPatch::Settings(Box::new(settings)))
+            .unwrap();
+        assert_eq!(fresh_receiver.recv().unwrap(), update.change.unwrap());
     }
 
     #[test]

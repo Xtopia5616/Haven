@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.188 | 日期: 2026-10-12
+> 版本: v1.190 | 日期: 2026-10-13
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -16,6 +16,7 @@
 - **同域不同形状标明角色**：同一领域中的完整 runtime state、稀疏 view 输入或 wire projection 即使字段重叠，也使用能标出约束/角色的不同类型名，不用可选字段数量来猜其含义。
 - **闭合契约与开放扩展点分开**：Rust/IPC 已声明的闭合枚举在 UI 直接复用 generated 类型，边界拒绝未知成员；不要为了未来值或旧值映射把它扩成任意字符串。只有协议或扩展点本身定义为开放字符串、且消费者必须保留原值时，才把 raw wire value 与内部归一分类分名。Tool manifest 的 source/group/risk 是闭合 generated enum；`presentation.renderer` 是开放扩展 discriminator，未知 renderer 使用通用 JSON renderer（ADR 0669）。
 - **多值结果具名**：若多个返回值各有稳定领域含义，使用具名结构体字段，不用位置元组让调用者记住各索引的语义；例如 `CreatedSession` 保存首条持久用户消息 ID，`ModelPricing` 区分 input/output 价格，`FactProvenanceColumns` 对应不同持久列，`StreamedLlmCall` 区分响应和耗时，`ToolRunEventProjection` 区分 channel 和 payload，`ParsedAgentResponse` 区分解析出的 thought 和 tool calls，`CappedText` 命名限长文本与截断状态，`ChatThinkingExtras` 区分 chat wire 的 thinking object 与 reasoning effort 字段，Anthropic request projection 分别区分 wire messages/system prompt 与 `thinking`/`output_config`，`GeminiContentConversion` 区分 provider content 与 system instruction，`ResponsesInputConversion` 区分 Responses input items 与 instructions，Tools process reader 用 `CappedStreamText` 和 `CappedStreamRead` 区分 decoded text 与 retained bytes/read error，`SkillProcessOutput` 则按 stdout/stderr 命名 Skill 进程结果，Agent 的 `CapabilityProjectedRequest` 区分 media-capability 处理后的 request context 与向 UI 发布的 `MediaPlan`，Common 的 `TruncatedOutput` 则把带省略标记的文本与截断状态放在同一结果中。
+- **稳定身份参数点名实体**：函数对实体 ID 执行删除、遍历或查询时，参数名使用对应领域名加 `_id`（如 `fact_id`、`root_session_id`）；不要以无角色的 `id`、`root`，或与查询根概念混淆的 `parent_session_id` 代替。集合读取统一使用 `list_*`，哪怕结果包含所有符合条件的记录。
 - **ToolResult 截断元数据与正文标记分层**：`ToolResult.truncated` 是执行结果级元数据；JSON 正文的 `truncated` 是具体工具的模型可见字段。正文标记为 `true` 时必须同步结果标记；工具正文契约包含该字段时，成功结果使用 `ToolResult::from_output` 统一同步，失败构造从已有正文标记推导结果标记。正文契约不包含该字段时可只设置结果标记，不为了对齐而扩展 JSON shape（ADR 0701）。
 - **结果结构区分阶段 owner**：adapter 前的解析/归一结果与对外执行 envelope 即使携带相似字段，也分别命名其阶段职责；例如 MCP content extraction 与 `McpCallOutput` 分开承载内容转换结果和最终工具调用状态。
 - **TranscriptProjection 按读取与提交阶段分名**：公开 `TranscriptProjection` 是从 durable event log 同次派生出的 canonical messages 与 ReAct rounds；Agent 内部 `CommittedTranscriptProjection` 是 durable commit 后应用到进程内 `ReActState` 的记录包。两者 shape 和生命周期不同，不合并，也不共用泛名（ADR 0602/0671）。
@@ -58,7 +59,9 @@
 - **Shell availability command 复用配置 shell enum**：`check_shell_available.shell` 使用 Common `ShellChoice` / generated `ShellChoiceInput`，与 Settings 的 `default_shell` 共享 `powershell` / `cmd` / `pwsh` 词汇；未知 shell 不作为有效诊断输入（ADR 0739）。
 - **Session permission grant 输出复用授权枚举**：`SessionPermissionGrant.target` 与 `.effect` 使用 Common `PermissionTarget` / `PermissionEffect`，UI 消费生成的 closed values；分层 capability 标识继续是字符串（ADR 0740）。
 - **消息角色复用 canonical vocabulary**：持久消息、Agent history、resume/live UI 中的 `role` 使用 Common `CanonicalRole`；数据库文本在写入时由 enum 序列化，读取时严格解析，UI 消费 generated type。Provider wire role 继续由各 LLM adapter 映射；模型发现与模型配置命令用 `request_kind: RequestKind` 选择逻辑请求，UI 请求引用生成的 `RequestKindInput`。消息角色、请求路由与模型配置 ID 是不同身份，不复用 `role` 字段（ADR 0726、0728、0729）。
-- **模型操作路由参数明确命名**：`discover_models`、`switch_model`、`set_reasoning_effort` 与 `set_web_search` 均以 `request_kind: RequestKind` 标识逻辑请求路由；参数命令仅修改该路由当前分配的模型。选择指定模型配置时使用独立的 `model_id`（ADR 0728、0729）。
+- **模型操作路由参数明确命名**：`discover_models`、`switch_model`、`set_reasoning_effort` 与 `set_web_search` 均以 `request_kind: RequestKind` 标识逻辑请求路由；参数命令仅修改该路由当前分配的模型。选择指定模型配置时使用独立的 `model_config_id`（renderer 边界为 `modelConfigId`；ADR 0728、0729）。
+- **协议 session ID 明确区分本地会话**：MCP peer 的 `Mcp-Session-Id` 保持协议给出的格式，内部字段命名为 `mcp_session_id`，不使用专指 Haven 对话的 `session_id`。
+- **renderer 展示键与实体身份分开**：`StreamMessage.id` 保持 canonical 实体 ID；当同一实体需并行展示第二种投影时，使用稳定 `presentationKey` 作为 keyed rendering / resume projection key。此 key 不用于领域关联，也不持久化；tool card、交互请求和 transcript 关联仍按实体 `id`（ADR 1083）。
 - **持久消息类别与 UI 展示类型分开**：`messages.message_type` 使用 Common `TranscriptMessageKind` 表达 SQLite 闭合集合，写库序列化、读库严格解析并生成到 resume IPC；`StreamMessage.type` 是 renderer presentation discriminator，由 resume mapper 从 durable kind 投影，不复用或冒充持久类别（ADR 0727）。
 - **IPC 请求类型按命令 owner 命名**：前端 wrapper 的 request alias 必须从它实际调用的 generated command 派生；即使两个命令的字段形状相同，也分别命名，如 `SetSkillEnabledRequest` / `SetToolEnabledRequest`、`ReconnectMcpServerRequest` / `RemoveMcpServerRequest`，不要用某一个命令的类型 alias 覆盖另一个命令（ADR 0681、0731）。
 - **Tool renderer 只按展示职责派发**：`ToolPresentation.renderer` 是开放扩展字符串；UI 仅为当前明确登记的 renderer key 选择专用组件，未知 key 使用通用 JSON renderer。MCP 固定使用 `mcp` renderer，server name 只放在 `ToolIdentity.root` / `root_presentation`，不能兼任组件分派键；builtin renderer 使用明确登记的 key，Skill 使用固定 `skills` root。不要把旧的 `haven`、`admin`、`settings` 别名隐式解释成管理面板（ADR 0682、0703）。
@@ -125,7 +128,7 @@ ReAct 按领域品牌大小写书写：类型与 enum variant 用 `ReAct`（如 
 
 应用能力可脱离当前 turn 持久运行时统一称为 `ToolRun`；当前源码、配置和 UI 不用退役的 `Job` 名称指代它。Windows `Job Object`、外部供应商异步 job 和 Memory outbox extraction job 各有独立语义，保留这些领域限定名称。
 
-ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion result，不标识领取它的 consumer；跨 Tools runtime 与 ToolRun persistence 共用 `ToolRunLease`。
+ToolRun completion lease 的 `lease_subject_id` 标识被租用的 ToolRun 或 completion result，不标识领取它的 consumer；跨 Tools runtime 与 ToolRun persistence 共用 `ToolRunLease`。不得将此稳定实体身份称为 `claim_token`（ADR 1096，取代 ADR 0676 的旧命名决定）。
 
 后台与定时 ToolRun 的终态交付统一使用 Common `ToolRunCompletionPayload`；Memory 在持久化列边界序列化，Tools 的 `ToolRunStatusView` 保持 UI 查询投影 owner，Agent 直接读取具名字段。不要把完成事件 payload 命名为 `status_json`，也不要让 UI status renderer 承担 completion 交付（ADR 0871）。
 
@@ -360,11 +363,13 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
   - 例外：`asr` 是用户输入的关键词（意图识别 vocabulary，与 `ocr` 相邻），属于**输入信号**，不是 provider 模块名，不并入 `stt` 词汇表。二者语义不同，各归其位。
 
 ### ID 规范
-实体 ID 统一 `{prefix}-{uuid32}`，一律用 `haven_common::types::new_id(prefix)` 生成，并用 `haven_common::types::is_canonical_id(id, prefix)` 校验；校验函数的 `prefix` 参数不带连字符，禁止各 crate 重复实现格式检查。Tauri 命令、模型可调用的 Tools 入口、Messaging service 与 JSONL transport 都在副作用或存储前校验 Haven 实体 ID；Tools 的轻量错误包装器仍委托 Common 校验器。Agent 工具的 session 与 message 参数分别使用 `ses`、`msg` ID 空间，广播标记 `*` 是唯一接收方例外。定时 ToolRun 的持久执行权 claim 使用来源身份：确认请求用对应 `conf-*`，无需确认时只能复用同一 ToolRun 的 `toolrun-*`；Memory 校验两者并拒绝其他 ToolRun ID（ADR 1016）。消息 inbox 只向模型暴露稳定 `message_ids`，进程内 `MessageClaim` 对象不生成或返回独立 ID（ADR 1044）。配置凭据引用复用同一校验器；provider ID、模型配置 ID 和运行代次等非实体标识按各自领域契约处理。完整前缀表见 `AGENTS.md`.
+实体 ID 统一 `{prefix}-{uuid32}`，一律用 `haven_common::types::new_id(prefix)` 生成，并用 `haven_common::types::is_canonical_id(id, prefix)` 校验；校验函数的 `prefix` 参数不带连字符，禁止各 crate 重复实现格式检查。Tauri 命令、模型可调用的 Tools 入口、Messaging service 与 JSONL transport 都在副作用或存储前校验 Haven 实体 ID；Tools 的轻量错误包装器仍委托 Common 校验器。Agent 工具的 session 与 message 参数分别使用 `ses`、`msg` ID 空间，广播标记 `*` 是唯一接收方例外。定时 ToolRun 的持久执行权 claim 使用来源身份：确认请求用对应 `conf-*`，无需确认时只能复用同一 ToolRun 的 `toolrun-*`；Memory 校验两者并拒绝其他 ToolRun ID（ADR 1016）。消息 inbox 只向模型暴露稳定 `message_ids`，进程内 `MessageClaim` 对象不生成或返回独立 ID（ADR 1044）。消息投影共享 `step-*` 身份时只允许 assistant role；普通消息行使用 `msg-*`（ADR 1087）。配置凭据引用复用同一校验器；provider ID、模型配置 ID 和运行代次等非实体标识按各自领域契约处理。完整前缀表见 `AGENTS.md`.
 
-Rust/DB/event 领域字段与 Tauri DTO 中，实体身份字段使用实体名限定的 `xxx_id`（如 `session_id`、`step_id`、`message_id`、`tool_run_id`）；UI 自有模型可在边界映射为 `xxxId`。数据库既有物理主键列（如 `sessions.id`）保持原名，由 Repository 映射为领域字段。尚未迁移的存量 DTO 按实体归属逐步收敛，不以结构体上下文作为省略实体名的理由；外部 provider 标识和 Tauri event envelope 序号 `id` 按各自协议保留。
+Rust/DB/event 领域字段与 Tauri DTO 中，实体身份字段使用实体名限定的 `xxx_id`（如 `session_id`、`step_id`、`message_id`、`tool_run_id`）；UI 自有模型可在边界映射为 `xxxId`。数据库既有物理主键列（如 `sessions.id`）保持原名，由 Repository 映射为领域字段。尚未迁移的存量 DTO 按实体归属逐步收敛，不以结构体上下文作为省略实体名的理由；外部 provider 标识按各自协议保留；Tauri renderer listener envelope 的 `event.id` 是本地事件序号，不是 Haven 实体 ID。
 
 Rust 函数参数若承载 Haven 实体身份，默认沿用完整实体名（如 `tool_run_id`）；只有函数名已明确指明单一实体且无同名混淆时，才允许用 `id` 简写。通用校验器的泛型 `id`、provider/protocol 外部 ID 和非实体用途的参数不套用此规则；文件名片段等值按其用途命名（如 `file_stem`），不冒充实体 ID。
+
+局部变量若承载新生成或跨调用传递的 Haven 实体身份，也使用完整实体名（如 `tool_run_id`）；只在短小且身份已由局部作用域明确限定的迭代/解构中使用泛名 `id`。日志字段必须标识实际值的语义，文件名片段不能记录为实体 ID。
 
 Messaging 的 JSONL envelope、registry、工具参数与工具结果共用显式身份词汇：消息字段为 `message_id`、`from_session_id`、`to_session_id`、`reply_to_session_id`、`in_reply_to_message_id`；Agent registry/view 为 `session_id`、`parent_session_id`；工具收件人/目标分别为 `to_session_id`、`target_session_id`。前端只在 renderer 边界映射 camelCase，不使用 `id`、`name`、`from`、`to` 或 `parent` 作为这些实体字段的别名（ADR 1026）。
 
@@ -390,7 +395,7 @@ Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalT
 
 `agent:supplement.inject_source` 使用 Rust `InjectSource` 的生成 TypeScript union 与运行时值集；UI event mapper 拒绝未知枚举值，不用任意字符串填充 reducer（ADR 1014）。
 
-- ToolRun 身份字段在 Rust 类型、事件与 JSON 结果中统一命名 `tool_run_id`；前端 IPC/view DTO 只在边界映射为 `toolRunId`，不再接受或输出泛名 `id` 别名。数据库物理列 `tool_runs.id` 保持不变，Repository 行字段命名 `tool_run_id`。Tauri event envelope 的数值 `event.id` 是另一实体，继续保留原名。
+- ToolRun 身份字段在 Rust 类型、事件与 JSON 结果中统一命名 `tool_run_id`；前端 IPC/view DTO 只在边界映射为 `toolRunId`，不再接受或输出泛名 `id` 别名。数据库物理列 `tool_runs.id` 保持不变，Repository 行字段命名 `tool_run_id`。Tauri renderer listener envelope 的数值 `event.id` 是本地事件序号，不是 Haven 实体 ID，继续保留原字段名。
 - ToolRun 持久化边界的 `started_at`、`finished_at`、定时 `due_at` 与 `created_at` 投影统一为 UTC RFC3339；写入时校验并归一 offset，读取兼容 SQLite 生成的旧 UTC 时间。定时 watch trigger 的 `due_at` 使用空字符串，损坏的 waiting `due_at` 保留给 service quarantine（ADR 0979）。
 - Admin `sessions` 与 `errors` 工具结果中的会话实体字段统一使用 `session_id`；Rust 序列化输出和 UI 专用 renderer 都消费该字段，并校验 `ses-*` canonical identity，不使用泛名 `id`（ADR 0964）。
 

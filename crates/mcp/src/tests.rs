@@ -365,7 +365,7 @@ async fn mcp_rate_limit_wait_honors_session_cancellation() {
 }
 
 #[tokio::test]
-async fn notification_listener_handle_can_be_awaited_after_shutdown() {
+async fn client_shutdown_joins_sse_listener_task() {
     let client = Arc::new(McpClient::new(
         &McpServerConfig {
             name: "notification-listener".into(),
@@ -375,14 +375,24 @@ async fn notification_listener_handle_can_be_awaited_after_shutdown() {
         2 * 1024 * 1024,
         2 * 1024 * 1024,
     ));
-    let listener = client.clone().start_notification_listener(|_| {});
+    let cancel = client.cancel_token.lock().await.clone();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let listener = {
+        let started = started.clone();
+        let finished = finished.clone();
+        tokio::spawn(async move {
+            started.notify_one();
+            cancel.cancelled().await;
+            finished.store(true, std::sync::atomic::Ordering::Release);
+        })
+    };
+    *client.sse_listener_task.lock().await = Some(listener);
+    started.notified().await;
 
     client.shutdown().await.unwrap();
 
-    tokio::time::timeout(Duration::from_millis(200), listener)
-        .await
-        .expect("notification listener must stop after shutdown")
-        .expect("notification listener task must exit cleanly");
+    assert!(finished.load(std::sync::atomic::Ordering::Acquire));
 }
 
 #[tokio::test]

@@ -27,7 +27,7 @@
 	);
 
 	function sessionTitle(session: SessionSummary): string {
-		const title = session.title || session.input;
+		const title = session.title || session.inputText;
 		return typeof title === 'string' && title.trim() ? title.trim() : '新会话';
 	}
 

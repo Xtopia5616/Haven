@@ -2,6 +2,7 @@
 	import { isSessionInteractionRequest } from '$lib/contracts/app.ts';
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
+	import { retainPendingDismissedRequestIds } from '$lib/interactionDismissals.ts';
 	import { shouldShowContinueButton } from '$lib/continueSession.ts';
 	import {
 		isBusyStatus,
@@ -187,6 +188,13 @@
 	const pendingAskInteractions = $derived(
 		pendingInteractions.filter((request) => request.kind === 'ask'),
 	);
+	$effect(() => {
+		const retained = retainPendingDismissedRequestIds(
+			dismissedAskIds,
+			pendingAskInteractions.map((request) => request.requestId),
+		);
+		if (retained) dismissedAskIds = retained;
+	});
 	const pendingInteractionItems = $derived.by(() =>
 		[...pendingInteractions]
 			.filter(isSessionInteractionRequest)
@@ -239,7 +247,7 @@
 	let sessionMenuOpen = $state(false);
 	let modelOptions = $state<ChatModelOption[]>([]);
 	let currentModelName = $state('');
-	let currentModelId = $state('');
+	let currentModelConfigId = $state('');
 	let currentEffort = $state('');
 	// Provider built-in web search mode ("off" | "auto" | "always").
 	// Defaults to off (opt-in); "auto" lets the model decide when to search.
@@ -680,8 +688,8 @@
 		setModelOptions: (value) => {
 			modelOptions = value;
 		},
-		setCurrentModelId: (value) => {
-			currentModelId = value;
+		setCurrentModelConfigId: (value) => {
+			currentModelConfigId = value;
 		},
 		setCurrentModelName: (value) => {
 			currentModelName = value;
@@ -705,8 +713,8 @@
 		setSkipNextDefaultModelRefresh: (skip) => {
 			skipNextDefaultModelRefresh = skip;
 		},
-		setCurrentModelId: (value) => {
-			currentModelId = value;
+		setCurrentModelConfigId: (value) => {
+			currentModelConfigId = value;
 		},
 		setCurrentModelName: (value) => {
 			currentModelName = value;
@@ -967,7 +975,6 @@
 					type: 'session/retained-error',
 					session: {
 						sessionId: historical.sessionId,
-						input: historical.input_text,
 						inputText: historical.input_text,
 						title: historical.title,
 						status: 'error',
@@ -1098,7 +1105,7 @@
 		activeSessionId ? sessions.find((session) => session.sessionId === activeSessionId) : null,
 	);
 	const sessionHeaderTitle = $derived(
-		String(activeSession?.title || activeSession?.input || '新会话'),
+		String(activeSession?.title || activeSession?.inputText || '新会话'),
 	);
 	const activeSessionStatusLabel = $derived(
 		activeSession ? sessionStatusLabel(activeSession) : '空闲',
@@ -1263,7 +1270,7 @@
 				<ModelToolbar
 					{modelMenuOpen}
 					{currentModelName}
-					{currentModelId}
+					{currentModelConfigId}
 					{modelOptions}
 					onToggleMenu={() => (modelMenuOpen = !modelMenuOpen)}
 					onModelSelect={modelOperations.selectModel}

@@ -10,7 +10,7 @@
 // repairs characters lost to batcher drops, so the last bubble always
 // matches the persisted message.
 //
-// IDs are NOT constructed here anymore: every streaming event carries the
+// Transcript IDs are NOT constructed here anymore: every streaming event carries the
 // `message_id` / `step_id` the backend minted (the same ids the DB rows are
 // persisted under), so the live bubble, the snap and the resume copy are
 // one entity and merges need no content-based dedup.
@@ -36,6 +36,11 @@ export type ToolResultPresentationOutcome =
 /** A chat-bubble message in the live streaming view. */
 export interface StreamMessage {
 	id: string;
+	/**
+	 * Stable renderer key for an additional view of the same transcript entity.
+	 * It is never used for domain joins or persisted as an entity id.
+	 */
+	presentationKey?: string;
 	role?: CanonicalRole;
 	content?: string;
 	/** Renderer-only presentation discriminator; it is not a durable message kind. */
@@ -67,6 +72,11 @@ export interface StreamMessage {
 	/** Stable ToolRun identity used to anchor its timeline card to this tool step. */
 	sourceToolRunId?: string | null;
 	_ts?: number;
+}
+
+/** Renderer list identity; domain associations continue to use `id`. */
+export function renderedMessageKey(message: Pick<StreamMessage, 'id' | 'presentationKey'>) {
+	return message.presentationKey ?? message.id;
 }
 
 /**
@@ -200,6 +210,7 @@ export function resetStreamBlocks(
  */
 export function newToolMessage({
 	id,
+	presentationKey = undefined,
 	stepNumber,
 	toolName,
 	time = undefined,
@@ -219,6 +230,7 @@ export function newToolMessage({
 	result = undefined,
 }: {
 	id: string;
+	presentationKey?: string | undefined;
 	stepNumber: number;
 	toolName: string;
 	time?: string | undefined;
@@ -242,6 +254,7 @@ export function newToolMessage({
 	const isAsk = toolName === 'ask';
 	return {
 		id,
+		...(presentationKey ? { presentationKey } : {}),
 		role: 'assistant',
 		content,
 		toolName,

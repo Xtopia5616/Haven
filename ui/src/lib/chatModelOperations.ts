@@ -8,7 +8,7 @@ import type {
 
 export interface ChatModelOption {
 	/** Stable id of a configured ModelConfig, used by RequestPolicy.primary. */
-	id: string;
+	modelConfigId: string;
 	name: string;
 	providerName: string;
 	model: string;
@@ -23,7 +23,7 @@ export interface ChatModelOption {
 export interface ChatModelOperationsDependencies {
 	commands: typeof chatModelCommands;
 	setSkipNextDefaultModelRefresh: (skip: boolean) => void;
-	setCurrentModelId: (value: string) => void;
+	setCurrentModelConfigId: (value: string) => void;
 	setCurrentModelName: (value: string) => void;
 	setCurrentEffort: (value: string) => void;
 	setCurrentWebSearch: (value: string) => void;
@@ -63,7 +63,7 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 			() =>
 				dependencies.commands.switchModel({
 					requestKind: 'chat',
-					modelConfigId: model.id,
+					modelConfigId: model.modelConfigId,
 				}),
 			() => {
 				dependencies.closeModelMenu();
@@ -76,7 +76,7 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 					webSearch = 'auto';
 					if (model.webSearchOverride !== false) normalizedWebSearch = 'auto';
 				}
-				dependencies.setCurrentModelId(model.id);
+				dependencies.setCurrentModelConfigId(model.modelConfigId);
 				dependencies.setCurrentModelName(model.name);
 				dependencies.setCurrentEffort(model.reasoningEffort);
 				dependencies.setCurrentWebSearch(webSearch);

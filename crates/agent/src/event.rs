@@ -1268,7 +1268,7 @@ impl EventDispatcher {
 
     // ── Static helpers for working with Arc<dyn AgentEventEmitter> ──
 
-    pub async fn emit_thought_from(
+    pub(crate) async fn emit_recovery_partial_thought_from(
         emitter: &Arc<dyn AgentEventEmitter>,
         session_id: &str,
         thought: &str,
@@ -1278,17 +1278,21 @@ impl EventDispatcher {
         store: &SessionStore,
     ) -> anyhow::Result<()> {
         tracing::debug!(
-            "emit_thought: session={} step={} run={} msg={} thought_bytes={}",
+            "emit_recovery_partial_thought: session={} step={} run={} msg={} thought_bytes={}",
             session_id,
             step_number,
             run_id,
             message_id,
             thought.len()
         );
-        // The step row shares the streamed bubble id. Sequenced UI publication
-        // is separate; this helper remains for callers that snap without a
-        // committed transcript sequence.
-        Self::persist_thought_step(session_id, step_number, message_id, store).await?;
+        // Recovery partials are the documented exception to the durable
+        // transcript path. The message row has already been persisted by the
+        // recovery protocol; persist its shared-ID step projection before
+        // publishing the transient, unsequenced UI event. Ordinary ReAct
+        // Thought rows use apply_transcript and CommittedUiPublisher.
+        store
+            .create_thought_step(session_id, step_number, message_id)
+            .await?;
         emitter
             .emit(AgentEvent::Thought {
                 session_id: session_id.into(),
@@ -1300,22 +1304,6 @@ impl EventDispatcher {
             })
             .await;
         Ok(())
-    }
-
-    /// Persist the thought step row without publishing a UI event.
-    ///
-    /// The sequenced Thought event is published from the committed transcript
-    /// row. This write is the materialized `session_steps` projection and may
-    /// fail after that UI event has already been sent.
-    pub async fn persist_thought_step(
-        session_id: &str,
-        step_number: u32,
-        message_id: &str,
-        store: &SessionStore,
-    ) -> anyhow::Result<()> {
-        store
-            .create_thought_step(session_id, step_number, message_id)
-            .await
     }
 
     pub async fn emit_session_error_from(
@@ -1767,7 +1755,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_bus_installs_event_bus_as_emitter() {
+    async fn recovery_partial_thought_uses_installed_bus_and_shared_step_identity() {
         let dispatcher = EventDispatcher::new();
         let bus = dispatcher.install_bus();
         let collector: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
@@ -1775,15 +1763,15 @@ mod tests {
         });
         bus.subscribe("c", collector.clone()).await;
 
-        // emit_thought_from drives the installed emitter (the bus), which fans out.
+        // The recovery-only helper drives the installed emitter (the bus), which fans out.
         let mut p = std::env::temp_dir();
         p.push(format!("haven_event_test_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
         let session = db.create_session("t").unwrap();
-        let store = SessionStore::new(db);
+        let store = SessionStore::new(db.clone());
         let bus_dyn: Arc<dyn AgentEventEmitter> = bus;
         let step_id = haven_common::types::new_id("step");
-        EventDispatcher::emit_thought_from(
+        EventDispatcher::emit_recovery_partial_thought_from(
             &bus_dyn,
             &session.session_id,
             "hello",
@@ -1794,11 +1782,19 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(collector.events.lock().unwrap().len(), 1);
+        let events = collector.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
         assert!(matches!(
-            collector.events.lock().unwrap()[0],
-            AgentEvent::Thought { .. }
+            &events[0],
+            AgentEvent::Thought {
+                message_id,
+                event_sequence: None,
+                ..
+            } if message_id == &step_id
         ));
+        let persisted_steps = db.list_session_steps(&session.session_id).unwrap();
+        assert_eq!(persisted_steps.len(), 1);
+        assert_eq!(persisted_steps[0].step_id, step_id);
     }
 
     #[tokio::test]

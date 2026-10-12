@@ -124,7 +124,7 @@ impl LoopHooks for DefaultHooks {
     ) -> futures_util::future::BoxFuture<'static, BeforeToolCallDecision> {
         Box::pin(async move {
             // Resume path: a prior confirm pause already recorded a decision.
-            if let Some((decision, receipt)) = request
+            if let Some(decision) = request
                 .executor
                 .confirm_decision_for(
                     &request.session_id,
@@ -134,8 +134,10 @@ impl LoopHooks for DefaultHooks {
                 )
                 .await
             {
-                return if decision {
-                    BeforeToolCallDecision::Proceed { receipt }
+                return if decision.approved {
+                    BeforeToolCallDecision::Proceed {
+                        receipt: decision.receipt,
+                    }
                 } else {
                     BeforeToolCallDecision::Block {
                         error: format!(

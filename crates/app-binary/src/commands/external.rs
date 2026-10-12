@@ -74,9 +74,12 @@ pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> R
 
 fn looks_like_http_url(value: &str) -> bool {
     let lower = value.as_bytes();
-    lower.len() >= 7
-        && (value[..7].eq_ignore_ascii_case("http://")
-            || (lower.len() >= 8 && value[..8].eq_ignore_ascii_case("https://")))
+    lower
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"http://"))
+        || lower
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"https://"))
 }
 
 fn validate_http_url(url: &str) -> Result<(), String> {
@@ -256,6 +259,12 @@ mod tests {
         assert!(looks_like_http_url("https://example.com/a?b=1&c=2"));
         assert!(looks_like_http_url("HTTP://EXAMPLE.COM"));
         assert!(validate_http_url("https://example.com/a?b=1&c=2").is_ok());
+    }
+
+    #[test]
+    fn non_ascii_paths_at_scheme_byte_boundaries_do_not_panic() {
+        assert!(!looks_like_http_url("abcdefé://folder/file"));
+        assert!(!looks_like_http_url("abcdefgé://folder/file"));
     }
 
     #[test]

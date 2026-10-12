@@ -195,6 +195,9 @@ $tauriCoreApiFiles = @($uiFiles | Where-Object { (Get-Content $_.FullName -Raw).
 Assert-SetEqual 'direct Tauri core API imports' @('tauri.ts', 'tauri.test.ts') $tauriCoreApiFiles
 $layout = Get-Source 'ui/src/routes/+layout.svelte'
 Assert-Contains $layout '(?s)const report = await invoke\(''check_llm_connection''\);\s*if \(generation === llmProbeGeneration\) applyLlmConnectionReport\(report\);' 'LLM connection report is normalized only for the current probe'
+$settingsView = Get-Source 'ui/src/lib/views/SettingsView.svelte'
+Assert-Contains $settingsView 'registerListeners\(\s*appEventListeners\(\{[\s\S]{0,500}?''llm:config_changed''' 'SettingsView LLM config event passes through the generated app-event mapper'
+Assert-NotContains $settingsView 'registerListeners\(\s*\{\s*''llm:config_changed''' 'SettingsView must not register the raw LLM config event'
 $llmConnection = Get-Source 'ui/src/lib/llmConnection.ts'
 Assert-Contains $llmConnection 'LLM_CONNECTION_STATUS_VALUES' 'LLM connection parser reuses generated status values'
 Assert-Contains $llmConnection 'LLM_CONNECTION_FAILURE_REASON_VALUES' 'LLM connection parser reuses generated failure-reason values'

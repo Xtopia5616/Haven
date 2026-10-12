@@ -58,8 +58,12 @@ export function reduceTranscript(
 			return {
 				...state,
 				messages: draft.length ? { [DRAFT_SESSION_ID]: draft } : {},
-				replay: { eventSequenceBySession: {}, chunkSeqByMessage: {}, blockIdsBySession: {} },
-				optimistic: {},
+				replay: {
+					eventSequenceBySession: {},
+					chunkSeqByMessage: {},
+					blockIdsBySession: {},
+				},
+				pendingMessageOwners: {},
 			};
 		}
 		case 'session/messages/optimistic-added': {
@@ -69,12 +73,10 @@ export function reduceTranscript(
 			]);
 			return {
 				...next,
-				optimistic: {
-					...next.optimistic,
+				pendingMessageOwners: {
+					...next.pendingMessageOwners,
 					[action.message.id]: {
 						sessionId: action.sessionId,
-						messageId: action.message.id,
-						status: 'pending',
 					},
 				},
 			};
@@ -100,31 +102,23 @@ export function reduceTranscript(
 					return result;
 				});
 			}
-			const optimistic = { ...next.optimistic };
-			optimistic[action.optimisticMessageId] = {
-				sessionId: action.toSessionId,
-				messageId: action.persistedMessageId || action.optimisticMessageId,
-				status: 'accepted',
-			};
-			return { ...next, optimistic };
+			const pendingMessageOwners = { ...next.pendingMessageOwners };
+			delete pendingMessageOwners[action.optimisticMessageId];
+			return { ...next, pendingMessageOwners };
 		}
 		case 'session/messages/rejected': {
-			const optimisticEntry = state.optimistic[action.messageId];
+			const pendingOwner = state.pendingMessageOwners[action.messageId];
 			let next = withMessages(state, action.sessionId, (messages) =>
 				messages.filter((message) => message.id !== action.messageId),
 			);
-			if (optimisticEntry && optimisticEntry.sessionId !== action.sessionId) {
-				next = withMessages(next, optimisticEntry.sessionId, (messages) =>
+			if (pendingOwner && pendingOwner.sessionId !== action.sessionId) {
+				next = withMessages(next, pendingOwner.sessionId, (messages) =>
 					messages.filter((message) => message.id !== action.messageId),
 				);
 			}
-			const optimistic = { ...next.optimistic };
-			if (optimistic[action.messageId])
-				optimistic[action.messageId] = {
-					...optimistic[action.messageId],
-					status: 'rejected',
-				};
-			return { ...next, optimistic };
+			const pendingMessageOwners = { ...next.pendingMessageOwners };
+			delete pendingMessageOwners[action.messageId];
+			return { ...next, pendingMessageOwners };
 		}
 		case 'session/messages/cleared': {
 			const next = clearReplayForSession(state, action.sessionId);
@@ -142,8 +136,20 @@ export function reduceTranscript(
 				});
 				return changed ? next : messages;
 			});
-		case 'session/messages/adopt-draft':
-			return moveMessages(state, DRAFT_SESSION_ID, action.sessionId);
+		case 'session/messages/adopt-draft': {
+			const draftMessageIds = new Set(
+				messagesOf(state, DRAFT_SESSION_ID).map((message) => message.id),
+			);
+			const next = moveMessages(state, DRAFT_SESSION_ID, action.sessionId);
+			if (next === state) return next;
+			const pendingMessageOwners = { ...next.pendingMessageOwners };
+			for (const messageId of draftMessageIds) {
+				if (pendingMessageOwners[messageId]?.sessionId === DRAFT_SESSION_ID) {
+					pendingMessageOwners[messageId] = { sessionId: action.sessionId };
+				}
+			}
+			return { ...next, pendingMessageOwners };
+		}
 		case 'session/asks-settled': {
 			const askById = new Map(action.asks.map((ask) => [ask.requestId, ask]));
 			if (askById.size === 0) return state;

@@ -728,16 +728,19 @@ impl<'db> FactGraph<'db> {
         })
     }
 
-    pub(crate) fn delete_by_id(&self, id: &str) -> anyhow::Result<()> {
+    pub(crate) fn delete_fact_by_id(&self, fact_id: &str) -> anyhow::Result<()> {
         let conn = self.db.conn();
         let subject: Option<String> = conn
             .query_row(
                 "SELECT subject FROM facts WHERE id = ?1",
-                rusqlite::params![id],
+                rusqlite::params![fact_id],
                 |r| r.get(0),
             )
             .optional()?;
-        conn.execute("DELETE FROM facts WHERE id = ?1", rusqlite::params![id])?;
+        conn.execute(
+            "DELETE FROM facts WHERE id = ?1",
+            rusqlite::params![fact_id],
+        )?;
         if let Some(subject) = subject {
             self.db.cache_invalidate_facts(&subject);
         }

@@ -795,7 +795,8 @@ export function mapAgentEvent(
 				!optionalSafeUnsignedIntegerIsValid(payload, 'duration_ms') ||
 				(requestKind !== undefined && !isOneOf(requestKind, REQUEST_KIND_VALUES)) ||
 				!isOneOf(payload.call_kind, LLM_CALL_KIND_VALUES) ||
-				!isBoolean(payload.has_cost)
+				!isBoolean(payload.has_cost) ||
+				payload.has_cost !== (payload.cost_usd !== null)
 			)
 				return null;
 			return {

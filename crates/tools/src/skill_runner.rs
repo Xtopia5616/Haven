@@ -9,6 +9,7 @@ use haven_platform::process_containment::ProcessContainment;
 use haven_skills::{Skill, VenvManager};
 use serde_json::Value;
 use std::time::Duration;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 /// Bound retained output independently for stdout and stderr. Both streams
@@ -54,6 +55,7 @@ impl SkillRunner {
         params: &Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        let deadline = Instant::now() + Duration::from_secs(self.config.timeout_secs);
         let entry = skill.entry_script().ok_or_else(|| {
             anyhow::anyhow!(
                 "skill '{}' has no entry script; expected scripts/main.py or scripts/{}.py",
@@ -69,7 +71,19 @@ impl SkillRunner {
             );
         }
 
-        let python = self.venv.ensure(skill.name(), skill.root()).await?;
+        let python = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                return Ok(ToolResult::cancelled(format!("skill '{}' cancelled", skill.name())));
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                return Ok(ToolResult::timed_out(
+                    crate::ToolExecutionOutcome::TimedOutUnknown,
+                    format!("skill '{}' timed out after {}s", skill.name(), self.config.timeout_secs),
+                ));
+            }
+            result = self.venv.ensure(skill.name(), skill.root()) => result?,
+        };
 
         let work_dir = &self.config.work_dir;
         tokio::fs::create_dir_all(work_dir).await?;
@@ -137,7 +151,6 @@ impl SkillRunner {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let max_lines = self.config.max_output_lines;
-        let timeout_dur = Duration::from_secs(self.config.timeout_secs);
 
         // Feed stdin, drain both output pipes, and wait for process exit as one
         // deadline-bound operation. Waiting first can deadlock when a child
@@ -211,7 +224,7 @@ impl SkillRunner {
                     pid_label
                 )));
             }
-            _ = tokio::time::sleep(timeout_dur) => {
+            _ = tokio::time::sleep_until(deadline) => {
                 return Ok(ToolResult::timed_out(
                     crate::ToolExecutionOutcome::TimedOutUnknown,
                     format!("skill '{}' timed out after {}s", pid_label, self.config.timeout_secs),
@@ -312,7 +325,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runner_timeout_returns_timed_out() {
+    async fn runner_total_deadline_returns_timed_out() {
         let temp = tempfile::tempdir().unwrap();
         let skill = scripted_skill(temp.path(), "import time\ntime.sleep(10)\nprint('{}')\n").await;
 

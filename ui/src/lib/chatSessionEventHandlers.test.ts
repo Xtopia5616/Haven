@@ -3,6 +3,7 @@ import { get } from 'svelte/store';
 import { createChatSessionEventHandler } from './chatSessionEventHandlers.ts';
 import { initialSessionState, SessionReducer } from './sessionReducer.ts';
 import { getToolOutputPreviewStore, setToolOutputPreview } from './toolOutputPreviewStore.ts';
+import { clearMediaPlans, mediaPlanStore, rememberMediaPlan } from './mediaPlanStore.ts';
 
 function handler(options: {
 	fresh?: boolean;
@@ -32,6 +33,33 @@ function handler(options: {
 }
 
 describe('chat session lifecycle handler', () => {
+	it('keeps media plans for the visible terminal session and clears inactive terminal plans', () => {
+		const activeSessionId = 'ses-d186f90b4f33cc53ee287f9e8c401e6a';
+		const inactiveSessionId = 'ses-ffe697a25c453d07bf0c9571521df2b7';
+		mediaPlanStore.set({});
+		const payload = (sessionId: string) => ({
+			sessionId,
+			stepNumber: 1,
+			runId: 1,
+			requestKind: 'chat' as const,
+			strategy: 'text_only_safe' as const,
+			projections: [],
+			notices: [],
+		});
+		rememberMediaPlan(payload(activeSessionId));
+		rememberMediaPlan(payload(inactiveSessionId));
+		const onLifecycle = handler({
+			activeSessionId,
+			dispatchSession: vi.fn(),
+		});
+
+		onLifecycle({ payload: { type: 'completed', sessionId: activeSessionId } } as never);
+		onLifecycle({ payload: { type: 'completed', sessionId: inactiveSessionId } } as never);
+		expect(get(mediaPlanStore)[activeSessionId]).toHaveLength(1);
+		expect(get(mediaPlanStore)[inactiveSessionId]).toBeUndefined();
+		clearMediaPlans(null);
+	});
+
 	it('stops live bubbles when a session is paused without clearing its pending ask', () => {
 		const flushChunksNow = vi.fn();
 		const clearAskAwaiting = vi.fn();

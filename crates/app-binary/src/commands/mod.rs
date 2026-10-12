@@ -72,7 +72,31 @@ pub(crate) use recording::{
 
 #[derive(Serialize)]
 pub struct RuntimeSessionListResponse {
-    pub sessions: Vec<haven_agent::SessionInfo>,
+    pub sessions: Vec<RuntimeSessionDto>,
+}
+
+/// App-owned allowlist for the runtime session switcher. Keep Agent summary,
+/// step inputs/outputs, and runtime bookkeeping inside the backend.
+#[derive(Serialize)]
+pub struct RuntimeSessionDto {
+    pub session_id: String,
+    pub input_text: String,
+    pub title: Option<String>,
+    pub status: haven_common::lifecycle::SessionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_reason: Option<haven_common::lifecycle::SessionWaitingReason>,
+}
+
+impl From<haven_agent::SessionInfo> for RuntimeSessionDto {
+    fn from(session: haven_agent::SessionInfo) -> Self {
+        Self {
+            session_id: session.session_id,
+            input_text: session.input,
+            title: session.title,
+            status: session.status,
+            waiting_reason: session.waiting_reason,
+        }
+    }
 }
 
 /// Re-export: command error logging lives in `crate::logging` (conventions §1).

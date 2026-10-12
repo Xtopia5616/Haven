@@ -74,5 +74,24 @@ describe('memory renderer DTO contract', () => {
 		);
 		expect(recall[0]).toHaveProperty('entityId', 'fact-00000000000000000000000000000001');
 		expect(recall[0]).not.toHaveProperty('entity_id');
+		expect(() =>
+			parseMemoryRecallResponses(
+				[
+					{
+						entity_id: 'fact-00000000000000000000000000000001',
+						text: 'likes tea',
+						score: 0.9,
+						model: 'embed-v1',
+					},
+					{
+						entity_id: 'fact-00000000000000000000000000000001',
+						text: 'likes tea a lot',
+						score: 0.8,
+						model: 'embed-v1',
+					},
+				],
+				'fact',
+			),
+		).toThrow('Duplicate memory recall identity');
 	});
 });

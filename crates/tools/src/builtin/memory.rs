@@ -114,6 +114,7 @@ impl MemoryTool {
             .iter()
             .map(|f| {
                 let mut row = json!({
+                    "fact_id": f.fact_id,
                     "subject": f.subject,
                     "predicate": f.predicate,
                     "object": f.object,
@@ -576,6 +577,10 @@ mod tests {
             .unwrap();
         let facts = result.output["facts"].as_array().unwrap();
         assert_eq!(facts.len(), 1);
+        assert!(haven_common::types::is_canonical_id(
+            facts[0]["fact_id"].as_str().unwrap(),
+            "fact"
+        ));
         assert_eq!(facts[0]["predicate"], "likes");
         assert_eq!(facts[0]["object"], "Rust");
         assert_eq!(facts[0]["source"], "inferred");
@@ -700,6 +705,11 @@ mod tests {
         let facts = result.output["facts"].as_array().unwrap();
         // Sensitive fact excluded; the three real facts remain.
         assert_eq!(facts.len(), 3);
+        assert!(facts.iter().all(|fact| {
+            fact["fact_id"]
+                .as_str()
+                .is_some_and(|id| haven_common::types::is_canonical_id(id, "fact"))
+        }));
         let objs: Vec<&str> = facts
             .iter()
             .map(|f| f["object"].as_str().unwrap())

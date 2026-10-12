@@ -11,7 +11,6 @@ export const TOOL_LABELS: Record<string, string> = {
 	system: '系统与桌面',
 	shell: '终端输出',
 	notify: '通知',
-	haven: 'Haven 管理与会话工具',
 	memory: '记忆',
 	load_mcp: '加载 MCP',
 	// Skills are registered directly as independent tools.

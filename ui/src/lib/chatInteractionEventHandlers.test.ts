@@ -21,9 +21,24 @@ describe('createChatInteractionEventHandlers', () => {
 							...base,
 							kind,
 							sessionId: 'ses-00000000000000000000000000000001',
+							toolName: 'scheduled_tool',
+							summary: 'Run scheduled operation',
+							permissionKey: 'tool.scheduled_tool',
 							owner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-00000000000000000000000000000001' },
 						}
-					: {
+					: kind === 'confirm'
+						? {
+							...base,
+							kind,
+							sessionId: 'ses-00000000000000000000000000000001',
+							toolName: 'run_command',
+							riskLevel: 'high',
+							summary: 'Run protected operation',
+							toolIndex: 0,
+							invocationStepId: 'step-00000000000000000000000000000002',
+							owner: { kind: 'session', sessionId: 'ses-00000000000000000000000000000001' },
+						}
+						: {
 							...base,
 							kind,
 							sessionId: 'ses-00000000000000000000000000000001',

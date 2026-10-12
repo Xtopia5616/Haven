@@ -8,16 +8,17 @@ import type {
 	MessageAttachment as GeneratedMessageAttachment,
 	SessionResumeMessageDto as GeneratedSessionResumeMessage,
 	RuntimeSessionListResponse as GeneratedSessionListResponse,
+	RuntimeSessionDto as GeneratedRuntimeSession,
 	SessionLineageResponse as GeneratedSessionLineageResponse,
 	SessionRecordDto as GeneratedSessionRecord,
 	SessionResumeResponse as GeneratedSessionResumeResponse,
 	SessionStep as GeneratedSessionStep,
 	SessionUsage as GeneratedSessionUsage,
-	StepInfo as GeneratedStepInfo,
 	TauriCommandResponse,
 } from './generatedCommands.ts';
 import {
 	INTERACTION_KIND_VALUES,
+	RISK_LEVEL_VALUES,
 	RUNTIME_SESSION_LIST_RESPONSE_SHAPE,
 	SESSION_LINEAGE_RESPONSE_SHAPE,
 	SESSION_RECORD_RESPONSE_SHAPE,
@@ -38,13 +39,13 @@ import { isCanonicalEntityId } from './wireGuards.ts';
 
 type SessionHistoryWireRow = TauriCommandResponse<'list_session_history'>[number];
 export type SessionHistoryRow = Omit<SessionHistoryWireRow, 'session_id'> & { sessionId: string };
-type RuntimeStepWire = GeneratedSessionListResponse['sessions'][number]['steps'][number];
-type RuntimeSessionWire = GeneratedSessionListResponse['sessions'][number];
+type RuntimeSessionWire = GeneratedRuntimeSession;
 export type RuntimeSessionListResponse = Omit<GeneratedSessionListResponse, 'sessions'> & {
 	sessions: Array<
-		Omit<RuntimeSessionWire, 'session_id' | 'steps'> & {
+		Omit<RuntimeSessionWire, 'session_id' | 'input_text' | 'waiting_reason'> & {
 			sessionId: string;
-			steps: Array<Omit<RuntimeStepWire, 'step_id'> & { stepId: string }>;
+			inputText: string;
+			waitingReason?: RuntimeSessionWire['waiting_reason'];
 		}
 	>;
 };
@@ -66,10 +67,7 @@ export type SessionResumeMessage = Omit<
 	attachments: Array<RendererMessageAttachment>;
 	media_inputs?: Array<RendererMediaInput>;
 };
-export type SessionResumeStep = Omit<
-	GeneratedSessionStep,
-	'step_id' | 'session_id'
-> & {
+export type SessionResumeStep = Omit<GeneratedSessionStep, 'step_id' | 'session_id'> & {
 	stepId: string;
 	sessionId: string;
 };
@@ -131,11 +129,7 @@ function hasSessionIdentity(
 function hasRuntimeSessionIdentity(value: unknown): boolean {
 	return (
 		isRecord(value) &&
-		isCanonicalEntityId(value.session_id, 'ses') &&
-		Array.isArray(value.steps) &&
-		value.steps.every(
-			(step: unknown) => isRecord(step) && isCanonicalEntityId(step.step_id, 'step'),
-		)
+		isCanonicalEntityId(value.session_id, 'ses')
 	);
 }
 
@@ -157,9 +151,9 @@ function hasOptionalSafeUnsignedInteger(record: Record<string, unknown>, field: 
 }
 
 function hasValidRuntimeSessionValues(value: unknown): boolean {
-	if (!isRecord(value) || !Array.isArray(value.steps)) return false;
+	if (!isRecord(value)) return false;
 	if (value.waiting_reason !== undefined && value.status !== 'paused') return false;
-	return value.steps.every((step: unknown) => isRecord(step) && isU32(step.step_number));
+	return true;
 }
 
 function hasValidRepresentationNumericValues(value: unknown): boolean {
@@ -270,24 +264,16 @@ function mapSessionRecord(value: GeneratedSessionRecord): SessionHistoryRow {
 	};
 }
 
-function mapRuntimeStep(
-	value: GeneratedStepInfo,
-): RuntimeSessionListResponse['sessions'][number]['steps'][number] {
-	const { step_id, ...rest } = value;
-	return {
-		...rest,
-		stepId: step_id,
-	};
-}
-
 function mapRuntimeSession(
 	value: GeneratedSessionListResponse['sessions'][number],
 ): RuntimeSessionListResponse['sessions'][number] {
-	const { session_id, steps, ...rest } = value;
+	const { session_id, input_text, waiting_reason } = value;
 	return {
-		...rest,
 		sessionId: session_id,
-		steps: steps.map(mapRuntimeStep),
+		inputText: input_text,
+		title: value.title,
+		status: value.status,
+		...(waiting_reason === undefined ? {} : { waitingReason: waiting_reason }),
 	};
 }
 
@@ -299,9 +285,7 @@ function mapMediaAsset(value: GeneratedMediaAsset): RendererMediaAsset {
 	};
 }
 
-function mapMediaRepresentation(
-	value: GeneratedMediaRepresentation,
-): RendererMediaRepresentation {
+function mapMediaRepresentation(value: GeneratedMediaRepresentation): RendererMediaRepresentation {
 	const payload = value.payload;
 	let mappedPayload: RendererMediaRepresentation['payload'];
 	switch (payload.kind) {
@@ -321,9 +305,7 @@ function mapMediaRepresentation(
 	return { ...value, payload: mappedPayload };
 }
 
-function mapMessageAttachment(
-	value: GeneratedMessageAttachment,
-	): RendererMessageAttachment {
+function mapMessageAttachment(value: GeneratedMessageAttachment): RendererMessageAttachment {
 	const { asset_id, representations, ...rest } = value;
 	return {
 		...rest,
@@ -454,6 +436,7 @@ function hasResumeInteractionIdentity(
 	value: unknown,
 	sessionId: string,
 	stepIds: ReadonlySet<string>,
+	messageIds: ReadonlySet<string>,
 ): boolean {
 	if (
 		!isRecord(value) ||
@@ -464,7 +447,38 @@ function hasResumeInteractionIdentity(
 	}
 	const expectedIdPrefix = value.kind === 'ask' ? 'step' : 'conf';
 	if (!isCanonicalEntityId(value.request_id, expectedIdPrefix)) return false;
-	if (value.kind === 'ask' && !stepIds.has(value.request_id)) return false;
+	if (
+		value.kind === 'ask' &&
+		(!stepIds.has(value.request_id) || !messageIds.has(value.request_id))
+	)
+		return false;
+	if (value.kind === 'confirm') {
+		if (
+			typeof value.tool_name !== 'string' ||
+			value.tool_name.trim().length === 0 ||
+			!isOneOf(value.risk_level, RISK_LEVEL_VALUES) ||
+			typeof value.summary !== 'string' ||
+			value.summary.trim().length === 0 ||
+			!isU32(value.tool_index)
+		)
+			return false;
+		if (
+			(value.owner.kind === 'session' &&
+				!isCanonicalEntityId(value.invocation_step_id, 'step')) ||
+			(value.owner.kind === 'app_command' && value.invocation_step_id !== undefined)
+		)
+			return false;
+	}
+	if (
+		value.kind === 'scheduled_confirm' &&
+		(typeof value.tool_name !== 'string' ||
+			value.tool_name.trim().length === 0 ||
+			typeof value.summary !== 'string' ||
+			value.summary.trim().length === 0 ||
+			typeof value.permission_key !== 'string' ||
+			value.permission_key.trim().length === 0)
+	)
+		return false;
 	if (value.session_id !== undefined && value.session_id !== sessionId) return false;
 	if (value.session_id !== undefined && !isCanonicalEntityId(value.session_id, 'ses')) {
 		return false;
@@ -580,6 +594,9 @@ export function parseSessionResumeResponse(
 	) {
 		throw new Error('Invalid resumed message identity');
 	}
+	const messageIds = new Set<string>(
+		messages.map((message: { message_id: string }) => message.message_id),
+	);
 	if (
 		!Array.isArray(value.llm_usage) ||
 		!value.llm_usage.every(
@@ -595,7 +612,7 @@ export function parseSessionResumeResponse(
 	if (
 		!Array.isArray(value.interactions) ||
 		!value.interactions.every((interaction: unknown) =>
-			hasResumeInteractionIdentity(interaction, sessionId, stepIds),
+			hasResumeInteractionIdentity(interaction, sessionId, stepIds, messageIds),
 		)
 	) {
 		throw new Error('Invalid resumed interaction identity');

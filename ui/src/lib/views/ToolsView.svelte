@@ -73,6 +73,7 @@
 
 	let unlistenSkills: { dispose: () => void } | undefined;
 	let unlistenMcp: { dispose: () => void } | undefined;
+	let disposed = false;
 	let mcpRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let mcpRefreshing = $state(false);
 	let skillsRefreshing = $state(false);
@@ -128,6 +129,7 @@
 	onMount(async () => {
 		try {
 			const result = await listBuiltinToolManifests();
+			if (disposed) return;
 			if (result && result.tools) {
 				const manifests = setToolManifests(result.tools);
 				builtinTools = manifests
@@ -135,28 +137,42 @@
 					.sort((a, b) => a.name.localeCompare(b.name));
 			}
 		} catch (e) {
+			if (disposed) return;
 			builtinTools = [];
 			reportError(e, { context: 'ToolsView', message: '加载工具列表失败', log: false });
 		}
 		await refreshMcpServers();
+		if (disposed) return;
 		await refreshSkillList();
-		unlistenSkills = await registerAppListener(
+		if (disposed) return;
+		const skillsListener = await registerAppListener(
 			'skills:status_change',
 			async () => {
 				await refreshSkillList(false);
 			},
 			{ tag: 'tools' },
 		);
-		unlistenMcp = await registerAppListener(
+		if (disposed) {
+			skillsListener.dispose();
+			return;
+		}
+		unlistenSkills = skillsListener;
+		const mcpListener = await registerAppListener(
 			'mcp:status_change',
 			() => {
 				scheduleMcpRefresh();
 			},
 			{ tag: 'tools' },
 		);
+		if (disposed) {
+			mcpListener.dispose();
+			return;
+		}
+		unlistenMcp = mcpListener;
 	});
 
 	onDestroy(() => {
+		disposed = true;
 		if (mcpRefreshTimer) clearTimeout(mcpRefreshTimer);
 		unlistenSkills?.dispose();
 		unlistenMcp?.dispose();
@@ -165,9 +181,11 @@
 	async function refreshMcpServers(notifyOnError = true) {
 		try {
 			const result = await listMcpServers();
+			if (disposed) return false;
 			mcpServers = result || [];
 			return true;
 		} catch (error) {
+			if (disposed) return false;
 			reportError(error, {
 				context: 'ToolsView',
 				message: '加载 MCP 服务器失败',
@@ -237,9 +255,11 @@
 	async function refreshSkillList(notifyOnError = true) {
 		try {
 			const result = await listSkills();
+			if (disposed) return false;
 			skills = result || [];
 			return true;
 		} catch (error) {
+			if (disposed) return false;
 			reportError(error, {
 				context: 'ToolsView',
 				message: '加载技能列表失败',

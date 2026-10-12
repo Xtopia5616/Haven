@@ -184,7 +184,7 @@ impl OpenAiAdapter {
                 cache_sections_split: false,
             };
         };
-        let Some((stable, session, memory)) = split_system_prompt_cache_sections(text) else {
+        let Some(sections) = split_system_prompt_cache_sections(text) else {
             return SystemPromptMessageConversion {
                 messages: Self::convert_messages_ref(
                     msgs,
@@ -194,7 +194,9 @@ impl OpenAiAdapter {
                 cache_sections_split: false,
             };
         };
-        if stable.trim().is_empty() || (session.is_empty() && memory.is_empty()) {
+        if sections.stable_prompt.trim().is_empty()
+            || (sections.session_context.is_empty() && sections.memory_context.is_empty())
+        {
             return SystemPromptMessageConversion {
                 messages: Self::convert_messages_ref(
                     msgs,
@@ -205,10 +207,12 @@ impl OpenAiAdapter {
             };
         }
 
-        let stable_message = CanonicalMessage::system(vec![ContentPart::text(stable)]);
-        let session_message = (!session.is_empty())
-            .then(|| CanonicalMessage::system(vec![ContentPart::text(session)]));
-        let memory_message = (!memory.is_empty()).then(|| CanonicalMessage::user_text(memory));
+        let stable_message =
+            CanonicalMessage::system(vec![ContentPart::text(sections.stable_prompt)]);
+        let session_message = (!sections.session_context.is_empty())
+            .then(|| CanonicalMessage::system(vec![ContentPart::text(sections.session_context)]));
+        let memory_message = (!sections.memory_context.is_empty())
+            .then(|| CanonicalMessage::user_text(sections.memory_context));
         let mut out = Vec::with_capacity(msgs.len() + 2);
         for (message_index, message) in msgs.iter().enumerate() {
             if message_index == index {

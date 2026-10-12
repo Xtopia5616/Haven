@@ -18,6 +18,7 @@
 				pid?: number | null;
 			}>;
 			elements?: Array<{
+				element_token?: string | null;
 				name?: string | null;
 				control_type?: ToolWindowControlType | null;
 			}>;
@@ -142,7 +143,7 @@
 	<ToolResultList items={data.elements}>
 		{#snippet children(visibleElements)}
 			<div class="tool-result-scroll-area">
-				{#each visibleElements as element, index (element.name ?? index)}
+				{#each visibleElements as element, index (element.element_token ?? index)}
 					<div class="tool-result-window-row">
 						<span class="tool-result-window-primary window-title" title={element.name}
 							>{element.name || '(未命名元素)'}</span

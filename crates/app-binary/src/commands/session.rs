@@ -76,7 +76,14 @@ pub async fn reopen_session(
 pub async fn list_runtime_sessions(
     state: State<'_, Arc<AppState>>,
 ) -> Result<RuntimeSessionListResponse, String> {
-    let sessions = state.runtime.executor.list_runtime_sessions().await;
+    let sessions = state
+        .runtime
+        .executor
+        .list_runtime_sessions()
+        .await
+        .into_iter()
+        .map(Into::into)
+        .collect();
     Ok(RuntimeSessionListResponse { sessions })
 }
 
@@ -1010,7 +1017,7 @@ mod tests {
         resume_session_from_store, session_lineage_from_store,
     };
     use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
-    use crate::commands::RuntimeSessionListResponse;
+    use crate::commands::{RuntimeSessionDto, RuntimeSessionListResponse};
     use haven_agent::{InteractionOwner, InteractionRequest, SessionInfo, StepInfo};
     use haven_common::lifecycle::SessionStatus;
     use haven_common::types::{PermissionEffect, PermissionScope, PermissionTarget, RiskLevel};
@@ -1093,28 +1100,28 @@ mod tests {
     }
 
     #[test]
-    fn runtime_session_list_serializes_entity_identity_fields() {
+    fn runtime_session_list_serializes_only_the_app_owned_projection() {
         let response = RuntimeSessionListResponse {
-            sessions: vec![SessionInfo {
+            sessions: vec![RuntimeSessionDto::from(SessionInfo {
                 session_id: "ses-00000000000000000000000000000001".into(),
-                input: "input".into(),
-                summary: "summary".into(),
-                title: None,
+                input: "visible input".into(),
+                summary: "private agent summary".into(),
+                title: Some("Visible title".into()),
                 status: SessionStatus::Running,
                 waiting_reason: None,
                 steps: vec![StepInfo {
                     step_id: "step-00000000000000000000000000000002".into(),
                     step_number: 1,
                     tool_name: "shell".into(),
-                    input: serde_json::json!({}),
-                    output: None,
+                    input: serde_json::json!({"private": "step input"}),
+                    output: Some(serde_json::json!({"private": "step output"})),
                     status: haven_common::lifecycle::SessionStepStatus::Completed,
                     risk_level: RiskLevel::Low,
                     confirmed: None,
                 }],
                 created_at: "2026-01-01T00:00:00Z".into(),
                 updated_at: "2026-01-01T00:00:00Z".into(),
-            }],
+            })],
         };
 
         let value = serde_json::to_value(response).unwrap();
@@ -1123,12 +1130,28 @@ mod tests {
             session["session_id"],
             "ses-00000000000000000000000000000001"
         );
-        assert!(session.get("id").is_none());
-        assert_eq!(
-            session["steps"][0]["step_id"],
-            "step-00000000000000000000000000000002"
-        );
-        assert!(session["steps"][0].get("id").is_none());
+        assert_eq!(session["input_text"], "visible input");
+        assert_eq!(session["title"], "Visible title");
+        for internal_field in [
+            "id",
+            "input",
+            "summary",
+            "steps",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(
+                session.get(internal_field).is_none(),
+                "leaked {internal_field}"
+            );
+        }
+        let serialized = value.to_string();
+        for private_value in ["private agent summary", "step input", "step output"] {
+            assert!(
+                !serialized.contains(private_value),
+                "leaked {private_value}"
+            );
+        }
     }
 
     #[test]
@@ -1465,7 +1488,7 @@ mod tests {
             state
                 .runtime
                 .session_store
-                .all_session_authorization_grants()
+                .list_session_authorization_grants()
                 .await
                 .unwrap()
                 .is_empty()

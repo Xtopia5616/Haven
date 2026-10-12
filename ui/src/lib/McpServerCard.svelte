@@ -167,7 +167,7 @@
 		<h4>提供的工具</h4>
 		{#if server.tools && server.tools.length > 0}
 			<div class="tool-list">
-				{#each server.tools as tool}
+				{#each server.tools as tool (tool.name)}
 					<div class="tool-item">
 						<div class="tool-item-name">{tool.name}</div>
 						<div class="tool-item-desc">{tool.description || '暂无描述'}</div>

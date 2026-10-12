@@ -10,7 +10,11 @@ import type {
 	SessionStepStatus,
 	TranscriptMessageKind,
 } from './contracts/generatedCommands.ts';
-import type { SessionMessagePresentationType, ToolResultPresentationOutcome } from './streaming.ts';
+import {
+	renderedMessageKey,
+	type SessionMessagePresentationType,
+	type ToolResultPresentationOutcome,
+} from './streaming.ts';
 
 type PersistedToolOutcome = Extract<SessionStepStatus, 'failed' | 'cancelled' | 'unknown'>;
 
@@ -32,6 +36,7 @@ export interface ResumeTranscriptProjectionInput {
 
 interface ResumeMessage {
 	id: string;
+	presentationKey?: string;
 	role?: CanonicalRole;
 	content?: string;
 	/** Renderer-only presentation type; mapped from the durable message kind. */
@@ -86,10 +91,13 @@ function persistedToolOutcome(
 /**
  * Merge DB-loaded messages with any in-memory streaming messages that
  * arrived concurrently (e.g. a session still running while the user
- * navigates back). Pure ID union: every live bubble carries the SAME id
- * the backend mints and persists its DB row under (`msg-*` for streamed
- * thought/reasoning, `step-*` for tool/ask cards), so identity is decided
- * by id alone; content equality is never used as an identity fallback.
+ * navigates back). Entity association uses `id`; a presentationKey can keep a
+ * second renderer projection of that same entity distinct in the visible list.
+ * Canonical transcript bubbles carry the backend entity id persisted in the
+ * corresponding row (assistant thought/ask can share `step-*`; user and
+ * supplement messages use `msg-*`). A synthetic card that presents the same
+ * entity separately keeps that canonical `id` and adds a renderer-only
+ * `presentationKey`. Content equality is never an identity fallback.
  *
  * Rules:
  * - id present in both: the DB copy wins, EXCEPT an awaiting live `ask`
@@ -125,7 +133,10 @@ export function mergeLiveStreaming(
 		existing.filter((m) => m.type === 'tool' && m.streaming).map((m) => [m.id, m]),
 	);
 	const out: ResumeMessage[] = [];
-	const existingIdxOf = new Map(existing.map((m, i) => [m.id, i]));
+	const existingIdxOf = new Map<string, number>();
+	existing.forEach((message, index) => {
+		if (!existingIdxOf.has(message.id)) existingIdxOf.set(message.id, index);
+	});
 	// For each emitted DB row that also exists in the live list: its position
 	// in `existing` (to order finalized live-only leftovers) and its position
 	// in `out` (the insertion point).
@@ -138,12 +149,12 @@ export function mergeLiveStreaming(
 		const live = liveAskById.get(m.id) ?? liveStreamingToolById.get(m.id);
 		if (live) {
 			out.push(live);
-			emitted.add(live.id);
+			emitted.add(renderedMessageKey(live));
 		} else {
 			// DB has no `steering`; keep the live mid-turn anchor until
 			// agent:supplement clears it.
 			out.push(m.role === 'user' && liveSteeringIds.has(m.id) ? { ...m, steering: true } : m);
-			emitted.add(m.id);
+			emitted.add(renderedMessageKey(m));
 		}
 		const existingIdx = existingIdxOf.get(m.id);
 		if (existingIdx != null) dbOutIdx.push({ existingIdx, outIdx: out.length - 1 });
@@ -158,7 +169,11 @@ export function mergeLiveStreaming(
 	// still-streaming thought.
 	const leftovers: Array<{ item: ResumeMessage; existingIdx: number }> = [];
 	existing.forEach((m, i) => {
-		if (emitted.has(m.id)) return;
+		if (emitted.has(renderedMessageKey(m))) return;
+		if (m.presentationKey) {
+			leftovers.push({ item: m, existingIdx: i });
+			return;
+		}
 		if (m.streaming) {
 			leftovers.push({ item: m, existingIdx: i });
 			return;

@@ -57,7 +57,7 @@
 | `cancel_recording` | execute | 清除 in-flight recording id |
 | `process_transcript` | execute | 附件限制和文件持久化校验 |
 | `reopen_session` | mutate | session id 选择持久化会话 |
-| `list_runtime_sessions` | read | 仅当前进程中驻留且未终结的会话 |
+| `list_runtime_sessions` | read | 仅当前进程中驻留且未终结的会话；App allowlist 返回 `session_id` / `input_text`、`title`、`status` 和可选 `waiting_reason`，不暴露 Agent summary 或步骤详情 |
 | `get_session_lineage` | read | 当前会话的父会话和直接 Agent 子会话 |
 | `end_session` | mutate | 仅显式结束 |
 | `interrupt_session` | mutate | 停止当前输出但保留会话，可继续 |
@@ -103,7 +103,7 @@ repository source 值后显式投影字段，repository 新增字段不会自动
 
 | 命令 | 边界 | 说明 |
 |---|---|---|
-| `list_runtime_sessions` | read | 当前进程中驻留且未终结的会话列表 |
+| `list_runtime_sessions` | read | 当前进程中驻留且未终结的会话列表；Rust `session_id` / `input_text` / `waiting_reason` 在 renderer 边界映射为 `sessionId` / `inputText` / `waitingReason`；响应仅包含会话切换器所需字段 |
 | `get_session_lineage` | read | 当前会话的父会话和直接 Agent 子会话 |
 | `get_session_for_resume` | read | 恢复指定会话所需的持久化投影 |
 | `get_latest_session_for_resume` | read | 最近持久化会话 |
@@ -222,7 +222,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `mute:changed` | `MuteChangedEvent { muted }` | 根布局、设置页 | 最新值覆盖；只含布尔状态。 |
 | `mcp:status_change` | `McpStatusChangedEvent { name, status }` | 工具视图、根布局 | 按 server name 合并；`Offline.error` 为净化错误，不含 env。 |
 | `skills:status_change` | `SkillsStatusChangedEvent { op }` | 技能视图 | refresh 通知可丢失，消费者重新读取受管 skills root。 |
-| `interaction:requested` | `InteractionRequestedEvent { request_id, owner, session_id?, kind: InteractionKind, status: InteractionStatus, options, tool_name, risk_level, summary, permission_key, invocation_step_id, tool_index, tool_call_id, created_at, expires_at }` | 聊天页 | `kind/status` 使用 Agent Rust enum 并生成前端类型和值集合；`owner` 仍是显式运行时路由元数据：`session { session_id }`、`scheduled_tool_run { tool_run_id }` 或 `app_command`；不包含 continuation。`session_id` 仅表示可选真实关联上下文；Session owner 必须与其相同，AppCommand 不带该上下文，ScheduledToolRun 可不关联会话。resume 投影明确为 Session owner。Ask 正文只存在 transcript，事件按 `request_id` 关联状态/选项，不重复携带正文或占位 prompt。confirm 原始参数、receipt 不跨边界，renderer 只收到安全摘要，决策仍由后端校验；前端映射为 `requestId` 后按请求身份幂等覆盖。durable clear event 使用 `request_ids`，replay 兼容旧持久 payload 的 `id` / `ids`，UI 不接受旧字段（ADR 0996）。 |
+| `interaction:requested` | `InteractionRequestedEvent { request_id, owner, session_id?, kind: InteractionKind, status: InteractionStatus, options?, tool_name?, risk_level?, summary?, permission_key?, invocation_step_id?, tool_index?, tool_call_id?, created_at, expires_at? }` | 聊天页 | `kind/status` 使用 Agent Rust enum 并生成前端类型和值集合；`owner` 仍是显式运行时路由元数据：`session { session_id }`、`scheduled_tool_run { tool_run_id }` 或 `app_command`；不包含 continuation。除 `request_id`、`owner`、`kind`、`status`、`created_at` 外，以上列表中带 `?` 的字段在 wire 上可省略；renderer 再按 `kind`/`owner` 校验展示必需字段（ADR 1078）。`session_id` 仅表示可选真实关联上下文；Session owner 必须与其相同，AppCommand 不带该上下文，ScheduledToolRun 可不关联会话。resume 投影明确为 Session owner。Ask 正文只存在 transcript，事件按 `request_id` 关联状态/选项，不重复携带正文或占位 prompt。confirm 原始参数、receipt 不跨边界，renderer 只收到安全摘要，决策仍由后端校验；前端映射为 `requestId` 后按请求身份幂等覆盖。durable clear event 使用 `request_ids`，replay 兼容旧持久 payload 的 `id` / `ids`，UI 不接受旧字段（ADR 0996）。 |
 | `hotkey:conflict` / `hotkey:rebind` | `HotkeyConflictEvent` / `HotkeyRebindEvent` | 根布局、设置页 | 仅报告绑定状态；不执行 renderer 传入的快捷键。 |
 | `llm:config_changed` | `()` | 设置页、模型页 | 无 payload；通知页面重新读取脱敏配置。 |
 | `agent:thought` | `AgentThoughtEvent` | 聊天页 | 按 `message_id` 归并；可选 `event_sequence` 是已提交的 `session_events.sequence`，缺失表示该事件未关联 durable event row。文本不得重复写入普通日志。 |
@@ -239,6 +239,8 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `agent:tool_output` | `AgentToolOutputEvent` | 聊天页 | UI-only 的有界输出通道；未知 channel 或畸形 payload 直接丢弃并记录。 |
 | `notification:show` | `AgentNotificationEvent` | 根布局 | 通用纯文本通知可省略 session 关联；ToolRun completion 元数据使用生成的 `ToolRunKindDto` / `ToolRunCompletionStatusDto` 与 `AgentNotificationKind`；背景任务必须带真实 `session_id` 和终态，定时任务不带该状态。正文不承载密钥、完整命令输出或原始 provider 错误。 |
 
-前端业务代码只使用 camelCase（例如 `sessionId`、`stepNumber`、`toolCallId`）；
+前端业务代码只使用 camelCase（例如 `sessionId`、`stepNumber`、`toolCallId`）；Rust-owned
+Settings snapshot 是明确例外：Settings parser/editor 与保存 payload 保留 Rust 的 snake_case
+字段，详见[命名规范](naming.md)的跨层映射表。
 `serde_json::Value` 只保留在上表明确标注的动态字段。新增事件必须同时更新 Rust
 常量/DTO、前端 contract、消费者、本文以及目录校验脚本。

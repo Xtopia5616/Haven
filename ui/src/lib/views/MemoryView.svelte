@@ -367,7 +367,7 @@
 			});
 			sessionResumeTargetStore.set({
 				sessionId: session.sessionId,
-				summary: session.input_text,
+				inputText: session.input_text,
 				title: session.title,
 				runEndStatus,
 				runEndReason: result.session.run_end_reason || '',

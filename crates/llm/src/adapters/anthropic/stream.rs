@@ -107,7 +107,11 @@ impl AnthropicAdapter {
         use tokio::sync::mpsc;
 
         let (chunk_tx, chunk_rx) = line_payload_channel();
-        spawn_line_reader(resp.bytes_stream(), chunk_tx, LineMode::SseDataOnly);
+        drop(spawn_line_reader(
+            resp.bytes_stream(),
+            chunk_tx,
+            LineMode::SseDataOnly,
+        ));
 
         struct BlockState {
             kind: BlockKind,

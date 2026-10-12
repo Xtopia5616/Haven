@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 40;
+pub const SCHEMA_VERSION: i32 = 41;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -156,7 +156,8 @@ const SCHEMA_SQL: &[&str] = &[
     )",
     "CREATE TABLE IF NOT EXISTS tool_runs (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL DEFAULT 'scheduled',
+        kind TEXT NOT NULL DEFAULT 'scheduled'
+            CHECK(kind IN ('background','scheduled')),
         due_at TEXT,
         title TEXT NOT NULL DEFAULT 'Haven',
         body TEXT,
@@ -700,6 +701,22 @@ mod tests {
 
         let error = init_schema(&conn).unwrap_err().to_string();
         assert!(error.contains("tool_runs.result_summary"));
+    }
+
+    #[test]
+    fn tool_run_kind_is_a_closed_persisted_domain() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+
+        let tool_run_id = haven_common::types::new_id("toolrun");
+        let error = conn
+            .execute(
+                "INSERT INTO tool_runs (id, kind, status) VALUES (?1, 'unknown', 'waiting')",
+                [&tool_run_id],
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("CHECK constraint failed"));
     }
 
     #[test]

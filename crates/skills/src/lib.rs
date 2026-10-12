@@ -15,6 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 use tokio::sync::{Mutex, RwLock};
 
+/// Counts every direct child in the root, including non-directory entries.
+const MAX_SKILL_ROOT_ENTRIES: usize = 1024;
+
 // ---------------------------------------------------------------------------
 // Manifest types
 // ---------------------------------------------------------------------------
@@ -453,7 +456,12 @@ fn scan_skill_directory(
         .with_context(|| format!("failed to read skills root: {}", root.display()))?;
 
     let mut skill_dirs = Vec::new();
+    let mut root_entry_count = 0;
     for entry in entries {
+        root_entry_count += 1;
+        if root_entry_count > MAX_SKILL_ROOT_ENTRIES {
+            anyhow::bail!("skills root exceeds the {MAX_SKILL_ROOT_ENTRIES}-entry scan limit");
+        }
         let entry = match entry {
             Ok(e) => e,
             Err(_) => {
@@ -576,6 +584,9 @@ struct Inner {
 #[derive(Clone)]
 pub struct SkillRegistry {
     inner: Arc<RwLock<Inner>>,
+    /// Serializes catalog/config mutations while filesystem scans run outside
+    /// the async executor and without holding `inner`'s reader/writer lock.
+    refresh_lock: Arc<Mutex<()>>,
     catalog_version: Arc<AtomicU64>,
     last_watcher_fingerprints: Arc<Mutex<Option<Vec<SkillFileFingerprint>>>>,
 }
@@ -596,6 +607,7 @@ impl SkillRegistry {
                 skill_diagnostics: Vec::new(),
                 limits: haven_common::config::ContextLimitsConfig::default(),
             })),
+            refresh_lock: Arc::new(Mutex::new(())),
             catalog_version: Arc::new(AtomicU64::new(0)),
             last_watcher_fingerprints: Arc::new(Mutex::new(None)),
         }
@@ -610,6 +622,7 @@ impl SkillRegistry {
 
     /// Replace the unified context limits (SKILL.md size / parse caps).
     pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
+        let _refresh = self.refresh_lock.lock().await;
         self.inner.write().await.limits = limits.clone();
     }
 
@@ -623,12 +636,20 @@ impl SkillRegistry {
         root: Option<PathBuf>,
         enabled_skill_allowlist: Option<Vec<String>>,
     ) -> anyhow::Result<()> {
-        {
-            let mut g = self.inner.write().await;
-            g.root = root;
-            g.enabled_skill_allowlist = enabled_skill_allowlist;
-        }
-        self.refresh_from_disk().await
+        let _refresh = self.refresh_lock.lock().await;
+        let limits = self.inner.read().await.limits.clone();
+        let effective = Self::resolve_root(root.as_deref());
+        let scanned =
+            scan_skill_directory_async(effective, enabled_skill_allowlist.clone(), limits).await?;
+
+        // Publish configuration and the catalog from the same successful
+        // scan. If scanning fails, the prior runtime snapshot stays intact.
+        let mut g = self.inner.write().await;
+        g.root = root;
+        g.enabled_skill_allowlist = enabled_skill_allowlist;
+        Self::replace_catalog(&mut g, scanned);
+        self.catalog_version.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Resolve the effective skills root: configured root or the default
@@ -641,25 +662,28 @@ impl SkillRegistry {
 
     /// Re-scan the skills directory from disk, replacing the in-memory map.
     pub async fn refresh_from_disk(&self) -> anyhow::Result<()> {
+        let _refresh = self.refresh_lock.lock().await;
         let (root, enabled_skill_allowlist, limits) = {
             let g = self.inner.read().await;
             (
-                g.root.clone(),
+                Self::resolve_root(g.root.as_deref()),
                 g.enabled_skill_allowlist.clone(),
                 g.limits.clone(),
             )
         };
-        let effective = Self::resolve_root(root.as_deref());
-        let scanned =
-            scan_skill_directory(&effective, enabled_skill_allowlist.as_deref(), &limits)?;
+        let scanned = scan_skill_directory_async(root, enabled_skill_allowlist, limits).await?;
         let mut g = self.inner.write().await;
+        Self::replace_catalog(&mut g, scanned);
+        self.catalog_version.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn replace_catalog(g: &mut Inner, scanned: SkillScanResult) {
         g.skills.clear();
         for s in scanned.skills {
             g.skills.insert(s.name().to_string(), s);
         }
         g.skill_diagnostics = scanned.diagnostics;
-        self.catalog_version.fetch_add(1, Ordering::Relaxed);
-        Ok(())
     }
 
     /// Refresh the catalog when the configured skill files have changed.
@@ -669,7 +693,7 @@ impl SkillRegistry {
     /// crosses the Skills boundary.
     pub async fn refresh_if_changed(&self) -> anyhow::Result<bool> {
         let mut last_fingerprints = self.last_watcher_fingerprints.lock().await;
-        let fingerprints = self.current_file_fingerprints().await;
+        let fingerprints = self.current_file_fingerprints().await?;
         if last_fingerprints.as_ref() == Some(&fingerprints) {
             return Ok(false);
         }
@@ -731,6 +755,7 @@ impl SkillRegistry {
     /// registry converts to an exhaustive `Some(list)` excluding the toggled
     /// skill, so the lone-disable edge case persists correctly.
     pub async fn set_enabled(&self, name: &str, enabled: bool) -> anyhow::Result<()> {
+        let _refresh = self.refresh_lock.lock().await;
         let mut g = self.inner.write().await;
         let s = g
             .skills
@@ -788,41 +813,11 @@ impl SkillRegistry {
 
     /// Cheap private fingerprints for every `<root>/<skill>/SKILL.md`.
     /// Detects added, removed, or modified skills without reading contents.
-    async fn current_file_fingerprints(&self) -> Vec<SkillFileFingerprint> {
+    async fn current_file_fingerprints(&self) -> anyhow::Result<Vec<SkillFileFingerprint>> {
         let root = self.resolved_root().await;
-        let mut fingerprints = Vec::new();
-        let Ok(root_canon) = root.canonicalize() else {
-            return fingerprints;
-        };
-        if let Ok(entries) = std::fs::read_dir(&root) {
-            for entry in entries.flatten() {
-                let skill_dir = entry.path();
-                let Ok(skill_dir_canon) = skill_dir.canonicalize() else {
-                    continue;
-                };
-                if !skill_dir_canon.starts_with(&root_canon) {
-                    continue;
-                }
-                let skill_md = skill_dir.join("SKILL.md");
-                let Ok(skill_md_canon) = skill_md.canonicalize() else {
-                    continue;
-                };
-                if !skill_md_canon.starts_with(&skill_dir_canon) {
-                    continue;
-                }
-                if let Ok(meta) = std::fs::metadata(&skill_md_canon)
-                    && let Ok(mtime) = meta.modified()
-                {
-                    fingerprints.push(SkillFileFingerprint {
-                        path: skill_md,
-                        modified_at: mtime,
-                        byte_length: meta.len(),
-                    });
-                }
-            }
-        }
-        fingerprints.sort();
-        fingerprints
+        tokio::task::spawn_blocking(move || current_file_fingerprints_from_disk(&root))
+            .await
+            .context("skill fingerprint scan task failed")?
     }
 }
 
@@ -832,6 +827,65 @@ struct SkillFileFingerprint {
     pub path: PathBuf,
     pub modified_at: SystemTime,
     pub byte_length: u64,
+}
+
+fn current_file_fingerprints_from_disk(root: &Path) -> anyhow::Result<Vec<SkillFileFingerprint>> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let root_canon = root
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize skills root: {}", root.display()))?;
+    let entries = std::fs::read_dir(root)
+        .with_context(|| format!("failed to read skills root: {}", root.display()))?;
+    let mut fingerprints = Vec::new();
+    let mut root_entry_count = 0;
+    for entry in entries {
+        root_entry_count += 1;
+        if root_entry_count > MAX_SKILL_ROOT_ENTRIES {
+            anyhow::bail!("skills root exceeds the {MAX_SKILL_ROOT_ENTRIES}-entry scan limit");
+        }
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let skill_dir = entry.path();
+        let Ok(skill_dir_canon) = skill_dir.canonicalize() else {
+            continue;
+        };
+        if !skill_dir_canon.starts_with(&root_canon) {
+            continue;
+        }
+        let skill_md = skill_dir.join("SKILL.md");
+        let Ok(skill_md_canon) = skill_md.canonicalize() else {
+            continue;
+        };
+        if !skill_md_canon.starts_with(&skill_dir_canon) {
+            continue;
+        }
+        if let Ok(metadata) = std::fs::metadata(&skill_md_canon)
+            && let Ok(modified_at) = metadata.modified()
+        {
+            fingerprints.push(SkillFileFingerprint {
+                path: skill_md,
+                modified_at,
+                byte_length: metadata.len(),
+            });
+        }
+    }
+    fingerprints.sort();
+    Ok(fingerprints)
+}
+
+async fn scan_skill_directory_async(
+    root: PathBuf,
+    enabled_skill_allowlist: Option<Vec<String>>,
+    limits: haven_common::config::ContextLimitsConfig,
+) -> anyhow::Result<SkillScanResult> {
+    tokio::task::spawn_blocking(move || {
+        scan_skill_directory(&root, enabled_skill_allowlist.as_deref(), &limits)
+    })
+    .await
+    .context("skill directory scan task failed")?
 }
 
 // ---------------------------------------------------------------------------
@@ -1171,6 +1225,80 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failed_config_scan_keeps_the_previous_runtime_snapshot() {
+        let root = tmp_dir();
+        std::fs::create_dir_all(&root).unwrap();
+        write_skill(
+            &root,
+            "stable",
+            "# Skill: stable\n## Metadata\n- description: stable\n## Instructions\nKeep this skill.\n",
+            false,
+        );
+        let invalid_root = root.join("not-a-directory");
+        std::fs::write(&invalid_root, "file").unwrap();
+
+        let registry = SkillRegistry::new();
+        registry
+            .set_config(Some(root.clone()), Some(vec!["stable".into()]))
+            .await
+            .unwrap();
+        let version = registry.catalog_version();
+        let skills_before = registry.list_skill_infos().await;
+        let allowlist_before = registry.enabled_skill_allowlist().await;
+
+        assert!(
+            registry
+                .set_config(Some(invalid_root), Some(vec!["other".into()]))
+                .await
+                .is_err()
+        );
+
+        assert_eq!(registry.resolved_root().await, root);
+        assert_eq!(registry.enabled_skill_allowlist().await, allowlist_before);
+        let skills_after = registry.list_skill_infos().await;
+        assert_eq!(skills_after.len(), skills_before.len());
+        assert_eq!(skills_after[0].name, skills_before[0].name);
+        assert_eq!(skills_after[0].description, skills_before[0].description);
+        assert_eq!(registry.catalog_version(), version);
+    }
+
+    #[tokio::test]
+    async fn oversized_skill_root_scan_keeps_the_previous_runtime_snapshot() {
+        let root = tmp_dir();
+        std::fs::create_dir_all(&root).unwrap();
+        write_skill(
+            &root,
+            "stable",
+            "# Skill: stable\n## Metadata\n- description: stable\n## Instructions\nKeep this skill.\n",
+            false,
+        );
+
+        let registry = SkillRegistry::new();
+        registry.set_config(Some(root.clone()), None).await.unwrap();
+        registry.refresh_if_changed().await.unwrap();
+        let version = registry.catalog_version();
+        let skills_before = registry.list_skill_infos().await;
+
+        // Include the existing skill directory so total root entries exceed
+        // the hard cap by exactly one.
+        for index in 0..MAX_SKILL_ROOT_ENTRIES {
+            std::fs::write(root.join(format!("entry-{index}")), b"").unwrap();
+        }
+
+        let fingerprint_error = registry.refresh_if_changed().await.unwrap_err();
+        assert!(fingerprint_error.to_string().contains("scan limit"));
+        let scan_error = registry.refresh_from_disk().await.unwrap_err();
+        assert!(scan_error.to_string().contains("scan limit"));
+
+        let skills_after = registry.list_skill_infos().await;
+        assert_eq!(skills_after.len(), skills_before.len());
+        assert_eq!(skills_after[0].name, skills_before[0].name);
+        assert_eq!(skills_after[0].description, skills_before[0].description);
+        assert_eq!(registry.catalog_version(), version);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

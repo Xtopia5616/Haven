@@ -69,6 +69,7 @@ describe('toolSourceLabel / toolDisplayName', () => {
 
 	it('uses Chinese labels for builtins and strips mcp/skill prefixes', () => {
 		expect(toolDisplayName('shell')).toBe('终端输出');
+		expect(toolDisplayName('haven')).toBe('haven');
 		expect(toolDisplayName('load_mcp')).toBe('加载 MCP');
 		expect(toolDisplayName('mcp__test-server__greet')).toBe('test-server__greet');
 		expect(toolDisplayName('skill__echo')).toBe('echo');

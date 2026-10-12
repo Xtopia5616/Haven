@@ -27,14 +27,10 @@ function list(...ids: string[]): RuntimeSessionListResponse {
 	return {
 		sessions: ids.map((id) => ({
 			sessionId: id,
-			input: '',
-			summary: '',
+			inputText: '',
 			title: null,
 			status: 'paused',
-			steps: [],
-			created_at: '',
-			updated_at: '',
-			waiting_reason: 'user_input',
+			waitingReason: 'user_input',
 		})),
 	};
 }
@@ -45,7 +41,7 @@ function resume(
 	return {
 		session: {
 			sessionId: SESSION_ID,
-			input_text: '旧会话摘要',
+			input_text: '旧会话首条输入',
 			title: '恢复会话',
 			status,
 			created_at: '',
@@ -148,7 +144,9 @@ afterEach(() => {
 
 describe('createChatSessionStartup', () => {
 	it('projects runtime session rows into the reducer renderer shape', async () => {
-		const harness = createHarness({ listRuntimeSessions: async () => list(SESSION_ID) });
+		const runtimeSessions = list(SESSION_ID);
+		runtimeSessions.sessions[0]!.inputText = '运行时首条输入';
+		const harness = createHarness({ listRuntimeSessions: async () => runtimeSessions });
 
 		await harness.startup.loadSessions();
 
@@ -156,7 +154,7 @@ describe('createChatSessionStartup', () => {
 			{
 				sessionId: SESSION_ID,
 				status: 'paused',
-				input: '',
+				inputText: '运行时首条输入',
 				title: null,
 				waitingReason: 'user_input',
 			},
@@ -269,12 +267,16 @@ describe('createChatSessionStartup', () => {
 		harness.startup.processResumeTarget({
 			sessionId: OTHER_SESSION_ID,
 			wasError: true,
+			inputText: '首条输入',
 			errorReason: '已停止',
 		} satisfies SessionResumeTarget);
 
 		expect(harness.freshIntentChanges).toEqual([true, false]);
 		expect(harness.evicted).toEqual([SESSION_ID]);
 		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
+		expect(harness.reducer.snapshot().sessions).toContainEqual(
+			expect.objectContaining({ sessionId: OTHER_SESSION_ID, inputText: '首条输入' }),
+		);
 		expect(harness.reducer.snapshot().runEndNotice).toEqual({
 			sessionId: OTHER_SESSION_ID,
 			status: 'error',

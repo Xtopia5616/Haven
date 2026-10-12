@@ -583,8 +583,8 @@ mod assembly_tests {
             self.inner.list_children(parent)
         }
 
-        fn list_descendants(&self, parent: &str) -> anyhow::Result<Vec<String>> {
-            self.inner.list_descendants(parent)
+        fn list_descendants(&self, root_session_id: &str) -> anyhow::Result<Vec<String>> {
+            self.inner.list_descendants(root_session_id)
         }
 
         fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome> {

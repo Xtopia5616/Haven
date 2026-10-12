@@ -84,8 +84,8 @@ describe('createStreamEventAggregator', () => {
 
 	it('keeps interleaved stream blocks in arrival order', () => {
 		const base: PendingChunk = {
-			tid: 'ses-6751ce00136ce79085a12dc820ec747c',
-			sid: 'step-c0b40676b839848be9143e9057e10785',
+			sessionId: 'ses-6751ce00136ce79085a12dc820ec747c',
+			messageId: 'step-c0b40676b839848be9143e9057e10785',
 			delta: '',
 			msgType: undefined,
 			stepNumber: 1,
@@ -95,11 +95,11 @@ describe('createStreamEventAggregator', () => {
 		};
 		const folded = foldContiguousChunks([
 			{ ...base, delta: 'A1' },
-			{ ...base, sid: 'step-5b45e3c7e661d88e9cbf98c591ac32e8', delta: 'B1', finalizeReasoning: false },
+			{ ...base, messageId: 'step-5b45e3c7e661d88e9cbf98c591ac32e8', delta: 'B1', finalizeReasoning: false },
 			{ ...base, delta: 'A2' },
 		]);
 
-		expect(folded.map(({ sid, delta }) => [sid, delta])).toEqual([
+		expect(folded.map(({ messageId, delta }) => [messageId, delta])).toEqual([
 			['step-c0b40676b839848be9143e9057e10785', 'A1'],
 			['step-5b45e3c7e661d88e9cbf98c591ac32e8', 'B1'],
 			['step-c0b40676b839848be9143e9057e10785', 'A2'],

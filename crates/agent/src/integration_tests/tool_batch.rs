@@ -611,7 +611,7 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
         .await
         .unwrap();
 
-    let mcp_name = "mcp__panic-server__panic_tool";
+    let mcp_name = "mcp__panic-server__panic_5ftool";
     let skill_name = "skill__panic-skill";
     for (tool_name, input) in [
         (mcp_name, serde_json::json!({})),

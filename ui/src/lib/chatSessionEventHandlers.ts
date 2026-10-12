@@ -43,6 +43,9 @@ export function createChatSessionEventHandler({
 
 	const cleanupTerminalSession = (sessionId: string) => {
 		clearToolOutputPreviewsForSession(sessionId);
+		// Keep plans for the visible completed session so its cards remain
+		// renderable; inactive terminal sessions no longer need their projection.
+		if (getActiveSessionId() !== sessionId) clearMediaPlans(sessionId);
 		// Drain queued stream chunks before dropping the transcript. A later RAF
 		// must not recreate terminal messages after session memory is evicted.
 		flushChunksNow();

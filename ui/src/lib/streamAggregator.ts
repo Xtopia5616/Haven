@@ -5,8 +5,8 @@ import type { SessionMessagePresentationType } from './streaming.ts';
 import type { AgentChunkBatchItem, SessionAction } from './sessionReducer.ts';
 
 export interface PendingChunk {
-	tid: string;
-	sid: string;
+	sessionId: string;
+	messageId: string;
 	delta: string;
 	msgType: Extract<SessionMessagePresentationType, 'reasoning'> | undefined;
 	stepNumber: number;
@@ -27,8 +27,8 @@ export function foldContiguousChunks(batch: readonly PendingChunk[]): PendingChu
 		const previous = merged[merged.length - 1];
 		if (
 			previous &&
-			previous.tid === chunk.tid &&
-			previous.sid === chunk.sid &&
+			previous.sessionId === chunk.sessionId &&
+			previous.messageId === chunk.messageId &&
 			previous.msgType === chunk.msgType &&
 			previous.stepNumber === chunk.stepNumber &&
 			previous.runId === chunk.runId
@@ -130,8 +130,8 @@ export function createStreamEventAggregator({
 		// Group by session while preserving arrival order within each session.
 		const bySession = new Map<string, PendingChunk[]>();
 		for (const chunk of merged) {
-			let list = bySession.get(chunk.tid);
-			if (!list) bySession.set(chunk.tid, (list = []));
+			let list = bySession.get(chunk.sessionId);
+			if (!list) bySession.set(chunk.sessionId, (list = []));
 			list.push(chunk);
 		}
 		for (const [, chunks] of bySession) {
@@ -139,11 +139,11 @@ export function createStreamEventAggregator({
 				kind: chunk.msgType === undefined ? 'thought' : 'reasoning',
 				...(chunk.msgType !== undefined ? { msgType: chunk.msgType } : {}),
 				payload: {
-					sessionId: chunk.tid,
+					sessionId: chunk.sessionId,
 					delta: chunk.delta,
 					stepNumber: chunk.stepNumber,
 					runId: chunk.runId,
-					messageId: chunk.sid,
+					messageId: chunk.messageId,
 					seq: chunk.seq ?? 0,
 				},
 			}));
@@ -181,8 +181,8 @@ export function createStreamEventAggregator({
 			const delta = data.delta || '';
 			if (getActiveSessionId() === sessionId) onActiveStream(sessionId);
 			pendingChunks.push({
-				tid: sessionId,
-				sid: messageId,
+				sessionId,
+				messageId,
 				delta,
 				msgType,
 				stepNumber: data.stepNumber,

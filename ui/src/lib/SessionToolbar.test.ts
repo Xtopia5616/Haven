@@ -208,6 +208,29 @@ describe('SessionToolbar', () => {
 		expect(onSwitchSession).toHaveBeenCalledWith('ses-76f19db031ba6b93089e8acb9f43666f');
 	});
 
+	it('preserves each menu row element identity when sessions are reordered', () => {
+		const first = {
+			sessionId: 'ses-00000000000000000000000000000001',
+			status: 'running' as const,
+			title: '第一个会话',
+		};
+		const second = {
+			sessionId: 'ses-00000000000000000000000000000002',
+			status: 'paused' as const,
+			title: '第二个会话',
+		};
+		const { rerender } = render(SessionToolbar, {
+			showSessionMenu: true,
+			sessionMenuOpen: true,
+			menuSessions: [first, second],
+		});
+
+		const firstMenuItem = screen.getByRole('menuitemradio', { name: /第一个会话/ });
+		rerender({ menuSessions: [second, first] });
+
+		expect(screen.getByRole('menuitemradio', { name: /第一个会话/ })).toBe(firstMenuItem);
+	});
+
 	it('shows parent and Agent child sessions in the session switcher', async () => {
 		const onSwitchSession = vi.fn();
 		render(SessionToolbar, {

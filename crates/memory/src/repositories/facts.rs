@@ -369,9 +369,12 @@ impl Database {
         })
     }
 
-    pub fn delete_fact(&self, id: &str) -> anyhow::Result<()> {
-        anyhow::ensure!(is_canonical_id(id, "fact"), "fact id must be canonical");
-        self.with_fact_write(|| FactGraph::new(self).delete_by_id(id))
+    pub fn delete_fact(&self, fact_id: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            is_canonical_id(fact_id, "fact"),
+            "fact id must be canonical"
+        );
+        self.with_fact_write(|| FactGraph::new(self).delete_fact_by_id(fact_id))
     }
 
     /// Delete every persisted long-term fact and invalidate its derived caches.

@@ -611,7 +611,7 @@ pub async fn list_session_permissions(
     state
         .runtime
         .session_store
-        .all_session_authorization_grants()
+        .list_session_authorization_grants()
         .await
         .map(|grants| {
             grants
@@ -780,7 +780,7 @@ pub async fn reset_session_permissions(state: State<'_, Arc<AppState>>) -> Resul
     let previous = state
         .runtime
         .session_store
-        .all_session_authorization_grants()
+        .list_session_authorization_grants()
         .await
         .map_err(|error| log_err("reset_session_permissions", error))?;
     state.runtime.services.authorization.clear_all_trust().await;

@@ -45,7 +45,7 @@ impl OpenAiAdapter {
         for part in &system.content {
             if let ContentPart::Text(text) = part {
                 let stable = split_system_prompt_cache_sections(text)
-                    .map(|(stable, _, _)| stable)
+                    .map(|sections| sections.stable_prompt)
                     .unwrap_or(text);
                 if !stable.trim().is_empty() {
                     hasher.update(stable.as_bytes());
@@ -129,7 +129,7 @@ impl OpenAiAdapter {
         for part in &system.content {
             if let ContentPart::Text(text) = part {
                 let stable = split_system_prompt_cache_sections(text)
-                    .map(|(stable, _, _)| stable)
+                    .map(|sections| sections.stable_prompt)
                     .unwrap_or(text);
                 if !stable.trim().is_empty() {
                     hasher.update(stable.as_bytes());

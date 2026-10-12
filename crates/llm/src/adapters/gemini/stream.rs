@@ -76,7 +76,11 @@ impl GeminiAdapter {
         let (chunk_tx, chunk_rx) = line_payload_channel();
         // `:streamGenerateContent?alt=sse` returns SSE frames; gateways that
         // ignore `alt=sse` fall back to raw JSON lines — both are handled.
-        spawn_line_reader(resp.bytes_stream(), chunk_tx, LineMode::SseOrRaw);
+        drop(spawn_line_reader(
+            resp.bytes_stream(),
+            chunk_tx,
+            LineMode::SseOrRaw,
+        ));
 
         struct UnfoldState {
             rx: mpsc::Receiver<Result<String, LlmError>>,

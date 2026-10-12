@@ -147,11 +147,11 @@ impl ToolRunCompletionBus {
             .remove(tool_run_id);
     }
 
-    async fn release_tool_run_lease(&self, tool_run_id: &str, claim_token: &str) -> bool {
+    async fn release_tool_run_lease(&self, tool_run_id: &str, lease_subject_id: &str) -> bool {
         let mut leases = self.tool_run_leases.write().await;
         if !leases
             .get_mut(tool_run_id)
-            .is_some_and(|lease| lease.invalidate_for(claim_token))
+            .is_some_and(|lease| lease.invalidate_for(lease_subject_id))
         {
             return false;
         }
@@ -419,7 +419,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scheduled_claim_release_checks_token_and_terminal_clear_invalidates_it() {
+    async fn scheduled_claim_release_checks_lease_subject_and_terminal_clear_invalidates_it() {
         let bus = ToolRunCompletionBus::new();
         let fired = scheduled_fire("toolrun-0000000000000000000000000000001d");
         bus.retain_scheduled_fire(fired.clone()).await;

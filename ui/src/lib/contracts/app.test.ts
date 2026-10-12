@@ -149,6 +149,83 @@ describe('app-shell IPC contract', () => {
 		}
 	});
 
+	it('requires presentation fields that the interaction owner and kind promise', () => {
+		const sessionConfirm = {
+			request_id: 'conf-00000000000000000000000000000031',
+			session_id: 'ses-00000000000000000000000000000031',
+			owner: { kind: 'session', session_id: 'ses-00000000000000000000000000000031' },
+			kind: 'confirm',
+			status: 'pending',
+			options: [],
+			tool_name: 'run_command',
+			risk_level: 'high',
+			summary: 'Run a protected command',
+			tool_index: 0,
+			invocation_step_id: 'step-00000000000000000000000000000031',
+			created_at: '2026-01-01T00:00:00Z',
+			expires_at: '2026-01-01T00:05:00Z',
+		};
+		for (const field of [
+			'tool_name',
+			'risk_level',
+			'summary',
+			'tool_index',
+			'invocation_step_id',
+		]) {
+			const incomplete = { ...sessionConfirm };
+			delete incomplete[field as keyof typeof incomplete];
+			expect(
+				mapAppEvent({ event: 'interaction:requested', id: 40, payload: incomplete }),
+			).toBeNull();
+		}
+
+		const scheduledConfirm = {
+			request_id: 'conf-00000000000000000000000000000032',
+			owner: {
+				kind: 'scheduled_tool_run',
+				tool_run_id: 'toolrun-00000000000000000000000000000032',
+			},
+			kind: 'scheduled_confirm',
+			status: 'pending',
+			options: [],
+			tool_name: 'schedule',
+			summary: 'Run scheduled task',
+			permission_key: 'tool.schedule',
+			created_at: '2026-01-01T00:00:00Z',
+			expires_at: '2026-01-01T00:05:00Z',
+		};
+		for (const field of ['tool_name', 'summary', 'permission_key']) {
+			const incomplete = { ...scheduledConfirm };
+			delete incomplete[field as keyof typeof incomplete];
+			expect(
+				mapAppEvent({ event: 'interaction:requested', id: 41, payload: incomplete }),
+			).toBeNull();
+		}
+
+		const {
+			session_id: _sessionId,
+			invocation_step_id: _invocationStepId,
+			...confirmDetails
+		} = sessionConfirm;
+		const appCommandConfirm = {
+			...confirmDetails,
+			owner: { kind: 'app_command' },
+		};
+		expect(
+			mapAppEvent({ event: 'interaction:requested', id: 42, payload: appCommandConfirm }),
+		).not.toBeNull();
+		expect(
+			mapAppEvent({
+				event: 'interaction:requested',
+				id: 43,
+				payload: {
+					...appCommandConfirm,
+					invocation_step_id: sessionConfirm.invocation_step_id,
+				},
+			}),
+		).toBeNull();
+	});
+
 	it('rejects unknown interaction enum values while defaulting omitted options', () => {
 		const event = mapAppEvent({
 			event: 'interaction:requested',
@@ -210,6 +287,18 @@ describe('app-shell IPC contract', () => {
 					status: 'pending',
 					created_at: '2026-01-01T00:00:00Z',
 					expires_at: '2026-01-01T00:05:00Z',
+					...(kind === 'confirm'
+						? {
+								tool_name: 'run_command',
+								risk_level: 'high',
+								summary: 'Run a protected command',
+								tool_index: 0,
+							}
+						: {
+								tool_name: 'schedule',
+								summary: 'Run a scheduled task',
+								permission_key: 'tool.schedule',
+							}),
 				},
 			});
 

@@ -14,6 +14,7 @@ pub fn sanitize_error_text(raw: &str) -> String {
         .collect::<String>();
     let normalized = collapse_whitespace(&normalized);
     let normalized = redact_key_value_segments(&normalized);
+    let normalized = redact_url_userinfo(&normalized);
     let normalized = redact_prefixed_tokens(&normalized);
     let normalized = redact_windows_paths(&normalized);
     truncate_with_ellipsis(&normalized, MAX_PUBLIC_ERROR_LENGTH)
@@ -93,7 +94,11 @@ fn redact_key_value_segments(value: &str) -> String {
             continue;
         };
 
+        let quoted_key = i > 0 && chars[i - 1] == '"';
         let mut value_start = i + key_len;
+        if quoted_key && value_start < chars.len() && chars[value_start] == '"' {
+            value_start += 1;
+        }
         while value_start < chars.len() && chars[value_start].is_whitespace() {
             value_start += 1;
         }
@@ -106,6 +111,38 @@ fn redact_key_value_segments(value: &str) -> String {
         while value_start < chars.len() && chars[value_start].is_whitespace() {
             value_start += 1;
         }
+
+        // JSON-like diagnostics quote both the key and the value. Keep the
+        // surrounding syntax intact while replacing the complete value,
+        // including values containing whitespace or escaped quotes.
+        let quoted_value = matches!(chars.get(value_start), Some('"' | '\''));
+        if quoted_value {
+            let quote = chars[value_start];
+            let mut end = value_start + 1;
+            let mut escaped = false;
+            while end < chars.len() {
+                if escaped {
+                    escaped = false;
+                } else if chars[end] == '\\' {
+                    escaped = true;
+                } else if chars[end] == quote {
+                    break;
+                }
+                end += 1;
+            }
+            out.extend(chars[i..=value_start].iter().copied());
+            if end > value_start + 1 {
+                out.push_str("[REDACTED]");
+            }
+            if end < chars.len() {
+                out.push(quote);
+                i = end + 1;
+            } else {
+                i = end;
+            }
+            continue;
+        }
+
         let mut end = value_start;
         while end < chars.len()
             && !matches!(
@@ -121,6 +158,52 @@ fn redact_key_value_segments(value: &str) -> String {
             out.push_str("[REDACTED]");
         }
         i = end;
+    }
+    out
+}
+
+fn redact_url_userinfo(value: &str) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    let lower = chars
+        .iter()
+        .map(|c| c.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let mut out = String::with_capacity(value.len());
+    let mut i = 0;
+
+    while i < chars.len() {
+        let scheme_end =
+            (i + 3 <= chars.len() && lower[i..i + 3] == [':', '/', '/']).then_some(i + 3);
+        let Some(authority_start) = scheme_end else {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        };
+
+        let mut authority_end = authority_start;
+        while authority_end < chars.len()
+            && !matches!(
+                chars[authority_end],
+                '/' | '?' | '#' | ' ' | '\t' | '\r' | '\n' | ',' | ';' | ')' | ']' | '}'
+            )
+        {
+            authority_end += 1;
+        }
+        let at = chars[authority_start..authority_end]
+            .iter()
+            .position(|ch| *ch == '@')
+            .map(|offset| authority_start + offset);
+        let has_password = at.is_some_and(|at| chars[authority_start..at].contains(&':'));
+
+        out.extend(chars[i..authority_start].iter().copied());
+        if let (Some(at), true) = (at, has_password) {
+            out.push_str("[REDACTED]");
+            out.push('@');
+            i = at + 1;
+        } else {
+            out.extend(chars[authority_start..authority_end].iter().copied());
+            i = authority_end;
+        }
     }
     out
 }
@@ -221,6 +304,19 @@ mod tests {
         assert!(!value.contains("C:\\Users"));
         assert!(value.contains("[REDACTED]"));
         assert!(value.contains("[PATH]"));
+    }
+
+    #[test]
+    fn redacts_json_and_url_credentials() {
+        let value = sanitize_error_text(
+            r#"provider error {"api_key":"secret-value", "password": "two words", "nested":{"access_token":"a\\\"b"}} https://user:pass@example.test/path"#,
+        );
+
+        for secret in ["secret-value", "two words", "a\\\"b", "user:pass"] {
+            assert!(!value.contains(secret), "leaked {secret:?} in {value:?}");
+        }
+        assert!(value.contains(r#""api_key":"[REDACTED]""#));
+        assert!(value.contains("https://[REDACTED]@example.test/path"));
     }
 
     #[test]

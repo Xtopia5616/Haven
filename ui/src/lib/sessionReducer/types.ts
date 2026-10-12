@@ -23,13 +23,12 @@ import type { SessionMessagePresentationType, StreamMessage } from '../streaming
 
 export const DRAFT_SESSION_ID = '_draft';
 
-/** The session summary fields used by the chat shell. */
+/** The session summary fields used by the chat shell. `inputText` is the initial user input. */
 export interface SessionSummary {
 	sessionId: string;
 	status: SessionStatus;
 	waitingReason?: SessionWaitingReason | null;
 	title?: string | null;
-	input?: string;
 	inputText?: string;
 }
 
@@ -78,10 +77,8 @@ export interface SessionReplayState {
 	blockIdsBySession: Record<string, Record<string, StreamBlockIds>>;
 }
 
-export interface SessionOptimisticMessage {
+export interface PendingMessageOwner {
 	sessionId: string;
-	messageId: string;
-	status: 'pending' | 'accepted' | 'rejected';
 }
 
 export interface AgentChunkBatchItem {
@@ -102,7 +99,7 @@ export interface SessionReducerState {
 	tokenStats: Record<string, SessionTokenStats>;
 	llmUsage: Record<string, SessionLlmUsage[]>;
 	replay: SessionReplayState;
-	optimistic: Record<string, SessionOptimisticMessage>;
+	pendingMessageOwners: Record<string, PendingMessageOwner>;
 }
 
 export type ResumeUsage = Partial<SessionResumeUsage>;
@@ -230,7 +227,7 @@ export const initialSessionState: SessionReducerState = {
 	tokenStats: {},
 	llmUsage: {},
 	replay: { eventSequenceBySession: {}, chunkSeqByMessage: {}, blockIdsBySession: {} },
-	optimistic: {},
+	pendingMessageOwners: {},
 };
 
 export type SessionActionOf<Type extends SessionAction['type']> = Extract<

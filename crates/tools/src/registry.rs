@@ -46,6 +46,7 @@ impl DeferredToolCatalog {
         *self.tools.write().await = index;
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn get(&self, name: &str) -> Option<ToolHandle> {
         self.tools.read().await.get(name).cloned()
     }

@@ -47,14 +47,13 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 	const loadSessionsRefresh = createSessionRefreshScheduler(() => loadSessionsNow());
 
 	function retainErroredSession(
-		resumeTarget: Pick<SessionResumeTarget, 'sessionId' | 'summary' | 'title'>,
+		resumeTarget: Pick<SessionResumeTarget, 'sessionId' | 'inputText' | 'title'>,
 	) {
 		dependencies.dispatch({
 			type: 'session/retained-error',
 			session: {
 				sessionId: resumeTarget.sessionId,
-				input: resumeTarget.summary || '',
-				inputText: resumeTarget.summary || '',
+				inputText: resumeTarget.inputText || '',
 				title: resumeTarget.title || null,
 				status: 'error',
 			},
@@ -130,9 +129,9 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 					sessions: result.sessions.map((session) => ({
 						sessionId: session.sessionId,
 						status: session.status,
-						input: session.input,
+						inputText: session.inputText,
 						title: session.title,
-						waitingReason: session.waiting_reason ?? null,
+						waitingReason: session.waitingReason ?? null,
 					})),
 					autoSelect: !before.activeSessionId && !dependencies.getFreshSessionIntent(),
 				});
@@ -247,7 +246,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			if (runEndStatus === 'error') {
 				retainErroredSession({
 					sessionId: latestSession.session.sessionId,
-					summary: latestSession.session.input_text,
+					inputText: latestSession.session.input_text,
 					title: latestSession.session.title,
 				});
 			}

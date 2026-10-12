@@ -3,12 +3,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
-use haven_common::encoding;
 use haven_platform::process_containment::ProcessContainment;
 
 const REQUIREMENTS_FINGERPRINT_FILE: &str = ".haven-requirements-fingerprint";
+const MAX_SETUP_STREAM_BYTES: usize = 1024 * 1024;
+const MAX_REQUIREMENTS_BYTES: usize = 1024 * 1024;
 
 fn venv_creation_command(venv: &Path) -> Command {
     let mut command = Command::new("python");
@@ -44,20 +46,15 @@ async fn run_contained_output(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let containment = ProcessContainment::new().map_err(|error| {
-        anyhow::anyhow!(
-            "failed to create process containment for skill '{}': {}",
-            skill_name,
-            error
-        )
-    })?;
+    let containment = ProcessContainment::new()
+        .map_err(|_| anyhow::anyhow!("failed to contain setup process for skill '{skill_name}'"))?;
     containment.prepare_command(command.as_std_mut(), 0);
     let mut child = command
         .kill_on_drop(true)
         .spawn()
-        .map_err(|error| anyhow::anyhow!("{spawn_error_context} for '{skill_name}': {error}"))?;
+        .map_err(|_| anyhow::anyhow!("{spawn_error_context} for skill '{skill_name}'"))?;
     let pid = child.id().ok_or_else(|| {
-        anyhow::anyhow!("skill '{}' child process did not expose a pid", skill_name)
+        anyhow::anyhow!("setup process for skill '{skill_name}' has no process id")
     })?;
 
     #[cfg(windows)]
@@ -68,19 +65,73 @@ async fn run_contained_output(
     #[cfg(not(windows))]
     let attach_result = containment.attach_and_resume(pid, ());
 
-    if let Err(error) = attach_result {
+    if attach_result.is_err() {
         let _ = child.kill().await;
-        anyhow::bail!(
-            "failed to attach skill '{}' to process containment: {}",
-            skill_name,
-            error
-        );
+        anyhow::bail!("failed to attach setup process for skill '{skill_name}' to containment");
     }
 
-    child
-        .wait_with_output()
-        .await
-        .map_err(|error| anyhow::anyhow!("{spawn_error_context} for '{skill_name}': {error}"))
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let (stdout, stderr, status) = tokio::join!(
+        read_stream_capped(stdout),
+        read_stream_capped(stderr),
+        child.wait(),
+    );
+    let status =
+        status.map_err(|_| anyhow::anyhow!("{spawn_error_context} for skill '{skill_name}'"))?;
+    Ok(Output {
+        status,
+        stdout: stdout?,
+        stderr: stderr?,
+    })
+}
+
+async fn read_stream_capped<R>(stream: Option<R>) -> anyhow::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let Some(mut stream) = stream else {
+        return Ok(Vec::new());
+    };
+    let mut retained = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = stream
+            .read(&mut buffer)
+            .await
+            .map_err(|_| anyhow::anyhow!("failed to read setup process output"))?;
+        if read == 0 {
+            return Ok(retained);
+        }
+        let available = MAX_SETUP_STREAM_BYTES.saturating_sub(retained.len());
+        retained.extend_from_slice(&buffer[..read.min(available)]);
+    }
+}
+
+/// Read a requirements file without blocking the async executor and without
+/// retaining more than the configured cap. Dropping the caller's future drops
+/// the file reader, so setup cancellation cannot proceed into pip installation.
+async fn read_requirements_capped<R>(mut reader: R, skill_name: &str) -> anyhow::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut content = Vec::with_capacity(MAX_REQUIREMENTS_BYTES);
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .await
+            .map_err(|_| anyhow::anyhow!("failed to read requirements for skill '{skill_name}'"))?;
+        if read == 0 {
+            return Ok(content);
+        }
+        if content.len().saturating_add(read) > MAX_REQUIREMENTS_BYTES {
+            anyhow::bail!(
+                "requirements for skill '{skill_name}' exceed the {MAX_REQUIREMENTS_BYTES}-byte limit"
+            );
+        }
+        content.extend_from_slice(&buffer[..read]);
+    }
 }
 
 /// Manages per-skill virtual environments (M4-02).
@@ -114,13 +165,45 @@ impl VenvManager {
         }
     }
 
-    fn requirements_path(skill_root: &Path) -> PathBuf {
-        skill_root.join("requirements.txt")
+    async fn canonical_requirements_path(skill_root: &Path) -> anyhow::Result<Option<PathBuf>> {
+        let canonical_root = tokio::fs::canonicalize(skill_root)
+            .await
+            .map_err(|_| anyhow::anyhow!("failed to resolve skill root"))?;
+        let candidate = canonical_root.join("requirements.txt");
+        match tokio::fs::metadata(&candidate).await {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => anyhow::bail!("requirements entry is not a file"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => anyhow::bail!("failed to inspect skill requirements"),
+        }
+
+        // Use the resolved target for both hashing and pip. This rejects a
+        // symlink/junction escape and avoids handing pip the unchecked alias.
+        let canonical_requirements = tokio::fs::canonicalize(&candidate)
+            .await
+            .map_err(|_| anyhow::anyhow!("failed to resolve skill requirements"))?;
+        if !canonical_requirements.starts_with(&canonical_root) {
+            anyhow::bail!("requirements entry resolves outside the skill root");
+        }
+        Ok(Some(canonical_requirements))
     }
 
-    fn checksum_file(path: &Path) -> anyhow::Result<String> {
-        let content = std::fs::read(path)
-            .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", path.display()))?;
+    async fn checksum_file(path: &Path, skill_name: &str) -> anyhow::Result<String> {
+        let file = tokio::fs::File::open(path)
+            .await
+            .map_err(|_| anyhow::anyhow!("failed to read requirements for skill '{skill_name}'"))?;
+        let metadata = file.metadata().await.map_err(|_| {
+            anyhow::anyhow!("failed to inspect requirements for skill '{skill_name}'")
+        })?;
+        if !metadata.is_file() {
+            anyhow::bail!("requirements entry for skill '{skill_name}' is not a file");
+        }
+        if metadata.len() > MAX_REQUIREMENTS_BYTES as u64 {
+            anyhow::bail!(
+                "requirements for skill '{skill_name}' exceed the {MAX_REQUIREMENTS_BYTES}-byte limit"
+            );
+        }
+        let content = read_requirements_capped(file, skill_name).await?;
         Ok(format!("sha256:{:x}", Sha256::digest(content)))
     }
 
@@ -134,7 +217,7 @@ impl VenvManager {
         F: FnOnce() -> Fut,
         Fut: Future<Output = anyhow::Result<()>>,
     {
-        let fingerprint = Self::checksum_file(requirements_path)?;
+        let fingerprint = Self::checksum_file(requirements_path, skill_name).await?;
         let marker_path = self
             .venv_dir(skill_name)
             .join(REQUIREMENTS_FINGERPRINT_FILE);
@@ -142,10 +225,9 @@ impl VenvManager {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => {
+                let _ = error;
                 return Err(anyhow::anyhow!(
-                    "failed to read requirements fingerprint for skill '{}': {}",
-                    skill_name,
-                    error
+                    "failed to read requirements fingerprint for skill '{skill_name}'"
                 ));
             }
         };
@@ -161,11 +243,8 @@ impl VenvManager {
         tokio::fs::write(&marker_path, fingerprint.as_bytes())
             .await
             .map_err(|error| {
-                anyhow::anyhow!(
-                    "failed to save requirements fingerprint for skill '{}': {}",
-                    skill_name,
-                    error
-                )
+                let _ = error;
+                anyhow::anyhow!("failed to save requirements fingerprint for skill '{skill_name}'")
             })?;
         Ok(())
     }
@@ -179,7 +258,9 @@ impl VenvManager {
 
         if !python.exists() {
             tracing::info!("creating venv for skill");
-            tokio::fs::create_dir_all(&venv).await?;
+            tokio::fs::create_dir_all(&venv)
+                .await
+                .map_err(|_| anyhow::anyhow!("failed to prepare venv for skill '{skill_name}'"))?;
             let output = run_contained_output(
                 venv_creation_command(&venv),
                 skill_name,
@@ -187,31 +268,11 @@ impl VenvManager {
             )
             .await?;
             if !output.status.success() {
-                let stderr = encoding::decode_lossy(&output.stderr);
-                anyhow::bail!("venv creation failed for '{}': {}", skill_name, stderr);
+                anyhow::bail!("venv creation failed for skill '{skill_name}'");
             }
         }
 
-        let req_path = Self::requirements_path(skill_root);
-        let requirements_file = match tokio::fs::metadata(&req_path).await {
-            Ok(metadata) if metadata.is_file() => true,
-            Ok(_) => {
-                anyhow::bail!(
-                    "requirements path for skill '{}' is not a file: {}",
-                    skill_name,
-                    req_path.display()
-                );
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => {
-                return Err(anyhow::anyhow!(
-                    "failed to inspect requirements for skill '{}': {}",
-                    skill_name,
-                    error
-                ));
-            }
-        };
-        if requirements_file {
+        if let Some(req_path) = Self::canonical_requirements_path(skill_root).await? {
             self.ensure_requirements_with(skill_name, &req_path, || async {
                 tracing::info!("installing requirements for skill");
                 let output = run_contained_output(
@@ -221,8 +282,7 @@ impl VenvManager {
                 )
                 .await?;
                 if !output.status.success() {
-                    let stderr = encoding::decode_lossy(&output.stderr);
-                    anyhow::bail!("pip install for '{}' failed: {}", skill_name, stderr);
+                    anyhow::bail!("pip install failed for skill '{skill_name}'");
                 }
                 Ok(())
             })
@@ -236,6 +296,12 @@ impl VenvManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::encoding;
+    use std::io;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll};
     use tempfile::tempdir;
 
     const CONTAINED_CHILD_MODE: &str = "HAVEN_SKILLS_CONTAINED_CHILD_MODE";
@@ -260,8 +326,7 @@ mod tests {
         )
         .await?;
         if !output.status.success() {
-            let stderr = encoding::decode_lossy(&output.stderr);
-            anyhow::bail!("pip install for 'example-skill' failed: {stderr}");
+            anyhow::bail!("pip install failed for skill 'example-skill'");
         }
         Ok(())
     }
@@ -274,6 +339,16 @@ mod tests {
         let requirements_path = skill_root.join("requirements.txt");
         std::fs::write(&requirements_path, "example-package==1.0\n").unwrap();
         (venv, requirements_path)
+    }
+
+    #[cfg(unix)]
+    fn symlink_file(target: &Path, link: &Path) -> io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(target: &Path, link: &Path) -> io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
     }
 
     #[tokio::test]
@@ -402,6 +477,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oversized_requirements_are_rejected_before_install() {
+        let temp = tempdir().unwrap();
+        let (venv, requirements_path) = test_paths(temp.path());
+        std::fs::write(&requirements_path, vec![b'x'; MAX_REQUIREMENTS_BYTES + 1]).unwrap();
+        let manager = VenvManager::new(temp.path().join("venvs"));
+        let mut installs = 0;
+
+        let error = manager
+            .ensure_requirements_with("example-skill", &requirements_path, || async {
+                installs += 1;
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("exceed the"));
+        assert_eq!(installs, 0);
+        assert!(!venv.join(REQUIREMENTS_FINGERPRINT_FILE).exists());
+    }
+
+    #[tokio::test]
+    async fn canonical_requirements_path_rejects_symlink_outside_skill_root() {
+        let temp = tempdir().unwrap();
+        let skill_root = temp.path().join("skills").join("example-skill");
+        std::fs::create_dir_all(&skill_root).unwrap();
+        let outside = temp.path().join("outside-requirements.txt");
+        std::fs::write(&outside, "example-package==1.0\n").unwrap();
+        if symlink_file(&outside, &skill_root.join("requirements.txt")).is_err() {
+            // Windows CI may not grant symlink privileges to the test process.
+            return;
+        }
+
+        let error = VenvManager::canonical_requirements_path(&skill_root)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("outside the skill root"));
+    }
+
+    #[tokio::test]
+    async fn pip_install_receives_the_canonical_requirements_path() {
+        let temp = tempdir().unwrap();
+        let (_, requirements_path) = test_paths(temp.path());
+        let canonical_path =
+            VenvManager::canonical_requirements_path(requirements_path.parent().unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+        let python = PathBuf::from("venvs/example-skill/python");
+
+        let command = pip_install_command(&python, &canonical_path);
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            args.last(),
+            Some(&canonical_path.to_string_lossy().into_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn requirements_read_future_drops_its_reader_when_cancelled() {
+        struct PendingReader(Arc<AtomicBool>);
+
+        impl AsyncRead for PendingReader {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _context: &mut Context<'_>,
+                _buffer: &mut tokio::io::ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                Poll::Pending
+            }
+        }
+
+        impl Drop for PendingReader {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn(read_requirements_capped(
+            PendingReader(Arc::clone(&dropped)),
+            "example-skill",
+        ));
+        tokio::task::yield_now().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
     async fn failed_install_does_not_persist_fingerprint_and_can_retry() {
         let temp = tempdir().unwrap();
         let (venv, requirements_path) = test_paths(temp.path());
@@ -419,7 +588,7 @@ mod tests {
             failure
                 .expect_err("failed contained install must be reported")
                 .to_string()
-                .contains("pip diagnostic marker")
+                .contains("pip install failed for skill 'example-skill'")
         );
         assert!(!marker_path.exists());
 
@@ -435,7 +604,8 @@ mod tests {
         assert_eq!(installs, 2);
         assert_eq!(
             tokio::fs::read(marker_path).await.unwrap(),
-            VenvManager::checksum_file(&requirements_path)
+            VenvManager::checksum_file(&requirements_path, "example-skill")
+                .await
                 .unwrap()
                 .as_bytes()
         );
@@ -468,6 +638,21 @@ mod tests {
 
         assert_eq!(output.status.code(), Some(17));
         assert!(encoding::decode_lossy(&output.stderr).contains("pip diagnostic marker"));
+    }
+
+    #[tokio::test]
+    async fn contained_command_caps_retained_output_without_stopping_pipe_draining() {
+        let output = run_contained_output(
+            contained_test_command("large"),
+            "example-skill",
+            "test command failed",
+        )
+        .await
+        .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), MAX_SETUP_STREAM_BYTES);
+        assert_eq!(output.stderr.len(), MAX_SETUP_STREAM_BYTES);
     }
 
     #[cfg(windows)]
@@ -521,6 +706,13 @@ mod tests {
             Ok("failure") => {
                 eprintln!("pip diagnostic marker");
                 std::process::exit(17);
+            }
+            Ok("large") => {
+                let chunk = "x".repeat(8192);
+                for _ in 0..160 {
+                    println!("{chunk}");
+                    eprintln!("{chunk}");
+                }
             }
             #[cfg(windows)]
             Ok("tree") => {

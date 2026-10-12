@@ -52,6 +52,38 @@ async fn event_boundary_cursor_read_succeeds_without_changing_the_event_log() {
 }
 
 #[tokio::test]
+async fn cancelled_run_still_verifies_its_final_event_boundary() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let session = db.create_session("cancelled event boundary").unwrap();
+    let engine = test_engine(db.clone());
+    engine
+        .event_store
+        .append(&session.session_id, "boundary_test", "{}", Some(1), Some(1))
+        .unwrap();
+    let mut state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    cancellation.cancel();
+    state.turn_cancel = Some(cancellation);
+
+    assert!(matches!(
+        engine.exit_cancelled(&session.session_id, &state, 1).await,
+        crate::react::LoopExit::Cancelled
+    ));
+
+    let metrics = engine.metrics.snapshot();
+    assert_eq!(metrics.counters.event_boundary_check_failures, 0);
+    assert_eq!(metrics.phase(MetricsPhase::EventBoundaryCheck).count, 1);
+    assert_eq!(
+        engine
+            .event_store
+            .read_all(&session.session_id)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn event_boundary_cursor_read_failure_returns_false_and_records_failure() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let session = db.create_session("event boundary failure").unwrap();

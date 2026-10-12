@@ -92,7 +92,11 @@ impl OpenAiAdapter {
         use tokio::sync::mpsc;
 
         let (chunk_tx, chunk_rx) = line_payload_channel();
-        spawn_line_reader(resp.bytes_stream(), chunk_tx, LineMode::SseOrRaw);
+        drop(spawn_line_reader(
+            resp.bytes_stream(),
+            chunk_tx,
+            LineMode::SseOrRaw,
+        ));
 
         // Merge streaming tool-call deltas by index. Arguments arrive as
         // incremental JSON fragments, so they accumulate as a raw string and

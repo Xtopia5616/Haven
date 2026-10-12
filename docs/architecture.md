@@ -36,7 +36,7 @@ haven-skills ──► haven-common, haven-platform
 | `haven-common` | 无内部依赖 | 纯叶子，全 workspace 共享；`usage` 子域拥有跨层用量契约和值枚举 |
 | `haven-platform` | `haven-common` | CredentialStore 端口、共享 filesystem metadata 安全检查；Windows 凭据管理器和子进程适配 |
 | `haven-llm` | `haven-common` | 只依赖共享层，不依赖任何业务 crate |
-| `haven-memory` | `haven-common` | 持久化（当前 SQLite schema、历史迁移、仓库） |
+| `haven-memory` | `haven-common` | 持久化（当前 SQLite schema、版本拒绝与 reset contract、仓库） |
 | `haven-skills` | `haven-common`, `haven-platform` | 技能目录解析、变更检测与 venv 子进程 containment；Skills root API 拥有目录变更判断，`venv` 是私有实现模块 |
 | `haven-messaging` | `haven-common` | 消息服务与 inbox transport |
 | `haven-mcp` | `haven-common`, `haven-llm`, `haven-platform` | MCP 客户端 / 传输（媒体能力复用 LLM 协议） |
@@ -414,7 +414,7 @@ marker 持久化，不把 provider 网络调用下沉到 Memory；事实维护�
 操作的异步 typed 边界；maintenance pass 步骤编排、LLM 仲裁、提案门禁与并发控制仍属于 Agent（ADR 0022、0063、0169、0310、0311）。
 Compaction summary episode 与首个 pending marker 只由 `MemoryOutboxStore::persist_compaction_summary` 在同一事务写入；提交成功后 Agent 调用 `MemoryWorker::wake_summary_extract` 更新 live outbox。MemoryOutboxStore 执行 durable marker 持久化操作；Agent `MemoryOutbox` 拥有 scanner、调度、retry/ack 决策和生命周期，Worker 不另行创建 summary marker，避免与 episode 分开提交（ADR 0266、0299、0481、0910）。
 `fact_security.rs` 将敏感 predicate 关键词、object 前缀和 marker 作为唯一规则源，并生成精确的批量删除 predicate；现有 `facts.rs` detector façade 和 `fact_maintenance.rs` 的单条 DELETE 共用这些规则，避免 SQL 通配符扩大永久删除范围（ADR 0475）。
-`MemoryRuntime` 负责 startup cursor/replay、committed-event live consumer 和六小时维护 schedule policy（ADR 0263、0267）。`AgentLayer::build` 仅在组合过程中创建它，并通过 `AgentStartup` 将唯一 `MemoryStartup` 交给 ApplicationRuntime；AgentLayer 只保留同一个 `MemoryWorker` capability。AppRuntime 注册 prepare/startup、live consumer 与 maintenance tasks 并负责 cancel/join。`PreparedMemoryRuntime` 按值消费 prepared receiver；`MemoryStartup::prepare_live_consumer` 产生 `MemoryLiveConsumerHandoff`，AppRuntime 只有在 handoff 注册成功后才将 `MemoryReady` 交给 `AgentLayer::start_after_memory_ready`。prepare/replay 失败或取消时 dispatcher 不启动（ADR 0367、0636）。
+`MemoryRuntime` 负责 startup cursor/replay、committed-event live consumer 和六小时维护 schedule policy（ADR 0263、0267）。`AgentLayer::build` 仅在组合过程中创建它，并通过 `AgentStartup` 将唯一 `MemoryStartup` 交给 ApplicationRuntime；AgentLayer 只保留同一个 `MemoryWorker` capability。`ApplicationRuntime` 注册 prepare/startup、live consumer 与 maintenance tasks 并负责 cancel/join。`PreparedMemoryRuntime` 按值消费 prepared receiver；`MemoryStartup::prepare_live_consumer` 产生 `MemoryLiveConsumerHandoff`，ApplicationRuntime 只有在 handoff 注册成功后才将 `MemoryReady` 交给 `AgentLayer::start_after_memory_ready`。prepare/replay 失败或取消时 dispatcher 不启动（ADR 0367、0636）。
 
 ### 2.4 `haven-input` —— 输入采集与语音生命周期
 
@@ -885,7 +885,8 @@ UI、Agent 与 provider 只在各自边界做场景适配。
   input 能力，属于不必要的耦合。
 - **改后**：`FollowUp` 下沉到 `haven_common::types`，`agent/src/session/mod.rs` 改为
   `pub use haven_common::types::FollowUp`，删除 `haven-input` 依赖与 `input/src/message.rs`。
-  现在 `agent` 与 `input` 分层不互相依赖（都只依赖 common / llm）。
+  现在 `agent` 与 `input` 不直接依赖；`haven-input` 仅依赖 `haven-common`，Agent 仍依赖
+  `haven-common`、`haven-llm`、`haven-memory`、`haven-tools` 与 `haven-messaging`。
 
 ### 3.4 依赖方向的守则
 

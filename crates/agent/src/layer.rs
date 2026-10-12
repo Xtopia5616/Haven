@@ -9,7 +9,12 @@ use crate::session::{SessionRunHandler, SessionSupervisorEvent};
 use haven_common::lifecycle::SessionStatus;
 use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{Mutex as StdMutex, MutexGuard as StdMutexGuard};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+const AGENT_BACKGROUND_TASK_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 mod tool_run_result_delivery;
 
@@ -24,7 +29,155 @@ pub struct AgentLayer {
     pub(crate) react_engine: Arc<ReActEngine>,
     pub(crate) memory_worker: Arc<MemoryWorker>,
     pub(crate) title: Option<TitleGenerator>,
-    pub(crate) title_in_flight: Arc<Mutex<HashSet<String>>>,
+    title_tasks: Arc<StdMutex<TitleGenerationTaskRegistry>>,
+    background_tasks: AgentBackgroundTasks,
+}
+
+#[derive(Default)]
+struct AgentBackgroundTasks {
+    inner: Arc<StdMutex<AgentBackgroundTaskState>>,
+}
+
+#[derive(Default)]
+struct AgentBackgroundTaskState {
+    next_id: u64,
+    shutting_down: bool,
+    tasks: HashMap<u64, AgentBackgroundTask>,
+}
+
+struct AgentBackgroundTask {
+    name: &'static str,
+    cancellation: CancellationToken,
+    handle: JoinHandle<()>,
+}
+
+impl AgentBackgroundTasks {
+    fn spawn<F>(&self, name: &'static str, cancellation: CancellationToken, future: F) -> bool
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut state = self.inner.lock().unwrap_or_else(|poisoned| {
+            tracing::error!(
+                task = name,
+                "Agent background task registry lock poisoned; recovering"
+            );
+            poisoned.into_inner()
+        });
+        if state.shutting_down || cancellation.is_cancelled() {
+            return false;
+        }
+        let id = state.next_id;
+        let Some(next_id) = id.checked_add(1) else {
+            tracing::error!(task = name, "Agent background task id space exhausted");
+            return false;
+        };
+        state.next_id = next_id;
+        let task_registry = self.inner.clone();
+        let handle = tokio::spawn(async move {
+            use futures_util::FutureExt;
+
+            if std::panic::AssertUnwindSafe(future)
+                .catch_unwind()
+                .await
+                .is_err()
+            {
+                tracing::warn!(task = name, "Agent background task panicked");
+            }
+            let mut state = task_registry.lock().unwrap_or_else(|poisoned| {
+                tracing::error!(
+                    task = name,
+                    "Agent background task registry lock poisoned; recovering"
+                );
+                poisoned.into_inner()
+            });
+            state.tasks.remove(&id);
+        });
+        state.tasks.insert(
+            id,
+            AgentBackgroundTask {
+                name,
+                cancellation,
+                handle,
+            },
+        );
+        true
+    }
+
+    async fn shutdown(&self) {
+        let mut tasks = {
+            let mut state = self.inner.lock().unwrap_or_else(|poisoned| {
+                tracing::error!("Agent background task registry lock poisoned; recovering");
+                poisoned.into_inner()
+            });
+            state.shutting_down = true;
+            std::mem::take(&mut state.tasks)
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        for task in &tasks {
+            task.cancellation.cancel();
+        }
+
+        let deadline = tokio::time::Instant::now() + AGENT_BACKGROUND_TASK_SHUTDOWN_GRACE;
+        let mut joined = vec![false; tasks.len()];
+        let mut deadline_elapsed = false;
+        for (index, task) in tasks.iter_mut().enumerate() {
+            match tokio::time::timeout_at(deadline, &mut task.handle).await {
+                Ok(Ok(())) => joined[index] = true,
+                Ok(Err(error)) => {
+                    joined[index] = true;
+                    if !error.is_cancelled() {
+                        tracing::warn!(
+                            task = task.name,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "Agent background task failed during shutdown"
+                        );
+                    }
+                }
+                Err(_) => {
+                    deadline_elapsed = true;
+                    break;
+                }
+            }
+        }
+        if deadline_elapsed {
+            tracing::warn!(
+                grace = ?AGENT_BACKGROUND_TASK_SHUTDOWN_GRACE,
+                "Agent background tasks did not stop before the shutdown deadline; aborting"
+            );
+            for (index, task) in tasks.iter().enumerate() {
+                if !joined[index] {
+                    task.handle.abort();
+                }
+            }
+            for (index, task) in tasks.iter_mut().enumerate() {
+                if !joined[index] {
+                    let _ = (&mut task.handle).await;
+                }
+            }
+        }
+    }
+}
+
+struct TitleGenerationTask {
+    identity: Arc<()>,
+    cancellation: CancellationToken,
+    handle: JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct TitleGenerationTaskRegistry {
+    shutting_down: bool,
+    tasks: HashMap<String, TitleGenerationTask>,
+}
+
+fn lock_title_tasks(
+    tasks: &StdMutex<TitleGenerationTaskRegistry>,
+) -> StdMutexGuard<'_, TitleGenerationTaskRegistry> {
+    tasks.lock().unwrap_or_else(|poisoned| {
+        tracing::error!("title task registry lock poisoned; recovering state");
+        poisoned.into_inner()
+    })
 }
 
 /// A session created together with its durable first user message.
@@ -111,7 +264,8 @@ impl AgentLayer {
             react_engine,
             memory_worker,
             title,
-            title_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            title_tasks: Arc::new(StdMutex::new(TitleGenerationTaskRegistry::default())),
+            background_tasks: AgentBackgroundTasks::default(),
         };
         AgentStartup {
             agent,
@@ -292,20 +446,28 @@ impl AgentLayer {
         // Pre-warm the new router's HTTP connection pool so the next request
         // doesn't pay TCP+TLS handshake latency after a provider switch.
         let warm = new_router.clone();
-        tokio::spawn(async move {
-            match warm
-                .health_check(haven_llm::HealthCheckRequest {
-                    request: haven_common::config::RequestKind::Chat,
-                })
-                .await
-            {
-                Ok(()) => tracing::info!("LLM connection pre-warmed after router swap"),
-                Err(error) => tracing::warn!(
-                    failure_reason = error.connection_failure_reason().as_str(),
-                    "LLM pre-warm after swap failed"
-                ),
-            }
-        });
+        let cancellation = CancellationToken::new();
+        let task_cancellation = cancellation.clone();
+        self.background_tasks
+            .spawn("llm-router-prewarm", cancellation, async move {
+                let result = tokio::select! {
+                    _ = task_cancellation.cancelled() => return,
+                    result = tokio::time::timeout(
+                        AGENT_BACKGROUND_TASK_SHUTDOWN_GRACE,
+                        warm.health_check(haven_llm::HealthCheckRequest {
+                            request: haven_common::config::RequestKind::Chat,
+                        }),
+                    ) => result,
+                };
+                match result {
+                    Ok(Ok(())) => tracing::info!("LLM connection pre-warmed after router swap"),
+                    Ok(Err(error)) => tracing::warn!(
+                        failure_reason = error.connection_failure_reason().as_str(),
+                        "LLM pre-warm after swap failed"
+                    ),
+                    Err(_) => tracing::warn!("LLM pre-warm after swap exceeded its deadline"),
+                }
+            });
         Ok(())
     }
 
@@ -408,10 +570,11 @@ impl AgentLayer {
             let executor = self.executor.clone();
             let memory_worker = self.memory_worker.clone();
             let cancellation = cancellation.clone();
-            tokio::spawn(async move {
+            let task_cancellation = cancellation.clone();
+            self.background_tasks.spawn("session-lifecycle-events", cancellation, async move {
                 loop {
                     let event = tokio::select! {
-                        _ = cancellation.cancelled() => return,
+                        _ = task_cancellation.cancelled() => return,
                         result = events_rx.recv() => match result {
                             Ok(event) => event,
                             Err(_) => return,
@@ -476,7 +639,7 @@ impl AgentLayer {
             });
         }
 
-        tool_run_result_delivery::spawn(self.clone(), cancellation.clone());
+        tool_run_result_delivery::spawn(self.clone(), cancellation.clone(), &self.background_tasks);
         // Spawn a consumer for fired scheduled_tool_runs: the fire behavior is chosen
         // by the scheduled ToolRun's mode.
         // - `tool`: execute the scheduled tool with its stored arguments
@@ -492,10 +655,11 @@ impl AgentLayer {
         let tool_run_port = self.executor.tool_run_port();
         if let Some(mut rx) = tool_run_port.take_completion_receiver() {
             let cancellation = cancellation.clone();
-            tokio::spawn(async move {
+            let task_cancellation = cancellation.clone();
+            self.background_tasks.spawn("scheduled-tool-run-completions", cancellation, async move {
                 loop {
                     let Some(event) = (tokio::select! {
-                        _ = cancellation.cancelled() => return,
+                        _ = task_cancellation.cancelled() => return,
                         event = rx.recv_scheduled_with_recovery() => event,
                     }) else {
                         return;
@@ -628,7 +792,7 @@ impl AgentLayer {
                                                     fired.session_id.as_deref(),
                                                     &tool_name,
                                                     args,
-                                                    cancellation.clone(),
+                                                    task_cancellation.clone(),
                                                     None,
                                                     None,
                                                 )
@@ -852,24 +1016,33 @@ impl AgentLayer {
         // app), so persisted ToolRun history never shows stale live work.
         let tool_runs = self.executor.tool_run_port();
         let cancellation = cancellation.clone();
-        tokio::spawn(async move {
-            let restore_summary = tokio::select! {
-                _ = cancellation.cancelled() => return,
-                result = tool_runs.restore() => result,
-            };
-            if restore_summary.overdue_scheduled_runs > 0 {
-                tracing::info!(
-                    "found {} overdue scheduled ToolRun(s) during restore",
-                    restore_summary.overdue_scheduled_runs
-                );
-            }
-            if restore_summary.interrupted_runs_marked_failed > 0 {
-                tracing::info!(
-                    "marked {} interrupted ToolRun(s) as failed",
-                    restore_summary.interrupted_runs_marked_failed
-                );
-            }
-        });
+        let task_cancellation = cancellation.clone();
+        self.background_tasks
+            .spawn("tool-run-restore", cancellation, async move {
+                let restore_summary = tokio::select! {
+                    _ = task_cancellation.cancelled() => return,
+                    result = tool_runs.restore() => result,
+                };
+                if restore_summary.overdue_scheduled_runs > 0 {
+                    tracing::info!(
+                        "found {} overdue scheduled ToolRun(s) during restore",
+                        restore_summary.overdue_scheduled_runs
+                    );
+                }
+                if restore_summary.interrupted_runs_marked_failed > 0 {
+                    tracing::info!(
+                        "marked {} interrupted ToolRun(s) as failed",
+                        restore_summary.interrupted_runs_marked_failed
+                    );
+                }
+            });
+    }
+
+    /// Cancel and join Agent-owned consumers before ApplicationRuntime closes
+    /// the ToolRun, MCP, and session resources they use.
+    pub async fn shutdown_background_tasks(&self) {
+        self.cancel_all_title_generations_for_shutdown().await;
+        self.background_tasks.shutdown().await;
     }
 
     pub async fn emit_session_completed(&self, session_id: &str, title: &str, reason: &str) {
@@ -894,7 +1067,17 @@ impl AgentLayer {
     /// Quiesce and delete one session, then reclaim every process-local cache
     /// owned by that session before publishing its ordered UI tombstone.
     pub async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
-        self.executor.delete_session(session_id).await?;
+        let stopped_title_task = self.cancel_title_generation(session_id).await;
+        if let Err(error) = self.executor.delete_session(session_id).await {
+            if stopped_title_task {
+                self.restart_title_generation_if_untitled(session_id).await;
+            }
+            return Err(error);
+        }
+        // A creator already holding the lifecycle gate may have registered a
+        // title task after the pre-delete drain. Deletion waits for that gate;
+        // drain again now that the durable row is gone.
+        self.cancel_title_generation(session_id).await;
         self.memory_worker.clear_session(session_id);
         self.react_engine.forget_deleted_session(session_id).await;
         self.events
@@ -906,7 +1089,20 @@ impl AgentLayer {
     /// Quiesce all actors and delete session history, then reclaim in-memory
     /// session state and publish one ordered tombstone for the cleared list.
     pub async fn delete_all_sessions(&self) -> anyhow::Result<usize> {
-        let session_ids = self.executor.delete_all_sessions().await?;
+        let stopped_title_tasks = self.cancel_all_title_generations().await;
+        let session_ids = match self.executor.delete_all_sessions().await {
+            Ok(session_ids) => session_ids,
+            Err(error) => {
+                for session_id in stopped_title_tasks {
+                    self.restart_title_generation_if_untitled(&session_id).await;
+                }
+                return Err(error);
+            }
+        };
+        // Creation may have already passed its lifecycle check when the bulk
+        // delete began, and registers its title job before releasing that gate.
+        // Drain once more after the durable delete to catch that interleaving.
+        self.cancel_all_title_generations().await;
         for session_id in &session_ids {
             self.memory_worker.clear_session(session_id);
         }
@@ -927,37 +1123,150 @@ impl AgentLayer {
         let executor = self.executor.clone();
         let title = self.title.clone();
         let events = self.events.clone();
-        let in_flight = self.title_in_flight.clone();
         let tid = session_id.to_string();
-        tokio::spawn(async move {
-            Self::try_generate_title(store, executor, title, events, in_flight, tid).await;
+        let identity = Arc::new(());
+        let cancellation = CancellationToken::new();
+        let task_identity = identity.clone();
+        let task_cancellation = cancellation.clone();
+        let tasks = self.title_tasks.clone();
+        let task_registry = tasks.clone();
+        let mut registry = lock_title_tasks(&tasks);
+        if registry.shutting_down || registry.tasks.contains_key(&tid) {
+            return;
+        }
+        let task_session_id = tid.clone();
+        let handle = tokio::spawn(async move {
+            Self::try_generate_title(
+                store,
+                executor,
+                title,
+                events,
+                task_cancellation,
+                task_session_id.clone(),
+            )
+            .await;
+            let mut registry = lock_title_tasks(&task_registry);
+            if registry
+                .tasks
+                .get(&task_session_id)
+                .is_some_and(|task| Arc::ptr_eq(&task.identity, &task_identity))
+            {
+                // The task is at its final instruction; dropping its own
+                // JoinHandle here cannot detach any remaining work.
+                registry.tasks.remove(&task_session_id);
+            }
         });
+        registry.tasks.insert(
+            tid,
+            TitleGenerationTask {
+                identity,
+                cancellation,
+                handle,
+            },
+        );
+    }
+
+    async fn cancel_title_generation(&self, session_id: &str) -> bool {
+        let task = lock_title_tasks(&self.title_tasks).tasks.remove(session_id);
+        if let Some(task) = task {
+            task.cancellation.cancel();
+            if let Err(error) = task.handle.await {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "title generation task failed while stopping for session deletion"
+                );
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn cancel_all_title_generations(&self) -> Vec<String> {
+        let (session_ids, tasks) = {
+            let mut registry = lock_title_tasks(&self.title_tasks);
+            let mut session_ids = Vec::with_capacity(registry.tasks.len());
+            let mut tasks = Vec::with_capacity(registry.tasks.len());
+            for (session_id, task) in std::mem::take(&mut registry.tasks) {
+                session_ids.push(session_id);
+                tasks.push(task);
+            }
+            (session_ids, tasks)
+        };
+        for task in &tasks {
+            task.cancellation.cancel();
+        }
+        for task in tasks {
+            if let Err(error) = task.handle.await {
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "title generation task failed while stopping for history deletion"
+                );
+            }
+        }
+        session_ids
+    }
+
+    async fn cancel_all_title_generations_for_shutdown(&self) {
+        let mut tasks = {
+            let mut registry = lock_title_tasks(&self.title_tasks);
+            registry.shutting_down = true;
+            std::mem::take(&mut registry.tasks)
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        for task in &tasks {
+            task.cancellation.cancel();
+        }
+        for mut task in tasks.drain(..) {
+            if let Err(error) = (&mut task.handle).await {
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "title generation task failed during application shutdown"
+                );
+            }
+        }
+    }
+
+    async fn restart_title_generation_if_untitled(&self, session_id: &str) {
+        if self.executor.is_session_closing(session_id)
+            || self.executor.ensure_lifecycle_open().is_err()
+        {
+            return;
+        }
+        match self
+            .executor
+            .session_store()
+            .load_session_record(session_id)
+            .await
+        {
+            Ok(Some(session)) if session.title.is_none() => {
+                self.spawn_title_generation(session_id);
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(
+                session_id = %session_id,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "failed to restore title generation after session deletion failed"
+            ),
+        }
     }
 
     /// Generate a short title using small_model in a background task. Only
     /// runs when the session has no title yet, and only once at a time:
     /// overlapping dispatches of the same session (auto-reload plus a manual
     /// continue) must not fire concurrent title calls.
-    pub(crate) async fn try_generate_title(
+    async fn try_generate_title(
         store: haven_memory::SessionStore,
         executor: Arc<SessionSupervisor>,
         title: Option<TitleGenerator>,
         events: Arc<EventDispatcher>,
-        in_flight: Arc<Mutex<HashSet<String>>>,
+        cancellation: CancellationToken,
         session_id: String,
     ) {
         let Some(generator) = title else { return };
-        // Claim the in-flight slot before the store read so two concurrent
-        // spawns both pass the title check only once. Released after the
-        // generation attempt ends (success or failure).
-        {
-            let mut set = in_flight.lock().await;
-            if !set.insert(session_id.clone()) {
-                return;
-            }
-        }
-        Self::generate_title(store, executor, generator, events, session_id.clone()).await;
-        in_flight.lock().await.remove(&session_id);
+        Self::generate_title(store, executor, generator, events, cancellation, session_id).await;
     }
 
     async fn generate_title(
@@ -965,9 +1274,13 @@ impl AgentLayer {
         executor: Arc<SessionSupervisor>,
         generator: TitleGenerator,
         events: Arc<EventDispatcher>,
+        cancellation: CancellationToken,
         session_id: String,
     ) {
-        let context = match store.title_generation_context(&session_id).await {
+        let context = match tokio::select! {
+            _ = cancellation.cancelled() => return,
+            result = store.title_generation_context(&session_id) => result,
+        } {
             Ok(Some(context)) => context,
             Ok(None) => return,
             Err(error) => {
@@ -982,10 +1295,45 @@ impl AgentLayer {
         if context.user_messages.is_empty() {
             return;
         }
-        let title = match generator.generate(&context.user_messages).await {
+        let title = match tokio::select! {
+            _ = cancellation.cancelled() => return,
+            title = generator.generate(&context.user_messages) => title,
+        } {
             Some(t) => t,
             None => return,
         };
+        // Serialize the final write and publication with session deletion.
+        // A deletion that owns the lifecycle gate first removes the row; the
+        // second context read then prevents a late model result from updating
+        // the actor or publishing TitleUpdated for that deleted session.
+        let _lifecycle = tokio::select! {
+            _ = cancellation.cancelled() => return,
+            lifecycle = executor.lifecycle_guard() => lifecycle,
+        };
+        if cancellation.is_cancelled()
+            || executor.ensure_lifecycle_open().is_err()
+            || executor.is_session_closing(&session_id)
+        {
+            return;
+        }
+        let current_session = match tokio::select! {
+            _ = cancellation.cancelled() => return,
+            result = store.load_session_record(&session_id) => result,
+        } {
+            Ok(Some(session)) => session,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(
+                    "title generation: failed to reload session (session={}): {}",
+                    session_id,
+                    haven_common::error::sanitize_error_text(&error.to_string())
+                );
+                return;
+            }
+        };
+        if current_session.title.is_some() || cancellation.is_cancelled() {
+            return;
+        }
         if let Err(e) = store.update_session_title(&session_id, &title).await {
             tracing::warn!(
                 error = %haven_common::error::sanitize_error_text(&e.to_string()),
@@ -993,8 +1341,14 @@ impl AgentLayer {
             );
             return;
         }
+        if cancellation.is_cancelled() {
+            return;
+        }
         // Update in-memory SessionInfo in executor
         executor.update_session_title(&session_id, &title).await;
+        if cancellation.is_cancelled() {
+            return;
+        }
         // Notify frontend
         events.emit_title_updated(&session_id, &title).await;
         tracing::info!(
@@ -1482,6 +1836,67 @@ mod tests {
         }
     }
 
+    struct DropProbe(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    struct BlockingTitleClient {
+        started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        provider_drop: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: tokio::sync::watch::Receiver<bool>,
+    }
+
+    #[async_trait::async_trait]
+    impl haven_llm::LlmClient for BlockingTitleClient {
+        async fn chat(
+            &self,
+            _: Vec<haven_common::types::CanonicalMessage>,
+        ) -> Result<haven_llm::LlmResponse, haven_llm::LlmError> {
+            let _drop_probe = DropProbe(self.provider_drop.lock().unwrap().take());
+            if let Some(started) = self.started.lock().unwrap().take() {
+                let _ = started.send(());
+            }
+            let mut release = self.release.clone();
+            while !*release.borrow() {
+                release.changed().await.map_err(|_| {
+                    haven_llm::LlmError::Unknown("title test release closed".into())
+                })?;
+            }
+            Ok(haven_llm::LlmResponse {
+                text: "late generated title".into(),
+                ..Default::default()
+            })
+        }
+
+        async fn chat_with_output_cap(
+            &self,
+            messages: Vec<haven_common::types::CanonicalMessage>,
+            _: Option<u32>,
+        ) -> Result<haven_llm::LlmResponse, haven_llm::LlmError> {
+            self.chat(messages).await
+        }
+
+        async fn chat_stream(
+            &self,
+            _: Vec<haven_common::types::CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn Stream<Item = Result<haven_llm::StreamChunk, haven_llm::LlmError>> + Send>>,
+            haven_llm::LlmError,
+        > {
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+
+        async fn health_check(&self) -> Result<(), haven_llm::LlmError> {
+            Ok(())
+        }
+    }
+
     fn make_agent(db: Arc<Database>) -> (AgentLayer, Arc<SessionSupervisor>) {
         let tools = Arc::new(haven_tools::ToolsFacade::new());
         let executor = Arc::new(SessionSupervisor::new_for_test(
@@ -1687,7 +2102,132 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("forced first message failure"));
-        assert!(db.all_session_ids().unwrap().is_empty());
+        assert!(db.list_session_ids().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_session_cancels_and_joins_blocked_title_generation() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let tools = Arc::new(haven_tools::ToolsFacade::new());
+        let executor = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            tools.clone(),
+            1,
+        ));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (provider_drop_tx, provider_drop_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::watch::channel(false);
+        let client = Arc::new(BlockingTitleClient {
+            started: std::sync::Mutex::new(Some(started_tx)),
+            provider_drop: std::sync::Mutex::new(Some(provider_drop_tx)),
+            release: release_rx,
+        });
+        let client: Arc<dyn haven_llm::LlmClient> = client;
+        let router = Arc::new(LlmRouter::new_with_test_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        router
+            .set_request_configured_for_test(haven_common::config::RequestKind::FastChat, true)
+            .await;
+        let context_limits = ContextLimitsConfig::default();
+        let memory_service = Arc::new(MemoryService::new(
+            db.clone(),
+            Some(router.clone()),
+            context_limits.embedding_chunk_size,
+        ));
+        let agent = Arc::new(
+            AgentLayer::build(
+                memory_service,
+                executor.clone(),
+                AgentToolPorts::from_tools_facade(tools),
+                router,
+                10,
+                20,
+                context_limits,
+            )
+            .agent,
+        );
+        let events = Arc::new(EventCollector::default());
+        agent.events.set_emitter(events.clone());
+
+        let created = agent
+            .create_session_with_first_message_and_origin(
+                "input that starts title generation",
+                &[],
+                false,
+                true,
+                haven_memory::SessionOrigin::User,
+            )
+            .await
+            .unwrap();
+        let session_id = created.session.session_id;
+        tokio::time::timeout(std::time::Duration::from_secs(2), started_rx)
+            .await
+            .expect("title provider did not start")
+            .expect("title provider start signal was dropped");
+
+        let deleting_agent = agent.clone();
+        let deleting_session_id = session_id.clone();
+        let delete_task =
+            tokio::spawn(async move { deleting_agent.delete_session(&deleting_session_id).await });
+        tokio::time::timeout(std::time::Duration::from_secs(2), delete_task)
+            .await
+            .expect("session deletion did not cancel the blocked title provider")
+            .expect("session deletion task panicked")
+            .expect("session deletion failed");
+        tokio::time::timeout(std::time::Duration::from_secs(2), provider_drop_rx)
+            .await
+            .expect("title provider future was not dropped before deletion completed")
+            .expect("title provider drop signal was lost");
+
+        // Releasing a provider after deletion must not revive the detached
+        // generation or publish a title for the deleted session.
+        release_tx.send(true).unwrap();
+        assert!(
+            executor
+                .session_store()
+                .load_session_record(&session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(executor.get_runtime_session(&session_id).await.is_none());
+        assert!(!events.events.lock().unwrap().iter().any(|event| matches!(
+            event,
+            AgentEvent::TitleUpdated { session_id: event_session_id, .. }
+                if event_session_id == &session_id
+        )));
+    }
+
+    #[tokio::test]
+    async fn background_task_shutdown_cancels_and_joins_registered_tasks() {
+        let tasks = AgentBackgroundTasks::default();
+        let cancellation = CancellationToken::new();
+        let task_cancellation = cancellation.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+
+        assert!(tasks.spawn("test-consumer", cancellation, async move {
+            let _ = started_tx.send(());
+            task_cancellation.cancelled().await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let _ = finished_tx.send(());
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(2), started_rx)
+            .await
+            .expect("background task did not start")
+            .expect("background task start signal was lost");
+
+        tasks.shutdown().await;
+
+        tokio::time::timeout(std::time::Duration::from_millis(100), finished_rx)
+            .await
+            .expect("shutdown returned before the registered task finished")
+            .expect("background task completion signal was lost");
+        assert!(!tasks.spawn("after-shutdown", CancellationToken::new(), async {}));
     }
 
     #[test]

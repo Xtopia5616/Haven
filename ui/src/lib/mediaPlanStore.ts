@@ -9,6 +9,7 @@ import type { AgentMediaPlanPayload } from './contracts/agent.ts';
 export const mediaPlanStore = writable<Record<string, AgentMediaPlanPayload[]>>({});
 
 const MEDIA_PLAN_HISTORY_LIMIT = 32;
+const MEDIA_PLAN_SESSION_LIMIT = 32;
 
 export function rememberMediaPlan(payload: AgentMediaPlanPayload) {
 	if (!payload.sessionId) return;
@@ -18,10 +19,15 @@ export function rememberMediaPlan(payload: AgentMediaPlanPayload) {
 		const next = previous.filter(
 			(plan) => `${plan.stepNumber}:${plan.runId}:${plan.requestKind}` !== key,
 		);
-		return {
-			...all,
-			[payload.sessionId]: [...next, payload].slice(-MEDIA_PLAN_HISTORY_LIMIT),
-		};
+		const updated = { ...all };
+		// Reinsert so object order tracks recency for the bounded session cache.
+		delete updated[payload.sessionId];
+		updated[payload.sessionId] = [...next, payload].slice(-MEDIA_PLAN_HISTORY_LIMIT);
+		const sessionIds = Object.keys(updated);
+		while (sessionIds.length > MEDIA_PLAN_SESSION_LIMIT) {
+			delete updated[sessionIds.shift()!];
+		}
+		return updated;
 	});
 }
 

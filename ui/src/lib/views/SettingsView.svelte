@@ -14,7 +14,7 @@
 		onAnimationEnd?: (event: AnimationEvent) => void;
 	} = $props();
 	import { onMount, onDestroy, tick } from 'svelte';
-	import { registerListeners } from '$lib/events.ts';
+	import { appEventListeners, registerListeners } from '$lib/events.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
@@ -847,7 +847,7 @@
 	onMount(async () => {
 		registerSettingsLeaveGuard({ isDirty, confirmLeave });
 		eventRegistrations = registerListeners(
-			{
+			appEventListeners({
 				'llm:config_changed': () => {
 					if (skipNextChatModelSync) {
 						skipNextChatModelSync = false;
@@ -855,7 +855,7 @@
 					}
 					syncChatModelFromBackend();
 				},
-			},
+			}),
 			{ tag: 'SettingsView' },
 		);
 		let settingsLoadedSuccessfully = false;

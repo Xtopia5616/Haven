@@ -17,7 +17,7 @@ function makeHarness(
 		options: { context: string; message: string; log?: boolean };
 	}> = [];
 	const suppressed: boolean[] = [];
-	const modelIds: string[] = [];
+	const modelConfigIds: string[] = [];
 	const modelNames: string[] = [];
 	const efforts: string[] = [];
 	const webSearchModes: string[] = [];
@@ -38,7 +38,7 @@ function makeHarness(
 	const dependencies: ChatModelOperationsDependencies = {
 		commands,
 		setSkipNextDefaultModelRefresh: (skip) => suppressed.push(skip),
-		setCurrentModelId: (value) => modelIds.push(value),
+		setCurrentModelConfigId: (value) => modelConfigIds.push(value),
 		setCurrentModelName: (value) => modelNames.push(value),
 		setCurrentEffort: (value) => efforts.push(value),
 		setCurrentWebSearch: (value) => webSearchModes.push(value),
@@ -58,7 +58,7 @@ function makeHarness(
 		notifications,
 		errors,
 		suppressed,
-		modelIds,
+		modelConfigIds,
 		modelNames,
 		efforts,
 		webSearchModes,
@@ -75,7 +75,7 @@ describe('createChatModelOperations', () => {
 		const harness = makeHarness();
 
 		await harness.controller.selectModel({
-			id: 'chat-profile',
+			modelConfigId: 'chat-profile',
 			name: 'chat-profile',
 			providerName: 'provider',
 			model: 'provider/model',
@@ -92,7 +92,7 @@ describe('createChatModelOperations', () => {
 			},
 		]);
 		expect(harness.modelMenuClosed).toBe(1);
-		expect(harness.modelIds).toEqual(['chat-profile']);
+		expect(harness.modelConfigIds).toEqual(['chat-profile']);
 		expect(harness.modelNames).toEqual(['chat-profile']);
 		expect(harness.efforts).toEqual(['high']);
 		expect(harness.webSearchModes).toEqual(['auto']);
@@ -108,7 +108,7 @@ describe('createChatModelOperations', () => {
 		const harness = makeHarness();
 
 		await harness.controller.selectModel({
-			id: 'local-chat',
+			modelConfigId: 'local-chat',
 			name: 'local-chat',
 			providerName: 'local',
 			model: 'llama3',
@@ -132,7 +132,7 @@ describe('createChatModelOperations', () => {
 		const harness = makeHarness();
 
 		await harness.controller.selectModel({
-			id: 'gemini-chat',
+			modelConfigId: 'gemini-chat',
 			name: 'gemini-chat',
 			providerName: 'gemini',
 			model: 'gemini-2.5-pro',
@@ -187,7 +187,7 @@ describe('createChatModelOperations', () => {
 			name: 'model switch',
 			select: (controller: ReturnType<typeof createChatModelOperations>) =>
 				controller.selectModel({
-					id: 'chat-profile',
+					modelConfigId: 'chat-profile',
 					name: 'chat-profile',
 					providerName: 'provider',
 					model: 'provider/model',

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+	DRAFT_SESSION_ID,
 	initialSessionState,
 	SessionReducer,
 	reduceSession,
@@ -19,6 +20,107 @@ const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState =
 });
 
 describe('SessionReducer', () => {
+	it('clears session projections while preserving the draft and non-session interactions', () => {
+		const sessionId = 'ses-00000000000000000000000000000041';
+		const sessionMessage = {
+			id: 'msg-00000000000000000000000000000041',
+			role: 'assistant' as const,
+			content: 'session transcript',
+		};
+		const draftMessage = {
+			id: 'msg-00000000000000000000000000000042',
+			role: 'user' as const,
+			content: 'draft input',
+		};
+		const sessionInteraction = {
+			requestId: 'step-00000000000000000000000000000041',
+			sessionId,
+			owner: { kind: 'session' as const, sessionId },
+			kind: 'ask' as const,
+			status: 'pending' as const,
+			options: [],
+			createdAt: '',
+		};
+		const scheduledInteraction = {
+			requestId: 'conf-00000000000000000000000000000041',
+			owner: {
+				kind: 'scheduled_tool_run' as const,
+				toolRunId: 'toolrun-00000000000000000000000000000041',
+			},
+			kind: 'scheduled_confirm' as const,
+			status: 'pending' as const,
+			options: [],
+			toolName: 'scheduled_tool',
+			summary: 'Run scheduled operation',
+			permissionKey: 'tool.scheduled_tool',
+			createdAt: '',
+		};
+		const appInteraction = {
+			requestId: 'conf-00000000000000000000000000000042',
+			owner: { kind: 'app_command' as const },
+			kind: 'confirm' as const,
+			status: 'pending' as const,
+			options: [],
+			toolName: 'run_command',
+			riskLevel: 'high' as const,
+			summary: 'Run protected operation',
+			toolIndex: 0,
+			createdAt: '',
+		};
+		const state = stateWith({
+			sessions: [session(sessionId)],
+			activeSessionId: sessionId,
+			messages: { [sessionId]: [sessionMessage], [DRAFT_SESSION_ID]: [draftMessage] },
+			interactions: {
+				[sessionInteraction.requestId]: sessionInteraction,
+				[scheduledInteraction.requestId]: scheduledInteraction,
+				[appInteraction.requestId]: appInteraction,
+			},
+			tokenStats: {
+				[sessionId]: {
+					promptTokens: 1,
+					completionTokens: 1,
+					totalTokens: 2,
+					cumulativePromptTokens: 1,
+					cumulativeCompletionTokens: 1,
+					cumulativeTotalTokens: 2,
+					costUsd: 0.01,
+					cumulativeCostUsd: 0.01,
+					contextWindow: 128_000,
+					model: 'test-model',
+				},
+			},
+			llmUsage: { [sessionId]: [{ usageId: 'usage-00000000000000000000000000000041' }] },
+			replay: {
+				eventSequenceBySession: { [sessionId]: ['1'] },
+				chunkSeqByMessage: { [sessionMessage.id]: 1 },
+				blockIdsBySession: { [sessionId]: {} },
+			},
+			pendingMessageOwners: {
+				[sessionMessage.id]: {
+					sessionId,
+				},
+			},
+		});
+
+		const cleared = reduceSession(state, { type: 'sessions/cleared' });
+
+		expect(cleared.sessions).toEqual([]);
+		expect(cleared.messages).toEqual({ [DRAFT_SESSION_ID]: [draftMessage] });
+		expect(cleared.interactions).toEqual({
+			[scheduledInteraction.requestId]: scheduledInteraction,
+			[appInteraction.requestId]: appInteraction,
+		});
+		expect(cleared.tokenStats).toEqual({});
+		expect(cleared.llmUsage).toEqual({});
+		expect(cleared.replay).toEqual({
+			eventSequenceBySession: {},
+			chunkSeqByMessage: {},
+			blockIdsBySession: {},
+		});
+		expect(cleared.pendingMessageOwners).toEqual({});
+	});
+
 	it('projects a completed web search as a finalized tool message', () => {
 		const next = reduceSession(initialSessionState, {
 			type: 'agent/web-search',
@@ -50,6 +152,11 @@ describe('SessionReducer', () => {
 			kind: 'confirm' as const,
 			status: 'pending' as const,
 			options: [],
+			toolName: 'run_command',
+			riskLevel: 'high' as const,
+			summary: 'Run protected operation',
+			toolIndex: 0,
+			invocationStepId: 'step-00000000000000000000000000000001',
 			createdAt: '2026-09-25T00:00:00Z',
 		};
 		const initial = stateWith({ interactions: { [pending.requestId]: pending } });
@@ -70,6 +177,10 @@ describe('SessionReducer', () => {
 			kind: 'confirm' as const,
 			status: 'pending' as const,
 			options: [],
+			toolName: 'run_command',
+			riskLevel: 'high' as const,
+			summary: 'Run protected operation',
+			toolIndex: 0,
 			createdAt: '2026-09-25T00:00:00Z',
 		};
 		const initial = stateWith({ interactions: { [pending.requestId]: pending } });
@@ -93,16 +204,25 @@ describe('SessionReducer', () => {
 		const scheduled = {
 			requestId: 'conf-e3dd57e72e242ef384277968ca385a88',
 			sessionId: 'ses-32f23b1e00f85571a60f75dde5588074',
-			owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-2113ac173bb7c669462883a7ca897832' },
+			owner: {
+				kind: 'scheduled_tool_run' as const,
+				toolRunId: 'toolrun-2113ac173bb7c669462883a7ca897832',
+			},
 			kind: 'scheduled_confirm' as const,
 			status: 'pending' as const,
 			options: [],
+			toolName: 'scheduled_tool',
+			summary: 'Run scheduled operation',
+			permissionKey: 'tool.scheduled_tool',
 			createdAt: '',
 		};
 		const otherScheduled = {
 			...scheduled,
 			requestId: 'conf-f6fc3107a24b02add8d010e0a7530995',
-			owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-bde27a06150dcf27f5eb46a0a0be6cf3' },
+			owner: {
+				kind: 'scheduled_tool_run' as const,
+				toolRunId: 'toolrun-bde27a06150dcf27f5eb46a0a0be6cf3',
+			},
 		};
 		const sessionRequest = {
 			requestId: 'conf-fdfb9b65ea4c91a392968372aa18a225',
@@ -111,6 +231,11 @@ describe('SessionReducer', () => {
 			kind: 'confirm' as const,
 			status: 'pending' as const,
 			options: [],
+			toolName: 'run_command',
+			riskLevel: 'high' as const,
+			summary: 'Run protected operation',
+			toolIndex: 0,
+			invocationStepId: 'step-00000000000000000000000000000001',
 			createdAt: '',
 		};
 		const initial = stateWith({
@@ -155,7 +280,9 @@ describe('SessionReducer', () => {
 			request: request('ask-other', 'ses-b77487af9bb14e5ec4d60572f1248bce', 'pending'),
 		});
 
-		expect(reducer.getPendingInteractionRequestIds('ses-32f23b1e00f85571a60f75dde5588074')).toEqual(['ask-live']);
+		expect(
+			reducer.getPendingInteractionRequestIds('ses-32f23b1e00f85571a60f75dde5588074'),
+		).toEqual(['ask-live']);
 	});
 
 	it('hydrates and clears only requests owned by that session', () => {
@@ -172,10 +299,16 @@ describe('SessionReducer', () => {
 		const scheduledRequest = {
 			requestId: 'conf-e3dd57e72e242ef384277968ca385a88',
 			sessionId: 'ses-32f23b1e00f85571a60f75dde5588074',
-			owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-00000000000000000000000000000001' },
+			owner: {
+				kind: 'scheduled_tool_run' as const,
+				toolRunId: 'toolrun-00000000000000000000000000000001',
+			},
 			kind: 'scheduled_confirm' as const,
 			status: 'pending' as const,
 			options: [],
+			toolName: 'scheduled_tool',
+			summary: 'Run scheduled operation',
+			permissionKey: 'tool.scheduled_tool',
 			createdAt: '',
 		};
 		const appRequest = {
@@ -184,6 +317,10 @@ describe('SessionReducer', () => {
 			kind: 'confirm' as const,
 			status: 'pending' as const,
 			options: [],
+			toolName: 'run_command',
+			riskLevel: 'high' as const,
+			summary: 'Run protected operation',
+			toolIndex: 0,
 			createdAt: '',
 		};
 		for (const request of [sessionRequest, scheduledRequest, appRequest])
@@ -208,7 +345,12 @@ describe('SessionReducer', () => {
 
 	it('keeps identical terminal run-end projections from notifying selectors again', () => {
 		const state = stateWith({
-			sessions: [{ ...session('ses-bddd30ebf7650ec7be092600cb64081d', 'completed'), waitingReason: null }],
+			sessions: [
+				{
+					...session('ses-bddd30ebf7650ec7be092600cb64081d', 'completed'),
+					waitingReason: null,
+				},
+			],
 			activeSessionId: 'ses-bddd30ebf7650ec7be092600cb64081d',
 			runEndNotice: {
 				sessionId: 'ses-bddd30ebf7650ec7be092600cb64081d',
@@ -252,12 +394,20 @@ describe('SessionReducer', () => {
 		});
 
 		expect(unchanged).toBe(reducer.snapshot());
-		expect(reducer.getSessionErrorReason('ses-c36288e603571a31e5c831d7da869434')).toBe('网络失败');
+		expect(reducer.getSessionErrorReason('ses-c36288e603571a31e5c831d7da869434')).toBe(
+			'网络失败',
+		);
 		expect(reducer.getSessionErrorReason('ses-bf789d6e0fcd7432cca7b5bc32496866')).toBe('超时');
 		expect(reducer.getSessionErrorReason('')).toBe('');
 
-		reducer.dispatch({ type: 'session/error-reason-forgotten', sessionId: 'ses-c36288e603571a31e5c831d7da869434' });
-		reducer.dispatch({ type: 'session/error-reason-forgotten', sessionId: 'ses-c36288e603571a31e5c831d7da869434' });
+		reducer.dispatch({
+			type: 'session/error-reason-forgotten',
+			sessionId: 'ses-c36288e603571a31e5c831d7da869434',
+		});
+		reducer.dispatch({
+			type: 'session/error-reason-forgotten',
+			sessionId: 'ses-c36288e603571a31e5c831d7da869434',
+		});
 		expect(reducer.getSessionErrorReason('ses-c36288e603571a31e5c831d7da869434')).toBe('');
 		expect(reducer.getSessionErrorReason('ses-bf789d6e0fcd7432cca7b5bc32496866')).toBe('超时');
 	});
@@ -305,7 +455,9 @@ describe('SessionReducer', () => {
 		expect(next.tokenStats[next.activeSessionId!]).toMatchObject(activeStats);
 		expect(next.llmUsage[next.activeSessionId!]).toEqual([activeCall]);
 		expect(next.tokenStats['ses-fb38531de0466990f46b178209103744']).toBe(otherStats);
-		expect(next.llmUsage['ses-fb38531de0466990f46b178209103744']).toBe(state.llmUsage['ses-fb38531de0466990f46b178209103744']);
+		expect(next.llmUsage['ses-fb38531de0466990f46b178209103744']).toBe(
+			state.llmUsage['ses-fb38531de0466990f46b178209103744'],
+		);
 	});
 
 	it('does not let an unrelated background session hijack a fresh draft', () => {
@@ -334,7 +486,11 @@ describe('SessionReducer', () => {
 		const state = stateWith({
 			sessions: [session('ses-1a4ee0ce88355110073c1a46637b89bc', 'error')],
 			activeSessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc',
-			runEndNotice: { sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc', status: 'error', reason: '网络失败' },
+			runEndNotice: {
+				sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc',
+				status: 'error',
+				reason: '网络失败',
+			},
 		});
 
 		const next = reduceSession(state, {
@@ -342,14 +498,21 @@ describe('SessionReducer', () => {
 			sessions: [session('ses-fb38531de0466990f46b178209103744')],
 		});
 
-		expect(next.sessions).toEqual([session('ses-fb38531de0466990f46b178209103744'), session('ses-1a4ee0ce88355110073c1a46637b89bc', 'error')]);
+		expect(next.sessions).toEqual([
+			session('ses-fb38531de0466990f46b178209103744'),
+			session('ses-1a4ee0ce88355110073c1a46637b89bc', 'error'),
+		]);
 	});
 
 	it('clears an error run-end notice when the session resumes or is left', () => {
 		const state = stateWith({
 			sessions: [session('ses-1a4ee0ce88355110073c1a46637b89bc', 'error')],
 			activeSessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc',
-			runEndNotice: { sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc', status: 'error', reason: '失败' },
+			runEndNotice: {
+				sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc',
+				status: 'error',
+				reason: '失败',
+			},
 		});
 
 		expect(
@@ -360,7 +523,10 @@ describe('SessionReducer', () => {
 			}).runEndNotice,
 		).toEqual(state.runEndNotice);
 		expect(
-			reduceSession(state, { type: 'session/selected', sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc' }).runEndNotice,
+			reduceSession(state, {
+				type: 'session/selected',
+				sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc',
+			}).runEndNotice,
 		).toEqual(state.runEndNotice);
 		expect(
 			reduceSession(state, {
@@ -369,7 +535,10 @@ describe('SessionReducer', () => {
 				status: 'pending',
 			}).runEndNotice,
 		).toBeNull();
-		const left = reduceSession(state, { type: 'session/selected', sessionId: 'ses-fb38531de0466990f46b178209103744' });
+		const left = reduceSession(state, {
+			type: 'session/selected',
+			sessionId: 'ses-fb38531de0466990f46b178209103744',
+		});
 		expect(left.runEndNotice).toBeNull();
 	});
 
@@ -377,7 +546,11 @@ describe('SessionReducer', () => {
 		const state = stateWith({
 			sessions: [session('ses-1a4ee0ce88355110073c1a46637b89bc', 'error')],
 			activeSessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc',
-			runEndNotice: { sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc', status: 'error', reason: '失败' },
+			runEndNotice: {
+				sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc',
+				status: 'error',
+				reason: '失败',
+			},
 		});
 
 		const next = reduceSession(state, {
@@ -395,7 +568,11 @@ describe('SessionReducer', () => {
 		const state = stateWith({
 			sessions: [session('ses-1a4ee0ce88355110073c1a46637b89bc', 'error')],
 			activeSessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc',
-			runEndNotice: { sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc', status: 'error', reason: '失败' },
+			runEndNotice: {
+				sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc',
+				status: 'error',
+				reason: '失败',
+			},
 		});
 
 		const next = reduceSession(state, {
@@ -411,16 +588,26 @@ describe('SessionReducer', () => {
 
 	it('clears the current error when the active session is cleared or deleted', () => {
 		const state = stateWith({
-			sessions: [session('ses-1a4ee0ce88355110073c1a46637b89bc', 'error'), session('ses-fb38531de0466990f46b178209103744')],
+			sessions: [
+				session('ses-1a4ee0ce88355110073c1a46637b89bc', 'error'),
+				session('ses-fb38531de0466990f46b178209103744'),
+			],
 			activeSessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc',
-			runEndNotice: { sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc', status: 'error', reason: '失败' },
+			runEndNotice: {
+				sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc',
+				status: 'error',
+				reason: '失败',
+			},
 		});
 
 		const cleared = reduceSession(state, { type: 'session/cleared' });
 		expect(cleared.activeSessionId).toBeNull();
 		expect(cleared.runEndNotice).toBeNull();
 
-		const deleted = reduceSession(state, { type: 'session/deleted', sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc' });
+		const deleted = reduceSession(state, {
+			type: 'session/deleted',
+			sessionId: 'ses-1a4ee0ce88355110073c1a46637b89bc',
+		});
 		expect(deleted.sessions).toEqual([session('ses-fb38531de0466990f46b178209103744')]);
 		expect(deleted.activeSessionId).toBeNull();
 		expect(deleted.runEndNotice).toBeNull();
@@ -442,7 +629,9 @@ describe('SessionReducer', () => {
 			sessions: [session('ses-fb38531de0466990f46b178209103744')],
 		});
 
-		expect(next.sessions).toContainEqual(session('ses-810b085358816d1bc83caf2eb4f45ff1', 'completed'));
+		expect(next.sessions).toContainEqual(
+			session('ses-810b085358816d1bc83caf2eb4f45ff1', 'completed'),
+		);
 		expect(next.runEndNotice?.reason).toBe('用户主动结束会话');
 	});
 
@@ -484,12 +673,89 @@ describe('SessionReducer', () => {
 
 		expect(accepted.messages?._draft).toEqual([]);
 		expect(accepted.messages?.['ses-e81537106812fb446551d3a7ec775e7e']).toEqual([
-			{ ...optimistic, id: 'msg-0000000000000000000000000000007b', received: true, steering: false },
+			{
+				...optimistic,
+				id: 'msg-0000000000000000000000000000007b',
+				received: true,
+				steering: false,
+			},
 		]);
-		expect(accepted.optimistic?.[optimistic.id]).toEqual({
-			sessionId: 'ses-e81537106812fb446551d3a7ec775e7e',
-			messageId: 'msg-0000000000000000000000000000007b',
-			status: 'accepted',
+		expect(accepted.pendingMessageOwners?.[optimistic.id]).toBeUndefined();
+	});
+
+	it('keeps pending ownership through draft adoption and clears the migrated bubble on rejection', () => {
+		const draftMessage: SessionMessage = {
+			id: 'u-pending-draft',
+			role: 'user',
+			content: 'voice input',
+		};
+		const sessionId = 'ses-00000000000000000000000000000051';
+		const pending = reduceSession(initialSessionState, {
+			type: 'session/messages/optimistic-added',
+			sessionId: DRAFT_SESSION_ID,
+			message: draftMessage,
+		});
+		const adopted = reduceSession(pending, {
+			type: 'session/messages/adopt-draft',
+			sessionId,
+		});
+
+		expect(adopted.pendingMessageOwners[draftMessage.id]).toEqual({ sessionId });
+		const rejected = reduceSession(adopted, {
+			type: 'session/messages/rejected',
+			sessionId: DRAFT_SESSION_ID,
+			messageId: draftMessage.id,
+		});
+
+		expect(rejected.messages[sessionId]).toEqual([]);
+		expect(rejected.pendingMessageOwners[draftMessage.id]).toBeUndefined();
+	});
+
+	it('uses canonical supplement ids and distinct renderer keys for injected tool cards', () => {
+		const sessionId = 'ses-00000000000000000000000000000071';
+		const peerSupplement = {
+			sessionId,
+			additionalContext: 'peer context',
+			stepNumber: 1,
+			runId: 1,
+			supplementId: 'msg-00000000000000000000000000000071',
+			injectSource: 'cross_session' as const,
+			eventSequence: 1,
+		};
+		const withPeerCard = reduceSession(initialSessionState, {
+			type: 'agent/supplement',
+			payload: peerSupplement,
+		});
+		const peerCard = withPeerCard.messages[sessionId]?.[0];
+		expect(peerCard).toMatchObject({
+			id: peerSupplement.supplementId,
+			presentationKey: `peer-mail:${peerSupplement.supplementId}`,
+		});
+		expect(
+			reduceSession(withPeerCard, { type: 'agent/supplement', payload: peerSupplement }).messages[
+				sessionId
+			],
+		).toHaveLength(1);
+
+		const toolRunId = 'toolrun-00000000000000000000000000000071';
+		const toolRunSupplement = {
+			sessionId,
+			additionalContext: `[Background tool run result]\ntool_run_id: ${toolRunId}\nstatus: completed`,
+			stepNumber: 2,
+			runId: 2,
+			messageId: 'msg-00000000000000000000000000000072',
+			supplementId: 'msg-00000000000000000000000000000072',
+			injectSource: 'tool_run_result' as const,
+			eventSequence: 2,
+		};
+		const withToolRunCard = reduceSession(withPeerCard, {
+			type: 'agent/supplement',
+			payload: toolRunSupplement,
+		});
+		expect(withToolRunCard.messages[sessionId]?.[1]).toMatchObject({
+			id: toolRunSupplement.supplementId,
+			presentationKey: `tool-run-result:${toolRunSupplement.supplementId}:${toolRunId}`,
+			toolName: 'tool_runs.inspect',
 		});
 	});
 
@@ -498,7 +764,12 @@ describe('SessionReducer', () => {
 			...initialSessionState,
 			messages: {
 				'ses-d628ca764938045bf3f3194d0ff8893a': [
-					{ id: 'step-82ef0e384f975888083f77d13d14a4fe', type: 'tool', content: '', streaming: true },
+					{
+						id: 'step-82ef0e384f975888083f77d13d14a4fe',
+						type: 'tool',
+						content: '',
+						streaming: true,
+					},
 					{
 						id: 'stale-final',
 						role: 'assistant' as const,
@@ -513,15 +784,35 @@ describe('SessionReducer', () => {
 			type: 'session/messages/resume-loaded',
 			sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a',
 			messages: [
-				{ id: 'step-82ef0e384f975888083f77d13d14a4fe', type: 'tool', content: '数据库尚未写完', streaming: false },
-				{ id: 'msg-ac1a07415ae294c58298ee88de671d65', role: 'assistant' as const, content: '已保存', streaming: false },
+				{
+					id: 'step-82ef0e384f975888083f77d13d14a4fe',
+					type: 'tool',
+					content: '数据库尚未写完',
+					streaming: false,
+				},
+				{
+					id: 'msg-ac1a07415ae294c58298ee88de671d65',
+					role: 'assistant' as const,
+					content: '已保存',
+					streaming: false,
+				},
 			],
 			preserveStreamingOnly: true,
 		});
 
 		expect(next.messages?.['ses-d628ca764938045bf3f3194d0ff8893a']).toEqual([
-			{ id: 'step-82ef0e384f975888083f77d13d14a4fe', type: 'tool', content: '', streaming: true },
-			{ id: 'msg-ac1a07415ae294c58298ee88de671d65', role: 'assistant' as const, content: '已保存', streaming: false },
+			{
+				id: 'step-82ef0e384f975888083f77d13d14a4fe',
+				type: 'tool',
+				content: '',
+				streaming: true,
+			},
+			{
+				id: 'msg-ac1a07415ae294c58298ee88de671d65',
+				role: 'assistant' as const,
+				content: '已保存',
+				streaming: false,
+			},
 		]);
 	});
 
@@ -530,8 +821,17 @@ describe('SessionReducer', () => {
 			...initialSessionState,
 			messages: {
 				'ses-d628ca764938045bf3f3194d0ff8893a': [
-					{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
-					{ id: 'msg-00000000000000000000000000000002', role: 'user' as const, content: '补充', steering: true },
+					{
+						id: 'msg-00000000000000000000000000000001',
+						role: 'user' as const,
+						content: 'hi',
+					},
+					{
+						id: 'msg-00000000000000000000000000000002',
+						role: 'user' as const,
+						content: '补充',
+						steering: true,
+					},
 				],
 			},
 		};
@@ -540,19 +840,36 @@ describe('SessionReducer', () => {
 			type: 'session/messages/resume-loaded',
 			sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a',
 			messages: [
-				{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
-				{ id: 'msg-00000000000000000000000000000002', role: 'user' as const, content: '补充' },
-				{ id: 'msg-581584b22ed8f37635989297798f2af0', role: 'assistant' as const, content: '继续处理' },
+				{
+					id: 'msg-00000000000000000000000000000001',
+					role: 'user' as const,
+					content: 'hi',
+				},
+				{
+					id: 'msg-00000000000000000000000000000002',
+					role: 'user' as const,
+					content: '补充',
+				},
+				{
+					id: 'msg-581584b22ed8f37635989297798f2af0',
+					role: 'assistant' as const,
+					content: '继续处理',
+				},
 			],
 			preserveStreamingOnly: true,
 		});
 
-		expect(next.messages?.['ses-d628ca764938045bf3f3194d0ff8893a'].map((message) => message.id)).toEqual([
+		expect(
+			next.messages?.['ses-d628ca764938045bf3f3194d0ff8893a'].map((message) => message.id),
+		).toEqual([
 			'msg-00000000000000000000000000000001',
 			'msg-581584b22ed8f37635989297798f2af0',
 			'msg-00000000000000000000000000000002',
 		]);
-		expect(next.messages?.['ses-d628ca764938045bf3f3194d0ff8893a'][2]).toMatchObject({ id: 'msg-00000000000000000000000000000002', steering: true });
+		expect(next.messages?.['ses-d628ca764938045bf3f3194d0ff8893a'][2]).toMatchObject({
+			id: 'msg-00000000000000000000000000000002',
+			steering: true,
+		});
 	});
 
 	it('does not drop a live confirmation when resume snapshot is behind the event', () => {
@@ -563,6 +880,11 @@ describe('SessionReducer', () => {
 			kind: 'confirm' as const,
 			status: 'pending' as const,
 			options: [],
+			toolName: 'run_command',
+			riskLevel: 'high' as const,
+			summary: 'Run protected operation',
+			toolIndex: 0,
+			invocationStepId: 'step-00000000000000000000000000000001',
 			createdAt: '2026-09-20T00:00:00Z',
 		};
 		const state = { ...initialSessionState, interactions: { [pending.requestId]: pending } };
@@ -595,6 +917,11 @@ describe('SessionReducer', () => {
 			kind: 'confirm' as const,
 			status: 'pending' as const,
 			options: [],
+			toolName: 'run_command',
+			riskLevel: 'high' as const,
+			summary: 'Run protected operation',
+			toolIndex: 0,
+			invocationStepId: 'step-00000000000000000000000000000001',
 			createdAt: '2026-09-20T00:00:00Z',
 		};
 		const state = { ...initialSessionState, interactions: { [pending.requestId]: pending } };
@@ -602,7 +929,13 @@ describe('SessionReducer', () => {
 		const resumed = reduceSession(state, {
 			type: 'session/messages/resume-loaded',
 			sessionId: pending.sessionId,
-			messages: [{ id: 'msg-da2427f68ad3025dae11e59d08bda3b3', role: 'assistant' as const, content: '已恢复' }],
+			messages: [
+				{
+					id: 'msg-da2427f68ad3025dae11e59d08bda3b3',
+					role: 'assistant' as const,
+					content: '已恢复',
+				},
+			],
 			interactions: [],
 			preserveRequestIds: [pending.requestId],
 			usage: {
@@ -619,7 +952,11 @@ describe('SessionReducer', () => {
 		});
 
 		expect(resumed.messages[pending.sessionId]).toEqual([
-			{ id: 'msg-da2427f68ad3025dae11e59d08bda3b3', role: 'assistant' as const, content: '已恢复' },
+			{
+				id: 'msg-da2427f68ad3025dae11e59d08bda3b3',
+				role: 'assistant' as const,
+				content: '已恢复',
+			},
 		]);
 		expect(resumed.interactions[pending.requestId]).toEqual(pending);
 		expect(resumed.tokenStats[pending.sessionId]).toMatchObject({
@@ -737,10 +1074,11 @@ describe('SessionReducer', () => {
 		dispose();
 
 		expect(listener).toHaveBeenCalledTimes(2); // initial subscription + one frame
-		expect(reducer.getMessages('ses-0ee5edd563b411bb4eb827e9afb75e7a').map((message) => message.content)).toEqual([
-			'先',
-			'后',
-		]);
+		expect(
+			reducer
+				.getMessages('ses-0ee5edd563b411bb4eb827e9afb75e7a')
+				.map((message) => message.content),
+		).toEqual(['先', '后']);
 		expect(
 			reduceSession(reducer.snapshot(), {
 				type: 'agent/chunks',
@@ -830,7 +1168,9 @@ describe('SessionReducer', () => {
 			type: 'sessions/loaded',
 			sessions: [],
 		});
-		expect(refreshed.sessions).toContainEqual(session('ses-bddd30ebf7650ec7be092600cb64081d', 'completed'));
+		expect(refreshed.sessions).toContainEqual(
+			session('ses-bddd30ebf7650ec7be092600cb64081d', 'completed'),
+		);
 		expect(refreshed.runEndNotice).toEqual({
 			sessionId: 'ses-bddd30ebf7650ec7be092600cb64081d',
 			status: 'completed',
@@ -853,23 +1193,45 @@ describe('SessionReducer', () => {
 		};
 		const first = reduceSession(initialSessionState, {
 			type: 'agent/tool_call',
-			payload: { ...base, stepId: 'step-ed4d1203d9eee442682361d4f077efd7', toolIndex: 0, toolCallId: 'call-a' },
+			payload: {
+				...base,
+				stepId: 'step-ed4d1203d9eee442682361d4f077efd7',
+				toolIndex: 0,
+				toolCallId: 'call-a',
+			},
 		});
 		const second = reduceSession(first, {
 			type: 'agent/tool_call',
-			payload: { ...base, stepId: 'step-e23a75ffc10203f54edf15d337e0a880', toolIndex: 1, toolCallId: 'call-b' },
+			payload: {
+				...base,
+				stepId: 'step-e23a75ffc10203f54edf15d337e0a880',
+				toolIndex: 1,
+				toolCallId: 'call-b',
+			},
 		});
-		expect(second.messages?.['ses-3c6f66976600af4c8a7aa758dbcea7af']?.map((message) => message.id)).toEqual([
+		expect(
+			second.messages?.['ses-3c6f66976600af4c8a7aa758dbcea7af']?.map((message) => message.id),
+		).toEqual([
 			'step-ed4d1203d9eee442682361d4f077efd7',
 			'step-e23a75ffc10203f54edf15d337e0a880',
 		]);
 		const replayA = reduceSession(second, {
 			type: 'agent/tool_call',
-			payload: { ...base, stepId: 'step-ed4d1203d9eee442682361d4f077efd7', toolIndex: 0, toolCallId: 'call-a' },
+			payload: {
+				...base,
+				stepId: 'step-ed4d1203d9eee442682361d4f077efd7',
+				toolIndex: 0,
+				toolCallId: 'call-a',
+			},
 		});
 		const replayB = reduceSession(replayA, {
 			type: 'agent/tool_call',
-			payload: { ...base, stepId: 'step-e23a75ffc10203f54edf15d337e0a880', toolIndex: 1, toolCallId: 'call-b' },
+			payload: {
+				...base,
+				stepId: 'step-e23a75ffc10203f54edf15d337e0a880',
+				toolIndex: 1,
+				toolCallId: 'call-b',
+			},
 		});
 		expect(replayA).toBe(second);
 		expect(replayB).toBe(replayA);
@@ -898,7 +1260,9 @@ describe('SessionReducer', () => {
 		});
 		expect(thoughtReplay).toBe(thought);
 		expect(
-			thought.messages?.['ses-3c6f66976600af4c8a7aa758dbcea7af']?.some((message) => message.content === 'keep'),
+			thought.messages?.['ses-3c6f66976600af4c8a7aa758dbcea7af']?.some(
+				(message) => message.content === 'keep',
+			),
 		).toBe(true);
 
 		const unsequenced = reduceSession(thought, {

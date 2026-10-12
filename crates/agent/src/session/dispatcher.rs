@@ -5,10 +5,21 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::Notify;
 use tracing::Instrument;
 
+const DISPATCHER_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn session_run_error_reason(error: &anyhow::Error) -> String {
     crate::sqlite_storage_failure_message(error)
         .map(str::to_owned)
         .unwrap_or_else(|| error.to_string())
+}
+
+fn log_dispatcher_task_failure(error: tokio::task::JoinError) {
+    if !error.is_cancelled() {
+        tracing::warn!(
+            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "session dispatcher child task failed"
+        );
+    }
 }
 
 /// Explicit run admission state. A Tokio semaphore cannot safely represent a
@@ -318,61 +329,75 @@ impl SessionSupervisor {
             tracing::error!("session dispatcher terminal cleanup retry receiver is unavailable");
             return;
         };
-        tokio::spawn(async move {
+        let dispatcher = self.clone();
+        let dispatcher_cancellation = cancellation.child_token();
+        *self
+            .dispatcher_cancellation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(dispatcher_cancellation.clone());
+        let handle = tokio::spawn(async move {
+            let mut run_tasks = tokio::task::JoinSet::new();
             if recover_pending {
-                match self
-                    .recover_pending_sessions_with_retry(&cancellation, 0)
+                match dispatcher
+                    .recover_pending_sessions_with_retry(&dispatcher_cancellation, 0)
                     .await
                 {
                     Some(count) if count > 0 => {
                         tracing::info!(count, "reloaded pending sessions")
                     }
                     Some(_) => {}
-                    None => return,
+                    None => {}
                 }
             }
-            let mut wake_rx = self.subscribe_dispatch();
-            loop {
+            let mut wake_rx = dispatcher.subscribe_dispatch();
+            'dispatcher: loop {
                 let permit = tokio::select! {
-                    _ = cancellation.cancelled() => return,
-                    retry_id = retry_rx.recv() => {
-                        let Some(session_id) = retry_id else {
-                            return;
-                        };
-                        if let Some(retry) = self.terminal_cleanup_retry_queue.take(&session_id) {
-                            self.retry_terminal_cleanup(&session_id, retry).await;
+                    _ = dispatcher_cancellation.cancelled() => break,
+                    result = run_tasks.join_next(), if !run_tasks.is_empty() => {
+                        if let Some(Err(error)) = result {
+                            log_dispatcher_task_failure(error);
                         }
                         continue;
                     }
-                    permit = self.admission.acquire(&cancellation) => match permit {
+                    retry_id = retry_rx.recv() => {
+                        let Some(session_id) = retry_id else {
+                            break;
+                        };
+                        if let Some(retry) = dispatcher.terminal_cleanup_retry_queue.take(&session_id) {
+                            dispatcher.retry_terminal_cleanup(&session_id, retry).await;
+                        }
+                        continue;
+                    }
+                    permit = dispatcher.admission.acquire(&dispatcher_cancellation) => match permit {
                         Some(permit) => permit,
-                        None => return,
+                        None => break,
                     },
                 };
-                let Some(session_id) = self.try_claim_pending().await else {
+                let Some(session_id) = dispatcher.try_claim_pending().await else {
                     drop(permit);
                     tokio::select! {
-                        _ = cancellation.cancelled() => return,
+                        _ = dispatcher_cancellation.cancelled() => break 'dispatcher,
                         retry_id = retry_rx.recv() => {
                             let Some(session_id) = retry_id else {
-                                return;
+                                break;
                             };
-                            if let Some(retry) = self.terminal_cleanup_retry_queue.take(&session_id) {
-                                self.retry_terminal_cleanup(&session_id, retry).await;
+                            if let Some(retry) = dispatcher.terminal_cleanup_retry_queue.take(&session_id) {
+                                dispatcher.retry_terminal_cleanup(&session_id, retry).await;
                             }
                         }
                         result = wake_rx.changed() => {
                             if result.is_err() {
-                                return;
+                                break;
                             }
                         }
                     }
                     continue;
                 };
-                let supervisor = self.clone();
+                let supervisor = dispatcher.clone();
                 let runner = engine.clone();
                 let span = tracing::info_span!("run_session", session_id = %session_id);
-                tokio::spawn(async move {
+                run_tasks.spawn(async move {
                     let result = async {
                         let actor = supervisor.actor_for(&session_id).await.ok_or_else(|| {
                             anyhow::anyhow!("session actor disappeared before run")
@@ -434,7 +459,66 @@ impl SessionSupervisor {
                     drop(permit);
                 });
             }
+
+            while let Some(result) = run_tasks.join_next().await {
+                if let Err(error) = result {
+                    log_dispatcher_task_failure(error);
+                }
+            }
+
+            // A run wrapper can enqueue a terminal-cleanup retry while the
+            // dispatcher is draining on shutdown. Give those retries one final
+            // attempt while their session actors and dependent services remain
+            // available; a persistent failure remains visible in the log.
+            for (session_id, retry) in dispatcher.terminal_cleanup_retry_queue.take_all() {
+                dispatcher.retry_terminal_cleanup(&session_id, retry).await;
+            }
+            let remaining_retries = dispatcher.terminal_cleanup_retry_queue.pending_count();
+            if remaining_retries > 0 {
+                tracing::warn!(
+                    count = remaining_retries,
+                    "terminal session cleanup retries remain after dispatcher shutdown"
+                );
+            }
         });
+        *self
+            .dispatcher_task
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handle);
+    }
+
+    /// Join the dispatcher loop and every run wrapper it owns. Application
+    /// shutdown calls this after cancelling and quiescing session actors, but
+    /// before closing ToolRun or MCP resources used by run-exit reconciliation.
+    pub async fn join_dispatcher(&self) {
+        if let Some(cancellation) = self
+            .dispatcher_cancellation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            cancellation.cancel();
+        }
+        let Some(mut handle) = self
+            .dispatcher_task
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        else {
+            return;
+        };
+        match tokio::time::timeout(DISPATCHER_SHUTDOWN_TIMEOUT, &mut handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => log_dispatcher_task_failure(error),
+            Err(_) => {
+                tracing::warn!(
+                    timeout = ?DISPATCHER_SHUTDOWN_TIMEOUT,
+                    "session dispatcher did not stop before the shutdown deadline; aborting owned tasks"
+                );
+                handle.abort();
+                let _ = handle.await;
+            }
+        }
     }
 
     pub(crate) async fn try_claim_pending(&self) -> Option<String> {
@@ -506,23 +590,6 @@ impl SessionSupervisor {
 
     pub fn max_concurrent(&self) -> usize {
         self.admission.limit()
-    }
-
-    pub async fn running_tool_runs_list(&self) -> Vec<String> {
-        let actors = self
-            .actors
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut ids = Vec::new();
-        for actor in actors {
-            if actor.is_running().await {
-                ids.push(actor.session_id.clone());
-            }
-        }
-        ids
     }
 
     pub async fn is_run_in_flight(&self, session_id: &str) -> bool {

@@ -31,15 +31,13 @@ use super::canonical_entity_id_schema;
 use crate::{OperationIdempotency, Tool, ToolResult};
 use haven_messaging::{
     AgentControlOperation, AgentControlRequest, AgentSpawnRequest, AgentStatus, Envelope,
-    MessageType, MessagingService, SendOutcome,
+    MAX_MESSAGE_PAYLOAD_BYTES, MAX_MESSAGE_SUBJECT_BYTES, MAX_MESSAGE_TEXT_BYTES,
+    MAX_MESSAGE_TIMESTAMP_BYTES, MessageType, MessagingService, SendOutcome,
+    validate_message_payload_size,
 };
 #[cfg(test)]
 use haven_messaging::{AgentControlResult, AgentSpawnResult, MessageTransport, MessagingRuntime};
 
-/// Max envelope field sizes (defensive caps; the bus is append-only JSONL).
-const MAX_TEXT_BYTES: usize = 16 * 1024;
-const MAX_SUBJECT_BYTES: usize = 512;
-const MAX_PAYLOAD_BYTES: usize = 64 * 1024;
 /// Default / max wait for `operation=request` (tool timeout sits above this).
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 60;
 const MAX_REQUEST_TIMEOUT_SECS: u64 = 300;
@@ -89,8 +87,8 @@ fn check_text(text: &str) -> anyhow::Result<String> {
     if text.is_empty() {
         anyhow::bail!("text must not be empty");
     }
-    if text.len() > MAX_TEXT_BYTES {
-        anyhow::bail!("text too long (max {MAX_TEXT_BYTES} bytes)");
+    if text.len() > MAX_MESSAGE_TEXT_BYTES {
+        anyhow::bail!("text too long (max {MAX_MESSAGE_TEXT_BYTES} bytes)");
     }
     Ok(text.to_string())
 }
@@ -98,11 +96,11 @@ fn check_text(text: &str) -> anyhow::Result<String> {
 fn check_subject(subject: Option<String>) -> anyhow::Result<Option<String>> {
     match subject {
         Some(s) => {
-            let s = s.trim().to_string();
-            if s.len() > MAX_SUBJECT_BYTES {
-                anyhow::bail!("subject too long (max {MAX_SUBJECT_BYTES} bytes)");
+            let s = s.trim();
+            if s.len() > MAX_MESSAGE_SUBJECT_BYTES {
+                anyhow::bail!("subject too long (max {MAX_MESSAGE_SUBJECT_BYTES} bytes)");
             }
-            Ok((!s.is_empty()).then_some(s))
+            Ok((!s.is_empty()).then(|| s.to_string()))
         }
         None => Ok(None),
     }
@@ -110,10 +108,9 @@ fn check_subject(subject: Option<String>) -> anyhow::Result<Option<String>> {
 
 fn check_payload(payload: Option<Value>) -> anyhow::Result<Option<Value>> {
     if let Some(p) = payload {
-        let len = serde_json::to_vec(&p)?.len();
-        if len > MAX_PAYLOAD_BYTES {
-            anyhow::bail!("payload too large (max {MAX_PAYLOAD_BYTES} bytes serialized)");
-        }
+        validate_message_payload_size(&p).map_err(|_| {
+            anyhow::anyhow!("payload too large (max {MAX_MESSAGE_PAYLOAD_BYTES} bytes serialized)")
+        })?;
         Ok(Some(p))
     } else {
         Ok(None)
@@ -124,6 +121,9 @@ fn check_expires_at(expires_at: Option<String>) -> anyhow::Result<Option<String>
     if let Some(s) = expires_at {
         let s = s.trim().to_string();
         if !s.is_empty() {
+            if s.len() > MAX_MESSAGE_TIMESTAMP_BYTES {
+                anyhow::bail!("expires_at exceeds maximum of {MAX_MESSAGE_TIMESTAMP_BYTES} bytes");
+            }
             chrono::DateTime::parse_from_rfc3339(&s)
                 .map_err(|e| anyhow::anyhow!("expires_at must be RFC3339: {e}"))?;
             return Ok(Some(s));
@@ -1083,7 +1083,7 @@ impl AgentTool {
         .await?;
         if child_count >= MAX_CHILDREN_PER_PARENT {
             anyhow::bail!(
-                "parent_session_id already has {child_count} spawned agents (max {MAX_CHILDREN_PER_PARENT}); end or reuse an existing child before spawning more"
+                "parent_session_id has {child_count} registered child sessions (maximum {MAX_CHILDREN_PER_PARENT}); offline and ended children still count, so no additional child can be spawned"
             );
         }
 
@@ -1180,11 +1180,11 @@ impl Tool for AgentTool {
                 "operation": { "type": "string", "enum": OPERATIONS },
                 "target_session_id": canonical_entity_id_schema("ses", Some("Agent session ID for history, status, wait, stop, or collect; lifecycle control is limited to descendants")),
                 "to_session_id": { "anyOf": [{ "const": "*" }, canonical_entity_id_schema("ses", None)], "description": "Recipient session id; use '*' only to broadcast with send" },
-                "text": { "type": "string", "minLength": 1, "description": "Concise message, reply, or request body" },
-                "subject": { "type": "string", "description": "Optional short topic label, not an instruction channel" },
-                "payload": { "type": "object", "description": "Optional structured low-trust data; keep it small and do not include secrets" },
+                "text": { "type": "string", "minLength": 1, "maxLength": MAX_MESSAGE_TEXT_BYTES, "description": "Concise message, reply, or request body; UTF-8 encoded size at most 16 KiB" },
+                "subject": { "type": "string", "maxLength": MAX_MESSAGE_SUBJECT_BYTES, "description": "Optional short topic label, not an instruction channel; UTF-8 encoded size at most 512 bytes" },
+                "payload": { "type": "object", "description": "Optional structured low-trust data; serialized JSON at most 64 KiB; do not include secrets" },
                 "type": { "type": "string", "enum": ["message", "reply", "broadcast", "request"], "description": "Message type for send; defaults to message" },
-                "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" },
+                "expires_at": { "type": "string", "minLength": 1, "maxLength": MAX_MESSAGE_TIMESTAMP_BYTES, "description": "Optional RFC 3339 expiration timestamp (at most 35 UTF-8 bytes)" },
                 "in_reply_to_message_id": canonical_entity_id_schema("msg", Some("Message id to reply to; omit to use the latest matching peer message")),
                 "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES, "description": "Exact capability token to filter agents by" },
                 "parent_session_id": canonical_entity_id_schema("ses", Some("Exact parent session ID to filter agents by")),
@@ -1213,11 +1213,11 @@ impl Tool for AgentTool {
                     "properties": {
                         "operation": { "const": "send" },
                         "to_session_id": { "anyOf": [{ "const": "*" }, canonical_entity_id_schema("ses", None)], "description": "Recipient session id; use '*' to broadcast to online peers" },
-                        "text": { "type": "string", "minLength": 1, "description": "Concise low-trust message for the recipient" },
-                        "subject": { "type": "string", "description": "Optional short topic label" },
-                        "payload": { "type": "object", "description": "Optional structured low-trust data; do not include secrets" },
+                        "text": { "type": "string", "minLength": 1, "maxLength": MAX_MESSAGE_TEXT_BYTES, "description": "Concise low-trust message for the recipient; UTF-8 encoded size at most 16 KiB" },
+                        "subject": { "type": "string", "maxLength": MAX_MESSAGE_SUBJECT_BYTES, "description": "Optional short topic label; UTF-8 encoded size at most 512 bytes" },
+                        "payload": { "type": "object", "description": "Optional structured low-trust data; serialized JSON at most 64 KiB; do not include secrets" },
                         "type": { "type": "string", "enum": ["message", "reply", "broadcast", "request"], "default": "message", "description": "Envelope type; defaults to message" },
-                        "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" }
+                        "expires_at": { "type": "string", "minLength": 1, "maxLength": MAX_MESSAGE_TIMESTAMP_BYTES, "description": "Optional RFC 3339 expiration timestamp (at most 35 UTF-8 bytes)" }
                     },
                     "required": ["operation", "to_session_id", "text"]
                 },
@@ -1227,10 +1227,10 @@ impl Tool for AgentTool {
                     "properties": {
                         "operation": { "const": "reply" },
                         "to_session_id": canonical_entity_id_schema("ses", Some("Optional recipient session id; omit to infer the latest peer message")),
-                        "text": { "type": "string", "minLength": 1, "description": "Concise reply body" },
-                        "subject": { "type": "string", "description": "Optional short topic label" },
-                        "payload": { "type": "object", "description": "Optional structured low-trust data; do not include secrets" },
-                        "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" },
+                        "text": { "type": "string", "minLength": 1, "maxLength": MAX_MESSAGE_TEXT_BYTES, "description": "Concise reply body; UTF-8 encoded size at most 16 KiB" },
+                        "subject": { "type": "string", "maxLength": MAX_MESSAGE_SUBJECT_BYTES, "description": "Optional short topic label; UTF-8 encoded size at most 512 bytes" },
+                        "payload": { "type": "object", "description": "Optional structured low-trust data; serialized JSON at most 64 KiB; do not include secrets" },
+                        "expires_at": { "type": "string", "minLength": 1, "maxLength": MAX_MESSAGE_TIMESTAMP_BYTES, "description": "Optional RFC 3339 expiration timestamp (at most 35 UTF-8 bytes)" },
                         "in_reply_to_message_id": canonical_entity_id_schema("msg", Some("Specific message id to reply to; omit to use the latest received message"))
                     },
                     "required": ["operation", "text"]
@@ -1252,10 +1252,10 @@ impl Tool for AgentTool {
                     "properties": {
                         "operation": { "const": "request" },
                         "to_session_id": canonical_entity_id_schema("ses", Some("Recipient session id; requests cannot be broadcast")),
-                        "text": { "type": "string", "minLength": 1, "description": "Concise request with the needed context and expected reply" },
-                        "subject": { "type": "string", "description": "Optional short topic label" },
-                        "payload": { "type": "object", "description": "Optional structured low-trust data; do not include secrets" },
-                        "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" },
+                        "text": { "type": "string", "minLength": 1, "maxLength": MAX_MESSAGE_TEXT_BYTES, "description": "Concise request with the needed context and expected reply; UTF-8 encoded size at most 16 KiB" },
+                        "subject": { "type": "string", "maxLength": MAX_MESSAGE_SUBJECT_BYTES, "description": "Optional short topic label; UTF-8 encoded size at most 512 bytes" },
+                        "payload": { "type": "object", "description": "Optional structured low-trust data; serialized JSON at most 64 KiB; do not include secrets" },
+                        "expires_at": { "type": "string", "minLength": 1, "maxLength": MAX_MESSAGE_TIMESTAMP_BYTES, "description": "Optional RFC 3339 expiration timestamp (at most 35 UTF-8 bytes)" },
                         "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS, "default": DEFAULT_REQUEST_TIMEOUT_SECS, "description": "How long to wait once for a reply; defaults to 60 seconds, maximum 300" }
                     },
                     "required": ["operation", "to_session_id", "text"]
@@ -2158,8 +2158,35 @@ mod tests {
             )
             .await;
         assert!(result.unwrap_err().to_string().contains("text"));
-        // Oversized payload.
-        let big = json!({"blob": "x".repeat(MAX_PAYLOAD_BYTES + 1)});
+        // Text and subject use the shared byte limits, including multibyte UTF-8.
+        let result = tool
+            .execute(
+                with_sid(
+                    op(
+                        "send",
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "界".repeat(MAX_MESSAGE_TEXT_BYTES / 3 + 1)}),
+                    ),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("text"));
+        let result = tool
+            .execute(
+                with_sid(
+                    op(
+                        "send",
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "subject": "界".repeat(MAX_MESSAGE_SUBJECT_BYTES / 3 + 1)}),
+                    ),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("subject"));
+        // Oversized payload is rejected with bounded serialization, before a serialized copy is allocated.
+        let big = json!({"blob": "x".repeat(MAX_MESSAGE_PAYLOAD_BYTES + 1)});
         let result = tool
             .execute(
                 with_sid(
@@ -2170,7 +2197,20 @@ mod tests {
             )
             .await;
         assert!(result.unwrap_err().to_string().contains("payload"));
-        // Invalid expires_at.
+        // Oversized and invalid expires_at values.
+        let result = tool
+            .execute(
+                with_sid(
+                    op(
+                        "send",
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "expires_at": "x".repeat(MAX_MESSAGE_TIMESTAMP_BYTES + 1)}),
+                    ),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("expires_at"));
         let result = tool
             .execute(
                 with_sid(
@@ -2804,6 +2844,9 @@ mod tests {
                 Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
             )
             .unwrap();
+            if i == 0 {
+                bus.mark_offline(&name).unwrap();
+            }
         }
         let err = tool
             .execute(
@@ -2816,7 +2859,13 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(err.contains("max"), "{err}");
+        assert!(err.contains("maximum 8"), "{err}");
+        assert!(
+            err.contains("offline and ended children still count"),
+            "{err}"
+        );
+        assert!(err.contains("no additional child can be spawned"), "{err}");
+        assert!(!err.contains("end or reuse"), "{err}");
     }
 
     #[test]

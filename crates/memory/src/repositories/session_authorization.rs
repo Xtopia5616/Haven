@@ -102,7 +102,7 @@ impl Database {
     /// Load all grants for live policy reapplication. The session id remains
     /// part of the typed result so each decision is restored into its owner
     /// scope rather than becoming a process-wide permission.
-    pub fn all_session_authorization_grants(
+    pub fn list_session_authorization_grants(
         &self,
     ) -> anyhow::Result<Vec<StoredSessionAuthorizationGrant>> {
         let conn = self.conn();
@@ -391,7 +391,7 @@ mod tests {
         drop(conn);
 
         assert!(
-            db.all_session_authorization_grants()
+            db.list_session_authorization_grants()
                 .unwrap_err()
                 .to_string()
                 .contains("canonical")

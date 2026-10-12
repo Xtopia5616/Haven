@@ -227,6 +227,21 @@ impl TerminalCleanupRetryQueue {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(session_id)
     }
+
+    pub(crate) fn take_all(&self) -> Vec<(String, TerminalCleanupRetry)> {
+        self.queued
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .drain()
+            .collect()
+    }
+
+    pub(crate) fn pending_count(&self) -> usize {
+        self.queued
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -290,6 +305,13 @@ pub struct ConfirmResolution {
     pub tool_name: String,
     pub tool_input: Value,
     pub status: crate::interaction::InteractionStatus,
+}
+
+/// A confirmation decision restored for a specific tool invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedConfirmationDecision {
+    pub approved: bool,
+    pub receipt: Option<haven_tools::ConfirmationReceipt>,
 }
 
 /// Typed side effects emitted by the supervisor. Consumers subscribe to this
@@ -408,6 +430,12 @@ pub struct SessionSupervisor {
     /// The supervisor owns exactly one dispatcher. Duplicate starts would
     /// create competing lifecycle consumers and make recovery nondeterministic.
     dispatcher_started: std::sync::atomic::AtomicBool,
+    /// Cancellation signal scoped to the dispatcher, so shutdown can stop and
+    /// join it without cancelling unrelated Agent background consumers.
+    dispatcher_cancellation: StdMutex<Option<CancellationToken>>,
+    /// Join owner for the dispatcher loop. The loop owns and drains the per-run
+    /// tasks so shutdown cannot outlive the reconciliation work it starts.
+    dispatcher_task: StdMutex<Option<tokio::task::JoinHandle<()>>>,
     /// FIFO dispatch queue: session ids in the order they became `Pending`
     /// (insertion order ≈ creation order for fresh sessions). The dispatcher
     /// claims from the front, so queued sessions run in submission order instead
@@ -522,6 +550,8 @@ impl SessionSupervisor {
             #[cfg(test)]
             direct_session_run_lease_id: AtomicUsize::new(0),
             dispatcher_started: std::sync::atomic::AtomicBool::new(false),
+            dispatcher_cancellation: StdMutex::new(None),
+            dispatcher_task: StdMutex::new(None),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             dispatch_tx: watch::channel(0).0,
             #[cfg(test)]
@@ -637,7 +667,7 @@ impl SessionSupervisor {
         // restored trust active. Callers surface the error and remain
         // fail-closed until reconciliation succeeds.
         self.authorization.clear_all_trust().await;
-        let grants = self.store.all_session_authorization_grants().await?;
+        let grants = self.store.list_session_authorization_grants().await?;
         let count = grants.len();
         for stored in grants {
             self.authorization
@@ -1336,14 +1366,15 @@ mod tests {
         exec.clone()
             .start_dispatcher_without_recovery_with_cancellation(handler, cancellation.clone());
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while exec.actor_for(&session.session_id).await.is_some() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the dispatcher retry worker should reclaim idle terminal cleanup");
-        cancellation.cancel();
+        exec.join_dispatcher().await;
+        assert!(
+            !cancellation.is_cancelled(),
+            "joining the dispatcher must cancel only its child token"
+        );
+        assert!(
+            exec.actor_for(&session.session_id).await.is_none(),
+            "shutdown should drain terminal cleanup retries after run wrappers"
+        );
     }
 
     #[tokio::test]
@@ -1396,6 +1427,7 @@ mod tests {
         .await
         .expect("an aborted End must retry its committed terminal cleanup");
         cancellation.cancel();
+        exec.join_dispatcher().await;
     }
 
     #[tokio::test]
@@ -3356,6 +3388,7 @@ mod tests {
         .await
         .expect("the recovered pending session should complete");
         cancellation.cancel();
+        exec.join_dispatcher().await;
 
         assert_eq!(handled.load(Ordering::SeqCst), 1);
         assert_eq!(

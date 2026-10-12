@@ -145,6 +145,28 @@ fn timestamped_backup_path(path: &Path) -> PathBuf {
 }
 
 const MAX_AUTOMATIC_CONFIG_BACKUPS: usize = 10;
+/// Config input is intentionally small: it is a user-edited settings document,
+/// not a bulk data format. Oversized files are rejected and left untouched.
+const MAX_CONFIG_FILE_BYTES: usize = 4 * 1024 * 1024;
+
+fn read_config_file(path: &Path) -> anyhow::Result<String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > MAX_CONFIG_FILE_BYTES as u64 {
+        anyhow::bail!("config file exceeds the {MAX_CONFIG_FILE_BYTES}-byte limit");
+    }
+
+    // Read one byte past the limit so a file that grows after metadata is
+    // checked is rejected without an unbounded allocation.
+    let mut bytes = Vec::with_capacity(MAX_CONFIG_FILE_BYTES.min(64 * 1024));
+    file.take(MAX_CONFIG_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_CONFIG_FILE_BYTES {
+        anyhow::bail!("config file exceeds the {MAX_CONFIG_FILE_BYTES}-byte limit");
+    }
+    String::from_utf8(bytes).map_err(Into::into)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct AutomaticBackupIdentity {
@@ -208,12 +230,14 @@ fn prune_timestamped_backups(config_path: &Path) {
     }
 }
 
-fn backup_unparsable_config(path: &Path, failure_kind: &'static str) {
+fn backup_unparsable_config(path: &Path, content: &[u8], failure_kind: &'static str) {
     // Never silently start with defaults: the next save() would overwrite the
     // user's config (MCP servers, API keys, skills) with defaults. Back up the
     // unparsable file so it can be recovered, then continue with defaults.
     let backup = timestamped_backup_path(path);
-    match std::fs::copy(path, &backup) {
+    // Back up exactly the already-bounded bytes that failed validation. This
+    // avoids re-reading a concurrently replaced or grown config file.
+    match std::fs::write(&backup, content) {
         Ok(_) => {
             prune_timestamped_backups(path);
             tracing::error!(
@@ -311,7 +335,7 @@ impl ConfigLoader {
             });
         }
         tracing::info!("loading config");
-        let content = std::fs::read_to_string(path)?;
+        let content = read_config_file(path)?;
         let source_fingerprint = Some(fingerprint_config_file(content.as_bytes()));
         let config = match toml::from_str::<AppConfig>(&content) {
             Ok(mut config) => {
@@ -324,14 +348,14 @@ impl ConfigLoader {
                     config.context_limits.max_known_facts = MAX_FACTS_IN_EXTRACTION_PROMPT;
                 }
                 if invalid_config_entry(&config).is_some() {
-                    backup_unparsable_config(path, "semantic_validation");
+                    backup_unparsable_config(path, content.as_bytes(), "semantic_validation");
                     AppConfig::default()
                 } else {
                     config
                 }
             }
             Err(_) => {
-                backup_unparsable_config(path, "toml_parse");
+                backup_unparsable_config(path, content.as_bytes(), "toml_parse");
                 AppConfig::default()
             }
         };
@@ -1565,6 +1589,31 @@ model = "nova-3"
         );
         // Sanity: the file itself is untouched until a save happens.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_rejects_oversized_config_without_backup_or_default_fallback() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = vec![b'x'; MAX_CONFIG_FILE_BYTES + 1];
+        std::fs::write(&path, &original).unwrap();
+
+        let error = ConfigLoader::load_from(&path).unwrap_err();
+
+        assert!(error.to_string().contains("exceeds the 4194304-byte limit"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(backups, 0, "oversized config must not be copied to backup");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

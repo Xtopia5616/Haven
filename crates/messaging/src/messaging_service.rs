@@ -12,7 +12,8 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::contract::{
-    validate_message_batch, validate_message_envelope, validate_message_id, validate_session_id,
+    validate_message_batch, validate_message_envelope, validate_message_envelope_for_delivery,
+    validate_message_id, validate_session_id,
 };
 use crate::inbox::{AgentInfo, Envelope, InboxBus, MessageType, SendOutcome};
 
@@ -45,7 +46,7 @@ macro_rules! define_message_transport {
             fn mark_offline(&self, session_id: &str) -> anyhow::Result<()>;
             fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>>;
             fn list_children(&self, parent_session_id: &str) -> anyhow::Result<Vec<AgentInfo>>;
-            fn list_descendants(&self, parent_session_id: &str) -> anyhow::Result<Vec<String>>;
+            fn list_descendants(&self, root_session_id: &str) -> anyhow::Result<Vec<String>>;
             fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome>;
             fn claim(&self, recipient: &str) -> anyhow::Result<Vec<Envelope>>;
             /// Best-effort claim for background polling. `None` means the transport
@@ -127,8 +128,8 @@ impl MessageTransport for InboxBus {
         InboxBus::list_children(self, parent_session_id)
     }
 
-    fn list_descendants(&self, parent_session_id: &str) -> anyhow::Result<Vec<String>> {
-        InboxBus::list_descendants(self, parent_session_id)
+    fn list_descendants(&self, root_session_id: &str) -> anyhow::Result<Vec<String>> {
+        InboxBus::list_descendants(self, root_session_id)
     }
 
     fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome> {
@@ -375,9 +376,9 @@ impl MessagingService {
         Ok(children)
     }
 
-    pub fn list_descendants(&self, parent_session_id: &str) -> anyhow::Result<Vec<String>> {
-        validate_session_id(parent_session_id)?;
-        let descendants = self.transport.list_descendants(parent_session_id)?;
+    pub fn list_descendants(&self, root_session_id: &str) -> anyhow::Result<Vec<String>> {
+        validate_session_id(root_session_id)?;
+        let descendants = self.transport.list_descendants(root_session_id)?;
         for session_id in &descendants {
             validate_session_id(session_id)?;
         }
@@ -388,7 +389,7 @@ impl MessagingService {
     /// transport. Identity and routing are checked before the adapter writes,
     /// so local sessions and independent processes share one durable source.
     pub fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome> {
-        validate_message_envelope(to, envelope)?;
+        validate_message_envelope_for_delivery(to, envelope)?;
         self.transport.deliver(to, envelope)
     }
 
@@ -764,11 +765,52 @@ impl MessageClaim {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::{
+        MAX_MESSAGE_PAYLOAD_BYTES, MAX_MESSAGE_SUBJECT_BYTES, MAX_MESSAGE_TEXT_BYTES,
+        MAX_MESSAGE_TIMESTAMP_BYTES,
+    };
 
     fn service() -> (tempfile::TempDir, MessagingService) {
         let dir = tempfile::tempdir().unwrap();
         let bus = Arc::new(InboxBus::new(dir.path()));
         (dir, MessagingService::new(bus))
+    }
+
+    #[test]
+    fn direct_service_delivery_rejects_oversized_fields_before_write() {
+        let (dir, service) = service();
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        service.register(recipient, &[]).unwrap();
+
+        let mut oversized_text =
+            Envelope::new("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "valid");
+        oversized_text.text = "x".repeat(MAX_MESSAGE_TEXT_BYTES + 1);
+
+        let mut oversized_subject =
+            Envelope::new("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "valid");
+        oversized_subject.subject = Some("x".repeat(MAX_MESSAGE_SUBJECT_BYTES + 1));
+
+        let mut oversized_payload =
+            Envelope::new("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "valid");
+        oversized_payload.payload = Some(serde_json::Value::String(
+            "x".repeat(MAX_MESSAGE_PAYLOAD_BYTES - 1),
+        ));
+
+        let mut oversized_timestamp =
+            Envelope::new("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "valid");
+        oversized_timestamp.expires_at = Some("x".repeat(MAX_MESSAGE_TIMESTAMP_BYTES + 1));
+
+        for envelope in [
+            oversized_text,
+            oversized_subject,
+            oversized_payload,
+            oversized_timestamp,
+        ] {
+            assert!(service.deliver(recipient, &envelope).is_err());
+        }
+
+        let mailbox = dir.path().join(format!("{recipient}.jsonl"));
+        assert_eq!(std::fs::read_to_string(mailbox).unwrap(), "");
     }
 
     #[test]

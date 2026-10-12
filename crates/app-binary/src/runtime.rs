@@ -25,7 +25,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
@@ -56,7 +56,7 @@ pub struct ApplicationRuntime {
     agent_startup_started: AtomicBool,
     shutdown_token: CancellationToken,
     shutting_down: AtomicBool,
-    tasks: Mutex<Vec<JoinHandle<()>>>,
+    tasks: Mutex<JoinSet<()>>,
     runtime_handle: tokio::runtime::Handle,
 }
 
@@ -126,7 +126,7 @@ impl ApplicationRuntime {
             agent_startup_started: AtomicBool::new(false),
             shutdown_token: CancellationToken::new(),
             shutting_down: AtomicBool::new(false),
-            tasks: Mutex::new(Vec::new()),
+            tasks: Mutex::new(JoinSet::new()),
             runtime_handle: tokio::runtime::Handle::current(),
         }
     }
@@ -237,7 +237,20 @@ impl ApplicationRuntime {
         if self.shutting_down.load(Ordering::Acquire) {
             return false;
         }
-        tasks.push(self.runtime_handle.spawn(future));
+        // Short-lived callbacks can register many tasks over the lifetime of
+        // the app. Reap completed results on each registration while retaining
+        // their join diagnostics; active work remains owned until shutdown.
+        while let Some(result) = tasks.try_join_next() {
+            if let Err(error) = result
+                && !error.is_cancelled()
+            {
+                tracing::warn!(
+                    error = %sanitize_error_text(&error.to_string()),
+                    "application task failed before shutdown"
+                );
+            }
+        }
+        tasks.spawn_on(future, &self.runtime_handle);
         true
     }
 
@@ -329,6 +342,7 @@ impl ApplicationRuntime {
                 "input pipeline shutdown failed"
             );
         }
+        self.agent.shutdown_background_tasks().await;
         if let Err(error) = self
             .executor
             .clear_session_runtime_state_for_shutdown()
@@ -339,33 +353,36 @@ impl ApplicationRuntime {
                 "session shutdown did not quiesce every run"
             );
         }
+        self.executor.join_dispatcher().await;
         self.services().tool_runs.shutdown().await;
         self.services().mcp.shutdown().await;
 
-        let tasks = {
+        let mut tasks = {
             let mut registered = self.tasks.lock().unwrap_or_else(|poisoned| {
                 tracing::error!("application task registry lock poisoned; recovering");
                 poisoned.into_inner()
             });
             std::mem::take(&mut *registered)
         };
-        for mut task in tasks {
-            match tokio::time::timeout(TASK_SHUTDOWN_GRACE, &mut task).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) if error.is_cancelled() => {}
-                Ok(Err(error)) => {
+        while !tasks.is_empty() {
+            match tokio::time::timeout(TASK_SHUTDOWN_GRACE, tasks.join_next()).await {
+                Ok(Some(Ok(()))) => {}
+                Ok(Some(Err(error))) if error.is_cancelled() => {}
+                Ok(Some(Err(error))) => {
                     tracing::warn!(
                         error = %sanitize_error_text(&error.to_string()),
                         "application task join failed during shutdown"
                     );
                 }
+                Ok(None) => break,
                 Err(_) => {
                     tracing::warn!(
                         "application task did not stop within {:?}; aborting",
                         TASK_SHUTDOWN_GRACE
                     );
-                    task.abort();
-                    let _ = task.await;
+                    tasks.abort_all();
+                    while tasks.join_next().await.is_some() {}
+                    break;
                 }
             }
         }
@@ -392,9 +409,7 @@ impl Drop for ApplicationRuntime {
         // are preserved. Registered task handles are aborted as a last resort.
         self.shutdown_token.cancel();
         if let Ok(tasks) = self.tasks.get_mut() {
-            for task in tasks {
-                task.abort();
-            }
+            tasks.abort_all();
         }
     }
 }

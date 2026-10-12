@@ -40,6 +40,9 @@ pub struct McpClient {
     /// transport token, it survives reconnects so the listener can reuse the
     /// receiver after a new connection is installed.
     pub(crate) notification_cancel: CancellationToken,
+    /// Join owner for the SSE notification producer of the current HTTP
+    /// connection generation. The producer does not capture this client.
+    pub(crate) sse_listener_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub(crate) rate_limiter: Arc<Mutex<RateLimiter>>,
     pub(crate) notification_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<Value>>>>,
     pub(crate) tools_list_changed: Arc<ToolsListChangedSignal>,
@@ -234,6 +237,7 @@ impl McpClient {
             reconnect_retries: Arc::new(Mutex::new(0)),
             cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
             notification_cancel: CancellationToken::new(),
+            sse_listener_task: Mutex::new(None),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(10.0))),
             notification_rx: Arc::new(Mutex::new(None)),
             tools_list_changed: Arc::new(ToolsListChangedSignal::new()),
@@ -410,6 +414,7 @@ impl McpClient {
             notification_tx,
             tools_list_changed: self.tools_list_changed.clone(),
             cancel: self.cancel_token.lock().await.clone(),
+            poisoned: false,
         })
     }
 
@@ -442,7 +447,7 @@ impl McpClient {
             http: built_client.client,
             url: built_client.endpoint.to_string(),
             headers,
-            session_id: Arc::new(tokio::sync::Mutex::new(String::new())),
+            mcp_session_id: Arc::new(tokio::sync::Mutex::new(String::new())),
             cancel: self.cancel_token.lock().await.clone(),
         });
         let inner = HttpInner {
@@ -480,6 +485,13 @@ impl McpClient {
         *self.tools_cache.lock().await = None;
         let result = self.connect_inner().await;
         if let Err(e) = &result {
+            if let Err(shutdown_error) = self.shutdown_inner(false).await {
+                tracing::warn!(
+                    server = %self.name,
+                    error = %haven_common::error::sanitize_error_text(&shutdown_error.to_string()),
+                    "MCP connection cleanup reported an error"
+                );
+            }
             let message = format!(
                 "connect failed: {}",
                 haven_common::error::sanitize_error_text(&e.to_string())
@@ -565,7 +577,7 @@ impl McpClient {
         // (e.g. tools/list_changed) are received.
         if let Some(shared) = http_shared {
             let cancel = self.cancel_token.lock().await.clone();
-            spawn_sse_listener(
+            let listener = spawn_sse_listener(
                 self.name.clone(),
                 cancel,
                 shared,
@@ -573,6 +585,7 @@ impl McpClient {
                 self.max_sse_buffer,
                 self.tools_list_changed.clone(),
             );
+            *self.sse_listener_task.lock().await = Some(listener);
         }
 
         // Cache tools after successful connection. A successful handshake
@@ -622,6 +635,26 @@ impl McpClient {
             self.notification_cancel.cancel();
         }
 
+        let sse_listener = self.sse_listener_task.lock().await.take();
+        if let Some(mut listener) = sse_listener {
+            match tokio::time::timeout(Duration::from_secs(5), &mut listener).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(
+                    server = %self.name,
+                    error = %error,
+                    "MCP SSE listener task failed"
+                ),
+                Err(_) => {
+                    tracing::warn!(
+                        server = %self.name,
+                        "MCP SSE listener did not stop after cancellation; aborting"
+                    );
+                    listener.abort();
+                    let _ = listener.await;
+                }
+            }
+        }
+
         let mut guard = self.inner.lock().await;
         if let Some(McpClientInner::Stdio(s)) = guard.as_mut() {
             let id = self.next_id.fetch_add(1, Ordering::SeqCst);
@@ -645,16 +678,42 @@ impl McpClient {
 
     pub async fn list_tools(&self) -> anyhow::Result<Vec<McpToolInfo>> {
         let mut guard = self.inner.lock().await;
-        let inner = guard
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("MCP client '{}' is not connected", self.name))?;
+        if guard.is_none() {
+            anyhow::bail!("MCP client '{}' is not connected", self.name);
+        }
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let result = inner.request(id, "tools/list", None).await?;
+        let result = guard
+            .as_mut()
+            .expect("checked MCP client inner")
+            .request(id, "tools/list", None)
+            .await;
+        self.discard_interrupted_stdio(&mut guard).await;
+        let result = result?;
 
         let tools: Vec<McpToolInfo> = serde_json::from_value(result["tools"].clone())
             .map_err(|e| anyhow::anyhow!("invalid tools/list from '{}': {}", self.name, e))?;
         Ok(tools)
+    }
+
+    /// Drop a stdio client after an interrupted request. Its line reader may
+    /// already have consumed a partial JSON-RPC frame, so later requests must
+    /// not reuse the remaining bytes as a fresh response.
+    async fn discard_interrupted_stdio(&self, guard: &mut Option<McpClientInner>) {
+        let interrupted = matches!(
+            guard.as_ref(),
+            Some(McpClientInner::Stdio(stdio)) if stdio.poisoned
+        );
+        if !interrupted {
+            return;
+        }
+
+        *guard = None;
+        let error = "MCP stdio connection discarded after an interrupted request".to_string();
+        *self.status.lock().await = McpClientStatus::Offline {
+            error: error.clone(),
+        };
+        *self.last_error.lock().await = Some(error);
     }
 
     /// Set calls-per-second rate limit for this client (refine §4.5).
@@ -711,15 +770,10 @@ impl McpClient {
 
                 match notification {
                     Notification::ClientCancelled => {
-                        // A transport token is cancelled during automatic
-                        // reconnect too. Keep the listener alive for that
-                        // transition, but exit for a real client shutdown or
-                        // an externally cancelled disconnected client.
-                        let reconnecting =
-                            matches!(&*self.status.lock().await, McpClientStatus::Connecting);
-                        if !reconnecting {
-                            return;
-                        }
+                        // A transport token is cancelled both during reconnect
+                        // and after a failed connect attempt. Keep the
+                        // manager-owned listener alive for a later generation;
+                        // terminal shutdown cancels `notification_cancel`.
                         tokio::select! {
                             _ = notification_cancel.cancelled() => return,
                             _ = tokio::time::sleep(Duration::from_millis(50)) => {}
@@ -805,24 +859,34 @@ impl McpClient {
             }
             guard = self.inner.lock() => guard,
         };
-        let inner = guard
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("MCP client '{}' is not connected", self.name))?;
+        if guard.is_none() {
+            anyhow::bail!("MCP client '{}' is not connected", self.name);
+        }
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let result = tokio::select! {
-            r = inner.request(
+        let (result, cancelled_by_client) = tokio::select! {
+            r = guard.as_mut().expect("checked MCP client inner").request(
                 id,
                 "tools/call",
                 Some(serde_json::json!({
                     "name": tool_name,
                     "arguments": input,
                 })),
-            ) => r?,
-            _ = client_cancel.cancelled() => {
-                anyhow::bail!("MCP call '{}' cancelled (client shutting down)", tool_name);
+            ) => (Some(r), None),
+            _ = client_cancel.cancelled() => (None, Some(true)),
+            _ = cancel.cancelled() => (None, Some(false)),
+        };
+        let result = match result {
+            Some(Ok(result)) => result,
+            Some(Err(error)) => {
+                self.discard_interrupted_stdio(&mut guard).await;
+                return Err(error);
             }
-            _ = cancel.cancelled() => {
+            None => {
+                self.discard_interrupted_stdio(&mut guard).await;
+                if cancelled_by_client == Some(true) {
+                    anyhow::bail!("MCP call '{}' cancelled (client shutting down)", tool_name);
+                }
                 anyhow::bail!("MCP call '{}' cancelled (session cancellation)", tool_name);
             }
         };
@@ -847,6 +911,7 @@ impl McpClient {
             McpServerTransport::Stdio => {
                 let mut guard = self.inner.lock().await;
                 match guard.as_mut() {
+                    Some(McpClientInner::Stdio(s)) if s.poisoned => false,
                     Some(McpClientInner::Stdio(s)) => {
                         s.child.try_wait().map(|st| st.is_none()).unwrap_or(false)
                     }
@@ -1014,5 +1079,96 @@ impl McpClient {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod stdio_poison_tests {
+    use super::*;
+    use std::{fs, path::PathBuf, thread, time::Duration};
+
+    struct TestFiles {
+        root: PathBuf,
+    }
+
+    impl Drop for TestFiles {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[tokio::test]
+    async fn poisoned_stdio_is_reported_dead_and_discarded() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "haven-mcp-poisoned-stdio-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create isolated fake server working directory");
+        fs::write(root.join("stdio_liveness_child"), b"test")
+            .expect("mark fake server working directory");
+        let files = TestFiles { root };
+
+        let mut config = haven_common::config::McpServerConfig::default();
+        config.name = "poisoned-stdio-test".into();
+        config.command = std::env::current_exe()
+            .expect("current test executable")
+            .to_string_lossy()
+            .into_owned();
+        config.args = vec![
+            "--exact".into(),
+            "client::stdio_poison_tests::stdio_liveness_child_helper".into(),
+            "--nocapture".into(),
+        ];
+        config.cwd = Some(files.root.to_string_lossy().into_owned());
+
+        let client = McpClient::new(&config, 1024, 1024);
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let mut stdio = client
+            .spawn_stdio(notification_tx)
+            .await
+            .expect("spawn live test server");
+        assert!(
+            stdio
+                .child
+                .try_wait()
+                .expect("inspect child process")
+                .is_none(),
+            "the test child must still be alive"
+        );
+        stdio.poisoned = true;
+        *client.inner.lock().await = Some(McpClientInner::Stdio(Box::new(stdio)));
+
+        assert!(
+            !client.is_alive().await,
+            "a poisoned stdio connection must trigger the existing health monitor"
+        );
+        let mut guard = client.inner.lock().await;
+        client.discard_interrupted_stdio(&mut guard).await;
+        assert!(
+            guard.is_none(),
+            "poisoned child transport must be discarded"
+        );
+        assert!(matches!(
+            &*client.status.lock().await,
+            McpClientStatus::Offline { .. }
+        ));
+    }
+
+    #[test]
+    fn stdio_liveness_child_helper() {
+        let Ok(root) = std::env::current_dir() else {
+            return;
+        };
+        if !root.join("stdio_liveness_child").exists() {
+            return;
+        }
+        loop {
+            thread::sleep(Duration::from_secs(1));
+        }
     }
 }

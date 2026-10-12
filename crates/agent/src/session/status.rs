@@ -270,7 +270,7 @@ impl SessionSupervisor {
     }
 
     pub(super) async fn finish_ended_session(&self, session_id: &str, cascade: bool) {
-        self.unregister_from_inbox(session_id);
+        self.unregister_from_inbox(session_id).await;
         self.unregister_session_tool_overlay(session_id).await;
         self.scheduled_confirms
             .lock()
@@ -283,34 +283,38 @@ impl SessionSupervisor {
         self.authorization.clear_session_trust(session_id).await;
     }
 
-    fn unregister_from_inbox(&self, session_id: &str) {
+    async fn unregister_from_inbox(&self, session_id: &str) {
         let session_id = session_id.to_string();
         let log_id = session_id.clone();
         let messaging = self.messaging_service.clone();
-        tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                let entry = messaging
-                    .list_agents()?
-                    .into_iter()
-                    .find(|agent| agent.session_id == session_id);
-                if entry
-                    .as_ref()
-                    .is_some_and(|agent| agent.parent_session_id.is_some())
-                {
-                    messaging.mark_offline(&session_id)
-                } else {
-                    messaging.unregister(&session_id)
-                }
-            })
-            .await;
-            if let Ok(Err(error)) = result {
-                tracing::debug!(
-                    session_id = %log_id,
-                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                    "messaging registry cleanup failed"
-                );
+        let result = tokio::task::spawn_blocking(move || {
+            let entry = messaging
+                .list_agents()?
+                .into_iter()
+                .find(|agent| agent.session_id == session_id);
+            if entry
+                .as_ref()
+                .is_some_and(|agent| agent.parent_session_id.is_some())
+            {
+                messaging.mark_offline(&session_id)
+            } else {
+                messaging.unregister(&session_id)
             }
-        });
+        })
+        .await;
+        match result {
+            Ok(Err(error)) => tracing::debug!(
+                session_id = %log_id,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "messaging registry cleanup failed"
+            ),
+            Err(error) => tracing::warn!(
+                session_id = %log_id,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "messaging registry cleanup task failed"
+            ),
+            Ok(Ok(())) => {}
+        }
     }
 
     async fn cascade_end_children(&self, parent_session_id: &str) {
@@ -466,7 +470,13 @@ impl SessionSupervisor {
     pub async fn clear_session_runtime_state_for_shutdown(&self) -> anyhow::Result<()> {
         let _block = self.begin_lifecycle_block()?;
         async {
-            self.quiesce_all_sessions(true).await?;
+            let quiesce_result = self.quiesce_all_sessions(true).await;
+            // `run_state=false` is published before the dispatcher wrapper's
+            // terminal reconciliation finishes. Keep actors registered and
+            // lifecycle admission unlocked until every wrapper and its final
+            // cleanup retry has completed.
+            self.join_dispatcher().await;
+            quiesce_result?;
             let _lifecycle = self.lifecycle_guard().await;
             self.clear_session_runtime_state_locked().await
         }
@@ -598,7 +608,7 @@ impl SessionSupervisor {
             let _lifecycle = self.lifecycle_guard().await;
             let session_ids = self
                 .store
-                .all_session_ids_cancellable(tokio_util::sync::CancellationToken::new())
+                .list_session_ids_cancellable(tokio_util::sync::CancellationToken::new())
                 .await?;
             // The actor registry is only the resident working set. Include
             // durable sessions that were never loaded before clearing their

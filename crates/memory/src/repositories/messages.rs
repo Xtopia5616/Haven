@@ -84,6 +84,11 @@ fn is_message_row_id(message_id: &str) -> bool {
     is_canonical_id(message_id, "msg") || is_canonical_id(message_id, "step")
 }
 
+fn is_message_row_identity_valid(message_id: &str, role: CanonicalRole) -> bool {
+    is_canonical_id(message_id, "msg")
+        || (role == CanonicalRole::Assistant && is_canonical_id(message_id, "step"))
+}
+
 fn ensure_message_row_id(message_id: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         is_message_row_id(message_id),
@@ -117,9 +122,6 @@ fn invalid_row_id(column: usize, value: &str, expected: &str) -> rusqlite::Error
 /// every read query so column order cannot drift between them.
 fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
     let id: String = row.get(0)?;
-    if !is_message_row_id(&id) {
-        return Err(invalid_row_id(0, &id, "message"));
-    }
     let session_id: String = row.get(1)?;
     if !is_canonical_id(&session_id, "ses") {
         return Err(invalid_row_id(1, &session_id, "session"));
@@ -132,6 +134,12 @@ fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
             format!("invalid CanonicalRole in messages.role: {role_text}").into(),
         )
     })?;
+    if !is_message_row_id(&id) {
+        return Err(invalid_row_id(0, &id, "message"));
+    }
+    if !is_message_row_identity_valid(&id, role) {
+        return Err(invalid_row_id(0, &id, "message ID for its role"));
+    }
     let message_type_text: Option<String> = row.get(4)?;
     let message_type = message_type_text
         .as_deref()
@@ -403,7 +411,10 @@ impl Database {
         let id = id
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("msg"));
-        ensure_message_row_id(&id)?;
+        anyhow::ensure!(
+            is_message_row_identity_valid(&id, role),
+            "message_id must be a canonical msg-* ID or an assistant step-* ID"
+        );
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<(String, i64, Option<PendingInputDisposition>)> {
@@ -987,6 +998,53 @@ mod tests {
         assert!(result.is_err());
         assert!(db.list_session_messages(&session_id).unwrap().is_empty());
         assert_eq!(db.get_last_message_ingress_seq(&session_id), 0);
+    }
+
+    #[test]
+    fn step_message_identity_is_reserved_for_assistant_rows() {
+        let db = test_db();
+        let session_id = test_session(&db);
+        let step_id = haven_common::types::new_id("step");
+
+        let user_result = db.add_message_full(
+            &session_id,
+            CanonicalRole::User,
+            "user message",
+            None,
+            None,
+            &[],
+            false,
+            Some(&step_id),
+        );
+        assert!(user_result.is_err());
+        assert_eq!(db.get_last_message_ingress_seq(&session_id), 0);
+
+        let assistant = db
+            .add_message_full(
+                &session_id,
+                CanonicalRole::Assistant,
+                "assistant thought",
+                Some(TranscriptMessageKind::Text),
+                None,
+                &[],
+                false,
+                Some(&step_id),
+            )
+            .unwrap();
+        assert_eq!(assistant.message_id, step_id);
+
+        db.conn()
+            .execute(
+                "UPDATE messages SET role = 'user' WHERE session_id = ?1 AND id = ?2",
+                rusqlite::params![session_id, step_id],
+            )
+            .unwrap();
+        assert!(
+            db.list_session_messages(&session_id)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid message ID for its role ID")
+        );
     }
 
     #[test]

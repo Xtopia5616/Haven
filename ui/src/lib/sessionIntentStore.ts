@@ -3,7 +3,8 @@ import type { SessionRunEndStatus } from './sessionReducer.ts';
 
 export type SessionResumeTarget = {
 	sessionId: string;
-	summary?: string;
+	/** Initial user input used when an errored session is retained in the shell. */
+	inputText?: string;
 	title?: string | null;
 	runEndStatus?: SessionRunEndStatus;
 	runEndReason?: string;

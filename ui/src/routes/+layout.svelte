@@ -30,6 +30,7 @@
 	import { invoke, isTauri } from '$lib/tauri.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { installGlobalErrorHandlers, reportError } from '$lib/errorHandling.ts';
+	import { retainPendingDismissedRequestIds } from '$lib/interactionDismissals.ts';
 	import {
 		toolRunEventListeners,
 		agentEventListeners,
@@ -633,6 +634,13 @@
 		),
 	);
 	let dismissedConfirmationRequestIds = $state(new Set<string>());
+	$effect(() => {
+		const retained = retainPendingDismissedRequestIds(
+			dismissedConfirmationRequestIds,
+			pendingConfirmInteractions.map((request) => request.requestId),
+		);
+		if (retained) dismissedConfirmationRequestIds = retained;
+	});
 	let requestedConfirmationRequestId = $state<string | null>(null);
 	$effect(() =>
 		syncStore(
@@ -751,7 +759,7 @@
 	function sessionTitleFor(toolRun: Pick<ToolRunPayload, 'sessionId'>) {
 		if (!toolRun.sessionId) return '';
 		const t = sessions.find((x) => x.sessionId === toolRun.sessionId);
-		const title = t?.title || t?.input;
+		const title = t?.title || t?.inputText;
 		return typeof title === 'string' ? title : toolRun.sessionId;
 	}
 

@@ -1,7 +1,7 @@
 import type { ToolRunPayload } from './contracts/toolRun.ts';
 import type { CanonicalRole } from './contracts/generatedCommands.ts';
 import type { SessionMessage } from './sessionReducer.ts';
-import { sourceToolRunIdFromObservation } from './streaming.ts';
+import { renderedMessageKey, sourceToolRunIdFromObservation } from './streaming.ts';
 import type { SessionMessagePresentationType } from './streaming.ts';
 
 /** Messages that describe agent work rather than user-facing transcript content. */
@@ -88,7 +88,7 @@ export function groupSessionMessages(messages: SessionMessage[]): SessionTranscr
 		if (!isMergedSessionMessage(message)) {
 			flushActivity();
 			items.push({ kind: 'message', message, index });
-			precedingBoundaryId = message.id;
+			precedingBoundaryId = renderedMessageKey(message);
 			return;
 		}
 

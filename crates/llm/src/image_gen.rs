@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use futures_util::TryStreamExt;
 use haven_common::config::{ImageGenConfig, ProviderConfig, provider_config_wire_style};
+use haven_common::network::{self, MAX_HTTP_REDIRECT_HOPS, ResolvedHttpDestination};
 use std::time::Duration;
 
 /// Bound the provider response before JSON parsing or base64 decoding. The
@@ -178,10 +179,7 @@ async fn response_text_bounded(resp: reqwest::Response, operation: &str) -> Resu
 /// Extract the generated image from an OpenAI `/v1/images/generations`
 /// response. Handles both `b64_json` (default for gpt-image-1) and `url`
 /// (dall-e-3 default) data items.
-async fn openai_image_from_response(
-    client: &reqwest::Client,
-    body: &str,
-) -> Result<GeneratedImage> {
+async fn openai_image_from_response(body: &str, timeout: Duration) -> Result<GeneratedImage> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| anyhow::anyhow!("invalid OpenAI image response: {e}"))?;
     let data = v
@@ -203,24 +201,96 @@ async fn openai_image_from_response(
         });
     }
     if let Some(url) = data.get("url").and_then(|u| u.as_str()) {
-        let resp = client.get(url).send().await.map_err(|e| {
-            anyhow::anyhow!(
-                "OpenAI image url fetch failed: {}",
-                haven_common::error::sanitize_error_text(&e.to_string())
-            )
-        })?;
+        let resp = fetch_public_image_url(url, timeout).await?;
         let status = resp.status();
         if !status.is_success() {
             let body = response_text_bounded(resp, "OpenAI image error response").await?;
             return Err(imagegen_body_error("OpenAI image fetch", status, &body));
         }
+        let media_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .filter(|value| value.starts_with("image/"))
+            .unwrap_or("image/png")
+            .to_string();
         let bytes = response_bytes_bounded(resp, "OpenAI image fetch").await?;
         return Ok(GeneratedImage {
-            media_type: "image/png".into(),
+            media_type,
             data: bytes,
         });
     }
     anyhow::bail!("OpenAI image response item has neither 'b64_json' nor 'url'")
+}
+
+async fn fetch_public_image_url(url: &str, timeout: Duration) -> Result<reqwest::Response> {
+    fetch_public_image_url_inner(url, timeout, false).await
+}
+
+async fn fetch_public_image_url_inner(
+    raw_url: &str,
+    timeout: Duration,
+    allow_loopback_for_test: bool,
+) -> Result<reqwest::Response> {
+    let mut current = reqwest::Url::parse(raw_url)
+        .map_err(|error| anyhow::anyhow!("invalid OpenAI image URL: {error}"))?;
+    let mut redirect_hops = 0usize;
+    loop {
+        let destination =
+            resolve_image_fetch_destination(current.as_str(), allow_loopback_for_test).await?;
+        let mut builder = reqwest::Client::builder()
+            .timeout(timeout)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some(address) = destination.pinned_address
+            && let Some(host) = destination.url.host_str()
+        {
+            builder = builder.resolve(host, address);
+        }
+        let client = builder.build()?;
+        let response = client
+            .get(destination.url.clone())
+            .send()
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "OpenAI image URL fetch failed: {}",
+                    haven_common::error::sanitize_error_text(&error.to_string())
+                )
+            })?;
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .filter(|_| response.status().is_redirection());
+        let Some(location) = location else {
+            return Ok(response);
+        };
+        redirect_hops += 1;
+        if redirect_hops > MAX_HTTP_REDIRECT_HOPS {
+            anyhow::bail!("OpenAI image URL redirect limit exceeded");
+        }
+        current = destination.url.join(&location)?;
+        // Each loop validates and pins the new destination before connecting.
+        // The fetch is unauthenticated and cookie-free, so public CDN redirects
+        // can safely cross origins.
+        drop(response);
+    }
+}
+
+async fn resolve_image_fetch_destination(
+    raw_url: &str,
+    allow_loopback_for_test: bool,
+) -> Result<ResolvedHttpDestination> {
+    #[cfg(test)]
+    if allow_loopback_for_test {
+        return Ok(network::resolve_http_destination_for_test(raw_url, &[]).await?);
+    }
+    #[cfg(not(test))]
+    let _ = allow_loopback_for_test;
+    network::resolve_http_destination(raw_url, &[]).await
 }
 
 /// Extract the generated image from a Gemini `generateContent` response.
@@ -264,6 +334,7 @@ struct OpenAiImageGenClient {
     base_url: String,
     api_key: String,
     model: String,
+    image_fetch_timeout: Duration,
 }
 
 impl OpenAiImageGenClient {
@@ -281,6 +352,7 @@ impl OpenAiImageGenClient {
             } else {
                 cfg.model.clone()
             },
+            image_fetch_timeout: timeout,
         }
     }
 }
@@ -318,7 +390,7 @@ impl ImageGenClient for OpenAiImageGenClient {
         if !status.is_success() {
             return Err(imagegen_body_error("OpenAI image", status, &body));
         }
-        openai_image_from_response(&self.client, &body).await
+        openai_image_from_response(&body, self.image_fetch_timeout).await
     }
 }
 
@@ -515,13 +587,12 @@ mod tests {
     #[test]
     fn openai_image_response_b64_json() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let client = reqwest::Client::new();
         let body = format!(
             r#"{{"data": [{{"b64_json": "{}", "content_type": "image/jpeg"}}]}}"#,
             base64::engine::general_purpose::STANDARD.encode(b"fake-image")
         );
         let img = rt
-            .block_on(openai_image_from_response(&client, &body))
+            .block_on(openai_image_from_response(&body, Duration::from_secs(5)))
             .unwrap();
         assert_eq!(img.media_type, "image/jpeg");
         assert_eq!(img.data, b"fake-image");
@@ -530,11 +601,50 @@ mod tests {
     #[test]
     fn openai_image_response_missing_data_errors() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let client = reqwest::Client::new();
         let err = rt
-            .block_on(openai_image_from_response(&client, r#"{"error": "x"}"#))
+            .block_on(openai_image_from_response(
+                r#"{"error": "x"}"#,
+                Duration::from_secs(5),
+            ))
             .unwrap_err();
         assert!(err.to_string().contains("missing 'data'"));
+    }
+
+    #[tokio::test]
+    async fn openai_image_url_redirect_rejects_metadata_destination() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut chunk).await.unwrap_or(0);
+                if read == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..read]);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let result = fetch_public_image_url_inner(
+            &format!("http://{address}/image"),
+            Duration::from_secs(5),
+            true,
+        )
+        .await;
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("blocked"), "{error:#}");
+        server.await.unwrap();
     }
 
     #[test]

@@ -108,7 +108,7 @@
 						<section class="recall-result-group" aria-labelledby="fact-results-title">
 							<h4 id="fact-results-title">长期事实</h4>
 							<ol class="recall-results">
-								{#each factResults as result, index (result.entityId + result.text)}
+								{#each factResults as result, index (result.entityId)}
 									<li class="recall-result">
 										<span class="recall-rank" aria-label={`第${index + 1}条`}
 											>{index + 1}</span
@@ -132,7 +132,7 @@
 						>
 							<h4 id="episode-results-title">过去的对话</h4>
 							<ol class="recall-results">
-								{#each episodeResults as result, index (result.entityId + result.text)}
+								{#each episodeResults as result, index (result.entityId)}
 									<li class="recall-result">
 										<span class="recall-rank" aria-label={`第${index + 1}条`}
 											>{index + 1}</span
@@ -152,7 +152,7 @@
 				</div>
 			{:else}
 				<ol class="recall-results">
-					{#each recallResults as result, index (result.entityId + result.text)}
+					{#each recallResults as result, index (result.entityId)}
 						<li class="recall-result">
 							<span class="recall-rank" aria-label={`第${index + 1}条`}
 								>{index + 1}</span

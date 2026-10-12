@@ -39,7 +39,8 @@ use tokio::sync::watch;
 use haven_common::types::new_id;
 
 use crate::contract::{
-    is_expired, validate_message_envelope, validate_message_id, validate_session_id,
+    is_expired, validate_message_envelope, validate_message_envelope_for_delivery,
+    validate_message_id, validate_session_id,
 };
 
 /// Heartbeat threshold: agents whose `last_seen` is older than this are
@@ -482,9 +483,9 @@ impl InboxBus {
             .collect())
     }
 
-    /// BFS descendants of `root` via registry `parent_session_id` links (cycle-safe).
-    pub fn list_descendants(&self, root: &str) -> anyhow::Result<Vec<String>> {
-        validate_session_id(root)?;
+    /// BFS descendants of `root_session_id` via registry `parent_session_id` links (cycle-safe).
+    pub fn list_descendants(&self, root_session_id: &str) -> anyhow::Result<Vec<String>> {
+        validate_session_id(root_session_id)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
         let reg = self.read_registry_unlocked()?;
@@ -500,8 +501,8 @@ impl InboxBus {
         }
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        let mut queue = vec![root.to_string()];
-        seen.insert(root.to_string());
+        let mut queue = vec![root_session_id.to_string()];
+        seen.insert(root_session_id.to_string());
         while let Some(cur) = queue.pop() {
             let Some(kids) = by_parent.get(&cur) else {
                 continue;
@@ -552,7 +553,7 @@ impl InboxBus {
     /// heartbeat freshness is only reported in [`SendOutcome::status`]);
     /// only a missing mailbox (never registered) is an error.
     pub fn deliver(&self, to: &str, env: &Envelope) -> anyhow::Result<SendOutcome> {
-        validate_message_envelope(to, env)?;
+        validate_message_envelope_for_delivery(to, env)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
         self.recover_mailbox_tmp_unlocked(to)?;
@@ -1411,6 +1412,7 @@ impl Drop for LockGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::MAX_MESSAGE_TEXT_BYTES;
     use serde_json::json;
 
     fn test_bus() -> (tempfile::TempDir, InboxBus) {
@@ -1923,6 +1925,24 @@ mod tests {
         let error = bus.deliver(recipient, &envelope).unwrap_err();
 
         assert!(error.to_string().contains("canonical session id"));
+        assert!(
+            std::fs::read_to_string(bus.mailbox(recipient))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn direct_delivery_rejects_oversized_text_before_write() {
+        let (_dir, bus) = test_bus();
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(recipient, &[]).unwrap();
+        let mut envelope = env_from("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "hello");
+        envelope.text = "x".repeat(MAX_MESSAGE_TEXT_BYTES + 1);
+
+        let error = bus.deliver(recipient, &envelope).unwrap_err();
+
+        assert!(error.to_string().contains("message text"));
         assert!(
             std::fs::read_to_string(bus.mailbox(recipient))
                 .unwrap()

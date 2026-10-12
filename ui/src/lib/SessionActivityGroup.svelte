@@ -6,6 +6,7 @@
 	import MediaPlanCard from '$lib/MediaPlanCard.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import { toolDisplayName } from '$lib/toolIdentity.ts';
+	import { renderedMessageKey } from '$lib/streaming.ts';
 	import { sourceToolRunId } from '$lib/sessionTimeline.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
 	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
@@ -157,7 +158,7 @@
 		{/if}
 
 		<div class="activity-items">
-			{#each entries as entry (entry.message.id)}
+			{#each entries as entry (renderedMessageKey(entry.message))}
 				{@const msg = entry.message}
 				{@const backgroundToolRun = backgroundToolRunFor(msg)}
 				{@const resultInTranscript =

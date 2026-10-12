@@ -29,3 +29,4 @@ url = "2.5.8"
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "macros", "test-util"] }
 tempfile.workspace = true
+haven-common = { path = "../common", features = ["test-support"] }

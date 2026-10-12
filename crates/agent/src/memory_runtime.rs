@@ -252,7 +252,7 @@ impl MemoryRuntime {
         &self,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<()> {
-        let Some(high_water) = self
+        let Some(high_water_session_id) = self
             .session_store
             .session_id_high_water_cancellable(cancellation.clone())
             .await
@@ -260,14 +260,14 @@ impl MemoryRuntime {
         else {
             return Ok(());
         };
-        let mut after_id = None;
+        let mut after_session_id = None;
         loop {
             anyhow::ensure!(!cancellation.is_cancelled(), "session recovery cancelled");
             let page = self
                 .session_store
                 .session_ids_page_cancellable(
-                    after_id.clone(),
-                    high_water.clone(),
+                    after_session_id.clone(),
+                    high_water_session_id.clone(),
                     cancellation.clone(),
                 )
                 .await
@@ -275,7 +275,7 @@ impl MemoryRuntime {
             if page.is_empty() {
                 break;
             }
-            after_id = page.last().cloned();
+            after_session_id = page.last().cloned();
             for session_id in page {
                 self.recover_session(&session_id, cancellation)
                     .await

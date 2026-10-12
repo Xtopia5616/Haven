@@ -209,7 +209,26 @@ impl McpToolAdapter {
     /// `load_mcp` meta-tool, so the name advertised to the model always
     /// matches the registration key.
     pub fn qualified_name_of(server_name: &str, tool_name: &str) -> String {
-        crate::llm_tool_name(&format!("mcp::{}::{}", server_name, tool_name))
+        // MCP names are provider supplied and may contain punctuation. Escape
+        // every character outside the stable safe alphabet, including `_`, so
+        // distinct raw names such as `foo.bar` and `foo_bar` stay distinct.
+        let encode_component = |value: &str| {
+            let mut encoded = String::with_capacity(value.len());
+            for byte in value.bytes() {
+                if byte.is_ascii_alphanumeric() || byte == b'-' {
+                    encoded.push(char::from(byte));
+                } else {
+                    encoded.push('_');
+                    encoded.push_str(&format!("{byte:02x}"));
+                }
+            }
+            encoded
+        };
+        crate::llm_tool_name(&format!(
+            "mcp::{}::{}",
+            encode_component(server_name),
+            encode_component(tool_name)
+        ))
     }
 
     fn qualified_name(&self) -> String {
@@ -409,6 +428,18 @@ mod tests {
         assert_eq!(adapter.name(), "mcp__test-server__greet");
         assert_eq!(adapter.description(), "Greets the user");
         assert_eq!(adapter.risk_level(&Value::Null), RiskLevel::High);
+    }
+
+    #[test]
+    fn mcp_qualified_names_preserve_distinct_raw_tool_identities() {
+        let dotted = McpToolAdapter::qualified_name_of("server", "foo.bar");
+        let underscored = McpToolAdapter::qualified_name_of("server", "foo_bar");
+
+        assert_ne!(dotted, underscored);
+        assert_eq!(dotted, "mcp__server__foo_2ebar");
+        assert_eq!(underscored, "mcp__server__foo_5fbar");
+        assert!(dotted.len() <= 64);
+        assert!(underscored.len() <= 64);
     }
 
     #[tokio::test]

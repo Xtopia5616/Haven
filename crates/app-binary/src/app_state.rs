@@ -850,6 +850,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_runtime_tasks_are_reaped_without_detaching_live_work() {
+        struct DropProbe(Arc<AtomicBool>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let dir = tempdir().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let state = AppState::new_for_test(&dir.path().join("test.db"), vec![], loader, dir.path())
+            .await
+            .unwrap();
+        let runtime = state.runtime.clone();
+        let existing_tasks = runtime.task_count_for_test();
+        let completed = Arc::new(tokio::sync::Notify::new());
+
+        for _ in 0..128 {
+            let task_completed = Arc::clone(&completed);
+            let completion = completed.notified();
+            assert!(runtime.spawn("short-lived-callback", async move {
+                task_completed.notify_one();
+            }));
+            completion.await;
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_task = Arc::clone(&dropped);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let task_started = Arc::clone(&started);
+        assert!(runtime.spawn("live-callback", async move {
+            let _probe = DropProbe(dropped_task);
+            task_started.notify_one();
+            std::future::pending::<()>().await;
+        }));
+        started.notified().await;
+
+        let registered_tasks = runtime.task_count_for_test();
+        assert!(
+            (1..=existing_tasks + 1).contains(&registered_tasks),
+            "completed callback handles must be reaped before the next registration; registered {registered_tasks}, baseline {existing_tasks}"
+        );
+        runtime.shutdown().await;
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(runtime.task_count_for_test(), 0);
+    }
+
+    #[tokio::test]
     async fn runtime_shutdown_cancels_owned_tasks_and_is_idempotent() {
         struct DropProbe(Arc<AtomicBool>);
 
@@ -881,7 +930,6 @@ mod tests {
         // worker entry point rather than the periodic schedule.
         runtime.agent.run_memory_maintenance().await.unwrap();
 
-        let tasks_before_memory_start = runtime.task_count_for_test();
         assert!(
             runtime.start_agent_after_memory_ready(PendingSessionRecovery::DeferUntilCatalogReady,)
         );
@@ -895,13 +943,12 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let registered = runtime.task_count_for_test();
-            if cursor == Some(1) && registered >= tasks_before_memory_start + 2 {
+            if cursor == Some(1) {
                 break;
             }
             assert!(
                 std::time::Instant::now() < startup_deadline,
-                "app did not prepare memory and register its live consumer"
+                "memory live consumer did not durably advance the session cursor"
             );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }

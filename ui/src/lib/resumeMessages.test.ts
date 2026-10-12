@@ -1229,6 +1229,30 @@ describe('mergeLiveStreaming', () => {
 		expect(merged.map((m) => m.id)).toEqual(['msg-00000000000000000000000000000001', 'msg-7cfb761c263b30e8eef2e0fafe90c089']);
 	});
 
+	it('keeps an additional presentation of a transcript entity distinct during resume merge', () => {
+		const messageId = 'msg-00000000000000000000000000000072';
+		const db = [{ id: messageId, role: 'user' as const, content: 'ToolRun result' }];
+		const existing = [
+			{ id: messageId, role: 'user' as const, content: 'ToolRun result' },
+			{
+				id: messageId,
+				presentationKey: `tool-run-result:${messageId}:toolrun-00000000000000000000000000000072`,
+				type: 'tool' as const,
+				toolName: 'tool_runs.inspect',
+				content: '{"operation":"tool_runs_result_injected"}',
+			},
+		];
+
+		const merged = mergeLiveStreaming(db, existing);
+
+		expect(merged).toHaveLength(2);
+		expect(merged.map((message) => message.id)).toEqual([messageId, messageId]);
+		expect(merged.map((message) => message.presentationKey ?? message.id)).toEqual([
+			messageId,
+			existing[1].presentationKey,
+		]);
+	});
+
 	it('prefers a live awaiting ask card over the DB ask card of the same id', () => {
 		// The DB build may lack quick-reply options/awaiting (the pause status
 		// can land after the observation); the awaiting live card wins for the

@@ -143,7 +143,7 @@
 					<span class="session-menu-title">切换会话</span>
 					<span class="session-menu-count">{menuSessions.length} 个</span>
 				</div>
-				{#each menuSessions as session}
+				{#each menuSessions as session (session.sessionId)}
 					<MenuItem
 						className="session-menu-item"
 						selected={session.sessionId === activeSessionId}

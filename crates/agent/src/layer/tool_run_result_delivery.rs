@@ -49,7 +49,11 @@ fn format_tool_run_result_message(
     )
 }
 
-pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
+pub(super) fn spawn(
+    agent: Arc<AgentLayer>,
+    cancellation: CancellationToken,
+    tasks: &AgentBackgroundTasks,
+) {
     // Spawn a consumer for background ToolRun completions. When a ToolRun
     // finishes, inject the result into the owning session's context at the
     // next ReAct step (via the ToolRun-completions buffer) and, if the session was
@@ -63,10 +67,11 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
     // is still buffered and delivered as context once the user resumes.
     let tool_run_port = agent.executor.tool_run_port();
     if let Some(mut rx) = tool_run_port.take_completion_receiver() {
-        tokio::spawn(async move {
+        let task_cancellation = cancellation.clone();
+        tasks.spawn("tool-run-result-delivery", cancellation, async move {
             loop {
                 let Some(event) = (tokio::select! {
-                    _ = cancellation.cancelled() => return,
+                    _ = task_cancellation.cancelled() => return,
                     event = rx.recv_result_with_recovery() => event,
                 }) else {
                     return;
@@ -237,7 +242,7 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                         return;
                     };
                     tokio::select! {
-                        _ = cancellation.cancelled() => return,
+                        _ = task_cancellation.cancelled() => return,
                         _ = tokio::time::sleep(delay) => {}
                     }
                     state = tool_run_completion_session_status(&agent, &tid).await;

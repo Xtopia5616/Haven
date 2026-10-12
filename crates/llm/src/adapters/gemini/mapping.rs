@@ -194,11 +194,12 @@ impl GeminiAdapter {
             None
         } else {
             let text = system_parts.join("\n\n");
-            let parts = if let Some((stable, session, memory)) =
-                split_system_prompt_cache_sections(&text)
-            {
-                let dynamic = format!("{session}{memory}");
-                vec![json!({"text": stable}), json!({"text": dynamic})]
+            let parts = if let Some(sections) = split_system_prompt_cache_sections(&text) {
+                let dynamic = format!("{}{}", sections.session_context, sections.memory_context);
+                vec![
+                    json!({"text": sections.stable_prompt}),
+                    json!({"text": dynamic}),
+                ]
             } else {
                 vec![json!({"text": text})]
             };

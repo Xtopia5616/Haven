@@ -200,17 +200,16 @@ function applySupplement(
 ): SessionReducerState {
 	const context = (payload.additionalContext || '').trim();
 	if (!payload.sessionId || !context) return state;
-	const supplementId =
-		payload.supplementId || `supplement-${payload.stepNumber}-${payload.runId}`;
 	if (payload.injectSource === 'cross_session') {
-		const cardId = `peer-mail-${supplementId}`;
+		const presentationKey = `peer-mail:${payload.supplementId}`;
 		const content = JSON.stringify({ operation: 'inbox', auto: true, text: context });
 		return withMessages(state, payload.sessionId, (messages) => {
-			if (messages.some((message) => message.id === cardId)) return messages;
+			if (messages.some((message) => message.presentationKey === presentationKey)) return messages;
 			return insertAgentMessage(
 				messages,
 				newToolMessage({
-					id: cardId,
+					id: payload.supplementId,
+					presentationKey,
 					stepNumber: payload.stepNumber,
 					toolName: 'agent.inbox',
 					content,
@@ -222,17 +221,18 @@ function applySupplement(
 	if (payload.injectSource === 'tool_run_result') {
 		const parsed = parseToolRunResultInject(context);
 		const toolRunId = parsed?.tool_run_id || 'unknown';
-		const cardId = `tool-run-result-${supplementId}-${toolRunId}`;
+		const presentationKey = `tool-run-result:${payload.supplementId}:${toolRunId}`;
 		const content = JSON.stringify({
 			...(parsed || { tool_run_id: toolRunId, status: 'completed', auto: true }),
 			operation: 'tool_runs_result_injected',
 		});
 		return withMessages(state, payload.sessionId, (messages) => {
-			if (messages.some((message) => message.id === cardId)) return messages;
+			if (messages.some((message) => message.presentationKey === presentationKey)) return messages;
 			return insertAgentMessage(
 				messages,
 				newToolMessage({
-					id: cardId,
+					id: payload.supplementId,
+					presentationKey,
 					stepNumber: payload.stepNumber,
 					toolName: 'tool_runs.inspect',
 					content,

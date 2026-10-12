@@ -523,7 +523,7 @@ impl Database {
         self.cache.invalidate_facts(subject);
     }
 
-    /// Bump every facts cache entry (subject views + `_facts_all`). Used by
+    /// Bump every facts cache entry (subject views + the all-facts result). Used by
     /// bulk maintenance that may touch arbitrary subjects (P1-6).
     pub(crate) fn cache_invalidate_all_facts(&self) {
         self.bump_memory_revision();
@@ -643,7 +643,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::QUERY_CACHE_MAX_KEYS;
+    use crate::cache::{QUERY_CACHE_MAX_KEYS, fact_subject_cache_key};
     use std::thread;
     use std::time::Duration;
 
@@ -863,7 +863,7 @@ mod tests {
         let subj = "user";
         assert!(db.cache_get_facts(subj).is_none());
         let facts = vec![make_fact("1", subj), make_fact("2", subj)];
-        let generation = db.cache_generation("_facts_user");
+        let generation = db.cache_generation(&fact_subject_cache_key(subj));
         db.cache_put_facts(subj, facts.clone(), 60, generation);
         let cached = db.cache_get_facts(subj).unwrap();
         assert_eq!(cached.len(), 2);
@@ -874,7 +874,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let subj = "user";
         let facts = vec![make_fact("1", subj)];
-        let generation = db.cache_generation("_facts_user");
+        let generation = db.cache_generation(&fact_subject_cache_key(subj));
         db.cache_put_facts(subj, facts, 1, generation);
         assert!(db.cache_get_facts(subj).is_some());
         thread::sleep(Duration::from_secs(2));
@@ -886,7 +886,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let subj = "user";
         let facts = vec![make_fact("1", subj)];
-        let generation = db.cache_generation("_facts_user");
+        let generation = db.cache_generation(&fact_subject_cache_key(subj));
         db.cache_put_facts(subj, facts, 60, generation);
         assert!(db.cache_get_facts(subj).is_some());
         db.cache_invalidate_facts(subj);
@@ -898,8 +898,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let f1 = vec![make_fact("1", "subject-a")];
         let f2 = vec![make_fact("2", "subject-b")];
-        let generation_a = db.cache_generation("_facts_subject-a");
-        let generation_b = db.cache_generation("_facts_subject-b");
+        let generation_a = db.cache_generation(&fact_subject_cache_key("subject-a"));
+        let generation_b = db.cache_generation(&fact_subject_cache_key("subject-b"));
         db.cache_put_facts("subject-a", f1, 60, generation_a);
         db.cache_put_facts("subject-b", f2, 60, generation_b);
         assert!(db.cache_get_facts("subject-a").is_some());

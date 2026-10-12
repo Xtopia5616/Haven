@@ -503,12 +503,13 @@ impl InputPipeline {
                                     "VAD worker failed; stopping recording"
                                 );
                                 let elapsed = start.elapsed();
-                                return RecordingResult {
-                                    pcm: accumulated_pcm,
-                                    reason: RecordingReason::Manual,
-                                    duration_ms: elapsed.as_millis() as u64,
-                                    capture_error: Some(format!("VAD worker failed: {error}")),
-                                };
+                                return recording_result_for_vad_worker_failure(
+                                    data.mode,
+                                    &data.event_handler,
+                                    accumulated_pcm,
+                                    elapsed.as_millis() as u64,
+                                    error.to_string(),
+                                );
                             }
                         };
 
@@ -823,6 +824,24 @@ fn notify_auto_stop(event_handler: &Option<Arc<dyn InputEventHandler>>) {
     }
 }
 
+fn recording_result_for_vad_worker_failure(
+    mode: LoopMode,
+    event_handler: &Option<Arc<dyn InputEventHandler>>,
+    pcm: Vec<f32>,
+    duration_ms: u64,
+    error: String,
+) -> RecordingResult {
+    if matches!(mode, LoopMode::Normal) {
+        notify_auto_stop(event_handler);
+    }
+    RecordingResult {
+        pcm,
+        reason: RecordingReason::Manual,
+        duration_ms,
+        capture_error: Some(format!("VAD worker failed: {error}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -913,6 +932,43 @@ mod tests {
         let pipeline = InputPipeline::new();
         pipeline.install_event_handler(Arc::new(StopHandler));
         assert!(pipeline.event_handler.is_installed());
+    }
+
+    #[tokio::test]
+    async fn vad_worker_failure_notifies_auto_stop_and_preserves_capture_error() {
+        struct AutoStopProbe(StdMutex<Option<tokio::sync::oneshot::Sender<()>>>);
+
+        #[async_trait]
+        impl InputEventHandler for AutoStopProbe {
+            async fn on_auto_stop(&self) {
+                if let Some(sender) = self.0.lock().unwrap().take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let event_handler: Option<Arc<dyn InputEventHandler>> =
+            Some(Arc::new(AutoStopProbe(StdMutex::new(Some(sender)))));
+        let result = recording_result_for_vad_worker_failure(
+            LoopMode::Normal,
+            &event_handler,
+            vec![0.1, -0.2],
+            321,
+            "worker channel closed".to_string(),
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), receiver)
+            .await
+            .expect("VAD failure should trigger auto-stop")
+            .expect("auto-stop handler should receive the notification");
+        assert_eq!(result.pcm, vec![0.1, -0.2]);
+        assert_eq!(result.reason, RecordingReason::Manual);
+        assert_eq!(result.duration_ms, 321);
+        assert_eq!(
+            result.capture_error.as_deref(),
+            Some("VAD worker failed: worker channel closed")
+        );
     }
 
     #[tokio::test]

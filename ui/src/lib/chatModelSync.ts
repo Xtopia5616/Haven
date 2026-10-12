@@ -9,7 +9,7 @@ import type { WebSearchModeInput } from '$lib/contracts/generatedCommands.ts';
 type ModelSyncOptions = {
 	isDead: () => boolean;
 	setModelOptions: (value: ChatModelOption[]) => void;
-	setCurrentModelId: (value: string) => void;
+	setCurrentModelConfigId: (value: string) => void;
 	setCurrentModelName: (value: string) => void;
 	setCurrentEffort: (value: string) => void;
 	setCurrentWebSearch: (value: string) => void;
@@ -39,7 +39,7 @@ function chatModelOptions(settings: SettingsPayload): ChatModelOption[] {
 		const providerWebSearch = normalizeConfiguredWebSearch(provider.default_web_search);
 		return [
 			{
-				id: model.id,
+				modelConfigId: model.id,
 				name: model.id,
 				providerName,
 				model: model.model,
@@ -64,7 +64,7 @@ export function createChatModelSync(options: ModelSyncOptions) {
 	const {
 		isDead,
 		setModelOptions,
-		setCurrentModelId,
+		setCurrentModelConfigId,
 		setCurrentModelName,
 		setCurrentEffort,
 		setCurrentWebSearch,
@@ -75,7 +75,7 @@ export function createChatModelSync(options: ModelSyncOptions) {
 	function applyDefaultModelFromSettings(settings: SettingsPayload | null) {
 		if (!settings) {
 			setModelOptions([]);
-			setCurrentModelId('');
+			setCurrentModelConfigId('');
 			setCurrentModelName('');
 			setCurrentEffort('');
 			setCurrentWebSearch('off');
@@ -108,7 +108,7 @@ export function createChatModelSync(options: ModelSyncOptions) {
 			if (explicitWebSearch === 'always') normalizedWebSearch = 'auto';
 		}
 
-		setCurrentModelId(selectedModel?.id || '');
+			setCurrentModelConfigId(selectedModel?.id || '');
 		setCurrentModelName(selectedModel?.id || '');
 		setCurrentEffort(selectedModel?.reasoning_effort || '');
 		setCurrentApiStyle(apiStyle);
