@@ -478,10 +478,13 @@ fn is_generated_media_file(name: &str) -> bool {
     let Some(separator) = suffix.as_bytes().get(32).copied() else {
         return false;
     };
-    let (Some(id), Some(tail)) = (suffix.get(..32), suffix.get(33..)) else {
+    let Some(tail) = suffix.get(33..) else {
         return false;
     };
-    if !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    let Some(canonical_id) = name.get(..37) else {
+        return false;
+    };
+    if !haven_common::types::is_canonical_id(canonical_id, "file") {
         return false;
     }
     match separator {
@@ -498,18 +501,20 @@ fn is_generated_media_file(name: &str) -> bool {
 }
 
 fn is_generated_upload_batch(name: &str) -> bool {
-    let Some(suffix) = name.strip_prefix("file-") else {
-        return false;
-    };
-    suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+    haven_common::types::is_canonical_id(name, "file")
 }
 
 fn is_generated_upload_staging(name: &str) -> bool {
-    name.strip_prefix(".file-")
+    let Some(suffix) = name
+        .strip_prefix(".file-")
         .and_then(|value| value.strip_suffix(".tmp"))
-        .is_some_and(|suffix| {
-            suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
-        })
+    else {
+        return false;
+    };
+    let Some(canonical_id) = name.get(1..38) else {
+        return false;
+    };
+    suffix.len() == 32 && haven_common::types::is_canonical_id(canonical_id, "file")
 }
 
 #[cfg(test)]
@@ -780,7 +785,23 @@ mod tests {
         assert!(!is_generated_upload_batch(
             "file-0123456789abcdef0123456789abcdeg"
         ));
+        assert!(!is_generated_upload_batch(
+            "file-0123456789abcdef0123456789ABCDEF"
+        ));
         assert!(!is_generated_upload_batch("uploads-file-0123456789abcdef"));
+    }
+
+    #[test]
+    fn test_generated_upload_staging_name_is_strict() {
+        assert!(is_generated_upload_staging(
+            ".file-0123456789abcdef0123456789abcdef.tmp"
+        ));
+        assert!(!is_generated_upload_staging(
+            ".file-0123456789abcdef0123456789ABCDEF.tmp"
+        ));
+        assert!(!is_generated_upload_staging(
+            ".file-0123456789abcdef0123456789abcdeg.tmp"
+        ));
     }
 
     #[test]
@@ -803,6 +824,9 @@ mod tests {
         ));
         assert!(!is_generated_media_file(
             "file-0123456789abcdef0123456789abcdeg.png"
+        ));
+        assert!(!is_generated_media_file(
+            "file-0123456789abcdef0123456789ABCDEF.png"
         ));
     }
 

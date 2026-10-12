@@ -3,6 +3,7 @@
 // history resume flow.
 
 import { formatMessageTime } from './messageFormat.ts';
+import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 import type { SessionResumeMessage, SessionResumeStep } from './contracts/sessionHistory.ts';
 import type {
 	CanonicalRole,
@@ -163,7 +164,7 @@ export function mergeLiveStreaming(
 			return;
 		}
 		const isPersistedCard =
-			(m.type === 'tool' || m.type === 'ask') && String(m.id || '').startsWith('step-');
+			(m.type === 'tool' || m.type === 'ask') && isCanonicalEntityId(m.id, 'step');
 		if (m.type === 'tool' || m.type === 'ask') {
 			if (!isPersistedCard) return;
 		} else if (m.role !== 'assistant' && m.role !== 'user') {

@@ -8,6 +8,7 @@
  */
 
 import type { CanonicalRole } from './contracts/generatedCommands.ts';
+import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 import type { SessionMessagePresentationType } from './streaming.ts';
 
 export type ContinueStrategy =
@@ -84,7 +85,7 @@ export function shouldResubmitOriginalUser(
 ): boolean {
 	// Optimistic ids are local to the previous UI send and cannot prove durable
 	// acceptance. Resubmit when there is no durable id or the exact id vanished.
-	if (!originalMessageId?.startsWith('msg-')) return true;
+	if (!isCanonicalEntityId(originalMessageId, 'msg')) return true;
 	return !syncedMessages.some(
 		(message) => message.role === 'user' && message.id === originalMessageId,
 	);

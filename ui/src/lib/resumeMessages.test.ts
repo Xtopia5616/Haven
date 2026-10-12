@@ -1182,7 +1182,7 @@ describe('mergeLiveStreaming', () => {
 		const db = [{ id: 'm1', role: 'user' as const, content: 'hi' }];
 		const existing = [
 			{
-				id: 'step-cut',
+				id: 'step-00000000000000000000000000000001',
 				type: 'tool' as const,
 				toolName: 'shell',
 				content: 'Interrupted',
@@ -1197,11 +1197,26 @@ describe('mergeLiveStreaming', () => {
 			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-cut']);
-		expect(merged.find((m) => m.id === 'step-cut')).toMatchObject({
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-00000000000000000000000000000001']);
+		expect(merged.find((m) => m.id === 'step-00000000000000000000000000000001')).toMatchObject({
 			type: 'tool' as const,
 			content: 'Interrupted',
 		});
+	});
+
+	it('drops finalized tool cards with malformed step identities', () => {
+		const merged = mergeLiveStreaming(
+			[],
+			[
+				{ id: 'step-short', type: 'tool' as const, streaming: false },
+				{
+					id: 'step-0000000000000000000000000000000A',
+					type: 'tool' as const,
+					streaming: false,
+				},
+			],
+		);
+		expect(merged).toEqual([]);
 	});
 
 	it('keeps a finalized real user bubble until its DB row arrives', () => {

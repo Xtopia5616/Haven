@@ -5,6 +5,8 @@ import {
 	shouldShowContinueButton,
 } from './continueSession.ts';
 
+const persistedMessageId = 'msg-00000000000000000000000000000001';
+
 describe('shouldShowContinueButton', () => {
 	it('shows for a conversation whose last visible message is from the user', () => {
 		expect(
@@ -28,30 +30,30 @@ describe('shouldShowContinueButton', () => {
 describe('pickContinueStrategy', () => {
 	it('resends the original user text when the agent never generated', () => {
 		const strategy = pickContinueStrategy([
-			{ role: 'user' as const, content: '帮我打开计算器', id: 'msg-1' },
+			{ role: 'user' as const, content: '帮我打开计算器', id: persistedMessageId },
 		]);
 		expect(strategy).toEqual({
 			mode: 'resend_user',
 			text: '帮我打开计算器',
-			messageId: 'msg-1',
+			messageId: persistedMessageId,
 		});
 	});
 
 	it('ignores trailing supplement badges when deciding resend', () => {
 		const strategy = pickContinueStrategy([
-			{ role: 'user' as const, content: '改一下标题', id: 'msg-1' },
+			{ role: 'user' as const, content: '改一下标题', id: persistedMessageId },
 			{ role: 'assistant' as const, type: 'supplement', content: '改一下标题' },
 		]);
 		expect(strategy).toEqual({
 			mode: 'resend_user',
 			text: '改一下标题',
-			messageId: 'msg-1',
+			messageId: persistedMessageId,
 		});
 	});
 
 	it('sends 继续 when the LLM was interrupted mid-generation', () => {
 		const strategy = pickContinueStrategy([
-			{ role: 'user' as const, content: '写一首诗', id: 'msg-1' },
+			{ role: 'user' as const, content: '写一首诗', id: persistedMessageId },
 			{ role: 'assistant' as const, type: 'reasoning', content: '先构思意境…' },
 			{ role: 'assistant' as const, type: 'thought', content: '床前明月' },
 		]);
@@ -60,7 +62,7 @@ describe('pickContinueStrategy', () => {
 
 	it('sends 继续 when a tool card already ran after the user turn', () => {
 		const strategy = pickContinueStrategy([
-			{ role: 'user' as const, content: '查天气', id: 'msg-1' },
+			{ role: 'user' as const, content: '查天气', id: persistedMessageId },
 			{ role: 'assistant' as const, type: 'tool', toolName: 'shell', content: 'ok' },
 		]);
 		expect(strategy).toEqual({ mode: 'continue', text: '继续' });
@@ -79,20 +81,25 @@ describe('shouldResubmitOriginalUser', () => {
 	it('does not resubmit when the persisted user turn survived truncate', () => {
 		expect(
 			shouldResubmitOriginalUser(
-				[{ role: 'user' as const, content: '帮我打开计算器', id: 'msg-abc' }],
-				'msg-abc',
+				[{ role: 'user' as const, content: '帮我打开计算器', id: persistedMessageId }],
+				persistedMessageId,
 			),
 		).toBe(false);
 	});
 
 	it('resubmits when the original turn is missing after resync', () => {
-		expect(shouldResubmitOriginalUser([], 'msg-original')).toBe(true);
+		expect(shouldResubmitOriginalUser([], 'msg-00000000000000000000000000000002')).toBe(true);
 		expect(
 			shouldResubmitOriginalUser(
-				[{ role: 'user' as const, content: '帮我打开计算器', id: 'msg-other' }],
-				'msg-original',
+				[{ role: 'user' as const, content: '帮我打开计算器', id: 'msg-00000000000000000000000000000003' }],
+				'msg-00000000000000000000000000000002',
 			),
 		).toBe(true);
+	});
+
+	it('resubmits IDs with a message prefix but a noncanonical suffix', () => {
+		expect(shouldResubmitOriginalUser([], 'msg-short')).toBe(true);
+		expect(shouldResubmitOriginalUser([], 'msg-0000000000000000000000000000000A')).toBe(true);
 	});
 
 	it('resubmits optimistic-only bubbles that never got a msg- id', () => {
