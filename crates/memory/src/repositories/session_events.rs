@@ -120,9 +120,7 @@ fn session_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionEv
         run_id: row
             .get::<_, Option<i64>>(6)?
             .and_then(|value| u64::try_from(value).ok()),
-        step_number: row
-            .get::<_, Option<i64>>(7)?
-            .and_then(|value| u32::try_from(value).ok()),
+        step_number: row.get(7)?,
     })
 }
 
@@ -996,7 +994,7 @@ impl SessionStore {
         let message_id = message_id.to_owned();
         self.db
             .run_blocking(move |db| {
-                db.create_thought_step(&session_id, step_number as i32, &message_id)?;
+                db.create_thought_step(&session_id, step_number, &message_id)?;
                 Ok::<(), anyhow::Error>(())
             })
             .await
@@ -2620,25 +2618,14 @@ impl SessionStore {
         let mut records = inputs
             .iter()
             .map(|input| {
-                let step_number = input
-                    .step_number
-                    .map(|value| {
-                        u32::try_from(value)
-                            .map_err(|_| anyhow::anyhow!("usage step_number must not be negative"))
-                    })
-                    .transpose();
-                step_number.map(|step_number| {
-                    let mut record = LlmUsageRecord::from_input(
-                        haven_common::types::new_id("usage"),
-                        session_id,
-                        input,
-                        String::new(),
-                    );
-                    record.step_number = step_number.map(|value| value as i32);
-                    record
-                })
+                LlmUsageRecord::from_input(
+                    haven_common::types::new_id("usage"),
+                    session_id,
+                    input,
+                    String::new(),
+                )
             })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
         let conn = self.db.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<(Vec<LlmUsageRecord>, Vec<SessionEvent>)> {
@@ -2656,9 +2643,7 @@ impl SessionStore {
                         event_type: USAGE_RECORDED_EVENT_TYPE.into(),
                         payload: serde_json::to_string(record)?,
                         run_id: None,
-                        step_number: record
-                            .step_number
-                            .and_then(|value| u32::try_from(value).ok()),
+                        step_number: record.step_number,
                     })
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
@@ -3457,7 +3442,7 @@ impl Database {
                     (id, session_id, step_number, tool_name, input, thought,
                      status, is_high_risk, created_at)
                  VALUES (?1, ?2, ?3, 'thought', ?1, NULL, 'completed', 0, ?4)",
-                rusqlite::params![message_id, session_id, *step_number as i32, created_at],
+                rusqlite::params![message_id, session_id, *step_number, created_at],
             )?;
             bump_step_sequence(conn, session_id)?;
         }
@@ -3486,7 +3471,7 @@ impl Database {
                 rusqlite::params![
                     step_id,
                     session_id,
-                    *step_number as i32,
+                    *step_number,
                     *tool_index as i32,
                     tool_name,
                     tool_input,
@@ -3522,7 +3507,7 @@ mod tests {
     use haven_common::config::RequestKind;
     use haven_common::usage::{CacheAccounting, LlmCallKind};
 
-    fn usage_input(step_number: i32, total_tokens: u32) -> LlmUsageRecordInput {
+    fn usage_input(step_number: u32, total_tokens: u32) -> LlmUsageRecordInput {
         LlmUsageRecordInput {
             step_number: Some(step_number),
             request_kind: RequestKind::Chat,
@@ -3607,6 +3592,33 @@ mod tests {
                 .unwrap(),
             replay.cursor
         );
+    }
+
+    #[tokio::test]
+    async fn session_event_step_number_round_trips_u32_and_rejects_negative_storage() {
+        let (db, store, session_id) = store();
+        let step_number = u32::MAX;
+        store
+            .append_usage(&session_id, &usage_input(step_number, 10))
+            .unwrap();
+
+        let usage = db.list_session_llm_usage(&session_id).unwrap();
+        assert_eq!(usage[0].step_number, Some(step_number));
+        assert_eq!(
+            store.read_all(&session_id).unwrap()[0].step_number,
+            Some(step_number)
+        );
+
+        db.conn()
+            .execute(
+                "INSERT INTO session_events
+                    (session_id, sequence, event_type, event_version, payload, created_at, run_id, step_number)
+                 VALUES (?1, 2, 'test_corrupt_step_number', 1, '{}', '2026-10-12T00:00:00Z', NULL, -1)",
+                rusqlite::params![session_id],
+            )
+            .unwrap();
+
+        assert!(store.read_all(&session_id).is_err());
     }
 
     #[tokio::test]

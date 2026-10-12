@@ -133,7 +133,7 @@ pub struct LlmUsageRecord {
     pub usage_id: String,
     pub session_id: String,
     /// ReAct step number the call served (NULL when not attributable).
-    pub step_number: Option<i32>,
+    pub step_number: Option<u32>,
     /// Request kind that produced the call. The physical SQLite column keeps
     /// its historical name `llm_usage.role` and is mapped here explicitly.
     #[serde(alias = "role")]
@@ -176,7 +176,7 @@ pub struct LlmUsageRecord {
 /// separately so a batch cannot accidentally mix sessions in one transaction.
 #[derive(Debug, Clone)]
 pub struct LlmUsageRecordInput {
-    pub step_number: Option<i32>,
+    pub step_number: Option<u32>,
     /// Request kind stored in the established `llm_usage.role` column.
     pub request_kind: RequestKind,
     pub call_kind: LlmCallKind,
@@ -322,7 +322,7 @@ impl Database {
     pub fn record_llm_call_usage(
         &self,
         session_id: &str,
-        step_number: Option<i32>,
+        step_number: Option<u32>,
         request_kind: RequestKind,
         model: Option<&str>,
         prompt_tokens: u32,
@@ -358,7 +358,7 @@ impl Database {
     pub fn record_llm_call_usage_with_cache_accounting(
         &self,
         session_id: &str,
-        step_number: Option<i32>,
+        step_number: Option<u32>,
         request_kind: RequestKind,
         model: Option<&str>,
         prompt_tokens: u32,
@@ -448,7 +448,7 @@ impl Database {
     pub fn persist_llm_call_and_refresh_session_usage(
         &self,
         session_id: &str,
-        step_number: Option<i32>,
+        step_number: Option<u32>,
         request_kind: RequestKind,
         model: Option<&str>,
         prompt_tokens: u32,
@@ -484,7 +484,7 @@ impl Database {
     pub fn persist_llm_call_and_refresh_session_usage_with_cache_accounting(
         &self,
         session_id: &str,
-        step_number: Option<i32>,
+        step_number: Option<u32>,
         request_kind: RequestKind,
         model: Option<&str>,
         prompt_tokens: u32,
@@ -525,7 +525,7 @@ impl Database {
     pub fn persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
         &self,
         session_id: &str,
-        step_number: Option<i32>,
+        step_number: Option<u32>,
         request_kind: RequestKind,
         model: Option<&str>,
         prompt_tokens: u32,
@@ -569,7 +569,7 @@ impl Database {
     pub fn persist_llm_call_and_refresh_session_usage_with_kind_and_context(
         &self,
         session_id: &str,
-        step_number: Option<i32>,
+        step_number: Option<u32>,
         request_kind: RequestKind,
         call_kind: LlmCallKind,
         model: Option<&str>,
@@ -833,7 +833,7 @@ impl Database {
         conn: &rusqlite::Connection,
         usage_id: &str,
         session_id: &str,
-        step_number: Option<i32>,
+        step_number: Option<u32>,
         request_kind: RequestKind,
         call_kind: &str,
         model: Option<&str>,
@@ -1485,6 +1485,60 @@ mod tests {
         assert!(usage[0].has_cost);
         assert_eq!(usage[0].duration_ms, Some(1234));
         assert_eq!(usage[0].request_kind, RequestKind::Chat);
+    }
+
+    #[test]
+    fn usage_step_number_round_trips_unsigned_values_above_i32_max() {
+        let db = test_db();
+        let session = db.create_session("test").unwrap();
+
+        db.record_llm_call_usage(
+            &session.session_id,
+            Some(u32::MAX),
+            RequestKind::Chat,
+            Some("test-model"),
+            1,
+            1,
+            2,
+            0,
+            0,
+            0.0,
+            false,
+            None,
+        )
+        .unwrap();
+
+        let usage = db.list_session_llm_usage(&session.session_id).unwrap();
+        assert_eq!(usage[0].step_number, Some(u32::MAX));
+    }
+
+    #[test]
+    fn list_usage_rejects_negative_persisted_step_numbers() {
+        let db = test_db();
+        let session = db.create_session("test").unwrap();
+        db.record_llm_call_usage(
+            &session.session_id,
+            Some(1),
+            RequestKind::Chat,
+            Some("test-model"),
+            1,
+            1,
+            2,
+            0,
+            0,
+            0.0,
+            false,
+            None,
+        )
+        .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE llm_usage SET step_number = -1 WHERE session_id = ?1",
+                rusqlite::params![session.session_id],
+            )
+            .unwrap();
+
+        assert!(db.list_session_llm_usage(&session.session_id).is_err());
     }
 
     #[test]

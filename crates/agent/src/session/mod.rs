@@ -273,7 +273,7 @@ impl SessionInfo {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StepInfo {
     pub step_id: String,
-    pub step_number: i32,
+    pub step_number: u32,
     pub tool_name: String,
     pub input: Value,
     pub output: Option<Value>,

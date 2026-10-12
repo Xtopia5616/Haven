@@ -432,6 +432,7 @@ Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalT
 | 实体 ID | `{prefix}-{uuid32}`（统一） | 原样透传 |
 
 - 步骤计数在 Rust 内部、tracing 字段、事件与数据库列统一叫 `step_number`，前端叫 `stepNumber`；禁止在内部缩写成 `step_num`。
+- `step_number` 的 Rust/SQLite/IPC/UI 数值域统一为非负 `u32`（SQLite `INTEGER` 承载该范围）；`tool_index` 是独立的有符号 `i32` 字段，不随步骤计数一并转换。
 - 消息实体引用在 Rust 内部叫 `message_id`，前端叫 `messageId`；禁止缩写成 `msg_id` / `msgId`。
 - **前端只在边界转换**（invoke 调用 / 事件监听处），内部统一 camelCase。
 - `process_transcript` 的 Rust `ProcessResult` externally-tagged snake_case response 由 `sessionCommands` 校验并投影为 `ProcessResultView`（`kind`、`sessionId`、`messageId`）；submit coordinator 只消费该 renderer view，不直接读取 generated wire union（ADR 1059）。

@@ -43,7 +43,7 @@ fn invalid_row_id(column: usize, value: &str, expected: &str) -> rusqlite::Error
 pub struct SessionStep {
     pub step_id: String,
     pub session_id: String,
-    pub step_number: i32,
+    pub step_number: u32,
     pub tool_index: i32,
     /// Raw thought text from the Reasoner (replaces old `tool_name = "thought"` hack)
     pub thought: Option<String>,
@@ -83,7 +83,7 @@ pub enum ToolStepOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolStepWrite {
     pub session_id: String,
-    pub step_number: i32,
+    pub step_number: u32,
     pub tool_index: i32,
     pub tool_name: String,
     pub tool_input: String,
@@ -97,7 +97,7 @@ pub struct ToolStepWrite {
 struct ToolStepFields<'a> {
     id: &'a str,
     session_id: &'a str,
-    step_number: i32,
+    step_number: u32,
     tool_index: i32,
     tool_name: &'a str,
     tool_input: &'a str,
@@ -250,7 +250,7 @@ impl Database {
     pub fn create_thought_step(
         &self,
         session_id: &str,
-        step_number: i32,
+        step_number: u32,
         id: &str,
     ) -> anyhow::Result<SessionStep> {
         ensure_session_id(session_id)?;
@@ -315,7 +315,7 @@ impl Database {
     pub fn create_tool_step(
         &self,
         session_id: &str,
-        step_number: i32,
+        step_number: u32,
         tool_name: &str,
         tool_input: &str,
         is_high_risk: bool,
@@ -348,7 +348,7 @@ impl Database {
     pub fn ensure_tool_step_with_identity(
         &self,
         session_id: &str,
-        step_number: i32,
+        step_number: u32,
         tool_index: i32,
         tool_name: &str,
         tool_input: &str,
@@ -576,6 +576,36 @@ mod tests {
         let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].step_id, step_id);
+    }
+
+    #[test]
+    fn step_number_round_trips_unsigned_values_above_i32_max() {
+        let db = test_db();
+        let session_id = seed_session(&db);
+        let step_id = haven_common::types::new_id("step");
+        let step_number = u32::MAX;
+
+        db.create_thought_step(&session_id, step_number, &step_id)
+            .unwrap();
+
+        let steps = db.list_session_steps(&session_id).unwrap();
+        assert_eq!(steps[0].step_number, step_number);
+    }
+
+    #[test]
+    fn list_session_steps_rejects_negative_persisted_step_numbers() {
+        let db = test_db();
+        let session_id = seed_session(&db);
+        let step_id = haven_common::types::new_id("step");
+        db.create_thought_step(&session_id, 1, &step_id).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE session_steps SET step_number = -1 WHERE id = ?1",
+                rusqlite::params![step_id],
+            )
+            .unwrap();
+
+        assert!(db.list_session_steps(&session_id).is_err());
     }
 
     #[test]

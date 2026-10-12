@@ -1050,3 +1050,4 @@
 - [1059：将 process_transcript 响应投影为 renderer view](1059-project-process-transcript-result.md)
 - [1060：统一 Common 工具契约导入入口](1060-use-canonical-common-tool-contract-path.md)
 - [1061：统一 Session 步数预算的有效范围](1061-align-session-step-budget-ranges.md)
+- [1062：统一持久化与 UI 的 step_number 数值域](1062-align-step-number-width.md)

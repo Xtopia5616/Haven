@@ -1087,7 +1087,7 @@ impl ReActEngine {
             &ctx.session_id,
             request,
             response,
-            ctx.step_number as i32,
+            ctx.step_number,
             Some(duration_ms),
             &ctx.emitter,
             Some(cancel),

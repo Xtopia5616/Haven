@@ -131,7 +131,7 @@ struct ToolStepRequest<'a> {
 
 struct ToolStepContext {
     session_id: String,
-    step_number: i32,
+    step_number: u32,
     tool_index: i32,
     tool_name: String,
     tool_input: String,
@@ -153,7 +153,7 @@ impl ToolStepContext {
     fn new_with_metadata(request: ToolStepRequest<'_>, metadata: ToolStepMetadata) -> Self {
         Self {
             session_id: request.session_id.into(),
-            step_number: request.step_number as i32,
+            step_number: request.step_number,
             tool_index: request.tool_index as i32,
             tool_name: request.tool_name.into(),
             tool_input: request.input.to_string(),
@@ -854,7 +854,6 @@ impl SessionSupervisor {
         } else {
             Vec::new()
         };
-        let persisted_step_number = step_number as i32;
         // Guard against rollback/cancel: if the session has been removed from the
         // running set while the tool was executing, skip persisting step records
         // that would otherwise write into a session after its lifecycle changed.
@@ -901,7 +900,7 @@ impl SessionSupervisor {
             actor
                 .record_step(StepInfo {
                     step_id: persist_step_id.clone(),
-                    step_number: persisted_step_number,
+                    step_number,
                     tool_name: tool_name_owned.clone(),
                     input: input.clone(),
                     output: Some(result.output.clone()),

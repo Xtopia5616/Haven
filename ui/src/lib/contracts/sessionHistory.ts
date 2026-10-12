@@ -91,7 +91,7 @@ function hasOptionalSafeUnsignedInteger(record: Record<string, unknown>, field: 
 function hasValidRuntimeSessionValues(value: unknown): boolean {
 	if (!isRecord(value) || !Array.isArray(value.steps)) return false;
 	if (value.waiting_reason !== undefined && value.status !== 'paused') return false;
-	return value.steps.every((step: unknown) => isRecord(step) && isI32(step.step_number));
+	return value.steps.every((step: unknown) => isRecord(step) && isU32(step.step_number));
 }
 
 function hasValidRepresentationNumericValues(value: unknown): boolean {
@@ -153,7 +153,7 @@ function hasValidLlmUsageNumericValues(value: unknown): boolean {
 	if (!isRecord(value)) return false;
 	return (
 		isOneOf(value.request_kind, REQUEST_KIND_VALUES) &&
-		(value.step_number === null || isI32(value.step_number)) &&
+		(value.step_number === null || isU32(value.step_number)) &&
 		[
 			'prompt_tokens',
 			'completion_tokens',
@@ -179,7 +179,7 @@ function hasValidResumeNumericValues(value: Record<string, unknown>): boolean {
 	}
 	return (
 		value.steps.every(
-			(step: unknown) => isRecord(step) && isI32(step.step_number) && isI32(step.tool_index),
+			(step: unknown) => isRecord(step) && isU32(step.step_number) && isI32(step.tool_index),
 		) &&
 		value.messages.every(
 			(message: unknown) => isRecord(message) && hasValidMessageNumericValues(message),

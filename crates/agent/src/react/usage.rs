@@ -21,7 +21,7 @@ pub(crate) struct UsageUpdate {
     pub call_kind: LlmCallKind,
     pub request: RequestKind,
     pub model: Option<String>,
-    pub step_number: i32,
+    pub step_number: u32,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,

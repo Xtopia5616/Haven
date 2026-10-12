@@ -88,7 +88,7 @@ impl ToolBatchState {
         engine
             .record_tool_usage(
                 &ctx.session_id,
-                ctx.step_number as i32,
+                ctx.step_number,
                 &self.tool_usages,
                 &ctx.emitter,
                 state.turn_cancel.clone(),

@@ -314,10 +314,14 @@ describe('session history and resume contracts', () => {
 		);
 	});
 
-	it('checks i32 runtime values and waiting reason semantics', () => {
-		const outsideI32 = runtimeSession();
-		outsideI32.steps[0]!.step_number = 0x8000_0000;
-		expect(() => parseRuntimeSessionListResponse({ sessions: [outsideI32] })).toThrow(
+	it('checks u32 runtime values and waiting reason semantics', () => {
+		const maxU32 = runtimeSession();
+		maxU32.steps[0]!.step_number = 0xffff_ffff;
+		expect(parseRuntimeSessionListResponse({ sessions: [maxU32] }).sessions).toHaveLength(1);
+
+		const outsideU32 = runtimeSession();
+		outsideU32.steps[0]!.step_number = 0x1_0000_0000;
+		expect(() => parseRuntimeSessionListResponse({ sessions: [outsideU32] })).toThrow(
 			'Invalid runtime session response value',
 		);
 
@@ -521,6 +525,23 @@ describe('session history and resume contracts', () => {
 		const invalidStep = resumeResponse();
 		invalidStep.steps[0]!.tool_index = 0x8000_0000;
 		expect(() => parseSessionResumeResponse(invalidStep)).toThrow(
+			'Invalid resumed numeric value',
+		);
+
+		const largeStepNumbers = resumeResponse();
+		largeStepNumbers.steps[0]!.step_number = 0x8000_0000;
+		largeStepNumbers.llm_usage[0]!.step_number = 0x8000_0000;
+		expect(parseSessionResumeResponse(largeStepNumbers).steps).toHaveLength(1);
+
+		const oversizedStepNumber = resumeResponse();
+		oversizedStepNumber.steps[0]!.step_number = 0x1_0000_0000;
+		expect(() => parseSessionResumeResponse(oversizedStepNumber)).toThrow(
+			'Invalid resumed numeric value',
+		);
+
+		const oversizedUsageStepNumber = resumeResponse();
+		oversizedUsageStepNumber.llm_usage[0]!.step_number = 0x1_0000_0000;
+		expect(() => parseSessionResumeResponse(oversizedUsageStepNumber)).toThrow(
 			'Invalid resumed numeric value',
 		);
 
