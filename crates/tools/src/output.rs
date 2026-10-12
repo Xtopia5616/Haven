@@ -29,12 +29,12 @@ impl OutputBudget {
     /// this call in one small value object gives shell/files/system/tool_runs
     /// one entry point without duplicating cap and recovery-key policy.
     pub fn observe(self, result: &ToolResult) -> String {
-        result.observation_text(self.max_chars)
+        result.observation_text(self.max_chars())
     }
 
     pub fn cap_text(self, text: &str) -> CappedText {
         let mut chars = text.chars();
-        let output: String = chars.by_ref().take(self.max_chars).collect();
+        let output: String = chars.by_ref().take(self.max_chars()).collect();
         CappedText {
             text: output,
             truncated: chars.next().is_some(),

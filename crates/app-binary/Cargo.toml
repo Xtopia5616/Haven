@@ -22,6 +22,7 @@ tauri-build = { version = "2", features = [] }
 [dev-dependencies]
 haven-memory = { path = "../memory", features = ["test-support"] }
 haven-tools = { path = "../tools", features = ["test-support"] }
+haven-common = { path = "../common", features = ["test-support"] }
 tempfile.workspace = true
 
 [dependencies]

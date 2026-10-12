@@ -159,9 +159,9 @@ pub use haven_skills::VenvManager;
 pub(crate) use mcp_server_config::McpServerConfigSource;
 #[doc(hidden)]
 pub use operation_view::OperationSpec;
+pub(crate) use output::{OutputBudget, ToolOutput};
 pub use output::{
-    CappedText, OutputBudget, ToolOutput, append_windows_diagnostics, is_progress_clixml,
-    sanitize_shell_output, summarize_error,
+    append_windows_diagnostics, is_progress_clixml, sanitize_shell_output, summarize_error,
 };
 pub(crate) use process::read_stream_text_capped;
 pub(crate) use registry::ToolRegistry;
@@ -226,7 +226,7 @@ pub use tool_runtime::{
 /// execution lookup — no reverse mapping is needed. A digest suffix is kept
 /// when truncating, otherwise two long MCP names with the same prefix could
 /// silently overwrite one another in the session catalog.
-pub fn llm_tool_name(qualified: &str) -> String {
+pub(crate) fn llm_tool_name(qualified: &str) -> String {
     let mut out: String = qualified
         .chars()
         .map(|c| {

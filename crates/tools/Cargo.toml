@@ -48,6 +48,7 @@ haven-memory = { path = "../memory", features = ["test-support"] }
 haven-llm = { path = "../llm", features = ["test-support"] }
 haven-messaging = { path = "../messaging", features = ["test-support"] }
 haven-mcp = { path = "../mcp", features = ["test-support"] }
+haven-common = { path = "../common", features = ["test-support"] }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]

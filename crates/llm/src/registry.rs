@@ -45,7 +45,7 @@ impl ModelInfo {
 }
 
 /// Fallback window when neither the endpoint nor discovery supplied one.
-pub const FALLBACK_CONTEXT_WINDOW: u32 = 128_000;
+pub(crate) const FALLBACK_CONTEXT_WINDOW: u32 = 128_000;
 
 /// Resolve the effective context window for an endpoint.
 ///
@@ -62,7 +62,7 @@ pub fn context_window_for(endpoint: &ModelEndpoint) -> Option<u32> {
 ///
 /// Pulls whatever the gateway exposes: context length under several common
 /// keys, display name, capability flags, and OpenRouter-style pricing.
-pub fn model_info_from_json(m: &serde_json::Value) -> Option<ModelInfo> {
+fn model_info_from_json(m: &serde_json::Value) -> Option<ModelInfo> {
     let id = m.get("id").and_then(|v| v.as_str())?.to_string();
     if id.is_empty() {
         return None;
@@ -354,11 +354,13 @@ impl ModelRegistry {
         Ok(self.discovered.clone())
     }
 
-    pub fn all(&self) -> Vec<&ModelInfo> {
+    #[cfg(test)]
+    fn all(&self) -> Vec<&ModelInfo> {
         self.discovered.iter().collect()
     }
 
-    pub fn search(&self, query: &str) -> Vec<&ModelInfo> {
+    #[cfg(test)]
+    fn search(&self, query: &str) -> Vec<&ModelInfo> {
         let q = query.to_lowercase();
         self.all()
             .into_iter()

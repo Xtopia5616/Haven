@@ -220,7 +220,8 @@ impl InputPipeline {
     }
 
     /// Current state of the speech-activity detector.
-    pub async fn vad_state(&self) -> VadState {
+    #[cfg(test)]
+    async fn vad_state(&self) -> VadState {
         self.vad_detector.lock().await.state()
     }
 

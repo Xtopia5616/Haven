@@ -65,9 +65,9 @@ impl McpManager {
     }
 
     /// Construct a manager with an explicit transport policy. The regular
-    /// constructor is fail-closed; this is useful for controlled hosts and
-    /// tests that intentionally provide their own network boundary.
-    pub fn new_with_network_policy(network_policy: haven_common::types::NetworkPolicy) -> Self {
+    /// constructor is fail-closed; internal setup and tests may provide a
+    /// different network boundary.
+    fn new_with_network_policy(network_policy: haven_common::types::NetworkPolicy) -> Self {
         let (status_tx, _) = tokio::sync::broadcast::channel(256);
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
@@ -145,7 +145,7 @@ impl McpManager {
         }
     }
 
-    pub async fn network_policy(&self) -> haven_common::types::NetworkPolicy {
+    pub(crate) async fn network_policy(&self) -> haven_common::types::NetworkPolicy {
         *self.network_policy.read().await
     }
 

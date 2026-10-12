@@ -428,7 +428,8 @@ impl LlmRouter {
         }
     }
 
-    pub fn select_request(&self, request: RequestKind) -> Arc<dyn LlmClient> {
+    #[cfg(test)]
+    fn select_request(&self, request: RequestKind) -> Arc<dyn LlmClient> {
         self.model_directory.select_client(request)
     }
 

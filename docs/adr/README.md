@@ -1011,3 +1011,4 @@
 - [1020：从 Rust 契约校验完整 Settings 响应](1020-validate-full-settings-response-shape.md)
 - [1021：从 Rust 契约校验完整 Memory 响应](1021-validate-memory-command-response-shapes.md)
 - [1022：从 Rust 契约校验完整 Session 响应](1022-validate-session-command-response-shapes.md)
+- [1023：收回仅限测试和 crate 内部使用的 API](1023-restrict-test-and-internal-crate-apis.md)

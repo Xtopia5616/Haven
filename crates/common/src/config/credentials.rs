@@ -3,6 +3,7 @@
 //! `haven-platform`; non-Windows production builds intentionally fail closed.
 
 use std::collections::{HashMap, HashSet};
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 
 use super::{AppConfig, McpEnvironmentCredentialRef, McpServerConfig, OcrConfig};
@@ -51,10 +52,12 @@ pub fn validate_credential_reference(reference: &str) -> anyhow::Result<()> {
 /// default production or development startup because references will not
 /// survive a process restart.
 #[derive(Default)]
+#[cfg(any(test, feature = "test-support"))]
 pub struct InMemoryCredentialStore {
     values: Mutex<HashMap<String, String>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl CredentialStore for InMemoryCredentialStore {
     fn read(&self, reference: &str) -> anyhow::Result<Option<String>> {
         validate_credential_reference(reference)?;
