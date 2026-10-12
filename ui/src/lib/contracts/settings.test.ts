@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	MEDIA_TIMEOUT_BOUNDS,
+	SESSION_STEP_BUDGET_BOUNDS,
 	parseSessionPermissionGrantResponses,
 	parseSettingsPayload,
 	validateSettingsNumbers,
@@ -167,6 +168,44 @@ describe('settings command contracts', () => {
 				expect(() => validateSettingsNumbers(invalid)).toThrow(
 					`Invalid Settings numeric value at settings.media.${kind}.timeout_secs`,
 				);
+			}
+		}
+	});
+
+	it('enforces session step budgets and the zero means unlimited UI mapping', () => {
+		for (const value of [
+			SESSION_STEP_BUDGET_BOUNDS.perRun.min,
+			SESSION_STEP_BUDGET_BOUNDS.perRun.max,
+		]) {
+			const valid = withSetting(['session', 'max_steps_per_run'], value);
+			expect(parseSettingsPayload(valid)).toBe(valid);
+			expect(() => validateSettingsNumbers(valid)).not.toThrow();
+		}
+
+		for (const value of [1, SESSION_STEP_BUDGET_BOUNDS.perSession.max]) {
+			const valid = withSetting(['session', 'max_steps_per_session'], value);
+			expect(parseSettingsPayload(valid)).toBe(valid);
+			expect(() => validateSettingsNumbers(valid)).not.toThrow();
+		}
+
+		const unlimited = withSetting(['session', 'max_steps_per_session'], null);
+		expect(() => validateSettingsNumbers(unlimited)).not.toThrow();
+
+		for (const [field, values] of [
+			[
+				'max_steps_per_run',
+				[0, SESSION_STEP_BUDGET_BOUNDS.perRun.max + 1],
+			],
+			[
+				'max_steps_per_session',
+				[0, SESSION_STEP_BUDGET_BOUNDS.perSession.max + 1],
+			],
+		] as const) {
+			for (const value of values) {
+				const invalid = withSetting(['session', field], value);
+				const path = `settings.session.${field}`;
+				expect(() => parseSettingsPayload(invalid)).toThrow(path);
+				expect(() => validateSettingsNumbers(invalid)).toThrow(path);
 			}
 		}
 	});

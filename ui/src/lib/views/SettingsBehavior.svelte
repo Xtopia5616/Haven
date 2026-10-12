@@ -7,6 +7,7 @@
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import HotkeyInput from '$lib/HotkeyInput.svelte';
 	import { withBooleanValue, withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
+	import { SESSION_STEP_BUDGET_BOUNDS } from '$lib/contracts/settings.ts';
 	import type {
 		HotkeyModeInput,
 		MemoryConfigInput,
@@ -127,8 +128,8 @@
 			<MaterialNumberField
 				id="session-max-steps-per-run"
 				value={session.max_steps_per_run}
-				min={1}
-				max={1000}
+				min={SESSION_STEP_BUDGET_BOUNDS.perRun.min}
+				max={SESSION_STEP_BUDGET_BOUNDS.perRun.max}
 				onChange={withNumberValue((value) => (session.max_steps_per_run = value))}
 			/>
 		</SettingsField>
@@ -140,8 +141,8 @@
 			<MaterialNumberField
 				id="session-max-steps-per-session"
 				value={session.max_steps_per_session ?? 0}
-				min={0}
-				max={100000}
+				min={SESSION_STEP_BUDGET_BOUNDS.perSession.minInput}
+				max={SESSION_STEP_BUDGET_BOUNDS.perSession.max}
 				onChange={withNumberValue(
 					(value) => (session.max_steps_per_session = value || null),
 				)}

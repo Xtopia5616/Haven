@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use crate::session::SessionSupervisor;
-use haven_common::config::{ContextLimitsConfig, RequestKind};
+use haven_common::config::{
+    ContextLimitsConfig, RequestKind, validate_max_steps_per_run, validate_max_steps_per_session,
+};
 use haven_common::lifecycle::SessionStatus;
 use haven_common::media::{
     CapabilityProfile, CapabilitySupport, MediaInput, MediaInputStrategy, MediaPlan,
@@ -536,6 +538,7 @@ impl ReActEngine {
     }
 
     pub fn set_max_steps_per_run(&self, max_steps_per_run: u32) -> anyhow::Result<()> {
+        validate_max_steps_per_run(max_steps_per_run)?;
         *runtime_setting_lock(&self.max_steps_per_run, "max steps per run")? = max_steps_per_run;
         Ok(())
     }
@@ -545,6 +548,7 @@ impl ReActEngine {
         &self,
         max_steps_per_session: Option<u32>,
     ) -> anyhow::Result<()> {
+        validate_max_steps_per_session(max_steps_per_session)?;
         *runtime_setting_lock(&self.max_steps_per_session, "max steps per session")? =
             max_steps_per_session;
         Ok(())

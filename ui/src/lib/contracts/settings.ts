@@ -200,6 +200,12 @@ export const MEDIA_TIMEOUT_BOUNDS = {
 	image_gen: { min: 10, max: 600 },
 } as const;
 
+/** Keep aligned with the shared Rust SessionConfig validator. */
+export const SESSION_STEP_BUDGET_BOUNDS = {
+	perRun: { min: 1, max: 1_000 },
+	perSession: { minInput: 0, minValue: 1, max: 100_000 },
+} as const;
+
 export type SessionPermissionGrant = GeneratedSessionPermissionGrant;
 
 /** Exact Rust-owned config shape from the generated IPC contract. */
@@ -344,12 +350,36 @@ function findInvalidMediaTimeout(value: unknown): string | null {
 	return null;
 }
 
+function findInvalidSessionStepBudget(value: unknown): string | null {
+	if (!isRecord(value) || !isRecord(value.session)) return null;
+	const { max_steps_per_run: perRun, max_steps_per_session: perSession } = value.session;
+	if (
+		perRun !== undefined &&
+		(!isSafeUnsignedInteger(perRun) ||
+			perRun < SESSION_STEP_BUDGET_BOUNDS.perRun.min ||
+			perRun > SESSION_STEP_BUDGET_BOUNDS.perRun.max)
+	) {
+		return 'settings.session.max_steps_per_run';
+	}
+	if (
+		perSession !== undefined &&
+		perSession !== null &&
+		(!isSafeUnsignedInteger(perSession) ||
+			perSession < SESSION_STEP_BUDGET_BOUNDS.perSession.minValue ||
+			perSession > SESSION_STEP_BUDGET_BOUNDS.perSession.max)
+	) {
+		return 'settings.session.max_steps_per_session';
+	}
+	return null;
+}
+
 /** Reject Settings numbers outside their Rust field domains or JavaScript-safe range. */
 export function validateSettingsNumbers(value: unknown): void {
 	const invalidPath =
 		findInvalidSettingsNumber(value) ??
 		findInvalidMcpInterval(value) ??
-		findInvalidMediaTimeout(value);
+		findInvalidMediaTimeout(value) ??
+		findInvalidSessionStepBudget(value);
 	if (invalidPath) throw new Error(`Invalid Settings numeric value at ${invalidPath}`);
 }
 

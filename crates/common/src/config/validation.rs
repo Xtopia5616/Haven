@@ -1,6 +1,9 @@
 //! Shared validation for values that cross the config and JavaScript boundary.
 
-use super::{AppConfig, Settings};
+use super::{
+    AppConfig, MAX_SESSION_STEPS_PER_RUN, MAX_SESSION_STEPS_PER_SESSION, MIN_SESSION_STEPS_PER_RUN,
+    MIN_SESSION_STEPS_PER_SESSION, Settings,
+};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
@@ -33,6 +36,10 @@ fn validate_settings_numbers(settings: &Settings) -> Result<()> {
 /// Keep persistence-only secret checks in their owning boundaries.
 pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
     validate_app_config_numbers(config)?;
+    validate_session_step_budgets(
+        config.session.max_steps_per_run,
+        config.session.max_steps_per_session,
+    )?;
     validate_unique_llm_configuration_keys(&config.llm)?;
     if config.context_limits.max_known_facts > super::MAX_FACTS_IN_EXTRACTION_PROMPT {
         anyhow::bail!(
@@ -79,6 +86,38 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         && !has_provider(&config.media.image_gen.provider_name)
     {
         anyhow::bail!("media.image_gen.provider_name must reference a configured Provider or none");
+    }
+    Ok(())
+}
+
+/// Validate the shared step-budget contract used by TOML, Settings and the
+/// runtime setters. The UI represents an unlimited lifetime cap as `None`;
+/// zero is never a valid configured budget.
+pub fn validate_session_step_budgets(
+    max_steps_per_run: u32,
+    max_steps_per_session: Option<u32>,
+) -> Result<()> {
+    validate_max_steps_per_run(max_steps_per_run)?;
+    validate_max_steps_per_session(max_steps_per_session)
+}
+
+pub fn validate_max_steps_per_run(max_steps_per_run: u32) -> Result<()> {
+    if !(MIN_SESSION_STEPS_PER_RUN..=MAX_SESSION_STEPS_PER_RUN).contains(&max_steps_per_run) {
+        anyhow::bail!(
+            "session.max_steps_per_run must be within {MIN_SESSION_STEPS_PER_RUN}..={MAX_SESSION_STEPS_PER_RUN}"
+        );
+    }
+    Ok(())
+}
+
+pub fn validate_max_steps_per_session(max_steps_per_session: Option<u32>) -> Result<()> {
+    if let Some(max_steps_per_session) = max_steps_per_session
+        && !(MIN_SESSION_STEPS_PER_SESSION..=MAX_SESSION_STEPS_PER_SESSION)
+            .contains(&max_steps_per_session)
+    {
+        anyhow::bail!(
+            "session.max_steps_per_session must be null or within {MIN_SESSION_STEPS_PER_SESSION}..={MAX_SESSION_STEPS_PER_SESSION}"
+        );
     }
     Ok(())
 }
@@ -336,8 +375,9 @@ fn validate_range(path: &str, value: f64, min: f64, max: f64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_INPUT_RING_BUFFER_SECS, validate_app_config, validate_app_config_numbers,
-        validate_settings_contract, validate_settings_numbers,
+        MAX_INPUT_RING_BUFFER_SECS, MAX_SESSION_STEPS_PER_RUN, MAX_SESSION_STEPS_PER_SESSION,
+        MIN_SESSION_STEPS_PER_RUN, MIN_SESSION_STEPS_PER_SESSION, validate_app_config,
+        validate_app_config_numbers, validate_settings_contract, validate_settings_numbers,
     };
     use crate::config::{AppConfig, ProviderConfig, Settings};
 
@@ -391,6 +431,46 @@ mod tests {
                     "{settings_error}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn session_step_budget_ranges_match_settings_controls_for_config_and_settings() {
+        for (max_steps_per_run, max_steps_per_session) in [
+            (MIN_SESSION_STEPS_PER_RUN, None),
+            (
+                MAX_SESSION_STEPS_PER_RUN,
+                Some(MIN_SESSION_STEPS_PER_SESSION),
+            ),
+            (
+                MIN_SESSION_STEPS_PER_RUN,
+                Some(MAX_SESSION_STEPS_PER_SESSION),
+            ),
+        ] {
+            let mut config = AppConfig::default();
+            config.session.max_steps_per_run = max_steps_per_run;
+            config.session.max_steps_per_session = max_steps_per_session;
+            assert!(validate_app_config(&config).is_ok());
+            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        }
+
+        for (max_steps_per_run, max_steps_per_session, expected_path) in [
+            (0, None, "max_steps_per_run"),
+            (MAX_SESSION_STEPS_PER_RUN + 1, None, "max_steps_per_run"),
+            (MIN_SESSION_STEPS_PER_RUN, Some(0), "max_steps_per_session"),
+            (
+                MIN_SESSION_STEPS_PER_RUN,
+                Some(MAX_SESSION_STEPS_PER_SESSION + 1),
+                "max_steps_per_session",
+            ),
+        ] {
+            let mut config = AppConfig::default();
+            config.session.max_steps_per_run = max_steps_per_run;
+            config.session.max_steps_per_session = max_steps_per_session;
+            let config_error = validate_app_config(&config).unwrap_err();
+            assert!(config_error.to_string().contains(expected_path));
+            let settings_error = validate_settings_contract(&Settings::from(&config)).unwrap_err();
+            assert!(settings_error.to_string().contains(expected_path));
         }
     }
 

@@ -287,6 +287,11 @@ async fn replace_router_and_router_work() {
 async fn set_max_steps_per_run_updates_field() {
     let (agent, executor) = make_test_agent();
     agent.set_max_steps_per_run(5).unwrap();
+    assert!(agent.set_max_steps_per_run(0).is_err());
+    assert!(agent.set_max_steps_per_run(1_001).is_err());
+    assert!(agent.set_max_steps_per_session(Some(0)).is_err());
+    assert!(agent.set_max_steps_per_session(Some(100_001)).is_err());
+    agent.set_max_steps_per_session(None).unwrap();
 
     let recorder = Arc::new(RecordingEmitter {
         thoughts: std::sync::Mutex::new(Vec::new()),

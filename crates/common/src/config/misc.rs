@@ -7,6 +7,10 @@ use super::*;
 /// Hard ceiling for the number of stored facts inserted into a fact-extraction
 /// prompt. The default remains lower so users can reduce prompt cost.
 pub const MAX_FACTS_IN_EXTRACTION_PROMPT: usize = 64;
+pub const MIN_SESSION_STEPS_PER_RUN: u32 = 1;
+pub const MAX_SESSION_STEPS_PER_RUN: u32 = 1_000;
+pub const MIN_SESSION_STEPS_PER_SESSION: u32 = 1;
+pub const MAX_SESSION_STEPS_PER_SESSION: u32 = 100_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]

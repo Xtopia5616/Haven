@@ -1049,3 +1049,4 @@
 - [1058：收窄 LLM crate 根 API 并归还能力判断 owner](1058-narrow-llm-root-api.md)
 - [1059：将 process_transcript 响应投影为 renderer view](1059-project-process-transcript-result.md)
 - [1060：统一 Common 工具契约导入入口](1060-use-canonical-common-tool-contract-path.md)
+- [1061：统一 Session 步数预算的有效范围](1061-align-session-step-budget-ranges.md)
