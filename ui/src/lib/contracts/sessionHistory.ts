@@ -8,9 +8,16 @@ import type {
 	SessionUsage as GeneratedSessionUsage,
 	TauriCommandResponse,
 } from './generatedCommands.ts';
-import { INTERACTION_KIND_VALUES } from './generatedCommands.ts';
+import {
+	INTERACTION_KIND_VALUES,
+	RUNTIME_SESSION_LIST_RESPONSE_SHAPE,
+	SESSION_LINEAGE_RESPONSE_SHAPE,
+	SESSION_RECORD_RESPONSE_SHAPE,
+	SESSION_RESUME_RESPONSE_SHAPE,
+} from './generatedCommands.ts';
+import { findGeneratedWireShapeMismatch } from './generatedWireShape.ts';
 import { isRecord } from './objectGuards.ts';
-import { isOneOf } from './valueGuards.ts';
+import { isFiniteNumber, isI32, isOneOf, isSafeUnsignedInteger, isU32 } from './valueGuards.ts';
 import { isCanonicalEntityId } from './wireGuards.ts';
 
 /** All command wire shapes are derived from Rust handlers and DTOs. */
@@ -29,19 +36,13 @@ export type SessionLlmUsage = Omit<Partial<GeneratedLlmUsageRecord>, 'cost_usd'>
 /** Complete successful response from get_session_for_resume/get_latest_session_for_resume. */
 export type SessionResumeResponse = GeneratedSessionResumeResponse;
 
-function isSessionRecord(
+function hasSessionIdentity(
 	value: unknown,
 ): value is Record<string, unknown> & { session_id: string } {
 	return isRecord(value) && isCanonicalEntityId(value.session_id, 'ses');
 }
 
-function hasCanonicalSessionId(
-	value: unknown,
-): value is Record<string, unknown> & { session_id: string } {
-	return isRecord(value) && isCanonicalEntityId(value.session_id, 'ses');
-}
-
-function isRuntimeSession(value: unknown): boolean {
+function hasRuntimeSessionIdentity(value: unknown): boolean {
 	return (
 		isRecord(value) &&
 		isCanonicalEntityId(value.session_id, 'ses') &&
@@ -52,23 +53,151 @@ function isRuntimeSession(value: unknown): boolean {
 	);
 }
 
+function requireWireShape(
+	value: unknown,
+	shape: Parameters<typeof findGeneratedWireShapeMismatch>[1],
+	label: string,
+): void {
+	const mismatch = findGeneratedWireShapeMismatch(value, shape);
+	if (mismatch) throw new Error(`Invalid ${label} response shape at ${mismatch}`);
+}
+
+function hasOptionalU32(record: Record<string, unknown>, field: string): boolean {
+	return record[field] === undefined || isU32(record[field]);
+}
+
+function hasOptionalSafeUnsignedInteger(record: Record<string, unknown>, field: string): boolean {
+	return record[field] === undefined || isSafeUnsignedInteger(record[field]);
+}
+
+function hasValidRuntimeSessionValues(value: unknown): boolean {
+	if (!isRecord(value) || !Array.isArray(value.steps)) return false;
+	if (value.waiting_reason !== undefined && value.status !== 'paused') return false;
+	return value.steps.every((step: unknown) => isRecord(step) && isI32(step.step_number));
+}
+
+function hasValidRepresentationNumericValues(value: unknown): boolean {
+	if (!isRecord(value)) return false;
+	if (value.confidence !== undefined && !isFiniteNumber(value.confidence)) return false;
+	if (value.cost === undefined) return true;
+	if (!isRecord(value.cost)) return false;
+	return (
+		hasOptionalU32(value.cost, 'estimated_tokens') &&
+		(value.cost.estimated_usd === undefined || isFiniteNumber(value.cost.estimated_usd))
+	);
+}
+
+function hasValidMessageNumericValues(value: Record<string, unknown>): boolean {
+	if (!Array.isArray(value.attachments)) return false;
+	const validAttachments = value.attachments.every((attachment: unknown) => {
+		if (!isRecord(attachment) || !hasOptionalSafeUnsignedInteger(attachment, 'size_bytes')) {
+			return false;
+		}
+		return (
+			attachment.representations === undefined ||
+			(Array.isArray(attachment.representations) &&
+				attachment.representations.every(hasValidRepresentationNumericValues))
+		);
+	});
+	if (!validAttachments || value.media_inputs === undefined) return validAttachments;
+	return (
+		Array.isArray(value.media_inputs) &&
+		value.media_inputs.every(
+			(input: unknown) =>
+				isRecord(input) &&
+				isRecord(input.asset) &&
+				isSafeUnsignedInteger(input.asset.size_bytes) &&
+				Array.isArray(input.representations) &&
+				input.representations.every(hasValidRepresentationNumericValues),
+		)
+	);
+}
+
+function hasValidSessionUsageNumericValues(value: unknown): boolean {
+	if (value === null) return true;
+	if (!isRecord(value)) return false;
+	return (
+		[
+			'prompt_tokens',
+			'completion_tokens',
+			'total_tokens',
+			'cached_tokens',
+			'cache_creation_tokens',
+			'cache_miss_tokens',
+			'context_tokens',
+		].every((field) => isU32(value[field])) &&
+		(value.context_window === null || isU32(value.context_window)) &&
+		isFiniteNumber(value.cost_usd)
+	);
+}
+
+function hasValidLlmUsageNumericValues(value: unknown): boolean {
+	if (!isRecord(value)) return false;
+	return (
+		(value.step_number === null || isI32(value.step_number)) &&
+		[
+			'prompt_tokens',
+			'completion_tokens',
+			'total_tokens',
+			'cached_tokens',
+			'cache_creation_tokens',
+			'cache_miss_tokens',
+			'context_tokens',
+		].every((field) => isU32(value[field])) &&
+		(value.context_window === null || isU32(value.context_window)) &&
+		isFiniteNumber(value.cost_usd) &&
+		(value.duration_ms === null || isSafeUnsignedInteger(value.duration_ms))
+	);
+}
+
+function hasValidResumeNumericValues(value: Record<string, unknown>): boolean {
+	if (
+		!Array.isArray(value.steps) ||
+		!Array.isArray(value.messages) ||
+		!Array.isArray(value.llm_usage)
+	) {
+		return false;
+	}
+	return (
+		value.steps.every(
+			(step: unknown) => isRecord(step) && isI32(step.step_number) && isI32(step.tool_index),
+		) &&
+		value.messages.every(
+			(message: unknown) => isRecord(message) && hasValidMessageNumericValues(message),
+		) &&
+		hasValidSessionUsageNumericValues(value.usage) &&
+		value.llm_usage.every(hasValidLlmUsageNumericValues) &&
+		Array.isArray(value.interactions) &&
+		value.interactions.every(
+			(interaction: unknown) =>
+				isRecord(interaction) && hasOptionalU32(interaction, 'tool_index'),
+		)
+	);
+}
+
 /** Validate the session and step identities before a runtime list reaches the reducer. */
 export function parseRuntimeSessionListResponse(value: unknown): RuntimeSessionListResponse {
 	if (
 		!isRecord(value) ||
 		!Array.isArray(value.sessions) ||
-		!value.sessions.every(isRuntimeSession)
+		!value.sessions.every(hasRuntimeSessionIdentity)
 	) {
 		throw new Error('Invalid runtime session identity');
+	}
+	requireWireShape(value, RUNTIME_SESSION_LIST_RESPONSE_SHAPE, 'runtime session list');
+	if (!value.sessions.every(hasValidRuntimeSessionValues)) {
+		throw new Error('Invalid runtime session response value');
 	}
 	return value as unknown as RuntimeSessionListResponse;
 }
 
 /** Validate persisted session identities returned by history and lineage commands. */
 export function parseSessionHistoryRows(value: unknown): SessionHistoryRow[] {
-	if (!Array.isArray(value) || !value.every(isSessionRecord)) {
+	if (!Array.isArray(value) || !value.every(hasSessionIdentity)) {
 		throw new Error('Invalid session history identity');
 	}
+	for (const row of value)
+		requireWireShape(row, SESSION_RECORD_RESPONSE_SHAPE, 'session history');
 	return value as unknown as SessionHistoryRow[];
 }
 
@@ -86,14 +215,14 @@ export function parseSessionLineageResponse(
 		) ||
 		!(
 			value.parent === null ||
-			(isSessionRecord(value.parent) &&
+			(hasSessionIdentity(value.parent) &&
 				value.parent.session_id === value.parent_session_id)
 		) ||
 		!Array.isArray(value.children) ||
 		!value.children.every(
 			(child: unknown) =>
 				isRecord(child) &&
-				isSessionRecord(child.session) &&
+				hasSessionIdentity(child.session) &&
 				isCanonicalEntityId(child.parent_session_id, 'ses') &&
 				child.parent_session_id === expectedSessionId &&
 				child.session.session_id !== expectedSessionId,
@@ -101,6 +230,7 @@ export function parseSessionLineageResponse(
 	) {
 		throw new Error('Invalid session lineage identity');
 	}
+	requireWireShape(value, SESSION_LINEAGE_RESPONSE_SHAPE, 'session lineage');
 	return value as unknown as SessionLineageResponse;
 }
 
@@ -180,7 +310,7 @@ export function parseSessionResumeResponse(
 	value: unknown,
 	expectedSessionId?: string,
 ): SessionResumeResponse {
-	if (!isRecord(value) || !isSessionRecord(value.session)) {
+	if (!isRecord(value) || !hasSessionIdentity(value.session)) {
 		throw new Error('Invalid resumed session identity');
 	}
 	const sessionId = value.session.session_id;
@@ -190,7 +320,7 @@ export function parseSessionResumeResponse(
 	if (
 		!Array.isArray(value.steps) ||
 		!value.steps.every(
-			(step: unknown) => hasCanonicalSessionId(step) && step.session_id === sessionId,
+			(step: unknown) => hasSessionIdentity(step) && step.session_id === sessionId,
 		)
 	) {
 		throw new Error('Invalid resumed step session identity');
@@ -207,16 +337,12 @@ export function parseSessionResumeResponse(
 	}
 	const stepIds = new Set<string>(
 		value.steps
-			.filter(
-				(step: unknown) => isRecord(step) && isCanonicalEntityId(step.step_id, 'step'),
-			)
+			.filter((step: unknown) => isRecord(step) && isCanonicalEntityId(step.step_id, 'step'))
 			.map((step: { step_id: string }) => step.step_id),
 	);
 	const supplementStepMessageIds = new Set<string>(
 		value.steps
-			.filter(
-				(step: unknown) => isRecord(step) && isCanonicalEntityId(step.step_id, 'msg'),
-			)
+			.filter((step: unknown) => isRecord(step) && isCanonicalEntityId(step.step_id, 'msg'))
 			.map((step: { step_id: string }) => step.step_id),
 	);
 	const validResumeMessage = (
@@ -257,6 +383,10 @@ export function parseSessionResumeResponse(
 		)
 	) {
 		throw new Error('Invalid resumed interaction identity');
+	}
+	requireWireShape(value, SESSION_RESUME_RESPONSE_SHAPE, 'session resume');
+	if (!hasValidResumeNumericValues(value)) {
+		throw new Error('Invalid resumed numeric value');
 	}
 	return value as unknown as SessionResumeResponse;
 }

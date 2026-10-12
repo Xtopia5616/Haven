@@ -431,6 +431,1110 @@ export const MEMORY_RECALL_ITEM_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const RUNTIME_SESSION_LIST_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'sessions': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'session_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'input': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'summary': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'title': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'status': {
+						optional: false,
+						shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
+					},
+					'waiting_reason': {
+						optional: true,
+						shape: { kind: 'enum', values: SESSION_WAITING_REASON_VALUES },
+					},
+					'steps': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'step_id': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'step_number': {
+									optional: false,
+									shape: { kind: 'number' },
+								},
+								'tool_name': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'input': {
+									optional: false,
+									shape: { kind: 'unknown' },
+								},
+								'output': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'unknown' } },
+								},
+								'status': {
+									optional: false,
+									shape: { kind: 'enum', values: SESSION_STEP_STATUS_VALUES },
+								},
+								'risk_level': {
+									optional: false,
+									shape: { kind: 'enum', values: RISK_LEVEL_VALUES },
+								},
+								'confirmed': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'boolean' } },
+								}
+							}
+						} },
+					},
+					'created_at': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'updated_at': {
+						optional: false,
+						shape: { kind: 'string' },
+					}
+				}
+			} },
+		}
+	}
+} as const;
+export const SESSION_LINEAGE_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'session_id': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'parent_session_id': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'parent': {
+			optional: false,
+			shape: { kind: 'nullable', inner: {
+				kind: 'object',
+				fields: {
+					'session_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'input_text': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'title': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'status': {
+						optional: false,
+						shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
+					},
+					'run_end_reason': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'created_at': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'updated_at': {
+						optional: false,
+						shape: { kind: 'string' },
+					}
+				}
+			} },
+		},
+		'children': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'session': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'session_id': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'input_text': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'title': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								},
+								'status': {
+									optional: false,
+									shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
+								},
+								'run_end_reason': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'created_at': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'updated_at': {
+									optional: false,
+									shape: { kind: 'string' },
+								}
+							}
+						},
+					},
+					'parent_session_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					}
+				}
+			} },
+		}
+	}
+} as const;
+export const SESSION_RECORD_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'session_id': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'input_text': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'title': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'status': {
+			optional: false,
+			shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
+		},
+		'run_end_reason': {
+			optional: true,
+			shape: { kind: 'string' },
+		},
+		'created_at': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'updated_at': {
+			optional: false,
+			shape: { kind: 'string' },
+		}
+	}
+} as const;
+export const SESSION_RESUME_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'session': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'session_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'input_text': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'title': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'status': {
+						optional: false,
+						shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
+					},
+					'run_end_reason': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'created_at': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'updated_at': {
+						optional: false,
+						shape: { kind: 'string' },
+					}
+				}
+			},
+		},
+		'messages': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'message_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'session_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'role': {
+						optional: false,
+						shape: { kind: 'enum', values: CANONICAL_ROLE_VALUES },
+					},
+					'content': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'message_type': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'enum', values: TRANSCRIPT_MESSAGE_KIND_VALUES } },
+					},
+					'created_at': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'tool_call_id': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'attachments': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'asset_id': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'media_type': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'data': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'filename': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'path': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'sha256': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'size_bytes': {
+									optional: true,
+									shape: { kind: 'number' },
+								},
+								'expires_at': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'representations': {
+									optional: true,
+									shape: { kind: 'array', items: {
+										kind: 'object',
+										fields: {
+											'representation': {
+												optional: false,
+												shape: { kind: 'enum', values: MEDIA_REPRESENTATION_KIND_VALUES },
+											},
+											'provenance': {
+												optional: false,
+												shape: { kind: 'union', anyOf: [
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'original' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'derived' },
+															},
+															'operation': {
+																optional: false,
+																shape: { kind: 'enum', values: MEDIA_DERIVATION_VALUES },
+															},
+															'provider': {
+																optional: true,
+																shape: { kind: 'string' },
+															},
+															'source_kind': {
+																optional: true,
+																shape: { kind: 'enum', values: MEDIA_REPRESENTATION_KIND_VALUES },
+															}
+														}
+													}
+												] },
+											},
+											'confidence': {
+												optional: true,
+												shape: { kind: 'number' },
+											},
+											'cost': {
+												optional: true,
+												shape: {
+													kind: 'object',
+													fields: {
+														'estimated_tokens': {
+															optional: true,
+															shape: { kind: 'number' },
+														},
+														'estimated_usd': {
+															optional: true,
+															shape: { kind: 'number' },
+														}
+													}
+												},
+											},
+											'availability': {
+												optional: false,
+												shape: { kind: 'union', anyOf: [
+													{
+														kind: 'object',
+														fields: {
+															'state': {
+																optional: false,
+																shape: { kind: 'literal', value: 'available' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'state': {
+																optional: false,
+																shape: { kind: 'literal', value: 'pending' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'state': {
+																optional: false,
+																shape: { kind: 'literal', value: 'unavailable' },
+															},
+															'reason': {
+																optional: false,
+																shape: { kind: 'string' },
+															}
+														}
+													}
+												] },
+											},
+											'payload': {
+												optional: false,
+												shape: { kind: 'union', anyOf: [
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'inline_data' },
+															},
+															'value': {
+																optional: false,
+																shape: {
+																	kind: 'object',
+																	fields: {
+																		'media_type': {
+																			optional: false,
+																			shape: { kind: 'string' },
+																		},
+																		'data': {
+																			optional: false,
+																			shape: { kind: 'string' },
+																		}
+																	}
+																},
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'text' },
+															},
+															'value': {
+																optional: false,
+																shape: { kind: 'string' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'structured' },
+															},
+															'value': {
+																optional: false,
+																shape: { kind: 'unknown' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'managed_file_ref' },
+															},
+															'value': {
+																optional: false,
+																shape: {
+																	kind: 'object',
+																	fields: {
+																		'asset_id': {
+																			optional: false,
+																			shape: { kind: 'string' },
+																		},
+																		'filename': {
+																			optional: false,
+																			shape: { kind: 'nullable', inner: { kind: 'string' } },
+																		}
+																	}
+																},
+															}
+														}
+													}
+												] },
+											}
+										}
+									} },
+								},
+								'preferred_representation': {
+									optional: true,
+									shape: { kind: 'enum', values: MEDIA_REPRESENTATION_KIND_VALUES },
+								}
+							}
+						} },
+					},
+					'media_inputs': {
+						optional: true,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'asset': {
+									optional: false,
+									shape: {
+										kind: 'object',
+										fields: {
+											'asset_id': {
+												optional: false,
+												shape: { kind: 'string' },
+											},
+											'content_hash': {
+												optional: false,
+												shape: { kind: 'string' },
+											},
+											'media_type': {
+												optional: false,
+												shape: { kind: 'string' },
+											},
+											'size_bytes': {
+												optional: false,
+												shape: { kind: 'number' },
+											},
+											'filename': {
+												optional: true,
+												shape: { kind: 'string' },
+											},
+											'source': {
+												optional: false,
+												shape: { kind: 'enum', values: MEDIA_ASSET_SOURCE_VALUES },
+											},
+											'lifecycle': {
+												optional: false,
+												shape: { kind: 'enum', values: MEDIA_ASSET_LIFECYCLE_VALUES },
+											},
+											'expires_at': {
+												optional: true,
+												shape: { kind: 'string' },
+											}
+										}
+									},
+								},
+								'representations': {
+									optional: false,
+									shape: { kind: 'array', items: {
+										kind: 'object',
+										fields: {
+											'representation': {
+												optional: false,
+												shape: { kind: 'enum', values: MEDIA_REPRESENTATION_KIND_VALUES },
+											},
+											'provenance': {
+												optional: false,
+												shape: { kind: 'union', anyOf: [
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'original' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'derived' },
+															},
+															'operation': {
+																optional: false,
+																shape: { kind: 'enum', values: MEDIA_DERIVATION_VALUES },
+															},
+															'provider': {
+																optional: true,
+																shape: { kind: 'string' },
+															},
+															'source_kind': {
+																optional: true,
+																shape: { kind: 'enum', values: MEDIA_REPRESENTATION_KIND_VALUES },
+															}
+														}
+													}
+												] },
+											},
+											'confidence': {
+												optional: true,
+												shape: { kind: 'number' },
+											},
+											'cost': {
+												optional: true,
+												shape: {
+													kind: 'object',
+													fields: {
+														'estimated_tokens': {
+															optional: true,
+															shape: { kind: 'number' },
+														},
+														'estimated_usd': {
+															optional: true,
+															shape: { kind: 'number' },
+														}
+													}
+												},
+											},
+											'availability': {
+												optional: false,
+												shape: { kind: 'union', anyOf: [
+													{
+														kind: 'object',
+														fields: {
+															'state': {
+																optional: false,
+																shape: { kind: 'literal', value: 'available' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'state': {
+																optional: false,
+																shape: { kind: 'literal', value: 'pending' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'state': {
+																optional: false,
+																shape: { kind: 'literal', value: 'unavailable' },
+															},
+															'reason': {
+																optional: false,
+																shape: { kind: 'string' },
+															}
+														}
+													}
+												] },
+											},
+											'payload': {
+												optional: false,
+												shape: { kind: 'union', anyOf: [
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'inline_data' },
+															},
+															'value': {
+																optional: false,
+																shape: {
+																	kind: 'object',
+																	fields: {
+																		'media_type': {
+																			optional: false,
+																			shape: { kind: 'string' },
+																		},
+																		'data': {
+																			optional: false,
+																			shape: { kind: 'string' },
+																		}
+																	}
+																},
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'text' },
+															},
+															'value': {
+																optional: false,
+																shape: { kind: 'string' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'structured' },
+															},
+															'value': {
+																optional: false,
+																shape: { kind: 'unknown' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'managed_file_ref' },
+															},
+															'value': {
+																optional: false,
+																shape: {
+																	kind: 'object',
+																	fields: {
+																		'asset_id': {
+																			optional: false,
+																			shape: { kind: 'string' },
+																		},
+																		'filename': {
+																			optional: false,
+																			shape: { kind: 'nullable', inner: { kind: 'string' } },
+																		}
+																	}
+																},
+															}
+														}
+													}
+												] },
+											}
+										}
+									} },
+								},
+								'preferred_representation': {
+									optional: true,
+									shape: { kind: 'enum', values: MEDIA_REPRESENTATION_KIND_VALUES },
+								}
+							}
+						} },
+					},
+					'voice': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					}
+				}
+			} },
+		},
+		'steps': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'step_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'session_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'step_number': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'tool_index': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'thought': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'tool_name': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'tool_input': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'tool_call_id': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'observation': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'status': {
+						optional: false,
+						shape: { kind: 'enum', values: SESSION_STEP_STATUS_VALUES },
+					},
+					'is_high_risk': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					},
+					'confirmed': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'boolean' } },
+					},
+					'silent': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					},
+					'started_at': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'completed_at': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'created_at': {
+						optional: false,
+						shape: { kind: 'string' },
+					}
+				}
+			} },
+		},
+		'usage': {
+			optional: false,
+			shape: { kind: 'nullable', inner: {
+				kind: 'object',
+				fields: {
+					'prompt_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'completion_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'total_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'cached_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'cache_creation_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'cache_miss_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'context_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'context_window': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					},
+					'cost_usd': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'has_cost': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					}
+				}
+			} },
+		},
+		'llm_usage': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'usage_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'session_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'step_number': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					},
+					'role': {
+						optional: false,
+						shape: { kind: 'enum', values: REQUEST_KIND_VALUES },
+					},
+					'call_kind': {
+						optional: false,
+						shape: { kind: 'enum', values: LLM_CALL_KIND_VALUES },
+					},
+					'model': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'prompt_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'completion_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'total_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'cached_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'cache_creation_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'cache_miss_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'cache_accounting': {
+						optional: false,
+						shape: { kind: 'enum', values: CACHE_ACCOUNTING_VALUES },
+					},
+					'cache_diagnostics': {
+						optional: true,
+						shape: {
+							kind: 'object',
+							fields: {
+								'strategy': {
+									optional: false,
+									shape: { kind: 'enum', values: PROMPT_CACHE_STRATEGY_VALUES },
+								},
+								'provider': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'key_requested': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'system_split': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'downgraded': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'outcome': {
+									optional: false,
+									shape: { kind: 'enum', values: CACHE_DIAGNOSTIC_OUTCOME_VALUES },
+								},
+								'usage_source': {
+									optional: false,
+									shape: { kind: 'enum', values: CACHE_USAGE_SOURCE_VALUES },
+								}
+							}
+						},
+					},
+					'context_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'context_window': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					},
+					'cost_usd': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'has_cost': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					},
+					'duration_ms': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					},
+					'created_at': {
+						optional: false,
+						shape: { kind: 'string' },
+					}
+				}
+			} },
+		},
+		'interactions': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'request_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'session_id': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'owner': {
+						optional: false,
+						shape: { kind: 'union', anyOf: [
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'session' },
+									},
+									'session_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'scheduled_tool_run' },
+									},
+									'tool_run_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'app_command' },
+									}
+								}
+							}
+						] },
+					},
+					'kind': {
+						optional: false,
+						shape: { kind: 'enum', values: INTERACTION_KIND_VALUES },
+					},
+					'status': {
+						optional: false,
+						shape: { kind: 'enum', values: INTERACTION_STATUS_VALUES },
+					},
+					'options': {
+						optional: true,
+						shape: { kind: 'array', items: { kind: 'string' } },
+					},
+					'tool_name': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'risk_level': {
+						optional: true,
+						shape: { kind: 'enum', values: RISK_LEVEL_VALUES },
+					},
+					'summary': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'permission_key': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'invocation_step_id': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'tool_index': {
+						optional: true,
+						shape: { kind: 'number' },
+					},
+					'tool_call_id': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'created_at': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'expires_at': {
+						optional: true,
+						shape: { kind: 'string' },
+					}
+				}
+			} },
+		}
+	}
+} as const;
 export const SETTINGS_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {

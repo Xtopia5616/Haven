@@ -4,10 +4,14 @@ import { isRecord } from './objectGuards.ts';
 export type GeneratedWireShape =
 	| { readonly kind: 'string' | 'boolean' | 'unknown' }
 	| { readonly kind: 'number' }
+	| { readonly kind: 'null' }
+	| { readonly kind: 'literal'; readonly value: string }
 	| { readonly kind: 'nullable'; readonly inner: GeneratedWireShape }
 	| { readonly kind: 'array'; readonly items: GeneratedWireShape }
+	| { readonly kind: 'tuple'; readonly items: readonly GeneratedWireShape[] }
 	| { readonly kind: 'record'; readonly values: GeneratedWireShape }
 	| { readonly kind: 'enum'; readonly values: readonly string[] }
+	| { readonly kind: 'union'; readonly anyOf: readonly GeneratedWireShape[] }
 	| {
 			readonly kind: 'object';
 			readonly fields: Readonly<
@@ -40,6 +44,10 @@ export function findGeneratedWireShapeMismatch(
 			return typeof value === 'boolean' ? null : path;
 		case 'unknown':
 			return null;
+		case 'null':
+			return value === null ? null : path;
+		case 'literal':
+			return value === shape.value ? null : path;
 		case 'nullable':
 			return value === null ? null : findGeneratedWireShapeMismatch(value, shape.inner, path);
 		case 'array': {
@@ -48,6 +56,18 @@ export function findGeneratedWireShapeMismatch(
 				const mismatch = findGeneratedWireShapeMismatch(
 					item,
 					shape.items,
+					`${path}[${index}]`,
+				);
+				if (mismatch) return mismatch;
+			}
+			return null;
+		}
+		case 'tuple': {
+			if (!Array.isArray(value) || value.length !== shape.items.length) return path;
+			for (const [index, itemShape] of shape.items.entries()) {
+				const mismatch = findGeneratedWireShapeMismatch(
+					value[index],
+					itemShape,
 					`${path}[${index}]`,
 				);
 				if (mismatch) return mismatch;
@@ -68,6 +88,10 @@ export function findGeneratedWireShapeMismatch(
 		}
 		case 'enum':
 			return typeof value === 'string' && shape.values.includes(value) ? null : path;
+		case 'union':
+			return shape.anyOf.some((option) => matchesGeneratedWireShape(value, option))
+				? null
+				: path;
 		case 'object':
 			if (!isRecord(value)) return path;
 			for (const [field, definition] of Object.entries(shape.fields)) {

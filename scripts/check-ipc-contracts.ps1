@@ -226,6 +226,21 @@ foreach ($file in $uiFiles) {
     }
 }
 
+$sessionHistoryContract = Get-Source 'ui/src/lib/contracts/sessionHistory.ts'
+foreach ($shape in @(
+    'RUNTIME_SESSION_LIST_RESPONSE_SHAPE',
+    'SESSION_RECORD_RESPONSE_SHAPE',
+    'SESSION_LINEAGE_RESPONSE_SHAPE',
+    'SESSION_RESUME_RESPONSE_SHAPE'
+)) {
+    Assert-Contains $generated ("export const " + $shape + '\s*=') "$shape is generated from Rust response DTOs"
+    Assert-Contains $sessionHistoryContract ("requireWireShape\([^\r\n]*" + $shape) "$shape is used by Session runtime response validation"
+}
+Assert-Contains $sessionHistoryContract 'isI32\(' 'Rust i32 Session fields retain signed 32-bit bounds'
+Assert-Contains $sessionHistoryContract 'isU32\(' 'Rust u32 Session fields retain unsigned 32-bit bounds'
+Assert-Contains $sessionHistoryContract 'isSafeUnsignedInteger\(' 'Rust u64 Session fields retain JavaScript safe-integer bounds'
+Assert-Contains $sessionHistoryContract "isCanonicalEntityId\(value\.session_id,\s*'ses'\)" 'Session response rows require canonical session identities'
+
 $memoryView = Get-Source 'ui/src/lib/views/MemoryView.svelte'
 Assert-NotContains $memoryView 'invoke\s*\(\s*''(?:list_facts|add_fact|delete_fact|clear_facts|recall_memory)''' 'MemoryView must use memoryCommands.ts'
 $memoryCommands = Get-Source 'crates/app-binary/src/commands/memory.rs'

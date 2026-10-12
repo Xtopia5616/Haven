@@ -53,10 +53,14 @@ enum WireShape {
     Number,
     Boolean,
     Unknown,
+    Null,
+    Literal(String),
     Nullable(Box<WireShape>),
     Array(Box<WireShape>),
+    Tuple(Vec<WireShape>),
     Record(Box<WireShape>),
     Enum(String),
+    Union(Vec<WireShape>),
     Object(Vec<(String, WireShapeField)>),
 }
 
@@ -73,6 +77,10 @@ impl WireShape {
             Self::Number => "{ kind: 'number' }".into(),
             Self::Boolean => "{ kind: 'boolean' }".into(),
             Self::Unknown => "{ kind: 'unknown' }".into(),
+            Self::Null => "{ kind: 'null' }".into(),
+            Self::Literal(value) => {
+                format!("{{ kind: 'literal', value: {} }}", quote_ts_string(value))
+            }
             Self::Nullable(inner) => format!(
                 "{{ kind: 'nullable', inner: {} }}",
                 inner.to_typescript(indent)
@@ -83,11 +91,35 @@ impl WireShape {
                     items.to_typescript(indent)
                 )
             }
+            Self::Tuple(items) => {
+                let child_indent = "\t".repeat(indent + 1);
+                let rendered = items
+                    .iter()
+                    .map(|item| format!("{child_indent}{}", item.to_typescript(indent + 1)))
+                    .collect::<Vec<_>>()
+                    .join(",\n");
+                format!(
+                    "{{ kind: 'tuple', items: [\n{rendered}\n{}] }}",
+                    "\t".repeat(indent)
+                )
+            }
             Self::Record(values) => format!(
                 "{{ kind: 'record', values: {} }}",
                 values.to_typescript(indent)
             ),
             Self::Enum(values) => format!("{{ kind: 'enum', values: {values} }}"),
+            Self::Union(options) => {
+                let child_indent = "\t".repeat(indent + 1);
+                let rendered = options
+                    .iter()
+                    .map(|option| format!("{child_indent}{}", option.to_typescript(indent + 1)))
+                    .collect::<Vec<_>>()
+                    .join(",\n");
+                format!(
+                    "{{ kind: 'union', anyOf: [\n{rendered}\n{}] }}",
+                    "\t".repeat(indent)
+                )
+            }
             Self::Object(fields) => {
                 if fields.is_empty() {
                     return "{ kind: 'object', fields: {} }".into();
@@ -450,10 +482,83 @@ impl RustTypeGraph {
                         && definition.serde.content.is_none()
                         && variants.iter().all(|variant| variant.unit));
                 if !plain_string_enum {
-                    Err(format!(
-                        "{} is a structured enum and needs an explicit runtime shape mapping",
-                        definition.key
-                    ))
+                    let mut choices = Vec::new();
+                    let rename_all_fields = definition.serde.rename_all_fields.as_deref();
+                    for variant in variants {
+                        if variant.skip_serializing {
+                            continue;
+                        }
+                        let payload = self.response_shape_for_variant(
+                            &variant,
+                            &definition.context,
+                            rename_all_fields,
+                            stack,
+                        )?;
+                        let shape = if definition.serde.untagged {
+                            payload
+                        } else if let Some(tag) = &definition.serde.tag {
+                            if let Some(content) = &definition.serde.content {
+                                let mut fields = vec![(
+                                    tag.clone(),
+                                    WireShapeField {
+                                        optional: false,
+                                        shape: WireShape::Literal(variant.name.clone()),
+                                    },
+                                )];
+                                if !variant.unit {
+                                    fields.push((
+                                        content.clone(),
+                                        WireShapeField {
+                                            optional: false,
+                                            shape: payload,
+                                        },
+                                    ));
+                                }
+                                WireShape::Object(fields)
+                            } else {
+                                Self::insert_internal_tag(
+                                    payload,
+                                    tag,
+                                    &variant.name,
+                                    &definition.key,
+                                )?
+                            }
+                        } else if let Some(content) = &definition.serde.content {
+                            let mut fields = vec![(
+                                definition
+                                    .serde
+                                    .tag
+                                    .clone()
+                                    .unwrap_or_else(|| "type".into()),
+                                WireShapeField {
+                                    optional: false,
+                                    shape: WireShape::Literal(variant.name.clone()),
+                                },
+                            )];
+                            if !variant.unit {
+                                fields.push((
+                                    content.clone(),
+                                    WireShapeField {
+                                        optional: false,
+                                        shape: payload,
+                                    },
+                                ));
+                            }
+                            WireShape::Object(fields)
+                        } else if variant.unit {
+                            WireShape::Literal(variant.name)
+                        } else {
+                            WireShape::Object(vec![(
+                                variant.name,
+                                WireShapeField {
+                                    optional: false,
+                                    shape: payload,
+                                },
+                            )])
+                        };
+                        choices.push(shape);
+                    }
+                    Ok(WireShape::Union(choices))
                 } else {
                     Ok(WireShape::Enum(enum_values_name(
                         &definition.name,
@@ -485,9 +590,12 @@ impl RustTypeGraph {
                 context,
                 stack,
             )?))),
-            Type::Tuple(_) => Err(format!(
-                "tuple field {} needs an explicit runtime shape mapping",
-                ty.to_token_stream()
+            Type::Tuple(tuple) => Ok(WireShape::Tuple(
+                tuple
+                    .elems
+                    .iter()
+                    .map(|item| self.response_shape_for_type(item, context, stack))
+                    .collect::<Result<Vec<_>, _>>()?,
             )),
             Type::Path(value) => {
                 let Some(segment) = value.path.segments.last() else {
@@ -563,6 +671,73 @@ impl RustTypeGraph {
                 other.to_token_stream()
             )),
         }
+    }
+
+    fn response_shape_for_variant(
+        &mut self,
+        variant: &VariantDef,
+        context: &TypeContext,
+        rename_all_fields: Option<&str>,
+        stack: &mut Vec<String>,
+    ) -> Result<WireShape, String> {
+        if variant.unit {
+            return Ok(WireShape::Null);
+        }
+        if let Some(payload) = &variant.payload {
+            return self.response_shape_for_type(payload, context, stack);
+        }
+        let mut fields = Vec::new();
+        for field in &variant.fields {
+            if field.skip_serializing {
+                continue;
+            }
+            let (field_type, optional) = if field.response_optional {
+                (option_inner(&field.ty)?.unwrap_or(&field.ty), true)
+            } else {
+                (&field.ty, false)
+            };
+            fields.push((
+                apply_case(&field.name, rename_all_fields)?,
+                WireShapeField {
+                    optional,
+                    shape: self.response_shape_for_type(field_type, context, stack)?,
+                },
+            ));
+        }
+        Ok(WireShape::Object(fields))
+    }
+
+    fn insert_internal_tag(
+        payload: WireShape,
+        tag: &str,
+        variant: &str,
+        enum_key: &str,
+    ) -> Result<WireShape, String> {
+        let mut fields = match payload {
+            WireShape::Object(fields) => fields,
+            WireShape::Null => Vec::new(),
+            _ => {
+                return Err(format!(
+                    "internally tagged enum {enum_key} has a non-object variant shape"
+                ));
+            }
+        };
+        if fields.iter().any(|(name, _)| name == tag) {
+            return Err(format!(
+                "internally tagged enum {enum_key} repeats its tag field {tag}"
+            ));
+        }
+        fields.insert(
+            0,
+            (
+                tag.to_string(),
+                WireShapeField {
+                    optional: false,
+                    shape: WireShape::Literal(variant.to_string()),
+                },
+            ),
+        );
+        Ok(WireShape::Object(fields))
     }
 
     fn collect_items(&mut self, items: &[Item], context: &TypeContext) -> Result<(), String> {
@@ -2291,6 +2466,77 @@ mod tests {
             shape
                 .contains("'wrapper': {\n\t\t\toptional: false,\n\t\t\tshape: { kind: 'string' },")
         );
+    }
+
+    #[test]
+    fn response_shape_models_tagged_untagged_and_tuple_enums() {
+        let items: Vec<Item> = vec![
+            syn::parse_quote! {
+                #[derive(serde::Serialize, serde::Deserialize)]
+                #[serde(rename_all = "snake_case", tag = "state")]
+                enum Internal {
+                    Ready,
+                    Failed { reason: String },
+                }
+            },
+            syn::parse_quote! {
+                #[derive(serde::Serialize, serde::Deserialize)]
+                #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+                enum Adjacent {
+                    Text(String),
+                    Pair(u32, bool),
+                    Empty,
+                }
+            },
+            syn::parse_quote! {
+                #[derive(serde::Serialize, serde::Deserialize)]
+                #[serde(untagged)]
+                enum Untagged {
+                    Text(String),
+                    Pair(u32, bool),
+                    Opaque(serde_json::Value),
+                    Empty,
+                }
+            },
+            syn::parse_quote! {
+                #[derive(serde::Serialize, serde::Deserialize)]
+                #[serde(rename_all = "snake_case")]
+                enum External {
+                    Empty,
+                    Text(String),
+                    Record { item_id: u32 },
+                }
+            },
+            syn::parse_quote! {
+                #[derive(serde::Serialize)]
+                struct Response {
+                    internal: Internal,
+                    adjacent: Adjacent,
+                    untagged: Untagged,
+                    external: External,
+                }
+            },
+        ];
+        let context = RustTypeGraph::test_context();
+        let mut graph = RustTypeGraph::default();
+        graph.collect_items(&items, &context).unwrap();
+
+        graph
+            .emit_response_shape("test_crate::Response", "RESPONSE_SHAPE")
+            .unwrap();
+
+        let shape = graph.runtime_shape_declarations();
+        assert!(shape.contains("'state':"));
+        assert!(shape.contains("value: 'ready'"));
+        assert!(shape.contains("'reason':"));
+        assert!(shape.contains("'kind':"));
+        assert!(shape.contains("value: 'text'"));
+        assert!(shape.contains("kind: 'tuple', items:"));
+        assert!(shape.contains("kind: 'unknown'"));
+        assert!(shape.contains("kind: 'null'"));
+        assert!(shape.contains("kind: 'union'"));
+        assert!(shape.contains("value: 'empty'"));
+        assert!(shape.contains("'record':"));
     }
 
     #[test]

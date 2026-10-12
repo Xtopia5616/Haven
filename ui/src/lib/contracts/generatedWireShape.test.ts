@@ -51,4 +51,42 @@ describe('generated Rust wire shapes', () => {
 			expect(matchesGeneratedWireShape(invalid, shape)).toBe(false);
 		}
 	});
+
+	it('checks tagged unions, string literals, null, and fixed tuples', () => {
+		const shape: GeneratedWireShape = {
+			kind: 'union',
+			anyOf: [
+				{ kind: 'null' },
+				{
+					kind: 'object',
+					fields: {
+						kind: { optional: false, shape: { kind: 'literal', value: 'text' } },
+						value: {
+							optional: false,
+							shape: {
+								kind: 'tuple',
+								items: [{ kind: 'number' }, { kind: 'boolean' }],
+							},
+						},
+					},
+				},
+				{
+					kind: 'object',
+					fields: {
+						kind: { optional: false, shape: { kind: 'literal', value: 'empty' } },
+						nullable: {
+							optional: false,
+							shape: { kind: 'nullable', inner: { kind: 'string' } },
+						},
+					},
+				},
+			],
+		};
+
+		expect(matchesGeneratedWireShape({ kind: 'text', value: [4, true] }, shape)).toBe(true);
+		expect(matchesGeneratedWireShape(null, shape)).toBe(true);
+		expect(matchesGeneratedWireShape({ kind: 'empty', nullable: null }, shape)).toBe(true);
+		expect(matchesGeneratedWireShape({ kind: 'text', value: [4] }, shape)).toBe(false);
+		expect(matchesGeneratedWireShape({ kind: 'other', value: [4, true] }, shape)).toBe(false);
+	});
 });

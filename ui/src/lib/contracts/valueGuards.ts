@@ -31,6 +31,16 @@ export function isSafeUnsignedInteger(value: unknown): value is number {
 	return isSafeInteger(value) && (value as number) >= 0;
 }
 
+/** Match Rust's i32 domain at a JSON boundary. */
+export function isI32(value: unknown): value is number {
+	return (
+		typeof value === 'number' &&
+		Number.isInteger(value) &&
+		value >= -0x8000_0000 &&
+		value <= 0x7fff_ffff
+	);
+}
+
 /** Match Rust's u32 domain at a JSON boundary. */
 export function isU32(value: unknown): value is number {
 	return isSafeUnsignedInteger(value) && value <= 0xffff_ffff;
