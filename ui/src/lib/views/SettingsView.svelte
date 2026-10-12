@@ -85,10 +85,8 @@
 		SttConfigDraft,
 		TtsConfigDraft,
 	} from '$lib/mediaConfigDraft.ts';
-	import type {
-		SessionPermissionGrant,
-		StoredPermission,
-	} from '$lib/contracts/generatedCommands.ts';
+	import type { StoredPermission } from '$lib/contracts/generatedCommands.ts';
+	import type { SessionPermissionGrant } from '$lib/contracts/settings.ts';
 	import {
 		settingsLlmInputFromState,
 		settingsLlmStateFromConfig,
@@ -1010,12 +1008,12 @@
 	async function revokeSessionPermission(grant: SessionPermissionGrant) {
 		try {
 			await revokeSessionPermissionCommand({
-				sessionId: grant.session_id,
+				sessionId: grant.sessionId,
 				capability: grant.capability,
 			});
 			sessionPermissions = sessionPermissions.filter(
 				(current) =>
-					current.session_id !== grant.session_id ||
+					current.sessionId !== grant.sessionId ||
 					current.capability !== grant.capability,
 			);
 			return true;

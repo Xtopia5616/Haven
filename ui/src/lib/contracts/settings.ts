@@ -258,7 +258,9 @@ export const RESOURCE_LIMIT_BOUNDS = {
 	toolRetryBackoffSecs: { min: 0, max: 60 },
 } as const;
 
-export type SessionPermissionGrant = GeneratedSessionPermissionGrant;
+export type SessionPermissionGrant = Omit<GeneratedSessionPermissionGrant, 'session_id'> & {
+	sessionId: string;
+};
 
 /** Exact Rust-owned config shape from the generated IPC contract. */
 export type SettingsPayload = GeneratedSettings;
@@ -333,7 +335,8 @@ function findInvalidSettingsNumber(
 			field === 'input_ring_buffer_secs' &&
 			(value < RESOURCE_LIMIT_BOUNDS.inputRingBufferSecs.min ||
 				value > RESOURCE_LIMIT_BOUNDS.inputRingBufferSecs.max)
-		) return path;
+		)
+			return path;
 		return null;
 	}
 	if (Array.isArray(value)) {
@@ -375,8 +378,7 @@ function findInvalidMcpInterval(value: unknown): string | null {
 	const retries = mcp.reconnect_max_retries;
 	if (
 		retries !== undefined &&
-		(!isSafeUnsignedInteger(retries) ||
-			retries > RESOURCE_LIMIT_BOUNDS.mcpReconnectRetries.max)
+		(!isSafeUnsignedInteger(retries) || retries > RESOURCE_LIMIT_BOUNDS.mcpReconnectRetries.max)
 	) {
 		return 'settings.mcp_discovery.reconnect_max_retries';
 	}
@@ -398,9 +400,7 @@ function findInvalidMcpInterval(value: unknown): string | null {
 	) {
 		return 'settings.mcp_discovery.reconnect_max_ms';
 	}
-	return isSafeUnsignedInteger(initial) &&
-		isSafeUnsignedInteger(max) &&
-		max < initial
+	return isSafeUnsignedInteger(initial) && isSafeUnsignedInteger(max) && max < initial
 		? 'settings.mcp_discovery.reconnect_max_ms'
 		: null;
 }
@@ -723,7 +723,10 @@ function findInvalidSettingsSemantics(value: unknown): string | null {
 		if (mode === 'mcp') {
 			const serverName = typeof stt.mcp_server === 'string' ? stt.mcp_server.trim() : '';
 			const servers = Array.isArray(value.mcp_servers) ? value.mcp_servers : [];
-			if (!serverName || !servers.some((server) => isRecord(server) && server.name === serverName)) {
+			if (
+				!serverName ||
+				!servers.some((server) => isRecord(server) && server.name === serverName)
+			) {
 				return 'settings.media.stt.mcp_server';
 			}
 		} else if (
@@ -785,7 +788,10 @@ export function parseSessionPermissionGrantResponses(value: unknown): SessionPer
 			throw new Error('Invalid session permission grant identity');
 		}
 	}
-	return value as unknown as SessionPermissionGrant[];
+	return (value as GeneratedSessionPermissionGrant[]).map((grant) => {
+		const { session_id, ...rest } = grant;
+		return { ...rest, sessionId: session_id };
+	});
 }
 
 /** Validate an opaque credential reference before Settings stores it in its draft. */

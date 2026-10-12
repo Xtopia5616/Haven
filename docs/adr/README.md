@@ -1061,3 +1061,5 @@
 - [1070：删除无效的 Skill 资源限制配置](1070-remove-ineffective-skill-resource-settings.md)
 - [1071：从事件日志中移除动态工具数据](1071-redact-dynamic-tool-data-from-event-logs.md)
 - [1072：在 Memory 与会话历史边界映射实体 ID](1072-map-renderer-entity-ids-at-boundaries.md)
+- [1073：在 UI 提取 ToolRun 身份时校验 canonical ID](1073-validate-tool-run-ids-at-ui-extraction.md)
+- [1074：将 Session permission grant 身份映射到 renderer DTO](1074-map-session-permission-grant-identity.md)

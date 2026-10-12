@@ -35,7 +35,10 @@ describe('settings command contracts', () => {
 			target: 'operation',
 			effect: 'allow',
 		};
-		expect(parseSessionPermissionGrantResponses([grant])).toEqual([grant]);
+		const { session_id, ...rest } = grant;
+		const [parsedGrant] = parseSessionPermissionGrantResponses([grant]);
+		expect(parsedGrant).toEqual({ ...rest, sessionId: session_id });
+		expect(parsedGrant).not.toHaveProperty('session_id');
 
 		for (const capability of [
 			'',
@@ -127,9 +130,9 @@ describe('settings command contracts', () => {
 			const valid = withSetting(['media', 'ocr', 'provider'], provider);
 			expect(parseSettingsPayload(valid)).toBe(valid);
 		}
-		expect(() => parseSettingsPayload(withSetting(['media', 'ocr', 'provider'], 'future'))).toThrow(
-			'settings.media.ocr.provider',
-		);
+		expect(() =>
+			parseSettingsPayload(withSetting(['media', 'ocr', 'provider'], 'future')),
+		).toThrow('settings.media.ocr.provider');
 
 		const provider = {
 			name: 'cloud',
@@ -141,7 +144,17 @@ describe('settings command contracts', () => {
 			proxy_url: null,
 			no_proxy: null,
 		};
-		for (const mode of ['off', 'auto', 'always', 'required', 'on', '1', 'true', ' TRUE ', '  ']) {
+		for (const mode of [
+			'off',
+			'auto',
+			'always',
+			'required',
+			'on',
+			'1',
+			'true',
+			' TRUE ',
+			'  ',
+		]) {
 			const valid = createSettingsFixture();
 			valid.llm.providers.push({ ...provider, default_web_search: mode });
 			valid.llm.models.push({

@@ -515,7 +515,12 @@ describe('insertAgentMessage / steering anchors', () => {
 				streaming: true,
 			}),
 		);
-		expect(out.map((x) => x.id)).toEqual(['u1', STEP_ID, 'step-15ad302632b32d7f9d258a91186d96dc', 'u2']);
+		expect(out.map((x) => x.id)).toEqual([
+			'u1',
+			STEP_ID,
+			'step-15ad302632b32d7f9d258a91186d96dc',
+			'u2',
+		]);
 	});
 
 	it('appends at the end when there is no trailing steering user', () => {
@@ -529,7 +534,11 @@ describe('insertAgentMessage / steering anchors', () => {
 			content: '下一轮',
 			streaming: true,
 		});
-		expect(out.map((x) => x.id)).toEqual(['u1', STEP_ID, 'msg-5e3cda012294f9c653e7917d8939a95a']);
+		expect(out.map((x) => x.id)).toEqual([
+			'u1',
+			STEP_ID,
+			'msg-5e3cda012294f9c653e7917d8939a95a',
+		]);
 	});
 
 	it('keeps a new stream segment above a mid-turn steer', () => {
@@ -807,11 +816,23 @@ describe('finalizeStreamBlocks', () => {
 			{ id: 'msg-99cbbb5f22a59f9ab709e95152374a9f', streaming: true },
 			{ id: 'msg-00000000000000000000000000000001', streaming: true },
 		];
-		const out = finalizeStreamBlocks(m, 'msg-5d1d60798754ba9ada660de5010d67a9', 'step-b4b6294ed3889d2c22b0b4c708f810ed');
-		expect(out.find((x) => x.id === 'msg-5d1d60798754ba9ada660de5010d67a9')).toMatchObject({ streaming: false });
-		expect(out.find((x) => x.id === 'step-b4b6294ed3889d2c22b0b4c708f810ed')).toMatchObject({ streaming: false });
-		expect(out.find((x) => x.id === 'msg-99cbbb5f22a59f9ab709e95152374a9f')).toMatchObject({ streaming: true });
-		expect(out.find((x) => x.id === 'msg-00000000000000000000000000000001')).toMatchObject({ streaming: true });
+		const out = finalizeStreamBlocks(
+			m,
+			'msg-5d1d60798754ba9ada660de5010d67a9',
+			'step-b4b6294ed3889d2c22b0b4c708f810ed',
+		);
+		expect(out.find((x) => x.id === 'msg-5d1d60798754ba9ada660de5010d67a9')).toMatchObject({
+			streaming: false,
+		});
+		expect(out.find((x) => x.id === 'step-b4b6294ed3889d2c22b0b4c708f810ed')).toMatchObject({
+			streaming: false,
+		});
+		expect(out.find((x) => x.id === 'msg-99cbbb5f22a59f9ab709e95152374a9f')).toMatchObject({
+			streaming: true,
+		});
+		expect(out.find((x) => x.id === 'msg-00000000000000000000000000000001')).toMatchObject({
+			streaming: true,
+		});
 	});
 
 	it('finalizes post-search reasoning segments as well as the original', () => {
@@ -820,16 +841,28 @@ describe('finalizeStreamBlocks', () => {
 			{ id: REASONING_ID + '-1', streaming: true },
 			{ id: REASONING_ID + '-2', streaming: true },
 		];
-		const out = finalizeStreamBlocks(m, 'msg-5d1d60798754ba9ada660de5010d67a9', 'step-b4b6294ed3889d2c22b0b4c708f810ed');
-		expect(out.find((x) => x.id === 'msg-5d1d60798754ba9ada660de5010d67a9')).toMatchObject({ streaming: false });
+		const out = finalizeStreamBlocks(
+			m,
+			'msg-5d1d60798754ba9ada660de5010d67a9',
+			'step-b4b6294ed3889d2c22b0b4c708f810ed',
+		);
+		expect(out.find((x) => x.id === 'msg-5d1d60798754ba9ada660de5010d67a9')).toMatchObject({
+			streaming: false,
+		});
 		expect(out.find((x) => x.id === REASONING_ID + '-1')).toMatchObject({ streaming: false });
 		expect(out.find((x) => x.id === REASONING_ID + '-2')).toMatchObject({ streaming: false });
 	});
 
 	it('is a no-op when reasoning is missing but the thought exists', () => {
 		const m = [{ id: 'step-b4b6294ed3889d2c22b0b4c708f810ed', streaming: true }];
-		const out = finalizeStreamBlocks(m, 'msg-5d1d60798754ba9ada660de5010d67a9', 'step-b4b6294ed3889d2c22b0b4c708f810ed');
-		expect(out.find((x) => x.id === 'step-b4b6294ed3889d2c22b0b4c708f810ed')).toMatchObject({ streaming: false });
+		const out = finalizeStreamBlocks(
+			m,
+			'msg-5d1d60798754ba9ada660de5010d67a9',
+			'step-b4b6294ed3889d2c22b0b4c708f810ed',
+		);
+		expect(out.find((x) => x.id === 'step-b4b6294ed3889d2c22b0b4c708f810ed')).toMatchObject({
+			streaming: false,
+		});
 	});
 
 	it('is a no-op when both ids are unknown', () => {
@@ -956,6 +989,16 @@ describe('toolRunIdFromObservation', () => {
 		expect(toolRunIdFromObservation('')).toBeNull();
 		expect(toolRunIdFromObservation(null)).toBeNull();
 	});
+	it('rejects non-canonical background ToolRun IDs', () => {
+		expect(
+			toolRunIdFromObservation(
+				JSON.stringify({
+					execution_mode: 'background',
+					tool_run_id: 'toolrun-not-canonical',
+				}),
+			),
+		).toBeNull();
+	});
 });
 
 describe('sourceToolRunIdFromObservation', () => {
@@ -963,7 +1006,10 @@ describe('sourceToolRunIdFromObservation', () => {
 		expect(
 			sourceToolRunIdFromObservation(
 				'schedule.set',
-				JSON.stringify({ operation: 'set', tool_run_id: 'toolrun-921be352ed48806cc0ff8635f2c282b9' }),
+				JSON.stringify({
+					operation: 'set',
+					tool_run_id: 'toolrun-921be352ed48806cc0ff8635f2c282b9',
+				}),
 			),
 		).toBe('toolrun-921be352ed48806cc0ff8635f2c282b9');
 	});
@@ -973,6 +1019,15 @@ describe('sourceToolRunIdFromObservation', () => {
 			sourceToolRunIdFromObservation(
 				'files.read',
 				JSON.stringify({ operation: 'set', tool_run_id: 'toolrun-not-a-tool-run' }),
+			),
+		).toBeNull();
+	});
+
+	it('rejects non-canonical scheduled ToolRun IDs', () => {
+		expect(
+			sourceToolRunIdFromObservation(
+				'schedule.set',
+				JSON.stringify({ operation: 'set', tool_run_id: 'toolrun-not-canonical' }),
 			),
 		).toBeNull();
 	});
@@ -993,6 +1048,18 @@ describe('parseToolRunResultInject', () => {
 	});
 	it('defaults status and tolerates missing tool_run_id', () => {
 		expect(parseToolRunResultInject('[Background tool run result]\n\njust output')).toEqual({
+			operation: 'result_injected',
+			tool_run_id: null,
+			status: 'completed',
+			auto: true,
+		});
+	});
+	it('discards a non-canonical tool_run_id from injected result text', () => {
+		expect(
+			parseToolRunResultInject(
+				'[Background tool run result]\ntool_run_id: toolrun-not-canonical\nstatus: completed',
+			),
+		).toEqual({
 			operation: 'result_injected',
 			tool_run_id: null,
 			status: 'completed',

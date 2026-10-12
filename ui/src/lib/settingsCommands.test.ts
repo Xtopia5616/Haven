@@ -20,8 +20,11 @@ import {
 vi.mock('$lib/tauri.ts', () => ({ invoke: vi.fn() }));
 
 import { invoke } from '$lib/tauri.ts';
-import type { SessionPermissionGrant, TauriCommandRequest } from './contracts/generatedCommands.ts';
-import { MEDIA_TIMEOUT_BOUNDS } from './contracts/settings.ts';
+import type {
+	SessionPermissionGrant as GeneratedSessionPermissionGrant,
+	TauriCommandRequest,
+} from './contracts/generatedCommands.ts';
+import { MEDIA_TIMEOUT_BOUNDS, type SessionPermissionGrant } from './contracts/settings.ts';
 import { createSettingsFixture } from './contracts/settingsFixture.ts';
 
 const invokeMock = vi.mocked(invoke);
@@ -61,13 +64,22 @@ describe('Settings commands', () => {
 	beforeEach(() => invokeMock.mockReset());
 
 	it('forwards each Settings operation through its generated command owner', async () => {
-		const grants: SessionPermissionGrant[] = [
+		const grants: GeneratedSessionPermissionGrant[] = [
 			{
 				session_id: 'ses-103ac63490bc5f6c27fd45405efecd69',
 				session_title: 'Session',
 				capability: 'files.read',
 				target: 'operation',
 				effect: 'allow',
+			},
+		];
+		const rendererGrants: SessionPermissionGrant[] = [
+			{
+				sessionId: grants[0].session_id,
+				session_title: grants[0].session_title,
+				capability: grants[0].capability,
+				target: grants[0].target,
+				effect: grants[0].effect,
 			},
 		];
 		const settingsRequest = { settings: { default_shell: 'pwsh' as const } };
@@ -89,13 +101,13 @@ describe('Settings commands', () => {
 			.mockResolvedValueOnce(undefined);
 
 		await discardStagedCredentials();
-		expect(await listSessionPermissions()).toBe(grants);
+		expect(await listSessionPermissions()).toEqual(rendererGrants);
 		expect(await isAutostartEnabled()).toBe(true);
 		expect(await runMemoryMaintenance()).toBe(4);
 		await revokePermission('files.read');
 		await revokeSessionPermission({
-			sessionId: grants[0].session_id,
-			capability: grants[0].capability,
+			sessionId: rendererGrants[0].sessionId,
+			capability: rendererGrants[0].capability,
 		});
 		await resetPermissions();
 		expect(await resetSessionPermissions()).toBe(2);
@@ -122,8 +134,8 @@ describe('Settings commands', () => {
 			[
 				'revoke_session_permission',
 				{
-					sessionId: grants[0].session_id,
-					capability: grants[0].capability,
+					sessionId: rendererGrants[0].sessionId,
+					capability: rendererGrants[0].capability,
 				},
 			],
 			['reset_permissions'],
@@ -188,7 +200,9 @@ describe('Settings commands', () => {
 			},
 		] as never);
 
-		await expect(listSessionPermissions()).rejects.toThrow('Invalid session permission grant at');
+		await expect(listSessionPermissions()).rejects.toThrow(
+			'Invalid session permission grant at',
+		);
 	});
 
 	it('rejects malformed opaque credential references from staging commands', async () => {

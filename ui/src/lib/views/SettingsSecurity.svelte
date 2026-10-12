@@ -7,10 +7,8 @@
 	import SettingsField from '$lib/SettingsField.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import { inputElementValue, withStringValue } from '$lib/typedCallbacks.ts';
-	import type {
-		SecurityConfigInput,
-		SessionPermissionGrant,
-	} from '$lib/contracts/generatedCommands.ts';
+	import type { SecurityConfigInput } from '$lib/contracts/generatedCommands.ts';
+	import type { SessionPermissionGrant } from '$lib/contracts/settings.ts';
 
 	interface Props {
 		security: SecurityConfigInput & { permissions: Array<{ key: string; effect: string }> };
@@ -440,9 +438,9 @@
 		</div>
 		{#if storedSessionPermissions.length > 0}
 			<div class="perm-list" role="list" aria-label="已保存的会话授权">
-				{#each storedSessionPermissions as grant (`${grant.session_id}:${grant.capability}`)}
+				{#each storedSessionPermissions as grant (`${grant.sessionId}:${grant.capability}`)}
 					{@const meta = permissionRuleMeta(grant.capability)}
-					{@const grantId = `${grant.session_id}:${grant.capability}`}
+					{@const grantId = `${grant.sessionId}:${grant.capability}`}
 					<div class="perm-row" role="listitem">
 						<div
 							class="perm-indicator"
@@ -454,9 +452,8 @@
 						<div class="perm-copy">
 							<strong>{meta.label}</strong>
 							<span class="perm-scope">{meta.scope} · {grant.target}</span>
-							<span class="perm-scope">{grant.session_title || grant.session_id}</span
-							>
-							<code class="perm-key">{grant.session_id} · {grant.capability}</code>
+							<span class="perm-scope">{grant.session_title || grant.sessionId}</span>
+							<code class="perm-key">{grant.sessionId} · {grant.capability}</code>
 						</div>
 						<span class="perm-effect" class:deny={grant.effect === 'deny'}>
 							{grant.effect === 'deny' ? '本会话拒绝' : '本会话允许'}

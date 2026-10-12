@@ -23,6 +23,7 @@ import type {
 	ToolRunStatus,
 } from './contracts/generatedCommands.ts';
 import { isRecord } from './contracts/objectGuards.ts';
+import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 
 /** Renderer-only session message kinds; durable message kinds map into this view. */
 export type SessionMessagePresentationType =
@@ -269,7 +270,11 @@ export function toolRunIdFromObservation(observation: string | undefined | null)
 	if (!observation) return null;
 	try {
 		const j = JSON.parse(observation);
-		if (isRecord(j) && j.execution_mode === 'background' && typeof j.tool_run_id === 'string') {
+		if (
+			isRecord(j) &&
+			j.execution_mode === 'background' &&
+			isCanonicalEntityId(j.tool_run_id, 'toolrun')
+		) {
 			return j.tool_run_id;
 		}
 	} catch {
@@ -289,9 +294,7 @@ export function sourceToolRunIdFromObservation(
 	try {
 		const value: unknown = JSON.parse(observation);
 		if (!isRecord(value)) return null;
-		return value.operation === 'set' &&
-			typeof value.tool_run_id === 'string' &&
-			value.tool_run_id
+		return value.operation === 'set' && isCanonicalEntityId(value.tool_run_id, 'toolrun')
 			? value.tool_run_id
 			: null;
 	} catch {
@@ -315,7 +318,10 @@ export function parseToolRunResultInject(text: string | undefined | null): {
 	let status = 'completed';
 	for (const line of text.split('\n')) {
 		const mId = /^tool_run_id:\s*(.+)\s*$/.exec(line);
-		if (mId) toolRunId = mId[1].trim();
+		if (mId) {
+			const candidate = mId[1].trim();
+			toolRunId = isCanonicalEntityId(candidate, 'toolrun') ? candidate : null;
+		}
 		const mSt = /^status:\s*(.+)\s*$/.exec(line);
 		if (mSt) status = mSt[1].trim();
 	}
