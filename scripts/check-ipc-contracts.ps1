@@ -192,7 +192,7 @@ $ownedCommands = @{
     'externalRef.ts' = @('open_external')
     'recordingOverlayController.ts' = @('start_recording', 'stop_recording', 'cancel_recording')
     'toolRunCommands.ts' = @('list_tool_runs', 'list_tool_run_history', 'clear_tool_run_history', 'cancel_tool_run')
-    'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill')
+    'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'list_skills', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill')
     'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'clear_facts', 'recall_memory')
     'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'count_session_history', 'count_session_history_search', 'get_session_for_resume', 'get_latest_session_for_resume', 'process_transcript', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'end_session', 'interrupt_session', 'continue_session')
     'modelDiscoveryCommands.ts' = @('discover_models')
@@ -200,6 +200,17 @@ $ownedCommands = @{
     'settingsCommands.ts' = @('get_settings', 'discard_staged_credentials', 'list_session_permissions', 'is_autostart_enabled', 'run_memory_maintenance', 'revoke_permission', 'revoke_session_permission', 'reset_permissions', 'reset_session_permissions', 'set_hotkey_capture_active', 'stage_provider_credential', 'stage_ocr_credential', 'update_settings', 'enable_autostart', 'disable_autostart')
     'chatModelCommands.ts' = @('switch_model', 'set_reasoning_effort', 'set_web_search')
 }
+$ownedCommandNames = @($ownedCommands.Values | ForEach-Object { $_ })
+$duplicateOwners = @($ownedCommandNames | Group-Object | Where-Object Count -gt 1 | ForEach-Object Name)
+if ($duplicateOwners.Count -gt 0) {
+    throw "UI command owner map assigns commands more than once: $($duplicateOwners -join ', ')"
+}
+$literalInvokeCommands = @()
+foreach ($file in $uiFiles | Where-Object { $_.Name -notmatch '\.(test|spec)\.' }) {
+    $literalInvokeCommands += Get-Matches (Get-Content $file.FullName -Raw) "invoke\s*\(\s*'([a-z0-9_]+)'"
+}
+Assert-SetEqual 'production literal invokes vs reviewed UI command owners' $literalInvokeCommands $ownedCommandNames
+
 foreach ($file in $uiFiles) {
     foreach ($owner in $ownedCommands.Keys) {
         if ($file.Name -eq $owner) { continue }
