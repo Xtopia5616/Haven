@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsView from './SettingsView.svelte';
 import { createSettingsFixture } from '$lib/contracts/settings-fixture.ts';
+import { AGENT_METRICS_PHASE_COUNT } from '$lib/contracts/generatedCommands.ts';
 
 const { invoke, listen } = vi.hoisted(() => ({
 	invoke: vi.fn(),
@@ -29,7 +30,12 @@ describe('SettingsView diagnostics export', () => {
 					return false;
 				case 'get_performance_metrics':
 					return {
-						phases: [],
+						phases: Array.from({ length: AGENT_METRICS_PHASE_COUNT }, () => ({
+							count: 0,
+							total_ms: 0,
+							p50_ms: 0,
+							p95_ms: 0,
+						})),
 						counters: {
 							turn_starts: 0,
 							first_tokens: 0,

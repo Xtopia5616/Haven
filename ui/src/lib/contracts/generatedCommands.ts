@@ -83,7 +83,7 @@ export interface MemoryRecallItem { entity_id: string; text: string; score: numb
 export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
 export const FRONTEND_FAILURE_KIND_INPUT_VALUES = ['operation_failure', 'unhandled_ui_error', 'unhandled_rejection'] as const;
 export type FrontendFailureKindInput = (typeof FRONTEND_FAILURE_KIND_INPUT_VALUES)[number];
-export interface LogInfo { enabled: boolean; level: string; path: string | null }
+export interface LogInfo { enabled: boolean; level: LogLevel; path: string | null }
 export interface LogTail { path: string; content: string }
 export interface McpRefreshResult { added: string[]; removed: string[]; updated: string[]; failed: string[] }
 export interface ApiKeyStatus { models: Record<string, boolean>; providers: Record<string, boolean>; stt: boolean; ocr: boolean; ocr_secret: boolean }
@@ -2544,6 +2544,9 @@ export const SETTINGS_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+
+export const AGENT_METRICS_PHASE_COUNT = 12 as const;
+
 
 export interface TauriCommandMap {
 	add_fact: { request: { subject: string; predicate: string; object: string; tags?: string[] | null }; response: MemoryFactResponse };

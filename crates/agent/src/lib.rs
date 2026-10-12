@@ -55,7 +55,7 @@ pub use prompt_context::{
     PromptCatalogContent, PromptCatalogVersions, PromptRuntimeContext, PromptToolPort,
 };
 pub(crate) use react::ReActEngine;
-pub use react::{MetricsSnapshot, ToolCatalogPort, UiMetricsSnapshot};
+pub use react::{METRICS_PHASE_COUNT, MetricsSnapshot, ToolCatalogPort, UiMetricsSnapshot};
 pub use session::{
     AgentToolRunPort, ConfirmResolution, ManagedAssetLeasePort, SessionInfo, SessionSupervisor,
     SessionSupervisorEvent, SessionToolOverlayPort, SessionToolPorts, StepInfo,

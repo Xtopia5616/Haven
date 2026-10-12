@@ -1,16 +1,31 @@
 /** Frontend boundary helpers for the typed LLM connectivity probe. */
 
-import type {
-	LlmConnectionFailureReason,
-	LlmConnectionStatus,
+import {
+	LLM_CONNECTION_FAILURE_REASON_VALUES,
+	LLM_CONNECTION_STATUS_VALUES,
+	type LlmConnectionFailureReason,
+	type LlmConnectionReport,
+	type LlmConnectionStatus,
 } from './contracts/generatedCommands.ts';
 import { isRecord } from './contracts/objectGuards.ts';
+import { isOneOf, isString } from './contracts/valueGuards.ts';
 
 export interface LlmConnectionReportView {
 	status: LlmConnectionStatus;
 	reason?: LlmConnectionFailureReason;
-	provider?: string;
-	model?: string;
+	provider: string;
+	model: string;
+}
+
+const INVALID_REPORT_FALLBACK: LlmConnectionReportView = {
+	status: 'disconnected',
+	reason: 'unknown',
+	provider: '',
+	model: '',
+};
+
+function invalidReport(): LlmConnectionReportView {
+	return { ...INVALID_REPORT_FALLBACK };
 }
 
 const REASONS: Record<LlmConnectionFailureReason, string> = {
@@ -34,23 +49,46 @@ export function llmConnectionReasonText(reason: unknown): string {
 
 /** Convert the untyped Tauri result into the one shape consumed by the shell. */
 export function normalizeLlmConnectionReport(value: unknown): LlmConnectionReportView {
-	if (!isRecord(value)) {
-		return { status: 'disconnected', reason: 'unknown' };
+	if (
+		!isRecord(value) ||
+		!Object.hasOwn(value, 'status') ||
+		!isOneOf(value.status, LLM_CONNECTION_STATUS_VALUES) ||
+		!Object.hasOwn(value, 'provider') ||
+		!isString(value.provider) ||
+		!Object.hasOwn(value, 'model') ||
+		!isString(value.model)
+	) {
+		return invalidReport();
 	}
+
 	const status = value.status;
-	if (status !== 'ready' && status !== 'disconnected' && status !== 'unconfigured') {
-		return { status: 'disconnected', reason: 'unknown' };
+	const provider = value.provider;
+	const model = value.model;
+	let report: LlmConnectionReport;
+	if (status === 'disconnected') {
+		if (
+			!Object.hasOwn(value, 'reason') ||
+			!isOneOf(value.reason, LLM_CONNECTION_FAILURE_REASON_VALUES)
+		) {
+			return invalidReport();
+		}
+		report = { status, reason: value.reason, provider, model };
+	} else {
+		if (Object.hasOwn(value, 'reason')) {
+			return invalidReport();
+		}
+		report = { status, provider, model };
 	}
-	const reason =
-		typeof value.reason === 'string' && Object.hasOwn(REASONS, value.reason)
-			? (value.reason as LlmConnectionFailureReason)
-			: undefined;
-	return {
-		status,
-		reason,
-		provider: typeof value.provider === 'string' ? value.provider : undefined,
-		model: typeof value.model === 'string' ? value.model : undefined,
-	};
+
+	// Keep the shell-facing view explicit at the generated IPC DTO boundary.
+	return report.status === 'disconnected'
+		? {
+				status: report.status,
+				reason: report.reason,
+				provider: report.provider,
+				model: report.model,
+			}
+		: { status: report.status, provider: report.provider, model: report.model };
 }
 
 export function formatLlmConnectionFailure(report: LlmConnectionReportView): string {

@@ -120,6 +120,7 @@ foreach ($parser in @('parseLogInfo', 'parseLogTail', 'parseShellAvailability', 
     Assert-Contains $diagnosticsCommands ("\.then\(" + $parser + '\)') "diagnostics response uses $parser"
 }
 Assert-Contains $diagnosticsCommands 'parsePerformanceMetricsSnapshot\(value\)' 'performance metrics are checked for safe integer precision'
+Assert-Contains $diagnosticsCommands "from './contracts/diagnostics.ts'" 'diagnostics command adapters use the diagnostics contract owner'
 $countContracts = Get-Source 'ui/src/lib/contracts/count.ts'
 Assert-Contains $countContracts 'isSafeUnsignedInteger\(value\)' 'scalar count responses are non-negative safe integers'
 $countCommands = @('clear_facts', 'clear_tool_run_history', 'count_session_history', 'count_session_history_search', 'delete_all_sessions', 'reset_session_permissions', 'run_memory_maintenance')
@@ -152,6 +153,8 @@ function Assert-MetricsFieldCoverage([string] $contractType, [string] $validator
     Assert-SetEqual "$contractType generated fields vs $validatorConstant" $contractFields $validatedFields
 }
 $diagnosticsContract = Get-Source 'ui/src/lib/contracts/diagnostics.ts'
+Assert-Contains $generated 'export const AGENT_METRICS_PHASE_COUNT = [0-9]+ as const' 'generated IPC contract exposes the Rust metrics phase count'
+Assert-Contains $diagnosticsContract 'value\.phases\.length !== AGENT_METRICS_PHASE_COUNT' 'performance metrics parser enforces the Rust fixed phase count'
 foreach ($metricsFieldSet in @(
     @{ Contract = 'PhaseSnapshot'; Validator = 'PHASE_FIELDS' },
     @{ Contract = 'CounterSnapshot'; Validator = 'COUNTER_FIELDS' },
@@ -160,10 +163,32 @@ foreach ($metricsFieldSet in @(
 )) {
     Assert-MetricsFieldCoverage $metricsFieldSet.Contract $metricsFieldSet.Validator
 }
+$metricsSource = Get-Source 'crates/agent/src/react/metrics.rs'
+$rustPhaseCount = [regex]::Match($metricsSource, 'pub const METRICS_PHASE_COUNT:\s*usize\s*=\s*(\d+)')
+$generatedPhaseCount = [regex]::Match($generated, 'export const AGENT_METRICS_PHASE_COUNT = (\d+) as const')
+if (-not $rustPhaseCount.Success -or -not $generatedPhaseCount.Success -or $rustPhaseCount.Groups[1].Value -ne $generatedPhaseCount.Groups[1].Value) {
+    throw 'generated metrics phase count must match the Rust response array length'
+}
+$settingsContract = Get-Source 'ui/src/lib/contracts/settings.ts'
+Assert-Contains $generated 'export interface LogInfo\s*\{[^}]*level:\s*LogLevel;' 'LogInfo uses the generated Rust LogLevel enum'
+Assert-Contains $diagnosticsContract 'isOneOf\(value\.level,\s*LOG_LEVEL_VALUES\)' 'log info parser validates the generated closed log-level enum'
+foreach ($diagnosticsParser in @('parseLogInfo', 'parseLogTail', 'parseShellAvailability', 'parseApiKeyStatus')) {
+    Assert-Contains $diagnosticsContract ("export function " + $diagnosticsParser + '\(') "$diagnosticsParser is owned by diagnostics contracts"
+    Assert-NotContains $settingsContract ("\b" + $diagnosticsParser + '\b') "$diagnosticsParser is not owned by settings contracts"
+}
 
 $uiFiles = Get-ChildItem (Join-Path $root 'ui/src') -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') }
 $layout = Get-Source 'ui/src/routes/+layout.svelte'
 Assert-Contains $layout '(?s)const report = await invoke\(''check_llm_connection''\);\s*if \(generation === llmProbeGeneration\) applyLlmConnectionReport\(report\);' 'LLM connection report is normalized only for the current probe'
+$llmConnection = Get-Source 'ui/src/lib/llmConnection.ts'
+Assert-Contains $llmConnection 'LLM_CONNECTION_STATUS_VALUES' 'LLM connection parser reuses generated status values'
+Assert-Contains $llmConnection 'LLM_CONNECTION_FAILURE_REASON_VALUES' 'LLM connection parser reuses generated failure-reason values'
+Assert-Contains $llmConnection 'isOneOf\(value\.status,\s*LLM_CONNECTION_STATUS_VALUES\)' 'LLM connection parser validates the generated closed status enum'
+Assert-Contains $llmConnection 'isString\(value\.provider\)' 'LLM connection parser requires a string provider'
+Assert-Contains $llmConnection 'isString\(value\.model\)' 'LLM connection parser requires a string model'
+Assert-Contains $llmConnection 'status === ''disconnected''[\s\S]*?isOneOf\(value\.reason,\s*LLM_CONNECTION_FAILURE_REASON_VALUES\)' 'disconnected LLM reports require a generated closed failure reason'
+Assert-Contains $llmConnection 'else\s*\{\s*if\s*\(Object\.hasOwn\(value,\s*''reason''\)\)' 'ready and unconfigured LLM reports reject a failure reason'
+Assert-Contains $llmConnection 'let report:\s*LlmConnectionReport' 'validated LLM response is materialized as its generated DTO before renderer mapping'
 Assert-Contains $layout "invoke\('get_bootstrap_status'\)" 'App shell owns the startup readiness probe'
 Assert-Contains $layout "invoke\('resolve_confirmation',\s*confirmationRequest\)" 'App shell owns global confirmation resolution'
 Assert-Contains $layout 'parseConfirmationResolutionResult\([\s\S]*?invoke\(''resolve_confirmation''' 'confirmation status is checked before state transition'

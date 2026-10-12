@@ -1,35 +1,33 @@
 import { invoke } from './tauri.ts';
+import {
+	parseApiKeyStatus,
+	parseLogInfo,
+	parseLogTail,
+	parsePerformanceMetricsSnapshot,
+	parseShellAvailability,
+	type ApiKeyStatus,
+	type LogInfo,
+	type LogTail,
+	type PerformanceMetricsSnapshot,
+	type ShellAvailability,
+} from './contracts/diagnostics.ts';
 import type {
 	CheckShellAvailableRequest,
 	ReadLogTailRequest,
 	UiMetricsSnapshot,
 } from './contracts/commands.ts';
-import {
-	parsePerformanceMetricsSnapshot,
-	type PerformanceMetricsSnapshot,
-} from './contracts/diagnostics.ts';
-import {
-	parseApiKeyStatus,
-	parseLogInfo,
-	parseLogTail,
-	parseShellAvailability,
-	type ApiKeyStatus,
-	type LogInfo,
-	type LogTail,
-	type ShellAvailability,
-} from './contracts/settings.ts';
 
-/** Read log metadata using the existing settings response validator. */
+/** Read log metadata through the diagnostics response boundary. */
 export function readLogInfo(): Promise<LogInfo> {
 	return invoke('get_log_info').then(parseLogInfo);
 }
 
-/** Read a bounded log tail using the existing settings response validator. */
+/** Read a bounded log tail through the diagnostics response boundary. */
 export function readLogTail(request: ReadLogTailRequest): Promise<LogTail> {
 	return invoke('read_log_tail', request).then(parseLogTail);
 }
 
-/** Check availability for one configured shell through the settings validator. */
+/** Check availability for one configured shell through the diagnostics response boundary. */
 export function checkShellAvailable(
 	request: CheckShellAvailableRequest,
 ): Promise<ShellAvailability> {

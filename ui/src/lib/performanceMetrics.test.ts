@@ -4,6 +4,7 @@ import {
 	registerPerformanceMetricsProvider,
 } from './performanceMetrics.ts';
 import type { UiMetricsSnapshot } from './contracts/commands.ts';
+import { AGENT_METRICS_PHASE_COUNT } from './contracts/generatedCommands.ts';
 import { invoke } from './tauri.ts';
 
 vi.mock('./tauri.ts', () => ({
@@ -18,7 +19,12 @@ describe('performance metrics export boundary', () => {
 	it('exports backend and renderer metrics through one invoke with the live UI snapshot', async () => {
 		const ui: UiMetricsSnapshot = { frames: 3, chunks: 8, drops: 1 };
 		vi.mocked(invoke).mockResolvedValue({
-			phases: [{ count: 0, total_ms: 0, p50_ms: 0, p95_ms: 0 }],
+			phases: Array.from({ length: AGENT_METRICS_PHASE_COUNT }, () => ({
+				count: 0,
+				total_ms: 0,
+				p50_ms: 0,
+				p95_ms: 0,
+			})),
 			counters: {
 				turn_starts: 0,
 				first_tokens: 0,

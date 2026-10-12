@@ -1,3 +1,4 @@
+use haven_agent::METRICS_PHASE_COUNT;
 use quote::ToTokens;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -216,6 +217,9 @@ fn generate(root: &Path) -> Result<String, String> {
     }
     output.push_str(&type_graph.declarations());
     output.push_str(&type_graph.runtime_shape_declarations());
+    output.push_str(&format!(
+        "\nexport const AGENT_METRICS_PHASE_COUNT = {METRICS_PHASE_COUNT} as const;\n\n"
+    ));
     output.push_str("\nexport interface TauriCommandMap {\n");
     for command in commands.values() {
         output.push_str(&format!(

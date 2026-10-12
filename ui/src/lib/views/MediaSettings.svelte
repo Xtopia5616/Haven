@@ -19,8 +19,8 @@
 		withStringValue,
 	} from '$lib/typedCallbacks.ts';
 	import { mediaCapabilityBackend, sttCapabilityBackend } from '$lib/apiStyle.ts';
+	import type { ApiKeyStatus } from '$lib/contracts/diagnostics.ts';
 	import type {
-		ApiKeyStatus,
 		AudioConfig,
 		ContextLimitsConfigInput,
 		LlmConfigInput,

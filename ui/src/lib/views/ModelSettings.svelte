@@ -16,8 +16,8 @@
 	} from '$lib/modelDiscovery.ts';
 	import { emptyModel, capabilityOptions, requestPolicyOptions } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
+	import type { ApiKeyStatus } from '$lib/contracts/diagnostics.ts';
 	import type {
-		ApiKeyStatus,
 		AudioConfig,
 		CapabilityInput,
 		ContextLimitsConfigInput,

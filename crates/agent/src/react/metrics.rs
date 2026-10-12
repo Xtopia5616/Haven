@@ -31,7 +31,7 @@ const LATENCY_BUCKETS_MS: [u64; 16] = [
     u64::MAX,
 ];
 
-const PHASE_COUNT: usize = 12;
+pub const METRICS_PHASE_COUNT: usize = 12;
 const COUNTER_COUNT: usize = 12;
 const GAUGE_COUNT: usize = 1;
 
@@ -218,7 +218,7 @@ pub struct UiMetricsSnapshot {
 /// turn on a metrics consumer.
 #[derive(Debug)]
 pub(crate) struct ReActMetrics {
-    phases: [PhaseMetric; PHASE_COUNT],
+    phases: [PhaseMetric; METRICS_PHASE_COUNT],
     counters: [AtomicU64; COUNTER_COUNT],
     gauges: [AtomicU64; GAUGE_COUNT],
 }
@@ -308,7 +308,7 @@ impl Default for ReActMetrics {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct MetricsSnapshot {
-    pub phases: [PhaseSnapshot; PHASE_COUNT],
+    pub phases: [PhaseSnapshot; METRICS_PHASE_COUNT],
     pub counters: CounterSnapshot,
     pub gauges: GaugeSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]

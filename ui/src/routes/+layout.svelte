@@ -448,7 +448,12 @@
 		} catch (e) {
 			if (generation !== llmProbeGeneration) return;
 			reportError(e, { context: '+layout', message: '检查模型连接失败', log: false });
-			llmConnectionReport = { status: 'disconnected', reason: 'unknown' };
+			llmConnectionReport = {
+				status: 'disconnected',
+				reason: 'unknown',
+				provider: '',
+				model: '',
+			};
 			llmConnected = 'disconnected';
 			llmProbeFailureStreak = Math.min(llmProbeFailureStreak + 1, 4);
 		} finally {

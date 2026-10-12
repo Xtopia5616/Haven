@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
-use haven_common::config::LogConfig;
+use haven_common::config::{LogConfig, LogLevel};
 use haven_common::log_file::{read_tail, resolve_current_log_file};
 use std::sync::Arc;
 use tauri::State;
@@ -32,7 +32,7 @@ pub struct LogTail {
 #[derive(Debug, serde::Serialize)]
 pub struct LogInfo {
     pub enabled: bool,
-    pub level: String,
+    pub level: LogLevel,
     pub path: Option<String>,
 }
 
@@ -54,7 +54,7 @@ pub fn get_log_info(state: State<'_, Arc<AppState>>) -> Result<LogInfo, String> 
         .map(|p| p.to_string_lossy().into_owned());
     Ok(LogInfo {
         enabled: log_cfg.file_enabled,
-        level: log_cfg.level.as_str().to_string(),
+        level: log_cfg.level.clone(),
         path,
     })
 }
@@ -206,7 +206,7 @@ mod tests {
     fn log_info_has_a_named_stable_wire_shape() {
         let info = LogInfo {
             enabled: false,
-            level: "info".into(),
+            level: LogLevel::Info,
             path: None,
         };
         assert_eq!(

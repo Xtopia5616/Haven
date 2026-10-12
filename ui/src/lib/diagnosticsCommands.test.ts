@@ -7,6 +7,7 @@ import {
 	readLogTail,
 } from './diagnosticsCommands.ts';
 import { invoke } from './tauri.ts';
+import { AGENT_METRICS_PHASE_COUNT } from './contracts/generatedCommands.ts';
 
 vi.mock('./tauri.ts', () => ({
 	invoke: vi.fn(),
@@ -14,7 +15,12 @@ vi.mock('./tauri.ts', () => ({
 
 function metricsSnapshot() {
 	return {
-		phases: [{ count: 1, total_ms: 2, p50_ms: 5, p95_ms: 30 }],
+		phases: Array.from({ length: AGENT_METRICS_PHASE_COUNT }, () => ({
+			count: 1,
+			total_ms: 2,
+			p50_ms: 5,
+			p95_ms: 30,
+		})),
 		counters: {
 			turn_starts: 2,
 			first_tokens: 0,
@@ -103,6 +109,9 @@ describe('diagnostics command boundary', () => {
 		null,
 		{},
 		{ ...metricsSnapshot(), phases: [null] },
+		{ ...metricsSnapshot(), phases: [] },
+		{ ...metricsSnapshot(), phases: metricsSnapshot().phases.slice(1) },
+		{ ...metricsSnapshot(), phases: [...metricsSnapshot().phases, metricsSnapshot().phases[0]] },
 		{
 			...metricsSnapshot(),
 			phases: [{ count: Number.MAX_SAFE_INTEGER + 1, total_ms: 0, p50_ms: 0, p95_ms: 0 }],

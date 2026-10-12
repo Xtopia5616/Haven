@@ -28,16 +28,71 @@ describe('llm connection report', () => {
 	it('falls back safely for malformed backend responses', () => {
 		const report = normalizeLlmConnectionReport({ status: 'broken', reason: 'secret' });
 
-		expect(report).toEqual({ status: 'disconnected', reason: 'unknown' });
+		expect(report).toEqual({
+			status: 'disconnected',
+			reason: 'unknown',
+			provider: '',
+			model: '',
+		});
 		expect(llmConnectionReasonText('secret')).toBe('暂时无法确定具体原因');
+	});
+
+	it('accepts ready and unconfigured DTOs with required string identity fields', () => {
+		expect(
+			normalizeLlmConnectionReport({
+				status: 'ready',
+				provider: 'OpenAI',
+				model: 'gpt-5',
+			}),
+		).toEqual({ status: 'ready', provider: 'OpenAI', model: 'gpt-5' });
+		expect(
+			normalizeLlmConnectionReport({
+				status: 'unconfigured',
+				provider: '',
+				model: '',
+			}),
+		).toEqual({ status: 'unconfigured', provider: '', model: '' });
+	});
+
+	it('rejects missing or malformed fixed DTO fields and invalid status/reason combinations', () => {
+		const invalidReports: unknown[] = [
+			{},
+			{ status: 'ready', provider: 'OpenAI' },
+			{ status: 'ready', provider: 'OpenAI', model: null },
+			{ status: 'ready', provider: 1, model: 'gpt-5' },
+			{ status: 'ready', reason: 'network', provider: 'OpenAI', model: 'gpt-5' },
+			{ status: 'unconfigured', reason: null, provider: '', model: '' },
+			{ status: 'disconnected', provider: 'OpenAI', model: 'gpt-5' },
+			{ status: 'disconnected', reason: null, provider: 'OpenAI', model: 'gpt-5' },
+			{ status: 'disconnected', reason: 'not-a-reason', provider: 'OpenAI', model: 'gpt-5' },
+		];
+
+		for (const value of invalidReports) {
+			expect(normalizeLlmConnectionReport(value)).toEqual({
+				status: 'disconnected',
+				reason: 'unknown',
+				provider: '',
+				model: '',
+			});
+		}
 	});
 
 	it('rejects inherited object-property names as failure reasons', () => {
 		for (const reason of ['constructor', 'toString', '__proto__']) {
 			expect(llmConnectionReasonText(reason)).toBe('暂时无法确定具体原因');
 			expect(
-				normalizeLlmConnectionReport({ status: 'disconnected', reason }).reason,
-			).toBeUndefined();
+				normalizeLlmConnectionReport({
+					status: 'disconnected',
+					reason,
+					provider: 'OpenAI',
+					model: 'gpt-5',
+				}),
+			).toEqual({
+				status: 'disconnected',
+				reason: 'unknown',
+				provider: '',
+				model: '',
+			});
 		}
 	});
 

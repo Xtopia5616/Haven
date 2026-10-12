@@ -47,6 +47,7 @@
 		updateSettings as updateSettingsCommand,
 	} from '$lib/settingsCommands.ts';
 	import { checkShellAvailable, readApiKeyStatus } from '$lib/diagnosticsCommands.ts';
+	import type { ApiKeyStatus } from '$lib/contracts/diagnostics.ts';
 	import { SHELL_CHOICE_INPUT_VALUES } from '$lib/contracts/generatedCommands.ts';
 	import ModelSettings from './ModelSettings.svelte';
 	import type { DiscoveredModelMetadataFill } from '$lib/modelDiscovery.ts';
@@ -59,7 +60,6 @@
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSurface from '$lib/WorkspaceSurface.svelte';
 	import type {
-		ApiKeyStatus,
 		AudioConfigInput,
 		AudioConfig,
 		ContextLimitsConfigInput,
