@@ -712,13 +712,20 @@ impl ReActEngine {
                     // `final_answer` is the only name that marks a tool call
                     // as the conversation's final answer.
                     let is_final = tc.name == "final_answer";
-                    let provider_id = tc.id.trim();
+                    // Provider tool-call IDs are opaque and may later be
+                    // replayed into provider history, so preserve them exactly.
+                    let provider_id = &tc.id;
                     let tool_call_id = if provider_id.is_empty()
-                        || !seen_tool_call_ids.insert(provider_id.to_string())
+                        || !seen_tool_call_ids.insert(provider_id.clone())
                     {
-                        haven_common::types::new_id("call")
+                        loop {
+                            let fallback_id = haven_common::types::new_id("call");
+                            if seen_tool_call_ids.insert(fallback_id.clone()) {
+                                break fallback_id;
+                            }
+                        }
                     } else {
-                        provider_id.to_string()
+                        provider_id.clone()
                     };
                     ToolCall {
                         tool_name: tc.name.clone(),
@@ -1983,7 +1990,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_duplicate_provider_tool_call_ids_get_distinct_local_ids() {
+    fn parse_duplicate_provider_tool_call_ids_get_distinct_fallback_ids() {
         let tcs = vec![
             CanonicalToolCall {
                 id: "same".into(),
@@ -2007,6 +2014,34 @@ mod tests {
                 .tool_call_id
                 .as_deref()
                 .is_some_and(|id| id.starts_with("call-"))
+        );
+    }
+
+    #[test]
+    fn parse_provider_tool_call_ids_preserve_exact_values() {
+        let tcs = vec![
+            CanonicalToolCall {
+                id: " provider/call-id".into(),
+                name: "search".into(),
+                arguments: serde_json::json!({}),
+            },
+            CanonicalToolCall {
+                id: "provider/call-id ".into(),
+                name: "search".into(),
+                arguments: serde_json::json!({}),
+            },
+        ];
+        let r = resp("", tcs, Some(FinishReason::ToolCalls));
+        let ParsedAgentResponse { tool_calls, .. } =
+            ReActEngine::parse_default_model_response(&r, 1);
+
+        assert_eq!(
+            tool_calls[0].tool_call_id.as_deref(),
+            Some(" provider/call-id")
+        );
+        assert_eq!(
+            tool_calls[1].tool_call_id.as_deref(),
+            Some("provider/call-id ")
         );
     }
 

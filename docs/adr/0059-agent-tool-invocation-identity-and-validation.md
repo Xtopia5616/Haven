@@ -1,5 +1,7 @@
 # ADR 0059：Agent 工具调用身份与参数验证
 
+> 其中关于 `call-*` 是进程内身份的描述已由 [ADR 1046](1046-distinguish-provider-tool-call-and-preview-identities.md) 更新；其余调用身份与参数验证决定继续适用。
+
 ## 背景
 
 同一 ReAct step 可以包含多个并行工具调用。仅凭工具名和参数无法区分重复调用，

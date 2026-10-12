@@ -1034,3 +1034,4 @@
 - [1043：统一回滚投影时间水位](1043-share-rollback-projection-watermark.md)
 - [1044：用稳定消息身份确认 Agent inbox](1044-use-stable-message-identities-for-inbox-ack.md)
 - [1045：统一 Messaging 的持久生命周期来源](1045-unify-durable-messaging-lifecycle-source.md)
+- [1046：区分 provider tool-call 身份与流式预览身份](1046-distinguish-provider-tool-call-and-preview-identities.md)

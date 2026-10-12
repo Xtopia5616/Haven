@@ -123,13 +123,13 @@ describe('agent IPC contract', () => {
 		expect(toolCall(-1)).toBeNull();
 		expect(toolCall(0x1_0000_0000)).toBeNull();
 
-		const toolCallChunk = (seq: unknown) =>
+		const toolCallChunk = (seq: unknown, previewId = 'preview-6b86b273ff34fce19d6b804eff5a3f57') =>
 			mapAgentEventContract({
 				event: 'agent:tool_call_chunk',
 				id: 1,
 				payload: {
 					session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-					preview_id: 'call-6b86b273ff34fce19d6b804eff5a3f57',
+					preview_id: previewId,
 					tool_name: 'read_file',
 					arguments: '{}',
 					arguments_truncated: false,
@@ -139,6 +139,8 @@ describe('agent IPC contract', () => {
 					seq,
 				},
 			});
+		expect(toolCallChunk(0)).not.toBeNull();
+		expect(toolCallChunk(0, 'call-6b86b273ff34fce19d6b804eff5a3f57')).toBeNull();
 		expect(toolCallChunk(-1)).toBeNull();
 		expect(toolCallChunk(0.5)).toBeNull();
 		expect(toolCallChunk(Number.MAX_SAFE_INTEGER + 1)).toBeNull();

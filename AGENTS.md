@@ -84,14 +84,15 @@ corepack pnpm run check
 | `cred-` | Credential Manager 凭据引用（仅引用，不是密钥值） | `haven_common` / `haven_platform` |
 | `usage-` | 单次 LLM 调用用量明细 llm_usage.id | `haven_memory` |
 
-以下 ID 均由运行时生成；`rec-*`、`file-*` 仅用于进程内生命周期，`conf-*`、`call-*` 的持久化范围由对应领域契约定义：
+以下 ID 均由运行时生成；`rec-*`、`file-*`、`preview-*` 仅用于进程内生命周期；`conf-*`、`call-*` 是否持久化由对应领域契约明确规定：
 
 | 前缀 | 实体 | 位置 |
 |---|---|---|
 | `conf-` | 安全确认请求（request ID 可按 ADR 写入 durable interaction event 或 scheduled ToolRun claim） | `haven_agent` |
 | `rec-` | 录音（一次录音一个 id，`recording:started`/`transcription:*` 事件共用） | `haven_app` |
 | `file-` | 临时文件名 | `haven_app` |
-| `call-` | provider 返回空 tool_call_id 时生成的 transcript 工具调用关联身份 | `haven_agent` |
+| `call-` | provider tool_call_id 缺失或同一 batch 重复时生成的 durable transcript 调用关联 fallback | `haven_agent` |
+| `preview-` | 流式工具调用参数预览身份 | `haven_agent` |
 
 规则：
 - **生成一律用 `haven_common::types::new_id(prefix)`**，禁止手拼 UUID。
@@ -105,7 +106,7 @@ corepack pnpm run check
 - 术语：**session** = 对话（ReAct 主实体）；**tool call** = Agent/模型发起的一次工具调用；**tool run** = 可脱离当前 turn 持久运行的工具工作单元（后台运行/定时运行由 `tool_runs.kind` 区分）。执行方式使用 `ToolExecutionMode::{Foreground, Background}`；定时触发仍是 `schedule` 工具的职责。UI 文案使用「会话」「任务」「后台任务」「定时任务」。
 - 实体 ID newtype 集中在 `haven_common::types`（`id_newtype!` 宏生成，`struct X(pub String)`，serde 按普通字符串序列化）：目前只有 `ConfirmId`/`RecordingId` 在运行时被使用，其余实体继续用 `String`；新增真正需要类型隔离的实体 ID 时再补 newtype，不要提前定义未使用的类型。
 - 序号类字段（u64 代次，非持久实体）：`run_id`（run 实例）、`gen_id`（流式代次）、MCP JSON-RPC `next_id`，保持现有命名并加文档说明。
-- 外部 ID（LLM `tool_call_id`、模型 ID、MCP `Mcp-Session-Id`）保持 provider 格式，不套用本规范。
+- 外部 ID（LLM `tool_call_id`、模型 ID、MCP `Mcp-Session-Id`）保持 provider 格式，不套用本规范；`tool_call_id` 按不透明字符串逐字保留。provider ID 为空或同一 batch 重复时，Agent 生成并持久化 `call-*` fallback，以维持 transcript、确认和恢复后的 provider history 关联；流式预览另用进程内 `preview-*`。
 - kv_store key 用 `domain.key` 风格（如 `fact_extraction.{session_id}`、`fact_extraction_pending.{session_id}`），内嵌的实体 ID 必须是规范格式。
 - 定时 ToolRun 的持久执行权 claim value 表示执行来源身份：确认路径使用对应 `conf-*` request ID；无需确认的 auto-approved 路径复用当前 `tool_run_id` 作为 claim ID。持久边界只接受规范 `conf-*`，或与 `tool_run_id` 完全相同的规范 `toolrun-*`。Messaging inbox 确认直接使用稳定的 `message_id`，不生成独立领取 ID（ADR 1044）。
 - 步骤计数统一叫 `step_number`（事件/UI/DB 列名一致）。

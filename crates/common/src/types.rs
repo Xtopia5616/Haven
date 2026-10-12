@@ -12,11 +12,13 @@ use serde::{Deserialize, Serialize};
 //     (session_steps), `fact-` (facts), `node-` (memory_nodes), `toolrun-`
 //     (ToolRuns — background and scheduled), `asset-` (managed media),
 //     `cred-` (Credential Manager references), and `usage-` (llm_usage).
-//   - Runtime-generated prefixes: `conf-` (safety confirmations), `rec-`
-//     (voice recordings), `file-` (temporary files), and `call-` (locally
-//     synthesized tool-call ids when the provider sends an empty one). Their
-//     persistence follows the owning domain contract; `call-*` participates
-//     in durable tool-call history when it supplies the required association.
+//   - Runtime-generated prefixes: `conf-` (confirmation request ids), `rec-`
+//     (voice recordings), `file-` (temporary files), `preview-` (streaming
+//     tool-call previews), and `call-` (fallback tool-call association ids).
+//     `rec-*`, `file-*`, and `preview-*` are process-local. `conf-*` may be
+//     persisted by its owning interaction or scheduled ToolRun contract;
+//     `call-*` participates in durable tool-call history when a provider ID is
+//     empty or duplicated in the assistant batch.
 //   - External ids (LLM `tool_call_id`, provider model ids, MCP session ids)
 //     keep their provider formats; `run_id`/`gen_id` are in-process u64
 //     run/generation counters, not persisted entity ids.
@@ -120,8 +122,9 @@ macro_rules! id_newtype {
 
 id_newtype! {
     /// Unique identifier for a safety-gateway confirmation request
-    /// (`conf-{uuid32}`). Ephemeral: lives only in the `interaction:requested`
-    /// event payload and the executor's pending-wait map.
+    /// (`conf-{uuid32}`). This request identity may be persisted in a durable
+    /// interaction event or scheduled ToolRun claim; active execution also
+    /// uses it to address the pending waiter.
     ConfirmId, "conf"
 }
 

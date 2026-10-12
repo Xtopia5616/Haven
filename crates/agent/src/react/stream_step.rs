@@ -69,7 +69,7 @@ fn update_tool_call_preview(
     let state = states
         .entry(update.tool_index)
         .or_insert_with(|| ToolCallPreviewState {
-            preview_id: haven_common::types::new_id("call"),
+            preview_id: haven_common::types::new_id("preview"),
             tool_name: String::new(),
             arguments: String::new(),
             arguments_truncated: false,

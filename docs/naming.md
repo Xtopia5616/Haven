@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.187 | 日期: 2026-10-12
+> 版本: v1.188 | 日期: 2026-10-12
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -131,7 +131,7 @@ ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion re
 
 | 术语 | 含义 | UI 文案 / 代码边界 |
 |---|---|---|
-| 工具调用（ToolCall） | Agent/模型发起的一次工具调用；前台调用等待结果并进入当前 transcript | Agent/ReAct 使用 `ToolCall`；provider 的 `tool_call_id` 保持原格式 |
+| 工具调用（ToolCall） | Agent/模型发起的一次工具调用；前台调用等待结果并进入当前 transcript | provider 的 `tool_call_id` 是不透明字符串并逐字保留；缺失或同一 batch 重复时使用持久 `call-*` fallback；流式参数预览使用进程内 `preview-*` |
 | 会话（session） | 用户与 Agent 的对话及其前台 ReAct 运行上下文 | UI 直接称“会话”；前台工具调用在会话内呈现 |
 | 录音（recording） | 一次麦克风采集及其关联转写；实体 ID 为 `rec-*`，跨层字段统一为 `recording_id` / `recordingId` | 使用 `RecordingId`；`session_id` 只指对话，不用于录音身份 |
 | 会话步骤状态（`SessionStepStatus`） | 持久 `session_steps.status` 与 live `StepInfo.status` 共用的闭合生命周期值：pending、running、completed、failed、cancelled、unknown | Common 定义并生成给 UI；SQLite 列仍存 snake_case 字符串，Memory 读入时严格解析。`ToolStepOutcome` 是 finish 操作的终态输入，不替代完整状态（ADR 0725） |

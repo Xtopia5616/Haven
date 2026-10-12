@@ -539,7 +539,7 @@ export function mapAgentEvent(
 		}
 		case 'agent:tool_call_chunk': {
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
-			const previewId = canonicalIdField(payload, 'preview_id', 'call');
+			const previewId = canonicalIdField(payload, 'preview_id', 'preview');
 			const toolName = readStringField(payload, 'tool_name');
 			const argumentsText = readStringField(payload, 'arguments');
 			const argumentsTruncated = requiredBoolean(payload, 'arguments_truncated');
