@@ -114,13 +114,16 @@ impl ToolRuntime {
         let live_outputs = Arc::new(LiveOutputHub::with_tail_factory(
             tool_run_service.output_tail_factory(),
         ));
+        let default_context_limits = ContextLimitsConfig::default();
         Self {
             managed_assets: ManagedAssetRegistry::default(),
             platform: RwLock::new(Arc::new(PlatformRuntime::default())),
             tool_run_service,
             live_outputs,
             builtin_catalog: RwLock::new(Arc::new(BuiltinCatalog::empty())),
-            clipboard_history: Arc::new(crate::builtin::clipboard::ClipboardHistory::new(50)),
+            clipboard_history: Arc::new(crate::builtin::clipboard::ClipboardHistory::new(
+                default_context_limits.clipboard_history_entries,
+            )),
             messaging_service: Arc::new(MessagingService::default_root()),
             memory_recall: new_memory_recall_slot(),
         }

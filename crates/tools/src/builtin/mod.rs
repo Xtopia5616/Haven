@@ -48,6 +48,7 @@ use crate::{
     ConfirmationRequirement, OperationIdempotency, OperationPolicy, ToolConcurrency, ToolHandle,
     ToolOperationScope,
 };
+use haven_common::config::{MAX_TOOLS_PER_REQUEST, MIN_MAX_TOOLS_PER_REQUEST};
 use haven_common::tools::{ToolCatalogGroup, ToolPresentation, ToolPrompt};
 use haven_common::types::RiskLevel;
 use haven_mcp::McpManager;
@@ -77,6 +78,7 @@ fn tool_output_cap(
     settings
         .get(name)
         .and_then(|c| c.max_output_chars)
+        .map(|cap| cap.min(default_cap))
         .unwrap_or(default_cap)
 }
 
@@ -174,7 +176,9 @@ pub(crate) async fn register_builtin_tools(
         deferred_catalog: deferred_catalog.clone(),
         registry: registry.clone(),
         session_tool_overlay: session_tool_overlay.clone(),
-        max_tools_per_request: limits.max_tools_per_request.max(1),
+        max_tools_per_request: limits
+            .max_tools_per_request
+            .clamp(MIN_MAX_TOOLS_PER_REQUEST, MAX_TOOLS_PER_REQUEST),
         mcp_manager: mcp_manager.clone(),
         mcp_server_config_source: mcp_server_config_source.clone(),
     }));
@@ -297,7 +301,9 @@ pub(crate) async fn register_builtin_tools(
     // on first call; the desktop runtime is an optional typed service port.
     let agent_tool: ToolHandle = Arc::new(messaging::AgentTool::new(messaging_service));
     add_operation_views(tools, agent_tool, settings, AGENT_OPERATION_VIEWS);
-    let max_tools = limits.max_tools_per_request.max(1);
+    let max_tools = limits
+        .max_tools_per_request
+        .clamp(MIN_MAX_TOOLS_PER_REQUEST, MAX_TOOLS_PER_REQUEST);
     // Skills are executable adapters in the deferred catalog. They become
     // provider-visible only after the model explicitly loads one or more.
     let skill_runner = skill_runner.read().await.clone();
@@ -1211,11 +1217,14 @@ mod tests {
     }
 
     #[test]
-    fn tool_output_cap_prefers_per_tool_override() {
+    fn tool_output_cap_allows_per_tool_lowering_but_not_raising() {
         let settings = settings_with("shell", Some(1_000));
         assert_eq!(tool_output_cap(&settings, "shell", 8_000), 1_000);
         // Tools without a settings entry still get the global default.
         assert_eq!(tool_output_cap(&settings, "files", 8_000), 8_000);
+
+        let settings = settings_with("shell", Some(10_000));
+        assert_eq!(tool_output_cap(&settings, "shell", 8_000), 8_000);
     }
 
     #[test]

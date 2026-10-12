@@ -48,7 +48,7 @@ pub struct ScheduleParams {
     /// Delay in seconds before firing (set only).
     #[serde(default)]
     pub delay_secs: Option<i64>,
-    /// Absolute fire time, ISO 8601 (set only).
+    /// Absolute fire time as ISO 8601 with an explicit timezone offset (set only).
     #[serde(default)]
     pub due_at: Option<String>,
     /// Set only: fire when the watched ToolRun reaches a terminal state.
@@ -333,7 +333,7 @@ impl Tool for ScheduleTool {
             "properties": {
                 "operation": { "type": "string", "enum": ["set", "list", "cancel"], "description": "Schedule future work, list schedules, or cancel one" },
                 "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "description": "Fire after this many seconds; choose this or due_at, not both" },
-                "due_at": { "type": "string", "minLength": 1, "description": "Absolute fire time as an ISO 8601 timestamp with timezone; choose this or delay_secs, not both" },
+                "due_at": { "type": "string", "minLength": 1, "description": "Absolute fire time as an ISO 8601 timestamp with an explicit timezone offset; choose this or delay_secs, not both" },
                 "watch_tool_run_id": canonical_entity_id_schema("toolrun", Some("Schedule continuation when this background task reaches a terminal state; requires mode=continue")),
                 "mode": { "type": "string", "enum": ["tool", "continue"], "default": "tool", "description": "At fire time, call tool_name (default) or resume this session with prompt" },
                 "title": { "type": "string", "minLength": 1, "description": "Short title shown for the scheduled task; defaults to Haven" },
@@ -363,7 +363,7 @@ impl Tool for ScheduleTool {
                     "properties": {
                         "operation": { "const": "set" },
                         "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "description": "Fire after this many seconds; choose this or due_at, not both" },
-                        "due_at": { "type": "string", "minLength": 1, "description": "Absolute fire time as an ISO 8601 timestamp with timezone; choose this or delay_secs, not both" },
+                        "due_at": { "type": "string", "minLength": 1, "description": "Absolute fire time as an ISO 8601 timestamp with an explicit timezone offset; choose this or delay_secs, not both" },
                         "mode": { "type": "string", "enum": ["tool", "continue"], "default": "tool", "description": "Call tool_name when it fires (default), or resume this session with prompt" },
                         "title": { "type": "string", "minLength": 1, "description": "Short task title; defaults to Haven" },
                         "body": { "type": "string", "minLength": 1, "description": "Required message shown when the schedule fires" },
@@ -465,6 +465,18 @@ mod tests {
     #[test]
     fn test_reminder_name() {
         assert_eq!(make_tool().name(), "schedule");
+    }
+
+    #[test]
+    fn due_at_schema_requires_an_explicit_timezone_offset() {
+        let schema = make_tool().input_schema();
+        let description = "Absolute fire time as an ISO 8601 timestamp with an explicit timezone offset; choose this or delay_secs, not both";
+
+        assert_eq!(schema["properties"]["due_at"]["description"], description);
+        assert_eq!(
+            schema["oneOf"][2]["properties"]["due_at"]["description"],
+            description
+        );
     }
 
     #[test]

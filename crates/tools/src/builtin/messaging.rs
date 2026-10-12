@@ -1521,7 +1521,7 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.output["delivered"], true);
         assert_eq!(result.output["recipient_status"], "online");
-        let a_msg_id = result.output["message_id"].as_str().unwrap().to_string();
+        let a_message_id = result.output["message_id"].as_str().unwrap().to_string();
 
         // B reads it: system_note marks low-trust origin.
         let result = tool
@@ -1596,7 +1596,7 @@ mod tests {
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         );
         assert_eq!(reply_msg["type"], "reply");
-        assert_eq!(reply_msg["in_reply_to_message_id"], a_msg_id);
+        assert_eq!(reply_msg["in_reply_to_message_id"], a_message_id);
         assert_eq!(
             reply_msg["reply_to_session_id"],
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

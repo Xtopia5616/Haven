@@ -208,8 +208,8 @@ export interface SessionConfigInput { max_concurrent?: number; prompt_history_li
 export interface SessionConfig { max_concurrent: number; prompt_history_limit: number; history_retention_days: number; max_steps_per_run: number; max_steps_per_session?: number }
 export interface SkillsConfigInput { root?: string | null; enabled?: string[] | null }
 export interface SkillsConfig { root: string | null; enabled?: string[] }
-export interface SkillsExecConfigInput { venv_root?: string; work_dir?: string; timeout_secs?: number; max_output_lines?: number; cpu_time_secs?: number | null; max_memory_mb?: number | null }
-export interface SkillsExecConfig { venv_root: string; work_dir: string; timeout_secs: number; max_output_lines: number; cpu_time_secs: number | null; max_memory_mb: number | null }
+export interface SkillsExecConfigInput { venv_root?: string; work_dir?: string; timeout_secs?: number; max_output_lines?: number }
+export interface SkillsExecConfig { venv_root: string; work_dir: string; timeout_secs: number; max_output_lines: number }
 export interface StoredPermissionInput { key: string; effect: PermissionEffectInput }
 export interface StoredPermission { key: string; effect: PermissionEffect }
 export interface ToolConfigInput { enabled?: boolean; timeout_secs?: number | null; max_output_chars?: number | null; max_retries?: number | null; retry_backoff_secs?: number | null; allowed_paths?: string[]; allowed_domains?: string[]; disabled_operations?: string[]; risk_override?: RiskLevelInput | null }
@@ -3985,14 +3985,6 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 					'max_output_lines': {
 						optional: false,
 						shape: { kind: 'number' },
-					},
-					'cpu_time_secs': {
-						optional: false,
-						shape: { kind: 'nullable', inner: { kind: 'number' } },
-					},
-					'max_memory_mb': {
-						optional: false,
-						shape: { kind: 'nullable', inner: { kind: 'number' } },
 					}
 				}
 			},
@@ -7514,14 +7506,6 @@ export const SETTINGS_RESPONSE_SHAPE = {
 					'max_output_lines': {
 						optional: false,
 						shape: { kind: 'number' },
-					},
-					'cpu_time_secs': {
-						optional: false,
-						shape: { kind: 'nullable', inner: { kind: 'number' } },
-					},
-					'max_memory_mb': {
-						optional: false,
-						shape: { kind: 'nullable', inner: { kind: 'number' } },
 					}
 				}
 			},

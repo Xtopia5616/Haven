@@ -99,6 +99,7 @@ describe('chat model route sync', () => {
 				model: 'gpt-5',
 				reasoningEffort: 'high',
 				webSearch: 'auto',
+				webSearchOverride: true,
 				apiStyle: 'openai-responses',
 				webSearchSupported: true,
 			},
@@ -109,6 +110,7 @@ describe('chat model route sync', () => {
 				model: 'llama3',
 				reasoningEffort: '',
 				webSearch: 'off',
+				webSearchOverride: false,
 				apiStyle: 'openai-chat',
 				webSearchSupported: false,
 			},
@@ -143,6 +145,62 @@ describe('chat model route sync', () => {
 		expect(capturedOptions.map((model) => model.id)).toEqual(['chat-profile']);
 		expect(state.modelIds).toEqual(['']);
 		expect(state.modelNames).toEqual(['']);
+	});
+
+	it('uses provider web-search defaults and preserves inherited environment fallback', () => {
+		let capturedOptions: ChatModelOption[] = [];
+		const { sync, state } = createSync((models) => (capturedOptions = models));
+
+		sync.applyDefaultModelFromSettings(
+			settingsFor({
+				primary: 'chat-profile',
+				providers: [
+					{ name: 'cloud', api_style: 'openai-responses', default_web_search: 'required' },
+					{ name: 'other', api_style: 'openai-responses' },
+				],
+				models: [
+					{
+						id: 'chat-profile',
+						provider_name: 'cloud',
+						model: 'gpt-5',
+						capabilities: ['chat'],
+					},
+					{
+						id: 'inherits-env',
+						provider_name: 'other',
+						model: 'gpt-5',
+						capabilities: ['chat'],
+					},
+				],
+			}),
+		);
+
+		expect(state.webSearch).toEqual(['always']);
+		expect(capturedOptions).toEqual([
+			{
+				id: 'chat-profile',
+				name: 'chat-profile',
+				providerName: 'cloud',
+				model: 'gpt-5',
+				reasoningEffort: '',
+				webSearch: 'always',
+				webSearchOverride: false,
+				apiStyle: 'openai-responses',
+				webSearchSupported: true,
+			},
+			{
+				id: 'inherits-env',
+				name: 'inherits-env',
+				providerName: 'other',
+				model: 'gpt-5',
+				reasoningEffort: '',
+				webSearch: 'inherit',
+				webSearchOverride: false,
+				apiStyle: 'openai-responses',
+				webSearchSupported: true,
+			},
+		]);
+		expect(setWebSearch).not.toHaveBeenCalled();
 	});
 
 	it('clears a stale web-search mode on an unsupported selected profile', () => {

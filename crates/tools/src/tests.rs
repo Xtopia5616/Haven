@@ -1164,7 +1164,7 @@ async fn test_execute_tool_circuit_breaker_opens() {
 }
 
 #[tokio::test]
-async fn execute_tool_retries_transient_failure_by_default() {
+async fn execute_tool_retries_transient_failure_within_shared_limit() {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     struct FlakyTool {
@@ -1196,7 +1196,8 @@ async fn execute_tool_retries_transient_failure_by_default() {
             _: Value,
             _: tokio_util::sync::CancellationToken,
         ) -> anyhow::Result<ToolResult> {
-            if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            if self.attempts.fetch_add(1, Ordering::SeqCst) < haven_common::config::MAX_TOOL_RETRIES
+            {
                 anyhow::bail!("service unavailable")
             }
             Ok(ToolResult::ok(json!({"recovered": true})))
@@ -1208,7 +1209,7 @@ async fn execute_tool_retries_transient_failure_by_default() {
     mgr.set_tool_settings(HashMap::from([(
         "flaky".into(),
         ToolConfig {
-            max_retries: Some(1),
+            max_retries: Some(haven_common::config::MAX_TOOL_RETRIES),
             retry_backoff_secs: Some(0),
             ..Default::default()
         },
@@ -1227,7 +1228,7 @@ async fn execute_tool_retries_transient_failure_by_default() {
         .await
         .unwrap();
     assert!(result.success);
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(attempts.load(Ordering::SeqCst), 11);
 }
 
 #[tokio::test]

@@ -81,10 +81,28 @@ pub trait McpToolCaller: Send + Sync {
 /// every cloud provider must be named in `llm.providers`.
 fn resolve_stt_config(cfg: &SttConfig, providers: &[ProviderConfig]) -> Result<ResolvedSttConfig> {
     let name = cfg.provider_name.trim();
-    if name.is_empty() || name.eq_ignore_ascii_case("none") || name == "llm" || name == "mcp" {
+    if name.is_empty() {
+        anyhow::bail!("STT provider name must not be empty");
+    }
+    if name.eq_ignore_ascii_case("none")
+        || name.eq_ignore_ascii_case("llm")
+        || name.eq_ignore_ascii_case("mcp")
+    {
+        let mode = if name.eq_ignore_ascii_case("none") {
+            "none"
+        } else if name.eq_ignore_ascii_case("llm") {
+            "llm"
+        } else {
+            "mcp"
+        };
         return Ok(ResolvedSttConfig {
-            provider: name.to_string(),
-            mcp_server: cfg.mcp_server.clone(),
+            provider: mode.to_string(),
+            mcp_server: cfg
+                .mcp_server
+                .as_deref()
+                .map(str::trim)
+                .filter(|server| !server.is_empty())
+                .map(str::to_string),
             api_key: String::new(),
             model: cfg.model.clone(),
             base_url: String::new(),

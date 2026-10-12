@@ -4,6 +4,9 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::{OperationIdempotency, Tool, ToolConcurrency, ToolResult};
+use haven_common::config::{
+    MAX_SEARCH_PATTERN_CHARS, MAX_SEARCH_RESULT_BYTES, MAX_SEARCH_ROOT_UTF16_UNITS,
+};
 
 use super::super::canonical_entity_id_schema;
 use super::{
@@ -213,11 +216,11 @@ impl Tool for FilesTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "search" },
-                        "root": { "type": "string", "minLength": 1, "description": "Directory or file path to search under" },
-                        "pattern": { "type": "string", "minLength": 1, "description": "Filename glob in filename mode; regular expression in content mode" },
+                        "root": { "type": "string", "minLength": 1, "maxLength": MAX_SEARCH_ROOT_UTF16_UNITS, "description": "Directory or file path to search under" },
+                        "pattern": { "type": "string", "minLength": 1, "maxLength": MAX_SEARCH_PATTERN_CHARS, "description": "Filename glob in filename mode; regular expression in content mode" },
                         "mode": { "type": "string", "enum": ["filename", "content"], "default": "filename", "description": "filename matches names (default); content searches file text and returns matching line snippets" },
                         "max_depth": { "type": "integer", "minimum": 0, "description": "Maximum directory depth; 0 means unlimited" },
-                        "max_results": { "type": "integer", "minimum": 1, "maximum": self.search.max_results_cap, "description": format!("Maximum results, capped at {}", self.search.max_results_cap) },
+                        "max_results": { "type": "integer", "minimum": 1, "maximum": self.search.max_results_cap, "default": 50.min(self.search.max_results_cap), "description": format!("Maximum results, capped at {} and at a {} MiB serialized result budget", self.search.max_results_cap, MAX_SEARCH_RESULT_BYTES / (1024 * 1024)) },
                         "ignore_hidden": { "type": "boolean", "description": "Skip hidden files and directories" },
                         "max_file_size": { "type": "integer", "minimum": 0, "description": "Content-mode file size limit in bytes; 0 means unlimited" },
                         "start_line": { "type": "integer", "minimum": 1, "description": "Content-mode first line" },

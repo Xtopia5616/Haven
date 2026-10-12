@@ -7,6 +7,7 @@
 //! owned by `haven_common::media`.
 
 use async_trait::async_trait;
+use haven_common::config::{MAX_FILE_OPERATION_BYTES, MAX_FILE_SUMMARY_TIMEOUT_SECS};
 use haven_common::media::MediaRepresentationKind;
 use haven_common::types::RiskLevel;
 use haven_llm::LlmRouter;
@@ -228,6 +229,7 @@ impl MediaTool {
         timeout_secs: u64,
         max_output_chars: usize,
     ) -> Self {
+        let timeout_secs = timeout_secs.clamp(1, MAX_FILE_SUMMARY_TIMEOUT_SECS);
         let has_router = router.is_some();
         Self {
             transcriber: Arc::new(media_content::MediaTranscriber::new(
@@ -249,7 +251,7 @@ impl MediaTool {
             ocr_min_confidence: 0.0,
             stt_timeout_secs: timeout_secs.max(1),
             managed_assets,
-            max_bytes,
+            max_bytes: max_bytes.min(MAX_FILE_OPERATION_BYTES),
             timeout_secs,
             max_output_chars: max_output_chars.max(1),
         }

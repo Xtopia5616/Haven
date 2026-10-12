@@ -38,8 +38,8 @@ use futures_util::future::join_all;
 #[cfg(any(test, feature = "test-support"))]
 use haven_common::config::{Capability, RoutedModel};
 use haven_common::config::{
-    MAX_LLM_CONCURRENT_REQUESTS, MIN_LLM_CONCURRENT_REQUESTS, RequestKind, RouterConfig,
-    compute_cost_usd,
+    MAX_CONTEXT_WINDOW_TOKENS, MAX_LLM_CONCURRENT_REQUESTS, MIN_CONTEXT_WINDOW_TOKENS,
+    MIN_LLM_CONCURRENT_REQUESTS, RequestKind, RouterConfig, compute_cost_usd,
 };
 use haven_common::config::{ModelEndpoint, is_known_api_style, is_stt_only_style};
 use haven_common::media::CapabilityProfile;
@@ -239,16 +239,12 @@ impl LlmRouter {
         mut config: RouterConfig,
         default_context_window: u32,
     ) -> Self {
+        let fallback = Self::normalize_context_windows(&mut config, default_context_window);
         // The response token floor can raise `max_tokens` above the model's
         // context window. Clamp each endpoint to its resolved context window
         // before adapter construction so the requested output budget cannot
         // exceed that window; small configured floors are applied so long
         // outputs are not truncated mid-stream.
-        let fallback = if default_context_window > 0 {
-            default_context_window
-        } else {
-            crate::registry::FALLBACK_CONTEXT_WINDOW
-        };
         ModelDirectory::clamp_max_tokens_to_context_windows(&mut config, fallback);
         let model_directory = ModelDirectory::from_config(&config);
         let request_limit = Self::request_limit(&config);
@@ -272,6 +268,27 @@ impl LlmRouter {
             semaphores,
             rate_limited,
         }
+    }
+
+    /// Keep direct RouterConfig construction inside the same bounds as the
+    /// persisted Settings contract. A zero endpoint window means unknown and
+    /// therefore uses the router fallback; positive out-of-range values are
+    /// clamped before adapter construction and output-budget calculation.
+    fn normalize_context_windows(config: &mut RouterConfig, default_context_window: u32) -> u32 {
+        let fallback = if default_context_window == 0 {
+            crate::registry::FALLBACK_CONTEXT_WINDOW
+        } else {
+            default_context_window
+        }
+        .clamp(MIN_CONTEXT_WINDOW_TOKENS, MAX_CONTEXT_WINDOW_TOKENS);
+        for model in &mut config.models {
+            if model.endpoint.context_window == Some(0) {
+                model.endpoint.context_window = None;
+            } else if let Some(window) = &mut model.endpoint.context_window {
+                *window = (*window).clamp(MIN_CONTEXT_WINDOW_TOKENS, MAX_CONTEXT_WINDOW_TOKENS);
+            }
+        }
+        fallback
     }
 
     /// Config-driven per-model request limit. Clamp at the typed boundary as
@@ -3984,6 +4001,45 @@ mod tests {
             1,
             "an over-window request still receives a valid positive provider cap"
         );
+    }
+
+    #[tokio::test]
+    async fn router_context_windows_are_normalized_to_common_bounds() {
+        let cases = [
+            (Some(0), 4_096, 4_096),
+            (
+                Some(MIN_CONTEXT_WINDOW_TOKENS - 1),
+                4_096,
+                MIN_CONTEXT_WINDOW_TOKENS,
+            ),
+            (
+                Some(MAX_CONTEXT_WINDOW_TOKENS + 1),
+                4_096,
+                MAX_CONTEXT_WINDOW_TOKENS,
+            ),
+            (None, u32::MAX, MAX_CONTEXT_WINDOW_TOKENS),
+        ];
+
+        for (model_window, fallback_window, expected) in cases {
+            let mut config = LlmRouter::injected_client_test_config();
+            let endpoint = &mut config
+                .model_config_mut("default_model")
+                .expect("default test model")
+                .endpoint;
+            endpoint.api_key = "sk-test".into();
+            endpoint.context_window = model_window;
+            endpoint.max_tokens = u32::MAX;
+
+            let router = LlmRouter::with_default_context_window(config, fallback_window);
+            assert_eq!(
+                router.context_window_for_request(RequestKind::Chat).await,
+                expected
+            );
+            let config = router.config.read().await;
+            let endpoint = &config.model_config("default_model").unwrap().endpoint;
+            assert!(endpoint.max_tokens <= expected);
+            assert_ne!(endpoint.context_window, Some(0));
+        }
     }
 
     #[tokio::test]

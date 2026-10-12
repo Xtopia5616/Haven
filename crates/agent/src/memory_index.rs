@@ -8,20 +8,16 @@
 
 use std::sync::Arc;
 
+use haven_common::config::{MAX_EMBEDDING_CHUNK_SIZE, MIN_EMBEDDING_CHUNK_SIZE};
 use haven_llm::EmbeddingRequest;
 use haven_llm::LlmRouter;
 use haven_memory::{MemoryEmbeddingStore, MemoryEmbeddingVector, MemoryRecallStore};
 use haven_memory::{MemoryHit, MemoryQuery};
 use tokio::sync::Mutex;
 
-/// Maximum inputs accepted by one embedding request, regardless of the
-/// configured batch size. The provider contract is intentionally enforced at
-/// this boundary so callers cannot accidentally create an unbounded request.
-const MAX_EMBEDDING_BATCH_SIZE: usize = 10;
-
 /// Clamp a configured embedding batch to the provider-safe range.
 pub(crate) fn embedding_batch_size(configured_size: usize) -> usize {
-    configured_size.clamp(1, MAX_EMBEDDING_BATCH_SIZE)
+    configured_size.clamp(MIN_EMBEDDING_CHUNK_SIZE, MAX_EMBEDDING_CHUNK_SIZE)
 }
 
 #[derive(Debug, Clone)]
@@ -375,7 +371,7 @@ mod tests {
     fn embedding_batch_size_is_provider_bounded() {
         assert_eq!(embedding_batch_size(0), 1);
         assert_eq!(embedding_batch_size(4), 4);
-        assert_eq!(embedding_batch_size(64), MAX_EMBEDDING_BATCH_SIZE);
+        assert_eq!(embedding_batch_size(64), MAX_EMBEDDING_CHUNK_SIZE);
     }
 
     #[tokio::test]

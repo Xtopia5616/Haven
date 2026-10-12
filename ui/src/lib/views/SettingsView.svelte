@@ -418,7 +418,7 @@
 		model: Pick<ModelDraft, 'model' | 'reasoning_effort' | 'web_search'>,
 		field: 'model' | 'reasoning_effort' | 'web_search',
 	) {
-		if (field === 'web_search') return model.web_search || 'off';
+		if (field === 'web_search') return model.web_search ?? null;
 		return model[field] || '';
 	}
 	function copyRuntimeModelField(
@@ -1428,7 +1428,12 @@
 							{/if}
 							{#if visitedSettingsTabs.includes('limits')}
 								<div hidden={settingsTab !== 'limits'}>
-									<SettingsLimits {contextLimits} />
+									<SettingsLimits
+										{contextLimits}
+										modelContextWindows={llmConfig.models.map(
+											(model) => model.context_window,
+										)}
+									/>
 								</div>
 							{/if}
 						</div>

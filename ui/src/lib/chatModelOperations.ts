@@ -14,6 +14,8 @@ export interface ChatModelOption {
 	model: string;
 	reasoningEffort: string;
 	webSearch: string;
+	/** True when `webSearch` came from this model's explicit override. */
+	webSearchOverride?: boolean;
 	apiStyle: string;
 	webSearchSupported: boolean;
 }
@@ -69,10 +71,10 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 				let normalizedWebSearch: WebSearchModeInput | null = null;
 				if (!model.webSearchSupported && webSearch !== 'off') {
 					webSearch = 'off';
-					normalizedWebSearch = 'off';
+					if (model.webSearchOverride !== false) normalizedWebSearch = 'off';
 				} else if (model.apiStyle === 'gemini' && webSearch === 'always') {
 					webSearch = 'auto';
-					normalizedWebSearch = 'auto';
+					if (model.webSearchOverride !== false) normalizedWebSearch = 'auto';
 				}
 				dependencies.setCurrentModelId(model.id);
 				dependencies.setCurrentModelName(model.name);

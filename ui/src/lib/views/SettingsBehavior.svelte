@@ -160,8 +160,8 @@
 			<MaterialNumberField
 				id="session-history-retention"
 				value={session.history_retention_days}
-				min={0}
-				max={365}
+				min={RESOURCE_LIMIT_BOUNDS.historyRetentionDays.min}
+				max={RESOURCE_LIMIT_BOUNDS.historyRetentionDays.max}
 				onChange={withNumberValue((value) => (session.history_retention_days = value))}
 			/>
 		</SettingsField>

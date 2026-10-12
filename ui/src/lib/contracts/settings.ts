@@ -76,7 +76,6 @@ const NUMERIC_FIELDS = new Set([
 	'cost_per_1k_cache_write_tokens',
 	'cost_per_1k_input_tokens',
 	'cost_per_1k_output_tokens',
-	'cpu_time_secs',
 	'default_context_window',
 	'default_max_tokens',
 	'default_temperature',
@@ -108,7 +107,6 @@ const NUMERIC_FIELDS = new Set([
 	'max_concurrent_requests',
 	'max_duration_secs',
 	'max_known_facts',
-	'max_memory_mb',
 	'max_observation_chars',
 	'max_output_chars',
 	'max_output_lines',
@@ -166,7 +164,6 @@ const NUMERIC_FIELDS = new Set([
 ]);
 
 const NULLABLE_NUMERIC_FIELDS = new Set([
-	'cpu_time_secs',
 	'context_window',
 	'cost_per_1k_cache_read_tokens',
 	'cost_per_1k_cache_write_tokens',
@@ -176,15 +173,12 @@ const NULLABLE_NUMERIC_FIELDS = new Set([
 	'default_temperature',
 	'default_timeout_secs',
 	'default_timeout_streaming_secs',
-	'max_memory_mb',
 	'max_steps_per_session',
 	'max_tokens',
 	'max_output_chars',
 	'max_retries',
 	'retry_backoff_secs',
 ]);
-
-const MAX_INPUT_RING_BUFFER_SECS = 120;
 
 /** Keep these ranges aligned with the Rust Settings/config contract. */
 export const MEDIA_TIMEOUT_BOUNDS = {
@@ -206,6 +200,12 @@ export const AUDIO_CAPTURE_BOUNDS = {
 	silenceTimeoutMs: { min: 500, max: 10_000 },
 } as const;
 
+/** Keep aligned with Common context-window config validation and model controls. */
+export const CONTEXT_WINDOW_BOUNDS = {
+	minTokens: 1_000,
+	maxTokens: 2_000_000,
+} as const;
+
 /** Keep aligned with the Common concurrency contract and Settings controls. */
 export const CONCURRENCY_BOUNDS = {
 	sessions: { min: 1, max: 10 },
@@ -216,10 +216,46 @@ export const CONCURRENCY_BOUNDS = {
 /** Keep aligned with Common config validation and resource-limit controls. */
 export const RESOURCE_LIMIT_BOUNDS = {
 	promptHistory: { min: 0, max: 500 },
+	historyRetentionDays: { min: 0, max: 365 },
+	contextTextChars: { min: 0, max: 100_000 },
+	notificationSummaryChars: { min: 0, max: 4_096 },
+	sanitizeFieldChars: { min: 1, max: 256 },
 	fileListEntries: { min: 0, max: 10_000 },
+	fileLineBytes: { min: 1, max: 128_000 },
+	fileByteReadBytes: { min: 1, max: 64 * 1024 * 1024 },
+	maxKnownFacts: { min: 0, max: 64 },
+	inputRingBufferSecs: { min: 0, max: 120 },
+	fileOperationBytes: { min: 0, max: 64 * 1024 * 1024 },
+	fileWriteBytes: { min: 1, max: 64 * 1024 * 1024 },
+	fileSummaryInputChars: { min: 0, max: 256_000 },
+	fileSummaryTimeoutSecs: { min: 1, max: 600 },
+	searchSnippetChars: { min: 0, max: 4_096 },
+	searchFileSizeBytes: { min: 0, max: 1024 * 1024 * 1024 },
 	mcpSseBufferBytes: { min: 0, max: 4 * 1024 * 1024 },
+	mcpBinaryBytes: { min: 0, max: 4 * 1024 * 1024 },
 	skillMarkdownBytes: { min: 0, max: 1024 * 1024 },
+	selfToolInstructionsBytes: { min: 0, max: 512 * 1024 },
+	selfToolScriptBytes: { min: 0, max: 1024 * 1024 },
 	networkBodyBytes: { min: 0, max: 16 * 1024 * 1024 },
+	networkRetries: { min: 0, max: 10 },
+	networkBackoffSecs: { min: 0, max: 60 },
+	searchResults: { min: 1, max: 1_000 },
+	searchWindowBytes: { min: 0, max: 16 * 1024 * 1024 },
+	embeddingChunk: { min: 1, max: 10 },
+	toolsPerRequest: { min: 1, max: 350 },
+	clipboardEntries: { min: 0, max: 100 },
+	clipboardEntryChars: { min: 0, max: 100_000 },
+	pendingScheduledRuns: { min: 0, max: 10_000 },
+	scheduledHorizonSecs: { min: 0, max: 10 * 365 * 24 * 60 * 60 },
+	eventChunkBatchBytes: { min: 0, max: 256 * 1024 },
+	mcpHealthIntervalSecs: { min: 1, max: 3_600 },
+	mcpReconnectDelayMs: { min: 1, max: 600_000 },
+	mcpReconnectRetries: { min: 0, max: 100 },
+	skillExecTimeoutSecs: { min: 1, max: 3_600 },
+	skillExecOutputLines: { min: 0, max: 50_000 },
+	toolTimeoutSecs: { min: 1, max: 3_600 },
+	toolRetries: { min: 0, max: 10 },
+	toolRetryBackoffSecs: { min: 0, max: 60 },
 } as const;
 
 export type SessionPermissionGrant = GeneratedSessionPermissionGrant;
@@ -293,7 +329,11 @@ function findInvalidSettingsNumber(
 		}
 		if (field !== undefined && U32_FIELDS.has(field)) return isU32(value) ? null : path;
 		if (!isSafeUnsignedInteger(value)) return path;
-		if (field === 'input_ring_buffer_secs' && value > MAX_INPUT_RING_BUFFER_SECS) return path;
+		if (
+			field === 'input_ring_buffer_secs' &&
+			(value < RESOURCE_LIMIT_BOUNDS.inputRingBufferSecs.min ||
+				value > RESOURCE_LIMIT_BOUNDS.inputRingBufferSecs.max)
+		) return path;
 		return null;
 	}
 	if (Array.isArray(value)) {
@@ -323,27 +363,44 @@ function isNullableNumericField(field: string, path: string): boolean {
 function findInvalidMcpInterval(value: unknown): string | null {
 	if (!isRecord(value) || !isRecord(value.mcp_discovery)) return null;
 	const mcp = value.mcp_discovery;
+	const health = mcp.health_interval_secs;
 	if (
-		mcp.health_interval_secs !== undefined &&
-		(!isSafeUnsignedInteger(mcp.health_interval_secs) || mcp.health_interval_secs === 0)
+		health !== undefined &&
+		(!isSafeUnsignedInteger(health) ||
+			health < RESOURCE_LIMIT_BOUNDS.mcpHealthIntervalSecs.min ||
+			health > RESOURCE_LIMIT_BOUNDS.mcpHealthIntervalSecs.max)
 	) {
 		return 'settings.mcp_discovery.health_interval_secs';
 	}
+	const retries = mcp.reconnect_max_retries;
 	if (
-		mcp.reconnect_initial_ms !== undefined &&
-		(!isSafeUnsignedInteger(mcp.reconnect_initial_ms) || mcp.reconnect_initial_ms === 0)
+		retries !== undefined &&
+		(!isSafeUnsignedInteger(retries) ||
+			retries > RESOURCE_LIMIT_BOUNDS.mcpReconnectRetries.max)
+	) {
+		return 'settings.mcp_discovery.reconnect_max_retries';
+	}
+	const initial = mcp.reconnect_initial_ms;
+	if (
+		initial !== undefined &&
+		(!isSafeUnsignedInteger(initial) ||
+			initial < RESOURCE_LIMIT_BOUNDS.mcpReconnectDelayMs.min ||
+			initial > RESOURCE_LIMIT_BOUNDS.mcpReconnectDelayMs.max)
 	) {
 		return 'settings.mcp_discovery.reconnect_initial_ms';
 	}
+	const max = mcp.reconnect_max_ms;
 	if (
-		mcp.reconnect_max_ms !== undefined &&
-		(!isSafeUnsignedInteger(mcp.reconnect_max_ms) || mcp.reconnect_max_ms === 0)
+		max !== undefined &&
+		(!isSafeUnsignedInteger(max) ||
+			max < RESOURCE_LIMIT_BOUNDS.mcpReconnectDelayMs.min ||
+			max > RESOURCE_LIMIT_BOUNDS.mcpReconnectDelayMs.max)
 	) {
 		return 'settings.mcp_discovery.reconnect_max_ms';
 	}
-	return isSafeUnsignedInteger(mcp.reconnect_initial_ms) &&
-		isSafeUnsignedInteger(mcp.reconnect_max_ms) &&
-		mcp.reconnect_max_ms < mcp.reconnect_initial_ms
+	return isSafeUnsignedInteger(initial) &&
+		isSafeUnsignedInteger(max) &&
+		max < initial
 		? 'settings.mcp_discovery.reconnect_max_ms'
 		: null;
 }
@@ -446,6 +503,16 @@ function findInvalidConcurrency(value: unknown): string | null {
 
 function findInvalidResourceLimits(value: unknown): string | null {
 	if (!isRecord(value)) return null;
+	if (isRecord(value.session) && value.session.history_retention_days !== undefined) {
+		const days = value.session.history_retention_days;
+		if (
+			!isSafeUnsignedInteger(days) ||
+			days < RESOURCE_LIMIT_BOUNDS.historyRetentionDays.min ||
+			days > RESOURCE_LIMIT_BOUNDS.historyRetentionDays.max
+		) {
+			return 'settings.session.history_retention_days';
+		}
+	}
 	if (isRecord(value.session) && value.session.prompt_history_limit !== undefined) {
 		const history = value.session.prompt_history_limit;
 		if (
@@ -456,19 +523,227 @@ function findInvalidResourceLimits(value: unknown): string | null {
 			return 'settings.session.prompt_history_limit';
 		}
 	}
-	if (!isRecord(value.context_limits)) return null;
-	for (const [field, bounds] of [
-		['file_max_list_entries', RESOURCE_LIMIT_BOUNDS.fileListEntries],
-		['mcp_max_sse_buffer_bytes', RESOURCE_LIMIT_BOUNDS.mcpSseBufferBytes],
-		['skills_max_md_bytes', RESOURCE_LIMIT_BOUNDS.skillMarkdownBytes],
-		['network_max_body_bytes', RESOURCE_LIMIT_BOUNDS.networkBodyBytes],
-	] as const) {
-		const limit = value.context_limits[field];
+	if (isRecord(value.context_limits)) {
+		for (const [field, bounds] of [
+			['max_observation_chars', RESOURCE_LIMIT_BOUNDS.contextTextChars],
+			['max_known_facts', RESOURCE_LIMIT_BOUNDS.maxKnownFacts],
+			['max_transcript_chars', RESOURCE_LIMIT_BOUNDS.contextTextChars],
+			['tool_run_result_context_chars', RESOURCE_LIMIT_BOUNDS.contextTextChars],
+			['notification_summary_chars', RESOURCE_LIMIT_BOUNDS.notificationSummaryChars],
+			['sanitize_field_max_chars', RESOURCE_LIMIT_BOUNDS.sanitizeFieldChars],
+			['file_max_full_file_bytes', RESOURCE_LIMIT_BOUNDS.fileOperationBytes],
+			['file_write_max_bytes', RESOURCE_LIMIT_BOUNDS.fileWriteBytes],
+			['file_vision_max_bytes', RESOURCE_LIMIT_BOUNDS.fileOperationBytes],
+			['file_summary_input_chars', RESOURCE_LIMIT_BOUNDS.fileSummaryInputChars],
+			['file_summary_timeout_secs', RESOURCE_LIMIT_BOUNDS.fileSummaryTimeoutSecs],
+			['file_max_list_entries', RESOURCE_LIMIT_BOUNDS.fileListEntries],
+			['file_line_max_bytes', RESOURCE_LIMIT_BOUNDS.fileLineBytes],
+			['file_byte_read_max_bytes', RESOURCE_LIMIT_BOUNDS.fileByteReadBytes],
+			['search_snippet_chars', RESOURCE_LIMIT_BOUNDS.searchSnippetChars],
+			['search_max_file_size_bytes', RESOURCE_LIMIT_BOUNDS.searchFileSizeBytes],
+			['mcp_max_binary_base64_bytes', RESOURCE_LIMIT_BOUNDS.mcpBinaryBytes],
+			['mcp_max_sse_buffer_bytes', RESOURCE_LIMIT_BOUNDS.mcpSseBufferBytes],
+			['skills_max_md_bytes', RESOURCE_LIMIT_BOUNDS.skillMarkdownBytes],
+			['self_tool_max_instructions_bytes', RESOURCE_LIMIT_BOUNDS.selfToolInstructionsBytes],
+			['self_tool_max_script_bytes', RESOURCE_LIMIT_BOUNDS.selfToolScriptBytes],
+			['network_max_body_bytes', RESOURCE_LIMIT_BOUNDS.networkBodyBytes],
+			['network_max_retries', RESOURCE_LIMIT_BOUNDS.networkRetries],
+			['network_backoff_base_secs', RESOURCE_LIMIT_BOUNDS.networkBackoffSecs],
+			['search_max_results', RESOURCE_LIMIT_BOUNDS.searchResults],
+			['search_window_bytes', RESOURCE_LIMIT_BOUNDS.searchWindowBytes],
+			['embedding_chunk_size', RESOURCE_LIMIT_BOUNDS.embeddingChunk],
+			['max_tools_per_request', RESOURCE_LIMIT_BOUNDS.toolsPerRequest],
+			['clipboard_history_entries', RESOURCE_LIMIT_BOUNDS.clipboardEntries],
+			['clipboard_history_max_entries', RESOURCE_LIMIT_BOUNDS.clipboardEntries],
+			['clipboard_entry_max_chars', RESOURCE_LIMIT_BOUNDS.clipboardEntryChars],
+			['max_pending_scheduled_tool_runs', RESOURCE_LIMIT_BOUNDS.pendingScheduledRuns],
+			['scheduled_tool_runs_due_horizon_secs', RESOURCE_LIMIT_BOUNDS.scheduledHorizonSecs],
+			['event_chunk_batch_max_bytes', RESOURCE_LIMIT_BOUNDS.eventChunkBatchBytes],
+		] as const) {
+			const limit = value.context_limits[field];
+			if (
+				limit !== undefined &&
+				(!isSafeUnsignedInteger(limit) || limit < bounds.min || limit > bounds.max)
+			) {
+				return `settings.context_limits.${field}`;
+			}
+		}
+	}
+	if (isRecord(value.skills_exec)) {
+		for (const [field, bounds] of [
+			['timeout_secs', RESOURCE_LIMIT_BOUNDS.skillExecTimeoutSecs],
+			['max_output_lines', RESOURCE_LIMIT_BOUNDS.skillExecOutputLines],
+		] as const) {
+			const limit = value.skills_exec[field];
+			if (
+				limit !== undefined &&
+				(!isSafeUnsignedInteger(limit) || limit < bounds.min || limit > bounds.max)
+			) {
+				return `settings.skills_exec.${field}`;
+			}
+		}
+	}
+	if (isRecord(value.tool_settings)) {
+		for (const [name, tool] of Object.entries(value.tool_settings)) {
+			if (!isRecord(tool)) continue;
+			for (const [field, bounds] of [
+				['timeout_secs', RESOURCE_LIMIT_BOUNDS.toolTimeoutSecs],
+				['max_retries', RESOURCE_LIMIT_BOUNDS.toolRetries],
+				['retry_backoff_secs', RESOURCE_LIMIT_BOUNDS.toolRetryBackoffSecs],
+			] as const) {
+				const limit = tool[field];
+				if (
+					limit !== undefined &&
+					(!isSafeUnsignedInteger(limit) || limit < bounds.min || limit > bounds.max)
+				) {
+					return `settings.tool_settings.${name}.${field}`;
+				}
+			}
+			const outputLimit = tool.max_output_chars;
+			const observationLimit = isRecord(value.context_limits)
+				? value.context_limits.max_observation_chars
+				: undefined;
+			if (
+				outputLimit !== undefined &&
+				isSafeUnsignedInteger(outputLimit) &&
+				isSafeUnsignedInteger(observationLimit) &&
+				outputLimit > observationLimit
+			) {
+				return `settings.tool_settings.${name}.max_output_chars`;
+			}
+		}
+	}
+	return null;
+}
+
+function findInvalidContextWindows(value: unknown): string | null {
+	if (!isRecord(value)) return null;
+	const limits = isRecord(value.context_limits) ? value.context_limits : null;
+	const defaultWindow = limits?.default_context_window;
+	if (
+		defaultWindow !== undefined &&
+		(!isSafeUnsignedInteger(defaultWindow) ||
+			defaultWindow < CONTEXT_WINDOW_BOUNDS.minTokens ||
+			defaultWindow > CONTEXT_WINDOW_BOUNDS.maxTokens)
+	) {
+		return 'settings.context_limits.default_context_window';
+	}
+	const responseFloor = limits?.response_token_floor;
+	if (
+		responseFloor !== undefined &&
+		(!isSafeUnsignedInteger(responseFloor) || responseFloor > CONTEXT_WINDOW_BOUNDS.maxTokens)
+	) {
+		return 'settings.context_limits.response_token_floor';
+	}
+	const reserve = limits?.compaction_reserve_tokens;
+	if (
+		reserve !== undefined &&
+		defaultWindow !== undefined &&
+		isSafeUnsignedInteger(reserve) &&
+		isSafeUnsignedInteger(defaultWindow) &&
+		reserve >= defaultWindow
+	) {
+		return 'settings.context_limits.compaction_reserve_tokens';
+	}
+
+	const models = isRecord(value.llm) && Array.isArray(value.llm.models) ? value.llm.models : [];
+	for (const [index, model] of models.entries()) {
+		if (!isRecord(model) || model.context_window == null) continue;
+		const window = model.context_window;
 		if (
-			limit !== undefined &&
-			(!isSafeUnsignedInteger(limit) || limit < bounds.min || limit > bounds.max)
+			!isSafeUnsignedInteger(window) ||
+			window < CONTEXT_WINDOW_BOUNDS.minTokens ||
+			window > CONTEXT_WINDOW_BOUNDS.maxTokens
 		) {
-			return `settings.context_limits.${field}`;
+			return `settings.llm.models[${index}].context_window`;
+		}
+		if (reserve !== undefined && isSafeUnsignedInteger(reserve) && reserve >= window) {
+			return 'settings.context_limits.compaction_reserve_tokens';
+		}
+	}
+	return null;
+}
+
+function isSupportedWebSearchSetting(value: unknown): boolean {
+	if (typeof value !== 'string') return false;
+	const mode = value.trim().toLowerCase();
+	return (
+		mode === '' ||
+		mode === 'off' ||
+		mode === 'auto' ||
+		mode === 'always' ||
+		mode === 'required' ||
+		mode === 'on' ||
+		mode === '1' ||
+		mode === 'true'
+	);
+}
+
+function findInvalidSettingsSemantics(value: unknown): string | null {
+	if (!isRecord(value)) return null;
+	const media = isRecord(value.media) ? value.media : null;
+	const ocr = media && isRecord(media.ocr) ? media.ocr : null;
+	if (
+		ocr &&
+		typeof ocr.provider === 'string' &&
+		!['llm', 'baidu', 'azure', 'tencent', 'none'].includes(ocr.provider)
+	) {
+		return 'settings.media.ocr.provider';
+	}
+
+	const llm = isRecord(value.llm) ? value.llm : null;
+	const providers = llm && Array.isArray(llm.providers) ? llm.providers : [];
+	const models = llm && Array.isArray(llm.models) ? llm.models : [];
+	for (const [index, provider] of providers.entries()) {
+		if (!isRecord(provider)) continue;
+		if (
+			provider.default_web_search !== undefined &&
+			provider.default_web_search !== null &&
+			!isSupportedWebSearchSetting(provider.default_web_search)
+		) {
+			return `settings.llm.providers[${index}].default_web_search`;
+		}
+	}
+	for (const [index, model] of models.entries()) {
+		if (!isRecord(model)) continue;
+		if (
+			model.web_search !== undefined &&
+			model.web_search !== null &&
+			!isSupportedWebSearchSetting(model.web_search)
+		) {
+			return `settings.llm.models[${index}].web_search`;
+		}
+	}
+
+	const stt = media && isRecord(media.stt) ? media.stt : null;
+	if (stt && typeof stt.provider_name === 'string') {
+		const name = stt.provider_name.trim();
+		const mode = name.toLowerCase();
+		if (!name) return 'settings.media.stt.provider_name';
+		if (mode === 'mcp') {
+			const serverName = typeof stt.mcp_server === 'string' ? stt.mcp_server.trim() : '';
+			const servers = Array.isArray(value.mcp_servers) ? value.mcp_servers : [];
+			if (!serverName || !servers.some((server) => isRecord(server) && server.name === serverName)) {
+				return 'settings.media.stt.mcp_server';
+			}
+		} else if (
+			!['llm', 'none'].includes(mode) &&
+			!providers.some((provider) => isRecord(provider) && provider.name === name)
+		) {
+			return 'settings.media.stt.provider_name';
+		}
+	}
+	for (const kind of ['tts', 'image_gen'] as const) {
+		const config = media && isRecord(media[kind]) ? media[kind] : null;
+		if (config && typeof config.provider_name === 'string') {
+			const name = config.provider_name.trim();
+			if (
+				name &&
+				name.toLowerCase() !== 'none' &&
+				!providers.some((provider) => isRecord(provider) && provider.name === name)
+			) {
+				return `settings.media.${kind}.provider_name`;
+			}
 		}
 	}
 	return null;
@@ -483,7 +758,8 @@ export function validateSettingsNumbers(value: unknown): void {
 		findInvalidSessionStepBudget(value) ??
 		findInvalidAudioCapture(value) ??
 		findInvalidConcurrency(value) ??
-		findInvalidResourceLimits(value);
+		findInvalidResourceLimits(value) ??
+		findInvalidContextWindows(value);
 	if (invalidPath) throw new Error(`Invalid Settings numeric value at ${invalidPath}`);
 }
 
@@ -527,6 +803,10 @@ export function parseSettingsPayload(value: unknown): SettingsPayload | null {
 		throw new Error('Invalid Settings credential reference');
 	}
 	validateSettingsNumbers(value);
+	const invalidSemanticPath = findInvalidSettingsSemantics(value);
+	if (invalidSemanticPath) {
+		throw new Error(`Invalid Settings semantic value at ${invalidSemanticPath}`);
+	}
 	const invalidPath = findGeneratedWireShapeMismatch(value, SETTINGS_RESPONSE_SHAPE);
 	if (invalidPath) {
 		throw new Error(`Invalid get_settings response shape at ${invalidPath}`);

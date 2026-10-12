@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	AUDIO_CAPTURE_BOUNDS,
 	CONCURRENCY_BOUNDS,
+	CONTEXT_WINDOW_BOUNDS,
 	MEDIA_TIMEOUT_BOUNDS,
 	RESOURCE_LIMIT_BOUNDS,
 	SESSION_STEP_BUDGET_BOUNDS,
@@ -121,6 +122,61 @@ describe('settings command contracts', () => {
 		}
 	});
 
+	it('validates media provider references and search mode semantics', () => {
+		for (const provider of ['llm', 'baidu', 'azure', 'tencent', 'none']) {
+			const valid = withSetting(['media', 'ocr', 'provider'], provider);
+			expect(parseSettingsPayload(valid)).toBe(valid);
+		}
+		expect(() => parseSettingsPayload(withSetting(['media', 'ocr', 'provider'], 'future'))).toThrow(
+			'settings.media.ocr.provider',
+		);
+
+		const provider = {
+			name: 'cloud',
+			provider: 'openai',
+			api_style: null,
+			base_url: '',
+			auth_header_name: 'Authorization',
+			auth_header_prefix: 'Bearer',
+			proxy_url: null,
+			no_proxy: null,
+		};
+		for (const mode of ['off', 'auto', 'always', 'required', 'on', '1', 'true', ' TRUE ', '  ']) {
+			const valid = createSettingsFixture();
+			valid.llm.providers.push({ ...provider, default_web_search: mode });
+			valid.llm.models.push({
+				id: 'profile',
+				provider_name: 'cloud',
+				model: 'model',
+				capabilities: [],
+				web_search: mode,
+			});
+			expect(parseSettingsPayload(valid)).toBe(valid);
+		}
+		const invalidWebSearch = createSettingsFixture();
+		invalidWebSearch.llm.providers.push({ ...provider, default_web_search: 'alway' });
+		expect(() => parseSettingsPayload(invalidWebSearch)).toThrow(
+			'settings.llm.providers[0].default_web_search',
+		);
+
+		const mcpStt = createSettingsFixture();
+		mcpStt.media.stt.provider_name = 'MCP';
+		expect(() => parseSettingsPayload(mcpStt)).toThrow('settings.media.stt.mcp_server');
+		mcpStt.mcp_servers.push({
+			name: 'transcriber',
+			transport: 'stdio',
+			command: 'server',
+			args: [],
+			cwd: null,
+			url: '',
+			enabled: false,
+		});
+		mcpStt.media.stt.mcp_server = 'transcriber';
+		expect(parseSettingsPayload(mcpStt)).toBe(mcpStt);
+		mcpStt.media.stt.mcp_server = 'missing';
+		expect(() => parseSettingsPayload(mcpStt)).toThrow('settings.media.stt.mcp_server');
+	});
+
 	it('rejects incomplete Settings records and unknown closed-enum values', () => {
 		expect(() => parseSettingsPayload({})).toThrow('Invalid get_settings response shape');
 		expect(() => parseSettingsPayload({ llm: { providers: [] } })).toThrow(
@@ -140,7 +196,7 @@ describe('settings command contracts', () => {
 	it('rejects Settings numbers that cannot be safely roundtripped through JavaScript', () => {
 		const safe = createSettingsFixture();
 		safe.context_limits.max_upload_total_bytes = Number.MAX_SAFE_INTEGER;
-		safe.context_limits.default_context_window = 0xffff_ffff;
+		safe.context_limits.default_context_window = CONTEXT_WINDOW_BOUNDS.maxTokens;
 		safe.context_limits.input_ring_buffer_secs = 120;
 		expect(parseSettingsPayload(safe)).toBe(safe);
 
@@ -158,6 +214,69 @@ describe('settings command contracts', () => {
 				'Invalid Settings numeric value',
 			);
 		}
+	});
+
+	it('enforces context window bounds and compaction reserve relationships', () => {
+		const safe = createSettingsFixture();
+		safe.context_limits.default_context_window = CONTEXT_WINDOW_BOUNDS.maxTokens;
+		safe.context_limits.response_token_floor = CONTEXT_WINDOW_BOUNDS.maxTokens;
+		safe.context_limits.compaction_reserve_tokens = CONTEXT_WINDOW_BOUNDS.maxTokens - 1;
+		safe.llm.models.push({
+			id: 'small',
+			provider_name: 'provider',
+			model: 'small',
+			capabilities: [],
+			context_window: CONTEXT_WINDOW_BOUNDS.maxTokens,
+		});
+		expect(parseSettingsPayload(safe)).toBe(safe);
+
+		const minWindow = withSetting(
+			['context_limits', 'default_context_window'],
+			CONTEXT_WINDOW_BOUNDS.minTokens,
+		);
+		minWindow.context_limits.compaction_reserve_tokens = CONTEXT_WINDOW_BOUNDS.minTokens - 1;
+		expect(parseSettingsPayload(minWindow)).toBe(minWindow);
+		for (const [path, invalid] of [
+			[['context_limits', 'default_context_window'], CONTEXT_WINDOW_BOUNDS.minTokens - 1],
+			[['context_limits', 'default_context_window'], CONTEXT_WINDOW_BOUNDS.maxTokens + 1],
+			[['context_limits', 'response_token_floor'], CONTEXT_WINDOW_BOUNDS.maxTokens + 1],
+		] as const) {
+			expect(() => parseSettingsPayload(withSetting(path, invalid))).toThrow(
+				`settings.${path.join('.')}`,
+			);
+		}
+
+		const invalidModel = createSettingsFixture();
+		invalidModel.llm.models.push({
+			id: 'too-small',
+			provider_name: 'provider',
+			model: 'small',
+			capabilities: [],
+			context_window: CONTEXT_WINDOW_BOUNDS.minTokens - 1,
+		});
+		expect(() => parseSettingsPayload(invalidModel)).toThrow(
+			'settings.llm.models[0].context_window',
+		);
+
+		const reserveAtDefault = createSettingsFixture();
+		reserveAtDefault.context_limits.compaction_reserve_tokens =
+			reserveAtDefault.context_limits.default_context_window;
+		expect(() => parseSettingsPayload(reserveAtDefault)).toThrow(
+			'settings.context_limits.compaction_reserve_tokens',
+		);
+
+		const reserveAtModelWindow = createSettingsFixture();
+		reserveAtModelWindow.context_limits.compaction_reserve_tokens = 4_000;
+		reserveAtModelWindow.llm.models.push({
+			id: 'small',
+			provider_name: 'provider',
+			model: 'small',
+			capabilities: [],
+			context_window: 4_000,
+		});
+		expect(() => parseSettingsPayload(reserveAtModelWindow)).toThrow(
+			'settings.context_limits.compaction_reserve_tokens',
+		);
 	});
 
 	it('enforces media timeout ranges in both Settings response and update contracts', () => {
@@ -242,10 +361,19 @@ describe('settings command contracts', () => {
 	it('enforces shared resource limits for history, buffers, skills, and file listings', () => {
 		const fields = [
 			['session', 'prompt_history_limit', RESOURCE_LIMIT_BOUNDS.promptHistory],
+			['session', 'history_retention_days', RESOURCE_LIMIT_BOUNDS.historyRetentionDays],
 			['context_limits', 'file_max_list_entries', RESOURCE_LIMIT_BOUNDS.fileListEntries],
+			['context_limits', 'file_line_max_bytes', RESOURCE_LIMIT_BOUNDS.fileLineBytes],
+			['context_limits', 'file_byte_read_max_bytes', RESOURCE_LIMIT_BOUNDS.fileByteReadBytes],
+			['context_limits', 'max_known_facts', RESOURCE_LIMIT_BOUNDS.maxKnownFacts],
+			['context_limits', 'input_ring_buffer_secs', RESOURCE_LIMIT_BOUNDS.inputRingBufferSecs],
 			['context_limits', 'mcp_max_sse_buffer_bytes', RESOURCE_LIMIT_BOUNDS.mcpSseBufferBytes],
 			['context_limits', 'skills_max_md_bytes', RESOURCE_LIMIT_BOUNDS.skillMarkdownBytes],
 			['context_limits', 'network_max_body_bytes', RESOURCE_LIMIT_BOUNDS.networkBodyBytes],
+			['context_limits', 'search_max_results', RESOURCE_LIMIT_BOUNDS.searchResults],
+			['context_limits', 'search_window_bytes', RESOURCE_LIMIT_BOUNDS.searchWindowBytes],
+			['context_limits', 'embedding_chunk_size', RESOURCE_LIMIT_BOUNDS.embeddingChunk],
+			['context_limits', 'max_tools_per_request', RESOURCE_LIMIT_BOUNDS.toolsPerRequest],
 		] as const;
 
 		for (const [owner, field, bounds] of fields) {
@@ -299,10 +427,16 @@ describe('settings command contracts', () => {
 			);
 		}
 
-		const nullable = createSettingsFixture();
-		nullable.skills_exec.cpu_time_secs = null;
-		nullable.skills_exec.max_memory_mb = null;
-		expect(parseSettingsPayload(nullable)).toBe(nullable);
+		expect(parseSettingsPayload(createSettingsFixture())).not.toBeNull();
+	});
+
+	it('omits ineffective skill resource limits from the generated Settings contract', () => {
+		const skillsExec = createSettingsFixture().skills_exec as unknown as Record<
+			string,
+			unknown
+		>;
+		expect(skillsExec).not.toHaveProperty('cpu_time_secs');
+		expect(skillsExec).not.toHaveProperty('max_memory_mb');
 	});
 
 	it('rejects MCP intervals that can spin or exceed the reconnect cap', () => {

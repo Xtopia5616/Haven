@@ -5,7 +5,11 @@
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialNumberFieldWithUnit from '$lib/MaterialNumberFieldWithUnit.svelte';
 	import { withNumberValue } from '$lib/typedCallbacks.ts';
-	import { CONCURRENCY_BOUNDS, RESOURCE_LIMIT_BOUNDS } from '$lib/contracts/settings.ts';
+	import {
+		CONCURRENCY_BOUNDS,
+		CONTEXT_WINDOW_BOUNDS,
+		RESOURCE_LIMIT_BOUNDS,
+	} from '$lib/contracts/settings.ts';
 	import {
 		MAX_FACTS_IN_EXTRACTION_PROMPT,
 		type ContextLimitsConfigInput,
@@ -35,10 +39,11 @@
 	}
 	interface Props {
 		contextLimits: Partial<ContextLimitsConfigInput>;
+		modelContextWindows?: Array<number | null | undefined>;
 	}
 
-	let { contextLimits }: Props = $props();
-	const MAX_CONTEXT_WINDOW_K_TOKENS = Math.floor(0xffff_ffff / 1000);
+	let { contextLimits, modelContextWindows = [] }: Props = $props();
+	const MAX_CONTEXT_WINDOW_K_TOKENS = CONTEXT_WINDOW_BOUNDS.maxTokens / 1000;
 
 	const LIMIT_GROUPS: LimitGroup[] = [
 		{
@@ -52,16 +57,18 @@
 					unit: 'K',
 					kTokens: true,
 					step: 1,
+					min: CONTEXT_WINDOW_BOUNDS.minTokens / 1000,
 					max: MAX_CONTEXT_WINDOW_K_TOKENS,
 					danger: true,
-					hint: '角色未填写 Context 且 Provider /models 未返回上下文长度时的回退窗口（单位 K = 1000 tokens，如 64 = 64K）。调高会增大每次请求的成本与溢出风险。',
+					hint: '角色未填写 Context 且 Provider /models 未返回上下文长度时的回退窗口（单位 K = 1000 tokens，如 64 = 64K）。范围 1K–2,000K；调高会增大请求成本与溢出风险。',
 				},
 				{
 					key: 'response_token_floor',
 					label: '回复输出 token 下限',
 					unit: 'tokens',
+					max: CONTEXT_WINDOW_BOUNDS.maxTokens,
 					danger: false,
-					hint: '每个模型端点的 max_tokens 会被抬到不低于此值（取两者较大）。默认 32000，兼顾长回复与 reasoning 成本；需要更长回复时再调高。',
+					hint: '每个模型端点的 max_tokens 会被抬到不低于此值（取两者较大），最多 2,000,000 tokens。默认 32000。',
 				},
 				{
 					key: 'compaction_ratio',
@@ -77,41 +84,48 @@
 					key: 'compaction_reserve_tokens',
 					label: '压缩保留 token',
 					unit: 'tokens',
+					max: CONTEXT_WINDOW_BOUNDS.maxTokens - 1,
 					danger: false,
-					hint: '计算压缩阈值时为模型回复预留的 token 数。',
+					hint: '计算压缩阈值时为模型回复预留的 token 数；必须小于默认窗口和每个显式模型窗口。',
 				},
 				{
 					key: 'max_observation_chars',
 					label: '工具观察字符上限',
 					unit: 'chars',
+					max: RESOURCE_LIMIT_BOUNDS.contextTextChars.max,
 					danger: true,
-					hint: '工具结果进入对话的最大字符数，也是 shell/files 等工具的默认输出截断上限（per-tool 可覆盖）。调大直接推高 token 成本。',
+					hint: '工具结果进入对话的最大字符数，也是 shell/files 等工具的默认输出截断上限（per-tool 只能调低）。上限 100,000；调大推高 token 成本。',
 				},
 				{
 					key: 'max_tools_per_request',
 					label: '单次请求工具数上限',
 					unit: 'count',
+					min: RESOURCE_LIMIT_BOUNDS.toolsPerRequest.min,
+					max: RESOURCE_LIMIT_BOUNDS.toolsPerRequest.max,
 					danger: true,
-					hint: '发给模型的 tools 数组最大长度。默认 256（提供方硬顶约 350）。内置工具优先保留；load_mcp 可按 tool_names 只加载子集，整服超限时返回工具目录供再选。',
+					hint: '发给模型的 tools 数组最大长度。范围 1–350；超过上限可能被提供方拒绝。',
 				},
 				{
 					key: 'max_transcript_chars',
 					label: '记忆提取转录上限',
 					unit: 'chars',
+					max: RESOURCE_LIMIT_BOUNDS.contextTextChars.max,
 					danger: true,
-					hint: '事实提取时发送给模型的转录长度。',
+					hint: '事实提取时发送给模型的转录长度，最多 100,000 字符。',
 				},
 				{
 					key: 'tool_run_result_context_chars',
 					label: '任务结果进入对话的上限',
 					unit: 'chars',
+					max: RESOURCE_LIMIT_BOUNDS.contextTextChars.max,
 					danger: true,
-					hint: '后台任务完成后放入所属会话的结果字符数；完整输出仍保存在日志中。',
+					hint: '后台任务完成后放入所属会话的结果字符数；完整输出仍保存在日志中，最多 100,000 字符。',
 				},
 				{
 					key: 'notification_summary_chars',
 					label: '通知摘要字符上限',
 					unit: 'chars',
+					max: RESOURCE_LIMIT_BOUNDS.notificationSummaryChars.max,
 					danger: false,
 				},
 				{
@@ -132,14 +146,14 @@
 					label: '事实推断间隔',
 					unit: 'steps',
 					danger: false,
-					hint: '长会话每多少步重新做一次事实提取。调小增加调用成本。',
+					hint: '长会话每多少步重新做一次事实提取；设为 0 可关闭步数触发。调小会增加调用成本。',
 				},
 				{
 					key: 'fact_extraction_min_interval_secs',
 					label: '事实提取最短间隔',
 					unit: 'secs',
 					danger: false,
-					hint: '限制短时间内重复调用模型提取事实的频率。',
+					hint: '限制短时间内重复调用模型提取事实的频率；设为 0 可关闭时间节流。',
 				},
 				{
 					key: 'max_known_facts',
@@ -153,8 +167,10 @@
 					key: 'sanitize_field_max_chars',
 					label: '事实字段消毒长度',
 					unit: 'chars',
+					min: RESOURCE_LIMIT_BOUNDS.sanitizeFieldChars.min,
+					max: RESOURCE_LIMIT_BOUNDS.sanitizeFieldChars.max,
 					danger: true,
-					hint: '事实字段注入到系统提示前的截断长度。调大 = 更大提示注入面。',
+					hint: '事实字段消毒的统一截断长度，范围 1–256 字符；系统提示构建也按同一 256 字符硬上限处理。',
 				},
 			],
 		},
@@ -167,22 +183,27 @@
 					key: 'file_max_full_file_bytes',
 					label: '整文件操作上限',
 					unit: 'bytes',
+					max: RESOURCE_LIMIT_BOUNDS.fileOperationBytes.max,
 					danger: true,
-					hint: 'read、edit、patch 整体载入文件时的字节上限，也作为未指定 limit 时的默认分段跨度；超过后用 offset/limit 或行范围读取。',
+					hint: 'read、edit、patch 整体载入文件时的字节上限，也作为未指定 limit 时的默认分段跨度；最多 64 MiB。',
 				},
 				{
 					key: 'file_byte_read_max_bytes',
 					label: '字节读取与哈希上限',
 					unit: 'MiB',
 					mb: true,
+					min: RESOURCE_LIMIT_BOUNDS.fileByteReadBytes.min / 1048576,
+					max: RESOURCE_LIMIT_BOUNDS.fileByteReadBytes.max / 1048576,
 					danger: true,
-					hint: 'byte 模式单次读取和 inspect/hash 扫描上限，不受调用方 limit 影响。',
+					hint: 'byte 模式单次读取上限至少 1 字节、最多 64 MiB；inspect/hash 仍有独立 64 MiB 硬上限。',
 				},
 				{
 					key: 'file_write_max_bytes',
 					label: '单次写入上限',
 					unit: 'MiB',
 					mb: true,
+					min: RESOURCE_LIMIT_BOUNDS.fileWriteBytes.min / 1048576,
+					max: RESOURCE_LIMIT_BOUNDS.fileWriteBytes.max / 1048576,
 					danger: true,
 					hint: 'write、edit、patch 单次产出文件的字节上限。',
 				},
@@ -191,13 +212,16 @@
 					key: 'file_line_max_bytes',
 					label: '单行缓冲上限',
 					unit: 'bytes',
+					min: RESOURCE_LIMIT_BOUNDS.fileLineBytes.min,
+					max: RESOURCE_LIMIT_BOUNDS.fileLineBytes.max,
 					danger: true,
-					hint: '行读取、outline 和 summary 单行最多缓冲的字节数。',
+					hint: '行读取、outline 和 summary 单行至少保留 1 字节，最多 128,000 字节。',
 				},
 				{
 					key: 'file_summary_input_chars',
 					label: '总结输入预算',
 					unit: 'chars',
+					max: RESOURCE_LIMIT_BOUNDS.fileSummaryInputChars.max,
 					danger: true,
 					hint: '发送给 small_model 的总结输入上限。调大 = 更多 token。',
 				},
@@ -205,6 +229,8 @@
 					key: 'file_summary_timeout_secs',
 					label: '总结超时',
 					unit: 'secs',
+					min: RESOURCE_LIMIT_BOUNDS.fileSummaryTimeoutSecs.min,
+					max: RESOURCE_LIMIT_BOUNDS.fileSummaryTimeoutSecs.max,
 					danger: false,
 				},
 				{
@@ -221,6 +247,7 @@
 					label: '图片理解大小上限',
 					unit: 'MiB',
 					mb: true,
+					max: RESOURCE_LIMIT_BOUNDS.fileOperationBytes.max / 1048576,
 					danger: true,
 					hint: '超过该大小的图片拒绝送视觉模型。',
 				},
@@ -228,14 +255,24 @@
 					key: 'search_snippet_chars',
 					label: '搜索片段长度',
 					unit: 'chars',
+					max: RESOURCE_LIMIT_BOUNDS.searchSnippetChars.max,
 					danger: false,
 				},
-				{ key: 'search_max_results', label: '搜索结果上限', unit: 'count', danger: true },
+				{
+					key: 'search_max_results',
+					label: '搜索结果上限',
+					unit: 'count',
+					min: RESOURCE_LIMIT_BOUNDS.searchResults.min,
+					max: RESOURCE_LIMIT_BOUNDS.searchResults.max,
+					danger: true,
+				},
 				{
 					key: 'search_max_file_size_bytes',
 					label: '搜索跳过文件大小',
 					unit: 'MiB',
 					mb: true,
+					max: RESOURCE_LIMIT_BOUNDS.searchFileSizeBytes.max / 1048576,
+					hint: '最多跳过 1 GiB 以上的文件；设为 0 表示不限文件大小，单次请求不能绕过此配置上限。',
 					danger: true,
 				},
 				{
@@ -243,7 +280,10 @@
 					label: '行范围搜索窗口',
 					unit: 'MiB',
 					mb: true,
+					min: RESOURCE_LIMIT_BOUNDS.searchWindowBytes.min / 1048576,
+					max: RESOURCE_LIMIT_BOUNDS.searchWindowBytes.max / 1048576,
 					danger: true,
+					hint: '行范围窗口单次最多缓冲 16 MiB；设为 0 时回退到流式全文件扫描。',
 				},
 			],
 		},
@@ -257,6 +297,7 @@
 					label: 'MCP Base64 内容上限',
 					unit: 'MiB',
 					mb: true,
+					max: RESOURCE_LIMIT_BOUNDS.mcpBinaryBytes.max / 1048576,
 					danger: true,
 					hint: 'MCP image/audio/resource 的 Base64 表示按 UTF-8 字节数计限，超出替换为 oversized 标记。',
 				},
@@ -301,6 +342,7 @@
 					label: '技能 instructions 上限',
 					unit: 'KiB',
 					kb: true,
+					max: RESOURCE_LIMIT_BOUNDS.selfToolInstructionsBytes.max / 1024,
 					danger: true,
 				},
 				{
@@ -308,12 +350,14 @@
 					label: '技能脚本大小上限',
 					unit: 'KiB',
 					kb: true,
+					max: RESOURCE_LIMIT_BOUNDS.selfToolScriptBytes.max / 1024,
 					danger: true,
 				},
 				{
 					key: 'network_max_retries',
 					label: '网络重试次数',
 					unit: 'count',
+					max: RESOURCE_LIMIT_BOUNDS.networkRetries.max,
 					danger: true,
 					hint: 'GET 请求的重试次数。调大 = 故障放大。',
 				},
@@ -321,6 +365,7 @@
 					key: 'network_backoff_base_secs',
 					label: '网络重试退避基数',
 					unit: 'secs',
+					max: RESOURCE_LIMIT_BOUNDS.networkBackoffSecs.max,
 					danger: false,
 				},
 				{
@@ -410,6 +455,7 @@
 					key: 'max_pending_scheduled_tool_runs',
 					label: '等待中定时任务数量上限',
 					unit: 'count',
+					max: RESOURCE_LIMIT_BOUNDS.pendingScheduledRuns.max,
 					danger: true,
 					hint: '尚未触发的定时任务数量上限；运行完成的历史记录不计入。',
 				},
@@ -418,47 +464,60 @@
 					label: '定时任务最远排期',
 					unit: 'days',
 					days: true,
+					max: RESOURCE_LIMIT_BOUNDS.scheduledHorizonSecs.max / 86400,
 					danger: false,
+					hint: '最远 10 年；设为 0 会拒绝未来的时间触发。等待其他任务完成的依赖触发不受此限。',
 				},
 				{
 					key: 'clipboard_history_entries',
 					label: '剪贴板历史默认条数',
 					unit: 'count',
+					max: RESOURCE_LIMIT_BOUNDS.clipboardEntries.max,
 					danger: false,
+					hint: '实际内存保留条数上限；设为 0 会清空历史并停止记录。',
 				},
 				{
 					key: 'clipboard_history_max_entries',
 					label: '剪贴板历史上限',
 					unit: 'count',
+					max: RESOURCE_LIMIT_BOUNDS.clipboardEntries.max,
 					danger: true,
+					hint: 'history 查询单次返回条数上限；设为 0 时查询返回空列表。',
 				},
 				{
 					key: 'clipboard_entry_max_chars',
 					label: '剪贴板条目截断',
 					unit: 'chars',
+					max: RESOURCE_LIMIT_BOUNDS.clipboardEntryChars.max,
 					danger: false,
+					hint: 'history 输出中每条剪贴板文本的截断长度；内存中每条记录另有固定安全上限。',
 				},
 				{
 					key: 'event_chunk_batch_max_bytes',
 					label: '事件分块批量上限',
 					unit: 'KiB',
 					kb: true,
+					max: RESOURCE_LIMIT_BOUNDS.eventChunkBatchBytes.max / 1024,
 					danger: false,
-					hint: 'agent 流式事件聚合分块的大小（IPC 频率与延迟权衡）。',
+					hint: '最多 256 KiB；设为 0 时每个后续流分片立即单独发送。',
 				},
 				{
 					key: 'input_ring_buffer_secs',
 					label: '音频环形缓冲',
 					unit: 'secs',
+					min: RESOURCE_LIMIT_BOUNDS.inputRingBufferSecs.min,
+					max: RESOURCE_LIMIT_BOUNDS.inputRingBufferSecs.max,
 					danger: true,
-					hint: '录音缓冲时长。调大 = 内存增加 + 停止录音后仍会处理更长音频。',
+					hint: '范围 0–120 秒。设为 0 使用采集默认容量；更改在下次创建录音引擎时生效，当前引擎不变。',
 				},
 				{
 					key: 'embedding_chunk_size',
 					label: '嵌入分块大小',
 					unit: 'count',
+					min: RESOURCE_LIMIT_BOUNDS.embeddingChunk.min,
+					max: RESOURCE_LIMIT_BOUNDS.embeddingChunk.max,
 					danger: false,
-					hint: 'embedding 请求分块（提供方限制）。',
+					hint: '范围 1–10，与单次 embedding provider 请求的硬上限一致。',
 				},
 			],
 		},
@@ -499,6 +558,18 @@
 		if (field.kTokens) return Math.round(value * 1000);
 		if (field.days) return Math.round(value * 86400);
 		return value;
+	}
+
+	function limitMaximum(field: LimitField): number {
+		if (field.key !== 'compaction_reserve_tokens') return field.max ?? 100000000;
+		const windows = [contextLimits.default_context_window, ...modelContextWindows].filter(
+			(value): value is number =>
+				typeof value === 'number' && Number.isSafeInteger(value) && value >= 1,
+		);
+		return Math.max(
+			0,
+			Math.min(field.max ?? 100000000, ...windows.map((window) => window - 1)),
+		);
 	}
 </script>
 
@@ -543,7 +614,7 @@
 							value={limitDisplay(f.key, contextLimits[f.key])}
 							step={f.step ?? 1}
 							min={f.min ?? 0}
-							max={f.max ?? 100000000}
+							max={limitMaximum(f)}
 							unit={f.unit}
 							onChange={withNumberValue((v) => {
 								contextLimits[f.key] = limitCommit(f.key, v);
@@ -570,7 +641,7 @@
 											value={limitDisplay(f.key, contextLimits[f.key])}
 											step={f.step ?? 1}
 											min={f.min ?? 0}
-											max={f.max ?? 100000000}
+											max={limitMaximum(f)}
 											unit={f.unit}
 											onChange={withNumberValue((v) => {
 												contextLimits[f.key] = limitCommit(f.key, v);

@@ -37,8 +37,8 @@ impl ScheduleMode {
 
 /// Everything ToolRunService needs to admit one scheduled ToolRun.
 pub struct ScheduledToolRunSpec {
-    /// Absolute fire time (RFC3339, local time accepted). Use this OR
-    /// `delay_secs` OR `watch_tool_run_id`; exactly one is required.
+    /// Absolute fire time as RFC3339 with an explicit timezone offset. Use
+    /// this OR `delay_secs` OR `watch_tool_run_id`; exactly one is required.
     pub due_at: Option<String>,
     /// Delay in seconds before the ToolRun fires. Use this OR `due_at` OR
     /// `watch_tool_run_id`.

@@ -13,6 +13,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ToolResult;
 use crate::cancellable_reader::CancellableReader;
+use haven_common::config::{
+    MAX_SEARCH_FILE_SIZE_BYTES, MAX_SEARCH_MAX_RESULTS, MAX_SEARCH_PATTERN_CHARS,
+    MAX_SEARCH_RESULT_BYTES, MAX_SEARCH_ROOT_UTF16_UNITS, MAX_SEARCH_SNIPPET_CHARS,
+    MAX_SEARCH_WINDOW_BYTES, MIN_SEARCH_MAX_RESULTS,
+};
 
 /// Keep a file search from consuming every logical CPU on the desktop.
 ///
@@ -27,8 +32,9 @@ const MAX_SEARCH_ENTRIES: usize = 100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TruncationReason {
-    MaxResults,
-    MaxScannedEntries,
+    ResultCount,
+    ScanEntryBudget,
+    ResultByteBudget,
 }
 
 struct FileSearchResult {
@@ -36,13 +42,35 @@ struct FileSearchResult {
     truncation_reason: Option<TruncationReason>,
 }
 
-fn truncation_reason(result_limit_hit: bool, scan_limit_hit: bool) -> Option<TruncationReason> {
-    if result_limit_hit {
-        Some(TruncationReason::MaxResults)
+fn truncation_reason(
+    result_limit_hit: bool,
+    scan_limit_hit: bool,
+    result_bytes_limit_hit: bool,
+) -> Option<TruncationReason> {
+    if result_bytes_limit_hit {
+        Some(TruncationReason::ResultByteBudget)
+    } else if result_limit_hit {
+        Some(TruncationReason::ResultCount)
     } else if scan_limit_hit {
-        Some(TruncationReason::MaxScannedEntries)
+        Some(TruncationReason::ScanEntryBudget)
     } else {
         None
+    }
+}
+
+fn reserve_result_bytes(reserved: &AtomicUsize, additional: usize) -> bool {
+    let mut current = reserved.load(Ordering::Relaxed);
+    loop {
+        let Some(next) = current.checked_add(additional) else {
+            return false;
+        };
+        if next > MAX_SEARCH_RESULT_BYTES {
+            return false;
+        }
+        match reserved.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
     }
 }
 
@@ -148,6 +176,7 @@ impl SearchRequest {
         max_results_cap: usize,
         default_max_file_size: u64,
     ) -> Self {
+        let max_results_cap = max_results_cap.clamp(MIN_SEARCH_MAX_RESULTS, MAX_SEARCH_MAX_RESULTS);
         let start_line = options.start_line.unwrap_or(1).max(1);
         let end_line = match options.end_line {
             Some(end) if end > 0 => end.max(start_line),
@@ -161,13 +190,32 @@ impl SearchRequest {
             max_results: options
                 .max_results
                 .filter(|value| *value > 0)
-                .map(|value| (value as usize).min(max_results_cap))
-                .unwrap_or(50),
+                .map(|value| {
+                    (value as usize)
+                        .min(max_results_cap.clamp(MIN_SEARCH_MAX_RESULTS, MAX_SEARCH_MAX_RESULTS))
+                })
+                .unwrap_or(
+                    50.min(max_results_cap.clamp(MIN_SEARCH_MAX_RESULTS, MAX_SEARCH_MAX_RESULTS)),
+                ),
             ignore_hidden: options.ignore_hidden.unwrap_or(true),
-            max_file_size: options.max_file_size.unwrap_or(default_max_file_size),
+            max_file_size: effective_max_file_size(options.max_file_size, default_max_file_size),
             start_line,
             end_line,
         }
+    }
+}
+
+fn effective_max_file_size(requested: Option<u64>, configured: u64) -> u64 {
+    let configured = if configured == 0 {
+        0
+    } else {
+        configured.min(MAX_SEARCH_FILE_SIZE_BYTES)
+    };
+    match requested {
+        None => configured,
+        Some(requested) if configured == 0 => requested.min(MAX_SEARCH_FILE_SIZE_BYTES),
+        Some(0) => configured,
+        Some(requested) => configured.min(requested),
     }
 }
 
@@ -210,10 +258,14 @@ impl FileSearchEngine {
         max_window_bytes: u64,
     ) -> Self {
         Self {
-            snippet_chars,
-            max_results_cap,
-            max_file_size,
-            max_window_bytes,
+            snippet_chars: snippet_chars.min(MAX_SEARCH_SNIPPET_CHARS),
+            max_results_cap: max_results_cap.clamp(MIN_SEARCH_MAX_RESULTS, MAX_SEARCH_MAX_RESULTS),
+            max_file_size: if max_file_size == 0 {
+                0
+            } else {
+                max_file_size.min(MAX_SEARCH_FILE_SIZE_BYTES)
+            },
+            max_window_bytes: max_window_bytes.min(MAX_SEARCH_WINDOW_BYTES),
             search_slots: Arc::new(Semaphore::new(1)),
         }
     }
@@ -230,13 +282,30 @@ impl FileSearchEngine {
 
     pub async fn search_request(
         &self,
-        request: SearchRequest,
+        mut request: SearchRequest,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
+        if request.root.trim().is_empty() {
+            anyhow::bail!("root is required");
+        }
+        if request.root.encode_utf16().count() > MAX_SEARCH_ROOT_UTF16_UNITS {
+            anyhow::bail!("root exceeds the maximum supported path length");
+        }
+        if request.pattern.is_empty() {
+            anyhow::bail!("pattern is required");
+        }
+        if request.pattern.chars().count() > MAX_SEARCH_PATTERN_CHARS {
+            anyhow::bail!("pattern must not exceed {MAX_SEARCH_PATTERN_CHARS} characters");
+        }
 
+        request.max_results = request
+            .max_results
+            .clamp(MIN_SEARCH_MAX_RESULTS, self.max_results_cap);
+        request.max_file_size =
+            effective_max_file_size(Some(request.max_file_size), self.max_file_size);
         let SearchRequest {
             root,
             pattern: pattern_str,
@@ -313,11 +382,15 @@ impl FileSearchEngine {
         });
         if let Some(reason) = truncation {
             output["hint"] = serde_json::Value::String(match reason {
-                TruncationReason::MaxResults => format!(
+                TruncationReason::ResultCount => format!(
                     "Results hit the max_results cap ({max_results}). Narrow the pattern, add a line range (start_line/end_line), or raise max_results."
                 ),
-                TruncationReason::MaxScannedEntries => format!(
+                TruncationReason::ScanEntryBudget => format!(
                     "Search stopped after scanning {MAX_SEARCH_ENTRIES} filesystem entries. Narrow the root, add a filename/content pattern, or reduce max_depth."
+                ),
+                TruncationReason::ResultByteBudget => format!(
+                    "Search results reached the {} MiB output budget. Narrow the pattern or reduce snippet context.",
+                    MAX_SEARCH_RESULT_BYTES / (1024 * 1024)
                 ),
             });
         }
@@ -427,6 +500,8 @@ fn search_filenames_parallel(
     let scan_limit_hit = Arc::new(AtomicBool::new(false));
     let result_count = Arc::new(AtomicUsize::new(0));
     let results = Arc::new(Mutex::new(Vec::new()));
+    let result_bytes = Arc::new(AtomicUsize::new(0));
+    let result_bytes_limit_hit = Arc::new(AtomicBool::new(false));
     let re = regex::Regex::new(&glob_to_regex(pattern)).ok();
     let glob = pattern.to_string();
 
@@ -439,6 +514,8 @@ fn search_filenames_parallel(
         let scan_limit_hit = scan_limit_hit.clone();
         let result_count = result_count.clone();
         let results = results.clone();
+        let result_bytes = result_bytes.clone();
+        let result_bytes_limit_hit = result_bytes_limit_hit.clone();
         let cancel = cancel.clone();
         Box::new(move |entry| {
             if cancel.is_cancelled() || found_flag.load(Ordering::Relaxed) {
@@ -461,11 +538,17 @@ fn search_filenames_parallel(
                     found_flag.store(true, Ordering::Relaxed);
                     return ignore::WalkState::Quit;
                 }
-                let mut guard = results.lock().unwrap();
-                guard.push(serde_json::json!({
+                let result = serde_json::json!({
                     "path": entry.path().to_string_lossy(),
                     "match_reason": "filename",
-                }));
+                });
+                let size = serde_json::to_vec(&result).map_or(usize::MAX, |bytes| bytes.len());
+                if !reserve_result_bytes(&result_bytes, size) {
+                    result_bytes_limit_hit.store(true, Ordering::Relaxed);
+                    found_flag.store(true, Ordering::Relaxed);
+                    return ignore::WalkState::Quit;
+                }
+                results.lock().unwrap().push(result);
             }
             ignore::WalkState::Continue
         })
@@ -475,6 +558,7 @@ fn search_filenames_parallel(
         truncation_reason: truncation_reason(
             result_count.load(Ordering::Relaxed) > max_results,
             scan_limit_hit.load(Ordering::Relaxed),
+            result_bytes_limit_hit.load(Ordering::Relaxed),
         ),
     }
 }
@@ -524,6 +608,17 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
     let scan_limit_hit = Arc::new(AtomicBool::new(false));
     let result_count = Arc::new(AtomicUsize::new(0));
     let results = Arc::new(Mutex::new(Vec::new()));
+    let result_bytes = Arc::new(AtomicUsize::new(0));
+    let result_bytes_limit_hit = Arc::new(AtomicBool::new(false));
+    let result_collector = SearchResultCollector {
+        max_results,
+        stop_flag: found_flag.clone(),
+        result_count,
+        results,
+        result_bytes,
+        result_bytes_limit_hit,
+        snippet_chars,
+    };
 
     let builder = walk_builder(root, max_depth, ignore_hidden);
     builder.build_parallel().run(|| {
@@ -532,8 +627,7 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
         let found_flag = found_flag.clone();
         let scanned_entries = scanned_entries.clone();
         let scan_limit_hit = scan_limit_hit.clone();
-        let result_count = result_count.clone();
-        let results = results.clone();
+        let result_collector = result_collector.clone();
         let cancel = cancel.clone();
         Box::new(move |entry| {
             if cancel.is_cancelled() || found_flag.load(Ordering::Relaxed) {
@@ -562,23 +656,13 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
                     &mut searcher,
                     sl,
                     el,
-                    max_results,
-                    &found_flag,
-                    &result_count,
-                    &results,
-                    snippet_chars,
+                    &result_collector,
                     max_window_bytes,
                     &cancel,
                 );
             } else {
-                let sink = CollectingSink::new(
-                    entry.path().to_path_buf(),
-                    max_results,
-                    found_flag.clone(),
-                    result_count.clone(),
-                    results.clone(),
-                    snippet_chars,
-                );
+                let sink =
+                    CollectingSink::new(entry.path().to_path_buf(), result_collector.clone());
                 let Ok(file) = std::fs::File::open(entry.path()) else {
                     return ignore::WalkState::Continue;
                 };
@@ -589,12 +673,26 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
         })
     });
     FileSearchResult {
-        results: finalize(results, max_results),
+        results: finalize(result_collector.results.clone(), max_results),
         truncation_reason: truncation_reason(
-            result_count.load(Ordering::Relaxed) > max_results,
+            result_collector.result_count.load(Ordering::Relaxed) > max_results,
             scan_limit_hit.load(Ordering::Relaxed),
+            result_collector
+                .result_bytes_limit_hit
+                .load(Ordering::Relaxed),
         ),
     }
+}
+
+#[derive(Clone)]
+struct SearchResultCollector {
+    max_results: usize,
+    stop_flag: Arc<AtomicBool>,
+    result_count: Arc<AtomicUsize>,
+    results: Arc<Mutex<Vec<Value>>>,
+    result_bytes: Arc<AtomicUsize>,
+    result_bytes_limit_hit: Arc<AtomicBool>,
+    snippet_chars: usize,
 }
 
 /// Search one file restricted to the 1-based line range `[start_line, end_line]`.
@@ -607,11 +705,7 @@ fn search_content_line_range(
     searcher: &mut grep_searcher::Searcher,
     start_line: u64,
     end_line: u64,
-    max_results: usize,
-    found_flag: &Arc<AtomicBool>,
-    result_count: &Arc<AtomicUsize>,
-    results: &Arc<Mutex<Vec<Value>>>,
-    snippet_chars: usize,
+    result_collector: &SearchResultCollector,
     max_window_bytes: u64,
     cancel: &CancellationToken,
 ) {
@@ -620,15 +714,8 @@ fn search_content_line_range(
     };
     let window_len = end - start;
     if window_len > max_window_bytes {
-        let sink = CollectingSink::new(
-            path.to_path_buf(),
-            max_results,
-            found_flag.clone(),
-            result_count.clone(),
-            results.clone(),
-            snippet_chars,
-        )
-        .with_line_filter(start_line, end_line);
+        let sink = CollectingSink::new(path.to_path_buf(), result_collector.clone())
+            .with_line_filter(start_line, end_line);
         let Ok(file) = std::fs::File::open(path) else {
             return;
         };
@@ -656,15 +743,8 @@ fn search_content_line_range(
         }
     }
     bytes.truncate(filled);
-    let sink = CollectingSink::new(
-        path.to_path_buf(),
-        max_results,
-        found_flag.clone(),
-        result_count.clone(),
-        results.clone(),
-        snippet_chars,
-    )
-    .with_line_offset(start_line - 1);
+    let sink = CollectingSink::new(path.to_path_buf(), result_collector.clone())
+        .with_line_offset(start_line - 1);
     let _ = searcher.search_slice(matcher.clone(), &bytes, sink);
 }
 
@@ -723,37 +803,22 @@ fn cancellable_search_reader<R>(reader: R, cancel: &CancellationToken) -> Cancel
 /// `line_filter` restricts results to an absolute 1-based line range.
 struct CollectingSink {
     path: std::path::PathBuf,
-    max: usize,
-    found_flag: Arc<AtomicBool>,
-    result_count: Arc<AtomicUsize>,
-    results: Arc<Mutex<Vec<Value>>>,
+    collector: SearchResultCollector,
     last_line: Option<u64>,
     line_offset: u64,
     line_filter: Option<(u64, u64)>,
-    snippet_chars: usize,
     pending_before: Vec<Value>,
     current_result: Option<usize>,
 }
 
 impl CollectingSink {
-    fn new(
-        path: std::path::PathBuf,
-        max: usize,
-        found_flag: Arc<AtomicBool>,
-        result_count: Arc<AtomicUsize>,
-        results: Arc<Mutex<Vec<Value>>>,
-        snippet_chars: usize,
-    ) -> Self {
+    fn new(path: std::path::PathBuf, collector: SearchResultCollector) -> Self {
         Self {
             path,
-            max,
-            found_flag,
-            result_count,
-            results,
+            collector,
             last_line: None,
             line_offset: 0,
             line_filter: None,
-            snippet_chars,
             pending_before: Vec::new(),
             current_result: None,
         }
@@ -772,7 +837,7 @@ impl CollectingSink {
     fn context_value(&self, line_number: u64, bytes: &[u8]) -> Value {
         serde_json::json!({
             "line": line_number,
-            "snippet": snippet_of(bytes, self.snippet_chars),
+            "snippet": snippet_of(bytes, self.collector.snippet_chars),
         })
     }
 }
@@ -781,7 +846,7 @@ impl Sink for CollectingSink {
     type Error = std::io::Error;
 
     fn matched(&mut self, _searcher: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
-        if self.found_flag.load(Ordering::Relaxed) {
+        if self.collector.stop_flag.load(Ordering::Relaxed) {
             return Ok(false);
         }
         let line_number = mat
@@ -802,13 +867,14 @@ impl Sink for CollectingSink {
         let snippet = mat
             .lines()
             .next()
-            .map(|l| snippet_of(l, self.snippet_chars))
+            .map(|l| snippet_of(l, self.collector.snippet_chars))
             .unwrap_or_default();
-        if self.result_count.fetch_add(1, Ordering::Relaxed) >= self.max {
-            self.found_flag.store(true, Ordering::Relaxed);
+        if self.collector.result_count.fetch_add(1, Ordering::Relaxed) >= self.collector.max_results
+        {
+            self.collector.stop_flag.store(true, Ordering::Relaxed);
             return Ok(false);
         }
-        let mut guard = self.results.lock().unwrap();
+        let mut guard = self.collector.results.lock().unwrap();
         let mut result = serde_json::json!({
             "path": self.path.to_string_lossy(),
             "line": line_number,
@@ -820,6 +886,16 @@ impl Sink for CollectingSink {
             let before = Value::Array(std::mem::take(&mut self.pending_before));
             result["before"] = before.clone();
             result["context"]["before"] = before;
+        }
+        let result_size = serde_json::to_vec(&result).map_or(usize::MAX, |bytes| bytes.len());
+        if !reserve_result_bytes(&self.collector.result_bytes, result_size) {
+            self.collector
+                .result_bytes_limit_hit
+                .store(true, Ordering::Relaxed);
+            self.collector.stop_flag.store(true, Ordering::Relaxed);
+            self.pending_before.clear();
+            self.current_result = None;
+            return Ok(false);
         }
         let result_index = guard.len();
         guard.push(result);
@@ -842,8 +918,19 @@ impl Sink for CollectingSink {
             SinkContextKind::Before => self.pending_before.push(value),
             SinkContextKind::After => {
                 if let Some(result_index) = self.current_result {
-                    let mut guard = self.results.lock().unwrap();
+                    let mut guard = self.collector.results.lock().unwrap();
                     if let Some(result) = guard.get_mut(result_index) {
+                        let context_size =
+                            serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len());
+                        let prefix_size = if result.get("after").is_some() { 1 } else { 10 };
+                        let additional = context_size.saturating_add(prefix_size).saturating_mul(2);
+                        if !reserve_result_bytes(&self.collector.result_bytes, additional) {
+                            self.collector
+                                .result_bytes_limit_hit
+                                .store(true, Ordering::Relaxed);
+                            self.collector.stop_flag.store(true, Ordering::Relaxed);
+                            return Ok(false);
+                        }
                         let context_value = value.clone();
                         result
                             .as_object_mut()
@@ -963,6 +1050,25 @@ mod tests {
     }
 
     #[test]
+    fn search_request_default_result_count_respects_configured_cap() {
+        let request =
+            SearchRequest::from_value(json!({"root": ".", "pattern": "*.rs"}), 7, 1024).unwrap();
+        assert_eq!(request.max_results, 7);
+
+        let zero_cap =
+            SearchRequest::new(".".into(), "*.rs".into(), SearchOptions::default(), 0, 0);
+        assert_eq!(zero_cap.max_results, MIN_SEARCH_MAX_RESULTS);
+    }
+
+    #[test]
+    fn search_engine_clamps_direct_resource_limits() {
+        let engine = FileSearchEngine::new(640, usize::MAX, 1024, u64::MAX);
+
+        assert_eq!(engine.max_results_cap, MAX_SEARCH_MAX_RESULTS);
+        assert_eq!(engine.max_window_bytes, MAX_SEARCH_WINDOW_BYTES);
+    }
+
+    #[test]
     fn test_glob_to_regex() {
         let re = regex::Regex::new(&glob_to_regex("*.rs")).unwrap();
         assert!(re.is_match("main.rs"));
@@ -993,6 +1099,19 @@ mod tests {
         ));
         assert!(stop_flag.load(Ordering::Relaxed));
         assert!(scan_limit_hit.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn materialized_result_byte_budget_cannot_be_exceeded() {
+        let reserved = AtomicUsize::new(0);
+        assert!(reserve_result_bytes(&reserved, MAX_SEARCH_RESULT_BYTES - 1));
+        assert!(!reserve_result_bytes(&reserved, 2));
+        assert_eq!(
+            reserved.load(Ordering::Relaxed),
+            MAX_SEARCH_RESULT_BYTES - 1
+        );
+        assert!(reserve_result_bytes(&reserved, 1));
+        assert!(!reserve_result_bytes(&reserved, 1));
     }
 
     #[test]
@@ -1264,6 +1383,51 @@ mod tests {
                 .unwrap()
                 .contains("max_results")
         );
+    }
+
+    #[tokio::test]
+    async fn test_search_content_mode_bounds_materialized_result_bytes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut content = String::new();
+        for _ in 0..300 {
+            content.push_str(&"界".repeat(800));
+            content.push('\n');
+            content.push_str(&"界".repeat(800));
+            content.push('\n');
+            content.push_str("needle ");
+            content.push_str(&"界".repeat(800));
+            content.push('\n');
+            content.push_str(&"界".repeat(800));
+            content.push('\n');
+            content.push_str(&"界".repeat(800));
+            content.push('\n');
+        }
+        let path = tmp.path().join("large-results.txt");
+        tokio::fs::write(&path, content).await.unwrap();
+
+        let result = FileSearchEngine::new(MAX_SEARCH_SNIPPET_CHARS, 1_000, 0, 0)
+            .search(
+                json!({
+                    "root": path.to_string_lossy(),
+                    "pattern": "needle",
+                    "mode": "content",
+                    "max_results": 1_000,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.truncated);
+        assert!(
+            result.output["hint"]
+                .as_str()
+                .unwrap()
+                .contains("output budget")
+        );
+        let results = result.output["results"].as_array().unwrap();
+        assert!(serde_json::to_vec(results).unwrap().len() <= MAX_SEARCH_RESULT_BYTES);
+        assert!(results.len() < 1_000);
     }
 
     #[tokio::test]

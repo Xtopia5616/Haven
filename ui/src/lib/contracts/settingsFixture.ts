@@ -3,6 +3,9 @@ import type { SettingsPayload } from './settings.ts';
 import type { GeneratedWireShape } from './generatedWireShape.ts';
 
 const SETTINGS_NUMERIC_FIXTURE_VALUES: Record<string, number> = {
+	'settings.context_limits.compaction_reserve_tokens': 8_192,
+	'settings.context_limits.default_context_window': 64_000,
+	'settings.context_limits.response_token_floor': 32_000,
 	'settings.media.audio.max_duration_secs': 60,
 	'settings.media.audio.silence_timeout_ms': 1_500,
 	'settings.media.audio.vad_threshold': 0.5,
@@ -47,5 +50,10 @@ export function createWireValueFixture(shape: GeneratedWireShape, path = 'settin
 }
 
 export function createSettingsFixture(): SettingsPayload {
-	return createWireValueFixture(SETTINGS_RESPONSE_SHAPE) as SettingsPayload;
+	const settings = createWireValueFixture(SETTINGS_RESPONSE_SHAPE) as SettingsPayload;
+	settings.media.stt.provider_name = 'llm';
+	settings.media.ocr.provider = 'llm';
+	settings.media.tts.provider_name = 'none';
+	settings.media.image_gen.provider_name = 'none';
+	return settings;
 }

@@ -52,14 +52,14 @@ impl ScheduledTriggerRequest {
     }
 
     /// Apply time-dependent input rules using the caller's single UTC sample.
-    /// Absolute due-time horizon is checked separately because its configured
-    /// limit is read asynchronously by ToolRunService after parsing and future
-    /// validation, as it was before this policy extraction.
+    /// Time-based triggers retain their full duration from this clock sample;
+    /// the configured horizon is checked separately after ToolRunService reads
+    /// it asynchronously. Dependency triggers have no due-time horizon.
     pub(crate) fn resolve(self, now: DateTime<Utc>) -> anyhow::Result<ScheduledTriggerCandidate> {
         if let Some(tool_run_id) = self.watch_tool_run_id {
             return Ok(ScheduledTriggerCandidate {
                 trigger: ScheduledTrigger::AfterToolRun { tool_run_id },
-                absolute_due_remaining_secs: None,
+                due_horizon: None,
             });
         }
 
@@ -69,9 +69,14 @@ impl ScheduledTriggerRequest {
             }
             (Some(value), None) => {
                 let due_at = DateTime::parse_from_rfc3339(value.trim())
-                    .map_err(|_| anyhow::anyhow!("due_at must be an ISO 8601 timestamp"))?
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "due_at must be an ISO 8601 timestamp with a timezone offset"
+                        )
+                    })?
                     .with_timezone(&Utc);
-                let remaining_secs = (due_at - now).num_seconds();
+                let due_duration = due_at - now;
+                let remaining_secs = due_duration.num_seconds();
                 if remaining_secs <= 0 {
                     anyhow::bail!("due_at must be in the future");
                 }
@@ -80,7 +85,7 @@ impl ScheduledTriggerRequest {
                         due_at,
                         remaining_secs,
                     },
-                    absolute_due_remaining_secs: Some(remaining_secs),
+                    due_horizon: Some(due_duration),
                 })
             }
             (None, Some(delay_secs)) if (1..=86_400).contains(&delay_secs) => {
@@ -90,7 +95,7 @@ impl ScheduledTriggerRequest {
                         due_at: now + chrono::Duration::seconds(remaining_secs),
                         remaining_secs,
                     },
-                    absolute_due_remaining_secs: None,
+                    due_horizon: Some(chrono::Duration::seconds(remaining_secs)),
                 })
             }
             (None, Some(_)) => {
@@ -106,20 +111,22 @@ impl ScheduledTriggerRequest {
 #[derive(Debug)]
 pub(crate) struct ScheduledTriggerCandidate {
     trigger: ScheduledTrigger,
-    absolute_due_remaining_secs: Option<i64>,
+    due_horizon: Option<chrono::Duration>,
 }
 
 impl ScheduledTriggerCandidate {
     pub(crate) fn needs_due_horizon_check(&self) -> bool {
-        self.absolute_due_remaining_secs.is_some()
+        self.due_horizon.is_some()
     }
 
     pub(crate) fn validate_due_horizon(&self, max_due_horizon_secs: i64) -> anyhow::Result<()> {
         if self
-            .absolute_due_remaining_secs
-            .is_some_and(|remaining| remaining > max_due_horizon_secs)
+            .due_horizon
+            .is_some_and(|duration| duration > chrono::Duration::seconds(max_due_horizon_secs))
         {
-            anyhow::bail!("due_at is more than 365 days in the future");
+            anyhow::bail!(
+                "scheduled due time exceeds the configured horizon of {max_due_horizon_secs} seconds"
+            );
         }
         Ok(())
     }
@@ -133,6 +140,7 @@ impl ScheduledTriggerCandidate {
 mod tests {
     use super::{ScheduledTrigger, ScheduledTriggerRequest};
     use chrono::{Duration, TimeZone, Utc};
+    use haven_common::config::MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS;
 
     fn fixed_now() -> chrono::DateTime<Utc> {
         Utc.with_ymd_and_hms(2030, 1, 2, 3, 4, 5)
@@ -148,7 +156,8 @@ mod tests {
             .resolve(now)
             .unwrap();
 
-        assert!(!candidate.needs_due_horizon_check());
+        assert!(candidate.needs_due_horizon_check());
+        candidate.validate_due_horizon(60).unwrap();
         assert_eq!(
             candidate.into_trigger(),
             ScheduledTrigger::At {
@@ -199,7 +208,100 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "due_at is more than 365 days in the future"
+            "scheduled due time exceeds the configured horizon of 31536000 seconds"
+        );
+    }
+
+    #[test]
+    fn enforces_zero_and_short_horizons_for_timer_triggers() {
+        let now = fixed_now();
+
+        let absolute_due_at = (now + Duration::seconds(5)).to_rfc3339();
+        let disabled_absolute = ScheduledTriggerRequest::new(Some(absolute_due_at), None, None)
+            .unwrap()
+            .resolve(now)
+            .unwrap();
+        assert_eq!(
+            disabled_absolute
+                .validate_due_horizon(0)
+                .unwrap_err()
+                .to_string(),
+            "scheduled due time exceeds the configured horizon of 0 seconds"
+        );
+
+        let disabled = ScheduledTriggerRequest::new(None, Some(1), None)
+            .unwrap()
+            .resolve(now)
+            .unwrap();
+        assert_eq!(
+            disabled.validate_due_horizon(0).unwrap_err().to_string(),
+            "scheduled due time exceeds the configured horizon of 0 seconds"
+        );
+
+        let delay_longer_than_horizon = ScheduledTriggerRequest::new(None, Some(86_400), None)
+            .unwrap()
+            .resolve(now)
+            .unwrap();
+        assert_eq!(
+            delay_longer_than_horizon
+                .validate_due_horizon(30)
+                .unwrap_err()
+                .to_string(),
+            "scheduled due time exceeds the configured horizon of 30 seconds"
+        );
+
+        let delay_at_horizon = ScheduledTriggerRequest::new(None, Some(30), None)
+            .unwrap()
+            .resolve(now)
+            .unwrap();
+        delay_at_horizon.validate_due_horizon(30).unwrap();
+
+        let fractional_overrun = ScheduledTriggerRequest::new(
+            Some((now + Duration::milliseconds(1_500)).to_rfc3339()),
+            None,
+            None,
+        )
+        .unwrap()
+        .resolve(now)
+        .unwrap();
+        assert!(fractional_overrun.validate_due_horizon(1).is_err());
+    }
+
+    #[test]
+    fn enforces_the_configured_ten_year_horizon_and_reports_its_value() {
+        let now = fixed_now();
+        let at_limit = ScheduledTriggerRequest::new(
+            Some((now + Duration::seconds(MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS)).to_rfc3339()),
+            None,
+            None,
+        )
+        .unwrap()
+        .resolve(now)
+        .unwrap();
+        at_limit
+            .validate_due_horizon(MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS)
+            .unwrap();
+
+        let beyond_limit = ScheduledTriggerRequest::new(
+            Some(
+                (now + Duration::seconds(MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS)
+                    + Duration::seconds(1))
+                .to_rfc3339(),
+            ),
+            None,
+            None,
+        )
+        .unwrap()
+        .resolve(now)
+        .unwrap();
+        assert_eq!(
+            beyond_limit
+                .validate_due_horizon(MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS)
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "scheduled due time exceeds the configured horizon of {MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS} seconds"
+            )
         );
     }
 
@@ -215,6 +317,7 @@ mod tests {
         .unwrap();
 
         assert!(!candidate.needs_due_horizon_check());
+        candidate.validate_due_horizon(0).unwrap();
         assert_eq!(
             candidate.into_trigger(),
             ScheduledTrigger::AfterToolRun {
@@ -259,7 +362,13 @@ mod tests {
                 Some("not-a-time".into()),
                 None,
                 None,
-                "due_at must be an ISO 8601 timestamp",
+                "due_at must be an ISO 8601 timestamp with a timezone offset",
+            ),
+            (
+                Some("2030-01-02T03:04:06".into()),
+                None,
+                None,
+                "due_at must be an ISO 8601 timestamp with a timezone offset",
             ),
             (
                 Some((now + Duration::milliseconds(999)).to_rfc3339()),

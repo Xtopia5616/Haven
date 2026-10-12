@@ -97,6 +97,9 @@ impl ToolRuntimeCoordinator {
             .set_tool_run_store(tool_run_store)
             .await;
         self.runtime
+            .clipboard_history
+            .set_capacity(context_limits.clipboard_history_entries);
+        self.runtime
             .replace_platform(crate::tool_runtime::PlatformRuntime {
                 router: Some(router),
                 admin_context: Some(admin_context),
@@ -213,6 +216,9 @@ impl ToolRuntimeCoordinator {
         &self,
         limits: ContextLimitsConfig,
     ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
+        self.runtime
+            .clipboard_history
+            .set_capacity(limits.clipboard_history_entries);
         self.builtins.mcp_manager.set_limits(&limits).await;
         self.builtins.skill_registry.set_limits(&limits).await;
         self.runtime.tool_run_service.set_limits(&limits).await;
@@ -492,6 +498,35 @@ mod tests {
         assert!(Arc::ptr_eq(&before_catalog, &after_catalog));
         assert!(after_platform.router.is_none());
         assert!(after_catalog.tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn clipboard_history_capacity_tracks_startup_and_live_limit_updates() {
+        let coordinator = ToolRuntimeCoordinator::new(SkillsExecConfig::default());
+        let mut wiring = startup_wiring();
+        wiring.context_limits.clipboard_history_entries = 2;
+        coordinator.wire_startup(wiring).await.unwrap();
+
+        let history = &coordinator.runtime.clipboard_history;
+        history.record("oldest".into());
+        history.record("middle".into());
+        history.record("newest".into());
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.recent(10)[0].content, "newest");
+
+        let mut limits = coordinator.runtime.platform().await.context_limits.clone();
+        limits.clipboard_history_entries = 1;
+        coordinator
+            .set_context_limits(limits.clone())
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.recent(10)[0].content, "newest");
+
+        limits.clipboard_history_entries = 0;
+        coordinator.set_context_limits(limits).await.unwrap();
+        history.record("disabled".into());
+        assert!(history.is_empty());
     }
 
     #[tokio::test]

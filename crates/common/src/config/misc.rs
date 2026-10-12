@@ -14,12 +14,74 @@ pub const MAX_SESSION_STEPS_PER_SESSION: u32 = 100_000;
 pub const MIN_SESSION_MAX_CONCURRENT: usize = 1;
 pub const MAX_SESSION_MAX_CONCURRENT: usize = 10;
 pub const MAX_SESSION_PROMPT_HISTORY_LIMIT: usize = 500;
+/// User-facing maximum automatic session-retention period in days; zero disables cleanup.
+pub const MAX_HISTORY_RETENTION_DAYS: u32 = 365;
+/// A configured model context must be large enough to represent a useful prompt budget.
+pub const MIN_CONTEXT_WINDOW_TOKENS: u32 = 1_000;
+/// Conservative ceiling for endpoint and default context-window settings.
+pub const MAX_CONTEXT_WINDOW_TOKENS: u32 = 2_000_000;
+pub const MAX_CONTEXT_TEXT_CHARS: usize = 100_000;
+pub const MAX_NOTIFICATION_SUMMARY_CHARS: usize = 4_096;
+pub const MAX_SANITIZE_FIELD_CHARS: usize = 256;
+pub const MAX_CLIPBOARD_HISTORY_ENTRIES: usize = 100;
+pub const MAX_CLIPBOARD_ENTRY_OUTPUT_CHARS: usize = 100_000;
+pub const MAX_TOOL_TIMEOUT_SECS: u64 = 3_600;
+pub const MAX_TOOL_RETRIES: u32 = 10;
+pub const MAX_TOOL_RETRY_BACKOFF_SECS: u64 = 60;
 /// A zero background ToolRun limit intentionally disables background launches.
 pub const MAX_RUNNING_BACKGROUND_TOOL_RUNS: usize = 64;
+/// Maximum number of entries returned by one files.list operation.
 pub const MAX_FILE_MAX_LIST_ENTRIES: usize = 10_000;
+/// Line-oriented reads require at least one byte of retention capacity.
+pub const MIN_FILE_LINE_MAX_BYTES: usize = 1;
+/// Maximum bytes buffered for one line in file read, outline, and summary paths.
+pub const MAX_FILE_LINE_MAX_BYTES: usize = 128_000;
+/// Maximum bytes for any configured whole-file read, write, or vision input.
+pub const MAX_FILE_OPERATION_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum bytes read by the configured files byte-read path.
+pub const MIN_FILE_BYTE_READ_MAX_BYTES: u64 = 1;
+pub const MAX_FILE_BYTE_READ_MAX_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_FILE_SUMMARY_INPUT_CHARS: usize = 256_000;
+pub const MAX_FILE_SUMMARY_TIMEOUT_SECS: u64 = 600;
 pub const MAX_MCP_MAX_SSE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_SKILLS_MAX_MD_BYTES: u64 = 1024 * 1024;
 pub const MAX_NETWORK_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_NETWORK_RETRIES: u32 = 10;
+pub const MAX_NETWORK_BACKOFF_BASE_SECS: u64 = 60;
+/// Search must return at least one result when it is enabled.
+pub const MIN_SEARCH_MAX_RESULTS: usize = 1;
+/// Maximum number of results one files search may materialize.
+pub const MAX_SEARCH_MAX_RESULTS: usize = 1_000;
+/// Maximum number of Unicode scalar values accepted for a file-search regex/glob.
+pub const MAX_SEARCH_PATTERN_CHARS: usize = 4_096;
+/// Maximum Windows-compatible root path length, measured as UTF-16 code units.
+pub const MAX_SEARCH_ROOT_UTF16_UNITS: usize = 32_767;
+/// Maximum serialized byte size of materialized results from one file search.
+pub const MAX_SEARCH_RESULT_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_SEARCH_SNIPPET_CHARS: usize = 4_096;
+/// Content searches skip files larger than this unless the configured limit is zero (unlimited).
+pub const MAX_SEARCH_FILE_SIZE_BYTES: u64 = 1024 * 1024 * 1024;
+/// Maximum byte window buffered for a line-range search.
+pub const MAX_SEARCH_WINDOW_BYTES: u64 = 16 * 1024 * 1024;
+/// An embedding request must contain at least one input.
+pub const MIN_EMBEDDING_CHUNK_SIZE: usize = 1;
+/// Provider-safe maximum inputs accepted by one embedding request.
+pub const MAX_EMBEDDING_CHUNK_SIZE: usize = 10;
+/// A model request must include at least one tool.
+pub const MIN_MAX_TOOLS_PER_REQUEST: usize = 1;
+/// Conservative upper bound for the provider tool-array contract.
+pub const MAX_TOOLS_PER_REQUEST: usize = 350;
+pub const MAX_SKILLS_EXEC_TIMEOUT_SECS: u64 = 3_600;
+pub const MAX_SKILLS_EXEC_OUTPUT_LINES: usize = 50_000;
+pub const MAX_SELF_TOOL_INSTRUCTIONS_BYTES: usize = 512 * 1024;
+pub const MAX_SELF_TOOL_SCRIPT_BYTES: usize = 1024 * 1024;
+pub const MAX_MCP_MAX_BINARY_BASE64_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_MCP_HEALTH_INTERVAL_SECS: u64 = 3_600;
+pub const MAX_MCP_RECONNECT_DELAY_MS: u64 = 600_000;
+pub const MAX_MCP_RECONNECT_RETRIES: u32 = 100;
+pub const MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS: i64 = 10 * 365 * 24 * 60 * 60;
+pub const MAX_EVENT_CHUNK_BATCH_MAX_BYTES: usize = 256 * 1024;
+pub const MAX_PENDING_SCHEDULED_TOOL_RUNS: usize = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -102,7 +164,7 @@ pub struct ContextLimitsConfig {
     /// conversation. Also the default cap (in chars) builtin tools apply to
     /// their own output — the observation budget is the only limit, so tools
     /// never produce output the loop would immediately truncate again.
-    /// Per-tool `tool_settings.*.max_output_chars` overrides it.
+    /// Per-tool `tool_settings.*.max_output_chars` may lower, but not raise, it.
     pub max_observation_chars: usize,
     /// Cap (in chars) for transcripts built for memory fact inference.
     pub max_transcript_chars: usize,
@@ -226,9 +288,9 @@ pub struct ContextLimitsConfig {
     /// Max response body bytes buffered by the network tool.
     pub network_max_body_bytes: usize,
     // —— resource bounds ——
-    /// Clipboard history entries kept in memory.
+    /// Clipboard entries retained in memory; zero disables capture and clears history.
     pub clipboard_history_entries: usize,
-    /// Upper clamp for the clipboard `history` operation's `limit` argument.
+    /// Upper clamp for the clipboard `history` operation's `limit` argument; zero returns no rows.
     pub clipboard_history_max_entries: usize,
     /// Per-entry content truncation for clipboard history dumps.
     pub clipboard_entry_max_chars: usize,
@@ -241,7 +303,8 @@ pub struct ContextLimitsConfig {
     /// Max bytes batched into one `agent:chunk` event.
     pub event_chunk_batch_max_bytes: usize,
     /// Audio ring buffer size in seconds (capture latency), capped at 120 to
-    /// bound the mono 16 kHz `f32` allocation to roughly 7.7 MB.
+    /// bound the mono 16 kHz `f32` allocation to roughly 7.7 MB. Zero keeps
+    /// the capture engine's default capacity; changes apply on its next spawn.
     pub input_ring_buffer_secs: usize,
     /// Embedding requests chunk size (provider request limits).
     pub embedding_chunk_size: usize,
@@ -417,10 +480,6 @@ pub struct SkillsExecConfig {
     pub timeout_secs: u64,
     /// Maximum output lines captured from stdout/stderr.
     pub max_output_lines: usize,
-    /// Optional CPU time limit in seconds (best-effort, platform-dependent).
-    pub cpu_time_secs: Option<u64>,
-    /// Optional memory limit in MB (best-effort, platform-dependent).
-    pub max_memory_mb: Option<u64>,
 }
 
 impl Default for SkillsExecConfig {
@@ -431,8 +490,6 @@ impl Default for SkillsExecConfig {
             work_dir: default_runtime_temp_root().join("skills_work"),
             timeout_secs: 30,
             max_output_lines: 5000,
-            cpu_time_secs: None,
-            max_memory_mb: None,
         }
     }
 }

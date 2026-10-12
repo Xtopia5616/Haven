@@ -161,6 +161,11 @@
 					<div class="model-option-group">
 						<div class="model-menu-title">联网搜索</div>
 						{#if webSearchSupported}
+							{#if currentWebSearch === 'inherit'}
+								<div class="model-menu-hint">
+									未设置模型覆盖；运行时使用提供商默认值或 HAVEN_WEB_SEARCH。
+								</div>
+							{/if}
 							<div class="effort-row" role="group" aria-label="联网搜索">
 								{#each webSearchOptions as option}
 									<MaterialChoiceChip

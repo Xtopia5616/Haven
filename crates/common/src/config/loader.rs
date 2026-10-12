@@ -1204,6 +1204,47 @@ base_url = "https://api.deepseek.com"
     }
 
     #[test]
+    fn load_backs_up_unknown_media_and_web_search_modes() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = r#"
+[media.ocr]
+provider = "future-ocr"
+
+[[llm.providers]]
+name = "primary"
+provider = "openai"
+default_web_search = "alway"
+"#;
+        std::fs::write(&path, original).unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+
+        assert_eq!(loader.config(), &AppConfig::default());
+        let backups: Vec<_> = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "invalid semantic config must be backed up"
+        );
+        assert_eq!(
+            std::fs::read_to_string(backups[0].path()).unwrap(),
+            original
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn load_rejects_old_fields_and_plaintext_credentials() {
         let cases = [
             ("removed root section", "[audio]\nmax_duration_secs = 20\n"),
@@ -1507,6 +1548,36 @@ model = "nova-3"
             original
         );
         // Sanity: the file itself is untouched until a save happens.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_rejects_removed_skill_resource_limits_and_backs_up_config() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original =
+            "[skills_exec]\nwork_dir = \"custom\"\ncpu_time_secs = 30\nmax_memory_mb = 512\n";
+        std::fs::write(&path, original).unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+
+        assert_eq!(loader.config().skills_exec, SkillsExecConfig::default());
+        let backups: Vec<_> = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "removed config fields must be backed up");
+        assert_eq!(
+            std::fs::read_to_string(backups[0].path()).unwrap(),
+            original
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         let _ = std::fs::remove_dir_all(&dir);
     }

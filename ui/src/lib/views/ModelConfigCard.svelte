@@ -6,6 +6,7 @@
 	import MaterialNumberFieldWithUnit from '$lib/MaterialNumberFieldWithUnit.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
+	import { CONTEXT_WINDOW_BOUNDS } from '$lib/contracts/settings.ts';
 	import { CAPABILITY_OPTIONS } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
 	import type { CapabilityInput } from '$lib/contracts/generatedCommands.ts';
@@ -23,7 +24,11 @@
 		onSetModel: (model: ModelDraft, modelId: string) => void;
 		onSetModelProvider: (model: ModelDraft, provider: string) => void;
 		onSetCapability: (model: ModelDraft, capability: CapabilityInput, checked: boolean) => void;
-		onUpdateOverride: (model: ModelDraft, field: ModelOverrideField, value: number | null) => void;
+		onUpdateOverride: (
+			model: ModelDraft,
+			field: ModelOverrideField,
+			value: number | null,
+		) => void;
 		onRemoveModel: (model: ModelDraft) => void;
 	}
 
@@ -101,7 +106,9 @@
 					<div class="model-fields">
 						<div class="model-field settings-field-layout model-id-field">
 							<label class="field-label" for="{fieldId}-id">模型配置 ID</label>
-							<span class="advanced-hint">Haven 内部路由标识，不会发送给 Provider</span>
+							<span class="advanced-hint"
+								>Haven 内部路由标识，不会发送给 Provider</span
+							>
 							<input
 								id="{fieldId}-id"
 								class="md-input model-id-input"
@@ -125,7 +132,9 @@
 						</div>
 						<div class="model-field settings-field-layout model-service-field">
 							<label class="field-label" for="{fieldId}-name">服务模型 ID</label>
-							<span class="advanced-hint">此值会作为 API 请求中的 model 参数发送给 Provider</span>
+							<span class="advanced-hint"
+								>此值会作为 API 请求中的 model 参数发送给 Provider</span
+							>
 							<div class="service-model-control">
 								<MaterialAutocomplete
 									id="{fieldId}-name"
@@ -213,6 +222,7 @@
 										unit="K"
 										step={1}
 										min={0}
+										max={CONTEXT_WINDOW_BOUNDS.maxTokens / 1000}
 										onChange={withNumberValue((value) =>
 											onUpdateOverride(
 												model,
@@ -221,6 +231,10 @@
 											),
 										)}
 									/>
+									<p class="model-hint">
+										0 使用 Provider 上报值或默认窗口；显式值范围为 1K–2,000K
+										tokens。
+									</p>
 								</div>
 								<div class="model-field settings-field-layout">
 									<label class="field-label" for="{fieldId}-cost-in"
@@ -472,8 +486,7 @@
 		background: currentColor;
 		opacity: 0;
 		transform: translate(-50%, -50%);
-		transition:
-			opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+		transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 		pointer-events: none;
 	}
 	.capability-checkbox-box::after {
@@ -487,8 +500,7 @@
 		border-width: 0 2px 2px 0;
 		opacity: 0;
 		transform: translate(-50%, -60%) rotate(45deg);
-		transition:
-			opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		transition: opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 		pointer-events: none;
 	}
 	.capability-checkbox-input:checked + .capability-checkbox-box {

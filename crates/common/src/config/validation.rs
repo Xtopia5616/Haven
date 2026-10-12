@@ -42,7 +42,47 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
     )?;
     validate_concurrency_limits(&config.session, &config.llm, &config.context_limits)?;
     validate_resource_limits(&config.session, &config.context_limits)?;
+    validate_skills_exec(&config.skills_exec)?;
+    validate_context_windows(config)?;
+    for (name, tool) in &config.tool_settings {
+        if tool
+            .timeout_secs
+            .is_some_and(|timeout| timeout == 0 || timeout > super::MAX_TOOL_TIMEOUT_SECS)
+        {
+            anyhow::bail!(
+                "tool_settings.{name}.timeout_secs must be within 1..={} seconds",
+                super::MAX_TOOL_TIMEOUT_SECS
+            );
+        }
+        if tool
+            .max_retries
+            .is_some_and(|retries| retries > super::MAX_TOOL_RETRIES)
+        {
+            anyhow::bail!(
+                "tool_settings.{name}.max_retries must not exceed {}",
+                super::MAX_TOOL_RETRIES
+            );
+        }
+        if tool
+            .retry_backoff_secs
+            .is_some_and(|secs| secs > super::MAX_TOOL_RETRY_BACKOFF_SECS)
+        {
+            anyhow::bail!(
+                "tool_settings.{name}.retry_backoff_secs must not exceed {} seconds",
+                super::MAX_TOOL_RETRY_BACKOFF_SECS
+            );
+        }
+        if tool
+            .max_output_chars
+            .is_some_and(|cap| cap > config.context_limits.max_observation_chars)
+        {
+            anyhow::bail!(
+                "tool_settings.{name}.max_output_chars must not exceed context_limits.max_observation_chars"
+            );
+        }
+    }
     validate_audio_capture(&config.media.audio)?;
+    validate_ocr_provider(&config.media.ocr.provider)?;
     validate_unique_llm_configuration_keys(&config.llm)?;
     if config.context_limits.max_known_facts > super::MAX_FACTS_IN_EXTRACTION_PROMPT {
         anyhow::bail!(
@@ -66,6 +106,16 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         {
             anyhow::bail!("llm.providers.api_style must use a supported API style");
         }
+        validate_web_search_mode(
+            "llm.providers.default_web_search",
+            provider.default_web_search.as_deref(),
+        )?;
+    }
+    for (index, model) in config.llm.models.iter().enumerate() {
+        validate_web_search_mode(
+            &format!("llm.models[{index}].web_search"),
+            model.web_search.as_deref(),
+        )?;
     }
 
     let has_provider = |name: &str| {
@@ -73,24 +123,92 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
             .llm
             .providers
             .iter()
-            .any(|provider| provider.name == name)
+            .any(|provider| provider.name == name.trim())
     };
-    if !matches!(
-        config.media.stt.provider_name.as_str(),
-        "llm" | "mcp" | "none"
-    ) && !has_provider(&config.media.stt.provider_name)
-    {
+    let stt_provider = config.media.stt.provider_name.trim();
+    if stt_provider.is_empty() {
+        anyhow::bail!("media.stt.provider_name must not be empty");
+    }
+    let stt_mode = if stt_provider.eq_ignore_ascii_case("llm") {
+        "llm"
+    } else if stt_provider.eq_ignore_ascii_case("mcp") {
+        "mcp"
+    } else if stt_provider.eq_ignore_ascii_case("none") {
+        "none"
+    } else {
+        "provider"
+    };
+    if stt_mode == "provider" && !has_provider(stt_provider) {
         anyhow::bail!("media.stt.provider_name must reference a configured Provider");
     }
-    if config.media.tts.provider_name != "none" && !has_provider(&config.media.tts.provider_name) {
-        anyhow::bail!("media.tts.provider_name must reference a configured Provider or none");
+    if stt_mode == "mcp" {
+        let server_name = config
+            .media
+            .stt
+            .mcp_server
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!("media.stt.mcp_server is required when provider_name is mcp")
+            })?;
+        if !config
+            .mcp_servers
+            .iter()
+            .any(|server| server.name == server_name)
+        {
+            anyhow::bail!("media.stt.mcp_server must reference a configured MCP server");
+        }
     }
-    if config.media.image_gen.provider_name != "none"
-        && !has_provider(&config.media.image_gen.provider_name)
-    {
-        anyhow::bail!("media.image_gen.provider_name must reference a configured Provider or none");
-    }
+    validate_optional_media_provider(
+        "media.tts.provider_name",
+        &config.media.tts.provider_name,
+        &has_provider,
+    )?;
+    validate_optional_media_provider(
+        "media.image_gen.provider_name",
+        &config.media.image_gen.provider_name,
+        &has_provider,
+    )?;
     Ok(())
+}
+
+fn validate_optional_media_provider(
+    path: &str,
+    name: &str,
+    has_provider: &impl Fn(&str) -> bool,
+) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() || name.eq_ignore_ascii_case("none") || has_provider(name) {
+        Ok(())
+    } else {
+        anyhow::bail!("{path} must reference a configured Provider or be none/empty")
+    }
+}
+
+fn validate_ocr_provider(provider: &str) -> Result<()> {
+    if matches!(provider, "llm" | "baidu" | "azure" | "tencent" | "none") {
+        Ok(())
+    } else {
+        anyhow::bail!("media.ocr.provider must be one of llm, baidu, azure, tencent, or none")
+    }
+}
+
+fn validate_web_search_mode(path: &str, value: Option<&str>) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let mode = value.trim();
+    if mode.is_empty()
+        || matches!(
+            mode.to_ascii_lowercase().as_str(),
+            "off" | "auto" | "always" | "required" | "on" | "1" | "true"
+        )
+    {
+        Ok(())
+    } else {
+        anyhow::bail!("{path} must be off, auto, always, or a supported always alias")
+    }
 }
 
 /// Validate the shared step-budget contract used by TOML, Settings and the
@@ -172,10 +290,145 @@ fn validate_resource_limits(
             super::MAX_SESSION_PROMPT_HISTORY_LIMIT
         );
     }
+    if session.history_retention_days > super::MAX_HISTORY_RETENTION_DAYS {
+        anyhow::bail!(
+            "session.history_retention_days must not exceed {} days",
+            super::MAX_HISTORY_RETENTION_DAYS
+        );
+    }
     if context.file_max_list_entries > super::MAX_FILE_MAX_LIST_ENTRIES {
         anyhow::bail!(
             "context_limits.file_max_list_entries must not exceed {}",
             super::MAX_FILE_MAX_LIST_ENTRIES
+        );
+    }
+    if !(super::MIN_FILE_LINE_MAX_BYTES..=super::MAX_FILE_LINE_MAX_BYTES)
+        .contains(&context.file_line_max_bytes)
+    {
+        anyhow::bail!(
+            "context_limits.file_line_max_bytes must be between {} and {} bytes",
+            super::MIN_FILE_LINE_MAX_BYTES,
+            super::MAX_FILE_LINE_MAX_BYTES
+        );
+    }
+    if !(super::MIN_FILE_BYTE_READ_MAX_BYTES..=super::MAX_FILE_BYTE_READ_MAX_BYTES)
+        .contains(&context.file_byte_read_max_bytes)
+    {
+        anyhow::bail!(
+            "context_limits.file_byte_read_max_bytes must be between {} and {} bytes",
+            super::MIN_FILE_BYTE_READ_MAX_BYTES,
+            super::MAX_FILE_BYTE_READ_MAX_BYTES
+        );
+    }
+    for (path, value, max) in [
+        (
+            "context_limits.file_max_full_file_bytes",
+            context.file_max_full_file_bytes,
+            super::MAX_FILE_OPERATION_BYTES,
+        ),
+        (
+            "context_limits.file_write_max_bytes",
+            context.file_write_max_bytes,
+            super::MAX_FILE_OPERATION_BYTES,
+        ),
+        (
+            "context_limits.file_vision_max_bytes",
+            context.file_vision_max_bytes,
+            super::MAX_FILE_OPERATION_BYTES,
+        ),
+        (
+            "context_limits.search_max_file_size_bytes",
+            context.search_max_file_size_bytes,
+            super::MAX_SEARCH_FILE_SIZE_BYTES,
+        ),
+    ] {
+        if value > max {
+            anyhow::bail!("{path} must not exceed {max} bytes");
+        }
+    }
+    if context.file_write_max_bytes == 0 {
+        anyhow::bail!("context_limits.file_write_max_bytes must be greater than zero");
+    }
+    for (path, value, max) in [
+        (
+            "context_limits.max_observation_chars",
+            context.max_observation_chars,
+            super::MAX_CONTEXT_TEXT_CHARS,
+        ),
+        (
+            "context_limits.max_transcript_chars",
+            context.max_transcript_chars,
+            super::MAX_CONTEXT_TEXT_CHARS,
+        ),
+        (
+            "context_limits.tool_run_result_context_chars",
+            context.tool_run_result_context_chars,
+            super::MAX_CONTEXT_TEXT_CHARS,
+        ),
+        (
+            "context_limits.notification_summary_chars",
+            context.notification_summary_chars,
+            super::MAX_NOTIFICATION_SUMMARY_CHARS,
+        ),
+        (
+            "context_limits.file_summary_input_chars",
+            context.file_summary_input_chars,
+            super::MAX_FILE_SUMMARY_INPUT_CHARS,
+        ),
+        (
+            "context_limits.search_snippet_chars",
+            context.search_snippet_chars,
+            super::MAX_SEARCH_SNIPPET_CHARS,
+        ),
+        (
+            "context_limits.self_tool_max_instructions_bytes",
+            context.self_tool_max_instructions_bytes,
+            super::MAX_SELF_TOOL_INSTRUCTIONS_BYTES,
+        ),
+        (
+            "context_limits.self_tool_max_script_bytes",
+            context.self_tool_max_script_bytes,
+            super::MAX_SELF_TOOL_SCRIPT_BYTES,
+        ),
+        (
+            "context_limits.mcp_max_binary_base64_bytes",
+            context.mcp_max_binary_base64_bytes,
+            super::MAX_MCP_MAX_BINARY_BASE64_BYTES,
+        ),
+        (
+            "context_limits.clipboard_history_entries",
+            context.clipboard_history_entries,
+            super::MAX_CLIPBOARD_HISTORY_ENTRIES,
+        ),
+        (
+            "context_limits.clipboard_history_max_entries",
+            context.clipboard_history_max_entries,
+            super::MAX_CLIPBOARD_HISTORY_ENTRIES,
+        ),
+        (
+            "context_limits.clipboard_entry_max_chars",
+            context.clipboard_entry_max_chars,
+            super::MAX_CLIPBOARD_ENTRY_OUTPUT_CHARS,
+        ),
+    ] {
+        if value > max {
+            anyhow::bail!("{path} must not exceed {max}");
+        }
+    }
+    if context.sanitize_field_max_chars == 0
+        || context.sanitize_field_max_chars > super::MAX_SANITIZE_FIELD_CHARS
+    {
+        anyhow::bail!(
+            "context_limits.sanitize_field_max_chars must be within 1..={}",
+            super::MAX_SANITIZE_FIELD_CHARS
+        );
+    }
+    if context.file_summary_timeout_secs == 0
+        || context.file_summary_timeout_secs > super::MAX_FILE_SUMMARY_TIMEOUT_SECS
+    {
+        anyhow::bail!(
+            "context_limits.file_summary_timeout_secs must be within 1..={} seconds",
+            super::MAX_FILE_SUMMARY_TIMEOUT_SECS
         );
     }
     if context.mcp_max_sse_buffer_bytes > super::MAX_MCP_MAX_SSE_BUFFER_BYTES {
@@ -195,6 +448,132 @@ fn validate_resource_limits(
             "context_limits.network_max_body_bytes must not exceed {} bytes",
             super::MAX_NETWORK_MAX_BODY_BYTES
         );
+    }
+    if !(super::MIN_SEARCH_MAX_RESULTS..=super::MAX_SEARCH_MAX_RESULTS)
+        .contains(&context.search_max_results)
+    {
+        anyhow::bail!(
+            "context_limits.search_max_results must be within {}..={}",
+            super::MIN_SEARCH_MAX_RESULTS,
+            super::MAX_SEARCH_MAX_RESULTS
+        );
+    }
+    if context.search_window_bytes > super::MAX_SEARCH_WINDOW_BYTES {
+        anyhow::bail!(
+            "context_limits.search_window_bytes must not exceed {} bytes",
+            super::MAX_SEARCH_WINDOW_BYTES
+        );
+    }
+    if context.max_pending_scheduled_tool_runs > super::MAX_PENDING_SCHEDULED_TOOL_RUNS {
+        anyhow::bail!(
+            "context_limits.max_pending_scheduled_tool_runs must not exceed {}",
+            super::MAX_PENDING_SCHEDULED_TOOL_RUNS
+        );
+    }
+    if context.event_chunk_batch_max_bytes > super::MAX_EVENT_CHUNK_BATCH_MAX_BYTES {
+        anyhow::bail!(
+            "context_limits.event_chunk_batch_max_bytes must not exceed {} bytes",
+            super::MAX_EVENT_CHUNK_BATCH_MAX_BYTES
+        );
+    }
+    if context.scheduled_tool_runs_due_horizon_secs < 0
+        || context.scheduled_tool_runs_due_horizon_secs
+            > super::MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS
+    {
+        anyhow::bail!(
+            "context_limits.scheduled_tool_runs_due_horizon_secs must be within 0..={} seconds",
+            super::MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS
+        );
+    }
+    if context.network_max_retries > super::MAX_NETWORK_RETRIES {
+        anyhow::bail!(
+            "context_limits.network_max_retries must not exceed {}",
+            super::MAX_NETWORK_RETRIES
+        );
+    }
+    if context.network_backoff_base_secs > super::MAX_NETWORK_BACKOFF_BASE_SECS {
+        anyhow::bail!(
+            "context_limits.network_backoff_base_secs must not exceed {} seconds",
+            super::MAX_NETWORK_BACKOFF_BASE_SECS
+        );
+    }
+    if !(super::MIN_EMBEDDING_CHUNK_SIZE..=super::MAX_EMBEDDING_CHUNK_SIZE)
+        .contains(&context.embedding_chunk_size)
+    {
+        anyhow::bail!(
+            "context_limits.embedding_chunk_size must be within {}..={}",
+            super::MIN_EMBEDDING_CHUNK_SIZE,
+            super::MAX_EMBEDDING_CHUNK_SIZE
+        );
+    }
+    if !(super::MIN_MAX_TOOLS_PER_REQUEST..=super::MAX_TOOLS_PER_REQUEST)
+        .contains(&context.max_tools_per_request)
+    {
+        anyhow::bail!(
+            "context_limits.max_tools_per_request must be within {}..={}",
+            super::MIN_MAX_TOOLS_PER_REQUEST,
+            super::MAX_TOOLS_PER_REQUEST
+        );
+    }
+    Ok(())
+}
+
+fn validate_skills_exec(config: &super::SkillsExecConfig) -> Result<()> {
+    if config.timeout_secs == 0 || config.timeout_secs > super::MAX_SKILLS_EXEC_TIMEOUT_SECS {
+        anyhow::bail!(
+            "skills_exec.timeout_secs must be within 1..={} seconds",
+            super::MAX_SKILLS_EXEC_TIMEOUT_SECS
+        );
+    }
+    if config.max_output_lines > super::MAX_SKILLS_EXEC_OUTPUT_LINES {
+        anyhow::bail!(
+            "skills_exec.max_output_lines must not exceed {}",
+            super::MAX_SKILLS_EXEC_OUTPUT_LINES
+        );
+    }
+    Ok(())
+}
+
+fn validate_context_windows(config: &AppConfig) -> Result<()> {
+    let limits = &config.context_limits;
+    if !(super::MIN_CONTEXT_WINDOW_TOKENS..=super::MAX_CONTEXT_WINDOW_TOKENS)
+        .contains(&limits.default_context_window)
+    {
+        anyhow::bail!(
+            "context_limits.default_context_window must be within {}..={} tokens",
+            super::MIN_CONTEXT_WINDOW_TOKENS,
+            super::MAX_CONTEXT_WINDOW_TOKENS
+        );
+    }
+    if limits.response_token_floor > super::MAX_CONTEXT_WINDOW_TOKENS {
+        anyhow::bail!(
+            "context_limits.response_token_floor must not exceed {} tokens",
+            super::MAX_CONTEXT_WINDOW_TOKENS
+        );
+    }
+    if limits.compaction_reserve_tokens >= limits.default_context_window {
+        anyhow::bail!(
+            "context_limits.compaction_reserve_tokens must be smaller than context_limits.default_context_window"
+        );
+    }
+
+    for (index, model) in config.llm.models.iter().enumerate() {
+        let Some(window) = model.context_window else {
+            continue;
+        };
+        if !(super::MIN_CONTEXT_WINDOW_TOKENS..=super::MAX_CONTEXT_WINDOW_TOKENS).contains(&window)
+        {
+            anyhow::bail!(
+                "llm.models[{index}].context_window must be within {}..={} tokens",
+                super::MIN_CONTEXT_WINDOW_TOKENS,
+                super::MAX_CONTEXT_WINDOW_TOKENS
+            );
+        }
+        if limits.compaction_reserve_tokens >= window {
+            anyhow::bail!(
+                "context_limits.compaction_reserve_tokens must be smaller than llm.models[{index}].context_window"
+            );
+        }
     }
     Ok(())
 }
@@ -331,15 +710,30 @@ fn validate_audio_capture(audio: &super::AudioConfig) -> Result<()> {
 }
 
 fn validate_mcp_discovery(config: &super::McpDiscoveryConfig) -> Result<()> {
-    if config.health_interval_secs == 0 {
-        anyhow::bail!("mcp_discovery.health_interval_secs must be greater than zero");
-    }
-    if config.reconnect_initial_ms == 0 {
-        anyhow::bail!("mcp_discovery.reconnect_initial_ms must be greater than zero");
-    }
-    if config.reconnect_max_ms == 0 || config.reconnect_max_ms < config.reconnect_initial_ms {
+    if !(1..=super::MAX_MCP_HEALTH_INTERVAL_SECS).contains(&config.health_interval_secs) {
         anyhow::bail!(
-            "mcp_discovery.reconnect_max_ms must be at least reconnect_initial_ms and greater than zero"
+            "mcp_discovery.health_interval_secs must be within 1..={} seconds",
+            super::MAX_MCP_HEALTH_INTERVAL_SECS
+        );
+    }
+    if !(1..=super::MAX_MCP_RECONNECT_DELAY_MS).contains(&config.reconnect_initial_ms) {
+        anyhow::bail!(
+            "mcp_discovery.reconnect_initial_ms must be within 1..={} milliseconds",
+            super::MAX_MCP_RECONNECT_DELAY_MS
+        );
+    }
+    if !(1..=super::MAX_MCP_RECONNECT_DELAY_MS).contains(&config.reconnect_max_ms)
+        || config.reconnect_max_ms < config.reconnect_initial_ms
+    {
+        anyhow::bail!(
+            "mcp_discovery.reconnect_max_ms must be within 1..={} milliseconds and at least reconnect_initial_ms",
+            super::MAX_MCP_RECONNECT_DELAY_MS
+        );
+    }
+    if config.reconnect_max_retries > super::MAX_MCP_RECONNECT_RETRIES {
+        anyhow::bail!(
+            "mcp_discovery.reconnect_max_retries must not exceed {}",
+            super::MAX_MCP_RECONNECT_RETRIES
         );
     }
     Ok(())
@@ -478,16 +872,119 @@ mod tests {
         MIN_SESSION_STEPS_PER_RUN, MIN_SESSION_STEPS_PER_SESSION, validate_app_config,
         validate_app_config_numbers, validate_settings_contract, validate_settings_numbers,
     };
-    use crate::config::{AppConfig, ProviderConfig, Settings};
+    use crate::config::{AppConfig, McpServerConfig, ProviderConfig, Settings};
 
     #[test]
     fn accepts_defaults_and_safe_integer_boundaries() {
         let mut config = AppConfig::default();
         config.context_limits.max_upload_total_bytes = 9_007_199_254_740_991;
-        config.context_limits.default_context_window = u32::MAX;
+        config.context_limits.default_context_window = super::super::MAX_CONTEXT_WINDOW_TOKENS;
 
         assert!(validate_app_config_numbers(&config).is_ok());
         assert!(validate_settings_numbers(&Settings::from(&config)).is_ok());
+    }
+
+    #[test]
+    fn context_window_and_compaction_reserve_share_one_budget() {
+        let mut config = AppConfig::default();
+        config.context_limits.default_context_window = super::super::MAX_CONTEXT_WINDOW_TOKENS;
+        config.context_limits.compaction_reserve_tokens =
+            super::super::MAX_CONTEXT_WINDOW_TOKENS - 1;
+        config.llm.providers.push(ProviderConfig {
+            name: "primary".into(),
+            ..Default::default()
+        });
+        config.llm.models.push(crate::config::ModelConfig {
+            id: "large-context".into(),
+            provider_name: "primary".into(),
+            model: "large-context-model".into(),
+            context_window: Some(super::super::MAX_CONTEXT_WINDOW_TOKENS),
+            ..Default::default()
+        });
+        assert!(validate_app_config(&config).is_ok());
+        assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+
+        for (invalid, path) in [
+            (
+                {
+                    let mut config = AppConfig::default();
+                    config.context_limits.default_context_window = u32::MAX;
+                    config
+                },
+                "context_limits.default_context_window",
+            ),
+            (
+                {
+                    let mut config = AppConfig::default();
+                    config.context_limits.compaction_reserve_tokens =
+                        config.context_limits.default_context_window;
+                    config
+                },
+                "compaction_reserve_tokens",
+            ),
+            (
+                {
+                    let mut config = AppConfig::default();
+                    config.llm.models.push(crate::config::ModelConfig {
+                        context_window: Some(999),
+                        ..Default::default()
+                    });
+                    config
+                },
+                "llm.models[0].context_window",
+            ),
+            (
+                {
+                    let mut config = AppConfig::default();
+                    config.llm.models.push(crate::config::ModelConfig {
+                        context_window: Some(4_000),
+                        ..Default::default()
+                    });
+                    config
+                },
+                "compaction_reserve_tokens",
+            ),
+        ] {
+            let config_error = validate_app_config(&invalid).unwrap_err();
+            assert!(config_error.to_string().contains(path), "{config_error}");
+            let settings_error = validate_settings_contract(&Settings::from(&invalid)).unwrap_err();
+            assert!(
+                settings_error.to_string().contains(path),
+                "{settings_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn per_tool_output_cap_cannot_exceed_global_observation_budget() {
+        let mut config = AppConfig::default();
+        config.context_limits.max_observation_chars = 20_000;
+        config.tool_settings.insert(
+            "shell".into(),
+            crate::config::ToolConfig {
+                max_output_chars: Some(20_000),
+                ..Default::default()
+            },
+        );
+        assert!(validate_app_config(&config).is_ok());
+        assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+
+        config
+            .tool_settings
+            .get_mut("shell")
+            .unwrap()
+            .max_output_chars = Some(20_001);
+        for validation in [
+            validate_app_config(&config),
+            validate_settings_contract(&Settings::from(&config)),
+        ] {
+            assert!(
+                validation
+                    .unwrap_err()
+                    .to_string()
+                    .contains("tool_settings.shell.max_output_chars")
+            );
+        }
     }
 
     #[test]
@@ -666,7 +1163,7 @@ mod tests {
 
     #[test]
     fn resource_bounds_match_config_and_settings_contracts() {
-        let cases: [(&str, u64, u64, fn(&mut AppConfig, u64)); 5] = [
+        let cases: [(&str, u64, u64, fn(&mut AppConfig, u64)); 13] = [
             (
                 "session.prompt_history_limit",
                 0,
@@ -678,6 +1175,30 @@ mod tests {
                 0,
                 super::super::MAX_FILE_MAX_LIST_ENTRIES as u64,
                 |config, value| config.context_limits.file_max_list_entries = value as usize,
+            ),
+            (
+                "context_limits.file_line_max_bytes",
+                super::super::MIN_FILE_LINE_MAX_BYTES as u64,
+                super::super::MAX_FILE_LINE_MAX_BYTES as u64,
+                |config, value| config.context_limits.file_line_max_bytes = value as usize,
+            ),
+            (
+                "context_limits.file_byte_read_max_bytes",
+                super::super::MIN_FILE_BYTE_READ_MAX_BYTES,
+                super::super::MAX_FILE_BYTE_READ_MAX_BYTES,
+                |config, value| config.context_limits.file_byte_read_max_bytes = value,
+            ),
+            (
+                "context_limits.max_known_facts",
+                0,
+                super::super::MAX_FACTS_IN_EXTRACTION_PROMPT as u64,
+                |config, value| config.context_limits.max_known_facts = value as usize,
+            ),
+            (
+                "context_limits.input_ring_buffer_secs",
+                0,
+                super::super::MAX_INPUT_RING_BUFFER_SECS as u64,
+                |config, value| config.context_limits.input_ring_buffer_secs = value as usize,
             ),
             (
                 "context_limits.mcp_max_sse_buffer_bytes",
@@ -696,6 +1217,30 @@ mod tests {
                 0,
                 super::super::MAX_NETWORK_MAX_BODY_BYTES as u64,
                 |config, value| config.context_limits.network_max_body_bytes = value as usize,
+            ),
+            (
+                "context_limits.search_max_results",
+                super::super::MIN_SEARCH_MAX_RESULTS as u64,
+                super::super::MAX_SEARCH_MAX_RESULTS as u64,
+                |config, value| config.context_limits.search_max_results = value as usize,
+            ),
+            (
+                "context_limits.search_window_bytes",
+                0,
+                super::super::MAX_SEARCH_WINDOW_BYTES,
+                |config, value| config.context_limits.search_window_bytes = value,
+            ),
+            (
+                "context_limits.embedding_chunk_size",
+                super::super::MIN_EMBEDDING_CHUNK_SIZE as u64,
+                super::super::MAX_EMBEDDING_CHUNK_SIZE as u64,
+                |config, value| config.context_limits.embedding_chunk_size = value as usize,
+            ),
+            (
+                "context_limits.max_tools_per_request",
+                super::super::MIN_MAX_TOOLS_PER_REQUEST as u64,
+                super::super::MAX_TOOLS_PER_REQUEST as u64,
+                |config, value| config.context_limits.max_tools_per_request = value as usize,
             ),
         ];
 
@@ -729,6 +1274,294 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn additional_resource_caps_match_config_and_settings_contracts() {
+        let cases: [(&str, u64, u64, fn(&mut AppConfig, u64)); 23] = [
+            (
+                "context_limits.max_observation_chars",
+                0,
+                super::super::MAX_CONTEXT_TEXT_CHARS as u64,
+                |config, value| config.context_limits.max_observation_chars = value as usize,
+            ),
+            (
+                "context_limits.max_transcript_chars",
+                0,
+                super::super::MAX_CONTEXT_TEXT_CHARS as u64,
+                |config, value| config.context_limits.max_transcript_chars = value as usize,
+            ),
+            (
+                "context_limits.tool_run_result_context_chars",
+                0,
+                super::super::MAX_CONTEXT_TEXT_CHARS as u64,
+                |config, value| {
+                    config.context_limits.tool_run_result_context_chars = value as usize
+                },
+            ),
+            (
+                "context_limits.notification_summary_chars",
+                0,
+                super::super::MAX_NOTIFICATION_SUMMARY_CHARS as u64,
+                |config, value| config.context_limits.notification_summary_chars = value as usize,
+            ),
+            (
+                "context_limits.file_max_full_file_bytes",
+                0,
+                super::super::MAX_FILE_OPERATION_BYTES,
+                |config, value| config.context_limits.file_max_full_file_bytes = value,
+            ),
+            (
+                "context_limits.file_write_max_bytes",
+                1,
+                super::super::MAX_FILE_OPERATION_BYTES,
+                |config, value| config.context_limits.file_write_max_bytes = value,
+            ),
+            (
+                "context_limits.file_vision_max_bytes",
+                0,
+                super::super::MAX_FILE_OPERATION_BYTES,
+                |config, value| config.context_limits.file_vision_max_bytes = value,
+            ),
+            (
+                "context_limits.file_summary_input_chars",
+                0,
+                super::super::MAX_FILE_SUMMARY_INPUT_CHARS as u64,
+                |config, value| config.context_limits.file_summary_input_chars = value as usize,
+            ),
+            (
+                "context_limits.search_snippet_chars",
+                0,
+                super::super::MAX_SEARCH_SNIPPET_CHARS as u64,
+                |config, value| config.context_limits.search_snippet_chars = value as usize,
+            ),
+            (
+                "context_limits.search_max_file_size_bytes",
+                0,
+                super::super::MAX_SEARCH_FILE_SIZE_BYTES,
+                |config, value| config.context_limits.search_max_file_size_bytes = value,
+            ),
+            (
+                "context_limits.self_tool_max_instructions_bytes",
+                0,
+                super::super::MAX_SELF_TOOL_INSTRUCTIONS_BYTES as u64,
+                |config, value| {
+                    config.context_limits.self_tool_max_instructions_bytes = value as usize
+                },
+            ),
+            (
+                "context_limits.self_tool_max_script_bytes",
+                0,
+                super::super::MAX_SELF_TOOL_SCRIPT_BYTES as u64,
+                |config, value| config.context_limits.self_tool_max_script_bytes = value as usize,
+            ),
+            (
+                "context_limits.mcp_max_binary_base64_bytes",
+                0,
+                super::super::MAX_MCP_MAX_BINARY_BASE64_BYTES as u64,
+                |config, value| config.context_limits.mcp_max_binary_base64_bytes = value as usize,
+            ),
+            (
+                "context_limits.clipboard_history_entries",
+                0,
+                super::super::MAX_CLIPBOARD_HISTORY_ENTRIES as u64,
+                |config, value| config.context_limits.clipboard_history_entries = value as usize,
+            ),
+            (
+                "context_limits.clipboard_history_max_entries",
+                0,
+                super::super::MAX_CLIPBOARD_HISTORY_ENTRIES as u64,
+                |config, value| {
+                    config.context_limits.clipboard_history_max_entries = value as usize
+                },
+            ),
+            (
+                "context_limits.clipboard_entry_max_chars",
+                0,
+                super::super::MAX_CLIPBOARD_ENTRY_OUTPUT_CHARS as u64,
+                |config, value| config.context_limits.clipboard_entry_max_chars = value as usize,
+            ),
+            (
+                "context_limits.max_pending_scheduled_tool_runs",
+                0,
+                super::super::MAX_PENDING_SCHEDULED_TOOL_RUNS as u64,
+                |config, value| {
+                    config.context_limits.max_pending_scheduled_tool_runs = value as usize
+                },
+            ),
+            (
+                "context_limits.event_chunk_batch_max_bytes",
+                0,
+                super::super::MAX_EVENT_CHUNK_BATCH_MAX_BYTES as u64,
+                |config, value| config.context_limits.event_chunk_batch_max_bytes = value as usize,
+            ),
+            (
+                "context_limits.network_max_retries",
+                0,
+                super::super::MAX_NETWORK_RETRIES as u64,
+                |config, value| config.context_limits.network_max_retries = value as u32,
+            ),
+            (
+                "context_limits.network_backoff_base_secs",
+                0,
+                super::super::MAX_NETWORK_BACKOFF_BASE_SECS,
+                |config, value| config.context_limits.network_backoff_base_secs = value,
+            ),
+            (
+                "mcp_discovery.health_interval_secs",
+                1,
+                super::super::MAX_MCP_HEALTH_INTERVAL_SECS,
+                |config, value| config.mcp_discovery.health_interval_secs = value,
+            ),
+            (
+                "mcp_discovery.reconnect_initial_ms",
+                1,
+                super::super::MAX_MCP_RECONNECT_DELAY_MS,
+                |config, value| config.mcp_discovery.reconnect_initial_ms = value,
+            ),
+            (
+                "mcp_discovery.reconnect_max_ms",
+                1,
+                super::super::MAX_MCP_RECONNECT_DELAY_MS,
+                |config, value| config.mcp_discovery.reconnect_max_ms = value,
+            ),
+        ];
+
+        for (path, min, max, set_value) in cases {
+            for value in [min, max] {
+                let mut config = AppConfig::default();
+                config.mcp_discovery.reconnect_initial_ms = 1;
+                config.mcp_discovery.reconnect_max_ms = super::super::MAX_MCP_RECONNECT_DELAY_MS;
+                set_value(&mut config, value);
+                assert!(validate_app_config(&config).is_ok(), "{path}={value}");
+                assert!(
+                    validate_settings_contract(&Settings::from(&config)).is_ok(),
+                    "Settings {path}={value}"
+                );
+            }
+
+            for value in min.checked_sub(1).into_iter().chain([max + 1]) {
+                let mut config = AppConfig::default();
+                config.mcp_discovery.reconnect_initial_ms = 1;
+                config.mcp_discovery.reconnect_max_ms = super::super::MAX_MCP_RECONNECT_DELAY_MS;
+                set_value(&mut config, value);
+                assert!(
+                    validate_app_config(&config)
+                        .unwrap_err()
+                        .to_string()
+                        .contains(path),
+                    "config {path}={value}"
+                );
+                assert!(
+                    validate_settings_contract(&Settings::from(&config))
+                        .unwrap_err()
+                        .to_string()
+                        .contains(path),
+                    "Settings {path}={value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn executor_and_schedule_budgets_reject_unbounded_values() {
+        for (timeout, lines, valid) in [
+            (1, 0, true),
+            (
+                super::super::MAX_SKILLS_EXEC_TIMEOUT_SECS,
+                super::super::MAX_SKILLS_EXEC_OUTPUT_LINES,
+                true,
+            ),
+            (0, 5_000, false),
+            (super::super::MAX_SKILLS_EXEC_TIMEOUT_SECS + 1, 5_000, false),
+            (30, super::super::MAX_SKILLS_EXEC_OUTPUT_LINES + 1, false),
+        ] {
+            let mut config = AppConfig::default();
+            config.skills_exec.timeout_secs = timeout;
+            config.skills_exec.max_output_lines = lines;
+            assert_eq!(validate_app_config(&config).is_ok(), valid);
+            assert_eq!(
+                validate_settings_contract(&Settings::from(&config)).is_ok(),
+                valid
+            );
+        }
+
+        for horizon in [0, super::super::MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS] {
+            let mut config = AppConfig::default();
+            config.context_limits.scheduled_tool_runs_due_horizon_secs = horizon;
+            assert!(validate_app_config(&config).is_ok());
+            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        }
+        for horizon in [
+            -1,
+            super::super::MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS + 1,
+        ] {
+            let mut config = AppConfig::default();
+            config.context_limits.scheduled_tool_runs_due_horizon_secs = horizon;
+            assert!(validate_app_config(&config).is_err());
+            assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        }
+
+        for (retries, valid) in [
+            (0, true),
+            (super::super::MAX_MCP_RECONNECT_RETRIES, true),
+            (super::super::MAX_MCP_RECONNECT_RETRIES + 1, false),
+        ] {
+            let mut config = AppConfig::default();
+            config.mcp_discovery.reconnect_max_retries = retries;
+            assert_eq!(validate_app_config(&config).is_ok(), valid);
+            assert_eq!(
+                validate_settings_contract(&Settings::from(&config)).is_ok(),
+                valid
+            );
+        }
+
+        let mut config = AppConfig::default();
+        config.tool_settings.insert(
+            "shell".into(),
+            crate::config::ToolConfig {
+                timeout_secs: Some(super::super::MAX_TOOL_TIMEOUT_SECS),
+                max_retries: Some(super::super::MAX_TOOL_RETRIES),
+                retry_backoff_secs: Some(super::super::MAX_TOOL_RETRY_BACKOFF_SECS),
+                ..Default::default()
+            },
+        );
+        assert!(validate_app_config(&config).is_ok());
+        assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        config.tool_settings.get_mut("shell").unwrap().timeout_secs =
+            Some(super::super::MAX_TOOL_TIMEOUT_SECS + 1);
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("tool_settings.shell.timeout_secs")
+        );
+        assert!(
+            validate_settings_contract(&Settings::from(&config))
+                .unwrap_err()
+                .to_string()
+                .contains("tool_settings.shell.timeout_secs")
+        );
+    }
+
+    #[test]
+    fn history_retention_matches_settings_range_and_zero_semantics() {
+        for days in [0, super::super::MAX_HISTORY_RETENTION_DAYS] {
+            let mut config = AppConfig::default();
+            config.session.history_retention_days = days;
+            assert!(validate_app_config(&config).is_ok());
+            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        }
+
+        let mut config = AppConfig::default();
+        config.session.history_retention_days = super::super::MAX_HISTORY_RETENTION_DAYS + 1;
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("history_retention_days")
+        );
+        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
     }
 
     #[test]
@@ -810,6 +1643,159 @@ mod tests {
         config.llm.providers[0].api_style = None;
         config.media.tts.provider_name = "missing".into();
         assert!(validate_app_config(&config).is_err());
+        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+    }
+
+    #[test]
+    fn media_and_web_search_semantics_match_config_and_settings_contracts() {
+        let mut config = AppConfig::default();
+        config.llm.providers.push(ProviderConfig {
+            name: "primary".into(),
+            default_web_search: Some(" ReQuIrEd ".into()),
+            ..Default::default()
+        });
+        config.llm.models.push(crate::config::ModelConfig {
+            id: "chat".into(),
+            provider_name: "primary".into(),
+            model: "model".into(),
+            web_search: Some("TRUE".into()),
+            ..Default::default()
+        });
+        assert!(validate_app_config(&config).is_ok());
+        assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+
+        for provider_name in ["", "none", "NONE", " primary "] {
+            let mut config = AppConfig::default();
+            config.llm.providers.push(ProviderConfig {
+                name: "primary".into(),
+                ..Default::default()
+            });
+            config.media.tts.provider_name = provider_name.into();
+            config.media.image_gen.provider_name = provider_name.into();
+            assert!(
+                validate_app_config(&config).is_ok(),
+                "media provider {provider_name:?}"
+            );
+            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        }
+
+        let mut config = AppConfig::default();
+        config.media.tts.provider_name = "missing".into();
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("media.tts.provider_name")
+        );
+        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        config.media.tts.provider_name = "none".into();
+        config.media.image_gen.provider_name = "missing".into();
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("media.image_gen.provider_name")
+        );
+        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+
+        for provider in ["llm", "baidu", "azure", "tencent", "none"] {
+            let mut config = AppConfig::default();
+            config.media.ocr.provider = provider.into();
+            assert!(
+                validate_app_config(&config).is_ok(),
+                "OCR provider {provider}"
+            );
+            assert!(
+                validate_settings_contract(&Settings::from(&config)).is_ok(),
+                "Settings OCR provider {provider}"
+            );
+        }
+
+        let mut config = AppConfig::default();
+        config.media.ocr.provider = "OCR-LATER".into();
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("media.ocr.provider")
+        );
+        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+
+        for mode in [
+            "off", "auto", "always", "required", "on", "1", "true", " TRUE ", "  ",
+        ] {
+            let mut config = AppConfig::default();
+            config.llm.providers.push(ProviderConfig {
+                name: "primary".into(),
+                default_web_search: Some(mode.into()),
+                ..Default::default()
+            });
+            assert!(
+                validate_app_config(&config).is_ok(),
+                "provider mode {mode:?}"
+            );
+            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+            config.llm.providers[0].default_web_search = None;
+            config.llm.models.push(crate::config::ModelConfig {
+                id: "chat".into(),
+                provider_name: "primary".into(),
+                model: "model".into(),
+                web_search: Some(mode.into()),
+                ..Default::default()
+            });
+            assert!(validate_app_config(&config).is_ok(), "model mode {mode:?}");
+            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        }
+
+        let mut config = AppConfig::default();
+        config.llm.providers.push(ProviderConfig {
+            name: "primary".into(),
+            default_web_search: Some("alway".into()),
+            ..Default::default()
+        });
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("default_web_search")
+        );
+        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        config.llm.providers[0].default_web_search = None;
+        config.llm.models.push(crate::config::ModelConfig {
+            id: "chat".into(),
+            provider_name: "primary".into(),
+            model: "model".into(),
+            web_search: Some("alway".into()),
+            ..Default::default()
+        });
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("web_search")
+        );
+        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+
+        let mut config = AppConfig::default();
+        config.media.stt.provider_name = "LLM".into();
+        assert!(validate_app_config(&config).is_ok());
+        assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        config.media.stt.provider_name = "MCP".into();
+        assert!(validate_app_config(&config).is_err());
+        config.mcp_servers.push(McpServerConfig {
+            name: "transcriber".into(),
+            ..Default::default()
+        });
+        config.media.stt.mcp_server = Some("transcriber".into());
+        assert!(validate_app_config(&config).is_ok());
+        assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        config.media.stt.mcp_server = Some("missing".into());
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("mcp_server")
+        );
         assert!(validate_settings_contract(&Settings::from(&config)).is_err());
     }
 

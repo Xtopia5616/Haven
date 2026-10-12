@@ -196,8 +196,17 @@ pub(super) async fn read_bytes(
     }
     // The output is truncated to max_chars anyway, and the caller-supplied
     // limit is untrusted: cap the allocation and the actual read.
+    // Keep this helper safe even when an internal/test caller bypasses the
+    // FilesTool constructor with a zero or oversized direct limit.
+    let max_byte_read_bytes = max_byte_read_bytes.clamp(
+        haven_common::config::MIN_FILE_BYTE_READ_MAX_BYTES,
+        haven_common::config::MAX_FILE_BYTE_READ_MAX_BYTES,
+    );
     let effective_limit = limit
-        .clamp(1, max_byte_read_bytes)
+        .clamp(
+            haven_common::config::MIN_FILE_BYTE_READ_MAX_BYTES,
+            max_byte_read_bytes,
+        )
         .min((max_chars as u64).saturating_mul(4).max(1))
         .min(total - offset) as usize;
     file.seek(tokio::io::SeekFrom::Start(offset)).await?;

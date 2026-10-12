@@ -1,3 +1,7 @@
+use haven_common::config::{
+    MAX_FILE_BYTE_READ_MAX_BYTES, MAX_FILE_LINE_MAX_BYTES, MAX_FILE_MAX_LIST_ENTRIES,
+    MAX_FILE_OPERATION_BYTES, MAX_FILE_SUMMARY_INPUT_CHARS, MAX_FILE_SUMMARY_TIMEOUT_SECS,
+};
 use haven_common::media::MediaRepresentationKind;
 use haven_llm::LlmRouter;
 use std::path::Path;
@@ -177,14 +181,14 @@ impl FilesTool {
         Self {
             summarizer,
             max_output_chars,
-            max_full_file_bytes,
+            max_full_file_bytes: max_full_file_bytes.min(MAX_FILE_OPERATION_BYTES),
             line_span,
-            max_line_bytes,
-            summary_input_chars,
-            max_list_entries,
-            max_byte_read_bytes,
+            max_line_bytes: max_line_bytes.clamp(1, MAX_FILE_LINE_MAX_BYTES),
+            summary_input_chars: summary_input_chars.min(MAX_FILE_SUMMARY_INPUT_CHARS),
+            max_list_entries: max_list_entries.min(MAX_FILE_MAX_LIST_ENTRIES),
+            max_byte_read_bytes: max_byte_read_bytes.clamp(1, MAX_FILE_BYTE_READ_MAX_BYTES),
             max_write_bytes: 16 * 1024 * 1024,
-            summary_timeout_secs,
+            summary_timeout_secs: summary_timeout_secs.clamp(1, MAX_FILE_SUMMARY_TIMEOUT_SECS),
             search,
             managed_assets,
             media_tool: None,
@@ -197,7 +201,7 @@ impl FilesTool {
     }
 
     pub(crate) fn with_max_write_bytes(mut self, max_write_bytes: u64) -> Self {
-        self.max_write_bytes = max_write_bytes.max(1);
+        self.max_write_bytes = max_write_bytes.clamp(1, MAX_FILE_OPERATION_BYTES);
         self
     }
 

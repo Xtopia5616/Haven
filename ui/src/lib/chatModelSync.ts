@@ -17,6 +17,14 @@ type ModelSyncOptions = {
 	setCurrentApiStyle: (value: string) => void;
 };
 
+function normalizeConfiguredWebSearch(value: string | null | undefined): WebSearchModeInput | null {
+	const mode = value?.trim().toLowerCase();
+	if (!mode) return null;
+	if (mode === 'off' || mode === 'auto') return mode;
+	if (['always', 'required', 'on', '1', 'true'].includes(mode)) return 'always';
+	return null;
+}
+
 function chatModelOptions(settings: SettingsPayload): ChatModelOption[] {
 	const providers = new Map(settings.llm.providers.map((provider) => [provider.name, provider]));
 	return settings.llm.models.flatMap((model) => {
@@ -26,6 +34,9 @@ function chatModelOptions(settings: SettingsPayload): ChatModelOption[] {
 			return [];
 		}
 		const apiStyle = normalizeApiStyle(provider.api_style || 'openai-chat');
+		const webSearchSupported = supportsBuiltinWebSearch(apiStyle);
+		const modelWebSearch = normalizeConfiguredWebSearch(model.web_search);
+		const providerWebSearch = normalizeConfiguredWebSearch(provider.default_web_search);
 		return [
 			{
 				id: model.id,
@@ -33,9 +44,12 @@ function chatModelOptions(settings: SettingsPayload): ChatModelOption[] {
 				providerName,
 				model: model.model,
 				reasoningEffort: model.reasoning_effort || '',
-				webSearch: model.web_search || 'off',
+				webSearch: webSearchSupported
+					? (modelWebSearch ?? providerWebSearch ?? 'inherit')
+					: 'off',
+				webSearchOverride: modelWebSearch !== null,
 				apiStyle,
-				webSearchSupported: supportsBuiltinWebSearch(apiStyle),
+				webSearchSupported,
 			},
 		];
 	});
@@ -81,15 +95,17 @@ export function createChatModelSync(options: ModelSyncOptions) {
 			: undefined;
 		const apiStyle = normalizeApiStyle(provider?.api_style || 'openai-chat');
 		const webSearchSupported = !!selectedModel && supportsBuiltinWebSearch(apiStyle);
-		const storedWebSearch = selectedModel?.web_search || 'off';
+		const explicitWebSearch = normalizeConfiguredWebSearch(selectedModel?.web_search);
+		const providerWebSearch = normalizeConfiguredWebSearch(provider?.default_web_search);
+		const storedWebSearch = explicitWebSearch ?? providerWebSearch ?? 'inherit';
 		let webSearch = storedWebSearch;
 		let normalizedWebSearch: WebSearchModeInput | null = null;
-		if (selectedModel && !webSearchSupported && webSearch !== 'off') {
+		if (selectedModel && !webSearchSupported && explicitWebSearch && explicitWebSearch !== 'off') {
 			webSearch = 'off';
 			normalizedWebSearch = 'off';
 		} else if (selectedModel && apiStyle === 'gemini' && webSearch === 'always') {
 			webSearch = 'auto';
-			normalizedWebSearch = 'auto';
+			if (explicitWebSearch === 'always') normalizedWebSearch = 'auto';
 		}
 
 		setCurrentModelId(selectedModel?.id || '');

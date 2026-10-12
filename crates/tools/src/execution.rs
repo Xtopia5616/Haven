@@ -184,7 +184,7 @@ impl AuthorizedExecutor<'_> {
         // Keep tool-local retries bounded even when a persisted settings file
         // contains an accidentally large value. Agent-level retries have a
         // separate budget in haven-agent; both use the shared recovery policy.
-        let max_attempts = 1 + max_retries.min(8);
+        let max_attempts = 1 + max_retries.min(haven_common::config::MAX_TOOL_RETRIES);
         let jitter = if backoff_secs == 0 {
             RetryJitter::None
         } else {

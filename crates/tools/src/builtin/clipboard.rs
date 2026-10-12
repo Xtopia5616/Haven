@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use haven_common::config::default_generated_media_root;
+use haven_common::config::{MAX_CLIPBOARD_ENTRY_OUTPUT_CHARS, MAX_CLIPBOARD_HISTORY_ENTRIES};
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -15,6 +16,8 @@ use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResul
 
 const MAX_CLIPBOARD_FILES: usize = 32;
 const MAX_CLIPBOARD_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CLIPBOARD_HISTORY_TEXT_CHARS: usize = 64 * 1024;
+const CLIPBOARD_HISTORY_TRUNCATION_MARKER: &str = "\n[clipboard history entry truncated]";
 
 /// One clipboard history entry.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -26,16 +29,41 @@ pub struct ClipboardEntry {
 /// In-memory clipboard history shared across clipboard tool instances
 /// (survives catalog rebuilds). Newest entries first.
 pub struct ClipboardHistory {
-    entries: Mutex<VecDeque<ClipboardEntry>>,
+    state: Mutex<ClipboardHistoryState>,
+}
+
+struct ClipboardHistoryState {
+    entries: VecDeque<ClipboardEntry>,
     max_entries: usize,
 }
 
 impl ClipboardHistory {
+    /// `max_entries == 0` disables retention until a later capacity update.
     pub fn new(max_entries: usize) -> Self {
         Self {
-            entries: Mutex::new(VecDeque::new()),
-            max_entries: max_entries.max(1),
+            state: Mutex::new(ClipboardHistoryState {
+                entries: VecDeque::new(),
+                max_entries: max_entries.min(MAX_CLIPBOARD_HISTORY_ENTRIES),
+            }),
         }
+    }
+
+    /// Apply the live retention capacity and immediately evict the oldest
+    /// entries if the new setting is smaller. A zero capacity clears history
+    /// and makes subsequent records no-ops.
+    pub(crate) fn set_capacity(&self, max_entries: usize) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.max_entries = max_entries.min(MAX_CLIPBOARD_HISTORY_ENTRIES);
+        while state.entries.len() > state.max_entries {
+            state.entries.pop_back();
+        }
+    }
+
+    fn max_entries(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .max_entries
     }
 
     /// Record a copied/read text. Re-recording an existing entry moves it to
@@ -44,37 +72,64 @@ impl ClipboardHistory {
         if content.is_empty() {
             return;
         }
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.max_entries == 0 {
+            return;
+        }
+        let content = truncate_history_entry(&content);
         let timestamp_ms = now_ms();
-        let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(idx) = entries.iter().position(|e| e.content == content) {
-            let mut entry = entries.remove(idx).unwrap();
+        if let Some(idx) = state.entries.iter().position(|e| e.content == content) {
+            let mut entry = state.entries.remove(idx).unwrap();
             entry.timestamp_ms = timestamp_ms;
-            entries.push_front(entry);
+            state.entries.push_front(entry);
         } else {
-            entries.push_front(ClipboardEntry {
+            state.entries.push_front(ClipboardEntry {
                 content,
                 timestamp_ms,
             });
         }
-        while entries.len() > self.max_entries {
-            entries.pop_back();
+        while state.entries.len() > state.max_entries {
+            state.entries.pop_back();
         }
     }
 
     /// Recent entries, newest first, capped at `limit`.
     pub fn recent(&self, limit: usize) -> Vec<ClipboardEntry> {
-        let entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
-        entries.iter().take(limit).cloned().collect()
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.entries.iter().take(limit).cloned().collect()
     }
 
     pub fn len(&self) -> usize {
-        self.entries.lock().unwrap_or_else(|p| p.into_inner()).len()
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entries
+            .len()
     }
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+fn truncate_history_entry(content: &str) -> String {
+    let mut char_indices = content.char_indices();
+    if char_indices.nth(MAX_CLIPBOARD_HISTORY_TEXT_CHARS).is_none() {
+        return content.to_owned();
+    }
+
+    let marker_chars = CLIPBOARD_HISTORY_TRUNCATION_MARKER.chars().count();
+    let prefix_chars = MAX_CLIPBOARD_HISTORY_TEXT_CHARS.saturating_sub(marker_chars);
+    let prefix_end = content
+        .char_indices()
+        .nth(prefix_chars)
+        .map(|(byte_index, _)| byte_index)
+        .unwrap_or(content.len());
+    format!(
+        "{}{CLIPBOARD_HISTORY_TRUNCATION_MARKER}",
+        &content[..prefix_end]
+    )
 }
 
 fn now_ms() -> u64 {
@@ -158,14 +213,15 @@ impl ClipboardTool {
         max_history_limit: usize,
         entry_max_chars: usize,
     ) -> Self {
+        let max_history_limit = max_history_limit.min(MAX_CLIPBOARD_HISTORY_ENTRIES);
         Self {
             history,
             clipboard_text_reader: Arc::new(read_text_clipboard),
             clipboard_text_writer: Arc::new(write_text_clipboard),
-            max_output_chars,
-            default_limit,
+            max_output_chars: max_output_chars.min(MAX_CLIPBOARD_ENTRY_OUTPUT_CHARS),
+            default_limit: default_limit.min(max_history_limit),
             max_history_limit,
-            entry_max_chars,
+            entry_max_chars: entry_max_chars.min(MAX_CLIPBOARD_ENTRY_OUTPUT_CHARS),
             managed_assets: ManagedAssetRegistry::default(),
         }
     }
@@ -429,10 +485,12 @@ impl ClipboardTool {
                         );
                     }
                 }
+                let history_cap = self.max_history_limit.min(self.history.max_entries());
+                let default_limit = self.default_limit.min(history_cap);
                 let limit = params
                     .limit
-                    .map(|l| (l.min(self.max_history_limit as u64)) as usize)
-                    .unwrap_or(self.default_limit);
+                    .map(|l| (l.min(history_cap as u64)) as usize)
+                    .unwrap_or(default_limit);
                 let entries = self.history.recent(limit);
                 let json_entries: Vec<Value> = entries
                     .iter()
@@ -917,7 +975,7 @@ mod tests {
     use serde_json::json;
 
     fn test_tool() -> ClipboardTool {
-        ClipboardTool::new(Arc::new(ClipboardHistory::new(10)), 20_000, 10, 100, 2000)
+        ClipboardTool::new(Arc::new(ClipboardHistory::new(10)), 20_000, 10, 100, 2_000)
             .with_clipboard_text_reader(|| anyhow::bail!("clipboard access is disabled in tests"))
     }
 
@@ -1171,6 +1229,56 @@ mod tests {
     }
 
     #[test]
+    fn test_history_capacity_zero_disables_recording_and_updates_evict_oldest() {
+        let history = ClipboardHistory::new(0);
+        history.record("disabled".into());
+        assert!(history.is_empty());
+
+        history.set_capacity(3);
+        for item in ["oldest", "middle", "newest"] {
+            history.record(item.into());
+        }
+        history.set_capacity(1);
+        assert_eq!(history.recent(10)[0].content, "newest");
+
+        history.set_capacity(0);
+        assert!(history.is_empty());
+        history.record("still disabled".into());
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_history_caps_retained_text_at_character_boundary_with_marker() {
+        let history = ClipboardHistory::new(1);
+        let source = "界".repeat(MAX_CLIPBOARD_HISTORY_TEXT_CHARS + 2);
+        history.record(source.clone());
+
+        let entry = history.recent(1).pop().unwrap();
+        assert_eq!(
+            entry.content.chars().count(),
+            MAX_CLIPBOARD_HISTORY_TEXT_CHARS
+        );
+        assert!(entry.content.ends_with(CLIPBOARD_HISTORY_TRUNCATION_MARKER));
+        let marker_start = entry.content.len() - CLIPBOARD_HISTORY_TRUNCATION_MARKER.len();
+        assert!(entry.content.is_char_boundary(marker_start));
+        assert_eq!(source.chars().count(), MAX_CLIPBOARD_HISTORY_TEXT_CHARS + 2);
+    }
+
+    #[test]
+    fn test_direct_clipboard_constructors_clamp_public_limits() {
+        let history = Arc::new(ClipboardHistory::new(MAX_CLIPBOARD_HISTORY_ENTRIES + 1));
+        assert_eq!(history.max_entries(), MAX_CLIPBOARD_HISTORY_ENTRIES);
+        history.set_capacity(MAX_CLIPBOARD_HISTORY_ENTRIES + 10);
+        assert_eq!(history.max_entries(), MAX_CLIPBOARD_HISTORY_ENTRIES);
+
+        let tool = ClipboardTool::new(history, usize::MAX, usize::MAX, usize::MAX, usize::MAX);
+        assert_eq!(tool.max_output_chars, MAX_CLIPBOARD_ENTRY_OUTPUT_CHARS);
+        assert_eq!(tool.default_limit, MAX_CLIPBOARD_HISTORY_ENTRIES);
+        assert_eq!(tool.max_history_limit, MAX_CLIPBOARD_HISTORY_ENTRIES);
+        assert_eq!(tool.entry_max_chars, MAX_CLIPBOARD_ENTRY_OUTPUT_CHARS);
+    }
+
+    #[test]
     fn test_history_ignores_empty() {
         let history = ClipboardHistory::new(10);
         history.record(String::new());
@@ -1244,6 +1352,56 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["content"], "item-4");
         assert_eq!(result.output["total"], 5);
+    }
+
+    #[tokio::test]
+    async fn test_history_default_and_requested_limits_respect_configured_query_cap() {
+        let history = Arc::new(ClipboardHistory::new(5));
+        for i in 0..5 {
+            history.record(format!("item-{i}"));
+        }
+        let tool = ClipboardTool::new(history, 20_000, 10, 2, 2_000);
+
+        let default_result = tool
+            .execute(json!({"operation": "history"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            default_result.output["entries"].as_array().unwrap().len(),
+            2
+        );
+
+        let requested_result = tool
+            .execute(
+                json!({"operation": "history", "limit": 99}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            requested_result.output["entries"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(requested_result.output["total"], 5);
+    }
+
+    #[tokio::test]
+    async fn test_entry_character_limit_truncates_history_output_not_retained_text() {
+        let history = Arc::new(ClipboardHistory::new(3));
+        history.record("abcdef".into());
+        let tool = ClipboardTool::new(history.clone(), 20_000, 10, 100, 3)
+            .with_clipboard_text_reader(|| Ok(String::new()));
+
+        let result = tool
+            .execute(json!({"operation": "history"}), CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.output["entries"][0]["content"],
+            "abc[truncated ... 3 chars omitted]"
+        );
+        assert_eq!(history.recent(1)[0].content, "abcdef");
     }
 
     #[tokio::test]

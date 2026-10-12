@@ -1,6 +1,8 @@
 use crate::process::{CappedStreamRead, drain_stream_with_byte_cap};
 use crate::tool_contract::ToolResult;
-use haven_common::config::SkillsExecConfig;
+use haven_common::config::{
+    MAX_SKILLS_EXEC_OUTPUT_LINES, MAX_SKILLS_EXEC_TIMEOUT_SECS, SkillsExecConfig,
+};
 use haven_common::encoding;
 use haven_common::error::sanitize_error_text;
 use haven_platform::process_containment::ProcessContainment;
@@ -32,7 +34,9 @@ pub struct SkillRunner {
 }
 
 impl SkillRunner {
-    pub fn new(venv: VenvManager, config: SkillsExecConfig) -> Self {
+    pub fn new(venv: VenvManager, mut config: SkillsExecConfig) -> Self {
+        config.timeout_secs = config.timeout_secs.clamp(1, MAX_SKILLS_EXEC_TIMEOUT_SECS);
+        config.max_output_lines = config.max_output_lines.min(MAX_SKILLS_EXEC_OUTPUT_LINES);
         Self { venv, config }
     }
 

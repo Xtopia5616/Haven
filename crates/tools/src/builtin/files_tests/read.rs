@@ -149,6 +149,34 @@ use super::*;
     }
 
     #[tokio::test]
+    async fn direct_zero_byte_read_limit_is_normalized_without_panicking() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("data.txt");
+        tokio::fs::write(&file, "ab").await.unwrap();
+        let tool = FilesTool {
+            max_byte_read_bytes: 0,
+            ..FilesTool::default()
+        };
+
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "read",
+                    "path": file.to_string_lossy(),
+                    "offset": 0,
+                    "limit": 0
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["content"], "a");
+        assert_eq!(result.output["read_bytes"], 1);
+    }
+
+    #[tokio::test]
     async fn test_file_execute_read_lines_mode() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("lines.txt");
