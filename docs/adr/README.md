@@ -1032,3 +1032,4 @@
 - [1041：关闭 IPC owner 与语义校验覆盖缺口](1041-close-ipc-owner-and-semantic-coverage-gaps.md)
 - [1042：收回未使用的 crate API 与重复入口](1042-narrow-unused-crate-apis.md)
 - [1043：统一回滚投影时间水位](1043-share-rollback-projection-watermark.md)
+- [1044：用稳定消息身份确认 Agent inbox](1044-use-stable-message-identities-for-inbox-ack.md)

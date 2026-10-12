@@ -486,11 +486,9 @@ Parent session                    Child session(s)
 
 协议约定：同伴消息 ≠ 用户指令；JSONL envelope 与工具消息行使用 `message_id`（稳定的 `msg-{uuid32}`）、`from_session_id`、`to_session_id`、`reply_to_session_id` 和 `in_reply_to_message_id`；registry 使用 `session_id` 与 `parent_session_id`。工具收件人参数使用 `to_session_id`，生命周期目标使用 `target_session_id`；
 `delivery_attempt` 记录 at-least-once 重投次数；批量消息必须走 `send → claim → process → ack`。
-显式 `agent.inbox` 默认只 claim 不 ack，处理完成后由 `agent.ack(message_ids|claim_token)` 确认；
-`claim_token` 是进程内整批 receipt，崩溃后由 durable processing 状态触发 at-least-once 重投，
-而不是丢失消息。`agent.history` 为只读恢复入口。`agent.status/wait/stop/collect` 只允许当前 session 或其后代，
+显式 `agent.inbox` 默认只 claim 不 ack，并返回稳定的 `message_ids`；处理完成后由 `agent.ack(message_ids)` 确认，每次最多 100 个 ID。模型可见结果不包含进程内领取身份；文件 transport 的 processing 状态在重启后按相同 `msg-*` 重投。旧 transcript 中的 `claim_token` 不再有效，应重新读取 inbox 并用 `message_ids` 确认。`agent.history` 为只读恢复入口。`agent.status/wait/stop/collect` 只允许当前 session 或其后代，
 并通过 `MessagingRuntime` 进入真实 `SessionSupervisor` / `SessionActor` 状态机，`stop` 走正常取消与终端清理路径。
-同进程 session 优先使用 SessionActor mailbox；跨进程仍使用 JSONL adapter 作为 fallback；子会话默认工作目录仍为
+同进程 session 优先使用 SessionActor mailbox；跨进程使用 JSONL adapter。JSONL 的未确认消息可在 app 重启后重投；SessionActor mailbox 仍是进程内队列，不提供相同的重启耐久保证，且 claim/ack 的 transport 来源可能随 actor 生命周期变化，这一边界仍待收敛（路线图 §5.7）。子会话默认工作目录仍为
 Temp（全局约束）。
 
 ### 2.5.2 内置 `system` 工具（机器信息与系统控制）

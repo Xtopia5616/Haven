@@ -22,8 +22,7 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -31,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{OperationIdempotency, Tool, ToolResult};
 use haven_messaging::{
     AgentControlOperation, AgentControlRequest, AgentSpawnRequest, AgentStatus, Envelope,
-    MessageClaim, MessageType, MessagingService, SendOutcome,
+    MessageType, MessagingService, SendOutcome,
 };
 #[cfg(test)]
 use haven_messaging::{
@@ -432,7 +431,8 @@ pub struct AgentParams {
     /// Stable message ids to acknowledge with `ack`.
     #[serde(default)]
     pub message_ids: Option<Vec<String>>,
-    /// Process-local receipt for a claim returned by `inbox`.
+    /// Legacy process-local receipt accepted only to return a migration error
+    /// for durable tool calls created before inbox switched to stable message ids.
     #[serde(default)]
     pub claim_token: Option<String>,
     /// Delegated task brief for spawn.
@@ -443,17 +443,12 @@ pub struct AgentParams {
 /// Unified cross-session messaging / peer-collab tool.
 pub struct AgentTool {
     inner: MessagingToolset,
-    /// Claims held across the `inbox` → process → `ack` calls. Dropping a
-    /// claim leaves the transport's durable processing record eligible for
-    /// redelivery, including after a process restart.
-    claims: Arc<Mutex<HashMap<String, (String, MessageClaim)>>>,
 }
 
 impl AgentTool {
     pub fn new(service: Arc<MessagingService>) -> Self {
         Self {
             inner: MessagingToolset::new(service),
-            claims: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -710,7 +705,7 @@ impl AgentTool {
         self.inner.register(&sid, &cancel).await?;
         let service = self.inner.service.clone();
         let claim_recipient = sid.clone();
-        let (messages, claim) = blocking(service, move |service| {
+        let messages = blocking(service, move |service| {
             let claim = service.claim(&claim_recipient)?;
             let messages = claim.envelopes().to_vec();
             if acknowledge {
@@ -718,40 +713,26 @@ impl AgentTool {
                 // the one-shot semantics. The safe default leaves the claim
                 // durable until a later `agent.ack` call.
                 claim.complete()?;
-                return Ok((messages, None));
             }
-            if claim.is_empty() {
-                Ok((messages, None))
-            } else {
-                Ok((messages, Some(claim)))
-            }
+            // Dropping a non-completed claim leaves the transport's durable
+            // processing record available for redelivery. Stable message ids
+            // are the only acknowledgement identity exposed to the model.
+            Ok(messages)
         })
         .await?;
+        let message_ids: Vec<String> = messages
+            .iter()
+            .map(|message| message.message_id.clone())
+            .collect();
         let messages: Vec<Value> = messages
             .into_iter()
             .map(|env| envelope_to_tool_json(&env))
             .collect();
-        let claim_token = if let Some(claim) = claim {
-            let token = haven_common::types::new_id("claim");
-            let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
-            // A forgotten token must not retain an unbounded number of file
-            // leases. Evicting the oldest-looking arbitrary entry is safe:
-            // dropping it makes those messages redeliverable.
-            if claims.len() >= 128
-                && let Some(evicted) = claims.keys().next().cloned()
-            {
-                claims.remove(&evicted);
-            }
-            claims.insert(token.clone(), (sid.clone(), claim));
-            Some(token)
-        } else {
-            None
-        };
         Ok(ToolResult::ok(json!({
             "count": messages.len(),
             "acknowledged": acknowledge,
             "ack_required": !acknowledge && !messages.is_empty(),
-            "claim_token": claim_token,
+            "message_ids": message_ids,
             "messages": messages,
         })))
     }
@@ -764,38 +745,12 @@ impl AgentTool {
         let sid = session_of(params.session_id)?;
         if let Some(token) = params.claim_token.as_deref() {
             crate::tool_contract::validate_entity_id(token, "claim_token", "claim")?;
+            anyhow::bail!(
+                "claim_token is no longer supported; call inbox and acknowledge its message_ids"
+            );
         }
-        let requested = if params.claim_token.is_none() {
-            Some(check_message_ids(params.message_ids)?)
-        } else {
-            None
-        };
+        let requested = check_message_ids(params.message_ids)?;
         self.inner.register(&sid, &cancel).await?;
-        if let Some(token) = params.claim_token.as_deref() {
-            let claim = {
-                let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
-                claims.remove(token)
-            }
-            .ok_or_else(|| anyhow::anyhow!("claim_token is unknown or already acknowledged"))?;
-            if claim.0 != sid {
-                let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
-                claims.insert(token.to_string(), claim);
-                anyhow::bail!("claim_token belongs to a different session");
-            }
-            let acknowledged = claim.1.envelopes().len();
-            let receipts_sent = blocking(self.inner.service.clone(), move |_service| {
-                Ok::<_, anyhow::Error>(claim.1.complete()?.len())
-            })
-            .await?;
-            return Ok(ToolResult::ok(json!({
-                "ok": true,
-                "acknowledged": acknowledged,
-                "requested": acknowledged,
-                "receipts_sent": receipts_sent,
-                "claim_token": token,
-            })));
-        }
-        let requested = requested.expect("message ids are checked when claim_token is absent");
         let service = self.inner.service.clone();
         let requested_for_io = requested.clone();
         let (acknowledged, receipts_sent) = blocking(service, move |service| {
@@ -1241,8 +1196,7 @@ impl Tool for AgentTool {
                 "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS, "default": DEFAULT_REQUEST_TIMEOUT_SECS, "description": "Maximum wait in seconds; defaults to 60 and is capped at 300" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "description": "Maximum results; list defaults to 50, history/collect to 20" },
                 "ack": { "type": "boolean", "default": false, "description": "For inbox only: acknowledge immediately. Defaults to false; process messages, then call ack" },
-                "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$" }, "description": "Message ids from the claimed inbox batch to acknowledge" },
-                "claim_token": { "type": "string", "pattern": "^claim-[0-9a-f]{32}$", "description": "Claim token returned by inbox; acknowledges that entire batch" },
+                "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$" }, "description": "Stable message ids returned by inbox; acknowledge at most 100 ids per call" },
                 "task": { "type": "string", "minLength": 1, "description": "Clear task brief for the new child agent" }
             },
             "required": ["operation"],
@@ -1252,8 +1206,7 @@ impl Tool for AgentTool {
                 { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "history" }, "target_session_id": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Current session or descendant session id; omit to read this session's history" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT, "description": "Maximum messages; defaults to 20" } }, "required": ["operation"] },
                 { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "inbox" }, "ack": { "type": "boolean", "default": false, "description": "Acknowledge immediately; defaults to false so messages can be processed before ack" } }, "required": ["operation"] },
                 { "oneOf": [
-                    { "type": "object", "properties": { "operation": { "const": "ack" }, "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$" }, "description": "Ids from the inbox claim to acknowledge selectively" } }, "required": ["operation", "message_ids"] },
-                    { "type": "object", "properties": { "operation": { "const": "ack" }, "claim_token": { "type": "string", "pattern": "^claim-[0-9a-f]{32}$", "description": "Token returned by inbox; acknowledges that whole claimed batch" } }, "required": ["operation", "claim_token"] }
+                    { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "ack" }, "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$" }, "description": "Stable message ids returned by inbox; acknowledge at most 100 ids per call" } }, "required": ["operation", "message_ids"] }
                 ] },
                 {
                     "type": "object",
@@ -2159,7 +2112,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inbox_claim_token_acknowledges_the_exact_claim() {
+    async fn inbox_message_ids_acknowledge_after_agent_tool_recreation() {
         let (_dir, bus, tool) = test_tools();
         bus.register("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &[])
             .unwrap();
@@ -2170,6 +2123,7 @@ mod tests {
             "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "durable batch",
         );
+        let message_id = message.message_id.clone();
         bus.deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &message)
             .unwrap();
 
@@ -2184,13 +2138,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(inbox.output["ack_required"], true);
-        let token = inbox.output["claim_token"].as_str().unwrap().to_string();
-        assert!(token.starts_with("claim-"));
+        assert_eq!(inbox.output["message_ids"], json!([message_id]));
+        assert!(inbox.output.get("claim_token").is_none());
+        assert!(
+            tool.input_schema()["properties"]
+                .get("claim_token")
+                .is_none()
+        );
 
-        let ack = tool
+        // A fresh tool instance has no process-local claim state. The stable
+        // message id still acknowledges the durable processing record.
+        let restarted_tool = AgentTool::new(Arc::new(MessagingService::new_for_test(bus.clone())));
+        let ack = restarted_tool
             .execute(
                 with_sid(
-                    json!({"operation": "ack", "claim_token": token}),
+                    json!({"operation": "ack", "message_ids": [message_id]}),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
@@ -2198,7 +2160,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ack.output["acknowledged"], 1);
-        assert_eq!(ack.output["claim_token"], token);
+        assert_eq!(ack.output["requested"], 1);
 
         let inbox = tool
             .execute(
@@ -2211,6 +2173,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(inbox.output["count"], 0);
+    }
+
+    #[tokio::test]
+    async fn legacy_claim_token_returns_stable_id_migration_guidance() {
+        let (_dir, _bus, tool) = test_tools();
+        let error = tool
+            .execute(
+                with_sid(
+                    json!({
+                        "operation": "ack",
+                        "claim_token": "claim-0123456789abcdef0123456789abcdef"
+                    }),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no longer supported"));
+        assert!(error.to_string().contains("message_ids"));
     }
 
     #[tokio::test]

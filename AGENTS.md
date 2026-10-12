@@ -84,15 +84,14 @@ corepack pnpm run check
 | `cred-` | Credential Manager 凭据引用（仅引用，不是密钥值） | `haven_common` / `haven_platform` |
 | `usage-` | 单次 LLM 调用用量明细 llm_usage.id | `haven_memory` |
 
-以下 ID 在运行时生成；除明确记录的 durable interaction event 或 scheduled ToolRun execution claim 外，均为进程内 ID、不落库：
+以下 ID 均由运行时生成；`rec-*`、`file-*` 仅用于进程内生命周期，`conf-*`、`call-*` 的持久化范围由对应领域契约定义：
 
 | 前缀 | 实体 | 位置 |
 |---|---|---|
 | `conf-` | 安全确认请求（request ID 可按 ADR 写入 durable interaction event 或 scheduled ToolRun claim） | `haven_agent` |
 | `rec-` | 录音（一次录音一个 id，`recording:started`/`transcription:*` 事件共用） | `haven_app` |
 | `file-` | 临时文件名 | `haven_app` |
-| `call-` | provider 返回空 tool_call_id 时的本地兜底 | `haven_agent` |
-| `claim-` | 消息 inbox 的进程内领取令牌（ack 后释放，不落库） | `haven_tools` |
+| `call-` | provider 返回空 tool_call_id 时生成的 transcript 工具调用关联身份 | `haven_agent` |
 
 规则：
 - **生成一律用 `haven_common::types::new_id(prefix)`**，禁止手拼 UUID。

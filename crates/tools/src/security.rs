@@ -3081,8 +3081,6 @@ mod tests {
                 if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
                     if pattern.contains("msg-") {
                         value = "msg-00000000000000000000000000000000".into();
-                    } else if pattern.contains("claim-") {
-                        value = "claim-00000000000000000000000000000000".into();
                     }
                 }
                 if let Some(max_len) = schema.get("maxLength").and_then(Value::as_u64) {

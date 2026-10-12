@@ -360,7 +360,7 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
   - 例外：`asr` 是用户输入的关键词（意图识别 vocabulary，与 `ocr` 相邻），属于**输入信号**，不是 provider 模块名，不并入 `stt` 词汇表。二者语义不同，各归其位。
 
 ### ID 规范
-实体 ID 统一 `{prefix}-{uuid32}`，一律用 `haven_common::types::new_id(prefix)` 生成，并用 `haven_common::types::is_canonical_id(id, prefix)` 校验；校验函数的 `prefix` 参数不带连字符，禁止各 crate 重复实现格式检查。Tauri 命令、模型可调用的 Tools 入口、Messaging service 与 JSONL transport 都在副作用或存储前校验 Haven 实体 ID；Tools 的轻量错误包装器仍委托 Common 校验器。Agent 工具的 session、message 与 claim 参数分别使用 `ses`、`msg`、`claim` ID 空间，广播标记 `*` 是唯一接收方例外。定时 ToolRun 的持久执行权 claim 使用来源身份：确认请求用对应 `conf-*`，无需确认时只能复用同一 ToolRun 的 `toolrun-*`；Memory 校验两者并拒绝其他 ToolRun ID。消息 inbox 的进程内 `claim-*` 不用于此持久 claim（ADR 1016）。配置凭据引用复用同一校验器；provider ID、模型配置 ID 和运行代次等非实体标识按各自领域契约处理。进程内 `claim_token` 也列入前缀表，避免未登记的 ID 空间。完整前缀表见 `AGENTS.md`.
+实体 ID 统一 `{prefix}-{uuid32}`，一律用 `haven_common::types::new_id(prefix)` 生成，并用 `haven_common::types::is_canonical_id(id, prefix)` 校验；校验函数的 `prefix` 参数不带连字符，禁止各 crate 重复实现格式检查。Tauri 命令、模型可调用的 Tools 入口、Messaging service 与 JSONL transport 都在副作用或存储前校验 Haven 实体 ID；Tools 的轻量错误包装器仍委托 Common 校验器。Agent 工具的 session 与 message 参数分别使用 `ses`、`msg` ID 空间，广播标记 `*` 是唯一接收方例外。定时 ToolRun 的持久执行权 claim 使用来源身份：确认请求用对应 `conf-*`，无需确认时只能复用同一 ToolRun 的 `toolrun-*`；Memory 校验两者并拒绝其他 ToolRun ID（ADR 1016）。消息 inbox 只向模型暴露稳定 `message_ids`，进程内 `MessageClaim` 对象不生成或返回独立 ID（ADR 1044）。配置凭据引用复用同一校验器；provider ID、模型配置 ID 和运行代次等非实体标识按各自领域契约处理。完整前缀表见 `AGENTS.md`.
 
 Rust/DB/event 领域字段与 Tauri DTO 中，实体身份字段使用实体名限定的 `xxx_id`（如 `session_id`、`step_id`、`message_id`、`tool_run_id`）；UI 自有模型可在边界映射为 `xxxId`。数据库既有物理主键列（如 `sessions.id`）保持原名，由 Repository 映射为领域字段。尚未迁移的存量 DTO 按实体归属逐步收敛，不以结构体上下文作为省略实体名的理由；外部 provider 标识和 Tauri event envelope 序号 `id` 按各自协议保留。
 
