@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '$lib/tauri.ts';
-import type { Fact } from './contracts/memory.ts';
 import { addFact, deleteFact, listFacts, recallMemory } from './memoryCommands.ts';
 
 vi.mock('$lib/tauri.ts', () => ({ invoke: vi.fn() }));
@@ -33,7 +32,7 @@ const validRecallItem = (overrides: Record<string, unknown> = {}) => ({
 describe('memory command boundary', () => {
 	beforeEach(() => invokeMock.mockReset());
 
-	it('validates fact identity and passes the response fields through unchanged', async () => {
+	it('maps fact IDs to camelCase while preserving the other response fields', async () => {
 		const response = [
 			{
 				fact_id: 'fact-00000000000000000000000000000001',
@@ -51,9 +50,27 @@ describe('memory command boundary', () => {
 				future_field: 'retained',
 			},
 		];
-		invokeMock.mockResolvedValue(response as unknown as Fact[]);
+		invokeMock.mockResolvedValue(response as never);
 
-		await expect(listFacts({ source: null })).resolves.toBe(response);
+		const facts = await listFacts({ source: null });
+		expect(facts).toEqual([
+			{
+				factId: response[0]!.fact_id,
+				subject: 'user',
+				predicate: 'likes',
+				object: 'tea',
+				source: 'user',
+				confidence: 1,
+				tags: [],
+				created_at: '2026-09-26T00:00:00Z',
+				mention_count: 0,
+				last_seen_at: null,
+				sourceRef: null,
+				durability: 1,
+				future_field: 'retained',
+			},
+		]);
+		expect(facts[0]).not.toHaveProperty('fact_id');
 		expect(invokeMock).toHaveBeenCalledWith('list_facts', { source: null });
 	});
 
@@ -80,7 +97,7 @@ describe('memory command boundary', () => {
 				object: 'tea',
 				tags: null,
 			}),
-		).resolves.toBe(addedFact);
+		).resolves.toMatchObject({ factId: addedFact.fact_id });
 		expect(invokeMock).toHaveBeenNthCalledWith(1, 'add_fact', {
 			subject: 'user',
 			predicate: 'likes',
@@ -94,7 +111,7 @@ describe('memory command boundary', () => {
 		expect(invokeMock).toHaveBeenNthCalledWith(2, 'delete_fact', { factId });
 	});
 
-	it('validates recall entity IDs and preserves additive response fields', async () => {
+	it('maps recall entity IDs and preserves additive response fields', async () => {
 		const response = [
 			{
 				entity_id: 'fact-00000000000000000000000000000003',
@@ -106,9 +123,17 @@ describe('memory command boundary', () => {
 		];
 		invokeMock.mockResolvedValue(response);
 
-		await expect(recallMemory({ query: 'tea', kind: 'fact', limit: 10 })).resolves.toBe(
-			response,
-		);
+		const results = await recallMemory({ query: 'tea', kind: 'fact', limit: 10 });
+		expect(results).toEqual([
+			{
+				entityId: response[0]!.entity_id,
+				text: 'likes tea',
+				score: 0.9,
+				model: 'embed-v1',
+				extra: true,
+			},
+		]);
+		expect(results[0]).not.toHaveProperty('entity_id');
 		expect(invokeMock).toHaveBeenCalledWith('recall_memory', {
 			query: 'tea',
 			kind: 'fact',
@@ -188,7 +213,7 @@ describe('memory command boundary', () => {
 		const episodeId = 'msg-00000000000000000000000000000009';
 		invokeMock.mockResolvedValueOnce([validRecallItem({ entity_id: episodeId })] as never);
 		await expect(recallMemory({ query: 'tea', kind: 'episode', limit: 5 })).resolves.toEqual([
-			validRecallItem({ entity_id: episodeId }),
+			{ entityId: episodeId, text: 'likes tea', score: 0.9, model: 'embed-v1' },
 		]);
 	});
 
@@ -206,8 +231,8 @@ describe('memory command boundary', () => {
 
 		const response = [validRecallItem({ extra: true, text: '', model: '' })];
 		invokeMock.mockResolvedValueOnce(response as never);
-		await expect(recallMemory({ query: 'tea', kind: 'fact', limit: 5 })).resolves.toBe(
-			response,
-		);
+		await expect(recallMemory({ query: 'tea', kind: 'fact', limit: 5 })).resolves.toEqual([
+			{ entityId: response[0]!.entity_id, text: '', score: 0.9, model: '', extra: true },
+		]);
 	});
 });

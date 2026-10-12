@@ -338,7 +338,10 @@ describe('session history and resume contracts', () => {
 	});
 
 	it('validates complete persisted session rows and lineage rows', () => {
-		expect(parseSessionHistoryRows([sessionRecord()])).toHaveLength(1);
+		const [history] = parseSessionHistoryRows([sessionRecord()]);
+		expect(history).toMatchObject({ sessionId, input_text: 'Open the project' });
+		expect(history).not.toHaveProperty('session_id');
+		expect(history).not.toHaveProperty('inputText');
 		expect(() =>
 			parseSessionHistoryRows([{ ...sessionRecord(), session_id: 'msg-invalid' }]),
 		).toThrow('Invalid session history identity');
@@ -346,7 +349,13 @@ describe('session history and resume contracts', () => {
 			parseSessionHistoryRows([{ ...sessionRecord(), input_text: undefined }]),
 		).toThrow('Invalid session history response shape');
 
-		expect(parseSessionLineageResponse(sessionLineage(), sessionId).children).toHaveLength(1);
+		const lineage = parseSessionLineageResponse(sessionLineage(), sessionId);
+		expect(lineage.children).toHaveLength(1);
+		expect(lineage).toHaveProperty('sessionId', sessionId);
+		expect(lineage).not.toHaveProperty('session_id');
+		expect(lineage).not.toHaveProperty('parent_session_id');
+		expect(lineage.children[0]!.session).not.toHaveProperty('session_id');
+		expect(lineage.children[0]).not.toHaveProperty('parent_session_id');
 		const malformedLineage = sessionLineage();
 		(malformedLineage.children[0]!.session as Record<string, unknown>).status = 'unknown';
 		expect(() => parseSessionLineageResponse(malformedLineage, sessionId)).toThrow(
@@ -379,7 +388,18 @@ describe('session history and resume contracts', () => {
 		const parsed = parseSessionResumeResponse(response);
 		expect(parsed).not.toBe(response);
 		expect(parsed.llm_usage[0]).toMatchObject({ request_kind: 'chat' });
-		expect(parsed.llm_usage[0]).not.toHaveProperty('requestKind');
+		expect(parsed.llm_usage[0]).not.toHaveProperty('usage_id');
+		expect(parsed.llm_usage[0]).toHaveProperty('usageId', usageId);
+		expect(parsed.session).toHaveProperty('sessionId', sessionId);
+		expect(parsed.session).not.toHaveProperty('session_id');
+		expect(parsed.messages[0]).toHaveProperty('messageId', messageId);
+		expect(parsed.messages[0]).not.toHaveProperty('message_id');
+		expect(parsed.steps[0]).toHaveProperty('stepId', stepId);
+		expect(parsed.steps[0]).not.toHaveProperty('step_id');
+		expect(parsed.messages[1]).toHaveProperty('tool_call_id', 'provider-call/opaque');
+		expect(parsed.messages[1]).not.toHaveProperty('toolCallId');
+		expect(parsed.steps[0]).toHaveProperty('tool_call_id', 'another-external-id');
+		expect(parsed.steps[0]).not.toHaveProperty('toolCallId');
 		expect(parsed.interactions).toEqual([
 			{
 				requestId: stepId,
@@ -499,7 +519,22 @@ describe('session history and resume contracts', () => {
 
 	it('validates shared msg step identities and nested managed asset identities', () => {
 		const response = resumeResponseWithAssets();
-		expect(parseSessionResumeResponse(response)).not.toBe(response);
+		const parsed = parseSessionResumeResponse(response);
+		expect(parsed).not.toBe(response);
+		const attachment = parsed.messages[0]!.attachments[0]!;
+		expect(attachment.assetId).toBe('asset-00000000000000000000000000000009');
+		expect(attachment).not.toHaveProperty('asset_id');
+		expect(attachment.representations?.[0]?.payload).toEqual({
+			kind: 'managed_file_ref',
+			value: {
+				assetId: 'asset-0000000000000000000000000000000a',
+				filename: 'photo.png',
+			},
+		});
+		expect(parsed.messages[0]!.media_inputs?.[0]?.asset.assetId).toBe(
+			'asset-0000000000000000000000000000000b',
+		);
+		expect(parsed.messages[0]!.media_inputs?.[0]?.asset).not.toHaveProperty('asset_id');
 
 		const malformed = resumeResponseWithAssets();
 		malformed.messages[0]!.attachments[0]!.asset_id = 'asset-short';

@@ -1,5 +1,10 @@
 use super::*;
 
+pub(super) struct SystemPromptMessageConversion {
+    pub(super) messages: Vec<OpenAiMessage>,
+    pub(super) cache_sections_split: bool,
+}
+
 impl OpenAiAdapter {
     #[cfg(test)]
     pub(super) fn convert_messages(
@@ -155,33 +160,49 @@ impl OpenAiAdapter {
         msgs: &[CanonicalMessage],
         requires_reasoning_echo: bool,
         reasoning_echo_max_chars: usize,
-    ) -> (Vec<OpenAiMessage>, bool) {
+    ) -> SystemPromptMessageConversion {
         let Some(index) = msgs
             .iter()
             .position(|message| message.role == CanonicalRole::System)
         else {
-            return (
-                Self::convert_messages_ref(msgs, requires_reasoning_echo, reasoning_echo_max_chars),
-                false,
-            );
+            return SystemPromptMessageConversion {
+                messages: Self::convert_messages_ref(
+                    msgs,
+                    requires_reasoning_echo,
+                    reasoning_echo_max_chars,
+                ),
+                cache_sections_split: false,
+            };
         };
         let Some(ContentPart::Text(text)) = msgs[index].content.first() else {
-            return (
-                Self::convert_messages_ref(msgs, requires_reasoning_echo, reasoning_echo_max_chars),
-                false,
-            );
+            return SystemPromptMessageConversion {
+                messages: Self::convert_messages_ref(
+                    msgs,
+                    requires_reasoning_echo,
+                    reasoning_echo_max_chars,
+                ),
+                cache_sections_split: false,
+            };
         };
         let Some((stable, session, memory)) = split_system_prompt_cache_sections(text) else {
-            return (
-                Self::convert_messages_ref(msgs, requires_reasoning_echo, reasoning_echo_max_chars),
-                false,
-            );
+            return SystemPromptMessageConversion {
+                messages: Self::convert_messages_ref(
+                    msgs,
+                    requires_reasoning_echo,
+                    reasoning_echo_max_chars,
+                ),
+                cache_sections_split: false,
+            };
         };
         if stable.trim().is_empty() || (session.is_empty() && memory.is_empty()) {
-            return (
-                Self::convert_messages_ref(msgs, requires_reasoning_echo, reasoning_echo_max_chars),
-                false,
-            );
+            return SystemPromptMessageConversion {
+                messages: Self::convert_messages_ref(
+                    msgs,
+                    requires_reasoning_echo,
+                    reasoning_echo_max_chars,
+                ),
+                cache_sections_split: false,
+            };
         }
 
         let stable_message = CanonicalMessage::system(vec![ContentPart::text(stable)]);
@@ -218,7 +239,10 @@ impl OpenAiAdapter {
                 reasoning_echo_max_chars,
             ));
         }
-        (out, true)
+        SystemPromptMessageConversion {
+            messages: out,
+            cache_sections_split: true,
+        }
     }
 
     pub(super) fn extract_tool_calls(choice: &OpenAiChoice) -> Vec<CanonicalToolCall> {

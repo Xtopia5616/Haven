@@ -64,13 +64,14 @@ impl OpenAiAdapter {
         let tool_names = self.tool_name_map(messages, tools);
         let prompt_cache_key = self.prompt_cache_key(messages, tools, web_search_mode);
         let x_grok_conv_id = self.xai_conversation_id(messages);
-        let (mut wire_messages, system_split) = Self::convert_messages_with_system_split(
+        let converted_messages = Self::convert_messages_with_system_split(
             messages,
             self.requires_reasoning_echo(),
             self.endpoint
                 .reasoning_echo_max_chars
                 .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
         );
+        let mut wire_messages = converted_messages.messages;
         for message in &mut wire_messages {
             if let Some(calls) = &mut message.tool_calls {
                 for call in calls {
@@ -80,7 +81,7 @@ impl OpenAiAdapter {
         }
         let cache_diagnostics = CacheDiagnostics::for_request(
             prompt_cache_key.is_some() || x_grok_conv_id.is_some(),
-            system_split,
+            converted_messages.cache_sections_split,
         )
         .with_provider(self.endpoint.provider.clone());
         let thinking_extras = chat_thinking_extras(&self.endpoint);
@@ -155,13 +156,14 @@ impl OpenAiAdapter {
 
     pub(super) fn append_guidance_to_request(&self, body: &mut OpenAiRequest, guidance: &str) {
         let message = CanonicalMessage::user_text(guidance);
-        let (mut wire, _) = Self::convert_messages_with_system_split(
+        let mut wire = Self::convert_messages_with_system_split(
             std::slice::from_ref(&message),
             self.requires_reasoning_echo(),
             self.endpoint
                 .reasoning_echo_max_chars
                 .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
-        );
+        )
+        .messages;
         body.messages.append(&mut wire);
     }
 

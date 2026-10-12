@@ -16,13 +16,13 @@ type PersistedToolOutcome = Extract<SessionStepStatus, 'failed' | 'cancelled' | 
 
 type ResumeMessageProjectionRow = Pick<
 	SessionResumeMessage,
-	'message_id' | 'role' | 'content' | 'created_at'
+	'messageId' | 'role' | 'content' | 'created_at'
 > &
-	Partial<Omit<SessionResumeMessage, 'message_id' | 'role' | 'content' | 'created_at'>>;
+	Partial<Omit<SessionResumeMessage, 'messageId' | 'role' | 'content' | 'created_at'>>;
 type ResumeStepProjectionRow = Pick<
 	SessionResumeStep,
-	'step_id' | 'step_number' | 'created_at'
-> & Partial<Omit<SessionResumeStep, 'step_id' | 'step_number' | 'created_at'>>;
+	'stepId' | 'step_number' | 'created_at'
+> & Partial<Omit<SessionResumeStep, 'stepId' | 'step_number' | 'created_at'>>;
 
 /** Tolerant transcript rows consumed by the resume-message projection. */
 export interface ResumeTranscriptProjectionInput {
@@ -222,27 +222,27 @@ export function buildResumeMessages<T extends ResumeTranscriptProjectionInput>(
 ): ResumeMessage[] {
 	const items: ResumeMessage[] = [];
 	const msgs = data.messages || [];
-	const stepById = new Map((data.steps || []).map((step) => [step.step_id, step]));
+	const stepById = new Map((data.steps || []).map((step) => [step.stepId, step]));
 
 	// Message rows persisted under a step row's step_id (ask questions on new
 	// records, thought/follow-up content on new records) are the content
 	// view of that step. Stable ids are the only identity link.
-	const msgById = new Map(msgs.map((message) => [message.message_id, message]));
+	const msgById = new Map(msgs.map((message) => [message.messageId, message]));
 	const askStepIds = new Set(
-		(data.steps || []).filter((s) => s.tool_name === 'ask').map((s) => s.step_id),
+		(data.steps || []).filter((s) => s.tool_name === 'ask').map((s) => s.stepId),
 	);
 
 	const messageIds = new Set();
 	for (const msg of msgs) {
-		messageIds.add(msg.message_id);
+		messageIds.add(msg.messageId);
 		// Ask question messages are persisted under the ask step row's id:
 		// skip them here (the ask CARD below renders them).
-		if (askStepIds.has(msg.message_id)) continue;
-		const step = stepById.get(msg.message_id);
+		if (askStepIds.has(msg.messageId)) continue;
+		const step = stepById.get(msg.messageId);
 		const isToolObservation = msg.role === 'tool' || msg.message_type === 'observation';
 		const persistedToolName = step?.tool_name;
 		items.push({
-			id: msg.message_id,
+			id: msg.messageId,
 			// Tool observations are rendered as assistant-side cards in chat, even
 			// though the persisted transcript uses the OpenAI `tool` role.
 			role: isToolObservation ? 'assistant' : msg.role,
@@ -277,7 +277,7 @@ export function buildResumeMessages<T extends ResumeTranscriptProjectionInput>(
 		// one entity. New ask records ALSO persist their question message
 		// under this id — the card below renders that message, so it must
 		// not be deduped away.
-		const stepId = step.step_id;
+		const stepId = step.stepId;
 		if (!step.tool_name) continue;
 		if (messageIds.has(stepId) && step.tool_name !== 'ask') continue;
 		const toolName = step.tool_name;
@@ -361,7 +361,7 @@ export function buildResumeMessages<T extends ResumeTranscriptProjectionInput>(
 	// The step_id is the only identity link needed for the message projection.
 	for (const step of data.steps || []) {
 		if (step.tool_name) continue;
-		const byId = items.find((i) => i.id === step.step_id && i.stepNumber == null);
+		const byId = items.find((i) => i.id === step.stepId && i.stepNumber == null);
 		if (byId) {
 			byId.stepNumber = step.step_number;
 			continue;

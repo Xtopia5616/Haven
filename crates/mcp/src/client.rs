@@ -437,10 +437,10 @@ impl McpClient {
         // redirects. Following a redirect would leak those to an unverified
         // host, so refuse to follow any.
         let policy = *self.network_policy.read().await;
-        let (http, endpoint) = crate::network::build_http_client(&self.url, policy).await?;
+        let built_client = crate::network::build_http_client(&self.url, policy).await?;
         let shared = Arc::new(HttpShared {
-            http,
-            url: endpoint.to_string(),
+            http: built_client.client,
+            url: built_client.endpoint.to_string(),
             headers,
             session_id: Arc::new(tokio::sync::Mutex::new(String::new())),
             cancel: self.cancel_token.lock().await.clone(),

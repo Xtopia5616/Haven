@@ -308,7 +308,7 @@ describe('ChatSessionController continue', () => {
 					? resumeResponseFixture({
 							messages: [
 								{
-									message_id: USER_MESSAGE_ID,
+									messageId: USER_MESSAGE_ID,
 									role: 'user' as const,
 									content: '打开计算器',
 									created_at: '2026-09-25T00:00:00Z',

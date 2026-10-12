@@ -96,6 +96,28 @@ function resumeStep(stepId: string, ownerSessionId: string) {
 	};
 }
 
+function rendererSessionRecord(id = sessionId) {
+	return {
+		sessionId: id,
+		input_text: 'hello',
+		title: null,
+		status: 'completed',
+		created_at: '2026-10-12T08:00:00Z',
+		updated_at: '2026-10-12T08:01:00Z',
+	};
+}
+
+function rendererResumeResponse(id = sessionId) {
+	return {
+		session: rendererSessionRecord(id),
+		messages: [],
+		steps: [],
+		usage: null,
+		llm_usage: [],
+		interactions: [],
+	};
+}
+
 describe('session history command boundary', () => {
 	beforeEach(() => invokeMock.mockReset());
 
@@ -157,13 +179,28 @@ describe('session history command boundary', () => {
 		);
 	});
 
-	it('keeps active-session list rows unchanged', async () => {
+	it('maps active-session IDs while preserving the remaining wire field names', async () => {
 		const response = {
 			sessions: [{ ...runtimeSession(), future_field: true }],
 		};
 		invokeMock.mockResolvedValue(response as never);
 
-		await expect(listRuntimeSessions()).resolves.toBe(response);
+		await expect(listRuntimeSessions()).resolves.toEqual({
+			sessions: [
+				{
+					sessionId,
+					input: 'hello',
+					summary: 'Say hello',
+					title: null,
+					status: 'paused',
+					waiting_reason: 'ask',
+					steps: [],
+					created_at: '2026-10-12T08:00:00Z',
+					updated_at: '2026-10-12T08:01:00Z',
+					future_field: true,
+				},
+			],
+		});
 		expect(invokeMock).toHaveBeenCalledOnce();
 		expect(invokeMock).toHaveBeenCalledWith('list_runtime_sessions');
 	});
@@ -178,7 +215,12 @@ describe('session history command boundary', () => {
 		};
 		invokeMock.mockResolvedValue(response as never);
 
-		await expect(getSessionLineage(request)).resolves.toBe(response);
+		await expect(getSessionLineage(request)).resolves.toEqual({
+			sessionId: request.sessionId,
+			parentSessionId: 'ses-00000000000000000000000000000002',
+			parent: rendererSessionRecord('ses-00000000000000000000000000000002'),
+			children: [],
+		});
 		expect(invokeMock).toHaveBeenCalledOnce();
 		expect(invokeMock).toHaveBeenCalledWith('get_session_lineage', request);
 	});
@@ -201,12 +243,14 @@ describe('session history command boundary', () => {
 		const response = [sessionRecord('ses-00000000000000000000000000000003')];
 		invokeMock.mockResolvedValue(response as never);
 
-		await expect(listSessionHistory(request)).resolves.toBe(response);
+		await expect(listSessionHistory(request)).resolves.toEqual([
+			rendererSessionRecord('ses-00000000000000000000000000000003'),
+		]);
 		expect(invokeMock).toHaveBeenCalledOnce();
 		expect(invokeMock).toHaveBeenCalledWith('list_session_history', request);
 	});
 
-	it('passes the history filter flat and preserves response fields', async () => {
+	it('passes the history filter flat and maps response fields', async () => {
 		const request = {
 			query: 'hello',
 			status: null,
@@ -220,7 +264,12 @@ describe('session history command boundary', () => {
 		];
 		invokeMock.mockResolvedValue(response as never);
 
-		await expect(searchSessionHistoryFiltered(request)).resolves.toBe(response);
+		await expect(searchSessionHistoryFiltered(request)).resolves.toEqual([
+			{
+				...rendererSessionRecord('ses-00000000000000000000000000000003'),
+				future_field: 'kept',
+			},
+		]);
 		expect(invokeMock).toHaveBeenCalledOnce();
 		expect(invokeMock).toHaveBeenCalledWith('search_session_history_filtered', request);
 	});
@@ -230,7 +279,12 @@ describe('session history command boundary', () => {
 		const resume = { ...resumeResponse(request.sessionId), future_field: { retained: true } };
 		invokeMock.mockResolvedValueOnce(resume as never).mockResolvedValueOnce(null);
 
-		await expect(getSessionForResume(request)).resolves.toEqual(resume);
+		await expect(getSessionForResume(request)).resolves.toEqual(
+			{
+				...rendererResumeResponse(request.sessionId),
+				future_field: { retained: true },
+			},
+		);
 		await expect(getLatestSessionForResume()).resolves.toBeNull();
 		expect(invokeMock.mock.calls).toEqual([
 			['get_session_for_resume', request],
@@ -279,7 +333,18 @@ describe('session history command boundary', () => {
 			steps: [resumeStep(stepId, sessionId)],
 		};
 		invokeMock.mockResolvedValueOnce(response as never);
-		await expect(getSessionForResume({ sessionId })).resolves.toEqual(response);
+		const mapped = await getSessionForResume({ sessionId });
+		expect(mapped).toMatchObject({
+			session: { sessionId },
+			messages: [{ messageId: stepId, sessionId }],
+			steps: [{ stepId, sessionId, step_number: 1 }],
+		});
+		expect(mapped.messages[0]).not.toHaveProperty('message_id');
+		expect(mapped.messages[0]).not.toHaveProperty('session_id');
+		expect(mapped.messages[0]).toHaveProperty('tool_call_id', null);
+		expect(mapped.steps[0]).not.toHaveProperty('step_id');
+		expect(mapped.steps[0]).not.toHaveProperty('session_id');
+		expect(mapped.steps[0]).toHaveProperty('tool_call_id', null);
 
 		invokeMock.mockResolvedValueOnce({ ...response, steps: [] } as never);
 		await expect(getSessionForResume({ sessionId })).rejects.toThrow(
@@ -333,6 +398,6 @@ describe('session history command boundary', () => {
 
 		await expect(
 			getSessionForResume({ sessionId: 'ses-00000000000000000000000000000007' }),
-		).resolves.toEqual(response);
+		).resolves.toEqual(rendererResumeResponse('ses-00000000000000000000000000000007'));
 	});
 });

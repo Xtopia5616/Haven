@@ -26,7 +26,7 @@ function deferred<T>() {
 function list(...ids: string[]): RuntimeSessionListResponse {
 	return {
 		sessions: ids.map((id) => ({
-			session_id: id,
+			sessionId: id,
 			input: '',
 			summary: '',
 			title: null,
@@ -44,7 +44,7 @@ function resume(
 ): SessionResumeResponse {
 	return {
 		session: {
-			session_id: SESSION_ID,
+			sessionId: SESSION_ID,
 			input_text: '旧会话摘要',
 			title: '恢复会话',
 			status,

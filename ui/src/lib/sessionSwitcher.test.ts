@@ -10,13 +10,13 @@ describe('buildSessionSwitcherOptions', () => {
 		];
 		const history = [
 			{
-				session_id: 'ses-76f19db031ba6b93089e8acb9f43666f',
+				sessionId: 'ses-76f19db031ba6b93089e8acb9f43666f',
 				input_text: '旧绘画会话',
 				title: null,
 				status: 'completed',
 			},
 			{
-				session_id: 'ses-1bd4a9f01b95da1dfb71021b982a09a8',
+				sessionId: 'ses-1bd4a9f01b95da1dfb71021b982a09a8',
 				input_text: '已完成的旧快照',
 				title: null,
 				status: 'completed',

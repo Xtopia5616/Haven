@@ -128,7 +128,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 				dependencies.dispatch({
 					type: 'sessions/loaded',
 					sessions: result.sessions.map((session) => ({
-						sessionId: session.session_id,
+						sessionId: session.sessionId,
 						status: session.status,
 						input: session.input,
 						title: session.title,
@@ -221,32 +221,32 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			latestSession.session.status === 'paused' ? 'paused' : wasError ? 'error' : undefined;
 		dependencies.dispatch({
 			type: 'session/messages/resume-loaded',
-			sessionId: latestSession.session.session_id,
+			sessionId: latestSession.session.sessionId,
 			messages: buildResumeMessages(latestSession),
 			interactions: latestSession.interactions,
 			preserveRequestIds: dependencies.getPendingInteractionRequestIds(
-				latestSession.session.session_id,
+				latestSession.session.sessionId,
 			),
 			usage: latestSession.usage,
 			llmUsage: latestSession.llm_usage,
 		});
 		dependencies.dispatch({
 			type: 'session/selected',
-			sessionId: latestSession.session.session_id,
+			sessionId: latestSession.session.sessionId,
 		});
 		if (runEndStatus) {
 			dependencies.dispatch({
 				type: 'session/run-ended',
-				sessionId: latestSession.session.session_id,
+				sessionId: latestSession.session.sessionId,
 				status: runEndStatus,
 				reason:
 					latestSession.session.run_end_reason ||
-					dependencies.reducer.getSessionErrorReason(latestSession.session.session_id) ||
+					dependencies.reducer.getSessionErrorReason(latestSession.session.sessionId) ||
 					(runEndStatus === 'error' ? '本次会话因错误停止，暂未收到更具体的原因。' : ''),
 			});
 			if (runEndStatus === 'error') {
 				retainErroredSession({
-					sessionId: latestSession.session.session_id,
+					sessionId: latestSession.session.sessionId,
 					summary: latestSession.session.input_text,
 					title: latestSession.session.title,
 				});
@@ -254,7 +254,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		}
 		try {
 			if (!wasError) {
-				await dependencies.reopenSession({ sessionId: latestSession.session.session_id });
+				await dependencies.reopenSession({ sessionId: latestSession.session.sessionId });
 			}
 		} catch {
 			if (!isCurrentGeneration(requestGeneration)) return;

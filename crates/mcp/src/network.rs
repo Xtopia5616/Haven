@@ -1,6 +1,11 @@
 use haven_common::types::NetworkPolicy;
 use std::net::{IpAddr, SocketAddr};
 
+pub(crate) struct BuiltMcpHttpClient {
+    pub(crate) client: reqwest::Client,
+    pub(crate) endpoint: reqwest::Url,
+}
+
 /// Validate and resolve an MCP HTTP endpoint before a client is created.
 /// Ask and Restricted modes pin the first validated public address in reqwest
 /// so a later DNS answer cannot silently redirect the connection to a private
@@ -9,7 +14,7 @@ use std::net::{IpAddr, SocketAddr};
 pub(crate) async fn build_http_client(
     raw_url: &str,
     policy: NetworkPolicy,
-) -> anyhow::Result<(reqwest::Client, reqwest::Url)> {
+) -> anyhow::Result<BuiltMcpHttpClient> {
     let url = reqwest::Url::parse(raw_url)
         .map_err(|error| anyhow::anyhow!("invalid MCP HTTP URL: {error}"))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -36,7 +41,10 @@ pub(crate) async fn build_http_client(
     let client = builder
         .build()
         .map_err(|error| anyhow::anyhow!("failed to build MCP HTTP client: {error}"))?;
-    Ok((client, url))
+    Ok(BuiltMcpHttpClient {
+        client,
+        endpoint: url,
+    })
 }
 
 async fn resolve_public_addresses(url: &reqwest::Url) -> anyhow::Result<Vec<SocketAddr>> {

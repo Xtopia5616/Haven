@@ -395,14 +395,14 @@ use super::*;
         for encoding in ["utf-8", "utf-8-bom", "utf-16le", "utf-16be", "gbk"] {
             let encoded = encode_patched_text(original, encoding).unwrap();
             let decoded = haven_common::encoding::decode_with_encoding(&encoded);
-            let (patched, _) = apply_patch_edits(
+            let patch = apply_patch_edits(
                 &decoded.text,
                 std::slice::from_ref(&edit),
                 1024,
                 CancellationToken::new(),
             )
             .unwrap();
-            let written = encode_patched_text(&patched, decoded.encoding).unwrap();
+            let written = encode_patched_text(&patch.content, decoded.encoding).unwrap();
             let roundtrip = haven_common::encoding::decode_with_encoding(&written);
             assert_eq!(roundtrip.text, "世界\n", "encoding={encoding}");
         }

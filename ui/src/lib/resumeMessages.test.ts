@@ -16,7 +16,7 @@ describe('buildResumeMessages', () => {
 			messages: [],
 			steps: [
 				{
-					step_id: 'step-543950710a972d7bd47f45c9d9e0965c',
+					stepId: 'step-543950710a972d7bd47f45c9d9e0965c',
 					tool_name: 'write_file',
 					status: 'unknown',
 					observation: 'may have run',
@@ -36,7 +36,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
@@ -44,7 +44,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'msg-00000000000000000000000000000002',
+					messageId: 'msg-00000000000000000000000000000002',
 					role: 'assistant' as const,
 					content: '已打开',
 					message_type: 'text',
@@ -70,7 +70,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'mv',
+					messageId: 'mv',
 					role: 'user' as const,
 					content: '打开计算器',
 					message_type: 'text',
@@ -79,7 +79,7 @@ describe('buildResumeMessages', () => {
 					voice: true,
 				},
 				{
-					message_id: 'mt',
+					messageId: 'mt',
 					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
@@ -98,7 +98,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'thought',
+					messageId: 'thought',
 					role: 'assistant',
 					content: 'thinking',
 					message_type: 'thought',
@@ -106,7 +106,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'tool-call',
+					messageId: 'tool-call',
 					role: 'assistant',
 					content: 'calling',
 					message_type: 'tool_call',
@@ -114,7 +114,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'reasoning',
+					messageId: 'reasoning',
 					role: 'assistant',
 					content: 'reasoning',
 					message_type: 'reasoning',
@@ -122,7 +122,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'peer-kickoff',
+					messageId: 'peer-kickoff',
 					role: 'user',
 					content: 'delegate',
 					message_type: 'peer_kickoff',
@@ -146,7 +146,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -156,7 +156,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					stepId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'files',
 					observation: '{"ok":true}',
 					thought: null,
@@ -179,7 +179,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: '读取文件',
 					message_type: 'text',
@@ -187,7 +187,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'm-thought',
+					messageId: 'm-thought',
 					role: 'assistant' as const,
 					content: '检查目标文件',
 					message_type: 'text',
@@ -197,7 +197,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-cf3cabbf64676a92780eea6db66a1f3e',
+					stepId: 'step-cf3cabbf64676a92780eea6db66a1f3e',
 					tool_name: 'files.read',
 					tool_input: '{"path":"notes.md"}',
 					observation: '{"operation":"read","path":"notes.md","content":"ok"}',
@@ -222,7 +222,7 @@ describe('buildResumeMessages', () => {
 			messages: [],
 			steps: [
 				{
-					step_id: 'step-cf023ba77a3ea05387eb80133d4fb0e8',
+					stepId: 'step-cf023ba77a3ea05387eb80133d4fb0e8',
 					tool_name: 'file',
 					observation: '{"content":"old"}',
 					thought: null,
@@ -230,7 +230,7 @@ describe('buildResumeMessages', () => {
 					created_at: '2026-08-01T10:01:00Z',
 				},
 				{
-					step_id: 'step-9b06cc05e7e3d240b08457c785accfc4',
+					stepId: 'step-9b06cc05e7e3d240b08457c785accfc4',
 					tool_name: 'file_search',
 					observation: '{"results":[]}',
 					thought: null,
@@ -238,7 +238,7 @@ describe('buildResumeMessages', () => {
 					created_at: '2026-08-01T10:02:00Z',
 				},
 				{
-					step_id: 'step-052b341c6a7d077effc2e1976c4ebdc7',
+					stepId: 'step-052b341c6a7d077effc2e1976c4ebdc7',
 					tool_name: 'scheduled_tool_run',
 					observation: '{"scheduled_tool_runs":[]}',
 					thought: null,
@@ -259,7 +259,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: '检查',
 					message_type: 'text',
@@ -267,7 +267,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					messageId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					role: 'tool' as const,
 					content: '{"output":"ok"}',
 					message_type: 'observation',
@@ -277,7 +277,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					stepId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'shell',
 					tool_input: '{"cmd":"dir"}',
 					observation: '{"output":"ok"}',
@@ -301,7 +301,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -311,7 +311,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					stepId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'mcp__filesystem__read',
 					tool_input: '{"path":"a.rs"}',
 					observation: '{"ok":true}',
@@ -337,7 +337,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -345,7 +345,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'msg-00000000000000000000000000000002',
+					messageId: 'msg-00000000000000000000000000000002',
 					role: 'assistant' as const,
 					content: '稍等',
 					message_type: 'text',
@@ -355,7 +355,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 's1',
+					stepId: 's1',
 					tool_name: 'shell',
 					tool_input: '{"command":"echo hi","silent":true}',
 					observation: '{"silent":true,"ok":true}',
@@ -382,7 +382,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -390,7 +390,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'msg-00000000000000000000000000000002',
+					messageId: 'msg-00000000000000000000000000000002',
 					role: 'assistant' as const,
 					content: '稍等，我检查一下',
 					message_type: 'text',
@@ -398,7 +398,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'msg-00000000000000000000000000000003',
+					messageId: 'msg-00000000000000000000000000000003',
 					role: 'assistant' as const,
 					content: '完成了',
 					message_type: 'text',
@@ -408,7 +408,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 't1',
+					stepId: 't1',
 					tool_name: null,
 					thought: '稍等，我检查一下',
 					silent: false,
@@ -416,7 +416,7 @@ describe('buildResumeMessages', () => {
 					created_at: '2026-08-01T10:01:00Z',
 				},
 				{
-					step_id: 's1',
+					stepId: 's1',
 					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
@@ -440,7 +440,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'late',
+					messageId: 'late',
 					role: 'assistant' as const,
 					content: 'later',
 					message_type: 'text',
@@ -448,7 +448,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'early',
+					messageId: 'early',
 					role: 'user' as const,
 					content: 'first',
 					message_type: 'text',
@@ -472,7 +472,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -480,7 +480,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'msg-00000000000000000000000000000002',
+					messageId: 'msg-00000000000000000000000000000002',
 					role: 'assistant' as const,
 					content: '稍等，我查一下',
 					message_type: 'text',
@@ -488,7 +488,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'msg-00000000000000000000000000000003',
+					messageId: 'msg-00000000000000000000000000000003',
 					role: 'assistant' as const,
 					content: '完成了',
 					message_type: 'text',
@@ -498,7 +498,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					stepId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
@@ -520,7 +520,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -528,7 +528,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'msg-00000000000000000000000000000002',
+					messageId: 'msg-00000000000000000000000000000002',
 					role: 'assistant' as const,
 					content: '稍等',
 					message_type: 'text',
@@ -536,7 +536,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'msg-00000000000000000000000000000003',
+					messageId: 'msg-00000000000000000000000000000003',
 					role: 'assistant' as const,
 					content: '完成了',
 					message_type: 'text',
@@ -546,7 +546,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					stepId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
@@ -566,7 +566,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -574,7 +574,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'msg-00000000000000000000000000000002',
+					messageId: 'msg-00000000000000000000000000000002',
 					role: 'assistant' as const,
 					content: '稍等',
 					message_type: 'text',
@@ -584,7 +584,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					stepId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
@@ -606,7 +606,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'do it',
 					message_type: 'text',
@@ -614,7 +614,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					messageId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					role: 'assistant' as const,
 					content: '你想要怎么处理？A 还是 B？',
 					message_type: 'text',
@@ -624,7 +624,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					stepId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'ask',
 					observation: JSON.stringify({ ask: true }),
 					thought: null,
@@ -654,7 +654,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'do it',
 					message_type: 'text',
@@ -662,7 +662,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					messageId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					role: 'assistant' as const,
 					content: '继续吗？',
 					message_type: 'text',
@@ -672,7 +672,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					stepId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'ask',
 					observation: JSON.stringify({
 						ask: true,
@@ -703,7 +703,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'go',
 					message_type: 'text',
@@ -711,7 +711,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					messageId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					role: 'assistant' as const,
 					content: 'Q1？',
 					message_type: 'text',
@@ -719,7 +719,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-5d310391cc7f4a1e5b7748d3f16e751a',
+					messageId: 'step-5d310391cc7f4a1e5b7748d3f16e751a',
 					role: 'assistant' as const,
 					content: 'Q2？',
 					message_type: 'text',
@@ -729,7 +729,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					stepId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'ask',
 					observation: 'Q1？',
 					thought: null,
@@ -737,7 +737,7 @@ describe('buildResumeMessages', () => {
 					created_at: '2026-08-01T10:01:00Z',
 				},
 				{
-					step_id: 'step-5d310391cc7f4a1e5b7748d3f16e751a',
+					stepId: 'step-5d310391cc7f4a1e5b7748d3f16e751a',
 					tool_name: 'ask',
 					observation: 'Q2？',
 					thought: null,
@@ -761,7 +761,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -769,7 +769,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-160d44dda6c0a478d9996206c6b3ec5e',
+					messageId: 'step-160d44dda6c0a478d9996206c6b3ec5e',
 					role: 'assistant' as const,
 					content: '稍等，我检查一下',
 					message_type: 'text',
@@ -779,7 +779,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-160d44dda6c0a478d9996206c6b3ec5e',
+					stepId: 'step-160d44dda6c0a478d9996206c6b3ec5e',
 					tool_name: null,
 					thought: null,
 					silent: false,
@@ -800,7 +800,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
@@ -808,7 +808,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'msg-00000000000000000000000000000003',
+					messageId: 'msg-00000000000000000000000000000003',
 					role: 'user' as const,
 					content: '网络不好就让我帮忙',
 					message_type: 'text',
@@ -818,7 +818,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'msg-00000000000000000000000000000003',
+					stepId: 'msg-00000000000000000000000000000003',
 					tool_name: null,
 					thought: null,
 					step_number: 2,
@@ -839,7 +839,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
@@ -847,7 +847,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'msg-00000000000000000000000000000003',
+					messageId: 'msg-00000000000000000000000000000003',
 					role: 'user' as const,
 					content: '网络不好就让我帮忙',
 					message_type: 'text',
@@ -857,7 +857,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'msg-00000000000000000000000000000003',
+					stepId: 'msg-00000000000000000000000000000003',
 					tool_name: null,
 					thought: null,
 					step_number: 2,
@@ -875,7 +875,7 @@ describe('buildResumeMessages', () => {
 			session: { ...sampleSession, status: 'paused' },
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'go',
 					message_type: 'text',
@@ -883,7 +883,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					messageId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					role: 'assistant' as const,
 					content: '继续吗？',
 					message_type: 'text',
@@ -893,7 +893,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					stepId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'ask',
 					observation: JSON.stringify({
 						ask: true,
@@ -920,7 +920,7 @@ describe('buildResumeMessages', () => {
 			session: { ...sampleSession, status: 'completed' },
 			messages: [
 				{
-					message_id: 'msg-00000000000000000000000000000001',
+					messageId: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'go',
 					message_type: 'text',
@@ -928,7 +928,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					messageId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					role: 'assistant' as const,
 					content: '继续吗？',
 					message_type: 'text',
@@ -938,7 +938,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
+					stepId: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'ask',
 					observation: JSON.stringify({
 						ask: true,

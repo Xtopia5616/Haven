@@ -1,9 +1,9 @@
 /**
  * Memory command response contracts at the renderer boundary.
  *
- * Rust `MemoryFactResponse`, `MemoryFactSourceRef`, `MemoryRecallItem`, and
- * `MemoryEntityKind` own the generated wire shapes. The UI-facing aliases
- * retain snake_case because memory views consume those names directly.
+ * Rust `MemoryFactResponse`, `MemoryFactSourceRef`, and `MemoryRecallItem`
+ * own the generated wire shapes. These renderer DTOs are explicitly mapped
+ * after validation so Rust field names do not escape the command boundary.
  */
 import {
 	MEMORY_ENTITY_KIND_INPUT_VALUES,
@@ -22,8 +22,17 @@ import { findGeneratedWireShapeMismatch } from './generatedWireShape.ts';
 import { isOneOf } from './valueGuards.ts';
 import { isCanonicalEntityId } from './wireGuards.ts';
 
-export type Fact = GeneratedMemoryFactResponse;
-export type MemoryRecallItem = GeneratedMemoryRecallItem;
+export type MemoryFactSourceRef = Omit<
+	NonNullable<GeneratedMemoryFactResponse['source_ref']>,
+	'message_id'
+> & { messageId: string };
+export type Fact = Omit<GeneratedMemoryFactResponse, 'fact_id' | 'source_ref'> & {
+	factId: string;
+	sourceRef: MemoryFactSourceRef | null;
+};
+export type MemoryRecallItem = Omit<GeneratedMemoryRecallItem, 'entity_id'> & {
+	entityId: string;
+};
 export type MemoryRecallKind = MemoryEntityKindInput;
 export type MemoryFactSourceFilter = MemoryFactSourceInput | '';
 export const MEMORY_RECALL_FILTER_VALUES = [
@@ -59,10 +68,10 @@ function hasFactIdentity(value: unknown): boolean {
 	return isCanonicalEntityId(value.source_ref.message_id, 'msg');
 }
 
-function validateFactResponse(value: unknown): asserts value is Fact {
+function validateFactResponse(value: unknown): asserts value is GeneratedMemoryFactResponse {
 	const mismatch = findGeneratedWireShapeMismatch(value, MEMORY_FACT_RESPONSE_SHAPE);
 	if (mismatch) throw new Error(`Invalid memory fact response shape at ${mismatch}`);
-	const fact = value as Fact;
+	const fact = value as GeneratedMemoryFactResponse;
 	if (
 		fact.confidence < 0 ||
 		fact.confidence > 1 ||
@@ -79,7 +88,7 @@ function validateFactResponse(value: unknown): asserts value is Fact {
 export function parseFactResponse(value: unknown): Fact {
 	if (!hasFactIdentity(value)) throw new Error('Invalid memory fact identity');
 	validateFactResponse(value);
-	return value as unknown as Fact;
+	return mapFactResponse(value as unknown as GeneratedMemoryFactResponse);
 }
 
 /** Validate complete fact rows before listing the persisted fact catalog. */
@@ -88,7 +97,21 @@ export function parseFactResponses(value: unknown): Fact[] {
 		throw new Error('Invalid memory fact identity');
 	}
 	for (const fact of value) validateFactResponse(fact);
-	return value as unknown as Fact[];
+	return value.map((fact) => mapFactResponse(fact as GeneratedMemoryFactResponse));
+}
+
+function mapFactResponse(value: GeneratedMemoryFactResponse): Fact {
+	const { fact_id, source_ref, ...rest } = value;
+	let sourceRef: MemoryFactSourceRef | null = null;
+	if (source_ref) {
+		const { message_id, ...sourceRest } = source_ref;
+		sourceRef = { ...sourceRest, messageId: message_id };
+	}
+	return {
+		...rest,
+		factId: fact_id,
+		sourceRef,
+	};
 }
 
 /** Validate recall entity IDs against the exact kind requested from Rust. */
@@ -107,5 +130,8 @@ export function parseMemoryRecallResponses(
 		const mismatch = findGeneratedWireShapeMismatch(item, MEMORY_RECALL_ITEM_RESPONSE_SHAPE);
 		if (mismatch) throw new Error(`Invalid memory recall response shape at ${mismatch}`);
 	}
-	return value as unknown as MemoryRecallItem[];
+	return value.map((item: GeneratedMemoryRecallItem) => {
+		const { entity_id, ...rest } = item;
+		return { ...rest, entityId: entity_id };
+	});
 }

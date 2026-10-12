@@ -134,7 +134,7 @@ export async function refreshSessionToolRuns(sessionId: string) {
 	} catch (error) {
 		reportError(error, {
 			context: 'toolRunStore',
-			message: '加载会话任务历史失败',
+			message: '加载任务历史失败',
 			notify: false,
 		});
 	}

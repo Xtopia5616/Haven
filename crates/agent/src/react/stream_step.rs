@@ -564,8 +564,8 @@ impl StreamForwarder {
         cancel: tokio_util::sync::CancellationToken,
         // Minted ids shared with the chunk events, the snap and the final
         // persistence, so the live bubble and the DB row match.
-        thought_msg_id: String,
-        reasoning_msg_id: String,
+        thought_message_id: String,
+        reasoning_message_id: String,
     ) -> (
         Self,
         impl FnMut(&haven_llm::StreamChunk) + Send + 'static,
@@ -608,8 +608,8 @@ impl StreamForwarder {
         let attempt_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
             partial_store.generation(&checkpoint_session),
         ));
-        let thought_mid = Arc::<str>::from(thought_msg_id.as_str());
-        let reasoning_mid = Arc::<str>::from(reasoning_msg_id.as_str());
+        let thought_message_id = Arc::<str>::from(thought_message_id.as_str());
+        let reasoning_message_id = Arc::<str>::from(reasoning_message_id.as_str());
         let reset_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let tool_call_previews = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let tool_call_previews_attempt = tool_call_previews.clone();
@@ -644,11 +644,11 @@ impl StreamForwarder {
         let reset_pending_c = reset_pending.clone();
         let attempt_generation_c = attempt_generation;
         let reset_session_id_c = session_id_c.clone();
-        let reset_thought_mid_c = thought_mid.clone();
-        let reset_reasoning_mid_c = reasoning_mid.clone();
+        let reset_thought_message_id_c = thought_message_id.clone();
+        let reset_reasoning_message_id_c = reasoning_message_id.clone();
         let reset_marker_session = session_id_c.clone();
-        let reset_marker_thought = thought_mid.clone();
-        let reset_marker_reasoning = reasoning_mid.clone();
+        let reset_marker_thought = thought_message_id.clone();
+        let reset_marker_reasoning = reasoning_message_id.clone();
         let tool_call_previews_chunk = tool_call_previews.clone();
         let preview_session_id = session_id_c.clone();
         let first_content_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -668,8 +668,8 @@ impl StreamForwarder {
             let stream_ready = if reset_pending_c.load(std::sync::atomic::Ordering::Acquire) {
                 let marker = crate::event::ChunkItem::Reset {
                     session_id: reset_session_id_c.clone(),
-                    thought_message_id: reset_thought_mid_c.clone(),
-                    reasoning_message_id: reset_reasoning_mid_c.clone(),
+                    thought_message_id: reset_thought_message_id_c.clone(),
+                    reasoning_message_id: reset_reasoning_message_id_c.clone(),
                     step_number,
                     run_id,
                 };
@@ -707,7 +707,7 @@ impl StreamForwarder {
                     && chunk_tx_c
                         .try_send(crate::event::ChunkItem::Delta {
                             session_id: session_id_c.clone(),
-                            message_id: thought_mid.clone(),
+                            message_id: thought_message_id.clone(),
                             delta: t.to_string(),
                             step_number,
                             run_id,
@@ -737,7 +737,7 @@ impl StreamForwarder {
                     && chunk_tx_c
                         .try_send(crate::event::ChunkItem::Delta {
                             session_id: session_id_c.clone(),
-                            message_id: reasoning_mid.clone(),
+                            message_id: reasoning_message_id.clone(),
                             delta: r.clone(),
                             step_number,
                             run_id,
@@ -964,10 +964,10 @@ impl ReActEngine {
         }
         // Mint the block ids this call's chunks accumulate into. Reused by
         // the chunk events, the snap and the final persistence of this step.
-        let thought_msg_id = identity_map.ensure_stream_block_message_id(
+        let thought_message_id = identity_map.ensure_stream_block_message_id(
             StreamBlockIdentity::thought(ctx.step_number, ctx.run_id),
         );
-        let reasoning_msg_id = identity_map.ensure_stream_block_message_id(
+        let reasoning_message_id = identity_map.ensure_stream_block_message_id(
             StreamBlockIdentity::reasoning(ctx.step_number, ctx.run_id),
         );
         let limits = self.limits();
@@ -982,8 +982,8 @@ impl ReActEngine {
             limits.partial_checkpoint_min_chars,
             std::time::Duration::from_secs(limits.partial_checkpoint_interval_secs),
             cancel.clone(),
-            thought_msg_id,
-            reasoning_msg_id,
+            thought_message_id,
+            reasoning_message_id,
         );
         let started = std::time::Instant::now();
         // RequestContext carries the exact token estimate for its immutable

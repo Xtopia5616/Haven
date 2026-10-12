@@ -8,7 +8,7 @@ describe('LongTermFacts', () => {
 		const props: any = {
 			facts: [
 				{
-					fact_id: 'fact-00000000000000000000000000000001',
+					factId: 'fact-00000000000000000000000000000001',
 					subject: 'user',
 					predicate: 'theme',
 					object: 'dark',

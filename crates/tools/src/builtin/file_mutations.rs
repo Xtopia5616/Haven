@@ -32,6 +32,11 @@ pub(super) struct PatchEditSummary {
     matches: usize,
 }
 
+pub(super) struct PatchApplication {
+    pub(super) content: String,
+    pub(super) edit_summaries: Vec<PatchEditSummary>,
+}
+
 pub(super) struct MutationLimits {
     pub(super) max_read_bytes: u64,
     pub(super) max_write_bytes: u64,
@@ -193,12 +198,11 @@ pub(super) async fn patch(
             path
         );
     }
-    let (result, summaries) =
-        apply_patch_edits(&decoded.text, edits, max_write_bytes, cancel.clone())?;
+    let patch = apply_patch_edits(&decoded.text, edits, max_write_bytes, cancel.clone())?;
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
-    let encoded = encode_patched_text(&result, decoded.encoding)?;
+    let encoded = encode_patched_text(&patch.content, decoded.encoding)?;
     let write = atomic_replace(
         std::path::Path::new(path),
         &encoded,
@@ -213,8 +217,8 @@ pub(super) async fn patch(
         "bytes": write.bytes,
         "sha256": write.sha256,
         "path": path,
-        "edits": summaries.len(),
-        "replacements": summaries
+        "edits": patch.edit_summaries.len(),
+        "replacements": patch.edit_summaries
             .into_iter()
             .enumerate()
             .map(|(index, summary)| serde_json::json!({
@@ -320,7 +324,7 @@ pub(super) fn apply_patch_edits(
     edits: &[FilesPatchEdit],
     max_result_bytes: u64,
     cancel: CancellationToken,
-) -> anyhow::Result<(String, Vec<PatchEditSummary>)> {
+) -> anyhow::Result<PatchApplication> {
     if edits.is_empty() {
         anyhow::bail!("'edits' must contain at least one edit");
     }
@@ -432,7 +436,10 @@ pub(super) fn apply_patch_edits(
         cursor = replacement.end;
     }
     result.push_str(&content[cursor..]);
-    Ok((result, summaries))
+    Ok(PatchApplication {
+        content: result,
+        edit_summaries: summaries,
+    })
 }
 
 pub(super) fn encode_patched_text(text: &str, encoding: &str) -> anyhow::Result<Vec<u8>> {

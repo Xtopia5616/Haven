@@ -131,7 +131,7 @@ pub(crate) fn run() {
     let log_cfg = config_loader.config().log.clone();
 
     // Initialize tracing subscriber (console + optional file output)
-    let (filter_handles, log_config) = init_tracing(&log_cfg);
+    let tracing_initialization = init_tracing(&log_cfg);
 
     // Set global panic hook to capture and log panics (M6-06)
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -206,7 +206,11 @@ pub(crate) fn run() {
             // Window from tauri.conf already exists here. Init backend now so
             // cold-start work no longer runs with zero visible window.
             let t_setup = std::time::Instant::now();
-            let app_state = init_app_state(filter_handles, log_config, config_loader);
+            let app_state = init_app_state(
+                tracing_initialization.filter_handles,
+                tracing_initialization.effective_log_config,
+                config_loader,
+            );
             app.manage(Arc::new(app_state));
             let notifications = Arc::new(DesktopNotifications::new(handle.clone()));
             app.manage(notifications.clone());

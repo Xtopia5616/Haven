@@ -2,11 +2,18 @@
 import { mapInteractionRequest, type InteractionRequest } from './app.ts';
 import type {
 	LlmUsageRecord as GeneratedLlmUsageRecord,
+	MediaAsset as GeneratedMediaAsset,
+	MediaInput as GeneratedMediaInput,
+	MediaRepresentation as GeneratedMediaRepresentation,
+	MessageAttachment as GeneratedMessageAttachment,
 	SessionResumeMessageDto as GeneratedSessionResumeMessage,
 	RuntimeSessionListResponse as GeneratedSessionListResponse,
+	SessionLineageResponse as GeneratedSessionLineageResponse,
+	SessionRecordDto as GeneratedSessionRecord,
 	SessionResumeResponse as GeneratedSessionResumeResponse,
 	SessionStep as GeneratedSessionStep,
 	SessionUsage as GeneratedSessionUsage,
+	StepInfo as GeneratedStepInfo,
 	TauriCommandResponse,
 } from './generatedCommands.ts';
 import {
@@ -29,27 +36,88 @@ import {
 } from './valueGuards.ts';
 import { isCanonicalEntityId } from './wireGuards.ts';
 
-/** All command wire shapes are derived from Rust handlers and DTOs. */
-export type SessionHistoryRow = TauriCommandResponse<'list_session_history'>[number];
-export type RuntimeSessionListResponse = GeneratedSessionListResponse;
-export type SessionLineageResponse = TauriCommandResponse<'get_session_lineage'>;
-export type SessionResumeMessage = GeneratedSessionResumeMessage;
-export type SessionResumeStep = GeneratedSessionStep;
+type SessionHistoryWireRow = TauriCommandResponse<'list_session_history'>[number];
+export type SessionHistoryRow = Omit<SessionHistoryWireRow, 'session_id'> & { sessionId: string };
+type RuntimeStepWire = GeneratedSessionListResponse['sessions'][number]['steps'][number];
+type RuntimeSessionWire = GeneratedSessionListResponse['sessions'][number];
+export type RuntimeSessionListResponse = Omit<GeneratedSessionListResponse, 'sessions'> & {
+	sessions: Array<
+		Omit<RuntimeSessionWire, 'session_id' | 'steps'> & {
+			sessionId: string;
+			steps: Array<Omit<RuntimeStepWire, 'step_id'> & { stepId: string }>;
+		}
+	>;
+};
+export type SessionLineageResponse = Omit<
+	GeneratedSessionLineageResponse,
+	'session_id' | 'parent_session_id' | 'parent' | 'children'
+> & {
+	sessionId: string;
+	parentSessionId: string | null;
+	parent: SessionHistoryRow | null;
+	children: Array<{ session: SessionHistoryRow; parentSessionId: string }>;
+};
+export type SessionResumeMessage = Omit<
+	GeneratedSessionResumeMessage,
+	'message_id' | 'session_id' | 'attachments' | 'media_inputs'
+> & {
+	messageId: string;
+	sessionId: string;
+	attachments: Array<RendererMessageAttachment>;
+	media_inputs?: Array<RendererMediaInput>;
+};
+export type SessionResumeStep = Omit<
+	GeneratedSessionStep,
+	'step_id' | 'session_id'
+> & {
+	stepId: string;
+	sessionId: string;
+};
 export type SessionResumeUsage = GeneratedSessionUsage;
 
-/** Resume usage rows retain Rust field names while refining nullable cost data. */
+type RendererMediaAsset = Omit<GeneratedMediaAsset, 'asset_id'> & { assetId: string };
+type RendererManagedFilePayload = {
+	kind: 'managed_file_ref';
+	value: Omit<
+		Extract<GeneratedMediaRepresentation['payload'], { kind: 'managed_file_ref' }>['value'],
+		'asset_id'
+	> & { assetId: string };
+};
+type RendererMediaRepresentation = Omit<GeneratedMediaRepresentation, 'payload'> & {
+	payload:
+		| Exclude<GeneratedMediaRepresentation['payload'], { kind: 'managed_file_ref' }>
+		| RendererManagedFilePayload;
+};
+type RendererMessageAttachment = Omit<
+	GeneratedMessageAttachment,
+	'asset_id' | 'representations'
+> & {
+	assetId?: string;
+	representations?: RendererMediaRepresentation[];
+};
+type RendererMediaInput = Omit<GeneratedMediaInput, 'asset' | 'representations'> & {
+	asset: RendererMediaAsset;
+	representations: RendererMediaRepresentation[];
+};
+
+/** Resume usage rows keep Rust field names except entity identifiers. */
 export type SessionLlmUsage = Omit<
 	Partial<GeneratedLlmUsageRecord>,
-	'cost_usd'
+	'usage_id' | 'session_id' | 'cost_usd'
 > & {
+	usageId?: string;
+	sessionId?: string;
 	cost_usd?: number | null;
 };
 
-/** Validated resume response with interactions mapped to the renderer contract. */
+/** Validated resume response with entity IDs mapped to the renderer contract. */
 export type SessionResumeResponse = Omit<
 	GeneratedSessionResumeResponse,
-	'interactions' | 'llm_usage'
+	'session' | 'messages' | 'steps' | 'interactions' | 'llm_usage'
 > & {
+	session: SessionHistoryRow;
+	messages: SessionResumeMessage[];
+	steps: SessionResumeStep[];
 	interactions: InteractionRequest[];
 	llm_usage: SessionLlmUsage[];
 };
@@ -194,6 +262,116 @@ function hasValidResumeNumericValues(value: Record<string, unknown>): boolean {
 	);
 }
 
+function mapSessionRecord(value: GeneratedSessionRecord): SessionHistoryRow {
+	const { session_id, ...rest } = value;
+	return {
+		...rest,
+		sessionId: session_id,
+	};
+}
+
+function mapRuntimeStep(
+	value: GeneratedStepInfo,
+): RuntimeSessionListResponse['sessions'][number]['steps'][number] {
+	const { step_id, ...rest } = value;
+	return {
+		...rest,
+		stepId: step_id,
+	};
+}
+
+function mapRuntimeSession(
+	value: GeneratedSessionListResponse['sessions'][number],
+): RuntimeSessionListResponse['sessions'][number] {
+	const { session_id, steps, ...rest } = value;
+	return {
+		...rest,
+		sessionId: session_id,
+		steps: steps.map(mapRuntimeStep),
+	};
+}
+
+function mapMediaAsset(value: GeneratedMediaAsset): RendererMediaAsset {
+	const { asset_id, ...rest } = value;
+	return {
+		...rest,
+		assetId: asset_id,
+	};
+}
+
+function mapMediaRepresentation(
+	value: GeneratedMediaRepresentation,
+): RendererMediaRepresentation {
+	const payload = value.payload;
+	let mappedPayload: RendererMediaRepresentation['payload'];
+	switch (payload.kind) {
+		case 'inline_data':
+		case 'text':
+		case 'structured':
+			mappedPayload = payload;
+			break;
+		case 'managed_file_ref':
+			const { asset_id, ...payloadRest } = payload.value;
+			mappedPayload = {
+				kind: payload.kind,
+				value: { ...payloadRest, assetId: asset_id },
+			};
+			break;
+	}
+	return { ...value, payload: mappedPayload };
+}
+
+function mapMessageAttachment(
+	value: GeneratedMessageAttachment,
+	): RendererMessageAttachment {
+	const { asset_id, representations, ...rest } = value;
+	return {
+		...rest,
+		...(asset_id === undefined ? {} : { assetId: asset_id }),
+		...(representations === undefined
+			? {}
+			: { representations: representations.map(mapMediaRepresentation) }),
+	};
+}
+
+function mapMediaInput(value: GeneratedMediaInput): RendererMediaInput {
+	const { asset, representations, ...rest } = value;
+	return {
+		...rest,
+		asset: mapMediaAsset(asset),
+		representations: representations.map(mapMediaRepresentation),
+	};
+}
+
+function mapResumeMessage(value: GeneratedSessionResumeMessage): SessionResumeMessage {
+	const { message_id, session_id, attachments, media_inputs, ...rest } = value;
+	return {
+		...rest,
+		messageId: message_id,
+		sessionId: session_id,
+		attachments: attachments.map(mapMessageAttachment),
+		...(media_inputs === undefined ? {} : { media_inputs: media_inputs.map(mapMediaInput) }),
+	};
+}
+
+function mapResumeStep(value: GeneratedSessionStep): SessionResumeStep {
+	const { step_id, session_id, ...rest } = value;
+	return {
+		...rest,
+		stepId: step_id,
+		sessionId: session_id,
+	};
+}
+
+function mapLlmUsage(value: GeneratedLlmUsageRecord): SessionLlmUsage {
+	const { usage_id, session_id, ...rest } = value;
+	return {
+		...rest,
+		usageId: usage_id,
+		sessionId: session_id,
+	};
+}
+
 /** Validate the session and step identities before a runtime list reaches the reducer. */
 export function parseRuntimeSessionListResponse(value: unknown): RuntimeSessionListResponse {
 	if (
@@ -207,7 +385,11 @@ export function parseRuntimeSessionListResponse(value: unknown): RuntimeSessionL
 	if (!value.sessions.every(hasValidRuntimeSessionValues)) {
 		throw new Error('Invalid runtime session response value');
 	}
-	return value as unknown as RuntimeSessionListResponse;
+	const wire = value as unknown as GeneratedSessionListResponse;
+	return {
+		...wire,
+		sessions: wire.sessions.map(mapRuntimeSession),
+	};
 }
 
 /** Validate persisted session identities returned by history and lineage commands. */
@@ -217,7 +399,7 @@ export function parseSessionHistoryRows(value: unknown): SessionHistoryRow[] {
 	}
 	for (const row of value)
 		requireWireShape(row, SESSION_RECORD_RESPONSE_SHAPE, 'session history');
-	return value as unknown as SessionHistoryRow[];
+	return (value as unknown as SessionHistoryWireRow[]).map(mapSessionRecord);
 }
 
 export function parseSessionLineageResponse(
@@ -250,7 +432,22 @@ export function parseSessionLineageResponse(
 		throw new Error('Invalid session lineage identity');
 	}
 	requireWireShape(value, SESSION_LINEAGE_RESPONSE_SHAPE, 'session lineage');
-	return value as unknown as SessionLineageResponse;
+	const wire = value as unknown as GeneratedSessionLineageResponse;
+	const { session_id, parent_session_id, parent, children, ...rest } = wire;
+	return {
+		...rest,
+		sessionId: session_id,
+		parentSessionId: parent_session_id,
+		parent: parent ? mapSessionRecord(parent) : null,
+		children: children.map((child) => {
+			const { session, parent_session_id, ...childRest } = child;
+			return {
+				...childRest,
+				session: mapSessionRecord(session),
+				parentSessionId: parent_session_id,
+			};
+		}),
+	};
 }
 
 function hasResumeInteractionIdentity(
@@ -412,6 +609,23 @@ export function parseSessionResumeResponse(
 	const interactions = value.interactions
 		.map(mapInteractionRequest)
 		.filter((interaction): interaction is InteractionRequest => interaction !== null);
-	const llmUsage = value.llm_usage as SessionLlmUsage[];
-	return { ...value, llm_usage: llmUsage, interactions } as unknown as SessionResumeResponse;
+	const wire = value as unknown as GeneratedSessionResumeResponse;
+	const {
+		session,
+		messages: wireMessages,
+		steps: wireSteps,
+		usage,
+		llm_usage,
+		interactions: _interactions,
+		...rest
+	} = wire;
+	return {
+		...rest,
+		session: mapSessionRecord(session),
+		messages: wireMessages.map(mapResumeMessage),
+		steps: wireSteps.map(mapResumeStep),
+		usage,
+		llm_usage: llm_usage.map(mapLlmUsage),
+		interactions,
+	};
 }

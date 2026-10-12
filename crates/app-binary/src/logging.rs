@@ -10,15 +10,15 @@ use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::reload;
 
+pub(crate) struct TracingInitialization {
+    pub(crate) filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
+    pub(crate) effective_log_config: Arc<std::sync::Mutex<LogConfig>>,
+}
+
 /// Initialize the tracing subscriber with console output and optional rolling
 /// file output. A single reloadable filter is applied at the subscriber level
 /// so runtime log-level changes affect both console and file output.
-pub(crate) fn init_tracing(
-    log_cfg: &LogConfig,
-) -> (
-    Vec<reload::Handle<EnvFilter, Registry>>,
-    Arc<std::sync::Mutex<LogConfig>>,
-) {
+pub(crate) fn init_tracing(log_cfg: &LogConfig) -> TracingInitialization {
     let level_str = log_cfg.level.as_str();
 
     // Single reloadable filter applied at the subscriber level — both
@@ -55,7 +55,10 @@ pub(crate) fn init_tracing(
             let _ = tracing::subscriber::set_global_default(subscriber);
             let mut effective_cfg = log_cfg.clone();
             effective_cfg.file_enabled = false;
-            return (handles, Arc::new(std::sync::Mutex::new(effective_cfg)));
+            return TracingInitialization {
+                filter_handles: handles,
+                effective_log_config: Arc::new(std::sync::Mutex::new(effective_cfg)),
+            };
         }
         let file_appender = tracing_appender::rolling::daily(
             log_path.parent().unwrap_or(std::path::Path::new(".")),
@@ -76,7 +79,10 @@ pub(crate) fn init_tracing(
     }
 
     let log_config = Arc::new(std::sync::Mutex::new(log_cfg.clone()));
-    (handles, log_config)
+    TracingInitialization {
+        filter_handles: handles,
+        effective_log_config: log_config,
+    }
 }
 
 /// Convert any displayable error into a frontend-facing string while logging
@@ -134,8 +140,8 @@ mod tests {
             file_enabled: false,
             ..Default::default()
         };
-        let (_handles, _log_cfg) = init_tracing(&cfg);
-        let cfg_ref = _log_cfg.lock().unwrap();
+        let initialization = init_tracing(&cfg);
+        let cfg_ref = initialization.effective_log_config.lock().unwrap();
         assert_eq!(cfg_ref.level.as_str(), "info");
     }
 
@@ -147,7 +153,7 @@ mod tests {
             file_path: Some(dir.path().join("haven.log")),
             ..Default::default()
         };
-        let (_handles, _log_cfg) = init_tracing(&cfg);
+        let _initialization = init_tracing(&cfg);
     }
 
     #[test]
@@ -161,8 +167,14 @@ mod tests {
             ..Default::default()
         };
 
-        let (_handles, effective_cfg) = init_tracing(&cfg);
-        assert!(!effective_cfg.lock().unwrap().file_enabled);
+        let initialization = init_tracing(&cfg);
+        assert!(
+            !initialization
+                .effective_log_config
+                .lock()
+                .unwrap()
+                .file_enabled
+        );
     }
 
     #[test]

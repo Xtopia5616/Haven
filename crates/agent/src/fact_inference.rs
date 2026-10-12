@@ -356,15 +356,15 @@ pub(crate) fn gate_predicate_merge(p: &PredicateMergeProposal) -> Option<(String
 /// Prefer the user line in an assistant+user pair for `source_ref` (M1).
 pub(crate) fn resolve_source_message(
     messages: &[haven_memory::Message],
-    idx: usize,
+    message_index: usize,
 ) -> Option<&haven_memory::Message> {
-    let m = messages.get(idx)?;
-    if m.role == haven_common::types::CanonicalRole::User {
-        return Some(m);
+    let message = messages.get(message_index)?;
+    if message.role == haven_common::types::CanonicalRole::User {
+        return Some(message);
     }
-    messages[idx + 1..]
+    messages[message_index + 1..]
         .iter()
-        .find(|n| n.role == haven_common::types::CanonicalRole::User)
+        .find(|next_message| next_message.role == haven_common::types::CanonicalRole::User)
 }
 
 /// Build a transcript string truncated to `max_chars`. Recent messages take

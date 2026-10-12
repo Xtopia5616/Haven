@@ -190,7 +190,7 @@
 						count={group.sessions.length}
 					>
 						{#snippet children()}
-							{#each group.sessions as session (session.session_id)}
+							{#each group.sessions as session (session.sessionId)}
 								<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
 								<article
 									class="session-item workspace-item-card motion-list-item"
@@ -221,7 +221,7 @@
 											/>
 										</div>
 										<div class="session-title-row">
-										{#if editingTitle === session.session_id}
+										{#if editingTitle === session.sessionId}
 												<!-- svelte-ignore a11y_autofocus -->
 												<input
 													type="text"
@@ -232,9 +232,9 @@
 															event.currentTarget.value,
 														)}
 													onkeydown={(event) =>
-													onRenameKeydown(event, session.session_id)}
+													onRenameKeydown(event, session.sessionId)}
 													onclick={(event) => event.stopPropagation()}
-												onblur={() => onSaveTitle(session.session_id)}
+												onblur={() => onSaveTitle(session.sessionId)}
 													autofocus
 													autocomplete="off"
 												/>

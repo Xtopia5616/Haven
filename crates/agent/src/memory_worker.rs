@@ -642,7 +642,7 @@ impl MemoryWorker {
         let candidates = facts.into_iter().map(|fact| {
             let source_ref = fact
                 .message_index
-                .and_then(|idx| resolve_source_message(messages, idx))
+                .and_then(|message_index| resolve_source_message(messages, message_index))
                 .map(|message| FactSourceRef::from_message(&message.message_id, &message.content));
             MemoryFactCandidate {
                 subject: fact.subject,
