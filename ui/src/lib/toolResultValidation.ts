@@ -2,7 +2,7 @@ import { isRecord } from './contracts/objectGuards.ts';
 import { isBoolean, isFiniteNumber, isString, isStringArray } from './contracts/valueGuards.ts';
 import { isMediaRepresentationKind } from './contracts/media.ts';
 import { isSessionStatus } from './contracts/session.ts';
-import { isToolRunStatus } from './contracts/toolRun.ts';
+import { isScheduleMode, isToolRunStatus } from './contracts/toolRun.ts';
 import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 import {
 	isToolAgentPresenceStatus,
@@ -19,7 +19,6 @@ import {
 	isToolMediaModality,
 	isToolMemoryRecallMode,
 	isToolRunResultStatus,
-	isToolScheduleMode,
 	isToolSystemScope,
 	isToolMediaOperation,
 	isToolRunsResultOperation,
@@ -455,7 +454,7 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 				hasValidOptionalFields(data, {
 					operation: isToolScheduleResultOperation,
 					...stringFields('fires_at'),
-					mode: isToolScheduleMode,
+					mode: isScheduleMode,
 				}) &&
 				hasValidOptionalCanonicalId(data, 'tool_run_id', 'toolrun') &&
 				hasValidRecordArray(
@@ -465,7 +464,7 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 						isCanonicalToolRunId(row.tool_run_id) &&
 						isString(row.title) &&
 						isString(row.body) &&
-						isToolScheduleMode(row.mode) &&
+						isScheduleMode(row.mode) &&
 						isString(row.due_at),
 				)
 			);

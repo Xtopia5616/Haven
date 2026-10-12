@@ -163,7 +163,7 @@ describe('createChatSessionStartup', () => {
 		]);
 	});
 
-	it('waits for session-list selection before auto-restore and preserves restore order', async () => {
+	it('waits for session-list selection before auto-resume and preserves resume order', async () => {
 		const errorResume = resume('error');
 		const sessionsResponse = deferred<RuntimeSessionListResponse>();
 		let sessionsResolved = false;
@@ -236,9 +236,9 @@ describe('createChatSessionStartup', () => {
 		expect(harness.initialLoadingChanges).toEqual([]);
 	});
 
-	it('ignores an auto-restore response and loading callback after disposal', async () => {
-		const restoreResponse = deferred<SessionResumeResponse | null>();
-		const getLatestSessionForResume = vi.fn(() => restoreResponse.promise);
+	it('ignores an auto-resume response and loading callback after disposal', async () => {
+		const resumeResponse = deferred<SessionResumeResponse | null>();
+		const getLatestSessionForResume = vi.fn(() => resumeResponse.promise);
 		const harness = createHarness({
 			listRuntimeSessions: async () => list(),
 			getLatestSessionForResume,
@@ -248,7 +248,7 @@ describe('createChatSessionStartup', () => {
 		expect(harness.actions.map((action) => action.type)).toEqual(['sessions/loaded']);
 
 		harness.startup.dispose();
-		restoreResponse.resolve(resume());
+		resumeResponse.resolve(resume());
 		await loading;
 
 		expect(harness.actions.map((action) => action.type)).toEqual(['sessions/loaded']);
@@ -286,17 +286,17 @@ describe('createChatSessionStartup', () => {
 		expect(harness.deferredTargetClears).toEqual([0]);
 	});
 
-	it('does not overwrite a session selected while auto-restore is in flight', async () => {
-		let finishRestore: ((value: SessionResumeResponse | null) => void) | undefined;
-		const restorePromise = new Promise<SessionResumeResponse | null>((resolve) => {
-			finishRestore = resolve;
+	it('does not overwrite a session selected while auto-resume is in flight', async () => {
+		let finishResume: ((value: SessionResumeResponse | null) => void) | undefined;
+		const resumePromise = new Promise<SessionResumeResponse | null>((resolve) => {
+			finishResume = resolve;
 		});
-		const getLatestSessionForResume = vi.fn(() => restorePromise);
+		const getLatestSessionForResume = vi.fn(() => resumePromise);
 		const harness = createHarness({ getLatestSessionForResume });
 		const initialLoad = harness.startup.loadInitialSessions(null);
 		await vi.waitFor(() => expect(getLatestSessionForResume).toHaveBeenCalledOnce());
 		harness.reducer.dispatch({ type: 'session/selected', sessionId: OTHER_SESSION_ID });
-		finishRestore?.(resume());
+		finishResume?.(resume());
 		await initialLoad;
 
 		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);

@@ -1,8 +1,5 @@
 import { isToolRunStatus, type ToolRunStatus } from './contracts/toolRun.ts';
-import type { ScheduleMode as GeneratedScheduleMode } from './contracts/generatedCommands.ts';
 import { isOneOf } from './contracts/valueGuards.ts';
-
-export { isScheduleMode as isToolScheduleMode } from './contracts/toolRun.ts';
 
 export const toolAgentPresenceStatuses = ['online', 'offline'] as const;
 
@@ -202,8 +199,6 @@ export type ToolWindowControlType = (typeof toolWindowControlTypes)[number];
 export function isToolWindowControlType(value: unknown): value is ToolWindowControlType {
 	return isOneOf(value, toolWindowControlTypes);
 }
-
-export type ToolScheduleMode = GeneratedScheduleMode;
 
 export const toolFileSearchModes = ['filename', 'content'] as const;
 

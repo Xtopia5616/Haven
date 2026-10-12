@@ -54,7 +54,7 @@
 		reactExecutionPhaseStore,
 		reactExecutionPhaseForSession,
 		updateReactExecutionPhase,
-	} from '$lib/sessionRuntimeStore.ts';
+	} from '$lib/reactExecutionPhaseStore.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import {
 		sessionResumeTargetStore,
@@ -109,7 +109,7 @@
 		WebSearchModeInput,
 	} from '$lib/contracts/generatedCommands.ts';
 	import type { SessionMessageContextMenuRequest } from '$lib/sessionTimeline.ts';
-	import type { ReActExecutionPhaseSnapshot } from '$lib/sessionRuntimeStore.ts';
+	import type { ReActExecutionPhaseSnapshot } from '$lib/reactExecutionPhaseStore.ts';
 
 	let chatPageEl = $state<HTMLElement | null>(null);
 	let composerRef = $state<{ setDraft: (text: string) => void } | null>(null);
@@ -577,7 +577,7 @@
 		}
 		// 新会话 = explicit fresh start. While `newSessionIntentStore` is set, no
 		// event-driven path may auto-assign an existing session (loadSessions
-		// auto-assign, session:lifecycle(created), auto-restore), otherwise the next message
+		// auto-assign, session:lifecycle(created), auto-resume), otherwise the next message
 		// would append to the old session instead of starting a new one.
 		// The intent is cleared only when the user's own submission creates a
 		// session (submit.ts) or they explicitly switch to another session. Also
@@ -751,8 +751,8 @@
 	onMount(async () => {
 		// Hydrate the fresh-start intent from localStorage BEFORE any data
 		// load: the store is in-memory only, but the intent survives app
-		// restarts via `haven.no_auto_restore`. Without this, `loadSessions`
-		// auto-assign would re-select the old session on restart and the
+		// restarts via the persisted `haven.no_auto_restore` intent. Without this,
+		// `loadSessions` auto-assign would re-select the old session on restart and the
 		// persisted intent would be silently defeated. The resumeTarget
 		// branch below (an explicit user choice) clears it again if needed.
 		sessionStartup.hydrateFreshSessionIntent();
@@ -810,7 +810,7 @@
 		});
 		chatEventController = eventController;
 		// Tauri listener registration is asynchronous. Complete it before any
-		// restore/reopen call can trigger a confirmation, otherwise the event can
+		// resume/reopen call can trigger a confirmation, otherwise the event can
 		// be emitted into the small registration gap and the modal never appears.
 		await eventController.register();
 		if (dead) return;
@@ -840,14 +840,14 @@
 				reportError(e, { context: '+page', message: '加载设置失败', log: false });
 			});
 
-		// Load the session list and auto-restore the last session in
+		// Load the session list and auto-resume the last session in
 		// parallel; chat renders as soon as its data arrives,
 		// without waiting for `reopen_session` (a second IPC round-trip that
 		// only makes the session resumable for follow-up messages).
 		await sessionStartup.loadInitialSessions(initialSessionResumeTarget);
 		if (dead) return;
 
-		// Session just opened (history resume or auto-restore): scroll to
+		// Session just opened (history resume or auto-resume): scroll to
 		// the real bottom, forcing the estimated content-visibility heights to
 		// render first (see scrollToBottomAfterOpen).
 		if (activeSessionId) {

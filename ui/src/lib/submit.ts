@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { browser } from '$app/environment';
 import { DRAFT_SESSION_ID, type SessionReducer } from './sessionReducer.ts';
-import { reactExecutionPhaseForSession, reactExecutionPhaseStore } from './sessionRuntimeStore.ts';
+import { reactExecutionPhaseForSession, reactExecutionPhaseStore } from './reactExecutionPhaseStore.ts';
 import { newMessage } from './messageFactory.ts';
 import { newSessionIntentStore, NEW_SESSION_INTENT_STORAGE_KEY } from './sessionIntentStore.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
@@ -190,7 +190,7 @@ function drainQueue(lane: SubmissionLane) {
  * The optimistic message is appended first under the active session id, or
  * under `_draft` when no session is open. If the backend replies with
  * `SessionCreated`, the message is migrated out of wherever it landed —
- * `_draft`, or a stale session id the UI auto-restored while the request was
+ * `_draft`, or a stale session id the UI auto-resumed while the request was
  * in flight (meaningful for voice; harmless for typed) — into the fresh
  * session, and the active session id is updated.
  *

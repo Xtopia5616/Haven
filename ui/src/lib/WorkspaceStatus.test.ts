@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import WorkspaceStatus from './WorkspaceStatus.svelte';
-import type { ReActExecutionPhase } from './sessionRuntimeStore.ts';
+import type { ReActExecutionPhase } from './reactExecutionPhaseStore.ts';
 
 describe('WorkspaceStatus', () => {
 	it('explains that browser preview has no Tauri backend', () => {

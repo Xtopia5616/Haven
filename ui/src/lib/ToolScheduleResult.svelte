@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { scheduleModeLabel, toolRunTitle } from '$lib/toolRunTerminology.ts';
 	import ToolResultList from '$lib/ToolResultList.svelte';
+	import type { ScheduleMode } from './contracts/toolRun.ts';
 	import {
 		normalizeToolScheduleOperation,
-		type ToolScheduleMode,
 		type ToolScheduleResultOperation,
 	} from './toolResultPresentation.ts';
 
@@ -15,10 +15,10 @@
 				tool_run_id: string;
 				title: string;
 				body: string;
-				mode: ToolScheduleMode;
+				mode: ScheduleMode;
 				due_at: string;
 			}>;
-			mode?: ToolScheduleMode | null;
+			mode?: ScheduleMode | null;
 			fires_at?: string | null;
 		};
 	}

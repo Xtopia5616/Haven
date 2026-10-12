@@ -32,7 +32,7 @@ export interface ChatSessionStartupDependencies {
 }
 
 /**
- * Own chat startup and session restore ordering separately from live session
+ * Own chat startup and session resume ordering separately from live session
  * commands. The route supplies store, notification, and view callbacks.
  */
 export function createChatSessionStartup(dependencies: ChatSessionStartupDependencies) {
@@ -269,9 +269,9 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		if (disposed) return;
 		const requestGeneration = generation;
 		const sessionsPromise = loadSessions();
-		const restorePromise = resumeLatestSession(resumeTarget);
+		const resumePromise = resumeLatestSession(resumeTarget);
 		try {
-			await Promise.all([sessionsPromise, restorePromise]);
+			await Promise.all([sessionsPromise, resumePromise]);
 		} finally {
 			if (isCurrentGeneration(requestGeneration)) dependencies.setInitialLoading(false);
 		}

@@ -4,7 +4,7 @@ import {
 	reactExecutionPhaseForSession,
 	reactExecutionPhaseStore,
 	updateReactExecutionPhase,
-} from './sessionRuntimeStore.ts';
+} from './reactExecutionPhaseStore.ts';
 
 describe('ReAct execution phase', () => {
 	beforeEach(() => {

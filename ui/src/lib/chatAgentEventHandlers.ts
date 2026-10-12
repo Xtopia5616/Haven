@@ -1,5 +1,5 @@
 import { clearToolOutputPreview, setToolOutputPreview } from './toolOutputPreviewStore.ts';
-import { updateReactExecutionPhase } from './sessionRuntimeStore.ts';
+import { updateReactExecutionPhase } from './reactExecutionPhaseStore.ts';
 import type { AgentEventListenerMap } from './events.ts';
 import type { SessionAction } from './sessionReducer.ts';
 import type { StreamEventAggregator } from './streamAggregator.ts';

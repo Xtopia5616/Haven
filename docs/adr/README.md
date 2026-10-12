@@ -1015,3 +1015,4 @@
 - [1024：将 ConfigLoader 的生产写入收归 ConfigService](1024-restrict-config-loader-writes.md)
 - [1025：统一 Diagnostics 响应契约与运行时校验](1025-normalize-diagnostics-response-contracts.md)
 - [1026：统一 Messaging 持久身份字段](1026-normalize-messaging-identity-fields.md)
+- [1027：对齐 UI 会话执行阶段与工具契约命名](1027-align-ui-session-and-tool-contract-owners.md)

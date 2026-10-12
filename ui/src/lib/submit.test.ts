@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { reactExecutionPhaseStore } from './sessionRuntimeStore.ts';
+import { reactExecutionPhaseStore } from './reactExecutionPhaseStore.ts';
 import { newSessionIntentStore } from './sessionIntentStore.ts';
 import { SessionReducer } from './sessionReducer.ts';
 

@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；Session history/lineage/resume command DTO、resume message 与 `SessionStep`、runtime `SessionInfo`/`StepInfo`、持久 `LlmUsageRecord`、交互请求、CompactSummary 与 prompt-history 的消息身份字段已收敛（ADR 0991、0993–0999）；Settings 数值字段类型与空值边界、模型配置完整性已对照生成 contract 并统一；运维日志的错误/内容/路径边界已统一，Skills 目录命令只返回成功状态（ADR 1000）；Agent 生命周期状态现只使用 Common lifecycle 唯一入口（ADR 1001）；MCP list/refresh command response 已补齐运行时校验，列表快照统一映射 renderer camelCase view（ADR 1002）；Skills list 与 execute command response 现校验完整固定字段，列表映射为 camelCase view、动态执行 output 保持开放（ADR 1003）；ToolRun board/history command rows 现要求 `status` 并与稀疏 lifecycle payload 使用不同类型（ADR 1004）；Agent dispatcher 启动方法和 handler 已收窄为 Agent crate 内部 API（ADR 1005）；durable transcript 媒体边界改用明确职责名并移除无效 BranchPoint force 参数（ADR 1006）；本轮 command/identity 复核又补齐 interaction replay 与 ToolRun renderer ID、FactSourceRef owner、模型发现 renderer view、builtin manifest envelope、metrics 与 scalar count 安全整数校验、supplement InjectSource 生成枚举校验、boolean command 响应、定时 ToolRun execution claim 身份、Settings 加载失败保存保护、recording event envelope/VAD enum 校验、UI IPC owner 清单闭合、Settings、Memory 与 Session 完整响应 shape 校验（ADR 1007–1022）；本轮继续收回仅供测试或 crate 内部使用的 Common、Input、MCP、LLM 与 Tools API（ADR 1023），并将 Common 配置 loader 的生产写入口收归 ConfigService owner（ADR 1024）；Diagnostics 固定响应复用 Rust enum/数组长度，UI parsers 按唯一 diagnostics owner 校验（ADR 1025）；Messaging 持久身份字段已统一并同步 UI renderer（ADR 1026）；其余 crate API、DTO 身份字段、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
+> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；Session history/lineage/resume command DTO、resume message 与 `SessionStep`、runtime `SessionInfo`/`StepInfo`、持久 `LlmUsageRecord`、交互请求、CompactSummary 与 prompt-history 的消息身份字段已收敛（ADR 0991、0993–0999）；Settings 数值字段类型与空值边界、模型配置完整性已对照生成 contract 并统一；运维日志的错误/内容/路径边界已统一，Skills 目录命令只返回成功状态（ADR 1000）；Agent 生命周期状态现只使用 Common lifecycle 唯一入口（ADR 1001）；MCP list/refresh command response 已补齐运行时校验，列表快照统一映射 renderer camelCase view（ADR 1002）；Skills list 与 execute command response 现校验完整固定字段，列表映射为 camelCase view、动态执行 output 保持开放（ADR 1003）；ToolRun board/history command rows 现要求 `status` 并与稀疏 lifecycle payload 使用不同类型（ADR 1004）；Agent dispatcher 启动方法和 handler 已收窄为 Agent crate 内部 API（ADR 1005）；durable transcript 媒体边界改用明确职责名并移除无效 BranchPoint force 参数（ADR 1006）；本轮 command/identity 复核又补齐 interaction replay 与 ToolRun renderer ID、FactSourceRef owner、模型发现 renderer view、builtin manifest envelope、metrics 与 scalar count 安全整数校验、supplement InjectSource 生成枚举校验、boolean command 响应、定时 ToolRun execution claim 身份、Settings 加载失败保存保护、recording event envelope/VAD enum 校验、UI IPC owner 清单闭合、Settings、Memory 与 Session 完整响应 shape 校验（ADR 1007–1022）；本轮继续收回仅供测试或 crate 内部使用的 Common、Input、MCP、LLM 与 Tools API（ADR 1023），并将 Common 配置 loader 的生产写入口收归 ConfigService owner（ADR 1024）；Diagnostics 固定响应复用 Rust enum/数组长度，UI parsers 按唯一 diagnostics owner 校验（ADR 1025）；Messaging 持久身份字段已统一并同步 UI renderer（ADR 1026）；UI ReAct execution phase store 与 ToolRun ScheduleMode renderer 边界已对齐 owner 命名（ADR 1027）；Memory 领域模型身份字段与 LlmRouter 窄配置读取边界仍待实现；其余 DTO、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
 > 更新日期：2026-10-12
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -147,7 +147,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | 4    | **crate/API 边界**           | 模块 owner 已稳定且存在单向依赖边界、独立消费者或可复核构建/维护收益。                                                                                          | API 清晰、无反向依赖或重复 adapter；否则保留现 crate 边界。              |
 | 5    | **性能与容量**               | 同负载 profile 复现用户相关延迟、资源或容量问题；固定场景记录优化前后指标。                                                                                     | 改善超过噪声并达到目标，否则关闭候选。                                   |
 
-**当前执行位置：** 阶段 0–8 已完成；唯一结构 Active 为 §5.7 的全项目术语与架构角色审查，当前先审 Rust crate 内部符号与函数调用图。§5.3 记录仍满足重开条件的 Deferred 候选；Windows 发布验收是独立 Open Gate（§5.1）。
+**当前执行位置：** 阶段 0–8 已完成；唯一结构 Active 为 §5.7 的全项目术语与架构角色审查。下一轮优先收敛 Memory 跨 crate 领域模型身份字段，并为 LlmRouter 设计不暴露完整敏感配置的窄读取接口；UI 命名残项按审计结果持续收尾。§5.3 记录仍满足重开条件的 Deferred 候选；Windows 发布验收是独立 Open Gate（§5.1）。
 
 ### 5.7 全项目领域术语与架构角色命名收敛（Active）
 
@@ -164,6 +164,8 @@ Input、MCP、LLM、Tools 与 Common 已收回无跨 crate 生产消费者的辅
 Diagnostics command response parsers 与类型统一归于 `contracts/diagnostics.ts`；`LogInfo.level`、LLM connection status/reason 与 metrics phase 数量复用生成的 Rust contract，固定数组长度由 UI 边界严格校验（ADR 1025）。
 
 Messaging JSONL envelope、Agent registry、Agent tool schema/result 与 UI 专用 renderer 已统一使用显式 message/session identity 字段；旧 inbox 字段不做 alias，升级重置要求见 ADR 1026 与 `release-and-reset.md`。
+
+UI 执行阶段 store 的文件名现与 ReAct phase owner 一致；session 启动流程统一称 resume；ToolRun `ScheduleMode` 和 guard 直接由 `contracts/toolRun.ts` 提供，renderer 不重复定义 alias（ADR 1027）。
 
 Durable transcript 的媒体清理辅助函数使用 `for_durable_transcript` / `canonical_for_compaction_event` 职责名，`continue_session` 按 `session_events` replay；BranchPoint append 无效 `force` 参数已删除（ADR 1006）。
 

@@ -3,7 +3,7 @@
 	import {
 		reactExecutionPhaseStore,
 		updateReactExecutionPhase,
-	} from '$lib/sessionRuntimeStore.ts';
+	} from '$lib/reactExecutionPhaseStore.ts';
 	import { recordingOverlayController } from '$lib/recordingOverlayController.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import {
@@ -73,7 +73,7 @@
 	} from '$lib/bootstrapStatus.ts';
 	import type { RecordingOverlayState } from '$lib/recordingOverlayController.ts';
 	import type { NavigationTab } from '$lib/navigationTypes.ts';
-	import type { ReActExecutionPhase } from '$lib/sessionRuntimeStore.ts';
+	import type { ReActExecutionPhase } from '$lib/reactExecutionPhaseStore.ts';
 	import type { ToolRunKind, ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { ConfirmationDecision } from '$lib/confirmationTypes.ts';
 	import type { AgentNotificationPayload } from '$lib/contracts/agent.ts';

@@ -4,7 +4,7 @@
 	import { toolRunKindLabel } from '$lib/toolRunTerminology.ts';
 	import type { LlmConnectionStatus } from '$lib/contracts/generatedCommands.ts';
 	import type { RecordingOverlayState } from './recordingOverlayController.ts';
-	import type { ReActExecutionPhase } from './sessionRuntimeStore.ts';
+	import type { ReActExecutionPhase } from './reactExecutionPhaseStore.ts';
 
 	interface Props {
 		overlay?: Partial<Pick<RecordingOverlayState, 'isRecording' | 'processing'>>;
