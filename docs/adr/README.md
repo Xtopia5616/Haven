@@ -1005,3 +1005,4 @@
 - [1014：校验 supplement 事件来源枚举](1014-validate-supplement-source-enum.md)
 - [1015：校验 boolean command 响应](1015-validate-boolean-command-responses.md)
 - [1016：统一定时 ToolRun 执行权 claim 身份](1016-unify-scheduled-toolrun-execution-claim-identity.md)
+- [1017：设置加载失败时禁止保存完整 fallback](1017-block-settings-save-after-load-failure.md)

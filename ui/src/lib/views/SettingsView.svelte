@@ -182,7 +182,7 @@
 		history_retention_days: 90,
 		max_steps_per_session: null,
 	});
-	let contextLimits = $state<Partial<ContextLimitsConfigInput>>({
+	let contextLimits = $state<Required<ContextLimitsConfigInput>>({
 		compaction_ratio: 0.65,
 		compaction_reserve_tokens: 8192,
 		default_context_window: 64000,
@@ -238,6 +238,7 @@
 		clipboard_history_max_entries: 100,
 		clipboard_entry_max_chars: 2000,
 		max_pending_scheduled_tool_runs: 32,
+		scheduled_tool_runs_due_horizon_secs: 365 * 24 * 3600,
 		max_running_background_tool_runs: 64,
 		event_chunk_batch_max_bytes: 8 * 1024,
 		input_ring_buffer_secs: 20,
@@ -865,77 +866,78 @@
 			},
 			{ tag: 'SettingsView' },
 		);
+		let settingsLoadedSuccessfully = false;
 		try {
 			const settings = await loadSettings();
 			if (!mounted) return;
-			if (settings) {
-				llmConfig = settings.llm ? settingsLlmStateFromConfig(settings.llm) : llmConfig;
-				llmConfig.providers = Array.isArray(llmConfig.providers) ? llmConfig.providers : [];
-				llmConfig.models = Array.isArray(llmConfig.models) ? llmConfig.models : [];
-				llmConfig.request_policies = Array.isArray(llmConfig.request_policies)
-					? llmConfig.request_policies
-					: [];
-				hotkeyBinding = settings.hotkey?.key_binding || hotkeyBinding;
-				hotkeyMode = settings.hotkey?.mode || 'toggle';
-				muteHotkey = settings.hotkey?.mute_hotkey ?? null;
-				session = {
-					...session,
-					...(settings.session || {}),
-					max_steps_per_session: settings.session?.max_steps_per_session ?? null,
-				};
-				contextLimits = settings.context_limits || contextLimits;
-				memory = { ...memory, ...(settings.memory || {}) };
-				security = {
-					permission_mode: settings.security?.permission_mode || 'default',
-					sandbox_mode: settings.security?.sandbox_mode || 'workspace_write',
-					network_policy: settings.security?.network_policy || 'ask',
-					writable_roots: Array.isArray(settings.security?.writable_roots)
-						? settings.security.writable_roots
-						: [],
-					permissions: Array.isArray(settings.security?.permissions)
-						? settings.security.permissions
-						: [],
-				};
-				const media = settings.media || {};
-				mediaInputStrategy = media.input_strategy || 'auto';
-				audio = media.audio || audio;
-				stt = {
-					providerName: media.stt?.provider_name || 'llm',
-					mcp_server: media.stt?.mcp_server || '',
-					model: media.stt?.model || '',
-					timeout_secs: media.stt?.timeout_secs || 30,
-					min_confidence: media.stt?.min_confidence ?? 0.7,
-				};
-				ocr = {
-					provider: media.ocr?.provider || 'llm',
-					api_key: '',
-					api_key_ref: media.ocr?.api_key_ref || null,
-					api_secret: '',
-					api_secret_ref: media.ocr?.api_secret_ref || null,
-					base_url: media.ocr?.base_url || '',
-					timeout_secs: media.ocr?.timeout_secs || 20,
-					min_confidence: media.ocr?.min_confidence ?? 0.7,
-				};
-				tts = {
-					providerName: media.tts?.provider_name || 'none',
-					model: media.tts?.model || '',
-					voice: media.tts?.voice || '',
-					timeout_secs: media.tts?.timeout_secs || 60,
-				};
-				imageGen = {
-					providerName: media.image_gen?.provider_name || 'none',
-					model: media.image_gen?.model || '',
-					timeout_secs: media.image_gen?.timeout_secs || 120,
-				};
-				mcpServerNames = (settings.mcp_servers || [])
-					.map((server) => server.name || '')
-					.filter(Boolean);
-				notification = { ...notification, ...(settings.notification || {}) };
-				setToolRunCompletionNotificationChannels(notification.tool_run_completed);
-				log = { ...log, ...(settings.log || {}) };
-				defaultShell = settings.default_shell || 'powershell';
-				checkShells();
-			}
+			if (!settings) throw new Error('Invalid get_settings response');
+			llmConfig = settings.llm ? settingsLlmStateFromConfig(settings.llm) : llmConfig;
+			llmConfig.providers = Array.isArray(llmConfig.providers) ? llmConfig.providers : [];
+			llmConfig.models = Array.isArray(llmConfig.models) ? llmConfig.models : [];
+			llmConfig.request_policies = Array.isArray(llmConfig.request_policies)
+				? llmConfig.request_policies
+				: [];
+			hotkeyBinding = settings.hotkey?.key_binding || hotkeyBinding;
+			hotkeyMode = settings.hotkey?.mode || 'toggle';
+			muteHotkey = settings.hotkey?.mute_hotkey ?? null;
+			session = {
+				...session,
+				...(settings.session || {}),
+				max_steps_per_session: settings.session?.max_steps_per_session ?? null,
+			};
+			contextLimits = settings.context_limits || contextLimits;
+			memory = { ...memory, ...(settings.memory || {}) };
+			security = {
+				permission_mode: settings.security?.permission_mode || 'default',
+				sandbox_mode: settings.security?.sandbox_mode || 'workspace_write',
+				network_policy: settings.security?.network_policy || 'ask',
+				writable_roots: Array.isArray(settings.security?.writable_roots)
+					? settings.security.writable_roots
+					: [],
+				permissions: Array.isArray(settings.security?.permissions)
+					? settings.security.permissions
+					: [],
+			};
+			const media = settings.media || {};
+			mediaInputStrategy = media.input_strategy || 'auto';
+			audio = media.audio || audio;
+			stt = {
+				providerName: media.stt?.provider_name || 'llm',
+				mcp_server: media.stt?.mcp_server || '',
+				model: media.stt?.model || '',
+				timeout_secs: media.stt?.timeout_secs || 30,
+				min_confidence: media.stt?.min_confidence ?? 0.7,
+			};
+			ocr = {
+				provider: media.ocr?.provider || 'llm',
+				api_key: '',
+				api_key_ref: media.ocr?.api_key_ref || null,
+				api_secret: '',
+				api_secret_ref: media.ocr?.api_secret_ref || null,
+				base_url: media.ocr?.base_url || '',
+				timeout_secs: media.ocr?.timeout_secs || 20,
+				min_confidence: media.ocr?.min_confidence ?? 0.7,
+			};
+			tts = {
+				providerName: media.tts?.provider_name || 'none',
+				model: media.tts?.model || '',
+				voice: media.tts?.voice || '',
+				timeout_secs: media.tts?.timeout_secs || 60,
+			};
+			imageGen = {
+				providerName: media.image_gen?.provider_name || 'none',
+				model: media.image_gen?.model || '',
+				timeout_secs: media.image_gen?.timeout_secs || 120,
+			};
+			mcpServerNames = (settings.mcp_servers || [])
+				.map((server) => server.name || '')
+				.filter(Boolean);
+			notification = { ...notification, ...(settings.notification || {}) };
+			setToolRunCompletionNotificationChannels(notification.tool_run_completed);
+			log = { ...log, ...(settings.log || {}) };
+			defaultShell = settings.default_shell || 'powershell';
+			checkShells();
+			settingsLoadedSuccessfully = true;
 		} catch (e) {
 			reportError(e, { context: 'SettingsView', message: '加载设置失败', log: false });
 		}
@@ -959,7 +961,6 @@
 				log: false,
 			});
 		}
-		if (mounted) settingsLoaded = true;
 		try {
 			autostartEnabled = await isAutostartEnabled();
 			if (!mounted) return;
@@ -970,9 +971,12 @@
 				log: false,
 			});
 		}
-		if (mounted) {
+		if (mounted && settingsLoadedSuccessfully) {
 			await tick();
-			if (mounted) captureSnapshot();
+			if (mounted) {
+				captureSnapshot();
+				settingsLoaded = true;
+			}
 		}
 	});
 
@@ -1106,7 +1110,7 @@
 
 	/** @returns {Promise<boolean>} */
 	async function saveSettings() {
-		if (saveState === 'saving') return false;
+		if (!settingsLoaded || !savedSnapshot || saveState === 'saving') return false;
 		const securityChanged = dirtySettingsSectionIds.includes('security');
 		saveState = 'saving';
 		saveError = '';

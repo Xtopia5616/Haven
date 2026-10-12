@@ -248,7 +248,54 @@ describe('SettingsView diagnostics export', () => {
 		expect(screen.getByRole('heading', { name: '权限中心' })).toBeTruthy();
 	});
 
+	it.each(['null', 'reject'] as const)(
+		'does not allow a full Settings save when get_settings %s',
+		async (failureKind) => {
+			invoke.mockImplementation(async (command: string) => {
+				switch (command) {
+					case 'get_settings':
+						if (failureKind === 'reject') throw new Error('settings unavailable');
+						return null;
+					case 'get_api_key_status':
+						return {
+							models: {},
+							providers: {},
+							stt: false,
+							ocr: false,
+							ocr_secret: false,
+						};
+					case 'is_autostart_enabled':
+						return false;
+					default:
+						return [];
+				}
+			});
+
+			render(SettingsView);
+			await waitFor(() => expect(invoke).toHaveBeenCalledWith('is_autostart_enabled'));
+			await fireEvent.click(screen.getByRole('tab', { name: /界面与通知/ }));
+			await fireEvent.click(
+				await screen.findByRole('switch', { name: '会话开始 Windows 通知' }),
+			);
+
+			expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
+			expect(invoke).not.toHaveBeenCalledWith('update_settings', expect.anything());
+		},
+	);
+
 	it('persists ToolRun completion channels independently and applies the toast switch', async () => {
+		invoke.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'get_settings':
+					return {};
+				case 'get_api_key_status':
+					return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
+				case 'is_autostart_enabled':
+					return false;
+				default:
+					return [];
+			}
+		});
 		const { container } = render(SettingsView);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('is_autostart_enabled'));
@@ -282,6 +329,10 @@ describe('SettingsView diagnostics export', () => {
 			);
 		});
 		expect(shouldShowToolRunCompletionInApp()).toBe(false);
+		const update = invoke.mock.calls.find(([command]) => command === 'update_settings');
+		expect(update?.[1]?.settings.context_limits.scheduled_tool_runs_due_horizon_secs).toBe(
+			365 * 24 * 3600,
+		);
 	});
 
 	it('preserves backend settings that are outside the visible category during a full save', async () => {
