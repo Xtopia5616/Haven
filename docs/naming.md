@@ -332,7 +332,7 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 ### 标识符
 - 类型 / 枚举 / trait / 结构体 → **PascalCase**：`Modality`、`Intent`、`LlmConfig`。
 - 函数 / 方法 / 变量 / 字段 / 模块 → **snake_case**：`fn detect_intent`、`stt_default_base_url`。
-- 常量 / 静态 → **UPPER_SNAKE_CASE**：`MAX_SPEAK_CHARS`、`IMAGE_GEN_KEYWORDS`。
+- 静态词表 / 固定选项常量 → **UPPER_SNAKE_CASE**；局部值与运行时状态仍用 camelCase：`MAX_SPEAK_CHARS`、`IMAGE_GEN_KEYWORDS`。
 - 构造 `pub const fn as_str` / `new` 保持惯例命名。
 - 跨模块返回多个具有稳定领域含义的值时使用具名结果结构体，字段名直接表达各自角色；不要让调用方通过 `.0` / `.1` 解读分类、版本时钟和 MIME 等语义。短生命周期局部组合、迭代器键值等仍可使用 tuple。不同分类空间即使都包含 `kind` 字段，也按 owner 命名具体结果（如 `FileClassification` 与 `ManagedMediaClassification`），不为形似而合并 enum。
 - 可复用的领域复合 key 使用具名结构体和闭合枚举表达各部分含义；不要用 tuple alias 加字符串标签编码固定身份。临时局部键值组合仍可用 tuple。
@@ -414,7 +414,7 @@ Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalT
 - 多个组件共享的表单字段、回调输入或字段联合类型由领域类型模块单一定义；持久配置草稿用 `Draft`，仅供编辑器使用的临时表单用 `Form`，供回调判定的输入用 `Input`，避免不同生命周期共用含糊名称。
 - 前端颜色主题由 `themeStore.ts::ThemeMode` 表达为 `light | dark`；localStorage 与 document attribute 是不可信字符串入口，读取时必须验证再进入主题状态。
 - 从共享 discriminated union 提取给不同 reducer 使用的私有动作子集，以 `<Domain>ReducerAction` 标明实际消费者；`Action`、`Props` 等短名只在明确的组件或模块作用域内作为私有局部类型使用。
-- 常量 → **UPPER_SNAKE_CASE**：`SESSION_STATUS_VALUES`、`COLOR_MAP`、`ROLE_KEYS`。
+- 静态词表 / 固定选项常量 → **UPPER_SNAKE_CASE**：`SESSION_STATUS_VALUES`、`COLOR_MAP`、`ROLE_KEYS`；普通局部值仍用 camelCase。
 - 局部变量 / 函数参数 → **camelCase**：`newKeyValue`、`reasoningOpen`、`ctxMenuItems`。
 
 ### 路由
@@ -463,7 +463,7 @@ Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalT
 - [ ] 缩写整词统一（`stt`/`ocr`/`tts`），不混用别名
 - [ ] 实体 ID 用 `{prefix}-{uuid32}`，经 `new_id` 生成
 - [ ] Svelte 组件文件名 = 组件名（PascalCase）；已迁移组件脚本使用 TypeScript，模块 camelCase，store 尾缀 `Store`
-- [ ] TypeScript 局部变量 camelCase，常量 UPPER_SNAKE
+- [ ] TypeScript 局部变量 camelCase，静态词表 / 固定选项常量 UPPER_SNAKE
 - [ ] 跨层只在边界转换 snake↔camel
 - [ ] 会话恢复用语统一 `resume`，不用 `review`
 - [ ] 运行态会话集合与持久会话历史使用不同名称；全量删除与运行态清理动词明确

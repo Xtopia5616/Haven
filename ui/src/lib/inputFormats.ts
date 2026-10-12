@@ -13,7 +13,7 @@
  */
 
 /** Single source of truth for the media-channel cards (voice first). */
-export const inputFormats = [
+export const INPUT_FORMATS = [
 	{
 		id: 'voice',
 		label: '语音 Voice',

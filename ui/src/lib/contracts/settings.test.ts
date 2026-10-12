@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseSessionPermissionGrantResponses, parseSettingsPayload } from './settings.ts';
-import { createSettingsFixture } from './settings-fixture.ts';
+import { createSettingsFixture } from './settingsFixture.ts';
 
 function withSetting(path: readonly string[], value: unknown) {
 	const settings = createSettingsFixture();

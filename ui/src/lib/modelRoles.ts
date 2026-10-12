@@ -6,7 +6,7 @@ import {
 	type RequestKind,
 } from './contracts/generatedCommands.ts';
 
-const requestKindLabels: Record<RequestKind, string> = {
+const REQUEST_KIND_LABELS: Record<RequestKind, string> = {
 	chat: '对话',
 	fast_chat: '轻量任务',
 	vision: '视觉理解',
@@ -17,7 +17,7 @@ const requestKindLabels: Record<RequestKind, string> = {
 	speech_synthesis: '语音合成',
 };
 
-export const capabilityOptions: Array<{ value: CapabilityInput; label: string }> = [
+export const CAPABILITY_OPTIONS: Array<{ value: CapabilityInput; label: string }> = [
 	{ value: 'chat', label: '对话' },
 	{ value: 'fast_chat', label: '轻量任务' },
 	{ value: 'vision', label: '视觉' },
@@ -28,9 +28,9 @@ export const capabilityOptions: Array<{ value: CapabilityInput; label: string }>
 	{ value: 'speech_synthesis', label: '语音合成' },
 ];
 
-export const requestPolicyOptions = REQUEST_KIND_VALUES.map((value) => ({
+export const REQUEST_POLICY_OPTIONS = REQUEST_KIND_VALUES.map((value) => ({
 	value,
-	label: requestKindLabels[value],
+	label: REQUEST_KIND_LABELS[value],
 }));
 
 export function emptyModel(id: string) {

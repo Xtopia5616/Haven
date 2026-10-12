@@ -6,7 +6,7 @@
 	import MaterialNumberFieldWithUnit from '$lib/MaterialNumberFieldWithUnit.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
-	import { capabilityOptions } from '$lib/modelRoles.ts';
+	import { CAPABILITY_OPTIONS } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
 	import type { CapabilityInput } from '$lib/contracts/generatedCommands.ts';
 	import type { SelectOption } from '$lib/selectOption.ts';
@@ -59,7 +59,7 @@
 	);
 	const assigned = $derived(!!model.providerName && !!model.model && !needsProviderBinding);
 	const configuredCapabilities = $derived(
-		capabilityOptions.filter((item) => (model.capabilities || []).includes(item.value)),
+		CAPABILITY_OPTIONS.filter((item) => (model.capabilities || []).includes(item.value)),
 	);
 	let editorOpen = $state(false);
 </script>
@@ -155,7 +155,7 @@
 					<fieldset class="capability-fieldset">
 						<legend class="field-label">模型能力</legend>
 						<div class="capability-list">
-							{#each capabilityOptions as capability}
+							{#each CAPABILITY_OPTIONS as capability}
 								<label class="capability-option">
 									<input
 										id="{fieldId}-{capability.value}"

@@ -21,7 +21,7 @@ vi.mock('$lib/tauri.ts', () => ({ invoke: vi.fn() }));
 
 import { invoke } from '$lib/tauri.ts';
 import type { SessionPermissionGrant, TauriCommandRequest } from './contracts/generatedCommands.ts';
-import { createSettingsFixture } from './contracts/settings-fixture.ts';
+import { createSettingsFixture } from './contracts/settingsFixture.ts';
 
 const invokeMock = vi.mocked(invoke);
 

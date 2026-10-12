@@ -37,13 +37,12 @@ export type SessionResumeMessage = GeneratedSessionResumeMessage;
 export type SessionResumeStep = GeneratedSessionStep;
 export type SessionResumeUsage = GeneratedSessionUsage;
 
-/** Renderer usage projection derives its fields from the Rust usage DTO. */
+/** Resume usage rows retain Rust field names while refining nullable cost data. */
 export type SessionLlmUsage = Omit<
 	Partial<GeneratedLlmUsageRecord>,
-	'cost_usd' | 'request_kind'
+	'cost_usd'
 > & {
 	cost_usd?: number | null;
-	requestKind?: GeneratedLlmUsageRecord['request_kind'];
 };
 
 /** Validated resume response with interactions mapped to the renderer contract. */
@@ -413,9 +412,6 @@ export function parseSessionResumeResponse(
 	const interactions = value.interactions
 		.map(mapInteractionRequest)
 		.filter((interaction): interaction is InteractionRequest => interaction !== null);
-	const llmUsage = (value.llm_usage as GeneratedLlmUsageRecord[]).map((row) => {
-		const { request_kind, ...rest } = row;
-		return { ...rest, requestKind: request_kind };
-	});
+	const llmUsage = value.llm_usage as SessionLlmUsage[];
 	return { ...value, llm_usage: llmUsage, interactions } as unknown as SessionResumeResponse;
 }

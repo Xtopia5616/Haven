@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { capabilityOptions, emptyModel, requestPolicyOptions } from './modelRoles.ts';
+import { CAPABILITY_OPTIONS, emptyModel, REQUEST_POLICY_OPTIONS } from './modelRoles.ts';
 
 describe('model routing metadata', () => {
 	it('creates an unassigned named model without fixed role slots', () => {
@@ -12,8 +12,8 @@ describe('model routing metadata', () => {
 	});
 
 	it('keeps request kinds and capabilities as separate option sets', () => {
-		expect(capabilityOptions.some((item) => item.value === 'transcription')).toBe(true);
-		expect(requestPolicyOptions.some((item) => item.value === 'vision')).toBe(true);
-		expect(requestPolicyOptions.some((item) => item.value === 'audio_chat')).toBe(true);
+		expect(CAPABILITY_OPTIONS.some((item) => item.value === 'transcription')).toBe(true);
+		expect(REQUEST_POLICY_OPTIONS.some((item) => item.value === 'vision')).toBe(true);
+		expect(REQUEST_POLICY_OPTIONS.some((item) => item.value === 'audio_chat')).toBe(true);
 	});
 });

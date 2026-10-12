@@ -374,8 +374,8 @@ describe('session history and resume contracts', () => {
 		const response = resumeResponse();
 		const parsed = parseSessionResumeResponse(response);
 		expect(parsed).not.toBe(response);
-		expect(parsed.llm_usage[0]).toMatchObject({ requestKind: 'chat' });
-		expect(parsed.llm_usage[0]).not.toHaveProperty('request_kind');
+		expect(parsed.llm_usage[0]).toMatchObject({ request_kind: 'chat' });
+		expect(parsed.llm_usage[0]).not.toHaveProperty('requestKind');
 		expect(parsed.interactions).toEqual([
 			{
 				requestId: stepId,

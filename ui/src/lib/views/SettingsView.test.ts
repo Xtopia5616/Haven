@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsView from './SettingsView.svelte';
-import { createSettingsFixture } from '$lib/contracts/settings-fixture.ts';
+import { createSettingsFixture } from '$lib/contracts/settingsFixture.ts';
 import { AGENT_METRICS_PHASE_COUNT } from '$lib/contracts/generatedCommands.ts';
 
 const { invoke, listen } = vi.hoisted(() => ({

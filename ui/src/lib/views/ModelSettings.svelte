@@ -14,7 +14,7 @@
 		isSameModelDiscoveryTarget,
 		type DiscoveredModelMetadataFill,
 	} from '$lib/modelDiscovery.ts';
-	import { emptyModel, capabilityOptions, requestPolicyOptions } from '$lib/modelRoles.ts';
+	import { emptyModel, CAPABILITY_OPTIONS, REQUEST_POLICY_OPTIONS } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
 	import type { ApiKeyStatus } from '$lib/contracts/diagnostics.ts';
 	import type {
@@ -141,7 +141,7 @@
 		speech_synthesis: 'speech_synthesis',
 	};
 	function addPolicy() {
-		const request = requestPolicyOptions.find(
+		const request = REQUEST_POLICY_OPTIONS.find(
 			(item) => !llmConfig.request_policies.some((policy) => policy.request === item.value),
 		)?.value;
 		if (!request) return;
@@ -409,7 +409,7 @@
 		return API_STYLE_OPTIONS.find((option) => option.value === style)?.label || style || '自动';
 	}
 	function setPolicyRequestFromInput(policy: RequestPolicyDraft, value: string) {
-		const request = requestPolicyOptions.find((option) => option.value === value)?.value;
+		const request = REQUEST_POLICY_OPTIONS.find((option) => option.value === value)?.value;
 		if (request) setPolicyRequest(policy, request);
 	}
 </script>
@@ -501,7 +501,7 @@
 										<MaterialSelect
 											id="policy-{policy.request}"
 											value={policy.request}
-											options={requestPolicyOptions}
+											options={REQUEST_POLICY_OPTIONS}
 											ariaLabel={`请求路由类型：${policy.request}`}
 											onChange={withStringValue((value) =>
 												setPolicyRequestFromInput(policy, value),
@@ -533,7 +533,7 @@
 										<MaterialButton
 											variant="text"
 											label="移除策略"
-											ariaLabel={`移除${requestPolicyOptions.find((option) => option.value === policy.request)?.label || policy.request}路由`}
+											ariaLabel={`移除${REQUEST_POLICY_OPTIONS.find((option) => option.value === policy.request)?.label || policy.request}路由`}
 											onclick={() => removePolicy(policy)}
 										/>
 									</div>

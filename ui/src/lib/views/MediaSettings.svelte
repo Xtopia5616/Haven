@@ -11,7 +11,7 @@
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
 	import ApiKeyDialog from '$lib/ApiKeyDialog.svelte';
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
-	import { inputFormats } from '$lib/inputFormats.ts';
+import { INPUT_FORMATS } from '$lib/inputFormats.ts';
 	import {
 		inputElementValue,
 		withEventValue,
@@ -251,7 +251,7 @@
 		</div>
 	</MaterialCard>
 	<div class="card-list">
-		{#each inputFormats as format (format.id)}
+		{#each INPUT_FORMATS as format (format.id)}
 			<MaterialCard variant="outlined" className="settings-card">
 				<div class="card-head">
 					<span class="card-title">{format.label}</span>
