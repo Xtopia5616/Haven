@@ -1039,3 +1039,4 @@
 - [1048：对齐 UI canonical ID 校验](1048-align-ui-canonical-id-validation.md)
 - [1049：集中构造 Tools 的实体 ID schema](1049-centralize-tool-entity-id-schemas.md)
 - [1050：只将规范实体 ID 视为持久身份](1050-classify-only-canonical-entity-identities.md)
+- [1051：共享媒体资产身份校验](1051-share-media-asset-identity-validation.md)

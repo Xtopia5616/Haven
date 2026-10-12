@@ -4453,7 +4453,7 @@ mod tests {
     async fn session_store_persists_ingress_seed_with_origin_type_and_attachments() {
         let (db, store, session_id) = store();
         let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
-        attachment.asset_id = Some("asset-test".into());
+        attachment.asset_id = Some("asset-00000000000000000000000000000001".into());
         attachment.filename = Some("photo.png".into());
         let attachments = [attachment.clone()];
 
@@ -4479,7 +4479,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             persisted.attachments[0].asset_id.as_deref(),
-            Some("asset-test")
+            Some("asset-00000000000000000000000000000001")
         );
         assert_eq!(
             persisted.attachments[0].filename.as_deref(),
@@ -4494,6 +4494,44 @@ mod tests {
         );
         assert_eq!(persisted.tool_call_id, None);
         assert_eq!(persisted.media_inputs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn session_store_rejects_noncanonical_attachment_asset_ids_before_writing() {
+        let (db, store, session_id) = store();
+        let mut attachment = MessageAttachment::new("application/pdf", "");
+        attachment.asset_id = Some("asset-test".into());
+        let error = store
+            .persist_ingress_user_seed(&session_id, "describe this", &[attachment], false)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("canonical asset-* ID"));
+        assert!(db.list_session_messages(&session_id).unwrap().is_empty());
+        assert_eq!(db.get_last_message_ingress_seq(&session_id), 0);
+
+        let mut attachment = MessageAttachment::new("application/pdf", "");
+        attachment.asset_id = Some("asset-00000000000000000000000000000002".into());
+        attachment
+            .representations
+            .push(haven_common::media::MediaRepresentation::available(
+                haven_common::media::MediaRepresentationKind::ManagedFileRef,
+                haven_common::media::MediaProvenance::Original,
+                haven_common::media::MediaRepresentationPayload::ManagedFileRef {
+                    asset_id: "asset-test".into(),
+                    filename: None,
+                },
+            ));
+        let error = store
+            .persist_ingress_user_seed(&session_id, "describe this", &[attachment], false)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("managed media representation asset_id")
+        );
+        assert!(db.list_session_messages(&session_id).unwrap().is_empty());
+        assert_eq!(db.get_last_message_ingress_seq(&session_id), 0);
     }
 
     #[tokio::test]

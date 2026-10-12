@@ -7,7 +7,7 @@
 //! representation into a provider wire format.
 
 use crate::media_detection::DetectedMediaKind;
-use crate::types::new_id;
+use crate::types::{is_canonical_id, new_id};
 use serde::{Deserialize, Serialize};
 
 /// Runtime/storage identifier for a managed media asset.
@@ -455,6 +455,26 @@ pub struct MediaInput {
 }
 
 impl MediaInput {
+    /// Validate every Haven-owned asset reference carried by this input.
+    /// Provider payloads and text representations remain opaque.
+    pub fn validate_asset_identities(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            is_canonical_id(&self.asset.asset_id, "asset"),
+            "media input asset_id must be a canonical asset-* ID"
+        );
+        for representation in &self.representations {
+            if let MediaRepresentationPayload::ManagedFileRef { asset_id, .. } =
+                &representation.payload
+            {
+                anyhow::ensure!(
+                    is_canonical_id(asset_id, "asset"),
+                    "managed media representation asset_id must be a canonical asset-* ID"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Remove inline bytes before storing an input in a durable transcript.
     /// Transcript records retain the host-owned asset reference, not another
     /// copy of the binary payload, so replay can resolve managed media safely.
@@ -1060,6 +1080,35 @@ mod tests {
         assert_eq!(filename.as_deref(), Some("report.pdf"));
         let json = serde_json::to_string(&input).unwrap();
         assert!(!json.contains("C:\\Users\\olive"));
+    }
+
+    #[test]
+    fn media_input_identity_validation_covers_asset_and_managed_references() {
+        let mut media_input = input(
+            asset("application/pdf", 0),
+            vec![MediaRepresentation::available(
+                MediaRepresentationKind::ManagedFileRef,
+                MediaProvenance::Original,
+                MediaRepresentationPayload::ManagedFileRef {
+                    asset_id: "asset-00000000000000000000000000000002".into(),
+                    filename: None,
+                },
+            )],
+        );
+        media_input.validate_asset_identities().unwrap();
+
+        let valid_asset_id = media_input.asset.asset_id.clone();
+        media_input.asset.asset_id = "asset-invalid".into();
+        assert!(media_input.validate_asset_identities().is_err());
+        media_input.asset.asset_id = valid_asset_id;
+
+        let MediaRepresentationPayload::ManagedFileRef { asset_id, .. } =
+            &mut media_input.representations[0].payload
+        else {
+            unreachable!();
+        };
+        *asset_id = "asset-invalid".into();
+        assert!(media_input.validate_asset_identities().is_err());
     }
 
     #[test]

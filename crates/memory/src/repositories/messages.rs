@@ -397,6 +397,9 @@ impl Database {
         pending_disposition: Option<PendingInputDisposition>,
     ) -> anyhow::Result<(Message, Option<PendingInputDisposition>)> {
         ensure_session_id(session_id)?;
+        for media_input in media_inputs {
+            media_input.validate_asset_identities()?;
+        }
         let id = id
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("msg"));

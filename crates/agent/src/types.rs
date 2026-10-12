@@ -174,25 +174,8 @@ pub(crate) fn ensure_canonical_id(id: &str, prefix: &str, field: &str) -> anyhow
 }
 
 fn validate_media_inputs(inputs: &[MediaInput]) -> anyhow::Result<()> {
-    use haven_common::media::MediaRepresentationPayload;
-
     for input in inputs {
-        ensure_canonical_id(
-            &input.asset.asset_id,
-            "asset",
-            "media_inputs[].asset.asset_id",
-        )?;
-        for representation in &input.representations {
-            if let MediaRepresentationPayload::ManagedFileRef { asset_id, .. } =
-                &representation.payload
-            {
-                ensure_canonical_id(
-                    asset_id,
-                    "asset",
-                    "media_inputs[].representations[].asset_id",
-                )?;
-            }
-        }
+        input.validate_asset_identities()?;
     }
     Ok(())
 }

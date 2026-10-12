@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；§5.7 全项目概念与实现规范覆盖持续推进。已完成 ADR 1031–1050：IPC runtime shape 与语义校验、API owner、rollback 水位、稳定 inbox ack、Messaging 单一持久来源，以及运行时身份和跨边界 ID 校验的一致性。尚未完成全库覆盖；继续核对剩余跨层概念、实现命名与文档契约。此前审计没有发现值得合并/拆分的架构候选。桌面 `list_facts` 分页仍待 UI 设计；Windows 发布验收为独立 Open Gate（§5.1）。
+> 状态：阶段 0–8 已完成；§5.7 全项目概念与实现规范覆盖持续推进。已完成 ADR 1031–1051：IPC runtime shape 与语义校验、API owner、rollback 水位、稳定 inbox ack、Messaging 单一持久来源，以及运行时身份和跨边界 ID 校验的一致性。尚未完成全库覆盖；继续核对剩余跨层概念、实现命名与文档契约。此前审计没有发现值得合并/拆分的架构候选。桌面 `list_facts` 分页仍待 UI 设计；Windows 发布验收为独立 Open Gate（§5.1）。
 > 更新日期：2026-10-12
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | **Active：**继续 §5.7 全库概念与实现规范覆盖；rollback projection watermark 与稳定 `message_ids` inbox ack 已完成（ADR 1043–1044）。Messaging 已统一为单一 JSONL 生命周期来源：Actor 移除或重启不再切换消息来源，未确认消息按原 ID 可重领（ADR 1045）。provider `tool_call_id` 逐字保留，durable `call-*` fallback 与进程内 `preview-*` 已分开（ADR 1046）。Interaction identity 现由 append 与 replay 共用同一校验，避免写入后恢复失败（ADR 1047）；Rust、UI 与 Tools schema 对 canonical ID 的前缀和长度规则现已收敛（ADR 1048–1049）；清理器与 UI 恢复/续接也只接受 canonical entity ID 作为持久身份（ADR 1050）。继续核对剩余跨层概念、实现命名和文档契约；此前 crate 边界审计没有发现值得合并/拆分的新结构候选；桌面完整 `list_facts` 分页仍待 UI 设计。 |
+| **Active / Next** | **Active：**继续 §5.7 全库概念与实现规范覆盖；rollback projection watermark 与稳定 `message_ids` inbox ack 已完成（ADR 1043–1044）。Messaging 已统一为单一 JSONL 生命周期来源：Actor 移除或重启不再切换消息来源，未确认消息按原 ID 可重领（ADR 1045）。provider `tool_call_id` 逐字保留，durable `call-*` fallback 与进程内 `preview-*` 已分开（ADR 1046）。Interaction identity 现由 append 与 replay 共用同一校验，避免写入后恢复失败（ADR 1047）；Rust、UI 与 Tools schema 对 canonical ID 的前缀和长度规则现已收敛（ADR 1048–1049）；清理器与 UI 恢复/续接也只接受 canonical entity ID 作为持久身份（ADR 1050）；Common、Agent 和 Memory 现共用媒体资产身份校验，消息 ingress 在写入前拒绝无效引用（ADR 1051）。继续核对剩余跨层概念、实现命名和文档契约；此前 crate 边界审计没有发现值得合并/拆分的新结构候选；桌面完整 `list_facts` 分页仍待 UI 设计。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -154,7 +154,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 范围覆盖所有 Rust crate、Svelte/TypeScript、Tauri IPC/事件，以及对应架构、命名和契约文档。职责以 `docs/architecture.md` 为准，术语与角色动词以 `docs/naming.md` 为准；已完成决定和实现细节只保存在对应 ADR，不在路线图复制实施日志。
 
 本轮持续检查 Rust crate 可达 API 与调用图、跨层身份写入、配置 load/update owner、UI command/event response 和语义校验、架构与命名文档引用。此前 Messaging、MCP 和 Memory 普通生产路径已由领域 facade/store 承接，具体 transport、client、repository 和数据库装配归各自 owner；跨 crate 测试注入使用非默认 `test-support`（ADR 0887–0892）。近期 API 和 IPC 复核已分别记录在 ADR 1041–1042。继续检查持久写路径时发现 `last_msg_at` 只读取 messages，可能在 rollback 时误删更晚写入的分支内 step/usage；现通过跨三表单调水位、事务化写入与 schema v40 reset 要求收口（ADR 1043）。
-继续核对运行时身份时发现显式 `agent.inbox` 的 `claim-*` 虽被文档定义为进程内，却随 ToolResult 进入 durable transcript；现改为稳定 `message_ids` ack，并为旧 transcript 参数返回迁移提示（ADR 1044）。对 Messaging 恢复路径的审计又发现同进程 Actor 的易失队列与 JSONL 竞争权威，并可能使 claim/ack 随 Actor 生命周期切换；现已删除 Actor inbox 和 `SessionMailbox` 分支，由 JSONL transport 独占投递、领取、确认、历史与回复查询（ADR 1045）。`call-*` 现明确为缺失/重复 provider ID 的持久 fallback，原始 provider ID 按不透明值保留；流式 preview 使用独立 `preview-*`（ADR 1046）。Interaction identity 由 append 和 replay 共用 `validate_interaction_ids`，避免 durable event 写入成功、恢复时才拒绝（ADR 1047）；Rust 与 UI `is_canonical_id`/`isCanonicalEntityId` 现对 prefix 字符及整体 ID 长度执行相同规则（ADR 1048）。Tools builtin 的 37 处持久实体 ID schema 现共用 `canonical_entity_id_schema`，并有 schema validator 对照 Common checker 覆盖边界（ADR 1049）。媒体文件清理、续接与 resume 持久身份分类现复用同一 ID 规则，不再仅按前缀判断（ADR 1050）。全库概念与实现规范覆盖仍未完成，继续按下表逐域审计并收敛文档和源码。
+继续核对运行时身份时发现显式 `agent.inbox` 的 `claim-*` 虽被文档定义为进程内，却随 ToolResult 进入 durable transcript；现改为稳定 `message_ids` ack，并为旧 transcript 参数返回迁移提示（ADR 1044）。对 Messaging 恢复路径的审计又发现同进程 Actor 的易失队列与 JSONL 竞争权威，并可能使 claim/ack 随 Actor 生命周期切换；现已删除 Actor inbox 和 `SessionMailbox` 分支，由 JSONL transport 独占投递、领取、确认、历史与回复查询（ADR 1045）。`call-*` 现明确为缺失/重复 provider ID 的持久 fallback，原始 provider ID 按不透明值保留；流式 preview 使用独立 `preview-*`（ADR 1046）。Interaction identity 由 append 和 replay 共用 `validate_interaction_ids`，避免 durable event 写入成功、恢复时才拒绝（ADR 1047）；Rust 与 UI `is_canonical_id`/`isCanonicalEntityId` 现对 prefix 字符及整体 ID 长度执行相同规则（ADR 1048）。Tools builtin 的 37 处持久实体 ID schema 现共用 `canonical_entity_id_schema`，并有 schema validator 对照 Common checker 覆盖边界（ADR 1049）。媒体文件清理、续接与 resume 持久身份分类现复用同一 ID 规则，不再仅按前缀判断（ADR 1050）。Common 的 `MediaInput::validate_asset_identities` 现由 Agent transcript 与 Memory message write 共用，防止带坏资产引用的 ingress 写入 messages 和媒体投影（ADR 1051）。全库概念与实现规范覆盖仍未完成，继续按下表逐域审计并收敛文档和源码。
 
 Agent 的跨 crate 生产启动只经 `AgentLayer::start_after_memory_ready`；`SessionSupervisor::start_dispatcher*` 与 `SessionRunHandler` 仅供 Agent crate 内部编排和测试使用（ADR 1005）。
 
