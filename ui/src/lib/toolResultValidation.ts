@@ -35,8 +35,13 @@ type FieldGuard = (value: unknown) => boolean;
 
 const isStringOrNumber = (value: unknown): boolean => isString(value) || isFiniteNumber(value);
 const isCanonicalAssetId = (value: unknown): boolean => isCanonicalEntityId(value, 'asset');
+const isCanonicalToolRunId = (value: unknown): boolean => isCanonicalEntityId(value, 'toolrun');
 const isMediaRepresentationArray = (value: unknown): boolean =>
 	Array.isArray(value) && value.every(isMediaRepresentationKind);
+
+function hasValidOptionalCanonicalId(data: JsonRecord, key: string, prefix: string): boolean {
+	return !(key in data) || isCanonicalEntityId(data[key], prefix);
+}
 
 function hasValidOptionalFields(
 	data: JsonRecord,
@@ -431,29 +436,30 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 			return (
 				hasValidOptionalFields(data, {
 					operation: isToolRunsResultOperation,
-					tool_run_id: isString,
 					status: isToolRunResultStatus,
 					...booleanFields('cancelled'),
 					exit_code: isFiniteNumber,
 				}) &&
+				hasValidOptionalCanonicalId(data, 'tool_run_id', 'toolrun') &&
 				hasValidRecordArray(
 					data,
 					'tool_runs',
-					(row) => isString(row.tool_run_id) && isToolRunStatus(row.status),
+					(row) => isCanonicalToolRunId(row.tool_run_id) && isToolRunStatus(row.status),
 				)
 			);
 		case 'schedule':
 			return (
 				hasValidOptionalFields(data, {
 					operation: isToolScheduleResultOperation,
-					...stringFields('tool_run_id', 'fires_at'),
+					...stringFields('fires_at'),
 					mode: isToolScheduleMode,
 				}) &&
+				hasValidOptionalCanonicalId(data, 'tool_run_id', 'toolrun') &&
 				hasValidRecordArray(
 					data,
 					'scheduled_tool_runs',
 					(row) =>
-						isString(row.tool_run_id) &&
+						isCanonicalToolRunId(row.tool_run_id) &&
 						isString(row.title) &&
 						isString(row.body) &&
 						isToolScheduleMode(row.mode) &&
@@ -506,13 +512,14 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 				)
 			);
 		case 'shell':
-			return hasValidOptionalFields(data, {
-				truncated: isBoolean,
-				execution_mode: isToolExecutionMode,
-				status: isToolRunStatus,
-				tool_run_id: isString,
-				exit_code: isFiniteNumber,
-			});
+			return (
+				hasValidOptionalFields(data, {
+					truncated: isBoolean,
+					execution_mode: isToolExecutionMode,
+					status: isToolRunStatus,
+					exit_code: isFiniteNumber,
+				}) && hasValidOptionalCanonicalId(data, 'tool_run_id', 'toolrun')
+			);
 		default:
 			return true;
 	}

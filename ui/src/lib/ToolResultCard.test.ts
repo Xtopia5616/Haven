@@ -29,6 +29,7 @@ import ToolScheduleResult from './ToolScheduleResult.svelte';
 
 const searchJson = (results: any[], extra: any = {}) =>
 	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
+const toolRunId = (suffix: number) => `toolrun-${suffix.toString(16).padStart(32, '0')}`;
 
 function render(component: any, props: Record<string, any> = {}) {
 	if (component !== ToolResultCard) return testingLibraryRender(component, props);
@@ -87,13 +88,17 @@ describe('canRenderToolResult', () => {
 		expect(
 			canRenderToolResult(
 				'haven',
-				JSON.stringify({ operation: 'schedule_set', tool_run_id: 'r1', mode: 'notify' }),
+				JSON.stringify({
+					operation: 'schedule_set',
+					tool_run_id: toolRunId(1),
+					mode: 'notify',
+				}),
 			),
 		).toBe(true);
 		expect(
 			canRenderToolResult(
 				'haven',
-				JSON.stringify({ operation: 'schedule_cancel', tool_run_id: 'toolrun-1' }),
+				JSON.stringify({ operation: 'schedule_cancel', tool_run_id: toolRunId(1) }),
 			),
 		).toBe(true);
 		expect(
@@ -119,7 +124,7 @@ describe('canRenderToolResult', () => {
 				'haven',
 				JSON.stringify({
 					operation: 'tool_runs_cancel',
-					tool_run_id: 'toolrun-1',
+					tool_run_id: toolRunId(1),
 					cancelled: true,
 				}),
 			),
@@ -245,23 +250,39 @@ describe('operation view UI contract', () => {
 			{ renderer: 'window', data: { elements: [{ control_type: 'FutureControl' }] } },
 			{ renderer: 'tool_runs', data: { tool_runs: [null] } },
 			{ renderer: 'tool_runs', data: { operation: 'pause' } },
-			{ renderer: 'tool_runs', data: { tool_run_id: 'toolrun-1', status: 'future-status' } },
+			{ renderer: 'tool_runs', data: { tool_run_id: toolRunId(1), status: 'future-status' } },
 			{
 				renderer: 'tool_runs',
-				data: { tool_runs: [{ tool_run_id: 'toolrun-1', status: 'future-status' }] },
+				data: {
+					operation: 'tool_runs_cancel',
+					tool_run_id: 'toolrun-short',
+					cancelled: true,
+				},
+			},
+			{
+				renderer: 'tool_runs',
+				data: { tool_runs: [{ tool_run_id: toolRunId(1), status: 'future-status' }] },
+			},
+			{
+				renderer: 'tool_runs',
+				data: { tool_runs: [{ tool_run_id: 'toolrun-short', status: 'running' }] },
 			},
 			{ renderer: 'schedule', data: { scheduled_tool_runs: [null] } },
 			{ renderer: 'schedule', data: { operation: 'pause' } },
 			{
 				renderer: 'schedule',
-				data: { scheduled_tool_runs: [{ tool_run_id: 'toolrun-1', due_at: 42 }] },
+				data: { operation: 'schedule_cancel', tool_run_id: null },
+			},
+			{
+				renderer: 'schedule',
+				data: { scheduled_tool_runs: [{ tool_run_id: toolRunId(1), due_at: 42 }] },
 			},
 			{
 				renderer: 'schedule',
 				data: {
 					scheduled_tool_runs: [
 						{
-							tool_run_id: 'toolrun-1',
+							tool_run_id: toolRunId(1),
 							title: 'test',
 							body: 'test',
 							mode: 'future',
@@ -290,6 +311,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'system', data: { scope: { unexpected: true } } },
 			{ renderer: 'system', data: { scope: 'power', ac_power: 'plugged' } },
 			{ renderer: 'system', data: { scope: 'power', battery_status: 'empty' } },
+			{ renderer: 'shell', data: { tool_run_id: 'toolrun-short' } },
 			{ renderer: 'haven_mcp', data: { servers: [null] } },
 			{
 				renderer: 'haven_diagnostics',
@@ -633,7 +655,7 @@ describe('operation view UI contract', () => {
 			getToolResultRenderer(
 				'custom',
 				'schedule',
-				{ operation: 'schedule_set', tool_run_id: 'toolrun-1', mode: 'tool' },
+				{ operation: 'schedule_set', tool_run_id: toolRunId(1), mode: 'tool' },
 				'schedule',
 			),
 		).toBe(ToolScheduleResult);
@@ -669,7 +691,7 @@ describe('operation view UI contract', () => {
 				{
 					scheduled_tool_runs: [
 						{
-							tool_run_id: 'toolrun-1',
+							tool_run_id: toolRunId(1),
 							title: 'scheduled',
 							body: 'body',
 							mode: 'continue',
@@ -679,7 +701,7 @@ describe('operation view UI contract', () => {
 					],
 					operation: 'set',
 					mode: 'tool',
-					tool_run_id: 'toolrun-2',
+					tool_run_id: toolRunId(2),
 					fires_at: '',
 					title: [],
 				},
@@ -746,7 +768,7 @@ describe('operation view UI contract', () => {
 			getToolResultRenderer('shell', 'shell', {
 				execution_mode: 'background',
 				status: 'running',
-				tool_run_id: 'toolrun-1',
+				tool_run_id: toolRunId(1),
 			}),
 		).toBe(ToolShellResult);
 		expect(
@@ -1084,7 +1106,7 @@ describe('ToolResultCard shell / notify / generic', () => {
 
 	it('renders the exit code for a completed background shell ToolRun', async () => {
 		upsertToolRun({
-			toolRunId: 'toolrun-shell-1',
+			toolRunId: toolRunId(11),
 			kind: 'background',
 			status: 'completed',
 			output: 'command output',
@@ -1092,7 +1114,7 @@ describe('ToolResultCard shell / notify / generic', () => {
 		});
 		const { container } = render(ToolResultCard, {
 			toolName: 'shell',
-			toolRunId: 'toolrun-shell-1',
+			toolRunId: toolRunId(11),
 			content: '',
 		});
 		await expandToolCard(container);
@@ -1568,13 +1590,13 @@ describe('ToolResultCard haven aggregate', () => {
 			renderer: 'tool_runs',
 			content: JSON.stringify({
 				operation: 'tool_runs_cancel',
-				tool_run_id: 'toolrun-2',
+				tool_run_id: toolRunId(2),
 				cancelled: true,
 			}),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
-		expect(screen.getByText('toolrun-2')).toBeTruthy();
+		expect(screen.getByText(toolRunId(2))).toBeTruthy();
 	});
 });
 
@@ -1585,13 +1607,13 @@ describe('ToolResultCard tool_runs', () => {
 			renderer: 'tool_runs',
 			content: JSON.stringify({
 				operation: 'tool_runs_list',
-				tool_run_id: 'toolrun-1',
+				tool_run_id: toolRunId(1),
 				status: 'completed',
 				exit_code: 0,
 			}),
 		});
 		await expandToolCard(container);
-		expect(screen.getByText('toolrun-1')).toBeTruthy();
+		expect(screen.getByText(toolRunId(1))).toBeTruthy();
 		expect(screen.getByText('已完成')).toBeTruthy();
 		expect(screen.getByText('退出码 0')).toBeTruthy();
 	});
@@ -1602,7 +1624,7 @@ describe('ToolResultCard tool_runs', () => {
 			renderer: 'tool_runs',
 			content: JSON.stringify({
 				operation: 'inspect',
-				tool_run_id: 'toolrun-missing',
+				tool_run_id: toolRunId(99),
 				status: 'not_found',
 			}),
 		});
@@ -1616,13 +1638,13 @@ describe('ToolResultCard tool_runs', () => {
 			renderer: 'tool_runs',
 			content: JSON.stringify({
 				operation: 'tool_runs_cancel',
-				tool_run_id: 'toolrun-2',
+				tool_run_id: toolRunId(2),
 				cancelled: true,
 			}),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
-		expect(screen.getByText('toolrun-2')).toBeTruthy();
+		expect(screen.getByText(toolRunId(2))).toBeTruthy();
 	});
 
 	it('renders list rows with generated ToolRun statuses', async () => {
@@ -1631,11 +1653,11 @@ describe('ToolResultCard tool_runs', () => {
 			renderer: 'tool_runs',
 			content: JSON.stringify({
 				operation: 'tool_runs_list',
-				tool_runs: [{ tool_run_id: 'toolrun-3', status: 'running' }],
+				tool_runs: [{ tool_run_id: toolRunId(3), status: 'running' }],
 			}),
 		});
 		await expandToolCard(container);
-		expect(screen.getByText('toolrun-3')).toBeTruthy();
+		expect(screen.getByText(toolRunId(3))).toBeTruthy();
 		expect(screen.getByText('运行中')).toBeTruthy();
 	});
 });
@@ -1782,14 +1804,14 @@ describe('ToolResultCard http', () => {
 			renderer: 'schedule',
 			content: JSON.stringify({
 				operation: 'schedule_set',
-				tool_run_id: 'r42',
+				tool_run_id: toolRunId(42),
 				mode: 'tool',
 				fires_at: '2026-08-05T09:00:00+08:00',
 				wakes_session: true,
 			}),
 		});
 		await expandToolCard(container);
-		expect(screen.getByText('#r42')).toBeTruthy();
+		expect(screen.getByText(`#${toolRunId(42)}`)).toBeTruthy();
 		expect(screen.getByText('调用工具')).toBeTruthy();
 		expect(screen.getByText('触发时间 2026-08-05T09:00:00+08:00')).toBeTruthy();
 	});
@@ -1798,11 +1820,11 @@ describe('ToolResultCard http', () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'schedule.cancel',
 			renderer: 'schedule',
-			content: JSON.stringify({ operation: 'schedule_cancel', tool_run_id: 'toolrun-42' }),
+			content: JSON.stringify({ operation: 'schedule_cancel', tool_run_id: toolRunId(42) }),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
-		expect(screen.getByText('#toolrun-42')).toBeTruthy();
+		expect(screen.getByText(`#${toolRunId(42)}`)).toBeTruthy();
 	});
 
 	it('renders list due_at from the scheduled ToolRun projection', async () => {
@@ -1813,7 +1835,7 @@ describe('ToolResultCard http', () => {
 				operation: 'schedule_list',
 				scheduled_tool_runs: [
 					{
-						tool_run_id: 'toolrun-scheduled',
+						tool_run_id: toolRunId(12),
 						title: '每日摘要',
 						body: '生成今日摘要',
 						mode: 'continue',

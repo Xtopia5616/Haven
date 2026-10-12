@@ -8,6 +8,78 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+fn require_canonical_id(id: &str, prefix: &str, field: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        haven_common::types::is_canonical_id(id, prefix),
+        "invalid {field}"
+    );
+    Ok(())
+}
+
+fn validate_replayed_interaction_ids(request: &InteractionRequest) -> anyhow::Result<()> {
+    let (request_prefix, detail_ids) = match (&request.kind, &request.details) {
+        (InteractionKind::Ask, InteractionDetails::Ask { step_ids, .. }) => {
+            if let Some(first_step_id) = step_ids.first() {
+                anyhow::ensure!(
+                    request.request_id == *first_step_id,
+                    "ask request ID does not match its first step ID"
+                );
+            }
+            (
+                "step",
+                step_ids.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+        }
+        (
+            InteractionKind::Confirm,
+            InteractionDetails::Confirm {
+                step_id, receipt, ..
+            },
+        ) => {
+            require_canonical_id(step_id, "step", "confirmation step ID")?;
+            if let Some(receipt) = receipt {
+                anyhow::ensure!(
+                    request.request_id == receipt.confirmation_id.to_string(),
+                    "confirmation request ID does not match its receipt"
+                );
+            }
+            ("conf", vec![step_id.as_str()])
+        }
+        (
+            InteractionKind::ScheduledConfirm,
+            InteractionDetails::ScheduledConfirm {
+                tool_run_id,
+                receipt,
+                ..
+            },
+        ) => {
+            require_canonical_id(tool_run_id, "toolrun", "scheduled tool run ID")?;
+            anyhow::ensure!(
+                request.request_id == receipt.confirmation_id.to_string(),
+                "scheduled confirmation request ID does not match its receipt"
+            );
+            ("conf", Vec::new())
+        }
+        _ => anyhow::bail!("interaction kind does not match its details"),
+    };
+
+    require_canonical_id(
+        &request.request_id,
+        request_prefix,
+        "interaction request ID",
+    )?;
+    if let Some(session_id) = request.session_id.as_deref() {
+        require_canonical_id(session_id, "ses", "interaction session ID")?;
+    }
+    for id in detail_ids
+        .into_iter()
+        .chain(request.correlation_ids.iter().map(String::as_str))
+    {
+        require_canonical_id(id, "step", "interaction correlation ID")?;
+    }
+    Ok(())
+}
+
 fn confirmation_expires_at(receipt: &haven_tools::ConfirmationReceipt) -> Option<String> {
     let timestamp = i64::try_from(receipt.expires_at).ok()?;
     chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0).map(|value| value.to_rfc3339())
@@ -324,6 +396,8 @@ pub fn replay_session_interactions(
         INTERACTION_RESOLVED_EVENT_TYPE, TRANSCRIPT_EVENT_TYPE,
     };
 
+    require_canonical_id(session_id, "ses", "replay session ID")?;
+
     let mut interactions: Vec<InteractionRequest> = Vec::new();
     for event in active_events {
         if event.session_id != session_id {
@@ -342,9 +416,23 @@ pub fn replay_session_interactions(
                     if payload.pointer("/action/tool_name").and_then(Value::as_str)
                         == Some("ask") =>
                 {
-                    let Some(step_id) = payload.get("step_id").and_then(Value::as_str) else {
+                    let Some(step_id_value) = payload.get("step_id") else {
                         continue;
                     };
+                    let Some(step_id) = step_id_value.as_str() else {
+                        anyhow::bail!(
+                            "invalid ask transcript at sequence {}: step ID is not a string",
+                            event.sequence
+                        );
+                    };
+                    require_canonical_id(step_id, "step", "ask transcript step ID").map_err(
+                        |error| {
+                            anyhow::anyhow!(
+                                "invalid ask transcript at sequence {}: {error}",
+                                event.sequence
+                            )
+                        },
+                    )?;
                     let options = payload
                         .pointer("/action/tool_input/options")
                         .and_then(Value::as_array)
@@ -389,6 +477,12 @@ pub fn replay_session_interactions(
                         )
                     },
                 )?;
+                validate_replayed_interaction_ids(&request).map_err(|error| {
+                    anyhow::anyhow!(
+                        "invalid interaction event at sequence {}: {error}",
+                        event.sequence
+                    )
+                })?;
                 if request.kind == InteractionKind::Ask {
                     let covered_ids = std::iter::once(request.request_id.as_str())
                         .chain(request.correlation_ids.iter().map(String::as_str))
@@ -424,6 +518,17 @@ pub fn replay_session_interactions(
                             event.sequence
                         )
                     })?;
+                if !ids.iter().all(|id| {
+                    id.as_str().is_some_and(|id| {
+                        haven_common::types::is_canonical_id(id, "step")
+                            || haven_common::types::is_canonical_id(id, "conf")
+                    })
+                }) {
+                    anyhow::bail!(
+                        "interaction clear event at sequence {} has invalid request IDs",
+                        event.sequence
+                    );
+                }
                 interactions.retain(|request| {
                     !ids.iter()
                         .any(|id| id.as_str() == Some(request.request_id.as_str()))
@@ -628,7 +733,11 @@ mod tests {
 
     #[test]
     fn replay_rejects_an_interaction_from_another_session() {
-        let request = InteractionRequest::ask("ses-other", Vec::new(), Vec::new());
+        let request = InteractionRequest::ask(
+            "ses-1123456789abcdef0123456789abcdef",
+            Vec::new(),
+            Vec::new(),
+        );
         let event = event(
             1,
             haven_memory::INTERACTION_REQUESTED_EVENT_TYPE,
@@ -638,6 +747,86 @@ mod tests {
         let error = replay_session_interactions(SESSION_ID, &[event])
             .expect_err("mismatched session association must fail closed");
         assert!(error.to_string().contains("does not match its owner"));
+    }
+
+    #[test]
+    fn replay_rejects_noncanonical_session_and_transcript_ids() {
+        assert!(replay_session_interactions("ses-short", &[]).is_err());
+
+        let error = replay_session_interactions(SESSION_ID, &[ask_result(1, "step-short")])
+            .expect_err("malformed ask IDs must not become pending interactions");
+        assert!(error.to_string().contains("ask transcript step ID"));
+
+        let malformed_type = event(
+            2,
+            haven_memory::TRANSCRIPT_EVENT_TYPE,
+            serde_json::json!({
+                "type": "tool_result",
+                "step_id": 42,
+                "action": {"tool_name": "ask"}
+            }),
+        );
+        let error = replay_session_interactions(SESSION_ID, &[malformed_type])
+            .expect_err("non-string ask IDs must fail replay");
+        assert!(error.to_string().contains("step ID is not a string"));
+    }
+
+    #[test]
+    fn replay_rejects_malformed_interaction_identity_fields() {
+        use haven_memory::INTERACTION_REQUESTED_EVENT_TYPE;
+
+        let mut request = InteractionRequest::ask(
+            SESSION_ID,
+            Vec::new(),
+            vec!["step-1123456789abcdef0123456789abcdef".into()],
+        );
+        request.correlation_ids = vec!["step-short".into()];
+        let malformed_correlation = event(
+            1,
+            INTERACTION_REQUESTED_EVENT_TYPE,
+            serde_json::to_value(request).unwrap(),
+        );
+        let error = replay_session_interactions(SESSION_ID, &[malformed_correlation])
+            .expect_err("malformed correlation IDs must fail replay");
+        assert!(error.to_string().contains("interaction correlation ID"));
+
+        let receipt = haven_tools::ConfirmationReceipt {
+            confirmation_id: haven_common::types::ConfirmId::new(),
+            capability: haven_common::types::CapabilityScope::try_new("haven.test").unwrap(),
+            canonical_input_hash: String::new(),
+            effective_risk: haven_common::types::RiskLevel::Safe,
+            policy_revision: 1,
+            expires_at: 1,
+        };
+        let request = InteractionRequest::scheduled_confirm(
+            "toolrun-short".into(),
+            Some(SESSION_ID),
+            "haven.test".into(),
+            Value::Null,
+            receipt,
+            "Scheduled confirmation".into(),
+        );
+        let malformed_tool_run = event(
+            2,
+            INTERACTION_REQUESTED_EVENT_TYPE,
+            serde_json::to_value(request).unwrap(),
+        );
+        let error = replay_session_interactions(SESSION_ID, &[malformed_tool_run])
+            .expect_err("malformed ToolRun IDs must fail replay");
+        assert!(error.to_string().contains("scheduled tool run ID"));
+    }
+
+    #[test]
+    fn replay_rejects_malformed_interaction_clear_ids() {
+        let cleared = event(
+            1,
+            haven_memory::INTERACTION_CLEARED_EVENT_TYPE,
+            serde_json::json!({"request_ids": ["step-short"]}),
+        );
+
+        let error = replay_session_interactions(SESSION_ID, &[cleared])
+            .expect_err("malformed clear IDs must not silently close requests");
+        assert!(error.to_string().contains("invalid request IDs"));
     }
 
     #[test]
