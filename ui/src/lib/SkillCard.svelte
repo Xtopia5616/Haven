@@ -8,12 +8,12 @@
 	import type {
 		ExecuteSkillRequest,
 		SkillExecutionResponse,
-		SkillInfo,
 	} from '$lib/contracts/tools.ts';
+	import type { SkillInfoView } from '$lib/contracts/skills.ts';
 	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 
 	interface Props {
-		skill: SkillInfo;
+		skill: SkillInfoView;
 		onPreview: (request: ExecuteSkillRequest) => Promise<SkillExecutionResponse>;
 		onToggle?: (name: string, enabled: boolean) => void | Promise<void>;
 	}

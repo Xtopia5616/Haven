@@ -5,7 +5,6 @@ import type {
 	TauriCommandRequest,
 } from './generatedCommands.ts';
 import { isRecord } from './objectGuards.ts';
-import type { SkillInfoView } from './skills.ts';
 
 /** The envelope is validated here; each dynamic manifest is parsed by toolManifest.ts. */
 export interface BuiltinToolManifestListView {
@@ -20,7 +19,6 @@ export function parseBuiltinToolManifestList(value: unknown): BuiltinToolManifes
 	return { ...value, tools: value.tools };
 }
 
-export type SkillInfo = SkillInfoView;
 export type SkillExecutionResponse = GeneratedSkillExecutionResponse;
 export type McpServerConfig = GeneratedMcpServerConfig;
 export type McpServerConfigInput = TauriCommandRequest<'add_mcp_server'>['config'];

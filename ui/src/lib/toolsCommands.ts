@@ -2,6 +2,7 @@ import { invoke } from '$lib/tauri.ts';
 import { parseMcpRefreshResult, parseMcpServerSnapshots } from './contracts/mcp.ts';
 import type { McpRefreshResultView, McpServerSnapshotView } from './contracts/mcp.ts';
 import { parseSkillExecutionResponse, parseSkillInfoList } from './contracts/skills.ts';
+import type { SkillInfoView } from './contracts/skills.ts';
 import { parseBuiltinToolManifestList } from './contracts/tools.ts';
 import type {
 	ReconnectMcpServerRequest,
@@ -10,7 +11,6 @@ import type {
 	McpServerConfigInput,
 	SetSkillEnabledRequest,
 	SetToolEnabledRequest,
-	SkillInfo,
 	ToggleMcpServerRequest,
 	BuiltinToolManifestListView,
 	ExecuteSkillRequest,
@@ -31,7 +31,7 @@ export function listMcpServers(): Promise<McpServerSnapshotView[]> {
 }
 
 /** Read the current Skill metadata projection. */
-export function listSkills(): Promise<SkillInfo[]> {
+export function listSkills(): Promise<SkillInfoView[]> {
 	return invoke('list_skills').then((value: unknown) => parseSkillInfoList(value));
 }
 

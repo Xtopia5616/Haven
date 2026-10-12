@@ -1,7 +1,7 @@
 <script lang="ts">
 	let { isVisible = true }: { isVisible?: boolean } = $props();
 	let mcpServers = $state<McpServerSnapshotView[]>([]);
-	let skills = $state<SkillInfo[]>([]);
+	let skills = $state<SkillInfoView[]>([]);
 	let builtinTools = $state<BuiltinToolEntry[]>([]);
 	let activeTab = $state<ToolTabId>('builtin');
 	let searchQuery = $state('');
@@ -52,7 +52,7 @@
 	import type { BuiltinToolEntry } from '$lib/builtinToolPresentation.ts';
 	import type { McpServerConfigInput } from '$lib/contracts/generatedCommands.ts';
 	import type { McpServerSnapshotView } from '$lib/contracts/mcp.ts';
-	import type { SkillInfo } from '$lib/contracts/tools.ts';
+	import type { SkillInfoView } from '$lib/contracts/skills.ts';
 
 	interface ResourceFilterItem {
 		name: string;
