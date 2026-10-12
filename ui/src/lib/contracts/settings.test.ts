@@ -3,6 +3,7 @@ import {
 	AUDIO_CAPTURE_BOUNDS,
 	CONCURRENCY_BOUNDS,
 	MEDIA_TIMEOUT_BOUNDS,
+	RESOURCE_LIMIT_BOUNDS,
 	SESSION_STEP_BUDGET_BOUNDS,
 	parseSessionPermissionGrantResponses,
 	parseSettingsPayload,
@@ -236,6 +237,30 @@ describe('settings command contracts', () => {
 			silence_timeout_ms: 1_500,
 			vad_threshold: 0.5,
 		});
+	});
+
+	it('enforces shared resource limits for history, buffers, skills, and file listings', () => {
+		const fields = [
+			['session', 'prompt_history_limit', RESOURCE_LIMIT_BOUNDS.promptHistory],
+			['context_limits', 'file_max_list_entries', RESOURCE_LIMIT_BOUNDS.fileListEntries],
+			['context_limits', 'mcp_max_sse_buffer_bytes', RESOURCE_LIMIT_BOUNDS.mcpSseBufferBytes],
+			['context_limits', 'skills_max_md_bytes', RESOURCE_LIMIT_BOUNDS.skillMarkdownBytes],
+			['context_limits', 'network_max_body_bytes', RESOURCE_LIMIT_BOUNDS.networkBodyBytes],
+		] as const;
+
+		for (const [owner, field, bounds] of fields) {
+			for (const value of [bounds.min, bounds.max]) {
+				const valid = withSetting([owner, field], value);
+				expect(parseSettingsPayload(valid)).toBe(valid);
+				expect(() => validateSettingsNumbers(valid)).not.toThrow();
+			}
+			for (const value of [bounds.min - 1, bounds.max + 1]) {
+				const invalid = withSetting([owner, field], value);
+				const path = `settings.${owner}.${field}`;
+				expect(() => parseSettingsPayload(invalid)).toThrow(path);
+				expect(() => validateSettingsNumbers(invalid)).toThrow(path);
+			}
+		}
 	});
 
 	it('enforces concurrency budgets across session, model, and background limits', () => {

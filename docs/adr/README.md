@@ -1054,3 +1054,4 @@
 - [1063：移除无效音频格式配置并统一录音范围](1063-remove-ineffective-audio-format-settings.md)
 - [1064：统一命令与前端错误报告所有权](1064-unify-command-and-renderer-error-reporting.md)
 - [1065：统一会话、模型与后台任务并发范围](1065-align-concurrency-budget-ranges.md)
+- [1066：为提示历史与外部缓冲配置建立硬上限](1066-bound-config-resource-budgets.md)

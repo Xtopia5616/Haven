@@ -7,7 +7,11 @@
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import HotkeyInput from '$lib/HotkeyInput.svelte';
 	import { withBooleanValue, withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
-	import { CONCURRENCY_BOUNDS, SESSION_STEP_BUDGET_BOUNDS } from '$lib/contracts/settings.ts';
+	import {
+		CONCURRENCY_BOUNDS,
+		RESOURCE_LIMIT_BOUNDS,
+		SESSION_STEP_BUDGET_BOUNDS,
+	} from '$lib/contracts/settings.ts';
 	import type {
 		HotkeyModeInput,
 		MemoryConfigInput,
@@ -110,13 +114,13 @@
 		<SettingsField
 			label="首次提示的历史消息数"
 			id="session-prompt-history-limit"
-			description="新会话首次构造 system prompt 时附带的近期消息条数。"
+			description="新会话首次构造 system prompt 时附带的近期消息条数，0 表示不附带历史消息。"
 		>
 			<MaterialNumberField
 				id="session-prompt-history-limit"
 				value={session.prompt_history_limit}
-				min={10}
-				max={500}
+				min={RESOURCE_LIMIT_BOUNDS.promptHistory.min}
+				max={RESOURCE_LIMIT_BOUNDS.promptHistory.max}
 				onChange={withNumberValue((value) => (session.prompt_history_limit = value))}
 			/>
 		</SettingsField>

@@ -13,8 +13,13 @@ pub const MIN_SESSION_STEPS_PER_SESSION: u32 = 1;
 pub const MAX_SESSION_STEPS_PER_SESSION: u32 = 100_000;
 pub const MIN_SESSION_MAX_CONCURRENT: usize = 1;
 pub const MAX_SESSION_MAX_CONCURRENT: usize = 10;
+pub const MAX_SESSION_PROMPT_HISTORY_LIMIT: usize = 500;
 /// A zero background ToolRun limit intentionally disables background launches.
 pub const MAX_RUNNING_BACKGROUND_TOOL_RUNS: usize = 64;
+pub const MAX_FILE_MAX_LIST_ENTRIES: usize = 10_000;
+pub const MAX_MCP_MAX_SSE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_SKILLS_MAX_MD_BYTES: u64 = 1024 * 1024;
+pub const MAX_NETWORK_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]

@@ -20,6 +20,8 @@ schema v40 仅接受事实提取 marker 的当前完整格式：旧 boolean、�
 
 并发范围由 Common 配置校验和 Settings UI 共同执行：`[session].max_concurrent` 为 1–10，`[llm].max_concurrent_requests` 为 1–16，`[context_limits].max_running_background_tool_runs` 为 0–64。后台任务上限设为 0 会禁用新的后台任务。超出范围的 TOML 会备份整份配置并在当前进程使用默认值；Settings 更新会拒绝该值。需要保留其它配置时，先把数值改到范围内；无需删除数据库。
 
+资源配置边界现由 Common 与 Settings UI 共同执行：`[session].prompt_history_limit` 为 0–500；`file_max_list_entries` 最多 10,000；MCP SSE 缓冲最多 4 MiB；单个 `SKILL.md` 最多 1 MiB；网络响应体最多 16 MiB。以上容量设为 0 时分别表示不带历史、返回空目录列表、丢弃 SSE 事件、跳过所有技能说明、不保留响应体。超过上限的 TOML 会备份整份配置并在当前进程使用默认值；Settings 更新会拒绝越界值。把数值改到范围内即可保留其它配置；数据库不受影响。
+
 `config.toml` 只接受当前配置结构，不执行旧字段搬迁、旧名称映射、凭据导入或静默兼容。配置表启用未知字段拒绝；当前结构允许缺省的字段仍使用安全默认值。本版本将 `context_limits.cut_off_retries` 改为 `incomplete_tool_args_retries`，将后台/终态 Job 限制字段重命名为 ToolRun 字段，并删除 `empty_response_max_retries` 与 `empty_response_retry_delay_ms`；含这些旧字段的配置会导致整份配置解析失败。工具根名从 `actions` 改为 `tool_runs`，旧名称下的权限 key 不迁移。`llm.models[]` 中绑定连接的字段现为 `provider_name`；`[media.stt]`、`[media.tts]` 与 `[media.image_gen]` 的连接引用也统一使用 `provider_name`，旧媒体字段 `provider` 不再接受。若只需保留现有设置，可将这些媒体表中的 `provider` 手动改为 `provider_name`；否则仅重建 `config.toml`。这些配置变更无需删除数据库。Session 步数预算配置现为 `[session].max_steps_per_run` 与 `[session].max_steps_per_session`；旧 `max_steps` / `session_max_steps` 不接受，遇到旧 key 时整份配置解析失败；如需保留预算数值，先手动将两项改为新 key，否则重建配置。其它旧字段（例如 `[memory].history_retention_days`、`llm.balanced_model`、旧安全策略字段和已删除的顶层 `[audio]`）也会导致整份配置解析失败。
 
 `context_limits.max_response_tokens` 实际是 endpoint `max_tokens` 的下限，现名为 `response_token_floor`；含旧 key 的配置会整体解析失败。需要保留数值时，手动将 key 改为 `response_token_floor`，或仅重建 `config.toml`；数据库不受影响。

@@ -5,7 +5,7 @@
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialNumberFieldWithUnit from '$lib/MaterialNumberFieldWithUnit.svelte';
 	import { withNumberValue } from '$lib/typedCallbacks.ts';
-	import { CONCURRENCY_BOUNDS } from '$lib/contracts/settings.ts';
+	import { CONCURRENCY_BOUNDS, RESOURCE_LIMIT_BOUNDS } from '$lib/contracts/settings.ts';
 	import {
 		MAX_FACTS_IN_EXTRACTION_PROMPT,
 		type ContextLimitsConfigInput,
@@ -21,6 +21,7 @@
 		kb?: boolean;
 		days?: boolean;
 		step?: number;
+		displayDigits?: number;
 		min?: number;
 		max?: number;
 		danger: boolean;
@@ -172,7 +173,7 @@
 				{
 					key: 'file_byte_read_max_bytes',
 					label: '字节读取与哈希上限',
-					unit: 'bytes',
+					unit: 'MiB',
 					mb: true,
 					danger: true,
 					hint: 'byte 模式单次读取和 inspect/hash 扫描上限，不受调用方 limit 影响。',
@@ -180,7 +181,7 @@
 				{
 					key: 'file_write_max_bytes',
 					label: '单次写入上限',
-					unit: 'bytes',
+					unit: 'MiB',
 					mb: true,
 					danger: true,
 					hint: 'write、edit、patch 单次产出文件的字节上限。',
@@ -210,12 +211,15 @@
 					key: 'file_max_list_entries',
 					label: '目录列表条目上限',
 					unit: 'count',
+					min: RESOURCE_LIMIT_BOUNDS.fileListEntries.min,
+					max: RESOURCE_LIMIT_BOUNDS.fileListEntries.max,
 					danger: true,
+					hint: '范围 0–10,000；设为 0 时目录列表返回空结果。',
 				},
 				{
 					key: 'file_vision_max_bytes',
 					label: '图片理解大小上限',
-					unit: 'MB',
+					unit: 'MiB',
 					mb: true,
 					danger: true,
 					hint: '超过该大小的图片拒绝送视觉模型。',
@@ -230,14 +234,14 @@
 				{
 					key: 'search_max_file_size_bytes',
 					label: '搜索跳过文件大小',
-					unit: 'MB',
+					unit: 'MiB',
 					mb: true,
 					danger: true,
 				},
 				{
 					key: 'search_window_bytes',
 					label: '行范围搜索窗口',
-					unit: 'MB',
+					unit: 'MiB',
 					mb: true,
 					danger: true,
 				},
@@ -259,18 +263,26 @@
 				{
 					key: 'mcp_max_sse_buffer_bytes',
 					label: 'MCP SSE 缓冲上限',
-					unit: 'MB',
+					unit: 'MiB',
 					mb: true,
+					min: RESOURCE_LIMIT_BOUNDS.mcpSseBufferBytes.min / 1048576,
+					max: RESOURCE_LIMIT_BOUNDS.mcpSseBufferBytes.max / 1048576,
+					step: 1 / 16,
+					displayDigits: 4,
 					danger: true,
-					hint: '单条未完成 SSE 事件缓冲上限，防恶意服务器无限增长。',
+					hint: '单条未完成 SSE 事件缓冲上限，最多 4 MiB；设为 0 会丢弃所有 SSE 事件。',
 				},
 				{
 					key: 'skills_max_md_bytes',
 					label: 'SKILL.md 大小上限',
-					unit: 'KB',
+					unit: 'KiB',
 					kb: true,
+					min: RESOURCE_LIMIT_BOUNDS.skillMarkdownBytes.min / 1024,
+					max: RESOURCE_LIMIT_BOUNDS.skillMarkdownBytes.max / 1024,
+					step: 1,
+					displayDigits: 0,
 					danger: true,
-					hint: '超过该大小的技能描述文件被跳过（防 OOM）。',
+					hint: '范围 0–1 MiB；设为 0 时所有 SKILL.md 都会被跳过。',
 				},
 				{
 					key: 'skills_max_parse_lines',
@@ -287,14 +299,14 @@
 				{
 					key: 'self_tool_max_instructions_bytes',
 					label: '技能 instructions 上限',
-					unit: 'KB',
+					unit: 'KiB',
 					kb: true,
 					danger: true,
 				},
 				{
 					key: 'self_tool_max_script_bytes',
 					label: '技能脚本大小上限',
-					unit: 'KB',
+					unit: 'KiB',
 					kb: true,
 					danger: true,
 				},
@@ -314,9 +326,14 @@
 				{
 					key: 'network_max_body_bytes',
 					label: '网络响应体上限',
-					unit: 'MB',
+					unit: 'MiB',
 					mb: true,
+					min: RESOURCE_LIMIT_BOUNDS.networkBodyBytes.min / 1048576,
+					max: RESOURCE_LIMIT_BOUNDS.networkBodyBytes.max / 1048576,
+					step: 1 / 16,
+					displayDigits: 4,
 					danger: true,
+					hint: 'HTTP 响应体缓冲范围 0–16 MiB；设为 0 时只保留状态和响应头信息。',
 				},
 			],
 		},
@@ -424,7 +441,7 @@
 				{
 					key: 'event_chunk_batch_max_bytes',
 					label: '事件分块批量上限',
-					unit: 'KB',
+					unit: 'KiB',
 					kb: true,
 					danger: false,
 					hint: 'agent 流式事件聚合分块的大小（IPC 频率与延迟权衡）。',
@@ -466,8 +483,9 @@
 	function limitDisplay(key: LimitKey, value: number | undefined) {
 		const field = LIMIT_GROUPS.flatMap((g) => g.fields).find((x) => x.key === key);
 		if (!field || value === undefined) return value ?? 0;
-		if (field.mb) return Math.round((value / 1048576) * 10) / 10;
-		if (field.kb) return Math.round((value / 1024) * 10) / 10;
+		const factor = 10 ** (field.displayDigits ?? 1);
+		if (field.mb) return Math.round((value / 1048576) * factor) / factor;
+		if (field.kb) return Math.round((value / 1024) * factor) / factor;
 		if (field.kTokens) return Math.round(value / 1000);
 		if (field.days) return Math.round((value / 86400) * 10) / 10;
 		return value;

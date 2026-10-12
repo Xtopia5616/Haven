@@ -41,6 +41,7 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         config.session.max_steps_per_session,
     )?;
     validate_concurrency_limits(&config.session, &config.llm, &config.context_limits)?;
+    validate_resource_limits(&config.session, &config.context_limits)?;
     validate_audio_capture(&config.media.audio)?;
     validate_unique_llm_configuration_keys(&config.llm)?;
     if config.context_limits.max_known_facts > super::MAX_FACTS_IN_EXTRACTION_PROMPT {
@@ -156,6 +157,43 @@ fn validate_concurrency_limits(
         anyhow::bail!(
             "context_limits.max_running_background_tool_runs must not exceed {}",
             super::MAX_RUNNING_BACKGROUND_TOOL_RUNS
+        );
+    }
+    Ok(())
+}
+
+fn validate_resource_limits(
+    session: &super::SessionConfig,
+    context: &super::ContextLimitsConfig,
+) -> Result<()> {
+    if session.prompt_history_limit > super::MAX_SESSION_PROMPT_HISTORY_LIMIT {
+        anyhow::bail!(
+            "session.prompt_history_limit must not exceed {}",
+            super::MAX_SESSION_PROMPT_HISTORY_LIMIT
+        );
+    }
+    if context.file_max_list_entries > super::MAX_FILE_MAX_LIST_ENTRIES {
+        anyhow::bail!(
+            "context_limits.file_max_list_entries must not exceed {}",
+            super::MAX_FILE_MAX_LIST_ENTRIES
+        );
+    }
+    if context.mcp_max_sse_buffer_bytes > super::MAX_MCP_MAX_SSE_BUFFER_BYTES {
+        anyhow::bail!(
+            "context_limits.mcp_max_sse_buffer_bytes must not exceed {} bytes",
+            super::MAX_MCP_MAX_SSE_BUFFER_BYTES
+        );
+    }
+    if context.skills_max_md_bytes > super::MAX_SKILLS_MAX_MD_BYTES {
+        anyhow::bail!(
+            "context_limits.skills_max_md_bytes must not exceed {} bytes",
+            super::MAX_SKILLS_MAX_MD_BYTES
+        );
+    }
+    if context.network_max_body_bytes > super::MAX_NETWORK_MAX_BODY_BYTES {
+        anyhow::bail!(
+            "context_limits.network_max_body_bytes must not exceed {} bytes",
+            super::MAX_NETWORK_MAX_BODY_BYTES
         );
     }
     Ok(())
@@ -623,6 +661,73 @@ mod tests {
                     .to_string()
                     .contains(expected_path)
             );
+        }
+    }
+
+    #[test]
+    fn resource_bounds_match_config_and_settings_contracts() {
+        let cases: [(&str, u64, u64, fn(&mut AppConfig, u64)); 5] = [
+            (
+                "session.prompt_history_limit",
+                0,
+                super::super::MAX_SESSION_PROMPT_HISTORY_LIMIT as u64,
+                |config, value| config.session.prompt_history_limit = value as usize,
+            ),
+            (
+                "context_limits.file_max_list_entries",
+                0,
+                super::super::MAX_FILE_MAX_LIST_ENTRIES as u64,
+                |config, value| config.context_limits.file_max_list_entries = value as usize,
+            ),
+            (
+                "context_limits.mcp_max_sse_buffer_bytes",
+                0,
+                super::super::MAX_MCP_MAX_SSE_BUFFER_BYTES as u64,
+                |config, value| config.context_limits.mcp_max_sse_buffer_bytes = value as usize,
+            ),
+            (
+                "context_limits.skills_max_md_bytes",
+                0,
+                super::super::MAX_SKILLS_MAX_MD_BYTES,
+                |config, value| config.context_limits.skills_max_md_bytes = value,
+            ),
+            (
+                "context_limits.network_max_body_bytes",
+                0,
+                super::super::MAX_NETWORK_MAX_BODY_BYTES as u64,
+                |config, value| config.context_limits.network_max_body_bytes = value as usize,
+            ),
+        ];
+
+        for (path, min, max, set_value) in cases {
+            for value in [min, max] {
+                let mut config = AppConfig::default();
+                set_value(&mut config, value);
+                assert!(validate_app_config(&config).is_ok(), "{path}={value}");
+                assert!(
+                    validate_settings_contract(&Settings::from(&config)).is_ok(),
+                    "Settings {path}={value}"
+                );
+            }
+
+            for value in min.checked_sub(1).into_iter().chain([max + 1]) {
+                let mut config = AppConfig::default();
+                set_value(&mut config, value);
+                assert!(
+                    validate_app_config(&config)
+                        .unwrap_err()
+                        .to_string()
+                        .contains(path),
+                    "config {path}={value}"
+                );
+                assert!(
+                    validate_settings_contract(&Settings::from(&config))
+                        .unwrap_err()
+                        .to_string()
+                        .contains(path),
+                    "Settings {path}={value}"
+                );
+            }
         }
     }
 

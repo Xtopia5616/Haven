@@ -213,6 +213,15 @@ export const CONCURRENCY_BOUNDS = {
 	backgroundToolRuns: { min: 0, max: 64 },
 } as const;
 
+/** Keep aligned with Common config validation and resource-limit controls. */
+export const RESOURCE_LIMIT_BOUNDS = {
+	promptHistory: { min: 0, max: 500 },
+	fileListEntries: { min: 0, max: 10_000 },
+	mcpSseBufferBytes: { min: 0, max: 4 * 1024 * 1024 },
+	skillMarkdownBytes: { min: 0, max: 1024 * 1024 },
+	networkBodyBytes: { min: 0, max: 16 * 1024 * 1024 },
+} as const;
+
 export type SessionPermissionGrant = GeneratedSessionPermissionGrant;
 
 /** Exact Rust-owned config shape from the generated IPC contract. */
@@ -435,6 +444,36 @@ function findInvalidConcurrency(value: unknown): string | null {
 	return null;
 }
 
+function findInvalidResourceLimits(value: unknown): string | null {
+	if (!isRecord(value)) return null;
+	if (isRecord(value.session) && value.session.prompt_history_limit !== undefined) {
+		const history = value.session.prompt_history_limit;
+		if (
+			!isSafeUnsignedInteger(history) ||
+			history < RESOURCE_LIMIT_BOUNDS.promptHistory.min ||
+			history > RESOURCE_LIMIT_BOUNDS.promptHistory.max
+		) {
+			return 'settings.session.prompt_history_limit';
+		}
+	}
+	if (!isRecord(value.context_limits)) return null;
+	for (const [field, bounds] of [
+		['file_max_list_entries', RESOURCE_LIMIT_BOUNDS.fileListEntries],
+		['mcp_max_sse_buffer_bytes', RESOURCE_LIMIT_BOUNDS.mcpSseBufferBytes],
+		['skills_max_md_bytes', RESOURCE_LIMIT_BOUNDS.skillMarkdownBytes],
+		['network_max_body_bytes', RESOURCE_LIMIT_BOUNDS.networkBodyBytes],
+	] as const) {
+		const limit = value.context_limits[field];
+		if (
+			limit !== undefined &&
+			(!isSafeUnsignedInteger(limit) || limit < bounds.min || limit > bounds.max)
+		) {
+			return `settings.context_limits.${field}`;
+		}
+	}
+	return null;
+}
+
 /** Reject Settings numbers outside their Rust field domains or JavaScript-safe range. */
 export function validateSettingsNumbers(value: unknown): void {
 	const invalidPath =
@@ -443,7 +482,8 @@ export function validateSettingsNumbers(value: unknown): void {
 		findInvalidMediaTimeout(value) ??
 		findInvalidSessionStepBudget(value) ??
 		findInvalidAudioCapture(value) ??
-		findInvalidConcurrency(value);
+		findInvalidConcurrency(value) ??
+		findInvalidResourceLimits(value);
 	if (invalidPath) throw new Error(`Invalid Settings numeric value at ${invalidPath}`);
 }
 
