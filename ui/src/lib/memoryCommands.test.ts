@@ -109,6 +109,14 @@ describe('memory command boundary', () => {
 			},
 		] as never);
 		await expect(listFacts({ source: null })).rejects.toThrow('Invalid memory fact identity');
+
+		invokeMock.mockResolvedValueOnce([
+			{
+				fact_id: 'fact-00000000000000000000000000000004',
+				source_ref: { message_id: '', snippet: 'orphaned evidence' },
+			},
+		] as never);
+		await expect(listFacts({ source: null })).rejects.toThrow('Invalid memory fact identity');
 	});
 
 	it('uses the requested kind and fact as the omitted-kind default for recall IDs', async () => {

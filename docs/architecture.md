@@ -794,7 +794,8 @@ session reducer，通知、usage fallback 与 media plan 双副作用保持原 o
 重新排入同一 `BufferedEmitter`，由 `TauriEmitter` 按队列顺序投影，并保留标题缓存和桌面通知（ADR 0511、0529）。
 Memory command 的 repository `Fact` 仅在 App command mapper 内映射到 `MemoryFactResponse`；该 DTO 与
 `MemoryFactSourceRef` 是 renderer 的 Rust wire authority，字段由生成的 `generatedCommands.ts` 导出，
-UI 使用生成类型别名（ADR 0357、0529）。session、ToolRun、recording、settings read、app event 与
+UI 使用生成类型别名（ADR 0357、0529）；存在的 `source_ref` 必须引用规范 `msg-*` 身份，写入拒绝空或
+非规范的 `message_id`，读取时忽略没有 message owner 的孤立 snippet。session、ToolRun、recording、settings read、app event 与
 agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330、0335、0340、0341、0346、0347、
 0348、0350、0376）；live interaction event 与 resume snake_case DTO 保持各自 mapper。命令 request/response
 的静态 TypeScript contract 由 Rust handler/Serde DTO 生成至 `generatedCommands.ts`，不在多份手写定义间

@@ -103,9 +103,7 @@ fn validate_fact_fields(
 }
 
 fn validate_source_ref(source_ref: Option<&FactSourceRef>) -> anyhow::Result<()> {
-    if let Some(source_ref) = source_ref
-        && !source_ref.message_id.is_empty()
-    {
+    if let Some(source_ref) = source_ref {
         anyhow::ensure!(
             is_canonical_id(&source_ref.message_id, "msg"),
             "fact source message_id must be a canonical msg-* ID"
@@ -253,12 +251,6 @@ impl<'db> FactGraph<'db> {
         } else {
             Some(refer.snippet.clone())
         };
-        if refer.message_id.is_empty() {
-            return Ok(FactProvenanceColumns {
-                provenance_snippet: snippet,
-                ..FactProvenanceColumns::default()
-            });
-        }
         let in_items = conn
             .query_row(
                 "SELECT 1 FROM memory_items WHERE id = ?1",
@@ -821,6 +813,35 @@ mod tests {
             .unwrap();
         assert_eq!(fact_count, 0);
         assert_eq!(node_count, 0);
+    }
+
+    #[test]
+    fn empty_source_message_identity_is_rejected_before_graph_writes() {
+        let db = Database::open_in_memory().unwrap();
+        let source_ref = FactSourceRef {
+            message_id: String::new(),
+            snippet: "a supporting message without an owner".into(),
+        };
+
+        let error = FactGraph::new(&db)
+            .insert_with_source_ref(
+                "user",
+                "likes",
+                "Rust",
+                "inferred",
+                0.8,
+                &[],
+                Some(&source_ref),
+                1.0,
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("canonical msg-* ID"));
+        let fact_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM facts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(fact_count, 0);
     }
 
     #[test]

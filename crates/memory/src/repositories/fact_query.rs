@@ -97,16 +97,11 @@ fn source_ref_from_provenance(
     record_id: Option<String>,
     snippet: Option<String>,
 ) -> Option<super::facts::FactSourceRef> {
-    let message_id = item_id.or(record_id).unwrap_or_default();
-    let snippet = snippet.unwrap_or_default();
-    if message_id.is_empty() && snippet.is_empty() {
-        None
-    } else {
-        Some(super::facts::FactSourceRef {
-            message_id,
-            snippet,
-        })
-    }
+    let message_id = item_id.or(record_id)?;
+    Some(super::facts::FactSourceRef {
+        message_id,
+        snippet: snippet.unwrap_or_default(),
+    })
 }
 
 /// Parse a fact timestamp. Corrupt rows fall back to now so recency math cannot
@@ -532,7 +527,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::sort_facts_effective;
+    use super::{sort_facts_effective, source_ref_from_provenance};
     use crate::Database;
     use crate::repositories::facts::Fact;
     use haven_common::types::new_id;
@@ -552,6 +547,12 @@ mod tests {
             source_ref: None,
             durability: 1.0,
         }
+    }
+
+    #[test]
+    fn fact_source_ref_without_a_message_identity_is_omitted() {
+        assert!(source_ref_from_provenance(None, None, Some("orphan snippet".into())).is_none());
+        assert!(source_ref_from_provenance(None, None, None).is_none());
     }
 
     #[test]
