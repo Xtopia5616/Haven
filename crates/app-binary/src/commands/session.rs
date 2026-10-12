@@ -849,7 +849,7 @@ pub async fn rollback_session(
 
 /// Resume a session that errored mid-step. Removes partial output persisted on
 /// error and sets the session to Pending so the dispatcher retries the failed
-/// step from the saved snapshot.
+/// step by replaying the durable `session_events` transcript.
 #[tauri::command]
 pub async fn continue_session(
     state: State<'_, Arc<AppState>>,

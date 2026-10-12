@@ -573,7 +573,7 @@ async fn persist_file_attachments_to_with_limit_and_registry(
         }
         // All binary inputs now become managed assets.  Inline base64 is an
         // ingress-only transport representation; keeping it in messages and
-        // snapshots made the same bytes live in multiple authorities.
+        // durable transcript events made the same bytes live in multiple authorities.
         files.push(att);
     }
     if files.is_empty() {
@@ -656,8 +656,8 @@ async fn persist_file_attachments_to_with_limit_and_registry(
         // Keep the decoded transport data in the returned in-memory value so
         // the ReAct media projection can still reference the just-persisted
         // asset while the model-facing media tool performs OCR/STT.
-        // `messages.ui_metadata` strips it at the DB boundary and snapshots
-        // use `MediaInput::for_snapshot`, so this is not a second durable
+        // `messages.ui_metadata` strips it at the DB boundary and transcript
+        // events use `MediaInput::for_durable_transcript`, so this is not a second durable
         // authority.
         persisted.push(att);
     }

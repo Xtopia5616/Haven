@@ -207,7 +207,10 @@ export const TAURI_COMMAND_CONTRACTS = {
 		boundary: 'mutate',
 		security: 'event cursor and projection clock rollback',
 	},
-	continue_session: { boundary: 'mutate', security: 'resume from saved error snapshot' },
+	continue_session: {
+		boundary: 'mutate',
+		security: 'replay durable session_events and truncate partial projection',
+	},
 	get_session_for_resume: { boundary: 'read', security: 'session-scoped persisted projection' },
 	get_latest_session_for_resume: {
 		boundary: 'read',

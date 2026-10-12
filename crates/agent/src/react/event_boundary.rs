@@ -313,8 +313,7 @@ impl ReActEngine {
                 status_label
             );
             if let Some(step) = branch_point_step {
-                self.save_branch_point(session_id, state, step, false)
-                    .await?;
+                self.save_branch_point(session_id, state, step).await?;
             }
             if !self
                 .ensure_event_boundary(session_id, state, boundary_step)
@@ -693,17 +692,13 @@ impl ReActEngine {
             return result;
         }
 
-        // Save a branch point BEFORE persisting the partial output, so
-        // last_msg_at captures the timestamp of the last message BEFORE the
-        // partial. This lets continue_session / rollback_session precisely delete
-        // only the partial output via delete_messages_after(last_msg_at).
-        // The events here represent the state BEFORE the failed LLM call
-        // (the response was never appended), so resuming will retry cleanly.
-        // FORCED write: continue_session / rollback_session locate this branch
-        // point in the durable event timeline; a throttled (stale) row would silently
-        // skip their message truncation.
+        // Append the branch point BEFORE persisting partial output so its event
+        // cursor and message cutoff both describe the pre-failure timeline.
+        // Continue/rollback use those two cursors to remove partial projection
+        // rows while preserving the durable events that precede the failed call.
+        // The failed LLM response was never appended, so replay retries cleanly.
         let branch_point = self
-            .save_branch_point(&ctx.session_id, state, ctx.step_number, true)
+            .save_branch_point(&ctx.session_id, state, ctx.step_number)
             .await
             .is_ok();
 
@@ -899,16 +894,13 @@ impl ReActEngine {
     /// Save a branch point at the current step before tool execution (§2).
     ///
     /// Append the durable branch marker before updating the actor's cache.
-    /// `force` remains part of the call contract for terminal/error paths, but
-    /// persistence is no longer throttled or stored as a session snapshot.
+    /// The event cursor and message cutoff are captured on every call.
     pub(super) async fn save_branch_point(
         &self,
         session_id: &str,
         state: &mut ReActState,
         step_number: u32,
-        force: bool,
     ) -> anyhow::Result<()> {
-        let _ = force;
         let cursor = self
             .event_store
             .append_branch_point_from_projection_for_existing_session(session_id, step_number, None)

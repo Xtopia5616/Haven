@@ -269,7 +269,7 @@ impl Database {
         let media_inputs: Vec<MediaInput> = attachments
             .iter()
             .map(message_attachment_to_media_input)
-            .map(|input| input.for_snapshot())
+            .map(|input| input.for_durable_transcript())
             .collect();
         self.add_message_full_with_media(
             session_id,
@@ -307,7 +307,7 @@ impl Database {
         let media_inputs: Vec<MediaInput> = attachments
             .iter()
             .map(message_attachment_to_media_input)
-            .map(|input| input.for_snapshot())
+            .map(|input| input.for_durable_transcript())
             .collect();
         let (message, disposition) = self.add_message_full_with_media(
             session_id,

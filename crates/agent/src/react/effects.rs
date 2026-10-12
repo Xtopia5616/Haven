@@ -225,7 +225,7 @@ async fn apply_projection_effect(
         }
         TurnEffect::SaveBranchPoint { step_number } => {
             engine
-                .save_branch_point(&ctx.session_id, state, step_number, false)
+                .save_branch_point(&ctx.session_id, state, step_number)
                 .await?;
         }
         TurnEffect::Emit(event) => {
@@ -255,7 +255,7 @@ async fn apply_projection_effect(
         TurnEffect::InjectTurnEnd { step_number } => {
             if engine.inject_turn_end_context(ctx, state).await? {
                 engine
-                    .save_branch_point(&ctx.session_id, state, step_number, false)
+                    .save_branch_point(&ctx.session_id, state, step_number)
                     .await?;
                 return Ok(ProjectionProgress::Stop(TurnControl::Continue));
             }

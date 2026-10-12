@@ -994,3 +994,4 @@
 - [1003：收敛 Skills command response 校验与 renderer view](1003-normalize-skills-command-responses.md)
 - [1004：ToolRun command rows 必须包含状态](1004-require-status-on-toolrun-command-rows.md)
 - [1005：将 Session dispatcher 启动入口限制在 Agent crate 内](1005-keep-session-dispatcher-startup-internal.md)
+- [1006：用 durable transcript 命名媒体持久化边界](1006-name-durable-transcript-media-boundaries.md)

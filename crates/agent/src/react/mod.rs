@@ -1595,7 +1595,7 @@ mod tests {
                 text: "看这张图".into(),
                 media_inputs: vec![
                     haven_common::media::message_attachment_to_media_input(&attachment)
-                        .for_snapshot(),
+                        .for_durable_transcript(),
                 ],
                 message_id: None,
             }],

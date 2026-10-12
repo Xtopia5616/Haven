@@ -455,12 +455,10 @@ pub struct MediaInput {
 }
 
 impl MediaInput {
-    /// Remove inline bytes before putting an input in a ReAct snapshot.  A
-    /// snapshot is an event authority, not a binary blob store.  New ingress
-    /// assets always have a host-owned id; the managed reference is therefore
-    /// sufficient for safe resume even when the provider cannot receive raw
-    /// media in the next process.
-    pub fn for_snapshot(&self) -> Self {
+    /// Remove inline bytes before storing an input in a durable transcript.
+    /// Transcript records retain the host-owned asset reference, not another
+    /// copy of the binary payload, so replay can resolve managed media safely.
+    pub fn for_durable_transcript(&self) -> Self {
         let representations = self
             .representations
             .iter()

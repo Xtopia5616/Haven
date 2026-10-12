@@ -68,7 +68,7 @@ pub(crate) enum TranscriptRecord {
         /// Raw text — adapters prepend wire prefixes (Phase 8 / B3).
         text: String,
         /// Durable provider-neutral media metadata. Inline bytes are removed
-        /// before this record is serialized into a snapshot.
+        /// before this record is serialized as a durable event.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         media_inputs: Vec<MediaInput>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -76,8 +76,8 @@ pub(crate) enum TranscriptRecord {
     },
     /// Durable request-projection metadata. This is deliberately separate
     /// from the canonical message: a derived transcript/OCR part is still a
-    /// media decision, not an opaque user sentence. The inputs are snapshot
-    /// safe and retain the producer-owned asset ids across compaction/resume.
+    /// media decision, not an opaque user sentence. The inputs are safe for
+    /// durable event storage and retain producer-owned asset ids across replay.
     MediaPlan {
         step_number: u32,
         strategy: MediaInputStrategy,
@@ -90,9 +90,9 @@ pub(crate) enum TranscriptRecord {
     CompactSummary {
         /// Step at which compaction replaced the active transcript.
         step_number: u32,
-        #[serde(serialize_with = "serialize_snapshot_canonical")]
+        #[serde(serialize_with = "serialize_compacted_canonical")]
         compacted: Vec<CanonicalMessage>,
-        /// Snapshot-safe media metadata for raw parts represented by the
+        /// Persisted media metadata for raw parts represented by the
         /// compacted canonical root.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         media_inputs: Vec<MediaInput>,
@@ -200,8 +200,8 @@ fn validate_media_inputs(inputs: &[MediaInput]) -> anyhow::Result<()> {
 /// Rollback point saved before tool execution (§2 / Phase 8 F4).
 ///
 /// Haven currently implements rollback as an overwrite of the active timeline,
-/// not as a user-visible branch tree. Stores only an index into the snapshot's
-/// `events` — no Arc Vec copies.
+/// not as a user-visible branch tree. Stores only an index into the active
+/// event projection — no Arc Vec copies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BranchPoint {
@@ -418,18 +418,20 @@ pub(crate) fn append_media_projection(
 }
 
 /// Remove inline media bytes from a canonical compaction root before it is
-/// persisted in a snapshot. Canonical messages are still the hot request
-/// projection, so the live state keeps the original image/audio parts; the
-/// durable root gets a typed text marker instead of an unbounded base64 blob.
-pub(crate) fn canonical_for_snapshot(messages: &[CanonicalMessage]) -> Vec<CanonicalMessage> {
-    canonical_for_snapshot_with_media_inputs(messages, &[])
+/// persisted in a durable event. Canonical messages are still the hot request
+/// projection, so live state keeps the original image/audio parts; the stored
+/// root gets a typed text marker instead of an unbounded base64 blob.
+pub(crate) fn canonical_for_compaction_event(
+    messages: &[CanonicalMessage],
+) -> Vec<CanonicalMessage> {
+    canonical_for_compaction_event_with_media_inputs(messages, &[])
 }
 
-/// Snapshot a canonical root while retaining the opaque identity for each
-/// raw media part. The live canonical projection intentionally has no asset
-/// field because that is provider-neutral wire data; this helper is the
-/// durable boundary where the association is restored into a safe marker.
-pub(crate) fn canonical_for_snapshot_with_media_inputs(
+/// Prepare a canonical compaction root for durable storage while retaining
+/// each raw media part's identity. The live canonical projection intentionally
+/// has no asset field because it is provider-neutral wire data; this helper
+/// restores that association into a safe stored marker.
+pub(crate) fn canonical_for_compaction_event_with_media_inputs(
     messages: &[CanonicalMessage],
     media_inputs: &[MediaInput],
 ) -> Vec<CanonicalMessage> {
@@ -445,10 +447,10 @@ pub(crate) fn canonical_for_snapshot_with_media_inputs(
                     ContentPart::Text(text) if text.starts_with("[media_plan: ") => None,
                     ContentPart::Text(text) => Some(ContentPart::Text(text)),
                     ContentPart::Image { media_type, .. } => {
-                        Some(ContentPart::text(snapshot_media_marker(
+                        Some(ContentPart::text(managed_media_marker(
                             "image",
                             &media_type,
-                            find_snapshot_media_input(
+                            find_compacted_media_input(
                                 media_inputs,
                                 &mut used_inputs,
                                 MediaModalityForPart::Image,
@@ -456,10 +458,10 @@ pub(crate) fn canonical_for_snapshot_with_media_inputs(
                         )))
                     }
                     ContentPart::Audio { media_type, .. } => {
-                        Some(ContentPart::text(snapshot_media_marker(
+                        Some(ContentPart::text(managed_media_marker(
                             "audio",
                             &media_type,
-                            find_snapshot_media_input(
+                            find_compacted_media_input(
                                 media_inputs,
                                 &mut used_inputs,
                                 MediaModalityForPart::Audio,
@@ -467,10 +469,10 @@ pub(crate) fn canonical_for_snapshot_with_media_inputs(
                         )))
                     }
                     ContentPart::Video { media_type, .. } => {
-                        Some(ContentPart::text(snapshot_media_marker(
+                        Some(ContentPart::text(managed_media_marker(
                             "video",
                             &media_type,
-                            find_snapshot_media_input(
+                            find_compacted_media_input(
                                 media_inputs,
                                 &mut used_inputs,
                                 MediaModalityForPart::Video,
@@ -491,7 +493,7 @@ enum MediaModalityForPart {
     Video,
 }
 
-fn find_snapshot_media_input<'a>(
+fn find_compacted_media_input<'a>(
     inputs: &'a [MediaInput],
     used: &mut std::collections::HashSet<usize>,
     modality: MediaModalityForPart,
@@ -534,7 +536,7 @@ fn media_input_matches_modality(input: &MediaInput, modality: MediaModalityForPa
         })
 }
 
-fn snapshot_media_marker(label: &str, media_type: &str, input: Option<&MediaInput>) -> String {
+fn managed_media_marker(label: &str, media_type: &str, input: Option<&MediaInput>) -> String {
     let media_type = sanitize_prompt_field(media_type, 96);
     match input {
         Some(input) => format!(
@@ -545,17 +547,17 @@ fn snapshot_media_marker(label: &str, media_type: &str, input: Option<&MediaInpu
     }
 }
 
-fn serialize_snapshot_canonical<S>(
+fn serialize_compacted_canonical<S>(
     messages: &[CanonicalMessage],
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
-    canonical_for_snapshot(messages).serialize(serializer)
+    canonical_for_compaction_event(messages).serialize(serializer)
 }
 
-/// Collect the snapshot-safe media identities carried by the current event
+/// Collect media identities carried by the current event
 /// root. A compaction boundary replaces older events, so encountering one
 /// resets the collection just like transcript projection resets canonical
 /// history.
@@ -583,7 +585,7 @@ pub(crate) fn media_inputs_from_events(events: &[TranscriptRecord]) -> Vec<Media
 }
 
 /// Test/helper: wrap a pre-built canonical list as a single CompactSummary
-/// seed event so snapshots can be constructed without replaying applies.
+/// seed event for tests that need a transcript fixture without replaying applies.
 pub(crate) fn seed_events_from_canonical(
     canonical: Vec<CanonicalMessage>,
 ) -> Vec<TranscriptRecord> {
@@ -667,7 +669,7 @@ mod tests {
     fn valid_media_input() -> MediaInput {
         let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
         attachment.asset_id = Some(ASSET_ID.into());
-        message_attachment_to_media_input(&attachment).for_snapshot()
+        message_attachment_to_media_input(&attachment).for_durable_transcript()
     }
 
     fn compact_summary(episode_id: &str, compacted: Vec<CanonicalMessage>) -> TranscriptRecord {
@@ -963,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn new_user_inject_snapshot_contains_media_metadata_not_inline_bytes() {
+    fn new_user_inject_event_contains_media_metadata_not_inline_bytes() {
         let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
         attachment.asset_id = Some("asset-0123456789abcdef0123456789abcdef".into());
         attachment.filename = Some("photo.png".into());
@@ -984,7 +986,9 @@ mod tests {
             step_number: 1,
             source: InjectSource::FollowUp,
             text: "请看图".into(),
-            media_inputs: vec![message_attachment_to_media_input(&attachment).for_snapshot()],
+            media_inputs: vec![
+                message_attachment_to_media_input(&attachment).for_durable_transcript(),
+            ],
             message_id: Some("msg-0123456789abcdef0123456789abcdef".into()),
         };
         let json = serde_json::to_string(&record).unwrap();
@@ -1041,10 +1045,10 @@ mod tests {
             source: None,
             message_id: None,
         }];
-        let snapshot = canonical_for_snapshot_with_media_inputs(&messages, &[input]);
-        let marker = match &snapshot[0].content[0] {
+        let compacted = canonical_for_compaction_event_with_media_inputs(&messages, &[input]);
+        let marker = match &compacted[0].content[0] {
             ContentPart::Text(text) => text,
-            other => panic!("expected snapshot marker, got {other:?}"),
+            other => panic!("expected managed media marker, got {other:?}"),
         };
         assert!(marker.contains("asset_id=asset-0123456789abcdef0123456789abcdef"));
         assert!(!marker.contains("aGVsbG8="));

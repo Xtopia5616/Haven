@@ -306,7 +306,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "continue_session",
         boundary: CommandBoundary::Mutate,
-        security: "resume from saved error snapshot",
+        security: "replay durable session_events and truncate partial projection",
     },
     CommandContract {
         name: "get_session_for_resume",

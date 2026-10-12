@@ -32,7 +32,7 @@ use super::committed_ui::{
     CommittedUi, StoredObservationUi, StoredToolCallUi, encode_transcript_payload,
 };
 use super::*;
-use crate::types::{ToolCall, TranscriptRecord, canonical_for_snapshot_with_media_inputs};
+use crate::types::{ToolCall, TranscriptRecord, canonical_for_compaction_event_with_media_inputs};
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
 use haven_memory::{CURRENT_EVENT_VERSION, SessionCommitted, SessionEvent, TRANSCRIPT_EVENT_TYPE};
@@ -184,7 +184,7 @@ impl TranscriptEvent {
                 media_inputs: attachments
                     .iter()
                     .map(haven_common::media::message_attachment_to_media_input)
-                    .map(|input| input.for_snapshot())
+                    .map(|input| input.for_durable_transcript())
                     .collect(),
                 message_id: message_id.clone(),
             },
@@ -198,10 +198,13 @@ impl TranscriptEvent {
                 degraded,
             } => TranscriptRecord::CompactSummary {
                 step_number,
-                compacted: canonical_for_snapshot_with_media_inputs(compacted, media_inputs),
+                compacted: canonical_for_compaction_event_with_media_inputs(
+                    compacted,
+                    media_inputs,
+                ),
                 media_inputs: media_inputs
                     .iter()
-                    .map(haven_common::media::MediaInput::for_snapshot)
+                    .map(haven_common::media::MediaInput::for_durable_transcript)
                     .collect(),
                 summary: summary.clone(),
                 tokens_before: *tokens_before,
@@ -243,7 +246,7 @@ fn media_record_for_inject(
         strategy,
         media_inputs: media_inputs
             .iter()
-            .map(haven_common::media::MediaInput::for_snapshot)
+            .map(haven_common::media::MediaInput::for_durable_transcript)
             .collect(),
         projections: media_plan.projections,
         notices: media_plan.notices,

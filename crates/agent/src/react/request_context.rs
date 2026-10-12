@@ -448,7 +448,7 @@ fn snapshot_media_inputs_for_message(
             let ContentPart::Text(text) = part else {
                 return None;
             };
-            let asset_id = snapshot_media_marker_info(text)?;
+            let asset_id = managed_media_marker_info(text)?;
             let index = inputs.iter().enumerate().find_map(|(index, input)| {
                 (input.asset.asset_id == asset_id && used.insert(index)).then_some(index)
             })?;
@@ -457,7 +457,7 @@ fn snapshot_media_inputs_for_message(
         .collect()
 }
 
-fn snapshot_media_marker_info(text: &str) -> Option<String> {
+fn managed_media_marker_info(text: &str) -> Option<String> {
     if text.starts_with("[managed image omitted from snapshot;")
         || text.starts_with("[managed audio omitted from snapshot;")
         || text.starts_with("[managed video omitted from snapshot;")
@@ -871,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn compacted_source_tagged_media_reconnects_through_snapshot_marker() {
+    fn compacted_source_tagged_media_reconnects_through_managed_media_marker() {
         let asset_id = "asset-33333333333333333333333333333333";
         let mut attachment = MessageAttachment::new("audio/wav", "YXVkaW8=");
         attachment.asset_id = Some(asset_id.into());
@@ -888,15 +888,15 @@ mod tests {
             ],
             haven_common::types::InjectSource::FollowUp,
         );
-        let snapshot_message = crate::types::canonical_for_snapshot_with_media_inputs(
+        let compacted_message = crate::types::canonical_for_compaction_event_with_media_inputs(
             std::slice::from_ref(&live_message),
             std::slice::from_ref(&input),
         );
         let state = ReActState::new(
             vec![TranscriptRecord::CompactSummary {
                 step_number: 1,
-                compacted: snapshot_message.clone(),
-                media_inputs: vec![input.for_snapshot()],
+                compacted: compacted_message.clone(),
+                media_inputs: vec![input.for_durable_transcript()],
                 summary: "older context".into(),
                 tokens_before: 100,
                 tokens_after: 20,
