@@ -186,7 +186,7 @@ mod tests {
                 "UPDATE facts SET created_at = '2000-01-01T00:00:00Z',
                                   last_seen_at = '2000-01-01T00:00:00Z'
                  WHERE id = ?1",
-                rusqlite::params![stale.id],
+                rusqlite::params![stale.fact_id],
             )
             .unwrap();
         db.insert_fact("user", "works_at", "Acme", "inferred", 0.85, &[])
@@ -199,7 +199,7 @@ mod tests {
         db.conn()
             .execute(
                 "UPDATE facts SET provenance_record_id = '  ' WHERE id = ?1",
-                rusqlite::params![source_ref_fact.id],
+                rusqlite::params![source_ref_fact.fact_id],
             )
             .unwrap();
 

@@ -649,7 +649,7 @@ mod tests {
         ));
         worker.suspend_outbox_worker_for_test();
         let runtime = MemoryRuntime::new(SessionStore::new(db.clone()), worker);
-        (db, session.id, runtime)
+        (db, session.session_id, runtime)
     }
 
     fn event(session_id: &str, sequence: i64, event_type: &str, payload: String) -> SessionEvent {
@@ -725,14 +725,14 @@ mod tests {
                 runtime
                     .session_store
                     .append(
-                        &session.id,
+                        &session.session_id,
                         MEMORY_TRIGGER_EVENT_TYPE,
                         &trigger("step_interval", false),
                         None,
                         None,
                     )
                     .unwrap();
-                new_session_id = Some(session.id);
+                new_session_id = Some(session.session_id);
             })
             .await
             .unwrap();
@@ -807,7 +807,7 @@ mod tests {
         let event = runtime
             .session_store
             .append(
-                &new_session.id,
+                &new_session.session_id,
                 MEMORY_TRIGGER_EVENT_TYPE,
                 &trigger("step_interval", false),
                 None,
@@ -823,8 +823,8 @@ mod tests {
                 .unwrap(),
             MemoryEventProcessOutcome::Checkpointed { enqueued: true }
         );
-        assert_eq!(cursor(&db, &new_session.id).await, 1);
-        assert_eq!(pending(&db).await, vec![(new_session.id, false)]);
+        assert_eq!(cursor(&db, &new_session.session_id).await, 1);
+        assert_eq!(pending(&db).await, vec![(new_session.session_id, false)]);
     }
 
     #[tokio::test]
@@ -837,13 +837,13 @@ mod tests {
                 .unwrap();
             runtime
                 .session_store
-                .initialize_memory_event_cursor_if_absent(&session.id, 0)
+                .initialize_memory_event_cursor_if_absent(&session.session_id, 0)
                 .unwrap();
             runtime
                 .session_store
-                .append(&session.id, "usage_recorded", "{}", None, None)
+                .append(&session.session_id, "usage_recorded", "{}", None, None)
                 .unwrap();
-            session_ids.push(session.id);
+            session_ids.push(session.session_id);
         }
 
         runtime.prepare_start(&cancellation()).await.unwrap();
@@ -1271,7 +1271,7 @@ mod tests {
         let (db, target_id, runtime) = fixture();
         let other = db.create_session("other session").unwrap();
         let event = event(
-            &other.id,
+            &other.session_id,
             1,
             MEMORY_TRIGGER_EVENT_TYPE,
             trigger("pause", true),
@@ -1285,7 +1285,7 @@ mod tests {
             MemoryEventProcessOutcome::IgnoredOtherSession
         );
         assert_eq!(cursor(&db, &target_id).await, 0);
-        assert_eq!(cursor(&db, &other.id).await, 0);
+        assert_eq!(cursor(&db, &other.session_id).await, 0);
         assert!(pending(&db).await.is_empty());
     }
 

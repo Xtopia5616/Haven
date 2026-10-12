@@ -293,7 +293,7 @@ impl<'a> MemoryMaintenancePass<'a> {
 
         let allowed: HashMap<String, &Fact> = groups
             .iter()
-            .flat_map(|g| g.facts.iter().map(|f| (f.id.clone(), f)))
+            .flat_map(|g| g.facts.iter().map(|f| (f.fact_id.clone(), f)))
             .collect();
         let mut demote_ids: Vec<String> = Vec::new();
         for p in proposals.into_iter().take(20) {

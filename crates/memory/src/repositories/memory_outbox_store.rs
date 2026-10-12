@@ -332,11 +332,11 @@ mod tests {
         let summary = "A durable compaction summary that should be extracted.";
 
         store
-            .persist_compaction_summary(&session.id, summary, &episode_id, true)
+            .persist_compaction_summary(&session.session_id, summary, &episode_id, true)
             .await
             .unwrap();
         store
-            .persist_compaction_summary(&session.id, summary, &episode_id, true)
+            .persist_compaction_summary(&session.session_id, summary, &episode_id, true)
             .await
             .unwrap();
 
@@ -354,20 +354,20 @@ mod tests {
             pending_summary_rows(&store, &CancellationToken::new())
                 .await
                 .unwrap(),
-            vec![(session.id.clone(), episode_id.clone())]
+            vec![(session.session_id.clone(), episode_id.clone())]
         );
 
-        db.clear_summary_extraction(&session.id, &episode_id)
+        db.clear_summary_extraction(&session.session_id, &episode_id)
             .unwrap();
         store
-            .persist_compaction_summary(&session.id, summary, &episode_id, true)
+            .persist_compaction_summary(&session.session_id, summary, &episode_id, true)
             .await
             .unwrap();
         assert_eq!(
             pending_summary_rows(&store, &CancellationToken::new())
                 .await
                 .unwrap(),
-            vec![(session.id, episode_id)]
+            vec![(session.session_id, episode_id)]
         );
     }
 
@@ -380,7 +380,7 @@ mod tests {
         let original = "A persisted summary without extraction.";
 
         store
-            .persist_compaction_summary(&session.id, original, &episode_id, false)
+            .persist_compaction_summary(&session.session_id, original, &episode_id, false)
             .await
             .unwrap();
         assert!(
@@ -392,7 +392,7 @@ mod tests {
 
         let error = store
             .persist_compaction_summary(
-                &session.id,
+                &session.session_id,
                 "conflicting content must not replace the original",
                 &episode_id,
                 true,
@@ -430,21 +430,21 @@ mod tests {
         let cancellation = CancellationToken::new();
 
         store
-            .enqueue_fact_extraction_cancellable(&session.id, false, 1, &cancellation)
+            .enqueue_fact_extraction_cancellable(&session.session_id, false, 1, &cancellation)
             .await
             .unwrap();
         store
-            .enqueue_fact_extraction_cancellable(&session.id, true, 2, &cancellation)
+            .enqueue_fact_extraction_cancellable(&session.session_id, true, 2, &cancellation)
             .await
             .unwrap();
         assert_eq!(
             pending_fact_rows(&store, &cancellation).await.unwrap(),
-            vec![(session.id.clone(), true, 2)]
+            vec![(session.session_id.clone(), true, 2)]
         );
 
         store
             .clear_pending_fact_extraction_if_current_cancellable(
-                &session.id,
+                &session.session_id,
                 1,
                 false,
                 &cancellation,
@@ -453,11 +453,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             pending_fact_rows(&store, &cancellation).await.unwrap(),
-            vec![(session.id.clone(), true, 2)]
+            vec![(session.session_id.clone(), true, 2)]
         );
         store
             .clear_pending_fact_extraction_if_current_cancellable(
-                &session.id,
+                &session.session_id,
                 2,
                 true,
                 &cancellation,
@@ -497,9 +497,10 @@ mod tests {
         let store = MemoryOutboxStore::new(db.clone());
         let cancellation = CancellationToken::new();
         let episode_id = new_id("msg");
-        db.enqueue_fact_extraction(&session.id, true, 3).unwrap();
+        db.enqueue_fact_extraction(&session.session_id, true, 3)
+            .unwrap();
         db.add_episode_with_pending_extraction(
-            &session.id,
+            &session.session_id,
             "A durable compaction summary with a pending extraction marker.",
             &episode_id,
             true,
@@ -508,11 +509,11 @@ mod tests {
 
         assert_eq!(
             pending_fact_rows(&store, &cancellation).await.unwrap(),
-            vec![(session.id.clone(), true, 3)]
+            vec![(session.session_id.clone(), true, 3)]
         );
         assert_eq!(
             pending_summary_rows(&store, &cancellation).await.unwrap(),
-            vec![(session.id.clone(), episode_id)]
+            vec![(session.session_id.clone(), episode_id)]
         );
 
         db.conn().execute_batch("DROP TABLE kv_store").unwrap();
@@ -538,7 +539,7 @@ mod tests {
         let session = db.create_session("memory store summary outbox").unwrap();
         let episode_id = new_id("msg");
         db.add_episode_with_pending_extraction(
-            &session.id,
+            &session.session_id,
             "A durable summary whose text is read through MemoryOutboxStore.",
             &episode_id,
             true,
@@ -585,7 +586,8 @@ mod tests {
         ));
         let db = Arc::new(Database::open(&path).unwrap());
         let session = db.create_session("memory store cancellation").unwrap();
-        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
+        db.enqueue_fact_extraction(&session.session_id, false, 1)
+            .unwrap();
         let store = MemoryOutboxStore::new(db.clone());
         let cancellation = CancellationToken::new();
 
@@ -593,7 +595,7 @@ mod tests {
         lock.execute_batch("BEGIN IMMEDIATE").unwrap();
         let clear = tokio::spawn({
             let store = store.clone();
-            let session_id = session.id.clone();
+            let session_id = session.session_id.clone();
             let cancellation = cancellation.clone();
             async move {
                 store
@@ -621,7 +623,7 @@ mod tests {
             pending_fact_rows(&store, &verification_cancellation)
                 .await
                 .unwrap(),
-            vec![(session.id, false, 1)]
+            vec![(session.session_id, false, 1)]
         );
         drop(store);
         drop(db);

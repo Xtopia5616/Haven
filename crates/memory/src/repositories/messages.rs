@@ -93,7 +93,7 @@ fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
         })
         .transpose()?;
     Ok(Message {
-        id,
+        message_id: id,
         session_id,
         role,
         content: row.get(3)?,
@@ -166,7 +166,7 @@ impl From<UiAttachmentMetadata> for MessageAttachment {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Message {
-    pub id: String,
+    pub message_id: String,
     pub session_id: String,
     pub role: CanonicalRole,
     pub content: String,
@@ -425,7 +425,7 @@ impl Database {
         self.cache_invalidate_messages(session_id);
         Ok((
             Message {
-                id,
+                message_id: id,
                 session_id: session_id.into(),
                 role,
                 content: content.into(),
@@ -870,7 +870,7 @@ mod tests {
     }
 
     fn test_session(db: &Database) -> String {
-        db.create_session("input").unwrap().id
+        db.create_session("input").unwrap().session_id
     }
 
     #[test]
@@ -1016,7 +1016,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            db.list_session_messages(&session_id).unwrap()[0].id,
+            db.list_session_messages(&session_id).unwrap()[0].message_id,
             step_id
         );
     }
@@ -1077,7 +1077,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        db.delete_message_by_id(&tid, &second.id).unwrap();
+        db.delete_message_by_id(&tid, &second.message_id).unwrap();
 
         let replacement = db
             .add_message(
@@ -1159,7 +1159,8 @@ mod tests {
                 None,
             )
             .unwrap();
-        db.create_thought_step(&tid, 2, &delivered.id).unwrap();
+        db.create_thought_step(&tid, 2, &delivered.message_id)
+            .unwrap();
         let pending = db
             .add_pending_user_input(
                 &tid,
@@ -1178,7 +1179,10 @@ mod tests {
             1,
             "only an explicit pending marker is returned"
         );
-        assert_eq!(pending_rows[0].message.id, pending.message.id);
+        assert_eq!(
+            pending_rows[0].message.message_id,
+            pending.message.message_id
+        );
         assert_eq!(
             pending_rows[0].disposition,
             PendingInputDisposition::FollowUp
@@ -1233,14 +1237,14 @@ mod tests {
         let conn = db.conn();
         conn.execute(
             "UPDATE messages SET created_at = ?1 WHERE id = ?2",
-            rusqlite::params![old, pending.message.id],
+            rusqlite::params![old, pending.message.message_id],
         )
         .unwrap();
         drop(conn);
 
         let recovered = db.list_pending_session_inputs(&tid).unwrap();
         assert_eq!(recovered.len(), 1);
-        assert_eq!(recovered[0].message.id, pending.message.id);
+        assert_eq!(recovered[0].message.message_id, pending.message.message_id);
         assert_eq!(recovered[0].disposition, PendingInputDisposition::FollowUp);
     }
 
@@ -1463,7 +1467,7 @@ mod tests {
     #[test]
     fn message_serde_roundtrip_with_attachments() {
         let msg = Message {
-            id: haven_common::types::new_id("msg"),
+            message_id: haven_common::types::new_id("msg"),
             session_id: haven_common::types::new_id("ses"),
             role: CanonicalRole::User,
             content: "看图".into(),
@@ -1575,7 +1579,7 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "first");
         // m2 should be gone
-        assert!(!msgs.iter().any(|m| m.id == m2.id));
+        assert!(!msgs.iter().any(|m| m.message_id == m2.message_id));
     }
 
     #[test]
@@ -1636,20 +1640,26 @@ mod tests {
             .list_session_messages(&tid)
             .unwrap()
             .iter()
-            .map(|m| m.id.clone())
+            .map(|m| m.message_id.clone())
             .collect();
-        assert_eq!(order_before, vec![steering.id.clone(), thought.id.clone()]);
+        assert_eq!(
+            order_before,
+            vec![steering.message_id.clone(), thought.message_id.clone()]
+        );
         std::thread::sleep(std::time::Duration::from_millis(5));
         let now = now_rfc3339_millis();
-        db.update_message_created_at(&tid, &steering.id, &now)
+        db.update_message_created_at(&tid, &steering.message_id, &now)
             .unwrap();
         let order_after: Vec<String> = db
             .list_session_messages(&tid)
             .unwrap()
             .iter()
-            .map(|m| m.id.clone())
+            .map(|m| m.message_id.clone())
             .collect();
-        assert_eq!(order_after, vec![thought.id.clone(), steering.id.clone()]);
+        assert_eq!(
+            order_after,
+            vec![thought.message_id.clone(), steering.message_id.clone()]
+        );
     }
 
     #[test]

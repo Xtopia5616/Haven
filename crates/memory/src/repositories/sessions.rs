@@ -38,7 +38,7 @@ fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
     let origin =
         SessionOrigin::from_storage(row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?)?;
     Ok(Session {
-        id,
+        session_id: id,
         input_text: row.get(1)?,
         title: row.get(2)?,
         status: SessionStatus::from_status_str(&status),
@@ -76,7 +76,7 @@ fn local_date_to_utc_bound(date: &str, exclusive_end: bool) -> Option<String> {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Session {
-    pub id: String,
+    pub session_id: String,
     pub input_text: String,
     pub title: Option<String>,
     pub status: SessionStatus,
@@ -196,7 +196,7 @@ impl Database {
         drop(conn);
         self.cache_invalidate_session_history_page();
         Ok(Session {
-            id,
+            session_id: id,
             input_text: input_text.into(),
             title: None,
             status: SessionStatus::Pending,
@@ -768,7 +768,7 @@ mod tests {
     fn test_create_session() {
         let db = create_db();
         let session = db.create_session("input text").unwrap();
-        assert!(!session.id.is_empty());
+        assert!(!session.session_id.is_empty());
         assert_eq!(session.input_text, "input text");
         assert_eq!(session.title, None);
         assert_eq!(session.status, SessionStatus::Pending);
@@ -796,7 +796,7 @@ mod tests {
             .create_session_with_origin(
                 "delegated kickoff",
                 SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.id.clone(),
+                    parent_session_id: parent.session_id.clone(),
                 },
             )
             .unwrap();
@@ -804,29 +804,29 @@ mod tests {
         assert_eq!(
             child.origin,
             SessionOrigin::AgentSpawn {
-                parent_session_id: parent.id.clone(),
+                parent_session_id: parent.session_id.clone(),
             }
         );
         assert_eq!(
-            db.list_session_children(&parent.id, 10, 0)
+            db.list_session_children(&parent.session_id, 10, 0)
                 .unwrap()
                 .into_iter()
-                .map(|session| session.id)
+                .map(|session| session.session_id)
                 .collect::<Vec<_>>(),
-            vec![child.id.clone()]
+            vec![child.session_id.clone()]
         );
         assert!(
-            db.list_session_children(&unrelated.id, 10, 0)
+            db.list_session_children(&unrelated.session_id, 10, 0)
                 .unwrap()
                 .is_empty()
         );
 
-        db.delete_session(&parent.id).unwrap();
-        let retained = db.get_session(&child.id).unwrap().unwrap();
+        db.delete_session(&parent.session_id).unwrap();
+        let retained = db.get_session(&child.session_id).unwrap().unwrap();
         assert_eq!(
             retained.origin,
             SessionOrigin::AgentSpawn {
-                parent_session_id: parent.id,
+                parent_session_id: parent.session_id,
             }
         );
     }
@@ -871,7 +871,7 @@ mod tests {
             .create_session_with_origin(
                 "delegated kickoff",
                 SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.id,
+                    parent_session_id: parent.session_id,
                 },
             )
             .unwrap();
@@ -879,11 +879,11 @@ mod tests {
         db.conn()
             .execute(
                 "UPDATE sessions SET parent_session_id = 'session-invalid' WHERE id = ?1",
-                [&child.id],
+                [&child.session_id],
             )
             .unwrap();
 
-        let error = db.get_session(&child.id).unwrap_err();
+        let error = db.get_session(&child.session_id).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -895,7 +895,7 @@ mod tests {
     fn test_create_session_without_session_works() {
         let db = create_db();
         let session = db.create_session("input").unwrap();
-        assert!(!session.id.is_empty());
+        assert!(!session.session_id.is_empty());
     }
 
     #[test]
@@ -904,7 +904,7 @@ mod tests {
         let first = db.create_session("first").unwrap();
         let second = db.create_session("second").unwrap();
 
-        let mut expected = vec![first.id, second.id];
+        let mut expected = vec![first.session_id, second.session_id];
         expected.sort();
         assert_eq!(db.all_session_ids().unwrap(), expected);
     }
@@ -913,7 +913,11 @@ mod tests {
     fn session_id_keyset_pages_are_bounded_and_honor_captured_high_water() {
         let db = create_db();
         let mut expected = (0..130)
-            .map(|index| db.create_session(&format!("paged-{index}")).unwrap().id)
+            .map(|index| {
+                db.create_session(&format!("paged-{index}"))
+                    .unwrap()
+                    .session_id
+            })
             .collect::<Vec<_>>();
         expected.sort();
         let high_water = db.session_id_high_water().unwrap().unwrap();
@@ -949,18 +953,18 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         // The most recent session must come first —the app start
         // session restore relies on this ordering.
-        assert_eq!(sessions[0].id, second.id);
-        assert_ne!(sessions[0].id, first.id);
+        assert_eq!(sessions[0].session_id, second.session_id);
+        assert_ne!(sessions[0].session_id, first.session_id);
     }
 
     #[test]
     fn test_get_session_found() {
         let db = create_db();
         let created = db.create_session("input").unwrap();
-        let found = db.get_session(&created.id).unwrap();
+        let found = db.get_session(&created.session_id).unwrap();
         assert!(found.is_some());
         let found = found.unwrap();
-        assert_eq!(found.id, created.id);
+        assert_eq!(found.session_id, created.session_id);
         assert_eq!(found.input_text, "input");
     }
 
@@ -976,9 +980,9 @@ mod tests {
     fn test_update_session_status() {
         let db = create_db();
         let session = db.create_session("input").unwrap();
-        db.update_session_status(&session.id, SessionStatus::Running)
+        db.update_session_status(&session.session_id, SessionStatus::Running)
             .unwrap();
-        let updated = db.get_session(&session.id).unwrap().unwrap();
+        let updated = db.get_session(&session.session_id).unwrap().unwrap();
         assert_eq!(updated.status, SessionStatus::Running);
     }
 
@@ -1043,7 +1047,7 @@ mod tests {
         let db = create_db();
         let session = db.create_session("session").unwrap();
         db.add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "message about rust",
             None,
@@ -1098,13 +1102,15 @@ mod tests {
         let db = create_db();
         let session = db.create_session("input").unwrap();
         let other = db.create_session("other").unwrap();
-        db.checkpoint_memory_event_cursor(&session.id, 5).unwrap();
-        db.checkpoint_memory_event_cursor(&other.id, 8).unwrap();
-        db.delete_session(&session.id).unwrap();
-        assert!(db.get_session(&session.id).unwrap().is_none());
+        db.checkpoint_memory_event_cursor(&session.session_id, 5)
+            .unwrap();
+        db.checkpoint_memory_event_cursor(&other.session_id, 8)
+            .unwrap();
+        db.delete_session(&session.session_id).unwrap();
+        assert!(db.get_session(&session.session_id).unwrap().is_none());
         assert_eq!(db.count_sessions().unwrap(), 1);
-        assert_eq!(db.memory_event_cursor(&session.id).unwrap(), 0);
-        assert_eq!(db.memory_event_cursor(&other.id).unwrap(), 8);
+        assert_eq!(db.memory_event_cursor(&session.session_id).unwrap(), 0);
+        assert_eq!(db.memory_event_cursor(&other.session_id).unwrap(), 8);
     }
 
     #[test]
@@ -1122,46 +1128,53 @@ mod tests {
         let first = db.create_session("a").unwrap();
         db.create_session("b").unwrap();
         db.create_session("c").unwrap();
-        db.set_kv(&format!("fact_extraction.{}", first.id), "msg-1")
+        db.set_kv(&format!("fact_extraction.{}", first.session_id), "msg-1")
             .unwrap();
         db.set_kv(
-            &format!("fact_extraction_last_run.{}", first.id),
+            &format!("fact_extraction_last_run.{}", first.session_id),
             "2026-08-15T00:00:00Z",
         )
         .unwrap();
         db.set_kv(
-            &format!("fact_extraction_episode_done.{}.msg-3", first.id),
-            &first.id,
+            &format!("fact_extraction_episode_done.{}.msg-3", first.session_id),
+            &first.session_id,
         )
         .unwrap();
-        db.set_kv(&format!("fact_extraction_pending.{}", first.id), "0:1:0:0")
+        db.set_kv(
+            &format!("fact_extraction_pending.{}", first.session_id),
+            "0:1:0:0",
+        )
+        .unwrap();
+        db.checkpoint_memory_event_cursor(&first.session_id, 12)
             .unwrap();
-        db.checkpoint_memory_event_cursor(&first.id, 12).unwrap();
 
         let count = db.delete_all_sessions().unwrap();
         assert_eq!(count, 3);
         assert_eq!(db.count_sessions().unwrap(), 0);
         assert!(
-            db.get_kv(&format!("fact_extraction.{}", first.id))
+            db.get_kv(&format!("fact_extraction.{}", first.session_id))
                 .unwrap()
                 .is_none()
         );
         assert!(
-            db.get_kv(&format!("fact_extraction_last_run.{}", first.id))
+            db.get_kv(&format!("fact_extraction_last_run.{}", first.session_id))
                 .unwrap()
                 .is_none()
         );
         assert!(
-            db.get_kv(&format!("fact_extraction_episode_done.{}.msg-3", first.id))
-                .unwrap()
-                .is_none()
+            db.get_kv(&format!(
+                "fact_extraction_episode_done.{}.msg-3",
+                first.session_id
+            ))
+            .unwrap()
+            .is_none()
         );
         assert!(
-            db.get_kv(&format!("fact_extraction_pending.{}", first.id))
+            db.get_kv(&format!("fact_extraction_pending.{}", first.session_id))
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 0);
+        assert_eq!(db.memory_event_cursor(&first.session_id).unwrap(), 0);
     }
 
     #[test]
@@ -1175,34 +1188,34 @@ mod tests {
     fn test_finalize_orphaned_running_sessions() {
         let db = create_db();
         let running = db.create_session("running").unwrap();
-        db.update_session_status(&running.id, SessionStatus::Running)
+        db.update_session_status(&running.session_id, SessionStatus::Running)
             .unwrap();
         let paused = db.create_session("paused").unwrap();
-        db.update_session_status(&paused.id, SessionStatus::Paused)
+        db.update_session_status(&paused.session_id, SessionStatus::Paused)
             .unwrap();
         let pending = db.create_session("pending").unwrap();
         let done = db.create_session("done").unwrap();
-        db.update_session_status(&done.id, SessionStatus::Completed)
+        db.update_session_status(&done.session_id, SessionStatus::Completed)
             .unwrap();
 
         let count = db.finalize_orphaned_running_sessions().unwrap();
         assert_eq!(count, 1);
 
         assert_eq!(
-            db.get_session(&running.id).unwrap().unwrap().status,
+            db.get_session(&running.session_id).unwrap().unwrap().status,
             SessionStatus::Error
         );
         // paused/pending are left alone —they are legitimate waiting work.
         assert_eq!(
-            db.get_session(&paused.id).unwrap().unwrap().status,
+            db.get_session(&paused.session_id).unwrap().unwrap().status,
             SessionStatus::Paused
         );
         assert_eq!(
-            db.get_session(&pending.id).unwrap().unwrap().status,
+            db.get_session(&pending.session_id).unwrap().unwrap().status,
             SessionStatus::Pending
         );
         assert_eq!(
-            db.get_session(&done.id).unwrap().unwrap().status,
+            db.get_session(&done.session_id).unwrap().unwrap().status,
             SessionStatus::Completed
         );
     }
@@ -1212,46 +1225,53 @@ mod tests {
         let db = create_db();
         let first = db.create_session("a").unwrap();
         db.create_session("b").unwrap();
-        db.set_kv(&format!("fact_extraction.{}", first.id), "msg-1")
+        db.set_kv(&format!("fact_extraction.{}", first.session_id), "msg-1")
             .unwrap();
         db.set_kv(
-            &format!("fact_extraction_last_run.{}", first.id),
+            &format!("fact_extraction_last_run.{}", first.session_id),
             "2026-08-15T00:00:00Z",
         )
         .unwrap();
         db.set_kv(
-            &format!("fact_extraction_episode_done.{}.msg-3", first.id),
-            &first.id,
+            &format!("fact_extraction_episode_done.{}.msg-3", first.session_id),
+            &first.session_id,
         )
         .unwrap();
-        db.set_kv(&format!("fact_extraction_pending.{}", first.id), "0:1:0:0")
+        db.set_kv(
+            &format!("fact_extraction_pending.{}", first.session_id),
+            "0:1:0:0",
+        )
+        .unwrap();
+        db.checkpoint_memory_event_cursor(&first.session_id, 15)
             .unwrap();
-        db.checkpoint_memory_event_cursor(&first.id, 15).unwrap();
 
         let count = db.delete_old_sessions(0).unwrap();
         assert_eq!(count, 2);
         assert_eq!(db.count_sessions().unwrap(), 0);
         assert!(
-            db.get_kv(&format!("fact_extraction.{}", first.id))
+            db.get_kv(&format!("fact_extraction.{}", first.session_id))
                 .unwrap()
                 .is_none()
         );
         assert!(
-            db.get_kv(&format!("fact_extraction_last_run.{}", first.id))
+            db.get_kv(&format!("fact_extraction_last_run.{}", first.session_id))
                 .unwrap()
                 .is_none()
         );
         assert!(
-            db.get_kv(&format!("fact_extraction_episode_done.{}.msg-3", first.id))
-                .unwrap()
-                .is_none()
+            db.get_kv(&format!(
+                "fact_extraction_episode_done.{}.msg-3",
+                first.session_id
+            ))
+            .unwrap()
+            .is_none()
         );
         assert!(
-            db.get_kv(&format!("fact_extraction_pending.{}", first.id))
+            db.get_kv(&format!("fact_extraction_pending.{}", first.session_id))
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 0);
+        assert_eq!(db.memory_event_cursor(&first.session_id).unwrap(), 0);
     }
 
     #[test]
@@ -1281,7 +1301,7 @@ mod tests {
         let db = create_db();
         let t1 = db.create_session("a").unwrap();
         db.create_session("b").unwrap();
-        db.update_session_status(&t1.id, SessionStatus::Completed)
+        db.update_session_status(&t1.session_id, SessionStatus::Completed)
             .unwrap();
 
         let results = db
@@ -1313,14 +1333,14 @@ mod tests {
         let db = create_db();
         let t1 = db.create_session("rust compiler bug").unwrap();
         db.create_session("python script").unwrap();
-        db.update_session_status(&t1.id, SessionStatus::Completed)
+        db.update_session_status(&t1.session_id, SessionStatus::Completed)
             .unwrap();
 
         let results = db
             .search_sessions_filtered(Some("rust"), Some("completed"), None, None, 50, 0)
             .unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, t1.id);
+        assert_eq!(results[0].session_id, t1.session_id);
     }
 
     #[test]
@@ -1362,7 +1382,7 @@ mod tests {
             .search_sessions_filtered(None, None, Some(&local_today), Some(&local_today), 50, 0)
             .unwrap();
         assert!(
-            results.iter().any(|t| t.id == session.id),
+            results.iter().any(|t| t.session_id == session.session_id),
             "session created today must match a same-day end-date filter"
         );
     }
@@ -1411,7 +1431,7 @@ mod tests {
         db.conn()
             .execute(
                 "UPDATE sessions SET id = 'ses-short', created_at = '2000-01-01T00:00:00Z' WHERE id = ?1",
-                [&session.id],
+                [&session.session_id],
             )
             .unwrap();
         assert!(db.all_session_ids().is_err());

@@ -65,19 +65,19 @@ fn sqlite_full_transcript_commit_rolls_back_and_can_be_retried() {
     let mut committed = SessionCommitted::transcript(oversized_for_test, 1, 1);
     committed.project_assistant_message(message_id, "committed", None);
     let commit_error = store
-        .commit_transcript(&session.id, &committed)
+        .commit_transcript(&session.session_id, &committed)
         .unwrap_err();
     assert!(commit_error.to_string().to_lowercase().contains("full"));
     assert_eq!(
         SessionStore::sqlite_storage_write_failure(&commit_error),
         Some(crate::repositories::session_events::SqliteStorageWriteFailure::DiskFull)
     );
-    assert!(store.read_all(&session.id).unwrap().is_empty());
+    assert!(store.read_all(&session.session_id).unwrap().is_empty());
     assert_eq!(
         db.conn()
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
-                rusqlite::params![session.id],
+                rusqlite::params![session.session_id],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
@@ -93,14 +93,19 @@ fn sqlite_full_transcript_commit_rolls_back_and_can_be_retried() {
         conn.pragma_update(None, "max_page_count", 2_147_483_647_i64)
             .unwrap();
     }
-    let recovered = store.commit_transcript(&session.id, &committed).unwrap();
+    let recovered = store
+        .commit_transcript(&session.session_id, &committed)
+        .unwrap();
     assert_eq!(recovered.events[0].sequence, 1);
-    assert_eq!(store.read_all(&session.id).unwrap(), recovered.events);
+    assert_eq!(
+        store.read_all(&session.session_id).unwrap(),
+        recovered.events
+    );
     assert_eq!(
         db.conn()
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
-                rusqlite::params![session.id],
+                rusqlite::params![session.session_id],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
@@ -147,16 +152,16 @@ fn failed_transcript_commit_rolls_back_and_can_be_retried() {
     );
     committed.project_assistant_message(message_id, "assistant", None);
     let commit_error = store
-        .commit_transcript(&session.id, &committed)
+        .commit_transcript(&session.session_id, &committed)
         .unwrap_err();
     assert!(commit_error.to_string().contains("FOREIGN KEY"));
     assert!(db.conn().is_autocommit());
-    assert!(store.read_all(&session.id).unwrap().is_empty());
+    assert!(store.read_all(&session.session_id).unwrap().is_empty());
     assert_eq!(
         db.conn()
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
-                rusqlite::params![session.id],
+                rusqlite::params![session.session_id],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
@@ -170,14 +175,19 @@ fn failed_transcript_commit_rolls_back_and_can_be_retried() {
     db.conn()
         .execute_batch("DROP TRIGGER fail_session_event_commit; DROP TABLE commit_failure_guard;")
         .unwrap();
-    let recovered = store.commit_transcript(&session.id, &committed).unwrap();
+    let recovered = store
+        .commit_transcript(&session.session_id, &committed)
+        .unwrap();
     assert_eq!(recovered.events[0].sequence, 1);
-    assert_eq!(store.read_all(&session.id).unwrap(), recovered.events);
+    assert_eq!(
+        store.read_all(&session.session_id).unwrap(),
+        recovered.events
+    );
     assert_eq!(
         db.conn()
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
-                rusqlite::params![session.id],
+                rusqlite::params![session.session_id],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
@@ -220,7 +230,7 @@ fn session_event_disk_capacity_profile() {
         let events = vec![event; EVENTS_PER_PROFILE];
         let mut wal_peak_bytes = 0;
         for batch in events.chunks(MAX_TRANSCRIPT_BATCH_EVENTS) {
-            store.append_batch(&session.id, batch).unwrap();
+            store.append_batch(&session.session_id, batch).unwrap();
             wal_peak_bytes = wal_peak_bytes.max(file_len(&wal_path));
         }
 
@@ -236,7 +246,7 @@ fn session_event_disk_capacity_profile() {
         db.conn()
             .execute(
                 "UPDATE sessions SET created_at = '2000-01-01T00:00:00+00:00' WHERE id = ?1",
-                rusqlite::params![session.id],
+                rusqlite::params![session.session_id],
             )
             .unwrap();
         assert_eq!(db.delete_old_sessions(90).unwrap(), 1);
@@ -290,15 +300,25 @@ fn age_retention_deletes_whole_sessions_and_cascades_their_events() {
     let retained = db.create_session("retained-session").unwrap();
     let store = SessionStore::new(db.clone());
     store
-        .append_transcript(&expired.id, r#"{"type":"thought","text":"old"}"#, 1, 1)
+        .append_transcript(
+            &expired.session_id,
+            r#"{"type":"thought","text":"old"}"#,
+            1,
+            1,
+        )
         .unwrap();
     store
-        .append_transcript(&retained.id, r#"{"type":"thought","text":"recent"}"#, 1, 1)
+        .append_transcript(
+            &retained.session_id,
+            r#"{"type":"thought","text":"recent"}"#,
+            1,
+            1,
+        )
         .unwrap();
     db.conn()
         .execute(
             "UPDATE sessions SET created_at = '2000-01-01T00:00:00+00:00' WHERE id = ?1",
-            rusqlite::params![expired.id],
+            rusqlite::params![expired.session_id],
         )
         .unwrap();
 
@@ -312,8 +332,8 @@ fn age_retention_deletes_whole_sessions_and_cascades_their_events() {
             )
             .unwrap()
     };
-    assert_eq!(event_count(&expired.id), 0);
-    assert_eq!(event_count(&retained.id), 1);
+    assert_eq!(event_count(&expired.session_id), 0);
+    assert_eq!(event_count(&retained.session_id), 1);
 
     drop(store);
     drop(db);
@@ -431,7 +451,7 @@ fn session_event_representative_mixture_capacity_profile() {
 
     let mut wal_peak_bytes = 0;
     for batch in events.chunks(MAX_TRANSCRIPT_BATCH_EVENTS) {
-        store.append_batch(&session.id, batch).unwrap();
+        store.append_batch(&session.session_id, batch).unwrap();
         wal_peak_bytes = wal_peak_bytes.max(file_len(&wal_path));
     }
 
@@ -447,7 +467,7 @@ fn session_event_representative_mixture_capacity_profile() {
     db.conn()
         .execute(
             "UPDATE sessions SET created_at = '2000-01-01T00:00:00+00:00' WHERE id = ?1",
-            rusqlite::params![session.id],
+            rusqlite::params![session.session_id],
         )
         .unwrap();
     assert_eq!(db.delete_old_sessions(90).unwrap(), 1);

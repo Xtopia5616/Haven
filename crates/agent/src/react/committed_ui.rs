@@ -708,7 +708,7 @@ mod tests {
         };
         let payload = encode_transcript_payload(&record, None).unwrap();
         let committed = store
-            .append_transcript(&session.id, &payload, 3, 1)
+            .append_transcript(&session.session_id, &payload, 3, 1)
             .unwrap();
         let emitter = dispatcher.emitter_arc().expect("test emitter");
         publisher

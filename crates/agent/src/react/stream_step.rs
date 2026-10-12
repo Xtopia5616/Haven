@@ -1409,21 +1409,21 @@ mod tests {
         let store = Arc::new(crate::partial::PartialStore::new(
             haven_memory::SessionStore::new(db.clone()),
         ));
-        let generation = store.generation(&session.id);
+        let generation = store.generation(&session.session_id);
         let writer = CheckpointWriter::new(store, Arc::new(ReActMetrics::new()));
         writer.submit(CheckpointRequest {
-            session_id: session.id.clone(),
+            session_id: session.session_id.clone(),
             generation,
             content: "first".to_string(),
         });
         writer.submit(CheckpointRequest {
-            session_id: session.id.clone(),
+            session_id: session.session_id.clone(),
             generation,
             content: "latest".to_string(),
         });
         writer.finish().await.unwrap();
 
-        let session_id = session.id;
+        let session_id = session.session_id;
         let partial = db
             .run_blocking_for_test(move |db| Ok(db.get_partial_message(&session_id)))
             .await
@@ -1656,7 +1656,7 @@ mod tests {
         );
         let emitter: Arc<dyn AgentEventEmitter> = Arc::new(NoopEmitter);
         let ctx = StepCtx {
-            session_id: session.id,
+            session_id: session.session_id,
             step_number: 2,
             run_id: 1,
             emitter,
@@ -1760,7 +1760,7 @@ mod tests {
             ContextLimitsConfig::default(),
         );
         let ctx = StepCtx {
-            session_id: session.id.clone(),
+            session_id: session.session_id.clone(),
             step_number: 2,
             run_id: 1,
             emitter: Arc::new(NoopEmitter),
@@ -1783,14 +1783,18 @@ mod tests {
         ));
         let marker = engine
             .event_store
-            .latest_recovery_persistence(&session.id)
+            .latest_recovery_persistence(&session.session_id)
             .unwrap()
             .expect("failed recovery marker must be durable");
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&marker.payload).unwrap()["phase"],
             "failed"
         );
-        assert!(db.list_session_messages(&session.id).unwrap().is_empty());
+        assert!(
+            db.list_session_messages(&session.session_id)
+                .unwrap()
+                .is_empty()
+        );
         let _ = std::fs::remove_file(db_path);
     }
 }

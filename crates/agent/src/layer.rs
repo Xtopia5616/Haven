@@ -1054,12 +1054,12 @@ impl AgentLayer {
         let first_msg = match self
             .executor
             .session_store()
-            .persist_ingress_user_seed(&record.id, input, attachments, voice)
+            .persist_ingress_user_seed(&record.session_id, input, attachments, voice)
             .await
         {
             Ok(msg) => msg,
             Err(e) => {
-                let session_id = record.id.clone();
+                let session_id = record.session_id.clone();
                 let _ = self
                     .executor
                     .session_store()
@@ -1069,28 +1069,28 @@ impl AgentLayer {
             }
         };
         self.executor
-            .ensure_session_loaded_locked(&record.id)
+            .ensure_session_loaded_locked(&record.session_id)
             .await?;
         // User-originated sessions get a title as soon as their first input is
         // durable. Peer kickoff sessions use their explicit title/fallback
         // path below and must not spend a small-model call here.
         if dispatch && record.origin == haven_memory::SessionOrigin::User {
-            self.spawn_title_generation(&record.id);
+            self.spawn_title_generation(&record.session_id);
         }
         if dispatch {
             // Wake the dispatcher now that the message is persisted.
             self.executor
-                .update_session_status(&record.id, SessionStatus::Pending)
+                .update_session_status(&record.session_id, SessionStatus::Pending)
                 .await?;
         }
         let session = self
             .executor
-            .get_session(&record.id)
+            .get_session(&record.session_id)
             .await
-            .ok_or_else(|| anyhow::anyhow!("session '{}' not registered", record.id))?;
+            .ok_or_else(|| anyhow::anyhow!("session '{}' not registered", record.session_id))?;
         Ok(CreatedSession {
             session,
-            first_user_message_id: first_msg.id,
+            first_user_message_id: first_msg.message_id,
         })
     }
 
@@ -1191,7 +1191,7 @@ impl AgentLayer {
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
         let status = record.status;
         Ok(haven_messaging::AgentControlResult {
-            session_id: record.id,
+            session_id: record.session_id,
             status: status.as_str().into(),
             terminal: status.is_terminal(),
             timed_out: false,
@@ -1625,7 +1625,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|session| session.id)
+            .map(|session| session.session_id)
             .collect();
         let mut expected_child_ids = session_ids.clone();
         durable_child_ids.sort();
@@ -1825,17 +1825,25 @@ mod tests {
         .agent;
 
         let stored = db.create_session("stored session").unwrap();
-        db.update_session_title(&stored.id, "stored title").unwrap();
-        db.update_session_status(&stored.id, SessionStatus::Completed)
+        db.update_session_title(&stored.session_id, "stored title")
+            .unwrap();
+        db.update_session_status(&stored.session_id, SessionStatus::Completed)
             .unwrap();
 
-        assert_eq!(executor.get_session_status(&stored.id).await, None);
+        assert_eq!(executor.get_session_status(&stored.session_id).await, None);
         assert_eq!(
-            tool_run_result_delivery::tool_run_completion_session_status(&agent, &stored.id).await,
+            tool_run_result_delivery::tool_run_completion_session_status(
+                &agent,
+                &stored.session_id
+            )
+            .await,
             Some(SessionStatus::Completed)
         );
-        let peer = agent.inspect_peer_session(&stored.id).await.unwrap();
-        assert_eq!(peer.session_id, stored.id);
+        let peer = agent
+            .inspect_peer_session(&stored.session_id)
+            .await
+            .unwrap();
+        assert_eq!(peer.session_id, stored.session_id);
         assert_eq!(peer.status, SessionStatus::Completed.as_str());
         assert!(peer.terminal);
         assert!(!peer.timed_out);

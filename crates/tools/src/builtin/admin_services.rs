@@ -660,7 +660,7 @@ impl AdminServices {
         let rows: Vec<SessionSummaryOutput> = sessions
             .into_iter()
             .map(|session| SessionSummaryOutput {
-                session_id: session.id,
+                session_id: session.session_id,
                 status: session.status,
                 title: session.title,
                 input_chars: session.input_text.chars().count(),
@@ -682,7 +682,7 @@ impl AdminServices {
             .into_iter()
             .filter(|session| session.status == haven_common::lifecycle::SessionStatus::Error)
             .map(|session| SessionErrorOutput {
-                session_id: session.id,
+                session_id: session.session_id,
                 title: session.title,
                 input_chars: session.input_text.chars().count(),
                 created_at: session.created_at,

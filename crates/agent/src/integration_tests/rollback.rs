@@ -169,7 +169,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
         .iter()
         .find(|m| m.content == "hello")
         .unwrap()
-        .id
+        .message_id
         .clone();
     let thought_ts = msgs
         .iter()
@@ -303,7 +303,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         .iter()
         .find(|m| m.content == "second")
         .unwrap()
-        .id
+        .message_id
         .clone();
     // Snapshot with a branch point ONLY at step 1; the target step 2 has
     // no branch point (realistic: step 2's save_branch_point never ran).
@@ -469,7 +469,7 @@ async fn rollback_orphan_after_processed_turn_preserves_earlier_history() {
         .iter()
         .find(|m| m.content == "interrupt")
         .unwrap()
-        .id
+        .message_id
         .clone();
     agent
         .rollback_session(&session.session_id, 1, true, Some(&interrupt_id))
@@ -516,7 +516,7 @@ async fn rollback_processed_user_message_with_later_orphan_wipes_target_timeline
         .iter()
         .find(|m| m.content == "hello")
         .unwrap()
-        .id
+        .message_id
         .clone();
     agent
         .rollback_session(&session.session_id, 1, true, Some(&hello_id))
@@ -589,7 +589,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         .iter()
         .find(|m| m.content == "hello")
         .unwrap()
-        .id
+        .message_id
         .clone();
     let thinking_ts = msgs
         .iter()
@@ -709,13 +709,13 @@ async fn rollback_pause_matches_compacted_message_id() {
         .iter()
         .find(|m| m.content == "use French")
         .unwrap()
-        .id
+        .message_id
         .clone();
     let initial_id = msgs
         .iter()
         .find(|m| m.content == "do it")
         .unwrap()
-        .id
+        .message_id
         .clone();
     let thinking_ts = msgs
         .iter()
@@ -1110,7 +1110,12 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
     );
 
     agent
-        .rollback_session(&session.session_id, target_step, true, Some(&user.id))
+        .rollback_session(
+            &session.session_id,
+            target_step,
+            true,
+            Some(&user.message_id),
+        )
         .await
         .unwrap();
     assert_eq!(

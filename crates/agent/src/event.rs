@@ -1735,9 +1735,17 @@ mod tests {
         let store = SessionStore::new(db);
         let bus_dyn: Arc<dyn AgentEventEmitter> = bus;
         let step_id = haven_common::types::new_id("step");
-        EventDispatcher::emit_thought_from(&bus_dyn, &session.id, "hello", 1, 1, &step_id, &store)
-            .await
-            .unwrap();
+        EventDispatcher::emit_thought_from(
+            &bus_dyn,
+            &session.session_id,
+            "hello",
+            1,
+            1,
+            &step_id,
+            &store,
+        )
+        .await
+        .unwrap();
         assert_eq!(collector.events.lock().unwrap().len(), 1);
         assert!(matches!(
             collector.events.lock().unwrap()[0],

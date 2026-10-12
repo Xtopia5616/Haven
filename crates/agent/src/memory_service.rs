@@ -259,7 +259,7 @@ impl MemoryService {
 
             let mut all_facts = self.recall_store.visible_user_facts(40).await?;
             let mut seen_ids: HashSet<String> =
-                all_facts.iter().map(|fact| fact.id.clone()).collect();
+                all_facts.iter().map(|fact| fact.fact_id.clone()).collect();
             let candidate_ids: Vec<String> = keyword_fact_hits
                 .iter()
                 .chain(vector_fact_hits.iter())
@@ -272,7 +272,7 @@ impl MemoryService {
                     .visible_facts_by_ids(candidate_ids)
                     .await?
                 {
-                    if seen_ids.insert(fact.id.clone()) {
+                    if seen_ids.insert(fact.fact_id.clone()) {
                         all_facts.push(fact);
                     }
                 }
@@ -468,19 +468,19 @@ mod tests {
             .unwrap();
         db.insert_fact("user", "api_key", "sk-hidden", "user", 1.0, &[])
             .unwrap();
-        db.add_episode(&current.id, "The user researches Rust testing.")
+        db.add_episode(&current.session_id, "The user researches Rust testing.")
             .unwrap();
-        db.add_episode(&earlier.id, "The user researches Rust testing.")
+        db.add_episode(&earlier.session_id, "The user researches Rust testing.")
             .unwrap();
         let service = MemoryService::new(db.clone(), None, 1);
 
         assert!(
             !service
-                .has_cached_prompt_candidates(" Rust\n testing ", Some(&current.id))
+                .has_cached_prompt_candidates(" Rust\n testing ", Some(&current.session_id))
                 .await
         );
         let candidates = service
-            .prompt_candidates(" Rust\n testing ", Some(&current.id))
+            .prompt_candidates(" Rust\n testing ", Some(&current.session_id))
             .await
             .unwrap();
 
@@ -488,7 +488,7 @@ mod tests {
         assert!(candidates.vector_fact_hits.is_empty());
         assert!(candidates.vector_episode_hits.is_empty());
         assert_eq!(candidates.all_facts.len(), 1);
-        assert_eq!(candidates.all_facts[0].id, safe_fact.id);
+        assert_eq!(candidates.all_facts[0].fact_id, safe_fact.fact_id);
         assert_eq!(candidates.keyword_episode_hits.len(), 1);
         assert_eq!(
             candidates.keyword_episode_hits[0].text,
@@ -496,7 +496,7 @@ mod tests {
         );
         assert!(
             service
-                .has_cached_prompt_candidates("Rust testing", Some(&current.id))
+                .has_cached_prompt_candidates("Rust testing", Some(&current.session_id))
                 .await
         );
 
@@ -504,7 +504,7 @@ mod tests {
             .unwrap();
         assert!(
             !service
-                .has_cached_prompt_candidates("Rust testing", Some(&current.id))
+                .has_cached_prompt_candidates("Rust testing", Some(&current.session_id))
                 .await
         );
     }
@@ -526,7 +526,7 @@ mod tests {
 
         assert_eq!(recall.mode, haven_memory::MemoryRecallMode::Keyword);
         assert_eq!(recall.hits.len(), 1);
-        assert_eq!(recall.hits[0].entity_id, safe.id);
+        assert_eq!(recall.hits[0].entity_id, safe.fact_id);
         assert!(recall.hits[0].model.is_empty());
     }
 

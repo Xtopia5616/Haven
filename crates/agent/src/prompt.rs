@@ -667,7 +667,7 @@ impl SystemPromptBuilder {
                 // Semantic hits outweigh surface keyword matches: the
                 // session may phrase things differently than the stored
                 // fact, but the meaning still matches.
-                if vector_fact_ids.contains(&fact.id) {
+                if vector_fact_ids.contains(&fact.fact_id) {
                     score += 35.0;
                 }
                 scored.push((score, fact));
@@ -681,7 +681,7 @@ impl SystemPromptBuilder {
                             .unwrap_or(&b.1.created_at)
                             .cmp(a.1.last_seen_at.as_deref().unwrap_or(&a.1.created_at))
                     })
-                    .then_with(|| a.1.id.cmp(&b.1.id))
+                    .then_with(|| a.1.fact_id.cmp(&b.1.fact_id))
             });
 
             // Select by score, then re-order stably so mid-run M2 patches do
@@ -705,7 +705,7 @@ impl SystemPromptBuilder {
                     .then_with(|| a.subject.cmp(&b.subject))
                     .then_with(|| a.predicate.cmp(&b.predicate))
                     .then_with(|| a.object.cmp(&b.object))
-                    .then_with(|| a.id.cmp(&b.id))
+                    .then_with(|| a.fact_id.cmp(&b.fact_id))
             });
 
             let mut groups: BTreeMap<&str, Vec<String>> = BTreeMap::new();
@@ -1342,8 +1342,11 @@ mod tests {
         .unwrap();
         // A past memory_item (episode_summary) mentioning the same topic.
         let session = db.create_session("past").unwrap();
-        db.add_episode(&session.id, "I asked about the dark theme design last week")
-            .unwrap();
+        db.add_episode(
+            &session.session_id,
+            "I asked about the dark theme design last week",
+        )
+        .unwrap();
 
         let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
@@ -1372,12 +1375,15 @@ mod tests {
         let current = db.create_session("current").unwrap();
         let past = db.create_session("past").unwrap();
         db.add_episode(
-            &current.id,
+            &current.session_id,
             "dark theme preference in the CURRENT session only",
         )
         .unwrap();
-        db.add_episode(&past.id, "dark theme preference from a PAST session")
-            .unwrap();
+        db.add_episode(
+            &past.session_id,
+            "dark theme preference from a PAST session",
+        )
+        .unwrap();
 
         let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
@@ -1385,7 +1391,7 @@ mod tests {
             Arc::new(MemoryService::new(db, None, 64)),
         );
         let prompt = builder
-            .build_for_session("set up dark theme", &[], Some(&current.id))
+            .build_for_session("set up dark theme", &[], Some(&current.session_id))
             .await;
 
         assert!(prompt.contains("PAST session"));
@@ -1741,7 +1747,7 @@ mod tests {
     #[test]
     fn display_confidence_pct_uses_raw_five_percent_buckets() {
         let mut fact = haven_memory::Fact {
-            id: "fact-1".into(),
+            fact_id: "fact-1".into(),
             subject: "user".into(),
             predicate: "likes".into(),
             object: "rust".into(),
@@ -1812,7 +1818,7 @@ mod tests {
             CanonicalMessage::user_text("user turn stays"),
         ];
         builder
-            .rebuild_canonical_system(&session.id, "new-desc", &mut canonical)
+            .rebuild_canonical_system(&session.session_id, "new-desc", &mut canonical)
             .await;
 
         let sys = match &canonical[0].content[0] {
@@ -1849,7 +1855,7 @@ mod tests {
         )
         .unwrap();
         let past = db.create_session("past").unwrap();
-        db.add_episode(&past.id, "discussed dark theme last week")
+        db.add_episode(&past.session_id, "discussed dark theme last week")
             .unwrap();
         let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(

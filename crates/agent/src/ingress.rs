@@ -123,7 +123,7 @@ impl AgentLayer {
                         session_id,
                         transcript,
                         attachments,
-                        persisted_msg.as_ref().map(|m| m.id.clone()),
+                        persisted_msg.as_ref().map(|m| m.message_id.clone()),
                     )
                     .await
                 {
@@ -145,7 +145,7 @@ impl AgentLayer {
                 // disposition is frozen in the durable pending marker before
                 // this queue operation, so recovery preserves the route if
                 // gates change before UserInject commits.
-                let message_id = persisted_msg.as_ref().map(|m| m.id.clone());
+                let message_id = persisted_msg.as_ref().map(|m| m.message_id.clone());
                 let was_in_memory = if is_answer {
                     self.executor
                         .add_answer_with_attachments(
@@ -210,7 +210,7 @@ impl AgentLayer {
                         // frontend is told to drop its copy below).
                         if let Some(msg) = persisted_msg.take() {
                             let tid = session_id.clone();
-                            let message_id = msg.id.clone();
+                            let message_id = msg.message_id.clone();
                             if let Err(e) = self
                                 .executor
                                 .session_store()
@@ -302,7 +302,7 @@ impl AgentLayer {
             }
             Ok(ProcessResult::supplemented(
                 session_id.clone(),
-                persisted_msg.as_ref().map(|m| m.id.clone()),
+                persisted_msg.as_ref().map(|m| m.message_id.clone()),
             ))
         } else {
             let created_session = self

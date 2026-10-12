@@ -95,7 +95,7 @@ pub struct SessionRecordDto {
 impl From<Session> for SessionRecordDto {
     fn from(session: Session) -> Self {
         Self {
-            session_id: session.id,
+            session_id: session.session_id,
             input_text: session.input_text,
             title: session.title,
             status: session.status,
@@ -158,7 +158,7 @@ async fn session_lineage_from_store(
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(SessionLineageResponse {
-        session_id: session.id,
+        session_id: session.session_id,
         parent_session_id,
         parent: parent.map(SessionRecordDto::from),
         children,
@@ -883,7 +883,7 @@ pub struct SessionResumeMessageDto {
 impl From<haven_memory::Message> for SessionResumeMessageDto {
     fn from(message: haven_memory::Message) -> Self {
         Self {
-            message_id: message.id,
+            message_id: message.message_id,
             session_id: message.session_id,
             role: message.role,
             content: message.content,
@@ -919,14 +919,14 @@ async fn resume_response_for_session(
     session: Session,
 ) -> Result<SessionResumeResponse, String> {
     let projection = session_store
-        .session_resume_projection(&session.id)
+        .session_resume_projection(&session.session_id)
         .await
         .map_err(|e| log_err("resume_response_for_session", e))?;
     // Agent owns interaction replay. Transcript ask results recover a pending
     // ask if shutdown happened after its question committed but before the
     // separate interaction_requested event did.
     let active_interactions =
-        haven_agent::replay_session_interactions(&session.id, &projection.active_events)
+        haven_agent::replay_session_interactions(&session.session_id, &projection.active_events)
             .map_err(|error| log_err("resume_response_for_session", error))?;
     let interactions = active_interactions
         .iter()
@@ -935,7 +935,7 @@ async fn resume_response_for_session(
             crate::bootstrap::project_interaction(
                 request,
                 haven_agent::InteractionOwner::Session {
-                    session_id: session.id.clone(),
+                    session_id: session.session_id.clone(),
                 },
             )
         })
@@ -1140,7 +1140,7 @@ mod tests {
     #[test]
     fn session_resume_message_wire_identity_uses_message_id() {
         let message = haven_memory::Message {
-            id: "msg-00000000000000000000000000000001".into(),
+            message_id: "msg-00000000000000000000000000000001".into(),
             session_id: "ses-00000000000000000000000000000002".into(),
             role: haven_common::types::CanonicalRole::User,
             content: "hello".into(),
@@ -1163,9 +1163,10 @@ mod tests {
     async fn resume_response_keeps_existing_ipc_field_names() {
         let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
         let session = db.create_session("resume wire shape").unwrap();
-        let response = resume_session_from_store(haven_memory::SessionStore::new(db), &session.id)
-            .await
-            .unwrap();
+        let response =
+            resume_session_from_store(haven_memory::SessionStore::new(db), &session.session_id)
+                .await
+                .unwrap();
 
         let value = serde_json::to_value(response).unwrap();
         let fields = value.as_object().unwrap();
@@ -1192,7 +1193,7 @@ mod tests {
             .create_session_with_origin(
                 "child",
                 SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.id.clone(),
+                    parent_session_id: parent.session_id.clone(),
                 },
             )
             .await
@@ -1201,13 +1202,13 @@ mod tests {
             .create_session_with_origin(
                 "sibling",
                 SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.id.clone(),
+                    parent_session_id: parent.session_id.clone(),
                 },
             )
             .await
             .unwrap();
 
-        let parent_lineage = session_lineage_from_store(&store, &parent.id)
+        let parent_lineage = session_lineage_from_store(&store, &parent.session_id)
             .await
             .unwrap();
         assert!(parent_lineage.parent.is_none());
@@ -1217,7 +1218,7 @@ mod tests {
                 .iter()
                 .map(|child| child.session.session_id.as_str())
                 .collect::<std::collections::HashSet<_>>(),
-            [sibling.id.as_str(), child.id.as_str()]
+            [sibling.session_id.as_str(), child.session_id.as_str()]
                 .into_iter()
                 .collect::<std::collections::HashSet<_>>()
         );
@@ -1227,22 +1228,29 @@ mod tests {
                 .iter()
                 .all(|child| { child.parent_session_id == parent_lineage.session_id })
         );
-        assert_eq!(parent_lineage.session_id, parent.id);
+        assert_eq!(parent_lineage.session_id, parent.session_id);
         assert_eq!(parent_lineage.parent_session_id, None);
         let parent_wire = serde_json::to_value(&parent_lineage).unwrap();
         assert!(parent_wire["children"][0].get("origin").is_none());
 
-        let child_lineage = session_lineage_from_store(&store, &child.id).await.unwrap();
+        let child_lineage = session_lineage_from_store(&store, &child.session_id)
+            .await
+            .unwrap();
         let child_wire = serde_json::to_value(&child_lineage).unwrap();
         assert!(child_wire["parent"].get("origin").is_none());
-        assert_eq!(child_lineage.session_id, child.id);
-        assert_eq!(child_lineage.parent_session_id, Some(parent.id.clone()));
-        assert_eq!(child_lineage.parent.unwrap().session_id, parent.id);
+        assert_eq!(child_lineage.session_id, child.session_id);
+        assert_eq!(
+            child_lineage.parent_session_id,
+            Some(parent.session_id.clone())
+        );
+        assert_eq!(child_lineage.parent.unwrap().session_id, parent.session_id);
         assert!(child_lineage.children.is_empty());
 
-        db.delete_session(&parent.id).unwrap();
-        let orphan_lineage = session_lineage_from_store(&store, &child.id).await.unwrap();
-        assert_eq!(orphan_lineage.parent_session_id, Some(parent.id));
+        db.delete_session(&parent.session_id).unwrap();
+        let orphan_lineage = session_lineage_from_store(&store, &child.session_id)
+            .await
+            .unwrap();
+        assert_eq!(orphan_lineage.parent_session_id, Some(parent.session_id));
         assert!(orphan_lineage.parent.is_none());
         assert!(orphan_lineage.children.is_empty());
     }
@@ -1270,7 +1278,7 @@ mod tests {
         });
         session_store
             .append(
-                &session.id,
+                &session.session_id,
                 haven_memory::TRANSCRIPT_EVENT_TYPE,
                 &payload.to_string(),
                 Some(1),
@@ -1330,19 +1338,19 @@ mod tests {
             .unwrap()
             .expect("a persisted session must be returned");
 
-        assert_eq!(response.session.session_id, session.id);
+        assert_eq!(response.session.session_id, session.session_id);
     }
 
     #[tokio::test]
     async fn end_session_title_prefers_executor_title_or_input() {
         let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
         let session = db.create_session("persisted input").unwrap();
-        db.update_session_title(&session.id, "persisted title")
+        db.update_session_title(&session.session_id, "persisted title")
             .unwrap();
         let session_store = haven_memory::SessionStore::new(db);
 
         let generated_title = end_session_display_title(
-            &session.id,
+            &session.session_id,
             Some(ExecutorSessionDisplay {
                 title: Some("executor title".into()),
                 input: "executor input".into(),
@@ -1353,7 +1361,7 @@ mod tests {
         assert_eq!(generated_title, "executor title");
 
         let executor_input = end_session_display_title(
-            &session.id,
+            &session.session_id,
             Some(ExecutorSessionDisplay {
                 title: None,
                 input: "executor input".into(),
@@ -1368,17 +1376,17 @@ mod tests {
     async fn end_session_title_uses_persisted_display_title_when_executor_has_no_session() {
         let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
         let titled_session = db.create_session("persisted input").unwrap();
-        db.update_session_title(&titled_session.id, "persisted title")
+        db.update_session_title(&titled_session.session_id, "persisted title")
             .unwrap();
         let untitled_session = db.create_session("input fallback").unwrap();
         let session_store = haven_memory::SessionStore::new(db);
 
         assert_eq!(
-            end_session_display_title(&titled_session.id, None, &session_store).await,
+            end_session_display_title(&titled_session.session_id, None, &session_store).await,
             "persisted title"
         );
         assert_eq!(
-            end_session_display_title(&untitled_session.id, None, &session_store).await,
+            end_session_display_title(&untitled_session.session_id, None, &session_store).await,
             "input fallback"
         );
     }
@@ -1391,7 +1399,7 @@ mod tests {
         let session_store = haven_memory::SessionStore::new(db);
 
         assert_eq!(
-            end_session_display_title(&session.id, None, &session_store).await,
+            end_session_display_title(&session.session_id, None, &session_store).await,
             ""
         );
     }

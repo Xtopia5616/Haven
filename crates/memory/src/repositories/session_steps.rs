@@ -531,7 +531,7 @@ mod tests {
     }
 
     fn seed_session(db: &Database) -> String {
-        db.create_session("test").unwrap().id
+        db.create_session("test").unwrap().session_id
     }
 
     #[test]

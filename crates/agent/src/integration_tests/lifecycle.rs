@@ -213,17 +213,17 @@ fn agent_build_constructor_works() {
     // Verify construction succeeded; no per-session indirection remains.
     assert!(agent.db.list_facts_by_subject("user").unwrap().is_empty());
     let session = agent.db.create_session("input").unwrap();
-    assert!(!session.id.is_empty());
+    assert!(!session.session_id.is_empty());
 }
 
 #[test]
 fn agent_constructs_without_session_machinery() {
     let (agent, _) = make_test_agent();
     let session = agent.db.create_session("input").unwrap();
-    assert!(!session.id.is_empty());
+    assert!(!session.session_id.is_empty());
     // Two sessions never share message keys ??each owns its own stream.
     let other = agent.db.create_session("input2").unwrap();
-    assert_ne!(session.id, other.id);
+    assert_ne!(session.session_id, other.session_id);
 }
 
 #[test]
@@ -364,7 +364,7 @@ async fn persist_message_adds_to_db() {
     let session = agent.db.create_session("input").unwrap();
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "test message",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -376,7 +376,9 @@ async fn persist_message_adds_to_db() {
     // Read back via db
     let agent_ref = agent.clone();
     let db = agent_ref.db.clone();
-    let msgs = db.list_recent_session_messages(&session.id, 50).unwrap();
+    let msgs = db
+        .list_recent_session_messages(&session.session_id, 50)
+        .unwrap();
     // Messages may or may not be immediately flushed depending on cache
     // ??verify at minimum the message is retrievable
     let found = msgs.iter().find(|m| {
@@ -413,15 +415,15 @@ async fn terminal_tool_run_result_projection_is_idempotent() {
         .await
         .unwrap();
 
-    assert_eq!(first.id, message_id);
-    assert_eq!(second.id, message_id);
+    assert_eq!(first.message_id, message_id);
+    assert_eq!(second.message_id, message_id);
     assert_eq!(
         agent
             .db
             .list_session_messages(&session.session_id)
             .unwrap()
             .iter()
-            .filter(|message| message.id == message_id)
+            .filter(|message| message.message_id == message_id)
             .count(),
         1,
         "terminal completion redelivery must reuse the existing history row"
@@ -509,7 +511,7 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
             .list_session_messages(&session.session_id)
             .unwrap()
             .iter()
-            .any(|message| message.id == message_id);
+            .any(|message| message.message_id == message_id);
         let pending: i64 = agent
             .db
             .conn()
@@ -625,7 +627,7 @@ async fn persist_message_with_attachments_roundtrips() {
     let att = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "看图",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -636,7 +638,9 @@ async fn persist_message_with_attachments_roundtrips() {
         .unwrap();
     let agent_ref = agent.clone();
     let db = agent_ref.db.clone();
-    let msgs = db.list_recent_session_messages(&session.id, 50).unwrap();
+    let msgs = db
+        .list_recent_session_messages(&session.session_id, 50)
+        .unwrap();
     let found = msgs
         .iter()
         .find(|m| m.role == haven_common::types::CanonicalRole::User && m.content == "看图");
@@ -1055,7 +1059,7 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
         .await
         .unwrap();
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].message.id, user_msg.id);
+    assert_eq!(pending[0].message.message_id, user_msg.message_id);
 }
 
 #[tokio::test]

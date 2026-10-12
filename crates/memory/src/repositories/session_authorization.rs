@@ -238,17 +238,17 @@ mod tests {
             PermissionTarget::Group,
             PermissionEffect::Allow,
         );
-        db.save_session_authorization_grant(&session.id, &first)
+        db.save_session_authorization_grant(&session.session_id, &first)
             .unwrap();
         let replacement = grant(
             "system.power",
             PermissionTarget::Group,
             PermissionEffect::Deny,
         );
-        db.save_session_authorization_grant(&session.id, &replacement)
+        db.save_session_authorization_grant(&session.session_id, &replacement)
             .unwrap();
         db.save_session_authorization_grant(
-            &session.id,
+            &session.session_id,
             &grant(
                 "files.read",
                 PermissionTarget::Operation,
@@ -258,7 +258,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            db.session_authorization_grants(&session.id).unwrap(),
+            db.session_authorization_grants(&session.session_id)
+                .unwrap(),
             vec![
                 grant(
                     "files.read",
@@ -316,41 +317,46 @@ mod tests {
             PermissionTarget::Group,
             PermissionEffect::Deny,
         );
-        db.save_session_authorization_grant(&old.id, &files)
+        db.save_session_authorization_grant(&old.session_id, &files)
             .unwrap();
-        db.save_session_authorization_grant(&retained.id, &files)
+        db.save_session_authorization_grant(&retained.session_id, &files)
             .unwrap();
-        db.save_session_authorization_grant(&retained.id, &system)
+        db.save_session_authorization_grant(&retained.session_id, &system)
             .unwrap();
 
-        db.revoke_session_authorization_grant(&retained.id, &files.capability)
+        db.revoke_session_authorization_grant(&retained.session_id, &files.capability)
             .unwrap();
         assert_eq!(
-            db.session_authorization_grants(&retained.id).unwrap(),
+            db.session_authorization_grants(&retained.session_id)
+                .unwrap(),
             vec![system.clone()]
         );
         assert_eq!(
-            db.session_authorization_grants(&old.id).unwrap(),
+            db.session_authorization_grants(&old.session_id).unwrap(),
             vec![files.clone()]
         );
 
-        db.delete_session(&retained.id).unwrap();
+        db.delete_session(&retained.session_id).unwrap();
         assert!(
-            db.session_authorization_grants(&retained.id)
+            db.session_authorization_grants(&retained.session_id)
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(db.delete_old_sessions(0).unwrap(), 1);
-        assert!(db.session_authorization_grants(&old.id).unwrap().is_empty());
+        assert!(
+            db.session_authorization_grants(&old.session_id)
+                .unwrap()
+                .is_empty()
+        );
 
         let reset = db.create_session("reset authorization session").unwrap();
-        db.save_session_authorization_grant(&reset.id, &files)
+        db.save_session_authorization_grant(&reset.session_id, &files)
             .unwrap();
-        db.save_session_authorization_grant(&reset.id, &system)
+        db.save_session_authorization_grant(&reset.session_id, &system)
             .unwrap();
         assert_eq!(db.clear_session_authorization_grants().unwrap(), 2);
         assert!(
-            db.session_authorization_grants(&reset.id)
+            db.session_authorization_grants(&reset.session_id)
                 .unwrap()
                 .is_empty()
         );
@@ -361,7 +367,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let session = db.create_session("corrupt authorization owner").unwrap();
         db.save_session_authorization_grant(
-            &session.id,
+            &session.session_id,
             &grant(
                 "files.read",
                 PermissionTarget::Operation,
@@ -374,12 +380,12 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
         conn.execute(
             "UPDATE sessions SET id = ?1 WHERE id = ?2",
-            rusqlite::params!["ses-malformed", session.id],
+            rusqlite::params!["ses-malformed", session.session_id],
         )
         .unwrap();
         conn.execute(
             "UPDATE session_authorization_grants SET session_id = ?1 WHERE session_id = ?2",
-            rusqlite::params!["ses-malformed", session.id],
+            rusqlite::params!["ses-malformed", session.session_id],
         )
         .unwrap();
         drop(conn);

@@ -2204,8 +2204,12 @@ async fn continue_session_resumes_errored_session() {
     let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].content, "hello");
-    assert_eq!(msgs[1].id, completed.id);
-    assert!(!msgs.iter().any(|message| message.id == partial.id));
+    assert_eq!(msgs[1].message_id, completed.message_id);
+    assert!(
+        !msgs
+            .iter()
+            .any(|message| message.message_id == partial.message_id)
+    );
     let steps = agent.db.list_session_steps(&session.session_id).unwrap();
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0].step_id, kept_step.step_id);
@@ -2384,9 +2388,16 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
         .list_session_messages(&session.session_id)
         .unwrap()
         .into_iter()
-        .map(|m| m.id)
+        .map(|m| m.message_id)
         .collect();
-    assert_eq!(ids, vec![opening.id, completed.id, visible_partial.id]);
+    assert_eq!(
+        ids,
+        vec![
+            opening.message_id,
+            completed.message_id,
+            visible_partial.message_id
+        ]
+    );
 }
 
 #[tokio::test]

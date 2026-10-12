@@ -257,7 +257,7 @@ impl SessionInfo {
     /// (e.g. `load_pending_sessions`) can mutate it after construction.
     pub fn from_db_record(record: &DbSession) -> Self {
         Self {
-            session_id: record.id.clone(),
+            session_id: record.session_id.clone(),
             input: record.input_text.clone(),
             summary: record.input_text.clone(),
             title: record.title.clone(),
@@ -1060,7 +1060,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(persisted.id, session.session_id);
+        assert_eq!(persisted.session_id, session.session_id);
         assert_eq!(persisted.input_text, "typed constructor");
     }
 
@@ -1088,10 +1088,13 @@ mod tests {
             Arc::new(ToolsFacade::new()),
             1,
         ));
-        first.ensure_session_loaded(&record.id).await.unwrap();
+        first
+            .ensure_session_loaded(&record.session_id)
+            .await
+            .unwrap();
         first
             .grant_session_permission(
-                &record.id,
+                &record.session_id,
                 CapabilityScope::try_new("files.write").unwrap(),
                 PermissionTarget::Operation,
                 PermissionEffect::Allow,
@@ -1101,7 +1104,7 @@ mod tests {
         assert!(matches!(
             first
                 .authorization
-                .authorize(&high_risk_session_request(&record.id))
+                .authorize(&high_risk_session_request(&record.session_id))
                 .await,
             AuthorizationDecision::AutoApproved
         ));
@@ -1127,7 +1130,7 @@ mod tests {
         assert!(matches!(
             first
                 .authorization
-                .authorize(&high_risk_session_request(&record.id))
+                .authorize(&high_risk_session_request(&record.session_id))
                 .await,
             AuthorizationDecision::AutoApproved
         ));
@@ -1143,11 +1146,14 @@ mod tests {
             Arc::new(ToolsFacade::new()),
             1,
         ));
-        restarted.ensure_session_loaded(&record.id).await.unwrap();
+        restarted
+            .ensure_session_loaded(&record.session_id)
+            .await
+            .unwrap();
         assert!(matches!(
             restarted
                 .authorization
-                .authorize(&high_risk_session_request(&record.id))
+                .authorize(&high_risk_session_request(&record.session_id))
                 .await,
             AuthorizationDecision::AutoApproved
         ));
@@ -1186,9 +1192,11 @@ mod tests {
             Arc::new(ToolsFacade::new()),
             1,
         ));
-        exec.ensure_session_loaded(&record.id).await.unwrap();
+        exec.ensure_session_loaded(&record.session_id)
+            .await
+            .unwrap();
         exec.grant_session_permission(
-            &record.id,
+            &record.session_id,
             CapabilityScope::try_new("files.write").unwrap(),
             PermissionTarget::Operation,
             PermissionEffect::Allow,
@@ -1199,19 +1207,21 @@ mod tests {
         // Error keeps an idle actor for Continue, while finish_ended_session
         // clears its process-local grant map. ensure_session_loaded must reload
         // the durable decision even though it does not need to respawn actor.
-        exec.update_session_status(&record.id, SessionStatus::Error)
+        exec.update_session_status(&record.session_id, SessionStatus::Error)
             .await
             .unwrap();
         assert!(matches!(
             exec.authorization
-                .authorize(&high_risk_session_request(&record.id))
+                .authorize(&high_risk_session_request(&record.session_id))
                 .await,
             AuthorizationDecision::RequiresConfirmation { .. }
         ));
-        exec.ensure_session_loaded(&record.id).await.unwrap();
+        exec.ensure_session_loaded(&record.session_id)
+            .await
+            .unwrap();
         assert!(matches!(
             exec.authorization
-                .authorize(&high_risk_session_request(&record.id))
+                .authorize(&high_risk_session_request(&record.session_id))
                 .await,
             AuthorizationDecision::AutoApproved
         ));
@@ -2038,7 +2048,7 @@ mod tests {
             "Unloaded clear",
             "must be cancelled",
             "tool",
-            Some(&session.id),
+            Some(&session.session_id),
             Some("notify"),
             None,
             None,
@@ -2056,10 +2066,10 @@ mod tests {
 
         assert_eq!(
             exec.delete_all_sessions().await.unwrap(),
-            vec![session.id.clone()]
+            vec![session.session_id.clone()]
         );
 
-        assert!(db.get_session(&session.id).unwrap().is_none());
+        assert!(db.get_session(&session.session_id).unwrap().is_none());
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
             haven_common::lifecycle::ToolRunStatus::Cancelled
@@ -3250,12 +3260,12 @@ mod tests {
             PermissionTarget::Operation,
             PermissionEffect::Allow,
         );
-        db.save_session_authorization_grant(&healthy.id, &grant)
+        db.save_session_authorization_grant(&healthy.session_id, &grant)
             .unwrap();
-        db.save_session_authorization_grant(&broken.id, &grant)
+        db.save_session_authorization_grant(&broken.session_id, &grant)
             .unwrap();
         SessionStore::new(db.clone())
-            .append_domain_event(&broken.id, INTERACTION_REQUESTED_EVENT_TYPE, "{}")
+            .append_domain_event(&broken.session_id, INTERACTION_REQUESTED_EVENT_TYPE, "{}")
             .await
             .unwrap();
 
@@ -3266,27 +3276,31 @@ mod tests {
         ));
 
         assert_eq!(exec.load_pending_sessions().await.unwrap(), 1);
-        assert!(exec.actor_for(&healthy.id).await.is_some());
-        assert!(exec.actor_for(&broken.id).await.is_none());
+        assert!(exec.actor_for(&healthy.session_id).await.is_some());
+        assert!(exec.actor_for(&broken.session_id).await.is_none());
         assert!(matches!(
             exec.authorization
-                .authorize(&high_risk_session_request(&healthy.id))
+                .authorize(&high_risk_session_request(&healthy.session_id))
                 .await,
             AuthorizationDecision::AutoApproved
         ));
         assert!(matches!(
             exec.authorization
-                .authorize(&high_risk_session_request(&broken.id))
+                .authorize(&high_risk_session_request(&broken.session_id))
                 .await,
             AuthorizationDecision::RequiresConfirmation { .. }
         ));
 
         // A failed install is not cached: a later explicit load attempts the
         // durable replay again and still fails closed while the event is bad.
-        assert!(exec.ensure_session_loaded(&broken.id).await.is_err());
-        assert!(exec.actor_for(&broken.id).await.is_none());
+        assert!(
+            exec.ensure_session_loaded(&broken.session_id)
+                .await
+                .is_err()
+        );
+        assert!(exec.actor_for(&broken.session_id).await.is_none());
         assert_eq!(
-            db.session_authorization_grants(&broken.id).unwrap(),
+            db.session_authorization_grants(&broken.session_id).unwrap(),
             vec![grant]
         );
     }
@@ -3593,7 +3607,7 @@ mod tests {
             "Actorless end",
             "must be cancelled",
             "tool",
-            Some(&session.id),
+            Some(&session.session_id),
             Some("notify"),
             None,
             None,
@@ -3610,11 +3624,11 @@ mod tests {
             .await;
 
         assert_eq!(
-            exec.end_session(&session.id).await.unwrap(),
+            exec.end_session(&session.session_id).await.unwrap(),
             SessionStatus::Completed
         );
         assert_eq!(
-            db.get_session(&session.id).unwrap().unwrap().status,
+            db.get_session(&session.session_id).unwrap().unwrap().status,
             SessionStatus::Completed
         );
         assert_eq!(
@@ -3635,7 +3649,7 @@ mod tests {
             "Actorless end retry",
             "must remain retryable",
             "tool",
-            Some(&session.id),
+            Some(&session.session_id),
             Some("notify"),
             None,
             None,
@@ -3661,12 +3675,12 @@ mod tests {
             .unwrap();
 
         let error = exec
-            .end_session(&session.id)
+            .end_session(&session.session_id)
             .await
             .expect_err("durable ToolRun cleanup failure must reject end");
         assert!(format!("{error:#}").contains("injected end cancellation failure"));
         assert_eq!(
-            db.get_session(&session.id).unwrap().unwrap().status,
+            db.get_session(&session.session_id).unwrap().unwrap().status,
             SessionStatus::Paused
         );
         assert_eq!(
@@ -3675,14 +3689,14 @@ mod tests {
         );
         assert!(matches!(
             events.try_recv(),
-            Ok(SessionSupervisorEvent::SessionEndPaused { session_id }) if session_id == session.id
+            Ok(SessionSupervisorEvent::SessionEndPaused { session_id }) if session_id == session.session_id
         ));
 
         db.conn()
             .execute_batch("DROP TRIGGER block_end_retry_cancel")
             .unwrap();
         assert_eq!(
-            exec.end_session(&session.id).await.unwrap(),
+            exec.end_session(&session.session_id).await.unwrap(),
             SessionStatus::Completed
         );
         assert_eq!(
@@ -3828,7 +3842,7 @@ mod tests {
             "Actorless delete",
             "must be cancelled before delete",
             "tool",
-            Some(&session.id),
+            Some(&session.session_id),
             Some("notify"),
             None,
             None,
@@ -3844,9 +3858,9 @@ mod tests {
             .set_store(Some(ToolRunStore::new(db.clone())))
             .await;
 
-        exec.delete_session(&session.id).await.unwrap();
+        exec.delete_session(&session.session_id).await.unwrap();
 
-        assert!(db.get_session(&session.id).unwrap().is_none());
+        assert!(db.get_session(&session.session_id).unwrap().is_none());
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
             haven_common::lifecycle::ToolRunStatus::Cancelled
@@ -3865,7 +3879,7 @@ mod tests {
             "Delete failure",
             "remain attached until cleanup works",
             "tool",
-            Some(&session.id),
+            Some(&session.session_id),
             Some("notify"),
             None,
             None,
@@ -3890,11 +3904,11 @@ mod tests {
             .unwrap();
 
         let error = exec
-            .delete_session(&session.id)
+            .delete_session(&session.session_id)
             .await
             .expect_err("a session must remain if its durable ToolRun cannot be cancelled");
         assert!(format!("{error:#}").contains("injected cancellation failure"));
-        assert!(db.get_session(&session.id).unwrap().is_some());
+        assert!(db.get_session(&session.session_id).unwrap().is_some());
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
             haven_common::lifecycle::ToolRunStatus::Waiting
@@ -3903,8 +3917,8 @@ mod tests {
         db.conn()
             .execute_batch("DROP TRIGGER block_session_tool_run_cancel")
             .unwrap();
-        exec.delete_session(&session.id).await.unwrap();
-        assert!(db.get_session(&session.id).unwrap().is_none());
+        exec.delete_session(&session.session_id).await.unwrap();
+        assert!(db.get_session(&session.session_id).unwrap().is_none());
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
             haven_common::lifecycle::ToolRunStatus::Cancelled

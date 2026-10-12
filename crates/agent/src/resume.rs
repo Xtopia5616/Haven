@@ -180,7 +180,7 @@ impl AgentLayer {
                         session_id,
                         &message.content,
                         &message.attachments,
-                        Some(message.id.clone()),
+                        Some(message.message_id.clone()),
                     )
                     .await
             } else {
@@ -189,7 +189,7 @@ impl AgentLayer {
                         session_id,
                         &message.content,
                         &message.attachments,
-                        Some(message.id.clone()),
+                        Some(message.message_id.clone()),
                     )
                     .await
             };
@@ -198,7 +198,7 @@ impl AgentLayer {
                     restored += 1;
                 }
                 Err(error) => tracing::warn!(
-                    message_id = %message.id,
+                    message_id = %message.message_id,
                     session_id,
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to re-queue pending input"

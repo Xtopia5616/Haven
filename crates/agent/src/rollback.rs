@@ -217,7 +217,7 @@ impl AgentLayer {
                         event,
                         TranscriptRecord::CompactSummary { compacted, .. }
                             if compacted.iter().any(|message| {
-                                message.message_id.as_deref() == Some(target.id.as_str())
+                            message.message_id.as_deref() == Some(target.message_id.as_str())
                             })
                     )
                 })
@@ -229,7 +229,7 @@ impl AgentLayer {
                 &mut replay.events,
                 &mut replay.branch_points,
                 target_step,
-                &target.id,
+                &target.message_id,
             )
         {
             return Err(anyhow::anyhow!(
@@ -247,7 +247,7 @@ impl AgentLayer {
                 message_id: target_msg
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("rollback target message is missing"))?
-                    .id
+                    .message_id
                     .clone(),
             }
         } else {

@@ -186,8 +186,9 @@ mod tests {
             .unwrap();
         db.insert_fact("user", "api_key", "sk-secret", "inferred", 1.0, &[])
             .unwrap();
-        db.add_episode(&session.id, "safe episode").unwrap();
-        db.add_episode(&session.id, "password is hunter2").unwrap();
+        db.add_episode(&session.session_id, "safe episode").unwrap();
+        db.add_episode(&session.session_id, "password is hunter2")
+            .unwrap();
 
         let pending = store.pending_embeddings("model-a".into()).await.unwrap();
 
@@ -286,13 +287,13 @@ mod tests {
                 vec![
                     MemoryEmbeddingVector {
                         entity: MemoryEntityKind::Fact,
-                        entity_id: first.id.clone(),
+                        entity_id: first.fact_id.clone(),
                         text: "user likes Rust".into(),
                         vector: vec![1.0, 0.0],
                     },
                     MemoryEmbeddingVector {
                         entity: MemoryEntityKind::Fact,
-                        entity_id: second.id.clone(),
+                        entity_id: second.fact_id.clone(),
                         text: "user likes Go".into(),
                         vector: Vec::new(),
                     },
@@ -303,15 +304,15 @@ mod tests {
 
         assert_eq!(report.attempted, 2);
         assert_eq!(report.failures.len(), 1);
-        assert_eq!(report.failures[0].entity_id, second.id);
+        assert_eq!(report.failures[0].entity_id, second.fact_id);
         assert!(report.failures[0].error.contains("must not be empty"));
         assert!(
-            db.get_embedding_for_model(entity_kind::FACT, &first.id, Some("model-a"))
+            db.get_embedding_for_model(entity_kind::FACT, &first.fact_id, Some("model-a"))
                 .unwrap()
                 .is_some()
         );
         assert!(
-            db.get_embedding_for_model(entity_kind::FACT, &second.id, Some("model-a"))
+            db.get_embedding_for_model(entity_kind::FACT, &second.fact_id, Some("model-a"))
                 .unwrap()
                 .is_none()
         );

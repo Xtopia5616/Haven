@@ -36,7 +36,7 @@ pub(crate) fn fact_from_row(row: &rusqlite::Row) -> rusqlite::Result<Fact> {
     let provenance_record_id = optional_canonical_id_from_row(row, 11, "msg")?;
     let provenance_snippet: Option<String> = row.get(12)?;
     Ok(Fact {
-        id,
+        fact_id: id,
         subject: row.get(1)?,
         predicate: row.get(2)?,
         object: row.get(3)?,
@@ -433,7 +433,7 @@ impl Database {
         let mut seen: HashSet<String> = HashSet::new();
         let mut out = Vec::with_capacity(limit.min(primary.len() + extra.len()));
         for f in primary.into_iter().chain(extra) {
-            if seen.insert(f.id.clone()) {
+            if seen.insert(f.fact_id.clone()) {
                 out.push(f);
                 if out.len() >= limit {
                     break;
@@ -534,7 +534,7 @@ mod tests {
 
     fn fact(id: &str, last_seen_at: &str) -> Fact {
         Fact {
-            id: id.into(),
+            fact_id: id.into(),
             subject: "user".into(),
             predicate: "likes".into(),
             object: id.into(),
@@ -565,7 +565,7 @@ mod tests {
         sort_facts_effective(&mut facts);
 
         assert_eq!(
-            facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(),
+            facts.iter().map(|f| f.fact_id.as_str()).collect::<Vec<_>>(),
             ["new", "old"]
         );
     }

@@ -158,7 +158,9 @@ mod tests {
     fn add_episode_persists_row() {
         let db = Database::open_in_memory().unwrap();
         let session = db.create_session("t1").unwrap();
-        let id = db.add_episode(&session.id, "a compaction summary").unwrap();
+        let id = db
+            .add_episode(&session.session_id, "a compaction summary")
+            .unwrap();
         assert!(id.starts_with("msg-"));
         let (content, session_id, kind): (String, String, String) = db
             .conn()
@@ -169,7 +171,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(content, "a compaction summary");
-        assert_eq!(session_id, session.id);
+        assert_eq!(session_id, session.session_id);
         assert_eq!(kind, "episode_summary");
     }
 
@@ -178,7 +180,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let session = db.create_session("t1").unwrap();
         let id = haven_common::types::new_id("msg");
-        db.add_episode_with_id(&session.id, "shared id summary", &id)
+        db.add_episode_with_id(&session.session_id, "shared id summary", &id)
             .unwrap();
         let got: String = db
             .conn()
@@ -210,7 +212,7 @@ mod tests {
         );
         assert!(
             db.add_episode_with_pending_extraction(
-                &session.id,
+                &session.session_id,
                 "invalid episode",
                 &invalid_episode_id,
                 true,
@@ -219,7 +221,7 @@ mod tests {
         );
         assert!(
             db.add_episode_structured(
-                &session.id,
+                &session.session_id,
                 "invalid structured episode",
                 &invalid_episode_id,
                 &[],
@@ -253,8 +255,14 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let session = db.create_session("t1").unwrap();
         let id = haven_common::types::new_id("msg");
-        db.add_episode_structured(&session.id, "summary", &id, &["theme", "ui"], &["Alice"])
-            .unwrap();
+        db.add_episode_structured(
+            &session.session_id,
+            "summary",
+            &id,
+            &["theme", "ui"],
+            &["Alice"],
+        )
+        .unwrap();
         let (topics, entities): (String, String) = db
             .conn()
             .query_row(
@@ -274,22 +282,23 @@ mod tests {
         let id = haven_common::types::new_id("msg");
         let summary = "A durable compaction summary with enough context.";
 
-        db.add_episode_with_pending_extraction(&session.id, summary, &id, true)
+        db.add_episode_with_pending_extraction(&session.session_id, summary, &id, true)
             .unwrap();
-        db.add_episode_with_pending_extraction(&session.id, summary, &id, true)
+        db.add_episode_with_pending_extraction(&session.session_id, summary, &id, true)
             .unwrap();
         assert_eq!(
             pending_summary_extraction_rows(&db).unwrap(),
-            vec![(session.id.clone(), id.clone())]
+            vec![(session.session_id.clone(), id.clone())]
         );
 
-        db.clear_summary_extraction(&session.id, &id).unwrap();
+        db.clear_summary_extraction(&session.session_id, &id)
+            .unwrap();
         assert!(pending_summary_extraction_rows(&db).unwrap().is_empty());
-        db.add_episode_with_pending_extraction(&session.id, summary, &id, true)
+        db.add_episode_with_pending_extraction(&session.session_id, summary, &id, true)
             .unwrap();
         assert_eq!(
             pending_summary_extraction_rows(&db).unwrap(),
-            vec![(session.id, id)]
+            vec![(session.session_id, id)]
         );
     }
 }

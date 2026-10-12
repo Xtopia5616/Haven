@@ -36,7 +36,7 @@ async fn compaction_summary_persists_trimmed_episode_marker_then_wakes_worker() 
     let summary = "  A durable compaction summary that exceeds the extraction threshold.  ";
 
     engine
-        .persist_compaction_summary(&session.id, summary, &episode_id)
+        .persist_compaction_summary(&session.session_id, summary, &episode_id)
         .await;
 
     assert_eq!(
@@ -45,11 +45,11 @@ async fn compaction_summary_persists_trimmed_episode_marker_then_wakes_worker() 
     );
     assert_eq!(
         crate::test_support::list_pending_summary_extraction_rows(&db).unwrap(),
-        vec![(session.id.clone(), episode_id.clone())]
+        vec![(session.session_id.clone(), episode_id.clone())]
     );
     assert_eq!(
         worker.pending_summary_outbox_value_for_test(&episode_id),
-        Some(session.id)
+        Some(session.session_id)
     );
 }
 
@@ -66,13 +66,13 @@ async fn compaction_summary_below_threshold_persists_without_marker_and_empty_su
     let at_threshold = "y".repeat(24);
 
     engine
-        .persist_compaction_summary(&session.id, &below_threshold, &short_episode_id)
+        .persist_compaction_summary(&session.session_id, &below_threshold, &short_episode_id)
         .await;
     engine
-        .persist_compaction_summary(&session.id, &at_threshold, &threshold_episode_id)
+        .persist_compaction_summary(&session.session_id, &at_threshold, &threshold_episode_id)
         .await;
     engine
-        .persist_compaction_summary(&session.id, "  \n\t  ", &empty_episode_id)
+        .persist_compaction_summary(&session.session_id, "  \n\t  ", &empty_episode_id)
         .await;
 
     assert_eq!(
@@ -86,7 +86,7 @@ async fn compaction_summary_below_threshold_persists_without_marker_and_empty_su
     assert!(db.episode_text(&empty_episode_id).unwrap().is_none());
     assert_eq!(
         crate::test_support::list_pending_summary_extraction_rows(&db).unwrap(),
-        vec![(session.id.clone(), threshold_episode_id.clone())]
+        vec![(session.session_id.clone(), threshold_episode_id.clone())]
     );
     assert!(
         worker
@@ -100,7 +100,7 @@ async fn compaction_summary_below_threshold_persists_without_marker_and_empty_su
     );
     assert_eq!(
         worker.pending_summary_outbox_value_for_test(&threshold_episode_id),
-        Some(session.id)
+        Some(session.session_id)
     );
 }
 
@@ -109,14 +109,14 @@ async fn failed_compaction_summary_does_not_wake_worker_or_prevent_later_success
     let db = Arc::new(Database::open_in_memory().unwrap());
     let session = db.create_session("compaction failure").unwrap();
     let failed_episode_id = haven_common::types::new_id("msg");
-    db.add_episode_with_id(&session.id, "original summary", &failed_episode_id)
+    db.add_episode_with_id(&session.session_id, "original summary", &failed_episode_id)
         .unwrap();
 
     let worker = test_worker(db.clone());
     let engine = test_engine(db.clone(), worker.clone());
     engine
         .persist_compaction_summary(
-            &session.id,
+            &session.session_id,
             "a conflicting summary that is long enough to enqueue extraction",
             &failed_episode_id,
         )
@@ -140,14 +140,18 @@ async fn failed_compaction_summary_does_not_wake_worker_or_prevent_later_success
     let succeeding_episode_id = haven_common::types::new_id("msg");
     let succeeding_summary = "A later compaction summary still persists and wakes extraction.";
     engine
-        .persist_compaction_summary(&session.id, succeeding_summary, &succeeding_episode_id)
+        .persist_compaction_summary(
+            &session.session_id,
+            succeeding_summary,
+            &succeeding_episode_id,
+        )
         .await;
     assert_eq!(
         crate::test_support::list_pending_summary_extraction_rows(&db).unwrap(),
-        vec![(session.id.clone(), succeeding_episode_id.clone())]
+        vec![(session.session_id.clone(), succeeding_episode_id.clone())]
     );
     assert_eq!(
         worker.pending_summary_outbox_value_for_test(&succeeding_episode_id),
-        Some(session.id)
+        Some(session.session_id)
     );
 }

@@ -145,7 +145,7 @@ impl<'db> FactMaintenance<'db> {
                 }
             }
             if tags != keeper.tags {
-                keeper_updates.push((tags, keeper.id));
+                keeper_updates.push((tags, keeper.fact_id));
             }
         }
         for (tags, id) in &keeper_updates {
@@ -211,7 +211,7 @@ impl<'db> FactMaintenance<'db> {
         for row in rows {
             let fact = row?;
             if fact_effective_confidence(&fact) < threshold && fact_age_days(&fact) >= 1.0 {
-                stale_ids.push(fact.id);
+                stale_ids.push(fact.fact_id);
             }
         }
         if stale_ids.is_empty() {
@@ -258,7 +258,7 @@ impl<'db> FactMaintenance<'db> {
                 if fact_effective_confidence(loser) >= CONTRADICTION_LIVE_FLOOR
                     && fact_within_demote_age(loser, now)
                 {
-                    demote_ids.insert(loser.id.clone());
+                    demote_ids.insert(loser.fact_id.clone());
                 }
             }
         }
@@ -357,7 +357,7 @@ impl<'db> FactMaintenance<'db> {
             .db
             .list_facts_by_ids(&unique_ids)?
             .into_iter()
-            .map(|fact| (fact.id.clone(), fact))
+            .map(|fact| (fact.fact_id.clone(), fact))
             .collect();
         let mut out = Vec::new();
         for (id_a, id_b) in pairs {

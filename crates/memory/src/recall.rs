@@ -202,7 +202,7 @@ impl<'db> MemoryRetriever<'db> {
                     .map(|fact| {
                         let score = fact_effective_confidence(&fact);
                         MemoryHit {
-                            entity_id: fact.id,
+                            entity_id: fact.fact_id,
                             text: format!("{}={}", fact.predicate, fact.object),
                             score,
                             model: String::new(),
@@ -268,13 +268,13 @@ impl<'db> MemoryRetriever<'db> {
                     .db
                     .list_facts_by_ids(&ids)?
                     .into_iter()
-                    .map(|fact| (fact.id.clone(), fact))
+                    .map(|fact| (fact.fact_id.clone(), fact))
                     .collect();
                 raw.into_iter()
                     .filter_map(|(embedding, score)| {
                         let fact = facts_by_id.get(&embedding.entity_id)?;
                         is_visible_fact(fact).then(|| MemoryHit {
-                            entity_id: fact.id.clone(),
+                            entity_id: fact.fact_id.clone(),
                             text: format!("{}={}", fact.predicate, fact.object),
                             score,
                             model: embedding.model,
@@ -431,7 +431,7 @@ mod tests {
 
         assert_eq!(recall.mode, MemoryRecallMode::Keyword);
         assert_eq!(recall.hits.len(), 1);
-        assert_eq!(recall.hits[0].entity_id, safe.id);
+        assert_eq!(recall.hits[0].entity_id, safe.fact_id);
         assert_eq!(recall.hits[0].text, "likes=Rust");
     }
 
@@ -446,7 +446,7 @@ mod tests {
             .unwrap();
         db.save_embedding(
             entity_kind::FACT,
-            &safe.id,
+            &safe.fact_id,
             "model-a",
             &[1.0, 0.0],
             "likes Rust",
@@ -454,7 +454,7 @@ mod tests {
         .unwrap();
         db.save_embedding(
             entity_kind::FACT,
-            &secret.id,
+            &secret.fact_id,
             "model-a",
             &[1.0, 0.0],
             "api_key super-secret",
@@ -471,8 +471,13 @@ mod tests {
 
         assert_eq!(recall.mode, MemoryRecallMode::Hybrid);
         assert_eq!(recall.hits.len(), 1);
-        assert_eq!(recall.hits[0].entity_id, safe.id);
-        assert!(!recall.hits.iter().any(|hit| hit.entity_id == secret.id));
+        assert_eq!(recall.hits[0].entity_id, safe.fact_id);
+        assert!(
+            !recall
+                .hits
+                .iter()
+                .any(|hit| hit.entity_id == secret.fact_id)
+        );
     }
 
     #[test]
@@ -487,7 +492,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(recall.mode, MemoryRecallMode::Keyword);
-        assert_eq!(recall.hits[0].entity_id, fact.id);
+        assert_eq!(recall.hits[0].entity_id, fact.fact_id);
         assert!(recall.hits[0].model.is_empty());
     }
 
@@ -634,7 +639,7 @@ mod tests {
         let recall = MemoryRetriever::new(&db).retrieve(&query, None).unwrap();
 
         assert_eq!(recall.hits.len(), 1);
-        assert_eq!(recall.hits[0].entity_id, target.id);
+        assert_eq!(recall.hits[0].entity_id, target.fact_id);
     }
 
     #[test]

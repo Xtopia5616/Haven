@@ -382,7 +382,7 @@ mod tests {
                 .commit_ordinary_extraction(
                     vec![inferred_write("user", "likes", "Rust")],
                     0.55,
-                    &session.id,
+                    &session.session_id,
                     &invalid_message_id,
                 )
                 .await
@@ -396,7 +396,7 @@ mod tests {
                 .is_none()
         );
         assert!(
-            db.get_kv(&format!("fact_extraction.{}", session.id))
+            db.get_kv(&format!("fact_extraction.{}", session.session_id))
                 .unwrap()
                 .is_none()
         );
@@ -426,7 +426,7 @@ mod tests {
                 .commit_summary_extraction(
                     vec![inferred_write("user", "likes", "Rust")],
                     0.55,
-                    &session.id,
+                    &session.session_id,
                     &invalid_episode_id,
                 )
                 .await
@@ -434,7 +434,7 @@ mod tests {
         );
         assert!(
             store
-                .summary_extraction_completed(&session.id, &invalid_episode_id)
+                .summary_extraction_completed(&session.session_id, &invalid_episode_id)
                 .await
                 .is_err()
         );
@@ -450,7 +450,7 @@ mod tests {
         assert!(
             db.get_kv(&format!(
                 "fact_extraction_episode_done.{}.{invalid_episode_id}",
-                session.id
+                session.session_id
             ))
             .unwrap()
             .is_none()
@@ -464,7 +464,7 @@ mod tests {
         let other_session = db.create_session("different summary owner").unwrap();
         let episode_id = new_id("msg");
         db.add_episode_with_pending_extraction(
-            &owner_session.id,
+            &owner_session.session_id,
             "A persisted compaction summary with enough context.",
             &episode_id,
             false,
@@ -474,20 +474,20 @@ mod tests {
         db.set_kv(
             &format!(
                 "fact_extraction_episode_done.{}.{}",
-                other_session.id, episode_id
+                other_session.session_id, episode_id
             ),
-            &other_session.id,
+            &other_session.session_id,
         )
         .unwrap();
         assert!(
             store
-                .summary_extraction_completed(&other_session.id, &episode_id)
+                .summary_extraction_completed(&other_session.session_id, &episode_id)
                 .await
                 .is_err()
         );
         assert!(
             !store
-                .summary_extraction_completed(&owner_session.id, &episode_id)
+                .summary_extraction_completed(&owner_session.session_id, &episode_id)
                 .await
                 .unwrap()
         );
@@ -497,7 +497,7 @@ mod tests {
                 .commit_summary_extraction(
                     vec![inferred_write("user", "likes", "Rust")],
                     0.55,
-                    &other_session.id,
+                    &other_session.session_id,
                     &episode_id,
                 )
                 .await
@@ -507,7 +507,7 @@ mod tests {
         assert!(
             db.get_kv(&format!(
                 "fact_extraction_episode_done.{}.{}",
-                other_session.id, episode_id
+                other_session.session_id, episode_id
             ))
             .unwrap()
             .is_some()
@@ -518,7 +518,7 @@ mod tests {
                 .commit_summary_extraction(
                     vec![inferred_write("user", "likes", "Rust")],
                     0.55,
-                    &owner_session.id,
+                    &owner_session.session_id,
                     &episode_id,
                 )
                 .await
@@ -526,7 +526,7 @@ mod tests {
         );
         assert!(
             store
-                .summary_extraction_completed(&owner_session.id, &episode_id)
+                .summary_extraction_completed(&owner_session.session_id, &episode_id)
                 .await
                 .unwrap()
         );
@@ -739,7 +739,7 @@ mod tests {
             .unwrap();
         assert_eq!(fact.tags, ["preference", "workspace"]);
 
-        store.delete_fact(fact.id.clone()).await.unwrap();
+        store.delete_fact(fact.fact_id.clone()).await.unwrap();
         assert!(store.list_facts(None).await.unwrap().is_empty());
     }
 
@@ -762,10 +762,12 @@ mod tests {
             .unwrap()
             .into_iter()
             .filter(crate::repositories::facts::is_visible_fact)
-            .map(|fact| fact.id)
+            .map(|fact| fact.fact_id)
             .collect::<Vec<_>>();
         assert_eq!(
-            all.iter().map(|fact| fact.id.clone()).collect::<Vec<_>>(),
+            all.iter()
+                .map(|fact| fact.fact_id.clone())
+                .collect::<Vec<_>>(),
             expected_order
         );
         assert_eq!(all.len(), 2);
@@ -775,7 +777,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first_match.len(), 1);
-        assert_eq!(first_match[0].id, expected_order[0]);
+        assert_eq!(first_match[0].fact_id, expected_order[0]);
         assert!(
             store
                 .search_visible_facts_limited("   ".into(), None, 0)

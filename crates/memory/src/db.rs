@@ -649,7 +649,7 @@ mod tests {
 
     fn make_msg(id: &str, session_id: &str) -> crate::repositories::messages::Message {
         crate::repositories::messages::Message {
-            id: id.into(),
+            message_id: id.into(),
             session_id: session_id.into(),
             role: haven_common::types::CanonicalRole::User,
             content: format!("content-{}", id),
@@ -665,7 +665,7 @@ mod tests {
 
     fn make_session(id: &str) -> crate::repositories::sessions::Session {
         crate::repositories::sessions::Session {
-            id: id.into(),
+            session_id: id.into(),
             input_text: format!("input-{}", id),
             title: None,
             status: haven_common::lifecycle::SessionStatus::Pending,
@@ -678,7 +678,7 @@ mod tests {
 
     fn make_fact(id: &str, subject: &str) -> crate::repositories::facts::Fact {
         crate::repositories::facts::Fact {
-            id: id.into(),
+            fact_id: id.into(),
             subject: subject.into(),
             predicate: "likes".into(),
             object: "rust".into(),
@@ -691,6 +691,32 @@ mod tests {
             source_ref: None,
             durability: 1.0,
         }
+    }
+
+    #[test]
+    fn domain_models_serialize_entity_specific_identity_fields() {
+        let session =
+            serde_json::to_value(make_session("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).unwrap();
+        let message = serde_json::to_value(make_msg(
+            "msg-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ))
+        .unwrap();
+        let fact = serde_json::to_value(make_fact("fact-cccccccccccccccccccccccccccccccc", "user"))
+            .unwrap();
+
+        assert_eq!(
+            session["session_id"],
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert!(session.get("id").is_none());
+        assert_eq!(
+            message["message_id"],
+            "msg-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+        assert!(message.get("id").is_none());
+        assert_eq!(fact["fact_id"], "fact-cccccccccccccccccccccccccccccccc");
+        assert!(fact.get("id").is_none());
     }
 
     #[test]
@@ -733,7 +759,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_task = {
             let db = db.clone();
-            let session_id = session.id.clone();
+            let session_id = session.session_id.clone();
             let cancel = cancel.clone();
             tokio::spawn(async move {
                 db.run_blocking_cancellable(cancel, move |db| {
@@ -771,7 +797,7 @@ mod tests {
         db.cache_put_messages(sid, msgs.clone(), 60, generation);
         let cached = db.cache_get_messages(sid).unwrap();
         assert_eq!(cached.len(), 2);
-        assert_eq!(cached[0].id, "1");
+        assert_eq!(cached[0].message_id, "1");
     }
 
     #[test]

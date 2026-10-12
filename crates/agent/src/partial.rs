@@ -279,7 +279,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());
         let session = db.create_session("input").unwrap();
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         (
             PartialStore::new(SessionStore::new(db.clone())),
             db,

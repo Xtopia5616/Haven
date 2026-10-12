@@ -944,7 +944,7 @@ impl SessionStore {
             .db
             .run_blocking(move |db| db.create_session_with_origin(&input_text, origin))
             .await?;
-        ensure_session_id(&session.id)?;
+        ensure_session_id(&session.session_id)?;
         Ok(session)
     }
 
@@ -3571,7 +3571,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("input").unwrap();
         let store = SessionStore::new(db.clone());
-        (db, store, session.id)
+        (db, store, session.session_id)
     }
 
     #[tokio::test]
@@ -3579,19 +3579,19 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let store = SessionStore::new(db.clone());
         let running = db.create_session("running").unwrap();
-        db.update_session_status(&running.id, SessionStatus::Running)
+        db.update_session_status(&running.session_id, SessionStatus::Running)
             .unwrap();
 
         assert_eq!(store.finalize_orphaned_running_sessions().await.unwrap(), 1);
         assert_eq!(
-            db.get_session(&running.id).unwrap().unwrap().status,
+            db.get_session(&running.session_id).unwrap().unwrap().status,
             SessionStatus::Error
         );
 
         let retained = db.create_session("retained before cleanup").unwrap();
         assert_eq!(store.delete_old_sessions(0).await.unwrap(), 2);
         assert_eq!(db.count_sessions().unwrap(), 0);
-        assert!(db.get_session(&retained.id).unwrap().is_none());
+        assert!(db.get_session(&retained.session_id).unwrap().is_none());
     }
 
     #[tokio::test]
@@ -3918,14 +3918,14 @@ mod tests {
             .unwrap();
 
         let second_running = db.create_session("second running").unwrap();
-        db.update_session_status(&second_running.id, SessionStatus::Running)
+        db.update_session_status(&second_running.session_id, SessionStatus::Running)
             .unwrap();
         let already_paused = db.create_session("already paused").unwrap();
-        db.update_session_status(&already_paused.id, SessionStatus::Paused)
+        db.update_session_status(&already_paused.session_id, SessionStatus::Paused)
             .unwrap();
         let still_pending = db.create_session("still pending").unwrap();
         let completed = db.create_session("completed").unwrap();
-        db.update_session_status(&completed.id, SessionStatus::Completed)
+        db.update_session_status(&completed.session_id, SessionStatus::Completed)
             .unwrap();
 
         assert_eq!(store.pause_running_sessions().unwrap(), 2);
@@ -3934,19 +3934,31 @@ mod tests {
             SessionStatus::Paused
         );
         assert_eq!(
-            db.get_session(&second_running.id).unwrap().unwrap().status,
+            db.get_session(&second_running.session_id)
+                .unwrap()
+                .unwrap()
+                .status,
             SessionStatus::Paused
         );
         assert_eq!(
-            db.get_session(&already_paused.id).unwrap().unwrap().status,
+            db.get_session(&already_paused.session_id)
+                .unwrap()
+                .unwrap()
+                .status,
             SessionStatus::Paused
         );
         assert_eq!(
-            db.get_session(&still_pending.id).unwrap().unwrap().status,
+            db.get_session(&still_pending.session_id)
+                .unwrap()
+                .unwrap()
+                .status,
             SessionStatus::Pending
         );
         assert_eq!(
-            db.get_session(&completed.id).unwrap().unwrap().status,
+            db.get_session(&completed.session_id)
+                .unwrap()
+                .unwrap()
+                .status,
             SessionStatus::Completed
         );
         assert_eq!(store.pause_running_sessions().unwrap(), 0);
@@ -3990,13 +4002,13 @@ mod tests {
             .unwrap();
 
         store
-            .delete_message_by_id(&session_id, &delete.id)
+            .delete_message_by_id(&session_id, &delete.message_id)
             .await
             .unwrap();
 
         let messages = db.list_session_messages(&session_id).unwrap();
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].id, keep.id);
+        assert_eq!(messages[0].message_id, keep.message_id);
     }
 
     #[tokio::test]
@@ -4039,7 +4051,7 @@ mod tests {
         )
         .unwrap();
         db.add_message(
-            &second.id,
+            &second.session_id,
             haven_common::types::CanonicalRole::User,
             "second message",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -4057,7 +4069,11 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        assert!(db.list_session_messages(&second.id).unwrap().is_empty());
+        assert!(
+            db.list_session_messages(&second.session_id)
+                .unwrap()
+                .is_empty()
+        );
         assert!(db.get_kv(&kv_key).unwrap().is_none());
         assert_eq!(store.delete_all_sessions().await.unwrap(), 0);
     }
@@ -4071,7 +4087,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .id,
+                .session_id,
             session_id
         );
 
@@ -4183,7 +4199,9 @@ mod tests {
                 None,
             )
             .unwrap();
-        let step = db.create_thought_step(&session_id, 1, &message.id).unwrap();
+        let step = db
+            .create_thought_step(&session_id, 1, &message.message_id)
+            .unwrap();
         let usage = store
             .append_usage(&session_id, &usage_input(1, 10))
             .unwrap();
@@ -4220,7 +4238,7 @@ mod tests {
             serde_json::to_value(&projection.active_domain_events).unwrap(),
             serde_json::to_value(store.read_active_domain_events(&session_id).unwrap()).unwrap()
         );
-        assert_eq!(projection.messages[0].id, message.id);
+        assert_eq!(projection.messages[0].message_id, message.message_id);
         assert_eq!(projection.steps[0].step_id, step.step_id);
         assert_eq!(projection.llm_usage[0].usage_id, usage.usage_id);
         assert!(
@@ -4242,18 +4260,18 @@ mod tests {
 
         let session = store.create_session("created through store").await.unwrap();
 
-        assert!(!session.id.is_empty());
+        assert!(!session.session_id.is_empty());
         assert_eq!(session.input_text, "created through store");
         assert_eq!(session.status, SessionStatus::Pending);
         assert_eq!(session.origin, SessionOrigin::User);
         assert!(
             store
-                .load_session_record(&session.id)
+                .load_session_record(&session.session_id)
                 .await
                 .unwrap()
                 .is_some()
         );
-        assert_eq!(store.latest_sequence(&session.id).unwrap(), 0);
+        assert_eq!(store.latest_sequence(&session.session_id).unwrap(), 0);
     }
 
     #[tokio::test]
@@ -4266,20 +4284,20 @@ mod tests {
             .create_session_with_origin(
                 "delegated kickoff",
                 SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.id.clone(),
+                    parent_session_id: parent.session_id.clone(),
                 },
             )
             .await
             .unwrap();
         let children = store
-            .load_session_children(&parent.id, 10, 0)
+            .load_session_children(&parent.session_id, 10, 0)
             .await
             .unwrap();
 
         assert_eq!(children.len(), 1);
-        assert_eq!(children[0].id, child.id);
+        assert_eq!(children[0].session_id, child.session_id);
         assert_eq!(children[0].origin, child.origin);
-        assert_eq!(store.latest_sequence(&child.id).unwrap(), 0);
+        assert_eq!(store.latest_sequence(&child.session_id).unwrap(), 0);
     }
 
     #[tokio::test]
@@ -4315,15 +4333,15 @@ mod tests {
         let middle = db.create_session("middle").unwrap();
         let newest = db.create_session("newest").unwrap();
         let completed = db.create_session("completed").unwrap();
-        db.update_session_status(&completed.id, SessionStatus::Completed)
+        db.update_session_status(&completed.session_id, SessionStatus::Completed)
             .unwrap();
 
         let conn = db.conn();
         for (session_id, created_at) in [
             (&oldest_id, "2026-09-20T10:00:00.000Z"),
-            (&middle.id, "2026-09-21T10:00:00.000Z"),
-            (&newest.id, "2026-09-22T10:00:00.000Z"),
-            (&completed.id, "2026-09-23T10:00:00.000Z"),
+            (&middle.session_id, "2026-09-21T10:00:00.000Z"),
+            (&newest.session_id, "2026-09-22T10:00:00.000Z"),
+            (&completed.session_id, "2026-09-23T10:00:00.000Z"),
         ] {
             conn.execute(
                 "UPDATE sessions SET created_at = ?1 WHERE id = ?2",
@@ -4340,9 +4358,13 @@ mod tests {
         assert_eq!(
             pending
                 .iter()
-                .map(|session| session.id.as_str())
+                .map(|session| session.session_id.as_str())
                 .collect::<Vec<_>>(),
-            [newest.id.as_str(), middle.id.as_str(), oldest_id.as_str()]
+            [
+                newest.session_id.as_str(),
+                middle.session_id.as_str(),
+                oldest_id.as_str()
+            ]
         );
         assert!(
             pending
@@ -4378,7 +4400,7 @@ mod tests {
             .unwrap();
         let other_pending = db
             .create_tool_step(
-                &other_session.id,
+                &other_session.session_id,
                 0,
                 "shell",
                 "{}",
@@ -4398,7 +4420,7 @@ mod tests {
             .completed_at;
         assert!(completed_at_before.is_some());
         let other_observation_before = db
-            .list_session_steps(&other_session.id)
+            .list_session_steps(&other_session.session_id)
             .unwrap()
             .into_iter()
             .find(|step| step.step_id == other_pending.step_id)
@@ -4438,7 +4460,7 @@ mod tests {
         );
         assert_eq!(completed_after.completed_at, completed_at_before);
 
-        let untouched = db.list_session_steps(&other_session.id).unwrap();
+        let untouched = db.list_session_steps(&other_session.session_id).unwrap();
         let other_pending_after = untouched
             .iter()
             .find(|step| step.step_id == other_pending.step_id)
@@ -4463,7 +4485,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(inserted.id.starts_with("msg-"));
+        assert!(inserted.message_id.starts_with("msg-"));
         assert_eq!(inserted.role, haven_common::types::CanonicalRole::User);
         assert_eq!(inserted.content, "describe this");
         assert_eq!(
@@ -4475,7 +4497,7 @@ mod tests {
         assert!(inserted.voice);
 
         let persisted = db
-            .get_message_by_id(&session_id, &inserted.id)
+            .get_message_by_id(&session_id, &inserted.message_id)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -4507,18 +4529,18 @@ mod tests {
             .create_session_with_origin(
                 "kickoff seed",
                 SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.id,
+                    parent_session_id: parent.session_id,
                 },
             )
             .await
             .unwrap();
 
         let user_seed = store
-            .persist_ingress_user_seed(&user_session.id, "hello", &[], false)
+            .persist_ingress_user_seed(&user_session.session_id, "hello", &[], false)
             .await
             .unwrap();
         let kickoff_seed = store
-            .persist_ingress_user_seed(&kickoff_session.id, "delegate this", &[], false)
+            .persist_ingress_user_seed(&kickoff_session.session_id, "delegate this", &[], false)
             .await
             .unwrap();
 
@@ -4558,7 +4580,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(first.id, retry.id);
+            assert_eq!(first.message_id, retry.message_id);
             assert_eq!(first.role, haven_common::types::CanonicalRole::Assistant);
             assert_eq!(first.message_type, Some(expected_type));
             assert!(first.attachments.is_empty());
@@ -4601,7 +4623,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(retried.id, first.id);
+        assert_eq!(retried.message_id, first.message_id);
         assert_eq!(retried.created_at, first.created_at);
         assert_eq!(db.list_session_messages(&session_id).unwrap().len(), 1);
     }
@@ -4687,7 +4709,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        db.create_thought_step(&session_id, 1, &anchored.id)
+        db.create_thought_step(&session_id, 1, &anchored.message_id)
             .unwrap();
         let attachment = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
         let pending = db
@@ -4712,14 +4734,14 @@ mod tests {
 
         let messages = store.pending_session_inputs(&session_id).await.unwrap();
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].message.id, pending.message.id);
+        assert_eq!(messages[0].message.message_id, pending.message.message_id);
         assert_eq!(messages[0].message.attachments[0].media_type, "image/png");
         assert_eq!(messages[0].message.media_inputs.len(), 1);
         assert_eq!(messages[0].disposition, PendingInputDisposition::FollowUp);
 
         let old_session = db.create_session("old input").unwrap();
         db.add_message(
-            &old_session.id,
+            &old_session.session_id,
             haven_common::types::CanonicalRole::User,
             "old seed",
             None,
@@ -4728,7 +4750,7 @@ mod tests {
         .unwrap();
         let old_pending = db
             .add_pending_user_input(
-                &old_session.id,
+                &old_session.session_id,
                 "old pending",
                 None,
                 &[],
@@ -4742,13 +4764,19 @@ mod tests {
         let conn = db.conn();
         conn.execute(
             "UPDATE messages SET created_at = ?1 WHERE id = ?2",
-            rusqlite::params![old_cutoff, old_pending.message.id],
+            rusqlite::params![old_cutoff, old_pending.message.message_id],
         )
         .unwrap();
         drop(conn);
-        let old_recovered = store.pending_session_inputs(&old_session.id).await.unwrap();
+        let old_recovered = store
+            .pending_session_inputs(&old_session.session_id)
+            .await
+            .unwrap();
         assert_eq!(old_recovered.len(), 1);
-        assert_eq!(old_recovered[0].message.id, old_pending.message.id);
+        assert_eq!(
+            old_recovered[0].message.message_id,
+            old_pending.message.message_id
+        );
     }
 
     #[tokio::test]
@@ -4767,9 +4795,9 @@ mod tests {
             .unwrap();
 
         let mut failed = SessionCommitted::transcript("{}", 1, 1);
-        failed.acknowledge_pending_user_input(pending.message.id.clone());
+        failed.acknowledge_pending_user_input(pending.message.message_id.clone());
         failed.project_assistant_message(
-            pending.message.id.clone(),
+            pending.message.message_id.clone(),
             "conflict",
             Some(haven_common::types::TranscriptMessageKind::Text),
         );
@@ -4780,7 +4808,7 @@ mod tests {
         );
 
         let mut committed = SessionCommitted::transcript("{}", 1, 1);
-        committed.acknowledge_pending_user_input(pending.message.id.clone());
+        committed.acknowledge_pending_user_input(pending.message.message_id.clone());
         store.commit_transcript(&session_id, &committed).unwrap();
         assert!(
             db.list_pending_session_inputs(&session_id)
@@ -4818,7 +4846,7 @@ mod tests {
         let other_session = db.create_session("other rollback target").unwrap();
         let foreign = db
             .add_message(
-                &other_session.id,
+                &other_session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "foreign",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -4827,15 +4855,15 @@ mod tests {
             .unwrap();
 
         let loaded = store
-            .load_rollback_target_message(&session_id, &target.id)
+            .load_rollback_target_message(&session_id, &target.message_id)
             .await
             .unwrap();
-        assert_eq!(loaded.id, target.id);
+        assert_eq!(loaded.message_id, target.message_id);
         assert_eq!(loaded.session_id, session_id);
         assert_eq!(loaded.role, haven_common::types::CanonicalRole::User);
 
         let missing_message_id = haven_common::types::new_id("msg");
-        for missing_id in [foreign.id.as_str(), missing_message_id.as_str()] {
+        for missing_id in [foreign.message_id.as_str(), missing_message_id.as_str()] {
             let error = store
                 .load_rollback_target_message(&session_id, missing_id)
                 .await
@@ -4959,8 +4987,12 @@ mod tests {
 
         let messages = db.list_session_messages(&session_id).unwrap();
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].id, kept.id);
-        assert!(!messages.iter().any(|message| message.id == discarded.id));
+        assert_eq!(messages[0].message_id, kept.message_id);
+        assert!(
+            !messages
+                .iter()
+                .any(|message| message.message_id == discarded.message_id)
+        );
     }
 
     #[test]
@@ -5012,7 +5044,7 @@ mod tests {
         }
         store
             .append(
-                &other_session.id,
+                &other_session.session_id,
                 "usage_recorded",
                 r#"{"payload":"other"}"#,
                 None,
@@ -5065,7 +5097,7 @@ mod tests {
         assert_eq!(empty.next_cursor, 12);
         assert_eq!(
             store
-                .replay_page_sync(&other_session.id, 0, 2)
+                .replay_page_sync(&other_session.session_id, 0, 2)
                 .unwrap()
                 .events
                 .len(),
@@ -5288,7 +5320,7 @@ mod tests {
         let other_session = db.create_session("other session").unwrap();
         let foreign_message = db
             .add_message(
-                &other_session.id,
+                &other_session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "foreign",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -5303,7 +5335,7 @@ mod tests {
                 1,
                 1,
                 RollbackProjectionBoundary::UserMessage {
-                    message_id: foreign_message.id,
+                    message_id: foreign_message.message_id,
                 },
             ),
             &[],
@@ -5312,8 +5344,8 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(
-            db.list_session_messages(&session_id).unwrap()[0].id,
-            message.id
+            db.list_session_messages(&session_id).unwrap()[0].message_id,
+            message.message_id
         );
         assert_eq!(store.read_all(&session_id).unwrap().len(), 1);
     }
@@ -5727,7 +5759,7 @@ mod tests {
 
         let messages = db.list_session_messages(&session_id).unwrap();
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].id, kept_message.id);
+        assert_eq!(messages[0].message_id, kept_message.message_id);
         let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].step_id, kept_step.step_id);
@@ -5769,7 +5801,7 @@ mod tests {
     #[test]
     fn projection_truncate_after_step_is_noop_without_branch_point_or_cutoff() {
         let (db, store, no_branch_point_session_id) = store();
-        let no_cutoff_session_id = db.create_session("no cutoff").unwrap().id;
+        let no_cutoff_session_id = db.create_session("no cutoff").unwrap().session_id;
 
         for (session_id, branch_point) in [
             (&no_branch_point_session_id, false),
@@ -5796,7 +5828,7 @@ mod tests {
                 .list_session_messages(session_id)
                 .unwrap()
                 .into_iter()
-                .map(|message| message.id)
+                .map(|message| message.message_id)
                 .collect::<Vec<_>>();
             let step_ids = db
                 .list_session_steps(session_id)
@@ -5817,7 +5849,7 @@ mod tests {
                 db.list_session_messages(session_id)
                     .unwrap()
                     .into_iter()
-                    .map(|message| message.id)
+                    .map(|message| message.message_id)
                     .collect::<Vec<_>>(),
                 message_ids
             );
@@ -5893,7 +5925,7 @@ mod tests {
 
         let messages = db.list_session_messages(&session_id).unwrap();
         assert_eq!(messages.len(), 1);
-        assert_ne!(messages[0].id, discarded_message.id);
+        assert_ne!(messages[0].message_id, discarded_message.message_id);
         let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].step_id, kept_step.step_id);
@@ -6013,7 +6045,7 @@ mod tests {
         assert!(
             messages
                 .iter()
-                .any(|message| message.id == discarded_message.id)
+                .any(|message| message.message_id == discarded_message.message_id)
         );
         let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 2);
@@ -6126,7 +6158,7 @@ mod tests {
             db.list_session_messages(&session_id)
                 .unwrap()
                 .iter()
-                .any(|message| message.id == later_message.id)
+                .any(|message| message.message_id == later_message.message_id)
         );
         assert!(
             db.list_session_steps(&session_id)
@@ -6153,8 +6185,8 @@ mod tests {
     fn recovery_truncation_is_noop_without_marker_or_valid_cutoff() {
         let (db, store, first_session_id) = store();
         let no_marker = first_session_id;
-        let no_branch_point = db.create_session("no branch point").unwrap().id;
-        let no_cutoff = db.create_session("no cutoff").unwrap().id;
+        let no_branch_point = db.create_session("no branch point").unwrap().session_id;
+        let no_cutoff = db.create_session("no cutoff").unwrap().session_id;
 
         for (session_id, has_marker, branch_point_cutoff) in [
             (no_marker.as_str(), false, Some(true)),
@@ -6202,7 +6234,7 @@ mod tests {
                 .list_session_messages(session_id)
                 .unwrap()
                 .into_iter()
-                .map(|message| message.id)
+                .map(|message| message.message_id)
                 .collect::<Vec<_>>();
             let step_ids = db
                 .list_session_steps(session_id)
@@ -6225,7 +6257,7 @@ mod tests {
                 db.list_session_messages(session_id)
                     .unwrap()
                     .into_iter()
-                    .map(|message| message.id)
+                    .map(|message| message.message_id)
                     .collect::<Vec<_>>(),
                 message_ids
             );
@@ -6446,7 +6478,10 @@ mod tests {
         assert_eq!(store.read_all(&session_id).unwrap().len(), 1);
         let messages = db.list_session_messages(&session_id).unwrap();
         assert_eq!(
-            messages.iter().filter(|row| row.id == message_id).count(),
+            messages
+                .iter()
+                .filter(|row| row.message_id == message_id)
+                .count(),
             1
         );
         let steps = db.list_session_steps(&session_id).unwrap();
@@ -6553,7 +6588,11 @@ mod tests {
 
         let messages = db.list_session_messages(&session_id).unwrap();
         let steps = db.list_session_steps(&session_id).unwrap();
-        assert!(messages.iter().any(|message| message.id == message_id));
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.message_id == message_id)
+        );
         assert!(steps.iter().any(|step| step.step_id == message_id));
 
         let rollback = store
@@ -6576,7 +6615,7 @@ mod tests {
         assert_eq!(store.read_all(&session_id).unwrap().len(), 3);
         let messages = db.list_session_messages(&session_id).unwrap();
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].id, baseline.id);
+        assert_eq!(messages[0].message_id, baseline.message_id);
         assert!(db.list_session_steps(&session_id).unwrap().is_empty());
     }
 
@@ -6640,7 +6679,7 @@ mod tests {
 
         assert_eq!(result.events[0].sequence, 1);
         assert_eq!(
-            db.list_session_messages(&session_id).unwrap()[0].id,
+            db.list_session_messages(&session_id).unwrap()[0].message_id,
             message_id
         );
     }

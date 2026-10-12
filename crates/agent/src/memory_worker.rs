@@ -643,7 +643,7 @@ impl MemoryWorker {
             let source_ref = fact
                 .message_index
                 .and_then(|idx| resolve_source_message(messages, idx))
-                .map(|message| FactSourceRef::from_message(&message.id, &message.content));
+                .map(|message| FactSourceRef::from_message(&message.message_id, &message.content));
             MemoryFactCandidate {
                 subject: fact.subject,
                 predicate: fact.predicate,
@@ -902,7 +902,7 @@ impl MemoryWorker {
         }
 
         let synthetic = haven_memory::Message {
-            id: episode_id.to_string(),
+            message_id: episode_id.to_string(),
             session_id: session_id.to_string(),
             role: haven_common::types::CanonicalRole::User,
             content: format!(
@@ -1176,7 +1176,7 @@ mod tests {
 
     fn make_message(content: &str) -> Message {
         Message {
-            id: uuid::Uuid::new_v4().to_string(),
+            message_id: uuid::Uuid::new_v4().to_string(),
             session_id: "t1".into(),
             role: haven_common::types::CanonicalRole::User,
             content: content.into(),
@@ -1427,10 +1427,10 @@ mod tests {
         db.conn()
             .execute(
                 "UPDATE facts SET predicate = ?1 WHERE id = ?2",
-                [predicate, fact.id.as_str()],
+                [predicate, fact.fact_id.as_str()],
             )
             .unwrap();
-        fact.id
+        fact.fact_id
     }
 
     fn insert_orphan_embedding(db: &Database) {
@@ -1468,7 +1468,7 @@ mod tests {
                 "UPDATE facts SET created_at = '2000-01-01T00:00:00Z',
                                   last_seen_at = '2000-01-01T00:00:00Z'
                  WHERE id = ?1",
-                [&stale.id],
+                [&stale.fact_id],
             )
             .unwrap();
         db.insert_fact("user", "likes", "Rust", "inferred", 0.9, &[])
@@ -1533,7 +1533,7 @@ mod tests {
         db.conn()
             .execute(
                 "UPDATE facts SET provenance_record_id = '  ' WHERE id = ?1",
-                [&fact.id],
+                [&fact.fact_id],
             )
             .unwrap();
         let orphan_session_id = haven_common::types::new_id("ses");
@@ -1562,7 +1562,7 @@ mod tests {
             "cursor cleanup after the failed prune must still run"
         );
         assert!(
-            db.get_fact_by_id(&fact.id)
+            db.get_fact_by_id(&fact.fact_id)
                 .unwrap()
                 .unwrap()
                 .source_ref
@@ -1590,7 +1590,7 @@ mod tests {
 
         assert!(error.to_string().contains("cancelled"));
         assert_eq!(db.list_facts_by_subject("user").unwrap().len(), 2);
-        assert!(db.get_fact_by_id(&first.id).unwrap().is_some());
+        assert!(db.get_fact_by_id(&first.fact_id).unwrap().is_some());
     }
 
     #[tokio::test]
@@ -1650,7 +1650,7 @@ mod tests {
         assert!(
             facts
                 .iter()
-                .any(|fact| fact.id == canonical.id && fact.predicate == "likes")
+                .any(|fact| fact.fact_id == canonical.fact_id && fact.predicate == "likes")
         );
         assert!(
             !facts
@@ -1669,7 +1669,10 @@ mod tests {
             .unwrap();
         let inference = Arc::new(FixedMemoryInference {
             fast_chat_configured: true,
-            response: format!(r#"[{{"demote_id":"{}","confidence":0.95}}]"#, inferred.id),
+            response: format!(
+                r#"[{{"demote_id":"{}","confidence":0.95}}]"#,
+                inferred.fact_id
+            ),
             calls: AtomicUsize::new(0),
         });
         let worker = make_engine_with_inference(db.clone(), inference.clone());
@@ -1686,7 +1689,7 @@ mod tests {
 
         assert_eq!(demoted, 1);
         assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
-        let updated = db.get_fact_by_id(&inferred.id).unwrap().unwrap();
+        let updated = db.get_fact_by_id(&inferred.fact_id).unwrap().unwrap();
         assert!((updated.confidence - 0.4).abs() < f64::EPSILON);
     }
 
@@ -1747,7 +1750,7 @@ mod tests {
 
     fn make_role_message(role: haven_common::types::CanonicalRole, content: &str) -> Message {
         Message {
-            id: uuid::Uuid::new_v4().to_string(),
+            message_id: uuid::Uuid::new_v4().to_string(),
             session_id: "t1".into(),
             role,
             content: content.into(),
@@ -1774,8 +1777,11 @@ mod tests {
             window.messages[0].role,
             haven_common::types::CanonicalRole::Assistant
         );
-        assert_eq!(window.messages[1].id, confirm.id);
-        assert_eq!(window.cursor_last.as_deref(), Some(confirm.id.as_str()));
+        assert_eq!(window.messages[1].message_id, confirm.message_id);
+        assert_eq!(
+            window.cursor_last.as_deref(),
+            Some(confirm.message_id.as_str())
+        );
     }
 
     #[test]
@@ -1794,8 +1800,11 @@ mod tests {
         let real = make_role_message(haven_common::types::CanonicalRole::User, "My name is Alice");
         let window = build_extraction_window(&[kickoff, second_kickoff, real.clone()], None, &[]);
         assert_eq!(window.messages.len(), 1);
-        assert_eq!(window.messages[0].id, real.id);
-        assert_eq!(window.cursor_last.as_deref(), Some(real.id.as_str()));
+        assert_eq!(window.messages[0].message_id, real.message_id);
+        assert_eq!(
+            window.cursor_last.as_deref(),
+            Some(real.message_id.as_str())
+        );
     }
 
     #[test]
@@ -1807,7 +1816,7 @@ mod tests {
         let user = make_role_message(haven_common::types::CanonicalRole::User, "I like Rust");
         let window = build_extraction_window(&[summary, user.clone()], None, &[]);
         assert_eq!(window.messages.len(), 1);
-        assert_eq!(window.messages[0].id, user.id);
+        assert_eq!(window.messages[0].message_id, user.message_id);
     }
 
     #[test]
@@ -1819,9 +1828,9 @@ mod tests {
         let window =
             build_extraction_window(&[a1, a2.clone(), a3.clone(), user.clone()], None, &[]);
         assert_eq!(window.messages.len(), 3);
-        assert_eq!(window.messages[0].id, a2.id);
-        assert_eq!(window.messages[1].id, a3.id);
-        assert_eq!(window.messages[2].id, user.id);
+        assert_eq!(window.messages[0].message_id, a2.message_id);
+        assert_eq!(window.messages[1].message_id, a3.message_id);
+        assert_eq!(window.messages[2].message_id, user.message_id);
     }
 
     #[test]
@@ -1838,8 +1847,8 @@ mod tests {
         let user = make_role_message(haven_common::types::CanonicalRole::User, "dark");
         let window = build_extraction_window(&[reasoning, ask.clone(), user.clone()], None, &[]);
         assert_eq!(window.messages.len(), 2);
-        assert_eq!(window.messages[0].id, ask.id);
-        assert_eq!(window.messages[1].id, user.id);
+        assert_eq!(window.messages[0].message_id, ask.message_id);
+        assert_eq!(window.messages[1].message_id, user.message_id);
     }
 
     #[test]
@@ -1855,13 +1864,13 @@ mod tests {
         let user = make_role_message(haven_common::types::CanonicalRole::User, "use that path");
         let window = build_extraction_window(&[ask.clone(), tool.clone(), user.clone()], None, &[]);
         assert_eq!(window.messages.len(), 3);
-        assert_eq!(window.messages[0].id, ask.id);
+        assert_eq!(window.messages[0].message_id, ask.message_id);
         assert_eq!(
             window.messages[1].role,
             haven_common::types::CanonicalRole::Tool
         );
         assert!(window.messages[1].content.chars().count() <= EXTRACTION_TOOL_CONTENT_CHARS);
-        assert_eq!(window.messages[2].id, user.id);
+        assert_eq!(window.messages[2].message_id, user.message_id);
     }
 
     #[test]
@@ -1889,14 +1898,14 @@ mod tests {
         };
         let window = build_extraction_window(&[ask.clone(), user.clone()], None, &[step]);
         assert_eq!(window.messages.len(), 3);
-        assert_eq!(window.messages[0].id, ask.id);
+        assert_eq!(window.messages[0].message_id, ask.message_id);
         assert_eq!(
             window.messages[1].role,
             haven_common::types::CanonicalRole::Tool
         );
         assert!(window.messages[1].content.contains("tool(shell):"));
         assert!(window.messages[1].content.contains("C:/Workspace/Haven"));
-        assert_eq!(window.messages[2].id, user.id);
+        assert_eq!(window.messages[2].message_id, user.message_id);
     }
 
     #[tokio::test]
@@ -1907,7 +1916,7 @@ mod tests {
             .unwrap();
         let previous_user = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "Earlier user turn",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -1916,7 +1925,7 @@ mod tests {
             .unwrap();
         let ask = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::Assistant,
                 "Checking the path",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -1925,7 +1934,7 @@ mod tests {
             .unwrap();
         let reasoning = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::Assistant,
                 "private reasoning",
                 Some(haven_common::types::TranscriptMessageKind::Reasoning),
@@ -1934,7 +1943,7 @@ mod tests {
             .unwrap();
         let current_user = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "Use that path",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -1942,10 +1951,13 @@ mod tests {
             )
             .unwrap();
         let message_times = [
-            (previous_user.id.as_str(), "2026-01-01T00:00:00.000Z"),
-            (ask.id.as_str(), "2026-01-01T00:00:01.000Z"),
-            (reasoning.id.as_str(), "2026-01-01T00:00:02.000Z"),
-            (current_user.id.as_str(), "2026-01-01T00:00:05.000Z"),
+            (
+                previous_user.message_id.as_str(),
+                "2026-01-01T00:00:00.000Z",
+            ),
+            (ask.message_id.as_str(), "2026-01-01T00:00:01.000Z"),
+            (reasoning.message_id.as_str(), "2026-01-01T00:00:02.000Z"),
+            (current_user.message_id.as_str(), "2026-01-01T00:00:05.000Z"),
         ];
         for (message_id, timestamp) in message_times {
             db.conn()
@@ -1959,7 +1971,7 @@ mod tests {
         let step_id = haven_common::types::new_id("step");
         let step = db
             .create_tool_step(
-                &session.id,
+                &session.session_id,
                 1,
                 "shell",
                 "{}",
@@ -1986,27 +1998,27 @@ mod tests {
             .unwrap();
 
         let transcript = MemoryFactExtractionStore::new(db)
-            .load_ordinary_transcript(&session.id)
+            .load_ordinary_transcript(&session.session_id)
             .await
             .unwrap();
         let window = build_extraction_window(
             &transcript.messages,
-            Some(&previous_user.id),
+            Some(&previous_user.message_id),
             &transcript.steps,
         );
 
         assert_eq!(window.messages.len(), 3);
-        assert_eq!(window.messages[0].id, ask.id);
+        assert_eq!(window.messages[0].message_id, ask.message_id);
         assert_eq!(
             window.messages[1].role,
             haven_common::types::CanonicalRole::Tool
         );
         assert!(window.messages[1].content.contains("tool(shell):"));
         assert!(window.messages[1].content.contains("C:/Workspace/Haven"));
-        assert_eq!(window.messages[2].id, current_user.id);
+        assert_eq!(window.messages[2].message_id, current_user.message_id);
         assert_eq!(
             window.cursor_last.as_deref(),
-            Some(current_user.id.as_str())
+            Some(current_user.message_id.as_str())
         );
     }
 
@@ -2019,14 +2031,17 @@ mod tests {
         let confirm = make_role_message(haven_common::types::CanonicalRole::User, "dark");
         let msgs = vec![ask, confirm.clone()];
         let src = resolve_source_message(&msgs, 0).unwrap();
-        assert_eq!(src.id, confirm.id);
-        assert_eq!(resolve_source_message(&msgs, 1).unwrap().id, confirm.id);
+        assert_eq!(src.message_id, confirm.message_id);
+        assert_eq!(
+            resolve_source_message(&msgs, 1).unwrap().message_id,
+            confirm.message_id
+        );
     }
 
     fn fresh_fact(id: &str, predicate: &str, object: &str, source: &str, confidence: f64) -> Fact {
         let now = chrono::Utc::now().to_rfc3339();
         Fact {
-            id: id.into(),
+            fact_id: id.into(),
             subject: "user".into(),
             predicate: predicate.into(),
             object: object.into(),
@@ -2051,19 +2066,19 @@ mod tests {
         }];
         let allowed: HashMap<String, &Fact> = groups
             .iter()
-            .flat_map(|g| g.facts.iter().map(|f| (f.id.clone(), f)))
+            .flat_map(|g| g.facts.iter().map(|f| (f.fact_id.clone(), f)))
             .collect();
         let ok = ContradictionDemoteProposal {
-            demote_id: drop.id.clone(),
+            demote_id: drop.fact_id.clone(),
             confidence: 0.9,
         };
         assert_eq!(
             gate_contradiction_demote(&ok, &allowed, &groups),
-            Some(drop.id.clone())
+            Some(drop.fact_id.clone())
         );
         // Keeper must never be demoted (always leave ≥1 survivor).
         let kill_keeper = ContradictionDemoteProposal {
-            demote_id: keep.id.clone(),
+            demote_id: keep.fact_id.clone(),
             confidence: 1.0,
         };
         assert_eq!(
@@ -2071,7 +2086,7 @@ mod tests {
             None
         );
         let weak = ContradictionDemoteProposal {
-            demote_id: drop.id.clone(),
+            demote_id: drop.fact_id.clone(),
             confidence: 0.5,
         };
         assert_eq!(gate_contradiction_demote(&weak, &allowed, &groups), None);
@@ -2092,20 +2107,20 @@ mod tests {
         }];
         let allowed: HashMap<String, &Fact> = groups
             .iter()
-            .flat_map(|g| g.facts.iter().map(|f| (f.id.clone(), f)))
+            .flat_map(|g| g.facts.iter().map(|f| (f.fact_id.clone(), f)))
             .collect();
         let attack = ContradictionDemoteProposal {
-            demote_id: user_job.id.clone(),
+            demote_id: user_job.fact_id.clone(),
             confidence: 1.0,
         };
         assert_eq!(gate_contradiction_demote(&attack, &allowed, &groups), None);
         let ok = ContradictionDemoteProposal {
-            demote_id: inferred.id.clone(),
+            demote_id: inferred.fact_id.clone(),
             confidence: 0.9,
         };
         assert_eq!(
             gate_contradiction_demote(&ok, &allowed, &groups),
-            Some(inferred.id.clone())
+            Some(inferred.fact_id.clone())
         );
     }
 
@@ -2124,10 +2139,10 @@ mod tests {
         }];
         let allowed: HashMap<String, &Fact> = groups
             .iter()
-            .flat_map(|g| g.facts.iter().map(|f| (f.id.clone(), f)))
+            .flat_map(|g| g.facts.iter().map(|f| (f.fact_id.clone(), f)))
             .collect();
         let ok = ContradictionDemoteProposal {
-            demote_id: drop.id.clone(),
+            demote_id: drop.fact_id.clone(),
             confidence: 1.0,
         };
         assert_eq!(gate_contradiction_demote(&ok, &allowed, &groups), None);
@@ -2217,7 +2232,7 @@ mod tests {
         let session = db.create_session("summary restore").unwrap();
         let episode_id = haven_common::types::new_id("msg");
         db.add_episode_with_pending_extraction(
-            &session.id,
+            &session.session_id,
             "A durable summary restored after process restart.",
             &episode_id,
             true,
@@ -2232,7 +2247,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             worker.pending_summary_outbox_value_for_test(&episode_id),
-            Some(session.id.clone())
+            Some(session.session_id.clone())
         );
     }
 
@@ -2243,7 +2258,8 @@ mod tests {
             let session = db
                 .create_session(&format!("scanner backlog {index}"))
                 .unwrap();
-            db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
+            db.enqueue_fact_extraction(&session.session_id, false, 1)
+                .unwrap();
         }
         let worker = Arc::new(make_engine(db.clone()));
 
@@ -2274,7 +2290,8 @@ mod tests {
     async fn delayed_fact_marker_does_not_block_ready_summary_work() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("delayed fact fairness").unwrap();
-        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
+        db.enqueue_fact_extraction(&session.session_id, false, 1)
+            .unwrap();
         let high_water = db.pending_fact_extraction_high_water().unwrap().unwrap();
         let fact_marker = db
             .pending_fact_extractions_page(None, &high_water, OUTBOX_PAGE_SIZE)
@@ -2292,7 +2309,7 @@ mod tests {
         );
         let episode_id = haven_common::types::new_id("msg");
         db.add_episode_with_pending_extraction(
-            &session.id,
+            &session.session_id,
             "A ready durable summary with enough text for extraction.",
             &episode_id,
             true,
@@ -2333,7 +2350,7 @@ mod tests {
         .expect("a fact backoff must not block a ready summary marker");
         assert_eq!(
             crate::test_support::list_pending_fact_extraction_rows(&db).unwrap(),
-            vec![(session.id, false, 1)]
+            vec![(session.session_id, false, 1)]
         );
         worker.shutdown();
     }
@@ -2344,7 +2361,7 @@ mod tests {
         let session = db.create_session("malformed summary marker").unwrap();
         let episode_id = haven_common::types::new_id("msg");
         db.add_episode_with_pending_extraction(
-            &session.id,
+            &session.session_id,
             "A durable summary whose malformed retry metadata is repairable.",
             &episode_id,
             true,
@@ -2352,7 +2369,7 @@ mod tests {
         .unwrap();
         let marker_key = format!(
             "fact_extraction_episode_pending.{}.{}",
-            session.id, episode_id
+            session.session_id, episode_id
         );
         db.set_kv(&marker_key, "malformed summary value").unwrap();
         let inference: Arc<dyn MemoryInferencePort> = Arc::new(FixedMemoryInference {
@@ -2379,7 +2396,7 @@ mod tests {
         assert_eq!(
             db.get_kv(&format!(
                 "fact_extraction_episode_pending_poison.{}.{}",
-                session.id, episode_id
+                session.session_id, episode_id
             ))
             .unwrap()
             .as_deref(),
@@ -2392,9 +2409,10 @@ mod tests {
     async fn restored_fact_and_summary_jobs_acknowledge_successful_durable_markers() {
         let db = temp_db();
         let session = db.create_session("outbox acknowledgements").unwrap();
-        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
+        db.enqueue_fact_extraction(&session.session_id, false, 1)
+            .unwrap();
         db.add_episode_with_pending_extraction(
-            &session.id,
+            &session.session_id,
             "A durable summary with enough text for the extraction path.",
             &haven_common::types::new_id("msg"),
             true,
@@ -2443,7 +2461,8 @@ mod tests {
     async fn failed_fact_marker_ack_keeps_marker_and_requeues_live_job() {
         let db = temp_db();
         let session = db.create_session("outbox fact retry").unwrap();
-        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
+        db.enqueue_fact_extraction(&session.session_id, false, 1)
+            .unwrap();
         db.conn()
             .execute_batch(
                 "CREATE TABLE marker_ack_attempts (kind TEXT NOT NULL);
@@ -2473,7 +2492,7 @@ mod tests {
                     )
                     .unwrap();
                 if attempts > 0
-                    && worker.pending_outbox_value_for_test(&session.id) == Some((1, false))
+                    && worker.pending_outbox_value_for_test(&session.session_id) == Some((1, false))
                 {
                     break;
                 }
@@ -2485,7 +2504,7 @@ mod tests {
 
         assert_eq!(
             crate::test_support::list_pending_fact_extraction_rows(&db).unwrap(),
-            vec![(session.id.clone(), false, 1)]
+            vec![(session.session_id.clone(), false, 1)]
         );
         worker.shutdown();
     }
@@ -2496,7 +2515,7 @@ mod tests {
         let session = db.create_session("outbox generation race").unwrap();
         let first_message = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "I prefer Rust.",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -2523,7 +2542,7 @@ mod tests {
         ));
 
         worker
-            .enqueue_infer_durable(&session.id, true, 1, &CancellationToken::new())
+            .enqueue_infer_durable(&session.session_id, true, 1, &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(
@@ -2535,7 +2554,7 @@ mod tests {
 
         let second_message = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "I also use Windows.",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -2543,7 +2562,7 @@ mod tests {
             )
             .unwrap();
         worker
-            .enqueue_infer_durable(&session.id, true, 2, &CancellationToken::new())
+            .enqueue_infer_durable(&session.session_id, true, 2, &CancellationToken::new())
             .await
             .unwrap();
 
@@ -2558,14 +2577,14 @@ mod tests {
         );
         assert_eq!(
             crate::test_support::list_pending_fact_extraction_rows(&db).unwrap(),
-            vec![(session.id.clone(), true, 2)],
+            vec![(session.session_id.clone(), true, 2)],
             "the old in-flight generation must not clear the newer same-bypass marker"
         );
         assert_eq!(
-            db.get_kv(&format!("fact_extraction.{}", session.id))
+            db.get_kv(&format!("fact_extraction.{}", session.session_id))
                 .unwrap()
                 .as_deref(),
-            Some(first_message.id.as_str()),
+            Some(first_message.message_id.as_str()),
             "the first inference commits only the transcript window it read before waiting"
         );
 
@@ -2577,7 +2596,9 @@ mod tests {
                 if crate::test_support::list_pending_fact_extraction_rows(&db)
                     .unwrap()
                     .is_empty()
-                    && worker.pending_outbox_value_for_test(&session.id).is_none()
+                    && worker
+                        .pending_outbox_value_for_test(&session.session_id)
+                        .is_none()
                 {
                     break;
                 }
@@ -2587,10 +2608,10 @@ mod tests {
         .await
         .expect("the newer generation should be acknowledged after its own extraction");
         assert_eq!(
-            db.get_kv(&format!("fact_extraction.{}", session.id))
+            db.get_kv(&format!("fact_extraction.{}", session.session_id))
                 .unwrap()
                 .as_deref(),
-            Some(second_message.id.as_str())
+            Some(second_message.message_id.as_str())
         );
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
         worker.shutdown();
@@ -2604,7 +2625,7 @@ mod tests {
             .unwrap();
         let episode_id = haven_common::types::new_id("msg");
         db.add_episode_with_pending_extraction(
-            &session.id,
+            &session.session_id,
             "A durable summary with enough text for a successful empty extraction.",
             &episode_id,
             true,
@@ -2683,14 +2704,15 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("outbox cancellation").unwrap();
         db.add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "I prefer Rust.",
             Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
-        db.enqueue_fact_extraction(&session.id, true, 1).unwrap();
+        db.enqueue_fact_extraction(&session.session_id, true, 1)
+            .unwrap();
         let inference = Arc::new(BlockingMemoryInference {
             started: Notify::new(),
         });
@@ -2720,10 +2742,10 @@ mod tests {
 
         assert_eq!(
             crate::test_support::list_pending_fact_extraction_rows(&db).unwrap(),
-            vec![(session.id.clone(), true, 1)]
+            vec![(session.session_id.clone(), true, 1)]
         );
         assert_eq!(
-            db.get_kv(&format!("fact_extraction.{}", session.id))
+            db.get_kv(&format!("fact_extraction.{}", session.session_id))
                 .unwrap(),
             None,
             "cancellation during inference must leave the message cursor behind"
@@ -2770,7 +2792,7 @@ mod tests {
         let session = db.create_session("t1").unwrap();
         let _m1 = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "I like Rust.",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -2779,7 +2801,7 @@ mod tests {
             .unwrap();
         let m2 = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "I use VSCode.",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -2787,18 +2809,18 @@ mod tests {
             )
             .unwrap();
         let engine = make_engine(db.clone());
-        engine.infer_facts(&session.id).await;
+        engine.infer_facts(&session.session_id).await;
 
         // Cursor should point at the last processed user message.
         let cursor: Option<String> = db
-            .get_kv(&format!("fact_extraction.{}", session.id))
+            .get_kv(&format!("fact_extraction.{}", session.session_id))
             .unwrap();
-        assert_eq!(cursor.as_deref(), Some(m2.id.as_str()));
+        assert_eq!(cursor.as_deref(), Some(m2.message_id.as_str()));
 
         // Re-running with no new messages must not change anything.
-        engine.infer_facts(&session.id).await;
+        engine.infer_facts(&session.session_id).await;
         let cursor2: Option<String> = db
-            .get_kv(&format!("fact_extraction.{}", session.id))
+            .get_kv(&format!("fact_extraction.{}", session.session_id))
             .unwrap();
         assert_eq!(cursor2, cursor);
     }
@@ -2808,7 +2830,7 @@ mod tests {
         let db = temp_db();
         let session = db.create_session("injected inference").unwrap();
         db.add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "I like Rust.",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -2831,7 +2853,7 @@ mod tests {
             0,
         );
 
-        assert!(worker.infer_facts(&session.id).await);
+        assert!(worker.infer_facts(&session.session_id).await);
 
         let facts = db.list_facts_by_subject("user").unwrap();
         assert!(
@@ -2850,7 +2872,7 @@ mod tests {
             .unwrap();
         let message = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "I prefer Rust.",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -2871,17 +2893,17 @@ mod tests {
                  BEFORE INSERT ON kv_store
                  WHEN NEW.key = 'fact_extraction.{}'
                  BEGIN SELECT RAISE(ABORT, 'injected ordinary cursor failure'); END;",
-                session.id
+                session.session_id
             ))
             .unwrap();
 
-        assert!(!worker.infer_facts(&session.id).await);
+        assert!(!worker.infer_facts(&session.session_id).await);
         assert_eq!(
             db.list_facts_by_subject("user").unwrap()[0].mention_count,
             0
         );
         assert_eq!(
-            db.get_kv(&format!("fact_extraction.{}", session.id))
+            db.get_kv(&format!("fact_extraction.{}", session.session_id))
                 .unwrap(),
             None
         );
@@ -2889,12 +2911,12 @@ mod tests {
         db.conn()
             .execute_batch("DROP TRIGGER fail_ordinary_cursor")
             .unwrap();
-        assert!(worker.infer_facts(&session.id).await);
+        assert!(worker.infer_facts(&session.session_id).await);
         assert_eq!(
-            db.get_kv(&format!("fact_extraction.{}", session.id))
+            db.get_kv(&format!("fact_extraction.{}", session.session_id))
                 .unwrap()
                 .as_deref(),
-            Some(message.id.as_str())
+            Some(message.message_id.as_str())
         );
         let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
@@ -3003,14 +3025,17 @@ mod tests {
         let session = db.create_session("summary completion duplicate").unwrap();
         let episode_id = haven_common::types::new_id("msg");
         db.add_episode_with_id(
-            &session.id,
+            &session.session_id,
             "The user prefers Rust for personal projects and tooling.",
             &episode_id,
         )
         .unwrap();
         db.set_kv(
-            &format!("fact_extraction_episode_done.{}.{episode_id}", session.id,),
-            &session.id,
+            &format!(
+                "fact_extraction_episode_done.{}.{episode_id}",
+                session.session_id,
+            ),
+            &session.session_id,
         )
         .unwrap();
         let inference = Arc::new(FixedMemoryInference {
@@ -3022,7 +3047,7 @@ mod tests {
 
         let outcome = worker
             .infer_facts_from_summary(
-                &session.id,
+                &session.session_id,
                 &episode_id,
                 "The user prefers Rust for personal projects and tooling.",
             )
@@ -3056,19 +3081,19 @@ mod tests {
         let worker = make_engine_with_inference(db.clone(), inference.clone());
         let episode_id = haven_common::types::new_id("msg");
         let summary = "The user prefers Rust for personal projects and tooling.";
-        db.add_episode_with_id(&session.id, summary, &episode_id)
+        db.add_episode_with_id(&session.session_id, summary, &episode_id)
             .unwrap();
 
         assert!(matches!(
             worker
-                .infer_facts_from_summary(&session.id, &episode_id, summary)
+                .infer_facts_from_summary(&session.session_id, &episode_id, summary)
                 .await,
             SummaryExtractOutcome::Retryable { .. }
         ));
         assert_eq!(
             db.get_kv(&format!(
                 "fact_extraction_episode_done.{}.{}",
-                session.id, episode_id
+                session.session_id, episode_id
             ))
             .unwrap(),
             None,
@@ -3084,18 +3109,18 @@ mod tests {
             .unwrap();
         assert_eq!(
             worker
-                .infer_facts_from_summary(&session.id, &episode_id, summary)
+                .infer_facts_from_summary(&session.session_id, &episode_id, summary)
                 .await,
             SummaryExtractOutcome::Done
         );
         assert_eq!(
             db.get_kv(&format!(
                 "fact_extraction_episode_done.{}.{}",
-                session.id, episode_id
+                session.session_id, episode_id
             ))
             .unwrap()
             .as_deref(),
-            Some(session.id.as_str())
+            Some(session.session_id.as_str())
         );
         assert!(
             db.list_facts_by_subject("user")
@@ -3107,7 +3132,7 @@ mod tests {
 
         assert_eq!(
             worker
-                .infer_facts_from_summary(&session.id, &episode_id, summary)
+                .infer_facts_from_summary(&session.session_id, &episode_id, summary)
                 .await,
             SummaryExtractOutcome::Done
         );
@@ -3133,20 +3158,20 @@ mod tests {
         let summary = "The user prefers Rust for personal projects and tooling.";
         let newer_episode_id = haven_common::types::new_id("msg");
         let older_episode_id = haven_common::types::new_id("msg");
-        db.add_episode_with_id(&session.id, summary, &newer_episode_id)
+        db.add_episode_with_id(&session.session_id, summary, &newer_episode_id)
             .unwrap();
-        db.add_episode_with_id(&session.id, summary, &older_episode_id)
+        db.add_episode_with_id(&session.session_id, summary, &older_episode_id)
             .unwrap();
 
         assert_eq!(
             worker
-                .infer_facts_from_summary(&session.id, &newer_episode_id, summary)
+                .infer_facts_from_summary(&session.session_id, &newer_episode_id, summary)
                 .await,
             SummaryExtractOutcome::Done
         );
         assert_eq!(
             worker
-                .infer_facts_from_summary(&session.id, &older_episode_id, summary)
+                .infer_facts_from_summary(&session.session_id, &older_episode_id, summary)
                 .await,
             SummaryExtractOutcome::Done
         );
@@ -3157,7 +3182,7 @@ mod tests {
 
         assert_eq!(
             worker
-                .infer_facts_from_summary(&session.id, &older_episode_id, summary)
+                .infer_facts_from_summary(&session.session_id, &older_episode_id, summary)
                 .await,
             SummaryExtractOutcome::Done
         );
@@ -3188,12 +3213,12 @@ mod tests {
         let worker = make_engine_with_inference_and_interval(db.clone(), inference.clone(), 3_600);
         let episode_id = haven_common::types::new_id("msg");
         let summary = "The user prefers Rust for personal projects and tooling.";
-        db.add_episode_with_id(&session.id, summary, &episode_id)
+        db.add_episode_with_id(&session.session_id, summary, &episode_id)
             .unwrap();
 
         assert!(matches!(
             worker
-                .infer_facts_from_summary(&session.id, &episode_id, summary)
+                .infer_facts_from_summary(&session.session_id, &episode_id, summary)
                 .await,
             SummaryExtractOutcome::Retryable { .. }
         ));
@@ -3201,7 +3226,7 @@ mod tests {
         assert_eq!(
             db.get_kv(&format!(
                 "fact_extraction_episode_done.{}.{}",
-                session.id, episode_id
+                session.session_id, episode_id
             ))
             .unwrap(),
             None
@@ -3212,7 +3237,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             worker
-                .infer_facts_from_summary(&session.id, &episode_id, summary)
+                .infer_facts_from_summary(&session.session_id, &episode_id, summary)
                 .await,
             SummaryExtractOutcome::Done
         );
@@ -3220,11 +3245,11 @@ mod tests {
         assert_eq!(
             db.get_kv(&format!(
                 "fact_extraction_episode_done.{}.{}",
-                session.id, episode_id
+                session.session_id, episode_id
             ))
             .unwrap()
             .as_deref(),
-            Some(session.id.as_str())
+            Some(session.session_id.as_str())
         );
     }
 
@@ -3234,7 +3259,7 @@ mod tests {
         let session = db.create_session("t1").unwrap();
         let m1 = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "first message",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -3242,27 +3267,27 @@ mod tests {
             )
             .unwrap();
         let engine = make_engine(db.clone());
-        engine.infer_facts(&session.id).await;
+        engine.infer_facts(&session.session_id).await;
         let cursor: Option<String> = db
-            .get_kv(&format!("fact_extraction.{}", session.id))
+            .get_kv(&format!("fact_extraction.{}", session.session_id))
             .unwrap();
-        assert_eq!(cursor.as_deref(), Some(m1.id.as_str()));
+        assert_eq!(cursor.as_deref(), Some(m1.message_id.as_str()));
 
         // A new message moves the cursor forward.
         let m2 = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "new signal only",
                 Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
-        engine.infer_facts(&session.id).await;
+        engine.infer_facts(&session.session_id).await;
         let cursor2: Option<String> = db
-            .get_kv(&format!("fact_extraction.{}", session.id))
+            .get_kv(&format!("fact_extraction.{}", session.session_id))
             .unwrap();
-        assert_eq!(cursor2.as_deref(), Some(m2.id.as_str()));
+        assert_eq!(cursor2.as_deref(), Some(m2.message_id.as_str()));
     }
 
     #[tokio::test]
@@ -3274,7 +3299,7 @@ mod tests {
         let session = db.create_session("t1").unwrap();
         let m1 = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "I like Rust.",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -3283,46 +3308,46 @@ mod tests {
             .unwrap();
         let router = mock_router("[]");
         let engine = MemoryWorker::new(db.clone(), router, 4_000, 64, 40, 256, 3_600);
-        engine.infer_facts(&session.id).await;
+        engine.infer_facts(&session.session_id).await;
         let cursor: Option<String> = db
-            .get_kv(&format!("fact_extraction.{}", session.id))
+            .get_kv(&format!("fact_extraction.{}", session.session_id))
             .unwrap();
-        assert_eq!(cursor.as_deref(), Some(m1.id.as_str()));
+        assert_eq!(cursor.as_deref(), Some(m1.message_id.as_str()));
         let last_run: Option<String> = db
-            .get_kv(&format!("fact_extraction_last_run.{}", session.id))
+            .get_kv(&format!("fact_extraction_last_run.{}", session.session_id))
             .unwrap();
         assert!(last_run.is_some(), "a model call must stamp last_run");
 
         // New message arrives within the interval: run is skipped entirely.
         let m2 = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "I use VSCode.",
                 Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
-        let outcome = engine.infer_facts_inner(&session.id, false).await;
+        let outcome = engine.infer_facts_inner(&session.session_id, false).await;
         assert!(matches!(
             outcome,
             FactInferenceOutcome::Throttled { wait_secs } if (1..=3_600).contains(&wait_secs)
         ));
         let cursor2: Option<String> = db
-            .get_kv(&format!("fact_extraction.{}", session.id))
+            .get_kv(&format!("fact_extraction.{}", session.session_id))
             .unwrap();
         assert_eq!(
             cursor2.as_deref(),
-            Some(m1.id.as_str()),
+            Some(m1.message_id.as_str()),
             "throttled run must not advance the cursor"
         );
         let last_run2: Option<String> = db
-            .get_kv(&format!("fact_extraction_last_run.{}", session.id))
+            .get_kv(&format!("fact_extraction_last_run.{}", session.session_id))
             .unwrap();
         assert_eq!(last_run2, last_run, "throttled run must not re-stamp");
         // The pending message is still unprocessed (not lost).
         let user_msgs: Vec<String> = db
-            .list_session_messages(&session.id)
+            .list_session_messages(&session.session_id)
             .unwrap()
             .into_iter()
             .filter(|m| m.role == haven_common::types::CanonicalRole::User)
@@ -3341,7 +3366,7 @@ mod tests {
         let session = db.create_session("t1").unwrap();
         let _m1 = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "I like Rust.",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -3350,14 +3375,14 @@ mod tests {
             .unwrap();
         let router = mock_router("not a json array");
         let engine = MemoryWorker::new(db.clone(), router, 4_000, 64, 40, 256, 0);
-        engine.infer_facts(&session.id).await;
+        engine.infer_facts(&session.session_id).await;
         let facts = db.list_facts_by_subject("user").unwrap();
         assert!(
             facts.is_empty(),
             "a failed extraction must not persist anything"
         );
         let cursor: Option<String> = db
-            .get_kv(&format!("fact_extraction.{}", session.id))
+            .get_kv(&format!("fact_extraction.{}", session.session_id))
             .unwrap();
         assert_eq!(cursor, None);
     }
@@ -3368,7 +3393,7 @@ mod tests {
             let db = Arc::new(Database::open_in_memory().unwrap());
             let session = db.create_session("missing extraction projection").unwrap();
             db.add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "I prefer Rust.",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -3381,11 +3406,11 @@ mod tests {
             let worker = MemoryWorker::new(db.clone(), mock_router("[]"), 4_000, 64, 40, 256, 0);
 
             assert!(
-                !worker.infer_facts(&session.id).await,
+                !worker.infer_facts(&session.session_id).await,
                 "missing {missing_table} must preserve the existing non-fatal extraction failure"
             );
             assert_eq!(
-                db.get_kv(&format!("fact_extraction.{}", session.id))
+                db.get_kv(&format!("fact_extraction.{}", session.session_id))
                     .unwrap(),
                 None,
                 "missing {missing_table} must not advance the extraction cursor"
@@ -3399,7 +3424,7 @@ mod tests {
         let session = db.create_session("disabled inference").unwrap();
         let message = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "I prefer Rust.",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -3427,13 +3452,13 @@ mod tests {
         let cancellation = CancellationToken::new();
         worker.start_outbox_worker(&cancellation).await.unwrap();
         worker
-            .enqueue_infer_durable(&session.id, true, 1, &cancellation)
+            .enqueue_infer_durable(&session.session_id, true, 1, &cancellation)
             .await
             .unwrap();
 
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert!(
-            db.get_kv(&format!("fact_extraction_pending.{}", session.id))
+            db.get_kv(&format!("fact_extraction_pending.{}", session.session_id))
                 .unwrap()
                 .is_some(),
             "disabling inference must preserve durable work"
@@ -3444,10 +3469,10 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if db
-                    .get_kv(&format!("fact_extraction.{}", session.id))
+                    .get_kv(&format!("fact_extraction.{}", session.session_id))
                     .unwrap()
                     .as_deref()
-                    == Some(message.id.as_str())
+                    == Some(message.message_id.as_str())
                 {
                     break;
                 }
@@ -3465,7 +3490,7 @@ mod tests {
         let db = temp_db();
         let session = db.create_session("pause retry throttle").unwrap();
         db.add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "I prefer Rust.",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -3484,7 +3509,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         worker.start_outbox_worker(&cancellation).await.unwrap();
         worker
-            .enqueue_infer_durable(&session.id, true, 1, &cancellation)
+            .enqueue_infer_durable(&session.session_id, true, 1, &cancellation)
             .await
             .unwrap();
 
@@ -3499,7 +3524,7 @@ mod tests {
                     .unwrap();
                 let state = markers
                     .into_iter()
-                    .find(|marker| marker.session_id == session.id)
+                    .find(|marker| marker.session_id == session.session_id)
                     .and_then(|marker| marker.state.ok());
                 if let Some(state) = state
                     && state.attempt > 0
@@ -3525,29 +3550,29 @@ mod tests {
         engine.suspend_outbox_worker_for_test();
         let cancellation = CancellationToken::new();
         engine
-            .enqueue_infer_durable(&first.id, false, 1, &cancellation)
+            .enqueue_infer_durable(&first.session_id, false, 1, &cancellation)
             .await
             .unwrap();
         engine
-            .enqueue_infer_durable(&first.id, true, 2, &cancellation)
+            .enqueue_infer_durable(&first.session_id, true, 2, &cancellation)
             .await
             .unwrap();
         engine
-            .enqueue_infer_durable(&second.id, false, 1, &cancellation)
+            .enqueue_infer_durable(&second.session_id, false, 1, &cancellation)
             .await
             .unwrap();
         assert_eq!(
-            engine.pending_outbox_value_for_test(&first.id),
+            engine.pending_outbox_value_for_test(&first.session_id),
             Some((2, true))
         );
         assert_eq!(
-            engine.pending_outbox_value_for_test(&second.id),
+            engine.pending_outbox_value_for_test(&second.session_id),
             Some((1, false))
         );
         assert_eq!(engine.outbox_projection_len_for_test(), 2);
         let durable = crate::test_support::list_pending_fact_extraction_rows(&db).unwrap();
-        assert!(durable.contains(&(first.id, true, 2)));
-        assert!(durable.contains(&(second.id, false, 1)));
+        assert!(durable.contains(&(first.session_id, true, 2)));
+        assert!(durable.contains(&(second.session_id, false, 1)));
     }
 
     #[tokio::test]
@@ -3560,7 +3585,7 @@ mod tests {
         engine.suspend_outbox_worker_for_test();
 
         engine
-            .enqueue_infer_durable(&session.id, true, 1, &CancellationToken::new())
+            .enqueue_infer_durable(&session.session_id, true, 1, &CancellationToken::new())
             .await
             .unwrap();
 
@@ -3568,8 +3593,8 @@ mod tests {
             .run_blocking_for_test(crate::test_support::list_pending_fact_extraction_rows)
             .await
             .unwrap();
-        let in_memory = engine.pending_outbox_value_for_test(&session.id);
-        assert!(pending.contains(&(session.id.clone(), true, 1)));
+        let in_memory = engine.pending_outbox_value_for_test(&session.session_id);
+        assert!(pending.contains(&(session.session_id.clone(), true, 1)));
         assert_eq!(in_memory, Some((1, true)));
     }
 }

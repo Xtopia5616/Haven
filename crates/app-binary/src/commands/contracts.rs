@@ -527,7 +527,7 @@ impl TryFrom<haven_memory::Fact> for MemoryFactResponse {
             MemoryFactSource::try_from(fact.source.as_str()).map_err(|error| error.to_string())?;
 
         Ok(Self {
-            fact_id: fact.id,
+            fact_id: fact.fact_id,
             subject: fact.subject,
             predicate: fact.predicate,
             object: fact.object,
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn memory_fact_response_exposes_only_its_explicit_wire_projection() {
         let mut fact = haven_memory::Fact {
-            id: "fact-0123456789abcdef0123456789abcdef".into(),
+            fact_id: "fact-0123456789abcdef0123456789abcdef".into(),
             subject: "user".into(),
             predicate: "likes".into(),
             object: "Rust".into(),

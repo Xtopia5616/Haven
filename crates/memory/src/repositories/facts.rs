@@ -18,7 +18,7 @@ pub struct PredicateCount {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Fact {
-    pub id: String,
+    pub fact_id: String,
     pub subject: String,
     pub predicate: String,
     pub object: String,
@@ -491,7 +491,7 @@ mod tests {
         let fact = db
             .insert_fact("user", "likes", "Rust", "user", 0.9, &["preference"])
             .unwrap();
-        assert!(!fact.id.is_empty());
+        assert!(!fact.fact_id.is_empty());
         assert_eq!(fact.subject, "user");
         assert_eq!(fact.predicate, "likes");
         assert_eq!(fact.object, "Rust");
@@ -692,7 +692,7 @@ mod tests {
         let fact = db
             .insert_fact("user", "likes", "Rust", "user", 0.9, &[])
             .unwrap();
-        db.delete_fact(&fact.id).unwrap();
+        db.delete_fact(&fact.fact_id).unwrap();
         let remaining = db.list_facts_by_subject("user").unwrap();
         assert!(remaining.is_empty());
     }
@@ -1495,7 +1495,7 @@ mod tests {
             .conn()
             .query_row(
                 "SELECT provenance_snippet FROM facts WHERE id = ?1",
-                rusqlite::params![stored[0].id],
+                rusqlite::params![stored[0].fact_id],
                 |row| row.get(0),
             )
             .unwrap();
@@ -1512,13 +1512,13 @@ mod tests {
             let conn = db.conn();
             conn.execute(
                 "UPDATE facts SET provenance_record_id = '   ' WHERE id = ?1",
-                rusqlite::params![fact.id],
+                rusqlite::params![fact.fact_id],
             )
             .unwrap();
         }
         let cleared = db.cleanup_orphan_source_refs().unwrap();
         assert_eq!(cleared, 1);
-        let got = db.get_fact_by_id(&fact.id).unwrap().unwrap();
+        let got = db.get_fact_by_id(&fact.fact_id).unwrap().unwrap();
         assert!(got.source_ref.is_none() || got.source_ref.as_ref().unwrap().message_id.is_empty());
     }
 
@@ -1527,7 +1527,7 @@ mod tests {
         let db = create_db();
         let session = db.create_session("t").unwrap();
         let episode_id = haven_common::types::new_id("msg");
-        db.add_episode_with_id(&session.id, "User prefers dark theme", &episode_id)
+        db.add_episode_with_id(&session.session_id, "User prefers dark theme", &episode_id)
             .unwrap();
         let from_episode = FactSourceRef::from_message(&episode_id, "User prefers dark theme");
         db.upsert_fact(

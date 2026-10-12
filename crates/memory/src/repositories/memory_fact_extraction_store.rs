@@ -128,7 +128,7 @@ mod tests {
         let session = db.create_session("fact extraction transcript").unwrap();
         let user = db
             .add_message(
-                &session.id,
+                &session.session_id,
                 haven_common::types::CanonicalRole::User,
                 "Use the checked path",
                 Some(haven_common::types::TranscriptMessageKind::Text),
@@ -137,7 +137,7 @@ mod tests {
             .unwrap();
         let step = db
             .create_tool_step(
-                &session.id,
+                &session.session_id,
                 1,
                 "shell",
                 "{\"command\":\"pwd\"}",
@@ -151,12 +151,12 @@ mod tests {
             .unwrap();
 
         let transcript = MemoryFactExtractionStore::new(db)
-            .load_ordinary_transcript(&session.id)
+            .load_ordinary_transcript(&session.session_id)
             .await
             .unwrap();
 
         assert_eq!(transcript.messages.len(), 1);
-        assert_eq!(transcript.messages[0].id, user.id);
+        assert_eq!(transcript.messages[0].message_id, user.message_id);
         assert_eq!(transcript.messages[0].content, "Use the checked path");
         assert_eq!(transcript.steps.len(), 1);
         assert_eq!(transcript.steps[0].step_id, step.step_id);
@@ -175,7 +175,7 @@ mod tests {
             .execute_batch("DROP TABLE messages")
             .unwrap();
         let error = MemoryFactExtractionStore::new(messages_db)
-            .load_ordinary_transcript(&messages_session.id)
+            .load_ordinary_transcript(&messages_session.session_id)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no such table: messages"));
@@ -187,7 +187,7 @@ mod tests {
             .execute_batch("DROP TABLE session_steps")
             .unwrap();
         let error = MemoryFactExtractionStore::new(steps_db)
-            .load_ordinary_transcript(&steps_session.id)
+            .load_ordinary_transcript(&steps_session.session_id)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no such table: session_steps"));
@@ -227,11 +227,16 @@ mod tests {
         );
 
         db.set_kv(
-            &format!("fact_extraction.{}", session.id),
+            &format!("fact_extraction.{}", session.session_id),
             &invalid_message_id,
         )
         .unwrap();
-        assert!(store.ordinary_extraction_cursor(&session.id).await.is_err());
+        assert!(
+            store
+                .ordinary_extraction_cursor(&session.session_id)
+                .await
+                .is_err()
+        );
         assert!(
             db.get_kv(&format!("fact_extraction_last_run.{invalid_session_id}"))
                 .unwrap()
@@ -243,7 +248,7 @@ mod tests {
     async fn ordinary_cursor_read_and_shared_attempt_timestamp_report_kv_errors() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("fact extraction kv errors").unwrap();
-        let session_id = session.id.as_str();
+        let session_id = session.session_id.as_str();
         let store = MemoryFactExtractionStore::new(db.clone());
 
         assert_eq!(

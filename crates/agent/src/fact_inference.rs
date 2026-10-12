@@ -41,7 +41,7 @@ pub(crate) fn build_extraction_window(
         .map(|(i, _)| i)
         .collect();
     let start_user = cursor
-        .and_then(|c| user_indices.iter().position(|&i| all[i].id == c))
+        .and_then(|c| user_indices.iter().position(|&i| all[i].message_id == c))
         .map(|i| i + 1)
         .unwrap_or(0);
     if start_user >= user_indices.len() {
@@ -70,7 +70,7 @@ pub(crate) fn build_extraction_window(
     }
     let cursor_last = user_indices[start_user..]
         .last()
-        .map(|&i| all[i].id.clone());
+        .map(|&i| all[i].message_id.clone());
     ExtractionWindow {
         messages,
         cursor_last,
@@ -163,7 +163,7 @@ fn push_turn_context(
                 continue;
             }
             tools.push(haven_memory::Message {
-                id: step.step_id.clone(),
+                message_id: step.step_id.clone(),
                 session_id: step.session_id.clone(),
                 role: haven_common::types::CanonicalRole::Tool,
                 content: format!("tool({name}): {body}"),
@@ -253,7 +253,7 @@ pub(crate) fn format_contradiction_groups(groups: &[ContradictionCandidate]) -> 
                 .iter()
                 .map(|f| {
                     let mut row = serde_json::json!({
-                        "id": f.id,
+                        "id": f.fact_id,
                         "subject": f.subject,
                         "predicate": f.predicate,
                         "object": f.object,
@@ -290,12 +290,12 @@ pub(crate) fn gate_contradiction_demote(
     let fact = *allowed.get(id)?;
     let group = groups
         .iter()
-        .find(|g| g.facts.iter().any(|f| f.id == fact.id))?;
+        .find(|g| g.facts.iter().any(|f| f.fact_id == fact.fact_id))?;
     if !fact_within_demote_age(fact, chrono::Utc::now()) {
         return None;
     }
     if let Some((keeper, _)) = pick_contradiction_keeper(group.kind, &group.facts)
-        && keeper.id == fact.id
+        && keeper.fact_id == fact.fact_id
     {
         // Never wipe a whole group — keeper always survives.
         return None;
@@ -304,12 +304,12 @@ pub(crate) fn gate_contradiction_demote(
         && group
             .facts
             .iter()
-            .any(|f| f.id != fact.id && f.source != "user")
+            .any(|f| f.fact_id != fact.fact_id && f.source != "user")
     {
         // User-stated beats inferred for every predicate (not only identity).
         return None;
     }
-    Some(fact.id.clone())
+    Some(fact.fact_id.clone())
 }
 
 /// Gate an LLM merge proposal (M6). Accept when the static alias map already

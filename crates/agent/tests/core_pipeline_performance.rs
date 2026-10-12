@@ -210,7 +210,7 @@ async fn memory_fact_outbox_latency_depth_and_throughput_profile() {
     let warmup_id = db
         .create_session("memory outbox profile warmup")
         .expect("warmup session")
-        .id;
+        .session_id;
     store
         .enqueue_fact_extraction_cancellable(&warmup_id, false, 1, &cancellation)
         .await
@@ -230,7 +230,7 @@ async fn memory_fact_outbox_latency_depth_and_throughput_profile() {
         .map(|index| {
             db.create_session(&format!("memory outbox profile {index}"))
                 .expect("profile session")
-                .id
+                .session_id
         })
         .collect::<Vec<_>>();
     let mut enqueue_samples_ns = Vec::with_capacity(SAMPLE_COUNT);

@@ -2198,12 +2198,12 @@ mod queue_tests {
         );
         let session = db.create_session("interaction owner").expect("session");
         let mut info = empty_state().info;
-        info.session_id = session.id.clone();
+        info.session_id = session.session_id.clone();
         let actor = spawn(SessionStore::new(db.clone()), info, Vec::new());
 
         actor
             .request_interaction(crate::interaction::InteractionRequest::ask(
-                &session.id,
+                &session.session_id,
                 vec!["A".into()],
                 vec!["step-valid".into()],
             ))
@@ -2221,13 +2221,16 @@ mod queue_tests {
         );
 
         let events = SessionStore::new(db)
-            .read_active_events_async(&session.id)
+            .read_active_events_async(&session.session_id)
             .await
             .expect("read active events");
         assert_eq!(events.len(), 1, "invalid request must not be appended");
         let persisted: crate::interaction::InteractionRequest =
             serde_json::from_str(&events[0].payload).expect("decode durable interaction");
-        assert_eq!(persisted.session_id.as_deref(), Some(session.id.as_str()));
+        assert_eq!(
+            persisted.session_id.as_deref(),
+            Some(session.session_id.as_str())
+        );
         assert_eq!(persisted.request_id, "step-valid");
     }
 
@@ -2513,7 +2516,7 @@ mod queue_tests {
                 .expect("temporary database"),
         );
         let session = db.create_session("actor ReAct loop").expect("session");
-        db.update_session_status(&session.id, SessionStatus::Paused)
+        db.update_session_status(&session.session_id, SessionStatus::Paused)
             .expect("paused session status");
 
         let executor = Arc::new(crate::session::SessionSupervisor::new_for_test(
@@ -2522,11 +2525,11 @@ mod queue_tests {
             1,
         ));
         executor
-            .ensure_session_loaded(&session.id)
+            .ensure_session_loaded(&session.session_id)
             .await
             .expect("load actor");
         let actor = executor
-            .actor_for(&session.id)
+            .actor_for(&session.session_id)
             .await
             .expect("session actor");
         let engine = Arc::new(crate::react::ReActEngine::new(
@@ -2545,11 +2548,11 @@ mod queue_tests {
             message_id: "step-00000000000000000000000000000001".into(),
         }];
         engine
-            .seed_transcript_events(&session.id, &events, 1)
+            .seed_transcript_events(&session.session_id, &events, 1)
             .await
             .expect("seed durable transcript");
 
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         let run_loop = |run_id| {
             let actor = actor.clone();
             let engine = engine.clone();

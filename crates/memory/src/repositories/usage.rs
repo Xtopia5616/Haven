@@ -1142,9 +1142,9 @@ mod tests {
     fn persist_and_get_session_usage_roundtrip() {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
-        assert!(db.get_session_usage(&session.id).unwrap().is_none());
+        assert!(db.get_session_usage(&session.session_id).unwrap().is_none());
         db.persist_llm_call_and_refresh_session_usage(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             None,
@@ -1158,7 +1158,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let u = db.get_session_usage(&session.id).unwrap().unwrap();
+        let u = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(u.prompt_tokens, 100);
         assert_eq!(u.completion_tokens, 50);
         assert_eq!(u.total_tokens, 150);
@@ -1174,7 +1174,7 @@ mod tests {
         let session = db.create_session("usage identity").unwrap();
         let record = db
             .persist_llm_call_and_refresh_session_usage(
-                &session.id,
+                &session.session_id,
                 Some(1),
                 RequestKind::Chat,
                 Some("model-a"),
@@ -1188,7 +1188,12 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(db.list_session_llm_usage(&session.id).unwrap().len(), 1);
+        assert_eq!(
+            db.list_session_llm_usage(&session.session_id)
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(db.list_session_llm_usage("ses-short").is_err());
 
         db.conn()
@@ -1197,7 +1202,7 @@ mod tests {
                 [&record.usage_id],
             )
             .unwrap();
-        assert!(db.list_session_llm_usage(&session.id).is_err());
+        assert!(db.list_session_llm_usage(&session.session_id).is_err());
     }
 
     #[test]
@@ -1206,7 +1211,7 @@ mod tests {
         let session = db.create_session("hello").unwrap();
         let records = db
             .persist_llm_call_batch_and_refresh_session_usage(
-                &session.id,
+                &session.session_id,
                 &[
                     LlmUsageRecordInput {
                         step_number: Some(3),
@@ -1254,8 +1259,13 @@ mod tests {
         assert_eq!(records[1].role, RequestKind::Chat);
         assert_eq!(records[0].call_kind, LlmCallKind::Tool);
         assert_eq!(records[1].call_kind, LlmCallKind::Media);
-        assert_eq!(db.list_session_llm_usage(&session.id).unwrap().len(), 2);
-        let totals = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(
+            db.list_session_llm_usage(&session.session_id)
+                .unwrap()
+                .len(),
+            2
+        );
+        let totals = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(totals.prompt_tokens, 0);
         assert_eq!(totals.total_tokens, 0);
     }
@@ -1265,7 +1275,7 @@ mod tests {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             None,
@@ -1286,14 +1296,14 @@ mod tests {
                 .unwrap();
             conn.execute(
                 "UPDATE llm_usage SET call_kind = 'future' WHERE session_id = ?1",
-                [&session.id],
+                [&session.session_id],
             )
             .unwrap();
             conn.execute_batch("PRAGMA ignore_check_constraints = OFF")
                 .unwrap();
         }
 
-        let error = db.list_session_llm_usage(&session.id).unwrap_err();
+        let error = db.list_session_llm_usage(&session.session_id).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -1307,7 +1317,7 @@ mod tests {
         let session = db.create_session("hello").unwrap();
         let rec = db
             .persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
-                &session.id,
+                &session.session_id,
                 Some(1),
                 RequestKind::Chat,
                 Some("model-a"),
@@ -1329,10 +1339,10 @@ mod tests {
 
         assert_eq!(rec.context_tokens, 900);
         assert_eq!(rec.context_window, Some(4096));
-        let summary = db.get_session_usage(&session.id).unwrap().unwrap();
+        let summary = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(summary.context_tokens, 900);
         assert_eq!(summary.context_window, Some(4096));
-        let calls = db.list_session_llm_usage(&session.id).unwrap();
+        let calls = db.list_session_llm_usage(&session.session_id).unwrap();
         assert_eq!(calls[0].context_tokens, 900);
         assert_eq!(calls[0].context_window, Some(4096));
     }
@@ -1342,7 +1352,7 @@ mod tests {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             Some("agent-model"),
@@ -1357,7 +1367,7 @@ mod tests {
         )
         .unwrap();
         db.persist_llm_call_and_refresh_session_usage_with_kind_and_context(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Vision,
             LlmCallKind::Media,
@@ -1378,13 +1388,13 @@ mod tests {
         )
         .unwrap();
 
-        let summary = db.get_session_usage(&session.id).unwrap().unwrap();
+        let summary = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(summary.prompt_tokens, 100);
         assert_eq!(summary.completion_tokens, 20);
         assert_eq!(summary.cached_tokens, 50);
         assert_eq!(summary.cost_usd, 0.1);
 
-        let calls = db.list_session_llm_usage(&session.id).unwrap();
+        let calls = db.list_session_llm_usage(&session.session_id).unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].call_kind, LlmCallKind::Agent);
         assert_eq!(calls[1].call_kind, LlmCallKind::Media);
@@ -1395,7 +1405,7 @@ mod tests {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             None,
@@ -1409,9 +1419,9 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(db.get_session_usage(&session.id).unwrap().is_some());
-        db.delete_session(&session.id).unwrap();
-        assert!(db.get_session_usage(&session.id).unwrap().is_none());
+        assert!(db.get_session_usage(&session.session_id).unwrap().is_some());
+        db.delete_session(&session.session_id).unwrap();
+        assert!(db.get_session_usage(&session.session_id).unwrap().is_none());
     }
 
     #[test]
@@ -1420,7 +1430,7 @@ mod tests {
         let session = db.create_session("hello").unwrap();
         let rec = db
             .record_llm_call_usage(
-                &session.id,
+                &session.session_id,
                 Some(1),
                 RequestKind::Chat,
                 Some("gpt-5"),
@@ -1446,7 +1456,7 @@ mod tests {
         assert_eq!(historic.usage_id, rec.usage_id);
         assert_eq!(rec.step_number, Some(1));
         assert_eq!(rec.model.as_deref(), Some("gpt-5"));
-        let usage = db.list_session_llm_usage(&session.id).unwrap();
+        let usage = db.list_session_llm_usage(&session.session_id).unwrap();
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].prompt_tokens, 100);
         assert_eq!(usage[0].completion_tokens, 50);
@@ -1464,7 +1474,7 @@ mod tests {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.record_llm_call_usage(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             None,
@@ -1479,7 +1489,7 @@ mod tests {
         )
         .unwrap();
         db.record_llm_call_usage(
-            &session.id,
+            &session.session_id,
             Some(2),
             RequestKind::Chat,
             None,
@@ -1494,7 +1504,7 @@ mod tests {
         )
         .unwrap();
         // Unlike session_usage, rows accumulate (one per call) in created order.
-        let usage = db.list_session_llm_usage(&session.id).unwrap();
+        let usage = db.list_session_llm_usage(&session.session_id).unwrap();
         assert_eq!(usage.len(), 2);
         assert_eq!(usage[0].step_number, Some(1));
         assert_eq!(usage[1].step_number, Some(2));
@@ -1518,7 +1528,7 @@ mod tests {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.record_llm_call_usage(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             None,
@@ -1532,8 +1542,12 @@ mod tests {
             None,
         )
         .unwrap();
-        db.delete_session(&session.id).unwrap();
-        assert!(db.list_session_llm_usage(&session.id).unwrap().is_empty());
+        db.delete_session(&session.session_id).unwrap();
+        assert!(
+            db.list_session_llm_usage(&session.session_id)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1541,7 +1555,7 @@ mod tests {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             Some("gpt-5"),
@@ -1556,7 +1570,7 @@ mod tests {
         )
         .unwrap();
         db.persist_llm_call_and_refresh_session_usage(
-            &session.id,
+            &session.session_id,
             Some(2),
             RequestKind::Chat,
             Some("gpt-5"),
@@ -1570,7 +1584,7 @@ mod tests {
             Some(5),
         )
         .unwrap();
-        let u = db.get_session_usage(&session.id).unwrap().unwrap();
+        let u = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(u.prompt_tokens, 120);
         assert_eq!(u.completion_tokens, 60);
         assert_eq!(u.total_tokens, 180);
@@ -1586,7 +1600,7 @@ mod tests {
         let session = db.create_session("hello").unwrap();
         for (step_number, context_tokens) in [(1, 32_000), (2, 64_000)] {
             db.persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
-                &session.id,
+                &session.session_id,
                 Some(step_number),
                 RequestKind::Chat,
                 None,
@@ -1607,7 +1621,7 @@ mod tests {
             .unwrap();
         }
 
-        let incremental = db.get_session_usage(&session.id).unwrap().unwrap();
+        let incremental = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(incremental.prompt_tokens, u32::MAX);
         assert_eq!(incremental.completion_tokens, 3_000_000_000);
         assert_eq!(incremental.total_tokens, u32::MAX);
@@ -1616,8 +1630,9 @@ mod tests {
         assert_eq!(incremental.cache_miss_tokens, u32::MAX);
         assert_eq!(incremental.context_tokens, 64_000);
 
-        db.rebuild_session_usage_from_calls(&session.id).unwrap();
-        let rebuilt = db.get_session_usage(&session.id).unwrap().unwrap();
+        db.rebuild_session_usage_from_calls(&session.session_id)
+            .unwrap();
+        let rebuilt = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(rebuilt.prompt_tokens, incremental.prompt_tokens);
         assert_eq!(rebuilt.completion_tokens, incremental.completion_tokens);
         assert_eq!(rebuilt.total_tokens, incremental.total_tokens);
@@ -1635,7 +1650,7 @@ mod tests {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             None,
@@ -1654,12 +1669,12 @@ mod tests {
         let conn = db.conn();
         conn.execute(
             "UPDATE session_usage SET prompt_tokens = ?2, total_tokens = ?2 WHERE session_id = ?1",
-            rusqlite::params![session.id, out_of_range_count],
+            rusqlite::params![session.session_id, out_of_range_count],
         )
         .unwrap();
         drop(conn);
 
-        let usage = db.get_session_usage(&session.id).unwrap().unwrap();
+        let usage = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(usage.prompt_tokens, u32::MAX);
         assert_eq!(usage.total_tokens, u32::MAX);
     }
@@ -1669,7 +1684,7 @@ mod tests {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             None,
@@ -1689,7 +1704,7 @@ mod tests {
         )
         .unwrap();
         db.persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
-            &session.id,
+            &session.session_id,
             Some(2),
             RequestKind::Chat,
             None,
@@ -1715,7 +1730,7 @@ mod tests {
         Database::insert_llm_call_usage_conn(
             &conn,
             &old_id,
-            &session.id,
+            &session.session_id,
             Some(0),
             RequestKind::Chat,
             LlmCallKind::Agent.as_str(),
@@ -1752,10 +1767,10 @@ mod tests {
             Some(4096),
             old_created_at,
         );
-        Database::apply_session_usage_delta_conn(&conn, &session.id, &delta).unwrap();
+        Database::apply_session_usage_delta_conn(&conn, &session.session_id, &delta).unwrap();
         drop(conn);
 
-        let summary = db.get_session_usage(&session.id).unwrap().unwrap();
+        let summary = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(summary.total_tokens, 47);
         assert_eq!(summary.context_tokens, 1200);
         assert_eq!(summary.context_window, Some(4096));
@@ -1766,7 +1781,7 @@ mod tests {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             Some("gpt-test"),
@@ -1784,7 +1799,7 @@ mod tests {
         )
         .unwrap();
         db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
-            &session.id,
+            &session.session_id,
             Some(2),
             RequestKind::Chat,
             Some("claude-test"),
@@ -1802,11 +1817,11 @@ mod tests {
         )
         .unwrap();
 
-        let calls = db.list_session_llm_usage(&session.id).unwrap();
+        let calls = db.list_session_llm_usage(&session.session_id).unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].cache_accounting, CacheAccounting::Inclusive);
         assert_eq!(calls[1].cache_accounting, CacheAccounting::Exclusive);
-        let total = db.get_session_usage(&session.id).unwrap().unwrap();
+        let total = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(total.prompt_tokens, 200);
         assert_eq!(total.cached_tokens, 500);
         assert_eq!(total.total_tokens, 610);
@@ -1817,7 +1832,7 @@ mod tests {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             None,
@@ -1832,16 +1847,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            db.get_session_usage(&session.id)
+            db.get_session_usage(&session.session_id)
                 .unwrap()
                 .unwrap()
                 .total_tokens,
             15
         );
         let cutoff = "1970-01-01T00:00:00.000Z";
-        db.delete_llm_usage_from(&session.id, cutoff).unwrap();
-        db.rebuild_session_usage_from_calls(&session.id).unwrap();
-        let u = db.get_session_usage(&session.id).unwrap().unwrap();
+        db.delete_llm_usage_from(&session.session_id, cutoff)
+            .unwrap();
+        db.rebuild_session_usage_from_calls(&session.session_id)
+            .unwrap();
+        let u = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(u.prompt_tokens, 0);
         assert_eq!(u.completion_tokens, 0);
         assert_eq!(u.total_tokens, 0);
@@ -1856,7 +1873,7 @@ mod tests {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             None,
@@ -1870,11 +1887,11 @@ mod tests {
             None,
         )
         .unwrap();
-        let u = db.get_session_usage(&session.id).unwrap().unwrap();
+        let u = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(u.prompt_tokens, 10);
         assert_eq!(u.completion_tokens, 5);
         assert_eq!(u.total_tokens, 15);
-        let calls = db.list_session_llm_usage(&session.id).unwrap();
+        let calls = db.list_session_llm_usage(&session.session_id).unwrap();
         assert_eq!(calls[0].total_tokens, 15);
     }
 
@@ -1883,7 +1900,7 @@ mod tests {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
-            &session.id,
+            &session.session_id,
             Some(1),
             RequestKind::Chat,
             None,
@@ -1900,9 +1917,9 @@ mod tests {
             None,
         )
         .unwrap();
-        let u = db.get_session_usage(&session.id).unwrap().unwrap();
+        let u = db.get_session_usage(&session.session_id).unwrap().unwrap();
         assert_eq!(u.total_tokens, 570);
-        let calls = db.list_session_llm_usage(&session.id).unwrap();
+        let calls = db.list_session_llm_usage(&session.session_id).unwrap();
         assert_eq!(calls[0].total_tokens, 570);
     }
 
@@ -1912,7 +1929,7 @@ mod tests {
         let session = db.create_session("hello").unwrap();
         let rec = db
             .persist_llm_call_and_refresh_session_usage(
-                &session.id,
+                &session.session_id,
                 Some(1),
                 RequestKind::Chat,
                 None,
@@ -1944,7 +1961,7 @@ mod tests {
         let session = db.create_session("hello").unwrap();
         let a = db
             .record_llm_call_usage(
-                &session.id,
+                &session.session_id,
                 Some(1),
                 RequestKind::Chat,
                 None,
@@ -1960,7 +1977,7 @@ mod tests {
             .unwrap();
         let b = db
             .record_llm_call_usage(
-                &session.id,
+                &session.session_id,
                 Some(2),
                 RequestKind::Chat,
                 None,
@@ -1975,7 +1992,7 @@ mod tests {
             )
             .unwrap();
         db.delete_llm_usage_by_id(&a.usage_id).unwrap();
-        let usage = db.list_session_llm_usage(&session.id).unwrap();
+        let usage = db.list_session_llm_usage(&session.session_id).unwrap();
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].usage_id, b.usage_id);
     }

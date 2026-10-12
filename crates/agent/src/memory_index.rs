@@ -484,7 +484,7 @@ mod tests {
             .unwrap();
         db.save_embedding(
             haven_memory::MemoryEntityKind::Fact.entity_type(),
-            &fact.id,
+            &fact.fact_id,
             "previous-vector-space",
             &[1.0, 0.0],
             "user likes Rust",

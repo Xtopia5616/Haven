@@ -905,24 +905,30 @@ mod tests {
         let db = test_db();
         let session = db.create_session("cursor").unwrap();
 
-        assert_eq!(db.memory_event_cursor_optional(&session.id).unwrap(), None);
+        assert_eq!(
+            db.memory_event_cursor_optional(&session.session_id)
+                .unwrap(),
+            None
+        );
         assert!(
-            db.initialize_memory_event_cursor_if_absent(&session.id, 0)
+            db.initialize_memory_event_cursor_if_absent(&session.session_id, 0)
                 .unwrap()
         );
         assert_eq!(
-            db.memory_event_cursor_optional(&session.id).unwrap(),
+            db.memory_event_cursor_optional(&session.session_id)
+                .unwrap(),
             Some(0)
         );
         assert!(
-            !db.initialize_memory_event_cursor_if_absent(&session.id, 8)
+            !db.initialize_memory_event_cursor_if_absent(&session.session_id, 8)
                 .unwrap()
         );
         assert_eq!(
-            db.memory_event_cursor_optional(&session.id).unwrap(),
+            db.memory_event_cursor_optional(&session.session_id)
+                .unwrap(),
             Some(0)
         );
-        assert_eq!(db.memory_event_cursor(&session.id).unwrap(), 0);
+        assert_eq!(db.memory_event_cursor(&session.session_id).unwrap(), 0);
     }
 
     #[test]
@@ -963,12 +969,18 @@ mod tests {
     fn memory_event_cursor_optional_rejects_invalid_stored_values() {
         let db = test_db();
         let session = db.create_session("cursor").unwrap();
-        db.set_kv(&format!("memory_event_cursor.{}", session.id), "bad")
-            .unwrap();
+        db.set_kv(
+            &format!("memory_event_cursor.{}", session.session_id),
+            "bad",
+        )
+        .unwrap();
 
-        assert!(db.memory_event_cursor_optional(&session.id).is_err());
         assert!(
-            db.initialize_memory_event_cursor_if_absent(&session.id, 1)
+            db.memory_event_cursor_optional(&session.session_id)
+                .is_err()
+        );
+        assert!(
+            db.initialize_memory_event_cursor_if_absent(&session.session_id, 1)
                 .is_err()
         );
     }
@@ -999,14 +1011,14 @@ mod tests {
         let first_episode_id = new_id("msg");
         let second_episode_id = new_id("msg");
         db.add_episode_with_pending_extraction(
-            &session.id,
+            &session.session_id,
             "The first durable summary contains enough extraction context.",
             &first_episode_id,
             true,
         )
         .unwrap();
         db.add_episode_with_pending_extraction(
-            &session.id,
+            &session.session_id,
             "The second durable summary contains enough extraction context.",
             &second_episode_id,
             true,
@@ -1016,16 +1028,16 @@ mod tests {
         let mut pending = pending_summary_extraction_rows(&db).unwrap();
         pending.sort();
         let mut expected = vec![
-            (session.id.clone(), first_episode_id.clone()),
-            (session.id.clone(), second_episode_id.clone()),
+            (session.session_id.clone(), first_episode_id.clone()),
+            (session.session_id.clone(), second_episode_id.clone()),
         ];
         expected.sort();
         assert_eq!(pending, expected);
-        db.clear_summary_extraction(&session.id, &first_episode_id)
+        db.clear_summary_extraction(&session.session_id, &first_episode_id)
             .unwrap();
         assert_eq!(
             pending_summary_extraction_rows(&db).unwrap(),
-            vec![(session.id, second_episode_id)]
+            vec![(session.session_id, second_episode_id)]
         );
     }
 
@@ -1035,7 +1047,7 @@ mod tests {
         let session = db.create_session("summary marker identity").unwrap();
         let episode_id = new_id("msg");
         db.add_episode_with_pending_extraction(
-            &session.id,
+            &session.session_id,
             "A durable summary with a canonical identity.",
             &episode_id,
             true,
@@ -1043,7 +1055,7 @@ mod tests {
         .unwrap();
 
         let invalid_key = "fact_extraction_episode_pending.not-a-session.not-a-message";
-        let valid_value = format!("{}:0:0", session.id);
+        let valid_value = format!("{}:0:0", session.session_id);
         db.set_kv(invalid_key, &valid_value).unwrap();
         let high_water = db.pending_summary_extraction_high_water().unwrap().unwrap();
         let markers = db
@@ -1074,14 +1086,15 @@ mod tests {
         let db = test_db();
         let session = db.create_session("").unwrap();
         // Cursor + throttle stamp for an existing session: kept.
-        db.set_kv(&format!("fact_extraction.{}", session.id), "msg-1")
+        db.set_kv(&format!("fact_extraction.{}", session.session_id), "msg-1")
             .unwrap();
         db.set_kv(
-            &format!("fact_extraction_last_run.{}", session.id),
+            &format!("fact_extraction_last_run.{}", session.session_id),
             "2026-08-15T00:00:00Z",
         )
         .unwrap();
-        db.checkpoint_memory_event_cursor(&session.id, 9).unwrap();
+        db.checkpoint_memory_event_cursor(&session.session_id, 9)
+            .unwrap();
         // Orphan cursor / orphan throttle stamp (no session row) and
         // non-cursor keys: the orphans are removed, unrelated kv keys survive.
         db.set_kv("fact_extraction.gone", "msg-9").unwrap();
@@ -1099,7 +1112,7 @@ mod tests {
         )
         .unwrap();
         db.set_kv(
-            &format!("fact_extraction_pending_poison.{}", session.id),
+            &format!("fact_extraction_pending_poison.{}", session.session_id),
             "keep for existing session",
         )
         .unwrap();
@@ -1110,16 +1123,16 @@ mod tests {
         let removed = db.cleanup_orphan_extraction_cursors().unwrap();
         assert_eq!(removed, 7);
         assert!(
-            db.get_kv(&format!("fact_extraction.{}", session.id))
+            db.get_kv(&format!("fact_extraction.{}", session.session_id))
                 .unwrap()
                 .is_some()
         );
         assert!(
-            db.get_kv(&format!("fact_extraction_last_run.{}", session.id))
+            db.get_kv(&format!("fact_extraction_last_run.{}", session.session_id))
                 .unwrap()
                 .is_some()
         );
-        assert_eq!(db.memory_event_cursor(&session.id).unwrap(), 9);
+        assert_eq!(db.memory_event_cursor(&session.session_id).unwrap(), 9);
         assert!(db.get_kv("fact_extraction.gone").unwrap().is_none());
         assert!(
             db.get_kv("fact_extraction_last_run.gone")
@@ -1143,9 +1156,12 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            db.get_kv(&format!("fact_extraction_pending_poison.{}", session.id))
-                .unwrap()
-                .as_deref(),
+            db.get_kv(&format!(
+                "fact_extraction_pending_poison.{}",
+                session.session_id
+            ))
+            .unwrap()
+            .as_deref(),
             Some("keep for existing session")
         );
         assert!(db.get_kv("memory_event_cursor.gone").unwrap().is_none());
@@ -1161,35 +1177,46 @@ mod tests {
         let db = test_db();
         let first = db.create_session("first").unwrap();
         let second = db.create_session("second").unwrap();
-        db.set_kv(&format!("fact_extraction.{}", first.id), "msg-7")
+        db.set_kv(&format!("fact_extraction.{}", first.session_id), "msg-7")
             .unwrap();
 
-        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 0);
-        db.checkpoint_memory_event_cursor(&first.id, 0).unwrap();
-        db.checkpoint_memory_event_cursor(&first.id, 4).unwrap();
-        db.checkpoint_memory_event_cursor(&first.id, 4).unwrap();
-        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 4);
-        assert_eq!(db.memory_event_cursor(&second.id).unwrap(), 0);
-        assert!(db.checkpoint_memory_event_cursor(&first.id, 3).is_err());
-        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 4);
+        assert_eq!(db.memory_event_cursor(&first.session_id).unwrap(), 0);
+        db.checkpoint_memory_event_cursor(&first.session_id, 0)
+            .unwrap();
+        db.checkpoint_memory_event_cursor(&first.session_id, 4)
+            .unwrap();
+        db.checkpoint_memory_event_cursor(&first.session_id, 4)
+            .unwrap();
+        assert_eq!(db.memory_event_cursor(&first.session_id).unwrap(), 4);
+        assert_eq!(db.memory_event_cursor(&second.session_id).unwrap(), 0);
+        assert!(
+            db.checkpoint_memory_event_cursor(&first.session_id, 3)
+                .is_err()
+        );
+        assert_eq!(db.memory_event_cursor(&first.session_id).unwrap(), 4);
 
-        db.checkpoint_memory_event_cursor(&second.id, 2).unwrap();
-        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 4);
-        assert_eq!(db.memory_event_cursor(&second.id).unwrap(), 2);
+        db.checkpoint_memory_event_cursor(&second.session_id, 2)
+            .unwrap();
+        assert_eq!(db.memory_event_cursor(&first.session_id).unwrap(), 4);
+        assert_eq!(db.memory_event_cursor(&second.session_id).unwrap(), 2);
         assert_eq!(
-            db.get_kv(&format!("memory_event_cursor.{}", first.id))
+            db.get_kv(&format!("memory_event_cursor.{}", first.session_id))
                 .unwrap(),
             Some("4".into())
         );
         assert_eq!(
-            db.get_kv(&format!("fact_extraction.{}", first.id)).unwrap(),
+            db.get_kv(&format!("fact_extraction.{}", first.session_id))
+                .unwrap(),
             Some("msg-7".into())
         );
-        assert!(db.checkpoint_memory_event_cursor(&first.id, -1).is_err());
+        assert!(
+            db.checkpoint_memory_event_cursor(&first.session_id, -1)
+                .is_err()
+        );
 
-        db.clear_memory_event_cursor(&first.id).unwrap();
-        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 0);
-        assert_eq!(db.memory_event_cursor(&second.id).unwrap(), 2);
+        db.clear_memory_event_cursor(&first.session_id).unwrap();
+        assert_eq!(db.memory_event_cursor(&first.session_id).unwrap(), 0);
+        assert_eq!(db.memory_event_cursor(&second.session_id).unwrap(), 2);
     }
 
     #[test]
@@ -1197,87 +1224,93 @@ mod tests {
         let db = test_db();
         let session = db.create_session("t-cursor").unwrap();
         let episode_id = new_id("msg");
-        db.set_kv(&format!("fact_extraction.{}", session.id), "msg-1")
+        db.set_kv(&format!("fact_extraction.{}", session.session_id), "msg-1")
             .unwrap();
         db.set_kv(
-            &format!("fact_extraction_last_run.{}", session.id),
+            &format!("fact_extraction_last_run.{}", session.session_id),
             "2026-08-15T00:00:00Z",
         )
         .unwrap();
         db.set_kv(
-            &format!("fact_extraction_episode_done.{}.{}", session.id, episode_id),
-            &session.id,
+            &format!(
+                "fact_extraction_episode_done.{}.{}",
+                session.session_id, episode_id
+            ),
+            &session.session_id,
         )
         .unwrap();
         db.set_kv(
-            &format!("fact_extraction_pending.{}", session.id),
+            &format!("fact_extraction_pending.{}", session.session_id),
             "0:1:0:0",
         )
         .unwrap();
         db.add_episode_with_pending_extraction(
-            &session.id,
+            &session.session_id,
             "A durable summary with an extraction marker for session cleanup.",
             &episode_id,
             true,
         )
         .unwrap();
-        db.checkpoint_memory_event_cursor(&session.id, 6).unwrap();
-        db.delete_session(&session.id).unwrap();
+        db.checkpoint_memory_event_cursor(&session.session_id, 6)
+            .unwrap();
+        db.delete_session(&session.session_id).unwrap();
         assert!(
-            db.get_kv(&format!("fact_extraction.{}", session.id))
+            db.get_kv(&format!("fact_extraction.{}", session.session_id))
                 .unwrap()
                 .is_none()
         );
         assert!(
-            db.get_kv(&format!("fact_extraction_last_run.{}", session.id))
+            db.get_kv(&format!("fact_extraction_last_run.{}", session.session_id))
                 .unwrap()
                 .is_none()
         );
         assert!(
             db.get_kv(&format!(
                 "fact_extraction_episode_done.{}.{}",
-                session.id, episode_id
+                session.session_id, episode_id
             ))
             .unwrap()
             .is_none()
         );
         assert!(
-            db.get_kv(&format!("fact_extraction_pending.{}", session.id))
+            db.get_kv(&format!("fact_extraction_pending.{}", session.session_id))
                 .unwrap()
                 .is_none()
         );
         assert!(
             db.get_kv(&format!(
                 "fact_extraction_episode_pending.{}.{}",
-                session.id, episode_id
+                session.session_id, episode_id
             ))
             .unwrap()
             .is_none()
         );
-        assert_eq!(db.memory_event_cursor(&session.id).unwrap(), 0);
+        assert_eq!(db.memory_event_cursor(&session.session_id).unwrap(), 0);
     }
 
     #[test]
     fn pending_extraction_markers_keep_event_generation_and_bypass() {
         let db = test_db();
         let session = db.create_session("t-pending").unwrap();
-        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
-        db.enqueue_fact_extraction(&session.id, true, 2).unwrap();
+        db.enqueue_fact_extraction(&session.session_id, false, 1)
+            .unwrap();
+        db.enqueue_fact_extraction(&session.session_id, true, 2)
+            .unwrap();
         assert_eq!(
             pending_fact_extraction_rows(&db).unwrap(),
-            vec![(session.id.clone(), true, 2)]
+            vec![(session.session_id.clone(), true, 2)]
         );
 
         assert!(
-            !db.clear_pending_fact_extraction_if_current(&session.id, 1, false)
+            !db.clear_pending_fact_extraction_if_current(&session.session_id, 1, false)
                 .unwrap()
         );
         assert_eq!(
             pending_fact_extraction_rows(&db).unwrap(),
-            vec![(session.id.clone(), true, 2)]
+            vec![(session.session_id.clone(), true, 2)]
         );
         assert!(
-            db.clear_pending_fact_extraction_if_current(&session.id, 2, true)
+            db.clear_pending_fact_extraction_if_current(&session.session_id, 2, true)
                 .unwrap()
         );
         assert!(pending_fact_extraction_rows(&db).unwrap().is_empty());
@@ -1287,20 +1320,22 @@ mod tests {
     fn same_value_retrigger_survives_an_older_job_ack() {
         let db = test_db();
         let session = db.create_session("t-pending-retrigger").unwrap();
-        db.enqueue_fact_extraction(&session.id, true, 4).unwrap();
-        db.enqueue_fact_extraction(&session.id, true, 5).unwrap();
+        db.enqueue_fact_extraction(&session.session_id, true, 4)
+            .unwrap();
+        db.enqueue_fact_extraction(&session.session_id, true, 5)
+            .unwrap();
 
         assert!(
-            !db.clear_pending_fact_extraction_if_current(&session.id, 4, true)
+            !db.clear_pending_fact_extraction_if_current(&session.session_id, 4, true)
                 .unwrap()
         );
         assert_eq!(
             pending_fact_extraction_rows(&db).unwrap(),
-            vec![(session.id.clone(), true, 5)]
+            vec![(session.session_id.clone(), true, 5)]
         );
 
         assert!(
-            db.clear_pending_fact_extraction_if_current(&session.id, 5, true)
+            db.clear_pending_fact_extraction_if_current(&session.session_id, 5, true)
                 .unwrap()
         );
         assert!(pending_fact_extraction_rows(&db).unwrap().is_empty());
@@ -1325,7 +1360,11 @@ mod tests {
     fn fact_outbox_pages_are_bounded_and_resume_after_delete_or_behind_cursor_update() {
         let db = test_db();
         let mut sessions = (0..130)
-            .map(|index| db.create_session(&format!("page-{index}")).unwrap().id)
+            .map(|index| {
+                db.create_session(&format!("page-{index}"))
+                    .unwrap()
+                    .session_id
+            })
             .collect::<Vec<_>>();
         sessions.sort();
         for session_id in &sessions {
@@ -1392,7 +1431,8 @@ mod tests {
     fn fact_retry_metadata_survives_same_generation_and_resets_for_new_event() {
         let db = test_db();
         let session = db.create_session("retry metadata").unwrap();
-        db.enqueue_fact_extraction(&session.id, true, 1).unwrap();
+        db.enqueue_fact_extraction(&session.session_id, true, 1)
+            .unwrap();
         let high_water = db.pending_fact_extraction_high_water().unwrap().unwrap();
         let original = db
             .pending_fact_extractions_page(None, &high_water, 64)
@@ -1408,7 +1448,8 @@ mod tests {
             )
             .unwrap()
         );
-        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
+        db.enqueue_fact_extraction(&session.session_id, false, 1)
+            .unwrap();
         let retried = db
             .pending_fact_extractions_page(None, &high_water, 64)
             .unwrap()
@@ -1421,7 +1462,8 @@ mod tests {
                 .unwrap()
         );
 
-        db.enqueue_fact_extraction(&session.id, true, 2).unwrap();
+        db.enqueue_fact_extraction(&session.session_id, true, 2)
+            .unwrap();
         let next_generation = db
             .pending_fact_extractions_page(None, &high_water, 64)
             .unwrap()
@@ -1440,7 +1482,7 @@ mod tests {
         let session = db.create_session("summary retry metadata").unwrap();
         let episode_id = new_id("msg");
         let content = "A summary long enough to create a durable episode row.";
-        db.add_episode_with_pending_extraction(&session.id, content, &episode_id, true)
+        db.add_episode_with_pending_extraction(&session.session_id, content, &episode_id, true)
             .unwrap();
         let high_water = db.pending_summary_extraction_high_water().unwrap().unwrap();
         let original = db
@@ -1456,7 +1498,7 @@ mod tests {
             )
             .unwrap()
         );
-        db.add_episode_with_pending_extraction(&session.id, content, &episode_id, true)
+        db.add_episode_with_pending_extraction(&session.session_id, content, &episode_id, true)
             .unwrap();
         let current = db
             .pending_summary_extractions_page(None, &high_water, 64)
@@ -1469,8 +1511,11 @@ mod tests {
                 .unwrap()
         );
 
-        db.set_kv("fact_extraction_episode_pending.zzzz.zzzz", &session.id)
-            .unwrap();
+        db.set_kv(
+            "fact_extraction_episode_pending.zzzz.zzzz",
+            &session.session_id,
+        )
+        .unwrap();
         let bounded_page = db
             .pending_summary_extractions_page(None, &high_water, 64)
             .unwrap();
@@ -1496,7 +1541,7 @@ mod tests {
         let session = db.create_session("repair summary marker").unwrap();
         let episode_id = new_id("msg");
         db.add_episode_with_pending_extraction(
-            &session.id,
+            &session.session_id,
             "A summary whose durable extraction marker can be repaired safely.",
             &episode_id,
             true,
@@ -1504,7 +1549,7 @@ mod tests {
         .unwrap();
         let key = format!(
             "fact_extraction_episode_pending.{}.{}",
-            session.id, episode_id
+            session.session_id, episode_id
         );
         db.set_kv(&key, "not-a-summary-marker").unwrap();
 
@@ -1518,11 +1563,11 @@ mod tests {
             .unwrap()
             .remove(0);
         assert_eq!(marker.state.unwrap().attempt, 0);
-        assert_eq!(marker.value, format!("{}:0:0", session.id));
+        assert_eq!(marker.value, format!("{}:0:0", session.session_id));
         assert_eq!(
             db.get_kv(&format!(
                 "fact_extraction_episode_pending_poison.{}.{}",
-                session.id, episode_id
+                session.session_id, episode_id
             ))
             .unwrap()
             .as_deref(),
@@ -1543,17 +1588,17 @@ mod tests {
                 "INSERT INTO session_events
                     (session_id, sequence, event_type, event_version, payload, created_at)
                  VALUES (?1, 1, 'usage_recorded', 1, '{}', '2026-10-06T00:00:00Z')",
-                rusqlite::params![existing.id],
+                rusqlite::params![existing.session_id],
             )
             .unwrap();
 
         db.baseline_missing_memory_event_cursors_to_latest()
             .unwrap();
-        assert_eq!(db.memory_event_cursor(&existing.id).unwrap(), 1);
+        assert_eq!(db.memory_event_cursor(&existing.session_id).unwrap(), 1);
 
         let created_after_baseline = db.create_session("created after baseline").unwrap();
         assert_eq!(
-            db.memory_event_cursor_optional(&created_after_baseline.id)
+            db.memory_event_cursor_optional(&created_after_baseline.session_id)
                 .unwrap(),
             None
         );

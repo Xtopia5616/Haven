@@ -1356,7 +1356,7 @@ mod tests {
     fn insert_episode(db: &Database) -> String {
         let session = db.create_session("embedding-test").unwrap();
         let episode_id = haven_common::types::new_id("msg");
-        db.add_episode_with_id(&session.id, "test episode", &episode_id)
+        db.add_episode_with_id(&session.session_id, "test episode", &episode_id)
             .unwrap();
         episode_id
     }
@@ -1466,15 +1466,27 @@ mod tests {
         let other = db
             .insert_fact("alice", "likes", "Go", "user", 0.9, &[])
             .unwrap();
-        db.save_embedding(entity_kind::FACT, &user.id, "m", &[1.0, 0.0], "user rust")
-            .unwrap();
-        db.save_embedding(entity_kind::FACT, &other.id, "m", &[1.0, 0.0], "alice go")
-            .unwrap();
+        db.save_embedding(
+            entity_kind::FACT,
+            &user.fact_id,
+            "m",
+            &[1.0, 0.0],
+            "user rust",
+        )
+        .unwrap();
+        db.save_embedding(
+            entity_kind::FACT,
+            &other.fact_id,
+            "m",
+            &[1.0, 0.0],
+            "alice go",
+        )
+        .unwrap();
         let hits = db
             .search_embeddings_filtered(entity_kind::FACT, &[1.0, 0.0], 10, "m", Some("user"), None)
             .unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].0.entity_id, user.id);
+        assert_eq!(hits[0].0.entity_id, user.fact_id);
     }
 
     #[test]
@@ -1482,8 +1494,10 @@ mod tests {
         let db = db();
         let current = db.create_session("cur").unwrap();
         let other = db.create_session("oth").unwrap();
-        let cur_ep = db.add_episode(&current.id, "current summary").unwrap();
-        let oth_ep = db.add_episode(&other.id, "other summary").unwrap();
+        let cur_ep = db
+            .add_episode(&current.session_id, "current summary")
+            .unwrap();
+        let oth_ep = db.add_episode(&other.session_id, "other summary").unwrap();
         db.save_embedding(entity_kind::EPISODE, &cur_ep, "m", &[1.0, 0.0], "current")
             .unwrap();
         db.save_embedding(entity_kind::EPISODE, &oth_ep, "m", &[1.0, 0.0], "other")
@@ -1495,7 +1509,7 @@ mod tests {
                 10,
                 "m",
                 None,
-                Some(&current.id),
+                Some(&current.session_id),
             )
             .unwrap();
         assert_eq!(hits.len(), 1);
@@ -1532,7 +1546,7 @@ mod tests {
         let f = db
             .insert_fact("user", "likes", "Go", "user", 0.8, &["preference"])
             .unwrap();
-        db.save_embedding(entity_kind::FACT, &f.id, "m", &[1.0], "x")
+        db.save_embedding(entity_kind::FACT, &f.fact_id, "m", &[1.0], "x")
             .unwrap();
         let missing = db.missing_embedding_ids(entity_kind::FACT, "m").unwrap();
         assert_eq!(missing.len(), 1);
@@ -1573,27 +1587,27 @@ mod tests {
         let missing = db
             .missing_embedding_ids(entity_kind::FACT, "model-a")
             .unwrap();
-        assert_eq!(missing, vec![fact.id.clone()]);
+        assert_eq!(missing, vec![fact.fact_id.clone()]);
 
         {
             let conn = db.conn();
             conn.execute(
                 "UPDATE facts SET object = 'Go' WHERE id = ?1",
-                rusqlite::params![fact.id],
+                rusqlite::params![fact.fact_id],
             )
             .unwrap();
         }
 
         db.save_embedding(
             entity_kind::FACT,
-            &fact.id,
+            &fact.fact_id,
             "model-a",
             &[1.0, 0.0],
             "user likes Rust",
         )
         .unwrap();
         assert!(
-            db.get_embedding_for_model(entity_kind::FACT, &fact.id, Some("model-a"))
+            db.get_embedding_for_model(entity_kind::FACT, &fact.fact_id, Some("model-a"))
                 .unwrap()
                 .is_none()
         );
@@ -1608,38 +1622,38 @@ mod tests {
         assert_eq!(
             db.missing_embedding_ids(entity_kind::FACT, "model-a")
                 .unwrap(),
-            vec![fact.id.clone()]
+            vec![fact.fact_id.clone()]
         );
         assert_eq!(
             db.missing_embedding_ids(entity_kind::FACT, "model-b")
                 .unwrap(),
-            vec![fact.id.clone()]
+            vec![fact.fact_id.clone()]
         );
 
         db.save_embedding(
             entity_kind::FACT,
-            &fact.id,
+            &fact.fact_id,
             "model-a",
             &[1.0, 0.0],
             "user likes Rust",
         )
         .unwrap();
         assert!(
-            db.get_embedding_for_model(entity_kind::FACT, &fact.id, Some("model-a"))
+            db.get_embedding_for_model(entity_kind::FACT, &fact.fact_id, Some("model-a"))
                 .unwrap()
                 .is_none()
         );
 
         db.save_embedding(
             entity_kind::FACT,
-            &fact.id,
+            &fact.fact_id,
             "model-b",
             &[0.0, 1.0],
             "user likes Rust",
         )
         .unwrap();
         assert_eq!(
-            db.get_embedding_for_model(entity_kind::FACT, &fact.id, Some("model-b"))
+            db.get_embedding_for_model(entity_kind::FACT, &fact.fact_id, Some("model-b"))
                 .unwrap()
                 .unwrap()
                 .vector,
@@ -1651,7 +1665,7 @@ mod tests {
     fn missing_embedding_ids_episodes() {
         let db = db();
         let session = db.create_session("t").unwrap();
-        let ep = db.add_episode(&session.id, "hello world").unwrap();
+        let ep = db.add_episode(&session.session_id, "hello world").unwrap();
         let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
         assert_eq!(missing.len(), 1);
         assert!(missing.contains(&ep));
@@ -1665,9 +1679,9 @@ mod tests {
     fn missing_embedding_ids_episodes_respects_limit_and_prefers_summaries() {
         let db = db();
         let session = db.create_session("t").unwrap();
-        let ep_a = db.add_episode(&session.id, "summary-a").unwrap();
-        let ep_b = db.add_episode(&session.id, "summary-b").unwrap();
-        let ep_c = db.add_episode(&session.id, "summary-c").unwrap();
+        let ep_a = db.add_episode(&session.session_id, "summary-a").unwrap();
+        let ep_b = db.add_episode(&session.session_id, "summary-b").unwrap();
+        let ep_c = db.add_episode(&session.session_id, "summary-c").unwrap();
 
         let missing = db
             .missing_embedding_ids_limited(entity_kind::EPISODE, "m", 2)
@@ -1692,7 +1706,9 @@ mod tests {
     fn episode_text_resolves_message() {
         let db = db();
         let session = db.create_session("t").unwrap();
-        let ep = db.add_episode(&session.id, "remember this").unwrap();
+        let ep = db
+            .add_episode(&session.session_id, "remember this")
+            .unwrap();
         assert_eq!(db.episode_text(&ep).unwrap(), Some("remember this".into()));
         assert_eq!(
             db.episode_text(&haven_common::types::new_id("msg"))
@@ -1706,7 +1722,7 @@ mod tests {
     fn prune_removes_orphaned() {
         let db = db();
         let session = db.create_session("t").unwrap();
-        let ep = db.add_episode(&session.id, "hello").unwrap();
+        let ep = db.add_episode(&session.session_id, "hello").unwrap();
         db.save_embedding(entity_kind::EPISODE, &ep, "m", &[1.0], "hello")
             .unwrap();
         assert!(
@@ -1783,9 +1799,12 @@ mod tests {
     fn search_episodes_by_keywords_ranks_matches() {
         let db = db();
         let session = db.create_session("t").unwrap();
-        db.add_episode(&session.id, "I discussed the dark theme preference earlier")
-            .unwrap();
-        db.add_episode(&session.id, "unrelated note about groceries")
+        db.add_episode(
+            &session.session_id,
+            "I discussed the dark theme preference earlier",
+        )
+        .unwrap();
+        db.add_episode(&session.session_id, "unrelated note about groceries")
             .unwrap();
         let hits = db
             .search_episodes_by_keywords(&["dark", "theme"], 5, None)
@@ -1798,7 +1817,7 @@ mod tests {
     fn search_episodes_by_keywords_empty_terms_returns_nothing() {
         let db = db();
         let session = db.create_session("t").unwrap();
-        db.add_episode(&session.id, "hello world").unwrap();
+        db.add_episode(&session.session_id, "hello world").unwrap();
         assert!(
             db.search_episodes_by_keywords(&[], 5, None)
                 .unwrap()
@@ -1811,12 +1830,15 @@ mod tests {
         let db = db();
         let current = db.create_session("current").unwrap();
         let past = db.create_session("past").unwrap();
-        db.add_episode(&current.id, "I discussed the dark theme in this session")
-            .unwrap();
-        db.add_episode(&past.id, "I discussed the dark theme last week")
+        db.add_episode(
+            &current.session_id,
+            "I discussed the dark theme in this session",
+        )
+        .unwrap();
+        db.add_episode(&past.session_id, "I discussed the dark theme last week")
             .unwrap();
         let hits = db
-            .search_episodes_by_keywords(&["dark", "theme"], 5, Some(&current.id))
+            .search_episodes_by_keywords(&["dark", "theme"], 5, Some(&current.session_id))
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert!(hits[0].text.contains("last week"));
@@ -1828,7 +1850,10 @@ mod tests {
         let db = db();
         let session = db.create_session("t").unwrap();
         let ep = db
-            .add_episode(&session.id, "user prefers the dark theme everywhere")
+            .add_episode(
+                &session.session_id,
+                "user prefers the dark theme everywhere",
+            )
             .unwrap();
 
         let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
@@ -1862,7 +1887,7 @@ mod tests {
         let session = db.create_session("t").unwrap();
         let id = haven_common::types::new_id("msg");
         db.add_episode_structured(
-            &session.id,
+            &session.session_id,
             "talked about monitors",
             &id,
             &["hardware"],
@@ -1911,7 +1936,7 @@ mod tests {
             .unwrap();
         db.save_embedding(
             entity_kind::FACT,
-            &fact.id,
+            &fact.fact_id,
             "m",
             &[1.0],
             "user language English",
@@ -1931,7 +1956,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            db.get_embedding(entity_kind::FACT, &fact.id)
+            db.get_embedding(entity_kind::FACT, &fact.fact_id)
                 .unwrap()
                 .is_some(),
             "confidence demotion must keep SPO embedding"
@@ -1941,12 +1966,12 @@ mod tests {
             let conn = db.conn();
             conn.execute(
                 "UPDATE facts SET object = 'French' WHERE id = ?1",
-                rusqlite::params![fact.id],
+                rusqlite::params![fact.fact_id],
             )
             .unwrap();
         }
         assert!(
-            db.get_embedding(entity_kind::FACT, &fact.id)
+            db.get_embedding(entity_kind::FACT, &fact.fact_id)
                 .unwrap()
                 .is_none(),
             "SPO UPDATE must drop the embedding"
@@ -1954,15 +1979,15 @@ mod tests {
         // Re-embed, then DELETE drops it again.
         db.save_embedding(
             entity_kind::FACT,
-            &fact.id,
+            &fact.fact_id,
             "m",
             &[1.0],
             "user language French",
         )
         .unwrap();
-        db.delete_fact(&fact.id).unwrap();
+        db.delete_fact(&fact.fact_id).unwrap();
         assert!(
-            db.get_embedding(entity_kind::FACT, &fact.id)
+            db.get_embedding(entity_kind::FACT, &fact.fact_id)
                 .unwrap()
                 .is_none(),
             "deleted fact must lose its embedding"
@@ -1975,14 +2000,14 @@ mod tests {
         let fact = db
             .insert_fact("user", "likes", "Rust", "inferred", 0.9, &["preference"])
             .unwrap();
-        db.save_embedding(entity_kind::FACT, &fact.id, "m", &[1.0], "x")
+        db.save_embedding(entity_kind::FACT, &fact.fact_id, "m", &[1.0], "x")
             .unwrap();
         // Warm the embeddings list cache.
         assert_eq!(db.list_embeddings(entity_kind::FACT).unwrap().len(), 1);
         // The facts_embed_del trigger deletes the embedding row directly in
         // SQL; the cache must be invalidated too, or recall keeps serving the
         // stale vector for the whole TTL.
-        db.delete_fact(&fact.id).unwrap();
+        db.delete_fact(&fact.fact_id).unwrap();
         assert!(
             db.list_embeddings(entity_kind::FACT).unwrap().is_empty(),
             "fact mutation must invalidate the embeddings list cache"

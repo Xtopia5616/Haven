@@ -519,7 +519,7 @@ mod tests {
         let mut tasks = Vec::new();
         for _ in 0..32 {
             let runtime = Arc::clone(&runtime);
-            let session_id = session.id.clone();
+            let session_id = session.session_id.clone();
             tasks.push(tokio::spawn(async move {
                 runtime.record(&session_id, update(1)).await.unwrap()
             }));
@@ -531,13 +531,18 @@ mod tests {
 
         assert_eq!(max_prompt, 32);
         assert_eq!(
-            db.get_session_usage(&session.id)
+            db.get_session_usage(&session.session_id)
                 .unwrap()
                 .unwrap()
                 .prompt_tokens,
             32
         );
-        assert_eq!(db.list_session_llm_usage(&session.id).unwrap().len(), 32);
+        assert_eq!(
+            db.list_session_llm_usage(&session.session_id)
+                .unwrap()
+                .len(),
+            32
+        );
     }
 
     #[tokio::test]
@@ -549,9 +554,13 @@ mod tests {
 
         let mut update = update(1);
         update.call_kind = LlmCallKind::Media;
-        assert!(runtime.record(&session.id, update).await.is_err());
-        assert!(db.list_session_llm_usage(&session.id).unwrap().is_empty());
-        assert!(db.get_session_usage(&session.id).unwrap().is_none());
+        assert!(runtime.record(&session.session_id, update).await.is_err());
+        assert!(
+            db.list_session_llm_usage(&session.session_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(db.get_session_usage(&session.session_id).unwrap().is_none());
     }
 
     #[tokio::test]
@@ -562,10 +571,13 @@ mod tests {
         let store = SessionStore::new(Arc::clone(&db));
         let runtime = UsageRuntime::new(store.clone());
 
-        runtime.record(&session.id, update(3)).await.unwrap();
+        runtime
+            .record(&session.session_id, update(3))
+            .await
+            .unwrap();
         store
             .append_usage(
-                &session.id,
+                &session.session_id,
                 &LlmUsageRecordInput {
                     step_number: Some(2),
                     request_kind: RequestKind::Chat,
@@ -588,26 +600,33 @@ mod tests {
             )
             .unwrap();
 
-        runtime.reset(&session.id);
-        let after_reset = runtime.record(&session.id, update(2)).await.unwrap();
+        runtime.reset(&session.session_id);
+        let after_reset = runtime
+            .record(&session.session_id, update(2))
+            .await
+            .unwrap();
         assert_eq!(after_reset.prompt_tokens, 45);
 
-        db.delete_llm_usage_from(&session.id, "1970-01-01T00:00:00.000Z")
+        db.delete_llm_usage_from(&session.session_id, "1970-01-01T00:00:00.000Z")
             .unwrap();
-        db.rebuild_session_usage_from_calls(&session.id).unwrap();
-        runtime.invalidate_after_truncate(&session.id);
-        let after_invalidate = runtime.record(&session.id, update(7)).await.unwrap();
+        db.rebuild_session_usage_from_calls(&session.session_id)
+            .unwrap();
+        runtime.invalidate_after_truncate(&session.session_id);
+        let after_invalidate = runtime
+            .record(&session.session_id, update(7))
+            .await
+            .unwrap();
         assert_eq!(after_invalidate.prompt_tokens, 7);
         assert_eq!(after_invalidate.total_tokens, 7);
 
         // Keep the tracker and epoch registry alive while this session worker
         // is registered; invalidation never removes/recreates live state.
         assert_eq!(runtime.sessions.lock().unwrap().len(), 1);
-        let session_state = runtime.sessions.lock().unwrap()[&session.id]
+        let session_state = runtime.sessions.lock().unwrap()[&session.session_id]
             .handle
             ._state
             .clone();
-        assert_eq!(session_state.tracker.epoch(&session.id), 1);
+        assert_eq!(session_state.tracker.epoch(&session.session_id), 1);
     }
 
     #[tokio::test]
@@ -617,15 +636,18 @@ mod tests {
         let session = db.create_session("usage worker deletion").unwrap();
         let runtime = UsageRuntime::new(SessionStore::new(Arc::clone(&db)));
 
-        runtime.record(&session.id, update(3)).await.unwrap();
-        let state = runtime.sessions.lock().unwrap()[&session.id]
+        runtime
+            .record(&session.session_id, update(3))
+            .await
+            .unwrap();
+        let state = runtime.sessions.lock().unwrap()[&session.session_id]
             .handle
             ._state
             .clone();
         let weak_state = Arc::downgrade(&state);
         drop(state);
 
-        runtime.remove_session(&session.id).await;
+        runtime.remove_session(&session.session_id).await;
 
         assert!(runtime.sessions.lock().unwrap().is_empty());
         assert!(
@@ -644,7 +666,7 @@ mod tests {
 
         runtime
             .append_tool_usage_batch(
-                &session.id,
+                &session.session_id,
                 vec![
                     tool_usage_input(LlmCallKind::Tool, "tool-model", 11),
                     tool_usage_input(LlmCallKind::Media, "media-model", 17),
@@ -655,7 +677,7 @@ mod tests {
             .unwrap();
 
         let usage_events = store
-            .read_all(&session.id)
+            .read_all(&session.session_id)
             .unwrap()
             .into_iter()
             .filter(|event| event.event_type == "usage_recorded")
@@ -667,7 +689,7 @@ mod tests {
         assert_eq!(usage_events[1]["model"].as_str(), Some("media-model"));
         assert_eq!(usage_events[1]["call_kind"], "media");
 
-        let projected = db.list_session_llm_usage(&session.id).unwrap();
+        let projected = db.list_session_llm_usage(&session.session_id).unwrap();
         assert_eq!(projected.len(), 2);
         assert!(projected.iter().any(|row| {
             row.model.as_deref() == Some("tool-model")
@@ -703,7 +725,7 @@ mod tests {
 
         let cancel = CancellationToken::new();
         let task_runtime = Arc::clone(&runtime);
-        let task_session_id = session.id.clone();
+        let task_session_id = session.session_id.clone();
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move {
             task_runtime
@@ -728,12 +750,16 @@ mod tests {
         );
         assert!(
             store
-                .read_all(&session.id)
+                .read_all(&session.session_id)
                 .unwrap()
                 .iter()
                 .all(|event| event.event_type != "usage_recorded")
         );
-        assert!(db.list_session_llm_usage(&session.id).unwrap().is_empty());
+        assert!(
+            db.list_session_llm_usage(&session.session_id)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

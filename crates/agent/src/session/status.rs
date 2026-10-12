@@ -1230,10 +1230,10 @@ impl SessionSupervisor {
                 !cancellation.is_cancelled(),
                 "pending session recovery cancelled"
             );
-            if self.is_session_closing(&record.id) {
+            if self.is_session_closing(&record.session_id) {
                 continue;
             }
-            let actor = match self.actor_for(&record.id).await {
+            let actor = match self.actor_for(&record.session_id).await {
                 Some(actor) => actor,
                 None => match self
                     .install_actor(SessionInfo::from_db_record(&record))
@@ -1245,7 +1245,7 @@ impl SessionSupervisor {
                     }
                     Err(error) => {
                         tracing::warn!(
-                            session_id = %record.id,
+                            session_id = %record.session_id,
                             error = %haven_common::error::sanitize_error_text(&error.to_string()),
                             "failed to restore pending session; retry requires a later load attempt"
                         );
@@ -1258,7 +1258,7 @@ impl SessionSupervisor {
                 .await
                 .is_some_and(|snapshot| snapshot.status == SessionStatus::Pending)
             {
-                self.enqueue_pending(&record.id).await;
+                self.enqueue_pending(&record.session_id).await;
                 found_pending_actor = true;
             }
         }

@@ -25,7 +25,7 @@ fn store() -> (Arc<Database>, SessionStore, String) {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let session = db.create_session("input").unwrap();
     let store = SessionStore::new(db.clone());
-    (db, store, session.id)
+    (db, store, session.session_id)
 }
 
 fn resume_test_attachment(filename: &str) -> MessageAttachment {
@@ -43,8 +43,8 @@ async fn session_store_latest_record_preserves_recent_history_order_and_empty_re
     let conn = db.conn();
     for (session_id, created_at) in [
         (&first_id, "2026-09-20T10:00:00.000Z"),
-        (&second.id, "2026-09-21T10:00:00.000Z"),
-        (&third.id, "2026-09-22T10:00:00.000Z"),
+        (&second.session_id, "2026-09-21T10:00:00.000Z"),
+        (&third.session_id, "2026-09-22T10:00:00.000Z"),
     ] {
         conn.execute(
             "UPDATE sessions SET created_at = ?1 WHERE id = ?2",
@@ -56,8 +56,8 @@ async fn session_store_latest_record_preserves_recent_history_order_and_empty_re
 
     let latest = store.latest_session_record().await.unwrap();
     assert_eq!(
-        latest.as_ref().map(|session| session.id.as_str()),
-        Some(third.id.as_str())
+        latest.as_ref().map(|session| session.session_id.as_str()),
+        Some(third.session_id.as_str())
     );
     assert_eq!(
         serde_json::to_value(latest).unwrap(),
@@ -166,12 +166,12 @@ async fn session_store_lists_latest_prompt_messages_in_chronological_order() {
         window,
         vec![
             SessionMessageText {
-                message_id: middle.id,
+                message_id: middle.message_id,
                 role: haven_common::types::CanonicalRole::Assistant,
                 content: "middle".into(),
             },
             SessionMessageText {
-                message_id: latest.id,
+                message_id: latest.message_id,
                 role: haven_common::types::CanonicalRole::User,
                 content: "latest".into(),
             },
@@ -233,7 +233,7 @@ async fn session_store_session_resume_media_uses_first_user_and_message_order() 
 
     assert_eq!(
         resume_media.initial_message_id.as_deref(),
-        Some(initial_message.id.as_str())
+        Some(initial_message.message_id.as_str())
     );
     assert_eq!(
         resume_media
@@ -272,7 +272,7 @@ async fn session_store_session_resume_media_returns_empty_media_and_isolates_ses
     let other_session = db.create_session("other session").unwrap();
     let other_attachment = resume_test_attachment("other-session.png");
     db.add_message_full(
-        &other_session.id,
+        &other_session.session_id,
         haven_common::types::CanonicalRole::User,
         "other input",
         Some(haven_common::types::TranscriptMessageKind::Text),
@@ -287,7 +287,7 @@ async fn session_store_session_resume_media_returns_empty_media_and_isolates_ses
 
     assert_eq!(
         resume_media.initial_message_id.as_deref(),
-        Some(initial_message.id.as_str())
+        Some(initial_message.message_id.as_str())
     );
     assert!(resume_media.initial_attachments.is_empty());
     assert!(resume_media.initial_media_inputs.is_empty());
@@ -299,13 +299,14 @@ async fn session_store_history_ports_preserve_database_query_semantics() {
     let (db, store, first_id) = store();
     let second = db.create_session("history needle two").unwrap();
     let third = db.create_session("history other three").unwrap();
-    db.update_session_title(&second.id, "named needle").unwrap();
+    db.update_session_title(&second.session_id, "named needle")
+        .unwrap();
 
     let conn = db.conn();
     for (session_id, created_at) in [
         (&first_id, "2026-09-20T10:00:00.000Z"),
-        (&second.id, "2026-09-21T10:00:00.000Z"),
-        (&third.id, "2026-09-22T10:00:00.000Z"),
+        (&second.session_id, "2026-09-21T10:00:00.000Z"),
+        (&third.session_id, "2026-09-22T10:00:00.000Z"),
     ] {
         conn.execute(
             "UPDATE sessions SET created_at = ?1 WHERE id = ?2",

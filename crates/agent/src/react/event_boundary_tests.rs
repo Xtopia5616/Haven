@@ -31,15 +31,19 @@ async fn event_boundary_cursor_read_succeeds_without_changing_the_event_log() {
     let engine = test_engine(db.clone());
     engine
         .event_store
-        .append(&session.id, "boundary_test", "{}", Some(1), Some(1))
+        .append(&session.session_id, "boundary_test", "{}", Some(1), Some(1))
         .unwrap();
-    let events_before = engine.event_store.read_all(&session.id).unwrap();
+    let events_before = engine.event_store.read_all(&session.session_id).unwrap();
     let state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
 
-    assert!(engine.ensure_event_boundary(&session.id, &state, 1).await);
+    assert!(
+        engine
+            .ensure_event_boundary(&session.session_id, &state, 1)
+            .await
+    );
 
     assert_eq!(
-        engine.event_store.read_all(&session.id).unwrap(),
+        engine.event_store.read_all(&session.session_id).unwrap(),
         events_before
     );
     let metrics = engine.metrics.snapshot();
@@ -57,7 +61,11 @@ async fn event_boundary_cursor_read_failure_returns_false_and_records_failure() 
     let engine = test_engine(db);
     let state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
 
-    assert!(!engine.ensure_event_boundary(&session.id, &state, 1).await);
+    assert!(
+        !engine
+            .ensure_event_boundary(&session.session_id, &state, 1)
+            .await
+    );
 
     let metrics = engine.metrics.snapshot();
     assert_eq!(metrics.counters.snapshot_failures, 1);

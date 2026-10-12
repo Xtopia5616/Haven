@@ -818,13 +818,13 @@ mod tests {
         };
 
         engine
-            .seed_transcript_events(&session.id, std::slice::from_ref(&seeded), 7)
+            .seed_transcript_events(&session.session_id, std::slice::from_ref(&seeded), 7)
             .await
             .unwrap();
         assert_eq!(live.try_recv().unwrap().sequence, 1);
         assert_eq!(
             engine
-                .append_transcript_record(&session.id, &appended, 8, 2)
+                .append_transcript_record(&session.session_id, &appended, 8, 2)
                 .await
                 .unwrap(),
             2
@@ -836,10 +836,16 @@ mod tests {
 
         engine
             .event_store
-            .append_branch_point(&session.id, 1, 1, Some("2026-09-24T00:00:00Z"), None)
+            .append_branch_point(
+                &session.session_id,
+                1,
+                1,
+                Some("2026-09-24T00:00:00Z"),
+                None,
+            )
             .unwrap();
         let replay = engine
-            .load_durable_event_state(&session.id)
+            .load_durable_event_state(&session.session_id)
             .await
             .unwrap()
             .unwrap();
@@ -902,13 +908,23 @@ mod tests {
         };
 
         let error = engine
-            .append_transcript_record(&session.id, &oversized, 1, 1)
+            .append_transcript_record(&session.session_id, &oversized, 1, 1)
             .await
             .unwrap_err();
 
         assert!(error.to_string().contains("transcript batch exceeds"));
-        assert!(engine.event_store.read_all(&session.id).unwrap().is_empty());
-        assert!(db.list_session_messages(&session.id).unwrap().is_empty());
+        assert!(
+            engine
+                .event_store
+                .read_all(&session.session_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.list_session_messages(&session.session_id)
+                .unwrap()
+                .is_empty()
+        );
         assert!(matches!(
             live.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
@@ -923,7 +939,7 @@ mod tests {
         engine
             .event_store
             .append(
-                &session.id,
+                &session.session_id,
                 haven_memory::TRANSCRIPT_EVENT_TYPE,
                 r#"{"not_a_transcript_record":true}"#,
                 Some(1),
@@ -932,13 +948,13 @@ mod tests {
             .unwrap();
 
         let error = engine
-            .load_durable_event_state(&session.id)
+            .load_durable_event_state(&session.session_id)
             .await
             .unwrap_err();
 
         assert!(error.to_string().starts_with(&format!(
             "invalid transcript event 1 for session {}:",
-            session.id
+            session.session_id
         )));
     }
 
@@ -950,7 +966,7 @@ mod tests {
         engine
             .event_store
             .append(
-                &session.id,
+                &session.session_id,
                 haven_memory::TRANSCRIPT_EVENT_TYPE,
                 r#"{"type":"thought","step_number":1,"text":"x","message_id":"step-invalid"}"#,
                 Some(1),
@@ -959,7 +975,7 @@ mod tests {
             .unwrap();
 
         let error = engine
-            .load_durable_event_state(&session.id)
+            .load_durable_event_state(&session.session_id)
             .await
             .unwrap_err();
 
@@ -985,7 +1001,7 @@ mod tests {
         };
 
         let error = engine
-            .append_transcript_record(&session.id, &record, 1, 1)
+            .append_transcript_record(&session.session_id, &record, 1, 1)
             .await
             .unwrap_err();
 
@@ -994,8 +1010,18 @@ mod tests {
                 .to_string()
                 .contains("expected canonical step- identity")
         );
-        assert!(engine.event_store.read_all(&session.id).unwrap().is_empty());
-        assert!(db.list_session_messages(&session.id).unwrap().is_empty());
+        assert!(
+            engine
+                .event_store
+                .read_all(&session.session_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.list_session_messages(&session.session_id)
+                .unwrap()
+                .is_empty()
+        );
         assert!(matches!(
             live.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
@@ -1010,7 +1036,7 @@ mod tests {
         engine
             .event_store
             .append(
-                &session.id,
+                &session.session_id,
                 haven_memory::TRANSCRIPT_EVENT_TYPE,
                 r#"{"type":"compact_summary","compacted":[],"summary":"summary","tokens_before":100,"tokens_after":20,"episode_id":"msg-summary","degraded":false}"#,
                 Some(3),
@@ -1019,7 +1045,7 @@ mod tests {
             .unwrap();
 
         let error = engine
-            .load_durable_event_state(&session.id)
+            .load_durable_event_state(&session.session_id)
             .await
             .unwrap_err();
 
@@ -1035,7 +1061,7 @@ mod tests {
         let db = Arc::new(Database::open(&dir).unwrap());
         let session = db.create_session("t").unwrap();
         let engine = test_engine(db);
-        let ctx = step_ctx(&session.id);
+        let ctx = step_ctx(&session.session_id);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         engine
             .apply_transcript(
@@ -1069,7 +1095,7 @@ mod tests {
         let db = Arc::new(Database::open(&dir).unwrap());
         let session = db.create_session("t").unwrap();
         let engine = test_engine(db);
-        let ctx = step_ctx(&session.id);
+        let ctx = step_ctx(&session.session_id);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         let body = "[Background tool run result]\ntool_run_id=toolrun-00000000000000000000000000000014\nok";
         engine
@@ -1106,7 +1132,7 @@ mod tests {
         let session = db.create_session("t").unwrap();
         let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = test_engine(db.clone());
-        let mut ctx = step_ctx(&session.id);
+        let mut ctx = step_ctx(&session.session_id);
         ctx.emitter = Arc::new(RecordingEmitter {
             events: recorded.clone(),
         });
@@ -1138,7 +1164,9 @@ mod tests {
             )),
             "ToolRunResult must emit Supplement for in-chat wake visibility"
         );
-        let steps = db.list_session_steps(&session.id).unwrap_or_default();
+        let steps = db
+            .list_session_steps(&session.session_id)
+            .unwrap_or_default();
         assert!(
             steps.is_empty(),
             "ToolRunResult must not create a thought step"
@@ -1155,7 +1183,7 @@ mod tests {
         let session = db.create_session("t").unwrap();
         let mid = haven_common::types::new_id("step");
         let engine = test_engine(db.clone());
-        let ctx = step_ctx(&session.id);
+        let ctx = step_ctx(&session.session_id);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         engine
             .apply_transcript(
@@ -1174,15 +1202,15 @@ mod tests {
         assert_eq!(rounds[0].thought.as_deref(), Some("thinking"));
         assert!(state.canonical.is_empty());
         // X12: Thought projects the messages row under the shared id.
-        let msgs = db.list_session_messages(&session.id).unwrap();
+        let msgs = db.list_session_messages(&session.session_id).unwrap();
         assert!(
-            msgs.iter().any(|m| m.id == mid
+            msgs.iter().any(|m| m.message_id == mid
                 && m.content == "thinking"
                 && m.role == haven_common::types::CanonicalRole::Assistant),
             "expected projected thought message, got {msgs:?}"
         );
         assert!(
-            db.list_session_steps(&session.id)
+            db.list_session_steps(&session.session_id)
                 .unwrap()
                 .iter()
                 .any(|step| step.step_id == mid && step.tool_name.is_none()),
@@ -1200,7 +1228,7 @@ mod tests {
         let session = db.create_session("t").unwrap();
         let mid = haven_common::types::new_id("msg");
         let engine = test_engine(db.clone());
-        let ctx = step_ctx(&session.id);
+        let ctx = step_ctx(&session.session_id);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         engine
             .apply_transcript(
@@ -1224,10 +1252,10 @@ mod tests {
         let rounds = projection.react_rounds;
         assert!(canon.is_empty());
         assert!(rounds.is_empty());
-        let msgs = db.list_session_messages(&session.id).unwrap();
+        let msgs = db.list_session_messages(&session.session_id).unwrap();
         assert!(
             msgs.iter().any(|m| {
-                m.id == mid
+                m.message_id == mid
                     && m.content == "why"
                     && m.message_type == Some(haven_common::types::TranscriptMessageKind::Reasoning)
             }),
@@ -1246,7 +1274,7 @@ mod tests {
         let ui_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = test_engine(db);
         let ctx = StepCtx {
-            session_id: session.id.clone(),
+            session_id: session.session_id.clone(),
             step_number: 2,
             run_id: 1,
             emitter: Arc::new(RecordingEmitter {
@@ -1315,7 +1343,7 @@ mod tests {
         assert!(rounds.is_empty());
         let durable_events = engine
             .event_store
-            .read_active_transcript(&session.id)
+            .read_active_transcript(&session.session_id)
             .unwrap();
         let durable_summary = durable_events
             .first()
@@ -1352,7 +1380,7 @@ mod tests {
         let ui_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = test_engine(db);
         let ctx = StepCtx {
-            session_id: session.id.clone(),
+            session_id: session.session_id.clone(),
             step_number: 3,
             run_id: 7,
             emitter: Arc::new(RecordingEmitter {
@@ -1394,7 +1422,7 @@ mod tests {
         assert_eq!(state.events.len(), 1);
         let durable_sequence = engine
             .event_store
-            .read_active_transcript(&session.id)
+            .read_active_transcript(&session.session_id)
             .unwrap()
             .first()
             .expect("committed tool-call event")
@@ -1405,7 +1433,7 @@ mod tests {
         );
         engine
             .committed_ui
-            .publish_tool_call(&ctx.emitter, &session.id, &step_id)
+            .publish_tool_call(&ctx.emitter, &session.session_id, &step_id)
             .await;
         let ev = ui_events.lock().unwrap();
         assert!(
@@ -1433,7 +1461,7 @@ mod tests {
         let ui_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = test_engine(db);
         let ctx = StepCtx {
-            session_id: session.id.clone(),
+            session_id: session.session_id.clone(),
             step_number: 4,
             run_id: 2,
             emitter: Arc::new(RecordingEmitter {
@@ -1488,7 +1516,7 @@ mod tests {
         assert_eq!(rounds[0].tools[0].step_id, step_id);
         let durable_events = engine
             .event_store
-            .read_active_transcript(&session.id)
+            .read_active_transcript(&session.session_id)
             .unwrap();
         let committed_event = durable_events
             .first()
@@ -1538,7 +1566,7 @@ mod tests {
         let db = Arc::new(Database::open(&dir).unwrap());
         let session = db.create_session("t").unwrap();
         let engine = test_engine(db);
-        let ctx = step_ctx(&session.id);
+        let ctx = step_ctx(&session.session_id);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         engine
             .apply_transcript(
@@ -1575,7 +1603,7 @@ mod tests {
         assert_eq!(
             engine
                 .event_store
-                .read_active_transcript(&session.id)
+                .read_active_transcript(&session.session_id)
                 .unwrap()
                 .len(),
             3,
@@ -1597,7 +1625,7 @@ mod tests {
         let session = db.create_session("t").unwrap();
         let step_id = haven_common::types::new_id("step");
         let engine = test_engine(db.clone());
-        let ctx = step_ctx(&session.id);
+        let ctx = step_ctx(&session.session_id);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         engine
             .apply_transcript(
@@ -1636,9 +1664,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let msgs = db.list_session_messages(&session.id).unwrap();
+        let msgs = db.list_session_messages(&session.session_id).unwrap();
         assert!(
-            msgs.iter().any(|m| m.id == step_id
+            msgs.iter().any(|m| m.message_id == step_id
                 && m.content == "Pick one?"
                 && m.role == haven_common::types::CanonicalRole::Assistant),
             "ask question must project under shared step id, got {msgs:?}"
@@ -1654,10 +1682,11 @@ mod tests {
         let db = Arc::new(Database::open(&dir).unwrap());
         let session = db.create_session("t").unwrap();
         let message_id = haven_common::types::new_id("step");
-        db.create_thought_step(&session.id, 1, &message_id).unwrap();
+        db.create_thought_step(&session.session_id, 1, &message_id)
+            .unwrap();
         let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = test_engine(db.clone());
-        let mut ctx = step_ctx(&session.id);
+        let mut ctx = step_ctx(&session.session_id);
         ctx.emitter = Arc::new(RecordingEmitter {
             events: recorded.clone(),
         });
@@ -1680,11 +1709,15 @@ mod tests {
         assert!(error.is_err(), "step collision must fail the transaction");
         let durable = engine
             .event_store
-            .read_active_transcript(&session.id)
+            .read_active_transcript(&session.session_id)
             .unwrap();
         assert!(durable.is_empty(), "the event must roll back with its step");
-        assert!(db.list_session_messages(&session.id).unwrap().is_empty());
-        assert_eq!(db.list_session_steps(&session.id).unwrap().len(), 1);
+        assert!(
+            db.list_session_messages(&session.session_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(db.list_session_steps(&session.session_id).unwrap().len(), 1);
         assert!(recorded.lock().unwrap().is_empty());
         assert!(matches!(
             committed_events.try_recv(),
@@ -1711,7 +1744,7 @@ mod tests {
         let rx = engine.event_store.subscribe();
         engine.start_committed_ui_bridge(dispatcher, rx);
         let ctx = StepCtx {
-            session_id: session.id.clone(),
+            session_id: session.session_id.clone(),
             step_number: 2,
             run_id: 3,
             emitter,
@@ -1750,7 +1783,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         engine
             .committed_ui
-            .publish_tool_call(&ctx.emitter, &session.id, &step_id)
+            .publish_tool_call(&ctx.emitter, &session.session_id, &step_id)
             .await;
         let events = recorded.lock().unwrap().clone();
         let tool_calls: Vec<_> = events
@@ -1764,7 +1797,7 @@ mod tests {
         );
         let sequence = engine
             .event_store
-            .read_active_transcript(&session.id)
+            .read_active_transcript(&session.session_id)
             .unwrap()[0]
             .sequence as u64;
         assert!(

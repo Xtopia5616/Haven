@@ -778,7 +778,7 @@ mod storage_error_tests {
         let mut committed = SessionCommitted::transcript(payload, 1, 1);
         committed.project_assistant_message(haven_common::types::new_id("msg"), "saved", None);
         let error = store
-            .commit_transcript(&session.id, &committed)
+            .commit_transcript(&session.session_id, &committed)
             .unwrap_err();
 
         let reason = session_run_error_reason(&error);

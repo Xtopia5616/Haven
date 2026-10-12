@@ -320,7 +320,7 @@ mod pending_context_tests {
             haven_common::config::ContextLimitsConfig::default(),
         );
         let ctx = StepCtx {
-            session_id: session.id.clone(),
+            session_id: session.session_id.clone(),
             step_number: 1,
             run_id: 1,
             emitter: std::sync::Arc::new(NoopEmitter),
@@ -357,7 +357,7 @@ mod pending_context_tests {
         assert_eq!(
             engine
                 .event_store
-                .read_all(&session.id)
+                .read_all(&session.session_id)
                 .unwrap()
                 .iter()
                 .filter(|event| event.payload.contains(&message_id))

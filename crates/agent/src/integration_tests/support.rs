@@ -887,7 +887,7 @@ pub(super) async fn seed_hello_projection(
                             && message.content == "hello"
                     })
                     .expect("seeded hello message")
-                    .id
+                    .message_id
                     .clone(),
             ),
         },

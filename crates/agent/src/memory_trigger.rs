@@ -144,12 +144,12 @@ mod tests {
         let session = db.create_session("interval trigger test").unwrap();
         let store = SessionStore::new(db.clone());
         let prior = store
-            .append(&session.id, "test_marker", "{}", None, None)
+            .append(&session.session_id, "test_marker", "{}", None, None)
             .unwrap();
 
         let event = append_memory_trigger(
             store.clone(),
-            &session.id,
+            &session.session_id,
             MemoryTriggerPayload::step_interval(17, 25),
             CancellationToken::new(),
         )
@@ -165,7 +165,10 @@ mod tests {
             serde_json::from_str::<MemoryTriggerPayload>(&event.payload).unwrap(),
             MemoryTriggerPayload::step_interval(17, 25)
         );
-        assert_eq!(store.latest_sequence(&session.id).unwrap(), event.sequence);
+        assert_eq!(
+            store.latest_sequence(&session.session_id).unwrap(),
+            event.sequence
+        );
     }
 
     #[tokio::test]
@@ -180,13 +183,13 @@ mod tests {
 
         append_memory_trigger_nonfatal(
             store.clone(),
-            &session.id,
+            &session.session_id,
             MemoryTriggerPayload::step_interval(3, 5),
             cancellation,
         )
         .await;
 
-        assert_eq!(store.latest_sequence(&session.id).unwrap(), 0);
+        assert_eq!(store.latest_sequence(&session.session_id).unwrap(), 0);
     }
 
     #[tokio::test]
@@ -195,7 +198,7 @@ mod tests {
         let session = db.create_session("failed interval trigger test").unwrap();
         let store = SessionStore::new(db.clone());
         let prior = store
-            .append(&session.id, "test_marker", "{}", None, None)
+            .append(&session.session_id, "test_marker", "{}", None, None)
             .unwrap();
         db.conn()
             .execute_batch(
@@ -207,13 +210,16 @@ mod tests {
 
         append_memory_trigger_nonfatal(
             store.clone(),
-            &session.id,
+            &session.session_id,
             MemoryTriggerPayload::step_interval(3, 5),
             CancellationToken::new(),
         )
         .await;
 
-        assert_eq!(store.latest_sequence(&session.id).unwrap(), prior.sequence);
+        assert_eq!(
+            store.latest_sequence(&session.session_id).unwrap(),
+            prior.sequence
+        );
     }
 
     #[tokio::test]

@@ -2261,19 +2261,19 @@ mod tests {
     async fn diagnostics_status_counts_all_sessions_and_only_groups_the_recent_fifty() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let older_error = db.create_session("older error").unwrap();
-        db.update_session_status(&older_error.id, SessionStatus::Error)
+        db.update_session_status(&older_error.session_id, SessionStatus::Error)
             .unwrap();
         db.conn()
             .execute(
                 "UPDATE sessions SET created_at = '2000-01-01T00:00:00Z' WHERE id = ?1",
-                [older_error.id.as_str()],
+                [older_error.session_id.as_str()],
             )
             .unwrap();
         db.cache_invalidate_session_history_page();
 
         for index in 0..50 {
             let session = db.create_session(&format!("recent {index}")).unwrap();
-            db.update_session_status(&session.id, SessionStatus::Completed)
+            db.update_session_status(&session.session_id, SessionStatus::Completed)
                 .unwrap();
         }
 
@@ -2307,24 +2307,24 @@ mod tests {
 
         let db = Arc::new(Database::open_in_memory().unwrap());
         let oldest_error = db.create_session("oldest error").unwrap();
-        db.update_session_status(&oldest_error.id, SessionStatus::Error)
+        db.update_session_status(&oldest_error.session_id, SessionStatus::Error)
             .unwrap();
-        set_created_at(&db, &oldest_error.id, "2020-01-01T00:00:00Z");
+        set_created_at(&db, &oldest_error.session_id, "2020-01-01T00:00:00Z");
 
         let middle_error = db.create_session("middle error").unwrap();
-        db.update_session_status(&middle_error.id, SessionStatus::Error)
+        db.update_session_status(&middle_error.session_id, SessionStatus::Error)
             .unwrap();
-        set_created_at(&db, &middle_error.id, "2021-01-01T00:00:00Z");
+        set_created_at(&db, &middle_error.session_id, "2021-01-01T00:00:00Z");
 
         let recent_completed = db.create_session("completed").unwrap();
-        db.update_session_status(&recent_completed.id, SessionStatus::Completed)
+        db.update_session_status(&recent_completed.session_id, SessionStatus::Completed)
             .unwrap();
-        set_created_at(&db, &recent_completed.id, "2022-01-01T00:00:00Z");
+        set_created_at(&db, &recent_completed.session_id, "2022-01-01T00:00:00Z");
 
         let newest_error = db.create_session("你 🙂").unwrap();
-        db.update_session_status(&newest_error.id, SessionStatus::Error)
+        db.update_session_status(&newest_error.session_id, SessionStatus::Error)
             .unwrap();
-        set_created_at(&db, &newest_error.id, "2023-01-01T00:00:00Z");
+        set_created_at(&db, &newest_error.session_id, "2023-01-01T00:00:00Z");
 
         let (surfaces, _dir) = test_surfaces_with_db(db);
         let sessions = surfaces
@@ -2336,8 +2336,14 @@ mod tests {
             .unwrap()
             .output;
         assert_eq!(sessions["sessions"].as_array().unwrap().len(), 2);
-        assert_eq!(sessions["sessions"][0]["session_id"], newest_error.id);
-        assert_eq!(sessions["sessions"][1]["session_id"], recent_completed.id);
+        assert_eq!(
+            sessions["sessions"][0]["session_id"],
+            newest_error.session_id
+        );
+        assert_eq!(
+            sessions["sessions"][1]["session_id"],
+            recent_completed.session_id
+        );
         assert_eq!(sessions["sessions"][0]["input_chars"], 3);
 
         let clamped_sessions = surfaces
@@ -2351,7 +2357,7 @@ mod tests {
         assert_eq!(clamped_sessions["sessions"].as_array().unwrap().len(), 1);
         assert_eq!(
             clamped_sessions["sessions"][0]["session_id"],
-            newest_error.id
+            newest_error.session_id
         );
 
         let errors = surfaces
@@ -2363,7 +2369,7 @@ mod tests {
             .unwrap()
             .output;
         assert_eq!(errors["errors"].as_array().unwrap().len(), 1);
-        assert_eq!(errors["errors"][0]["session_id"], newest_error.id);
+        assert_eq!(errors["errors"][0]["session_id"], newest_error.session_id);
     }
 
     #[tokio::test]
@@ -2371,13 +2377,14 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let transcript = "private-transcript-marker";
         let session = db.create_session(transcript).unwrap();
-        db.update_session_title(&session.id, "safe title").unwrap();
-        db.update_session_status(&session.id, SessionStatus::Error)
+        db.update_session_title(&session.session_id, "safe title")
+            .unwrap();
+        db.update_session_status(&session.session_id, SessionStatus::Error)
             .unwrap();
         db.conn()
             .execute(
                 "UPDATE sessions SET created_at = '2024-01-02T03:04:05Z', updated_at = '2024-01-03T04:05:06Z' WHERE id = ?1",
-                [session.id.as_str()],
+                [session.session_id.as_str()],
             )
             .unwrap();
         db.cache_invalidate_session_history_page();
@@ -2429,7 +2436,7 @@ mod tests {
             session_wire,
             json!({
                 "sessions": [{
-                    "session_id": session.id,
+                    "session_id": session.session_id,
                     "status": "error",
                     "title": "safe title",
                     "input_chars": transcript.chars().count(),
@@ -2453,7 +2460,7 @@ mod tests {
             errors_wire,
             json!({
                 "errors": [{
-                    "session_id": session.id,
+                    "session_id": session.session_id,
                     "title": "safe title",
                     "input_chars": transcript.chars().count(),
                     "created_at": "2024-01-02T03:04:05Z",

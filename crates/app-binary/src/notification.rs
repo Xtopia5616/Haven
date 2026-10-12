@@ -376,23 +376,24 @@ mod tests {
         let session_store = SessionStore::new(db.clone());
 
         let titled = db.create_session("original input").unwrap();
-        db.update_session_title(&titled.id, "Persisted title")
+        db.update_session_title(&titled.session_id, "Persisted title")
             .unwrap();
         assert_eq!(
-            resolve_session_display_title_from_store(&session_store, &titled.id).await,
+            resolve_session_display_title_from_store(&session_store, &titled.session_id).await,
             "Persisted title"
         );
 
         let untitled = db.create_session("input fallback").unwrap();
         assert_eq!(
-            resolve_session_display_title_from_store(&session_store, &untitled.id).await,
+            resolve_session_display_title_from_store(&session_store, &untitled.session_id).await,
             "input fallback"
         );
 
         let empty_title = db.create_session("empty title fallback").unwrap();
-        db.update_session_title(&empty_title.id, "").unwrap();
+        db.update_session_title(&empty_title.session_id, "")
+            .unwrap();
         assert_eq!(
-            resolve_session_display_title_from_store(&session_store, &empty_title.id).await,
+            resolve_session_display_title_from_store(&session_store, &empty_title.session_id).await,
             "empty title fallback"
         );
 

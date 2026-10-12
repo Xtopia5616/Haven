@@ -131,7 +131,7 @@ mod tests {
             .unwrap();
         db.save_embedding(
             entity_kind::FACT,
-            &safe.id,
+            &safe.fact_id,
             "model-a",
             &[1.0, 0.0],
             "user likes Rust",
@@ -141,7 +141,7 @@ mod tests {
         // visibility filter even when such a row is already present.
         db.save_embedding(
             entity_kind::FACT,
-            &hidden.id,
+            &hidden.fact_id,
             "model-a",
             &[1.0, 0.0],
             "user api_key sk-hidden",
@@ -153,7 +153,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(keyword.len(), 1);
-        assert_eq!(keyword[0].entity_id, safe.id);
+        assert_eq!(keyword[0].entity_id, safe.fact_id);
 
         let vector = store
             .vector_recall(
@@ -166,22 +166,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(vector.len(), 1);
-        assert_eq!(vector[0].entity_id, safe.id);
+        assert_eq!(vector[0].entity_id, safe.fact_id);
         assert_eq!(vector[0].text, "likes=Rust");
 
         let visible = store.visible_user_facts(40).await.unwrap();
         assert_eq!(visible.len(), 1);
-        assert_eq!(visible[0].id, safe.id);
+        assert_eq!(visible[0].fact_id, safe.fact_id);
         assert_eq!(
             visible[0].source_ref.as_ref().unwrap().snippet,
             "[redacted]"
         );
         let by_id = store
-            .visible_facts_by_ids(vec![hidden.id.clone(), safe.id.clone()])
+            .visible_facts_by_ids(vec![hidden.fact_id.clone(), safe.fact_id.clone()])
             .await
             .unwrap();
         assert_eq!(by_id.len(), 1);
-        assert_eq!(by_id[0].id, safe.id);
+        assert_eq!(by_id[0].fact_id, safe.fact_id);
         assert_eq!(by_id[0].source_ref.as_ref().unwrap().snippet, "[redacted]");
     }
 
@@ -199,7 +199,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.mode, MemoryRecallMode::Keyword);
-        assert_eq!(result.hits[0].entity_id, fact.id);
+        assert_eq!(result.hits[0].entity_id, fact.fact_id);
 
         let empty = store
             .retrieve(

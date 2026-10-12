@@ -219,7 +219,7 @@ impl<'db> FactGraph<'db> {
         )?;
         self.db.cache_invalidate_facts(subject);
         Ok(Fact {
-            id,
+            fact_id: id,
             subject: subject.into(),
             predicate,
             object: object.into(),
@@ -297,7 +297,7 @@ impl<'db> FactGraph<'db> {
             ],
         )?;
         Ok(Fact {
-            id,
+            fact_id: id,
             subject: subject.into(),
             predicate: predicate.into(),
             object: object.into(),
@@ -349,7 +349,7 @@ impl<'db> FactGraph<'db> {
                          SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = 1.0,
                              durability = 1.0
                          WHERE id = ?2",
-                        rusqlite::params![now, existing.id],
+                        rusqlite::params![now, existing.fact_id],
                     )?;
                     let mut fact = existing;
                     fact.confidence = 1.0;
@@ -362,7 +362,7 @@ impl<'db> FactGraph<'db> {
                     "UPDATE facts
                      SET source = 'user', confidence = 1.0, last_seen_at = ?1, durability = 1.0
                      WHERE id = ?2",
-                    rusqlite::params![now, existing.id],
+                    rusqlite::params![now, existing.fact_id],
                 )?;
                 let mut fact = existing;
                 fact.source = "user".into();
@@ -670,7 +670,7 @@ impl<'db> FactGraph<'db> {
                     provenance.provenance_snippet,
                     tags_json,
                     merged_durability,
-                    existing.id
+                    existing.fact_id
                 ],
             )?;
             self.db.cache_invalidate_facts(subject);
@@ -769,7 +769,7 @@ mod tests {
             .insert("user", "likes", "Rust", "inferred", 0.8, &[])
             .unwrap();
 
-        assert!(fact.id.starts_with("fact-"));
+        assert!(fact.fact_id.starts_with("fact-"));
         let node_count: i64 = db
             .conn()
             .query_row(

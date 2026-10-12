@@ -101,7 +101,7 @@ impl SessionStore {
                     .list_recent_session_messages(&session_id, limit)?
                     .into_iter()
                     .map(|message| SessionMessageText {
-                        message_id: message.id,
+                        message_id: message.message_id,
                         role: message.role,
                         content: message.content,
                     })
@@ -133,7 +133,7 @@ impl SessionStore {
                     .iter()
                     .find(|message| message.role == CanonicalRole::User);
                 Ok(SessionResumeMedia {
-                    initial_message_id: initial_message.map(|message| message.id.clone()),
+                    initial_message_id: initial_message.map(|message| message.message_id.clone()),
                     initial_attachments: initial_message
                         .map(|message| message.attachments.clone())
                         .unwrap_or_default(),

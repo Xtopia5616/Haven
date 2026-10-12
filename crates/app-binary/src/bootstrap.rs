@@ -939,14 +939,14 @@ mod tests {
     fn exit_pause_helper_uses_session_store_to_pause_running_sessions() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("in-flight session").unwrap();
-        db.update_session_status(&session.id, SessionStatus::Running)
+        db.update_session_status(&session.session_id, SessionStatus::Running)
             .unwrap();
         let session_store = SessionStore::new(db.clone());
 
         pause_running_sessions_on_exit(&session_store);
 
         assert_eq!(
-            db.get_session(&session.id).unwrap().unwrap().status,
+            db.get_session(&session.session_id).unwrap().unwrap().status,
             SessionStatus::Paused
         );
     }
