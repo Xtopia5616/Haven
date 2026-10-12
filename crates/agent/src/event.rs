@@ -27,7 +27,7 @@ pub enum AgentEvent {
         thought: String,
         step_number: u32,
         run_id: u64,
-        /// The `msg-*` id this thought is persisted under (minted when the
+        /// The `step-*` id this thought is persisted under (minted when the
         /// step's thought stream started). The frontend uses it as the live
         /// bubble id, so live streaming, snap and the DB copy share one id
         /// and merges need no content-based dedup.
@@ -107,7 +107,7 @@ pub enum AgentEvent {
         delta: String,
         step_number: u32,
         run_id: u64,
-        /// `msg-*` id of the message this chunk accumulates into. Constant
+        /// `step-*` id of the thought message this chunk accumulates into. Constant
         /// for the whole (step, run) block, matching the id the backend
         /// later persists the final text under.
         message_id: String,
@@ -117,7 +117,8 @@ pub enum AgentEvent {
         delta: String,
         step_number: u32,
         run_id: u64,
-        /// Same semantics as `ThoughtChunk::message_id`.
+        /// Same field semantics as `ThoughtChunk::message_id`, but reasoning
+        /// blocks use the separate `msg-*` identity namespace.
         message_id: String,
     },
     /// Ephemeral live preview of raw tool-call arguments. These fragments may
@@ -1277,7 +1278,7 @@ impl EventDispatcher {
         store: &SessionStore,
     ) -> anyhow::Result<()> {
         tracing::debug!(
-            "emit_thought: session={} step={} run={} msg={} thought_len={}",
+            "emit_thought: session={} step={} run={} msg={} thought_bytes={}",
             session_id,
             step_number,
             run_id,

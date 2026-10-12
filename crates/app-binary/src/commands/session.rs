@@ -641,7 +641,6 @@ async fn accept_ui_confirmation(
         request_id = %pending.request.request_id,
         session_id = ?pending.request.session_id,
         interaction_kind = ?pending.request.kind,
-        tool = %pending.authorization_request.tool_name,
         risk = ?pending.receipt.effective_risk,
         "resolving renderer-triggered confirmation"
     );

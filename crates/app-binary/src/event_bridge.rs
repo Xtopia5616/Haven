@@ -63,7 +63,7 @@ pub(crate) fn project_tool_run_event(event: ToolRunLifecycleEvent) -> ToolRunEve
 #[async_trait::async_trait]
 impl AgentEventEmitter for TauriEmitter {
     async fn emit(&self, event: AgentEvent) {
-        self.trace_event(&event);
+        Self::trace_event(&event);
         let channel = Self::channel(&event);
         let chunk_seq = match &event {
             AgentEvent::ThoughtChunk { .. }
@@ -547,7 +547,7 @@ impl TauriEmitter {
     }
 
     /// 保留原有按变体区分的 tracing 日志（语义不变）。
-    fn trace_event(&self, event: &AgentEvent) {
+    fn trace_event(event: &AgentEvent) {
         match event {
             AgentEvent::Thought {
                 session_id,
@@ -560,20 +560,18 @@ impl TauriEmitter {
                     session_id = %session_id,
                     step_number = %step_number,
                     run_id = %run_id,
-                    thought_len = thought.len(),
+                    thought_bytes = thought.len(),
                     "TauriEmitter::on_thought"
                 );
             }
             AgentEvent::ToolCall {
                 session_id,
-                tool_name,
                 step_number,
                 run_id,
                 ..
             } => {
                 tracing::debug!(
                     session_id = %session_id,
-                    tool_name = %tool_name,
                     step_number = %step_number,
                     run_id = %run_id,
                     "TauriEmitter::on_action"
@@ -581,7 +579,6 @@ impl TauriEmitter {
             }
             AgentEvent::Observation {
                 session_id,
-                tool_name,
                 step_number,
                 run_id,
                 silent,
@@ -589,7 +586,6 @@ impl TauriEmitter {
             } => {
                 tracing::debug!(
                     session_id = %session_id,
-                    tool_name = %tool_name,
                     step_number = %step_number,
                     run_id = %run_id,
                     silent = *silent,
@@ -598,7 +594,6 @@ impl TauriEmitter {
             }
             AgentEvent::ToolCallChunk {
                 session_id,
-                tool_name,
                 arguments,
                 step_number,
                 run_id,
@@ -606,10 +601,9 @@ impl TauriEmitter {
             } => {
                 tracing::trace!(
                     session_id = %session_id,
-                    tool_name = %tool_name,
                     step_number = %step_number,
                     run_id = %run_id,
-                    arguments_len = arguments.len(),
+                    arguments_bytes = arguments.len(),
                     "TauriEmitter::on_tool_call_chunk"
                 );
             }
@@ -627,8 +621,8 @@ impl TauriEmitter {
             } => {
                 tracing::info!(
                     session_id = %session_id,
-                    title_len = title.chars().count(),
-                    reason_len = reason.chars().count(),
+                    title_chars = title.chars().count(),
+                    reason_chars = reason.chars().count(),
                     "TauriEmitter::on_session_completed"
                 );
             }
@@ -666,8 +660,8 @@ impl TauriEmitter {
             } => {
                 tracing::info!(
                     session_id = ?session_id,
-                    title_len = title.chars().count(),
-                    body_len = body.chars().count(),
+                    title_chars = title.chars().count(),
+                    body_chars = body.chars().count(),
                     "TauriEmitter::on_notification"
                 );
             }
@@ -693,6 +687,123 @@ impl TauriEmitter {
 mod tests {
     use super::*;
     use haven_agent::{ToolRunCompletionStatus, ToolRunNotificationSource};
+
+    #[test]
+    fn agent_event_logs_redact_tool_names_and_label_text_lengths() {
+        use std::io::{self, Write};
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone)]
+        struct BufferWriter(Arc<Mutex<Vec<u8>>>);
+
+        impl Write for BufferWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> MakeWriter<'a> for BufferWriter {
+            type Writer = Self;
+
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let private_tool_name = "private_dynamic_tool_name";
+        let session_id = "ses-55555555555555555555555555555555";
+        let events = [
+            AgentEvent::Thought {
+                session_id: session_id.into(),
+                thought: "é".into(),
+                step_number: 1,
+                run_id: 2,
+                message_id: "step-55555555555555555555555555555555".into(),
+                event_sequence: None,
+            },
+            AgentEvent::ToolCall {
+                session_id: session_id.into(),
+                tool_name: private_tool_name.into(),
+                input: serde_json::json!({"private_key": "private_argument_value"}),
+                step_number: 1,
+                run_id: 2,
+                tool_call_id: None,
+                tool_index: 0,
+                step_id: "step-55555555555555555555555555555555".into(),
+                suppress_streamed_thought: false,
+                event_sequence: None,
+            },
+            AgentEvent::Observation {
+                session_id: session_id.into(),
+                observation: "private observation".into(),
+                tool_name: private_tool_name.into(),
+                step_number: 1,
+                run_id: 2,
+                silent: false,
+                tool_call_id: None,
+                tool_index: 0,
+                ask_options: Vec::new(),
+                step_id: "step-55555555555555555555555555555555".into(),
+                idempotency: haven_common::tools::OperationIdempotency::Idempotent,
+                operation_scope: haven_common::tools::ToolOperationScope::Session,
+                renderer: "files".into(),
+                result: haven_common::tools::ToolResultEnvelope::default(),
+                event_sequence: None,
+            },
+            AgentEvent::ToolCallChunk {
+                session_id: session_id.into(),
+                preview_id: "preview-55555555555555555555555555555555".into(),
+                tool_name: private_tool_name.into(),
+                arguments: "é".into(),
+                arguments_truncated: false,
+                step_number: 1,
+                run_id: 2,
+                tool_index: 0,
+            },
+            AgentEvent::SessionCompleted {
+                session_id: session_id.into(),
+                title: "标题".into(),
+                reason: "结束".into(),
+            },
+            AgentEvent::Notification {
+                session_id: Some(session_id.into()),
+                title: "通知".into(),
+                body: "正文".into(),
+            },
+        ];
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(BufferWriter(output.clone()))
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            for event in &events {
+                TauriEmitter::trace_event(event);
+            }
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+
+        assert!(!logs.contains(private_tool_name), "captured logs: {logs}");
+        assert!(!logs.contains("private_key"), "captured logs: {logs}");
+        assert!(
+            !logs.contains("private_argument_value"),
+            "captured logs: {logs}"
+        );
+        assert!(logs.contains("thought_bytes=2"), "captured logs: {logs}");
+        assert!(logs.contains("arguments_bytes=2"), "captured logs: {logs}");
+        assert!(logs.contains("title_chars=2"), "captured logs: {logs}");
+        assert!(logs.contains("reason_chars=2"), "captured logs: {logs}");
+        assert!(logs.contains("body_chars=2"), "captured logs: {logs}");
+    }
 
     #[test]
     fn tool_run_output_event_projects_only_the_bounded_preview_fields() {
