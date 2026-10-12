@@ -419,15 +419,18 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 		case 'agent':
 			return (
 				hasValidOptionalFields(data, {
-					...stringFields('text', 'message_id', 'session_id', 'parent', 'role'),
+					...stringFields('text', 'role'),
 					...numberFields('timeout_secs', 'running_sessions', 'max_concurrent'),
 					...booleanFields('auto', 'timed_out', 'ok', 'queued'),
 				}) &&
+				hasValidOptionalCanonicalId(data, 'message_id', 'msg') &&
+				hasValidOptionalCanonicalId(data, 'session_id', 'ses') &&
+				hasValidOptionalCanonicalId(data, 'parent_session_id', 'ses') &&
 				hasValidRecordArray(
 					data,
 					'agents',
 					(row) =>
-						isString(row.name) &&
+						isCanonicalEntityId(row.session_id, 'ses') &&
 						hasValidOptionalFields(row, stringFields('title', 'role')) &&
 						isToolAgentPresenceStatus(row.status),
 				)

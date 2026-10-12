@@ -21,23 +21,23 @@ pub(crate) fn validate_message_id(message_id: &str, field: &str) -> anyhow::Resu
 
 pub(crate) fn validate_message_envelope(to: &str, envelope: &Envelope) -> anyhow::Result<()> {
     validate_session_id(to)?;
-    validate_session_id(&envelope.from)?;
-    if envelope.to != to {
+    validate_session_id(&envelope.from_session_id)?;
+    if envelope.to_session_id != to {
         anyhow::bail!(
             "message recipient mismatch: envelope targets '{}' but delivery targets '{}'",
-            envelope.to,
+            envelope.to_session_id,
             to
         );
     }
-    validate_message_id(&envelope.id, "message_id")?;
+    validate_message_id(&envelope.message_id, "message_id")?;
     if envelope.text.trim().is_empty() {
         anyhow::bail!("message text must not be empty");
     }
-    if let Some(reply_address) = &envelope.reply_address {
-        validate_session_id(reply_address)?;
+    if let Some(reply_to_session_id) = &envelope.reply_to_session_id {
+        validate_session_id(reply_to_session_id)?;
     }
-    if let Some(in_reply_to) = &envelope.in_reply_to {
-        validate_message_id(in_reply_to, "in_reply_to")?;
+    if let Some(in_reply_to_message_id) = &envelope.in_reply_to_message_id {
+        validate_message_id(in_reply_to_message_id, "in_reply_to_message_id")?;
     }
     DateTime::parse_from_rfc3339(&envelope.created_at)
         .map_err(|error| anyhow::anyhow!("invalid message created_at: {error}"))?;
@@ -46,13 +46,13 @@ pub(crate) fn validate_message_envelope(to: &str, envelope: &Envelope) -> anyhow
             .map_err(|error| anyhow::anyhow!("invalid message expires_at: {error}"))?;
     }
     if envelope.r#type == MessageType::Receipt {
-        let Some(in_reply_to) = envelope.in_reply_to.as_deref() else {
-            anyhow::bail!("receipt messages require in_reply_to");
+        let Some(in_reply_to_message_id) = envelope.in_reply_to_message_id.as_deref() else {
+            anyhow::bail!("receipt messages require in_reply_to_message_id");
         };
-        validate_message_id(in_reply_to, "receipt in_reply_to")?;
+        validate_message_id(in_reply_to_message_id, "receipt in_reply_to_message_id")?;
     }
-    if envelope.r#type == MessageType::Reply && envelope.in_reply_to.is_none() {
-        anyhow::bail!("reply messages require in_reply_to");
+    if envelope.r#type == MessageType::Reply && envelope.in_reply_to_message_id.is_none() {
+        anyhow::bail!("reply messages require in_reply_to_message_id");
     }
     Ok(())
 }

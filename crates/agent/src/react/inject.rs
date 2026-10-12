@@ -141,25 +141,25 @@ mod cross_session_format_tests {
     use haven_messaging::{Envelope, MessageType};
 
     #[test]
-    fn formats_id_and_in_reply_to() {
+    fn formats_message_id_and_in_reply_to_message_id() {
         let mut env = Envelope::new("ses-a", "ses-b", "hello peer");
         env.r#type = MessageType::Request;
-        env.in_reply_to = None;
+        env.in_reply_to_message_id = None;
         let s = format_cross_session_inject(&env);
-        assert!(s.contains(&format!("id={}", env.id)));
+        assert!(s.contains(&format!("message_id={}", env.message_id)));
         assert!(s.contains("(request;"));
         assert!(s.contains("]: hello peer"));
-        assert!(!s.contains("in_reply_to="));
+        assert!(!s.contains("in_reply_to_message_id="));
     }
 
     #[test]
     fn formats_reply_meta_and_subject() {
         let mut env = Envelope::new("ses-w", "ses-c", "done");
         env.r#type = MessageType::Reply;
-        env.in_reply_to = Some("msg-abc".into());
+        env.in_reply_to_message_id = Some("msg-abc".into());
         env.subject = Some("result".into());
         let s = format_cross_session_inject(&env);
-        assert!(s.contains("in_reply_to=msg-abc"));
+        assert!(s.contains("in_reply_to_message_id=msg-abc"));
         assert!(s.contains("subject=result"));
         assert!(s.contains("(reply;"));
     }
@@ -168,7 +168,7 @@ mod cross_session_format_tests {
     fn formats_receipt() {
         let mut env = Envelope::new("ses-b", "ses-a", "");
         env.r#type = MessageType::Receipt;
-        env.in_reply_to = Some("msg-1".into());
+        env.in_reply_to_message_id = Some("msg-1".into());
         let s = format_cross_session_inject(&env);
         assert_eq!(s, "[Read receipt] ses-b read your message msg-1");
     }

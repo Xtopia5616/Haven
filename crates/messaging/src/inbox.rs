@@ -4,9 +4,9 @@
 //! JSONL mailbox per agent.
 //!
 //! Layout:
-//! - `agents.json` — registry: agent name → metadata (`last_seen` heartbeat)
-//! - `<name>.jsonl` — per-agent mailbox (append-only, one JSON envelope per line)
-//! - `<name>.archive.jsonl` — read messages kept for audit
+//! - `agents.json` — registry: agent session_id → metadata (`last_seen` heartbeat)
+//! - `<session_id>.jsonl` — per-agent mailbox (append-only, one JSON envelope per line)
+//! - `<session_id>.archive.jsonl` — read messages kept for audit
 //! - `.lock` — cross-process file mutex (Windows-safe)
 //!
 //! Concurrency model: every mutation (append, claim/ack, registry
@@ -144,24 +144,24 @@ impl std::fmt::Display for MessageType {
 
 /// One message envelope = one line in a mailbox JSONL file.
 ///
-/// Required fields: `id` / `from` / `to` / `text` / `created_at`; everything
-/// else is optional and serialized as `null` when absent (kept on the wire
+/// Required fields: `message_id` / `from_session_id` / `to_session_id` / `text` / `created_at`;
+/// everything else is optional and serialized as `null` when absent (kept on the wire
 /// for audit readability, matching the interop format).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
     /// Unique message id, canonical `msg-{uuid32}`.
-    pub id: String,
+    pub message_id: String,
     /// `message | reply | broadcast | request | system`.
     #[serde(default)]
     pub r#type: MessageType,
-    /// Sender agent name.
-    pub from: String,
-    /// Recipient agent name, or `*` for broadcast.
-    pub to: String,
-    /// Address replies should go to; defaults to `from` when absent.
-    pub reply_address: Option<String>,
+    /// Sender session ID.
+    pub from_session_id: String,
+    /// Recipient session id, or `*` for broadcast.
+    pub to_session_id: String,
+    /// Session id replies should target; defaults to `from_session_id` when absent.
+    pub reply_to_session_id: Option<String>,
     /// When this envelope is a reply: the id of the original message.
-    pub in_reply_to: Option<String>,
+    pub in_reply_to_message_id: Option<String>,
     pub subject: Option<String>,
     pub text: String,
     /// Optional structured payload (JSON only; files referenced by path).
@@ -178,14 +178,14 @@ pub struct Envelope {
 }
 
 impl Envelope {
-    pub fn new(from: &str, to: &str, text: &str) -> Self {
+    pub fn new(from_session_id: &str, to_session_id: &str, text: &str) -> Self {
         Self {
-            id: new_id("msg"),
+            message_id: new_id("msg"),
             r#type: MessageType::Message,
-            from: from.into(),
-            to: to.into(),
-            reply_address: None,
-            in_reply_to: None,
+            from_session_id: from_session_id.into(),
+            to_session_id: to_session_id.into(),
+            reply_to_session_id: None,
+            in_reply_to_message_id: None,
             subject: None,
             text: text.into(),
             payload: None,
@@ -196,16 +196,18 @@ impl Envelope {
     }
 
     /// The address a reply to this message should target: its custom
-    /// `reply_address` when set, else its sender.
-    pub fn reply_target(&self) -> &str {
-        self.reply_address.as_deref().unwrap_or(&self.from)
+    /// `reply_to_session_id` when set, else its sender.
+    pub fn reply_target_session_id(&self) -> &str {
+        self.reply_to_session_id
+            .as_deref()
+            .unwrap_or(&self.from_session_id)
     }
 }
 
 /// Registry entry for one agent (`agents.json` value).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AgentEntry {
-    pub name: String,
+    pub session_id: String,
     /// RFC3339 heartbeat timestamp.
     pub last_seen: String,
     /// RFC3339 first-registration timestamp.
@@ -216,9 +218,9 @@ struct AgentEntry {
     /// Optional role label for discovery (e.g. `researcher`, `coder`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    /// Optional parent session id when this agent was spawned by another.
+    /// Optional parent session ID when this session was spawned by another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<String>,
+    pub parent_session_id: Option<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
 }
@@ -234,20 +236,20 @@ pub enum AgentStatus {
 /// Agent view returned by [`InboxBus::list_agents`].
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentInfo {
-    pub name: String,
+    pub session_id: String,
     pub last_seen: String,
     pub started_at: String,
     pub status: AgentStatus,
     pub title: Option<String>,
     pub role: Option<String>,
-    pub parent: Option<String>,
+    pub parent_session_id: Option<String>,
     pub capabilities: Vec<String>,
 }
 
 /// Result of delivering one envelope to one recipient.
 #[derive(Debug, Clone, Serialize)]
 pub struct SendOutcome {
-    pub to: String,
+    pub to_session_id: String,
     /// Whether the envelope was appended to the recipient's mailbox.
     /// Lenient delivery: `true` even when the recipient's heartbeat is stale
     /// (they read it next time they poll); only agents that never registered
@@ -300,28 +302,28 @@ impl InboxBus {
         self.notifier.subscribe()
     }
 
-    fn mailbox(&self, name: &str) -> PathBuf {
-        self.root.join(format!("{name}.jsonl"))
+    fn mailbox(&self, session_id: &str) -> PathBuf {
+        self.root.join(format!("{session_id}.jsonl"))
     }
 
-    fn mailbox_tmp(&self, name: &str) -> PathBuf {
-        self.root.join(format!("{name}.jsonl.tmp"))
+    fn mailbox_tmp(&self, session_id: &str) -> PathBuf {
+        self.root.join(format!("{session_id}.jsonl.tmp"))
     }
 
-    fn archive(&self, name: &str) -> PathBuf {
-        self.root.join(format!("{name}.archive.jsonl"))
+    fn archive(&self, session_id: &str) -> PathBuf {
+        self.root.join(format!("{session_id}.archive.jsonl"))
     }
 
-    fn archive_tmp(&self, name: &str) -> PathBuf {
-        self.root.join(format!("{name}.archive.jsonl.tmp"))
+    fn archive_tmp(&self, session_id: &str) -> PathBuf {
+        self.root.join(format!("{session_id}.archive.jsonl.tmp"))
     }
 
-    fn processing(&self, name: &str) -> PathBuf {
-        self.root.join(format!("{name}.jsonl.processing"))
+    fn processing(&self, session_id: &str) -> PathBuf {
+        self.root.join(format!("{session_id}.jsonl.processing"))
     }
 
-    fn processing_tmp(&self, name: &str) -> PathBuf {
-        self.root.join(format!("{name}.jsonl.processing.tmp"))
+    fn processing_tmp(&self, session_id: &str) -> PathBuf {
+        self.root.join(format!("{session_id}.jsonl.processing.tmp"))
     }
 
     fn ensure_dir(&self) -> anyhow::Result<()> {
@@ -334,8 +336,8 @@ impl InboxBus {
     ///
     /// An empty `capabilities` slice on a re-register **preserves** the
     /// stored list (heartbeats must not wipe a previously announced profile).
-    pub fn register(&self, name: &str, capabilities: &[String]) -> anyhow::Result<()> {
-        self.register_with_profile(name, capabilities, None, None, None)
+    pub fn register(&self, session_id: &str, capabilities: &[String]) -> anyhow::Result<()> {
+        self.register_with_profile(session_id, capabilities, None, None, None)
     }
 
     /// Like [`InboxBus::register`], but with an optional human-readable
@@ -343,36 +345,36 @@ impl InboxBus {
     /// `agents_list` and the UI can show what a session is about).
     pub fn register_with_title(
         &self,
-        name: &str,
+        session_id: &str,
         capabilities: &[String],
         title: Option<&str>,
     ) -> anyhow::Result<()> {
-        self.register_with_profile(name, capabilities, title, None, None)
+        self.register_with_profile(session_id, capabilities, title, None, None)
     }
 
     /// Full profile upsert used by spawn / announce / heartbeat.
     ///
     /// On re-register:
-    /// - `title` / `role` / `parent`: only overwritten when `Some`
+    /// - `title` / `role` / `parent_session_id`: only overwritten when `Some`
     /// - `capabilities`: only overwritten when non-empty (empty = preserve)
     pub fn register_with_profile(
         &self,
-        name: &str,
+        session_id: &str,
         capabilities: &[String],
         title: Option<&str>,
         role: Option<&str>,
-        parent: Option<&str>,
+        parent_session_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        validate_session_id(name)?;
-        if let Some(p) = parent {
+        validate_session_id(session_id)?;
+        if let Some(p) = parent_session_id {
             validate_session_id(p)?;
         }
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
-        self.recover_mailbox_tmp_unlocked(name)?;
+        self.recover_mailbox_tmp_unlocked(session_id)?;
         let now = now_rfc3339();
         let mut reg = self.read_registry_unlocked()?;
-        match reg.get_mut(name) {
+        match reg.get_mut(session_id) {
             Some(e) => {
                 e.last_seen = now.clone();
                 if let Some(t) = title {
@@ -385,8 +387,8 @@ impl InboxBus {
                         Some(r.to_string())
                     };
                 }
-                if let Some(p) = parent {
-                    e.parent = Some(p.to_string());
+                if let Some(p) = parent_session_id {
+                    e.parent_session_id = Some(p.to_string());
                 }
                 if !capabilities.is_empty() {
                     e.capabilities = capabilities.to_vec();
@@ -394,14 +396,14 @@ impl InboxBus {
             }
             None => {
                 reg.insert(
-                    name.into(),
+                    session_id.into(),
                     AgentEntry {
-                        name: name.into(),
+                        session_id: session_id.into(),
                         last_seen: now.clone(),
                         started_at: now,
                         title: title.map(String::from),
                         role: role.filter(|r| !r.is_empty()).map(String::from),
-                        parent: parent.map(String::from),
+                        parent_session_id: parent_session_id.map(String::from),
                         capabilities: capabilities.to_vec(),
                     },
                 );
@@ -410,7 +412,7 @@ impl InboxBus {
         self.write_registry_unlocked(&reg)?;
         // Create the mailbox if missing (the existence of this file is what
         // message_send checks to decide "agent exists").
-        let mailbox = self.mailbox(name);
+        let mailbox = self.mailbox(session_id);
         if !mailbox.exists() {
             OpenOptions::new().create(true).append(true).open(mailbox)?;
         }
@@ -421,27 +423,27 @@ impl InboxBus {
     /// archive are kept, so late messages remain deliverable (reported as
     /// `offline`) and the history survives a later re-registration. Missing
     /// entries are a no-op.
-    pub fn unregister(&self, name: &str) -> anyhow::Result<()> {
-        validate_session_id(name)?;
+    pub fn unregister(&self, session_id: &str) -> anyhow::Result<()> {
+        validate_session_id(session_id)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
         let mut reg = self.read_registry_unlocked()?;
-        if reg.remove(name).is_some() {
+        if reg.remove(session_id).is_some() {
             self.write_registry_unlocked(&reg)?;
         }
         Ok(())
     }
 
-    /// Retain a completed peer's metadata and parent link while making its
+    /// Retain a completed peer's metadata and parent session link while making its
     /// liveness unambiguously offline. This is used by the AgentLayer for
     /// spawned sessions so lifecycle authorization remains stable through the
     /// asynchronous terminal cleanup window.
-    pub(crate) fn mark_offline(&self, name: &str) -> anyhow::Result<()> {
-        validate_session_id(name)?;
+    pub(crate) fn mark_offline(&self, session_id: &str) -> anyhow::Result<()> {
+        validate_session_id(session_id)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
         let mut reg = self.read_registry_unlocked()?;
-        let Some(entry) = reg.get_mut(name) else {
+        let Some(entry) = reg.get_mut(session_id) else {
             return Ok(());
         };
         let stale_after = OFFLINE_AFTER.as_secs().saturating_add(1) as i64;
@@ -451,36 +453,36 @@ impl InboxBus {
         Ok(())
     }
 
-    /// Agents whose registry `parent` equals `parent` (spawned children).
+    /// Agents whose registry `parent_session_id` equals `parent_session_id` (spawned children).
     /// Filters under one lock without the online-first sort used by
     /// [`Self::list_agents`] (cascade / spawn caps care about identity, not UI order).
-    pub fn list_children(&self, parent: &str) -> anyhow::Result<Vec<AgentInfo>> {
-        validate_session_id(parent)?;
+    pub fn list_children(&self, parent_session_id: &str) -> anyhow::Result<Vec<AgentInfo>> {
+        validate_session_id(parent_session_id)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
         let now = Local::now();
         Ok(self
             .read_registry_unlocked()?
             .into_values()
-            .filter(|e| e.parent.as_deref() == Some(parent))
+            .filter(|e| e.parent_session_id.as_deref() == Some(parent_session_id))
             .map(|e| AgentInfo {
                 status: if is_online(&e.last_seen, now) {
                     AgentStatus::Online
                 } else {
                     AgentStatus::Offline
                 },
-                name: e.name,
+                session_id: e.session_id,
                 last_seen: e.last_seen,
                 started_at: e.started_at,
                 title: e.title,
                 role: e.role,
-                parent: e.parent,
+                parent_session_id: e.parent_session_id,
                 capabilities: e.capabilities,
             })
             .collect())
     }
 
-    /// BFS descendants of `root` via registry `parent` links (cycle-safe).
+    /// BFS descendants of `root` via registry `parent_session_id` links (cycle-safe).
     pub fn list_descendants(&self, root: &str) -> anyhow::Result<Vec<String>> {
         validate_session_id(root)?;
         let _lock = LockGuard::acquire(&self.root)?;
@@ -489,11 +491,11 @@ impl InboxBus {
         let mut by_parent: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
         for e in reg.values() {
-            if let Some(p) = e.parent.as_deref() {
+            if let Some(p) = e.parent_session_id.as_deref() {
                 by_parent
                     .entry(p.to_string())
                     .or_default()
-                    .push(e.name.clone());
+                    .push(e.session_id.clone());
             }
         }
         let mut out = Vec::new();
@@ -528,18 +530,18 @@ impl InboxBus {
                 } else {
                     AgentStatus::Offline
                 },
-                name: e.name,
+                session_id: e.session_id,
                 last_seen: e.last_seen,
                 started_at: e.started_at,
                 title: e.title,
                 role: e.role,
-                parent: e.parent,
+                parent_session_id: e.parent_session_id,
                 capabilities: e.capabilities,
             })
             .collect();
         out.sort_by(|a, b| {
-            let ka = (a.status == AgentStatus::Offline, &a.name);
-            let kb = (b.status == AgentStatus::Offline, &b.name);
+            let ka = (a.status == AgentStatus::Offline, &a.session_id);
+            let kb = (b.status == AgentStatus::Offline, &b.session_id);
             ka.cmp(&kb)
         });
         Ok(out)
@@ -572,7 +574,7 @@ impl InboxBus {
         // notification instead of waiting for its next polling step.
         self.notifier.notify();
         Ok(SendOutcome {
-            to: to.into(),
+            to_session_id: to.into(),
             delivered: true,
             status,
         })
@@ -581,16 +583,16 @@ impl InboxBus {
     /// Claim mailbox messages for a durable consumer without acknowledging
     /// them yet.
     ///
-    /// This leaves the claimed envelopes in `<name>.jsonl.processing`. The
+    /// This leaves the claimed envelopes in `<session_id>.jsonl.processing`. The
     /// service must call the acknowledgement primitive
     /// [`Self::ack_claimed`]
     /// after it has durably projected the batch. A crash between claim and ack
     /// therefore produces at-least-once delivery instead of silently losing a
     /// message after it was archived.
-    pub(crate) fn claim_and_archive(&self, name: &str) -> anyhow::Result<Vec<Envelope>> {
-        validate_session_id(name)?;
+    pub(crate) fn claim_and_archive(&self, session_id: &str) -> anyhow::Result<Vec<Envelope>> {
+        validate_session_id(session_id)?;
         let _lock = LockGuard::acquire(&self.root)?;
-        self.claim_and_archive_unlocked(name)
+        self.claim_and_archive_unlocked(session_id)
     }
 
     /// Best-effort claim for heartbeat/background polling. It never waits for
@@ -598,24 +600,24 @@ impl InboxBus {
     /// operation owns the lock, so the caller can retry on its next cadence.
     pub(crate) fn try_claim_and_archive(
         &self,
-        name: &str,
+        session_id: &str,
     ) -> anyhow::Result<Option<Vec<Envelope>>> {
-        validate_session_id(name)?;
+        validate_session_id(session_id)?;
         let Some(_lock) = LockGuard::try_acquire(&self.root)? else {
             return Ok(None);
         };
-        self.claim_and_archive_unlocked(name).map(Some)
+        self.claim_and_archive_unlocked(session_id).map(Some)
     }
 
-    fn claim_and_archive_unlocked(&self, name: &str) -> anyhow::Result<Vec<Envelope>> {
+    fn claim_and_archive_unlocked(&self, session_id: &str) -> anyhow::Result<Vec<Envelope>> {
         self.ensure_dir()?;
-        self.recover_mailbox_tmp_unlocked(name)?;
+        self.recover_mailbox_tmp_unlocked(session_id)?;
         // Recover an archive replacement left between Windows' remove and
         // rename steps before processing the current claim.
-        self.append_archive_unlocked(name, &[])?;
-        self.recover_processing_tmp_unlocked(name)?;
-        let pending = self.processing(name);
-        let mailbox = self.mailbox(name);
+        self.append_archive_unlocked(session_id, &[])?;
+        self.recover_processing_tmp_unlocked(session_id)?;
+        let pending = self.processing(session_id);
+        let mailbox = self.mailbox(session_id);
         let had_pending = pending.exists();
 
         if !had_pending && mailbox.exists() {
@@ -626,7 +628,7 @@ impl InboxBus {
             // before parsing so the old claim is never stranded.
             let old = std::fs::read_to_string(&pending)?;
             let incoming = std::fs::read_to_string(&mailbox)?;
-            let tmp = self.processing_tmp(name);
+            let tmp = self.processing_tmp(session_id);
             let mut merged = old;
             merged.push_str(&incoming);
             std::fs::write(&tmp, merged)?;
@@ -652,7 +654,7 @@ impl InboxBus {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e.into()),
         };
-        let envs = parse_envelopes(name, &content);
+        let envs = parse_envelopes(session_id, &content);
         if envs.is_empty() {
             let _ = std::fs::remove_file(&pending);
             return Ok(Vec::new());
@@ -662,7 +664,7 @@ impl InboxBus {
         // between these two writes, the processing file still carries a
         // non-zero attempt and will be redelivered; archive presence is never
         // used as an acknowledgement.
-        let archive_ids = self.read_archive_tail_ids(name)?;
+        let archive_ids = self.read_archive_tail_ids(session_id)?;
         // Remove expired/corrupt entries from the durable claim and de-dupe
         // repeated envelope ids before returning. Expired messages are still
         // archived below, matching the service expiry/archive contract, but
@@ -672,12 +674,12 @@ impl InboxBus {
             .iter()
             .filter(|env| {
                 !is_expired(env)
-                    && seen.insert(env.id.clone())
+                    && seen.insert(env.message_id.clone())
                     // A zero-attempt envelope in a fresh mailbox whose id is
                     // already archived is a duplicate delivery. Claimed
                     // envelopes carry their incremented attempt count in the
                     // processing file, so crash recovery remains at-least-once.
-                    && (env.delivery_attempt > 0 || !archive_ids.contains(&env.id))
+                    && (env.delivery_attempt > 0 || !archive_ids.contains(&env.message_id))
             })
             .cloned()
             .map(|mut env| {
@@ -685,11 +687,11 @@ impl InboxBus {
                 env
             })
             .collect();
-        self.write_processing_unlocked(name, &active)?;
+        self.write_processing_unlocked(session_id, &active)?;
 
         // Archive at claim time for auditability. The processing attempt is
         // already durable, so a crash during this append remains recoverable.
-        self.append_archive_unlocked(name, &envs)?;
+        self.append_archive_unlocked(session_id, &envs)?;
 
         Ok(active)
     }
@@ -697,8 +699,8 @@ impl InboxBus {
     /// Acknowledge a previously claimed batch. Only matching ids are removed;
     /// messages that arrived after the claim remain in the mailbox and are
     /// merged by the next claim.
-    pub(crate) fn ack_claimed(&self, name: &str, ids: &[String]) -> anyhow::Result<()> {
-        validate_session_id(name)?;
+    pub(crate) fn ack_claimed(&self, session_id: &str, ids: &[String]) -> anyhow::Result<()> {
+        validate_session_id(session_id)?;
         for id in ids {
             validate_message_id(id, "message_id")?;
         }
@@ -707,22 +709,22 @@ impl InboxBus {
         }
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
-        self.recover_mailbox_tmp_unlocked(name)?;
-        self.recover_archive_tmp_unlocked(name)?;
-        self.recover_processing_tmp_unlocked(name)?;
-        let pending = self.processing(name);
-        let mailbox = self.mailbox(name);
+        self.recover_mailbox_tmp_unlocked(session_id)?;
+        self.recover_archive_tmp_unlocked(session_id)?;
+        self.recover_processing_tmp_unlocked(session_id)?;
+        let pending = self.processing(session_id);
+        let mailbox = self.mailbox(session_id);
         if !pending.exists() {
             OpenOptions::new().create(true).append(true).open(mailbox)?;
             return Ok(());
         }
         let content = std::fs::read_to_string(&pending)?;
         let acknowledged: HashSet<&str> = ids.iter().map(String::as_str).collect();
-        let remaining_envelopes: Vec<Envelope> = parse_envelopes(name, &content)
+        let remaining_envelopes: Vec<Envelope> = parse_envelopes(session_id, &content)
             .into_iter()
-            .filter(|env| !acknowledged.contains(env.id.as_str()))
+            .filter(|env| !acknowledged.contains(env.message_id.as_str()))
             .collect();
-        self.write_processing_unlocked(name, &remaining_envelopes)?;
+        self.write_processing_unlocked(session_id, &remaining_envelopes)?;
         OpenOptions::new().create(true).append(true).open(mailbox)?;
         Ok(())
     }
@@ -730,32 +732,32 @@ impl InboxBus {
     /// The most recent message this agent received (unread mailbox first,
     /// then archive tail). Used by the service to resolve a missing reply
     /// target.
-    pub fn last_received(&self, name: &str) -> anyhow::Result<Option<Envelope>> {
-        validate_session_id(name)?;
+    pub fn last_received(&self, session_id: &str) -> anyhow::Result<Option<Envelope>> {
+        validate_session_id(session_id)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
-        self.recover_mailbox_tmp_unlocked(name)?;
-        self.append_archive_unlocked(name, &[])?;
-        if let Some(env) = last_valid_line(name, &self.mailbox(name))? {
+        self.recover_mailbox_tmp_unlocked(session_id)?;
+        self.append_archive_unlocked(session_id, &[])?;
+        if let Some(env) = last_valid_line(session_id, &self.mailbox(session_id))? {
             return Ok(Some(env));
         }
-        last_valid_line(name, &self.archive(name))
+        last_valid_line(session_id, &self.archive(session_id))
     }
 
     /// Find one envelope by id in this agent's mailbox or archive. Used by
-    /// the service to resolve the target of an `in_reply_to` reference.
+    /// the service to resolve the target of an `in_reply_to_message_id` reference.
     /// The archive is scanned only within its bounded durable tail; very old
     /// records are intentionally outside the retention contract.
-    pub fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
-        validate_session_id(name)?;
+    pub fn find_message(&self, session_id: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
+        validate_session_id(session_id)?;
         validate_message_id(id, "message_id")?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
-        self.recover_mailbox_tmp_unlocked(name)?;
-        self.append_archive_unlocked(name, &[])?;
+        self.recover_mailbox_tmp_unlocked(session_id)?;
+        self.append_archive_unlocked(session_id, &[])?;
         for (path, max_bytes) in [
-            (self.mailbox(name), u64::MAX),
-            (self.archive(name), MAX_ARCHIVE_BYTES),
+            (self.mailbox(session_id), u64::MAX),
+            (self.archive(session_id), MAX_ARCHIVE_BYTES),
         ] {
             let content = if max_bytes == u64::MAX {
                 match std::fs::read_to_string(&path) {
@@ -767,9 +769,9 @@ impl InboxBus {
                 read_tail(&path, max_bytes)?
             };
             if let Some(env) = content.lines().find_map(|line| {
-                parse_envelope(name, line.trim())
+                parse_envelope(session_id, line.trim())
                     .ok()
-                    .filter(|e| e.id == id)
+                    .filter(|e| e.message_id == id)
             }) {
                 return Ok(Some(env));
             }
@@ -777,29 +779,29 @@ impl InboxBus {
         Ok(None)
     }
 
-    /// Selectively drain mailbox envelopes that reply to `in_reply_to` from
-    /// `expected_from`, leaving unrelated messages in place. Used by the
+    /// Selectively drain mailbox envelopes that reply to `in_reply_to_message_id` from
+    /// `expected_from_session_id`, leaving unrelated messages in place. Used by the
     /// service request wait so a blocked RPC does not steal peer mail meant
     /// for the ReAct auto-inject path, and so a third agent cannot satisfy the
-    /// wait by forging `in_reply_to`.
+    /// wait by forging `in_reply_to_message_id`.
     ///
-    /// Matching rule: `in_reply_to` equals the request id, `from` equals the
+    /// Matching rule: `in_reply_to_message_id` equals the request id, `from_session_id` equals the
     /// original recipient, and type is `reply` or `message` (not `receipt`).
     /// Expired matches are archived but not returned.
     pub(crate) fn take_matching_replies(
         &self,
-        name: &str,
-        in_reply_to: &str,
-        expected_from: &str,
+        session_id: &str,
+        in_reply_to_message_id: &str,
+        expected_from_session_id: &str,
     ) -> anyhow::Result<Vec<Envelope>> {
-        validate_session_id(name)?;
-        validate_session_id(expected_from)?;
-        validate_message_id(in_reply_to, "in_reply_to")?;
+        validate_session_id(session_id)?;
+        validate_session_id(expected_from_session_id)?;
+        validate_message_id(in_reply_to_message_id, "in_reply_to_message_id")?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
-        self.recover_mailbox_tmp_unlocked(name)?;
-        self.append_archive_unlocked(name, &[])?;
-        let mailbox = self.mailbox(name);
+        self.recover_mailbox_tmp_unlocked(session_id)?;
+        self.append_archive_unlocked(session_id, &[])?;
+        let mailbox = self.mailbox(session_id);
         let content = match std::fs::read_to_string(&mailbox) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -816,8 +818,14 @@ impl InboxBus {
             if trimmed.is_empty() {
                 continue;
             }
-            match parse_envelope(name, trimmed) {
-                Ok(env) if is_reply_to_request(&env, in_reply_to, expected_from) => {
+            match parse_envelope(session_id, trimmed) {
+                Ok(env)
+                    if is_reply_to_request(
+                        &env,
+                        in_reply_to_message_id,
+                        expected_from_session_id,
+                    ) =>
+                {
                     if is_expired(&env) {
                         archived_only.push(env);
                     } else {
@@ -839,32 +847,32 @@ impl InboxBus {
             .chain(archived_only.iter())
             .cloned()
             .collect();
-        self.append_archive_unlocked(name, &to_archive)?;
+        self.append_archive_unlocked(session_id, &to_archive)?;
 
         // Rewrite mailbox without the taken replies (preserve other lines).
         let mut rewritten = rest.join("\n");
         if !rewritten.is_empty() {
             rewritten.push('\n');
         }
-        self.write_mailbox_unlocked(name, &rewritten)?;
+        self.write_mailbox_unlocked(session_id, &rewritten)?;
         Ok(matching)
     }
 
     /// Message history of one agent: unread mailbox messages plus the
     /// read archive, newest first, up to `limit` entries. Read-only view for
     /// the UI / audit (never consumes the mailbox).
-    pub fn history(&self, name: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
-        validate_session_id(name)?;
+    pub fn history(&self, session_id: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
+        validate_session_id(session_id)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
-        self.recover_mailbox_tmp_unlocked(name)?;
-        self.append_archive_unlocked(name, &[])?;
+        self.recover_mailbox_tmp_unlocked(session_id)?;
+        self.append_archive_unlocked(session_id, &[])?;
         let mut entries: Vec<Envelope> = Vec::new();
         // Archive (older) first, then the unread mailbox (newer), so the
         // reversal below yields strictly newest-first across both files.
         for (path, max_bytes) in [
-            (self.archive(name), MAX_ARCHIVE_BYTES),
-            (self.mailbox(name), u64::MAX),
+            (self.archive(session_id), MAX_ARCHIVE_BYTES),
+            (self.mailbox(session_id), u64::MAX),
         ] {
             let content = if max_bytes == u64::MAX {
                 match std::fs::read_to_string(&path) {
@@ -877,7 +885,7 @@ impl InboxBus {
             };
             {
                 for line in content.lines() {
-                    if let Ok(env) = parse_envelope(name, line.trim()) {
+                    if let Ok(env) = parse_envelope(session_id, line.trim()) {
                         entries.push(env);
                     }
                 }
@@ -901,15 +909,15 @@ impl InboxBus {
                     validate_session_id(session_id).map_err(|error| {
                         anyhow::anyhow!("invalid session id in agents.json: {error}")
                     })?;
-                    if entry.name != *session_id {
+                    if entry.session_id != *session_id {
                         anyhow::bail!(
-                            "corrupt agents.json: key '{session_id}' does not match entry name '{}'",
-                            entry.name
+                            "corrupt agents.json: key '{session_id}' does not match entry session_id '{}'",
+                            entry.session_id
                         );
                     }
-                    if let Some(parent) = entry.parent.as_deref() {
-                        validate_session_id(parent).map_err(|error| {
-                            anyhow::anyhow!("invalid parent session id in agents.json: {error}")
+                    if let Some(parent_session_id) = entry.parent_session_id.as_deref() {
+                        validate_session_id(parent_session_id).map_err(|error| {
+                            anyhow::anyhow!("invalid parent session ID in agents.json: {error}")
                         })?;
                     }
                 }
@@ -923,7 +931,11 @@ impl InboxBus {
     /// Append envelopes to the archive and compact it to a newest-record tail
     /// in the same locked mutation. Read-only callers do not compact as a
     /// side effect; interrupted replacements are still recovered.
-    fn append_archive_unlocked(&self, name: &str, envelopes: &[Envelope]) -> anyhow::Result<()> {
+    fn append_archive_unlocked(
+        &self,
+        session_id: &str,
+        envelopes: &[Envelope],
+    ) -> anyhow::Result<()> {
         #[cfg(test)]
         if !envelopes.is_empty()
             && self
@@ -937,8 +949,8 @@ impl InboxBus {
         // history/find lookup into a remove/create/sync cycle. A temp file is
         // itself a recovery signal; otherwise a rewrite is needed only when
         // the archive is oversized or at least one envelope is genuinely new.
-        let had_tmp = self.recover_archive_tmp_unlocked(name)?;
-        let archive = self.archive(name);
+        let had_tmp = self.recover_archive_tmp_unlocked(session_id)?;
+        let archive = self.archive(session_id);
         let existing = read_tail(&archive, MAX_ARCHIVE_BYTES)?;
         let mut lines: Vec<String> = existing
             .lines()
@@ -947,12 +959,12 @@ impl InboxBus {
             .collect();
         let mut ids: HashSet<String> = lines
             .iter()
-            .filter_map(|line| parse_envelope(name, line).ok())
-            .map(|envelope| envelope.id)
+            .filter_map(|line| parse_envelope(session_id, line).ok())
+            .map(|envelope| envelope.message_id)
             .collect();
         let mut has_new_envelope = false;
         for envelope in envelopes {
-            if ids.insert(envelope.id.clone()) {
+            if ids.insert(envelope.message_id.clone()) {
                 has_new_envelope = true;
                 lines.push(serde_json::to_string(envelope)?);
             }
@@ -964,7 +976,7 @@ impl InboxBus {
             let line_bytes = line.len() as u64 + 1;
             if line_bytes > MAX_ARCHIVE_BYTES {
                 tracing::warn!(
-                    session_id = name,
+                    session_id = session_id,
                     bytes = line_bytes,
                     "inbox archive record exceeds archive byte budget; dropping record from audit tail"
                 );
@@ -982,7 +994,7 @@ impl InboxBus {
             return Ok(());
         }
 
-        let tmp = self.archive_tmp(name);
+        let tmp = self.archive_tmp(session_id);
         let mut file = File::create(&tmp)?;
         for line in retained {
             writeln!(file, "{line}")?;
@@ -1002,9 +1014,9 @@ impl InboxBus {
     /// remove-then-rename. A temp file is promoted only when the destination
     /// is absent; if the old archive survived, it remains the safer source of
     /// truth and the abandoned temp is discarded.
-    fn recover_archive_tmp_unlocked(&self, name: &str) -> anyhow::Result<bool> {
-        let archive = self.archive(name);
-        let tmp = self.archive_tmp(name);
+    fn recover_archive_tmp_unlocked(&self, session_id: &str) -> anyhow::Result<bool> {
+        let archive = self.archive(session_id);
+        let tmp = self.archive_tmp(session_id);
         if !tmp.exists() {
             return Ok(false);
         }
@@ -1021,14 +1033,14 @@ impl InboxBus {
     fn write_registry_unlocked(&self, reg: &HashMap<String, AgentEntry>) -> anyhow::Result<()> {
         for (session_id, entry) in reg {
             validate_session_id(session_id)?;
-            if entry.name != *session_id {
+            if entry.session_id != *session_id {
                 anyhow::bail!(
-                    "registry key '{session_id}' does not match entry name '{}'",
-                    entry.name
+                    "registry key '{session_id}' does not match entry session_id '{}'",
+                    entry.session_id
                 );
             }
-            if let Some(parent) = entry.parent.as_deref() {
-                validate_session_id(parent)?;
+            if let Some(parent_session_id) = entry.parent_session_id.as_deref() {
+                validate_session_id(parent_session_id)?;
             }
         }
         let tmp = self.root.join("agents.json.tmp");
@@ -1039,19 +1051,21 @@ impl InboxBus {
 
     /// Ids of the last messages in the archive, for append deduplication
     /// (crash recovery only; bounded scan keeps this O(1)-ish in practice).
-    fn read_archive_tail_ids(&self, name: &str) -> anyhow::Result<HashSet<String>> {
-        Ok(read_tail(&self.archive(name), ARCHIVE_DEDUP_TAIL_BYTES)?
-            .lines()
-            .filter_map(|line| parse_envelope(name, line.trim()).ok())
-            .map(|e| e.id)
-            .collect())
+    fn read_archive_tail_ids(&self, session_id: &str) -> anyhow::Result<HashSet<String>> {
+        Ok(
+            read_tail(&self.archive(session_id), ARCHIVE_DEDUP_TAIL_BYTES)?
+                .lines()
+                .filter_map(|line| parse_envelope(session_id, line.trim()).ok())
+                .map(|e| e.message_id)
+                .collect(),
+        )
     }
 
     /// Replace a selectively drained mailbox with a fully written file. The
     /// temp file is recoverable after Windows' remove-then-rename window.
-    fn write_mailbox_unlocked(&self, name: &str, content: &str) -> anyhow::Result<()> {
-        let mailbox = self.mailbox(name);
-        let tmp = self.mailbox_tmp(name);
+    fn write_mailbox_unlocked(&self, session_id: &str, content: &str) -> anyhow::Result<()> {
+        let mailbox = self.mailbox(session_id);
+        let tmp = self.mailbox_tmp(session_id);
         let mut file = File::create(&tmp)?;
         file.write_all(content.as_bytes())?;
         file.flush()?;
@@ -1065,9 +1079,9 @@ impl InboxBus {
         Ok(())
     }
 
-    fn recover_mailbox_tmp_unlocked(&self, name: &str) -> anyhow::Result<()> {
-        let mailbox = self.mailbox(name);
-        let tmp = self.mailbox_tmp(name);
+    fn recover_mailbox_tmp_unlocked(&self, session_id: &str) -> anyhow::Result<()> {
+        let mailbox = self.mailbox(session_id);
+        let tmp = self.mailbox_tmp(session_id);
         if !tmp.exists() {
             return Ok(());
         }
@@ -1089,8 +1103,12 @@ impl InboxBus {
     /// replacement is recovered from the temp file on the next claim. An
     /// empty claim is removed so it cannot be mistaken for a pending delivery
     /// on the next poll.
-    fn write_processing_unlocked(&self, name: &str, envelopes: &[Envelope]) -> anyhow::Result<()> {
-        let pending = self.processing(name);
+    fn write_processing_unlocked(
+        &self,
+        session_id: &str,
+        envelopes: &[Envelope],
+    ) -> anyhow::Result<()> {
+        let pending = self.processing(session_id);
         if envelopes.is_empty() {
             match std::fs::remove_file(&pending) {
                 Ok(()) => {}
@@ -1100,7 +1118,7 @@ impl InboxBus {
             return Ok(());
         }
 
-        let tmp = self.processing_tmp(name);
+        let tmp = self.processing_tmp(session_id);
         let mut file = File::create(&tmp)?;
         for envelope in envelopes {
             writeln!(file, "{}", serde_json::to_string(envelope)?)?;
@@ -1119,9 +1137,9 @@ impl InboxBus {
         Ok(())
     }
 
-    fn recover_processing_tmp_unlocked(&self, name: &str) -> anyhow::Result<()> {
-        let pending = self.processing(name);
-        let tmp = self.processing_tmp(name);
+    fn recover_processing_tmp_unlocked(&self, session_id: &str) -> anyhow::Result<()> {
+        let pending = self.processing(session_id);
+        let tmp = self.processing_tmp(session_id);
         if !tmp.exists() {
             return Ok(());
         }
@@ -1183,10 +1201,14 @@ fn is_online(last_seen: &str, now: DateTime<Local>) -> bool {
 }
 
 /// Whether `env` is a substantive reply to the given request id from the
-/// expected peer (excludes auto receipts, which also set `in_reply_to`).
-fn is_reply_to_request(env: &Envelope, in_reply_to: &str, expected_from: &str) -> bool {
-    env.in_reply_to.as_deref() == Some(in_reply_to)
-        && env.from == expected_from
+/// expected peer (excludes auto receipts, which also set `in_reply_to_message_id`).
+fn is_reply_to_request(
+    env: &Envelope,
+    in_reply_to_message_id: &str,
+    expected_from_session_id: &str,
+) -> bool {
+    env.in_reply_to_message_id.as_deref() == Some(in_reply_to_message_id)
+        && env.from_session_id == expected_from_session_id
         && matches!(env.r#type, MessageType::Reply | MessageType::Message)
 }
 
@@ -1393,13 +1415,13 @@ mod tests {
         (dir, bus)
     }
 
-    fn claim_and_ack(bus: &InboxBus, name: &str) -> Vec<Envelope> {
-        let messages = bus.claim_and_archive(name).unwrap();
+    fn claim_and_ack(bus: &InboxBus, session_id: &str) -> Vec<Envelope> {
+        let messages = bus.claim_and_archive(session_id).unwrap();
         let ids = messages
             .iter()
-            .map(|message| message.id.clone())
+            .map(|message| message.message_id.clone())
             .collect::<Vec<_>>();
-        bus.ack_claimed(name, &ids).unwrap();
+        bus.ack_claimed(session_id, &ids).unwrap();
         messages
     }
 
@@ -1409,25 +1431,25 @@ mod tests {
         Envelope::new(a, to, text)
     }
 
-    fn write_mailbox(bus: &InboxBus, name: &str, envs: &[Envelope]) {
+    fn write_mailbox(bus: &InboxBus, session_id: &str, envs: &[Envelope]) {
         let mut f = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(bus.mailbox(name))
+            .open(bus.mailbox(session_id))
             .unwrap();
         for e in envs {
             writeln!(f, "{}", serde_json::to_string(e).unwrap()).unwrap();
         }
     }
 
-    fn reg_entry(name: &str, last_seen: &str) -> AgentEntry {
+    fn reg_entry(session_id: &str, last_seen: &str) -> AgentEntry {
         AgentEntry {
-            name: name.into(),
+            session_id: session_id.into(),
             last_seen: last_seen.into(),
             started_at: "2026-01-01T00:00:00+08:00".into(),
             title: None,
             role: None,
-            parent: None,
+            parent_session_id: None,
             capabilities: vec![],
         }
     }
@@ -1444,7 +1466,7 @@ mod tests {
 
     #[test]
     fn validate_session_id_rejects_noncanonical_ids() {
-        for name in [
+        for session_id in [
             "",
             "agent-alpha",
             "ses-abc123",
@@ -1459,7 +1481,7 @@ mod tests {
             "a".repeat(65).as_str(),
             "中文",
         ] {
-            assert!(validate_session_id(name).is_err(), "{name}");
+            assert!(validate_session_id(session_id).is_err(), "{session_id}");
         }
     }
 
@@ -1467,8 +1489,8 @@ mod tests {
     fn registry_rejects_noncanonical_persisted_session_ids() {
         let (_dir, bus) = test_bus();
         let registry = serde_json::json!({
-            "ses-old-name": {
-                "name": "ses-old-name",
+            "ses-old-session_id": {
+                "session_id": "ses-old-session_id",
                 "last_seen": "2026-01-01T00:00:00Z",
                 "started_at": "2026-01-01T00:00:00Z"
             }
@@ -1489,6 +1511,14 @@ mod tests {
         let (_dir, bus) = test_bus();
         bus.register("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &["x".into()])
             .unwrap();
+        bus.register_with_profile(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            &[],
+            None,
+            None,
+            Some("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        )
+        .unwrap();
         assert!(bus.mailbox("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").exists());
         let reg: HashMap<String, AgentEntry> =
             serde_json::from_str(&std::fs::read_to_string(bus.root().join("agents.json")).unwrap())
@@ -1498,6 +1528,51 @@ mod tests {
             vec!["x"]
         );
         assert_eq!(reg.len(), 1);
+        let registry_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(bus.root().join("agents.json")).unwrap())
+                .unwrap();
+        let entry = &registry_json["ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"];
+        assert_eq!(entry["session_id"], "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert!(entry.get("name").is_none());
+        assert_eq!(
+            entry["parent_session_id"],
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+    }
+
+    #[test]
+    fn durable_messaging_records_use_explicit_identity_fields() {
+        let envelope = Envelope::new(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "hello",
+        );
+        let value = serde_json::to_value(&envelope).unwrap();
+        for field in ["message_id", "from_session_id", "to_session_id"] {
+            assert!(value.get(field).is_some(), "missing {field}");
+        }
+        for legacy_field in ["id", "from", "to", "reply_address", "in_reply_to"] {
+            assert!(
+                value.get(legacy_field).is_none(),
+                "legacy {legacy_field} persisted"
+            );
+        }
+
+        let legacy_envelope = serde_json::json!({
+            "id": "msg-00000000000000000000000000000001",
+            "from": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "text": "hello",
+            "created_at": "2026-01-01T00:00:00Z"
+        });
+        assert!(serde_json::from_value::<Envelope>(legacy_envelope).is_err());
+
+        let legacy_registry_entry = serde_json::json!({
+            "name": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "last_seen": "2026-01-01T00:00:00Z",
+            "started_at": "2026-01-01T00:00:00Z"
+        });
+        assert!(serde_json::from_value::<AgentEntry>(legacy_registry_entry).is_err());
     }
 
     #[test]
@@ -1554,9 +1629,9 @@ mod tests {
         let msgs = claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert_eq!(msgs.len(), 1);
         let got = &msgs[0];
-        assert_eq!(got.id, env.id);
-        assert_eq!(got.from, "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        assert_eq!(got.to, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(got.message_id, env.message_id);
+        assert_eq!(got.from_session_id, "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(got.to_session_id, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert_eq!(got.text, "schema 定了吗？");
         assert_eq!(got.subject.as_deref(), Some("需要你确认"));
         assert_eq!(got.payload, Some(json!({"file": "/path/x.rs"})));
@@ -1619,7 +1694,7 @@ mod tests {
             .history("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1)
             .unwrap();
         assert_eq!(history.len(), 1);
-        assert_eq!(history[0].id, messages.last().unwrap().id);
+        assert_eq!(history[0].message_id, messages.last().unwrap().message_id);
     }
 
     #[test]
@@ -1642,7 +1717,7 @@ mod tests {
             .history("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1)
             .unwrap();
 
-        assert_eq!(history[0].id, archived.id);
+        assert_eq!(history[0].message_id, archived.message_id);
         assert!(
             !bus.archive_tmp("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
                 .exists()
@@ -1681,8 +1756,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            history.iter().map(|env| &env.id).collect::<Vec<_>>(),
-            vec![&old.id]
+            history
+                .iter()
+                .map(|env| &env.message_id)
+                .collect::<Vec<_>>(),
+            vec![&old.message_id]
         );
         assert!(
             !bus.archive_tmp("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -1724,15 +1802,15 @@ mod tests {
         assert_eq!(
             bus.history("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1)
                 .unwrap()[0]
-                .id,
-            archived.id
+                .message_id,
+            archived.message_id
         );
         assert_eq!(
-            bus.find_message("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &archived.id)
+            bus.find_message("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &archived.message_id)
                 .unwrap()
                 .unwrap()
-                .id,
-            archived.id
+                .message_id,
+            archived.message_id
         );
 
         let after = std::fs::metadata(bus.archive("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
@@ -1777,7 +1855,7 @@ mod tests {
             .history("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1)
             .unwrap();
 
-        assert_eq!(history[0].id, messages.last().unwrap().id);
+        assert_eq!(history[0].message_id, messages.last().unwrap().message_id);
         assert_eq!(
             std::fs::metadata(bus.archive("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
                 .unwrap()
@@ -1805,7 +1883,7 @@ mod tests {
             .claim_and_archive("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].id, env.id);
+        assert_eq!(first[0].message_id, env.message_id);
 
         // Simulate a process crash after claim/archive but before transcript
         // projection and acknowledgement.
@@ -1813,11 +1891,11 @@ mod tests {
             .claim_and_archive("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
         assert_eq!(redelivered.len(), 1);
-        assert_eq!(redelivered[0].id, env.id);
+        assert_eq!(redelivered[0].message_id, env.message_id);
 
         bus.ack_claimed(
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            std::slice::from_ref(&env.id),
+            std::slice::from_ref(&env.message_id),
         )
         .unwrap();
         assert!(
@@ -1836,7 +1914,7 @@ mod tests {
         let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         bus.register(recipient, &[]).unwrap();
         let mut envelope = env_from("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "hello");
-        envelope.from = "ses-old-agent-name".into();
+        envelope.from_session_id = "ses-old-agent-session_id".into();
 
         let error = bus.deliver(recipient, &envelope).unwrap_err();
 
@@ -1904,23 +1982,26 @@ mod tests {
             .claim_and_archive("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
         assert_eq!(
-            merged.iter().map(|env| env.id.as_str()).collect::<Vec<_>>(),
-            [first.id.as_str(), second.id.as_str()]
+            merged
+                .iter()
+                .map(|env| env.message_id.as_str())
+                .collect::<Vec<_>>(),
+            [first.message_id.as_str(), second.message_id.as_str()]
         );
 
         bus.ack_claimed(
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            std::slice::from_ref(&first.id),
+            std::slice::from_ref(&first.message_id),
         )
         .unwrap();
         let remaining = bus
             .claim_and_archive("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].id, second.id);
+        assert_eq!(remaining[0].message_id, second.message_id);
         bus.ack_claimed(
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            std::slice::from_ref(&second.id),
+            std::slice::from_ref(&second.message_id),
         )
         .unwrap();
     }
@@ -1947,14 +2028,14 @@ mod tests {
             .claim_and_archive("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
         assert_eq!(claimed.len(), 1);
-        assert_eq!(claimed[0].id, env.id);
+        assert_eq!(claimed[0].message_id, env.message_id);
         assert!(
             !bus.processing_tmp("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
                 .exists()
         );
         bus.ack_claimed(
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            std::slice::from_ref(&env.id),
+            std::slice::from_ref(&env.message_id),
         )
         .unwrap();
     }
@@ -2089,7 +2170,7 @@ mod tests {
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "legacy identity",
         );
-        legacy_identity.from = "ses-old-agent-name".into();
+        legacy_identity.from_session_id = "ses-old-agent-session_id".into();
         writeln!(f, "{}", serde_json::to_string(&legacy_identity).unwrap()).unwrap();
         writeln!(
             f,
@@ -2105,7 +2186,7 @@ mod tests {
         drop(f);
         let msgs = claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].id, good.id);
+        assert_eq!(msgs[0].message_id, good.message_id);
     }
 
     #[test]
@@ -2173,7 +2254,7 @@ mod tests {
             2,
             "both the leftover and the new writes must be read"
         );
-        assert_eq!(msgs[0].id, first.id);
+        assert_eq!(msgs[0].message_id, first.message_id);
     }
 
     #[test]
@@ -2257,7 +2338,7 @@ mod tests {
             8 * 25,
             "every concurrent write must survive intact"
         );
-        let ids: HashSet<String> = msgs.iter().map(|e| e.id.clone()).collect();
+        let ids: HashSet<String> = msgs.iter().map(|e| e.message_id.clone()).collect();
         assert_eq!(ids.len(), msgs.len(), "ids must be unique");
     }
 
@@ -2282,7 +2363,7 @@ mod tests {
         let agents = bus.list_agents().unwrap();
         assert_eq!(agents.len(), 2);
         assert_eq!(
-            agents[0].name, "ses-dddddddddddddddddddddddddddddddd",
+            agents[0].session_id, "ses-dddddddddddddddddddddddddddddddd",
             "online agents come first"
         );
         assert_eq!(agents[0].status, AgentStatus::Online);
@@ -2290,7 +2371,7 @@ mod tests {
     }
 
     #[test]
-    fn last_received_prefers_mailbox_then_archive_and_honors_reply_address() {
+    fn last_received_prefers_mailbox_then_archive_and_honors_reply_session_id() {
         let (_dir, bus) = test_bus();
         bus.register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
             .unwrap();
@@ -2311,13 +2392,13 @@ mod tests {
         )
         .unwrap();
         claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        // New unread message from ses-c with a custom reply_address.
+        // New unread message from ses-c with a custom reply_to_session_id.
         let mut fresh = env_from(
             "ses-cccccccccccccccccccccccccccccccc",
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "新消息",
         );
-        fresh.reply_address = Some("ses-99999999999999999999999999999999".into());
+        fresh.reply_to_session_id = Some("ses-99999999999999999999999999999999".into());
         write_mailbox(
             &bus,
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -2328,11 +2409,14 @@ mod tests {
             .last_received("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap()
             .unwrap();
-        assert_eq!(last.id, fresh.id, "unread mailbox wins over archive");
         assert_eq!(
-            last.reply_target(),
+            last.message_id, fresh.message_id,
+            "unread mailbox wins over archive"
+        );
+        assert_eq!(
+            last.reply_target_session_id(),
             "ses-99999999999999999999999999999999",
-            "reply_address overrides from"
+            "reply_to_session_id overrides from"
         );
 
         // After reading the mailbox, the archive tail provides the last sender.
@@ -2341,8 +2425,11 @@ mod tests {
             .last_received("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap()
             .unwrap();
-        assert_eq!(last.id, fresh.id);
-        assert_eq!(last.reply_target(), "ses-99999999999999999999999999999999");
+        assert_eq!(last.message_id, fresh.message_id);
+        assert_eq!(
+            last.reply_target_session_id(),
+            "ses-99999999999999999999999999999999"
+        );
     }
 
     #[test]
@@ -2390,15 +2477,15 @@ mod tests {
         );
 
         let found = bus
-            .find_message("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &fresh.id)
+            .find_message("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &fresh.message_id)
             .unwrap()
             .unwrap();
-        assert_eq!(found.id, fresh.id);
+        assert_eq!(found.message_id, fresh.message_id);
         let found = bus
-            .find_message("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &archived.id)
+            .find_message("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &archived.message_id)
             .unwrap()
             .unwrap();
-        assert_eq!(found.id, archived.id);
+        assert_eq!(found.message_id, archived.message_id);
         assert!(
             bus.find_message("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "msg-nonexistent")
                 .is_err()
@@ -2464,7 +2551,7 @@ mod tests {
             .list_agents()
             .unwrap()
             .into_iter()
-            .map(|a| a.name)
+            .map(|a| a.session_id)
             .collect();
         assert_eq!(
             names,
@@ -2496,7 +2583,7 @@ mod tests {
             bus.list_agents()
                 .unwrap()
                 .iter()
-                .any(|a| a.name == "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                .any(|a| a.session_id == "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         );
     }
 
@@ -2524,11 +2611,11 @@ mod tests {
             .list_agents()
             .unwrap()
             .into_iter()
-            .find(|agent| agent.name == "ses-00000000000000000000000000000001")
+            .find(|agent| agent.session_id == "ses-00000000000000000000000000000001")
             .unwrap();
         assert_eq!(child.status, AgentStatus::Offline);
         assert_eq!(
-            child.parent.as_deref(),
+            child.parent_session_id.as_deref(),
             Some("ses-00000000000000000000000000000005")
         );
         assert_eq!(child.capabilities, vec!["docs"]);
@@ -2547,7 +2634,7 @@ mod tests {
             .list_agents()
             .unwrap()
             .into_iter()
-            .find(|a| a.name == "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .find(|a| a.session_id == "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             .unwrap()
             .title;
         assert_eq!(title.as_deref(), Some("修复登录 bug"));
@@ -2605,7 +2692,7 @@ mod tests {
         let kids = bus
             .list_children("ses-00000000000000000000000000000005")
             .unwrap();
-        let mut names: Vec<_> = kids.into_iter().map(|a| a.name).collect();
+        let mut names: Vec<_> = kids.into_iter().map(|a| a.session_id).collect();
         names.sort();
         assert_eq!(
             names,
@@ -2683,7 +2770,7 @@ mod tests {
         assert_eq!(info.capabilities, vec!["code", "review"]);
         assert_eq!(info.role.as_deref(), Some("coder"));
         assert_eq!(
-            info.parent.as_deref(),
+            info.parent_session_id.as_deref(),
             Some("ses-00000000000000000000000000000005")
         );
         assert_eq!(info.title.as_deref(), Some("worker"));
@@ -2723,7 +2810,7 @@ mod tests {
             "done X",
         );
         reply.r#type = MessageType::Reply;
-        reply.in_reply_to = Some(request.id.clone());
+        reply.in_reply_to_message_id = Some(request.message_id.clone());
         bus.deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &reply)
             .unwrap();
         let mut receipt = Envelope::new(
@@ -2732,25 +2819,25 @@ mod tests {
             "已读",
         );
         receipt.r#type = MessageType::Receipt;
-        receipt.in_reply_to = Some(request.id.clone());
+        receipt.in_reply_to_message_id = Some(request.message_id.clone());
         bus.deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &receipt)
             .unwrap();
 
         let got = bus
             .take_matching_replies(
                 "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                &request.id,
+                &request.message_id,
                 "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             )
             .unwrap();
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].id, reply.id);
+        assert_eq!(got[0].message_id, reply.message_id);
         assert_eq!(got[0].text, "done X");
 
         // Unrelated message + receipt remain for the normal inbox drain.
         let left = claim_and_ack(&bus, "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         assert_eq!(left.len(), 2);
-        assert!(left.iter().any(|e| e.id == unrelated.id));
+        assert!(left.iter().any(|e| e.message_id == unrelated.message_id));
         assert!(left.iter().any(|e| e.r#type == MessageType::Receipt));
     }
 
@@ -2773,7 +2860,7 @@ mod tests {
             "done X",
         );
         reply.r#type = MessageType::Reply;
-        reply.in_reply_to = Some(request.id.clone());
+        reply.in_reply_to_message_id = Some(request.message_id.clone());
         bus.deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &reply)
             .unwrap();
         let mailbox = bus.mailbox("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
@@ -2784,7 +2871,7 @@ mod tests {
         assert!(
             bus.take_matching_replies(
                 "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                &request.id,
+                &request.message_id,
                 "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             )
             .is_err()
@@ -2794,12 +2881,12 @@ mod tests {
         let recovered = bus
             .take_matching_replies(
                 "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                &request.id,
+                &request.message_id,
                 "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             )
             .unwrap();
         assert_eq!(recovered.len(), 1);
-        assert_eq!(recovered[0].id, reply.id);
+        assert_eq!(recovered[0].message_id, reply.message_id);
     }
 
     #[test]
@@ -2833,8 +2920,16 @@ mod tests {
         let history = bus
             .history("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 10)
             .unwrap();
-        assert!(history.iter().any(|envelope| envelope.id == old.id));
-        assert!(!history.iter().any(|envelope| envelope.id == replacement.id));
+        assert!(
+            history
+                .iter()
+                .any(|envelope| envelope.message_id == old.message_id)
+        );
+        assert!(
+            !history
+                .iter()
+                .any(|envelope| envelope.message_id == replacement.message_id)
+        );
         assert!(!tmp.exists());
 
         std::fs::remove_file(&mailbox).unwrap();
@@ -2846,7 +2941,11 @@ mod tests {
         let history = bus
             .history("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 10)
             .unwrap();
-        assert!(history.iter().any(|envelope| envelope.id == replacement.id));
+        assert!(
+            history
+                .iter()
+                .any(|envelope| envelope.message_id == replacement.message_id)
+        );
         assert!(mailbox.exists());
         assert!(!tmp.exists());
     }
@@ -2872,13 +2971,13 @@ mod tests {
             "I am B",
         );
         forged.r#type = MessageType::Reply;
-        forged.in_reply_to = Some(request.id.clone());
+        forged.in_reply_to_message_id = Some(request.message_id.clone());
         bus.deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &forged)
             .unwrap();
         assert!(
             bus.take_matching_replies(
                 "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                &request.id,
+                &request.message_id,
                 "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             )
             .unwrap()
@@ -2962,8 +3061,14 @@ mod tests {
             .history("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 10)
             .unwrap();
         assert_eq!(history.len(), 2);
-        assert_eq!(history[0].id, fresh.id, "mailbox (newer) comes first");
-        assert_eq!(history[1].id, old.id, "archive (older) comes last");
+        assert_eq!(
+            history[0].message_id, fresh.message_id,
+            "mailbox (newer) comes first"
+        );
+        assert_eq!(
+            history[1].message_id, old.message_id,
+            "archive (older) comes last"
+        );
         // The read-only view must not consume the mailbox.
         assert_eq!(
             claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").len(),
@@ -2974,6 +3079,6 @@ mod tests {
             .history("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1)
             .unwrap();
         assert_eq!(capped.len(), 1);
-        assert_eq!(capped[0].id, fresh.id);
+        assert_eq!(capped[0].message_id, fresh.message_id);
     }
 }

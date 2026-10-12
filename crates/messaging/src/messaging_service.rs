@@ -27,26 +27,26 @@ macro_rules! define_message_transport {
         /// feature; production callers construct the service through its facade.
         $visibility trait MessageTransport: std::fmt::Debug + Send + Sync {
             fn subscribe(&self) -> watch::Receiver<u64>;
-            fn register(&self, name: &str, capabilities: &[String]) -> anyhow::Result<()>;
+            fn register(&self, session_id: &str, capabilities: &[String]) -> anyhow::Result<()>;
             fn register_with_title(
                 &self,
-                name: &str,
+                session_id: &str,
                 capabilities: &[String],
                 title: Option<&str>,
             ) -> anyhow::Result<()>;
             fn register_with_profile(
                 &self,
-                name: &str,
+                session_id: &str,
                 capabilities: &[String],
                 title: Option<&str>,
                 role: Option<&str>,
-                parent: Option<&str>,
+                parent_session_id: Option<&str>,
             ) -> anyhow::Result<()>;
-            fn unregister(&self, name: &str) -> anyhow::Result<()>;
-            fn mark_offline(&self, name: &str) -> anyhow::Result<()>;
+            fn unregister(&self, session_id: &str) -> anyhow::Result<()>;
+            fn mark_offline(&self, session_id: &str) -> anyhow::Result<()>;
             fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>>;
-            fn list_children(&self, parent: &str) -> anyhow::Result<Vec<AgentInfo>>;
-            fn list_descendants(&self, parent: &str) -> anyhow::Result<Vec<String>>;
+            fn list_children(&self, parent_session_id: &str) -> anyhow::Result<Vec<AgentInfo>>;
+            fn list_descendants(&self, parent_session_id: &str) -> anyhow::Result<Vec<String>>;
             fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome>;
             fn claim(&self, recipient: &str) -> anyhow::Result<Vec<Envelope>>;
             /// Best-effort claim for background polling. `None` means the transport
@@ -54,15 +54,15 @@ macro_rules! define_message_transport {
             /// wait for the transport lock.
             fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>>;
             fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<()>;
-            fn last_received(&self, name: &str) -> anyhow::Result<Option<Envelope>>;
-            fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>>;
+            fn last_received(&self, session_id: &str) -> anyhow::Result<Option<Envelope>>;
+            fn find_message(&self, session_id: &str, id: &str) -> anyhow::Result<Option<Envelope>>;
             fn take_matching_replies(
                 &self,
-                name: &str,
-                in_reply_to: &str,
-                expected_from: &str,
+                session_id: &str,
+                in_reply_to_message_id: &str,
+                expected_from_session_id: &str,
             ) -> anyhow::Result<Vec<Envelope>>;
-            fn history(&self, name: &str, limit: usize) -> anyhow::Result<Vec<Envelope>>;
+            fn history(&self, session_id: &str, limit: usize) -> anyhow::Result<Vec<Envelope>>;
         }
     };
 }
@@ -77,48 +77,55 @@ impl MessageTransport for InboxBus {
         InboxBus::subscribe(self)
     }
 
-    fn register(&self, name: &str, capabilities: &[String]) -> anyhow::Result<()> {
-        InboxBus::register(self, name, capabilities)
+    fn register(&self, session_id: &str, capabilities: &[String]) -> anyhow::Result<()> {
+        InboxBus::register(self, session_id, capabilities)
     }
 
     fn register_with_title(
         &self,
-        name: &str,
+        session_id: &str,
         capabilities: &[String],
         title: Option<&str>,
     ) -> anyhow::Result<()> {
-        InboxBus::register_with_title(self, name, capabilities, title)
+        InboxBus::register_with_title(self, session_id, capabilities, title)
     }
 
     fn register_with_profile(
         &self,
-        name: &str,
+        session_id: &str,
         capabilities: &[String],
         title: Option<&str>,
         role: Option<&str>,
-        parent: Option<&str>,
+        parent_session_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        InboxBus::register_with_profile(self, name, capabilities, title, role, parent)
+        InboxBus::register_with_profile(
+            self,
+            session_id,
+            capabilities,
+            title,
+            role,
+            parent_session_id,
+        )
     }
 
-    fn unregister(&self, name: &str) -> anyhow::Result<()> {
-        InboxBus::unregister(self, name)
+    fn unregister(&self, session_id: &str) -> anyhow::Result<()> {
+        InboxBus::unregister(self, session_id)
     }
 
-    fn mark_offline(&self, name: &str) -> anyhow::Result<()> {
-        InboxBus::mark_offline(self, name)
+    fn mark_offline(&self, session_id: &str) -> anyhow::Result<()> {
+        InboxBus::mark_offline(self, session_id)
     }
 
     fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {
         InboxBus::list_agents(self)
     }
 
-    fn list_children(&self, parent: &str) -> anyhow::Result<Vec<AgentInfo>> {
-        InboxBus::list_children(self, parent)
+    fn list_children(&self, parent_session_id: &str) -> anyhow::Result<Vec<AgentInfo>> {
+        InboxBus::list_children(self, parent_session_id)
     }
 
-    fn list_descendants(&self, parent: &str) -> anyhow::Result<Vec<String>> {
-        InboxBus::list_descendants(self, parent)
+    fn list_descendants(&self, parent_session_id: &str) -> anyhow::Result<Vec<String>> {
+        InboxBus::list_descendants(self, parent_session_id)
     }
 
     fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome> {
@@ -137,25 +144,30 @@ impl MessageTransport for InboxBus {
         InboxBus::ack_claimed(self, recipient, ids)
     }
 
-    fn last_received(&self, name: &str) -> anyhow::Result<Option<Envelope>> {
-        InboxBus::last_received(self, name)
+    fn last_received(&self, session_id: &str) -> anyhow::Result<Option<Envelope>> {
+        InboxBus::last_received(self, session_id)
     }
 
-    fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
-        InboxBus::find_message(self, name, id)
+    fn find_message(&self, session_id: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
+        InboxBus::find_message(self, session_id, id)
     }
 
     fn take_matching_replies(
         &self,
-        name: &str,
-        in_reply_to: &str,
-        expected_from: &str,
+        session_id: &str,
+        in_reply_to_message_id: &str,
+        expected_from_session_id: &str,
     ) -> anyhow::Result<Vec<Envelope>> {
-        InboxBus::take_matching_replies(self, name, in_reply_to, expected_from)
+        InboxBus::take_matching_replies(
+            self,
+            session_id,
+            in_reply_to_message_id,
+            expected_from_session_id,
+        )
     }
 
-    fn history(&self, name: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
-        InboxBus::history(self, name, limit)
+    fn history(&self, session_id: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
+        InboxBus::history(self, session_id, limit)
     }
 }
 
@@ -183,15 +195,15 @@ pub trait SessionMailbox: Send + Sync {
     /// Session mailboxes are in-process and non-blocking by contract.
     fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>>;
     fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<Option<()>>;
-    fn last_received(&self, name: &str) -> anyhow::Result<Option<Option<Envelope>>>;
-    fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Option<Envelope>>>;
+    fn last_received(&self, session_id: &str) -> anyhow::Result<Option<Option<Envelope>>>;
+    fn find_message(&self, session_id: &str, id: &str) -> anyhow::Result<Option<Option<Envelope>>>;
     fn take_matching_replies(
         &self,
-        name: &str,
-        in_reply_to: &str,
-        expected_from: &str,
+        session_id: &str,
+        in_reply_to_message_id: &str,
+        expected_from_session_id: &str,
     ) -> anyhow::Result<Option<Vec<Envelope>>>;
-    fn history(&self, name: &str, limit: usize) -> anyhow::Result<Option<Vec<Envelope>>>;
+    fn history(&self, session_id: &str, limit: usize) -> anyhow::Result<Option<Vec<Envelope>>>;
 }
 
 /// Runtime port for peer-session lifecycle operations.
@@ -342,77 +354,82 @@ impl MessagingService {
             .unwrap_or_else(|| self.transport.subscribe())
     }
 
-    pub fn register(&self, name: &str, capabilities: &[String]) -> anyhow::Result<()> {
-        validate_session_id(name)?;
-        self.transport.register(name, capabilities)
+    pub fn register(&self, session_id: &str, capabilities: &[String]) -> anyhow::Result<()> {
+        validate_session_id(session_id)?;
+        self.transport.register(session_id, capabilities)
     }
 
     pub fn register_with_title(
         &self,
-        name: &str,
+        session_id: &str,
         capabilities: &[String],
         title: Option<&str>,
     ) -> anyhow::Result<()> {
-        validate_session_id(name)?;
+        validate_session_id(session_id)?;
         self.transport
-            .register_with_title(name, capabilities, title)
+            .register_with_title(session_id, capabilities, title)
     }
 
     pub fn register_with_profile(
         &self,
-        name: &str,
+        session_id: &str,
         capabilities: &[String],
         title: Option<&str>,
         role: Option<&str>,
-        parent: Option<&str>,
+        parent_session_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        validate_session_id(name)?;
-        if let Some(parent) = parent {
-            validate_session_id(parent)?;
+        validate_session_id(session_id)?;
+        if let Some(parent_session_id) = parent_session_id {
+            validate_session_id(parent_session_id)?;
         }
-        self.transport
-            .register_with_profile(name, capabilities, title, role, parent)
+        self.transport.register_with_profile(
+            session_id,
+            capabilities,
+            title,
+            role,
+            parent_session_id,
+        )
     }
 
-    pub fn unregister(&self, name: &str) -> anyhow::Result<()> {
-        validate_session_id(name)?;
-        self.transport.unregister(name)
+    pub fn unregister(&self, session_id: &str) -> anyhow::Result<()> {
+        validate_session_id(session_id)?;
+        self.transport.unregister(session_id)
     }
 
     /// Retain a peer entry and make its liveness explicitly stale. Keeping
-    /// the parent link after a child finishes lets a parent perform a final
+    /// the parent session link after a child finishes lets a parent perform a final
     /// lifecycle lookup without racing asynchronous registry cleanup.
-    pub fn mark_offline(&self, name: &str) -> anyhow::Result<()> {
-        validate_session_id(name)?;
-        self.transport.mark_offline(name)
+    pub fn mark_offline(&self, session_id: &str) -> anyhow::Result<()> {
+        validate_session_id(session_id)?;
+        self.transport.mark_offline(session_id)
     }
 
     pub fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {
         let agents = self.transport.list_agents()?;
         for agent in &agents {
-            validate_session_id(&agent.name)?;
-            if let Some(parent) = agent.parent.as_deref() {
-                validate_session_id(parent)?;
+            validate_session_id(&agent.session_id)?;
+            if let Some(parent_session_id) = agent.parent_session_id.as_deref() {
+                validate_session_id(parent_session_id)?;
             }
         }
         Ok(agents)
     }
 
-    pub fn list_children(&self, parent: &str) -> anyhow::Result<Vec<AgentInfo>> {
-        validate_session_id(parent)?;
-        let children = self.transport.list_children(parent)?;
+    pub fn list_children(&self, parent_session_id: &str) -> anyhow::Result<Vec<AgentInfo>> {
+        validate_session_id(parent_session_id)?;
+        let children = self.transport.list_children(parent_session_id)?;
         for child in &children {
-            validate_session_id(&child.name)?;
-            if child.parent.as_deref() != Some(parent) {
+            validate_session_id(&child.session_id)?;
+            if child.parent_session_id.as_deref() != Some(parent_session_id) {
                 anyhow::bail!("child session result has a mismatched parent_session_id");
             }
         }
         Ok(children)
     }
 
-    pub fn list_descendants(&self, parent: &str) -> anyhow::Result<Vec<String>> {
-        validate_session_id(parent)?;
-        let descendants = self.transport.list_descendants(parent)?;
+    pub fn list_descendants(&self, parent_session_id: &str) -> anyhow::Result<Vec<String>> {
+        validate_session_id(parent_session_id)?;
+        let descendants = self.transport.list_descendants(parent_session_id)?;
         for session_id in &descendants {
             validate_session_id(session_id)?;
         }
@@ -436,7 +453,7 @@ impl MessagingService {
     /// outcome. All message kinds, including requests, replies, and receipts,
     /// use this one entry point after construction.
     pub fn send(&self, envelope: Envelope) -> anyhow::Result<SentMessage> {
-        let to = envelope.to.clone();
+        let to = envelope.to_session_id.clone();
         let outcome = self.deliver(&to, &envelope)?;
         Ok(SentMessage { envelope, outcome })
     }
@@ -505,34 +522,34 @@ impl MessagingService {
         }))
     }
 
-    pub fn last_received(&self, name: &str) -> anyhow::Result<Option<Envelope>> {
-        validate_session_id(name)?;
+    pub fn last_received(&self, session_id: &str) -> anyhow::Result<Option<Envelope>> {
+        validate_session_id(session_id)?;
         let result = if let Some(mailbox) = self.mailbox()
-            && let Some(result) = mailbox.last_received(name)?
+            && let Some(result) = mailbox.last_received(session_id)?
         {
             result
         } else {
-            self.transport.last_received(name)?
+            self.transport.last_received(session_id)?
         };
         if let Some(envelope) = result.as_ref() {
-            validate_message_envelope(name, envelope)?;
+            validate_message_envelope(session_id, envelope)?;
         }
         Ok(result)
     }
 
-    pub fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
-        validate_session_id(name)?;
+    pub fn find_message(&self, session_id: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
+        validate_session_id(session_id)?;
         validate_message_id(id, "message_id")?;
         let result = if let Some(mailbox) = self.mailbox()
-            && let Some(result) = mailbox.find_message(name, id)?
+            && let Some(result) = mailbox.find_message(session_id, id)?
         {
             result
         } else {
-            self.transport.find_message(name, id)?
+            self.transport.find_message(session_id, id)?
         };
         if let Some(envelope) = result.as_ref() {
-            validate_message_envelope(name, envelope)?;
-            if envelope.id != id {
+            validate_message_envelope(session_id, envelope)?;
+            if envelope.message_id != id {
                 anyhow::bail!("message lookup returned a different message_id");
             }
         }
@@ -544,38 +561,44 @@ impl MessagingService {
     /// all bulk inbox delivery goes through [`Self::claim`].
     pub fn take_matching_replies(
         &self,
-        name: &str,
-        in_reply_to: &str,
-        expected_from: &str,
+        session_id: &str,
+        in_reply_to_message_id: &str,
+        expected_from_session_id: &str,
     ) -> anyhow::Result<Vec<Envelope>> {
-        validate_session_id(name)?;
-        validate_message_id(in_reply_to, "in_reply_to")?;
-        validate_session_id(expected_from)?;
+        validate_session_id(session_id)?;
+        validate_message_id(in_reply_to_message_id, "in_reply_to_message_id")?;
+        validate_session_id(expected_from_session_id)?;
         let replies = if let Some(mailbox) = self.mailbox()
-            && let Some(result) = mailbox.take_matching_replies(name, in_reply_to, expected_from)?
-        {
+            && let Some(result) = mailbox.take_matching_replies(
+                session_id,
+                in_reply_to_message_id,
+                expected_from_session_id,
+            )? {
             result
         } else {
-            self.transport
-                .take_matching_replies(name, in_reply_to, expected_from)?
+            self.transport.take_matching_replies(
+                session_id,
+                in_reply_to_message_id,
+                expected_from_session_id,
+            )?
         };
-        validate_message_batch(name, &replies)?;
+        validate_message_batch(session_id, &replies)?;
         if !replies.is_empty() {
-            let _ = self.send_receipts(name, &replies);
+            let _ = self.send_receipts(session_id, &replies);
         }
         Ok(replies)
     }
 
-    pub fn history(&self, name: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
-        validate_session_id(name)?;
+    pub fn history(&self, session_id: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
+        validate_session_id(session_id)?;
         let entries = if let Some(mailbox) = self.mailbox()
-            && let Some(result) = mailbox.history(name, limit)?
+            && let Some(result) = mailbox.history(session_id, limit)?
         {
             result
         } else {
-            self.transport.history(name, limit)?
+            self.transport.history(session_id, limit)?
         };
-        validate_message_batch(name, &entries)?;
+        validate_message_batch(session_id, &entries)?;
         Ok(entries)
     }
 
@@ -605,17 +628,17 @@ impl MessagingService {
         &self,
         from: &str,
         to: &str,
-        in_reply_to: &str,
+        in_reply_to_message_id: &str,
         text: &str,
         subject: Option<String>,
         payload: Option<serde_json::Value>,
         expires_at: Option<String>,
     ) -> anyhow::Result<SentMessage> {
-        validate_message_id(in_reply_to, "in_reply_to")?;
+        validate_message_id(in_reply_to_message_id, "in_reply_to_message_id")?;
         let mut envelope = Envelope::new(from, to, text);
         envelope.r#type = MessageType::Reply;
-        envelope.reply_address = Some(from.to_string());
-        envelope.in_reply_to = Some(in_reply_to.to_string());
+        envelope.reply_to_session_id = Some(from.to_string());
+        envelope.in_reply_to_message_id = Some(in_reply_to_message_id.to_string());
         envelope.subject = subject;
         envelope.payload = payload;
         envelope.expires_at = expires_at;
@@ -623,12 +646,17 @@ impl MessagingService {
     }
 
     /// Construct and deliver a read receipt through the same message path.
-    pub fn receipt(&self, from: &str, to: &str, in_reply_to: &str) -> anyhow::Result<SentMessage> {
-        validate_message_id(in_reply_to, "receipt in_reply_to")?;
+    pub fn receipt(
+        &self,
+        from: &str,
+        to: &str,
+        in_reply_to_message_id: &str,
+    ) -> anyhow::Result<SentMessage> {
+        validate_message_id(in_reply_to_message_id, "receipt in_reply_to_message_id")?;
         let mut envelope = Envelope::new(from, to, "已读");
         envelope.r#type = MessageType::Receipt;
-        envelope.in_reply_to = Some(in_reply_to.to_string());
-        envelope.reply_address = Some(from.to_string());
+        envelope.in_reply_to_message_id = Some(in_reply_to_message_id.to_string());
+        envelope.reply_to_session_id = Some(from.to_string());
         self.send(envelope)
     }
 
@@ -639,12 +667,12 @@ impl MessagingService {
         &self,
         recipient: &str,
         request_id: &str,
-        expected_from: &str,
+        expected_from_session_id: &str,
         timeout: Duration,
         cancel: &CancellationToken,
     ) -> anyhow::Result<Option<Envelope>> {
         validate_session_id(recipient)?;
-        validate_session_id(expected_from)?;
+        validate_session_id(expected_from_session_id)?;
         validate_message_id(request_id, "request_id")?;
         let deadline = tokio::time::Instant::now() + timeout;
         let mut wake = self.subscribe();
@@ -652,9 +680,9 @@ impl MessagingService {
             let service = self.clone();
             let recipient = recipient.to_string();
             let request_id = request_id.to_string();
-            let expected_from = expected_from.to_string();
+            let expected_from_session_id = expected_from_session_id.to_string();
             let found = tokio::task::spawn_blocking(move || {
-                service.take_matching_replies(&recipient, &request_id, &expected_from)
+                service.take_matching_replies(&recipient, &request_id, &expected_from_session_id)
             })
             .await??
             .into_iter()
@@ -731,11 +759,11 @@ impl MessagingService {
     fn send_receipts(&self, recipient: &str, read: &[Envelope]) -> Vec<SendOutcome> {
         read.iter()
             .filter(|envelope| {
-                envelope.r#type != MessageType::Receipt && envelope.from != recipient
+                envelope.r#type != MessageType::Receipt && envelope.from_session_id != recipient
             })
             .filter_map(|envelope| {
-                let to = envelope.reply_target().to_string();
-                match self.receipt(recipient, &to, &envelope.id) {
+                let to = envelope.reply_target_session_id().to_string();
+                match self.receipt(recipient, &to, &envelope.message_id) {
                     Ok(sent) => Some(sent.outcome),
                     Err(error) => {
                         tracing::debug!(
@@ -793,7 +821,7 @@ impl MessageClaim {
         } = self;
         let ids: Vec<String> = envelopes
             .iter()
-            .map(|envelope| envelope.id.clone())
+            .map(|envelope| envelope.message_id.clone())
             .collect();
         service.ack(&recipient, &ids)?;
         Ok(service.send_receipts(&recipient, &envelopes))
@@ -812,11 +840,11 @@ impl MessageClaim {
         } = self;
         let selected_envelopes: Vec<Envelope> = envelopes
             .into_iter()
-            .filter(|envelope| selected_ids.iter().any(|id| id == &envelope.id))
+            .filter(|envelope| selected_ids.iter().any(|id| id == &envelope.message_id))
             .collect();
         let ids: Vec<String> = selected_envelopes
             .iter()
-            .map(|envelope| envelope.id.clone())
+            .map(|envelope| envelope.message_id.clone())
             .collect();
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -863,13 +891,13 @@ mod tests {
         let claim = service
             .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
-        assert_eq!(claim.envelopes()[0].id, envelope.id);
+        assert_eq!(claim.envelopes()[0].message_id, envelope.message_id);
         assert_eq!(claim.envelopes()[0].delivery_attempt, 1);
         claim.retry();
         let retry = service
             .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
-        assert_eq!(retry.envelopes()[0].id, envelope.id);
+        assert_eq!(retry.envelopes()[0].message_id, envelope.message_id);
         assert_eq!(retry.envelopes()[0].delivery_attempt, 2);
         retry.retry();
 
@@ -920,7 +948,7 @@ mod tests {
         assert!(
             outcomes
                 .iter()
-                .all(|outcome| outcome.to == "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .all(|outcome| outcome.to_session_id == "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
 
         let receipts = service
@@ -929,20 +957,23 @@ mod tests {
         assert_eq!(receipts.envelopes().len(), 2);
         assert!(receipts.envelopes().iter().all(|envelope| {
             envelope.r#type == MessageType::Receipt
-                && envelope.from == "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                && envelope.reply_address.as_deref() == Some("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                && envelope.from_session_id == "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                && envelope.reply_to_session_id.as_deref()
+                    == Some("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         }));
         assert!(
             receipts
                 .envelopes()
                 .iter()
-                .any(|envelope| envelope.in_reply_to.as_deref() == Some(first.id.as_str()))
+                .any(|envelope| envelope.in_reply_to_message_id.as_deref()
+                    == Some(first.message_id.as_str()))
         );
         assert!(
             receipts
                 .envelopes()
                 .iter()
-                .any(|envelope| envelope.in_reply_to.as_deref() == Some(second.id.as_str()))
+                .any(|envelope| envelope.in_reply_to_message_id.as_deref()
+                    == Some(second.message_id.as_str()))
         );
         assert!(receipts.complete().unwrap().is_empty(), "no receipt loops");
 
@@ -979,7 +1010,7 @@ mod tests {
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "hello",
         );
-        envelope.id = "invalid-id".into();
+        envelope.message_id = "invalid-id".into();
         let error = service
             .deliver("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &envelope)
             .unwrap_err();
@@ -1000,11 +1031,11 @@ mod tests {
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "hello",
         );
-        envelope.in_reply_to = Some("invalid-id".into());
+        envelope.in_reply_to_message_id = Some("invalid-id".into());
         let error = service
             .deliver("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &envelope)
             .unwrap_err();
-        assert!(error.to_string().contains("in_reply_to"));
+        assert!(error.to_string().contains("in_reply_to_message_id"));
     }
 
     #[test]
@@ -1036,8 +1067,8 @@ mod tests {
             service
                 .history("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 10)
                 .unwrap()[0]
-                .id,
-            envelope.id
+                .message_id,
+            envelope.message_id
         );
     }
 }

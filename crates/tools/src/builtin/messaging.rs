@@ -16,7 +16,7 @@
 //! Collaboration protocol (prompt-reinforced):
 //! 1. `agent` operation=spawn → child session starts with a delegated task brief
 //! 2. coordinator `agent` operation=request (or send type=request) → worker
-//! 3. worker `agent` operation=reply with `in_reply_to` → coordinator (wait returns)
+//! 3. worker `agent` operation=reply with `in_reply_to_message_id` → coordinator (wait returns)
 //! 4. auto `receipt` confirms the peer actually read the mail
 
 use async_trait::async_trait;
@@ -55,8 +55,8 @@ const MAX_LIST_LIMIT: usize = 100;
 const DEFAULT_HISTORY_LIMIT: usize = 20;
 const MAX_HISTORY_LIMIT: usize = 100;
 const MAX_INBOX_ACK_IDS: usize = 100;
-/// Soft cap on concurrently discoverable children per parent (online or offline
-/// registry entries with `parent` set). Prevents unbounded spawn storms.
+/// Soft cap on concurrently discoverable children per parent session (online or offline
+/// registry entries with `parent_session_id` set). Prevents unbounded spawn storms.
 const MAX_CHILDREN_PER_PARENT: usize = 8;
 const OPERATIONS: &[&str] = &[
     "list", "children", "history", "send", "inbox", "ack", "reply", "profile", "request", "spawn",
@@ -237,13 +237,13 @@ fn check_discovery_token(
     Ok(Some(value))
 }
 
-fn check_target(target: Option<String>, fallback: &str) -> anyhow::Result<String> {
-    let target = target.as_deref().unwrap_or(fallback);
-    if target.is_empty() {
-        anyhow::bail!("target must not be empty");
+fn check_target(target_session_id: Option<String>, fallback: &str) -> anyhow::Result<String> {
+    let target_session_id = target_session_id.as_deref().unwrap_or(fallback);
+    if target_session_id.is_empty() {
+        anyhow::bail!("target_session_id must not be empty");
     }
-    crate::tool_contract::validate_entity_id(target, "target", "ses")?;
-    Ok(target.to_string())
+    crate::tool_contract::validate_entity_id(target_session_id, "target_session_id", "ses")?;
+    Ok(target_session_id.to_string())
 }
 
 fn check_status_filter(status: Option<String>) -> anyhow::Result<Option<AgentStatus>> {
@@ -309,7 +309,7 @@ fn check_explicit_type(t: Option<String>) -> anyhow::Result<Option<MessageType>>
             }
             if s.eq_ignore_ascii_case("system") {
                 anyhow::bail!(
-                    "type=system is reserved for runtime notices (parent-ended cascade); use message|reply|broadcast|request"
+                    "type=system is reserved for runtime notices (parent session ended cascade); use message|reply|broadcast|request"
                 );
             }
             serde_json::from_value(Value::String(s.to_string()))
@@ -326,7 +326,7 @@ fn send_output(outcome: &SendOutcome, message_id: &str) -> ToolResult {
     ToolResult::ok(json!({
         "ok": true,
         "message_id": message_id,
-        "to": outcome.to,
+        "to_session_id": outcome.to_session_id,
         "delivered": outcome.delivered,
         "recipient_status": outcome.status,
     }))
@@ -384,10 +384,10 @@ pub struct AgentParams {
     /// Optional peer session filter for list, or target session for
     /// lifecycle/history operations. `_session_id` remains the caller identity.
     #[serde(default)]
-    pub target: Option<String>,
-    /// Recipient session id (send / request), or omit for reply auto-target.
+    pub target_session_id: Option<String>,
+    /// Recipient session ID (send / request); omit for reply to infer it from history.
     #[serde(default)]
-    pub to: Option<String>,
+    pub to_session_id: Option<String>,
     /// Message / reply / request body.
     #[serde(default)]
     pub text: Option<String>,
@@ -403,13 +403,13 @@ pub struct AgentParams {
     pub expires_at: Option<String>,
     /// Id of the original message being replied to.
     #[serde(default)]
-    pub in_reply_to: Option<String>,
+    pub in_reply_to_message_id: Option<String>,
     /// Optional discovery filter for `list`.
     #[serde(default)]
     pub capability: Option<String>,
-    /// Optional parent filter for `list`.
+    /// Optional parent_session_id filter for `list`.
     #[serde(default)]
-    pub parent: Option<String>,
+    pub parent_session_id: Option<String>,
     /// Optional liveness filter for `list`: online | offline.
     #[serde(default)]
     pub status: Option<String>,
@@ -500,11 +500,15 @@ impl AgentTool {
         let role = check_discovery_token(params.role, "role", MAX_ROLE_BYTES)?;
         let capability =
             check_discovery_token(params.capability, "capability", MAX_CAPABILITY_BYTES)?;
-        let parent = params
-            .parent
-            .map(|parent| {
-                crate::tool_contract::validate_entity_id(&parent, "parent", "ses")?;
-                Ok::<String, anyhow::Error>(parent)
+        let parent_session_id = params
+            .parent_session_id
+            .map(|parent_session_id| {
+                crate::tool_contract::validate_entity_id(
+                    &parent_session_id,
+                    "parent_session_id",
+                    "ses",
+                )?;
+                Ok::<String, anyhow::Error>(parent_session_id)
             })
             .transpose()?;
         let status = check_status_filter(params.status)?;
@@ -517,9 +521,11 @@ impl AgentTool {
                 && capability.as_deref().is_none_or(|capability| {
                     agent.capabilities.iter().any(|item| item == capability)
                 })
-                && parent
+                && parent_session_id
                     .as_deref()
-                    .is_none_or(|parent| agent.parent.as_deref() == Some(parent))
+                    .is_none_or(|parent_session_id| {
+                        agent.parent_session_id.as_deref() == Some(parent_session_id)
+                    })
                 && status.is_none_or(|status| agent.status == status)
         });
         let limit = list_limit(params.limit);
@@ -544,14 +550,17 @@ impl AgentTool {
         let sid = session_of(params.session_id)?;
         self.inner.register(&sid, &cancel).await?;
         let service = self.inner.service.clone();
-        let parent = sid.clone();
-        let mut children = blocking(service, move |service| service.list_children(&parent)).await?;
+        let parent_session_id = sid.clone();
+        let mut children = blocking(service, move |service| {
+            service.list_children(&parent_session_id)
+        })
+        .await?;
         // The registry is backed by a map; make the model-facing result stable
         // even though this operation intentionally does not expose arbitrary
-        // parent queries.
-        children.sort_by(|left, right| left.name.cmp(&right.name));
+        // parent_session_id queries.
+        children.sort_by(|left, right| left.session_id.cmp(&right.session_id));
         Ok(ToolResult::ok(json!({
-            "parent": sid,
+            "parent_session_id": sid,
             "children": children,
         })))
     }
@@ -562,12 +571,13 @@ impl AgentTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id.clone())?;
-        let target = check_target(params.target, &sid)?;
-        self.ensure_related_target(&sid, &target, false).await?;
+        let target_session_id = check_target(params.target_session_id, &sid)?;
+        self.ensure_related_target(&sid, &target_session_id, false)
+            .await?;
         self.inner.register(&sid, &cancel).await?;
         let limit = history_limit(params.limit);
         let service = self.inner.service.clone();
-        let history_target = target.clone();
+        let history_target = target_session_id.clone();
         let messages = blocking(service, move |service| {
             service.history(&history_target, limit)
         })
@@ -577,7 +587,7 @@ impl AgentTool {
             .map(|envelope| envelope_to_tool_json(&envelope))
             .collect();
         Ok(ToolResult::ok(json!({
-            "session_id": target,
+            "session_id": target_session_id,
             "count": messages.len(),
             "limit": limit,
             "messages": messages,
@@ -587,24 +597,24 @@ impl AgentTool {
     async fn ensure_related_target(
         &self,
         requester: &str,
-        target: &str,
+        target_session_id: &str,
         require_child: bool,
     ) -> anyhow::Result<()> {
-        if target == requester {
+        if target_session_id == requester {
             if require_child {
-                anyhow::bail!("target must be a child session, not the current session");
+                anyhow::bail!("target_session_id must be a child session, not the current session");
             }
             return Ok(());
         }
         let service = self.inner.service.clone();
         let requester = requester.to_string();
-        let target = target.to_string();
+        let target_session_id = target_session_id.to_string();
         let related = blocking(service, move |service| {
             Ok::<_, anyhow::Error>(
                 service
                     .list_descendants(&requester)?
                     .iter()
-                    .any(|candidate| candidate == &target),
+                    .any(|candidate| candidate == &target_session_id),
             )
         })
         .await?;
@@ -623,13 +633,13 @@ impl AgentTool {
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id.clone())?;
         let to = params
-            .to
+            .to_session_id
             .as_deref()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("to must not be empty"))?
+            .ok_or_else(|| anyhow::anyhow!("to_session_id must not be empty"))?
             .to_string();
         if to != "*" {
-            crate::tool_contract::validate_entity_id(&to, "to", "ses")?;
+            crate::tool_contract::validate_entity_id(&to, "to_session_id", "ses")?;
         }
         self.inner.register(&sid, &cancel).await?;
 
@@ -647,8 +657,8 @@ impl AgentTool {
                 let agents = service.list_agents()?;
                 let online: Vec<String> = agents
                     .into_iter()
-                    .filter(|a| a.status == AgentStatus::Online && a.name != sid)
-                    .map(|a| a.name)
+                    .filter(|a| a.status == AgentStatus::Online && a.session_id != sid)
+                    .map(|a| a.session_id)
                     .collect();
                 if online.is_empty() {
                     anyhow::bail!("no online agents to broadcast to");
@@ -685,7 +695,7 @@ impl AgentTool {
         env.subject = subject;
         env.payload = payload;
         env.expires_at = expires_at;
-        let message_id = env.id.clone();
+        let message_id = env.message_id.clone();
         let sent = blocking(service, move |service| service.send(env)).await?;
         Ok(send_output(&sent.outcome, &message_id))
     }
@@ -793,7 +803,7 @@ impl AgentTool {
             let selected_envelopes: Vec<Envelope> = claim
                 .envelopes()
                 .iter()
-                .filter(|envelope| requested_for_io.iter().any(|id| id == &envelope.id))
+                .filter(|envelope| requested_for_io.iter().any(|id| id == &envelope.message_id))
                 .cloned()
                 .collect();
             let acknowledged = selected_envelopes.len();
@@ -819,11 +829,11 @@ impl AgentTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id.clone())?;
-        if let Some(to) = params.to.as_deref() {
-            crate::tool_contract::validate_entity_id(to, "to", "ses")?;
+        if let Some(to) = params.to_session_id.as_deref() {
+            crate::tool_contract::validate_entity_id(to, "to_session_id", "ses")?;
         }
-        if let Some(message_id) = params.in_reply_to.as_deref() {
-            crate::tool_contract::validate_entity_id(message_id, "in_reply_to", "msg")?;
+        if let Some(message_id) = params.in_reply_to_message_id.as_deref() {
+            crate::tool_contract::validate_entity_id(message_id, "in_reply_to_message_id", "msg")?;
         }
         self.inner.register(&sid, &cancel).await?;
 
@@ -834,47 +844,52 @@ impl AgentTool {
 
         let service = self.inner.service.clone();
         let sid_for_lookup = sid.clone();
-        let (to, in_reply_to) = blocking(service.clone(), move |service| {
-            let target = match &params.to {
+        let (to, in_reply_to_message_id) = blocking(service.clone(), move |service| {
+            let target_session_id = match &params.to_session_id {
                 Some(t) => {
                     let t = t.to_string();
-                    // Even with an explicit `to`, auto-fill `in_reply_to` from
+                    // Even with an explicit `to`, auto-fill `in_reply_to_message_id` from
                     // the latest message from that peer so request waits
-                    // (which key on in_reply_to) still complete.
-                    let in_reply_to = match params.in_reply_to.clone() {
+                    // (which key on in_reply_to_message_id) still complete.
+                    let in_reply_to_message_id = match params.in_reply_to_message_id.clone() {
                         Some(id) if !id.trim().is_empty() => Some(id),
                         _ => service
                             .last_received(&sid_for_lookup)?
-                            .filter(|env| env.from == t || env.reply_target() == t)
-                            .map(|env| env.id),
+                            .filter(|env| {
+                                env.from_session_id == t || env.reply_target_session_id() == t
+                            })
+                            .map(|env| env.message_id),
                     };
-                    (t, in_reply_to)
+                    (t, in_reply_to_message_id)
                 }
                 _ => {
                     // Resolve from message history: prefer the explicitly
                     // referenced message, else the most recent received one.
-                    if let Some(id) = params.in_reply_to.clone() {
+                    if let Some(id) = params.in_reply_to_message_id.clone() {
                         let env = service.find_message(&sid_for_lookup, &id)?.ok_or_else(|| {
                             anyhow::anyhow!("message '{id}' not found in this session's history")
                         })?;
-                        (env.reply_target().to_string(), Some(id))
+                        (env.reply_target_session_id().to_string(), Some(id))
                     } else {
                         let env = service.last_received(&sid_for_lookup)?.ok_or_else(|| {
                             anyhow::anyhow!(
                                 "no 'to' given and no prior message received — cannot reply"
                             )
                         })?;
-                        (env.reply_target().to_string(), Some(env.id.clone()))
+                        (
+                            env.reply_target_session_id().to_string(),
+                            Some(env.message_id.clone()),
+                        )
                     }
                 }
             };
-            Ok::<_, anyhow::Error>(target)
+            Ok::<_, anyhow::Error>(target_session_id)
         })
         .await?;
 
-        let correlation = in_reply_to
+        let correlation = in_reply_to_message_id
             .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("reply requires in_reply_to"))?
+            .ok_or_else(|| anyhow::anyhow!("reply requires in_reply_to_message_id"))?
             .to_string();
         let sid_for_send = sid.clone();
         let to_for_send = to.clone();
@@ -890,7 +905,7 @@ impl AgentTool {
             )
         })
         .await?;
-        Ok(send_output(&sent.outcome, &sent.envelope.id))
+        Ok(send_output(&sent.outcome, &sent.envelope.message_id))
     }
 
     async fn op_profile(
@@ -914,7 +929,7 @@ impl AgentTool {
                     service
                         .list_agents()?
                         .into_iter()
-                        .find(|agent| agent.name == profile_name),
+                        .find(|agent| agent.session_id == profile_name),
                 )
             })
             .await?;
@@ -922,9 +937,9 @@ impl AgentTool {
                 "ok": true,
                 "read_only": true,
                 "found": profile.is_some(),
-                "name": sid,
+                "session_id": sid,
                 "status": profile.as_ref().map(|agent| agent.status),
-                "parent": profile.as_ref().and_then(|agent| agent.parent.clone()),
+                "parent_session_id": profile.as_ref().and_then(|agent| agent.parent_session_id.clone()),
                 "role": profile.as_ref().and_then(|agent| agent.role.clone()),
                 "title": profile.as_ref().and_then(|agent| agent.title.clone()),
                 "capabilities": profile.map(|agent| agent.capabilities).unwrap_or_default(),
@@ -948,7 +963,7 @@ impl AgentTool {
         Ok(ToolResult::ok(json!({
             "ok": true,
             "read_only": false,
-            "name": sid,
+            "session_id": sid,
             "role": role,
             "title": title,
             "capabilities": capabilities,
@@ -963,17 +978,17 @@ impl AgentTool {
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id.clone())?;
         let requires_child = !matches!(operation, AgentControlOperation::Status);
-        if requires_child && params.target.is_none() {
-            anyhow::bail!("target is required for agent wait/stop");
+        if requires_child && params.target_session_id.is_none() {
+            anyhow::bail!("target_session_id is required for agent wait/stop");
         }
-        let target = check_target(params.target, &sid)?;
-        self.ensure_related_target(&sid, &target, requires_child)
+        let target_session_id = check_target(params.target_session_id, &sid)?;
+        self.ensure_related_target(&sid, &target_session_id, requires_child)
             .await?;
         self.inner.register(&sid, &cancel).await?;
         let timeout_secs = check_timeout_secs(params.timeout_secs);
         let request = AgentControlRequest {
             requester_session_id: sid,
-            target_session_id: target,
+            target_session_id,
             operation,
             timeout_secs,
         };
@@ -1011,17 +1026,17 @@ impl AgentTool {
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id.clone())?;
         let to = params
-            .to
+            .to_session_id
             .as_deref()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("to must not be empty"))?
+            .ok_or_else(|| anyhow::anyhow!("to_session_id must not be empty"))?
             .to_string();
         if to == "*" {
             anyhow::bail!(
-                "agent request does not support broadcast; use operation=send with to='*'"
+                "agent request does not support broadcast; use operation=send with to_session_id='*'"
             );
         }
-        crate::tool_contract::validate_entity_id(&to, "to", "ses")?;
+        crate::tool_contract::validate_entity_id(&to, "to_session_id", "ses")?;
         self.inner.register(&sid, &cancel).await?;
         let text = check_text(params.text.as_deref().unwrap_or(""))?;
         let subject = check_subject(params.subject)?;
@@ -1042,7 +1057,7 @@ impl AgentTool {
             )
         })
         .await?;
-        let request_id = sent.envelope.id.clone();
+        let request_id = sent.envelope.message_id.clone();
         let outcome = sent.outcome;
         let reply = self
             .inner
@@ -1060,7 +1075,7 @@ impl AgentTool {
                 "ok": true,
                 "timed_out": false,
                 "message_id": request_id,
-                "to": outcome.to,
+                "to_session_id": outcome.to_session_id,
                 "delivered": outcome.delivered,
                 "recipient_status": outcome.status,
                 "reply": envelope_to_tool_json(&reply),
@@ -1072,7 +1087,7 @@ impl AgentTool {
                 "ok": false,
                 "timed_out": true,
                 "message_id": request_id,
-                "to": outcome.to,
+                "to_session_id": outcome.to_session_id,
                 "delivered": outcome.delivered,
                 "recipient_status": outcome.status,
                 "timeout_secs": timeout_secs,
@@ -1103,14 +1118,14 @@ impl AgentTool {
         let capabilities = check_capabilities(params.capabilities)?;
 
         let service = self.inner.service.clone();
-        let parent = sid.clone();
+        let parent_session_id = sid.clone();
         let child_count = blocking(service, move |service| {
-            Ok::<_, anyhow::Error>(service.list_children(&parent)?.len())
+            Ok::<_, anyhow::Error>(service.list_children(&parent_session_id)?.len())
         })
         .await?;
         if child_count >= MAX_CHILDREN_PER_PARENT {
             anyhow::bail!(
-                "parent already has {child_count} spawned agents (max {MAX_CHILDREN_PER_PARENT}); end or reuse an existing child before spawning more"
+                "parent_session_id already has {child_count} spawned agents (max {MAX_CHILDREN_PER_PARENT}); end or reuse an existing child before spawning more"
             );
         }
 
@@ -1135,12 +1150,12 @@ impl AgentTool {
                 result.running_sessions, result.max_concurrent
             )
         } else {
-            "Use agent operation=request to coordinate; the child should agent operation=reply with in_reply_to set to the request id.".into()
+            "Use agent operation=request to coordinate; the child should agent operation=reply with in_reply_to_message_id set to the request id.".into()
         };
         Ok(ToolResult::ok(json!({
             "ok": true,
             "session_id": result.session_id,
-            "parent": sid,
+            "parent_session_id": sid,
             "title": result.title.or(title),
             "role": result.role.or(role),
             "capabilities": capabilities,
@@ -1205,16 +1220,16 @@ impl Tool for AgentTool {
             "type": "object",
             "properties": {
                 "operation": { "type": "string", "enum": OPERATIONS },
-                "target": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Agent session id for history, status, wait, stop, or collect; lifecycle control is limited to descendants" },
-                "to": { "anyOf": [{ "const": "*" }, { "type": "string", "pattern": "^ses-[0-9a-f]{32}$" }], "description": "Recipient session id; use '*' only to broadcast with send" },
+                "target_session_id": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Agent session ID for history, status, wait, stop, or collect; lifecycle control is limited to descendants" },
+                "to_session_id": { "anyOf": [{ "const": "*" }, { "type": "string", "pattern": "^ses-[0-9a-f]{32}$" }], "description": "Recipient session id; use '*' only to broadcast with send" },
                 "text": { "type": "string", "minLength": 1, "description": "Concise message, reply, or request body" },
                 "subject": { "type": "string", "description": "Optional short topic label, not an instruction channel" },
                 "payload": { "type": "object", "description": "Optional structured low-trust data; keep it small and do not include secrets" },
                 "type": { "type": "string", "enum": ["message", "reply", "broadcast", "request"], "description": "Message type for send; defaults to message" },
                 "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" },
-                "in_reply_to": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$", "description": "Message id to reply to; omit to use the latest matching peer message" },
+                "in_reply_to_message_id": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$", "description": "Message id to reply to; omit to use the latest matching peer message" },
                 "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES, "description": "Exact capability token to filter agents by" },
-                "parent": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Exact parent session id to filter agents by" },
+                "parent_session_id": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Exact parent session ID to filter agents by" },
                 "status": { "type": "string", "enum": ["online", "offline"], "description": "Filter agents to online or offline" },
                 "role": { "type": "string", "minLength": 1, "description": "Agent role label; on list this is an exact filter, on profile/spawn it describes the agent" },
                 "title": { "type": "string", "minLength": 1, "description": "Short human-readable agent title" },
@@ -1228,9 +1243,9 @@ impl Tool for AgentTool {
             },
             "required": ["operation"],
             "oneOf": [
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "list" }, "role": { "type": "string", "minLength": 1, "maxLength": MAX_ROLE_BYTES, "description": "Exact role filter" }, "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES, "description": "Exact capability token filter" }, "parent": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Exact parent session id filter" }, "status": { "type": "string", "enum": ["online", "offline"], "description": "Filter to online or offline agents" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "description": "Maximum results; defaults to 50" } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "list" }, "role": { "type": "string", "minLength": 1, "maxLength": MAX_ROLE_BYTES, "description": "Exact role filter" }, "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES, "description": "Exact capability token filter" }, "parent_session_id": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Exact parent session ID filter" }, "status": { "type": "string", "enum": ["online", "offline"], "description": "Filter to online or offline agents" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "description": "Maximum results; defaults to 50" } }, "required": ["operation"] },
                 { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "children" } }, "required": ["operation"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "history" }, "target": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Current session or descendant session id; omit to read this session's history" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT, "description": "Maximum messages; defaults to 20" } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "history" }, "target_session_id": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Current session or descendant session id; omit to read this session's history" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT, "description": "Maximum messages; defaults to 20" } }, "required": ["operation"] },
                 { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "inbox" }, "ack": { "type": "boolean", "default": false, "description": "Acknowledge immediately; defaults to false so messages can be processed before ack" } }, "required": ["operation"] },
                 { "oneOf": [
                     { "type": "object", "properties": { "operation": { "const": "ack" }, "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$" }, "description": "Ids from the inbox claim to acknowledge selectively" } }, "required": ["operation", "message_ids"] },
@@ -1241,26 +1256,26 @@ impl Tool for AgentTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "send" },
-                        "to": { "anyOf": [{ "const": "*" }, { "type": "string", "pattern": "^ses-[0-9a-f]{32}$" }], "description": "Recipient session id; use '*' to broadcast to online peers" },
+                        "to_session_id": { "anyOf": [{ "const": "*" }, { "type": "string", "pattern": "^ses-[0-9a-f]{32}$" }], "description": "Recipient session id; use '*' to broadcast to online peers" },
                         "text": { "type": "string", "minLength": 1, "description": "Concise low-trust message for the recipient" },
                         "subject": { "type": "string", "description": "Optional short topic label" },
                         "payload": { "type": "object", "description": "Optional structured low-trust data; do not include secrets" },
                         "type": { "type": "string", "enum": ["message", "reply", "broadcast", "request"], "default": "message", "description": "Envelope type; defaults to message" },
                         "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" }
                     },
-                    "required": ["operation", "to", "text"]
+                    "required": ["operation", "to_session_id", "text"]
                 },
                 {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "reply" },
-                        "to": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Optional recipient session id; omit to infer the latest peer message" },
+                        "to_session_id": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Optional recipient session id; omit to infer the latest peer message" },
                         "text": { "type": "string", "minLength": 1, "description": "Concise reply body" },
                         "subject": { "type": "string", "description": "Optional short topic label" },
                         "payload": { "type": "object", "description": "Optional structured low-trust data; do not include secrets" },
                         "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" },
-                        "in_reply_to": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$", "description": "Specific message id to reply to; omit to use the latest received message" }
+                        "in_reply_to_message_id": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$", "description": "Specific message id to reply to; omit to use the latest received message" }
                     },
                     "required": ["operation", "text"]
                 },
@@ -1280,14 +1295,14 @@ impl Tool for AgentTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "request" },
-                        "to": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Recipient session id; requests cannot be broadcast" },
+                        "to_session_id": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Recipient session id; requests cannot be broadcast" },
                         "text": { "type": "string", "minLength": 1, "description": "Concise request with the needed context and expected reply" },
                         "subject": { "type": "string", "description": "Optional short topic label" },
                         "payload": { "type": "object", "description": "Optional structured low-trust data; do not include secrets" },
                         "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" },
                         "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS, "default": DEFAULT_REQUEST_TIMEOUT_SECS, "description": "How long to wait once for a reply; defaults to 60 seconds, maximum 300" }
                     },
-                    "required": ["operation", "to", "text"]
+                    "required": ["operation", "to_session_id", "text"]
                 },
                 {
                     "type": "object",
@@ -1301,10 +1316,10 @@ impl Tool for AgentTool {
                     },
                     "required": ["operation", "task"]
                 },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "status" }, "target": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Current session or descendant session id; omit to read this session's status" } }, "required": ["operation"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "wait" }, "target": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Required descendant session id to wait for" }, "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS, "default": DEFAULT_REQUEST_TIMEOUT_SECS, "description": "Maximum wait; defaults to 60 seconds, maximum 300" } }, "required": ["operation", "target"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "stop" }, "target": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Required descendant session id to stop" } }, "required": ["operation", "target"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "collect" }, "target": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Current session or descendant session id to collect history from" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT, "description": "Maximum messages to return; defaults to 20" } }, "required": ["operation", "target"] }
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "status" }, "target_session_id": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Current session or descendant session id; omit to read this session's status" } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "wait" }, "target_session_id": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Required descendant session id to wait for" }, "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS, "default": DEFAULT_REQUEST_TIMEOUT_SECS, "description": "Maximum wait; defaults to 60 seconds, maximum 300" } }, "required": ["operation", "target_session_id"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "stop" }, "target_session_id": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Required descendant session id to stop" } }, "required": ["operation", "target_session_id"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "collect" }, "target_session_id": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Current session or descendant session id to collect history from" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT, "description": "Maximum messages to return; defaults to 20" } }, "required": ["operation", "target_session_id"] }
             ],
         })
     }
@@ -1346,13 +1361,13 @@ mod tests {
             json!({
                 "operation": "send",
                 "_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "to": "ses-invalid",
+                "to_session_id": "ses-invalid",
                 "text": "hello"
             }),
             json!({
                 "operation": "reply",
                 "_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "in_reply_to": "msg-invalid",
+                "in_reply_to_message_id": "msg-invalid",
                 "text": "hello"
             }),
             json!({
@@ -1363,12 +1378,12 @@ mod tests {
             json!({
                 "operation": "status",
                 "_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "target": "ses-invalid"
+                "target_session_id": "ses-invalid"
             }),
             json!({
                 "operation": "send",
                 "_session_id": "ses-invalid",
-                "to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 "text": "hello"
             }),
         ];
@@ -1531,7 +1546,7 @@ mod tests {
             op("history", json!({})),
             op(
                 "send",
-                json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi"}),
+                json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi"}),
             ),
             op("inbox", json!({})),
             op(
@@ -1542,17 +1557,17 @@ mod tests {
             op("profile", json!({"role": "coder"})),
             op(
                 "request",
-                json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "timeout_secs": 1}),
+                json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "timeout_secs": 1}),
             ),
             op("spawn", json!({"task": "do X"})),
             op("status", json!({})),
             op(
                 "wait",
-                json!({"target": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "timeout_secs": 1}),
+                json!({"target_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "timeout_secs": 1}),
             ),
             op(
                 "stop",
-                json!({"target": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}),
+                json!({"target_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}),
             ),
         ];
         for input in inputs {
@@ -1588,7 +1603,7 @@ mod tests {
                 with_sid(
                     op(
                         "send",
-                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "schema 定了吗？", "subject": "需要你确认"}),
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "schema 定了吗？", "subject": "需要你确认"}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
@@ -1614,7 +1629,10 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["count"], 1);
         let msg = &result.output["messages"][0];
-        assert_eq!(msg["from"], "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(
+            msg["from_session_id"],
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
         assert_eq!(msg["subject"], "需要你确认");
         assert_eq!(
             msg["system_note"].as_str().unwrap(),
@@ -1635,7 +1653,7 @@ mod tests {
         assert_eq!(result.output["count"], 1);
         assert_eq!(result.output["messages"][0]["type"], "receipt");
 
-        // B replies without `to` (last sender) and without in_reply_to.
+        // B replies without `to` (last sender) and without in_reply_to_message_id.
         let result = tool
             .execute(
                 with_sid(
@@ -1647,7 +1665,10 @@ mod tests {
             .await
             .unwrap();
         assert!(result.success);
-        assert_eq!(result.output["to"], "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(
+            result.output["to_session_id"],
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
         assert_eq!(result.output["recipient_status"], "online");
 
         // A reads the reply, which references the original message.
@@ -1663,11 +1684,14 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["count"], 1);
         let reply_msg = &result.output["messages"][0];
-        assert_eq!(reply_msg["from"], "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        assert_eq!(reply_msg["type"], "reply");
-        assert_eq!(reply_msg["in_reply_to"], a_msg_id);
         assert_eq!(
-            reply_msg["reply_address"],
+            reply_msg["from_session_id"],
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+        assert_eq!(reply_msg["type"], "reply");
+        assert_eq!(reply_msg["in_reply_to_message_id"], a_msg_id);
+        assert_eq!(
+            reply_msg["reply_to_session_id"],
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         );
         assert_eq!(reply_msg["text"], "定了，按 msg 格式走");
@@ -1690,7 +1714,7 @@ mod tests {
             with_sid(
                 op(
                     "send",
-                    json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "第一封"}),
+                    json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "第一封"}),
                 ),
                 "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ),
@@ -1708,24 +1732,30 @@ mod tests {
             )
             .await
             .unwrap();
-        let orig_id = result.output["messages"][0]["id"]
+        let orig_id = result.output["messages"][0]["message_id"]
             .as_str()
             .unwrap()
             .to_string();
 
-        // Explicit in_reply_to, no `to` → target resolved from the message's
-        // reply target, and in_reply_to is honored verbatim.
+        // Explicit in_reply_to_message_id, no `to` → target_session_id resolved from the message's
+        // reply target_session_id, and in_reply_to_message_id is honored verbatim.
         let result = tool
             .execute(
                 with_sid(
-                    op("reply", json!({"text": "回复", "in_reply_to": orig_id})),
+                    op(
+                        "reply",
+                        json!({"text": "回复", "in_reply_to_message_id": orig_id}),
+                    ),
                     "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 ),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
-        assert_eq!(result.output["to"], "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(
+            result.output["to_session_id"],
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
         let result = tool
             .execute(
                 with_sid(
@@ -1736,7 +1766,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result.output["messages"][0]["in_reply_to"], orig_id);
+        assert_eq!(
+            result.output["messages"][0]["in_reply_to_message_id"],
+            orig_id
+        );
     }
 
     #[tokio::test]
@@ -1762,7 +1795,7 @@ mod tests {
             let result = tool
                 .execute(
                     with_sid(
-                        op("send", json!({"to": bad, "text": "x"})),
+                        op("send", json!({"to_session_id": bad, "text": "x"})),
                         "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     ),
                     CancellationToken::new(),
@@ -1780,7 +1813,7 @@ mod tests {
                 with_sid(
                     op(
                         "send",
-                        json!({"to": "ses-ffffffffffffffffffffffffffffffff", "text": "hi"}),
+                        json!({"to_session_id": "ses-ffffffffffffffffffffffffffffffff", "text": "hi"}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
@@ -1806,7 +1839,7 @@ mod tests {
                 with_sid(
                     op(
                         "send",
-                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi"}),
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi"}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
@@ -1830,7 +1863,7 @@ mod tests {
         let result = tool
             .execute(
                 with_sid(
-                    op("send", json!({"to": "*", "text": "全员注意"})),
+                    op("send", json!({"to_session_id": "*", "text": "全员注意"})),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
@@ -1844,7 +1877,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|r| r["to"].as_str().unwrap().to_string())
+            .map(|r| r["to_session_id"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(
             recipients,
@@ -1900,7 +1933,7 @@ mod tests {
         let result = tool
             .execute(
                 with_sid(
-                    op("send", json!({"to": "*", "text": "x"})),
+                    op("send", json!({"to_session_id": "*", "text": "x"})),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
@@ -1928,7 +1961,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|a| a["name"].as_str().unwrap())
+            .map(|a| a["session_id"].as_str().unwrap())
             .collect();
         assert_eq!(
             agents,
@@ -1982,7 +2015,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|agent| agent["name"].as_str().unwrap())
+            .map(|agent| agent["session_id"].as_str().unwrap())
             .collect();
         assert_eq!(
             names,
@@ -2019,8 +2052,14 @@ mod tests {
             .unwrap();
         let children = result.output["children"].as_array().unwrap();
         assert_eq!(children.len(), 2);
-        assert_eq!(children[0]["name"], "ses-cccccccccccccccccccccccccccccccc");
-        assert_eq!(children[1]["name"], "ses-dddddddddddddddddddddddddddddddd");
+        assert_eq!(
+            children[0]["session_id"],
+            "ses-cccccccccccccccccccccccccccccccc"
+        );
+        assert_eq!(
+            children[1]["session_id"],
+            "ses-dddddddddddddddddddddddddddddddd"
+        );
     }
 
     #[tokio::test]
@@ -2035,7 +2074,7 @@ mod tests {
             "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "first",
         );
-        let first_id = first.id.clone();
+        let first_id = first.message_id.clone();
         bus.deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &first)
             .unwrap();
 
@@ -2051,7 +2090,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["acknowledged"], false);
         assert_eq!(result.output["ack_required"], true);
-        assert_eq!(result.output["messages"][0]["id"], first_id);
+        assert_eq!(result.output["messages"][0]["message_id"], first_id);
 
         // A new message arriving after the claim must not be consumed by an
         // acknowledgement for the older id.
@@ -2060,7 +2099,7 @@ mod tests {
             "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "second",
         );
-        let second_id = second.id.clone();
+        let second_id = second.message_id.clone();
         bus.deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &second)
             .unwrap();
         let ack = tool
@@ -2086,7 +2125,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remaining.output["count"], 1);
-        assert_eq!(remaining.output["messages"][0]["id"], second_id);
+        assert_eq!(remaining.output["messages"][0]["message_id"], second_id);
         let _ = tool
             .execute(
                 with_sid(
@@ -2175,7 +2214,7 @@ mod tests {
                 with_sid(
                     op(
                         "send",
-                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "   "}),
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "   "}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
@@ -2188,7 +2227,7 @@ mod tests {
         let result = tool
             .execute(
                 with_sid(
-                    op("send", json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "payload": big})),
+                    op("send", json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "payload": big})),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
@@ -2201,7 +2240,7 @@ mod tests {
                 with_sid(
                     op(
                         "send",
-                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "expires_at": "not-a-date"}),
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "expires_at": "not-a-date"}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
@@ -2213,7 +2252,7 @@ mod tests {
         let result = tool
             .execute(
                 with_sid(
-                    op("send", json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "type": "yell"})),
+                    op("send", json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "type": "yell"})),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
@@ -2232,17 +2271,22 @@ mod tests {
         assert!(schema.get("_session_id").is_none());
         assert!(schema.get("session_id").is_none());
         assert_eq!(
-            schema["properties"]["target"]["pattern"],
+            schema["properties"]["target_session_id"]["pattern"],
             "^ses-[0-9a-f]{32}$"
         );
         assert_eq!(
-            schema["properties"]["in_reply_to"]["pattern"],
+            schema["properties"]["to_session_id"]["anyOf"][1]["pattern"],
+            "^ses-[0-9a-f]{32}$"
+        );
+        assert!(schema["properties"].get("to").is_none());
+        assert_eq!(
+            schema["properties"]["in_reply_to_message_id"]["pattern"],
             "^msg-[0-9a-f]{32}$"
         );
         assert!(
             tool.validate_input(&json!({
                 "operation": "send",
-                "to": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "to_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "text": "hello"
             }))
             .is_ok()
@@ -2250,7 +2294,15 @@ mod tests {
         assert!(
             tool.validate_input(&json!({
                 "operation": "send",
-                "to": "ses-invalid",
+                "to": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "text": "hello"
+            }))
+            .is_err()
+        );
+        assert!(
+            tool.validate_input(&json!({
+                "operation": "send",
+                "to_session_id": "ses-invalid",
                 "text": "hello"
             }))
             .is_err()
@@ -2275,7 +2327,7 @@ mod tests {
                 with_sid(
                     op(
                         "send",
-                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi"}),
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi"}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
@@ -2304,7 +2356,7 @@ mod tests {
                 with_sid(
                     op(
                         "send",
-                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "看完回我"}),
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "看完回我"}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
@@ -2340,8 +2392,11 @@ mod tests {
         assert_eq!(result.output["count"], 1, "A receives exactly one receipt");
         let ack = &result.output["messages"][0];
         assert_eq!(ack["type"], "receipt");
-        assert_eq!(ack["from"], "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        assert_eq!(ack["in_reply_to"], message_id);
+        assert_eq!(
+            ack["from_session_id"],
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+        assert_eq!(ack["in_reply_to_message_id"], message_id);
 
         // Reading the receipt produces no further acks (no loops).
         tool.execute(
@@ -2424,7 +2479,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|a| a["name"] == "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .find(|a| a["session_id"] == "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             .unwrap();
         assert_eq!(agent["role"], "researcher");
         assert_eq!(agent["title"], "调研登录");
@@ -2469,7 +2524,7 @@ mod tests {
                 with_sid(
                     op(
                         "status",
-                        json!({"target": "ses-00000000000000000000000000000001"}),
+                        json!({"target_session_id": "ses-00000000000000000000000000000001"}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
@@ -2485,7 +2540,7 @@ mod tests {
                 with_sid(
                     op(
                         "status",
-                        json!({"target": "ses-dddddddddddddddddddddddddddddddd"}),
+                        json!({"target_session_id": "ses-dddddddddddddddddddddddddddddddd"}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
@@ -2516,7 +2571,7 @@ mod tests {
         let bus_for_peer = bus.clone();
         let tool_for_peer = tool.clone();
         let peer = tokio::spawn(async move {
-            // Wait until the request lands, then reply with in_reply_to.
+            // Wait until the request lands, then reply with in_reply_to_message_id.
             for _ in 0..50 {
                 let msgs = tokio::task::spawn_blocking({
                     let bus = bus_for_peer.clone();
@@ -2532,8 +2587,8 @@ mod tests {
                                     "reply",
                                     json!({
                                         "text": "完成了",
-                                        "in_reply_to": req.id,
-                                        "to": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                        "in_reply_to_message_id": req.message_id,
+                                        "to_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                                     }),
                                 ),
                                 "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -2554,7 +2609,7 @@ mod tests {
                 with_sid(
                     op(
                         "request",
-                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "请处理", "timeout_secs": 5}),
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "请处理", "timeout_secs": 5}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
@@ -2567,7 +2622,7 @@ mod tests {
         assert_eq!(result.output["timed_out"], false);
         assert_eq!(result.output["reply"]["text"], "完成了");
         assert_eq!(
-            result.output["reply"]["from"],
+            result.output["reply"]["from_session_id"],
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         );
     }
@@ -2582,7 +2637,7 @@ mod tests {
                 with_sid(
                     op(
                         "request",
-                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "无人回", "timeout_secs": 1}),
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "无人回", "timeout_secs": 1}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
@@ -2633,17 +2688,17 @@ mod tests {
             "ses-00000000000000000000000000000001"
         );
         assert_eq!(
-            result.output["parent"],
+            result.output["parent_session_id"],
             "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         );
         let agents = bus.list_agents().unwrap();
         let child = agents
             .iter()
-            .find(|a| a.name == "ses-00000000000000000000000000000001")
+            .find(|a| a.session_id == "ses-00000000000000000000000000000001")
             .unwrap();
         assert_eq!(child.role.as_deref(), Some("researcher"));
         assert_eq!(
-            child.parent.as_deref(),
+            child.parent_session_id.as_deref(),
             Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         assert_eq!(child.capabilities, vec!["docs"]);
@@ -2683,7 +2738,7 @@ mod tests {
                 with_sid(
                     op(
                         "send",
-                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "req", "type": "request"}),
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "req", "type": "request"}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
@@ -2705,7 +2760,7 @@ mod tests {
             with_sid(
                 op(
                     "reply",
-                    json!({"to": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "text": "done"}),
+                    json!({"to_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "text": "done"}),
                 ),
                 "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             ),
@@ -2729,7 +2784,7 @@ mod tests {
             .iter()
             .find(|m| m["type"] == "reply")
             .expect("reply present");
-        assert_eq!(reply_msg["in_reply_to"], req_id);
+        assert_eq!(reply_msg["in_reply_to_message_id"], req_id);
     }
 
     #[tokio::test]
@@ -2755,7 +2810,7 @@ mod tests {
                         "forged",
                     );
                     forged.r#type = MessageType::Reply;
-                    forged.in_reply_to = Some(req.id);
+                    forged.in_reply_to_message_id = Some(req.message_id);
                     bus_for_evil
                         .deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &forged)
                         .unwrap();
@@ -2770,7 +2825,7 @@ mod tests {
                 with_sid(
                     op(
                         "request",
-                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "timeout_secs": 1}),
+                        json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "timeout_secs": 1}),
                     ),
                     "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),

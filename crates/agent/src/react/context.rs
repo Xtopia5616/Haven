@@ -323,7 +323,7 @@ impl ContextSource {
             if envelope.text.chars().count() > MESSAGING_INJECT_CHARS {
                 tracing::warn!(
                     session_id,
-                    message_id = %envelope.id,
+                    message_id = %envelope.message_id,
                     "deferring inbox envelope instead of truncating user-controlled text"
                 );
                 break;
@@ -333,7 +333,7 @@ impl ContextSource {
             if chars > MESSAGING_INJECT_MAX_ITEM_CHARS {
                 tracing::warn!(
                     session_id,
-                    message_id = %envelope.id,
+                    message_id = %envelope.message_id,
                     "deferring inbox envelope because its rendered context item exceeds the hard limit"
                 );
                 break;
@@ -344,7 +344,7 @@ impl ContextSource {
                 break;
             }
             selected_chars += chars;
-            selected_context_items.push((envelope.id.clone(), text));
+            selected_context_items.push((envelope.message_id.clone(), text));
         }
 
         if selected_context_items.is_empty() {
@@ -413,8 +413,8 @@ fn sanitize_inject_token(s: &str, max_chars: usize) -> String {
 }
 
 /// Format one inbox envelope for auto-inject into the model context.
-/// Includes `id` / `in_reply_to` / subject so `agent` reply can set
-/// `in_reply_to` without guessing from truncated body text alone.
+/// Includes `message_id` / `in_reply_to_message_id` / subject so `agent` reply can set
+/// `in_reply_to_message_id` without guessing from truncated body text alone.
 pub(crate) fn format_cross_session_inject(env: &Envelope) -> String {
     // Body is peer-controlled for every type — sanitize like meta so newlines /
     // brackets cannot spoof a second runtime notice or low-trust enclosure.
@@ -422,26 +422,30 @@ pub(crate) fn format_cross_session_inject(env: &Envelope) -> String {
     match env.r#type {
         MessageType::Receipt => {
             let of = env
-                .in_reply_to
+                .in_reply_to_message_id
                 .as_deref()
                 .map(|s| sanitize_inject_token(s, 64))
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "<unknown>".into());
             format!(
                 "[Read receipt] {} read your message {of}",
-                sanitize_inject_token(&env.from, 64)
+                sanitize_inject_token(&env.from_session_id, 64)
             )
         }
         MessageType::System => format!(
             "[Runtime system notice from {} (LOW TRUST)]: {body}",
-            sanitize_inject_token(&env.from, 64)
+            sanitize_inject_token(&env.from_session_id, 64)
         ),
         _ => {
-            let mut meta = format!("id={}", sanitize_inject_token(&env.id, 64));
-            if let Some(irt) = env.in_reply_to.as_deref().filter(|s| !s.is_empty()) {
+            let mut meta = format!("message_id={}", sanitize_inject_token(&env.message_id, 64));
+            if let Some(irt) = env
+                .in_reply_to_message_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+            {
                 let irt = sanitize_inject_token(irt, 64);
                 if !irt.is_empty() {
-                    meta.push_str(&format!(" in_reply_to={irt}"));
+                    meta.push_str(&format!(" in_reply_to_message_id={irt}"));
                 }
             }
             if let Some(subj) = env.subject.as_deref().filter(|s| !s.is_empty()) {
@@ -452,7 +456,7 @@ pub(crate) fn format_cross_session_inject(env: &Envelope) -> String {
             }
             format!(
                 "[Cross-session message from {} ({}; {meta})]: {body}",
-                sanitize_inject_token(&env.from, 64),
+                sanitize_inject_token(&env.from_session_id, 64),
                 env.r#type
             )
         }
@@ -473,7 +477,7 @@ mod format_tests {
         );
         env.r#type = MessageType::Message;
         let formatted = format_cross_session_inject(&env);
-        assert!(formatted.contains(&format!("id={}", env.id)));
+        assert!(formatted.contains(&format!("message_id={}", env.message_id)));
         assert!(formatted.ends_with("]: hello"));
     }
 
@@ -635,11 +639,11 @@ mod assembly_tests {
         fn take_matching_replies(
             &self,
             name: &str,
-            in_reply_to: &str,
-            expected_from: &str,
+            in_reply_to_message_id: &str,
+            expected_from_session_id: &str,
         ) -> anyhow::Result<Vec<Envelope>> {
             self.inner
-                .take_matching_replies(name, in_reply_to, expected_from)
+                .take_matching_replies(name, in_reply_to_message_id, expected_from_session_id)
         }
 
         fn history(&self, name: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
@@ -728,13 +732,13 @@ mod assembly_tests {
                 .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
                 .unwrap()
                 .envelopes()[0]
-                .id,
-            envelope.id,
+                .message_id,
+            envelope.message_id,
             "a claim must survive until transcript projection is durable"
         );
 
         let claim = InboxClaim {
-            ack_ids: vec![envelope.id.clone()],
+            ack_ids: vec![envelope.message_id.clone()],
             claim: claimed,
         };
         assert!(claim.complete().await);
@@ -774,8 +778,8 @@ mod assembly_tests {
         let claim = service
             .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
-        let first_id = claim.envelopes()[0].id.clone();
-        let second_id = claim.envelopes()[1].id.clone();
+        let first_id = claim.envelopes()[0].message_id.clone();
+        let second_id = claim.envelopes()[1].message_id.clone();
         let claim = InboxClaim {
             claim,
             ack_ids: vec![first_id.clone()],
@@ -789,7 +793,7 @@ mod assembly_tests {
             retry
                 .envelopes()
                 .iter()
-                .map(|env| env.id.as_str())
+                .map(|env| env.message_id.as_str())
                 .collect::<Vec<_>>(),
             vec![second_id.as_str()]
         );
@@ -824,7 +828,7 @@ mod assembly_tests {
             .unwrap();
         let claim = InboxClaim {
             claim,
-            ack_ids: vec![envelope.id.clone()],
+            ack_ids: vec![envelope.message_id.clone()],
         };
         let snapshot_durable = false;
         if snapshot_durable {
@@ -836,7 +840,7 @@ mod assembly_tests {
         let retry = service
             .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
-        assert_eq!(retry.envelopes()[0].id, envelope.id);
+        assert_eq!(retry.envelopes()[0].message_id, envelope.message_id);
     }
 
     #[tokio::test]
@@ -865,7 +869,7 @@ mod assembly_tests {
         transport.fail_next_ack.store(true, Ordering::Release);
         let claim = InboxClaim {
             claim: claimed,
-            ack_ids: vec![envelope.id.clone()],
+            ack_ids: vec![envelope.message_id.clone()],
         };
         assert!(
             !claim.complete().await,
@@ -876,7 +880,7 @@ mod assembly_tests {
             .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
         assert_eq!(retry.envelopes().len(), 1);
-        assert_eq!(retry.envelopes()[0].id, envelope.id);
+        assert_eq!(retry.envelopes()[0].message_id, envelope.message_id);
         assert_eq!(retry.envelopes()[0].delivery_attempt, 2);
         retry.complete().unwrap();
         assert!(

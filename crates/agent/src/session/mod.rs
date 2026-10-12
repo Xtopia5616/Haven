@@ -948,7 +948,7 @@ impl haven_messaging::SessionMailbox for SessionSupervisor {
         actor.deliver_message(envelope.clone())?;
         self.message_tx.send_modify(|counter| *counter += 1);
         Ok(Some(haven_messaging::SendOutcome {
-            to: to.to_string(),
+            to_session_id: to.to_string(),
             delivered: true,
             status: haven_messaging::AgentStatus::Online,
         }))
@@ -974,39 +974,42 @@ impl haven_messaging::SessionMailbox for SessionSupervisor {
 
     fn last_received(
         &self,
-        name: &str,
+        session_id: &str,
     ) -> anyhow::Result<Option<Option<haven_messaging::Envelope>>> {
-        let actor = self.actors.blocking_lock().get(name).cloned();
+        let actor = self.actors.blocking_lock().get(session_id).cloned();
         Ok(actor.map(|actor| actor.last_received_message()))
     }
 
     fn find_message(
         &self,
-        name: &str,
-        id: &str,
+        session_id: &str,
+        message_id: &str,
     ) -> anyhow::Result<Option<Option<haven_messaging::Envelope>>> {
-        let actor = self.actors.blocking_lock().get(name).cloned();
-        Ok(actor.map(|actor| actor.find_message_by_id(id.to_string())))
+        let actor = self.actors.blocking_lock().get(session_id).cloned();
+        Ok(actor.map(|actor| actor.find_message_by_id(message_id.to_string())))
     }
 
     fn take_matching_replies(
         &self,
-        name: &str,
-        in_reply_to: &str,
-        expected_from: &str,
+        session_id: &str,
+        in_reply_to_message_id: &str,
+        expected_from_session_id: &str,
     ) -> anyhow::Result<Option<Vec<haven_messaging::Envelope>>> {
-        let actor = self.actors.blocking_lock().get(name).cloned();
+        let actor = self.actors.blocking_lock().get(session_id).cloned();
         Ok(actor.map(|actor| {
-            actor.take_matching_replies_blocking(in_reply_to.to_string(), expected_from.to_string())
+            actor.take_matching_replies_blocking(
+                in_reply_to_message_id.to_string(),
+                expected_from_session_id.to_string(),
+            )
         }))
     }
 
     fn history(
         &self,
-        name: &str,
+        session_id: &str,
         limit: usize,
     ) -> anyhow::Result<Option<Vec<haven_messaging::Envelope>>> {
-        let actor = self.actors.blocking_lock().get(name).cloned();
+        let actor = self.actors.blocking_lock().get(session_id).cloned();
         Ok(actor.map(|actor| actor.history_blocking(limit)))
     }
 }
@@ -2416,7 +2419,10 @@ mod tests {
                 .await
                 .unwrap()
         };
-        assert_eq!(first_claim.envelopes()[0].id, request.envelope.id);
+        assert_eq!(
+            first_claim.envelopes()[0].message_id,
+            request.envelope.message_id
+        );
         assert_eq!(first_claim.envelopes()[0].delivery_attempt, 1);
         tokio::task::spawn_blocking(move || first_claim.retry())
             .await
@@ -2448,7 +2454,7 @@ mod tests {
             .unwrap();
 
         let reply_service = service.clone();
-        let reply_to = request.envelope.id.clone();
+        let reply_to = request.envelope.message_id.clone();
         let from = receiver.session_id.clone();
         let to = sender.session_id.clone();
         let reply_task = tokio::spawn(async move {
@@ -2464,7 +2470,7 @@ mod tests {
         let reply = service
             .wait_for_reply(
                 &sender.session_id,
-                &request.envelope.id,
+                &request.envelope.message_id,
                 &receiver.session_id,
                 std::time::Duration::from_secs(1),
                 &tokio_util::sync::CancellationToken::new(),
@@ -2491,7 +2497,7 @@ mod tests {
         let mut expired =
             haven_messaging::Envelope::new(&sender.session_id, &receiver.session_id, "过期");
         expired.expires_at = Some("2000-01-01T00:00:00Z".into());
-        let expired_id = expired.id.clone();
+        let expired_id = expired.message_id.clone();
         {
             let service = service.clone();
             tokio::task::spawn_blocking(move || service.send(expired).unwrap())
@@ -2513,7 +2519,11 @@ mod tests {
                 .await
                 .unwrap()
         };
-        assert!(history.iter().any(|envelope| envelope.id == expired_id));
+        assert!(
+            history
+                .iter()
+                .any(|envelope| envelope.message_id == expired_id)
+        );
     }
 
     #[tokio::test]

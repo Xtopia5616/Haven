@@ -1014,3 +1014,4 @@
 - [1023：收回仅限测试和 crate 内部使用的 API](1023-restrict-test-and-internal-crate-apis.md)
 - [1024：将 ConfigLoader 的生产写入收归 ConfigService](1024-restrict-config-loader-writes.md)
 - [1025：统一 Diagnostics 响应契约与运行时校验](1025-normalize-diagnostics-response-contracts.md)
+- [1026：统一 Messaging 持久身份字段](1026-normalize-messaging-identity-fields.md)

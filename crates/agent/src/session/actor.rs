@@ -271,12 +271,12 @@ pub(crate) enum ActorCommand {
         reply: oneshot::Sender<Option<Envelope>>,
     },
     FindMessage {
-        id: String,
+        message_id: String,
         reply: oneshot::Sender<Option<Envelope>>,
     },
     TakeMatchingReplies {
-        in_reply_to: String,
-        expected_from: String,
+        in_reply_to_message_id: String,
+        expected_from_session_id: String,
         reply: oneshot::Sender<Vec<Envelope>>,
     },
     History {
@@ -807,11 +807,11 @@ impl SessionActorHandle {
         rx.blocking_recv().ok().flatten()
     }
 
-    pub(crate) fn find_message_by_id(&self, id: String) -> Option<Envelope> {
+    pub(crate) fn find_message_by_id(&self, message_id: String) -> Option<Envelope> {
         let (reply, rx) = oneshot::channel();
         if self
             .tx
-            .blocking_send(ActorCommand::FindMessage { id, reply })
+            .blocking_send(ActorCommand::FindMessage { message_id, reply })
             .is_err()
         {
             return None;
@@ -821,15 +821,15 @@ impl SessionActorHandle {
 
     pub(crate) fn take_matching_replies_blocking(
         &self,
-        in_reply_to: String,
-        expected_from: String,
+        in_reply_to_message_id: String,
+        expected_from_session_id: String,
     ) -> Vec<Envelope> {
         let (reply, rx) = oneshot::channel();
         if self
             .tx
             .blocking_send(ActorCommand::TakeMatchingReplies {
-                in_reply_to,
-                expected_from,
+                in_reply_to_message_id,
+                expected_from_session_id,
                 reply,
             })
             .is_err()
@@ -1574,7 +1574,7 @@ pub(crate) fn spawn(
                     clear_messaging(&mut state);
                 }
                 ActorCommand::DeliverMessage { envelope, reply } => {
-                    let result = if message_known(&state, &envelope.id) {
+                    let result = if message_known(&state, &envelope.message_id) {
                         Ok(())
                     } else if state.inbox.len() >= SESSION_INBOX_MAX_ITEMS {
                         Err(anyhow::anyhow!(
@@ -1587,7 +1587,7 @@ pub(crate) fn spawn(
                             SESSION_INBOX_ITEM_MAX_CHARS
                         ))
                     } else {
-                        state.active_message_ids.insert(envelope.id.clone());
+                        state.active_message_ids.insert(envelope.message_id.clone());
                         state.inbox.push_back(*envelope);
                         Ok(())
                     };
@@ -1599,7 +1599,7 @@ pub(crate) fn spawn(
                 ActorCommand::AckMessages { ids, reply } => {
                     state
                         .processing
-                        .retain(|envelope| !ids.iter().any(|id| id == &envelope.id));
+                        .retain(|envelope| !ids.iter().any(|id| id == &envelope.message_id));
                     for id in ids {
                         state.active_message_ids.remove(&id);
                     }
@@ -1620,26 +1620,43 @@ pub(crate) fn spawn(
                         .or_else(|| state.archive.back().cloned());
                     let _ = reply.send(result);
                 }
-                ActorCommand::FindMessage { id, reply } => {
+                ActorCommand::FindMessage { message_id, reply } => {
                     let result = state
                         .inbox
                         .iter()
-                        .find(|env| env.id == id)
+                        .find(|env| env.message_id == message_id)
                         .cloned()
-                        .or_else(|| state.processing.iter().find(|env| env.id == id).cloned())
-                        .or_else(|| state.archive.iter().rev().find(|env| env.id == id).cloned());
+                        .or_else(|| {
+                            state
+                                .processing
+                                .iter()
+                                .find(|env| env.message_id == message_id)
+                                .cloned()
+                        })
+                        .or_else(|| {
+                            state
+                                .archive
+                                .iter()
+                                .rev()
+                                .find(|env| env.message_id == message_id)
+                                .cloned()
+                        });
                     let _ = reply.send(result);
                 }
                 ActorCommand::TakeMatchingReplies {
-                    in_reply_to,
-                    expected_from,
+                    in_reply_to_message_id,
+                    expected_from_session_id,
                     reply,
                 } => {
                     let mut matching = Vec::new();
                     let mut rest = VecDeque::new();
                     while let Some(envelope) = state.inbox.pop_front() {
-                        if is_matching_reply(&envelope, &in_reply_to, &expected_from) {
-                            let message_id = envelope.id.clone();
+                        if is_matching_reply(
+                            &envelope,
+                            &in_reply_to_message_id,
+                            &expected_from_session_id,
+                        ) {
+                            let message_id = envelope.message_id.clone();
                             if haven_messaging::is_expired(&envelope) {
                                 archive_once(&mut state, envelope);
                             } else {
@@ -1681,13 +1698,16 @@ fn message_known(state: &SessionState, id: &str) -> bool {
 }
 
 fn archive_once(state: &mut SessionState, envelope: Envelope) {
-    if !state.archive_message_ids.insert(envelope.id.clone()) {
+    if !state
+        .archive_message_ids
+        .insert(envelope.message_id.clone())
+    {
         return;
     }
     state.archive.push_back(envelope);
     while state.archive.len() > SESSION_INBOX_ARCHIVE_MAX_ITEMS {
         if let Some(evicted) = state.archive.pop_front() {
-            state.archive_message_ids.remove(&evicted.id);
+            state.archive_message_ids.remove(&evicted.message_id);
         }
     }
 }
@@ -1700,7 +1720,7 @@ fn claim_messages(state: &mut SessionState) -> Vec<Envelope> {
     let mut seen = HashSet::new();
     let mut claimed = Vec::new();
     for mut envelope in candidates {
-        if !seen.insert(envelope.id.clone()) {
+        if !seen.insert(envelope.message_id.clone()) {
             continue;
         }
         archive_once(state, envelope.clone());
@@ -1714,22 +1734,26 @@ fn claim_messages(state: &mut SessionState) -> Vec<Envelope> {
     claimed
 }
 
-fn is_matching_reply(envelope: &Envelope, in_reply_to: &str, expected_from: &str) -> bool {
-    envelope.from == expected_from
-        && envelope.in_reply_to.as_deref() == Some(in_reply_to)
+fn is_matching_reply(
+    envelope: &Envelope,
+    in_reply_to_message_id: &str,
+    expected_from_session_id: &str,
+) -> bool {
+    envelope.from_session_id == expected_from_session_id
+        && envelope.in_reply_to_message_id.as_deref() == Some(in_reply_to_message_id)
         && matches!(envelope.r#type, MessageType::Reply | MessageType::Message)
 }
 
 fn history(state: &SessionState, limit: usize) -> Vec<Envelope> {
     let mut by_id = HashMap::new();
     for envelope in &state.archive {
-        by_id.insert(envelope.id.clone(), envelope.clone());
+        by_id.insert(envelope.message_id.clone(), envelope.clone());
     }
     for envelope in &state.processing {
-        by_id.insert(envelope.id.clone(), envelope.clone());
+        by_id.insert(envelope.message_id.clone(), envelope.clone());
     }
     for envelope in &state.inbox {
-        by_id.insert(envelope.id.clone(), envelope.clone());
+        by_id.insert(envelope.message_id.clone(), envelope.clone());
     }
     let mut entries: Vec<Envelope> = by_id.into_values().collect();
     entries.sort_by(|left, right| left.created_at.cmp(&right.created_at));
@@ -2643,7 +2667,7 @@ mod queue_tests {
         let mut state = empty_state();
         for index in 0..(SESSION_INBOX_ARCHIVE_MAX_ITEMS + 8) {
             let mut envelope = Envelope::new("sender", "receiver", "message");
-            envelope.id = format!("msg-{index}");
+            envelope.message_id = format!("msg-{index}");
             archive_once(&mut state, envelope);
         }
 

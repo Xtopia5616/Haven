@@ -292,8 +292,11 @@ impl SessionSupervisor {
                 let entry = messaging
                     .list_agents()?
                     .into_iter()
-                    .find(|agent| agent.name == session_id);
-                if entry.as_ref().is_some_and(|agent| agent.parent.is_some()) {
+                    .find(|agent| agent.session_id == session_id);
+                if entry
+                    .as_ref()
+                    .is_some_and(|agent| agent.parent_session_id.is_some())
+                {
                     messaging.mark_offline(&session_id)
                 } else {
                     messaging.unregister(&session_id)

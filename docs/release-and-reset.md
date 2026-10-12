@@ -62,9 +62,10 @@ Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：
 ### 仅重置消息收件箱
 
 1. 完全退出 Haven，并确认没有 `Haven.exe` 进程仍在运行。
-2. 如需保留待处理消息或 archive，先在 `%APPDATA%\haven` 之外备份 `inbox/`；内容可能包含会话消息。
-3. 删除 `%APPDATA%\haven\inbox`（非 Windows 开发环境为 `~/.local/share/haven/inbox`）。
-4. 重新启动 Haven；Messaging 会按规范 session ID 重建 registry 和 mailbox。SQLite transcript 不受影响。
+2. 确认所有共享该 inbox 的 Haven 进程都已升级到同一版本。新版 Messaging JSONL envelope 与 `agents.json` 使用显式 `message_id`、`from_session_id`、`to_session_id`、`session_id` 和 `parent_session_id` 字段；旧字段不会迁移或兼容读取。
+3. 如需保留待处理消息或 archive，先在 `%APPDATA%\haven` 之外备份 `inbox/`；内容可能包含会话消息。
+4. 删除 `%APPDATA%\haven\inbox`（非 Windows 开发环境为 `~/.local/share/haven/inbox`）。
+5. 重新启动 Haven；Messaging 会按规范 session ID 重建 registry 和 mailbox。SQLite transcript 不受影响。
 
 ### 完整重置数据根目录
 

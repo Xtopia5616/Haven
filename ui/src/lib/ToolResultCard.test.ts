@@ -229,6 +229,21 @@ describe('operation view UI contract', () => {
 			},
 			{ renderer: 'agent', data: { agents: [null] } },
 			{ renderer: 'agent', data: { agents: [{ name: 'peer', status: 'future' }] } },
+			{
+				renderer: 'agent',
+				data: {
+					agents: [
+						{
+							name: 'ses-0123456789abcdef0123456789abcdef',
+							status: 'online',
+						},
+					],
+				},
+			},
+			{
+				renderer: 'agent',
+				data: { agents: [{ session_id: 'ses-short', status: 'online' }] },
+			},
 			{ renderer: 'agent', data: { auto: 'yes' } },
 			{ renderer: 'clipboard', data: { entries: [null] } },
 			{ renderer: 'clipboard', data: { entries: null } },
@@ -520,11 +535,8 @@ describe('operation view UI contract', () => {
 					auto: null,
 					text: null,
 					timed_out: null,
-					message_id: null,
 					timeout_secs: null,
-					session_id: null,
 					ok: null,
-					parent: null,
 					role: null,
 					queued: null,
 					running_sessions: null,
@@ -715,7 +727,7 @@ describe('operation view UI contract', () => {
 				{
 					agents: [
 						{
-							name: 'peer',
+							session_id: 'ses-0123456789abcdef0123456789abcdef',
 							title: null,
 							role: null,
 							status: 'online',

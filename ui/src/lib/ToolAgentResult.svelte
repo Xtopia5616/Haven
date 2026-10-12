@@ -8,7 +8,7 @@
 			auto?: boolean | null;
 			text?: string | null;
 			agents?: Array<{
-				name: string;
+				session_id: string;
 				title?: string | null;
 				role?: string | null;
 				status: ToolAgentPresenceStatus;
@@ -18,7 +18,7 @@
 			timeout_secs?: number | null;
 			session_id?: string | null;
 			ok?: boolean | null;
-			parent?: string | null;
+			parent_session_id?: string | null;
 			role?: string | null;
 			queued?: boolean | null;
 			running_sessions?: number | null;
@@ -39,9 +39,9 @@
 		<ToolResultList items={data.agents}>
 			{#snippet children(visibleAgents)}
 				<div class="tool-result-scroll-area">
-					{#each visibleAgents as agent (agent.name)}
+					{#each visibleAgents as agent (agent.session_id)}
 						<div class="tool-result-status-row">
-							<span class="action-id">{agent.title || agent.name}</span>
+							<span class="action-id">{agent.title || agent.session_id}</span>
 							{#if agent.role}<span class="scheduled-mode">{agent.role}</span>{/if}
 							{#if agent.status}<StatusBadge
 									label={agent.status}
@@ -71,8 +71,8 @@
 		/>
 		<span class="action-id">{data.session_id}</span>
 	</div>
-	{#if data.parent}<div class="tool-result-meta tool-result-meta--compact">
-			父会话 {data.parent}
+	{#if data.parent_session_id}<div class="tool-result-meta tool-result-meta--compact">
+			父会话 {data.parent_session_id}
 		</div>{/if}
 	{#if data.role}<div class="tool-result-meta tool-result-meta--compact">
 			角色 {data.role}
