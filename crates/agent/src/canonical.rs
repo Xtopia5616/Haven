@@ -19,8 +19,8 @@ pub(crate) fn is_dangling_boundary(msg: &CanonicalMessage) -> bool {
         || (msg.role == CanonicalRole::Assistant && msg.tool_calls.is_some())
 }
 
-/// The ReAct loop only ever builds valid arrays, but snapshots/compaction
-/// output can be corrupted by an interruption: a compaction split between an
+/// The ReAct loop only ever builds valid arrays, but replayed or compacted
+/// transcript output can be interrupted: a compaction split between an
 /// assistant tool_call message and its tool results (the assistant is
 /// summarized away while the results survive), an app exit right after the
 /// assistant message was appended, or a tool batch cancelled mid-flight with
@@ -40,7 +40,7 @@ const INTERRUPTED_RESULT: &str =
 /// Enrich the interrupted-result text with the tool name and the arguments
 /// that were attempted, so the model can see exactly which call was cut off
 /// and retry it with the same input instead of guessing. Used by both the
-/// live cancel path and the snapshot sanitize/repair path.
+/// live cancel path and canonical transcript repair.
 pub(crate) fn interrupted_result_text(tool_name: &str, arguments: &Value) -> String {
     if tool_name.is_empty() {
         INTERRUPTED_RESULT.to_string()

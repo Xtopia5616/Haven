@@ -1,6 +1,6 @@
-//! Session rollback / resume logic: rewinding a session to a saved branch
-//! point, resuming an errored session from its snapshot, and trimming a
-//! half-built trailing tool call before a resume.
+//! Session rollback / resume logic: rewinding the durable event projection to
+//! a saved branch point, resuming errored sessions from `session_events`, and
+//! trimming a half-built trailing tool call before a resume.
 //!
 //! Split out of `lib.rs` so the `AgentLayer` dispatch entrypoint stays
 //! readable; these methods operate on the same private fields (`db`,
@@ -16,8 +16,8 @@ use haven_common::lifecycle::SessionStatus;
 use haven_memory::{RollbackProjectionBoundary, RollbackRequest};
 
 impl AgentLayer {
-    /// Roll back a session to a specific branch point. The session is rewound
-    /// to the saved state at that step. When `pause` is true the session is
+    /// Roll back a session to a specific branch point. The event cursor and
+    /// message projection are rewound to that step. When `pause` is true the session is
     /// set to Paused (user wants to edit the message before re-sending);
     /// otherwise it is set to Pending for immediate re-execution.
     /// `target_message_id` is the id of the exact message being rolled back;
@@ -27,8 +27,8 @@ impl AgentLayer {
     /// an error, not a content-based guess.
     ///
     /// R6: when a dispatcher run slot is held (claim→spawn / stream / tools /
-    /// pause unwind), cancel + join before restore so late writes cannot
-    /// overwrite the restored snapshot. Ask/confirm gates are always cleared.
+    /// pause unwind), cancel + join before applying the rollback cutoff so late
+    /// writes cannot advance the event projection past it. Ask/confirm gates are always cleared.
     pub async fn rollback_session(
         &self,
         session_id: &str,
@@ -76,7 +76,7 @@ impl AgentLayer {
                 // claim→spawn / direct run): the loop observes the token at
                 // wait points and exits without Error marking. Join via
                 // `await_run_finished` (oneshot on slot release) so
-                // exit_cancelled cannot overwrite the restored snapshot.
+                // exit_cancelled cannot overwrite the rollback result.
                 let cancel = self.executor.cancellation_token(session_id).await;
                 cancel.cancel();
                 self.executor.await_run_finished(session_id).await?;
@@ -135,13 +135,13 @@ impl AgentLayer {
 
         // If no branch_point exists at the target step, the step likely
         // failed before save_branch_point was called (e.g. LLM error
-        // mid-stream). In that case the snapshot's current events ARE the
-        // pre-step state — use them directly.
+        // mid-stream). In that case the current replay projection is already
+        // the pre-step state — use its event cursor directly.
         let bp = if let Some(bp) = replay.branch_points.get(&target_step).cloned() {
             bp
         } else {
             tracing::warn!(
-                "rollback_session {}: no branch_point at step {}, using snapshot state (step_number={})",
+                "rollback_session {}: no branch_point at step {}, using current replay projection (step_number={})",
                 session_id,
                 target_step,
                 infer_resume_step(&replay.events)
@@ -153,7 +153,7 @@ impl AgentLayer {
             }
         };
 
-        // Restore the append-only event log to the recorded cursor.
+        // Truncate the in-memory replay projection to the recorded cursor.
         replay.events.truncate(bp.event_cursor);
 
         // If the branch point was saved right after a ToolCall event but
@@ -180,7 +180,7 @@ impl AgentLayer {
             .retain(|&k, b| k <= target_step && b.event_cursor <= event_len);
 
         // Truncate session messages persisted after the branch point so the
-        // session transcript context matches the restored snapshot.
+        // session transcript context matches the branch-point projection.
         //
         // A user message may be persisted AFTER the newest branch point:
         // an interjection sent while the session was erroring (its supplement
@@ -278,7 +278,7 @@ impl AgentLayer {
         }
 
         // Background tool_runs spawned before the rollback are stale relative
-        // to the restored snapshot: kill them so their children cannot leak.
+        // to the target event cursor: kill them so their children cannot leak.
         self.executor.cancel_session_tool_runs(session_id).await;
 
         // Drop any checkpointed partial stream text only after lifecycle
@@ -353,7 +353,7 @@ impl AgentLayer {
     /// Resume a session that errored mid-step. Removes any partial assistant
     /// output that was persisted on error (so the retry produces a clean
     /// message), then sets the session to Pending so the dispatcher picks it up
-    /// and `run_session_from_id` restores from the saved snapshot.
+    /// and `run_session_from_id` rebuilds transcript state by replaying `session_events`.
     pub async fn continue_session(&self, session_id: &str) -> anyhow::Result<()> {
         // Ensure the session is loaded in executor memory.
         self.executor.ensure_session_loaded(session_id).await?;

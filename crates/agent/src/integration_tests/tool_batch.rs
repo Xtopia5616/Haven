@@ -710,7 +710,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     // A tool batch cancelled mid-flight must NOT silently drop the
     // in-flight calls: each one is repaired with an "Interrupted"
     // observation (so the UI shows it and the model can retry) and the
-    // snapshot canonical stays a valid assistant/tool chain.
+    // replayed canonical transcript stays a valid assistant/tool chain.
     let tools = Arc::new(ToolsFacade::new());
     let timing = Arc::new(TimingState::new());
     tools
@@ -830,13 +830,13 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
             .all(|o| o.contains("tool:") && o.contains("arguments")),
         "interrupted history observations must carry tool name and arguments"
     );
-    // The saved snapshot canonical stays a valid assistant/tool chain: no
+    // The replayed canonical transcript stays a valid assistant/tool chain: no
     // dangling assistant tool_calls without a following result (which
     // providers would reject as a 400 on resume).
-    let snapshot = load_event_projection(&agent, &session.session_id).await;
+    let projection = load_event_projection(&agent, &session.session_id).await;
     let mut pending: Vec<String> = Vec::new();
     let mut interrupted_with_fields = 0;
-    let canonical = snapshot.project().canonical_messages;
+    let canonical = projection.project().canonical_messages;
     for m in &canonical {
         match m.role {
             CanonicalRole::Tool => {
@@ -876,11 +876,11 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     }
     assert_eq!(
         interrupted_with_fields, 2,
-        "both interrupted tool results in the snapshot must carry fields"
+        "both interrupted tool results in the event projection must carry fields"
     );
     assert!(
         pending.is_empty(),
-        "snapshot canonical must not end with unanswered tool_calls (got {:?})",
+        "canonical transcript must not end with unanswered tool_calls (got {:?})",
         pending
     );
     // Pending step rows created at ToolCall emit must be completed with the

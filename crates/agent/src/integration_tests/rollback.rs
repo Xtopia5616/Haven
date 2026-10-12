@@ -74,10 +74,10 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
 }
 
 #[tokio::test]
-async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
+async fn rollback_without_branch_point_uses_event_projection() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("no bp").await.unwrap();
-    // Save a snapshot with no branch_points at the target step.
+    // Seed durable events with no branch_points at the target step.
     let canonical = vec![CanonicalMessage {
         role: CanonicalRole::System,
         content: vec![ContentPart::text("sys")],
@@ -89,13 +89,13 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         source: None,
         message_id: None,
     }];
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(canonical.clone()),
         step_number: 1,
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
     agent
         .db
         .add_message(
@@ -106,8 +106,8 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
             None,
         )
         .unwrap();
-    // The partial must land strictly after the user row (rollback
-    // truncates rows created_at > the snapshot's last message ts).
+    // The partial must land strictly after the user row: without a stored
+    // branch point, that latest user timestamp is the projection cutoff.
     std::thread::sleep(std::time::Duration::from_millis(5));
     agent
         .db
@@ -210,13 +210,13 @@ async fn rollback_pause_true_removes_user_message_from_session() {
             last_msg_at: Some(thought_ts),
         },
     );
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
 
     // User-message rollback: the user message itself must be removed from
     // the session (its text returns to the composer for editing) ??not
@@ -327,13 +327,13 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
             last_msg_at: Some(reply1_ts),
         },
     );
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(canonical),
         step_number: 2,
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
 
     // The user clicked "second" (the newest user message, whose id
     // resolves to a persisted row).
@@ -434,13 +434,13 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
             last_msg_at: Some(reply_a_ts),
         },
     );
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(canonical),
         step_number: 2,
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
 
     // A canonical but absent id has no DB row; rollback errors and deletes nothing.
     let missing_message_id = haven_common::types::new_id("msg");
@@ -461,7 +461,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
 async fn rollback_orphan_after_processed_turn_preserves_earlier_history() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("orphan rollback").await.unwrap();
-    let msgs = seed_hello_snapshot(&agent, &session.session_id).await;
+    let msgs = seed_hello_projection(&agent, &session.session_id).await;
 
     // Roll back the interrupted message: only it must be discarded; the
     // earlier exchange ("hello" / "thinking") survives.
@@ -510,7 +510,7 @@ async fn rollback_processed_user_message_with_later_orphan_wipes_target_timeline
     // discarded timeline), and the canonical IS truncated.
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("processed rollback").await.unwrap();
-    let msgs = seed_hello_snapshot(&agent, &session.session_id).await;
+    let msgs = seed_hello_projection(&agent, &session.session_id).await;
 
     let hello_id = msgs
         .iter()
@@ -630,13 +630,13 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
             last_msg_at: Some(thinking_ts),
         },
     );
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
 
     // Roll back "hello" specifically —the steering interjection must
     // NOT keep "hello" alive.
@@ -769,13 +769,13 @@ async fn rollback_pause_matches_compacted_message_id() {
             last_msg_at: Some(thinking_ts),
         },
     );
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(canonical),
         step_number: 2,
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
 
     agent
         .rollback_session(&session.session_id, 2, true, Some(&steering_id))
@@ -819,7 +819,7 @@ async fn rollback_pause_matches_compacted_message_id() {
 }
 
 /// R6 W8×O1: rollback while an ask interaction is pending must clear the gate
-/// (memory + snapshot) so the next user input is not mis-routed as an answer.
+/// (runtime interaction state + durable event projection) so the next user input is not mis-routed as an answer.
 #[tokio::test]
 async fn rollback_while_ask_wait_clears_interaction_gate() {
     let tools = Arc::new(ToolsFacade::new());

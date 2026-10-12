@@ -611,13 +611,13 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
         CanonicalMessage::user_text("Additional context from user: please be brief"),
         CanonicalMessage::user_text("Steering: please be brief"),
     ];
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
     agent
         .run_session_from_id(&session.session_id)
         .await
@@ -690,15 +690,15 @@ async fn resume_keeps_repeated_same_text_turns() {
             Vec::new(),
         ),
     ];
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
     // The second identical user turn remains explicitly pending after the
-    // snapshot, even though its text matches the earlier turn.
+    // event projection, even though its text matches the earlier turn.
     agent
         .react_engine
         .event_store
@@ -795,13 +795,13 @@ async fn resume_does_not_recover_unmarked_historical_user_messages() {
             Vec::new(),
         ),
     ];
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
     // Assistant rows are not pending inputs and are never recovered.
     agent
         .persist_message_parts(
@@ -890,13 +890,13 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
             Vec::new(),
         ),
     ];
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
 
     agent
         .run_session_from_id(&session.session_id)
@@ -923,7 +923,7 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
 }
 
 #[tokio::test]
-async fn run_session_from_id_keeps_first_user_media_out_of_snapshot_bytes() {
+async fn run_session_from_id_keeps_managed_media_as_prompt_reference() {
     let (agent, executor) = make_test_agent();
     agent.set_emitter(make_recording_emitter());
     let session = executor
@@ -946,8 +946,8 @@ async fn run_session_from_id_keeps_first_user_media_out_of_snapshot_bytes() {
         .run_session_from_id(&session.session_id)
         .await
         .unwrap();
-    let snapshot = load_event_projection(&agent, &session.session_id).await;
-    let canonical = snapshot.project().canonical_messages;
+    let projection = load_event_projection(&agent, &session.session_id).await;
+    let canonical = projection.project().canonical_messages;
     let user_msg = canonical
         .iter()
         .find(|m| m.role == CanonicalRole::User)
@@ -1051,8 +1051,8 @@ async fn run_session_from_id_keeps_later_media_as_managed_reference() {
         .run_session_from_id(&session.session_id)
         .await
         .unwrap();
-    let snapshot = load_event_projection(&agent, &session.session_id).await;
-    let canonical = snapshot.project().canonical_messages;
+    let projection = load_event_projection(&agent, &session.session_id).await;
+    let canonical = projection.project().canonical_messages;
     let first_user = canonical
         .iter()
         .find(|m| m.role == CanonicalRole::User)
@@ -1064,8 +1064,8 @@ async fn run_session_from_id_keeps_later_media_as_managed_reference() {
             .any(|p| matches!(p, ContentPart::Image { .. })),
         "image supplement must not be attached to the initial user turn"
     );
-    // The supplement itself is still injected later, but the snapshot carries
-    // only the opaque managed reference rather than inline image bytes.
+    // The supplement itself is still injected later, but the canonical
+    // transcript carries only the opaque managed reference rather than inline image bytes.
     assert!(
         canonical.iter().any(|m| m
             .content
@@ -1078,7 +1078,7 @@ async fn run_session_from_id_keeps_later_media_as_managed_reference() {
 
 #[tokio::test]
 async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
-    // Simulate a snapshot saved by save_branch_point right after the
+    // Seed an event projection at the branch point right after the
     // assistant tool_call message but before tool results were appended
     // (e.g. the app was closed mid-tool-execution). Resuming must trim
     // the dangling assistant message instead of sending it to the LLM,
@@ -1162,13 +1162,13 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
         });
         e
     };
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events,
         step_number: 2,
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
 
     let result = agent
         .run_session_from_id(&session.session_id)

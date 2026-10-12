@@ -815,10 +815,10 @@ impl Tool for TimingTool {
 }
 
 /// Seed the common rollback-test fixture: messages `hello` / `thinking` /
-/// `interrupt` plus a saved ReAct snapshot at step 1 (canonical =
+/// `interrupt` plus event projection state at step 1 (canonical =
 /// [System "sys", User "hello"], branch point after the thinking turn).
 /// Returns the persisted messages so tests can resolve specific ids.
-pub(super) async fn seed_hello_snapshot(
+pub(super) async fn seed_hello_projection(
     agent: &AgentLayer,
     session_id: &str,
 ) -> Vec<haven_memory::Message> {
@@ -901,13 +901,13 @@ pub(super) async fn seed_hello_snapshot(
             last_msg_at: Some(thinking_ts),
         },
     );
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(agent, session_id, &snapshot).await;
+    seed_event_projection(agent, session_id, &projection).await;
     msgs
 }
 
@@ -932,15 +932,19 @@ impl EventProjection {
 pub(super) async fn seed_event_projection(
     agent: &AgentLayer,
     session_id: &str,
-    snapshot: &EventProjection,
+    projection: &EventProjection,
 ) {
     agent
         .react_engine
-        .seed_transcript_events(session_id, &snapshot.events, 0)
+        .seed_transcript_events(session_id, &projection.events, 0)
         .await
         .unwrap();
     let store = agent.react_engine.event_store.clone();
-    let branches = snapshot.branch_points.values().cloned().collect::<Vec<_>>();
+    let branches = projection
+        .branch_points
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
     let session_id = session_id.to_string();
     agent
         .db
@@ -961,7 +965,7 @@ pub(super) async fn seed_event_projection(
     // Seed interactions through the actor command boundary as production
     // ingress does. This updates both the live mailbox and the durable domain
     // event stream, so tests do not construct a second interaction authority.
-    for request in &snapshot.interactions {
+    for request in &projection.interactions {
         agent
             .executor
             .request_interaction(request.clone())
@@ -971,7 +975,7 @@ pub(super) async fn seed_event_projection(
 }
 
 /// Build the in-process projection used by assertions from the only durable
-/// recovery source. Tests must not emulate a removed database snapshot row.
+/// `session_events` recovery source, not from the removed ReAct state column.
 pub(super) async fn load_event_projection(agent: &AgentLayer, session_id: &str) -> EventProjection {
     let durable = agent
         .react_engine

@@ -96,9 +96,9 @@ pub(crate) fn attachment_to_content_part_with_strategy(
     media_input_to_content_part_with_strategy(&input, strategy)
 }
 
-/// Project an already normalized media input. Snapshot resume and live
-/// ingress both use this helper, so provider-facing content cannot drift based
-/// on which path produced the input.
+/// Project an already normalized media input. Event replay and live ingress
+/// both use this helper, so provider-facing content cannot drift based on
+/// which path produced the input.
 pub(crate) fn media_input_to_content_part_with_strategy(
     input: &MediaInput,
     strategy: MediaInputStrategy,

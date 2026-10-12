@@ -151,6 +151,8 @@ ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion re
 | 交互请求（`InteractionRequest`） | Agent 内用于 Ask/Confirm/ScheduledConfirm 的状态与继续执行数据；统一用 `request_id`，Ask 复用 `step-*`，确认请求使用 `conf-*`；可包含不应发送到 UI 的工具输入和授权 receipt | `InteractionOwner` 只负责进程内 owner routing；durable event 与生成的 `InteractionRequestedEvent` 使用 `request_id`，清除事件使用 `request_ids`；前端映射为 `requestId` 并拒绝旧 UI 字段 `id`。durable replay 为读取历史 payload 接受 `id` / `ids`，新事件只写 canonical 字段（ADR 0996） |
 | 工具实现、定义与清单 | `ToolHandle` 是单个共享可执行实现；Common `ToolDef` 是 provider-neutral 的模型调用定义；LLM `LlmToolDefinition` 是转换后的 `{type, function}` 请求中间形状；`ToolManifest` 是 Tauri/UI 的 identity、policy 与 presentation projection | `ToolDef → LlmToolDefinition → provider adapter wire`；`ToolRegistry` 持有可执行实现；`ToolCatalogSnapshot` / `OperationCatalog` 是模型可见目录投影；`OperationRegistry` 管已安装、deferred 与 session operations。目录可见不等同于授权 |
 
+会话恢复和 rollback 从 `session_events` replay；`ReActState` 只是进程内投影 scratch，不称为可恢复 snapshot。`snapshot` 保留给真正的不可变请求/目录快照或 point-in-time 诊断视图，不用它描述已删除的 ReAct 持久状态（ADR 0209、0502）。
+
 Session UI reducer 的 `SessionSummary.status` 与创建 action 使用 generated `SessionStatus`，lifecycle update action 使用 generated `SessionUpdateStatus`；run-end notice 再通过 `SessionRunEndStatus` 提取其终态子集。只处理不可信动态文本的状态 helper 可以继续接收 `string` 并提供未知值 fallback（ADR 0765）。
 
 Session reducer 中的 `waitingReason` state/action 字段引用 generated `SessionWaitingReason | null`，与 runtime session list 和已映射 lifecycle event 一致。`sessionWaitingReason()` 仍接收 unknown-shaped 输入并在动态边界校验，避免 view utility 把不可信对象直接视为已验证 state（ADR 0766）。

@@ -854,9 +854,8 @@ impl SessionSupervisor {
         };
         let persisted_step_number = step_number as i32;
         // Guard against rollback/cancel: if the session has been removed from the
-        // running set while the tool was executing (e.g. rollback_session marked
-        // it Error and restored a snapshot), skip persisting step records that
-        // would otherwise corrupt the restored state.
+        // running set while the tool was executing, skip persisting step records
+        // that would otherwise write into a session after its lifecycle changed.
         if !self.is_run_in_flight(session_id).await {
             tracing::warn!(
                 "execute_step: session {} left running set during tool execution; skipping step record",

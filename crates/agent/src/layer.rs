@@ -235,7 +235,7 @@ impl AgentLayer {
     }
 
     /// Interrupt the current model/tool run without closing the session.
-    /// The paused session keeps its durable snapshot and can accept a later
+    /// The paused session keeps its committed transcript and can accept a later
     /// follow-up, while the cancellation token stops an in-flight provider call.
     pub async fn interrupt_session(&self, session_id: &str) -> anyhow::Result<()> {
         if self.executor.interrupt_session(session_id).await? {

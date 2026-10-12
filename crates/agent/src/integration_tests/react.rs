@@ -529,7 +529,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
             Some("call_ask".into()),
         ),
     ];
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points: HashMap::new(),
@@ -539,7 +539,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
             vec!["step-ask".into()],
         )],
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
     agent
         .run_session_from_id(&session.session_id)
         .await
@@ -946,7 +946,7 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
         .await
         .unwrap();
 
-    // Inspect the saved snapshot's canonical: the assistant declaration
+    // Inspect the replayed canonical transcript: the assistant declaration
     // and the tool result must share the same (non-empty) id.
     let saved = load_event_projection(&agent, &session.session_id).await;
     let mut declared: Option<String> = None;
@@ -1289,7 +1289,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
 }
 
 #[tokio::test]
-async fn ask_interaction_survives_executor_restart_from_durable_snapshot() {
+async fn ask_interaction_survives_executor_restart_from_event_replay() {
     let db = temp_db();
     let tools = Arc::new(ToolsFacade::new());
     tools
@@ -1782,8 +1782,8 @@ async fn run_session_multiple_asks_surface_all_questions() {
 }
 
 #[tokio::test]
-async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
-    // The pause snapshot must end with the agent's own final answer (not
+async fn paused_event_projection_and_resume_keep_own_final_answer_in_canonical() {
+    // The paused transcript projection must end with the agent's own final answer (not
     // right after the tool results), so a resume sees the completed
     // answer BEFORE the follow-up instead of having the re-seed re-insert
     // it at the transcript head, out of order.
@@ -1856,15 +1856,15 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
         Some(SessionStatus::Paused)
     );
 
-    let snapshot = load_event_projection(&agent, &session.session_id).await;
-    let canonical = snapshot.project().canonical_messages;
+    let projection = load_event_projection(&agent, &session.session_id).await;
+    let canonical = projection.project().canonical_messages;
     let last = canonical.last().expect("canonical not empty");
     assert_eq!(
         last.role,
         CanonicalRole::Assistant,
-        "pause snapshot canonical must end with the agent's own answer"
+        "paused transcript projection must end with the agent's own answer"
     );
-    let snapshot_text: String = last
+    let answer_text: String = last
         .content
         .iter()
         .filter_map(|p| match p {
@@ -1873,8 +1873,8 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
         })
         .collect();
     assert!(
-        snapshot_text.contains("First answer."),
-        "snapshot canonical must carry the final answer, got: {snapshot_text:?}"
+        answer_text.contains("First answer."),
+        "replayed canonical transcript must carry the final answer, got: {answer_text:?}"
     );
 
     // Resume with a follow-up: the next LLM request must show the agent's
@@ -2018,7 +2018,7 @@ async fn continue_session_resumes_errored_session() {
     let mock = Arc::new(ScriptedMock::new(Vec::new()));
     let (agent, executor) = make_test_agent_with(mock, Arc::new(ToolsFacade::new()));
     let session = executor.create_session("test continue").await.unwrap();
-    // Simulate an errored session with a saved snapshot.
+    // Simulate an errored session with no in-flight run.
     agent
         .db
         .update_session_status(&session.session_id, SessionStatus::Error)
@@ -2050,7 +2050,7 @@ async fn continue_session_resumes_errored_session() {
             .await,
         Err(LlmError::CircuitOpen { .. })
     ));
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(vec![CanonicalMessage {
             role: CanonicalRole::User,
             content: vec![ContentPart::text("hello")],
@@ -2091,7 +2091,7 @@ async fn continue_session_resumes_errored_session() {
         .db
         .create_thought_step(&session.session_id, 1, &kept_step_id)
         .unwrap();
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
     let store = agent.react_engine.event_store.clone();
     let kept_usage = store
         .append_usage(
@@ -2313,9 +2313,9 @@ async fn continue_from_error_clears_stale_confirmation_requests() {
 
 #[tokio::test]
 async fn continue_session_preserves_history_without_an_error_partial_marker() {
-    // App/process interruption can leave a periodic snapshot whose branch
-    // point predates several already-persisted rounds. That snapshot is valid
-    // for model resume, but it is not authorization to delete chat history.
+    // App/process interruption can leave a branch point that predates several
+    // already-persisted rounds. Event replay remains authoritative, and the old
+    // branch point is not authorization to delete chat history.
     let (agent, executor) = make_test_agent();
     let session = executor
         .create_session("interrupted after checkpoints")
@@ -2369,13 +2369,13 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
             last_msg_at: Some(opening.created_at),
         },
     );
-    let snapshot = EventProjection {
+    let projection = EventProjection {
         events: seed_events_from_canonical(vec![CanonicalMessage::user_text("opening")]),
         step_number: 1,
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &projection).await;
     agent.continue_session(&session.session_id).await.unwrap();
 
     let ids: Vec<String> = agent
