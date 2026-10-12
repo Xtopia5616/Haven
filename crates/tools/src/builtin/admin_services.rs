@@ -26,6 +26,12 @@ use haven_skills::{SkillInfo, SkillRegistry};
 
 const DIAGNOSTIC_MODEL_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(7);
 const MCP_RELOAD_MAX_PARALLEL_CONNECTS: usize = 8;
+
+struct ResolvedLogTail {
+    path: PathBuf,
+    tail: haven_common::log_file::LogTailLines,
+}
+
 const DEFAULT_SKILL_SCRIPT: &str = r###"import contextlib
 import io
 import json
@@ -613,26 +619,29 @@ impl AdminServices {
             });
         }
 
-        let read_result = tokio::task::spawn_blocking(
-            move || -> std::io::Result<Option<(PathBuf, usize, Vec<String>)>> {
+        let read_result =
+            tokio::task::spawn_blocking(move || -> std::io::Result<Option<ResolvedLogTail>> {
                 let Some(path) =
                     haven_common::log_file::resolve_current_log_file(&configured_path)?
                 else {
                     return Ok(None);
                 };
-                let (lines, total_lines) =
-                    haven_common::log_file::read_tail_lines_with_count(&path, limit)?;
-                Ok(Some((path, total_lines, lines)))
-            },
-        )
-        .await
-        .map_err(Error::from)?;
+                let tail = haven_common::log_file::read_tail_lines_with_count(&path, limit)?;
+                Ok(Some(ResolvedLogTail { path, tail }))
+            })
+            .await
+            .map_err(Error::from)?;
 
         match read_result {
-            Ok(Some((path, total_lines, lines))) => Ok(LogsTailOutput::Read {
-                path: path.to_string_lossy().to_string(),
-                total_lines,
-                lines: lines.iter().map(|line| sanitize_log_line(line)).collect(),
+            Ok(Some(read)) => Ok(LogsTailOutput::Read {
+                path: read.path.to_string_lossy().to_string(),
+                total_lines: read.tail.total_lines,
+                lines: read
+                    .tail
+                    .lines
+                    .iter()
+                    .map(|line| sanitize_log_line(line))
+                    .collect(),
             }),
             Ok(None) => Ok(LogsTailOutput::Unavailable {
                 path: configured_path_text,

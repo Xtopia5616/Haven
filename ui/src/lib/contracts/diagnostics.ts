@@ -25,7 +25,7 @@ const COUNTER_FIELDS = [
 	'chunk_drops',
 	'checkpoint_pending',
 	'branch_point_failures',
-	'snapshot_failures',
+	'event_boundary_check_failures',
 	'projection_failures',
 	'inbox_ack_failures',
 	'tool_run_result_retries',

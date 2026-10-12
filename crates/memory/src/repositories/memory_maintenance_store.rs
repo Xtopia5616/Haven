@@ -31,7 +31,7 @@ impl MemoryMaintenanceStore {
         Self { db }
     }
 
-    async fn run<T, F>(
+    async fn run_blocking_operation<T, F>(
         &self,
         cancellation: Option<&CancellationToken>,
         operation: F,
@@ -60,7 +60,8 @@ impl MemoryMaintenanceStore {
         &self,
         cancellation: Option<&CancellationToken>,
     ) -> anyhow::Result<u64> {
-        self.run(cancellation, |db| db.dedup_facts()).await
+        self.run_blocking_operation(cancellation, |db| db.dedup_facts())
+            .await
     }
 
     /// Delete facts whose predicate or object contains credential-like data.
@@ -68,7 +69,7 @@ impl MemoryMaintenanceStore {
         &self,
         cancellation: Option<&CancellationToken>,
     ) -> anyhow::Result<u64> {
-        self.run(cancellation, |db| db.delete_sensitive_facts())
+        self.run_blocking_operation(cancellation, |db| db.delete_sensitive_facts())
             .await
     }
 
@@ -78,7 +79,7 @@ impl MemoryMaintenanceStore {
         &self,
         cancellation: Option<&CancellationToken>,
     ) -> anyhow::Result<u64> {
-        self.run(cancellation, |db| db.resolve_contradictions())
+        self.run_blocking_operation(cancellation, |db| db.resolve_contradictions())
             .await
     }
 
@@ -89,7 +90,7 @@ impl MemoryMaintenanceStore {
         threshold: f64,
         cancellation: Option<&CancellationToken>,
     ) -> anyhow::Result<u64> {
-        self.run(cancellation, move |db| db.flush_low_confidence(threshold))
+        self.run_blocking_operation(cancellation, move |db| db.flush_low_confidence(threshold))
             .await
     }
 
@@ -99,7 +100,7 @@ impl MemoryMaintenanceStore {
         &self,
         cancellation: Option<&CancellationToken>,
     ) -> anyhow::Result<u64> {
-        self.run(cancellation, |db| db.prune_orphaned_embeddings())
+        self.run_blocking_operation(cancellation, |db| db.prune_orphaned_embeddings())
             .await
     }
 
@@ -110,7 +111,7 @@ impl MemoryMaintenanceStore {
         &self,
         cancellation: Option<&CancellationToken>,
     ) -> anyhow::Result<u64> {
-        self.run(cancellation, |db| db.cleanup_orphan_extraction_cursors())
+        self.run_blocking_operation(cancellation, |db| db.cleanup_orphan_extraction_cursors())
             .await
     }
 
@@ -120,7 +121,7 @@ impl MemoryMaintenanceStore {
         &self,
         cancellation: Option<&CancellationToken>,
     ) -> anyhow::Result<u64> {
-        self.run(cancellation, |db| db.cleanup_orphan_source_refs())
+        self.run_blocking_operation(cancellation, |db| db.cleanup_orphan_source_refs())
             .await
     }
 
@@ -130,19 +131,21 @@ impl MemoryMaintenanceStore {
     pub async fn list_ambiguous_contradictions(
         &self,
     ) -> anyhow::Result<Vec<ContradictionCandidate>> {
-        self.run(None, |db| db.list_ambiguous_contradictions())
+        self.run_blocking_operation(None, |db| db.list_ambiguous_contradictions())
             .await
     }
 
     /// Demote the selected fact ids after the caller has applied its policy
     /// gate. An empty list retains the repository's zero-count behavior.
     pub async fn demote_fact_ids(&self, ids: Vec<String>) -> anyhow::Result<u64> {
-        self.run(None, move |db| db.demote_fact_ids(ids)).await
+        self.run_blocking_operation(None, move |db| db.demote_fact_ids(ids))
+            .await
     }
 
     /// Return exact predicate counts for maintenance policy decisions.
     pub async fn list_predicate_counts(&self) -> anyhow::Result<Vec<PredicateCount>> {
-        self.run(None, |db| db.list_predicate_counts()).await
+        self.run_blocking_operation(None, |db| db.list_predicate_counts())
+            .await
     }
 
     /// Rewrite one predicate and run the repository's existing duplicate
@@ -150,7 +153,7 @@ impl MemoryMaintenanceStore {
     pub async fn rewrite_predicate(&self, from: &str, to: &str) -> anyhow::Result<u64> {
         let from = from.to_string();
         let to = to.to_string();
-        self.run(None, move |db| db.rewrite_predicate(&from, &to))
+        self.run_blocking_operation(None, move |db| db.rewrite_predicate(&from, &to))
             .await
     }
 }

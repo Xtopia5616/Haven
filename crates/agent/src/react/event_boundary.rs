@@ -595,7 +595,8 @@ impl ReActEngine {
             )
             .await;
         if !result {
-            self.metrics.increment(MetricsCounter::SnapshotFailures);
+            self.metrics
+                .increment(MetricsCounter::EventBoundaryCheckFailures);
         }
         result
     }
@@ -611,9 +612,9 @@ impl ReActEngine {
         // a pause boundary). There is no serialized ReAct state to write:
         // the event stream and atomic projections are already durable. Read
         // the store cursor only as a final integrity check for the boundary.
-        let _timer = self
-            .metrics
-            .start(MetricsPhase::Snapshot, session_id, 0, step_number);
+        let _timer =
+            self.metrics
+                .start(MetricsPhase::EventBoundaryCheck, session_id, 0, step_number);
         let saved = self
             .event_store
             .event_boundary_cursor(session_id, state.turn_cancel.clone())
@@ -627,7 +628,7 @@ impl ReActEngine {
                 tracing::warn!(
                     session_id = %session_id,
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                    "checkpoint failed"
+                    "event boundary cursor check failed"
                 );
                 false
             }

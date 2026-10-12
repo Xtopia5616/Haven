@@ -28,7 +28,7 @@ function metricsSnapshot() {
 			chunk_drops: 0,
 			checkpoint_pending: 0,
 			branch_point_failures: 0,
-			snapshot_failures: 0,
+			event_boundary_check_failures: 0,
 			projection_failures: 0,
 			inbox_ack_failures: 0,
 			tool_run_result_retries: 0,
@@ -111,7 +111,10 @@ describe('diagnostics command boundary', () => {
 		{ ...metricsSnapshot(), phases: [null] },
 		{ ...metricsSnapshot(), phases: [] },
 		{ ...metricsSnapshot(), phases: metricsSnapshot().phases.slice(1) },
-		{ ...metricsSnapshot(), phases: [...metricsSnapshot().phases, metricsSnapshot().phases[0]] },
+		{
+			...metricsSnapshot(),
+			phases: [...metricsSnapshot().phases, metricsSnapshot().phases[0]],
+		},
 		{
 			...metricsSnapshot(),
 			phases: [{ count: Number.MAX_SAFE_INTEGER + 1, total_ms: 0, p50_ms: 0, p95_ms: 0 }],

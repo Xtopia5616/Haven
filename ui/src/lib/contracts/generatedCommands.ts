@@ -60,7 +60,7 @@ export type InteractionOwnerInput = { kind: 'session'; session_id: string } | { 
 export type InteractionOwner = { kind: 'session'; session_id: string } | { kind: 'scheduled_tool_run'; tool_run_id: string } | { kind: 'app_command' };
 export const INTERACTION_STATUS_VALUES = ['pending', 'resolved', 'expired', 'cancelled'] as const;
 export type InteractionStatus = (typeof INTERACTION_STATUS_VALUES)[number];
-export interface CounterSnapshot { turn_starts: number; first_tokens: number; stream_chunks: number; chunk_drops: number; checkpoint_pending: number; branch_point_failures: number; snapshot_failures: number; projection_failures: number; inbox_ack_failures: number; tool_run_result_retries: number; tool_run_result_duplicates: number; web_search_drops: number }
+export interface CounterSnapshot { turn_starts: number; first_tokens: number; stream_chunks: number; chunk_drops: number; checkpoint_pending: number; branch_point_failures: number; event_boundary_check_failures: number; projection_failures: number; inbox_ack_failures: number; tool_run_result_retries: number; tool_run_result_duplicates: number; web_search_drops: number }
 export interface GaugeSnapshot { context_queue_items: number }
 export interface MetricsSnapshot { phases: PhaseSnapshot[]; counters: CounterSnapshot; gauges: GaugeSnapshot; ui?: UiMetricsSnapshot }
 export interface PhaseSnapshot { count: number; total_ms: number; p50_ms: number; p95_ms: number }
@@ -2206,7 +2206,7 @@ export const GET_PERFORMANCE_METRICS_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'number' },
 					},
-					'snapshot_failures': {
+					'event_boundary_check_failures': {
 						optional: false,
 						shape: { kind: 'number' },
 					},

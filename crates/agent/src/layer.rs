@@ -346,7 +346,7 @@ impl AgentLayer {
     /// Reload sessions that were left Pending by a previous process after the
     /// desktop has finished warming its tool catalog.
     pub async fn recover_pending_sessions(&self) -> anyhow::Result<usize> {
-        self.executor.load_pending_sessions().await
+        self.executor.restore_pending_sessions().await
     }
 
     /// Continue a deferred recovery after its initial batch read failed. The
@@ -1085,7 +1085,7 @@ impl AgentLayer {
         }
         let session = self
             .executor
-            .get_session(&record.session_id)
+            .get_runtime_session(&record.session_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("session '{}' not registered", record.session_id))?;
         Ok(CreatedSession {
@@ -1174,7 +1174,7 @@ impl AgentLayer {
         &self,
         session_id: &str,
     ) -> anyhow::Result<haven_messaging::AgentControlResult> {
-        if let Some(session) = self.executor.get_session(session_id).await {
+        if let Some(session) = self.executor.get_runtime_session(session_id).await {
             return Ok(haven_messaging::AgentControlResult {
                 session_id: session.session_id,
                 status: session.status.as_str().into(),
@@ -1590,7 +1590,7 @@ mod tests {
             assert_eq!(result.title, expected_title);
             assert_eq!(
                 executor
-                    .get_session(&result.session_id)
+                    .get_runtime_session(&result.session_id)
                     .await
                     .unwrap()
                     .title,

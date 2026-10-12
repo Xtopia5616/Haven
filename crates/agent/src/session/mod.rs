@@ -254,7 +254,7 @@ impl SessionInfo {
     /// Build an in-memory `SessionInfo` from a freshly-loaded DB record. Centralizes
     /// the 10-field literal that used to be duplicated at every `load_*` site;
     /// `status` is taken from the record so callers that need a forced override
-    /// (e.g. `load_pending_sessions`) can mutate it after construction.
+    /// (e.g. `restore_pending_sessions`) can mutate it after construction.
     pub fn from_db_record(record: &DbSession) -> Self {
         Self {
             session_id: record.session_id.clone(),
@@ -2909,7 +2909,11 @@ mod tests {
             exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Paused)
         );
-        assert!(exec.get_session(&session.session_id).await.is_some());
+        assert!(
+            exec.get_runtime_session(&session.session_id)
+                .await
+                .is_some()
+        );
         assert!(!exec.interrupt_session(&session.session_id).await.unwrap());
     }
 
@@ -3202,7 +3206,7 @@ mod tests {
         // working set. The pending session must be reloaded and dispatchable.
         let exec2 = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 3));
         assert!(exec2.list_runtime_sessions().await.is_empty());
-        let loaded = exec2.load_pending_sessions().await.unwrap();
+        let loaded = exec2.restore_pending_sessions().await.unwrap();
         assert_eq!(loaded, 1);
 
         let claimed = exec2.try_claim_pending().await;
@@ -3242,7 +3246,7 @@ mod tests {
             1,
         ));
 
-        assert_eq!(exec.load_pending_sessions().await.unwrap(), 1);
+        assert_eq!(exec.restore_pending_sessions().await.unwrap(), 1);
         assert!(exec.actor_for(&healthy.session_id).await.is_some());
         assert!(exec.actor_for(&broken.session_id).await.is_none());
         assert!(matches!(
@@ -3282,7 +3286,7 @@ mod tests {
         exec.dequeue_pending(&session.session_id).await;
         let mut wake = exec.subscribe_dispatch();
 
-        assert_eq!(exec.load_pending_sessions().await.unwrap(), 0);
+        assert_eq!(exec.restore_pending_sessions().await.unwrap(), 0);
         tokio::time::timeout(std::time::Duration::from_millis(100), wake.changed())
             .await
             .expect("recovery should wake the dispatcher even when queue insertion is deduped")
@@ -3453,7 +3457,7 @@ mod tests {
             Some(SessionStatus::Pending)
         );
 
-        assert_eq!(exec2.load_pending_sessions().await.unwrap(), 1);
+        assert_eq!(exec2.restore_pending_sessions().await.unwrap(), 1);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while handled.load(Ordering::SeqCst) == 0 {
                 tokio::task::yield_now().await;
@@ -3492,7 +3496,7 @@ mod tests {
 
         // Restart: only the still-pending session is reloaded.
         let exec2 = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
-        let loaded = exec2.load_pending_sessions().await.unwrap();
+        let loaded = exec2.restore_pending_sessions().await.unwrap();
         assert_eq!(loaded, 0);
         assert!(exec2.list_runtime_sessions().await.is_empty());
     }

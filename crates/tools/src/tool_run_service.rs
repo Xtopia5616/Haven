@@ -536,16 +536,16 @@ impl ToolRunService {
     /// budget is exhausted, retain a single per-row background retry with
     /// exponential backoff. This prevents a transient DB outage from turning
     /// a durable `waiting` row into a permanently invisible ToolRun.
-    async fn quarantine_invalid_scheduled_row(self: &Arc<Self>, id: &str, reason: &str) {
+    async fn quarantine_invalid_scheduled_row(self: &Arc<Self>, tool_run_id: &str, reason: &str) {
         let finished_at = chrono::Utc::now().to_rfc3339();
         match self
-            .try_quarantine_invalid_scheduled_row(id, reason, &finished_at)
+            .try_quarantine_invalid_scheduled_row(tool_run_id, reason, &finished_at)
             .await
         {
             Ok(_) => return,
             Err(error) => {
                 tracing::warn!(
-                    tool_run_id = %id,
+                    tool_run_id = %tool_run_id,
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to quarantine malformed scheduled ToolRun; scheduling retry"
                 );
@@ -556,12 +556,12 @@ impl ToolRunService {
             .quarantine_persistence_retries
             .write()
             .await
-            .insert(id.to_string())
+            .insert(tool_run_id.to_string())
         {
             return;
         }
         let service = Arc::clone(self);
-        let tool_run_id = id.to_string();
+        let tool_run_id = tool_run_id.to_string();
         let reason = reason.to_string();
         tokio::spawn(async move {
             let retry_policy = ToolRunPersistenceRetryPolicy::terminal_persistence();
@@ -601,8 +601,8 @@ impl ToolRunService {
         });
     }
 
-    async fn clear_scheduled_fire_claim(&self, id: &str) {
-        self.completion_bus.clear_scheduled_fire(id).await;
+    async fn clear_scheduled_fire_claim(&self, tool_run_id: &str) {
+        self.completion_bus.clear_scheduled_fire(tool_run_id).await;
     }
 
     async fn rollback_background_registration(&self, tool_run_id: &str) {

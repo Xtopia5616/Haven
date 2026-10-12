@@ -1063,3 +1063,6 @@
 - [1072：在 Memory 与会话历史边界映射实体 ID](1072-map-renderer-entity-ids-at-boundaries.md)
 - [1073：在 UI 提取 ToolRun 身份时校验 canonical ID](1073-validate-tool-run-ids-at-ui-extraction.md)
 - [1074：将 Session permission grant 身份映射到 renderer DTO](1074-map-session-permission-grant-identity.md)
+- [1075：让 Rust helper 名称标明操作与身份](1075-name-rust-helpers-by-operation-and-identity.md)
+- [1076：为日志尾部和配置备份身份返回具名结果](1076-name-log-tail-and-backup-results.md)
+- [1077：按事件边界 cursor check 命名 ReAct 指标](1077-name-react-event-boundary-metrics.md)

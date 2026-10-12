@@ -47,8 +47,8 @@ async fn event_boundary_cursor_read_succeeds_without_changing_the_event_log() {
         events_before
     );
     let metrics = engine.metrics.snapshot();
-    assert_eq!(metrics.counters.snapshot_failures, 0);
-    assert_eq!(metrics.phase(MetricsPhase::Snapshot).count, 1);
+    assert_eq!(metrics.counters.event_boundary_check_failures, 0);
+    assert_eq!(metrics.phase(MetricsPhase::EventBoundaryCheck).count, 1);
 }
 
 #[tokio::test]
@@ -68,6 +68,6 @@ async fn event_boundary_cursor_read_failure_returns_false_and_records_failure() 
     );
 
     let metrics = engine.metrics.snapshot();
-    assert_eq!(metrics.counters.snapshot_failures, 1);
-    assert_eq!(metrics.phase(MetricsPhase::Snapshot).count, 1);
+    assert_eq!(metrics.counters.event_boundary_check_failures, 1);
+    assert_eq!(metrics.phase(MetricsPhase::EventBoundaryCheck).count, 1);
 }

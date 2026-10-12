@@ -3,6 +3,18 @@
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+/// The selected log lines plus the complete line count for the log file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogTailLines {
+    pub lines: Vec<String>,
+    pub total_lines: usize,
+}
+
+struct TailBytes {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
 /// Resolve the newest rolling log file for a configured base path.
 ///
 /// The daily appender writes `{stem}.{YYYY-MM-DD}` beside the configured path.
@@ -62,9 +74,11 @@ pub fn resolve_current_log_file(log_path: &Path) -> io::Result<Option<PathBuf>> 
 /// Reads backwards in fixed-size chunks and caps raw tail bytes at 2 MiB, so
 /// memory use does not grow with the total size of the log file.
 pub fn read_tail(path: &Path, max_lines: usize) -> io::Result<String> {
-    let (buffer, truncated) = read_tail_bytes(path, max_lines)?;
-    let mut text = crate::encoding::decode_lossy(&buffer);
-    if truncated && let Some((_, complete_tail)) = text.split_once('\n') {
+    let tail = read_tail_bytes(path, max_lines)?;
+    let mut text = crate::encoding::decode_lossy(&tail.bytes);
+    if tail.truncated
+        && let Some((_, complete_tail)) = text.split_once('\n')
+    {
         text = complete_tail.to_owned();
     }
     let mut lines: Vec<&str> = text.split('\n').collect();
@@ -77,23 +91,22 @@ pub fn read_tail(path: &Path, max_lines: usize) -> io::Result<String> {
 
 /// Read the last `max_lines` entries and the total line count without keeping
 /// the full log in memory.
-pub fn read_tail_lines_with_count(
-    path: &Path,
-    max_lines: usize,
-) -> io::Result<(Vec<String>, usize)> {
+pub fn read_tail_lines_with_count(path: &Path, max_lines: usize) -> io::Result<LogTailLines> {
     let total_lines = count_lines(path)?;
-    let (buffer, truncated) = read_tail_bytes(path, max_lines)?;
-    let mut text = crate::encoding::decode_lossy(&buffer);
-    if truncated && let Some((_, complete_tail)) = text.split_once('\n') {
+    let tail = read_tail_bytes(path, max_lines)?;
+    let mut text = crate::encoding::decode_lossy(&tail.bytes);
+    if tail.truncated
+        && let Some((_, complete_tail)) = text.split_once('\n')
+    {
         text = complete_tail.to_owned();
-    } else if truncated {
-        return Ok((
-            (total_lines > 0)
+    } else if tail.truncated {
+        return Ok(LogTailLines {
+            lines: (total_lines > 0)
                 .then(|| "[redacted diagnostic line]".to_owned())
                 .into_iter()
                 .collect(),
             total_lines,
-        ));
+        });
     }
     let lines = text
         .lines()
@@ -104,14 +117,17 @@ pub fn read_tail_lines_with_count(
         .into_iter()
         .rev()
         .collect();
-    Ok((lines, total_lines))
+    Ok(LogTailLines { lines, total_lines })
 }
 
-fn read_tail_bytes(path: &Path, max_lines: usize) -> io::Result<(Vec<u8>, bool)> {
+fn read_tail_bytes(path: &Path, max_lines: usize) -> io::Result<TailBytes> {
     let mut file = std::fs::File::open(path)?;
     let file_len = file.metadata()?.len();
     if file_len == 0 || max_lines == 0 {
-        return Ok((Vec::new(), false));
+        return Ok(TailBytes {
+            bytes: Vec::new(),
+            truncated: false,
+        });
     }
 
     const CHUNK: u64 = 8192;
@@ -144,7 +160,10 @@ fn read_tail_bytes(path: &Path, max_lines: usize) -> io::Result<(Vec<u8>, bool)>
     for chunk in chunks.into_iter().rev() {
         buffer.extend_from_slice(&chunk);
     }
-    Ok((buffer, truncated))
+    Ok(TailBytes {
+        bytes: buffer,
+        truncated,
+    })
 }
 
 fn count_lines(path: &Path) -> io::Result<usize> {

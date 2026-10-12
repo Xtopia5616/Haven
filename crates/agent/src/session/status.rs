@@ -355,7 +355,7 @@ impl SessionSupervisor {
                 continue;
             }
             let title = self
-                .get_session(&child_id)
+                .get_runtime_session(&child_id)
                 .await
                 .map(|session| session.title.unwrap_or(session.input))
                 .unwrap_or_default();
@@ -413,7 +413,7 @@ impl SessionSupervisor {
 
     async fn remove_session_locked(&self, session_id: &str) -> anyhow::Result<()> {
         if let Some(actor) = self.actor_for(session_id).await {
-            actor.clear_runtime().await;
+            actor.clear_transient_state().await;
         }
         self.dequeue_pending(session_id).await;
         self.unregister_session_tool_overlay(session_id).await;
@@ -509,7 +509,7 @@ impl SessionSupervisor {
             .cloned()
             .collect::<Vec<_>>();
         for actor in &actors {
-            actor.clear_runtime().await;
+            actor.clear_transient_state().await;
         }
         self.authorization.clear_all_trust().await;
         self.actors.lock().await.clear();
@@ -1030,7 +1030,7 @@ impl SessionSupervisor {
         }
     }
 
-    pub async fn get_session(&self, session_id: &str) -> Option<SessionInfo> {
+    pub async fn get_runtime_session(&self, session_id: &str) -> Option<SessionInfo> {
         let mut session = self.actor_for(session_id).await?.snapshot().await?;
         session.waiting_reason = self.waiting_reason(session_id).await;
         (!session.status.is_terminal()).then_some(session)
@@ -1140,7 +1140,7 @@ impl SessionSupervisor {
 
     /// Retry the complete durable pending-session read after a prior batch
     /// failure. Per-session actor replay failures are intentionally contained
-    /// by `load_pending_sessions` and therefore never repeat the whole batch.
+    /// by `restore_pending_sessions` and therefore never repeat the whole batch.
     pub(crate) async fn recover_pending_sessions_with_retry(
         self: &Arc<Self>,
         cancellation: &CancellationToken,
@@ -1169,7 +1169,10 @@ impl SessionSupervisor {
                 return None;
             }
 
-            match self.load_pending_sessions_cancellable(cancellation).await {
+            match self
+                .restore_pending_sessions_cancellable(cancellation)
+                .await
+            {
                 Ok(loaded) => return Some(loaded),
                 Err(_) if cancellation.is_cancelled() => return None,
                 Err(error) => {
@@ -1186,12 +1189,15 @@ impl SessionSupervisor {
         }
     }
 
-    pub async fn load_pending_sessions(self: &Arc<Self>) -> anyhow::Result<usize> {
-        self.load_pending_sessions_cancellable(&CancellationToken::new())
+    /// Restore pending durable sessions into runtime actors and enqueue them.
+    /// The count includes only newly installed actors; existing pending actors
+    /// are requeued but do not increase the returned count.
+    pub async fn restore_pending_sessions(self: &Arc<Self>) -> anyhow::Result<usize> {
+        self.restore_pending_sessions_cancellable(&CancellationToken::new())
             .await
     }
 
-    async fn load_pending_sessions_cancellable(
+    async fn restore_pending_sessions_cancellable(
         self: &Arc<Self>,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<usize> {

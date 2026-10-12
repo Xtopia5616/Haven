@@ -589,9 +589,9 @@ ToolRun 管理写入口经 ADR 0373 审计：Tauri、`tool_runs`/`schedule` 工�
 trigger command，`ToolConcurrency` 也不是跨 Tauri/worker 的互斥机制。terminal history delete 只接受终态，但其
 `spawn_gate` 不覆盖所有 terminal CAS/retry；现已由 ADR 0374 收口为 completion ack 前拒绝 history delete，并在同一 SQLite writer 边界协调 ack/delete。无 owner completion 的 ack 同时校验 ToolRun 与 outbox 均未绑定；迟到绑定会重开 outbox，带 session 的 live-output 工具则在无 step id 时也于 spawn 前绑定 owner。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
-是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
-请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`
-表达。
+是 ask、confirm 和 scheduled confirm 的共同生命周期投影。恢复时 Agent 从 `session_events`
+replay active interaction events 并重建 Actor 内状态；该状态不写入独立的 `interactions` 表或
+ReAct snapshot。交互状态以 `Pending → Resolved | Expired | Cancelled` 表达。
 
 Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具进入；图片/文件读取先复制到受管媒体
 资产并只向模型返回 `asset_id`。`clipboard.history` 是进程内有界文本历史；每次查询会采样当前系统剪贴板的

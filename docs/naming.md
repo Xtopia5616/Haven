@@ -364,6 +364,8 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 
 Rust/DB/event 领域字段与 Tauri DTO 中，实体身份字段使用实体名限定的 `xxx_id`（如 `session_id`、`step_id`、`message_id`、`tool_run_id`）；UI 自有模型可在边界映射为 `xxxId`。数据库既有物理主键列（如 `sessions.id`）保持原名，由 Repository 映射为领域字段。尚未迁移的存量 DTO 按实体归属逐步收敛，不以结构体上下文作为省略实体名的理由；外部 provider 标识和 Tauri event envelope 序号 `id` 按各自协议保留。
 
+Rust 函数参数若承载 Haven 实体身份，默认沿用完整实体名（如 `tool_run_id`）；只有函数名已明确指明单一实体且无同名混淆时，才允许用 `id` 简写。通用校验器的泛型 `id`、provider/protocol 外部 ID 和非实体用途的参数不套用此规则；文件名片段等值按其用途命名（如 `file_stem`），不冒充实体 ID。
+
 Messaging 的 JSONL envelope、registry、工具参数与工具结果共用显式身份词汇：消息字段为 `message_id`、`from_session_id`、`to_session_id`、`reply_to_session_id`、`in_reply_to_message_id`；Agent registry/view 为 `session_id`、`parent_session_id`；工具收件人/目标分别为 `to_session_id`、`target_session_id`。前端只在 renderer 边界映射 camelCase，不使用 `id`、`name`、`from`、`to` 或 `parent` 作为这些实体字段的别名（ADR 1026）。
 
 ToolRun completion 消息身份是可重试投递的派生身份：`tool_run_result_id` 经 SHA-256 确定性映射到 `msg-*`，同一 completion 在 outbox 重投、进程恢复和 queue 重试中必须得到同一个 `message_id`，以保持 transcript/outbox 幂等。它不是新实体的随机 ID 生成；不得替换为每次调用 `new_id("msg")`（ADR 0998）。

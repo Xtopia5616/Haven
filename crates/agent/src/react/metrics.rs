@@ -48,7 +48,7 @@ pub(crate) enum Phase {
     OrderedCommit,
     EventAppend,
     Projection,
-    Snapshot,
+    EventBoundaryCheck,
     SqliteLockWait,
 }
 
@@ -65,7 +65,7 @@ impl Phase {
             Self::OrderedCommit => 7,
             Self::EventAppend => 8,
             Self::Projection => 9,
-            Self::Snapshot => 10,
+            Self::EventBoundaryCheck => 10,
             Self::SqliteLockWait => 11,
         }
     }
@@ -82,7 +82,7 @@ impl Phase {
             Self::OrderedCommit => "ordered_commit",
             Self::EventAppend => "event_append",
             Self::Projection => "projection",
-            Self::Snapshot => "snapshot",
+            Self::EventBoundaryCheck => "event_boundary_check",
             Self::SqliteLockWait => "sqlite_lock_wait",
         }
     }
@@ -154,7 +154,7 @@ pub(crate) enum Counter {
     ChunkDrops,
     CheckpointPending,
     BranchPointFailures,
-    SnapshotFailures,
+    EventBoundaryCheckFailures,
     ProjectionFailures,
     InboxAckFailures,
     ToolRunResultRetries,
@@ -171,7 +171,7 @@ impl Counter {
             Self::ChunkDrops => 3,
             Self::CheckpointPending => 4,
             Self::BranchPointFailures => 5,
-            Self::SnapshotFailures => 6,
+            Self::EventBoundaryCheckFailures => 6,
             Self::ProjectionFailures => 7,
             Self::InboxAckFailures => 8,
             Self::ToolRunResultRetries => 9,
@@ -190,7 +190,7 @@ pub struct CounterSnapshot {
     pub chunk_drops: u64,
     pub checkpoint_pending: u64,
     pub branch_point_failures: u64,
-    pub snapshot_failures: u64,
+    pub event_boundary_check_failures: u64,
     pub projection_failures: u64,
     pub inbox_ack_failures: u64,
     pub tool_run_result_retries: u64,
@@ -279,8 +279,9 @@ impl ReActMetrics {
                     .load(Ordering::Relaxed),
                 branch_point_failures: self.counters[Counter::BranchPointFailures.index()]
                     .load(Ordering::Relaxed),
-                snapshot_failures: self.counters[Counter::SnapshotFailures.index()]
-                    .load(Ordering::Relaxed),
+                event_boundary_check_failures: self.counters
+                    [Counter::EventBoundaryCheckFailures.index()]
+                .load(Ordering::Relaxed),
                 projection_failures: self.counters[Counter::ProjectionFailures.index()]
                     .load(Ordering::Relaxed),
                 inbox_ack_failures: self.counters[Counter::InboxAckFailures.index()]

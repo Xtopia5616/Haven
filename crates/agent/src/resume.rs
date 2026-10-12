@@ -268,10 +268,11 @@ impl AgentLayer {
         terminal_error_owner: TerminalErrorEventOwner,
     ) -> anyhow::Result<Vec<ReActRound>> {
         tracing::debug!("run_session_from_id: session_id={}", session_id);
-        let session =
-            self.executor.get_session(session_id).await.ok_or_else(|| {
-                anyhow::anyhow!("session '{}' not found by dispatcher", session_id)
-            })?;
+        let session = self
+            .executor
+            .get_runtime_session(session_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("session '{}' not found by dispatcher", session_id))?;
 
         // Dispatcher calls already own the run slot. Test-only direct calls
         // acquire their own lease before changing status or doing any work.

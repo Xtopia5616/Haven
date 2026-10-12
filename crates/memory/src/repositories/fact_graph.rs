@@ -314,7 +314,7 @@ impl<'db> FactGraph<'db> {
 
     /// Store a fact explicitly stated by the user. User facts are
     /// authoritative and single-valued predicates replace all prior values.
-    pub(crate) fn set_user(
+    pub(crate) fn set_user_fact(
         &self,
         subject: &str,
         predicate: &str,
@@ -849,7 +849,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let graph = FactGraph::new(&db);
         graph
-            .set_user("user", "project_path", "D:/authoritative", &[])
+            .set_user_fact("user", "project_path", "D:/authoritative", &[])
             .unwrap();
 
         let outcome = graph

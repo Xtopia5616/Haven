@@ -278,7 +278,9 @@ impl Database {
         object: &str,
         tags: &[&str],
     ) -> anyhow::Result<Fact> {
-        self.with_fact_write(|| FactGraph::new(self).set_user(subject, predicate, object, tags))
+        self.with_fact_write(|| {
+            FactGraph::new(self).set_user_fact(subject, predicate, object, tags)
+        })
     }
 
     /// Delete facts by (subject, predicate[, object]) — used by the

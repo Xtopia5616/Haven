@@ -192,7 +192,7 @@ pub async fn end_session(
     let executor_session = state
         .runtime
         .executor
-        .get_session(&session_id)
+        .get_runtime_session(&session_id)
         .await
         .map(|session| ExecutorSessionDisplay {
             title: session.title,

@@ -56,7 +56,7 @@ impl LoopHooks for DefaultHooks {
                 .memory_worker
                 .take_memory_dirty_throttled(&ctx.session_id)
         {
-            let description = match engine.executor.get_session(&ctx.session_id).await {
+            let description = match engine.executor.get_runtime_session(&ctx.session_id).await {
                 Some(s) if !s.summary.is_empty() => s.summary,
                 Some(s) => s.input,
                 None => String::new(),

@@ -185,12 +185,12 @@ fn output_log_dir(kind: &str) -> std::path::PathBuf {
 /// Write a command's full (sanitized) output to a log file so a condensed
 /// failure summary never hides the root cause (e.g. an npm install failure
 /// whose real error sits mid-log). Returns the log file path.
-pub(crate) fn write_output_log(kind: &str, id: &str, text: &str) -> std::path::PathBuf {
+pub(crate) fn write_output_log(kind: &str, file_stem: &str, text: &str) -> std::path::PathBuf {
     let dir = output_log_dir(kind);
-    let path = dir.join(format!("{id}.log"));
+    let path = dir.join(format!("{file_stem}.log"));
     if let Err(e) = std::fs::create_dir_all(&dir) {
         tracing::warn!(
-            tool_run_id = %id,
+            output_log_stem = %file_stem,
             error = %haven_common::error::sanitize_error_text(&e.to_string()),
             "failed to create output-log dir"
         );
@@ -198,7 +198,7 @@ pub(crate) fn write_output_log(kind: &str, id: &str, text: &str) -> std::path::P
     }
     if let Err(e) = std::fs::write(&path, text) {
         tracing::warn!(
-            tool_run_id = %id,
+            output_log_stem = %file_stem,
             error = %haven_common::error::sanitize_error_text(&e.to_string()),
             "failed to write output log"
         );

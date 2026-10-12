@@ -32,7 +32,7 @@ describe('performance metrics export boundary', () => {
 				chunk_drops: 0,
 				checkpoint_pending: 0,
 				branch_point_failures: 0,
-				snapshot_failures: 0,
+				event_boundary_check_failures: 0,
 				projection_failures: 0,
 				inbox_ack_failures: 0,
 				tool_run_result_retries: 0,

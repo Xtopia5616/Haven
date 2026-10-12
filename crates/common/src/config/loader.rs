@@ -146,7 +146,22 @@ fn timestamped_backup_path(path: &Path) -> PathBuf {
 
 const MAX_AUTOMATIC_CONFIG_BACKUPS: usize = 10;
 
-fn automatic_backup_timestamp(path: &Path, config_path: &Path) -> Option<(u64, u32, u64)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct AutomaticBackupIdentity {
+    timestamp_secs: u64,
+    process_id: u32,
+    sequence: u64,
+}
+
+struct TimestampedBackup {
+    identity: AutomaticBackupIdentity,
+    path: PathBuf,
+}
+
+fn parse_automatic_backup_identity(
+    path: &Path,
+    config_path: &Path,
+) -> Option<AutomaticBackupIdentity> {
     let base = config_path.file_stem()?.to_str()?;
     let file_name = path.file_name()?.to_str()?;
     let middle = file_name
@@ -157,11 +172,11 @@ fn automatic_backup_timestamp(path: &Path, config_path: &Path) -> Option<(u64, u
     let [timestamp, pid, sequence] = parts.as_slice() else {
         return None;
     };
-    Some((
-        timestamp.parse().ok()?,
-        pid.parse().ok()?,
-        sequence.parse().ok()?,
-    ))
+    Some(AutomaticBackupIdentity {
+        timestamp_secs: timestamp.parse().ok()?,
+        process_id: pid.parse().ok()?,
+        sequence: sequence.parse().ok()?,
+    })
 }
 
 /// Keep only the newest automatic recovery copies for this config. Manual
@@ -178,12 +193,13 @@ fn prune_timestamped_backups(config_path: &Path) {
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let path = entry.path();
-            automatic_backup_timestamp(&path, config_path).map(|stamp| (stamp, path))
+            parse_automatic_backup_identity(&path, config_path)
+                .map(|identity| TimestampedBackup { identity, path })
         })
         .collect();
-    backups.sort_by_key(|backup| std::cmp::Reverse(backup.0));
-    for (_, backup) in backups.into_iter().skip(MAX_AUTOMATIC_CONFIG_BACKUPS) {
-        if let Err(error) = std::fs::remove_file(&backup) {
+    backups.sort_by_key(|backup| std::cmp::Reverse(backup.identity));
+    for backup in backups.into_iter().skip(MAX_AUTOMATIC_CONFIG_BACKUPS) {
+        if let Err(error) = std::fs::remove_file(&backup.path) {
             tracing::warn!(
                 error = %crate::error::sanitize_error_text(&error.to_string()),
                 "failed to prune old automatic config backup"
@@ -1603,7 +1619,7 @@ model = "nova-3"
             .read_dir()
             .unwrap()
             .filter_map(Result::ok)
-            .filter_map(|entry| automatic_backup_timestamp(&entry.path(), &path))
+            .filter_map(|entry| parse_automatic_backup_identity(&entry.path(), &path))
             .collect();
         assert_eq!(automatic.len(), MAX_AUTOMATIC_CONFIG_BACKUPS);
         assert!(dir.join("config.toml.12.1.0.bak").exists());

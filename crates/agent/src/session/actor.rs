@@ -252,7 +252,7 @@ pub(crate) enum ActorCommand {
     HasChildren {
         reply: oneshot::Sender<bool>,
     },
-    ClearRuntime,
+    ClearTransientState,
 }
 
 /// A cloneable mailbox endpoint for one session.
@@ -707,8 +707,8 @@ impl SessionActorHandle {
         rx.await.unwrap_or(false)
     }
 
-    pub(crate) async fn clear_runtime(&self) {
-        let _ = self.send(ActorCommand::ClearRuntime).await;
+    pub(crate) async fn clear_transient_state(&self) {
+        let _ = self.send(ActorCommand::ClearTransientState).await;
     }
 
     /// Advance this session's inbox poll cursor. The subscribe closure runs
@@ -1453,7 +1453,7 @@ pub(crate) fn spawn(
                 ActorCommand::ClearMessaging => {
                     clear_messaging(&mut state);
                 }
-                ActorCommand::ClearRuntime => {
+                ActorCommand::ClearTransientState => {
                     state.tool_run_results.clear();
                     state.tool_run_result_chars = 0;
                     state.follow_up_queue.clear();

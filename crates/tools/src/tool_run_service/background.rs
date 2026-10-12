@@ -625,10 +625,10 @@ impl ToolRunService {
         }
     }
 
-    pub(super) async fn mark_cancelled(self: &Arc<Self>, id: &str, started_at: &str) {
+    pub(super) async fn mark_cancelled(self: &Arc<Self>, tool_run_id: &str, started_at: &str) {
         let running = {
             let tool_runs = self.tool_runs.read().await;
-            tool_runs.get(id).is_some_and(|entry| {
+            tool_runs.get(tool_run_id).is_some_and(|entry| {
                 entry.kind == ToolRunKind::Background
                     && can_claim_terminal(
                         entry.state.status(),
@@ -641,24 +641,31 @@ impl ToolRunService {
             return;
         }
         let state = TerminalTimestamps::now(started_at).build(TerminalPayload::Cancelled);
-        match self.try_commit_background_terminal(id, &state, false).await {
+        match self
+            .try_commit_background_terminal(tool_run_id, &state, false)
+            .await
+        {
             Ok(_) => {}
             Err(error) => {
                 tracing::warn!(
-                    tool_run_id = %id,
+                    tool_run_id = %tool_run_id,
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to persist ToolRun cancellation"
                 );
-                self.retry_background_terminal_persistence(id, state, false)
+                self.retry_background_terminal_persistence(tool_run_id, state, false)
                     .await;
             }
         }
     }
 
-    async fn cancel_owned_background_tool_run(self: &Arc<Self>, id: &str, session_id: &str) {
+    async fn cancel_owned_background_tool_run(
+        self: &Arc<Self>,
+        tool_run_id: &str,
+        session_id: &str,
+    ) {
         let started_at = {
             let mut tool_runs = self.tool_runs.write().await;
-            let Some(entry) = tool_runs.get_mut(id) else {
+            let Some(entry) = tool_runs.get_mut(tool_run_id) else {
                 return;
             };
             if entry.kind != ToolRunKind::Background
@@ -681,24 +688,27 @@ impl ToolRunService {
             // If the ToolRun finished after selection, it already published its
             // terminal event. Cleanup only drops the board entry.
             let mut tool_runs = self.tool_runs.write().await;
-            if tool_runs.get(id).is_some_and(|entry| {
+            if tool_runs.get(tool_run_id).is_some_and(|entry| {
                 entry.kind == ToolRunKind::Background
                     && entry.session_id.as_deref() == Some(session_id)
                     && entry.state.is_terminal()
             }) {
-                tool_runs.remove(id);
+                tool_runs.remove(tool_run_id);
             }
             return;
         };
 
         let state = TerminalTimestamps::now(started_at).build(TerminalPayload::Cancelled);
-        if let Err(error) = self.try_commit_background_terminal(id, &state, true).await {
+        if let Err(error) = self
+            .try_commit_background_terminal(tool_run_id, &state, true)
+            .await
+        {
             tracing::warn!(
-                tool_run_id = %id,
+                tool_run_id = %tool_run_id,
                 error = %haven_common::error::sanitize_error_text(&error.to_string()),
                 "failed to persist session cleanup cancellation"
             );
-            self.retry_background_terminal_persistence(id, state, true)
+            self.retry_background_terminal_persistence(tool_run_id, state, true)
                 .await;
         }
     }
