@@ -1012,3 +1012,4 @@
 - [1021：从 Rust 契约校验完整 Memory 响应](1021-validate-memory-command-response-shapes.md)
 - [1022：从 Rust 契约校验完整 Session 响应](1022-validate-session-command-response-shapes.md)
 - [1023：收回仅限测试和 crate 内部使用的 API](1023-restrict-test-and-internal-crate-apis.md)
+- [1024：将 ConfigLoader 的生产写入收归 ConfigService](1024-restrict-config-loader-writes.md)

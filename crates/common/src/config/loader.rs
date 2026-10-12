@@ -76,6 +76,30 @@ settings_pair! {
 // Config loader
 // ---------------------------------------------------------------------------
 
+/// TOML codec and file boundary held by [`ConfigService`](super::ConfigService).
+/// Production configuration writes go through that owner so validation,
+/// versioning, persistence, and change notifications stay together.
+///
+/// The mutable loader surface is intentionally unavailable to downstream
+/// crates:
+///
+/// ```compile_fail
+/// use haven_common::config::ConfigLoader;
+/// let mut loader = ConfigLoader::load().unwrap();
+/// loader.config_mut();
+/// ```
+///
+/// ```compile_fail
+/// use haven_common::config::ConfigLoader;
+/// let mut loader = ConfigLoader::load().unwrap();
+/// loader.save().unwrap();
+/// ```
+///
+/// ```compile_fail
+/// use haven_common::config::{ConfigLoader, Settings};
+/// let mut loader = ConfigLoader::load().unwrap();
+/// loader.apply_settings(&Settings::default());
+/// ```
 #[derive(Debug, Clone)]
 pub struct ConfigLoader {
     path: PathBuf,
@@ -296,7 +320,7 @@ impl ConfigLoader {
     /// replace the configured path only after the complete TOML write succeeds.
     /// A successful return confirms the replacement call succeeded; it does
     /// not guarantee survival across an OS crash or sudden power loss.
-    pub fn save(&mut self) -> anyhow::Result<()> {
+    pub(crate) fn save(&mut self) -> anyhow::Result<()> {
         super::validate_app_config(&self.config)?;
         super::credentials::validate_config_references(&self.config)?;
         let toml_str = toml::to_string_pretty(&self.config)?;
@@ -343,7 +367,7 @@ impl ConfigLoader {
         &self.config
     }
 
-    pub fn config_mut(&mut self) -> &mut AppConfig {
+    pub(crate) fn config_mut(&mut self) -> &mut AppConfig {
         &mut self.config
     }
 
@@ -351,9 +375,9 @@ impl ConfigLoader {
         Settings::from(&self.config)
     }
 
-    /// Apply a frontend `Settings` update, preserving stored api keys when the
-    /// incoming value is empty.
-    pub fn apply_settings(&mut self, settings: &Settings) {
+    /// Apply a frontend `Settings` update in loader unit tests.
+    #[cfg(test)]
+    fn apply_settings(&mut self, settings: &Settings) {
         self.config.apply_settings(settings);
     }
 

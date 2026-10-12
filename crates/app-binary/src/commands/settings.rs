@@ -872,17 +872,19 @@ mod tests {
     fn config_service_with_config(config: AppConfig) -> (ConfigService, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let mut loader = ConfigLoader::load_from(&path).unwrap();
-        *loader.config_mut() = config;
-        loader.save().unwrap();
-        (
-            ConfigService::new_with_credential_store(
-                loader,
-                std::sync::Arc::new(InMemoryCredentialStore::default()),
-            )
-            .unwrap(),
-            dir,
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        let service = ConfigService::new_with_credential_store(
+            loader,
+            std::sync::Arc::new(InMemoryCredentialStore::default()),
         )
+        .unwrap();
+        service
+            .edit(move |current| {
+                *current = config;
+                Ok(())
+            })
+            .unwrap();
+        (service, dir)
     }
 
     #[tokio::test]
@@ -1058,6 +1060,7 @@ mod tests {
     #[test]
     fn no_op_settings_edit_does_not_start_runtime_apply() {
         let (service, _dir) = config_service_with_config(AppConfig::default());
+        let initial_version = service.snapshot().unwrap().version;
         let settings = service.settings().unwrap();
         let receiver = service.subscribe().unwrap();
 
@@ -1065,7 +1068,7 @@ mod tests {
 
         assert!(update.is_none());
         assert!(receiver.try_recv().is_err());
-        assert_eq!(service.snapshot().unwrap().version, 0);
+        assert_eq!(service.snapshot().unwrap().version, initial_version);
     }
 
     #[tokio::test]
@@ -1073,6 +1076,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let (service, _dir) = config_service_with_config(AppConfig::default());
+        let initial_version = service.snapshot().unwrap().version;
         let mut settings = service.settings().unwrap();
         settings.log.level = LogLevel::Debug;
         let changes = service.subscribe().unwrap();
@@ -1107,11 +1111,12 @@ mod tests {
             vec![SettingsRuntimeApplyPhase::Logging]
         );
         let snapshot = service.snapshot().unwrap();
-        assert_eq!(snapshot.version, 1);
+        let applied_version = initial_version + 1;
+        assert_eq!(snapshot.version, applied_version);
         assert_eq!(snapshot.config.log.level, LogLevel::Debug);
         let persisted = ConfigLoader::load_from(&service.path().unwrap()).unwrap();
         assert_eq!(persisted.config().log.level, LogLevel::Debug);
-        assert_eq!(changes.try_recv().unwrap().version, 1);
+        assert_eq!(changes.try_recv().unwrap().version, applied_version);
 
         assert!(apply_settings_edit(&service, &settings).unwrap().is_none());
         assert!(changes.try_recv().is_err());
