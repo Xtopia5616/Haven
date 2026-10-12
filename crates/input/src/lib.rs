@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use capture::{CaptureEngineHandle, TARGET_SAMPLE_RATE};
 use haven_common::hooks::OnceHandler;
 
-use haven_common::config::AudioConfig;
+use haven_common::config::{AudioConfig, MAX_INPUT_RING_BUFFER_SECS};
 pub use hotkey::{KeyCode, KeyCombo, KeyModifier};
 pub use vad::{VadSignal, VadState};
 
@@ -161,10 +161,17 @@ impl InputPipeline {
     }
 
     /// Set the audio ring capacity used when the capture engine is next spawned.
-    /// An already-running capture engine retains its current capacity.
-    pub fn set_ring_buffer_capacity_secs(&self, capacity_secs: usize) {
+    /// An already-running capture engine retains its current capacity. Zero
+    /// keeps the capture engine's default-capacity behavior.
+    pub fn set_ring_buffer_capacity_secs(&self, capacity_secs: usize) -> Result<()> {
+        if capacity_secs > MAX_INPUT_RING_BUFFER_SECS {
+            return Err(anyhow!(
+                "input ring buffer capacity must not exceed {MAX_INPUT_RING_BUFFER_SECS} seconds"
+            ));
+        }
         *lock_std_or_recover(&self.ring_buffer_capacity_secs, "ring_buffer_capacity_secs") =
             capacity_secs;
+        Ok(())
     }
 
     /// Start the capture engine at app startup so the first recording pays no
@@ -838,6 +845,33 @@ mod tests {
         let pipeline = InputPipeline::new();
         let state = pipeline.state().await;
         assert_eq!(state, RecordingState::Pending);
+    }
+
+    #[test]
+    fn ring_buffer_capacity_uses_the_common_limit_and_keeps_previous_value_on_rejection() {
+        let pipeline = InputPipeline::new();
+
+        assert!(pipeline.set_ring_buffer_capacity_secs(0).is_ok());
+        assert!(
+            pipeline
+                .set_ring_buffer_capacity_secs(MAX_INPUT_RING_BUFFER_SECS)
+                .is_ok()
+        );
+
+        for capacity_secs in [MAX_INPUT_RING_BUFFER_SECS + 1, usize::MAX] {
+            assert!(
+                pipeline
+                    .set_ring_buffer_capacity_secs(capacity_secs)
+                    .is_err()
+            );
+            assert_eq!(
+                *lock_std_or_recover(
+                    &pipeline.ring_buffer_capacity_secs,
+                    "ring_buffer_capacity_secs"
+                ),
+                MAX_INPUT_RING_BUFFER_SECS
+            );
+        }
     }
 
     #[tokio::test]

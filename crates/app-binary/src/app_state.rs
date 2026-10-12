@@ -308,7 +308,8 @@ impl AppState {
         agent.set_max_steps_per_session(max_steps_per_session)?;
 
         let input_pipeline = Arc::new(InputPipeline::new());
-        input_pipeline.set_ring_buffer_capacity_secs(context_limits_clone.input_ring_buffer_secs);
+        input_pipeline
+            .set_ring_buffer_capacity_secs(context_limits_clone.input_ring_buffer_secs)?;
         let shell = Arc::new(DesktopShell::new());
         let runtime = Arc::new(ApplicationRuntime::new(RuntimeServices {
             session_store: session_store.clone(),

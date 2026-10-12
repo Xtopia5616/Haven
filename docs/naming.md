@@ -306,7 +306,7 @@ VAD 模型输出语音概率的推理入口使用 `infer_speech_probability`；�
 
 Input capture 内部的 engine owner 和命令分别使用 `CaptureEngine`、`CaptureEngineCommand`、`CaptureEngineHandle`；活动 ring 的直接读取叫 `drain_buffered`，隐藏 mutex 共享实现。`Resampler` 的状态式转换入口使用 `resample` / `resample_into`，区分音频变换和泛化的 `process`。
 
-`InputPipeline` 的 ring capacity 配置入口叫 `set_ring_buffer_capacity_secs`，音频参数替换叫 `update_audio_config`。ring capacity 当前只在下一次 capture engine spawn 时生效；运行中 engine 不会因设置变更而 resize（ADR 0634）。
+`InputPipeline` 的 ring capacity 配置入口叫 `set_ring_buffer_capacity_secs`，音频参数替换叫 `update_audio_config`。capacity setter 复用 Common 的 `MAX_INPUT_RING_BUFFER_SECS` 上限并返回 `Result`；0 继续使用 capture engine 的默认容量。ring capacity 当前只在下一次 capture engine spawn 时生效；运行中 engine 不会因设置变更而 resize（ADR 0634、1057）。
 
 Common 媒体探测 helper 和变量以 `mime_type` 表示 MIME 字符串，探测/扩展名映射函数使用 `*_mime_type`；`MediaProbe` 的 Rust 与 Serde 字段统一为 `media_kind`，MIME 字符串为 `mime_type`，不为旧 `media_type` key 保留别名。此规则仅针对探测结果；消息附件、受管媒体资产及 provider wire 中表示 MIME 字符串的 `media_type` 按各自现行契约保留。`DetectedMediaKind` 是 bytes/extension/MIME 推出的粗分类（含 `Unknown`）。能力规划的 `MediaModality` 没有 `Unknown`，继续表示模型能力合同，不与检测失败分类合并。
 

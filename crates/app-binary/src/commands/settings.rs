@@ -269,10 +269,16 @@ async fn execute_settings_apply_phase(
             }
         }
         SettingsRuntimeApplyPhase::ContextLimits => {
-            state
+            if let Err(error) = state
                 .runtime
                 .input_pipeline
-                .set_ring_buffer_capacity_secs(config.context_limits.input_ring_buffer_secs);
+                .set_ring_buffer_capacity_secs(config.context_limits.input_ring_buffer_secs)
+            {
+                return SettingsRuntimeApplyOutcome::failed(
+                    "update_settings input ring buffer",
+                    error,
+                );
+            }
             let result = state
                 .runtime
                 .tools

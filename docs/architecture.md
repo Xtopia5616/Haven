@@ -423,7 +423,8 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryOutboxStore::p
 - `lib.rs` 的 `InputPipeline`：录音状态机（`start_capture` / `stop_capture` /
   `cancel_capture`）、固定时长 `capture_for`、VAD 判定与自动停止、PCM/WAV 序列化和采集侧错误。
   `update_audio_config` 替换音频参数；`set_ring_buffer_capacity_secs` 设置下一次 capture engine
-  spawn 使用的容量，当前 engine 不在线 resize。
+  spawn 使用的容量，当前 engine 不在线 resize；setter 复用 Common 的 120 秒资源上限并返回错误，
+  0 保持默认容量语义（ADR 1057）。
 - 内部 `hotkey.rs`：快捷键字符串解析为中性 `KeyCombo`（与平台解耦）。按键与 VAD
   类型跨 crate 只从根模块导出 `KeyCode`、`KeyCombo`、强类型 `KeyModifier` 和
   `VadSignal` / `VadState`；
