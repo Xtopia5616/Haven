@@ -64,12 +64,14 @@ enum CaptureEngineCommand {
     Start(tokio::sync::oneshot::Sender<Result<()>>),
     StopAndDrain(tokio::sync::oneshot::Sender<Vec<f32>>),
     StopAndClear,
+    Shutdown,
 }
 
 /// Client-side handle to the capture engine thread.
 #[derive(Clone)]
 pub struct CaptureEngineHandle {
     cmd_tx: mpsc::Sender<CaptureEngineCommand>,
+    thread: Arc<StdMutex<Option<std::thread::JoinHandle<()>>>>,
     /// Shared ring; the recording loop drains it directly (mutex-protected),
     /// so audio consumption needs no command round-trip.
     ring: Arc<StdMutex<RingBuffer>>,
@@ -140,6 +142,26 @@ impl CaptureEngineHandle {
     pub fn stop_and_clear(&self) {
         let _ = self.cmd_tx.send(CaptureEngineCommand::StopAndClear);
     }
+
+    /// Stop the engine thread and wait for its stream teardown to finish.
+    pub async fn shutdown(&self) -> Result<()> {
+        let _ = self.cmd_tx.send(CaptureEngineCommand::Shutdown);
+        let Some(thread) = self
+            .thread
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("capture engine thread lock poisoned; recovering state");
+                poisoned.into_inner()
+            })
+            .take()
+        else {
+            return Ok(());
+        };
+        tokio::task::spawn_blocking(move || thread.join())
+            .await
+            .map_err(|error| anyhow!("capture engine join task failed: {error}"))?
+            .map_err(|_| anyhow!("capture engine thread panicked"))
+    }
 }
 
 /// Spawn the capture engine thread. `ring_capacity_secs` (from
@@ -155,22 +177,18 @@ pub fn spawn_engine(ring_capacity_secs: usize) -> Result<CaptureEngineHandle> {
     let silent_abort = Arc::new(AtomicBool::new(false));
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<CaptureEngineCommand>();
-    let handle = CaptureEngineHandle {
-        cmd_tx: cmd_tx.clone(),
-        ring: ring.clone(),
-        stream_failed: stream_failed.clone(),
-        silent_abort: silent_abort.clone(),
-    };
-
-    std::thread::Builder::new()
+    let engine_ring = ring.clone();
+    let engine_stream_failed = stream_failed.clone();
+    let engine_silent_abort = silent_abort.clone();
+    let thread = std::thread::Builder::new()
         .name("haven-audio-engine".into())
         .spawn(move || {
             let mut engine = CaptureEngine {
-                ring,
+                ring: engine_ring,
                 backend: None,
                 signals: CaptureSignals::new(),
-                out_failed: stream_failed,
-                out_silent_abort: silent_abort,
+                out_failed: engine_stream_failed,
+                out_silent_abort: engine_silent_abort,
                 recording: false,
                 started_at: None,
                 silent_checked: false,
@@ -217,6 +235,10 @@ pub fn spawn_engine(ring_capacity_secs: usize) -> Result<CaptureEngineHandle> {
                     Some(CaptureEngineCommand::StopAndClear) => {
                         engine.cmd_stop_and_clear();
                     }
+                    Some(CaptureEngineCommand::Shutdown) => {
+                        engine.teardown();
+                        return;
+                    }
                     None => {
                         engine.poll_timeout();
                     }
@@ -224,6 +246,14 @@ pub fn spawn_engine(ring_capacity_secs: usize) -> Result<CaptureEngineHandle> {
             }
         })
         .map_err(|e| anyhow!("failed to spawn capture engine: {e}"))?;
+
+    let handle = CaptureEngineHandle {
+        cmd_tx,
+        thread: Arc::new(StdMutex::new(Some(thread))),
+        ring,
+        stream_failed,
+        silent_abort,
+    };
 
     Ok(handle)
 }
@@ -348,5 +378,27 @@ impl CaptureEngine {
             has_signal: Arc::new(AtomicBool::new(false)),
             stream_failed: out_failed.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shutdown_joins_the_capture_engine_thread_without_opening_a_device() {
+        let engine = spawn_engine(0).unwrap();
+
+        engine.shutdown().await.unwrap();
+        engine.shutdown().await.unwrap();
+
+        assert!(
+            engine
+                .thread
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_none()
+        );
+        assert!(engine.cmd_tx.send(CaptureEngineCommand::Shutdown).is_err());
     }
 }

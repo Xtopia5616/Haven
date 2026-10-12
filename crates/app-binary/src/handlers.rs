@@ -42,15 +42,24 @@ impl desktop::ShellHandler for HavenShellHandler {
     async fn on_recording_start(&self, context: RecordingStartContext) {
         let state = self.app_h.state::<Arc<AppState>>();
         let lifecycle = state.recording_lifecycle.lock().await;
+        let existing_recording_id = state.recording_lifecycle.current(&lifecycle);
+        let recording_id = existing_recording_id
+            .clone()
+            .unwrap_or_else(|| crate::commands::begin_recording(&state, &lifecycle));
         // Start the pipeline first: emitting `recording:started` before the
         // pipeline is actually recording would leave the UI stuck in the
         // recording state (and every stop attempt failing with "not
         // recording") if startup errors.
-        if let Err(e) = self.input_pipeline.start_capture().await {
-            if matches!(
-                self.input_pipeline.state().await,
-                haven_input::RecordingState::Recording
-            ) && state.recording_lifecycle.current(&lifecycle).is_some()
+        if let Err(e) = self
+            .input_pipeline
+            .start_capture(recording_id.clone())
+            .await
+        {
+            if existing_recording_id.is_some()
+                && matches!(
+                    self.input_pipeline.state().await,
+                    haven_input::RecordingState::Recording
+                )
             {
                 // Another app entry point established this user capture while
                 // the Shell callback waited for its lifecycle guard.
@@ -58,6 +67,11 @@ impl desktop::ShellHandler for HavenShellHandler {
                     .sync_recording_if_revision(true, context.recording_revision)
                     .await;
                 return;
+            }
+            if existing_recording_id.is_none() {
+                state
+                    .recording_lifecycle
+                    .finish_if_current(&lifecycle, &recording_id);
             }
             tracing::warn!(
                 error = %sanitize_error_text(&e.to_string()),
@@ -73,80 +87,20 @@ impl desktop::ShellHandler for HavenShellHandler {
             );
             return;
         }
-        let recording_id = crate::commands::begin_recording(&state, &lifecycle);
         crate::commands::emit_recording_started(&self.app_h, &recording_id);
     }
 
     async fn on_recording_stop(&self, stop_context: RecordingStopContext) {
         let state = self.app_h.state::<Arc<AppState>>();
+        let app_state = state.inner().clone();
         let lifecycle = state.recording_lifecycle.lock().await;
-        let (recording_id, result) = match stop_capture_for_owned_recording(
-            state.recording_lifecycle.current(&lifecycle),
-            || self.input_pipeline.stop_capture(),
-        )
-        .await
-        {
-            Ok(Some(stopped)) => stopped,
-            Ok(None) => {
-                // A timed media-tool capture shares InputPipeline but is not
-                // an app-owned recording. Clear stale shell chrome without
-                // stopping it.
-                self.shell_arc.refresh_tray().await;
-                return;
-            }
-            Err((recording_id, error)) => {
-                tracing::warn!(
-                    error = %sanitize_error_text(&error.to_string()),
-                    "pipeline stop_capture failed"
-                );
-                self.shell_arc.refresh_tray().await;
-                let detached = state.recording_lifecycle.finish(&lifecycle);
-                if let Some(recording_id) =
-                    crate::commands::stop_error_event_recording_id(detached, &recording_id)
-                {
-                    crate::commands::emit_recording_error(
-                        &self.app_h,
-                        Some(recording_id),
-                        format!("录音停止失败: {error}"),
-                    );
-                }
-                return;
-            }
-        };
-        // Same split as the `stop_recording` Tauri command: stop the audio
-        // capture first and notify the UI, then run STT in the background.
-        // Without this, VAD-triggered auto-stops would also keep the
-        // "recording" overlay visible for the duration of the STT call.
-        let detached_recording_id = state.recording_lifecycle.finish(&lifecycle);
-        debug_assert_eq!(detached_recording_id.as_ref(), Some(&recording_id));
-        let state_for_transcription = state.inner().clone();
-        let app_for_transcription = self.app_h.clone();
-        let app_for_event = self.app_h.clone();
-        crate::commands::finish_recording_stop(
-            &self.shell_arc,
-            crate::commands::RecordingStopCompletion {
-                lifecycle,
-                stop_context,
-                recording_id,
-                result,
-                shell_update: crate::commands::RecordingStopShellUpdate::RefreshCurrent,
-            },
-            move |recording_id, reason, duration_ms| {
-                crate::commands::emit_recording_stopped(
-                    &app_for_event,
-                    recording_id,
-                    reason,
-                    Some(duration_ms),
-                );
-            },
-            move |recording_id, result| async move {
-                crate::commands::schedule_recording_transcription(
-                    state_for_transcription,
-                    app_for_transcription,
-                    recording_id,
-                    result,
-                )
-            },
+        complete_shell_recording_stop(
+            app_state,
+            self.app_h.clone(),
+            self.shell_arc.clone(),
+            lifecycle,
+            stop_context,
+            None,
         )
         .await;
     }
@@ -191,6 +145,105 @@ impl desktop::ShellHandler for HavenShellHandler {
     }
 }
 
+async fn complete_shell_recording_stop(
+    state: Arc<AppState>,
+    app: tauri::AppHandle,
+    shell: Arc<desktop::DesktopShell>,
+    lifecycle: crate::recording_lifecycle::RecordingLifecycleGuard<'_>,
+    stop_context: RecordingStopContext,
+    expected_recording_id: Option<RecordingId>,
+) {
+    let Some(recording_id) = state.recording_lifecycle.current(&lifecycle) else {
+        // A timed media-tool capture shares InputPipeline but is not an
+        // app-owned recording. Clear stale shell chrome without stopping it.
+        shell.refresh_tray().await;
+        return;
+    };
+    if let Some(expected) = expected_recording_id.as_ref()
+        && expected != &recording_id
+    {
+        tracing::trace!(
+            recording_id = %expected,
+            "ignoring stale input auto-stop callback"
+        );
+        return;
+    }
+    if state.runtime.is_shutting_down() {
+        state
+            .recording_lifecycle
+            .finish_if_current(&lifecycle, &recording_id);
+        return;
+    }
+
+    let (recording_id, result) = match stop_capture_for_owned_recording(Some(recording_id), || {
+        state.runtime.input_pipeline.stop_capture()
+    })
+    .await
+    {
+        Ok(Some(stopped)) => stopped,
+        Ok(None) => unreachable!("an app-owned recording identity was supplied"),
+        Err((recording_id, error)) => {
+            tracing::warn!(
+                error = %sanitize_error_text(&error.to_string()),
+                "pipeline stop_capture failed"
+            );
+            shell.refresh_tray().await;
+            if state.runtime.is_shutting_down() {
+                state
+                    .recording_lifecycle
+                    .finish_if_current(&lifecycle, &recording_id);
+                return;
+            }
+            if state
+                .recording_lifecycle
+                .finish_if_current(&lifecycle, &recording_id)
+            {
+                crate::commands::emit_recording_error(
+                    &app,
+                    Some(recording_id),
+                    format!("录音停止失败: {error}"),
+                );
+            }
+            return;
+        }
+    };
+
+    let detached = state
+        .recording_lifecycle
+        .finish_if_current(&lifecycle, &recording_id);
+    debug_assert!(detached, "the stop still owns the recording identity");
+    let state_for_transcription = state.clone();
+    let app_for_transcription = app.clone();
+    let app_for_event = app.clone();
+    crate::commands::finish_recording_stop(
+        &shell,
+        crate::commands::RecordingStopCompletion {
+            lifecycle,
+            stop_context,
+            recording_id,
+            result,
+            shell_update: crate::commands::RecordingStopShellUpdate::RefreshCurrent,
+        },
+        move |recording_id, reason, duration_ms| {
+            crate::commands::emit_recording_stopped(
+                &app_for_event,
+                recording_id,
+                reason,
+                Some(duration_ms),
+            );
+        },
+        move |recording_id, result| async move {
+            crate::commands::schedule_recording_transcription(
+                state_for_transcription,
+                app_for_transcription,
+                recording_id,
+                result,
+            )
+        },
+    )
+    .await;
+}
+
 /// Concrete `InputEventHandler` wiring VAD status + auto-stop to the Tauri app
 /// handle and the desktop shell. Replaces the former separate
 /// `set_vad_status_callback` + `set_on_auto_stop` bindings on `InputPipeline`.
@@ -226,8 +279,35 @@ impl haven_input::InputEventHandler for HavenInputEventHandler {
         }
     }
 
-    async fn on_auto_stop(&self) {
-        self.shell_arc.stop_recording().await;
+    async fn on_auto_stop(&self, recording_id: RecordingId) {
+        let state = self.app_h.state::<Arc<AppState>>();
+        if state.runtime.is_shutting_down() {
+            return;
+        }
+        let app_state = state.inner().clone();
+        let lifecycle = state.recording_lifecycle.lock().await;
+        if !state
+            .recording_lifecycle
+            .matches_current(&lifecycle, &recording_id)
+        {
+            tracing::trace!(
+                recording_id = %recording_id,
+                "ignoring stale input auto-stop callback"
+            );
+            return;
+        }
+        let Some(stop_context) = self.shell_arc.claim_recording_stop().await else {
+            return;
+        };
+        complete_shell_recording_stop(
+            app_state,
+            self.app_h.clone(),
+            self.shell_arc.clone(),
+            lifecycle,
+            stop_context,
+            Some(recording_id),
+        )
+        .await;
     }
 }
 

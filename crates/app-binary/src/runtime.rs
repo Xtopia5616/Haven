@@ -143,6 +143,10 @@ impl ApplicationRuntime {
         self.shutdown_token.clone()
     }
 
+    pub(crate) fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire)
+    }
+
     #[cfg(test)]
     pub(crate) fn task_count_for_test(&self) -> usize {
         self.tasks

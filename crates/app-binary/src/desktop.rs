@@ -132,21 +132,21 @@ impl DesktopShell {
         }
     }
 
-    pub async fn stop_recording(&self) {
-        let handler = self.handler_snap();
-        let context = {
-            let mut state = self.state.lock().await;
-            state.is_recording = false;
-            state.recording_revision = state.recording_revision.wrapping_add(1);
-            RecordingStopContext {
-                recording_revision: state.recording_revision,
-                toggle_generation: state.toggle_generation,
-            }
-        };
-        if let Some(h) = &handler {
-            h.on_recording_stop(context).await;
+    /// Atomically claim a currently active shell recording without invoking
+    /// the registered stop callback. The Input auto-stop adapter uses this
+    /// after it has verified the recording identity and completes the same
+    /// stop flow while holding that identity's lifecycle guard.
+    pub(crate) async fn claim_recording_stop(&self) -> Option<RecordingStopContext> {
+        let mut state = self.state.lock().await;
+        if !state.is_recording {
+            return None;
         }
-        self.refresh_tray().await;
+        state.is_recording = false;
+        state.recording_revision = state.recording_revision.wrapping_add(1);
+        Some(RecordingStopContext {
+            recording_revision: state.recording_revision,
+            toggle_generation: state.toggle_generation,
+        })
     }
 
     /// Sync shell state with an app command only while its captured revision
@@ -388,10 +388,22 @@ mod tests {
     async fn test_stop_recording_clears_state() {
         let shell = DesktopShell::new();
         shell.toggle_recording().await;
-        shell.stop_recording().await;
+        shell.toggle_recording().await;
         let state = shell.state().await;
         assert!(!state.is_recording);
         assert_eq!(state.tray_status, TrayStatus::Normal);
+    }
+
+    #[tokio::test]
+    async fn claim_recording_stop_only_claims_an_active_shell_recording() {
+        let shell = DesktopShell::new();
+        assert!(shell.claim_recording_stop().await.is_none());
+
+        shell.toggle_recording().await;
+        let context = shell.claim_recording_stop().await.unwrap();
+        assert_eq!(context.recording_revision, 2);
+        assert!(shell.claim_recording_stop().await.is_none());
+        assert!(!shell.state().await.is_recording);
     }
 
     #[tokio::test]
@@ -560,8 +572,11 @@ mod tests {
         shell.set_handler(handler.clone());
         shell.toggle_recording().await;
 
-        let stop_shell = shell.clone();
-        let stop_task = tokio::spawn(async move { stop_shell.stop_recording().await });
+        let stop_context = shell.claim_recording_stop().await.unwrap();
+        let stop_handler = handler.clone();
+        let stop_task = tokio::spawn(async move {
+            stop_handler.on_recording_stop(stop_context).await;
+        });
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
             handler.entered.notified(),

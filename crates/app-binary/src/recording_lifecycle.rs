@@ -22,8 +22,9 @@ impl RecordingLifecycleOwner {
         }
     }
 
-    /// Get the ID assigned to the active app-owned capture, minting one only
-    /// after a start path has established that capture.
+    /// Reserve the stable ID for an app-owned capture before it opens. The
+    /// input layer carries it through auto-stop so callbacks can be checked
+    /// against the currently active recording.
     pub(crate) fn begin(
         &self,
         _guard: &RecordingLifecycleGuard<'_>,
@@ -47,6 +48,14 @@ impl RecordingLifecycleOwner {
             .clone()
     }
 
+    pub(crate) fn matches_current(
+        &self,
+        guard: &RecordingLifecycleGuard<'_>,
+        expected: &haven_common::types::RecordingId,
+    ) -> bool {
+        self.current(guard).as_ref() == Some(expected)
+    }
+
     /// Detach the ID while the transition guard is held, before another start
     /// can observe the pipeline's already-Pending state.
     pub(crate) fn finish(
@@ -57,6 +66,23 @@ impl RecordingLifecycleOwner {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
+    }
+
+    /// Detach an identity only if it still belongs to the caller's capture.
+    pub(crate) fn finish_if_current(
+        &self,
+        _guard: &RecordingLifecycleGuard<'_>,
+        expected: &haven_common::types::RecordingId,
+    ) -> bool {
+        let mut current = self
+            .current_recording_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.as_ref() != Some(expected) {
+            return false;
+        }
+        current.take();
+        true
     }
 }
 
@@ -110,5 +136,20 @@ mod tests {
             1
         );
         assert_eq!(first.or(second), Some(recording_id));
+    }
+
+    #[tokio::test]
+    async fn stale_capture_identity_cannot_match_or_detach_a_new_recording() {
+        let owner = RecordingLifecycleOwner::default();
+        let lifecycle = owner.lock().await;
+        let stale = owner.begin(&lifecycle);
+        assert!(owner.finish_if_current(&lifecycle, &stale));
+
+        let current = owner.begin(&lifecycle);
+        assert_ne!(stale, current);
+        assert!(!owner.matches_current(&lifecycle, &stale));
+        assert!(!owner.finish_if_current(&lifecycle, &stale));
+        assert!(owner.matches_current(&lifecycle, &current));
+        assert_eq!(owner.current(&lifecycle), Some(current));
     }
 }

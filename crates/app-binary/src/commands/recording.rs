@@ -441,12 +441,21 @@ pub async fn start_recording(
         .await
         .recording_revision;
     let lifecycle = state.recording_lifecycle.lock().await;
-    if let Err(e) = state.runtime.input_pipeline.start_capture().await {
+    let existing_recording_id = state.recording_lifecycle.current(&lifecycle);
+    let recording_id = existing_recording_id
+        .clone()
+        .unwrap_or_else(|| begin_recording(&state, &lifecycle));
+    if let Err(e) = state
+        .runtime
+        .input_pipeline
+        .start_capture(recording_id.clone())
+        .await
+    {
         // The hotkey may have started a recording a moment earlier, or a VAD
         // auto-stop may be finalizing: the pipeline is busy, not broken.
         let capture_state = state.runtime.input_pipeline.state().await;
-        if matches!(capture_state, haven_input::RecordingState::Recording)
-            && let Some(recording_id) = state.recording_lifecycle.current(&lifecycle)
+        if existing_recording_id.is_some()
+            && matches!(capture_state, haven_input::RecordingState::Recording)
         {
             state
                 .runtime
@@ -458,6 +467,11 @@ pub async fn start_recording(
             // the renderer can bind its optimistic state to that capture.
             emit_recording_started(&app, &recording_id);
             return Ok(());
+        }
+        if existing_recording_id.is_none() {
+            state
+                .recording_lifecycle
+                .finish_if_current(&lifecycle, &recording_id);
         }
         let msg = if matches!(capture_state, haven_input::RecordingState::Processing) {
             "正在处理上一条录音，请稍候再试".to_string()
@@ -476,7 +490,6 @@ pub async fn start_recording(
         .shell
         .sync_recording_if_revision(true, expected_recording_revision)
         .await;
-    let recording_id = begin_recording(&state, &lifecycle);
     emit_recording_started(&app, &recording_id);
     Ok(())
 }
@@ -1060,7 +1073,7 @@ mod tests {
 
         // Model state changes that arrive while the old stop callback waits
         // on the pipeline lifecycle permit.
-        shell.stop_recording().await;
+        assert!(shell.claim_recording_stop().await.is_some());
         shell.toggle_recording().await;
         shell.toggle_recording().await;
 

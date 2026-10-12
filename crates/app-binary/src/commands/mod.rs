@@ -67,7 +67,7 @@ pub(crate) fn emit_event_logged<T: Serialize + Clone>(
 pub(crate) use recording::{
     RecordingStopCompletion, RecordingStopShellUpdate, begin_recording, emit_recording_error,
     emit_recording_started, emit_recording_stopped, finish_recording_stop,
-    schedule_recording_transcription, stop_error_event_recording_id,
+    schedule_recording_transcription,
 };
 
 #[derive(Serialize)]
