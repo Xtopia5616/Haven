@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::memory_inference::RouterMemoryInferencePort;
-use crate::session::SessionSupervisorEvent;
+use crate::session::{SessionRunHandler, SessionSupervisorEvent};
 use haven_common::lifecycle::SessionStatus;
 use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
 use serde_json::Value;

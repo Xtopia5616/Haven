@@ -39,7 +39,7 @@ pub use haven_common::types::FollowUp;
 /// perform the ReAct loop for `session_id` and return `Ok(())` on completion.
 /// It is responsible for acquiring no permits (dispatcher already does) but
 /// is expected to update the session status on completion/error.
-pub type SessionRunHandler =
+pub(crate) type SessionRunHandler =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
 /// A direct SessionRun blocked on admission capacity. The id unregisters only

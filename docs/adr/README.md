@@ -993,3 +993,4 @@
 - [1002：收敛 MCP command response 校验与 renderer view](1002-normalize-mcp-command-response-boundary.md)
 - [1003：收敛 Skills command response 校验与 renderer view](1003-normalize-skills-command-responses.md)
 - [1004：ToolRun command rows 必须包含状态](1004-require-status-on-toolrun-command-rows.md)
+- [1005：将 Session dispatcher 启动入口限制在 Agent crate 内](1005-keep-session-dispatcher-startup-internal.md)

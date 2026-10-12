@@ -271,15 +271,17 @@ impl SessionSupervisor {
         self.admission.set_limit(new_max);
     }
 
-    pub fn start_dispatcher(self: Arc<Self>, handler: SessionRunHandler) {
+    #[cfg(test)]
+    pub(crate) fn start_dispatcher(self: Arc<Self>, handler: SessionRunHandler) {
         self.start_dispatcher_with_cancellation(handler, CancellationToken::new());
     }
 
-    pub fn start_dispatcher_without_recovery(self: Arc<Self>, handler: SessionRunHandler) {
+    #[cfg(test)]
+    pub(crate) fn start_dispatcher_without_recovery(self: Arc<Self>, handler: SessionRunHandler) {
         self.start_dispatcher_without_recovery_with_cancellation(handler, CancellationToken::new());
     }
 
-    pub fn start_dispatcher_with_cancellation(
+    pub(crate) fn start_dispatcher_with_cancellation(
         self: Arc<Self>,
         handler: SessionRunHandler,
         cancellation: CancellationToken,
@@ -287,7 +289,7 @@ impl SessionSupervisor {
         self.start_dispatcher_inner(SessionRunEngine::new(handler), true, cancellation);
     }
 
-    pub fn start_dispatcher_without_recovery_with_cancellation(
+    pub(crate) fn start_dispatcher_without_recovery_with_cancellation(
         self: Arc<Self>,
         handler: SessionRunHandler,
         cancellation: CancellationToken,

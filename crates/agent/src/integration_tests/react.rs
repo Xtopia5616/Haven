@@ -1,5 +1,6 @@
 use super::support::*;
 use super::*;
+use crate::session::SessionRunHandler;
 use haven_memory::RecoveryPersistenceStatus;
 
 struct StreamResetCollector {

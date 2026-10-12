@@ -57,8 +57,8 @@ pub use prompt_context::{
 pub(crate) use react::ReActEngine;
 pub use react::{MetricsSnapshot, ToolCatalogPort, UiMetricsSnapshot};
 pub use session::{
-    AgentToolRunPort, ConfirmResolution, ManagedAssetLeasePort, SessionInfo, SessionRunHandler,
-    SessionSupervisor, SessionSupervisorEvent, SessionToolOverlayPort, SessionToolPorts, StepInfo,
+    AgentToolRunPort, ConfirmResolution, ManagedAssetLeasePort, SessionInfo, SessionSupervisor,
+    SessionSupervisorEvent, SessionToolOverlayPort, SessionToolPorts, StepInfo,
     ToolAuthorizationPort, ToolExecution, ToolExecutionContext, ToolExecutionPort,
     ToolObservationPort, ToolRunCompletionReceiverPort,
 };
