@@ -16,6 +16,60 @@ pub(crate) fn now_rfc3339_millis() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+/// Read the shared rollback watermark across all projection tables. Although
+/// the branch-point field is historically named `last_msg_at`, it fences
+/// messages, execution steps, and LLM usage rows together.
+pub(crate) fn last_projection_created_at(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> anyhow::Result<Option<String>> {
+    ensure_session_id(session_id)?;
+    let (last, invalid_count): (Option<String>, i64) = conn.query_row(
+        "WITH projection_timestamps AS (
+            SELECT created_at FROM messages WHERE session_id = ?1
+            UNION ALL SELECT created_at FROM session_steps WHERE session_id = ?1
+            UNION ALL SELECT created_at FROM llm_usage WHERE session_id = ?1
+        ), normalized AS (
+            SELECT strftime('%Y-%m-%dT%H:%M:%fZ', created_at) AS created_at
+            FROM projection_timestamps
+        )
+        SELECT MAX(created_at), COALESCE(SUM(created_at IS NULL), 0) FROM normalized",
+        rusqlite::params![session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    anyhow::ensure!(
+        invalid_count == 0,
+        "session projection contains an invalid created_at timestamp"
+    );
+    Ok(last)
+}
+
+/// Mint a fixed millisecond UTC timestamp strictly after every durable
+/// projection for this session and any earlier timestamp allocated in the
+/// same batch. The read side rounds legacy higher-precision timestamps to the
+/// end of their millisecond bucket, so string cutoffs remain safe.
+pub(crate) fn next_projection_created_at(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    previous_in_batch: Option<&str>,
+) -> anyhow::Result<String> {
+    let last_persisted = last_projection_created_at(conn, session_id)?;
+    let last = last_persisted
+        .as_deref()
+        .into_iter()
+        .chain(previous_in_batch)
+        .max();
+    let now = now_rfc3339_millis();
+    if let Some(last) = last.filter(|last| *last >= now.as_str()) {
+        let timestamp = chrono::DateTime::parse_from_rfc3339(last)
+            .map_err(|error| anyhow::anyhow!("invalid projection timestamp: {error}"))?;
+        Ok((timestamp + chrono::Duration::milliseconds(1))
+            .to_rfc3339_opts(SecondsFormat::Millis, true))
+    } else {
+        Ok(now)
+    }
+}
+
 fn ensure_session_id(session_id: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         is_canonical_id(session_id, "ses"),
@@ -347,18 +401,10 @@ impl Database {
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("msg"));
         ensure_message_row_id(&id)?;
-        // Strictly monotonic per session: two writes landing within the same
-        // millisecond (or a clock step backwards) must stay distinguishable —
-        // rollback's `delete_messages_after` deletes with `created_at > ?`
-        // and would otherwise fail to discard the later message.
-        let now = now_rfc3339_millis();
-        let created_at = match self.get_last_message_created_at_best_effort(session_id) {
-            Some(last) if last >= now => Self::bump_millis(&last),
-            _ => now,
-        };
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<(i64, Option<PendingInputDisposition>)> {
+        let result = (|| -> anyhow::Result<(String, i64, Option<PendingInputDisposition>)> {
+            let created_at = next_projection_created_at(&conn, session_id, None)?;
             conn.execute(
                 "INSERT INTO message_ingress_cursors (session_id, last_ingress_seq)
                  VALUES (?1, 1)
@@ -409,9 +455,9 @@ impl Database {
                     rusqlite::params![session_id, id, disposition.unwrap().as_db_value()],
                 )?;
             }
-            Ok((ingress_seq, disposition))
+            Ok((created_at, ingress_seq, disposition))
         })();
-        let (ingress_seq, disposition) = match result {
+        let (created_at, ingress_seq, disposition) = match result {
             Ok(result) => {
                 conn.execute_batch("COMMIT")?;
                 result
@@ -439,17 +485,6 @@ impl Database {
             },
             disposition,
         ))
-    }
-
-    /// Step a stored `created_at` forward by one millisecond, keeping strict
-    /// ordering when a new write collides with the session's latest row.
-    /// Falls back to the current time when the stored value cannot be parsed.
-    fn bump_millis(last: &str) -> String {
-        match chrono::DateTime::parse_from_rfc3339(last) {
-            Ok(ts) => (ts + chrono::Duration::milliseconds(1))
-                .to_rfc3339_opts(SecondsFormat::Millis, true),
-            Err(_) => now_rfc3339_millis(),
-        }
     }
 
     fn serialize_ui_metadata(attachments: &[MessageAttachment]) -> Option<String> {

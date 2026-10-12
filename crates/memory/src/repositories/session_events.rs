@@ -9,7 +9,8 @@
 use crate::Database;
 use crate::repositories::kv_store::MAX_MEMORY_SESSION_ID_PAGE_SIZE;
 use crate::repositories::messages::{
-    Message, PendingInputDisposition, PendingSessionInput, now_rfc3339_millis,
+    Message, PendingInputDisposition, PendingSessionInput, last_projection_created_at,
+    next_projection_created_at,
 };
 use crate::repositories::session_authorization::{
     SessionAuthorizationGrant, StoredSessionAuthorizationGrant,
@@ -438,8 +439,7 @@ impl SessionCommitted {
 #[derive(Debug, Clone, Default)]
 pub struct SessionCommitResult {
     pub events: Vec<SessionEvent>,
-    /// Created-at values for message rows, in insertion order.  Agent uses
-    /// the last value to advance its in-memory `last_msg_at` sidecar.
+    /// Created-at values for materialized message rows, in insertion order.
     pub message_created_at: Vec<String>,
     /// Time spent entering the immediate SQLite transaction, including any
     /// writer-lock wait before the event/projection batch could begin.
@@ -2097,14 +2097,7 @@ impl SessionStore {
             )
             .optional()?
             .unwrap_or(0);
-        let last_msg_at = conn
-            .query_row(
-                "SELECT created_at FROM messages
-                 WHERE session_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                rusqlite::params![session_id],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let last_msg_at = last_projection_created_at(conn, session_id)?;
         Ok(SessionCursor {
             event_sequence,
             event_cursor,
@@ -2624,7 +2617,7 @@ impl SessionStore {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
-        let records = inputs
+        let mut records = inputs
             .iter()
             .map(|input| {
                 let step_number = input
@@ -2639,35 +2632,41 @@ impl SessionStore {
                         haven_common::types::new_id("usage"),
                         session_id,
                         input,
-                        now_rfc3339_millis(),
+                        String::new(),
                     );
                     record.step_number = step_number.map(|value| value as i32);
                     record
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let events = records
-            .iter()
-            .map(|record| {
-                Ok(SessionEventInput {
-                    event_type: USAGE_RECORDED_EVENT_TYPE.into(),
-                    payload: serde_json::to_string(record)?,
-                    run_id: None,
-                    step_number: record
-                        .step_number
-                        .and_then(|value| u32::try_from(value).ok()),
-                })
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-
         let conn = self.db.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<(Vec<LlmUsageRecord>, Vec<SessionEvent>)> {
+            let mut previous_created_at: Option<String> = None;
+            for record in &mut records {
+                let created_at =
+                    next_projection_created_at(&conn, session_id, previous_created_at.as_deref())?;
+                record.created_at = created_at.clone();
+                previous_created_at = Some(created_at);
+            }
+            let events = records
+                .iter()
+                .map(|record| {
+                    Ok(SessionEventInput {
+                        event_type: USAGE_RECORDED_EVENT_TYPE.into(),
+                        payload: serde_json::to_string(record)?,
+                        run_id: None,
+                        step_number: record
+                            .step_number
+                            .and_then(|value| u32::try_from(value).ok()),
+                    })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
             let stored_events = Self::append_batch_in_transaction(&conn, session_id, &events)?;
             for record in &records {
                 Database::project_llm_call_usage_conn(&conn, record)?;
             }
-            Ok((records, stored_events))
+            Ok((std::mem::take(&mut records), stored_events))
         })();
         match result {
             Ok((records, stored_events)) => {
@@ -3395,15 +3394,6 @@ impl Database {
             })
             .count();
         let mut message_created_at = Vec::with_capacity(message_count);
-        let mut last_created_at = conn
-            .query_row(
-                "SELECT created_at FROM messages
-                 WHERE session_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                rusqlite::params![session_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-
         // Keep materialization order stable: chat rows first, then thought
         // steps, then action steps. Branch-point `last_msg_at` and the UI
         // timeline rely on this established projection order.
@@ -3423,11 +3413,7 @@ impl Database {
             else {
                 continue;
             };
-            let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-            let created_at = match last_created_at.as_deref() {
-                Some(last) if last >= now.as_str() => bump_message_millis(last),
-                _ => now,
-            };
+            let created_at = next_projection_created_at(conn, session_id, None)?;
             conn.execute(
                 "INSERT INTO message_ingress_cursors (session_id, last_ingress_seq)
                  VALUES (?1, 1)
@@ -3454,7 +3440,6 @@ impl Database {
                     ingress_seq,
                 ],
             )?;
-            last_created_at = Some(created_at.clone());
             message_created_at.push(created_at);
         }
 
@@ -3466,7 +3451,7 @@ impl Database {
             else {
                 continue;
             };
-            let created_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            let created_at = next_projection_created_at(conn, session_id, None)?;
             conn.execute(
                 "INSERT INTO session_steps
                     (id, session_id, step_number, tool_name, input, thought,
@@ -3491,7 +3476,7 @@ impl Database {
             else {
                 continue;
             };
-            let created_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            let created_at = next_projection_created_at(conn, session_id, None)?;
             let changed = conn.execute(
                 "INSERT OR IGNORE INTO session_steps
                     (id, session_id, step_number, tool_index, tool_name, input,
@@ -3529,14 +3514,6 @@ fn bump_step_sequence(conn: &rusqlite::Connection, session_id: &str) -> anyhow::
         rusqlite::params![session_id],
     )?;
     Ok(())
-}
-
-fn bump_message_millis(last: &str) -> String {
-    match chrono::DateTime::parse_from_rfc3339(last) {
-        Ok(timestamp) => (timestamp + chrono::Duration::milliseconds(1))
-            .to_rfc3339_opts(SecondsFormat::Millis, true),
-        Err(_) => Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
-    }
 }
 
 #[cfg(test)]
@@ -6630,6 +6607,71 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message_id, baseline.message_id);
         assert!(db.list_session_steps(&session_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn branch_projection_watermark_covers_messages_steps_and_usage() {
+        let (db, store, session_id) = store();
+        let baseline = db
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::User,
+                "baseline",
+                Some(haven_common::types::TranscriptMessageKind::Text),
+                None,
+            )
+            .unwrap();
+        let before_step = db
+            .create_tool_step(&session_id, 1, "read_file", "{}", false, false, None, None)
+            .unwrap();
+        let before_usage = store.append_usage(&session_id, &usage_input(1, 5)).unwrap();
+        let legacy_timestamp = "2099-03-04T05:06:07.123456789+00:00";
+        db.conn()
+            .execute(
+                "UPDATE session_steps SET created_at = ?1 WHERE id = ?2",
+                rusqlite::params![legacy_timestamp, before_step.step_id],
+            )
+            .unwrap();
+
+        let (_, branch_cursor) = store
+            .append_branch_point_from_projection(&session_id, 2, None)
+            .unwrap();
+        let cutoff = branch_cursor.last_msg_at.as_deref().unwrap();
+        assert_eq!(cutoff, "2099-03-04T05:06:07.123Z");
+        assert!(cutoff >= baseline.created_at.as_str());
+        assert!(cutoff >= before_step.created_at.as_str());
+        assert!(cutoff >= before_usage.created_at.as_str());
+
+        let after_step = db
+            .create_tool_step(&session_id, 2, "shell", "{}", false, false, None, None)
+            .unwrap();
+        let after_usage = store.append_usage(&session_id, &usage_input(2, 7)).unwrap();
+        let after_message = db
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                "after branch",
+                Some(haven_common::types::TranscriptMessageKind::Text),
+                None,
+            )
+            .unwrap();
+        assert!(after_step.created_at.as_str() > cutoff);
+        assert!(after_usage.created_at.as_str() > cutoff);
+        assert!(after_message.created_at.as_str() > cutoff);
+
+        store
+            .truncate_projection_after_step(&session_id, 2)
+            .unwrap();
+
+        let messages = db.list_session_messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].message_id, baseline.message_id);
+        let steps = db.list_session_steps(&session_id).unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].step_id, before_step.step_id);
+        let usage = db.list_session_llm_usage(&session_id).unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].usage_id, before_usage.usage_id);
     }
 
     #[test]

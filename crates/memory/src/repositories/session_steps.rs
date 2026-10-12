@@ -1,5 +1,5 @@
 use crate::db::Database;
-use crate::repositories::messages::now_rfc3339_millis;
+use crate::repositories::messages::{next_projection_created_at, now_rfc3339_millis};
 use haven_common::lifecycle::SessionStepStatus;
 use haven_common::types::is_canonical_id;
 
@@ -137,36 +137,49 @@ impl Database {
     ) -> anyhow::Result<String> {
         ensure_session_id(fields.session_id)?;
         ensure_step_id(fields.id)?;
-        let now = now_rfc3339_millis();
         let conn = self.conn();
-        let sql = if ignore_existing {
-            "INSERT OR IGNORE INTO session_steps (id, session_id, step_number, tool_index, tool_name, input, tool_call_name, tool_call_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, ?12, ?8, ?9, ?10, ?11)"
-        } else {
-            "INSERT INTO session_steps (id, session_id, step_number, tool_index, tool_name, input, tool_call_name, tool_call_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, ?12, ?8, ?9, ?10, ?11)"
-        };
-        conn.execute(
-            sql,
-            rusqlite::params![
-                fields.id,
-                fields.session_id,
-                fields.step_number,
-                fields.tool_index,
-                fields.tool_name,
-                fields.tool_input,
-                fields.tool_call_id,
-                fields.is_high_risk as i32,
-                now,
-                fields.silent as i32,
-                fields.confirmed.map(|confirmed| confirmed as i32),
-                SessionStepStatus::Pending.as_str(),
-            ],
-        )?;
-        if conn.changes() > 0 {
-            Self::bump_step_seq(&conn, fields.session_id)?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<String> {
+            let now = next_projection_created_at(&conn, fields.session_id, None)?;
+            let sql = if ignore_existing {
+                "INSERT OR IGNORE INTO session_steps (id, session_id, step_number, tool_index, tool_name, input, tool_call_name, tool_call_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, ?12, ?8, ?9, ?10, ?11)"
+            } else {
+                "INSERT INTO session_steps (id, session_id, step_number, tool_index, tool_name, input, tool_call_name, tool_call_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, ?12, ?8, ?9, ?10, ?11)"
+            };
+            conn.execute(
+                sql,
+                rusqlite::params![
+                    fields.id,
+                    fields.session_id,
+                    fields.step_number,
+                    fields.tool_index,
+                    fields.tool_name,
+                    fields.tool_input,
+                    fields.tool_call_id,
+                    fields.is_high_risk as i32,
+                    now,
+                    fields.silent as i32,
+                    fields.confirmed.map(|confirmed| confirmed as i32),
+                    SessionStepStatus::Pending.as_str(),
+                ],
+            )?;
+            if conn.changes() > 0 {
+                Self::bump_step_seq(&conn, fields.session_id)?;
+            }
+            Ok(now)
+        })();
+        match result {
+            Ok(created_at) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(created_at)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
         }
-        Ok(now)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -242,20 +255,34 @@ impl Database {
     ) -> anyhow::Result<SessionStep> {
         ensure_session_id(session_id)?;
         ensure_thought_id(id)?;
-        let now = now_rfc3339_millis();
         let conn = self.conn();
-        conn.execute(
-            "INSERT INTO session_steps (id, session_id, step_number, tool_name, input, thought, status, is_high_risk, created_at)
-             VALUES (?1, ?2, ?3, 'thought', ?1, NULL, ?4, 0, ?5)",
-            rusqlite::params![
-                id,
-                session_id,
-                step_number,
-                SessionStepStatus::Completed.as_str(),
-                now
-            ],
-        )?;
-        Self::bump_step_seq(&conn, session_id)?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<String> {
+            let now = next_projection_created_at(&conn, session_id, None)?;
+            conn.execute(
+                "INSERT INTO session_steps (id, session_id, step_number, tool_name, input, thought, status, is_high_risk, created_at)
+                 VALUES (?1, ?2, ?3, 'thought', ?1, NULL, ?4, 0, ?5)",
+                rusqlite::params![
+                    id,
+                    session_id,
+                    step_number,
+                    SessionStepStatus::Completed.as_str(),
+                    now
+                ],
+            )?;
+            Self::bump_step_seq(&conn, session_id)?;
+            Ok(now)
+        })();
+        let now = match result {
+            Ok(created_at) => {
+                conn.execute_batch("COMMIT")?;
+                created_at
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        };
         Ok(SessionStep {
             step_id: id.into(),
             session_id: session_id.into(),

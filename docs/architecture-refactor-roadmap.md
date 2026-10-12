@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | **无 Active/Next。** §5.7 本轮全库术语与实现规范审计已完成，ADR 1031–1040 记录本轮决策。未发现需要合并/拆分的新结构候选；未来出现 owner 漂移、语义回归或新消费者时按 §5.5/§5.6 重开。桌面完整 `list_facts` 的分页仍待 UI 设计。 |
+| **Active / Next** | **Active：**继续 §5.7 全库概念与实现规范覆盖；rollback projection watermark 修复已通过 memory 与 workspace 门禁（ADR 1043）。下一切片优先审计 `call-*` 与 inbox `claim-*` 是否越过进程内生命周期进入 durable history。此前的 crate 边界审计没有发现值得合并/拆分的新结构候选；桌面完整 `list_facts` 的分页仍待 UI 设计。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -147,13 +147,13 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | 4    | **crate/API 边界**           | 模块 owner 已稳定且存在单向依赖边界、独立消费者或可复核构建/维护收益。                                                                                          | API 清晰、无反向依赖或重复 adapter；否则保留现 crate 边界。              |
 | 5    | **性能与容量**               | 同负载 profile 复现用户相关延迟、资源或容量问题；固定场景记录优化前后指标。                                                                                     | 改善超过噪声并达到目标，否则关闭候选。                                   |
 
-**当前执行位置：** 阶段 0–8 已完成；本轮全库术语、API owner、持久身份写入、UI command/event contract、配置规则和规范文档引用审计已完成。全部 command response 与 event channel 有结构级 runtime coverage，语义约束由各领域 owner 校验；没有新的合并/拆分候选。当前无 Active/Next，后续按 §5.5/§5.6 的具体信号重开。§5.3 的 Deferred 候选保留其各自重开条件；Windows 发布验收是独立 Open Gate（§5.1）。
+**当前执行位置：** 阶段 0–8 已完成；全库术语与实现规范审计仍在进行。此前已完成 API owner、持久身份、UI command/event contract、配置规则和文档引用的多轮切片，全部 command response 与 event channel 有结构级 runtime coverage，语义约束由各领域 owner 校验。本轮进一步发现并修复 branch projection watermark 只覆盖 messages 的持久化边界缺口（ADR 1043）；当前继续覆盖进程内 ID 穿入 durable history 的边界。现有证据仍不支持新的 crate 合并/拆分。§5.3 的 Deferred 候选保留其各自重开条件；Windows 发布验收是独立 Open Gate（§5.1）。
 
-### 5.7 全项目领域术语与架构角色命名收敛（本轮审计已完成；按信号重开）
+### 5.7 全项目领域术语与架构角色命名收敛（持续覆盖）
 
 范围覆盖所有 Rust crate、Svelte/TypeScript、Tauri IPC/事件，以及对应架构、命名和契约文档。职责以 `docs/architecture.md` 为准，术语与角色动词以 `docs/naming.md` 为准；已完成决定和实现细节只保存在对应 ADR，不在路线图复制实施日志。
 
-本轮检查覆盖 Rust crate 可达 API 与实际调用图、跨层身份写入、配置 load/update owner、UI command/event response 和语义校验、架构与命名文档引用。结合此前的领域审计，Messaging、MCP 和 Memory 普通生产路径由领域 facade/store 承接，具体 transport、client、repository 和数据库装配归各自 owner；跨 crate 测试注入使用非默认 `test-support`（ADR 0887–0892）。没有发现新的 owner 绕行或足以证明需要合并/拆分的结构收益。后续复核由具体漂移、回归或新增消费者触发。
+本轮持续检查 Rust crate 可达 API 与调用图、跨层身份写入、配置 load/update owner、UI command/event response 和语义校验、架构与命名文档引用。此前 Messaging、MCP 和 Memory 普通生产路径已由领域 facade/store 承接，具体 transport、client、repository 和数据库装配归各自 owner；跨 crate 测试注入使用非默认 `test-support`（ADR 0887–0892）。近期 API 和 IPC 复核已分别记录在 ADR 1041–1042。继续检查持久写路径时发现 `last_msg_at` 只读取 messages，可能在 rollback 时误删更晚写入的分支内 step/usage；现通过跨三表单调水位、事务化写入与 schema v40 reset 要求收口（ADR 1043）。未发现新的 crate 合并/拆分收益；术语、contract 和实现规范的覆盖审计仍未完成，按下表逐域推进。
 
 Agent 的跨 crate 生产启动只经 `AgentLayer::start_after_memory_ready`；`SessionSupervisor::start_dispatcher*` 与 `SessionRunHandler` 仅供 Agent crate 内部编排和测试使用（ADR 1005）。
 

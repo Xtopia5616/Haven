@@ -1,6 +1,6 @@
 use crate::db::Database;
 #[cfg(test)]
-use crate::repositories::messages::now_rfc3339_millis;
+use crate::repositories::messages::next_projection_created_at;
 use haven_common::config::RequestKind;
 use haven_common::types::is_canonical_id;
 use haven_common::usage::{CacheAccounting, CacheDiagnostics, LlmCallKind};
@@ -374,53 +374,66 @@ impl Database {
         duration_ms: Option<u64>,
     ) -> anyhow::Result<LlmUsageRecord> {
         let usage_id = haven_common::types::new_id("usage");
-        let created_at = now_rfc3339_millis();
         let conn = self.conn();
-        Self::insert_llm_call_usage_conn(
-            &conn,
-            &usage_id,
-            session_id,
-            step_number,
-            request_kind,
-            LlmCallKind::Agent.as_str(),
-            model,
-            prompt_tokens,
-            completion_tokens,
-            total_tokens,
-            cached_tokens,
-            cache_creation_tokens,
-            cache_miss_tokens,
-            cache_accounting,
-            cache_diagnostics,
-            0,
-            None,
-            cost_usd,
-            has_cost,
-            duration_ms,
-            &created_at,
-        )?;
-        Ok(LlmUsageRecord {
-            usage_id,
-            session_id: session_id.into(),
-            step_number,
-            request_kind,
-            call_kind: LlmCallKind::Agent,
-            model: model.map(String::from),
-            prompt_tokens,
-            completion_tokens,
-            total_tokens,
-            cached_tokens,
-            cache_creation_tokens,
-            cache_miss_tokens,
-            cache_accounting: CacheAccounting::parse(cache_accounting),
-            cache_diagnostics: deserialize_cache_diagnostics(cache_diagnostics),
-            context_tokens: 0,
-            context_window: None,
-            cost_usd,
-            has_cost,
-            duration_ms,
-            created_at,
-        })
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<LlmUsageRecord> {
+            let created_at = next_projection_created_at(&conn, session_id, None)?;
+            Self::insert_llm_call_usage_conn(
+                &conn,
+                &usage_id,
+                session_id,
+                step_number,
+                request_kind,
+                LlmCallKind::Agent.as_str(),
+                model,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cached_tokens,
+                cache_creation_tokens,
+                cache_miss_tokens,
+                cache_accounting,
+                cache_diagnostics,
+                0,
+                None,
+                cost_usd,
+                has_cost,
+                duration_ms,
+                &created_at,
+            )?;
+            Ok(LlmUsageRecord {
+                usage_id,
+                session_id: session_id.into(),
+                step_number,
+                request_kind,
+                call_kind: LlmCallKind::Agent,
+                model: model.map(String::from),
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cached_tokens,
+                cache_creation_tokens,
+                cache_miss_tokens,
+                cache_accounting: CacheAccounting::parse(cache_accounting),
+                cache_diagnostics: deserialize_cache_diagnostics(cache_diagnostics),
+                context_tokens: 0,
+                context_window: None,
+                cost_usd,
+                has_cost,
+                duration_ms,
+                created_at,
+            })
+        })();
+        match result {
+            Ok(record) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(record)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     /// Insert one call-detail row and apply its Agent delta to `session_usage`
@@ -428,8 +441,8 @@ impl Database {
     /// number of calls; the detail table is still the rebuild source after a
     /// rollback or deletion.
     ///
-    /// `created_at` uses [`now_rfc3339_millis`] (same shape as messages/steps)
-    /// so string cutoffs in rollback/`truncate_session_after` compare correctly.
+    /// `created_at` uses the shared monotonic projection clock so branch-point
+    /// and user-message rollback cutoffs compare all projection rows correctly.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn persist_llm_call_and_refresh_session_usage(
@@ -575,10 +588,10 @@ impl Database {
         context_window: Option<u32>,
     ) -> anyhow::Result<LlmUsageRecord> {
         let usage_id = haven_common::types::new_id("usage");
-        let created_at = now_rfc3339_millis();
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<LlmUsageRecord> {
+            let created_at = next_projection_created_at(&conn, session_id, None)?;
             Self::insert_llm_call_usage_conn(
                 &conn,
                 &usage_id,
@@ -666,20 +679,19 @@ impl Database {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
-        let stamped = inputs
-            .iter()
-            .map(|_| (haven_common::types::new_id("usage"), now_rfc3339_millis()))
-            .collect::<Vec<_>>();
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Vec<LlmUsageRecord>> {
             let mut delta = SessionUsageDelta::default();
-            for (input, (id, created_at)) in inputs.iter().zip(&stamped) {
+            let mut records = Vec::with_capacity(inputs.len());
+            for input in inputs {
+                let usage_id = haven_common::types::new_id("usage");
+                let created_at = next_projection_created_at(&conn, session_id, None)?;
                 let cache_diagnostics =
                     serialize_cache_diagnostics(input.cache_diagnostics.as_ref())?;
                 Self::insert_llm_call_usage_conn(
                     &conn,
-                    id,
+                    &usage_id,
                     session_id,
                     input.step_number,
                     input.request_kind,
@@ -698,7 +710,7 @@ impl Database {
                     input.cost_usd,
                     input.has_cost,
                     input.duration_ms,
-                    created_at,
+                    &created_at,
                 )?;
                 delta.add_call(
                     input.call_kind,
@@ -713,17 +725,14 @@ impl Database {
                     input.has_cost,
                     input.context_tokens,
                     input.context_window,
-                    created_at,
+                    &created_at,
                 );
+                records.push(LlmUsageRecord::from_input(
+                    usage_id, session_id, input, created_at,
+                ));
             }
             Self::apply_session_usage_delta_conn(&conn, session_id, &delta)?;
-            Ok(inputs
-                .iter()
-                .zip(&stamped)
-                .map(|(input, (id, created_at))| {
-                    LlmUsageRecord::from_input(id.clone(), session_id, input, created_at.clone())
-                })
-                .collect())
+            Ok(records)
         })();
         match result {
             Ok(records) => {

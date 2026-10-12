@@ -1029,3 +1029,6 @@
 - [1038：拒绝有歧义的 LLM 配置查找键](1038-reject-ambiguous-llm-configuration-keys.md)
 - [1039：Skill 执行前由 Tools owner 复核可执行状态](1039-revalidate-skill-before-execution.md)
 - [1040：为全部 IPC 命令与事件生成运行时 wire shape](1040-generate-runtime-shapes-for-all-ipc.md)
+- [1041：关闭 IPC owner 与语义校验覆盖缺口](1041-close-ipc-owner-and-semantic-coverage-gaps.md)
+- [1042：收回未使用的 crate API 与重复入口](1042-narrow-unused-crate-apis.md)
+- [1043：统一回滚投影时间水位](1043-share-rollback-projection-watermark.md)
