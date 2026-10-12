@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{OperationIdempotency, Tool, ToolConcurrency, ToolResult};
 
+use super::super::canonical_entity_id_schema;
 use super::{
     FilesParams, FilesTool, MAX_PATCH_EDITS, MAX_PATCH_INPUT_BYTES, MAX_SUMMARY_FOCUS_CHARS,
 };
@@ -72,7 +73,7 @@ impl Tool for FilesTool {
             "type": "object",
             "properties": {
                 "operation": { "type": "string", "enum": ["read", "inspect", "stat", "hash", "write", "create_dir", "edit", "patch", "copy", "move", "delete", "list", "outline", "summary", "search"], "description": crate::prompts::FILES_OPERATION_SELECTOR_DESCRIPTION },
-                "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed attachment id returned by an earlier tool result; use it instead of guessing a local path" }
+                "asset_id": canonical_entity_id_schema("asset", Some("Managed attachment id returned by an earlier tool result; use it instead of guessing a local path"))
             },
             "required": ["operation"],
             "oneOf": [
@@ -91,7 +92,7 @@ impl Tool for FilesTool {
                     "properties": {
                         "operation": { "const": "read" },
                         "path": { "type": "string", "minLength": 1, "description": "Local file path to read" },
-                        "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed attachment id returned by an earlier tool result" },
+                        "asset_id": canonical_entity_id_schema("asset", Some("Managed attachment id returned by an earlier tool result")),
                         "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Zero-based byte offset; defaults to 0. Use byte arguments instead of line arguments" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": self.max_byte_read_bytes, "description": "Maximum bytes to read from offset; omit for the configured default span. Do not combine with line arguments" },
                         "start_line": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based first line; defaults to 1. Use line arguments instead of byte arguments" },
@@ -198,7 +199,7 @@ impl Tool for FilesTool {
                     "properties": {
                         "operation": { "const": "summary" },
                         "path": { "type": "string", "minLength": 1, "description": "Text file path to summarize" },
-                        "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed attachment id returned by an earlier tool result" },
+                        "asset_id": canonical_entity_id_schema("asset", Some("Managed attachment id returned by an earlier tool result")),
                         "start_line": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based first line; defaults to 1" },
                         "end_line": { "type": "integer", "minimum": 0, "description": "1-based last line; 0 or omitted means through EOF" },
                         "focus": { "type": "string", "maxLength": MAX_SUMMARY_FOCUS_CHARS, "description": "Optional topic to focus the summary on; treated as untrusted data" },

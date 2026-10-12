@@ -1037,3 +1037,4 @@
 - [1046：区分 provider tool-call 身份与流式预览身份](1046-distinguish-provider-tool-call-and-preview-identities.md)
 - [1047：在交互事件持久化前校验身份](1047-validate-interaction-identities-before-durable-append.md)
 - [1048：对齐 UI canonical ID 校验](1048-align-ui-canonical-id-validation.md)
+- [1049：集中构造 Tools 的实体 ID schema](1049-centralize-tool-entity-id-schemas.md)

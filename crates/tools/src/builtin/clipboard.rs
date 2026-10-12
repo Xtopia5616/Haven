@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
+use super::canonical_entity_id_schema;
 use crate::asset_registry::GeneratedMediaWriteGuard;
 use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResult};
 
@@ -225,7 +226,7 @@ impl Tool for ClipboardTool {
                 "format": { "type": "string", "enum": ["auto", "text", "html", "image", "files"] },
                 "text": { "type": "string" },
                 "html": { "type": "string" },
-                "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$" },
+                "asset_id": canonical_entity_id_schema("asset", None),
                 "files": { "type": "array", "minItems": 1, "maxItems": MAX_CLIPBOARD_FILES, "items": { "type": "string", "minLength": 1 } },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
             },
@@ -268,7 +269,7 @@ impl Tool for ClipboardTool {
                             "properties": {
                                 "operation": { "const": "write" },
                                 "format": { "const": "image" },
-                                "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$" }
+                                "asset_id": canonical_entity_id_schema("asset", None)
                             },
                             "required": ["operation", "format", "asset_id"]
                         },

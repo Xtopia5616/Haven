@@ -25,6 +25,7 @@ pub mod shell;
 pub mod system;
 pub(crate) mod tool_catalog;
 pub mod tool_runs;
+mod tool_schema;
 pub mod window;
 
 use serde_json::Value;
@@ -33,6 +34,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use self::operation_contract::{OperationContract, operation_contract};
+use self::tool_schema::canonical_entity_id_schema;
 use crate::ToolRegistry;
 use crate::ToolRunService;
 use crate::operation_view::{
@@ -360,7 +362,7 @@ fn files_read_text_schema() -> serde_json::Value {
         "additionalProperties": false,
         "properties": {
             "path": { "type": "string", "minLength": 1, "description": "Local file path to read" },
-            "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed attachment id returned by an earlier tool result" },
+            "asset_id": canonical_entity_id_schema("asset", Some("Managed attachment id returned by an earlier tool result")),
             "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Zero-based byte offset; defaults to 0. Use byte arguments instead of line arguments" },
             "limit": { "type": "integer", "minimum": 1, "description": "Maximum bytes to read from offset; omit for the configured default span. Do not combine with line arguments" },
             "start_line": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based first line; defaults to 1. Use line arguments instead of byte arguments" },
@@ -390,7 +392,7 @@ fn files_summary_schema() -> serde_json::Value {
         "additionalProperties": false,
         "properties": {
             "path": { "type": "string", "minLength": 1, "description": "Local text file path to summarize" },
-            "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed attachment id returned by an earlier tool result" },
+            "asset_id": canonical_entity_id_schema("asset", Some("Managed attachment id returned by an earlier tool result")),
             "start_line": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based first line; defaults to 1" },
             "end_line": { "type": "integer", "minimum": 0, "description": "1-based last line; 0 or omitted means through EOF" },
             "focus": { "type": "string", "maxLength": 2000, "description": "Optional question or topic to focus the summary on" },

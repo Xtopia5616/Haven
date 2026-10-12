@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use super::canonical_entity_id_schema;
 use crate::{Tool, ToolConcurrency, ToolResult, ToolRunService};
 
 /// Explicit mutating operation supported by the unified task board.
@@ -162,11 +163,7 @@ impl Tool for ToolRunsTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tool_run_id": {
-                    "type": "string",
-                    "pattern": "^toolrun-[0-9a-f]{32}$",
-                    "description": "Inspect this single background or scheduled task instead of listing"
-                },
+                "tool_run_id": canonical_entity_id_schema("toolrun", Some("Inspect this single background or scheduled task instead of listing")),
                 "operation": {
                     "type": "string",
                     "enum": ["cancel"],
@@ -182,7 +179,7 @@ impl Tool for ToolRunsTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "tool_run_id": { "type": "string", "pattern": "^toolrun-[0-9a-f]{32}$" } },
+                    "properties": { "tool_run_id": canonical_entity_id_schema("toolrun", None) },
                     "required": ["tool_run_id"]
                 },
                 {
@@ -190,7 +187,7 @@ impl Tool for ToolRunsTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "cancel" },
-                        "tool_run_id": { "type": "string", "pattern": "^toolrun-[0-9a-f]{32}$" }
+                        "tool_run_id": canonical_entity_id_schema("toolrun", None)
                     },
                     "required": ["operation", "tool_run_id"]
                 },
