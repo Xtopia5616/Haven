@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	AUDIO_CAPTURE_BOUNDS,
+	CONCURRENCY_BOUNDS,
 	MEDIA_TIMEOUT_BOUNDS,
 	SESSION_STEP_BUDGET_BOUNDS,
 	parseSessionPermissionGrantResponses,
@@ -235,6 +236,30 @@ describe('settings command contracts', () => {
 			silence_timeout_ms: 1_500,
 			vad_threshold: 0.5,
 		});
+	});
+
+	it('enforces concurrency budgets across session, model, and background limits', () => {
+		const fields = [
+			['session', 'max_concurrent', CONCURRENCY_BOUNDS.sessions],
+			['llm', 'max_concurrent_requests', CONCURRENCY_BOUNDS.llmRequests],
+			[
+				'context_limits',
+				'max_running_background_tool_runs',
+				CONCURRENCY_BOUNDS.backgroundToolRuns,
+			],
+		] as const;
+		for (const [owner, field, bounds] of fields) {
+			for (const value of [bounds.min, bounds.max]) {
+				const valid = withSetting([owner, field], value);
+				expect(parseSettingsPayload(valid)).toBe(valid);
+				expect(() => validateSettingsNumbers(valid)).not.toThrow();
+			}
+			for (const value of [bounds.min - 1, bounds.max + 1]) {
+				const invalid = withSetting([owner, field], value);
+				expect(() => parseSettingsPayload(invalid)).toThrow(`${owner}.${field}`);
+				expect(() => validateSettingsNumbers(invalid)).toThrow(`${owner}.${field}`);
+			}
+		}
 	});
 
 	it('rejects malformed numeric types and accepts required nullable Settings values', () => {

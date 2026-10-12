@@ -206,6 +206,13 @@ export const AUDIO_CAPTURE_BOUNDS = {
 	silenceTimeoutMs: { min: 500, max: 10_000 },
 } as const;
 
+/** Keep aligned with the Common concurrency contract and Settings controls. */
+export const CONCURRENCY_BOUNDS = {
+	sessions: { min: 1, max: 10 },
+	llmRequests: { min: 1, max: 16 },
+	backgroundToolRuns: { min: 0, max: 64 },
+} as const;
+
 export type SessionPermissionGrant = GeneratedSessionPermissionGrant;
 
 /** Exact Rust-owned config shape from the generated IPC contract. */
@@ -390,6 +397,44 @@ function findInvalidAudioCapture(value: unknown): string | null {
 	return null;
 }
 
+function findInvalidConcurrency(value: unknown): string | null {
+	if (!isRecord(value)) return null;
+	if (isRecord(value.session) && value.session.max_concurrent !== undefined) {
+		const sessions = value.session.max_concurrent;
+		if (
+			!isSafeUnsignedInteger(sessions) ||
+			sessions < CONCURRENCY_BOUNDS.sessions.min ||
+			sessions > CONCURRENCY_BOUNDS.sessions.max
+		) {
+			return 'settings.session.max_concurrent';
+		}
+	}
+	if (isRecord(value.llm) && value.llm.max_concurrent_requests !== undefined) {
+		const requests = value.llm.max_concurrent_requests;
+		if (
+			!isSafeUnsignedInteger(requests) ||
+			requests < CONCURRENCY_BOUNDS.llmRequests.min ||
+			requests > CONCURRENCY_BOUNDS.llmRequests.max
+		) {
+			return 'settings.llm.max_concurrent_requests';
+		}
+	}
+	if (
+		isRecord(value.context_limits) &&
+		value.context_limits.max_running_background_tool_runs !== undefined
+	) {
+		const runs = value.context_limits.max_running_background_tool_runs;
+		if (
+			!isSafeUnsignedInteger(runs) ||
+			runs < CONCURRENCY_BOUNDS.backgroundToolRuns.min ||
+			runs > CONCURRENCY_BOUNDS.backgroundToolRuns.max
+		) {
+			return 'settings.context_limits.max_running_background_tool_runs';
+		}
+	}
+	return null;
+}
+
 /** Reject Settings numbers outside their Rust field domains or JavaScript-safe range. */
 export function validateSettingsNumbers(value: unknown): void {
 	const invalidPath =
@@ -397,7 +442,8 @@ export function validateSettingsNumbers(value: unknown): void {
 		findInvalidMcpInterval(value) ??
 		findInvalidMediaTimeout(value) ??
 		findInvalidSessionStepBudget(value) ??
-		findInvalidAudioCapture(value);
+		findInvalidAudioCapture(value) ??
+		findInvalidConcurrency(value);
 	if (invalidPath) throw new Error(`Invalid Settings numeric value at ${invalidPath}`);
 }
 

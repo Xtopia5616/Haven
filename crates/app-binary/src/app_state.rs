@@ -284,7 +284,7 @@ impl AppState {
         let executor = Arc::new(SessionSupervisor::new(
             supervisor_session_store,
             agent_tool_ports.session_ports(),
-            cfg.session.max_concurrent.max(1),
+            cfg.session.max_concurrent,
         ));
 
         let memory_service = Arc::new(MemoryService::new(

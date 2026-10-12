@@ -16,6 +16,7 @@
 	} from '$lib/modelDiscovery.ts';
 	import { emptyModel, CAPABILITY_OPTIONS, REQUEST_POLICY_OPTIONS } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
+	import { CONCURRENCY_BOUNDS } from '$lib/contracts/settings.ts';
 	import type { ApiKeyStatus } from '$lib/contracts/diagnostics.ts';
 	import type {
 		AudioConfig,
@@ -464,8 +465,8 @@
 				<MaterialNumberField
 					id="llm-max-concurrent-requests"
 					value={llmConfig.max_concurrent_requests}
-					min={1}
-					max={16}
+					min={CONCURRENCY_BOUNDS.llmRequests.min}
+					max={CONCURRENCY_BOUNDS.llmRequests.max}
 					onChange={withNumberValue(
 						(value) => (llmConfig.max_concurrent_requests = value),
 					)}

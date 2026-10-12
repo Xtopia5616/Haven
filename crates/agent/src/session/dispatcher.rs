@@ -32,10 +32,7 @@ pub(super) struct SessionRunPermit {
 impl SessionRunAdmission {
     pub(super) fn new(limit: usize) -> Self {
         Self {
-            state: StdMutex::new(AdmissionState {
-                limit: limit.max(1),
-                active: 0,
-            }),
+            state: StdMutex::new(AdmissionState { limit, active: 0 }),
             notify: Notify::new(),
         }
     }
@@ -86,7 +83,7 @@ impl SessionRunAdmission {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .limit = limit.max(1);
+            .limit = limit;
         self.notify.notify_waiters();
     }
 
@@ -267,8 +264,10 @@ impl SessionSupervisor {
         self.dispatch_tx.subscribe()
     }
 
-    pub fn set_max_concurrent(&self, new_max: usize) {
+    pub fn set_max_concurrent(&self, new_max: usize) -> anyhow::Result<()> {
+        haven_common::config::validate_session_concurrency_limit(new_max)?;
         self.admission.set_limit(new_max);
+        Ok(())
     }
 
     #[cfg(test)]

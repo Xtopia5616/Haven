@@ -1053,3 +1053,4 @@
 - [1062：统一持久化与 UI 的 step_number 数值域](1062-align-step-number-width.md)
 - [1063：移除无效音频格式配置并统一录音范围](1063-remove-ineffective-audio-format-settings.md)
 - [1064：统一命令与前端错误报告所有权](1064-unify-command-and-renderer-error-reporting.md)
+- [1065：统一会话、模型与后台任务并发范围](1065-align-concurrency-budget-ranges.md)

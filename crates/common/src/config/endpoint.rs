@@ -4,6 +4,9 @@
 
 use super::*;
 
+pub const MIN_LLM_CONCURRENT_REQUESTS: usize = 1;
+pub const MAX_LLM_CONCURRENT_REQUESTS: usize = 16;
+
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelEndpoint {

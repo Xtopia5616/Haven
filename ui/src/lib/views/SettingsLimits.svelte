@@ -5,6 +5,7 @@
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialNumberFieldWithUnit from '$lib/MaterialNumberFieldWithUnit.svelte';
 	import { withNumberValue } from '$lib/typedCallbacks.ts';
+	import { CONCURRENCY_BOUNDS } from '$lib/contracts/settings.ts';
 	import {
 		MAX_FACTS_IN_EXTRACTION_PROMPT,
 		type ContextLimitsConfigInput,
@@ -363,6 +364,8 @@
 					key: 'max_running_background_tool_runs',
 					label: '运行中后台任务数量上限',
 					unit: 'count',
+					min: CONCURRENCY_BOUNDS.backgroundToolRuns.min,
+					max: CONCURRENCY_BOUNDS.backgroundToolRuns.max,
 					danger: true,
 					hint: '同时运行的 background shell 任务数。调大 = 子进程失控风险。',
 				},

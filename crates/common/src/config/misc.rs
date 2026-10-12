@@ -11,6 +11,10 @@ pub const MIN_SESSION_STEPS_PER_RUN: u32 = 1;
 pub const MAX_SESSION_STEPS_PER_RUN: u32 = 1_000;
 pub const MIN_SESSION_STEPS_PER_SESSION: u32 = 1;
 pub const MAX_SESSION_STEPS_PER_SESSION: u32 = 100_000;
+pub const MIN_SESSION_MAX_CONCURRENT: usize = 1;
+pub const MAX_SESSION_MAX_CONCURRENT: usize = 10;
+/// A zero background ToolRun limit intentionally disables background launches.
+pub const MAX_RUNNING_BACKGROUND_TOOL_RUNS: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -309,7 +313,7 @@ impl Default for ContextLimitsConfig {
             clipboard_entry_max_chars: 2_000,
             max_pending_scheduled_tool_runs: 32,
             scheduled_tool_runs_due_horizon_secs: 365 * 24 * 3600,
-            max_running_background_tool_runs: 64,
+            max_running_background_tool_runs: MAX_RUNNING_BACKGROUND_TOOL_RUNS,
             event_chunk_batch_max_bytes: 8 * 1024,
             input_ring_buffer_secs: 20,
             embedding_chunk_size: 10,

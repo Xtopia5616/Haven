@@ -7,7 +7,7 @@
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import HotkeyInput from '$lib/HotkeyInput.svelte';
 	import { withBooleanValue, withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
-	import { SESSION_STEP_BUDGET_BOUNDS } from '$lib/contracts/settings.ts';
+	import { CONCURRENCY_BOUNDS, SESSION_STEP_BUDGET_BOUNDS } from '$lib/contracts/settings.ts';
 	import type {
 		HotkeyModeInput,
 		MemoryConfigInput,
@@ -102,8 +102,8 @@
 			<MaterialNumberField
 				id="session-max-concurrent"
 				value={session.max_concurrent}
-				min={1}
-				max={10}
+				min={CONCURRENCY_BOUNDS.sessions.min}
+				max={CONCURRENCY_BOUNDS.sessions.max}
 				onChange={withNumberValue((value) => (session.max_concurrent = value))}
 			/>
 		</SettingsField>

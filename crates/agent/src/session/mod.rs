@@ -499,7 +499,10 @@ impl SessionSupervisor {
             observation_port: observations,
             managed_asset_lease_port: managed_asset_leases,
             actors: Arc::new(Mutex::new(HashMap::new())),
-            admission: Arc::new(dispatcher::SessionRunAdmission::new(max_concurrent.max(1))),
+            admission: Arc::new(dispatcher::SessionRunAdmission::new(max_concurrent.clamp(
+                haven_common::config::MIN_SESSION_MAX_CONCURRENT,
+                haven_common::config::MAX_SESSION_MAX_CONCURRENT,
+            ))),
             lifecycle_gate: Arc::new(Mutex::new(())),
             lifecycle_blocked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             closing_sessions: Arc::new(StdMutex::new(HashMap::new())),
@@ -1717,7 +1720,10 @@ mod tests {
     #[tokio::test]
     async fn set_max_concurrent_reclaims_and_does_not_overshoot() {
         let exec = make_executor(4);
-        exec.set_max_concurrent(1);
+        assert!(exec.set_max_concurrent(0).is_err());
+        assert!(exec.set_max_concurrent(11).is_err());
+        assert_eq!(exec.admission.limit(), 4, "rejected limits must not apply");
+        exec.set_max_concurrent(1).unwrap();
         // Idle pool: exactly one permit may be acquired without waiting.
         let first = exec.admission.try_acquire();
         assert!(
@@ -1731,7 +1737,7 @@ mod tests {
         );
         drop(first.unwrap());
         // Raise back to 3: available permits must be 3, not 3 + stale 3.
-        exec.set_max_concurrent(3);
+        exec.set_max_concurrent(3).unwrap();
         let mut held = Vec::new();
         for _ in 0..3 {
             match exec.admission.try_acquire() {

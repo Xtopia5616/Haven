@@ -332,10 +332,16 @@ async fn execute_settings_apply_phase(
                     error,
                 );
             }
-            state
+            if let Err(error) = state
                 .runtime
                 .executor
-                .set_max_concurrent(config.session.max_concurrent);
+                .set_max_concurrent(config.session.max_concurrent)
+            {
+                return SettingsRuntimeApplyOutcome::failed(
+                    "update_settings max_concurrent",
+                    error,
+                );
+            }
             SettingsRuntimeApplyOutcome::applied()
         }
         SettingsRuntimeApplyPhase::ToolSettings => {

@@ -40,6 +40,7 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         config.session.max_steps_per_run,
         config.session.max_steps_per_session,
     )?;
+    validate_concurrency_limits(&config.session, &config.llm, &config.context_limits)?;
     validate_audio_capture(&config.media.audio)?;
     validate_unique_llm_configuration_keys(&config.llm)?;
     if config.context_limits.max_known_facts > super::MAX_FACTS_IN_EXTRACTION_PROMPT {
@@ -118,6 +119,43 @@ pub fn validate_max_steps_per_session(max_steps_per_session: Option<u32>) -> Res
     {
         anyhow::bail!(
             "session.max_steps_per_session must be null or within {MIN_SESSION_STEPS_PER_SESSION}..={MAX_SESSION_STEPS_PER_SESSION}"
+        );
+    }
+    Ok(())
+}
+
+pub fn validate_session_concurrency_limit(max_concurrent: usize) -> Result<()> {
+    if !(super::MIN_SESSION_MAX_CONCURRENT..=super::MAX_SESSION_MAX_CONCURRENT)
+        .contains(&max_concurrent)
+    {
+        anyhow::bail!(
+            "session.max_concurrent must be within {}..={}",
+            super::MIN_SESSION_MAX_CONCURRENT,
+            super::MAX_SESSION_MAX_CONCURRENT
+        );
+    }
+    Ok(())
+}
+
+fn validate_concurrency_limits(
+    session: &super::SessionConfig,
+    llm: &super::LlmConfig,
+    context: &super::ContextLimitsConfig,
+) -> Result<()> {
+    validate_session_concurrency_limit(session.max_concurrent)?;
+    if !(super::MIN_LLM_CONCURRENT_REQUESTS..=super::MAX_LLM_CONCURRENT_REQUESTS)
+        .contains(&llm.max_concurrent_requests)
+    {
+        anyhow::bail!(
+            "llm.max_concurrent_requests must be within {}..={}",
+            super::MIN_LLM_CONCURRENT_REQUESTS,
+            super::MAX_LLM_CONCURRENT_REQUESTS
+        );
+    }
+    if context.max_running_background_tool_runs > super::MAX_RUNNING_BACKGROUND_TOOL_RUNS {
+        anyhow::bail!(
+            "context_limits.max_running_background_tool_runs must not exceed {}",
+            super::MAX_RUNNING_BACKGROUND_TOOL_RUNS
         );
     }
     Ok(())
@@ -525,6 +563,54 @@ mod tests {
             let mut config = AppConfig::default();
             config.media.audio.max_duration_secs = duration;
             config.media.audio.silence_timeout_ms = silence;
+            assert!(
+                validate_app_config(&config)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(expected_path)
+            );
+            assert!(
+                validate_settings_contract(&Settings::from(&config))
+                    .unwrap_err()
+                    .to_string()
+                    .contains(expected_path)
+            );
+        }
+    }
+
+    #[test]
+    fn concurrency_limits_match_config_settings_and_runtime_ranges() {
+        for (session, llm, background) in [
+            (
+                super::super::MIN_SESSION_MAX_CONCURRENT,
+                super::super::MIN_LLM_CONCURRENT_REQUESTS,
+                0,
+            ),
+            (
+                super::super::MAX_SESSION_MAX_CONCURRENT,
+                super::super::MAX_LLM_CONCURRENT_REQUESTS,
+                super::super::MAX_RUNNING_BACKGROUND_TOOL_RUNS,
+            ),
+        ] {
+            let mut config = AppConfig::default();
+            config.session.max_concurrent = session;
+            config.llm.max_concurrent_requests = llm;
+            config.context_limits.max_running_background_tool_runs = background;
+            assert!(validate_app_config(&config).is_ok());
+            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        }
+
+        for (session, llm, background, expected_path) in [
+            (0, 2, 64, "session.max_concurrent"),
+            (11, 2, 64, "session.max_concurrent"),
+            (3, 0, 64, "llm.max_concurrent_requests"),
+            (3, 17, 64, "llm.max_concurrent_requests"),
+            (3, 2, 65, "context_limits.max_running_background_tool_runs"),
+        ] {
+            let mut config = AppConfig::default();
+            config.session.max_concurrent = session;
+            config.llm.max_concurrent_requests = llm;
+            config.context_limits.max_running_background_tool_runs = background;
             assert!(
                 validate_app_config(&config)
                     .unwrap_err()

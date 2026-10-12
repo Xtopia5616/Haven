@@ -37,8 +37,11 @@ use crate::types::{
 use futures_util::future::join_all;
 #[cfg(any(test, feature = "test-support"))]
 use haven_common::config::{Capability, RoutedModel};
+use haven_common::config::{
+    MAX_LLM_CONCURRENT_REQUESTS, MIN_LLM_CONCURRENT_REQUESTS, RequestKind, RouterConfig,
+    compute_cost_usd,
+};
 use haven_common::config::{ModelEndpoint, is_known_api_style, is_stt_only_style};
-use haven_common::config::{RequestKind, RouterConfig, compute_cost_usd};
 use haven_common::media::CapabilityProfile;
 use haven_common::media::CapabilitySupport;
 
@@ -271,11 +274,12 @@ impl LlmRouter {
         }
     }
 
-    /// Config-driven per-model request limit. Clamped to >= 1 so a hand-edited
-    /// 0 (or a config without the new field) can never deadlock the router on
-    /// an unacquirable permit.
+    /// Config-driven per-model request limit. Clamp at the typed boundary as
+    /// defense in depth; Common rejects invalid persisted and Settings values.
     fn request_limit(config: &RouterConfig) -> usize {
-        config.max_concurrent_requests.max(1)
+        config
+            .max_concurrent_requests
+            .clamp(MIN_LLM_CONCURRENT_REQUESTS, MAX_LLM_CONCURRENT_REQUESTS)
     }
 
     /// Default runtime state shared by every constructor: per-model circuit
@@ -3620,6 +3624,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(max_seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn request_limit_clamps_to_the_shared_concurrency_contract() {
+        let mut config = RouterConfig::default();
+        config.max_concurrent_requests = 0;
+        assert_eq!(
+            LlmRouter::request_limit(&config),
+            MIN_LLM_CONCURRENT_REQUESTS
+        );
+
+        config.max_concurrent_requests = usize::MAX;
+        assert_eq!(
+            LlmRouter::request_limit(&config),
+            MAX_LLM_CONCURRENT_REQUESTS
+        );
     }
 
     struct AggregatedPermitProbe {
