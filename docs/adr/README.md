@@ -1004,3 +1004,4 @@
 - [1013：校验确认命令的终态响应](1013-validate-confirmation-resolution-result.md)
 - [1014：校验 supplement 事件来源枚举](1014-validate-supplement-source-enum.md)
 - [1015：校验 boolean command 响应](1015-validate-boolean-command-responses.md)
+- [1016：统一定时 ToolRun 执行权 claim 身份](1016-unify-scheduled-toolrun-execution-claim-identity.md)

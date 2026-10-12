@@ -95,8 +95,16 @@ fn validate_optional_id(id: Option<&str>, prefix: &str, field: &str) -> anyhow::
     Ok(())
 }
 
-fn validate_execution_claim_id(id: &str) -> anyhow::Result<()> {
-    validate_id(id, "conf", "request_id")
+fn validate_execution_claim_id(claim_id: &str, tool_run_id: &str) -> anyhow::Result<()> {
+    if is_canonical_id(claim_id, "conf") {
+        return Ok(());
+    }
+
+    anyhow::ensure!(
+        claim_id == tool_run_id && is_canonical_id(claim_id, "toolrun"),
+        "invalid claim_id: expected canonical conf- ID or the claimed toolrun- ID"
+    );
+    Ok(())
 }
 
 fn validate_tool_run_row(row: &ToolRunRow) -> anyhow::Result<()> {
@@ -602,20 +610,19 @@ impl ToolRunStore {
             .await
     }
 
-    /// Claim execution for one pending scheduled confirmation. Repeating with
-    /// the same request ID is idempotent, so callers can retry an approval
-    /// after a grant write failure without reopening cancellation races.
+    /// Claim execution for a pending scheduled ToolRun. A confirmation uses
+    /// its `conf-*` request ID; an auto-approved operation uses the ToolRun's
+    /// own ID. Repeating with the same claim ID is idempotent, so callers can
+    /// retry an approval after a grant write failure without reopening races.
     pub async fn claim_scheduled_tool_run_execution(
         &self,
         tool_run_id: String,
-        request_id: String,
+        claim_id: String,
     ) -> anyhow::Result<bool> {
         validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        validate_execution_claim_id(&request_id)?;
+        validate_execution_claim_id(&claim_id, &tool_run_id)?;
         self.db
-            .run_blocking(move |db| {
-                db.claim_scheduled_tool_run_execution(&tool_run_id, &request_id)
-            })
+            .run_blocking(move |db| db.claim_scheduled_tool_run_execution(&tool_run_id, &claim_id))
             .await
     }
 
@@ -623,13 +630,13 @@ impl ToolRunStore {
     pub async fn release_scheduled_tool_run_execution_claim(
         &self,
         tool_run_id: String,
-        request_id: String,
+        claim_id: String,
     ) -> anyhow::Result<bool> {
         validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        validate_execution_claim_id(&request_id)?;
+        validate_execution_claim_id(&claim_id, &tool_run_id)?;
         self.db
             .run_blocking(move |db| {
-                db.release_scheduled_tool_run_execution_claim(&tool_run_id, &request_id)
+                db.release_scheduled_tool_run_execution_claim(&tool_run_id, &claim_id)
             })
             .await
     }
@@ -1206,6 +1213,58 @@ mod tests {
                 .claim_scheduled_tool_run_execution(new_id("toolrun"), new_id("conf"))
                 .await
                 .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduled_execution_claim_accepts_only_its_own_tool_run_id_for_auto_approval() {
+        let (db, store) = store();
+        let tool_run_id = new_id("toolrun");
+        store
+            .save_scheduled_tool_run(
+                tool_run_id.clone(),
+                "2026-09-25T10:00:00Z".into(),
+                "Reminder".into(),
+                "body".into(),
+                "notify".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .start_scheduled_tool_run(tool_run_id.clone(), STARTED_AT.into())
+                .await
+                .unwrap()
+        );
+
+        assert!(
+            store
+                .claim_scheduled_tool_run_execution(tool_run_id.clone(), new_id("toolrun"))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            db.get_kv(&format!("scheduled_execution_claim.{tool_run_id}"))
+                .unwrap(),
+            None
+        );
+
+        assert!(
+            store
+                .claim_scheduled_tool_run_execution(tool_run_id.clone(), tool_run_id.clone())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            db.get_kv(&format!("scheduled_execution_claim.{tool_run_id}"))
+                .unwrap()
+                .as_deref(),
+            Some(tool_run_id.as_str())
         );
     }
 

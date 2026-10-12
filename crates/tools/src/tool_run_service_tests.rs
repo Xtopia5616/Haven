@@ -3537,6 +3537,36 @@ async fn scheduled_execution_claim_arbitrates_with_cancellation() {
         None
     );
 
+    let auto_approved_id = service
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_tool_run_id: None,
+            title: "Auto-approved ToolRun".into(),
+            body: "an operation without a confirmation uses its ToolRun identity".into(),
+            mode: crate::tool_run_types::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    service.fire_scheduled(&auto_approved_id).await;
+    assert!(
+        service
+            .claim_scheduled_execution(&auto_approved_id, &auto_approved_id)
+            .await
+            .unwrap()
+    );
+    assert!(!service.cancel(&auto_approved_id).await);
+    assert_eq!(
+        db.get_kv(&format!("scheduled_execution_claim.{auto_approved_id}"))
+            .unwrap()
+            .as_deref(),
+        Some(auto_approved_id.as_str())
+    );
+
     let cancelled_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
