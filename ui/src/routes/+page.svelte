@@ -653,7 +653,7 @@
 		}
 	});
 
-	// When the active session changes (e.g. switching to a reviewed session or
+	// When the active session changes (e.g. switching to a resumed session or
 	// creating a new session), re-enable follow and scroll to the bottom.
 	$effect(() => {
 		const _ = activeSessionId;
