@@ -19,7 +19,14 @@ import {
 } from './generatedCommands.ts';
 import { findGeneratedWireShapeMismatch } from './generatedWireShape.ts';
 import { isRecord } from './objectGuards.ts';
-import { isFiniteNumber, isI32, isOneOf, isSafeUnsignedInteger, isU32 } from './valueGuards.ts';
+import {
+	isFiniteNumber,
+	isI32,
+	isNonNegativeFiniteNumber,
+	isOneOf,
+	isSafeUnsignedInteger,
+	isU32,
+} from './valueGuards.ts';
 import { isCanonicalEntityId } from './wireGuards.ts';
 
 /** All command wire shapes are derived from Rust handlers and DTOs. */
@@ -139,7 +146,7 @@ function hasValidSessionUsageNumericValues(value: unknown): boolean {
 			'context_tokens',
 		].every((field) => isU32(value[field])) &&
 		(value.context_window === null || isU32(value.context_window)) &&
-		isFiniteNumber(value.cost_usd)
+		isNonNegativeFiniteNumber(value.cost_usd)
 	);
 }
 
@@ -158,7 +165,7 @@ function hasValidLlmUsageNumericValues(value: unknown): boolean {
 			'context_tokens',
 		].every((field) => isU32(value[field])) &&
 		(value.context_window === null || isU32(value.context_window)) &&
-		isFiniteNumber(value.cost_usd) &&
+		isNonNegativeFiniteNumber(value.cost_usd) &&
 		(value.duration_ms === null || isSafeUnsignedInteger(value.duration_ms))
 	);
 }

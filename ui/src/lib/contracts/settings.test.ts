@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSettingsPayload } from './settings.ts';
+import { parseSessionPermissionGrantResponses, parseSettingsPayload } from './settings.ts';
 import { createSettingsFixture } from './settings-fixture.ts';
 
 function withSetting(path: readonly string[], value: unknown) {
@@ -17,6 +17,23 @@ function withSetting(path: readonly string[], value: unknown) {
 }
 
 describe('settings command contracts', () => {
+	it('validates permission capability scopes with the Rust owner grammar', () => {
+		const grant = {
+			session_id: 'ses-11111111111111111111111111111111',
+			session_title: null,
+			capability: 'system.power-lock',
+			target: 'operation',
+			effect: 'allow',
+		};
+		expect(parseSessionPermissionGrantResponses([grant])).toEqual([grant]);
+
+		for (const capability of ['', ' system.power', 'system.power ', '.system', 'system..power', 'system:power']) {
+			expect(() =>
+				parseSessionPermissionGrantResponses([{ ...grant, capability }]),
+			).toThrow('Invalid session permission grant identity');
+		}
+	});
+
 	it('validates credential references in the full Settings response', () => {
 		const payload = createSettingsFixture();
 		payload.llm.providers.push({

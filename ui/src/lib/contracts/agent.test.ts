@@ -242,6 +242,18 @@ describe('agent IPC contract', () => {
 		}
 	});
 
+	it('rejects negative usage costs while allowing absent pricing', () => {
+		for (const payload of [
+			makeUsagePayload({ cost_usd: -0.01 }),
+			makeUsagePayload({ cumulative_cost_usd: -0.01 }),
+		]) {
+			expect(mapAgentEventContract({ event: 'agent:usage', id: 4, payload })).toBeNull();
+		}
+		expect(
+			mapAgentEventContract({ event: 'agent:usage', id: 5, payload: makeUsagePayload() }),
+		).not.toBeNull();
+	});
+
 	it('maps stream replacement boundaries to camelCase', () => {
 		const event = mapAgentEvent({
 			event: 'agent:stream_reset',

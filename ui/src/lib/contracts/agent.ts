@@ -291,8 +291,8 @@ function nullableStringIsValid(value: unknown): boolean {
 	return value === null || isString(value);
 }
 
-function nullableNumberIsValid(value: unknown): boolean {
-	return value === null || isFiniteNumber(value);
+function nullableCostIsValid(value: unknown): boolean {
+	return value === null || (isFiniteNumber(value) && value >= 0);
 }
 
 function nullableU32IsValid(value: unknown): boolean {
@@ -787,9 +787,9 @@ export function mapAgentEvent(
 				!numberFields.every((field) => isU32(payload[field])) ||
 				!isBoolean(payload.cache_exclusive) ||
 				!isOneOf(cacheAccounting, CACHE_ACCOUNTING_VALUES) ||
-				!nullableNumberIsValid(payload.cost_usd) ||
+				!nullableCostIsValid(payload.cost_usd) ||
 				!nullableStringIsValid(payload.model) ||
-				!nullableNumberIsValid(payload.cumulative_cost_usd) ||
+				!nullableCostIsValid(payload.cumulative_cost_usd) ||
 				!nullableU32IsValid(payload.context_window) ||
 				!optionalU32IsValid(payload, 'step_number') ||
 				!optionalSafeUnsignedIntegerIsValid(payload, 'duration_ms') ||

@@ -552,4 +552,17 @@ describe('session history and resume contracts', () => {
 			'Invalid resumed numeric value',
 		);
 	});
+
+	it('rejects negative costs in persisted usage projections', () => {
+		const aggregate = resumeResponse();
+		aggregate.usage = {
+			...(aggregate.usage as Record<string, unknown>),
+			cost_usd: -0.01,
+		};
+		expect(() => parseSessionResumeResponse(aggregate)).toThrow('Invalid resumed numeric value');
+
+		const detail = resumeResponse();
+		detail.llm_usage[0]!.cost_usd = -0.01;
+		expect(() => parseSessionResumeResponse(detail)).toThrow('Invalid resumed numeric value');
+	});
 });

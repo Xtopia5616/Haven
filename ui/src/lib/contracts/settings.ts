@@ -13,6 +13,7 @@ import { findGeneratedWireShapeMismatch } from './generatedWireShape.ts';
 import { isRecord } from './objectGuards.ts';
 import {
 	isBoolean,
+	isCapabilityScope,
 	isFiniteNumber,
 	isOneOf,
 	isSafeUnsignedInteger,
@@ -339,6 +340,9 @@ export function parseSessionPermissionGrantResponses(value: unknown): SessionPer
 		);
 		if (invalidPath) {
 			throw new Error(`Invalid session permission grant at [${index}]${invalidPath.slice(1)}`);
+		}
+		if (!isCapabilityScope(grant.capability)) {
+			throw new Error('Invalid session permission grant identity');
 		}
 	}
 	return value as unknown as SessionPermissionGrant[];

@@ -12,6 +12,12 @@ function Get-Matches([string] $text, [string] $pattern) {
     @([regex]::Matches($text, $pattern) | ForEach-Object { $_.Groups[1].Value })
 }
 
+function Get-LiteralInvokeCommands([string] $text) {
+    $delimiters = [string]::Concat([char]39, [char]34, [char]96)
+    $pattern = 'invoke\s*\(\s*([' + $delimiters + '])([a-z0-9_]+)\1'
+    @([regex]::Matches($text, $pattern) | ForEach-Object { $_.Groups[2].Value })
+}
+
 function Assert-SetEqual([string] $label, [string[]] $expected, [string[]] $actual) {
     $expected = @($expected | Sort-Object -Unique)
     $actual = @($actual | Sort-Object -Unique)
@@ -109,6 +115,7 @@ $settingsContract = Get-Source 'ui/src/lib/contracts/settings.ts'
 Assert-Contains $settingsContract 'function parseSettingsPayload\(value:\s*unknown\):\s*SettingsPayload\s*\|\s*null' 'settings parser accepts unknown'
 Assert-Contains $generated 'export const SETTINGS_RESPONSE_SHAPE\s*=' 'Settings runtime shape is generated from Rust response DTOs'
 Assert-Contains $settingsContract 'findGeneratedWireShapeMismatch\(value,\s*SETTINGS_RESPONSE_SHAPE\)' 'Settings response validates its generated full wire shape'
+Assert-Contains $settingsContract 'isCapabilityScope\(grant\.capability\)' 'session permission grants validate Rust capability scope syntax before renderer use'
 
 $toolsCommands = Get-Source 'ui/src/lib/toolsCommands.ts'
 $mcpContract = Get-Source 'ui/src/lib/contracts/mcp.ts'
@@ -184,6 +191,8 @@ foreach ($diagnosticsParser in @('parseLogInfo', 'parseLogTail', 'parseShellAvai
 }
 
 $uiFiles = Get-ChildItem (Join-Path $root 'ui/src') -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') }
+$tauriCoreApiFiles = @($uiFiles | Where-Object { (Get-Content $_.FullName -Raw).Contains('@tauri-apps/api/core') } | ForEach-Object { $_.Name })
+Assert-SetEqual 'direct Tauri core API imports' @('tauri.ts', 'tauri.test.ts') $tauriCoreApiFiles
 $layout = Get-Source 'ui/src/routes/+layout.svelte'
 Assert-Contains $layout '(?s)const report = await invoke\(''check_llm_connection''\);\s*if \(generation === llmProbeGeneration\) applyLlmConnectionReport\(report\);' 'LLM connection report is normalized only for the current probe'
 $llmConnection = Get-Source 'ui/src/lib/llmConnection.ts'
@@ -236,6 +245,14 @@ $ownedCommands = @{
     'settingsCommands.ts' = @('get_settings', 'discard_staged_credentials', 'list_session_permissions', 'is_autostart_enabled', 'run_memory_maintenance', 'revoke_permission', 'revoke_session_permission', 'reset_permissions', 'reset_session_permissions', 'set_hotkey_capture_active', 'stage_provider_credential', 'stage_ocr_credential', 'update_settings', 'enable_autostart', 'disable_autostart')
     'chatModelCommands.ts' = @('switch_model', 'set_reasoning_effort', 'set_web_search')
 }
+$reviewedNonUiCommands = @{
+    delete_tool_run = 'Retired command is absent from the live renderer; ToolRun removal flows use cancellation and history cleanup.'
+    export_session_history = 'No renderer export flow exists; session history is currently consumed through typed read and search commands.'
+    get_recording_state = 'Recording state is driven by recording lifecycle events and the app bootstrap snapshot.'
+    list_permissions = 'Global permissions are loaded by the authorization owner outside the renderer command surface.'
+    search_session_history = 'Superseded by the filtered and paginated session history commands; no renderer caller remains.'
+    search_session_history_paginated = 'No renderer caller exists; current history search uses the filtered command and explicit count query.'
+}
 $ownedCommandNames = @($ownedCommands.Values | ForEach-Object { $_ })
 $duplicateOwners = @($ownedCommandNames | Group-Object | Where-Object Count -gt 1 | ForEach-Object Name)
 if ($duplicateOwners.Count -gt 0) {
@@ -243,16 +260,21 @@ if ($duplicateOwners.Count -gt 0) {
 }
 $literalInvokeCommands = @()
 foreach ($file in $uiFiles | Where-Object { $_.Name -notmatch '\.(test|spec)\.' }) {
-    $literalInvokeCommands += Get-Matches (Get-Content $file.FullName -Raw) "invoke\s*\(\s*'([a-z0-9_]+)'"
+    $literalInvokeCommands += Get-LiteralInvokeCommands (Get-Content $file.FullName -Raw)
 }
 Assert-SetEqual 'production literal invokes vs reviewed UI command owners' $literalInvokeCommands $ownedCommandNames
+Assert-SetEqual 'generated commands vs UI and reviewed non-UI dispositions' $generatedNames (@($ownedCommandNames) + @($reviewedNonUiCommands.Keys))
+if (@($reviewedNonUiCommands.GetEnumerator() | Where-Object { [string]::IsNullOrWhiteSpace($_.Value) }).Count -gt 0) {
+    throw 'every non-UI command disposition must include a review reason'
+}
+Assert-SetEqual 'reviewed non-UI commands have no renderer call' @() @($literalInvokeCommands | Where-Object { $reviewedNonUiCommands.ContainsKey($_) })
 
 foreach ($file in $uiFiles | Where-Object { $_.Name -notmatch '\.(test|spec)\.' }) {
+    $fileInvokes = @(Get-LiteralInvokeCommands (Get-Content $file.FullName -Raw))
     foreach ($owner in $ownedCommands.Keys) {
         if ($file.Name -eq $owner) { continue }
         foreach ($command in $ownedCommands[$owner]) {
-            $invokePattern = "invoke\s*\(\s*'$([regex]::Escape($command))'"
-            if ([regex]::IsMatch((Get-Content $file.FullName -Raw), $invokePattern)) {
+            if ($fileInvokes -contains $command) {
                 throw "$($file.FullName.Substring($root.Length + 1)) bypasses $owner for '$command'"
             }
         }
@@ -260,6 +282,8 @@ foreach ($file in $uiFiles | Where-Object { $_.Name -notmatch '\.(test|spec)\.' 
 }
 
 $sessionHistoryContract = Get-Source 'ui/src/lib/contracts/sessionHistory.ts'
+Assert-Contains (Get-Source 'ui/src/lib/contracts/agent.ts') 'function nullableCostIsValid\(value:\s*unknown\):\s*boolean\s*\{\s*return value === null \|\| \(isFiniteNumber\(value\) && value >= 0\)' 'Agent usage costs are finite, nullable and non-negative'
+Assert-Contains $sessionHistoryContract 'isNonNegativeFiniteNumber\(value\.cost_usd\)' 'persisted aggregate and detailed usage costs are non-negative'
 foreach ($shape in @(
     'RUNTIME_SESSION_LIST_RESPONSE_SHAPE',
     'SESSION_RECORD_RESPONSE_SHAPE',
@@ -301,4 +325,4 @@ Assert-NotContains $toolsView '\binvoke\s*\(' 'ToolsView must use toolsCommands.
 $skillCard = Get-Source 'ui/src/lib/SkillCard.svelte'
 Assert-NotContains $skillCard "invoke\s*\(\s*'execute_skill'" 'SkillCard must delegate execution through its ToolsView owner'
 
-Write-Host "IPC contract verified: $($implemented.Count) handlers agree across Rust registration, generated TypeScript, reviewed security metadata, and docs; runtime validators and audited UI owners remain in place."
+Write-Host "IPC contract verified: $($implemented.Count) handlers agree across Rust registration, generated TypeScript, reviewed security metadata, docs, and complete UI/non-UI dispositions; invoke ownership and semantic validators remain in place."

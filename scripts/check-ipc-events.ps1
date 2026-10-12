@@ -33,6 +33,30 @@ $eventShapeRegistry = [regex]::Match($generated, '(?sm)export const IPC_EVENT_PA
 if (-not $eventShapeRegistry.Success) { throw 'generated Rust event payload shape registry is missing' }
 $eventShapeNames = Get-Matches $eventShapeRegistry.Groups[1].Value "(?m)^\s*'([^']+:[^']+)'\s*:"
 Assert-SetEqual 'Rust event directory vs generated payload shape registry' $rustEvents $eventShapeNames
+
+# Keep every direct Tauri emission site visible for review. New emitters must
+# add their source file and count here, then remain covered by the channel and
+# DTO ownership checks below.
+$emitSiteInventory = @{
+    'crates/app-binary/src/bootstrap.rs' = 6
+    'crates/app-binary/src/commands/mcp.rs' = 1
+    'crates/app-binary/src/commands/mod.rs' = 2
+    'crates/app-binary/src/commands/settings.rs' = 1
+    'crates/app-binary/src/event_bridge.rs' = 2
+    'crates/app-binary/src/handlers.rs' = 3
+}
+$actualEmitFiles = @()
+Get-ChildItem (Join-Path $root 'crates/app-binary/src') -Recurse -Filter '*.rs' | ForEach-Object {
+    $relativePath = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
+    $emitCount = [regex]::Matches((Get-Content $_.FullName -Raw), '\.emit(?:_to)?\s*\(').Count
+    if ($emitCount -gt 0) {
+        $actualEmitFiles += $relativePath
+        if (-not $emitSiteInventory.ContainsKey($relativePath) -or $emitSiteInventory[$relativePath] -ne $emitCount) {
+            throw "unreviewed Tauri event emission sites in ${relativePath}: $emitCount"
+        }
+    }
+}
+Assert-SetEqual 'reviewed Tauri event emitter files' @($emitSiteInventory.Keys) $actualEmitFiles
 $sessionEventArray = [regex]::Match($generated, "(?s)export const SESSION_EVENT_NAMES = \[(.*?)\]\s*as const")
 if (-not $sessionEventArray.Success -or
     (Get-Matches $sessionEventArray.Groups[1].Value "'([^']+:[^']+)'" | Measure-Object).Count -ne 1 -or
@@ -187,4 +211,4 @@ if ($rustEvents.Count -ne 36) {
     throw "expected 36 public IPC events, found $($rustEvents.Count)"
 }
 
-Write-Host "IPC event directory verified: $($rustEvents.Count) channels agree, and runtime enum validators use generated Rust vocabularies."
+Write-Host "IPC event directory verified: $($rustEvents.Count) channels agree, runtime enum validators use generated Rust vocabularies, and all direct emitter sites match the reviewed inventory."

@@ -21,6 +21,21 @@ export function isFiniteNumber(value: unknown): value is number {
 	return isNumber(value) && Number.isFinite(value);
 }
 
+/** Accept a finite monetary amount in the non-negative USD domain. */
+export function isNonNegativeFiniteNumber(value: unknown): value is number {
+	return isFiniteNumber(value) && value >= 0;
+}
+
+/** Match the Rust CapabilityScope grammar used by persisted permission grants. */
+export function isCapabilityScope(value: unknown): value is string {
+	return (
+		typeof value === 'string' &&
+		value.length > 0 &&
+		value.trim() === value &&
+		value.split('.').every((segment) => /^[A-Za-z0-9_-]+$/.test(segment))
+	);
+}
+
 /** Accept an integer that JavaScript can represent exactly, including negatives. */
 export function isSafeInteger(value: unknown): value is number {
 	return Number.isSafeInteger(value);
