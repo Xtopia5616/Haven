@@ -31,7 +31,7 @@ describe('Composer context menu', () => {
 
 	it('keeps the recording shortcut in the active-session placeholder', () => {
 		render(Composer, {
-			activeSessionId: 'ses-1',
+			activeSessionId: 'ses-00000000000000000000000000000001',
 			hotkeyBinding: 'Alt+Space',
 			onsubmit: vi.fn(),
 		});
@@ -234,20 +234,20 @@ describe('Composer per-session drafts', () => {
 
 	it('isolates drafts between sessions and restores each draft when returning', async () => {
 		const { container, rerender } = render(Composer, {
-			activeSessionId: 'ses-a',
+			activeSessionId: 'ses-32f23b1e00f85571a60f75dde5588074',
 			onsubmit,
 		});
 		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
 
 		await fireEvent.input(textarea, { target: { value: 'draft A' } });
-		await rerender({ activeSessionId: 'ses-b', onsubmit });
+		await rerender({ activeSessionId: 'ses-b77487af9bb14e5ec4d60572f1248bce', onsubmit });
 		expect(textarea.value).toBe('');
 
 		await fireEvent.input(textarea, { target: { value: 'draft B' } });
-		await rerender({ activeSessionId: 'ses-a', onsubmit });
+		await rerender({ activeSessionId: 'ses-32f23b1e00f85571a60f75dde5588074', onsubmit });
 		expect(textarea.value).toBe('draft A');
 
-		await rerender({ activeSessionId: 'ses-b', onsubmit });
+		await rerender({ activeSessionId: 'ses-b77487af9bb14e5ec4d60572f1248bce', onsubmit });
 		expect(textarea.value).toBe('draft B');
 	});
 
@@ -256,21 +256,21 @@ describe('Composer per-session drafts', () => {
 		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
 
 		await fireEvent.input(textarea, { target: { value: 'new conversation draft' } });
-		await rerender({ activeSessionId: 'ses-a', onsubmit });
+		await rerender({ activeSessionId: 'ses-32f23b1e00f85571a60f75dde5588074', onsubmit });
 		expect(textarea.value).toBe('');
 
 		await fireEvent.input(textarea, { target: { value: 'session draft' } });
 		await rerender({ activeSessionId: null, onsubmit });
 		expect(textarea.value).toBe('new conversation draft');
 
-		await rerender({ activeSessionId: 'ses-a', onsubmit });
+		await rerender({ activeSessionId: 'ses-32f23b1e00f85571a60f75dde5588074', onsubmit });
 		expect(textarea.value).toBe('session draft');
 	});
 
 	it('clears the submitted draft instead of restoring it on the next visit', async () => {
 		const submit = vi.fn();
 		const { container, rerender } = render(Composer, {
-			activeSessionId: 'ses-a',
+			activeSessionId: 'ses-32f23b1e00f85571a60f75dde5588074',
 			onsubmit: submit,
 		});
 		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
@@ -279,29 +279,32 @@ describe('Composer per-session drafts', () => {
 
 		expect(submit).toHaveBeenCalledWith({ text: 'send once', images: [], files: [] });
 		expect(textarea.value).toBe('');
-		await rerender({ activeSessionId: 'ses-b', onsubmit: submit });
-		await rerender({ activeSessionId: 'ses-a', onsubmit: submit });
+		await rerender({ activeSessionId: 'ses-b77487af9bb14e5ec4d60572f1248bce', onsubmit: submit });
+		await rerender({ activeSessionId: 'ses-32f23b1e00f85571a60f75dde5588074', onsubmit: submit });
 		expect(textarea.value).toBe('');
 	});
 
 	it('evicts the oldest cached draft after the 100-session limit', async () => {
 		const { container, rerender } = render(Composer, {
-			activeSessionId: 'ses-0',
+			activeSessionId: 'ses-00000000000000000000000000000000',
 			onsubmit,
 		});
 		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
 
 		for (let index = 0; index <= 101; index += 1) {
 			if (index > 0) {
-				await rerender({ activeSessionId: `ses-${index}`, onsubmit });
+				await rerender({
+					activeSessionId: `ses-${index.toString(16).padStart(32, '0')}`,
+					onsubmit,
+				});
 			}
 			await fireEvent.input(textarea, { target: { value: `draft-${index}` } });
 		}
 
-		await rerender({ activeSessionId: 'ses-0', onsubmit });
+		await rerender({ activeSessionId: 'ses-00000000000000000000000000000000', onsubmit });
 		expect(textarea.value).toBe('');
 
-		await rerender({ activeSessionId: 'ses-2', onsubmit });
+		await rerender({ activeSessionId: 'ses-00000000000000000000000000000002', onsubmit });
 		expect(textarea.value).toBe('draft-2');
 	});
 });

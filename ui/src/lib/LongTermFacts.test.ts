@@ -8,7 +8,7 @@ describe('LongTermFacts', () => {
 		const props: any = {
 			facts: [
 				{
-					fact_id: 'fact-1',
+					fact_id: 'fact-00000000000000000000000000000001',
 					subject: 'user',
 					predicate: 'theme',
 					object: 'dark',
@@ -32,6 +32,6 @@ describe('LongTermFacts', () => {
 		expect(screen.getByRole('heading', { name: 'theme' })).toBeTruthy();
 		expect(screen.getAllByText('dark').length).toBeGreaterThan(0);
 		await fireEvent.click(screen.getByRole('button', { name: '删除这条记忆' }));
-		expect(onDeleteFact).toHaveBeenCalledWith('fact-1');
+		expect(onDeleteFact).toHaveBeenCalledWith('fact-00000000000000000000000000000001');
 	});
 });

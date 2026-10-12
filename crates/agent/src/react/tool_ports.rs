@@ -67,7 +67,11 @@ mod tests {
                 .expect("temporary database"),
         );
         let tools = Arc::new(ToolsFacade::new());
-        let snapshot = Arc::new(tools.tool_catalog_snapshot("ses-seed").await);
+        let snapshot = Arc::new(
+            tools
+                .tool_catalog_snapshot("ses-64cf9d395b198e3bd1b0b7af3b26084a")
+                .await,
+        );
         let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
         let session_ids = Arc::new(Mutex::new(Vec::new()));
         let tool_catalog: Arc<dyn ToolCatalogPort> = Arc::new(RecordingToolCatalogPort {

@@ -2069,7 +2069,7 @@ mod tests {
             .unwrap();
         bus.register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
             .unwrap();
-        // Rewrite the registry so ses-b looks stale (heartbeat > 300s ago).
+        // Rewrite the registry so session-a looks stale (heartbeat > 300s ago).
         let old = (Local::now()
             - chrono::Duration::from_std(OFFLINE_AFTER).unwrap()
             - chrono::Duration::seconds(10))
@@ -2096,7 +2096,7 @@ mod tests {
             "stale agents still receive (lenient delivery)"
         );
         assert_eq!(outcome.status, AgentStatus::Offline);
-        // The message is there when ses-b eventually polls.
+        // The message is there when session-b eventually polls.
         let msgs = claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert_eq!(msgs.len(), 1);
     }
@@ -2379,7 +2379,7 @@ mod tests {
         let (_dir, bus) = test_bus();
         bus.register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
             .unwrap();
-        // Archive history: an old message from ses-a.
+        // Archive history: an old message from session-a.
         let old = env_from(
             "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -2396,7 +2396,7 @@ mod tests {
         )
         .unwrap();
         claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        // New unread message from ses-c with a custom reply_to_session_id.
+        // New unread message from session-c with a custom reply_to_session_id.
         let mut fresh = env_from(
             "ses-cccccccccccccccccccccccccccccccc",
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -2534,11 +2534,20 @@ mod tests {
     #[test]
     fn mailbox_paths_follow_the_spec_layout() {
         let (_dir, bus) = test_bus();
-        assert_eq!(bus.mailbox("ses-x"), bus.root().join("ses-x.jsonl"));
-        assert_eq!(bus.archive("ses-x"), bus.root().join("ses-x.archive.jsonl"));
         assert_eq!(
-            bus.processing("ses-x"),
-            bus.root().join("ses-x.jsonl.processing")
+            bus.mailbox("ses-ebf7891451d2d7f9e5c1bf89d169e552"),
+            bus.root()
+                .join("ses-ebf7891451d2d7f9e5c1bf89d169e552.jsonl")
+        );
+        assert_eq!(
+            bus.archive("ses-ebf7891451d2d7f9e5c1bf89d169e552"),
+            bus.root()
+                .join("ses-ebf7891451d2d7f9e5c1bf89d169e552.archive.jsonl")
+        );
+        assert_eq!(
+            bus.processing("ses-ebf7891451d2d7f9e5c1bf89d169e552"),
+            bus.root()
+                .join("ses-ebf7891451d2d7f9e5c1bf89d169e552.jsonl.processing")
         );
     }
 

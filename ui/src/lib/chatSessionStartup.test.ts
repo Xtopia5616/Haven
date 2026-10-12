@@ -175,7 +175,7 @@ describe('createChatSessionStartup', () => {
 			listRuntimeSessions: () => sessionsResponse.promise,
 			getLatestSessionForResume,
 		});
-		const pendingIds = ['step-live'];
+		const pendingIds = ['step-fa7d9da560291aec4d4fd57e8812de10'];
 		// A reducer-owned pending request must survive a possibly stale resume snapshot.
 		harness.reducer.dispatch({
 			type: 'session/interaction-upserted',
@@ -205,7 +205,7 @@ describe('createChatSessionStartup', () => {
 			'session/retained-error',
 			'sessions/loaded',
 		]);
-		expect(harness.actions[1]).toMatchObject({ preserveRequestIds: ['step-live'] });
+		expect(harness.actions[1]).toMatchObject({ preserveRequestIds: ['step-fa7d9da560291aec4d4fd57e8812de10'] });
 		expect(harness.actions[3]).toMatchObject({
 			type: 'session/run-ended',
 			status: 'error',

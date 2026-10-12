@@ -1284,7 +1284,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("haven_prompt_rank_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&dir).unwrap());
-        // 15 higher-confidence but ses-irrelevant facts…
+        // 15 higher-confidence but session-irrelevant facts…
         for i in 0..15 {
             db.insert_fact(
                 "user",
@@ -1314,7 +1314,7 @@ mod tests {
         );
         let prompt = builder.build("set up dark theme", &[]).await;
 
-        // The ses-relevant fact wins a slot despite its lower raw confidence.
+        // The session-relevant fact wins a slot despite its lower raw confidence.
         assert!(prompt.contains("dark themes"));
         // The 15-fact budget means at least one irrelevant fact was dropped.
         let included_things = prompt.matches("Thing").count();
@@ -1747,7 +1747,7 @@ mod tests {
     #[test]
     fn display_confidence_pct_uses_raw_five_percent_buckets() {
         let mut fact = haven_memory::Fact {
-            fact_id: "fact-1".into(),
+            fact_id: "fact-4239df0ceaf003ef339c54b852a35b0a".into(),
             subject: "user".into(),
             predicate: "likes".into(),
             object: "rust".into(),
@@ -1942,7 +1942,7 @@ mod tests {
             "the capability index should stay descriptive, not carry tool schemas"
         );
 
-        let session_id = "ses-prompt-routing";
+        let session_id = "ses-2e4e6ebf8d097ecdd911d6f5f1d1633c";
         let before = tools.tool_catalog_snapshot(session_id).await;
         assert!(
             before

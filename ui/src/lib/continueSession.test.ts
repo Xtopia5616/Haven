@@ -99,7 +99,7 @@ describe('shouldResubmitOriginalUser', () => {
 
 	it('resubmits IDs with a message prefix but a noncanonical suffix', () => {
 		expect(shouldResubmitOriginalUser([], 'msg-short')).toBe(true);
-		expect(shouldResubmitOriginalUser([], 'msg-0000000000000000000000000000000A')).toBe(true);
+		expect(shouldResubmitOriginalUser([], 'msg-54fd6ea013a17b80d741dba40001ee1d')).toBe(true);
 	});
 
 	it('resubmits optimistic-only bubbles that never got a msg- id', () => {

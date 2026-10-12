@@ -1041,3 +1041,5 @@
 - [1050：只将规范实体 ID 视为持久身份](1050-classify-only-canonical-entity-identities.md)
 - [1051：共享媒体资产身份校验](1051-share-media-asset-identity-validation.md)
 - [1052：统一 UI 静态词表命名并保留响应字段形状](1052-align-ui-vocabulary-and-response-field-shapes.md)
+- [1053：规范化 Rust 正向实体 ID 测试夹具](1053-normalize-positive-rust-id-fixtures.md)
+- [1054：规范化 UI 正向实体 ID 测试夹具](1054-normalize-positive-ui-id-fixtures.md)

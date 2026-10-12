@@ -66,7 +66,7 @@ describe('WorkspaceStatus', () => {
 			llmConnected: 'disconnected',
 			executionPhase: 'generating',
 			activeSessionStatusLabel: '运行中',
-			busySessions: new Set(['ses-1']),
+			busySessions: new Set(['ses-00000000000000000000000000000001']),
 		});
 
 		const status = screen.getByRole('status', { name: '状态：模型不可用' });
@@ -86,7 +86,7 @@ describe('WorkspaceStatus', () => {
 				runtime: 'tauri',
 				bootstrapReady: true,
 				executionPhase,
-				busySessions: new Set(['ses-1']),
+				busySessions: new Set(['ses-00000000000000000000000000000001']),
 			});
 			expect(screen.getByRole('status', { name: `状态：${label}` })).toBeTruthy();
 			unmount();

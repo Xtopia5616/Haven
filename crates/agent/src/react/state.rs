@@ -321,7 +321,7 @@ mod tests {
             summary: "summary".into(),
             tokens_before: 100,
             tokens_after: 20,
-            episode_id: "msg-summary".into(),
+            episode_id: "msg-f2a54ee443860f8ff808d3402e429653".into(),
             degraded: false,
         };
         state.replace_with_compaction(record, vec![CanonicalMessage::user_text("recent")]);
@@ -429,7 +429,7 @@ mod tests {
             summary: "summary".into(),
             tokens_before: 100,
             tokens_after: 20,
-            episode_id: "msg-summary".into(),
+            episode_id: "msg-f2a54ee443860f8ff808d3402e429653".into(),
             degraded: false,
         };
 

@@ -988,10 +988,10 @@ mod tests {
     #[test]
     fn set_and_get_kv() {
         let db = test_db();
-        db.set_kv("fact_extraction.t1", "msg-1").unwrap();
+        db.set_kv("example.value", "opaque-value").unwrap();
         assert_eq!(
-            db.get_kv("fact_extraction.t1").unwrap(),
-            Some("msg-1".into())
+            db.get_kv("example.value").unwrap(),
+            Some("opaque-value".into())
         );
         assert_eq!(db.get_kv("nonexistent").unwrap(), None);
     }
@@ -1085,9 +1085,14 @@ mod tests {
     fn cleanup_orphan_extraction_cursors_removes_stale_keys() {
         let db = test_db();
         let session = db.create_session("").unwrap();
+        let orphan_session_id = "ses-00000000000000000000000000000009";
+        let orphan_message_id = "msg-00000000000000000000000000000009";
         // Cursor + throttle stamp for an existing session: kept.
-        db.set_kv(&format!("fact_extraction.{}", session.session_id), "msg-1")
-            .unwrap();
+        db.set_kv(
+            &format!("fact_extraction.{}", session.session_id),
+            "msg-00000000000000000000000000000001",
+        )
+        .unwrap();
         db.set_kv(
             &format!("fact_extraction_last_run.{}", session.session_id),
             "2026-08-15T00:00:00Z",
@@ -1097,17 +1102,35 @@ mod tests {
             .unwrap();
         // Orphan cursor / orphan throttle stamp (no session row) and
         // non-cursor keys: the orphans are removed, unrelated kv keys survive.
-        db.set_kv("fact_extraction.gone", "msg-9").unwrap();
-        db.set_kv("fact_extraction_last_run.gone", "2026-08-15T00:00:00Z")
-            .unwrap();
-        db.set_kv("fact_extraction_episode_done.gone.msg-11", "gone")
-            .unwrap();
-        db.set_kv("fact_extraction_pending.gone", "0:1:0:0")
-            .unwrap();
-        db.set_kv("fact_extraction_pending_poison.gone", "bad fact marker")
-            .unwrap();
         db.set_kv(
-            "fact_extraction_episode_pending_poison.gone.msg-11",
+            &format!("fact_extraction.{orphan_session_id}"),
+            orphan_message_id,
+        )
+        .unwrap();
+        db.set_kv(
+            &format!("fact_extraction_last_run.{orphan_session_id}"),
+            "2026-08-15T00:00:00Z",
+        )
+        .unwrap();
+        db.set_kv(
+            &format!("fact_extraction_episode_done.{orphan_session_id}.{orphan_message_id}"),
+            "gone",
+        )
+        .unwrap();
+        db.set_kv(
+            &format!("fact_extraction_pending.{orphan_session_id}"),
+            "0:1:0:0",
+        )
+        .unwrap();
+        db.set_kv(
+            &format!("fact_extraction_pending_poison.{orphan_session_id}"),
+            "bad fact marker",
+        )
+        .unwrap();
+        db.set_kv(
+            &format!(
+                "fact_extraction_episode_pending_poison.{orphan_session_id}.{orphan_message_id}"
+            ),
             "bad summary marker",
         )
         .unwrap();
@@ -1116,7 +1139,8 @@ mod tests {
             "keep for existing session",
         )
         .unwrap();
-        db.set_kv("memory_event_cursor.gone", "8").unwrap();
+        db.set_kv(&format!("memory_event_cursor.{orphan_session_id}"), "8")
+            .unwrap();
         db.set_kv("memoryXeventYcursor.gone", "keep").unwrap();
         db.set_kv("other.state", "keep").unwrap();
 
@@ -1133,27 +1157,41 @@ mod tests {
                 .is_some()
         );
         assert_eq!(db.memory_event_cursor(&session.session_id).unwrap(), 9);
-        assert!(db.get_kv("fact_extraction.gone").unwrap().is_none());
         assert!(
-            db.get_kv("fact_extraction_last_run.gone")
+            db.get_kv(&format!("fact_extraction.{orphan_session_id}"))
                 .unwrap()
                 .is_none()
         );
         assert!(
-            db.get_kv("fact_extraction_episode_done.gone.msg-11")
-                .unwrap()
-                .is_none()
-        );
-        assert!(db.get_kv("fact_extraction_pending.gone").unwrap().is_none());
-        assert!(
-            db.get_kv("fact_extraction_pending_poison.gone")
+            db.get_kv(&format!("fact_extraction_last_run.{orphan_session_id}"))
                 .unwrap()
                 .is_none()
         );
         assert!(
-            db.get_kv("fact_extraction_episode_pending_poison.gone.msg-11")
+            db.get_kv(&format!(
+                "fact_extraction_episode_done.{orphan_session_id}.{orphan_message_id}"
+            ))
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            db.get_kv(&format!("fact_extraction_pending.{orphan_session_id}"))
                 .unwrap()
                 .is_none()
+        );
+        assert!(
+            db.get_kv(&format!(
+                "fact_extraction_pending_poison.{orphan_session_id}"
+            ))
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            db.get_kv(&format!(
+                "fact_extraction_episode_pending_poison.{orphan_session_id}.{orphan_message_id}"
+            ))
+            .unwrap()
+            .is_none()
         );
         assert_eq!(
             db.get_kv(&format!(
@@ -1164,7 +1202,11 @@ mod tests {
             .as_deref(),
             Some("keep for existing session")
         );
-        assert!(db.get_kv("memory_event_cursor.gone").unwrap().is_none());
+        assert!(
+            db.get_kv(&format!("memory_event_cursor.{orphan_session_id}"))
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             db.get_kv("memoryXeventYcursor.gone").unwrap(),
             Some("keep".into())
@@ -1177,8 +1219,11 @@ mod tests {
         let db = test_db();
         let first = db.create_session("first").unwrap();
         let second = db.create_session("second").unwrap();
-        db.set_kv(&format!("fact_extraction.{}", first.session_id), "msg-7")
-            .unwrap();
+        db.set_kv(
+            &format!("fact_extraction.{}", first.session_id),
+            "msg-00000000000000000000000000000007",
+        )
+        .unwrap();
 
         assert_eq!(db.memory_event_cursor(&first.session_id).unwrap(), 0);
         db.checkpoint_memory_event_cursor(&first.session_id, 0)
@@ -1207,7 +1252,7 @@ mod tests {
         assert_eq!(
             db.get_kv(&format!("fact_extraction.{}", first.session_id))
                 .unwrap(),
-            Some("msg-7".into())
+            Some("msg-00000000000000000000000000000007".into())
         );
         assert!(
             db.checkpoint_memory_event_cursor(&first.session_id, -1)
@@ -1224,8 +1269,11 @@ mod tests {
         let db = test_db();
         let session = db.create_session("t-cursor").unwrap();
         let episode_id = new_id("msg");
-        db.set_kv(&format!("fact_extraction.{}", session.session_id), "msg-1")
-            .unwrap();
+        db.set_kv(
+            &format!("fact_extraction.{}", session.session_id),
+            &episode_id,
+        )
+        .unwrap();
         db.set_kv(
             &format!("fact_extraction_last_run.{}", session.session_id),
             "2026-08-15T00:00:00Z",
@@ -1528,9 +1576,10 @@ mod tests {
 
     #[test]
     fn summary_extraction_marker_requires_attempt_and_deadline() {
-        assert!(decode_summary_extraction_marker("ses-123").is_err());
-        let current = decode_summary_extraction_marker("ses-123:2:5000").unwrap();
-        assert_eq!(current.session_id, "ses-123");
+        let session_id = "ses-00000000000000000000000000000001";
+        assert!(decode_summary_extraction_marker(session_id).is_err());
+        let current = decode_summary_extraction_marker(&format!("{session_id}:2:5000")).unwrap();
+        assert_eq!(current.session_id, session_id);
         assert_eq!(current.attempt, 2);
         assert_eq!(current.next_attempt_at_ms, 5000);
     }

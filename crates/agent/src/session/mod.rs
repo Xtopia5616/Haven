@@ -3915,7 +3915,7 @@ mod tests {
                 "nonexistent_tool",
                 serde_json::json!({}),
                 1,
-                "step-any",
+                "step-1e19d260dd6f91b53031ed458094235e",
             )
             .await;
         assert!(result.is_err());
@@ -3936,7 +3936,7 @@ mod tests {
                 "nonexistent_tool",
                 serde_json::json!({}),
                 1,
-                "step-any",
+                "step-1e19d260dd6f91b53031ed458094235e",
             )
             .await;
         assert!(result.is_err());
@@ -3963,7 +3963,7 @@ mod tests {
                 "nonexistent_tool",
                 serde_json::json!({}),
                 1,
-                "step-any",
+                "step-1e19d260dd6f91b53031ed458094235e",
             )
             .await;
         assert!(result.is_err());
@@ -3984,7 +3984,7 @@ mod tests {
                 "nonexistent_tool",
                 serde_json::json!({}),
                 1,
-                "step-any",
+                "step-1e19d260dd6f91b53031ed458094235e",
             )
             .await;
         assert!(result.is_err());

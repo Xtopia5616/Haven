@@ -567,7 +567,7 @@ describe('ChatBubble', () => {
 			base({
 				role: 'assistant' as const,
 				content: 'ctx',
-				messageId: 'm42',
+				messageId: 'msg-0000000000000000000000000000002a',
 				stepNumber: 7,
 				type: 'thought',
 				onContextMenu,
@@ -582,7 +582,7 @@ describe('ChatBubble', () => {
 		expect(payload).toMatchObject({
 			x: 11,
 			y: 22,
-			messageId: 'm42',
+			messageId: 'msg-0000000000000000000000000000002a',
 			stepNumber: 7,
 			role: 'assistant' as const,
 			content: 'ctx',

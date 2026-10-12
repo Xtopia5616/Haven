@@ -62,7 +62,7 @@ describe('Settings commands', () => {
 	it('forwards each Settings operation through its generated command owner', async () => {
 		const grants: SessionPermissionGrant[] = [
 			{
-				session_id: 'ses-0123456789abcdef0123456789abcdef',
+				session_id: 'ses-103ac63490bc5f6c27fd45405efecd69',
 				session_title: 'Session',
 				capability: 'files.read',
 				target: 'operation',
@@ -80,9 +80,9 @@ describe('Settings commands', () => {
 			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce(2)
 			.mockResolvedValueOnce(undefined)
-			.mockResolvedValueOnce('cred-11111111111111111111111111111111')
-			.mockResolvedValueOnce('cred-22222222222222222222222222222222')
-			.mockResolvedValueOnce('cred-33333333333333333333333333333333')
+			.mockResolvedValueOnce('cred-0000008c3defb1edb984fe2ac71c71c7')
+			.mockResolvedValueOnce('cred-000001187bdf63db7309fc558e38e38e')
+			.mockResolvedValueOnce('cred-000001a4b9cf15c92c8efa8055555555')
 			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce(undefined);
@@ -100,13 +100,13 @@ describe('Settings commands', () => {
 		expect(await resetSessionPermissions()).toBe(2);
 		await setHotkeyCaptureActive(true);
 		expect(await stageProviderCredential({ providerName: 'provider', apiKey: 'secret' })).toBe(
-			'cred-11111111111111111111111111111111',
+			'cred-0000008c3defb1edb984fe2ac71c71c7',
 		);
 		expect(await stageOcrCredential({ apiSecret: false, value: 'key' })).toBe(
-			'cred-22222222222222222222222222222222',
+			'cred-000001187bdf63db7309fc558e38e38e',
 		);
 		expect(await stageOcrCredential({ apiSecret: true, value: 'secret' })).toBe(
-			'cred-33333333333333333333333333333333',
+			'cred-000001a4b9cf15c92c8efa8055555555',
 		);
 		await updateSettings(settingsRequest);
 		await enableAutostart();
@@ -163,7 +163,7 @@ describe('Settings commands', () => {
 		);
 
 		invokeMock.mockResolvedValueOnce({
-			session_id: 'ses-0123456789abcdef0123456789abcdef',
+			session_id: 'ses-103ac63490bc5f6c27fd45405efecd69',
 		} as never);
 		await expect(listSessionPermissions()).rejects.toThrow(
 			'Invalid session permission grant identity',
@@ -178,7 +178,7 @@ describe('Settings commands', () => {
 	])('rejects malformed session permission grant fields: %o', async (invalidFields) => {
 		invokeMock.mockResolvedValueOnce([
 			{
-				session_id: 'ses-0123456789abcdef0123456789abcdef',
+				session_id: 'ses-103ac63490bc5f6c27fd45405efecd69',
 				session_title: 'Session',
 				capability: 'files.read',
 				target: 'operation',

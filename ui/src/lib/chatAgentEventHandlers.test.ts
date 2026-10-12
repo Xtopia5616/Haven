@@ -16,16 +16,16 @@ describe('chat agent live tool output', () => {
 		});
 
 		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
-		handlers['agent:tool_call']({ payload: { sessionId: 'ses-live' } } as never);
+		handlers['agent:tool_call']({ payload: { sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a' } } as never);
 		expect(get(reactExecutionPhaseStore)).toMatchObject({
-			sessionId: 'ses-live',
+			sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a',
 			phase: 'waiting_result',
 		});
 
 		handlers['agent:observation']({
 			payload: {
-				sessionId: 'ses-live',
-				stepId: 'step-shell',
+				sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a',
+				stepId: 'step-b1ff030bcda172afbbad69aa787379d5',
 				stepNumber: 1,
 				runId: 1,
 				eventSequence: 2,
@@ -34,7 +34,7 @@ describe('chat agent live tool output', () => {
 			},
 		} as never);
 		expect(get(reactExecutionPhaseStore)).toMatchObject({
-			sessionId: 'ses-live',
+			sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a',
 			phase: 'generating',
 		});
 	});
@@ -49,11 +49,11 @@ describe('chat agent live tool output', () => {
 		clearToolOutputPreviewsForSession(null);
 
 		handlers['agent:tool_output']({
-			payload: { sessionId: 'ses-live', stepId: 'step-shell', output: 'line 1' },
+			payload: { sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a', stepId: 'step-b1ff030bcda172afbbad69aa787379d5', output: 'line 1' },
 		} as never);
 
 		expect(dispatchSession).not.toHaveBeenCalled();
-		expect(get(getToolOutputPreviewStore('step-shell'))).toBe('line 1');
+		expect(get(getToolOutputPreviewStore('step-b1ff030bcda172afbbad69aa787379d5'))).toBe('line 1');
 	});
 
 	it('clears the side-channel when the canonical observation arrives', () => {
@@ -62,12 +62,12 @@ describe('chat agent live tool output', () => {
 			flushChunksNow: vi.fn(),
 			dispatchSession: vi.fn(),
 		});
-		getToolOutputPreviewStore('step-shell').set('partial');
+		getToolOutputPreviewStore('step-b1ff030bcda172afbbad69aa787379d5').set('partial');
 
 		handlers['agent:observation']({
 			payload: {
-				sessionId: 'ses-live',
-				stepId: 'step-shell',
+				sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a',
+				stepId: 'step-b1ff030bcda172afbbad69aa787379d5',
 				stepNumber: 1,
 				runId: 1,
 				eventSequence: 2,
@@ -76,6 +76,6 @@ describe('chat agent live tool output', () => {
 			},
 		} as never);
 
-		expect(get(getToolOutputPreviewStore('step-shell'))).toBeUndefined();
+		expect(get(getToolOutputPreviewStore('step-b1ff030bcda172afbbad69aa787379d5'))).toBeUndefined();
 	});
 });

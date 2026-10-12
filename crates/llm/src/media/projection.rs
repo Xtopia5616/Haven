@@ -202,7 +202,7 @@ mod tests {
                 MediaRepresentationKind::ManagedFileRef,
                 MediaProvenance::Original,
                 MediaRepresentationPayload::ManagedFileRef {
-                    asset_id: "asset-0123456789abcdef".into(),
+                    asset_id: "asset-8cfe45d6fdb80bb1325ceefa61f7c344".into(),
                     filename: Some("report.pdf".into()),
                 },
             ),
@@ -218,7 +218,7 @@ mod tests {
         );
         let parts = project_media_plan(&plan, std::slice::from_ref(&input)).unwrap();
         assert!(matches!(parts.as_slice(), [ContentPart::Text(text)]
-            if text.contains("asset-0123456789abcdef")
+            if text.contains("asset-8cfe45d6fdb80bb1325ceefa61f7c344")
                 && text.contains("report.pdf")
                 && !text.contains("C:\\")
                 && !text.contains("/Users/")));

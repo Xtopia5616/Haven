@@ -490,12 +490,12 @@ mod tests {
     #[test]
     fn confirm_resume_reuses_pending_identity() {
         let pending = InteractionRequest::confirm(
-            "ses-test",
+            "ses-37d95174ca2a846e8425178b7dc6ed84",
             1,
             "write".into(),
             serde_json::json!({"path": "a.txt"}),
             "call-write".into(),
-            "step-existing".into(),
+            "step-8a444e63a26188cb355b0a3d8efb3dab".into(),
             3,
             haven_common::types::RiskLevel::High,
             None,
@@ -504,7 +504,7 @@ mod tests {
         let plan = ToolBatchPlan::from_confirm_requests(&[pending]);
         let planned = plan.get(0).unwrap();
 
-        assert_eq!(planned.step_id, "step-existing");
+        assert_eq!(planned.step_id, "step-8a444e63a26188cb355b0a3d8efb3dab");
         assert_eq!(planned.tool_index, 3);
         assert_eq!(
             planned.tool_call.tool_call_id.as_deref(),
@@ -517,7 +517,7 @@ mod tests {
         let plan =
             ToolBatchPlan::from_tool_calls(&[tool_call("read", false), tool_call("write", false)]);
         let confirmation = InteractionRequest::confirm(
-            "ses-test",
+            "ses-37d95174ca2a846e8425178b7dc6ed84",
             7,
             "write".into(),
             serde_json::json!({"name": "write"}),
@@ -574,7 +574,7 @@ mod tests {
     fn replay_drops_confirmation_plan_only_after_its_requests_are_cleared() {
         let plan = ToolBatchPlan::from_tool_calls(&[tool_call("write", false)]);
         let request = InteractionRequest::confirm(
-            "ses-test",
+            "ses-37d95174ca2a846e8425178b7dc6ed84",
             2,
             "write".into(),
             serde_json::json!({"name": "write"}),
@@ -587,7 +587,7 @@ mod tests {
         let durable =
             ConfirmationBatchPlan::from_plan(2, &plan, std::slice::from_ref(&request)).unwrap();
         let event = |sequence, event_type: &str, payload: String| haven_memory::SessionEvent {
-            session_id: "ses-test".into(),
+            session_id: "ses-37d95174ca2a846e8425178b7dc6ed84".into(),
             sequence,
             event_type: event_type.into(),
             event_version: haven_memory::CURRENT_EVENT_VERSION,
@@ -604,7 +604,7 @@ mod tests {
         let unrelated_clear = event(
             2,
             haven_memory::INTERACTION_CLEARED_EVENT_TYPE,
-            r#"{"ids":["conf-other"]}"#.into(),
+            r#"{"ids":["conf-8e9decfc9f32435a6d88d068b0e27d39"]}"#.into(),
         );
         let completed_clear = event(
             3,

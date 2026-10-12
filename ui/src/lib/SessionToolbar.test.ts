@@ -8,8 +8,8 @@ describe('SessionToolbar', () => {
 		render(SessionToolbar, {
 			showSessionMenu: true,
 			menuSessions: [
-				{ sessionId: 'ses-1', status: 'running', title: '当前会话' },
-				{ sessionId: 'ses-2', status: 'paused', title: '另一个会话' },
+				{ sessionId: 'ses-00000000000000000000000000000001', status: 'running', title: '当前会话' },
+				{ sessionId: 'ses-00000000000000000000000000000002', status: 'paused', title: '另一个会话' },
 			],
 			onToggleSessionMenu,
 		});
@@ -26,7 +26,7 @@ describe('SessionToolbar', () => {
 	});
 
 	it('does not render duplicate new or end controls in the normal toolbar', () => {
-		render(SessionToolbar, { activeSessionId: 'ses-1' });
+		render(SessionToolbar, { activeSessionId: 'ses-00000000000000000000000000000001' });
 
 		expect(screen.queryByRole('button', { name: '新建会话' })).toBeNull();
 		expect(screen.queryByRole('button', { name: '结束会话' })).toBeNull();
@@ -199,13 +199,13 @@ describe('SessionToolbar', () => {
 		render(SessionToolbar, {
 			showSessionMenu: true,
 			sessionMenuOpen: true,
-			menuSessions: [{ sessionId: 'ses-old', status: 'completed', title: '旧绘画会话' }],
+			menuSessions: [{ sessionId: 'ses-76f19db031ba6b93089e8acb9f43666f', status: 'completed', title: '旧绘画会话' }],
 			onSwitchSession,
 		});
 
 		await fireEvent.click(screen.getByRole('menuitemradio'));
 
-		expect(onSwitchSession).toHaveBeenCalledWith('ses-old');
+		expect(onSwitchSession).toHaveBeenCalledWith('ses-76f19db031ba6b93089e8acb9f43666f');
 	});
 
 	it('shows parent and Agent child sessions in the session switcher', async () => {
@@ -216,14 +216,14 @@ describe('SessionToolbar', () => {
 			menuSessions: [],
 			sessionLineage: {
 				parent: {
-					sessionId: 'ses-parent',
+					sessionId: 'ses-00000000000000000000000000000003',
 					status: 'paused',
 					title: '父会话',
 					inputText: '父会话',
 				},
 				children: [
 					{
-						sessionId: 'ses-child',
+						sessionId: 'ses-9eef625636b53892919ea43340b92944',
 						status: 'completed',
 						title: 'Agent 调研',
 						inputText: 'Agent 调研',
@@ -234,9 +234,9 @@ describe('SessionToolbar', () => {
 		});
 
 		await fireEvent.click(screen.getByRole('menuitem', { name: /返回父会话/ }));
-		expect(onSwitchSession).toHaveBeenCalledWith('ses-parent');
+		expect(onSwitchSession).toHaveBeenCalledWith('ses-00000000000000000000000000000003');
 		await fireEvent.click(screen.getByRole('menuitem', { name: /Agent 调研/ }));
-		expect(onSwitchSession).toHaveBeenLastCalledWith('ses-child');
+		expect(onSwitchSession).toHaveBeenLastCalledWith('ses-9eef625636b53892919ea43340b92944');
 	});
 
 	it('distinguishes a lineage load failure from an empty relationship list', () => {

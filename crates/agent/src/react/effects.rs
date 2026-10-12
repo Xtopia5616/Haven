@@ -342,7 +342,7 @@ mod tests {
         let mut batch = EffectBatch::continue_batch();
         batch.transcript(TranscriptEvent::Thought {
             text: "one".into(),
-            message_id: "step-1".into(),
+            message_id: "step-f9430084054c5002eb0d7715a0ec20cd".into(),
         });
         assert_eq!(batch.effects.len(), 1);
         assert!(matches!(batch.effects[0], TurnEffect::Transcript(_)));
@@ -353,7 +353,7 @@ mod tests {
         let mut prefix = EffectBatch::continue_batch();
         prefix.transcript(TranscriptEvent::Thought {
             text: "thought".into(),
-            message_id: "step-1".into(),
+            message_id: "step-f9430084054c5002eb0d7715a0ec20cd".into(),
         });
         let mut end = EffectBatch::continue_batch();
         end.transcript(TranscriptEvent::ToolCall {

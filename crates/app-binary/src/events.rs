@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn session_lifecycle_event_uses_a_discriminated_union() {
         let event = SessionLifecycleEvent::Updated {
-            session_id: "ses-1".into(),
+            session_id: "ses-7ae290dbf0b4468c9d2c401be649850b".into(),
             status: SessionUpdateStatus::Paused,
             waiting_reason: Some(SessionWaitingReason::UserInterrupt),
             title: "Plan migration".into(),
@@ -773,7 +773,7 @@ mod tests {
             serde_json::to_value(event).unwrap(),
             serde_json::json!({
                 "type": "updated",
-                "session_id": "ses-1",
+                "session_id": "ses-7ae290dbf0b4468c9d2c401be649850b",
                 "status": "paused",
                 "title": "Plan migration",
                 "waiting_reason": "user_interrupt",
@@ -782,7 +782,7 @@ mod tests {
         );
 
         let error = SessionLifecycleEvent::Error {
-            session_id: "ses-2".into(),
+            session_id: "ses-0d64523ce8dd6152d96419b5fce658eb".into(),
             title: "Build".into(),
             error: "provider unavailable".into(),
         };
@@ -790,7 +790,7 @@ mod tests {
             serde_json::to_value(error).unwrap(),
             serde_json::json!({
                 "type": "error",
-                "session_id": "ses-2",
+                "session_id": "ses-0d64523ce8dd6152d96419b5fce658eb",
                 "title": "Build",
                 "error": "provider unavailable",
             })
@@ -865,11 +865,11 @@ mod tests {
     #[test]
     fn background_tool_run_view_preserves_the_tool_run_event_wire_contract() {
         let event = ToolRunEvent::from(ToolRunView {
-            tool_run_id: "toolrun-board-background".into(),
+            tool_run_id: "toolrun-e8d9795bbfceef9833b59c0bbf1b3315".into(),
             kind: haven_tools::ToolRunKind::Background,
             status: ToolRunStatus::Completed,
-            session_id: Some("ses-1".into()),
-            source_step_id: Some("step-source".into()),
+            session_id: Some("ses-7ae290dbf0b4468c9d2c401be649850b".into()),
+            source_step_id: Some("step-7469d05e68e65b64fab2ddb439cbcf39".into()),
             started_at: Some("2026-09-23T10:00:00Z".into()),
             finished_at: Some("2026-09-23T10:00:01Z".into()),
             due_at: None,
@@ -887,11 +887,11 @@ mod tests {
         assert_eq!(
             serde_json::to_value(event).unwrap(),
             serde_json::json!({
-                "tool_run_id": "toolrun-board-background",
+                "tool_run_id": "toolrun-e8d9795bbfceef9833b59c0bbf1b3315",
                 "kind": "background",
                 "status": "completed",
-                "session_id": "ses-1",
-                "source_step_id": "step-source",
+                "session_id": "ses-7ae290dbf0b4468c9d2c401be649850b",
+                "source_step_id": "step-7469d05e68e65b64fab2ddb439cbcf39",
                 "started_at": "2026-09-23T10:00:00Z",
                 "finished_at": "2026-09-23T10:00:01Z",
                 "output": "done",
@@ -904,10 +904,10 @@ mod tests {
     #[test]
     fn scheduled_tool_run_view_preserves_wire_contract_without_internal_fields() {
         let event = ToolRunEvent::from(ToolRunView {
-            tool_run_id: "toolrun-board-scheduled".into(),
+            tool_run_id: "toolrun-07d3d49fefbdfe364742555319bb7669".into(),
             kind: haven_tools::ToolRunKind::Scheduled,
             status: ToolRunStatus::Waiting,
-            session_id: Some("ses-2".into()),
+            session_id: Some("ses-0d64523ce8dd6152d96419b5fce658eb".into()),
             source_step_id: None,
             started_at: None,
             finished_at: None,
@@ -927,10 +927,10 @@ mod tests {
         assert_eq!(
             wire,
             serde_json::json!({
-                "tool_run_id": "toolrun-board-scheduled",
+                "tool_run_id": "toolrun-07d3d49fefbdfe364742555319bb7669",
                 "kind": "scheduled",
                 "status": "waiting",
-                "session_id": "ses-2",
+                "session_id": "ses-0d64523ce8dd6152d96419b5fce658eb",
                 "due_at": "2026-09-24T10:00:00Z",
                 "title": "Take a break",
                 "body": "Stand up",

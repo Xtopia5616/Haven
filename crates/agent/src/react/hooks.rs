@@ -264,7 +264,7 @@ mod tests {
 
         let emitter: Arc<dyn AgentEventEmitter> = Arc::new(SilentEmitter);
         let ctx = StepCtx {
-            session_id: "ses-test".into(),
+            session_id: "ses-37d95174ca2a846e8425178b7dc6ed84".into(),
             step_number: 25,
             run_id: 1,
             emitter: emitter.clone(),
@@ -451,7 +451,7 @@ mod tests {
             );
             let emitter: Arc<dyn AgentEventEmitter> = Arc::new(SilentEmitter);
             let ctx = StepCtx {
-                session_id: "ses-test".into(),
+                session_id: "ses-37d95174ca2a846e8425178b7dc6ed84".into(),
                 step_number: 1,
                 run_id: 1,
                 emitter,

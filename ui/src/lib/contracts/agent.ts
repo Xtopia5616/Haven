@@ -579,7 +579,7 @@ export function mapAgentEvent(
 			const stepNumber = requiredU32(payload, 'step_number');
 			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
 			const thoughtMessageId = canonicalIdField(payload, 'thought_message_id', 'step');
-			const reasoningMessageId = canonicalIdField(payload, 'reasoning_message_id', 'step');
+			const reasoningMessageId = canonicalIdField(payload, 'reasoning_message_id', 'msg');
 			if (
 				sessionId === null ||
 				stepNumber === null ||

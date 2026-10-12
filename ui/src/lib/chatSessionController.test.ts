@@ -177,7 +177,7 @@ function addMessages(
 
 function pendingInteraction(sessionId = SESSION_ID): InteractionRequest {
 	return {
-		requestId: 'step-pending',
+		requestId: 'step-aac817798dc536ab69caa990732988f1',
 		sessionId,
 		owner: { kind: 'session' as const, sessionId },
 		kind: 'ask',
@@ -259,7 +259,7 @@ describe('ChatSessionController continue', () => {
 			harness.reducer,
 			{ id: USER_MESSAGE_ID, role: 'user' as const, content: '写一首诗' },
 			{
-				id: 'step-00000000000000000000000000000020',
+				id: 'step-00000000000000000000000000000014',
 				role: 'assistant' as const,
 				content: '已有一段',
 				type: 'thought',
@@ -337,11 +337,11 @@ describe('ChatSessionController continue', () => {
 
 		await harness.controller.resyncSessionMessages(SESSION_ID);
 
-		expect(harness.reducer.snapshot().interactions['step-pending']?.status).toBe('pending');
+		expect(harness.reducer.snapshot().interactions['step-aac817798dc536ab69caa990732988f1']?.status).toBe('pending');
 		const resumeAction = harness.actions.find(
 			(action) => action.type === 'session/messages/resume-loaded',
 		);
-		expect(resumeAction).toMatchObject({ preserveRequestIds: ['step-pending'] });
+		expect(resumeAction).toMatchObject({ preserveRequestIds: ['step-aac817798dc536ab69caa990732988f1'] });
 	});
 
 	it('ignores a duplicate continue request while the first command is in flight', async () => {

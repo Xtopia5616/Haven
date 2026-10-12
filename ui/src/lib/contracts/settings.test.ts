@@ -19,7 +19,7 @@ function withSetting(path: readonly string[], value: unknown) {
 describe('settings command contracts', () => {
 	it('validates permission capability scopes with the Rust owner grammar', () => {
 		const grant = {
-			session_id: 'ses-11111111111111111111111111111111',
+			session_id: 'ses-0000008c3defb1edb984fe2ac71c71c7',
 			session_title: null,
 			capability: 'system.power-lock',
 			target: 'operation',
@@ -41,13 +41,13 @@ describe('settings command contracts', () => {
 			provider: 'openai',
 			api_style: null,
 			base_url: '',
-			api_key_ref: 'cred-11111111111111111111111111111111',
+			api_key_ref: 'cred-0000008c3defb1edb984fe2ac71c71c7',
 			auth_header_name: 'Authorization',
 			auth_header_prefix: 'Bearer',
 			proxy_url: null,
 			no_proxy: null,
 		});
-		payload.media.ocr.api_secret_ref = 'cred-22222222222222222222222222222222';
+		payload.media.ocr.api_secret_ref = 'cred-000001187bdf63db7309fc558e38e38e';
 		payload.mcp_servers.push({
 			name: 'local',
 			transport: 'stdio',
@@ -56,7 +56,7 @@ describe('settings command contracts', () => {
 			env_refs: [
 				{
 					name: 'TOKEN',
-					credential_ref: 'cred-33333333333333333333333333333333',
+					credential_ref: 'cred-000001a4b9cf15c92c8efa8055555555',
 					has_value: false,
 				},
 			],

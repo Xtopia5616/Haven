@@ -8,7 +8,9 @@ describe('createChatInteractionEventHandlers', () => {
 		'places %s requests in the reducer',
 		(kind) => {
 			const base = {
-				requestId: `${kind}-1`,
+				requestId: kind === 'ask'
+					? 'step-00000000000000000000000000000001'
+					: 'conf-00000000000000000000000000000001',
 				status: 'pending' as const,
 				options: [],
 				createdAt: '2026-09-14T00:00:00Z',
@@ -18,14 +20,14 @@ describe('createChatInteractionEventHandlers', () => {
 					? {
 							...base,
 							kind,
-							sessionId: 'ses-1',
-							owner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-1' },
+							sessionId: 'ses-00000000000000000000000000000001',
+							owner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-00000000000000000000000000000001' },
 						}
 					: {
 							...base,
 							kind,
-							sessionId: 'ses-1',
-							owner: { kind: 'session', sessionId: 'ses-1' },
+							sessionId: 'ses-00000000000000000000000000000001',
+							owner: { kind: 'session', sessionId: 'ses-00000000000000000000000000000001' },
 						};
 			const event: TauriEvent<InteractionRequest> = {
 				event: 'interaction:requested',

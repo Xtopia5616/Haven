@@ -1881,7 +1881,7 @@ mod queue_tests {
     fn empty_state() -> SessionState {
         SessionState {
             info: SessionInfo {
-                session_id: "ses-queue".into(),
+                session_id: "ses-bcdbcfda44caeababedfd18888ea3db8".into(),
                 input: "queue".into(),
                 summary: "queue".into(),
                 title: None,

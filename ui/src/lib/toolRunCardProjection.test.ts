@@ -9,7 +9,7 @@ const projectionOptions = {
 		return status || '';
 	},
 	sessionTitleFor: (toolRun: { sessionId?: string }) =>
-		toolRun.sessionId === 'ses-1' ? '研究会话' : '',
+		toolRun.sessionId === 'ses-00000000000000000000000000000001' ? '研究会话' : '',
 	toolRunDuration: () => '3s',
 	scheduledToolRunCountdown: (dueAt?: string) => (dueAt ? '2分后' : ''),
 };
@@ -18,7 +18,7 @@ describe('projectToolRunCard', () => {
 	it('leaves a missing background status label blank', () => {
 		const card = projectToolRunCard(
 			{
-				toolRunId: 'toolrun-background',
+				toolRunId: 'toolrun-058de138a89ad8e4eef21b1dab8e5527',
 				kind: 'background',
 			},
 			projectionOptions,
@@ -31,7 +31,10 @@ describe('projectToolRunCard', () => {
 	it('maps finite ToolRun states to the card tone vocabulary', () => {
 		const toneFor = (kind: 'background' | 'scheduled', status: ToolRunStatus) =>
 			projectToolRunCard({
-				toolRunId: `toolrun-${kind}`,
+				toolRunId:
+					kind === 'background'
+						? 'toolrun-00000000000000000000000000000001'
+						: 'toolrun-00000000000000000000000000000002',
 				kind,
 				status,
 			}, projectionOptions).tone;
@@ -45,10 +48,10 @@ describe('projectToolRunCard', () => {
 	it('projects background cards with the shared fields and background details', () => {
 		const card = projectToolRunCard(
 			{
-				toolRunId: 'toolrun-background',
+				toolRunId: 'toolrun-058de138a89ad8e4eef21b1dab8e5527',
 				kind: 'background',
 				status: 'completed',
-				sessionId: 'ses-1',
+				sessionId: 'ses-00000000000000000000000000000001',
 				command: '整理下载目录',
 				output: '已移动 3 个文件',
 				error: 'diagnostic detail',
@@ -60,10 +63,10 @@ describe('projectToolRunCard', () => {
 		);
 
 		expect(card).toMatchObject({
-			toolRunId: 'toolrun-background',
+			toolRunId: 'toolrun-058de138a89ad8e4eef21b1dab8e5527',
 			kind: 'background',
 			status: 'completed',
-			sessionId: 'ses-1',
+			sessionId: 'ses-00000000000000000000000000000001',
 			title: '调用工具',
 			searchText: '研究会话',
 			statusLabel: '已完成',
@@ -83,10 +86,10 @@ describe('projectToolRunCard', () => {
 	it('projects scheduled cards with the same structure and scheduled details', () => {
 		const card = projectToolRunCard(
 			{
-				toolRunId: 'toolrun-scheduled',
+				toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9',
 				kind: 'scheduled',
 				status: 'completed',
-				sessionId: 'ses-1',
+				sessionId: 'ses-00000000000000000000000000000001',
 				dueAt: '2026-09-27T12:00:00Z',
 				title: '稍后整理',
 				body: '整理下载目录',
@@ -96,10 +99,10 @@ describe('projectToolRunCard', () => {
 		);
 
 		expect(card).toMatchObject({
-			toolRunId: 'toolrun-scheduled',
+			toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9',
 			kind: 'scheduled',
 			status: 'completed',
-			sessionId: 'ses-1',
+			sessionId: 'ses-00000000000000000000000000000001',
 			title: '稍后整理',
 			searchText: '继续会话',
 			statusLabel: '已完成',

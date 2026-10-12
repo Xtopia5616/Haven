@@ -860,7 +860,7 @@ mod tests {
             TranscriptRecord::Thought {
                 step_number: 1,
                 text: "run both".into(),
-                message_id: "step-1".into(),
+                message_id: "step-f9430084054c5002eb0d7715a0ec20cd".into(),
             },
             TranscriptRecord::ToolCall {
                 step_number: 1,
@@ -884,7 +884,7 @@ mod tests {
             TranscriptRecord::ToolResult {
                 step_number: 1,
                 tool_index: 1,
-                step_id: "step-b".into(),
+                step_id: "step-c78daa3b58455c210528e142f631bdfe".into(),
                 canonical_observation: "rb".into(),
                 history_observation: "rb".into(),
                 tool_call_id: Some("c2".into()),
@@ -898,7 +898,7 @@ mod tests {
             TranscriptRecord::ToolResult {
                 step_number: 1,
                 tool_index: 0,
-                step_id: "step-a".into(),
+                step_id: "step-6f1498a1c2d46dc54570809a01317852".into(),
                 canonical_observation: "ra".into(),
                 history_observation: "ra".into(),
                 tool_call_id: Some("c1".into()),
@@ -916,9 +916,15 @@ mod tests {
         assert_eq!(rounds.len(), 1, "parallel tools must share one round");
         assert_eq!(rounds[0].tools.len(), 2);
         assert_eq!(rounds[0].tools[0].tool_index, 0);
-        assert_eq!(rounds[0].tools[0].step_id, "step-a");
+        assert_eq!(
+            rounds[0].tools[0].step_id,
+            "step-6f1498a1c2d46dc54570809a01317852"
+        );
         assert_eq!(rounds[0].tools[1].tool_index, 1);
-        assert_eq!(rounds[0].tools[1].step_id, "step-b");
+        assert_eq!(
+            rounds[0].tools[1].step_id,
+            "step-c78daa3b58455c210528e142f631bdfe"
+        );
         assert_eq!(canonical.len(), 3); // assistant + 2 tool
         assert_eq!(canonical[1].tool_call_id.as_deref(), Some("c1"));
         assert_eq!(canonical[2].tool_call_id.as_deref(), Some("c2"));
@@ -1080,11 +1086,14 @@ mod tests {
     #[test]
     fn process_result_variants_roundtrip() {
         for result in [
-            ProcessResult::session_created("ses-1", Some("msg-abc".into())),
-            ProcessResult::session_created("ses-2", None),
+            ProcessResult::session_created(
+                "ses-7ae290dbf0b4468c9d2c401be649850b",
+                Some("msg-44bd9ed03bcbd23e6c23074d50f1faf8".into()),
+            ),
+            ProcessResult::session_created("ses-0d64523ce8dd6152d96419b5fce658eb", None),
             ProcessResult::supplemented(
                 "ses-00000000000000000000000000000001",
-                Some("msg-def".into()),
+                Some("msg-5a480fcd11648372633c8969567f6e32".into()),
             ),
             ProcessResult::supplemented("ses-00000000000000000000000000000002", None),
         ] {

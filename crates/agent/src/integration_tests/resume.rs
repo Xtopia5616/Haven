@@ -245,18 +245,28 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
     // to the loader, but resume must not silently activate them in a session.
     let rounds = Vec::new();
     assert!(tools.get_tool("skill__echo").await.is_some());
-    let before = tools.list_schemas_for_session("ses-x").await;
+    let before = tools
+        .list_schemas_for_session("ses-ebf7891451d2d7f9e5c1bf89d169e552")
+        .await;
     assert!(!before.iter().any(|s| s["name"] == "skill__echo"));
-    let other_before = tools.list_schemas_for_session("ses-y").await;
+    let other_before = tools
+        .list_schemas_for_session("ses-ac533cdf0f0ad375d0ed4078b77378a9")
+        .await;
     assert!(!other_before.iter().any(|s| s["name"] == "skill__echo"));
 
-    agent.restore_per_session_tools("ses-x", &rounds).await;
+    agent
+        .restore_per_session_tools("ses-ebf7891451d2d7f9e5c1bf89d169e552", &rounds)
+        .await;
 
     // The resume path must not activate or duplicate the deferred skill.
-    let after = tools.list_schemas_for_session("ses-x").await;
+    let after = tools
+        .list_schemas_for_session("ses-ebf7891451d2d7f9e5c1bf89d169e552")
+        .await;
     assert!(!after.iter().any(|s| s["name"] == "skill__echo"));
 
-    let other = tools.list_schemas_for_session("ses-y").await;
+    let other = tools
+        .list_schemas_for_session("ses-ac533cdf0f0ad375d0ed4078b77378a9")
+        .await;
     assert!(!other.iter().any(|s| s["name"] == "skill__echo"));
 
     let _ = std::fs::remove_dir_all(&dir);

@@ -45,7 +45,7 @@ describe('formatError', () => {
 	it('recognizes queued authorization confirmations without matching ordinary errors', () => {
 		expect(
 			isAuthorizationConfirmationPending(
-				JSON.stringify({ requires_confirmation: true, request_id: 'conf-test' }),
+				JSON.stringify({ requires_confirmation: true, request_id: 'conf-b7a65e97699c7c548225828bfc5e17f9' }),
 			),
 		).toBe(true);
 		expect(isAuthorizationConfirmationPending('refresh failed')).toBe(false);

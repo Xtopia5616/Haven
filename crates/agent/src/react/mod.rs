@@ -1611,7 +1611,7 @@ mod tests {
     #[test]
     fn managed_file_attachment_projects_to_opaque_reference() {
         let mut attachment = MessageAttachment::new("application/pdf", "");
-        attachment.asset_id = Some("asset-report".into());
+        attachment.asset_id = Some("asset-62797bc67611befdce1b622e0b3860ca".into());
         attachment.filename = Some("report.pdf".into());
         attachment.path = Some(r"C:\Users\olive\uploads\report.pdf".into());
         let ContentPart::Text(text) =
@@ -1619,7 +1619,7 @@ mod tests {
         else {
             panic!("managed files use a text reference for the files tool");
         };
-        assert!(text.contains("asset-report"));
+        assert!(text.contains("asset-62797bc67611befdce1b622e0b3860ca"));
         assert!(text.contains("report.pdf"));
         assert!(!text.contains(r"C:\Users\olive"));
     }

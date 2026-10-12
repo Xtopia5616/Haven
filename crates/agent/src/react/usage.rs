@@ -765,9 +765,9 @@ mod tests {
     #[test]
     fn tracker_invalidation_clears_totals_and_increments_epoch() {
         let tracker = UsageTracker::new();
-        assert_eq!(tracker.epoch("ses-tracker-test"), 0);
+        assert_eq!(tracker.epoch("ses-170421b62a27ad2f951a2e044e072c6f"), 0);
         tracker.record_with_seed(
-            "ses-tracker-test",
+            "ses-170421b62a27ad2f951a2e044e072c6f",
             10,
             5,
             15,
@@ -777,10 +777,10 @@ mod tests {
             None,
             CumulativeUsage::default,
         );
-        tracker.invalidate_after_truncate("ses-tracker-test");
-        assert_eq!(tracker.epoch("ses-tracker-test"), 1);
+        tracker.invalidate_after_truncate("ses-170421b62a27ad2f951a2e044e072c6f");
+        assert_eq!(tracker.epoch("ses-170421b62a27ad2f951a2e044e072c6f"), 1);
         let totals = tracker.record_with_seed(
-            "ses-tracker-test",
+            "ses-170421b62a27ad2f951a2e044e072c6f",
             1,
             1,
             2,

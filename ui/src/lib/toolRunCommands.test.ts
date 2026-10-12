@@ -13,22 +13,22 @@ describe('ToolRun command contract boundary', () => {
 	it('normalizes list_tool_runs rows through the shared ToolRunEvent mapper', async () => {
 		invokeMock.mockResolvedValue([
 			{
-				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 				kind: 'background',
 				status: 'running',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				future_wire_field: 'ignored',
 			},
-			{ tool_run_id: 'toolrun-d4735e3a265e16eee03f59718b9b5d03', kind: 'future-kind' },
-			{ tool_run_id: 'toolrun-4e07408562bedb8b60ce05c1decfe3ad', kind: 'scheduled' },
+			{ tool_run_id: 'toolrun-9e21f42cef1a7b941794b4db9fb85cb1', kind: 'future-kind' },
+			{ tool_run_id: 'toolrun-f7391f4e56282cae467ea5a88dc7a560', kind: 'scheduled' },
 		] as never);
 
 		await expect(listToolRunRows()).resolves.toEqual([
 			{
-				toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 				kind: 'background',
 				status: 'running',
-				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 			},
 			null,
 			null,
@@ -44,22 +44,22 @@ describe('ToolRun command contract boundary', () => {
 	});
 
 	it('binds filtered ToolRun history rows to the requested session', async () => {
-		const sessionId = 'ses-00000000000000000000000000000031';
+		const sessionId = 'ses-0000000000000000000000000000001f';
 		invokeMock.mockResolvedValueOnce([
 			{
-				tool_run_id: 'toolrun-00000000000000000000000000000032',
+				tool_run_id: 'toolrun-00000000000000000000000000000020',
 				kind: 'background',
 				status: 'completed',
 				session_id: sessionId,
 			},
 			{
-				tool_run_id: 'toolrun-00000000000000000000000000000033',
+				tool_run_id: 'toolrun-00000000000000000000000000000021',
 				kind: 'scheduled',
 				status: 'completed',
-				session_id: 'ses-00000000000000000000000000000034',
+				session_id: 'ses-00000000000000000000000000000022',
 			},
 			{
-				tool_run_id: 'toolrun-00000000000000000000000000000035',
+				tool_run_id: 'toolrun-00000000000000000000000000000023',
 				kind: 'scheduled',
 				status: 'completed',
 			},
@@ -67,7 +67,7 @@ describe('ToolRun command contract boundary', () => {
 
 		await expect(listToolRunHistory(undefined, 50, sessionId)).resolves.toEqual([
 			{
-				toolRunId: 'toolrun-00000000000000000000000000000032',
+				toolRunId: 'toolrun-00000000000000000000000000000020',
 				kind: 'background',
 				status: 'completed',
 				sessionId,
@@ -83,7 +83,7 @@ describe('ToolRun command contract boundary', () => {
 	it('uses the named cancel request and preserves the boolean response', async () => {
 		invokeMock.mockResolvedValue(true);
 		const request = {
-			toolRunId: 'toolrun-4e07408562bedb8b60ce05c1decfe3ad',
+			toolRunId: 'toolrun-f7391f4e56282cae467ea5a88dc7a560',
 			kind: 'scheduled' as const,
 		};
 
@@ -97,7 +97,7 @@ describe('ToolRun command contract boundary', () => {
 
 		await expect(
 			cancelToolRunCommand({
-				toolRunId: 'toolrun-4b227777d4dd1fc61c6f884f48641d02',
+				toolRunId: 'toolrun-8c538cfe87353df186d2165b761fb38b',
 				kind: 'background',
 			}),
 		).rejects.toThrow('Invalid cancel_tool_run boolean response');

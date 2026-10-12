@@ -21,7 +21,7 @@ describe('session selector stores', () => {
 
 		reducer.dispatch({
 			type: 'session/usage-live',
-			sessionId: 'ses-1',
+			sessionId: 'ses-00000000000000000000000000000001',
 			call: { call_kind: 'agent', total_tokens: 1 },
 		});
 
@@ -41,24 +41,24 @@ describe('session selector stores', () => {
 
 		reducer.dispatch({
 			type: 'sessions/loaded',
-			sessions: [{ sessionId: 'ses-1', status: 'paused' }],
+			sessions: [{ sessionId: 'ses-00000000000000000000000000000001', status: 'paused' }],
 		});
 
 		expect(listener).toHaveBeenCalledTimes(2);
-		expect(listener).toHaveBeenLastCalledWith([{ sessionId: 'ses-1', status: 'paused' }]);
+		expect(listener).toHaveBeenLastCalledWith([{ sessionId: 'ses-00000000000000000000000000000001', status: 'paused' }]);
 		unsubscribe();
 	});
 
 	it('switches the active message slice by reference and reuses a stable empty value', () => {
-		const firstMessage: SessionMessage = { id: 'msg-1', role: 'user' as const, content: 'first' };
-		const secondMessage: SessionMessage = { id: 'msg-2', role: 'user' as const, content: 'second' };
+		const firstMessage: SessionMessage = { id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'first' };
+		const secondMessage: SessionMessage = { id: 'msg-00000000000000000000000000000002', role: 'user' as const, content: 'second' };
 		const firstMessages = [firstMessage];
 		const secondMessages = [secondMessage];
 		const emptyMessages: SessionMessage[] = [];
 		const initial: SessionReducerState = {
 			...initialSessionState,
-			activeSessionId: 'ses-1',
-			messages: { 'ses-1': firstMessages, 'ses-2': secondMessages },
+			activeSessionId: 'ses-00000000000000000000000000000001',
+			messages: { 'ses-00000000000000000000000000000001': firstMessages, 'ses-00000000000000000000000000000002': secondMessages },
 		};
 		const root = writable(initial);
 		const selected = createEqualityGatedSessionSelectorStore(root, (state) => {
@@ -68,14 +68,14 @@ describe('session selector stores', () => {
 		const values: SessionMessage[][] = [];
 		const unsubscribe = selected.subscribe((messages) => values.push(messages));
 
-		root.set({ ...initial, activeSessionId: 'ses-2' });
+		root.set({ ...initial, activeSessionId: 'ses-00000000000000000000000000000002' });
 		expect(values).toHaveLength(2);
 		expect(values[0]).toBe(firstMessages);
 		expect(values[1]).toBe(secondMessages);
 
-		root.set({ ...initial, activeSessionId: 'ses-missing' });
+		root.set({ ...initial, activeSessionId: 'ses-fe7c8628e67a7d316c9558f491aa795b' });
 		const emptySelection = values.at(-1);
-		root.set({ ...initial, activeSessionId: null, runEndNotice: { sessionId: 'ses-3', status: 'error', reason: 'x' } });
+		root.set({ ...initial, activeSessionId: null, runEndNotice: { sessionId: 'ses-00000000000000000000000000000003', status: 'error', reason: 'x' } });
 		expect(values).toHaveLength(3);
 		expect(emptySelection).toBe(emptyMessages);
 		expect(values.at(-1)).toBe(emptyMessages);
@@ -90,7 +90,7 @@ describe('session selector stores', () => {
 			(state) => state.sessions,
 		).subscribe(listener);
 
-		root.set({ ...initialSessionState, activeSessionId: 'ses-1' });
+		root.set({ ...initialSessionState, activeSessionId: 'ses-00000000000000000000000000000001' });
 
 		expect(listener).toHaveBeenCalledTimes(1);
 		unsubscribe();
@@ -119,7 +119,7 @@ describe('session selector stores', () => {
 		second();
 		expect(unsubscribeCount).toBe(1);
 
-		state = { ...state, activeSessionId: 'ses-1' };
+		state = { ...state, activeSessionId: 'ses-00000000000000000000000000000001' };
 		const third = selected.subscribe(() => {});
 		expect(subscribeCount).toBe(2);
 		third();

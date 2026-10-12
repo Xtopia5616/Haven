@@ -17,7 +17,7 @@ fn parse_shortcut(binding: &str) -> Option<tauri_plugin_global_shortcut::Shortcu
 
 fn test_session_info() -> SessionInfo {
     SessionInfo {
-        session_id: "ses-1".into(),
+        session_id: "ses-7ae290dbf0b4468c9d2c401be649850b".into(),
         input: "my input".into(),
         summary: "my summary".into(),
         title: Some("My Title".into()),
@@ -34,24 +34,24 @@ fn channel_maps_every_variant_to_expected_channel() {
     let cases: Vec<(AgentEvent, &str)> = vec![
         (
             AgentEvent::Thought {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 thought: "x".into(),
                 step_number: 1,
                 run_id: 1,
-                message_id: "msg-1".into(),
+                message_id: "step-e11ea518ef030561fe32765a0ab84b18".into(),
                 event_sequence: None,
             },
             "agent:thought",
         ),
         (
             AgentEvent::ToolCall {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 tool_name: "read_file".into(),
                 input: json!({}),
                 step_number: 1,
                 run_id: 1,
                 tool_call_id: None,
-                step_id: "step-1".into(),
+                step_id: "step-f9430084054c5002eb0d7715a0ec20cd".into(),
                 tool_index: 0,
                 suppress_streamed_thought: false,
                 event_sequence: None,
@@ -60,7 +60,7 @@ fn channel_maps_every_variant_to_expected_channel() {
         ),
         (
             AgentEvent::Observation {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 observation: "o".into(),
                 tool_name: "read_file".into(),
                 step_number: 1,
@@ -68,7 +68,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 silent: false,
                 tool_call_id: None,
                 ask_options: vec![],
-                step_id: "step-1".into(),
+                step_id: "step-f9430084054c5002eb0d7715a0ec20cd".into(),
                 tool_index: 0,
                 idempotency: haven_common::tools::OperationIdempotency::Idempotent,
                 operation_scope: haven_common::tools::ToolOperationScope::Session,
@@ -84,7 +84,7 @@ fn channel_maps_every_variant_to_expected_channel() {
         ),
         (
             AgentEvent::SessionCompleted {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 title: "x".into(),
                 reason: "用户主动结束会话".into(),
             },
@@ -92,7 +92,7 @@ fn channel_maps_every_variant_to_expected_channel() {
         ),
         (
             AgentEvent::SessionUpdated {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 status: haven_common::lifecycle::SessionStatus::Paused,
                 waiting_reason: None,
                 reason: None,
@@ -101,14 +101,14 @@ fn channel_maps_every_variant_to_expected_channel() {
         ),
         (
             AgentEvent::SessionError {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 error: "e".into(),
             },
             "session:lifecycle",
         ),
         (
             AgentEvent::Notification {
-                session_id: Some("t".into()),
+                session_id: Some("ses-00000000000000000000000000000001".into()),
                 title: "x".into(),
                 body: "y".into(),
             },
@@ -116,51 +116,51 @@ fn channel_maps_every_variant_to_expected_channel() {
         ),
         (
             AgentEvent::TitleUpdated {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 title: "x".into(),
             },
             "session:lifecycle",
         ),
         (
             AgentEvent::ThoughtChunk {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 delta: "d".into(),
                 step_number: 1,
                 run_id: 1,
-                message_id: "msg-1".into(),
+                message_id: "step-e11ea518ef030561fe32765a0ab84b18".into(),
             },
             "agent:thought_chunk",
         ),
         (
             AgentEvent::ReasoningChunk {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 delta: "d".into(),
                 step_number: 1,
                 run_id: 1,
-                message_id: "msg-2".into(),
+                message_id: "msg-c5be24b3c5f5ee71083c02117bb756ed".into(),
             },
             "agent:reasoning_chunk",
         ),
         (
             AgentEvent::StreamReset {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 step_number: 1,
                 run_id: 1,
-                thought_message_id: "msg-1".into(),
-                reasoning_message_id: "msg-2".into(),
+                thought_message_id: "step-e11ea518ef030561fe32765a0ab84b18".into(),
+                reasoning_message_id: "msg-c5be24b3c5f5ee71083c02117bb756ed".into(),
             },
             "agent:stream_reset",
         ),
         (
             AgentEvent::MediaPlan {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 step_number: 1,
                 run_id: 1,
                 request_kind: haven_common::config::RequestKind::Vision,
                 strategy: haven_common::media::MediaInputStrategy::Auto,
                 projections: vec![],
                 notices: vec![haven_common::media::MediaPlanNotice {
-                    asset_id: "asset-1".into(),
+                    asset_id: "asset-2c740c2a13b7cd0c9ba244dca6894e99".into(),
                     code: haven_common::media::MediaPlanNoticeCode::RawCapabilityUnknown,
                 }],
                 event_sequence: None,
@@ -169,7 +169,7 @@ fn channel_maps_every_variant_to_expected_channel() {
         ),
         (
             AgentEvent::WebSearch {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 phase: haven_llm::WebSearchPhase::Searching,
                 step_number: 1,
                 run_id: 1,
@@ -181,18 +181,18 @@ fn channel_maps_every_variant_to_expected_channel() {
         ),
         (
             AgentEvent::StreamStalled {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
             },
             "agent:stream_stalled",
         ),
         (
             AgentEvent::Supplement {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 additional_context: "c".into(),
                 step_number: 1,
                 run_id: 1,
                 message_id: None,
-                supplement_id: "msg-supplement".into(),
+                supplement_id: "msg-15ec69c7ac12649c1a367602af3327c3".into(),
                 inject_source: None,
                 event_sequence: None,
             },
@@ -200,7 +200,7 @@ fn channel_maps_every_variant_to_expected_channel() {
         ),
         (
             AgentEvent::Compaction {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 summary: "s".into(),
                 tokens_before: 1,
                 tokens_after: 2,
@@ -212,7 +212,7 @@ fn channel_maps_every_variant_to_expected_channel() {
         ),
         (
             AgentEvent::Usage {
-                session_id: "t".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
                 prompt_tokens: 1,
                 completion_tokens: 2,
                 total_tokens: 3,
@@ -255,7 +255,7 @@ fn channel_maps_every_variant_to_expected_channel() {
 #[test]
 fn usage_event_keeps_call_kind_typed_and_serializes_the_canonical_value() {
     let event = AgentEvent::Usage {
-        session_id: "ses-usage".into(),
+        session_id: "ses-eb008455936524547e8585c022c9f7d8".into(),
         prompt_tokens: 1,
         completion_tokens: 2,
         total_tokens: 3,
@@ -292,13 +292,13 @@ fn usage_event_keeps_call_kind_typed_and_serializes_the_canonical_value() {
 #[test]
 fn media_plan_payload_contains_strategy_projection_and_reason() {
     let event = AgentEvent::MediaPlan {
-        session_id: "ses-1".into(),
+        session_id: "ses-7ae290dbf0b4468c9d2c401be649850b".into(),
         step_number: 4,
         run_id: 8,
         request_kind: haven_common::config::RequestKind::AudioChat,
         strategy: haven_common::media::MediaInputStrategy::Auto,
         projections: vec![haven_common::media::MediaProjection {
-            asset_id: "asset-1".into(),
+            asset_id: "asset-2c740c2a13b7cd0c9ba244dca6894e99".into(),
             representation: haven_common::media::MediaRepresentationKind::Transcript,
             mode: haven_common::media::MediaProjectionMode::Derived,
             provenance: haven_common::media::MediaProvenance::Derived {
@@ -309,7 +309,7 @@ fn media_plan_payload_contains_strategy_projection_and_reason() {
         }],
         event_sequence: None,
         notices: vec![haven_common::media::MediaPlanNotice {
-            asset_id: "asset-1".into(),
+            asset_id: "asset-2c740c2a13b7cd0c9ba244dca6894e99".into(),
             code: haven_common::media::MediaPlanNoticeCode::RawCapabilityUnknown,
         }],
     };
@@ -318,7 +318,10 @@ fn media_plan_payload_contains_strategy_projection_and_reason() {
     assert_eq!(payload["request_kind"], "audio_chat");
     assert!(payload.get("role").is_none());
     assert_eq!(payload["strategy"], "auto");
-    assert_eq!(payload["projections"][0]["asset_id"], "asset-1");
+    assert_eq!(
+        payload["projections"][0]["asset_id"],
+        "asset-2c740c2a13b7cd0c9ba244dca6894e99"
+    );
     assert_eq!(payload["projections"][0]["representation"], "transcript");
     assert_eq!(payload["projections"][0]["mode"], "derived");
     assert_eq!(payload["notices"][0]["code"], "raw_capability_unknown");
@@ -327,21 +330,21 @@ fn media_plan_payload_contains_strategy_projection_and_reason() {
 #[test]
 fn thought_payload_uses_the_explicit_wire_dto() {
     let event = AgentEvent::Thought {
-        session_id: "t1".into(),
+        session_id: "ses-00000000000000000000000000000002".into(),
         thought: "hello".into(),
         step_number: 2,
         run_id: 7,
-        message_id: "msg-1".into(),
+        message_id: "step-e11ea518ef030561fe32765a0ab84b18".into(),
         event_sequence: Some(11),
     };
     assert_eq!(
         TauriEmitter::payload(&event, None),
         json!({
-            "session_id": "t1",
+            "session_id": "ses-00000000000000000000000000000002",
             "thought": "hello",
             "step_number": 2,
             "run_id": 7,
-            "message_id": "msg-1",
+            "message_id": "step-e11ea518ef030561fe32765a0ab84b18",
             "event_sequence": 11,
         })
     );
@@ -350,13 +353,13 @@ fn thought_payload_uses_the_explicit_wire_dto() {
 #[test]
 fn payload_adds_silent_to_tool_call() {
     let event = AgentEvent::ToolCall {
-        session_id: "t".into(),
+        session_id: "ses-00000000000000000000000000000001".into(),
         tool_name: "read_file".into(),
         input: json!({"silent": true, "path": "/tmp/x"}),
         step_number: 1,
         run_id: 1,
         tool_call_id: Some("call-1".into()),
-        step_id: "step-1".into(),
+        step_id: "step-f9430084054c5002eb0d7715a0ec20cd".into(),
         tool_index: 0,
         suppress_streamed_thought: false,
         event_sequence: Some(17),
@@ -365,20 +368,23 @@ fn payload_adds_silent_to_tool_call() {
     assert_eq!(payload["silent"], json!(true));
     assert_eq!(payload["tool_name"], json!("read_file"));
     assert_eq!(payload["tool_call_id"], json!("call-1"));
-    assert_eq!(payload["step_id"], json!("step-1"));
+    assert_eq!(
+        payload["step_id"],
+        json!("step-f9430084054c5002eb0d7715a0ec20cd")
+    );
     assert_eq!(payload["event_sequence"], json!(17));
 }
 
 #[test]
 fn payload_never_silences_ask() {
     let event = AgentEvent::ToolCall {
-        session_id: "t".into(),
+        session_id: "ses-00000000000000000000000000000001".into(),
         tool_name: "ask".into(),
         input: json!({"silent": true}),
         step_number: 1,
         run_id: 1,
         tool_call_id: None,
-        step_id: "step-1".into(),
+        step_id: "step-f9430084054c5002eb0d7715a0ec20cd".into(),
         tool_index: 0,
         suppress_streamed_thought: false,
         event_sequence: None,
@@ -390,47 +396,53 @@ fn payload_never_silences_ask() {
 #[test]
 fn payload_injects_seq_for_chunk_variants() {
     let thought = AgentEvent::ThoughtChunk {
-        session_id: "t".into(),
+        session_id: "ses-00000000000000000000000000000001".into(),
         delta: "d".into(),
         step_number: 1,
         run_id: 1,
-        message_id: "msg-1".into(),
+        message_id: "step-e11ea518ef030561fe32765a0ab84b18".into(),
     };
     let payload = TauriEmitter::payload(&thought, Some(42));
     assert_eq!(payload["seq"], json!(42));
     assert_eq!(payload["delta"], json!("d"));
-    assert_eq!(payload["message_id"], json!("msg-1"));
+    assert_eq!(
+        payload["message_id"],
+        json!("step-e11ea518ef030561fe32765a0ab84b18")
+    );
 
     let reasoning = AgentEvent::ReasoningChunk {
-        session_id: "t".into(),
+        session_id: "ses-00000000000000000000000000000001".into(),
         delta: "d".into(),
         step_number: 1,
         run_id: 1,
-        message_id: "msg-2".into(),
+        message_id: "msg-c5be24b3c5f5ee71083c02117bb756ed".into(),
     };
     let payload = TauriEmitter::payload(&reasoning, Some(43));
     assert_eq!(payload["seq"], json!(43));
-    assert_eq!(payload["message_id"], json!("msg-2"));
+    assert_eq!(
+        payload["message_id"],
+        json!("msg-c5be24b3c5f5ee71083c02117bb756ed")
+    );
 }
 
 #[test]
 fn payload_projects_stream_reset_boundary() {
     let event = AgentEvent::StreamReset {
-        session_id: "t".into(),
+        session_id: "ses-00000000000000000000000000000001".into(),
         step_number: 3,
         run_id: 7,
-        thought_message_id: "msg-thought".into(),
-        reasoning_message_id: "msg-reasoning".into(),
+        thought_message_id: "step-d1cddeb2513e8070a41670497d336ee0".into(),
+        reasoning_message_id: "msg-ed03e30c61a91f6ed2ae4ebbba109918".into(),
     };
     let payload = TauriEmitter::payload(&event, None);
     assert_eq!(
         payload,
         json!({
-            "session_id": "t",
+            "session_id": "ses-00000000000000000000000000000001",
             "step_number": 3,
             "run_id": 7,
-            "thought_message_id": "msg-thought",
-            "reasoning_message_id": "msg-reasoning",
+            "thought_message_id": "step-d1cddeb2513e8070a41670497d336ee0",
+            "reasoning_message_id": "msg-ed03e30c61a91f6ed2ae4ebbba109918",
         })
     );
 }
@@ -443,7 +455,7 @@ fn payload_projects_session_created_without_leaking_internal_fields() {
         payload,
         json!({
             "type": "created",
-            "session_id": "ses-1",
+            "session_id": "ses-7ae290dbf0b4468c9d2c401be649850b",
             "status": "running",
             "title": "My Title",
         })
@@ -465,7 +477,7 @@ fn payload_projects_session_created_without_leaking_internal_fields() {
 #[test]
 fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
     let completed = AgentEvent::SessionCompleted {
-        session_id: "t".into(),
+        session_id: "ses-00000000000000000000000000000001".into(),
         title: "X".into(),
         reason: "用户主动结束会话".into(),
     };
@@ -474,14 +486,14 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
         payload,
         json!({
             "type": "completed",
-            "session_id": "t",
+            "session_id": "ses-00000000000000000000000000000001",
             "title": "X",
             "reason": "用户主动结束会话"
         })
     );
 
     let updated = AgentEvent::SessionUpdated {
-        session_id: "t".into(),
+        session_id: "ses-00000000000000000000000000000001".into(),
         status: haven_common::lifecycle::SessionStatus::Paused,
         waiting_reason: None,
         reason: Some("用户主动打断输出".into()),
@@ -491,23 +503,23 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
         payload,
         json!({
             "type": "updated",
-            "session_id": "t",
+            "session_id": "ses-00000000000000000000000000000001",
             "status": "paused",
-            "title": "t",
+            "title": "ses-00000000000000000000000000000001",
             "reason": "用户主动打断输出"
         })
     );
 
     let errored = AgentEvent::SessionError {
-        session_id: "t".into(),
+        session_id: "ses-00000000000000000000000000000001".into(),
         error: "sanitized failure".into(),
     };
     assert_eq!(
         TauriEmitter::payload(&errored, None),
         json!({
             "type": "error",
-            "session_id": "t",
-            "title": "t",
+            "session_id": "ses-00000000000000000000000000000001",
+            "title": "ses-00000000000000000000000000000001",
             "error": "sanitized failure"
         })
     );

@@ -621,7 +621,7 @@ mod tests {
             .map(|step_number| TranscriptRecord::Thought {
                 step_number,
                 text: "history".into(),
-                message_id: format!("msg-{step_number}"),
+                message_id: format!("step-{step_number:032x}"),
             })
             .collect::<Vec<_>>();
         events.push(TranscriptRecord::UserInject {

@@ -8,11 +8,11 @@ describe('tool run IPC contract', () => {
 				event: 'tool_run:finished',
 				id: 4,
 				payload: {
-					tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+					tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 					kind: 'background',
 					status: 'completed',
-					session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-					source_step_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
+					session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+					source_step_id: 'step-ea869e583dff7756d1747b32ad55e798',
 					finished_at: '2026-08-26T00:00:00Z',
 					exit_code: 0,
 					future_wire_field: 'ignored',
@@ -22,11 +22,11 @@ describe('tool run IPC contract', () => {
 			event: 'tool_run:finished',
 			id: 4,
 			payload: {
-				toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 				kind: 'background',
 				status: 'completed',
-				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-				sourceStepId: 'step-6b86b273ff34fce19d6b804eff5a3f57',
+				sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+				sourceStepId: 'step-ea869e583dff7756d1747b32ad55e798',
 				finishedAt: '2026-08-26T00:00:00Z',
 				exitCode: 0,
 			},
@@ -36,16 +36,16 @@ describe('tool run IPC contract', () => {
 	it('keeps omitted optional fields absent and rejects explicit nulls', () => {
 		expect(
 			mapToolRunPayload({
-				tool_run_id: 'toolrun-d4735e3a265e16eee03f59718b9b5d03',
+				tool_run_id: 'toolrun-9e21f42cef1a7b941794b4db9fb85cb1',
 				kind: 'scheduled',
 			}),
 		).toEqual({
-			toolRunId: 'toolrun-d4735e3a265e16eee03f59718b9b5d03',
+			toolRunId: 'toolrun-9e21f42cef1a7b941794b4db9fb85cb1',
 			kind: 'scheduled',
 		});
 		expect(
 			mapToolRunPayload({
-				tool_run_id: 'toolrun-d4735e3a265e16eee03f59718b9b5d03',
+				tool_run_id: 'toolrun-9e21f42cef1a7b941794b4db9fb85cb1',
 				kind: 'scheduled',
 				session_id: null,
 				status: null,
@@ -53,14 +53,14 @@ describe('tool run IPC contract', () => {
 		).toBeNull();
 		expect(
 			mapToolRunPayload({
-				tool_run_id: 'toolrun-d4735e3a265e16eee03f59718b9b5d03',
+				tool_run_id: 'toolrun-9e21f42cef1a7b941794b4db9fb85cb1',
 				kind: 'scheduled',
 				exit_code: null,
 			}),
 		).toBeNull();
 		expect(
 			mapToolRunPayload({
-				tool_run_id: 'toolrun-d4735e3a265e16eee03f59718b9b5d03',
+				tool_run_id: 'toolrun-9e21f42cef1a7b941794b4db9fb85cb1',
 				kind: 'background',
 				source_step_id: 42,
 			}),
@@ -69,7 +69,7 @@ describe('tool run IPC contract', () => {
 
 	it('requires status for command rows while keeping the shared payload projection sparse', () => {
 		const row = {
-			tool_run_id: 'toolrun-d4735e3a265e16eee03f59718b9b5d03',
+			tool_run_id: 'toolrun-9e21f42cef1a7b941794b4db9fb85cb1',
 			kind: 'scheduled',
 		};
 
@@ -86,25 +86,25 @@ describe('tool run IPC contract', () => {
 	it('uses generated ScheduleMode values for ToolRun lifecycle rows', () => {
 		expect(
 			mapToolRunPayload({
-				tool_run_id: 'toolrun-19581e27de7ced00ff1ce50b2047e7a5',
+				tool_run_id: 'toolrun-253cea9a73bd446583b8d67ee7881e04',
 				kind: 'scheduled',
 				mode: 'continue',
 			}),
 		).toEqual({
-			toolRunId: 'toolrun-19581e27de7ced00ff1ce50b2047e7a5',
+			toolRunId: 'toolrun-253cea9a73bd446583b8d67ee7881e04',
 			kind: 'scheduled',
 			mode: 'continue',
 		});
 		expect(
 			mapToolRunPayload({
-				tool_run_id: 'toolrun-4a44dc15364204a80fe80e9039455cc1',
+				tool_run_id: 'toolrun-a1a4416f8b4eb96a19daa467cf021c40',
 				kind: 'scheduled',
 				mode: 'future_mode',
 			}),
 		).toBeNull();
 		expect(
 			mapToolRunPayload({
-				tool_run_id: 'toolrun-4fc82b26aecb47d2868c4efbe3581732',
+				tool_run_id: 'toolrun-85636ca1f3d6a5740d35f1ddcf3409ab',
 				kind: 'scheduled',
 				mode: null,
 			}),
@@ -114,14 +114,14 @@ describe('tool run IPC contract', () => {
 	it('rejects unknown ToolRun statuses and kinds', () => {
 		expect(
 			mapToolRunPayload({
-				tool_run_id: 'toolrun-4e07408562bedb8b60ce05c1decfe3ad',
+				tool_run_id: 'toolrun-f7391f4e56282cae467ea5a88dc7a560',
 				kind: 'background',
 				status: 'unexpected',
 			}),
 		).toBeNull();
 		expect(
 			mapToolRunPayload({
-				tool_run_id: 'toolrun-4b227777d4dd1fc61c6f884f48641d02',
+				tool_run_id: 'toolrun-8c538cfe87353df186d2165b761fb38b',
 				kind: 'future-kind',
 				status: 'running',
 			}),
@@ -129,7 +129,7 @@ describe('tool run IPC contract', () => {
 	});
 
 	it('enforces the required fields of each lifecycle channel', () => {
-		const toolRunId = 'toolrun-0123456789abcdef0123456789abcdef';
+		const toolRunId = 'toolrun-58ec300e6432076c8ec176f56120ec01';
 		const event = (
 			name: 'tool_run:created' | 'tool_run:updated' | 'tool_run:output' | 'tool_run:finished',
 			payload: object,
@@ -163,7 +163,7 @@ describe('tool run IPC contract', () => {
 			event('tool_run:updated', {
 				tool_run_id: toolRunId,
 				kind: 'background',
-				session_id: 'ses-0123456789abcdef0123456789abcdef',
+				session_id: 'ses-103ac63490bc5f6c27fd45405efecd69',
 			}),
 		).not.toBeNull();
 	});
@@ -172,17 +172,17 @@ describe('tool run IPC contract', () => {
 		expect(mapToolRunPayload({ kind: 'background' })).toBeNull();
 		expect(
 			mapToolRunPayload({
-				id: 'toolrun-c49fea7425fa7f8699897a97c159c669',
+				id: 'toolrun-7dac828ec7db92e6714d63fcad6d882a',
 				kind: 'background',
 			}),
 		).toBeNull();
 		expect(mapToolRunPayload({ tool_run_id: '', kind: 'background' })).toBeNull();
 		expect(
-			mapToolRunPayload({ tool_run_id: 'toolrun-ef2d127de37b942baad06145e54b0c61' }),
+			mapToolRunPayload({ tool_run_id: 'toolrun-66ab9a878b9ddd58f81ed42d68529c44' }),
 		).toBeNull();
 		expect(
 			mapToolRunPayload({
-				tool_run_id: 'toolrun-e7f6c011776e8db7cd330b54174fd76f',
+				tool_run_id: 'toolrun-3719ed23050d15defc73068cde1b1dc0',
 				kind: 'background',
 				session_id: 42,
 			}),
@@ -191,7 +191,7 @@ describe('tool run IPC contract', () => {
 			mapToolRunEvent({
 				event: 'tool_run:finished',
 				id: 4,
-				payload: { tool_run_id: 'toolrun-7902699be42c8a8e46fbbb4501726517' },
+				payload: { tool_run_id: 'toolrun-78c38c07f72fe515ebef1de39c4b837b' },
 			}),
 		).toBeNull();
 	});
@@ -202,19 +202,19 @@ describe('tool run IPC contract', () => {
 				mapToolRunEvent({
 					event: 'tool_run:finished',
 					id,
-					payload: { tool_run_id: 'toolrun-7902699be42c8a8e46fbbb4501726517' },
+					payload: { tool_run_id: 'toolrun-78c38c07f72fe515ebef1de39c4b837b' },
 				}),
 			).toBeNull();
 		}
 	});
 
 	it('rejects non-canonical ToolRun, session, and source-step identities', () => {
-		const validToolRunId = 'toolrun-0123456789abcdef0123456789abcdef';
+		const validToolRunId = 'toolrun-58ec300e6432076c8ec176f56120ec01';
 		for (const tool_run_id of [
 			'toolrun-short',
-			'ses-0123456789abcdef0123456789abcdef',
-			'toolrun-01234567-89ab-cdef-0123-456789abcdef',
-			'toolrun-0123456789ABCDEF0123456789abcdef',
+			'ses-103ac63490bc5f6c27fd45405efecd69',
+			'toolrun-1',
+			'toolrun-0123456789abcdef0123456789abcdeF',
 		]) {
 			expect(mapToolRunPayload({ tool_run_id, kind: 'scheduled' })).toBeNull();
 		}
@@ -222,15 +222,15 @@ describe('tool run IPC contract', () => {
 			mapToolRunPayload({
 				tool_run_id: validToolRunId,
 				kind: 'background',
-				session_id: 'toolrun-0123456789abcdef0123456789abcdef',
+				session_id: 'toolrun-58ec300e6432076c8ec176f56120ec01',
 			}),
 		).toBeNull();
 		expect(
 			mapToolRunPayload({
 				tool_run_id: validToolRunId,
 				kind: 'background',
-				session_id: 'ses-0123456789abcdef0123456789abcdef',
-				source_step_id: 'msg-0123456789abcdef0123456789abcdef',
+				session_id: 'ses-103ac63490bc5f6c27fd45405efecd69',
+				source_step_id: 'msg-fc16f96c92a9c37a323bb7d0f47a4e22',
 			}),
 		).toBeNull();
 	});
@@ -238,7 +238,7 @@ describe('tool run IPC contract', () => {
 	it('does not transform dynamic tool_args into a board field', () => {
 		const toolArgs = { query: { tags: ['private', 'nested'], limit: 3 } };
 		const wire = {
-			tool_run_id: 'toolrun-2c624232cdd221771294dfbb310aca00',
+			tool_run_id: 'toolrun-772f25b617df7ead1e3854501b05d800',
 			kind: 'scheduled',
 			tool_args: toolArgs,
 		};
@@ -246,7 +246,7 @@ describe('tool run IPC contract', () => {
 		// ToolRunEvent intentionally excludes execution arguments. Keep the JSON
 		// extension opaque to this UI DTO mapper rather than stringifying it.
 		expect(mapToolRunPayload(wire)).toEqual({
-			toolRunId: 'toolrun-2c624232cdd221771294dfbb310aca00',
+			toolRunId: 'toolrun-772f25b617df7ead1e3854501b05d800',
 			kind: 'scheduled',
 		});
 		expect(wire.tool_args).toBe(toolArgs);

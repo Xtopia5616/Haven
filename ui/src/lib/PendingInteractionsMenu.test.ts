@@ -14,7 +14,7 @@ describe('PendingInteractionsMenu', () => {
 					detail: '选择部署方式',
 				},
 				{
-					id: 'conf-1',
+					id: 'conf-00000000000000000000000000000001',
 					kind: 'confirm',
 					title: '权限确认 · 测试会话',
 					detail: '写入文件',
@@ -32,7 +32,7 @@ describe('PendingInteractionsMenu', () => {
 		await fireEvent.click(
 			screen.getByRole('menuitem', { name: '权限确认 · 测试会话：写入文件' }),
 		);
-		expect(onSelect).toHaveBeenCalledWith('conf-1');
+		expect(onSelect).toHaveBeenCalledWith('conf-00000000000000000000000000000001');
 		expect(screen.queryByRole('menu')).toBeNull();
 	});
 });

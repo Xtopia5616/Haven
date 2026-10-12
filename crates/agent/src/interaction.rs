@@ -635,7 +635,10 @@ mod tests {
     #[test]
     fn session_association_requires_the_exact_owner_session() {
         assert!(validate_session_association(Some(SESSION_ID), SESSION_ID).is_ok());
-        assert!(validate_session_association(Some("ses-other"), SESSION_ID).is_err());
+        assert!(
+            validate_session_association(Some("ses-9589b11fb124d96caa27b5509dadcf99"), SESSION_ID)
+                .is_err()
+        );
         assert!(validate_session_association(None, SESSION_ID).is_err());
     }
 

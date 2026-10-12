@@ -6,19 +6,19 @@ import {
 } from './wireGuards.ts';
 
 describe('canonical entity id wire guards', () => {
-	const sessionId = 'ses-0123456789abcdef0123456789abcdef';
+	const sessionId = 'ses-103ac63490bc5f6c27fd45405efecd69';
 
 	it('requires the requested prefix and lowercase UUID32 suffix', () => {
 		expect(isCanonicalEntityId(sessionId, 'ses')).toBe(true);
-		expect(isCanonicalEntityId('toolrun-0123456789abcdef0123456789abcdef', 'toolrun')).toBe(
+		expect(isCanonicalEntityId('toolrun-58ec300e6432076c8ec176f56120ec01', 'toolrun')).toBe(
 			true,
 		);
 		for (const value of [
-			'step-0123456789abcdef0123456789abcdef',
-			'ses-0123',
-			'ses-01234567-89ab-cdef-0123-456789abcdef',
-			'ses-0123456789ABCDEF0123456789abcdef',
-			'ses-0123456789abcdef0123456789abcdeg',
+			'step-455572844fd881c7ae3ae7d45163af1a',
+			'ses-7b',
+			'ses-0123456789abcdef0123456789abcdeF',
+			'ses-0000000000000000000000000000000Z',
+			'ses-not-an-id',
 			`${sessionId}\n`,
 		]) {
 			expect(isCanonicalEntityId(value, 'ses')).toBe(false);

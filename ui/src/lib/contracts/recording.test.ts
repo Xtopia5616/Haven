@@ -8,7 +8,7 @@ describe('recording IPC contract', () => {
 			id: 1,
 			payload: {
 				is_recording: false,
-				recording_id: 'rec-6b86b273ff34fce19d6b804eff5a3f57',
+				recording_id: 'rec-740e8385526b3df7e1871ffaa127850a',
 				reason: 'silence',
 				duration_ms: 1200,
 				future_field: 'ignored',
@@ -18,7 +18,7 @@ describe('recording IPC contract', () => {
 			event: 'recording:stopped',
 			id: 1,
 			payload: {
-				recordingId: 'rec-6b86b273ff34fce19d6b804eff5a3f57',
+				recordingId: 'rec-740e8385526b3df7e1871ffaa127850a',
 				reason: 'silence',
 			},
 		});
@@ -52,7 +52,7 @@ describe('recording IPC contract', () => {
 			event: 'transcription:started',
 			id: 3,
 			payload: {
-				recording_id: 'rec-4e07408562bedb8b60ce05c1decfe3ad',
+				recording_id: 'rec-080d7df150839c2b3694f90831cc6285',
 				future_field: 'ignored',
 			},
 		});
@@ -60,7 +60,7 @@ describe('recording IPC contract', () => {
 			event: 'transcription:result',
 			id: 4,
 			payload: {
-				recording_id: 'rec-4e07408562bedb8b60ce05c1decfe3ad',
+				recording_id: 'rec-080d7df150839c2b3694f90831cc6285',
 				text: 'hello',
 				duration_ms: 800,
 				confidence: 0.85,
@@ -68,9 +68,9 @@ describe('recording IPC contract', () => {
 			},
 		});
 
-		expect(started?.payload).toEqual({ recordingId: 'rec-4e07408562bedb8b60ce05c1decfe3ad' });
+		expect(started?.payload).toEqual({ recordingId: 'rec-080d7df150839c2b3694f90831cc6285' });
 		expect(result?.payload).toEqual({
-			recordingId: 'rec-4e07408562bedb8b60ce05c1decfe3ad',
+			recordingId: 'rec-080d7df150839c2b3694f90831cc6285',
 			text: 'hello',
 			durationMs: 800,
 		});
@@ -81,7 +81,7 @@ describe('recording IPC contract', () => {
 			event: 'recording:error',
 			id: 5,
 			payload: {
-				recording_id: 'rec-ef2d127de37b942baad06145e54b0c61',
+				recording_id: 'rec-37c676076805c964ff55cbb590a027fc',
 				error: 'microphone unavailable',
 				future_field: 1,
 			},
@@ -90,18 +90,18 @@ describe('recording IPC contract', () => {
 			event: 'transcription:error',
 			id: 6,
 			payload: {
-				recording_id: 'rec-ef2d127de37b942baad06145e54b0c61',
+				recording_id: 'rec-37c676076805c964ff55cbb590a027fc',
 				error: 'transcription unavailable',
 				future_field: 1,
 			},
 		});
 
 		expect(recordingError?.payload).toEqual({
-			recordingId: 'rec-ef2d127de37b942baad06145e54b0c61',
+			recordingId: 'rec-37c676076805c964ff55cbb590a027fc',
 			error: 'microphone unavailable',
 		});
 		expect(transcriptionError?.payload).toEqual({
-			recordingId: 'rec-ef2d127de37b942baad06145e54b0c61',
+			recordingId: 'rec-37c676076805c964ff55cbb590a027fc',
 			error: 'transcription unavailable',
 		});
 	});
@@ -137,7 +137,7 @@ describe('recording IPC contract', () => {
 				mapRecordingEvent({
 					event: 'recording:started',
 					id: id as number,
-					payload: { recording_id: 'rec-4fc82b26aecb47d2868c4efbe3581732' },
+					payload: { recording_id: 'rec-2a7dd1d69ba34e8fd44a2568e421951c' },
 				}),
 			).toBeNull();
 		}
@@ -168,9 +168,9 @@ describe('recording IPC contract', () => {
 
 	it.each([
 		'rec-short',
-		'ses-0123456789abcdef0123456789abcdef',
-		'rec-01234567-89ab-cdef-0123-456789abcdef',
-		'rec-0123456789ABCDEF0123456789abcdef',
+		'ses-103ac63490bc5f6c27fd45405efecd69',
+		'rec-1',
+		'rec-0123456789abcdef0123456789abcdeF',
 	])('rejects a non-canonical recording identity: %s', (recording_id) => {
 		expect(
 			mapRecordingEvent({
@@ -185,7 +185,7 @@ describe('recording IPC contract', () => {
 		const event = mapRecordingEvent({
 			event: 'recording:started',
 			id: 12,
-			payload: { session_id: 'rec-c49fea7425fa7f8699897a97c159c669' },
+			payload: { session_id: 'rec-732192f5bdcf906262753a88a8baedd5' },
 		});
 
 		expect(event).toBeNull();
@@ -195,13 +195,13 @@ describe('recording IPC contract', () => {
 		const event = mapRecordingEvent({
 			event: 'recording:started',
 			id: 11,
-			payload: { is_recording: true, recording_id: 'rec-4fc82b26aecb47d2868c4efbe3581732' },
+			payload: { is_recording: true, recording_id: 'rec-2a7dd1d69ba34e8fd44a2568e421951c' },
 		});
-		expect(event?.payload).toEqual({ recordingId: 'rec-4fc82b26aecb47d2868c4efbe3581732' });
+		expect(event?.payload).toEqual({ recordingId: 'rec-2a7dd1d69ba34e8fd44a2568e421951c' });
 	});
 
 	it('requires the recording channel state and validates optional durations', () => {
-		const recordingId = 'rec-4fc82b26aecb47d2868c4efbe3581732';
+		const recordingId = 'rec-2a7dd1d69ba34e8fd44a2568e421951c';
 		expect(
 			mapRecordingEvent({
 				event: 'recording:started',
@@ -238,7 +238,7 @@ describe('recording IPC contract', () => {
 			id: 10,
 			payload: {
 				is_recording: false,
-				recording_id: 'rec-c49fea7425fa7f8699897a97c159c669',
+				recording_id: 'rec-732192f5bdcf906262753a88a8baedd5',
 				reason: 'future_reason',
 			},
 		});
@@ -253,7 +253,7 @@ describe('recording IPC contract', () => {
 					event: 'recording:stopped',
 					id: 10,
 					payload: {
-						recording_id: 'rec-c49fea7425fa7f8699897a97c159c669',
+						recording_id: 'rec-732192f5bdcf906262753a88a8baedd5',
 						...(reason !== undefined ? { reason } : {}),
 					},
 				}),
@@ -267,7 +267,7 @@ describe('recording IPC contract', () => {
 				mapRecordingEvent({
 					event: eventName,
 					id: 8,
-					payload: { recording_id: 'rec-c49fea7425fa7f8699897a97c159c669' },
+					payload: { recording_id: 'rec-732192f5bdcf906262753a88a8baedd5' },
 				}),
 			).toBeNull();
 			expect(
@@ -275,7 +275,7 @@ describe('recording IPC contract', () => {
 					event: eventName,
 					id: 8,
 					payload: {
-						recording_id: 'rec-c49fea7425fa7f8699897a97c159c669',
+						recording_id: 'rec-732192f5bdcf906262753a88a8baedd5',
 						error: null,
 					},
 				}),
@@ -284,7 +284,7 @@ describe('recording IPC contract', () => {
 	});
 
 	it('requires string transcript text and a nonnegative integer duration', () => {
-		const recordingId = 'rec-c49fea7425fa7f8699897a97c159c669';
+		const recordingId = 'rec-732192f5bdcf906262753a88a8baedd5';
 		for (const payload of [
 			{ recording_id: recordingId, duration_ms: 0 },
 			{ recording_id: recordingId, text: null, duration_ms: 0 },
@@ -310,14 +310,14 @@ describe('recording IPC contract', () => {
 			event: 'transcription:result',
 			id: 9,
 			payload: {
-				recording_id: 'rec-19581e27de7ced00ff1ce50b2047e7a5',
+				recording_id: 'rec-215ec2389a2af957a85060a67a563c60',
 				text: 'hello',
 				duration_ms: 800,
 				confidence: 0.95,
 			},
 		});
 		expect(event?.payload).toEqual({
-			recordingId: 'rec-19581e27de7ced00ff1ce50b2047e7a5',
+			recordingId: 'rec-215ec2389a2af957a85060a67a563c60',
 			text: 'hello',
 			durationMs: 800,
 		});
@@ -327,7 +327,7 @@ describe('recording IPC contract', () => {
 					event: 'transcription:result',
 					id: 9,
 					payload: {
-						recording_id: 'rec-19581e27de7ced00ff1ce50b2047e7a5',
+						recording_id: 'rec-215ec2389a2af957a85060a67a563c60',
 						text: 'hello',
 						duration_ms: 800,
 						confidence,

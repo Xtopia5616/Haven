@@ -37,11 +37,11 @@ describe('chat session lifecycle handler', () => {
 		const clearAskAwaiting = vi.fn();
 		const reducer = new SessionReducer({
 			...initialSessionState,
-			sessions: [{ sessionId: 'ses-paused', status: 'running' }],
-			activeSessionId: 'ses-paused',
+			sessions: [{ sessionId: 'ses-d7f8acbf674cce3d6ba47e40218ba936', status: 'running' }],
+			activeSessionId: 'ses-d7f8acbf674cce3d6ba47e40218ba936',
 			messages: {
-				['ses-paused']: [
-					{ id: 'step-thought', role: 'assistant' as const, content: '半截回复', streaming: true },
+				['ses-d7f8acbf674cce3d6ba47e40218ba936']: [
+					{ id: 'step-db57142e6c7eae1b75511b732e35f0db', role: 'assistant' as const, content: '半截回复', streaming: true },
 					{
 						id: 'ask-1',
 						type: 'ask',
@@ -53,17 +53,17 @@ describe('chat session lifecycle handler', () => {
 			},
 		});
 		const onLifecycle = handler({
-			activeSessionId: 'ses-paused',
+			activeSessionId: 'ses-d7f8acbf674cce3d6ba47e40218ba936',
 			flushChunksNow,
 			clearAskAwaiting,
 			dispatchSession: (action) => reducer.dispatch(action),
 		});
-		setToolOutputPreview('step-shell', 'partial', 'ses-paused');
+		setToolOutputPreview('step-b1ff030bcda172afbbad69aa787379d5', 'partial', 'ses-d7f8acbf674cce3d6ba47e40218ba936');
 
 		onLifecycle({
 			payload: {
 				type: 'updated',
-				sessionId: 'ses-paused',
+				sessionId: 'ses-d7f8acbf674cce3d6ba47e40218ba936',
 				status: 'paused',
 				waitingReason: 'ask',
 				title: 'Question',
@@ -77,15 +77,15 @@ describe('chat session lifecycle handler', () => {
 			title: 'Question',
 		});
 		expect(reducer.snapshot().runEndNotice).toEqual({
-			sessionId: 'ses-paused',
+			sessionId: 'ses-d7f8acbf674cce3d6ba47e40218ba936',
 			status: 'paused',
 			reason: '用户主动打断输出',
 		});
 		expect(flushChunksNow).toHaveBeenCalledOnce();
 		expect(clearAskAwaiting).not.toHaveBeenCalled();
-		expect(get(getToolOutputPreviewStore('step-shell'))).toBeUndefined();
-		expect(reducer.getMessages('ses-paused')).toEqual([
-			{ id: 'step-thought', role: 'assistant' as const, content: '半截回复', streaming: false },
+		expect(get(getToolOutputPreviewStore('step-b1ff030bcda172afbbad69aa787379d5'))).toBeUndefined();
+		expect(reducer.getMessages('ses-d7f8acbf674cce3d6ba47e40218ba936')).toEqual([
+			{ id: 'step-db57142e6c7eae1b75511b732e35f0db', role: 'assistant' as const, content: '半截回复', streaming: false },
 			{
 				id: 'ask-1',
 				type: 'ask',
@@ -107,7 +107,7 @@ describe('chat session lifecycle handler', () => {
 		onLifecycle({
 			payload: {
 				type: 'created',
-				sessionId: 'ses-fast',
+				sessionId: 'ses-6bb3f11b1693b49cabe739510f5d9b02',
 				status: 'pending',
 				waitingReason: null,
 				title: null,
@@ -116,7 +116,7 @@ describe('chat session lifecycle handler', () => {
 
 		expect(dispatchSession).toHaveBeenCalledWith({
 			type: 'session/created',
-			sessionId: 'ses-fast',
+			sessionId: 'ses-6bb3f11b1693b49cabe739510f5d9b02',
 			freshStart: true,
 			adoptedDraft: true,
 			status: 'pending',
@@ -125,7 +125,7 @@ describe('chat session lifecycle handler', () => {
 	});
 
 	it('projects a completion and performs terminal cleanup once from the same event', () => {
-		const sessionId = 'ses-done';
+		const sessionId = 'ses-810b085358816d1bc83caf2eb4f45ff1';
 		const flushChunksNow = vi.fn();
 		const clearAskAwaiting = vi.fn();
 		const evictTerminalSessionMemory = vi.fn();
@@ -137,7 +137,7 @@ describe('chat session lifecycle handler', () => {
 			activeSessionId: sessionId,
 			messages: {
 				[sessionId]: [
-					{ id: 'step-live', role: 'assistant' as const, content: '最后一段', streaming: true },
+					{ id: 'step-fa7d9da560291aec4d4fd57e8812de10', role: 'assistant' as const, content: '最后一段', streaming: true },
 				],
 			},
 		});
@@ -150,7 +150,7 @@ describe('chat session lifecycle handler', () => {
 			scheduleLoadSessions,
 			dispatchSession: (action) => reducer.dispatch(action),
 		});
-		setToolOutputPreview('step-live', 'partial', sessionId);
+		setToolOutputPreview('step-fa7d9da560291aec4d4fd57e8812de10', 'partial', sessionId);
 
 		onLifecycle({
 			payload: {
@@ -177,11 +177,11 @@ describe('chat session lifecycle handler', () => {
 		expect(evictTerminalSessionMemory).toHaveBeenCalledOnce();
 		expect(clearStepBlockIds).toHaveBeenCalledOnce();
 		expect(scheduleLoadSessions).toHaveBeenCalledOnce();
-		expect(get(getToolOutputPreviewStore('step-live'))).toBeUndefined();
+		expect(get(getToolOutputPreviewStore('step-fa7d9da560291aec4d4fd57e8812de10'))).toBeUndefined();
 	});
 
 	it('projects one error run-end notice with terminal status and cleanup', () => {
-		const sessionId = 'ses-error';
+		const sessionId = 'ses-1a4ee0ce88355110073c1a46637b89bc';
 		const clearAskAwaiting = vi.fn();
 		const evictTerminalSessionMemory = vi.fn();
 		const flushChunksNow = vi.fn();
@@ -225,30 +225,30 @@ describe('chat session lifecycle handler', () => {
 	it('refreshes inactive terminal sessions after clearing their queued output', () => {
 		const cleanupOrder: string[] = [];
 		const onLifecycle = handler({
-			activeSessionId: 'ses-active',
+			activeSessionId: 'ses-d186f90b4f33cc53ee287f9e8c401e6a',
 			flushChunksNow: () => cleanupOrder.push('flush'),
 			evictTerminalSessionMemory: () => cleanupOrder.push('evict'),
 			dispatchSession: vi.fn(),
 		});
-		setToolOutputPreview('step-background', '后台命令输出', 'ses-background');
+		setToolOutputPreview('step-f5ba153deb417361f0e17158c2c3924a', '后台命令输出', 'ses-ffe697a25c453d07bf0c9571521df2b7');
 
 		onLifecycle({
 			payload: {
 				type: 'error',
-				sessionId: 'ses-background',
+				sessionId: 'ses-ffe697a25c453d07bf0c9571521df2b7',
 				title: '后台会话',
 				error: '请求失败',
 			},
 		} as never);
 
 		expect(cleanupOrder).toEqual(['flush', 'evict']);
-		expect(get(getToolOutputPreviewStore('step-background'))).toBeUndefined();
+		expect(get(getToolOutputPreviewStore('step-f5ba153deb417361f0e17158c2c3924a'))).toBeUndefined();
 	});
 
 	it('clears the resumed ask indicator on a pending update', () => {
 		const clearAskAwaiting = vi.fn();
 		const onLifecycle = handler({
-			activeSessionId: 'ses-active',
+			activeSessionId: 'ses-d186f90b4f33cc53ee287f9e8c401e6a',
 			clearAskAwaiting,
 			dispatchSession: vi.fn(),
 		});
@@ -256,7 +256,7 @@ describe('chat session lifecycle handler', () => {
 		onLifecycle({
 			payload: {
 				type: 'updated',
-				sessionId: 'ses-active',
+				sessionId: 'ses-d186f90b4f33cc53ee287f9e8c401e6a',
 				status: 'pending',
 				waitingReason: null,
 				title: '研究',
@@ -265,7 +265,7 @@ describe('chat session lifecycle handler', () => {
 		} as never);
 
 		expect(clearAskAwaiting).toHaveBeenCalledOnce();
-		expect(clearAskAwaiting).toHaveBeenCalledWith('ses-active');
+		expect(clearAskAwaiting).toHaveBeenCalledWith('ses-d186f90b4f33cc53ee287f9e8c401e6a');
 	});
 
 	it('updates a session title and refreshes the history list', () => {
@@ -278,16 +278,16 @@ describe('chat session lifecycle handler', () => {
 		});
 
 		onLifecycle({
-			payload: { type: 'title_updated', sessionId: 'ses-title', title: '新标题' },
+			payload: { type: 'title_updated', sessionId: 'ses-4f151e73abe298e48f40d72febb7be74', title: '新标题' },
 		} as never);
 
 		expect(updateSessionTitle).toHaveBeenCalledOnce();
-		expect(updateSessionTitle).toHaveBeenCalledWith('ses-title', '新标题');
+		expect(updateSessionTitle).toHaveBeenCalledWith('ses-4f151e73abe298e48f40d72febb7be74', '新标题');
 		expect(scheduleLoadSessions).toHaveBeenCalledOnce();
 	});
 
 	it('clears the deleted session projection from the same lifecycle event', () => {
-		const sessionId = 'ses-deleted';
+		const sessionId = 'ses-ce69f619d8040910b44a763046f457f9';
 		const flushChunksNow = vi.fn();
 		const clearAskAwaiting = vi.fn();
 		const clearStepBlockIds = vi.fn();
@@ -296,7 +296,7 @@ describe('chat session lifecycle handler', () => {
 			...initialSessionState,
 			sessions: [{ sessionId, status: 'paused', title: '删除目标' }],
 			activeSessionId: sessionId,
-			messages: { [sessionId]: [{ id: 'msg-1', role: 'user' as const, content: '问题' }] },
+			messages: { [sessionId]: [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: '问题' }] },
 		});
 		const onLifecycle = handler({
 			activeSessionId: sessionId,
@@ -306,7 +306,7 @@ describe('chat session lifecycle handler', () => {
 			scheduleLoadSessions,
 			dispatchSession: (action) => reducer.dispatch(action),
 		});
-		setToolOutputPreview('step-deleted', 'partial', sessionId);
+		setToolOutputPreview('step-e98ef375faf65dc4add5e1667f51f7a6', 'partial', sessionId);
 
 		onLifecycle({ payload: { type: 'deleted', sessionId } } as never);
 
@@ -317,6 +317,6 @@ describe('chat session lifecycle handler', () => {
 		expect(clearAskAwaiting).toHaveBeenCalledWith(sessionId);
 		expect(clearStepBlockIds).toHaveBeenCalledWith(sessionId);
 		expect(scheduleLoadSessions).toHaveBeenCalledOnce();
-		expect(get(getToolOutputPreviewStore('step-deleted'))).toBeUndefined();
+		expect(get(getToolOutputPreviewStore('step-e98ef375faf65dc4add5e1667f51f7a6'))).toBeUndefined();
 	});
 });

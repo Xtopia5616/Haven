@@ -105,7 +105,7 @@ describe('sessionEventListeners', () => {
 			id: 4,
 			payload: {
 				type: 'updated',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				status: 'paused',
 				title: 'A title',
 				waiting_reason: 'user_input',
@@ -118,7 +118,7 @@ describe('sessionEventListeners', () => {
 			id: 4,
 			payload: {
 				type: 'updated',
-				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				status: 'paused',
 				waitingReason: 'user_input',
 				title: 'A title',
@@ -136,7 +136,7 @@ describe('sessionEventListeners', () => {
 			id: 10,
 			payload: {
 				type: 'completed',
-				session_id: 'ses-a4c3ed04a95a3da14a9d235c83d868be',
+				session_id: 'ses-78957b28026e9636da1b45cfe053f9de',
 				title: 'A title',
 				reason: 'Finished',
 			},
@@ -146,7 +146,7 @@ describe('sessionEventListeners', () => {
 			id: 11,
 			payload: {
 				type: 'error',
-				session_id: 'ses-ca00fccfb408989eddc401062c4d1219',
+				session_id: 'ses-fa042c90a5ae6e4d05dbcaac067fd438',
 				title: 'Build',
 				error: 'Request failed',
 			},
@@ -155,13 +155,13 @@ describe('sessionEventListeners', () => {
 		expect(handler.mock.calls.map(([value]) => value.payload)).toEqual([
 			{
 				type: 'completed',
-				sessionId: 'ses-a4c3ed04a95a3da14a9d235c83d868be',
+				sessionId: 'ses-78957b28026e9636da1b45cfe053f9de',
 				title: 'A title',
 				reason: 'Finished',
 			},
 			{
 				type: 'error',
-				sessionId: 'ses-ca00fccfb408989eddc401062c4d1219',
+				sessionId: 'ses-fa042c90a5ae6e4d05dbcaac067fd438',
 				title: 'Build',
 				error: 'Request failed',
 			},
@@ -177,7 +177,7 @@ describe('sessionEventListeners', () => {
 			id: 5,
 			payload: {
 				type: 'updated',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				status: 'completed',
 				title: 'A title',
 			},
@@ -202,7 +202,7 @@ describe('sessionEventListeners', () => {
 			id: 6,
 			payload: {
 				type: 'title_updated',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				title: 'A title',
 			},
 		});
@@ -212,7 +212,7 @@ describe('sessionEventListeners', () => {
 			id: 6,
 			payload: {
 				type: 'title_updated',
-				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				title: 'A title',
 			},
 		});
@@ -364,8 +364,8 @@ describe('registerAppListener', () => {
 			event: 'interaction:requested',
 			id: 10,
 			payload: {
-				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				id: 'conf-79de9202e37eef0078c66a58ae861c3b',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				kind: 'confirm',
 			},
 		});
@@ -391,10 +391,10 @@ describe('toolRunEventListeners', () => {
 			event: 'tool_run:finished',
 			id: 3,
 			payload: {
-				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 				kind: 'background',
 				status: 'completed',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				exit_code: 0,
 			},
 		} as never);
@@ -403,10 +403,10 @@ describe('toolRunEventListeners', () => {
 			event: 'tool_run:finished',
 			id: 3,
 			payload: {
-				toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 				kind: 'background',
 				status: 'completed',
-				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				exitCode: 0,
 			},
 		});
@@ -446,18 +446,18 @@ describe('agentEventListeners', () => {
 		});
 		const arrivals = [
 			{
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				thought: 'first',
 				step_number: 1,
 				run_id: 1,
-				message_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
+				message_id: 'step-ea869e583dff7756d1747b32ad55e798',
 			},
 			{
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				thought: 'second',
 				step_number: 2,
 				run_id: 1,
-				message_id: 'step-d4735e3a265e16eee03f59718b9b5d03',
+				message_id: 'step-6b5a1abca066bd12caad8d5a5bbf8c52',
 			},
 		];
 
@@ -466,8 +466,8 @@ describe('agentEventListeners', () => {
 		});
 
 		expect(received).toEqual([
-			'ses-6b86b273ff34fce19d6b804eff5a3f57:first',
-			'ses-6b86b273ff34fce19d6b804eff5a3f57:second',
+			'ses-0ecf371384ab79d597760ca41f2ba21c:first',
+			'ses-0ecf371384ab79d597760ca41f2ba21c:second',
 		]);
 	});
 
@@ -480,11 +480,11 @@ describe('agentEventListeners', () => {
 			event: 'agent:thought',
 			id: 4,
 			payload: {
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				thought: privateValue,
 				step_number: 'bad',
 				run_id: 2,
-				message_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
+				message_id: 'step-ea869e583dff7756d1747b32ad55e798',
 			},
 		} as never);
 
@@ -520,25 +520,25 @@ describe('recordingEventListeners', () => {
 				event: 'recording:started',
 				payload: {
 					is_recording: true,
-					recording_id: 'rec-6b86b273ff34fce19d6b804eff5a3f57',
+					recording_id: 'rec-740e8385526b3df7e1871ffaa127850a',
 				},
 			},
 			{
 				event: 'recording:stopped',
 				payload: {
 					is_recording: false,
-					recording_id: 'rec-6b86b273ff34fce19d6b804eff5a3f57',
+					recording_id: 'rec-740e8385526b3df7e1871ffaa127850a',
 					reason: 'silence',
 				},
 			},
 			{
 				event: 'transcription:started',
-				payload: { recording_id: 'rec-6b86b273ff34fce19d6b804eff5a3f57' },
+				payload: { recording_id: 'rec-740e8385526b3df7e1871ffaa127850a' },
 			},
 			{
 				event: 'transcription:result',
 				payload: {
-					recording_id: 'rec-6b86b273ff34fce19d6b804eff5a3f57',
+					recording_id: 'rec-740e8385526b3df7e1871ffaa127850a',
 					text: 'hello',
 					duration_ms: 800,
 				},
@@ -550,9 +550,9 @@ describe('recordingEventListeners', () => {
 		});
 
 		expect(received).toEqual([
-			'recording:started:rec-6b86b273ff34fce19d6b804eff5a3f57',
+			'recording:started:rec-740e8385526b3df7e1871ffaa127850a',
 			'recording:stopped:silence',
-			'transcription:started:rec-6b86b273ff34fce19d6b804eff5a3f57',
+			'transcription:started:rec-740e8385526b3df7e1871ffaa127850a',
 			'transcription:result:hello',
 		]);
 	});

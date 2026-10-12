@@ -912,14 +912,14 @@ mod tests {
     #[test]
     fn interaction_projection_keeps_typed_lifecycle_values_on_the_existing_wire() {
         let request = haven_agent::InteractionRequest::ask(
-            "ses-interaction-projection",
+            "ses-e47db875d9bb819c9b621fed98ffe82b",
             Vec::new(),
-            vec!["step-interaction-projection".into()],
+            vec!["step-8035d06884c9e501700b994a5f4d4f55".into()],
         );
         let event = project_interaction(
             &request,
             haven_agent::InteractionOwner::Session {
-                session_id: "ses-interaction-projection".into(),
+                session_id: "ses-e47db875d9bb819c9b621fed98ffe82b".into(),
             },
         );
 
@@ -930,7 +930,7 @@ mod tests {
             wire["owner"],
             serde_json::json!({
                 "kind": "session",
-                "session_id": "ses-interaction-projection",
+                "session_id": "ses-e47db875d9bb819c9b621fed98ffe82b",
             })
         );
     }

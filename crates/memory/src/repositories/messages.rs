@@ -833,7 +833,7 @@ impl Database {
         Ok(())
     }
 
-    /// Drop every message **and** ses-step whose `created_at` is strictly
+    /// Drop every message **and** session step whose `created_at` is strictly
     /// after `ts`, or at-or-after `ts` when `inclusive`. Centralizes the
     /// `delete_messages_after/from + delete_session_steps_after` pair that
     /// rollback used to repeat at every branch-point cutoff, so a future
@@ -964,7 +964,7 @@ mod tests {
         let db = test_db();
         let session_id = test_session(&db);
         let invalid_session_result = db.add_message_full(
-            "ses-1",
+            "ses-7ae290dbf0b4468c9d2c401be649850b",
             CanonicalRole::User,
             "hello",
             None,

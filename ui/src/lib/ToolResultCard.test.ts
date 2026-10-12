@@ -151,7 +151,7 @@ describe('canRenderToolResult', () => {
 				'media',
 				JSON.stringify({
 					operation: 'inspect',
-					asset_id: 'asset-0123456789abcdef0123456789abcdef',
+					asset_id: 'asset-4ace2c308fb47262b111ecb85d46d787',
 					media: {},
 				}),
 			),
@@ -234,7 +234,7 @@ describe('operation view UI contract', () => {
 				data: {
 					agents: [
 						{
-							name: 'ses-0123456789abcdef0123456789abcdef',
+							name: 'ses-103ac63490bc5f6c27fd45405efecd69',
 							status: 'online',
 						},
 					],
@@ -332,7 +332,7 @@ describe('operation view UI contract', () => {
 				renderer: 'haven_diagnostics',
 				data: {
 					sessions: [
-						{ session_id: 'ses-0123456789abcdef0123456789abcdef', status: 'future' },
+						{ session_id: 'ses-103ac63490bc5f6c27fd45405efecd69', status: 'future' },
 					],
 				},
 			},
@@ -342,7 +342,7 @@ describe('operation view UI contract', () => {
 			},
 			{
 				renderer: 'haven_diagnostics',
-				data: { errors: [{ session_id: 'toolrun-0123456789abcdef0123456789abcdef' }] },
+				data: { errors: [{ session_id: 'toolrun-58ec300e6432076c8ec176f56120ec01' }] },
 			},
 			{ renderer: 'haven_diagnostics', data: { sessions: [{ title: 'missing id' }] } },
 			{ renderer: 'http', data: { status: '200' } },
@@ -636,7 +636,7 @@ describe('operation view UI contract', () => {
 				{
 					operation: 'read',
 					media: {
-						asset_id: 'asset-0123456789abcdef0123456789abcdef',
+						asset_id: 'asset-4ace2c308fb47262b111ecb85d46d787',
 						content: 'plain text',
 					},
 				},
@@ -727,7 +727,7 @@ describe('operation view UI contract', () => {
 				{
 					agents: [
 						{
-							session_id: 'ses-0123456789abcdef0123456789abcdef',
+							session_id: 'ses-103ac63490bc5f6c27fd45405efecd69',
 							title: null,
 							role: null,
 							status: 'online',
@@ -745,7 +745,7 @@ describe('operation view UI contract', () => {
 				'haven_diagnostics',
 				{
 					sessions: [
-						{ session_id: 'ses-0123456789abcdef0123456789abcdef', status: 'running' },
+						{ session_id: 'ses-103ac63490bc5f6c27fd45405efecd69', status: 'running' },
 					],
 				},
 				'haven_diagnostics',
@@ -1404,7 +1404,7 @@ describe('ToolResultCard collapsible', () => {
 	});
 
 	it('does not reopen after a transient live-preview gap', async () => {
-		const messageId = 'step-preview-gap';
+		const messageId = 'step-95410acf0ea69fc43cb94e2ec2c0ffa6';
 		setToolOutputPreview(messageId, 'first chunk');
 		const { container, rerender } = render(ToolResultCard, {
 			toolName: 'shell',
@@ -1681,7 +1681,7 @@ describe('ToolResultCard window', () => {
 			content: JSON.stringify({
 				scope: 'window',
 				operation: 'screenshot',
-				asset_id: 'asset-0123456789abcdef0123456789abcdef',
+				asset_id: 'asset-4ace2c308fb47262b111ecb85d46d787',
 				width: 1920,
 				height: 1080,
 				format: 'png',
@@ -1689,7 +1689,7 @@ describe('ToolResultCard window', () => {
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('截图已生成')).toBeTruthy();
-		expect(screen.getByText('asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
+		expect(screen.getByText('asset-4ace2c308fb47262b111ecb85d46d787')).toBeTruthy();
 		expect(screen.getByText('1920×1080 · PNG')).toBeTruthy();
 	});
 });
@@ -1711,7 +1711,7 @@ describe('ToolResultCard media recording', () => {
 	});
 
 	it('shows capture errors while retaining the recorded asset', async () => {
-		const assetId = 'asset-0123456789abcdef0123456789abcdef';
+		const assetId = 'asset-4ace2c308fb47262b111ecb85d46d787';
 		const { container } = render(ToolResultCard, {
 			toolName: 'media',
 			content: JSON.stringify({
@@ -1735,9 +1735,9 @@ describe('ToolResultCard files', () => {
 			toolName: 'files',
 			content: JSON.stringify({
 				operation: 'read',
-				asset_id: 'asset-0123456789abcdef0123456789abcdef',
+				asset_id: 'asset-4ace2c308fb47262b111ecb85d46d787',
 				media: {
-					asset_id: 'asset-0123456789abcdef0123456789abcdef',
+					asset_id: 'asset-4ace2c308fb47262b111ecb85d46d787',
 					filename: 'diagram.png',
 					content: 'A flow diagram with three nodes.',
 					available_representations: ['managed_file_ref', 'image_description'],
@@ -1747,7 +1747,7 @@ describe('ToolResultCard files', () => {
 			}),
 		});
 		await expandToolCard(container);
-		expect(screen.getByText('asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
+		expect(screen.getByText('asset-4ace2c308fb47262b111ecb85d46d787')).toBeTruthy();
 		expect(screen.getByText('diagram.png')).toBeTruthy();
 		expect(screen.getByText('A flow diagram with three nodes.')).toBeTruthy();
 		expect(screen.getByText('可用表示：managed_file_ref、image_description')).toBeTruthy();
@@ -1934,9 +1934,9 @@ describe('ToolResultCard media audio operations and input', () => {
 			toolName: 'media',
 			content: JSON.stringify({
 				operation: 'record',
-				asset_id: 'asset-0123456789abcdef0123456789abcdef',
+				asset_id: 'asset-4ace2c308fb47262b111ecb85d46d787',
 				media: {
-					asset_id: 'asset-0123456789abcdef0123456789abcdef',
+					asset_id: 'asset-4ace2c308fb47262b111ecb85d46d787',
 					representation: 'transcript',
 					available_representations: ['managed_file_ref', 'transcript'],
 					recommended_next: null,
@@ -1945,7 +1945,7 @@ describe('ToolResultCard media audio operations and input', () => {
 			}),
 		});
 		await expandToolCard(container);
-		expect(screen.getByText('资产：asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
+		expect(screen.getByText('资产：asset-4ace2c308fb47262b111ecb85d46d787')).toBeTruthy();
 		expect(screen.getByText('表示：transcript')).toBeTruthy();
 		expect(screen.getByText('可用表示：managed_file_ref、transcript')).toBeTruthy();
 	});

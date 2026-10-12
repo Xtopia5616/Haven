@@ -422,7 +422,12 @@ mod tests {
     fn phase_timer_preserves_correlation_without_recording_content() {
         let metrics = ReActMetrics::new();
         {
-            let _timer = metrics.start(Phase::Projection, "ses-test", 7, 3);
+            let _timer = metrics.start(
+                Phase::Projection,
+                "ses-37d95174ca2a846e8425178b7dc6ed84",
+                7,
+                3,
+            );
         }
         assert_eq!(metrics.snapshot().phase(Phase::Projection).count, 1);
     }

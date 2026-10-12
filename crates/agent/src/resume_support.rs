@@ -131,13 +131,13 @@ mod tests {
                 summary: String::new(),
                 tokens_before: 0,
                 tokens_after: 0,
-                episode_id: "msg-summary".into(),
+                episode_id: "msg-f2a54ee443860f8ff808d3402e429653".into(),
                 degraded: false,
             },
             TranscriptRecord::ToolResult {
                 step_number: 4,
                 tool_index: 0,
-                step_id: "step-tool".into(),
+                step_id: "step-5f6b5bd10a5a9f334d204f296796b5f7".into(),
                 canonical_observation: "ok".into(),
                 history_observation: "ok".into(),
                 tool_call_id: Some("call-tool".into()),
@@ -161,7 +161,7 @@ mod tests {
             summary: "summary".into(),
             tokens_before: 100,
             tokens_after: 20,
-            episode_id: "msg-summary".into(),
+            episode_id: "msg-f2a54ee443860f8ff808d3402e429653".into(),
             degraded: false,
         }];
 

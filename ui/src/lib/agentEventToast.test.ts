@@ -5,7 +5,7 @@ describe('Agent event toast projection', () => {
 	it('formats normal and degraded compaction events', () => {
 		expect(
 			formatAgentCompactionToast({
-				sessionId: 'ses-test',
+				sessionId: 'ses-f598facda111677e0871bdc09d391332',
 				summary: 'summary',
 				tokensBefore: 1200,
 				tokensAfter: 800,
@@ -15,7 +15,7 @@ describe('Agent event toast projection', () => {
 
 		expect(
 			formatAgentCompactionToast({
-				sessionId: 'ses-test',
+				sessionId: 'ses-f598facda111677e0871bdc09d391332',
 				summary: 'summary',
 				tokensBefore: 1200,
 				tokensAfter: 800,
@@ -31,19 +31,19 @@ describe('Agent event toast projection', () => {
 	it('includes media representation and downgrade reason in the toast', () => {
 		expect(
 			formatAgentMediaPlanToast({
-				sessionId: 'ses-media',
+				sessionId: 'ses-5842f320b26bb7a914cbf6e460c843c9',
 				stepNumber: 4,
 				runId: 8,
 				requestKind: 'audio_chat',
 				strategy: 'auto',
 				projections: [
-					{ assetId: 'asset-1', representation: 'transcript', mode: 'derived' },
+					{ assetId: 'asset-00000000000000000000000000000001', representation: 'transcript', mode: 'derived' },
 				],
-				notices: [{ assetId: 'asset-1', code: 'raw_capability_unknown' }],
+				notices: [{ assetId: 'asset-00000000000000000000000000000001', code: 'raw_capability_unknown' }],
 			}),
 		).toEqual({
 			message:
-				'附件表示（audio_chat）：已使用 asset-1：转写文本（派生）；策略：自动；原因：当前模型能力未知，未发送原始媒体',
+				'附件表示（audio_chat）：已使用 asset-00000000000000000000000000000001：转写文本（派生）；策略：自动；原因：当前模型能力未知，未发送原始媒体',
 			type: 'warning',
 			durationMs: 5000,
 		});

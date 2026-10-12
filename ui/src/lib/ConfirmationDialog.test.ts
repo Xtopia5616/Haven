@@ -12,9 +12,9 @@ describe('ConfirmationDialog', () => {
 		const onConfirm = vi.fn();
 		const { container } = render(ConfirmationDialog as any, {
 			...deadlineProps(),
-			requestId: 'conf-test',
+			requestId: 'conf-b7a65e97699c7c548225828bfc5e17f9',
 			toolName: 'files.write',
-			sessionId: 'ses-test',
+			sessionId: 'ses-f598facda111677e0871bdc09d391332',
 			sessionTitle: '测试会话',
 			riskLevel: 'medium',
 			summary: '写入文件',
@@ -57,7 +57,7 @@ describe('ConfirmationDialog', () => {
 
 		await fireEvent.click(onceButton);
 		expect(onConfirm).toHaveBeenCalledWith({
-			requestId: 'conf-test',
+			requestId: 'conf-b7a65e97699c7c548225828bfc5e17f9',
 			approved: true,
 			effect: 'allow',
 			scope: 'once',
@@ -72,20 +72,20 @@ describe('ConfirmationDialog', () => {
 		const { rerender } = render(ConfirmationDialog as any, {
 			...deadline,
 			open: true,
-			requestId: 'conf-close',
+			requestId: 'conf-a01e8dd02b9ac9753f4d8ceeb93b4af0',
 			toolName: 'files.write',
 			onDismiss,
 			onConfirm,
 		});
 
 		await fireEvent.click(screen.getByRole('button', { name: '关闭权限确认' }));
-		expect(onDismiss).toHaveBeenCalledWith('conf-close');
+		expect(onDismiss).toHaveBeenCalledWith('conf-a01e8dd02b9ac9753f4d8ceeb93b4af0');
 		expect(onConfirm).not.toHaveBeenCalled();
 
 		await rerender({
 			...deadline,
 			open: false,
-			requestId: 'conf-close',
+			requestId: 'conf-a01e8dd02b9ac9753f4d8ceeb93b4af0',
 			toolName: 'files.write',
 			onDismiss,
 			onConfirm,
@@ -95,7 +95,7 @@ describe('ConfirmationDialog', () => {
 		await rerender({
 			...deadline,
 			open: true,
-			requestId: 'conf-close',
+			requestId: 'conf-a01e8dd02b9ac9753f4d8ceeb93b4af0',
 			toolName: 'files.write',
 			onDismiss,
 			onConfirm,
@@ -110,9 +110,9 @@ describe('ConfirmationDialog', () => {
 			const onConfirm = vi.fn();
 			render(ConfirmationDialog as any, {
 				...deadlineProps(1000),
-				requestId: 'conf-timeout',
+				requestId: 'conf-55ddccbc8eb4825ca74dea3d65ce9ce5',
 				toolName: 'files.write',
-				sessionId: 'ses-test',
+				sessionId: 'ses-f598facda111677e0871bdc09d391332',
 				summary: '写入文件',
 				permissionKey: 'files.write',
 				onConfirm,
@@ -129,7 +129,7 @@ describe('ConfirmationDialog', () => {
 	it('does not offer session grants to confirmations without a persisted session', async () => {
 		render(ConfirmationDialog as any, {
 			...deadlineProps(),
-			requestId: 'conf-ui-only',
+			requestId: 'conf-16c894afc7e907aa73537a342ea11872',
 			toolName: 'mcp__server__write',
 			permissionKey: 'mcp.server.write',
 			onConfirm: vi.fn(),
@@ -147,7 +147,7 @@ describe('ConfirmationDialog', () => {
 		const onConfirm = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 		render(ConfirmationDialog as any, {
 			...deadlineProps(),
-			requestId: 'conf-retry',
+			requestId: 'conf-b1e0260f9f155eaca25bb42b04a91e5d',
 			toolName: 'mcp__server__write',
 			onConfirm,
 		});

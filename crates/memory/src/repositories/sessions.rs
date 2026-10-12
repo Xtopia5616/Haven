@@ -1001,7 +1001,7 @@ mod tests {
     fn test_list_tool_runs_limit_offset() {
         let db = create_db();
         for i in 0..5 {
-            db.create_session(&format!("ses-{}", i)).unwrap();
+            db.create_session(&format!("session {i}")).unwrap();
         }
         let sessions = db.list_persisted_sessions(2, 0).unwrap();
         assert_eq!(sessions.len(), 2);
@@ -1128,15 +1128,21 @@ mod tests {
         let first = db.create_session("a").unwrap();
         db.create_session("b").unwrap();
         db.create_session("c").unwrap();
-        db.set_kv(&format!("fact_extraction.{}", first.session_id), "msg-1")
-            .unwrap();
+        db.set_kv(
+            &format!("fact_extraction.{}", first.session_id),
+            "msg-e11ea518ef030561fe32765a0ab84b18",
+        )
+        .unwrap();
         db.set_kv(
             &format!("fact_extraction_last_run.{}", first.session_id),
             "2026-08-15T00:00:00Z",
         )
         .unwrap();
         db.set_kv(
-            &format!("fact_extraction_episode_done.{}.msg-3", first.session_id),
+            &format!(
+                "fact_extraction_episode_done.{}.msg-1c54a19f14b80e82ef5996e9ca905fd1",
+                first.session_id
+            ),
             &first.session_id,
         )
         .unwrap();
@@ -1163,7 +1169,7 @@ mod tests {
         );
         assert!(
             db.get_kv(&format!(
-                "fact_extraction_episode_done.{}.msg-3",
+                "fact_extraction_episode_done.{}.msg-1c54a19f14b80e82ef5996e9ca905fd1",
                 first.session_id
             ))
             .unwrap()
@@ -1225,15 +1231,21 @@ mod tests {
         let db = create_db();
         let first = db.create_session("a").unwrap();
         db.create_session("b").unwrap();
-        db.set_kv(&format!("fact_extraction.{}", first.session_id), "msg-1")
-            .unwrap();
+        db.set_kv(
+            &format!("fact_extraction.{}", first.session_id),
+            "msg-e11ea518ef030561fe32765a0ab84b18",
+        )
+        .unwrap();
         db.set_kv(
             &format!("fact_extraction_last_run.{}", first.session_id),
             "2026-08-15T00:00:00Z",
         )
         .unwrap();
         db.set_kv(
-            &format!("fact_extraction_episode_done.{}.msg-3", first.session_id),
+            &format!(
+                "fact_extraction_episode_done.{}.msg-1c54a19f14b80e82ef5996e9ca905fd1",
+                first.session_id
+            ),
             &first.session_id,
         )
         .unwrap();
@@ -1260,7 +1272,7 @@ mod tests {
         );
         assert!(
             db.get_kv(&format!(
-                "fact_extraction_episode_done.{}.msg-3",
+                "fact_extraction_episode_done.{}.msg-1c54a19f14b80e82ef5996e9ca905fd1",
                 first.session_id
             ))
             .unwrap()

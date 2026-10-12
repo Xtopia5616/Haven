@@ -16,7 +16,7 @@ describe('buildResumeMessages', () => {
 			messages: [],
 			steps: [
 				{
-					step_id: 'step-unknown',
+					step_id: 'step-543950710a972d7bd47f45c9d9e0965c',
 					tool_name: 'write_file',
 					status: 'unknown',
 					observation: 'may have run',
@@ -27,7 +27,7 @@ describe('buildResumeMessages', () => {
 		});
 		expect(items).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({ id: 'step-unknown', type: 'tool', outcome: 'unknown' }),
+				expect.objectContaining({ id: 'step-543950710a972d7bd47f45c9d9e0965c', type: 'tool', outcome: 'unknown' }),
 			]),
 		);
 	});
@@ -36,7 +36,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
@@ -44,7 +44,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'm2',
+					message_id: 'msg-00000000000000000000000000000002',
 					role: 'assistant' as const,
 					content: '已打开',
 					message_type: 'text',
@@ -56,13 +56,13 @@ describe('buildResumeMessages', () => {
 		});
 		expect(items).toHaveLength(2);
 		expect(items[0]).toMatchObject({
-			id: 'm1',
+			id: 'msg-00000000000000000000000000000001',
 			role: 'user' as const,
 			content: '打开记事本',
 			streaming: false,
 			voice: false,
 		});
-		expect(items[1]).toMatchObject({ id: 'm2', role: 'assistant' as const, content: '已打开' });
+		expect(items[1]).toMatchObject({ id: 'msg-00000000000000000000000000000002', role: 'assistant' as const, content: '已打开' });
 	});
 
 	it('preserves the voice flag from persisted messages', () => {
@@ -146,7 +146,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -156,7 +156,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-s1',
+					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'files',
 					observation: '{"ok":true}',
 					thought: null,
@@ -167,7 +167,7 @@ describe('buildResumeMessages', () => {
 		});
 		expect(items).toHaveLength(2);
 		expect(items[1]).toMatchObject({
-			id: 'step-s1',
+			id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 			type: 'tool',
 			toolName: 'files',
 			content: '{"ok":true}',
@@ -179,7 +179,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: '读取文件',
 					message_type: 'text',
@@ -197,7 +197,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-view',
+					step_id: 'step-cf3cabbf64676a92780eea6db66a1f3e',
 					tool_name: 'files.read',
 					tool_input: '{"path":"notes.md"}',
 					observation: '{"operation":"read","path":"notes.md","content":"ok"}',
@@ -207,9 +207,9 @@ describe('buildResumeMessages', () => {
 				},
 			],
 		});
-		const tool = items.find((item) => item.id === 'step-view');
+		const tool = items.find((item) => item.id === 'step-cf3cabbf64676a92780eea6db66a1f3e');
 		expect(tool).toMatchObject({
-			id: 'step-view',
+			id: 'step-cf3cabbf64676a92780eea6db66a1f3e',
 			type: 'tool',
 			toolName: 'files.read',
 			toolArgs: '{"path":"notes.md"}',
@@ -222,7 +222,7 @@ describe('buildResumeMessages', () => {
 			messages: [],
 			steps: [
 				{
-					step_id: 'step-file',
+					step_id: 'step-cf023ba77a3ea05387eb80133d4fb0e8',
 					tool_name: 'file',
 					observation: '{"content":"old"}',
 					thought: null,
@@ -230,7 +230,7 @@ describe('buildResumeMessages', () => {
 					created_at: '2026-08-01T10:01:00Z',
 				},
 				{
-					step_id: 'step-search',
+					step_id: 'step-9b06cc05e7e3d240b08457c785accfc4',
 					tool_name: 'file_search',
 					observation: '{"results":[]}',
 					thought: null,
@@ -238,7 +238,7 @@ describe('buildResumeMessages', () => {
 					created_at: '2026-08-01T10:02:00Z',
 				},
 				{
-					step_id: 'step-schedule',
+					step_id: 'step-052b341c6a7d077effc2e1976c4ebdc7',
 					tool_name: 'scheduled_tool_run',
 					observation: '{"scheduled_tool_runs":[]}',
 					thought: null,
@@ -259,7 +259,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: '检查',
 					message_type: 'text',
@@ -267,7 +267,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-s1',
+					message_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					role: 'tool' as const,
 					content: '{"output":"ok"}',
 					message_type: 'observation',
@@ -277,7 +277,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-s1',
+					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'shell',
 					tool_input: '{"cmd":"dir"}',
 					observation: '{"output":"ok"}',
@@ -287,7 +287,7 @@ describe('buildResumeMessages', () => {
 				},
 			],
 		});
-		const tool = items.find((item) => item.id === 'step-s1');
+		const tool = items.find((item) => item.id === 'step-edfd6f6b7218b976ac1daf2a9709bba0');
 		expect(tool).toMatchObject({
 			role: 'assistant' as const,
 			type: 'tool',
@@ -301,7 +301,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -311,7 +311,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-s1',
+					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'mcp__filesystem__read',
 					tool_input: '{"path":"a.rs"}',
 					observation: '{"ok":true}',
@@ -322,7 +322,7 @@ describe('buildResumeMessages', () => {
 			],
 		});
 		expect(items[1]).toMatchObject({
-			id: 'step-s1',
+			id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 			type: 'tool',
 			toolName: 'mcp__filesystem__read',
 			toolArgs: '{"path":"a.rs"}',
@@ -337,7 +337,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -345,7 +345,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'm2',
+					message_id: 'msg-00000000000000000000000000000002',
 					role: 'assistant' as const,
 					content: '稍等',
 					message_type: 'text',
@@ -382,7 +382,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -390,7 +390,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'm2',
+					message_id: 'msg-00000000000000000000000000000002',
 					role: 'assistant' as const,
 					content: '稍等，我检查一下',
 					message_type: 'text',
@@ -398,7 +398,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'm3',
+					message_id: 'msg-00000000000000000000000000000003',
 					role: 'assistant' as const,
 					content: '完成了',
 					message_type: 'text',
@@ -426,7 +426,7 @@ describe('buildResumeMessages', () => {
 				},
 			],
 		});
-		expect(items.find((i) => i.id === 'm2')!.stepNumber).toBe(1);
+		expect(items.find((i) => i.id === 'msg-00000000000000000000000000000002')!.stepNumber).toBe(1);
 		expect(items.filter((i) => i.type === 'tool')).toHaveLength(1);
 	});
 
@@ -472,7 +472,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -480,7 +480,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'm2',
+					message_id: 'msg-00000000000000000000000000000002',
 					role: 'assistant' as const,
 					content: '稍等，我查一下',
 					message_type: 'text',
@@ -488,7 +488,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'm3',
+					message_id: 'msg-00000000000000000000000000000003',
 					role: 'assistant' as const,
 					content: '完成了',
 					message_type: 'text',
@@ -498,7 +498,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-s1',
+					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
@@ -508,7 +508,7 @@ describe('buildResumeMessages', () => {
 				},
 			],
 		});
-		expect(items.map((i) => i.id)).toEqual(['m1', 'm2', 'step-s1', 'm3']);
+		expect(items.map((i) => i.id)).toEqual(['msg-00000000000000000000000000000001', 'msg-00000000000000000000000000000002', 'step-edfd6f6b7218b976ac1daf2a9709bba0', 'msg-00000000000000000000000000000003']);
 	});
 
 	it('keeps a same-second tool card before its answer with ms timestamps', () => {
@@ -520,7 +520,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -528,7 +528,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'm2',
+					message_id: 'msg-00000000000000000000000000000002',
 					role: 'assistant' as const,
 					content: '稍等',
 					message_type: 'text',
@@ -536,7 +536,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'm3',
+					message_id: 'msg-00000000000000000000000000000003',
 					role: 'assistant' as const,
 					content: '完成了',
 					message_type: 'text',
@@ -546,7 +546,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-s1',
+					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
@@ -556,7 +556,7 @@ describe('buildResumeMessages', () => {
 				},
 			],
 		});
-		expect(items.map((i) => i.id)).toEqual(['m1', 'm2', 'step-s1', 'm3']);
+		expect(items.map((i) => i.id)).toEqual(['msg-00000000000000000000000000000001', 'msg-00000000000000000000000000000002', 'step-edfd6f6b7218b976ac1daf2a9709bba0', 'msg-00000000000000000000000000000003']);
 	});
 
 	it('falls back to created_at for cards without completed_at', () => {
@@ -566,7 +566,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -574,7 +574,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'm2',
+					message_id: 'msg-00000000000000000000000000000002',
 					role: 'assistant' as const,
 					content: '稍等',
 					message_type: 'text',
@@ -584,7 +584,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-s1',
+					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
@@ -594,7 +594,7 @@ describe('buildResumeMessages', () => {
 				},
 			],
 		});
-		expect(items.map((i) => i.id)).toEqual(['m1', 'step-s1', 'm2']);
+		expect(items.map((i) => i.id)).toEqual(['msg-00000000000000000000000000000001', 'step-edfd6f6b7218b976ac1daf2a9709bba0', 'msg-00000000000000000000000000000002']);
 	});
 
 	it('renders an ask step as a dedup question card, not a raw tool badge', () => {
@@ -606,7 +606,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'do it',
 					message_type: 'text',
@@ -614,7 +614,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-s1',
+					message_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					role: 'assistant' as const,
 					content: '你想要怎么处理？A 还是 B？',
 					message_type: 'text',
@@ -624,7 +624,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-s1',
+					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'ask',
 					observation: JSON.stringify({ ask: true }),
 					thought: null,
@@ -635,14 +635,14 @@ describe('buildResumeMessages', () => {
 		});
 		expect(items).toHaveLength(2);
 		expect(items[1]).toMatchObject({
-			id: 'step-s1',
+			id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 			type: 'ask',
 			toolName: 'ask',
 			content: '你想要怎么处理？A 还是 B？',
 		});
 		const toolBadges = items.filter((i) => i.type === 'tool');
 		expect(toolBadges).toHaveLength(0);
-		expect(items.filter((i) => i.id === 'step-s1')).toHaveLength(1);
+		expect(items.filter((i) => i.id === 'step-edfd6f6b7218b976ac1daf2a9709bba0')).toHaveLength(1);
 	});
 
 	it('links an ask card to its question message persisted under the step id', () => {
@@ -654,7 +654,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'do it',
 					message_type: 'text',
@@ -662,7 +662,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-s1',
+					message_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					role: 'assistant' as const,
 					content: '继续吗？',
 					message_type: 'text',
@@ -672,7 +672,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-s1',
+					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'ask',
 					observation: JSON.stringify({
 						ask: true,
@@ -687,13 +687,13 @@ describe('buildResumeMessages', () => {
 		});
 		expect(items).toHaveLength(2);
 		expect(items[1]).toMatchObject({
-			id: 'step-s1',
+			id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 			type: 'ask',
 			toolName: 'ask',
 			content: '继续吗？',
 			options: ['A', 'B'],
 		});
-		expect(items.filter((i) => i.id === 'step-s1')).toHaveLength(1);
+		expect(items.filter((i) => i.id === 'step-edfd6f6b7218b976ac1daf2a9709bba0')).toHaveLength(1);
 	});
 
 	it('renders each ask of a batched step from its own id-shared message', () => {
@@ -703,7 +703,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'go',
 					message_type: 'text',
@@ -711,7 +711,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-s1',
+					message_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					role: 'assistant' as const,
 					content: 'Q1？',
 					message_type: 'text',
@@ -719,7 +719,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-s2',
+					message_id: 'step-5d310391cc7f4a1e5b7748d3f16e751a',
 					role: 'assistant' as const,
 					content: 'Q2？',
 					message_type: 'text',
@@ -729,7 +729,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-s1',
+					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'ask',
 					observation: 'Q1？',
 					thought: null,
@@ -737,7 +737,7 @@ describe('buildResumeMessages', () => {
 					created_at: '2026-08-01T10:01:00Z',
 				},
 				{
-					step_id: 'step-s2',
+					step_id: 'step-5d310391cc7f4a1e5b7748d3f16e751a',
 					tool_name: 'ask',
 					observation: 'Q2？',
 					thought: null,
@@ -761,7 +761,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -769,7 +769,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-t1',
+					message_id: 'step-160d44dda6c0a478d9996206c6b3ec5e',
 					role: 'assistant' as const,
 					content: '稍等，我检查一下',
 					message_type: 'text',
@@ -779,7 +779,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-t1',
+					step_id: 'step-160d44dda6c0a478d9996206c6b3ec5e',
 					tool_name: null,
 					thought: null,
 					silent: false,
@@ -789,7 +789,7 @@ describe('buildResumeMessages', () => {
 			],
 		});
 		expect(items).toHaveLength(2);
-		expect(items.find((i) => i.id === 'step-t1')!.stepNumber).toBe(1);
+		expect(items.find((i) => i.id === 'step-160d44dda6c0a478d9996206c6b3ec5e')!.stepNumber).toBe(1);
 	});
 
 	it('resolves a supplement user message stepNumber by id', () => {
@@ -800,7 +800,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
@@ -808,7 +808,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'm3',
+					message_id: 'msg-00000000000000000000000000000003',
 					role: 'user' as const,
 					content: '网络不好就让我帮忙',
 					message_type: 'text',
@@ -818,7 +818,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'm3',
+					step_id: 'msg-00000000000000000000000000000003',
 					tool_name: null,
 					thought: null,
 					step_number: 2,
@@ -826,7 +826,7 @@ describe('buildResumeMessages', () => {
 				},
 			],
 		});
-		expect(items.find((i) => i.id === 'm3')!.stepNumber).toBe(2);
+		expect(items.find((i) => i.id === 'msg-00000000000000000000000000000003')!.stepNumber).toBe(2);
 	});
 
 	it('links an interrupted user message to its id-shared thought step', () => {
@@ -839,7 +839,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
@@ -847,7 +847,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'm3',
+					message_id: 'msg-00000000000000000000000000000003',
 					role: 'user' as const,
 					content: '网络不好就让我帮忙',
 					message_type: 'text',
@@ -857,7 +857,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'm3',
+					step_id: 'msg-00000000000000000000000000000003',
 					tool_name: null,
 					thought: null,
 					step_number: 2,
@@ -865,7 +865,7 @@ describe('buildResumeMessages', () => {
 				},
 			],
 		});
-		expect(items.find((i) => i.id === 'm3')!.stepNumber).toBe(2);
+		expect(items.find((i) => i.id === 'msg-00000000000000000000000000000003')!.stepNumber).toBe(2);
 	});
 
 	it('restores ask options without duplicating interaction state', () => {
@@ -875,7 +875,7 @@ describe('buildResumeMessages', () => {
 			session: { ...sampleSession, status: 'paused' },
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'go',
 					message_type: 'text',
@@ -883,7 +883,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-s1',
+					message_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					role: 'assistant' as const,
 					content: '继续吗？',
 					message_type: 'text',
@@ -893,7 +893,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-s1',
+					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'ask',
 					observation: JSON.stringify({
 						ask: true,
@@ -907,7 +907,7 @@ describe('buildResumeMessages', () => {
 			],
 		});
 		expect(items[1]).toMatchObject({
-			id: 'step-s1',
+			id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 			type: 'ask',
 			content: '继续吗？',
 			options: ['A', 'B'],
@@ -920,7 +920,7 @@ describe('buildResumeMessages', () => {
 			session: { ...sampleSession, status: 'completed' },
 			messages: [
 				{
-					message_id: 'm1',
+					message_id: 'msg-00000000000000000000000000000001',
 					role: 'user' as const,
 					content: 'go',
 					message_type: 'text',
@@ -928,7 +928,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					message_id: 'step-s1',
+					message_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					role: 'assistant' as const,
 					content: '继续吗？',
 					message_type: 'text',
@@ -938,7 +938,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					step_id: 'step-s1',
+					step_id: 'step-edfd6f6b7218b976ac1daf2a9709bba0',
 					tool_name: 'ask',
 					observation: JSON.stringify({
 						ask: true,
@@ -972,30 +972,30 @@ describe('formatMessageTime', () => {
 
 describe('mergeLiveStreaming', () => {
 	const dbMessages = [
-		{ id: 'm1', role: 'user' as const, content: 'hi' },
-		{ id: 'step-s1', type: 'tool' as const, toolName: 'files', stepNumber: 1 },
+		{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
+		{ id: 'step-edfd6f6b7218b976ac1daf2a9709bba0', type: 'tool' as const, toolName: 'files', stepNumber: 1 },
 	];
 
 	it('merges DB messages with no streaming tail', () => {
 		const merged = mergeLiveStreaming(dbMessages, []);
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1']);
+		expect(merged.map((m) => m.id)).toEqual(['msg-00000000000000000000000000000001', 'step-edfd6f6b7218b976ac1daf2a9709bba0']);
 	});
 
 	it('appends streaming messages not already in the DB', () => {
-		const existing = [{ id: 'step-s2', type: 'tool' as const, stepNumber: 2, streaming: true }];
+		const existing = [{ id: 'step-5d310391cc7f4a1e5b7748d3f16e751a', type: 'tool' as const, stepNumber: 2, streaming: true }];
 		const merged = mergeLiveStreaming(dbMessages, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'step-s2']);
+		expect(merged.map((m) => m.id)).toEqual(['msg-00000000000000000000000000000001', 'step-edfd6f6b7218b976ac1daf2a9709bba0', 'step-5d310391cc7f4a1e5b7748d3f16e751a']);
 	});
 
 	it('drops streaming messages whose id already exists in the DB', () => {
 		const existing = [
-			{ id: 'm1', streaming: true },
-			{ id: 'step-other', type: 'tool' as const, streaming: true },
+			{ id: 'msg-00000000000000000000000000000001', streaming: true },
+			{ id: 'step-4626a4fa5daedbd40725050ffb1f4e74', type: 'tool' as const, streaming: true },
 		];
 		const merged = mergeLiveStreaming(dbMessages, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'step-other']);
+		expect(merged.map((m) => m.id)).toEqual(['msg-00000000000000000000000000000001', 'step-edfd6f6b7218b976ac1daf2a9709bba0', 'step-4626a4fa5daedbd40725050ffb1f4e74']);
 		// The DB copy wins; the duplicate streaming copy is not appended twice.
-		expect(merged.filter((m) => m.id === 'm1')).toHaveLength(1);
+		expect(merged.filter((m) => m.id === 'msg-00000000000000000000000000000001')).toHaveLength(1);
 	});
 
 	it('keeps a single tool card when the live card and the DB badge share the step id', () => {
@@ -1003,9 +1003,9 @@ describe('mergeLiveStreaming', () => {
 		// (both keyed by the backend-minted `step-*` id), so the merge can
 		// never show a card plus a badge for one step.
 		const db = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
 			{
-				id: 'step-1',
+				id: 'step-00000000000000000000000000000001',
 				type: 'tool' as const,
 				toolName: 'files',
 				stepNumber: 1,
@@ -1014,7 +1014,7 @@ describe('mergeLiveStreaming', () => {
 		];
 		const existing = [
 			{
-				id: 'step-1',
+				id: 'step-00000000000000000000000000000001',
 				type: 'tool' as const,
 				toolName: 'files',
 				stepNumber: 1,
@@ -1022,17 +1022,17 @@ describe('mergeLiveStreaming', () => {
 			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-1']);
-		expect(merged.filter((m) => m.id === 'step-1')).toHaveLength(1);
+		expect(merged.map((m) => m.id)).toEqual(['msg-00000000000000000000000000000001', 'step-00000000000000000000000000000001']);
+		expect(merged.filter((m) => m.id === 'step-00000000000000000000000000000001')).toHaveLength(1);
 	});
 
 	it('dedups finalized live reasoning against the DB copy by id', () => {
 		// The live reasoning bubble and the persisted reasoning row share the
 		// minted message id, so the DB copy simply replaces the live one.
 		const db = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
 			{
-				id: 'msg-9',
+				id: 'msg-00000000000000000000000000000009',
 				role: 'assistant' as const,
 				type: 'reasoning' as const,
 				content: '完整推理文本',
@@ -1041,7 +1041,7 @@ describe('mergeLiveStreaming', () => {
 		];
 		const existing = [
 			{
-				id: 'msg-9',
+				id: 'msg-00000000000000000000000000000009',
 				role: 'assistant' as const,
 				type: 'reasoning' as const,
 				content: '完整推理文本',
@@ -1051,16 +1051,16 @@ describe('mergeLiveStreaming', () => {
 		const merged = mergeLiveStreaming(db, existing);
 		const reasoning = merged.filter((m) => m.type === 'reasoning');
 		expect(reasoning).toHaveLength(1);
-		expect(reasoning[0].id).toBe('msg-9');
+		expect(reasoning[0].id).toBe('msg-00000000000000000000000000000009');
 	});
 
 	it('keeps finalized live reasoning when the DB has no equivalent', () => {
 		// The snap may arrive before the DB write; dropping it would lose
 		// the block entirely.
-		const db = [{ id: 'm1', role: 'user' as const, content: 'hi' }];
+		const db = [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' }];
 		const existing = [
 			{
-				id: 'msg-9',
+				id: 'msg-00000000000000000000000000000009',
 				role: 'assistant' as const,
 				type: 'reasoning' as const,
 				content: '新鲜推理',
@@ -1068,39 +1068,39 @@ describe('mergeLiveStreaming', () => {
 			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toContain('msg-9');
+		expect(merged.map((m) => m.id)).toContain('msg-00000000000000000000000000000009');
 	});
 
 	it('keeps finalized live thought text missing from the DB', () => {
-		const db = [{ id: 'm1', role: 'user' as const, content: 'hi' }];
+		const db = [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' }];
 		const existing = [
 			{
-				id: 'msg-8',
+				id: 'msg-00000000000000000000000000000008',
 				role: 'assistant' as const,
 				content: '已定稿但未持久化',
 				streaming: false,
 			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toContain('msg-8');
+		expect(merged.map((m) => m.id)).toContain('msg-00000000000000000000000000000008');
 	});
 
 	it('keeps a finalized live-only assistant message before the DB row that follows it', () => {
-		// The snap-finalized reasoning (msg-8) has no DB row yet, but the DB
-		// already holds the user's later message (m2). The merge must not push
-		// the reasoning AFTER m2 (the old append-at-end behavior reordered
+		// The snap-finalized reasoning (msg-00000000000000000000000000000008) has no DB row yet, but the DB
+		// already holds the user's later message (msg-00000000000000000000000000000002). The merge must not push
+		// the reasoning AFTER that message (the old append-at-end behavior reordered
 		// [user, thinking, user] to [user, user, thinking] for one frame).
 		const db = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
-			{ id: 'm2', role: 'user' as const, content: 'second' },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000002', role: 'user' as const, content: 'second' },
 		];
 		const existing = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
-			{ id: 'msg-8', role: 'assistant' as const, content: '思考片段', streaming: false },
-			{ id: 'm2', role: 'user' as const, content: 'second' },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000008', role: 'assistant' as const, content: '思考片段', streaming: false },
+			{ id: 'msg-00000000000000000000000000000002', role: 'user' as const, content: 'second' },
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-8', 'm2']);
+		expect(merged.map((m) => m.id)).toEqual(['msg-00000000000000000000000000000001', 'msg-00000000000000000000000000000008', 'msg-00000000000000000000000000000002']);
 	});
 
 	it('keeps a still-streaming live thought before a DB steer that follows it', () => {
@@ -1108,50 +1108,50 @@ describe('mergeLiveStreaming', () => {
 		// streaming — the old unconditional streamingTail append pushed it
 		// after the persisted steer for one frame.
 		const db = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
-			{ id: 'm2', role: 'user' as const, content: 'second' },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000002', role: 'user' as const, content: 'second' },
 		];
 		const existing = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
-			{ id: 'msg-8', role: 'assistant' as const, content: '思考中', streaming: true },
-			{ id: 'm2', role: 'user' as const, content: 'second', steering: true },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000008', role: 'assistant' as const, content: '思考中', streaming: true },
+			{ id: 'msg-00000000000000000000000000000002', role: 'user' as const, content: 'second', steering: true },
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-8', 'm2']);
-		expect(merged.find((m) => m.id === 'msg-8')!.streaming).toBe(true);
-		expect(merged.find((m) => m.id === 'm2')!.steering).toBe(true);
+		expect(merged.map((m) => m.id)).toEqual(['msg-00000000000000000000000000000001', 'msg-00000000000000000000000000000008', 'msg-00000000000000000000000000000002']);
+		expect(merged.find((m) => m.id === 'msg-00000000000000000000000000000008')!.streaming).toBe(true);
+		expect(merged.find((m) => m.id === 'msg-00000000000000000000000000000002')!.steering).toBe(true);
 	});
 
 	it('preserves live steering on same-id user rows from the DB', () => {
 		const db = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
-			{ id: 'm2', role: 'user' as const, content: '补充' },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000002', role: 'user' as const, content: '补充' },
 		];
 		const existing = [
-			{ id: 'm1', role: 'user' as const, content: 'hi', received: true },
-			{ id: 'msg-t', role: 'assistant' as const, content: '想', streaming: true },
-			{ id: 'm2', role: 'user' as const, content: '补充', steering: true },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi', received: true },
+			{ id: 'msg-379388a05a9bb6d609e5b4f48e2062d8', role: 'assistant' as const, content: '想', streaming: true },
+			{ id: 'msg-00000000000000000000000000000002', role: 'user' as const, content: '补充', steering: true },
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.find((m) => m.id === 'm2')!.steering).toBe(true);
+		expect(merged.find((m) => m.id === 'msg-00000000000000000000000000000002')!.steering).toBe(true);
 	});
 
 	it('reanchors pending steering after later DB-ordered agent messages', () => {
 		const db = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
-			{ id: 'm2', role: 'user' as const, content: '补充' },
-			{ id: 'msg-after', role: 'assistant' as const, content: '继续处理' },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000002', role: 'user' as const, content: '补充' },
+			{ id: 'msg-581584b22ed8f37635989297798f2af0', role: 'assistant' as const, content: '继续处理' },
 		];
 		const existing = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
-			{ id: 'msg-after', role: 'assistant' as const, content: '继续处理' },
-			{ id: 'm2', role: 'user' as const, content: '补充', steering: true },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-581584b22ed8f37635989297798f2af0', role: 'assistant' as const, content: '继续处理' },
+			{ id: 'msg-00000000000000000000000000000002', role: 'user' as const, content: '补充', steering: true },
 		];
 
 		const merged = mergeLiveStreaming(db, existing);
 
-		expect(merged.map((message) => message.id)).toEqual(['m1', 'msg-after', 'm2']);
-		expect(merged.at(-1)).toMatchObject({ id: 'm2', steering: true });
+		expect(merged.map((message) => message.id)).toEqual(['msg-00000000000000000000000000000001', 'msg-581584b22ed8f37635989297798f2af0', 'msg-00000000000000000000000000000002']);
+		expect(merged.at(-1)).toMatchObject({ id: 'msg-00000000000000000000000000000002', steering: true });
 	});
 
 	it('keeps the interrupted partial reasoning after a continue resync', () => {
@@ -1160,10 +1160,10 @@ describe('mergeLiveStreaming', () => {
 		// "Thinking…" block. handleContinue preserves it by leaving it out of
 		// partialIds; mergeLiveStreaming keeps it because the DB (post-truncate)
 		// has no row with that id.
-		const db = [{ id: 'm1', role: 'user' as const, content: 'hi' }];
+		const db = [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' }];
 		const existing = [
 			{
-				id: 'msg-9',
+				id: 'msg-00000000000000000000000000000009',
 				role: 'assistant' as const,
 				type: 'reasoning' as const,
 				content: '先想想一部分',
@@ -1171,15 +1171,15 @@ describe('mergeLiveStreaming', () => {
 			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toContain('msg-9');
-		expect(merged.find((m) => m.id === 'msg-9')!.content).toBe('先想想一部分');
+		expect(merged.map((m) => m.id)).toContain('msg-00000000000000000000000000000009');
+		expect(merged.find((m) => m.id === 'msg-00000000000000000000000000000009')!.content).toBe('先想想一部分');
 	});
 
 	it('keeps finalized step-* tool cards and drops transient web_search', () => {
 		// Continue resync can race the retry's ToolCall/Observation and miss the
 		// pending step row for one frame; dropping step-* cards made post-resume
 		// tool calls vanish. web_search indicators are never persisted — drop.
-		const db = [{ id: 'm1', role: 'user' as const, content: 'hi' }];
+		const db = [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' }];
 		const existing = [
 			{
 				id: 'step-00000000000000000000000000000001',
@@ -1197,7 +1197,7 @@ describe('mergeLiveStreaming', () => {
 			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-00000000000000000000000000000001']);
+		expect(merged.map((m) => m.id)).toEqual(['msg-00000000000000000000000000000001', 'step-00000000000000000000000000000001']);
 		expect(merged.find((m) => m.id === 'step-00000000000000000000000000000001')).toMatchObject({
 			type: 'tool' as const,
 			content: 'Interrupted',
@@ -1210,7 +1210,7 @@ describe('mergeLiveStreaming', () => {
 			[
 				{ id: 'step-short', type: 'tool' as const, streaming: false },
 				{
-					id: 'step-0000000000000000000000000000000A',
+					id: 'step-shorter-invalid',
 					type: 'tool' as const,
 					streaming: false,
 				},
@@ -1220,13 +1220,13 @@ describe('mergeLiveStreaming', () => {
 	});
 
 	it('keeps a finalized real user bubble until its DB row arrives', () => {
-		const db = [{ id: 'm1', role: 'user' as const, content: 'hi' }];
+		const db = [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' }];
 		const existing = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
-			{ id: 'msg-pending', role: 'user' as const, content: '补充说明', streaming: false },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-7cfb761c263b30e8eef2e0fafe90c089', role: 'user' as const, content: '补充说明', streaming: false },
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-pending']);
+		expect(merged.map((m) => m.id)).toEqual(['msg-00000000000000000000000000000001', 'msg-7cfb761c263b30e8eef2e0fafe90c089']);
 	});
 
 	it('prefers a live awaiting ask card over the DB ask card of the same id', () => {
@@ -1234,9 +1234,9 @@ describe('mergeLiveStreaming', () => {
 		// can land after the observation); the awaiting live card wins for the
 		// same step id so the user can answer.
 		const db = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
 			{
-				id: 'step-7',
+				id: 'step-00000000000000000000000000000007',
 				role: 'assistant' as const,
 				type: 'ask' as const,
 				content: '继续吗？',
@@ -1247,7 +1247,7 @@ describe('mergeLiveStreaming', () => {
 		];
 		const existing = [
 			{
-				id: 'step-7',
+				id: 'step-00000000000000000000000000000007',
 				type: 'ask' as const,
 				toolName: 'ask',
 				content: '继续吗？',
@@ -1259,7 +1259,7 @@ describe('mergeLiveStreaming', () => {
 		const merged = mergeLiveStreaming(db, existing);
 		const asks = merged.filter((m) => m.type === 'ask');
 		expect(asks).toHaveLength(1);
-		expect(asks[0]).toMatchObject({ id: 'step-7', options: ['A', 'B'], awaiting: true });
+		expect(asks[0]).toMatchObject({ id: 'step-00000000000000000000000000000007', options: ['A', 'B'], awaiting: true });
 	});
 
 	it('prefers EVERY awaiting live ask card in a batched step', () => {
@@ -1267,9 +1267,9 @@ describe('mergeLiveStreaming', () => {
 		// observation→pause race window; both must keep their options, not
 		// just the first.
 		const db = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
 			{
-				id: 'step-1',
+				id: 'step-00000000000000000000000000000001',
 				role: 'assistant' as const,
 				type: 'ask' as const,
 				content: 'Q1？',
@@ -1278,7 +1278,7 @@ describe('mergeLiveStreaming', () => {
 				streaming: false,
 			},
 			{
-				id: 'step-2',
+				id: 'step-00000000000000000000000000000002',
 				role: 'assistant' as const,
 				type: 'ask' as const,
 				content: 'Q2？',
@@ -1289,7 +1289,7 @@ describe('mergeLiveStreaming', () => {
 		];
 		const existing = [
 			{
-				id: 'step-1',
+				id: 'step-00000000000000000000000000000001',
 				type: 'ask' as const,
 				toolName: 'ask',
 				content: 'Q1？',
@@ -1298,7 +1298,7 @@ describe('mergeLiveStreaming', () => {
 				streaming: false,
 			},
 			{
-				id: 'step-2',
+				id: 'step-00000000000000000000000000000002',
 				type: 'ask' as const,
 				toolName: 'ask',
 				content: 'Q2？',
@@ -1310,8 +1310,8 @@ describe('mergeLiveStreaming', () => {
 		const merged = mergeLiveStreaming(db, existing);
 		const asks = merged.filter((m) => m.type === 'ask');
 		expect(asks).toHaveLength(2);
-		expect(asks[0]).toMatchObject({ id: 'step-1', options: ['A'], awaiting: true });
-		expect(asks[1]).toMatchObject({ id: 'step-2', options: ['B'], awaiting: true });
+		expect(asks[0]).toMatchObject({ id: 'step-00000000000000000000000000000001', options: ['A'], awaiting: true });
+		expect(asks[1]).toMatchObject({ id: 'step-00000000000000000000000000000002', options: ['B'], awaiting: true });
 	});
 
 	it('keeps the live streaming tool card over its empty DB badge mid-tool', () => {
@@ -1320,9 +1320,9 @@ describe('mergeLiveStreaming', () => {
 		// sessions mid-tool must keep the live card, not freeze an empty
 		// badge (the old dropToolSteps behavior, now id-based).
 		const db = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
 			{
-				id: 'step-9',
+				id: 'step-00000000000000000000000000000009',
 				type: 'tool' as const,
 				toolName: 'shell',
 				stepNumber: 2,
@@ -1331,7 +1331,7 @@ describe('mergeLiveStreaming', () => {
 		];
 		const existing = [
 			{
-				id: 'step-9',
+				id: 'step-00000000000000000000000000000009',
 				type: 'tool' as const,
 				toolName: 'shell',
 				stepNumber: 2,
@@ -1340,17 +1340,17 @@ describe('mergeLiveStreaming', () => {
 			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-9']);
-		expect(merged.find((m) => m.id === 'step-9')).toMatchObject({ streaming: true });
+		expect(merged.map((m) => m.id)).toEqual(['msg-00000000000000000000000000000001', 'step-00000000000000000000000000000009']);
+		expect(merged.find((m) => m.id === 'step-00000000000000000000000000000009')).toMatchObject({ streaming: true });
 	});
 
 	it('lets a FINALIZED live tool card yield to the DB badge', () => {
 		// Once the observation lands (live card finalized), the DB copy wins
 		// as before — the streaming preference only applies mid-tool.
 		const db = [
-			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: 'hi' },
 			{
-				id: 'step-9',
+				id: 'step-00000000000000000000000000000009',
 				type: 'tool' as const,
 				toolName: 'shell',
 				stepNumber: 2,
@@ -1360,7 +1360,7 @@ describe('mergeLiveStreaming', () => {
 		];
 		const existing = [
 			{
-				id: 'step-9',
+				id: 'step-00000000000000000000000000000009',
 				type: 'tool' as const,
 				toolName: 'shell',
 				stepNumber: 2,

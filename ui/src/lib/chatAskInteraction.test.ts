@@ -3,7 +3,7 @@ import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachment
 import { createAskInteractionController } from './chatAskInteraction.ts';
 import { SessionReducer } from './sessionReducer.ts';
 
-const SESSION_ID = 'ses-ask';
+const SESSION_ID = 'ses-d2afe69b781a622a89acb83e17f1ac7d';
 
 function createRequest(
 	id: string,
@@ -232,7 +232,7 @@ describe('createAskInteractionController', () => {
 			{
 				requestId: 'scheduled-same',
 				sessionId: SESSION_ID,
-				owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-scheduled' },
+				owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9' },
 				kind: 'scheduled_confirm' as const,
 				status: 'pending' as const,
 				options: [],
@@ -240,8 +240,8 @@ describe('createAskInteractionController', () => {
 			},
 			{
 				requestId: 'ask-other',
-				sessionId: 'ses-other',
-				owner: { kind: 'session' as const, sessionId: 'ses-other' },
+				sessionId: 'ses-fb38531de0466990f46b178209103744',
+				owner: { kind: 'session' as const, sessionId: 'ses-fb38531de0466990f46b178209103744' },
 				kind: 'ask' as const,
 				status: 'pending' as const,
 				options: [],
@@ -272,7 +272,7 @@ describe('createAskInteractionController', () => {
 		expect(reducer.snapshot().interactions).toMatchObject({
 			'confirm-same': expect.objectContaining({ kind: 'confirm', status: 'pending' }),
 			'scheduled-same': expect.objectContaining({ kind: 'scheduled_confirm', status: 'pending' }),
-			'ask-other': expect.objectContaining({ sessionId: 'ses-other', kind: 'ask', status: 'pending' }),
+			'ask-other': expect.objectContaining({ sessionId: 'ses-fb38531de0466990f46b178209103744', kind: 'ask', status: 'pending' }),
 		});
 	});
 

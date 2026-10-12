@@ -1094,7 +1094,7 @@ mod tests {
                 is_final: false,
                 tool_call_id: Some("call-write".into()),
             },
-            step_id: "step-write".into(),
+            step_id: "step-d55d301187645924cb86cf4d7d17e356".into(),
             tool_index: 4,
         }
     }

@@ -607,7 +607,7 @@ mod tests {
         let db = test_db();
         let session_id = seed_session(&db);
         let invalid_session = db.create_tool_step(
-            "ses-1",
+            "ses-invalid",
             0,
             "shell",
             "{}",
@@ -624,7 +624,7 @@ mod tests {
             false,
             false,
             None,
-            Some("step-1"),
+            Some("step-invalid"),
         );
 
         assert!(invalid_session.is_err());
@@ -643,7 +643,7 @@ mod tests {
             conn.execute_batch("PRAGMA ignore_check_constraints = ON")
                 .unwrap();
             conn.execute(
-                "UPDATE session_steps SET id = 'step-1' WHERE session_id = ?1",
+                "UPDATE session_steps SET id = 'step-invalid' WHERE session_id = ?1",
                 [&session_id],
             )
             .unwrap();

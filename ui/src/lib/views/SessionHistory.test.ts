@@ -56,7 +56,7 @@ describe('SessionHistory actions', () => {
 		const onResume = vi.fn();
 		const onDeleteRequest = vi.fn();
 		const session: SessionHistoryRow = {
-			session_id: 'ses-1',
+			session_id: 'ses-00000000000000000000000000000001',
 			status: 'completed',
 			created_at: '2026-09-06T03:00:00Z',
 			updated_at: '2026-09-06T03:00:00Z',
@@ -85,7 +85,7 @@ describe('SessionHistory actions', () => {
 		setViewport(840, 900);
 		const onResume = vi.fn();
 		const session: SessionHistoryRow = {
-			session_id: 'ses-1',
+			session_id: 'ses-00000000000000000000000000000001',
 			status: 'completed',
 			created_at: '2026-09-06T03:00:00Z',
 			updated_at: '2026-09-06T03:00:00Z',
@@ -106,7 +106,7 @@ describe('SessionHistory actions', () => {
 			...commonProps,
 			sessions: [
 				{
-					session_id: 'ses-1',
+					session_id: 'ses-00000000000000000000000000000001',
 					status: 'completed',
 					created_at: '2026-09-06T03:00:00Z',
 					updated_at: '2026-09-06T03:00:00Z',
@@ -124,7 +124,7 @@ describe('SessionHistory actions', () => {
 	it('keeps the native context menu available while renaming', () => {
 		const onContextMenu = vi.fn();
 		const session: SessionHistoryRow = {
-			session_id: 'ses-1',
+			session_id: 'ses-00000000000000000000000000000001',
 			status: 'completed',
 			created_at: '2026-09-06T03:00:00Z',
 			updated_at: '2026-09-06T03:00:00Z',

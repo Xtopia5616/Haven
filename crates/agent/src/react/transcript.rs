@@ -1038,7 +1038,7 @@ mod tests {
             .append(
                 &session.session_id,
                 haven_memory::TRANSCRIPT_EVENT_TYPE,
-                r#"{"type":"compact_summary","compacted":[],"summary":"summary","tokens_before":100,"tokens_after":20,"episode_id":"msg-summary","degraded":false}"#,
+                r#"{"type":"compact_summary","compacted":[],"summary":"summary","tokens_before":100,"tokens_after":20,"episode_id":"msg-f2a54ee443860f8ff808d3402e429653","degraded":false}"#,
                 Some(3),
                 Some(17),
             )
@@ -1294,7 +1294,7 @@ mod tests {
         let events = vec![TranscriptRecord::Thought {
             step_number: 1,
             text: "keep".into(),
-            message_id: "step-keep".into(),
+            message_id: "step-f768662d55e2ad6c2b2aea45a5f00ec7".into(),
         }];
         let compacted = vec![
             CanonicalMessage::assistant(

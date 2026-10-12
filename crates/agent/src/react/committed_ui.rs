@@ -496,7 +496,7 @@ mod tests {
             message_id: STEP_ID_1.into(),
         };
         SessionEvent {
-            session_id: "ses-1".into(),
+            session_id: "ses-7ae290dbf0b4468c9d2c401be649850b".into(),
             sequence,
             event_type: TRANSCRIPT_EVENT_TYPE.into(),
             event_version: 1,
@@ -548,7 +548,7 @@ mod tests {
             ],
         };
         SessionEvent {
-            session_id: "ses-1".into(),
+            session_id: "ses-7ae290dbf0b4468c9d2c401be649850b".into(),
             sequence,
             event_type: TRANSCRIPT_EVENT_TYPE.into(),
             event_version: 1,
@@ -632,10 +632,10 @@ mod tests {
         assert!(seen.lock().unwrap().is_empty());
 
         publisher
-            .publish_tool_call(&emitter, "ses-1", STEP_ID_1)
+            .publish_tool_call(&emitter, "ses-7ae290dbf0b4468c9d2c401be649850b", STEP_ID_1)
             .await;
         publisher
-            .publish_tool_call(&emitter, "ses-1", STEP_ID_1)
+            .publish_tool_call(&emitter, "ses-7ae290dbf0b4468c9d2c401be649850b", STEP_ID_1)
             .await;
         let events = seen.lock().unwrap().clone();
         assert_eq!(events.len(), 1);
@@ -650,7 +650,7 @@ mod tests {
         ));
 
         publisher
-            .publish_tool_call(&emitter, "ses-1", STEP_ID_2)
+            .publish_tool_call(&emitter, "ses-7ae290dbf0b4468c9d2c401be649850b", STEP_ID_2)
             .await;
         let events = seen.lock().unwrap().clone();
         assert_eq!(events.len(), 2);

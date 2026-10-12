@@ -119,7 +119,10 @@ mod tests {
 
     #[test]
     fn exact_message_id_wins_over_a_later_duplicate_text() {
-        let mut events = vec![inject(Some("msg-target"), "same"), inject(None, "same")];
+        let mut events = vec![
+            inject(Some("msg-96b24db9a9060f4147186035fcef2d4f"), "same"),
+            inject(None, "same"),
+        ];
         let mut branch_points = HashMap::new();
         branch_points.insert(
             1,
@@ -134,7 +137,7 @@ mod tests {
             &mut events,
             &mut branch_points,
             1,
-            "msg-target"
+            "msg-96b24db9a9060f4147186035fcef2d4f"
         ));
         assert!(events.is_empty());
         assert!(branch_points.is_empty());
@@ -142,13 +145,16 @@ mod tests {
 
     #[test]
     fn missing_message_id_does_not_match_by_content() {
-        let mut events = vec![inject(Some("msg-other"), "same"), inject(None, "same")];
+        let mut events = vec![
+            inject(Some("msg-827d4c04e22a410d0f7329333b90eac9"), "same"),
+            inject(None, "same"),
+        ];
         let mut branch_points = HashMap::new();
         assert!(!truncate_at_user_message(
             &mut events,
             &mut branch_points,
             1,
-            "msg-missing"
+            "msg-fa33832ecd3ca99b102346feb83c1db7"
         ));
         assert_eq!(events.len(), 2);
     }

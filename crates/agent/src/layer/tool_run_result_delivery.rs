@@ -327,7 +327,7 @@ mod tests {
         let message = format_tool_run_result_message(
             tool_run_id,
             "background",
-            Some("step-origin"),
+            Some("step-96325e1a1ea57edd930e80996fe414e9"),
             haven_common::lifecycle::ToolRunStatus::Failed,
             summary,
             Some("C:\\tmp\\result<&>.log"),
@@ -351,7 +351,10 @@ mod tests {
             .unwrap();
         let envelope: Value = serde_json::from_str(payload).unwrap();
         assert_eq!(envelope["tool_run_id"], tool_run_id);
-        assert_eq!(envelope["source_step_id"], "step-origin");
+        assert_eq!(
+            envelope["source_step_id"],
+            "step-96325e1a1ea57edd930e80996fe414e9"
+        );
         assert_eq!(envelope["kind"], "background");
         assert_eq!(envelope["status"], "failed");
         assert_eq!(envelope["summary"], "abc[... 3 chars omitted]");

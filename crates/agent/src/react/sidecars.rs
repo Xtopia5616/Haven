@@ -211,10 +211,22 @@ mod tests {
     #[test]
     fn clear_session_releases_heartbeat_slot() {
         let poller = MessagingPoller::new();
-        assert!(poller.try_begin_heartbeat("ses-a").is_some());
-        assert!(poller.try_begin_heartbeat("ses-a").is_none());
-        poller.clear_session("ses-a");
-        assert!(poller.try_begin_heartbeat("ses-a").is_some());
+        assert!(
+            poller
+                .try_begin_heartbeat("ses-65dd7c6b35b99687a424c2fd8bdb08a9")
+                .is_some()
+        );
+        assert!(
+            poller
+                .try_begin_heartbeat("ses-65dd7c6b35b99687a424c2fd8bdb08a9")
+                .is_none()
+        );
+        poller.clear_session("ses-65dd7c6b35b99687a424c2fd8bdb08a9");
+        assert!(
+            poller
+                .try_begin_heartbeat("ses-65dd7c6b35b99687a424c2fd8bdb08a9")
+                .is_some()
+        );
     }
 
     #[test]
@@ -229,31 +241,35 @@ mod tests {
             token_estimate: 7,
         };
         for index in 0..ToolDefCache::CAPACITY {
-            cache.insert(&format!("ses-{index}"), initial_version, prepared());
+            cache.insert(&format!("ses-{index:032x}"), initial_version, prepared());
         }
         assert_eq!(
             cache
-                .get_if_catalog_version("ses-0", initial_version)
+                .get_if_catalog_version("ses-00000000000000000000000000000001", initial_version)
                 .unwrap()
                 .token_estimate,
             7
         );
 
-        cache.insert("ses-overflow", initial_version, prepared());
+        cache.insert(
+            "ses-d90130e71c5a40feb2fe2769e24f1da1",
+            initial_version,
+            prepared(),
+        );
 
         assert!(
             cache
-                .get_if_catalog_version("ses-0", initial_version)
+                .get_if_catalog_version("ses-00000000000000000000000000000001", initial_version)
                 .is_some()
         );
         assert!(
             cache
-                .get_if_catalog_version("ses-overflow", initial_version)
+                .get_if_catalog_version("ses-d90130e71c5a40feb2fe2769e24f1da1", initial_version)
                 .is_some()
         );
         assert!(
             cache
-                .get_if_catalog_version("ses-1", initial_version)
+                .get_if_catalog_version("ses-7ae290dbf0b4468c9d2c401be649850b", initial_version)
                 .is_none()
         );
     }
@@ -266,7 +282,7 @@ mod tests {
             session_overlay_version: 9,
         };
         cache.insert(
-            "ses-a",
+            "ses-65dd7c6b35b99687a424c2fd8bdb08a9",
             version,
             PreparedToolDefinitions {
                 definitions: Arc::new(Vec::new()),
@@ -274,11 +290,15 @@ mod tests {
             },
         );
 
-        assert!(cache.get_if_catalog_version("ses-a", version).is_some());
+        assert!(
+            cache
+                .get_if_catalog_version("ses-65dd7c6b35b99687a424c2fd8bdb08a9", version)
+                .is_some()
+        );
         assert!(
             cache
                 .get_if_catalog_version(
-                    "ses-a",
+                    "ses-65dd7c6b35b99687a424c2fd8bdb08a9",
                     ToolCatalogVersion {
                         global_catalog_version: 5,
                         session_overlay_version: 9,
@@ -289,7 +309,7 @@ mod tests {
         assert!(
             cache
                 .get_if_catalog_version(
-                    "ses-a",
+                    "ses-65dd7c6b35b99687a424c2fd8bdb08a9",
                     ToolCatalogVersion {
                         global_catalog_version: 4,
                         session_overlay_version: 10,

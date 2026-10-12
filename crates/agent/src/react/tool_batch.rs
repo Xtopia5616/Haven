@@ -729,7 +729,7 @@ mod tests {
         assert!(empty_inbox_output(r#"{"count": 0, "messages": []}"#));
         assert!(empty_inbox_output(r#"{"count":0}"#));
         assert!(!empty_inbox_output(
-            r#"{"count": 1, "messages": [{"id": "msg-x"}]}"#
+            r#"{"count": 1, "messages": [{"id": "msg-4486b784b2305c65b03b35eb60099ae4"}]}"#
         ));
         assert!(!empty_inbox_output("not json"));
     }
@@ -924,7 +924,7 @@ mod tests {
                     is_final: false,
                     tool_call_id: Some("call-second".into()),
                 },
-                "step-second".into(),
+                "step-65507188c14284cf483dd25b8ab4c04b".into(),
                 1,
                 "second completed first".into(),
                 haven_tools::ToolExecutionOutcome::Failed,
@@ -939,7 +939,7 @@ mod tests {
                     is_final: false,
                     tool_call_id: Some("call-first".into()),
                 },
-                "step-first".into(),
+                "step-70c1a577861743ffc3c113fab549cac8".into(),
                 0,
                 "first completed second".into(),
                 haven_tools::ToolExecutionOutcome::Failed,
@@ -968,7 +968,7 @@ mod tests {
                     is_final: false,
                     tool_call_id: Some("call-first".into()),
                 },
-                "step-first".into(),
+                "step-70c1a577861743ffc3c113fab549cac8".into(),
                 0,
                 "first".into(),
                 haven_tools::ToolExecutionOutcome::Succeeded,
@@ -983,7 +983,7 @@ mod tests {
                     is_final: false,
                     tool_call_id: Some("call-third".into()),
                 },
-                "step-third".into(),
+                "step-e0e6f8fc262275512533d9f0f94391f7".into(),
                 2,
                 "third".into(),
                 haven_tools::ToolExecutionOutcome::Succeeded,
@@ -1003,7 +1003,7 @@ mod tests {
                 is_final: false,
                 tool_call_id: Some("call-send".into()),
             },
-            "step-send".into(),
+            "step-dbc309e16d468e0f1667ae12e30b37dd".into(),
             0,
             "timed out".into(),
             haven_tools::ToolExecutionOutcome::TimedOutUnknown,

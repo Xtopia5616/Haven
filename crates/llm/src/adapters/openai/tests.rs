@@ -654,7 +654,7 @@ fn prompt_cache_key_restarts_after_compaction_and_stays_stable_afterward() {
         Vec::new(),
         Vec::new(),
     );
-    summary.message_id = Some("msg-compaction-1".into());
+    summary.message_id = Some("msg-26335e122998a799d8dc94b86f501eae".into());
     let after = client
         .build_request_body(
             vec![system.clone(), anchor.clone(), summary.clone()],

@@ -217,19 +217,22 @@ mod tests {
             .execute(
                 "INSERT INTO memory_embeddings
                     (entity_type, entity_id, model, vector, text)
-                 VALUES ('fact', 'fact-orphan', 'model', x'00000000', 'orphan')",
+                 VALUES ('fact', 'fact-b0feb8de767b1ce11801f141ab9ec94a', 'model', x'00000000', 'orphan')",
                 [],
             )
             .unwrap();
         db.conn()
             .execute(
                 "INSERT INTO embedding_lsh (entity_type, entity_id, model, bucket)
-                 VALUES ('fact', 'fact-orphan', 'model', 1)",
+                 VALUES ('fact', 'fact-b0feb8de767b1ce11801f141ab9ec94a', 'model', 1)",
                 [],
             )
             .unwrap();
-        db.set_kv("fact_extraction.ses-deadbeef", "msg-deadbeef")
-            .unwrap();
+        db.set_kv(
+            "fact_extraction.ses-7ee1ba25f3c826b64f40e20f4bf1ce80",
+            "msg-73ec6073b4d79d45955f35b5cd94a393",
+        )
+        .unwrap();
 
         assert_eq!(store.prune_orphaned_embeddings(None).await.unwrap(), 1);
         assert_eq!(
@@ -241,8 +244,11 @@ mod tests {
     #[tokio::test]
     async fn missing_tables_propagate_and_later_store_calls_still_run() {
         let (db, store) = fixture();
-        db.set_kv("fact_extraction.ses-deadbeef", "msg-deadbeef")
-            .unwrap();
+        db.set_kv(
+            "fact_extraction.ses-7ee1ba25f3c826b64f40e20f4bf1ce80",
+            "msg-73ec6073b4d79d45955f35b5cd94a393",
+        )
+        .unwrap();
         db.conn().execute_batch("DROP TABLE facts").unwrap();
 
         let error = store.dedup_facts(None).await.unwrap_err();

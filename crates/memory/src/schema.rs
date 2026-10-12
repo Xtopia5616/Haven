@@ -752,7 +752,7 @@ mod tests {
         init_schema(&conn).unwrap();
         conn.execute(
             "INSERT INTO facts (id, subject, predicate, object, created_at)
-             VALUES ('fact-1', 'user', 'likes', 'Rust', '2026-01-01')",
+             VALUES ('fact-4239df0ceaf003ef339c54b852a35b0a', 'user', 'likes', 'Rust', '2026-01-01')",
             [],
         )
         .unwrap();
@@ -761,7 +761,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO memory_embeddings
                     (entity_type, entity_id, model, vector, text)
-                 VALUES ('tool', 'fact-1', 'm', X'00000000', 'Rust')",
+                 VALUES ('tool', 'fact-4239df0ceaf003ef339c54b852a35b0a', 'm', X'00000000', 'Rust')",
                 [],
             )
             .is_err()
@@ -770,7 +770,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO memory_embeddings
                     (entity_type, entity_id, model, vector, text)
-                 VALUES ('fact', 'fact-1', 'm', X'00', 'Rust')",
+                 VALUES ('fact', 'fact-4239df0ceaf003ef339c54b852a35b0a', 'm', X'00', 'Rust')",
                 [],
             )
             .is_err()
@@ -779,7 +779,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO facts
                     (id, subject, predicate, object, confidence, created_at)
-                 VALUES ('fact-2', ' ', 'likes', 'Rust', 1.0, '2026-01-01')",
+                 VALUES ('fact-67cfb58b793e179d3249941f635c7c46', ' ', 'likes', 'Rust', 1.0, '2026-01-01')",
                 [],
             )
             .is_err()
@@ -788,7 +788,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO facts
                     (id, subject, predicate, object, confidence, created_at)
-                 VALUES ('fact-3', 'user', 'likes', 'Rust', 1.1, '2026-01-01')",
+                 VALUES ('fact-610910404bc8ccda5476666993bc4374', 'user', 'likes', 'Rust', 1.1, '2026-01-01')",
                 [],
             )
             .is_err()
@@ -801,33 +801,39 @@ mod tests {
         init_schema(&conn).unwrap();
         conn.execute(
             "INSERT INTO facts (id, subject, predicate, object, created_at)
-             VALUES ('fact-1', 'user', 'likes', 'Rust', '2026-01-01')",
+             VALUES ('fact-4239df0ceaf003ef339c54b852a35b0a', 'user', 'likes', 'Rust', '2026-01-01')",
             [],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO memory_embeddings
                 (entity_type, entity_id, model, vector, text)
-             VALUES ('fact', 'fact-1', 'm', X'00000000', 'user likes Rust')",
+             VALUES ('fact', 'fact-4239df0ceaf003ef339c54b852a35b0a', 'm', X'00000000', 'user likes Rust')",
             [],
         )
         .unwrap();
-        conn.execute("UPDATE facts SET confidence = 0.5 WHERE id = 'fact-1'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE facts SET confidence = 0.5 WHERE id = 'fact-4239df0ceaf003ef339c54b852a35b0a'",
+            [],
+        )
+        .unwrap();
         assert_eq!(
             conn.query_row(
-                "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id = 'fact-1'",
+                "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id = 'fact-4239df0ceaf003ef339c54b852a35b0a'",
                 [],
                 |row| row.get::<_, i32>(0),
             )
             .unwrap(),
             1
         );
-        conn.execute("UPDATE facts SET object = 'Golang' WHERE id = 'fact-1'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE facts SET object = 'Golang' WHERE id = 'fact-4239df0ceaf003ef339c54b852a35b0a'",
+            [],
+        )
+        .unwrap();
         assert_eq!(
             conn.query_row(
-                "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id = 'fact-1'",
+                "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id = 'fact-4239df0ceaf003ef339c54b852a35b0a'",
                 [],
                 |row| row.get::<_, i32>(0),
             )
@@ -842,7 +848,7 @@ mod tests {
         init_schema(&conn).unwrap();
         conn.execute(
             "INSERT INTO facts (id, subject, predicate, object, tags, created_at)
-             VALUES ('fact-1', 'user', 'likes', 'Rust', '[\"dev\"]', '2026-01-01')",
+             VALUES ('fact-4239df0ceaf003ef339c54b852a35b0a', 'user', 'likes', 'Rust', '[\"dev\"]', '2026-01-01')",
             [],
         )
         .unwrap();

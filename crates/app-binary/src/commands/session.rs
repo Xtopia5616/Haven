@@ -1485,7 +1485,7 @@ mod tests {
         let (_directory, state, request_id) =
             test_state_and_ui_confirmation(chrono::Utc::now().timestamp().max(0) as u64 + 60).await;
         let session_owner = InteractionOwner::Session {
-            session_id: "ses-wrong-owner".into(),
+            session_id: "ses-c996baf34b6e23cdd181800ff4fc4298".into(),
         };
         assert!(matches!(
             deny_app_confirmation(&state, &session_owner, &request_id).await,
@@ -1501,7 +1501,7 @@ mod tests {
 
         let owner = app_command_owner();
         assert!(matches!(
-            deny_app_confirmation(&state, &owner, "conf-wrong-request").await,
+            deny_app_confirmation(&state, &owner, "conf-97baf3a9879fa02d47c84b6f30c91057").await,
             Ok(AppConfirmationResolution::Stale)
         ));
         assert!(

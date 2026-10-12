@@ -75,27 +75,27 @@ describe('sessionTimeline grouping', () => {
 			message('tool-background', {
 				type: 'tool',
 				stepNumber: 3,
-				content: '{"execution_mode":"background","tool_run_id":"toolrun-background"}',
+				content: '{"execution_mode":"background","tool_run_id":"toolrun-058de138a89ad8e4eef21b1dab8e5527"}',
 			}),
 			message('tool-schedule', {
 				type: 'tool',
 				stepNumber: 4,
 				toolName: 'schedule.set',
-				content: '{"operation":"set","tool_run_id":"toolrun-scheduled"}',
+				content: '{"operation":"set","tool_run_id":"toolrun-921be352ed48806cc0ff8635f2c282b9"}',
 			}),
 		];
 		const toolRuns = [
 			{
-				toolRunId: 'toolrun-background',
+				toolRunId: 'toolrun-058de138a89ad8e4eef21b1dab8e5527',
 				kind: 'background' as const,
 				status: 'running' as const,
-				sessionId: 'ses-1',
+				sessionId: 'ses-00000000000000000000000000000001',
 			},
 			{
-				toolRunId: 'toolrun-scheduled',
+				toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9',
 				kind: 'scheduled' as const,
 				status: 'waiting' as const,
-				sessionId: 'ses-1',
+				sessionId: 'ses-00000000000000000000000000000001',
 			},
 		];
 		const items = groupSessionTimeline(messages, {
@@ -114,7 +114,7 @@ describe('sessionTimeline grouping', () => {
 		});
 		expect(items[1]).toMatchObject({
 			kind: 'tool_run',
-			toolRun: { toolRunId: 'toolrun-scheduled', kind: 'scheduled' },
+			toolRun: { toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9', kind: 'scheduled' },
 			awaitingBackgroundResult: false,
 		});
 	});
@@ -124,7 +124,7 @@ describe('sessionTimeline grouping', () => {
 			message('observation-anchor', {
 				type: 'tool',
 				stepNumber: 2,
-				content: '{"execution_mode":"background","tool_run_id":"toolrun-source"}',
+				content: '{"execution_mode":"background","tool_run_id":"toolrun-e98b15b1242ce675596491b57efadf2f"}',
 			}),
 			message('message-boundary'),
 			message('stable-source-step', {
@@ -135,7 +135,7 @@ describe('sessionTimeline grouping', () => {
 		];
 		const items = groupSessionTimeline(messages, {
 			toolRuns: [{
-				toolRunId: 'toolrun-source',
+				toolRunId: 'toolrun-e98b15b1242ce675596491b57efadf2f',
 				kind: 'background',
 				sourceStepId: 'stable-source-step',
 			}],
@@ -147,10 +147,10 @@ describe('sessionTimeline grouping', () => {
 
 	it('keeps unanchored toolRuns in the owning session timeline and emits one wait fallback', () => {
 		const toolRun = {
-			toolRunId: 'toolrun-unanchored',
+			toolRunId: 'toolrun-2568876529a4fa57522c0a91cbed6129',
 			kind: 'background' as const,
 			status: 'running' as const,
-			sessionId: 'ses-1',
+			sessionId: 'ses-00000000000000000000000000000001',
 		};
 		const items = groupSessionTimeline([message('user-1')], {
 			toolRuns: [toolRun],
@@ -161,7 +161,7 @@ describe('sessionTimeline grouping', () => {
 		expect(items.map((item) => item.kind)).toEqual(['message', 'tool_run']);
 		expect(items[1]).toMatchObject({
 			kind: 'tool_run',
-			toolRun: { toolRunId: 'toolrun-unanchored' },
+			toolRun: { toolRunId: 'toolrun-2568876529a4fa57522c0a91cbed6129' },
 			awaitingBackgroundResult: true,
 		});
 
@@ -179,22 +179,22 @@ describe('sessionTimeline grouping', () => {
 		expect(
 			firstWaitingBackgroundToolRunId(
 				[
-					{ toolRunId: 'toolrun-later', kind: 'background', status: 'running', startedAt: '2026-10-06T11:00:00Z' },
-					{ toolRunId: 'toolrun-scheduled', kind: 'scheduled', status: 'waiting' },
-					{ toolRunId: 'toolrun-earlier', kind: 'background', status: 'running', startedAt: '2026-10-06T10:00:00Z' },
+					{ toolRunId: 'toolrun-705eb9b2ff45c4397aab6ceb5bb85eab', kind: 'background', status: 'running', startedAt: '2026-10-06T11:00:00Z' },
+					{ toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9', kind: 'scheduled', status: 'waiting' },
+					{ toolRunId: 'toolrun-309099f4d738d016c3ac91ffa860d4ed', kind: 'background', status: 'running', startedAt: '2026-10-06T10:00:00Z' },
 				],
 				true,
 			),
-		).toBe('toolrun-earlier');
+		).toBe('toolrun-309099f4d738d016c3ac91ffa860d4ed');
 		expect(firstWaitingBackgroundToolRunId([], false)).toBeNull();
 	});
 
 	it('folds a terminal background result into its source tool card without a duplicate ToolRun card', () => {
 		const toolRun = {
-			toolRunId: 'toolrun-finished',
+			toolRunId: 'toolrun-c5c98b7ab76450e008c0e66f4e9b82e6',
 			kind: 'background' as const,
 			status: 'completed' as const,
-			sessionId: 'ses-1',
+			sessionId: 'ses-00000000000000000000000000000001',
 			output: 'same result',
 		};
 		const transcriptResult = message('tool-finished', {
@@ -219,10 +219,10 @@ describe('sessionTimeline grouping', () => {
 
 	it('keeps terminal detail on the source tool card until the transcript receives it', () => {
 		const toolRun = {
-			toolRunId: 'toolrun-unprojected',
+			toolRunId: 'toolrun-98168450224200071aadc87a22cddc0f',
 			kind: 'background' as const,
 			status: 'failed' as const,
-			sessionId: 'ses-1',
+			sessionId: 'ses-00000000000000000000000000000001',
 			error: 'process failed',
 		};
 		const source = message('tool-unprojected', {

@@ -26,47 +26,47 @@ describe('upsertToolRun', () => {
 
 	it('keeps the explicit background create payload', () => {
 		upsertToolRun({
-			toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+			toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			kind: 'background',
 			status: 'running',
 			startedAt: '2026-01-01T00:00:00Z',
 		});
-		const row = get(toolRunStore)['toolrun-6b86b273ff34fce19d6b804eff5a3f57'];
+		const row = get(toolRunStore)['toolrun-d409f06a31c9daee6d1a4f437a1f1f85'];
 		expect(row.status).toBe('running');
 		expect(row.kind).toBe('background');
-		expect(row.toolRunId).toBe('toolrun-6b86b273ff34fce19d6b804eff5a3f57');
+		expect(row.toolRunId).toBe('toolrun-d409f06a31c9daee6d1a4f437a1f1f85');
 	});
 
 	it('keeps a session binding update after an evicted row', () => {
 		upsertToolRun({
-			toolRunId: 'toolrun-ead6ef03d61ee60c533d6d450c50a1e5',
+			toolRunId: 'toolrun-799dd769de1342a01fddd367f57dd080',
 			kind: 'background',
 			status: 'completed',
 		});
-		removeToolRun('toolrun-ead6ef03d61ee60c533d6d450c50a1e5');
+		removeToolRun('toolrun-799dd769de1342a01fddd367f57dd080');
 		upsertToolRun({
-			toolRunId: 'toolrun-ead6ef03d61ee60c533d6d450c50a1e5',
+			toolRunId: 'toolrun-799dd769de1342a01fddd367f57dd080',
 			kind: 'background',
-			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 		});
-		const row = get(toolRunStore)['toolrun-ead6ef03d61ee60c533d6d450c50a1e5'];
+		const row = get(toolRunStore)['toolrun-799dd769de1342a01fddd367f57dd080'];
 		expect(row.status).toBeUndefined();
-		expect(row.sessionId).toBe('ses-6b86b273ff34fce19d6b804eff5a3f57');
+		expect(row.sessionId).toBe('ses-0ecf371384ab79d597760ca41f2ba21c');
 	});
 
 	it('keeps an explicit terminal status from tool_run:finished', () => {
 		upsertToolRun({
-			toolRunId: 'toolrun-d4735e3a265e16eee03f59718b9b5d03',
+			toolRunId: 'toolrun-9e21f42cef1a7b941794b4db9fb85cb1',
 			kind: 'background',
 			status: 'running',
 		});
 		upsertToolRun({
-			toolRunId: 'toolrun-d4735e3a265e16eee03f59718b9b5d03',
+			toolRunId: 'toolrun-9e21f42cef1a7b941794b4db9fb85cb1',
 			kind: 'background',
 			status: 'completed',
 			output: 'done',
 		});
-		const row = get(toolRunStore)['toolrun-d4735e3a265e16eee03f59718b9b5d03'];
+		const row = get(toolRunStore)['toolrun-9e21f42cef1a7b941794b4db9fb85cb1'];
 		expect(row.status).toBe('completed');
 		expect(row.output).toBe('done');
 	});
@@ -74,29 +74,29 @@ describe('upsertToolRun', () => {
 	it('evicts terminal rows before live running rows when over capacity', () => {
 		for (let i = 0; i < 70; i++) {
 			upsertToolRun({
-				toolRunId: `toolrun-done-${i}`,
+				toolRunId: `toolrun-${(10_000 + i).toString(16).padStart(32, '0')}`,
 				kind: 'background',
 				status: 'completed',
 			});
 		}
 		upsertToolRun({
-			toolRunId: 'toolrun-247610f4dedd4ab7247d07dbda19c81c',
+			toolRunId: 'toolrun-31fea33fc8d7689de5d5dc4b38c1e4bc',
 			kind: 'background',
 			status: 'running',
 		});
 		const store = get(toolRunStore);
-		expect(store['toolrun-247610f4dedd4ab7247d07dbda19c81c']?.status).toBe('running');
+		expect(store['toolrun-31fea33fc8d7689de5d5dc4b38c1e4bc']?.status).toBe('running');
 		expect(Object.keys(store).length).toBeLessThanOrEqual(64);
 	});
 
 	it('removeToolRun drops the row', () => {
 		upsertToolRun({
-			toolRunId: 'toolrun-4e07408562bedb8b60ce05c1decfe3ad',
+			toolRunId: 'toolrun-f7391f4e56282cae467ea5a88dc7a560',
 			kind: 'background',
 			status: 'running',
 		});
-		removeToolRun('toolrun-4e07408562bedb8b60ce05c1decfe3ad');
-		expect(get(toolRunStore)['toolrun-4e07408562bedb8b60ce05c1decfe3ad']).toBeUndefined();
+		removeToolRun('toolrun-f7391f4e56282cae467ea5a88dc7a560');
+		expect(get(toolRunStore)['toolrun-f7391f4e56282cae467ea5a88dc7a560']).toBeUndefined();
 	});
 
 	it('ignores an older ToolRun refresh response', async () => {
@@ -118,7 +118,7 @@ describe('upsertToolRun', () => {
 		const newerRefresh = refreshToolRuns();
 		resolveNewer([
 			{
-				tool_run_id: 'toolrun-11507a0e2f5e69d5dfa40a62a1bd7b6e',
+				tool_run_id: 'toolrun-2e15073133060c9395627f3f343d1baa',
 				kind: 'scheduled',
 				status: 'waiting',
 			},
@@ -126,17 +126,17 @@ describe('upsertToolRun', () => {
 		await newerRefresh;
 		resolveOlder([
 			{
-				tool_run_id: 'toolrun-cba06b5736faf67e54b07b561eae9439',
+				tool_run_id: 'toolrun-289594ac70693b3600ba5be6b241a692',
 				kind: 'scheduled',
 				status: 'waiting',
 			},
 		]);
 		await olderRefresh;
 
-		expect(get(toolRunStore)['toolrun-11507a0e2f5e69d5dfa40a62a1bd7b6e']?.status).toBe(
+		expect(get(toolRunStore)['toolrun-2e15073133060c9395627f3f343d1baa']?.status).toBe(
 			'waiting',
 		);
-		expect(get(toolRunStore)['toolrun-cba06b5736faf67e54b07b561eae9439']).toBeUndefined();
+		expect(get(toolRunStore)['toolrun-289594ac70693b3600ba5be6b241a692']).toBeUndefined();
 		vi.mocked(invoke).mockResolvedValue(undefined);
 	});
 
@@ -151,20 +151,20 @@ describe('upsertToolRun', () => {
 
 		const refresh = refreshToolRuns();
 		upsertToolRun({
-			toolRunId: 'toolrun-129ce50dd90bf244858763d3f10932a9',
+			toolRunId: 'toolrun-016864084f6608895ba0e6ecb4ea39f8',
 			kind: 'scheduled',
 			status: 'running',
 		});
 		resolveRefresh([
 			{
-				tool_run_id: 'toolrun-129ce50dd90bf244858763d3f10932a9',
+				tool_run_id: 'toolrun-016864084f6608895ba0e6ecb4ea39f8',
 				kind: 'scheduled',
 				status: 'waiting',
 			},
 		]);
 		await refresh;
 
-		expect(get(toolRunStore)['toolrun-129ce50dd90bf244858763d3f10932a9']?.status).toBe(
+		expect(get(toolRunStore)['toolrun-016864084f6608895ba0e6ecb4ea39f8']?.status).toBe(
 			'running',
 		);
 		vi.mocked(invoke).mockResolvedValue(undefined);
@@ -176,22 +176,22 @@ describe('upsertToolRun', () => {
 			.mockReset()
 			.mockResolvedValue([
 				{
-					tool_run_id: 'toolrun-53f0f736e59579919b9fef0854b7d696',
+					tool_run_id: 'toolrun-048f6d4ef95ee9b66749a96dce9776f6',
 					kind: 'background',
 					status: 'running',
 				},
 				{
-					tool_run_id: 'toolrun-01e3c99eb1d506edf998a8190fcd2cd7',
+					tool_run_id: 'toolrun-c65aaaf434059cb85b4c1924d843f10e',
 					kind: 'background',
 					status: 'completed',
 				},
 				{
-					tool_run_id: 'toolrun-bbe41c5af12743e88a4c2e7bb3ef17c4',
+					tool_run_id: 'toolrun-01a8a9fb492bc54b6940c29d266a1b9f',
 					kind: 'scheduled',
 					status: 'waiting',
 				},
 				{
-					tool_run_id: 'toolrun-fa026afbc0da04f1e3a0bb550b62db4a',
+					tool_run_id: 'toolrun-5f6561f3dba31459d605670145ba704f',
 					kind: 'scheduled',
 					status: 'running',
 				},
@@ -200,10 +200,10 @@ describe('upsertToolRun', () => {
 		await refreshToolRuns();
 
 		const rows = get(toolRunStore);
-		expect(rows['toolrun-53f0f736e59579919b9fef0854b7d696']?.status).toBe('running');
-		expect(rows['toolrun-bbe41c5af12743e88a4c2e7bb3ef17c4']?.status).toBe('waiting');
-		expect(rows['toolrun-fa026afbc0da04f1e3a0bb550b62db4a']?.status).toBe('running');
-		expect(rows['toolrun-01e3c99eb1d506edf998a8190fcd2cd7']).toBeUndefined();
+		expect(rows['toolrun-048f6d4ef95ee9b66749a96dce9776f6']?.status).toBe('running');
+		expect(rows['toolrun-01a8a9fb492bc54b6940c29d266a1b9f']?.status).toBe('waiting');
+		expect(rows['toolrun-5f6561f3dba31459d605670145ba704f']?.status).toBe('running');
+		expect(rows['toolrun-c65aaaf434059cb85b4c1924d843f10e']).toBeUndefined();
 		vi.mocked(invoke).mockResolvedValue(undefined);
 	});
 
@@ -211,14 +211,14 @@ describe('upsertToolRun', () => {
 		appSessionReducer.dispatch({ type: 'sessions/cleared' });
 		appSessionReducer.dispatch({
 			type: 'session/messages/resume-loaded',
-			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 			messages: [
 				{
-					id: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
-					toolRunId: 'toolrun-a383bcb77c832a8ff52caace0f4efa8f',
+					id: 'msg-5a834705d100706f8a7f168139a48f64',
+					toolRunId: 'toolrun-f0e73c4a1171ba7ddc9c666d937f82ec',
 					content: JSON.stringify({
 						background: true,
-						tool_run_id: 'toolrun-a383bcb77c832a8ff52caace0f4efa8f',
+						tool_run_id: 'toolrun-f0e73c4a1171ba7ddc9c666d937f82ec',
 						status: 'running',
 					}),
 					streaming: true,
@@ -226,16 +226,16 @@ describe('upsertToolRun', () => {
 			],
 		});
 		finalizeBackgroundToolRunMessages({
-			toolRunId: 'toolrun-a383bcb77c832a8ff52caace0f4efa8f',
+			toolRunId: 'toolrun-f0e73c4a1171ba7ddc9c666d937f82ec',
 			kind: 'background',
 			status: 'cancelled',
 			output: 'stopped',
 		});
 		const msg = appSessionReducer.getMessages(
-			'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			'ses-0ecf371384ab79d597760ca41f2ba21c',
 		)[0] as unknown as Record<string, unknown>;
 		expect(msg.toolRunId).toBeNull();
-		expect(msg.sourceToolRunId).toBe('toolrun-a383bcb77c832a8ff52caace0f4efa8f');
+		expect(msg.sourceToolRunId).toBe('toolrun-f0e73c4a1171ba7ddc9c666d937f82ec');
 		expect(msg.streaming).toBe(false);
 		const body = JSON.parse(String(msg.content));
 		expect(body.status).toBe('cancelled');
@@ -246,14 +246,14 @@ describe('upsertToolRun', () => {
 		appSessionReducer.dispatch({ type: 'sessions/cleared' });
 		appSessionReducer.dispatch({
 			type: 'session/messages/resume-loaded',
-			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 			messages: [
 				{
-					id: 'msg-d4735e3a265e16eee03f59718b9b5d03',
-					toolRunId: 'toolrun-18beb67f31f2536585c6a34c733848fd',
+					id: 'msg-0d3d0197b18f9a1b56d61fafda5d9ba4',
+					toolRunId: 'toolrun-13a82ce6d9ad77004c1d1c01df4c9a4c',
 					content: JSON.stringify({
 						background: true,
-						tool_run_id: 'toolrun-18beb67f31f2536585c6a34c733848fd',
+						tool_run_id: 'toolrun-13a82ce6d9ad77004c1d1c01df4c9a4c',
 						status: 'running',
 					}),
 					streaming: true,
@@ -262,15 +262,15 @@ describe('upsertToolRun', () => {
 		});
 
 		finalizeBackgroundToolRunMessages({
-			toolRunId: 'toolrun-18beb67f31f2536585c6a34c733848fd',
+			toolRunId: 'toolrun-13a82ce6d9ad77004c1d1c01df4c9a4c',
 			kind: 'scheduled',
 			status: 'completed',
 		});
 
 		const msg = appSessionReducer.getMessages(
-			'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			'ses-0ecf371384ab79d597760ca41f2ba21c',
 		)[0] as unknown as Record<string, unknown>;
-		expect(msg.toolRunId).toBe('toolrun-18beb67f31f2536585c6a34c733848fd');
+		expect(msg.toolRunId).toBe('toolrun-13a82ce6d9ad77004c1d1c01df4c9a4c');
 		expect(msg.streaming).toBe(true);
 		expect(JSON.parse(String(msg.content))).toMatchObject({ status: 'running' });
 	});
@@ -286,36 +286,36 @@ describe('session ToolRun history hydration', () => {
 	it('loads terminal rows for the selected session after switching or restart', async () => {
 		vi.mocked(invoke).mockResolvedValue([
 			{
-				tool_run_id: 'toolrun-84097828fc31a8c8d29210df48901a85',
+				tool_run_id: 'toolrun-6333ff0482315d2e6d91694e64d7be54',
 				kind: 'scheduled',
 				status: 'completed',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				title: 'Reminder',
 			},
 			{
-				tool_run_id: 'toolrun-5f711b23ee4fecbbb8e053b872bbda82',
+				tool_run_id: 'toolrun-91afdc0999e04c5438155a1820d8efbb',
 				kind: 'background',
 				status: 'failed',
-				session_id: 'ses-d4735e3a265e16eee03f59718b9b5d03',
+				session_id: 'ses-07a8107a71b8033314d1f83b5d330769',
 			},
 		]);
 
-		await refreshSessionToolRuns('ses-6b86b273ff34fce19d6b804eff5a3f57');
+		await refreshSessionToolRuns('ses-0ecf371384ab79d597760ca41f2ba21c');
 
 		expect(invoke).toHaveBeenCalledWith('list_tool_run_history', {
 			kind: null,
 			limit: 200,
-			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 		});
-		expect(get(sessionToolRunStore)['ses-6b86b273ff34fce19d6b804eff5a3f57']).toMatchObject({
-			'toolrun-84097828fc31a8c8d29210df48901a85': { status: 'completed', kind: 'scheduled' },
+		expect(get(sessionToolRunStore)['ses-0ecf371384ab79d597760ca41f2ba21c']).toMatchObject({
+			'toolrun-6333ff0482315d2e6d91694e64d7be54': { status: 'completed', kind: 'scheduled' },
 		});
 		expect(
-			get(sessionToolRunStore)['ses-6b86b273ff34fce19d6b804eff5a3f57']?.[
-				'toolrun-5f711b23ee4fecbbb8e053b872bbda82'
+			get(sessionToolRunStore)['ses-0ecf371384ab79d597760ca41f2ba21c']?.[
+				'toolrun-91afdc0999e04c5438155a1820d8efbb'
 			],
 		).toBeUndefined();
-		expect(get(sessionToolRunStore)['ses-d4735e3a265e16eee03f59718b9b5d03']).toBeUndefined();
+		expect(get(sessionToolRunStore)['ses-07a8107a71b8033314d1f83b5d330769']).toBeUndefined();
 	});
 
 	it('keeps a newer lifecycle event received while history is loading', async () => {
@@ -325,28 +325,28 @@ describe('session ToolRun history hydration', () => {
 		});
 		vi.mocked(invoke).mockReturnValueOnce(history as never);
 
-		const refresh = refreshSessionToolRuns('ses-6b86b273ff34fce19d6b804eff5a3f57');
+		const refresh = refreshSessionToolRuns('ses-0ecf371384ab79d597760ca41f2ba21c');
 		upsertSessionToolRun({
-			toolRunId: 'toolrun-129ce50dd90bf244858763d3f10932a9',
+			toolRunId: 'toolrun-016864084f6608895ba0e6ecb4ea39f8',
 			kind: 'background',
 			status: 'failed',
-			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 			output: 'new event result',
 		});
 		resolveHistory([
 			{
-				tool_run_id: 'toolrun-129ce50dd90bf244858763d3f10932a9',
+				tool_run_id: 'toolrun-016864084f6608895ba0e6ecb4ea39f8',
 				kind: 'background',
 				status: 'completed',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				output: 'stale history result',
 			},
 		]);
 		await refresh;
 
 		expect(
-			get(sessionToolRunStore)['ses-6b86b273ff34fce19d6b804eff5a3f57']?.[
-				'toolrun-129ce50dd90bf244858763d3f10932a9'
+			get(sessionToolRunStore)['ses-0ecf371384ab79d597760ca41f2ba21c']?.[
+				'toolrun-016864084f6608895ba0e6ecb4ea39f8'
 			],
 		).toMatchObject({
 			status: 'failed',
@@ -357,28 +357,30 @@ describe('session ToolRun history hydration', () => {
 	it('bounds the cached ToolRun rows and number of cached sessions', () => {
 		for (let index = 0; index < 205; index++) {
 			upsertSessionToolRun({
-				toolRunId: `toolrun-cap-${index}`,
+				toolRunId: `toolrun-${(20_000 + index).toString(16).padStart(32, '0')}`,
 				kind: 'scheduled',
 				status: 'completed',
-				sessionId: 'ses-ec21b3b973a3a0e7050392031862848f',
+				sessionId: 'ses-93506352f1057381a474df372af1d8f8',
 				finishedAt: new Date(1_700_000_000_000 + index * 1000).toISOString(),
 			});
 		}
-		setActiveSessionToolRun('ses-ec21b3b973a3a0e7050392031862848f');
+		setActiveSessionToolRun('ses-93506352f1057381a474df372af1d8f8');
 		expect(
-			Object.keys(get(sessionToolRunStore)['ses-ec21b3b973a3a0e7050392031862848f'] || {}),
+			Object.keys(get(sessionToolRunStore)['ses-93506352f1057381a474df372af1d8f8'] || {}),
 		).toHaveLength(200);
 		for (let index = 0; index < 17; index++) {
 			upsertSessionToolRun({
-				toolRunId: `toolrun-session-${index}`,
+				toolRunId: `toolrun-${(40_000 + index).toString(16).padStart(32, '0')}`,
 				kind: 'scheduled',
-				sessionId: `ses-capacity-${index}`,
+				sessionId: `ses-${(30_000 + index).toString(16).padStart(32, '0')}`,
 			});
 		}
 
 		const store = get(sessionToolRunStore);
 		expect(Object.keys(store)).toHaveLength(16);
-		expect(Object.keys(store['ses-ec21b3b973a3a0e7050392031862848f'] || {})).toHaveLength(200);
-		expect(Object.keys(store['ses-capacity-16'] || {})).toHaveLength(1);
+		expect(Object.keys(store['ses-93506352f1057381a474df372af1d8f8'] || {})).toHaveLength(200);
+		expect(
+			Object.keys(store[`ses-${(30_000 + 16).toString(16).padStart(32, '0')}`] || {}),
+		).toHaveLength(1);
 	});
 });

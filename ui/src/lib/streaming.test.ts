@@ -17,8 +17,8 @@ import {
 	resetStreamBlocks,
 } from './streaming.ts';
 
-const STEP_ID = 'msg-thought-1';
-const REASONING_ID = 'msg-reasoning-1';
+const STEP_ID = 'step-b4b6294ed3889d2c22b0b4c708f810ed';
+const REASONING_ID = 'msg-5d1d60798754ba9ada660de5010d67a9';
 const BASE: {
 	messageId: string;
 	msgType: 'reasoning' | undefined;
@@ -242,7 +242,7 @@ describe('accumulateStreamChunk (reasoning)', () => {
 		// A resumed session reuses step numbers; the reasoning of run 2 must
 		// anchor on run 2's thought, not run 1's.
 		const run1Thought = {
-			id: 'msg-run1',
+			id: 'msg-5acdb037e8b90f5b1f450f7c4f25e014',
 			role: 'assistant' as const,
 			type: undefined,
 			content: '上一次的回答',
@@ -385,7 +385,7 @@ describe('applyThoughtSnap', () => {
 			streaming: true,
 		};
 		const tool = {
-			id: 'step-tool-1',
+			id: 'step-15ad302632b32d7f9d258a91186d96dc',
 			role: 'assistant' as const,
 			type: 'tool' as const,
 			content: '观察结果',
@@ -509,13 +509,13 @@ describe('insertAgentMessage / steering anchors', () => {
 		const out = insertAgentMessage(
 			list,
 			newToolMessage({
-				id: 'step-tool-1',
+				id: 'step-15ad302632b32d7f9d258a91186d96dc',
 				stepNumber: 1,
 				toolName: 'shell',
 				streaming: true,
 			}),
 		);
-		expect(out.map((x) => x.id)).toEqual(['u1', STEP_ID, 'step-tool-1', 'u2']);
+		expect(out.map((x) => x.id)).toEqual(['u1', STEP_ID, 'step-15ad302632b32d7f9d258a91186d96dc', 'u2']);
 	});
 
 	it('appends at the end when there is no trailing steering user', () => {
@@ -524,12 +524,12 @@ describe('insertAgentMessage / steering anchors', () => {
 			{ id: STEP_ID, role: 'assistant' as const, content: '好', streaming: false },
 		];
 		const out = insertAgentMessage(list, {
-			id: 'msg-next',
+			id: 'msg-5e3cda012294f9c653e7917d8939a95a',
 			role: 'assistant' as const,
 			content: '下一轮',
 			streaming: true,
 		});
-		expect(out.map((x) => x.id)).toEqual(['u1', STEP_ID, 'msg-next']);
+		expect(out.map((x) => x.id)).toEqual(['u1', STEP_ID, 'msg-5e3cda012294f9c653e7917d8939a95a']);
 	});
 
 	it('keeps a new stream segment above a mid-turn steer', () => {
@@ -563,7 +563,7 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 		m = [
 			...m,
 			newToolMessage({
-				id: 'step-tool-1',
+				id: 'step-15ad302632b32d7f9d258a91186d96dc',
 				stepNumber: 1,
 				toolName: 'files',
 				content: '',
@@ -576,7 +576,7 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 		m = chunk(m, '先读取');
 		m = chunk(m, '文件');
 
-		expect(m.map((x) => x.id)).toEqual([STEP_ID, 'step-tool-1']);
+		expect(m.map((x) => x.id)).toEqual([STEP_ID, 'step-15ad302632b32d7f9d258a91186d96dc']);
 		expect(m[0]).toMatchObject({ content: '我先读取文件', streaming: false });
 	});
 
@@ -802,38 +802,38 @@ describe('applyThoughtSnap with websearch segments', () => {
 describe('finalizeStreamBlocks', () => {
 	it('finalizes reasoning and thought blocks; leaves others alone', () => {
 		const m = [
-			{ id: 'msg-reasoning-1', streaming: true },
-			{ id: 'msg-thought-1', streaming: true },
-			{ id: 'msg-thought-2', streaming: true },
-			{ id: 'm1', streaming: true },
+			{ id: 'msg-5d1d60798754ba9ada660de5010d67a9', streaming: true },
+			{ id: 'step-b4b6294ed3889d2c22b0b4c708f810ed', streaming: true },
+			{ id: 'msg-99cbbb5f22a59f9ab709e95152374a9f', streaming: true },
+			{ id: 'msg-00000000000000000000000000000001', streaming: true },
 		];
-		const out = finalizeStreamBlocks(m, 'msg-reasoning-1', 'msg-thought-1');
-		expect(out.find((x) => x.id === 'msg-reasoning-1')).toMatchObject({ streaming: false });
-		expect(out.find((x) => x.id === 'msg-thought-1')).toMatchObject({ streaming: false });
-		expect(out.find((x) => x.id === 'msg-thought-2')).toMatchObject({ streaming: true });
-		expect(out.find((x) => x.id === 'm1')).toMatchObject({ streaming: true });
+		const out = finalizeStreamBlocks(m, 'msg-5d1d60798754ba9ada660de5010d67a9', 'step-b4b6294ed3889d2c22b0b4c708f810ed');
+		expect(out.find((x) => x.id === 'msg-5d1d60798754ba9ada660de5010d67a9')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === 'step-b4b6294ed3889d2c22b0b4c708f810ed')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === 'msg-99cbbb5f22a59f9ab709e95152374a9f')).toMatchObject({ streaming: true });
+		expect(out.find((x) => x.id === 'msg-00000000000000000000000000000001')).toMatchObject({ streaming: true });
 	});
 
 	it('finalizes post-search reasoning segments as well as the original', () => {
 		const m = [
-			{ id: 'msg-reasoning-1', streaming: true },
-			{ id: 'msg-reasoning-1-1', streaming: true },
-			{ id: 'msg-thought-1-1', streaming: true },
+			{ id: 'msg-5d1d60798754ba9ada660de5010d67a9', streaming: true },
+			{ id: REASONING_ID + '-1', streaming: true },
+			{ id: REASONING_ID + '-2', streaming: true },
 		];
-		const out = finalizeStreamBlocks(m, 'msg-reasoning-1', 'msg-thought-1');
-		expect(out.find((x) => x.id === 'msg-reasoning-1')).toMatchObject({ streaming: false });
-		expect(out.find((x) => x.id === 'msg-reasoning-1-1')).toMatchObject({ streaming: false });
-		expect(out.find((x) => x.id === 'msg-thought-1-1')).toMatchObject({ streaming: false });
+		const out = finalizeStreamBlocks(m, 'msg-5d1d60798754ba9ada660de5010d67a9', 'step-b4b6294ed3889d2c22b0b4c708f810ed');
+		expect(out.find((x) => x.id === 'msg-5d1d60798754ba9ada660de5010d67a9')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === REASONING_ID + '-1')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === REASONING_ID + '-2')).toMatchObject({ streaming: false });
 	});
 
 	it('is a no-op when reasoning is missing but the thought exists', () => {
-		const m = [{ id: 'msg-thought-1', streaming: true }];
-		const out = finalizeStreamBlocks(m, 'msg-reasoning-1', 'msg-thought-1');
-		expect(out.find((x) => x.id === 'msg-thought-1')).toMatchObject({ streaming: false });
+		const m = [{ id: 'step-b4b6294ed3889d2c22b0b4c708f810ed', streaming: true }];
+		const out = finalizeStreamBlocks(m, 'msg-5d1d60798754ba9ada660de5010d67a9', 'step-b4b6294ed3889d2c22b0b4c708f810ed');
+		expect(out.find((x) => x.id === 'step-b4b6294ed3889d2c22b0b4c708f810ed')).toMatchObject({ streaming: false });
 	});
 
 	it('is a no-op when both ids are unknown', () => {
-		const m = [{ id: 'm1', streaming: true }];
+		const m = [{ id: 'msg-00000000000000000000000000000001', streaming: true }];
 		const out = finalizeStreamBlocks(m, undefined, undefined);
 		expect(out).toEqual(m);
 	});
@@ -856,13 +856,13 @@ describe('dropStreamedThought', () => {
 describe('newToolMessage', () => {
 	it('builds a plain tool message', () => {
 		const msg = newToolMessage({
-			id: 'step-1',
+			id: 'step-00000000000000000000000000000001',
 			stepNumber: 1,
 			toolName: 'files',
 			time: '10:00',
 		});
 		expect(msg).toEqual({
-			id: 'step-1',
+			id: 'step-00000000000000000000000000000001',
 			role: 'assistant' as const,
 			content: '',
 			toolName: 'files',
@@ -876,7 +876,7 @@ describe('newToolMessage', () => {
 
 	it('marks ask messages as question cards with options and awaiting', () => {
 		const msg = newToolMessage({
-			id: 'step-1',
+			id: 'step-00000000000000000000000000000001',
 			stepNumber: 1,
 			toolName: 'ask',
 			content: '继续吗？',
@@ -894,18 +894,18 @@ describe('newToolMessage', () => {
 
 	it('carries toolRunId for background shell observations', () => {
 		const msg = newToolMessage({
-			id: 'step-1',
+			id: 'step-00000000000000000000000000000001',
 			stepNumber: 1,
 			toolName: 'shell',
 			content: '{"execution_mode":"background"}',
-			toolRunId: 'toolrun-abc',
+			toolRunId: 'toolrun-7121023493ef04de24194cb433e7c8fd',
 		});
-		expect(msg.toolRunId).toBe('toolrun-abc');
+		expect(msg.toolRunId).toBe('toolrun-7121023493ef04de24194cb433e7c8fd');
 	});
 
 	it('carries toolArgs from the ToolCall placeholder and omits them when undefined', () => {
 		const withArgs = newToolMessage({
-			id: 'step-1',
+			id: 'step-00000000000000000000000000000001',
 			stepNumber: 1,
 			toolName: 'files',
 			streaming: true,
@@ -913,7 +913,7 @@ describe('newToolMessage', () => {
 		});
 		expect(withArgs.toolArgs).toEqual({ operation: 'read', path: 'a.rs' });
 		const fill = newToolMessage({
-			id: 'step-1',
+			id: 'step-00000000000000000000000000000001',
 			stepNumber: 1,
 			toolName: 'files',
 			content: '{"ok":true}',
@@ -923,7 +923,7 @@ describe('newToolMessage', () => {
 
 	it('keeps the complete input on a streaming ToolCall', () => {
 		const msg = newToolMessage({
-			id: 'step-1',
+			id: 'step-00000000000000000000000000000001',
 			stepNumber: 1,
 			toolName: 'shell',
 			streaming: true,
@@ -944,11 +944,11 @@ describe('toolRunIdFromObservation', () => {
 			toolRunIdFromObservation(
 				JSON.stringify({
 					execution_mode: 'background',
-					tool_run_id: 'toolrun-1',
+					tool_run_id: 'toolrun-00000000000000000000000000000001',
 					status: 'running',
 				}),
 			),
-		).toBe('toolrun-1');
+		).toBe('toolrun-00000000000000000000000000000001');
 	});
 	it('returns null for foreground / non-JSON observations', () => {
 		expect(toolRunIdFromObservation('{"output":"hi"}')).toBeNull();
@@ -963,9 +963,9 @@ describe('sourceToolRunIdFromObservation', () => {
 		expect(
 			sourceToolRunIdFromObservation(
 				'schedule.set',
-				JSON.stringify({ operation: 'set', tool_run_id: 'toolrun-scheduled' }),
+				JSON.stringify({ operation: 'set', tool_run_id: 'toolrun-921be352ed48806cc0ff8635f2c282b9' }),
 			),
-		).toBe('toolrun-scheduled');
+		).toBe('toolrun-921be352ed48806cc0ff8635f2c282b9');
 	});
 
 	it('does not treat unrelated tool results as ToolRun creation links', () => {
@@ -982,11 +982,11 @@ describe('parseToolRunResultInject', () => {
 	it('parses producer-labelled background ToolRun result injects', () => {
 		expect(
 			parseToolRunResultInject(
-				'[Background tool run result]\ntool_run_id: toolrun-9\nstatus: completed\n\nok',
+				'[Background tool run result]\ntool_run_id: toolrun-00000000000000000000000000000009\nstatus: completed\n\nok',
 			),
 		).toEqual({
 			operation: 'result_injected',
-			tool_run_id: 'toolrun-9',
+			tool_run_id: 'toolrun-00000000000000000000000000000009',
 			status: 'completed',
 			auto: true,
 		});

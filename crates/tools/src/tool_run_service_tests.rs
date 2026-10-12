@@ -733,7 +733,7 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
 }
 
 /// Spawn the two fixture echo ToolRuns (`tool-run-a` / `tool-run-b`) and attach them to
-/// `ses-09df36791e54c51f7be063867e10b9af` / `ses-9faf101bcfff72cb42cfe3bcfe2a11e1`. Shared by the board and scoped-list tests.
+/// Attach two echo ToolRuns to canonical sessions. Shared by the board and scoped-list tests.
 async fn spawn_two_echo_tool_runs(tool_runs: &Arc<ToolRunService>) -> (String, String) {
     let id_a = tool_runs
         .spawn_shell("echo tool-run-a", "cmd", 20_000, None)
@@ -2421,8 +2421,11 @@ async fn session_cleanup_cancels_running_schedule_restored_by_another_service() 
         "cleanup must cancel a durable running schedule absent from its local board"
     );
     assert!(
-        !db.claim_scheduled_tool_run_execution(tool_run_id, "conf-late-approval")
-            .unwrap()
+        !db.claim_scheduled_tool_run_execution(
+            tool_run_id,
+            "conf-e1eae9a520e524eb0c513511d6af1947"
+        )
+        .unwrap()
     );
 }
 
@@ -3601,7 +3604,7 @@ async fn scheduled_execution_claim_arbitrates_with_cancellation() {
     assert!(service.cancel(&cancelled_id).await);
     assert!(
         !service
-            .claim_scheduled_execution(&cancelled_id, "conf-late")
+            .claim_scheduled_execution(&cancelled_id, "conf-48725ba887a67fc2a0797ebbeac51da9")
             .await
             .unwrap()
     );

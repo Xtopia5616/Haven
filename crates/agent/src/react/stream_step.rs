@@ -1444,7 +1444,7 @@ mod tests {
         for index in 0..(256 + 257) {
             sender.try_send(
                 AgentEvent::WebSearch {
-                    session_id: "ses-overflow".into(),
+                    session_id: "ses-d90130e71c5a40feb2fe2769e24f1da1".into(),
                     phase: haven_llm::WebSearchPhase::Searching,
                     step_number: 1,
                     run_id: 1,

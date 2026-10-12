@@ -6933,7 +6933,7 @@ mod tests {
         let mut committed = SessionCommitted::transcript(r#"{"type":"tool_result"}"#, 1, 2);
         committed.push_trailing_event(
             INTERACTION_CLEARED_EVENT_TYPE,
-            r#"{"request_ids":["conf-test"]}"#,
+            r#"{"request_ids":["conf-00000000000000000000000000000001"]}"#,
         );
 
         let error = store

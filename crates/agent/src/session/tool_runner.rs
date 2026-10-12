@@ -2943,7 +2943,7 @@ mod interaction_owner_route_tests {
             "files.write".into(),
             json!({"path": "notes.txt"}),
             "call-session".into(),
-            "step-session".into(),
+            "step-9c66573ca9c921cc5c45210d8ad159cc".into(),
             0,
             haven_common::types::RiskLevel::High,
             Some(future_receipt("files.write")),
@@ -2957,7 +2957,7 @@ mod interaction_owner_route_tests {
         ));
         assert!(!interaction_owner_matches_request(
             &crate::interaction::InteractionOwner::Session {
-                session_id: "ses-other".into()
+                session_id: "ses-9589b11fb124d96caa27b5509dadcf99".into()
             },
             &session_request
         ));

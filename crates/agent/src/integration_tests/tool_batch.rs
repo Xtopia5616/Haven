@@ -105,7 +105,7 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
         .await;
     let gated_authorization = tools
         .resolve_authorization_request(
-            Some("ses-confirm-check"),
+            Some("ses-9930b20bf67b3ba14286afbbdd24fd6a"),
             "batch_gated",
             &serde_json::json!({}),
         )

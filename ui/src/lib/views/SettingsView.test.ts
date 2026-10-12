@@ -504,7 +504,7 @@ describe('SettingsView diagnostics export', () => {
 				case 'get_settings':
 					return createSettingsFixture();
 				case 'stage_provider_credential':
-					return 'cred-0123456789abcdef0123456789abcdef';
+					return 'cred-b338124556ee7e51cdde231e1e5a64e6';
 				case 'get_api_key_status':
 					return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
 				case 'is_autostart_enabled':
@@ -542,7 +542,7 @@ describe('SettingsView diagnostics export', () => {
 		const update = invoke.mock.calls.find(([command]) => command === 'update_settings');
 		const settings = update?.[1]?.settings;
 		expect(settings.llm.providers[0].api_key).toBeUndefined();
-		expect(settings.llm.providers[0].api_key_ref).toBe('cred-0123456789abcdef0123456789abcdef');
+		expect(settings.llm.providers[0].api_key_ref).toBe('cred-b338124556ee7e51cdde231e1e5a64e6');
 		expect(JSON.stringify(settings)).not.toContain('provider-secret-marker');
 	});
 });

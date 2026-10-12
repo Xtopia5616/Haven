@@ -11,14 +11,14 @@ vi.mock('./tauri.ts', () => ({
 import { invoke } from './tauri.ts';
 import { submitTranscript as submitWithReducer } from './submit.ts';
 
-const SESSION_A = 'ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-const SESSION_B = 'ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-const SESSION_IMG = 'ses-cccccccccccccccccccccccccccccccc';
-const SESSION_MIX = 'ses-dddddddddddddddddddddddddddddddd';
-const SESSION_EMPTY = 'ses-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
-const SESSION_STALE = 'ses-ffffffffffffffffffffffffffffffff';
-const SESSION_FAIL = 'ses-11111111111111111111111111111111';
-const SESSION_DRAFT = 'ses-22222222222222222222222222222222';
+const SESSION_A = 'ses-efe910e5aabbdf9a4747892b4359818f';
+const SESSION_B = 'ses-851143562c1031fee321946d737a0e15';
+const SESSION_IMG = 'ses-fd7557c1b1b6e80f53d0bd81c8b41723';
+const SESSION_MIX = 'ses-3f2cdef8fd463c21da5263cbed357ec7';
+const SESSION_EMPTY = 'ses-ef40375cdc9832aa3194cde8ebdf843f';
+const SESSION_STALE = 'ses-fd7266ec1d3b4717e098c8cdc0d8a9ee';
+const SESSION_FAIL = 'ses-0000008c3defb1edb984fe2ac71c71c7';
+const SESSION_DRAFT = 'ses-000001187bdf63db7309fc558e38e38e';
 
 function supplemented(sessionId: string, messageId?: string) {
 	return {
@@ -70,7 +70,7 @@ describe('submitTranscript', () => {
 		select(SESSION_A);
 		loadMessages(SESSION_A, [
 			{
-				id: 'msg-00000000000000000000000000000020',
+				id: 'msg-00000000000000000000000000000014',
 				role: 'user' as const,
 				content: '第一条消息',
 			},
@@ -79,7 +79,7 @@ describe('submitTranscript', () => {
 
 		const list = messagesFor(SESSION_A);
 		expect(list).toHaveLength(2);
-		expect(list[0].id).toBe('msg-00000000000000000000000000000020');
+		expect(list[0].id).toBe('msg-00000000000000000000000000000014');
 		expect(list[1].content).toBe('第二条消息');
 	});
 
@@ -102,7 +102,7 @@ describe('submitTranscript', () => {
 		resolveInvoke!({
 			SessionCreated: {
 				session_id: SESSION_DRAFT,
-				message_id: 'msg-22222222222222222222222222222222',
+				message_id: 'msg-000001187bdf63db7309fc558e38e38e',
 			},
 		});
 		await pending;
@@ -114,7 +114,7 @@ describe('submitTranscript', () => {
 		invokeMock.mockResolvedValue({
 			SessionCreated: {
 				session_id: SESSION_DRAFT,
-				message_id: 'msg-33333333333333333333333333333333',
+				message_id: 'msg-000001a4b9cf15c92c8efa8055555555',
 			},
 		});
 		await submitTranscript('voice text', {
@@ -181,15 +181,15 @@ describe('submitTranscript', () => {
 	it('migrates the optimistic bubble into the newly created session', async () => {
 		invokeMock.mockResolvedValue({
 			SessionCreated: {
-				session_id: 'ses-11111111111111111111111111111111',
+				session_id: 'ses-0000008c3defb1edb984fe2ac71c71c7',
 				message_id: 'msg-00000000000000000000000000000001',
 			},
 		});
 		await submitTranscript('hi', { voice: false });
 
-		expect(reducer.snapshot().activeSessionId).toBe('ses-11111111111111111111111111111111');
+		expect(reducer.snapshot().activeSessionId).toBe('ses-0000008c3defb1edb984fe2ac71c71c7');
 		expect(messagesFor('_draft')).toEqual([]);
-		const list = messagesFor('ses-11111111111111111111111111111111');
+		const list = messagesFor('ses-0000008c3defb1edb984fe2ac71c71c7');
 		expect(list).toHaveLength(1);
 		expect(list[0].content).toBe('hi');
 		expect(list[0].id).toBe('msg-00000000000000000000000000000001');
@@ -198,16 +198,16 @@ describe('submitTranscript', () => {
 	it('migrates from a stale session id when SessionCreated differs', async () => {
 		invokeMock.mockResolvedValue({
 			SessionCreated: {
-				session_id: 'ses-11111111111111111111111111111111',
+				session_id: 'ses-0000008c3defb1edb984fe2ac71c71c7',
 				message_id: 'msg-00000000000000000000000000000002',
 			},
 		});
 		select(SESSION_STALE);
 		await submitTranscript('hi', { voice: false });
 
-		expect(reducer.snapshot().activeSessionId).toBe('ses-11111111111111111111111111111111');
+		expect(reducer.snapshot().activeSessionId).toBe('ses-0000008c3defb1edb984fe2ac71c71c7');
 		expect(messagesFor(SESSION_STALE)).toEqual([]);
-		const list = messagesFor('ses-11111111111111111111111111111111');
+		const list = messagesFor('ses-0000008c3defb1edb984fe2ac71c71c7');
 		expect(list).toHaveLength(1);
 		expect(list[0].id).toBe('msg-00000000000000000000000000000002');
 	});
@@ -215,14 +215,14 @@ describe('submitTranscript', () => {
 	it('does not move messages when SessionCreated equals the current key', async () => {
 		invokeMock.mockResolvedValue({
 			SessionCreated: {
-				session_id: 'ses-22222222222222222222222222222222',
+				session_id: 'ses-000001187bdf63db7309fc558e38e38e',
 				message_id: 'msg-00000000000000000000000000000003',
 			},
 		});
-		select('ses-22222222222222222222222222222222');
+		select('ses-000001187bdf63db7309fc558e38e38e');
 		await submitTranscript('hi', { voice: false });
 
-		const list = messagesFor('ses-22222222222222222222222222222222');
+		const list = messagesFor('ses-000001187bdf63db7309fc558e38e38e');
 		expect(list).toHaveLength(1);
 		expect(list[0].content).toBe('hi');
 		expect(list[0].id).toBe('msg-00000000000000000000000000000003');
@@ -252,13 +252,13 @@ describe('submitTranscript', () => {
 		select(SESSION_A);
 		loadMessages(SESSION_A, [
 			{
-				id: 'msg-00000000000000000000000000000020',
+				id: 'msg-00000000000000000000000000000014',
 				role: 'user' as const,
 				content: 'hi',
 				received: true,
 			},
 			{
-				id: 'msg-00000000000000000000000000000021',
+				id: 'msg-00000000000000000000000000000015',
 				role: 'assistant' as const,
 				content: '想',
 				streaming: true,
@@ -280,13 +280,13 @@ describe('submitTranscript', () => {
 		select(SESSION_A);
 		loadMessages(SESSION_A, [
 			{
-				id: 'msg-00000000000000000000000000000020',
+				id: 'msg-00000000000000000000000000000014',
 				role: 'user' as const,
 				content: 'hi',
 				received: true,
 			},
 			{
-				id: 'msg-00000000000000000000000000000021',
+				id: 'msg-00000000000000000000000000000015',
 				role: 'assistant' as const,
 				content: '好的',
 				streaming: false,
@@ -309,7 +309,7 @@ describe('submitTranscript', () => {
 		select(SESSION_A);
 		// First message accepted, execution phase not flipped yet, no assistant bubble.
 		loadMessages(SESSION_A, [
-			{ id: 'msg-00000000000000000000000000000020', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-00000000000000000000000000000014', role: 'user' as const, content: 'hi' },
 		]);
 		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
 		await submitTranscript('再加一句', { voice: false });
@@ -326,13 +326,13 @@ describe('submitTranscript', () => {
 		select(SESSION_B);
 		loadMessages(SESSION_B, [
 			{
-				id: 'msg-00000000000000000000000000000022',
+				id: 'msg-00000000000000000000000000000016',
 				role: 'user' as const,
 				content: 'hi',
 				received: true,
 			},
 			{
-				id: 'msg-00000000000000000000000000000023',
+				id: 'msg-00000000000000000000000000000017',
 				role: 'assistant' as const,
 				content: '好的',
 				streaming: false,
@@ -369,7 +369,7 @@ describe('submitTranscript', () => {
 	it('uses the active session id at submission time, not the eventual SessionCreated', async () => {
 		invokeMock.mockResolvedValue({
 			SessionCreated: {
-				session_id: 'ses-11111111111111111111111111111111',
+				session_id: 'ses-0000008c3defb1edb984fe2ac71c71c7',
 				message_id: 'msg-00000000000000000000000000000007',
 			},
 		});
@@ -436,23 +436,23 @@ describe('submitTranscript', () => {
 					resolveFirst = resolve;
 				}),
 			)
-			.mockResolvedValueOnce(supplemented('ses-11111111111111111111111111111111'));
+			.mockResolvedValueOnce(supplemented('ses-0000008c3defb1edb984fe2ac71c71c7'));
 		select(null);
 		const first = submitTranscript('第一条', { voice: false });
 		const second = submitTranscript('第二条', { voice: true });
 		expect(invokeMock).toHaveBeenCalledTimes(1);
 		resolveFirst!({
 			SessionCreated: {
-				session_id: 'ses-11111111111111111111111111111111',
+				session_id: 'ses-0000008c3defb1edb984fe2ac71c71c7',
 				message_id: 'msg-00000000000000000000000000000008',
 			},
 		});
 		await Promise.all([first, second]);
 		expect(invokeMock).toHaveBeenCalledTimes(2);
 		expect(/** @type {any[]} */ invokeMock.mock.calls[1][1].activeSessionId).toBe(
-			'ses-11111111111111111111111111111111',
+			'ses-0000008c3defb1edb984fe2ac71c71c7',
 		);
-		const list = messagesFor('ses-11111111111111111111111111111111');
+		const list = messagesFor('ses-0000008c3defb1edb984fe2ac71c71c7');
 		expect(list.map((x) => x.content)).toEqual(['第一条', '第二条']);
 	});
 
@@ -464,7 +464,7 @@ describe('submitTranscript', () => {
 					resolveFirst = resolve;
 				}),
 			)
-			.mockResolvedValueOnce(supplemented('ses-33333333333333333333333333333333'));
+			.mockResolvedValueOnce(supplemented('ses-000001a4b9cf15c92c8efa8055555555'));
 		select(null);
 		newSessionIntentStore.set(true);
 		const first = submitTranscript('新对话第一条', { voice: false });
@@ -472,14 +472,14 @@ describe('submitTranscript', () => {
 		expect(invokeMock).toHaveBeenCalledTimes(1);
 		resolveFirst!({
 			SessionCreated: {
-				session_id: 'ses-33333333333333333333333333333333',
+				session_id: 'ses-000001a4b9cf15c92c8efa8055555555',
 				message_id: 'msg-00000000000000000000000000000009',
 			},
 		});
 		await Promise.all([first, second]);
 		expect(invokeMock).toHaveBeenCalledTimes(2);
 		expect(/** @type {any[]} */ invokeMock.mock.calls[1][1].activeSessionId).toBe(
-			'ses-33333333333333333333333333333333',
+			'ses-000001a4b9cf15c92c8efa8055555555',
 		);
 		newSessionIntentStore.set(false);
 	});
@@ -523,37 +523,37 @@ describe('submitTranscript', () => {
 					resolveSecond = resolve;
 				}),
 			)
-			.mockResolvedValueOnce(supplemented('ses-11111111111111111111111111111111'));
+			.mockResolvedValueOnce(supplemented('ses-0000008c3defb1edb984fe2ac71c71c7'));
 		select(null);
 
 		const first = submitTranscript('创建会话', { voice: false });
 		const second = submitTranscript('排队消息', { voice: false });
 		resolveFirst!({
 			SessionCreated: {
-				session_id: 'ses-11111111111111111111111111111111',
-				message_id: 'msg-00000000000000000000000000000010',
+				session_id: 'ses-0000008c3defb1edb984fe2ac71c71c7',
+				message_id: 'msg-0000000000000000000000000000000a',
 			},
 		});
 		// The queued message owns the new session lane now. A third send to the
 		// active session must queue behind it instead of overtaking it.
 		await vi.waitFor(() =>
-			expect(reducer.snapshot().activeSessionId).toBe('ses-11111111111111111111111111111111'),
+			expect(reducer.snapshot().activeSessionId).toBe('ses-0000008c3defb1edb984fe2ac71c71c7'),
 		);
 		const third = submitTranscript('不能超车', { voice: false });
 		expect(invokeMock).toHaveBeenCalledTimes(2);
 
 		await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
 		expect(/** @type {any[]} */ invokeMock.mock.calls[1][1].activeSessionId).toBe(
-			'ses-11111111111111111111111111111111',
+			'ses-0000008c3defb1edb984fe2ac71c71c7',
 		);
-		resolveSecond!(supplemented('ses-11111111111111111111111111111111'));
+		resolveSecond!(supplemented('ses-0000008c3defb1edb984fe2ac71c71c7'));
 		await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(3));
 		await Promise.all([first, second, third]);
 		expect(invokeMock).toHaveBeenCalledTimes(3);
 		expect(/** @type {any[]} */ invokeMock.mock.calls[2][1].activeSessionId).toBe(
-			'ses-11111111111111111111111111111111',
+			'ses-0000008c3defb1edb984fe2ac71c71c7',
 		);
-		const list = messagesFor('ses-11111111111111111111111111111111');
+		const list = messagesFor('ses-0000008c3defb1edb984fe2ac71c71c7');
 		expect(list.map((x) => x.content)).toEqual(['创建会话', '排队消息', '不能超车']);
 	});
 

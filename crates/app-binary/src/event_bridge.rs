@@ -722,7 +722,7 @@ mod tests {
     #[test]
     fn tool_run_completion_notification_is_tagged_without_changing_generic_wire() {
         let generic = AgentEvent::Notification {
-            session_id: Some("ses-generic".into()),
+            session_id: Some("ses-b10266431b94e07821b946c973a97783".into()),
             title: "Notice".into(),
             body: "Generic notice".into(),
         };
@@ -730,7 +730,7 @@ mod tests {
         assert_eq!(
             TauriEmitter::payload(&generic, None),
             serde_json::json!({
-                "session_id": "ses-generic",
+                "session_id": "ses-b10266431b94e07821b946c973a97783",
                 "title": "Notice",
                 "body": "Generic notice",
             })
@@ -738,7 +738,7 @@ mod tests {
 
         let tool_run_completion = AgentEvent::ToolRunCompletionNotification {
             tool_run_kind: ToolRunNotificationSource::Scheduled,
-            tool_run_id: "toolrun-scheduled".into(),
+            tool_run_id: "toolrun-8b965b7786222161632d3437a1311290".into(),
             session_id: None,
             tool_run_status: None,
             title: "任务完成".into(),
@@ -755,14 +755,14 @@ mod tests {
                 "body": "结果",
                 "notification_kind": "tool_run_completion",
                 "tool_run_kind": "scheduled",
-                "tool_run_id": "toolrun-scheduled",
+                "tool_run_id": "toolrun-8b965b7786222161632d3437a1311290",
             })
         );
 
         let background_completion = AgentEvent::ToolRunCompletionNotification {
             tool_run_kind: ToolRunNotificationSource::Background,
-            tool_run_id: "toolrun-background".into(),
-            session_id: Some("ses-owner".into()),
+            tool_run_id: "toolrun-20d3e20a073cc2b99ef530b375956cc7".into(),
+            session_id: Some("ses-b6745a2e56b364791ed6b2ff6441cfe7".into()),
             tool_run_status: Some(ToolRunCompletionStatus::Failed),
             title: "后台任务失败".into(),
             body: "错误摘要".into(),
@@ -770,20 +770,20 @@ mod tests {
         assert_eq!(
             TauriEmitter::payload(&background_completion, None),
             serde_json::json!({
-                "session_id": "ses-owner",
+                "session_id": "ses-b6745a2e56b364791ed6b2ff6441cfe7",
                 "title": "后台任务失败",
                 "body": "错误摘要",
                 "notification_kind": "tool_run_completion",
                 "tool_run_kind": "background",
-                "tool_run_id": "toolrun-background",
+                "tool_run_id": "toolrun-20d3e20a073cc2b99ef530b375956cc7",
                 "tool_run_status": "failed",
             })
         );
 
         let completed_completion = AgentEvent::ToolRunCompletionNotification {
             tool_run_kind: ToolRunNotificationSource::Background,
-            tool_run_id: "toolrun-completed".into(),
-            session_id: Some("ses-owner".into()),
+            tool_run_id: "toolrun-144f268e0cbe6f7fbd820649652ff45f".into(),
+            session_id: Some("ses-b6745a2e56b364791ed6b2ff6441cfe7".into()),
             tool_run_status: Some(ToolRunCompletionStatus::Completed),
             title: "后台任务已完成".into(),
             body: "完成".into(),
@@ -797,7 +797,7 @@ mod tests {
     #[test]
     fn agent_observation_uses_the_result_envelope_as_its_only_outcome_source() {
         let event = AgentEvent::Observation {
-            session_id: "ses-1".into(),
+            session_id: "ses-7ae290dbf0b4468c9d2c401be649850b".into(),
             observation: "operation result".into(),
             tool_name: "files.read".into(),
             step_number: 1,
@@ -806,7 +806,7 @@ mod tests {
             tool_call_id: Some("call-1".into()),
             tool_index: 0,
             ask_options: Vec::new(),
-            step_id: "step-1".into(),
+            step_id: "step-f9430084054c5002eb0d7715a0ec20cd".into(),
             idempotency: haven_common::tools::OperationIdempotency::Idempotent,
             operation_scope: haven_common::tools::ToolOperationScope::Session,
             renderer: "files".into(),
@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn session_lifecycle_variants_share_one_channel_and_keep_terminal_details_typed() {
         let completed = AgentEvent::SessionCompleted {
-            session_id: "ses-completed".into(),
+            session_id: "ses-89564312af0e67cec57339c7df9c23b8".into(),
             title: "研究".into(),
             reason: "用户主动结束会话".into(),
         };
@@ -831,14 +831,14 @@ mod tests {
             TauriEmitter::payload(&completed, None),
             serde_json::json!({
                 "type": "completed",
-                "session_id": "ses-completed",
+                "session_id": "ses-89564312af0e67cec57339c7df9c23b8",
                 "title": "研究",
                 "reason": "用户主动结束会话",
             })
         );
 
         let failed = AgentEvent::SessionError {
-            session_id: "ses-error".into(),
+            session_id: "ses-68074e35ff3d611936f197b42ed3c8c2".into(),
             error: "网络请求超时".into(),
         };
         assert_eq!(TauriEmitter::channel(&failed), SESSION_LIFECYCLE_EVENT);
@@ -846,19 +846,19 @@ mod tests {
             TauriEmitter::payload(&failed, None),
             serde_json::json!({
                 "type": "error",
-                "session_id": "ses-error",
-                "title": "ses-error",
+                "session_id": "ses-68074e35ff3d611936f197b42ed3c8c2",
+                "title": "ses-68074e35ff3d611936f197b42ed3c8c2",
                 "error": "网络请求超时",
             })
         );
 
         let single = AgentEvent::SessionDeleted {
-            session_id: Some("ses-deleted".into()),
+            session_id: Some("ses-0c0bb384d521e3c3c4d2e3e7bbc6a979".into()),
         };
         assert_eq!(TauriEmitter::channel(&single), SESSION_LIFECYCLE_EVENT);
         assert_eq!(
             TauriEmitter::payload(&single, None),
-            serde_json::json!({ "type": "deleted", "session_id": "ses-deleted" })
+            serde_json::json!({ "type": "deleted", "session_id": "ses-0c0bb384d521e3c3c4d2e3e7bbc6a979" })
         );
 
         let all = AgentEvent::SessionDeleted { session_id: None };

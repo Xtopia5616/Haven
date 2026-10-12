@@ -26,7 +26,7 @@ describe('createStreamEventAggregator', () => {
 			reducer.dispatch(action),
 	) {
 		return createStreamEventAggregator({
-			getActiveSessionId: () => 'ses-stream-test',
+			getActiveSessionId: () => 'ses-6751ce00136ce79085a12dc820ec747c',
 			onActiveStream: vi.fn(),
 			dispatch,
 			getBlockIds: (sessionId, stepNumber, runId) =>
@@ -37,11 +37,11 @@ describe('createStreamEventAggregator', () => {
 	function chunk(overrides: Partial<AgentChunkPayload> = {}): { payload: AgentChunkPayload } {
 		return {
 			payload: {
-				sessionId: 'ses-stream-test',
+				sessionId: 'ses-6751ce00136ce79085a12dc820ec747c',
 				delta: 'hello',
 				stepNumber: 1,
 				runId: 1,
-				messageId: 'step-thought-test',
+				messageId: 'step-ce193f30dde770e8c33e31e94b42f31a',
 				seq: 1,
 				...overrides,
 			},
@@ -54,12 +54,12 @@ describe('createStreamEventAggregator', () => {
 
 		handler(chunk());
 		handler(chunk({ delta: 'duplicate', seq: 1 }));
-		expect(reducer.getMessages('ses-stream-test')).toHaveLength(1);
-		expect(reducer.getMessages('ses-stream-test')[0].content).toBe('hello');
+		expect(reducer.getMessages('ses-6751ce00136ce79085a12dc820ec747c')).toHaveLength(1);
+		expect(reducer.getMessages('ses-6751ce00136ce79085a12dc820ec747c')[0].content).toBe('hello');
 
 		aggregator.flushChunksNow();
-		expect(reducer.getMessages('ses-stream-test')).toHaveLength(1);
-		expect(reducer.getMessages('ses-stream-test')[0].content).toBe('hello');
+		expect(reducer.getMessages('ses-6751ce00136ce79085a12dc820ec747c')).toHaveLength(1);
+		expect(reducer.getMessages('ses-6751ce00136ce79085a12dc820ec747c')[0].content).toBe('hello');
 		expect(aggregator.metricsSnapshot()).toEqual({ frames: 0, chunks: 2, drops: 0 });
 	});
 
@@ -68,14 +68,14 @@ describe('createStreamEventAggregator', () => {
 		aggregator.chunkHandler(
 			false,
 			'reasoning',
-		)(chunk({ messageId: 'step-reasoning-test', delta: 'reason', seq: 1 }));
+		)(chunk({ messageId: 'step-cfab4805314410f1e0bdda7d8557047b', delta: 'reason', seq: 1 }));
 		aggregator.chunkHandler(
 			true,
 			undefined,
-		)(chunk({ messageId: 'step-thought-test-2', delta: 'thought', seq: 1 }));
+		)(chunk({ messageId: 'step-6e836ca15cb739d7ee23e1060e098217', delta: 'thought', seq: 1 }));
 
 		aggregator.flushChunksNow();
-		const messages = reducer.getMessages('ses-stream-test');
+		const messages = reducer.getMessages('ses-6751ce00136ce79085a12dc820ec747c');
 		expect(messages.map((message) => [message.content, message.streaming])).toEqual([
 			['reason', false],
 			['thought', true],
@@ -84,8 +84,8 @@ describe('createStreamEventAggregator', () => {
 
 	it('keeps interleaved stream blocks in arrival order', () => {
 		const base: PendingChunk = {
-			tid: 'ses-stream-test',
-			sid: 'step-thought-a',
+			tid: 'ses-6751ce00136ce79085a12dc820ec747c',
+			sid: 'step-c0b40676b839848be9143e9057e10785',
 			delta: '',
 			msgType: undefined,
 			stepNumber: 1,
@@ -95,14 +95,14 @@ describe('createStreamEventAggregator', () => {
 		};
 		const folded = foldContiguousChunks([
 			{ ...base, delta: 'A1' },
-			{ ...base, sid: 'step-reasoning-b', delta: 'B1', finalizeReasoning: false },
+			{ ...base, sid: 'step-5b45e3c7e661d88e9cbf98c591ac32e8', delta: 'B1', finalizeReasoning: false },
 			{ ...base, delta: 'A2' },
 		]);
 
 		expect(folded.map(({ sid, delta }) => [sid, delta])).toEqual([
-			['step-thought-a', 'A1'],
-			['step-reasoning-b', 'B1'],
-			['step-thought-a', 'A2'],
+			['step-c0b40676b839848be9143e9057e10785', 'A1'],
+			['step-5b45e3c7e661d88e9cbf98c591ac32e8', 'B1'],
+			['step-c0b40676b839848be9143e9057e10785', 'A2'],
 		]);
 	});
 
@@ -128,8 +128,8 @@ describe('createStreamEventAggregator', () => {
 
 	it('counts one frame for a real multi-session animation-frame callback', () => {
 		const aggregator = createAggregator();
-		aggregator.chunkHandler(true, undefined)(chunk({ sessionId: 'ses-a', messageId: 'a' }));
-		aggregator.chunkHandler(true, undefined)(chunk({ sessionId: 'ses-b', messageId: 'b' }));
+		aggregator.chunkHandler(true, undefined)(chunk({ sessionId: 'ses-32f23b1e00f85571a60f75dde5588074', messageId: 'a' }));
+		aggregator.chunkHandler(true, undefined)(chunk({ sessionId: 'ses-b77487af9bb14e5ec4d60572f1248bce', messageId: 'b' }));
 
 		frame?.(0);
 
@@ -149,13 +149,13 @@ describe('createStreamEventAggregator', () => {
 		aggregator.chunkHandler(
 			true,
 			undefined,
-		)(chunk({ sessionId: 'ses-other', messageId: 'other', stepNumber: 1 }));
+		)(chunk({ sessionId: 'ses-fb38531de0466990f46b178209103744', messageId: 'other', stepNumber: 1 }));
 		expect(frame).not.toBeNull();
 
 		aggregator.chunkHandler(
 			true,
 			undefined,
-		)(chunk({ sessionId: 'ses-stream-test', messageId: 'active', stepNumber: 2 }));
+		)(chunk({ sessionId: 'ses-6751ce00136ce79085a12dc820ec747c', messageId: 'active', stepNumber: 2 }));
 
 		expect(vi.mocked(cancelAnimationFrame)).toHaveBeenCalledWith(1);
 	});

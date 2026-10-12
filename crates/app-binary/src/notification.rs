@@ -426,19 +426,35 @@ mod tests {
     #[test]
     fn deleted_sessions_are_removed_from_notification_caches() {
         let mut statuses = std::collections::HashMap::from([
-            ("ses-a".to_string(), "running".to_string()),
-            ("ses-b".to_string(), "completed".to_string()),
+            (
+                "ses-65dd7c6b35b99687a424c2fd8bdb08a9".to_string(),
+                "running".to_string(),
+            ),
+            (
+                "ses-a46f4e14d169d01e24d2481df833ce4d".to_string(),
+                "completed".to_string(),
+            ),
         ]);
         let mut titles = std::collections::HashMap::from([
-            ("ses-a".to_string(), "A".to_string()),
-            ("ses-b".to_string(), "B".to_string()),
+            (
+                "ses-65dd7c6b35b99687a424c2fd8bdb08a9".to_string(),
+                "A".to_string(),
+            ),
+            (
+                "ses-a46f4e14d169d01e24d2481df833ce4d".to_string(),
+                "B".to_string(),
+            ),
         ]);
 
-        forget_session_cache(&mut statuses, &mut titles, Some("ses-a"));
+        forget_session_cache(
+            &mut statuses,
+            &mut titles,
+            Some("ses-65dd7c6b35b99687a424c2fd8bdb08a9"),
+        );
         assert_eq!(statuses.len(), 1);
         assert_eq!(titles.len(), 1);
-        assert!(statuses.contains_key("ses-b"));
-        assert!(titles.contains_key("ses-b"));
+        assert!(statuses.contains_key("ses-a46f4e14d169d01e24d2481df833ce4d"));
+        assert!(titles.contains_key("ses-a46f4e14d169d01e24d2481df833ce4d"));
 
         forget_session_cache(&mut statuses, &mut titles, None);
         assert!(statuses.is_empty());

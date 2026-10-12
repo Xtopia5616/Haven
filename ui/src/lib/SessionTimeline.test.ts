@@ -27,7 +27,7 @@ describe('SessionTimeline', () => {
 
 	it('renders the message timeline immediately when the first message arrives', () => {
 		render(SessionTimeline, {
-			messages: [{ id: 'msg-1', role: 'user' as const, content: '你好' }],
+			messages: [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: '你好' }],
 		});
 
 		expect(document.querySelector('.message-list')).toBeTruthy();
@@ -38,7 +38,7 @@ describe('SessionTimeline', () => {
 		const { container } = render(SessionTimeline, {
 			messages: [
 				{
-					id: 'step-background',
+					id: 'step-f5ba153deb417361f0e17158c2c3924a',
 					role: 'assistant' as const,
 					content:
 						'{"execution_mode":"background","tool_run_id":"toolrun-00000000000000000000000000000001"}',
@@ -85,10 +85,10 @@ describe('SessionTimeline', () => {
 			messages: [],
 			sessionToolRuns: [
 				{
-					toolRunId: 'toolrun-scheduled',
+					toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9',
 					kind: 'scheduled',
 					status: 'waiting',
-					sessionId: 'ses-1',
+					sessionId: 'ses-00000000000000000000000000000001',
 					dueAt: '2026-10-03T04:00:00Z',
 					title: '稍后提醒',
 					body: '整理会议记录',
@@ -110,7 +110,7 @@ describe('SessionTimeline', () => {
 	it('keeps scheduled ToolRun order stable when a run starts', () => {
 		const messages = [
 			{
-				id: 'step-schedule',
+				id: 'step-052b341c6a7d077effc2e1976c4ebdc7',
 				role: 'assistant' as const,
 				content: '计划任务',
 				type: 'tool' as const,
@@ -121,17 +121,17 @@ describe('SessionTimeline', () => {
 		];
 		const waitingRuns = [
 			{
-				toolRunId: 'toolrun-earlier',
+				toolRunId: 'toolrun-309099f4d738d016c3ac91ffa860d4ed',
 				kind: 'scheduled' as const,
 				status: 'waiting' as const,
-				sourceStepId: 'step-schedule',
+				sourceStepId: 'step-052b341c6a7d077effc2e1976c4ebdc7',
 				dueAt: '2026-10-08T12:00:00Z',
 			},
 			{
-				toolRunId: 'toolrun-later',
+				toolRunId: 'toolrun-705eb9b2ff45c4397aab6ceb5bb85eab',
 				kind: 'scheduled' as const,
 				status: 'waiting' as const,
-				sourceStepId: 'step-schedule',
+				sourceStepId: 'step-052b341c6a7d077effc2e1976c4ebdc7',
 				dueAt: '2026-10-08T12:05:00Z',
 			},
 		];
@@ -148,13 +148,13 @@ describe('SessionTimeline', () => {
 				.filter((item) => item.kind === 'tool_run')
 				.map((item) => (item.kind === 'tool_run' ? item.toolRun.toolRunId : ''));
 
-		expect(runOrder(waitingRuns)).toEqual(['toolrun-earlier', 'toolrun-later']);
-		expect(runOrder(startedRuns)).toEqual(['toolrun-earlier', 'toolrun-later']);
+		expect(runOrder(waitingRuns)).toEqual(['toolrun-309099f4d738d016c3ac91ffa860d4ed', 'toolrun-705eb9b2ff45c4397aab6ceb5bb85eab']);
+		expect(runOrder(startedRuns)).toEqual(['toolrun-309099f4d738d016c3ac91ffa860d4ed', 'toolrun-705eb9b2ff45c4397aab6ceb5bb85eab']);
 	});
 
 	it('passes through the continue handler for a user-tail conversation', () => {
 		render(SessionTimeline, {
-			messages: [{ id: 'msg-1', role: 'user' as const, content: '继续处理' }],
+			messages: [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: '继续处理' }],
 			showContinueButton: true,
 		});
 
@@ -168,7 +168,7 @@ describe('SessionTimeline', () => {
 
 	it('removes the continue handler while it is unavailable', () => {
 		render(SessionTimeline, {
-			messages: [{ id: 'msg-1', role: 'user' as const, content: '继续处理' }],
+			messages: [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: '继续处理' }],
 			showContinueButton: true,
 			continueDisabled: true,
 		});
@@ -180,7 +180,7 @@ describe('SessionTimeline', () => {
 	it('keeps batch disclosure state when the step preamble is reconciled', async () => {
 		const tools = [
 			{
-				id: 'step-a',
+				id: 'step-ed4d1203d9eee442682361d4f077efd7',
 				role: 'assistant' as const,
 				content: 'first result',
 				type: 'tool' as const,
@@ -189,7 +189,7 @@ describe('SessionTimeline', () => {
 				streaming: false,
 			},
 			{
-				id: 'step-b',
+				id: 'step-e23a75ffc10203f54edf15d337e0a880',
 				role: 'assistant' as const,
 				content: 'second result',
 				type: 'tool' as const,
@@ -210,7 +210,7 @@ describe('SessionTimeline', () => {
 		await rerender({
 			messages: [
 				{
-					id: 'msg-preamble',
+					id: 'msg-eddbe8412b7a8205685b0a41d546042c',
 					role: 'assistant' as const,
 					content: '检查相关文件',
 					type: 'thought' as const,

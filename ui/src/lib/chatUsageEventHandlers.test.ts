@@ -26,7 +26,7 @@ describe('createChatUsageEventHandlers', () => {
 				event: 'agent:usage',
 				id: id === 'media' ? 1 : 2,
 				payload: {
-					sessionId: 'ses-test',
+					sessionId: 'ses-f598facda111677e0871bdc09d391332',
 					promptTokens: 11,
 					completionTokens: 7,
 					totalTokens: 18,
@@ -53,8 +53,8 @@ describe('createChatUsageEventHandlers', () => {
 			} as any);
 		}
 
-		expect(reducer.snapshot().tokenStats?.['ses-test']).toBeUndefined();
-		expect(reducer.snapshot().llmUsage?.['ses-test']).toEqual([
+		expect(reducer.snapshot().tokenStats?.['ses-f598facda111677e0871bdc09d391332']).toBeUndefined();
+		expect(reducer.snapshot().llmUsage?.['ses-f598facda111677e0871bdc09d391332']).toEqual([
 			expect.objectContaining({ call_kind: 'media', step_number: null, requestKind: 'chat' }),
 			expect.objectContaining({ call_kind: 'tool', step_number: null, requestKind: 'chat' }),
 		]);
@@ -68,23 +68,23 @@ describe('createChatUsageEventHandlers', () => {
 			event: 'agent:media_plan',
 			id: 3,
 			payload: {
-				sessionId: 'ses-media',
+				sessionId: 'ses-5842f320b26bb7a914cbf6e460c843c9',
 				stepNumber: 4,
 				runId: 8,
 				requestKind: 'audio_chat',
 				strategy: 'auto',
 				projections: [
-					{ assetId: 'asset-1', representation: 'transcript', mode: 'derived' },
+					{ assetId: 'asset-00000000000000000000000000000001', representation: 'transcript', mode: 'derived' },
 				],
-				notices: [{ assetId: 'asset-1', code: 'raw_capability_unknown' }],
+				notices: [{ assetId: 'asset-00000000000000000000000000000001', code: 'raw_capability_unknown' }],
 			},
 		});
 
-		expect(get(mediaPlanStore)['ses-media']).toEqual([
+		expect(get(mediaPlanStore)['ses-5842f320b26bb7a914cbf6e460c843c9']).toEqual([
 			expect.objectContaining({
 				strategy: 'auto',
 				projections: [
-					{ assetId: 'asset-1', representation: 'transcript', mode: 'derived' },
+					{ assetId: 'asset-00000000000000000000000000000001', representation: 'transcript', mode: 'derived' },
 				],
 			}),
 		]);

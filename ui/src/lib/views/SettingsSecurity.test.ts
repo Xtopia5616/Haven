@@ -39,7 +39,7 @@ describe('SettingsSecurity', () => {
 
 	it('shows and revokes session allow and deny grants by exact session', async () => {
 		const grant: SessionPermissionGrant = {
-			session_id: 'ses-test',
+			session_id: 'ses-f598facda111677e0871bdc09d391332',
 			session_title: '测试对话',
 			capability: 'files.write',
 			target: 'operation',
@@ -65,7 +65,7 @@ describe('SettingsSecurity', () => {
 			security: createSecurity(),
 			sessionPermissions: [
 				{
-					session_id: 'ses-test',
+					session_id: 'ses-f598facda111677e0871bdc09d391332',
 					session_title: null,
 					capability: 'files.write',
 					target: 'operation',

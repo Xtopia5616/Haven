@@ -108,8 +108,8 @@ describe('session history command boundary', () => {
 		};
 		const response = {
 			SessionCreated: {
-				session_id: 'ses-00000000000000000000000000000010',
-				message_id: 'msg-00000000000000000000000000000011',
+				session_id: 'ses-0000000000000000000000000000000a',
+				message_id: 'msg-0000000000000000000000000000000b',
 			},
 		};
 		invokeMock.mockResolvedValueOnce(response as never);
@@ -127,12 +127,12 @@ describe('session history command boundary', () => {
 
 		const supplementRequest = {
 			...request,
-			activeSessionId: 'ses-00000000000000000000000000000012',
+			activeSessionId: 'ses-0000000000000000000000000000000c',
 		};
 		const supplementResponse = {
 			Supplemented: {
 				session_id: supplementRequest.activeSessionId,
-				message_id: 'msg-00000000000000000000000000000013',
+				message_id: 'msg-0000000000000000000000000000000d',
 			},
 		};
 		invokeMock.mockResolvedValueOnce(supplementResponse as never);
@@ -140,8 +140,8 @@ describe('session history command boundary', () => {
 
 		invokeMock.mockResolvedValueOnce({
 			Supplemented: {
-				session_id: 'ses-00000000000000000000000000000014',
-				message_id: 'msg-00000000000000000000000000000015',
+				session_id: 'ses-0000000000000000000000000000000e',
+				message_id: 'msg-0000000000000000000000000000000f',
 			},
 		} as never);
 		await expect(processTranscript(supplementRequest)).rejects.toThrow(
@@ -176,9 +176,9 @@ describe('session history command boundary', () => {
 	});
 
 	it('rejects lineage rows whose owner does not match the request', async () => {
-		const request = { sessionId: 'ses-00000000000000000000000000000021' };
+		const request = { sessionId: 'ses-00000000000000000000000000000015' };
 		invokeMock.mockResolvedValueOnce({
-			session_id: 'ses-00000000000000000000000000000022',
+			session_id: 'ses-00000000000000000000000000000016',
 			parent_session_id: null,
 			parent: null,
 			children: [],
@@ -232,10 +232,10 @@ describe('session history command boundary', () => {
 
 	it('rejects a canonical resume response owned by another requested session', async () => {
 		invokeMock.mockResolvedValueOnce(
-			resumeResponse('ses-00000000000000000000000000000024') as never,
+			resumeResponse('ses-00000000000000000000000000000018') as never,
 		);
 		await expect(
-			getSessionForResume({ sessionId: 'ses-00000000000000000000000000000025' }),
+			getSessionForResume({ sessionId: 'ses-00000000000000000000000000000019' }),
 		).rejects.toThrow('Invalid resumed session identity');
 	});
 
@@ -280,7 +280,7 @@ describe('session history command boundary', () => {
 	});
 
 	it('owns rollback and active session lifecycle commands', async () => {
-		const request = { sessionId: 'ses-lifecycle' };
+		const request = { sessionId: 'ses-d8a361dbfde93b45612fce5bf38f7f2c' };
 		const rollbackRequest = {
 			sessionId: request.sessionId,
 			targetStep: 3,
@@ -303,7 +303,7 @@ describe('session history command boundary', () => {
 	});
 
 	it('forwards history mutations and keeps the command result values', async () => {
-		const request = { sessionId: 'ses-4' };
+		const request = { sessionId: 'ses-00000000000000000000000000000004' };
 		invokeMock.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined);
 		invokeMock.mockResolvedValueOnce(2).mockResolvedValueOnce(undefined);
 

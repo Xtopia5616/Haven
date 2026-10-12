@@ -250,14 +250,14 @@ function resumeResponseWithAssets(): ResumeFixture {
 					data: 'base64-data',
 					size_bytes: 2048,
 					representations: [
-						managedRepresentation('asset-00000000000000000000000000000010'),
+						managedRepresentation('asset-0000000000000000000000000000000a'),
 					],
 				},
 			],
 			media_inputs: [
 				{
 					asset: {
-						asset_id: 'asset-00000000000000000000000000000011',
+						asset_id: 'asset-0000000000000000000000000000000b',
 						content_hash: 'abc123',
 						media_type: 'image/png',
 						size_bytes: 4096,
@@ -265,7 +265,7 @@ function resumeResponseWithAssets(): ResumeFixture {
 						lifecycle: 'session',
 					},
 					representations: [
-						managedRepresentation('asset-00000000000000000000000000000012'),
+						managedRepresentation('asset-0000000000000000000000000000000c'),
 					],
 				},
 			],
@@ -355,8 +355,8 @@ describe('session history and resume contracts', () => {
 			parseSessionLineageResponse(
 				{
 					session_id: sessionId,
-					parent_session_id: 'ses-00000000000000000000000000000040',
-					parent: sessionRecord('ses-00000000000000000000000000000041'),
+					parent_session_id: 'ses-00000000000000000000000000000028',
+					parent: sessionRecord('ses-00000000000000000000000000000029'),
 					children: [],
 				},
 				sessionId,
@@ -364,7 +364,7 @@ describe('session history and resume contracts', () => {
 		).toThrow('Invalid session lineage identity');
 
 		const wrongChild = sessionLineage();
-		wrongChild.children[0]!.parent_session_id = 'ses-00000000000000000000000000000043';
+		wrongChild.children[0]!.parent_session_id = 'ses-0000000000000000000000000000002b';
 		expect(() => parseSessionLineageResponse(wrongChild, sessionId)).toThrow(
 			'Invalid session lineage identity',
 		);

@@ -98,7 +98,7 @@ describe('generated Rust wire shapes', () => {
 		expect(
 			matchesGeneratedEventPayload('recording:started', {
 				is_recording: true,
-				recording_id: 'rec-0123456789abcdef0123456789abcdef',
+				recording_id: 'rec-83ead25b7e0ce1ca7d61f0ef95e4f29c',
 			}),
 		).toBe(true);
 		expect(matchesGeneratedEventPayload('recording:started', { recording_id: 'missing-state' })).toBe(
@@ -106,7 +106,7 @@ describe('generated Rust wire shapes', () => {
 		);
 		expect(
 			matchesGeneratedEventPayload('tool_run:created', {
-				tool_run_id: 'toolrun-0123456789abcdef0123456789abcdef',
+				tool_run_id: 'toolrun-58ec300e6432076c8ec176f56120ec01',
 				kind: 'background',
 				status: 'future_status',
 			}),

@@ -53,7 +53,7 @@ describe('recording overlay controller', () => {
 		});
 		start.resolve();
 		await starting;
-		controller.onRecordingStarted({ recordingId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b' });
 		vi.advanceTimersByTime(3_000);
 		expect(controller.durationSeconds()).toBe(3);
 
@@ -61,11 +61,11 @@ describe('recording overlay controller', () => {
 		expect(state(controller)).toMatchObject({
 			visible: false,
 			isRecording: false,
-			recordingId: 'rec-a',
+			recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b',
 		});
 		expect(vi.getTimerCount()).toBe(0);
 		controller.onRecordingStopped({
-			recordingId: 'rec-a',
+			recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b',
 			reason: 'manual',
 		});
 		stop.resolve();
@@ -73,7 +73,7 @@ describe('recording overlay controller', () => {
 		expect(state(controller)).toMatchObject({
 			visible: true,
 			isRecording: false,
-			recordingId: 'rec-a',
+			recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b',
 		});
 		expect(invoke.mock.calls.map(([command]) => command)).toEqual([
 			'start_recording',
@@ -90,11 +90,11 @@ describe('recording overlay controller', () => {
 		const { controller } = makeController(invoke);
 
 		const starting = controller.toggleFromToolbar();
-		controller.onRecordingStarted({ recordingId: 'rec-fast' });
+		controller.onRecordingStarted({ recordingId: 'rec-b45ef09ef270833380a98055b9afbaa9' });
 		const stopping = controller.toggleFromToolbar();
 		expect(state(controller)).toMatchObject({ visible: false, isRecording: false });
 		controller.onRecordingStopped({
-			recordingId: 'rec-fast',
+			recordingId: 'rec-b45ef09ef270833380a98055b9afbaa9',
 			reason: 'silence',
 		});
 		expect(state(controller)).toMatchObject({ visible: true, processing: true });
@@ -106,9 +106,9 @@ describe('recording overlay controller', () => {
 			'stop_recording',
 		]);
 
-		controller.onTranscriptionStarted('rec-fast');
+		controller.onTranscriptionStarted('rec-b45ef09ef270833380a98055b9afbaa9');
 		expect(state(controller).processing).toBe(true);
-		controller.onTranscriptionFinished('rec-fast');
+		controller.onTranscriptionFinished('rec-b45ef09ef270833380a98055b9afbaa9');
 		expect(state(controller).visible).toBe(false);
 		expect(vi.getTimerCount()).toBe(0);
 	});
@@ -119,13 +119,13 @@ describe('recording overlay controller', () => {
 		const { controller } = makeController(invoke);
 
 		const starting = controller.startFromToolbar();
-		controller.onRecordingStarted({ recordingId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b' });
 		failedStart.reject(new Error('start failed after a newer lifecycle event'));
 		await starting;
 		expect(state(controller)).toMatchObject({
 			visible: true,
 			isRecording: true,
-			recordingId: 'rec-a',
+			recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b',
 		});
 		controller.dispose();
 
@@ -143,13 +143,13 @@ describe('recording overlay controller', () => {
 	it('restores a matching recording when an optimistic stop fails', async () => {
 		const invoke = vi.fn().mockRejectedValue(new Error('stop failed'));
 		const failingController = makeController(invoke).controller;
-		failingController.onRecordingStarted({ recordingId: 'rec-a' });
+		failingController.onRecordingStarted({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b' });
 
 		await expect(failingController.stopFromToolbar()).rejects.toThrow('stop failed');
 		expect(state(failingController)).toMatchObject({
 			visible: true,
 			isRecording: true,
-			recordingId: 'rec-a',
+			recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b',
 		});
 		expect(vi.getTimerCount()).toBe(1);
 		failingController.dispose();
@@ -157,33 +157,33 @@ describe('recording overlay controller', () => {
 
 	it('ignores an older stop and transcription lifecycle without stopping the new timer', () => {
 		const { controller } = makeController();
-		controller.onRecordingStarted({ recordingId: 'rec-a' });
-		controller.onRecordingStopped({ recordingId: 'rec-a', reason: 'manual' });
-		controller.onTranscriptionStarted('rec-a');
-		controller.onRecordingStarted({ recordingId: 'rec-b' });
+		controller.onRecordingStarted({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b' });
+		controller.onRecordingStopped({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b', reason: 'manual' });
+		controller.onTranscriptionStarted('rec-b0f2fdb1b7b61e4290c1c6d3f884975b');
+		controller.onRecordingStarted({ recordingId: 'rec-2e6c61eefa580ce861ae28ae9474edfc' });
 		vi.advanceTimersByTime(2_000);
 
-		controller.onTranscriptionStarted('rec-a');
-		controller.onRecordingStopped({ recordingId: 'rec-a', reason: 'cancel' });
-		controller.onRecordingError({ recordingId: 'rec-a', error: 'old recording failed' });
-		controller.onTranscriptionFinished('rec-a');
+		controller.onTranscriptionStarted('rec-b0f2fdb1b7b61e4290c1c6d3f884975b');
+		controller.onRecordingStopped({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b', reason: 'cancel' });
+		controller.onRecordingError({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b', error: 'old recording failed' });
+		controller.onTranscriptionFinished('rec-b0f2fdb1b7b61e4290c1c6d3f884975b');
 
 		expect(state(controller)).toMatchObject({
 			visible: true,
 			isRecording: true,
-			recordingId: 'rec-b',
+			recordingId: 'rec-2e6c61eefa580ce861ae28ae9474edfc',
 		});
 		expect(controller.durationSeconds()).toBe(2);
 		vi.advanceTimersByTime(1_000);
 		expect(controller.durationSeconds()).toBe(3);
 
-		controller.onTranscriptionStarted('rec-b');
+		controller.onTranscriptionStarted('rec-2e6c61eefa580ce861ae28ae9474edfc');
 		expect(state(controller)).toMatchObject({
 			visible: true,
 			isRecording: false,
 			processing: true,
 		});
-		controller.onTranscriptionFinished('rec-b');
+		controller.onTranscriptionFinished('rec-2e6c61eefa580ce861ae28ae9474edfc');
 		expect(state(controller)).toMatchObject({
 			visible: false,
 			processing: false,
@@ -194,22 +194,22 @@ describe('recording overlay controller', () => {
 
 	it('applies VAD only while recording and only lets a matching stop change the overlay', () => {
 		const { controller } = makeController();
-		controller.onRecordingStarted({ recordingId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b' });
 		controller.onVadStatus({ state: 'speech', signal: 'speech_start' });
 		expect(state(controller).vadState).toBe('speech');
 
-		controller.onRecordingStopped({ recordingId: 'rec-other', reason: 'cancel' });
-		expect(state(controller)).toMatchObject({ isRecording: true, recordingId: 'rec-a' });
-		controller.onRecordingStopped({ recordingId: 'rec-a', reason: 'manual' });
+		controller.onRecordingStopped({ recordingId: 'rec-8c65192cd8f2596a04077bc8c6d24029', reason: 'cancel' });
+		expect(state(controller)).toMatchObject({ isRecording: true, recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b' });
+		controller.onRecordingStopped({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b', reason: 'manual' });
 		controller.onVadStatus({ state: 'silent', signal: 'none' });
 		expect(state(controller).vadState).toBe('silent');
 	});
 
 	it('treats a repeated started event for the same capture as an idempotent confirmation', () => {
 		const { controller } = makeController();
-		controller.onRecordingStarted({ recordingId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b' });
 		vi.advanceTimersByTime(2_000);
-		controller.onRecordingStarted({ recordingId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b' });
 
 		expect(controller.durationSeconds()).toBe(2);
 		expect(vi.getTimerCount()).toBe(1);
@@ -218,7 +218,7 @@ describe('recording overlay controller', () => {
 
 	it('hides after cancel even on command failure and disposes only its timer', async () => {
 		const failedCancel = makeController(vi.fn().mockRejectedValue(new Error('cancel failed')));
-		failedCancel.controller.onRecordingStarted({ recordingId: 'rec-a' });
+		failedCancel.controller.onRecordingStarted({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b' });
 		const cancelResult = failedCancel.controller.cancel();
 		await expect(cancelResult).rejects.toThrow('cancel failed');
 		expect(state(failedCancel.controller)).toMatchObject({
@@ -227,14 +227,14 @@ describe('recording overlay controller', () => {
 		});
 
 		const { controller, invoke } = makeController();
-		controller.onRecordingStarted({ recordingId: 'rec-b' });
+		controller.onRecordingStarted({ recordingId: 'rec-2e6c61eefa580ce861ae28ae9474edfc' });
 		vi.advanceTimersByTime(2_000);
 		controller.dispose();
 		vi.advanceTimersByTime(5_000);
 		expect(state(controller)).toMatchObject({
 			visible: true,
 			isRecording: true,
-			recordingId: 'rec-b',
+			recordingId: 'rec-2e6c61eefa580ce861ae28ae9474edfc',
 		});
 		expect(controller.durationSeconds()).toBe(2);
 		expect(invoke).not.toHaveBeenCalled();
@@ -244,31 +244,31 @@ describe('recording overlay controller', () => {
 	it('retires a muted or cancelled overlay so late transcription events stay hidden', async () => {
 		const cancel = deferred<void>();
 		const { controller } = makeController(vi.fn(() => cancel.promise));
-		controller.onRecordingStarted({ recordingId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b' });
 		const cancelling = controller.cancel();
 		cancel.resolve();
 		await cancelling;
 		expect(state(controller).recordingId).toBeNull();
-		controller.onRecordingStarted({ recordingId: 'rec-b' });
+		controller.onRecordingStarted({ recordingId: 'rec-2e6c61eefa580ce861ae28ae9474edfc' });
 		controller.reset();
-		controller.onTranscriptionStarted('rec-b');
+		controller.onTranscriptionStarted('rec-2e6c61eefa580ce861ae28ae9474edfc');
 		expect(state(controller)).toMatchObject({ visible: false, processing: false });
 	});
 
 	it('does not let an older cancel completion clear a newer recording', async () => {
 		const cancel = deferred<void>();
 		const { controller } = makeController(vi.fn(() => cancel.promise));
-		controller.onRecordingStarted({ recordingId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b' });
 		const cancelling = controller.cancel();
-		controller.onRecordingStopped({ recordingId: 'rec-a', reason: 'cancel' });
-		controller.onRecordingStarted({ recordingId: 'rec-b' });
+		controller.onRecordingStopped({ recordingId: 'rec-b0f2fdb1b7b61e4290c1c6d3f884975b', reason: 'cancel' });
+		controller.onRecordingStarted({ recordingId: 'rec-2e6c61eefa580ce861ae28ae9474edfc' });
 		cancel.resolve();
 		await cancelling;
 
 		expect(state(controller)).toMatchObject({
 			visible: true,
 			isRecording: true,
-			recordingId: 'rec-b',
+			recordingId: 'rec-2e6c61eefa580ce861ae28ae9474edfc',
 		});
 		expect(vi.getTimerCount()).toBe(1);
 		controller.dispose();

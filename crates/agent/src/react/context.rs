@@ -665,13 +665,21 @@ mod assembly_tests {
     fn turn_start_assembly_preserves_source_priority_and_item_identity() {
         let attachment = MessageAttachment::new("image/png", "base64");
         let mut batch = PendingContextBatch {
-            items: vec![item(InjectSource::Steering, Some("msg-steer"), "steer")],
+            items: vec![item(
+                InjectSource::Steering,
+                Some("msg-5ae52d5b29c9562297d3baadb5198f5a"),
+                "steer",
+            )],
             clears_ask: false,
             inbox_claim: None,
         };
         batch.items[0].attachments.push(attachment.clone());
         batch.append(PendingContextBatch {
-            items: vec![item(InjectSource::FollowUp, Some("msg-follow"), "follow")],
+            items: vec![item(
+                InjectSource::FollowUp,
+                Some("msg-74292aeca69bd93127ba791d083966e9"),
+                "follow",
+            )],
             clears_ask: true,
             inbox_claim: None,
         });
@@ -681,7 +689,11 @@ mod assembly_tests {
             inbox_claim: None,
         });
         batch.append(PendingContextBatch {
-            items: vec![item(InjectSource::CrossSession, Some("msg-peer"), "peer")],
+            items: vec![item(
+                InjectSource::CrossSession,
+                Some("msg-43f013012994f3d8ffb82a1b09c4445b"),
+                "peer",
+            )],
             clears_ask: false,
             inbox_claim: None,
         });
@@ -699,9 +711,18 @@ mod assembly_tests {
                 InjectSource::CrossSession,
             ]
         );
-        assert_eq!(batch.items[0].message_id.as_deref(), Some("msg-steer"));
-        assert_eq!(batch.items[1].message_id.as_deref(), Some("msg-follow"));
-        assert_eq!(batch.items[3].message_id.as_deref(), Some("msg-peer"));
+        assert_eq!(
+            batch.items[0].message_id.as_deref(),
+            Some("msg-5ae52d5b29c9562297d3baadb5198f5a")
+        );
+        assert_eq!(
+            batch.items[1].message_id.as_deref(),
+            Some("msg-74292aeca69bd93127ba791d083966e9")
+        );
+        assert_eq!(
+            batch.items[3].message_id.as_deref(),
+            Some("msg-43f013012994f3d8ffb82a1b09c4445b")
+        );
         assert_eq!(batch.items[0].attachments, vec![attachment]);
         assert!(batch.clears_ask);
     }

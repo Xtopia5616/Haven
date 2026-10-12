@@ -695,7 +695,10 @@ mod tests {
     #[test]
     fn background_wait_feedback_has_one_explicit_delivery_contract() {
         let value = Value::Object(background_wait_object(
-            ["toolrun-1", "toolrun-2"],
+            [
+                "toolrun-3f9423355e416c5e4078c5328452196f",
+                "toolrun-7006177ee496aa925290ee008c7c491e",
+            ],
             "wait for ToolRun results",
         ));
 
@@ -707,7 +710,7 @@ mod tests {
             value[BACKGROUND_WAIT_KEY],
             serde_json::json!({
                 "kind": BACKGROUND_WAIT_KIND,
-                "tool_run_ids": ["toolrun-1", "toolrun-2"],
+                "tool_run_ids": ["toolrun-3f9423355e416c5e4078c5328452196f", "toolrun-7006177ee496aa925290ee008c7c491e"],
                 "delivery": BACKGROUND_WAIT_DELIVERY,
             })
         );

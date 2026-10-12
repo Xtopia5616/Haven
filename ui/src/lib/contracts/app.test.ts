@@ -17,15 +17,15 @@ describe('app-shell IPC contract', () => {
 
 	it.each([
 		[
-			{ kind: 'session', sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57' } as const,
-			{ kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+			{ kind: 'session', sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c' } as const,
+			{ kind: 'session', session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 		],
 		[
 			{
 				kind: 'scheduled_tool_run',
-				toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			} as const,
-			{ kind: 'scheduled_tool_run', tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57' },
+			{ kind: 'scheduled_tool_run', tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85' },
 		],
 		[{ kind: 'app_command' } as const, { kind: 'app_command' }],
 	])('serializes the selected interaction owner for resolve IPC', (owner, wire) => {
@@ -37,13 +37,13 @@ describe('app-shell IPC contract', () => {
 			event: 'interaction:requested',
 			id: 1,
 			payload: {
-				request_id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+				request_id: 'conf-79de9202e37eef0078c66a58ae861c3b',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+				owner: { kind: 'session', session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 				kind: 'confirm',
 				status: 'pending',
 				options: [],
-				invocation_step_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
+				invocation_step_id: 'step-ea869e583dff7756d1747b32ad55e798',
 				tool_index: 1,
 				tool_call_id: 'call-1',
 				tool_name: 'run_command',
@@ -57,13 +57,13 @@ describe('app-shell IPC contract', () => {
 		});
 
 		expect(event?.payload).toEqual({
-			requestId: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
-			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-			owner: { kind: 'session', sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+			requestId: 'conf-79de9202e37eef0078c66a58ae861c3b',
+			sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+			owner: { kind: 'session', sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 			kind: 'confirm',
 			status: 'pending',
 			options: [],
-			invocationStepId: 'step-6b86b273ff34fce19d6b804eff5a3f57',
+			invocationStepId: 'step-ea869e583dff7756d1747b32ad55e798',
 			toolIndex: 1,
 			toolCallId: 'call-1',
 			toolName: 'run_command',
@@ -82,9 +82,9 @@ describe('app-shell IPC contract', () => {
 			event: 'interaction:requested',
 			id: 24,
 			payload: {
-				request_id: 'step-e7f729190d36bf14aed6c9c2ed7f5fe7',
-				session_id: 'ses-e7f729190d36bf14aed6c9c2ed7f5fe7',
-				owner: { kind: 'session', session_id: 'ses-e7f729190d36bf14aed6c9c2ed7f5fe7' },
+				request_id: 'step-20edda8dd4d8ca425075d9951bd5e83c',
+				session_id: 'ses-485b594d54374c140c71b794d06112bd',
+				owner: { kind: 'session', session_id: 'ses-485b594d54374c140c71b794d06112bd' },
 				kind: 'ask',
 				status: 'pending',
 				options: ['继续', '停止'],
@@ -93,9 +93,9 @@ describe('app-shell IPC contract', () => {
 		});
 
 		expect(event?.payload).toMatchObject({
-			requestId: 'step-e7f729190d36bf14aed6c9c2ed7f5fe7',
+			requestId: 'step-20edda8dd4d8ca425075d9951bd5e83c',
 			kind: 'ask',
-			owner: { kind: 'session', sessionId: 'ses-e7f729190d36bf14aed6c9c2ed7f5fe7' },
+			owner: { kind: 'session', sessionId: 'ses-485b594d54374c140c71b794d06112bd' },
 		});
 	});
 
@@ -104,9 +104,9 @@ describe('app-shell IPC contract', () => {
 			event: 'interaction:requested',
 			id: 25,
 			payload: {
-				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+				id: 'conf-79de9202e37eef0078c66a58ae861c3b',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+				owner: { kind: 'session', session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 				kind: 'confirm',
 				status: 'pending',
 				options: [],
@@ -120,21 +120,21 @@ describe('app-shell IPC contract', () => {
 
 	it('rejects interaction identities that do not match their entity type', () => {
 		const confirmation = {
-			request_id: 'conf-0123456789abcdef0123456789abcdef',
-			session_id: 'ses-0123456789abcdef0123456789abcdef',
-			owner: { kind: 'session', session_id: 'ses-0123456789abcdef0123456789abcdef' },
+			request_id: 'conf-a51f4384e7b5b61dfce716dedff5b3fd',
+			session_id: 'ses-103ac63490bc5f6c27fd45405efecd69',
+			owner: { kind: 'session', session_id: 'ses-103ac63490bc5f6c27fd45405efecd69' },
 			kind: 'confirm',
 			status: 'pending',
 			created_at: '2026-01-01T00:00:00Z',
 			expires_at: '2026-01-01T00:05:00Z',
 		};
 		for (const payload of [
-			{ ...confirmation, request_id: 'step-0123456789abcdef0123456789abcdef' },
-			{ ...confirmation, session_id: 'msg-0123456789abcdef0123456789abcdef' },
-			{ ...confirmation, invocation_step_id: 'msg-0123456789abcdef0123456789abcdef' },
+			{ ...confirmation, request_id: 'step-455572844fd881c7ae3ae7d45163af1a' },
+			{ ...confirmation, session_id: 'msg-fc16f96c92a9c37a323bb7d0f47a4e22' },
+			{ ...confirmation, invocation_step_id: 'msg-fc16f96c92a9c37a323bb7d0f47a4e22' },
 			{
 				...confirmation,
-				owner: { kind: 'session', session_id: 'toolrun-0123456789abcdef0123456789abcdef' },
+				owner: { kind: 'session', session_id: 'toolrun-58ec300e6432076c8ec176f56120ec01' },
 			},
 			{
 				...confirmation,
@@ -155,8 +155,8 @@ describe('app-shell IPC contract', () => {
 			id: 2,
 			payload: {
 				request_id: 'interaction-1',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+				owner: { kind: 'session', session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 				kind: 'future_kind',
 				status: 'future_status',
 				created_at: '2026-01-01T00:00:00Z',
@@ -176,23 +176,23 @@ describe('app-shell IPC contract', () => {
 		{
 			owner: {
 				kind: 'scheduled_tool_run',
-				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			},
 			expectedOwner: {
 				kind: 'scheduled_tool_run',
-				toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			},
 			kind: 'scheduled_confirm',
 		},
 		{
 			owner: {
 				kind: 'scheduled_tool_run',
-				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			},
-			session_id: 'ses-ea7792a26f405e2ae9c6f49ca93bbe60',
+			session_id: 'ses-8012a8abdcc2d6c9fe75559e9bdcca24',
 			expectedOwner: {
 				kind: 'scheduled_tool_run',
-				toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			},
 			kind: 'scheduled_confirm',
 		},
@@ -203,7 +203,7 @@ describe('app-shell IPC contract', () => {
 				event: 'interaction:requested',
 				id: 20,
 				payload: {
-					request_id: 'conf-4c1029697ee358715d3a14a2add817c4',
+					request_id: 'conf-e3ddd52c190a238a5980afa6555fe93e',
 					...(session_id ? { session_id } : {}),
 					owner,
 					kind,
@@ -214,7 +214,7 @@ describe('app-shell IPC contract', () => {
 			});
 
 			expect(event?.payload).toMatchObject({
-				requestId: 'conf-4c1029697ee358715d3a14a2add817c4',
+				requestId: 'conf-e3ddd52c190a238a5980afa6555fe93e',
 				owner: expectedOwner,
 				kind,
 			});
@@ -229,13 +229,13 @@ describe('app-shell IPC contract', () => {
 			kind: 'confirm',
 			owner: {
 				kind: 'scheduled_tool_run',
-				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			},
 		},
 		{
 			kind: 'scheduled_confirm',
-			owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
-			session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			owner: { kind: 'session', session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
+			session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 		},
 		{ kind: 'scheduled_confirm', owner: { kind: 'app_command' } },
 	])(
@@ -266,9 +266,9 @@ describe('app-shell IPC contract', () => {
 				event: 'interaction:requested',
 				id: 22,
 				payload: {
-					request_id: 'conf-1fd4027863da5bf37b5f51f9be35d18c',
-					session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-					owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+					request_id: 'conf-10916ee88684482ff20e3f8285e2f926',
+					session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+					owner: { kind: 'session', session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 					kind: 'confirm',
 					status: 'pending',
 					created_at: '2026-01-01T00:00:00Z',
@@ -280,18 +280,18 @@ describe('app-shell IPC contract', () => {
 	);
 
 	it.each([
-		{ owner: undefined, session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+		{ owner: undefined, session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 		{
-			owner: { kind: 'session', session_id: 'ses-d9298a10d1b0735837dc4bd85dac641b' },
-			session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			owner: { kind: 'session', session_id: 'ses-71939af277fc2fa1f18590c5f15ae8df' },
+			session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 		},
-		{ owner: { kind: 'session' }, session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+		{ owner: { kind: 'session' }, session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 		{ owner: { kind: 'scheduled_tool_run' }, session_id: undefined },
-		{ owner: { kind: 'app_command' }, session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+		{ owner: { kind: 'app_command' }, session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 		{
 			owner: {
 				kind: 'future_owner',
-				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			},
 			session_id: undefined,
 		},
@@ -300,7 +300,7 @@ describe('app-shell IPC contract', () => {
 			event: 'interaction:requested',
 			id: 21,
 			payload: {
-				request_id: 'conf-55839c1aeb493986bcea56970d1e88e9',
+				request_id: 'conf-2b945745d4c4982ecd1e546098b729ef',
 				...(session_id ? { session_id } : {}),
 				owner,
 				kind: 'confirm',
@@ -379,9 +379,9 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				request_id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+				request_id: 'conf-79de9202e37eef0078c66a58ae861c3b',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+				owner: { kind: 'session', session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',
@@ -391,9 +391,9 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				request_id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+				request_id: 'conf-79de9202e37eef0078c66a58ae861c3b',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+				owner: { kind: 'session', session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',
@@ -403,9 +403,9 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				request_id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+				request_id: 'conf-79de9202e37eef0078c66a58ae861c3b',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+				owner: { kind: 'session', session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',
@@ -415,9 +415,9 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				request_id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
-				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+				request_id: 'conf-79de9202e37eef0078c66a58ae861c3b',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+				owner: { kind: 'session', session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',

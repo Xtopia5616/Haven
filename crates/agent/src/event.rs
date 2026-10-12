@@ -1473,8 +1473,8 @@ mod tests {
         // Push 100 tiny per-token chunks faster than the batch interval.
         for i in 0..100u32 {
             tx.send(delta(
-                "t1",
-                "msg-thought-1",
+                "ses-00000000000000000000000000000001",
+                "step-93a9942be480e3628c7c1b32c5b58914",
                 format!("{}", i % 10),
                 1,
                 7,
@@ -1509,7 +1509,7 @@ mod tests {
             {
                 assert_eq!(*step_number, 1);
                 assert_eq!(*run_id, 7);
-                assert_eq!(message_id, "msg-thought-1");
+                assert_eq!(message_id, "step-93a9942be480e3628c7c1b32c5b58914");
             }
         }
     }
@@ -1526,12 +1526,26 @@ mod tests {
             DEFAULT_CHUNK_BATCH_MAX_BYTES,
         ));
 
-        tx.send(delta("t2", "msg-1", "hello ", 3, 1, true))
-            .await
-            .unwrap();
-        tx.send(delta("t2", "msg-1", "world", 3, 1, true))
-            .await
-            .unwrap();
+        tx.send(delta(
+            "ses-00000000000000000000000000000002",
+            "msg-e11ea518ef030561fe32765a0ab84b18",
+            "hello ",
+            3,
+            1,
+            true,
+        ))
+        .await
+        .unwrap();
+        tx.send(delta(
+            "ses-00000000000000000000000000000002",
+            "msg-e11ea518ef030561fe32765a0ab84b18",
+            "world",
+            3,
+            1,
+            true,
+        ))
+        .await
+        .unwrap();
         drop(tx);
         // Should NOT need to wait the full 50ms — closing the sender flushes promptly.
         let joined = tokio::time::timeout(std::time::Duration::from_millis(200), handle);
@@ -1560,12 +1574,26 @@ mod tests {
 
         // Push enough data to cross the default max-batch threshold mid-batch.
         let big = "x".repeat(DEFAULT_CHUNK_BATCH_MAX_BYTES);
-        tx.send(delta("t3", "msg-3", big.clone(), 1, 1, false))
-            .await
-            .unwrap();
-        tx.send(delta("t3", "msg-3", "tail", 1, 1, false))
-            .await
-            .unwrap();
+        tx.send(delta(
+            "ses-00000000000000000000000000000003",
+            "step-1c54a19f14b80e82ef5996e9ca905fd1",
+            big.clone(),
+            1,
+            1,
+            false,
+        ))
+        .await
+        .unwrap();
+        tx.send(delta(
+            "ses-00000000000000000000000000000003",
+            "step-1c54a19f14b80e82ef5996e9ca905fd1",
+            "tail",
+            1,
+            1,
+            false,
+        ))
+        .await
+        .unwrap();
         drop(tx);
         handle.await.unwrap();
 
@@ -1584,21 +1612,35 @@ mod tests {
             DEFAULT_CHUNK_BATCH_MAX_BYTES,
         ));
 
-        tx.send(delta("t4", "msg-4", "old", 2, 9, false))
-            .await
-            .unwrap();
+        tx.send(delta(
+            "ses-00000000000000000000000000000004",
+            "step-87a5ebaaf55b7ea2e02b4d9f00db80fb",
+            "old",
+            2,
+            9,
+            false,
+        ))
+        .await
+        .unwrap();
         tx.send(ChunkItem::Reset {
-            session_id: Arc::from("t4"),
-            thought_message_id: Arc::from("msg-4"),
-            reasoning_message_id: Arc::from("msg-r-4"),
+            session_id: Arc::from("ses-00000000000000000000000000000004"),
+            thought_message_id: Arc::from("step-87a5ebaaf55b7ea2e02b4d9f00db80fb"),
+            reasoning_message_id: Arc::from("msg-02ecebd2884b62cbd91030da3f83ea32"),
             step_number: 2,
             run_id: 9,
         })
         .await
         .unwrap();
-        tx.send(delta("t4", "msg-4", "new", 2, 9, false))
-            .await
-            .unwrap();
+        tx.send(delta(
+            "ses-00000000000000000000000000000004",
+            "step-87a5ebaaf55b7ea2e02b4d9f00db80fb",
+            "new",
+            2,
+            9,
+            false,
+        ))
+        .await
+        .unwrap();
         drop(tx);
         handle.await.unwrap();
 
@@ -1620,13 +1662,20 @@ mod tests {
         let mailbox = ChunkMailbox::new();
         let sender = ChunkSender::new(tx, mailbox.clone());
         sender
-            .try_send(delta("t-empty", "msg-empty", "old", 4, 10, false))
+            .try_send(delta(
+                "ses-00000000000000000000000000000005",
+                "step-fcbd60e2606ee95dc69db357a24fbee3",
+                "old",
+                4,
+                10,
+                false,
+            ))
             .unwrap();
         sender
             .try_send(ChunkItem::Reset {
-                session_id: Arc::from("t-empty"),
-                thought_message_id: Arc::from("msg-empty"),
-                reasoning_message_id: Arc::from("msg-r-empty"),
+                session_id: Arc::from("ses-00000000000000000000000000000005"),
+                thought_message_id: Arc::from("step-fcbd60e2606ee95dc69db357a24fbee3"),
+                reasoning_message_id: Arc::from("msg-278b76c534b9f658acdd48d0fa94a4f9"),
                 step_number: 4,
                 run_id: 10,
             })
@@ -1662,8 +1711,8 @@ mod tests {
         bus.subscribe("b", b.clone()).await;
 
         bus.emit(AgentEvent::ThoughtChunk {
-            session_id: "t".into(),
-            message_id: "msg-t-1".into(),
+            session_id: "ses-00000000000000000000000000000001".into(),
+            message_id: "step-dd6fc4d2ab39ab5cdad958840dc8cfcc".into(),
             delta: "hi".into(),
             step_number: 1,
             run_id: 1,
@@ -1685,8 +1734,8 @@ mod tests {
         assert!(removed.is_some());
 
         bus.emit(AgentEvent::ThoughtChunk {
-            session_id: "t".into(),
-            message_id: "msg-t-1".into(),
+            session_id: "ses-00000000000000000000000000000001".into(),
+            message_id: "step-dd6fc4d2ab39ab5cdad958840dc8cfcc".into(),
             delta: "x".into(),
             step_number: 1,
             run_id: 1,
@@ -1704,8 +1753,8 @@ mod tests {
         assert!(prev.is_some());
 
         bus.emit(AgentEvent::ThoughtChunk {
-            session_id: "t".into(),
-            message_id: "msg-t-1".into(),
+            session_id: "ses-00000000000000000000000000000001".into(),
+            message_id: "step-dd6fc4d2ab39ab5cdad958840dc8cfcc".into(),
             delta: "x".into(),
             step_number: 1,
             run_id: 1,
@@ -1762,7 +1811,7 @@ mod tests {
         for i in 0..5u32 {
             buffered
                 .emit(AgentEvent::SessionUpdated {
-                    session_id: format!("ses-{i}"),
+                    session_id: format!("ses-{i:032x}"),
                     status: SessionStatus::Running,
                     waiting_reason: None,
                     reason: None,
@@ -1782,7 +1831,7 @@ mod tests {
         for (i, e) in events.iter().enumerate() {
             match e {
                 AgentEvent::SessionUpdated { session_id, .. } => {
-                    assert_eq!(session_id, &format!("ses-{i}"))
+                    assert_eq!(session_id, &format!("ses-{i:032x}"))
                 }
                 other => panic!("unexpected event: {:?}", other),
             }
@@ -1812,8 +1861,8 @@ mod tests {
         let buffered = BufferedEmitter::new(1, slow);
         buffered
             .emit(AgentEvent::ThoughtChunk {
-                session_id: "t".into(),
-                message_id: "msg-t-1".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
+                message_id: "step-dd6fc4d2ab39ab5cdad958840dc8cfcc".into(),
                 delta: "old-chunk".into(),
                 step_number: 1,
                 run_id: 1,
@@ -1825,8 +1874,8 @@ mod tests {
         let t0 = std::time::Instant::now();
         buffered
             .emit(AgentEvent::ThoughtChunk {
-                session_id: "t".into(),
-                message_id: "msg-t-1".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
+                message_id: "step-dd6fc4d2ab39ab5cdad958840dc8cfcc".into(),
                 delta: "new-chunk".into(),
                 step_number: 1,
                 run_id: 1,
@@ -1863,8 +1912,8 @@ mod tests {
         // chunk is ever evicted.
         buffered
             .emit(AgentEvent::ThoughtChunk {
-                session_id: "t".into(),
-                message_id: "msg-t-1".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
+                message_id: "step-dd6fc4d2ab39ab5cdad958840dc8cfcc".into(),
                 delta: "streamed-partial".into(),
                 step_number: 1,
                 run_id: 1,
@@ -1872,8 +1921,8 @@ mod tests {
             .await;
         buffered
             .emit(AgentEvent::Thought {
-                session_id: "t".into(),
-                message_id: "msg-t-1".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
+                message_id: "step-dd6fc4d2ab39ab5cdad958840dc8cfcc".into(),
                 thought: "full authoritative text".into(),
                 step_number: 1,
                 run_id: 1,
@@ -1882,8 +1931,8 @@ mod tests {
             .await;
         buffered
             .emit(AgentEvent::ThoughtChunk {
-                session_id: "t".into(),
-                message_id: "msg-t-1".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
+                message_id: "step-dd6fc4d2ab39ab5cdad958840dc8cfcc".into(),
                 delta: "straggler".into(),
                 step_number: 1,
                 run_id: 1,
@@ -1918,8 +1967,8 @@ mod tests {
         for i in 0..20u32 {
             buffered
                 .emit(AgentEvent::ThoughtChunk {
-                    session_id: "t".into(),
-                    message_id: "msg-t-1".into(),
+                    session_id: "ses-00000000000000000000000000000001".into(),
+                    message_id: "step-dd6fc4d2ab39ab5cdad958840dc8cfcc".into(),
                     delta: format!("chunk-{i}"),
                     step_number: 1,
                     run_id: 1,
@@ -1928,8 +1977,8 @@ mod tests {
         }
         buffered
             .emit(AgentEvent::Thought {
-                session_id: "t".into(),
-                message_id: "msg-t-1".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
+                message_id: "step-dd6fc4d2ab39ab5cdad958840dc8cfcc".into(),
                 thought: "full authoritative text after stream".into(),
                 step_number: 1,
                 run_id: 1,
@@ -1966,8 +2015,8 @@ mod tests {
         for i in 0..15u32 {
             buffered
                 .emit(AgentEvent::ReasoningChunk {
-                    session_id: "t".into(),
-                    message_id: "msg-r-1".into(),
+                    session_id: "ses-00000000000000000000000000000001".into(),
+                    message_id: "msg-b5312d567c93aa34af9f7e1e979d5938".into(),
                     delta: format!("r-{i}"),
                     step_number: 1,
                     run_id: 1,
@@ -1976,8 +2025,8 @@ mod tests {
         }
         buffered
             .emit(AgentEvent::ReasoningChunk {
-                session_id: "t".into(),
-                message_id: "msg-r-1".into(),
+                session_id: "ses-00000000000000000000000000000001".into(),
+                message_id: "msg-b5312d567c93aa34af9f7e1e979d5938".into(),
                 delta: "complete reasoning body".into(),
                 step_number: 1,
                 run_id: 1,
@@ -2006,8 +2055,8 @@ mod tests {
 
         buffered
             .emit(AgentEvent::ThoughtChunk {
-                session_id: "ses-delete-order".into(),
-                message_id: "msg-delete-order".into(),
+                session_id: "ses-0dd84d05c76e9a0859a0a321127e939c".into(),
+                message_id: "step-366efd87e39c0d658a7b0947636f3545".into(),
                 delta: "old output".into(),
                 step_number: 1,
                 run_id: 1,
@@ -2015,7 +2064,7 @@ mod tests {
             .await;
         buffered
             .emit(AgentEvent::SessionDeleted {
-                session_id: Some("ses-delete-order".into()),
+                session_id: Some("ses-0dd84d05c76e9a0859a0a321127e939c".into()),
             })
             .await;
 
@@ -2050,18 +2099,18 @@ mod tests {
         });
         let buffered = BufferedEmitter::new(1, collector.clone() as Arc<dyn AgentEventEmitter>);
         let reset = || AgentEvent::StreamReset {
-            session_id: "ses-delete-overflow".into(),
+            session_id: "ses-3034f72fee1eb56859591f6067fa2f5d".into(),
             step_number: 1,
             run_id: 1,
-            thought_message_id: "msg-thought".into(),
-            reasoning_message_id: "msg-reasoning".into(),
+            thought_message_id: "step-d1cddeb2513e8070a41670497d336ee0".into(),
+            reasoning_message_id: "msg-ed03e30c61a91f6ed2ae4ebbba109918".into(),
         };
 
         buffered.emit(reset()).await;
         buffered.emit(reset()).await;
         buffered
             .emit(AgentEvent::SessionDeleted {
-                session_id: Some("ses-delete-overflow".into()),
+                session_id: Some("ses-3034f72fee1eb56859591f6067fa2f5d".into()),
             })
             .await;
 

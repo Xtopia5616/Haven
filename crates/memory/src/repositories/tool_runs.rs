@@ -882,7 +882,7 @@ mod tests {
     fn save_and_list_pending() {
         let db = test_db();
         db.save_scheduled_tool_run(
-            "toolrun-1",
+            "toolrun-3f9423355e416c5e4078c5328452196f",
             "2026-08-04T02:00:00+08:00",
             "Haven",
             "drink water",
@@ -895,12 +895,12 @@ mod tests {
         )
         .unwrap();
         db.save_scheduled_tool_run(
-            "toolrun-2",
+            "toolrun-7006177ee496aa925290ee008c7c491e",
             "2026-08-04T01:00:00+08:00",
             "Haven",
             "stand up",
             "continue",
-            Some("ses-7"),
+            Some("ses-0e6f328793b1e91fa54a34fac9a1f1a0"),
             None,
             None,
             Some("check the weather"),
@@ -908,12 +908,12 @@ mod tests {
         )
         .unwrap();
         db.save_scheduled_tool_run(
-            "toolrun-3",
+            "toolrun-3f2a3d0f66cfff89c284a4404dd9ba9b",
             "2026-08-04T03:00:00+08:00",
             "Haven",
             "backup",
             "tool",
-            Some("ses-7"),
+            Some("ses-0e6f328793b1e91fa54a34fac9a1f1a0"),
             Some("files"),
             Some(r#"{"operation":"read","path":"C:\\x"}"#),
             None,
@@ -923,16 +923,28 @@ mod tests {
         let pending = db.list_pending_scheduled_tool_runs().unwrap();
         assert_eq!(pending.len(), 3);
         // Ordered by due_at ascending.
-        assert_eq!(pending[0].tool_run_id, "toolrun-2");
+        assert_eq!(
+            pending[0].tool_run_id,
+            "toolrun-7006177ee496aa925290ee008c7c491e"
+        );
         assert_eq!(pending[0].body, "stand up");
         assert_eq!(pending[0].mode, "continue");
-        assert_eq!(pending[0].session_id.as_deref(), Some("ses-7"));
+        assert_eq!(
+            pending[0].session_id.as_deref(),
+            Some("ses-0e6f328793b1e91fa54a34fac9a1f1a0")
+        );
         assert_eq!(pending[0].prompt.as_deref(), Some("check the weather"));
-        assert_eq!(pending[1].tool_run_id, "toolrun-1");
+        assert_eq!(
+            pending[1].tool_run_id,
+            "toolrun-3f9423355e416c5e4078c5328452196f"
+        );
         assert_eq!(pending[1].mode, "tool");
         assert_eq!(pending[1].tool_name.as_deref(), Some("notify"));
         assert_eq!(pending[1].prompt, None);
-        assert_eq!(pending[2].tool_run_id, "toolrun-3");
+        assert_eq!(
+            pending[2].tool_run_id,
+            "toolrun-3f2a3d0f66cfff89c284a4404dd9ba9b"
+        );
         assert_eq!(pending[2].mode, "tool");
         assert_eq!(pending[2].tool_name.as_deref(), Some("files"));
         assert!(pending[2].tool_args.as_deref().unwrap().contains("read"));
@@ -943,19 +955,28 @@ mod tests {
     fn background_tool_run_source_step_is_persisted_and_listed() {
         let db = test_db();
         db.save_tool_run_with_source(
-            "toolrun-source",
-            Some("ses-source"),
+            "toolrun-c1c06c9bd135a4b74d2018105af6c82e",
+            Some("ses-499ca13ea6e741627e78b0587cc1dbbf"),
             "echo source",
             "started",
-            Some("step-source"),
+            Some("step-7469d05e68e65b64fab2ddb439cbcf39"),
         )
         .unwrap();
 
-        let row = db.get_tool_run("toolrun-source").unwrap().unwrap();
-        assert_eq!(row.source_step_id.as_deref(), Some("step-source"));
+        let row = db
+            .get_tool_run("toolrun-c1c06c9bd135a4b74d2018105af6c82e")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.source_step_id.as_deref(),
+            Some("step-7469d05e68e65b64fab2ddb439cbcf39")
+        );
         let listed = db.list_tool_runs(Some("background")).unwrap();
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].source_step_id.as_deref(), Some("step-source"));
+        assert_eq!(
+            listed[0].source_step_id.as_deref(),
+            Some("step-7469d05e68e65b64fab2ddb439cbcf39")
+        );
     }
 
     #[test]
@@ -982,7 +1003,7 @@ mod tests {
             "After producer",
             "continue with result",
             "continue",
-            Some("ses-owner"),
+            Some("ses-b6745a2e56b364791ed6b2ff6441cfe7"),
             None,
             None,
             None,
@@ -1043,11 +1064,11 @@ mod tests {
             "Invalid",
             "both triggers",
             "continue",
-            Some("ses-owner"),
+            Some("ses-b6745a2e56b364791ed6b2ff6441cfe7"),
             None,
             None,
             Some("prompt"),
-            Some("toolrun-producer"),
+            Some("toolrun-09fb17f95f15663d943ebe9dfe8d4e62"),
         );
         assert!(timer_and_dependency.is_err());
 
@@ -1057,7 +1078,7 @@ mod tests {
             "Invalid",
             "no trigger",
             "continue",
-            Some("ses-owner"),
+            Some("ses-b6745a2e56b364791ed6b2ff6441cfe7"),
             None,
             None,
             Some("prompt"),
@@ -1070,7 +1091,7 @@ mod tests {
     fn completed_scheduled_tool_runs_are_hidden_from_pending() {
         let db = test_db();
         db.save_scheduled_tool_run(
-            "toolrun-1",
+            "toolrun-3f9423355e416c5e4078c5328452196f",
             "2026-08-04T02:00:00+08:00",
             "Haven",
             "x",
@@ -1082,10 +1103,13 @@ mod tests {
             None,
         )
         .unwrap();
-        db.start_scheduled_tool_run("toolrun-1", "2026-08-04T02:00:00Z")
-            .unwrap();
+        db.start_scheduled_tool_run(
+            "toolrun-3f9423355e416c5e4078c5328452196f",
+            "2026-08-04T02:00:00Z",
+        )
+        .unwrap();
         db.finish_scheduled_tool_run(
-            "toolrun-1",
+            "toolrun-3f9423355e416c5e4078c5328452196f",
             ToolRunStatus::Completed,
             None,
             None,
@@ -1167,7 +1191,7 @@ mod tests {
     fn cancelled_scheduled_tool_runs_are_hidden_from_pending() {
         let db = test_db();
         db.save_scheduled_tool_run(
-            "toolrun-1",
+            "toolrun-3f9423355e416c5e4078c5328452196f",
             "2026-08-04T02:00:00+08:00",
             "Haven",
             "x",
@@ -1179,15 +1203,21 @@ mod tests {
             None,
         )
         .unwrap();
-        db.cancel_scheduled_tool_run("toolrun-1", "2026-08-04T02:00:01Z")
-            .unwrap();
+        db.cancel_scheduled_tool_run(
+            "toolrun-3f9423355e416c5e4078c5328452196f",
+            "2026-08-04T02:00:01Z",
+        )
+        .unwrap();
         assert!(db.list_pending_scheduled_tool_runs().unwrap().is_empty());
     }
 
     #[test]
     fn scheduled_execution_claim_and_cancel_are_first_wins() {
         let db = test_db();
-        for id in ["toolrun-approved", "toolrun-cancelled"] {
+        for id in [
+            "toolrun-e39d162ef3e068d4c7313ee944e38099",
+            "toolrun-a7494ea15f8baebbba418a9ec4d9ae60",
+        ] {
             db.save_scheduled_tool_run(
                 id,
                 "2026-08-04T02:00:00+08:00",
@@ -1208,31 +1238,43 @@ mod tests {
         }
 
         assert!(
-            db.claim_scheduled_tool_run_execution("toolrun-approved", "conf-approval")
-                .unwrap()
+            db.claim_scheduled_tool_run_execution(
+                "toolrun-e39d162ef3e068d4c7313ee944e38099",
+                "conf-dd63614482208fe24e0e16329ef24813"
+            )
+            .unwrap()
         );
         assert!(
-            db.claim_scheduled_tool_run_execution("toolrun-approved", "conf-approval")
-                .unwrap(),
+            db.claim_scheduled_tool_run_execution(
+                "toolrun-e39d162ef3e068d4c7313ee944e38099",
+                "conf-dd63614482208fe24e0e16329ef24813"
+            )
+            .unwrap(),
             "same-request retries must be idempotent"
         );
         assert!(
-            !db.claim_scheduled_tool_run_execution("toolrun-approved", "conf-other")
-                .unwrap()
+            !db.claim_scheduled_tool_run_execution(
+                "toolrun-e39d162ef3e068d4c7313ee944e38099",
+                "conf-8e9decfc9f32435a6d88d068b0e27d39"
+            )
+            .unwrap()
         );
         assert!(
-            !db.cancel_scheduled_tool_run("toolrun-approved", "cancel-lost")
-                .unwrap()
+            !db.cancel_scheduled_tool_run(
+                "toolrun-e39d162ef3e068d4c7313ee944e38099",
+                "cancel-lost"
+            )
+            .unwrap()
         );
         assert_eq!(
-            db.get_kv("scheduled_execution_claim.toolrun-approved")
+            db.get_kv("scheduled_execution_claim.toolrun-e39d162ef3e068d4c7313ee944e38099")
                 .unwrap()
                 .as_deref(),
-            Some("conf-approval")
+            Some("conf-dd63614482208fe24e0e16329ef24813")
         );
         assert!(
             db.finish_scheduled_tool_run(
-                "toolrun-approved",
+                "toolrun-e39d162ef3e068d4c7313ee944e38099",
                 ToolRunStatus::Completed,
                 Some("done"),
                 None,
@@ -1241,21 +1283,24 @@ mod tests {
             .unwrap()
         );
         assert_eq!(
-            db.get_kv("scheduled_execution_claim.toolrun-approved")
+            db.get_kv("scheduled_execution_claim.toolrun-e39d162ef3e068d4c7313ee944e38099")
                 .unwrap(),
             None
         );
 
         assert!(
-            db.cancel_scheduled_tool_run("toolrun-cancelled", "cancel-won")
+            db.cancel_scheduled_tool_run("toolrun-a7494ea15f8baebbba418a9ec4d9ae60", "cancel-won")
                 .unwrap()
         );
         assert!(
-            !db.claim_scheduled_tool_run_execution("toolrun-cancelled", "conf-late")
-                .unwrap()
+            !db.claim_scheduled_tool_run_execution(
+                "toolrun-a7494ea15f8baebbba418a9ec4d9ae60",
+                "conf-48725ba887a67fc2a0797ebbeac51da9"
+            )
+            .unwrap()
         );
         assert_eq!(
-            db.get_tool_run("toolrun-cancelled")
+            db.get_tool_run("toolrun-a7494ea15f8baebbba418a9ec4d9ae60")
                 .unwrap()
                 .unwrap()
                 .status,
@@ -1269,7 +1314,7 @@ mod tests {
         db.set_kv("scheduledXexecution_claim.keep", "unrelated")
             .unwrap();
         db.save_scheduled_tool_run(
-            "toolrun-interrupted",
+            "toolrun-ec30bce074ec534f0ad80aba9a4c00e5",
             "2026-08-04T02:00:00+08:00",
             "Haven",
             "claimed before restart",
@@ -1282,23 +1327,29 @@ mod tests {
         )
         .unwrap();
         assert!(
-            db.start_scheduled_tool_run("toolrun-interrupted", "started")
+            db.start_scheduled_tool_run("toolrun-ec30bce074ec534f0ad80aba9a4c00e5", "started")
                 .unwrap()
         );
         assert!(
-            db.claim_scheduled_tool_run_execution("toolrun-interrupted", "conf-interrupted")
-                .unwrap()
+            db.claim_scheduled_tool_run_execution(
+                "toolrun-ec30bce074ec534f0ad80aba9a4c00e5",
+                "conf-652a7077befd5db526d76ff37ae25486"
+            )
+            .unwrap()
         );
 
         assert_eq!(db.mark_interrupted_tool_runs().unwrap(), 1);
-        let interrupted = db.get_tool_run("toolrun-interrupted").unwrap().unwrap();
+        let interrupted = db
+            .get_tool_run("toolrun-ec30bce074ec534f0ad80aba9a4c00e5")
+            .unwrap()
+            .unwrap();
         assert_eq!(interrupted.status, ToolRunStatus::Failed);
         assert!(
             chrono::DateTime::parse_from_rfc3339(interrupted.finished_at.as_deref().unwrap())
                 .is_ok()
         );
         assert_eq!(
-            db.get_kv("scheduled_execution_claim.toolrun-interrupted")
+            db.get_kv("scheduled_execution_claim.toolrun-ec30bce074ec534f0ad80aba9a4c00e5")
                 .unwrap(),
             None
         );
@@ -1318,7 +1369,7 @@ mod tests {
         let canceller = Database::open(&database_path).unwrap();
         approver
             .save_scheduled_tool_run(
-                "toolrun-shared-connection",
+                "toolrun-da6248246093e8ee88aaf51dce7ce93a",
                 "2026-08-04T02:00:00+08:00",
                 "Haven",
                 "arbitrate across connections",
@@ -1332,39 +1383,45 @@ mod tests {
             .unwrap();
         assert!(
             approver
-                .start_scheduled_tool_run("toolrun-shared-connection", "started")
+                .start_scheduled_tool_run("toolrun-da6248246093e8ee88aaf51dce7ce93a", "started")
                 .unwrap()
         );
 
         assert!(
             approver
                 .claim_scheduled_tool_run_execution(
-                    "toolrun-shared-connection",
-                    "conf-shared-connection"
+                    "toolrun-da6248246093e8ee88aaf51dce7ce93a",
+                    "conf-1cdf74777f371565ce46aa3becd45dd2"
                 )
                 .unwrap()
         );
         assert!(
             !canceller
-                .cancel_scheduled_tool_run("toolrun-shared-connection", "cancel-lost")
+                .cancel_scheduled_tool_run(
+                    "toolrun-da6248246093e8ee88aaf51dce7ce93a",
+                    "cancel-lost"
+                )
                 .unwrap()
         );
         assert!(
             approver
                 .release_scheduled_tool_run_execution_claim(
-                    "toolrun-shared-connection",
-                    "conf-shared-connection",
+                    "toolrun-da6248246093e8ee88aaf51dce7ce93a",
+                    "conf-1cdf74777f371565ce46aa3becd45dd2",
                 )
                 .unwrap()
         );
         assert!(
             canceller
-                .cancel_scheduled_tool_run("toolrun-shared-connection", "cancel-won")
+                .cancel_scheduled_tool_run("toolrun-da6248246093e8ee88aaf51dce7ce93a", "cancel-won")
                 .unwrap()
         );
         assert!(
             !approver
-                .claim_scheduled_tool_run_execution("toolrun-shared-connection", "conf-late")
+                .claim_scheduled_tool_run_execution(
+                    "toolrun-da6248246093e8ee88aaf51dce7ce93a",
+                    "conf-48725ba887a67fc2a0797ebbeac51da9"
+                )
                 .unwrap()
         );
         drop(canceller);
@@ -1376,7 +1433,7 @@ mod tests {
     fn malformed_waiting_scheduled_tool_runs_can_be_quarantined() {
         let db = test_db();
         db.save_scheduled_tool_run(
-            "toolrun-invalid",
+            "toolrun-1aeb68b4774efae8b0fa672f9b3b77e9",
             "not-a-timestamp",
             "Haven",
             "bad schedule",
@@ -1391,14 +1448,17 @@ mod tests {
 
         assert!(
             db.fail_waiting_scheduled_tool_run(
-                "toolrun-invalid",
+                "toolrun-1aeb68b4774efae8b0fa672f9b3b77e9",
                 "invalid due_at",
                 "2026-08-04T02:00:01Z",
             )
             .unwrap()
         );
         assert!(db.list_pending_scheduled_tool_runs().unwrap().is_empty());
-        let row = db.get_tool_run("toolrun-invalid").unwrap().unwrap();
+        let row = db
+            .get_tool_run("toolrun-1aeb68b4774efae8b0fa672f9b3b77e9")
+            .unwrap()
+            .unwrap();
         assert_eq!(row.status, ToolRunStatus::Failed);
         assert_eq!(row.error_reason.as_deref(), Some("invalid due_at"));
         assert_eq!(row.finished_at.as_deref(), Some("2026-08-04T02:00:01Z"));
@@ -1408,21 +1468,30 @@ mod tests {
     fn tool_run_lifecycle_persists_and_updates() {
         let db = test_db();
         db.save_tool_run(
-            "toolrun-1",
-            Some("ses-9"),
+            "toolrun-3f9423355e416c5e4078c5328452196f",
+            Some("ses-dc37d73c17ff8d590242ee937b905472"),
             "echo hello",
             "2026-08-09T10:00:00Z",
         )
         .unwrap();
-        db.save_tool_run("toolrun-2", None, "ping", "2026-08-09T10:01:00Z")
-            .unwrap();
+        db.save_tool_run(
+            "toolrun-7006177ee496aa925290ee008c7c491e",
+            None,
+            "ping",
+            "2026-08-09T10:01:00Z",
+        )
+        .unwrap();
 
         // A running background ToolRun must not leak into the pending list.
         assert!(db.list_pending_scheduled_tool_runs().unwrap().is_empty());
 
-        db.update_tool_run_session("toolrun-2", "ses-9").unwrap();
+        db.update_tool_run_session(
+            "toolrun-7006177ee496aa925290ee008c7c491e",
+            "ses-dc37d73c17ff8d590242ee937b905472",
+        )
+        .unwrap();
         db.finish_tool_run(
-            "toolrun-1",
+            "toolrun-3f9423355e416c5e4078c5328452196f",
             ToolRunStatus::Completed,
             Some("hello"),
             None,
@@ -1433,12 +1502,12 @@ mod tests {
         )
         .unwrap();
         db.finish_tool_run(
-            "toolrun-2",
+            "toolrun-7006177ee496aa925290ee008c7c491e",
             ToolRunStatus::Failed,
             None,
             Some("connection refused"),
             Some("connection refused"),
-            Some("C:\\tmp\\tool-run-logs\\toolrun-2.log"),
+            Some("C:\\tmp\\tool-run-logs\\toolrun-7006177ee496aa925290ee008c7c491e.log"),
             Some(1),
             "2026-08-09T10:01:03Z",
         )
@@ -1452,27 +1521,37 @@ mod tests {
 
         let finished = backgrounds
             .iter()
-            .find(|row| row.tool_run_id == "toolrun-1")
+            .find(|row| row.tool_run_id == "toolrun-3f9423355e416c5e4078c5328452196f")
             .unwrap();
         assert_eq!(finished.status, ToolRunStatus::Completed);
         assert_eq!(finished.output.as_deref(), Some("hello"));
         assert_eq!(finished.exit_code, Some(0));
-        assert_eq!(finished.session_id.as_deref(), Some("ses-9"));
+        assert_eq!(
+            finished.session_id.as_deref(),
+            Some("ses-dc37d73c17ff8d590242ee937b905472")
+        );
         assert!(finished.finished_at.is_some());
 
         let failed = backgrounds
             .iter()
-            .find(|row| row.tool_run_id == "toolrun-2")
+            .find(|row| row.tool_run_id == "toolrun-7006177ee496aa925290ee008c7c491e")
             .unwrap();
         assert_eq!(failed.status, ToolRunStatus::Failed);
-        assert_eq!(failed.session_id.as_deref(), Some("ses-9"));
+        assert_eq!(
+            failed.session_id.as_deref(),
+            Some("ses-dc37d73c17ff8d590242ee937b905472")
+        );
         assert_eq!(
             failed.log_path.as_deref(),
-            Some("C:\\tmp\\tool-run-logs\\toolrun-2.log")
+            Some("C:\\tmp\\tool-run-logs\\toolrun-7006177ee496aa925290ee008c7c491e.log")
         );
         assert_eq!(failed.error_reason.as_deref(), Some("connection refused"));
 
-        assert!(db.get_tool_run("toolrun-1").unwrap().is_some());
+        assert!(
+            db.get_tool_run("toolrun-3f9423355e416c5e4078c5328452196f")
+                .unwrap()
+                .is_some()
+        );
         assert!(db.get_tool_run("nope").unwrap().is_none());
     }
 
@@ -1481,17 +1560,17 @@ mod tests {
         let db = test_db();
         for (id, first_status, late_status) in [
             (
-                "toolrun-completed",
+                "toolrun-144f268e0cbe6f7fbd820649652ff45f",
                 ToolRunStatus::Completed,
                 ToolRunStatus::Failed,
             ),
             (
-                "toolrun-failed",
+                "toolrun-79b4aaa5f6b9d7368bc194ef3c0a9f30",
                 ToolRunStatus::Failed,
                 ToolRunStatus::Completed,
             ),
             (
-                "toolrun-cancelled",
+                "toolrun-a7494ea15f8baebbba418a9ec4d9ae60",
                 ToolRunStatus::Cancelled,
                 ToolRunStatus::Failed,
             ),
@@ -1549,12 +1628,17 @@ mod tests {
     #[test]
     fn background_finish_rejects_cancelled_status() {
         let db = test_db();
-        db.save_tool_run("toolrun-cancel-api", None, "echo cancel", "started")
-            .unwrap();
+        db.save_tool_run(
+            "toolrun-af85722cf18ba91f9215191ddeda32e5",
+            None,
+            "echo cancel",
+            "started",
+        )
+        .unwrap();
 
         assert!(
             db.finish_tool_run(
-                "toolrun-cancel-api",
+                "toolrun-af85722cf18ba91f9215191ddeda32e5",
                 ToolRunStatus::Cancelled,
                 None,
                 None,
@@ -1566,11 +1650,11 @@ mod tests {
             .is_err()
         );
         assert!(
-            db.cancel_background_tool_run("toolrun-cancel-api", "finished")
+            db.cancel_background_tool_run("toolrun-af85722cf18ba91f9215191ddeda32e5", "finished")
                 .unwrap()
         );
         assert_eq!(
-            db.get_tool_run("toolrun-cancel-api")
+            db.get_tool_run("toolrun-af85722cf18ba91f9215191ddeda32e5")
                 .unwrap()
                 .unwrap()
                 .status,
@@ -1582,18 +1666,21 @@ mod tests {
     fn late_completion_cannot_overwrite_restart_failure() {
         let db = test_db();
         db.save_tool_run(
-            "toolrun-restarted",
-            Some("ses-1"),
+            "toolrun-1ea0dba6bc75630f9034c95ef551b986",
+            Some("ses-7ae290dbf0b4468c9d2c401be649850b"),
             "echo restart",
             "started",
         )
         .unwrap();
         assert_eq!(db.mark_interrupted_tool_runs().unwrap(), 1);
-        let interrupted = db.get_tool_run("toolrun-restarted").unwrap().unwrap();
+        let interrupted = db
+            .get_tool_run("toolrun-1ea0dba6bc75630f9034c95ef551b986")
+            .unwrap()
+            .unwrap();
 
         assert!(
             !db.finish_tool_run_with_completion(&completion_payload(
-                "toolrun-restarted",
+                "toolrun-1ea0dba6bc75630f9034c95ef551b986",
                 ToolRunStatus::Completed,
                 Some("late output"),
                 "late finish",
@@ -1601,7 +1688,10 @@ mod tests {
             .unwrap()
         );
 
-        let after_late_completion = db.get_tool_run("toolrun-restarted").unwrap().unwrap();
+        let after_late_completion = db
+            .get_tool_run("toolrun-1ea0dba6bc75630f9034c95ef551b986")
+            .unwrap()
+            .unwrap();
         assert_eq!(after_late_completion.status, ToolRunStatus::Failed);
         assert_eq!(after_late_completion.error_reason, interrupted.error_reason);
         assert_eq!(after_late_completion.finished_at, interrupted.finished_at);
@@ -1610,7 +1700,7 @@ mod tests {
             .conn()
             .query_row(
                 "SELECT COUNT(*) FROM tool_run_completion_outbox WHERE tool_run_id = ?1",
-                ["toolrun-restarted"],
+                ["toolrun-1ea0dba6bc75630f9034c95ef551b986"],
                 |row| row.get(0),
             )
             .unwrap();
@@ -1621,7 +1711,7 @@ mod tests {
     fn scheduled_rows_keep_kind_and_terminal_history() {
         let db = test_db();
         db.save_scheduled_tool_run(
-            "toolrun-1",
+            "toolrun-3f9423355e416c5e4078c5328452196f",
             "2026-08-04T02:00:00+08:00",
             "Haven",
             "drink water",
@@ -1633,25 +1723,36 @@ mod tests {
             None,
         )
         .unwrap();
-        db.start_scheduled_tool_run("toolrun-1", "2026-08-04T02:00:00Z")
-            .unwrap();
+        db.start_scheduled_tool_run(
+            "toolrun-3f9423355e416c5e4078c5328452196f",
+            "2026-08-04T02:00:00Z",
+        )
+        .unwrap();
         db.finish_scheduled_tool_run(
-            "toolrun-1",
+            "toolrun-3f9423355e416c5e4078c5328452196f",
             ToolRunStatus::Completed,
             None,
             None,
             "2026-08-04T02:00:01Z",
         )
         .unwrap();
-        db.save_tool_run("toolrun-2", None, "echo", "2026-08-09T10:00:00Z")
-            .unwrap();
+        db.save_tool_run(
+            "toolrun-7006177ee496aa925290ee008c7c491e",
+            None,
+            "echo",
+            "2026-08-09T10:00:00Z",
+        )
+        .unwrap();
 
         // Pending list excludes both the completed scheduled ToolRun and the background ToolRun.
         assert!(db.list_pending_scheduled_tool_runs().unwrap().is_empty());
         // ToolRun listing still surfaces the completed scheduled ToolRun as history.
         let scheduled = db.list_tool_runs(Some("scheduled")).unwrap();
         assert_eq!(scheduled.len(), 1);
-        assert_eq!(scheduled[0].tool_run_id, "toolrun-1");
+        assert_eq!(
+            scheduled[0].tool_run_id,
+            "toolrun-3f9423355e416c5e4078c5328452196f"
+        );
         assert_eq!(scheduled[0].status, ToolRunStatus::Completed);
         assert_eq!(scheduled[0].kind, "scheduled");
     }
@@ -1659,12 +1760,22 @@ mod tests {
     #[test]
     fn interrupted_tool_runs_marked_failed() {
         let db = test_db();
-        db.save_tool_run("toolrun-1", None, "echo", "2026-08-09T10:00:00Z")
-            .unwrap();
-        db.save_tool_run("toolrun-2", None, "ping", "2026-08-09T10:01:00Z")
-            .unwrap();
+        db.save_tool_run(
+            "toolrun-3f9423355e416c5e4078c5328452196f",
+            None,
+            "echo",
+            "2026-08-09T10:00:00Z",
+        )
+        .unwrap();
+        db.save_tool_run(
+            "toolrun-7006177ee496aa925290ee008c7c491e",
+            None,
+            "ping",
+            "2026-08-09T10:01:00Z",
+        )
+        .unwrap();
         db.save_scheduled_tool_run(
-            "toolrun-3",
+            "toolrun-3f2a3d0f66cfff89c284a4404dd9ba9b",
             "2026-08-09T10:02:00Z",
             "Scheduled",
             "resume",
@@ -1676,10 +1787,13 @@ mod tests {
             None,
         )
         .unwrap();
-        db.start_scheduled_tool_run("toolrun-3", "2026-08-09T10:02:00Z")
-            .unwrap();
+        db.start_scheduled_tool_run(
+            "toolrun-3f2a3d0f66cfff89c284a4404dd9ba9b",
+            "2026-08-09T10:02:00Z",
+        )
+        .unwrap();
         db.finish_tool_run(
-            "toolrun-1",
+            "toolrun-3f9423355e416c5e4078c5328452196f",
             ToolRunStatus::Completed,
             Some("ok"),
             None,
@@ -1700,11 +1814,14 @@ mod tests {
         assert_eq!(running_left, 0);
         let j2 = backgrounds
             .iter()
-            .find(|row| row.tool_run_id == "toolrun-2")
+            .find(|row| row.tool_run_id == "toolrun-7006177ee496aa925290ee008c7c491e")
             .unwrap();
         assert_eq!(j2.status, ToolRunStatus::Failed);
         assert!(j2.error_reason.as_deref().unwrap().contains("restarted"));
-        let scheduled = db.get_tool_run("toolrun-3").unwrap().unwrap();
+        let scheduled = db
+            .get_tool_run("toolrun-3f2a3d0f66cfff89c284a4404dd9ba9b")
+            .unwrap()
+            .unwrap();
         assert_eq!(scheduled.status, ToolRunStatus::Failed);
         assert!(
             scheduled
@@ -1720,10 +1837,21 @@ mod tests {
     #[test]
     fn delete_removes_any_kind() {
         let db = test_db();
-        db.save_tool_run("toolrun-1", None, "echo", "2026-08-09T10:00:00Z")
-            .unwrap();
-        assert!(db.delete_tool_run("toolrun-1").unwrap());
-        assert!(!db.delete_tool_run("toolrun-1").unwrap());
+        db.save_tool_run(
+            "toolrun-3f9423355e416c5e4078c5328452196f",
+            None,
+            "echo",
+            "2026-08-09T10:00:00Z",
+        )
+        .unwrap();
+        assert!(
+            db.delete_tool_run("toolrun-3f9423355e416c5e4078c5328452196f")
+                .unwrap()
+        );
+        assert!(
+            !db.delete_tool_run("toolrun-3f9423355e416c5e4078c5328452196f")
+                .unwrap()
+        );
         assert!(db.list_tool_runs(Some("background")).unwrap().is_empty());
     }
 

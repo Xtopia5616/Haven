@@ -1176,8 +1176,8 @@ mod tests {
 
     fn make_message(content: &str) -> Message {
         Message {
-            message_id: uuid::Uuid::new_v4().to_string(),
-            session_id: "t1".into(),
+            message_id: haven_common::types::new_id("msg"),
+            session_id: "ses-00000000000000000000000000000001".into(),
             role: haven_common::types::CanonicalRole::User,
             content: content.into(),
             message_type: Some(haven_common::types::TranscriptMessageKind::Text),
@@ -1438,14 +1438,14 @@ mod tests {
             .execute(
                 "INSERT INTO memory_embeddings
                     (entity_type, entity_id, model, vector, text)
-                 VALUES ('fact', 'fact-orphan', 'model', x'00000000', 'orphan')",
+                 VALUES ('fact', 'fact-b0feb8de767b1ce11801f141ab9ec94a', 'model', x'00000000', 'orphan')",
                 [],
             )
             .unwrap();
         db.conn()
             .execute(
                 "INSERT INTO embedding_lsh (entity_type, entity_id, model, bucket)
-                 VALUES ('fact', 'fact-orphan', 'model', 1)",
+                 VALUES ('fact', 'fact-b0feb8de767b1ce11801f141ab9ec94a', 'model', 1)",
                 [],
             )
             .unwrap();
@@ -1723,11 +1723,10 @@ mod tests {
     fn shutdown_cancels_worker_and_prompt_prefetch_tokens() {
         let worker = make_engine(temp_db());
         let prefetch_cancellation = CancellationToken::new();
-        worker
-            .prompt_prefetches
-            .lock()
-            .unwrap()
-            .insert("ses-shutdown-test".into(), prefetch_cancellation.clone());
+        worker.prompt_prefetches.lock().unwrap().insert(
+            "ses-3891ad78912d8af0441257911e17eb78".into(),
+            prefetch_cancellation.clone(),
+        );
 
         worker.shutdown();
 
@@ -1750,8 +1749,8 @@ mod tests {
 
     fn make_role_message(role: haven_common::types::CanonicalRole, content: &str) -> Message {
         Message {
-            message_id: uuid::Uuid::new_v4().to_string(),
-            session_id: "t1".into(),
+            message_id: haven_common::types::new_id("msg"),
+            session_id: "ses-00000000000000000000000000000001".into(),
             role,
             content: content.into(),
             message_type: Some(haven_common::types::TranscriptMessageKind::Text),
@@ -1879,8 +1878,8 @@ mod tests {
         let mut user = make_role_message(haven_common::types::CanonicalRole::User, "yes keep it");
         user.created_at = "2026-01-01T00:00:02Z".into();
         let step = SessionStep {
-            step_id: "step-obs1".into(),
-            session_id: "t1".into(),
+            step_id: "step-d312be105392d91d9d7b1a253966e18d".into(),
+            session_id: "ses-00000000000000000000000000000001".into(),
             step_number: 1,
             tool_index: 0,
             thought: None,
@@ -2058,8 +2057,20 @@ mod tests {
 
     #[test]
     fn gate_contradiction_demote_accepts_high_confidence_member() {
-        let keep = fresh_fact("fact-aaaa", "works_at", "Acme", "inferred", 0.9);
-        let drop = fresh_fact("fact-bbbb", "works_at", "Beta", "inferred", 0.85);
+        let keep = fresh_fact(
+            "fact-df71ae1b93067985d97d58c089dd7931",
+            "works_at",
+            "Acme",
+            "inferred",
+            0.9,
+        );
+        let drop = fresh_fact(
+            "fact-bacee43dd15b615428ac4b33f5a7f80b",
+            "works_at",
+            "Beta",
+            "inferred",
+            0.85,
+        );
         let groups = vec![ContradictionCandidate {
             kind: ContradictionKind::SingleValued,
             facts: vec![keep.clone(), drop.clone()],
@@ -2091,7 +2102,7 @@ mod tests {
         };
         assert_eq!(gate_contradiction_demote(&weak, &allowed, &groups), None);
         let unknown = ContradictionDemoteProposal {
-            demote_id: "fact-zzzz".into(),
+            demote_id: "fact-816d98aa1bda38ce90e708ed5b14322d".into(),
             confidence: 1.0,
         };
         assert_eq!(gate_contradiction_demote(&unknown, &allowed, &groups), None);
@@ -2099,8 +2110,20 @@ mod tests {
 
     #[test]
     fn gate_contradiction_demote_protects_user_over_inferred() {
-        let user_job = fresh_fact("fact-user", "works_at", "Acme", "user", 1.0);
-        let inferred = fresh_fact("fact-inf", "works_at", "Beta", "inferred", 0.9);
+        let user_job = fresh_fact(
+            "fact-0be297e5a1044702ce330ce574e83951",
+            "works_at",
+            "Acme",
+            "user",
+            1.0,
+        );
+        let inferred = fresh_fact(
+            "fact-e3c71b94ca14c9eaab6c53c4f880361c",
+            "works_at",
+            "Beta",
+            "inferred",
+            0.9,
+        );
         let groups = vec![ContradictionCandidate {
             kind: ContradictionKind::SingleValued,
             facts: vec![user_job.clone(), inferred.clone()],
@@ -2126,8 +2149,20 @@ mod tests {
 
     #[test]
     fn gate_contradiction_demote_rejects_stale() {
-        let mut keep = fresh_fact("fact-aaaa", "works_at", "Acme", "inferred", 0.9);
-        let mut drop = fresh_fact("fact-bbbb", "works_at", "Beta", "inferred", 0.85);
+        let mut keep = fresh_fact(
+            "fact-df71ae1b93067985d97d58c089dd7931",
+            "works_at",
+            "Acme",
+            "inferred",
+            0.9,
+        );
+        let mut drop = fresh_fact(
+            "fact-bacee43dd15b615428ac4b33f5a7f80b",
+            "works_at",
+            "Beta",
+            "inferred",
+            0.85,
+        );
         let stale = (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339();
         keep.created_at = stale.clone();
         keep.last_seen_at = Some(stale.clone());
@@ -2200,29 +2235,29 @@ mod tests {
     #[test]
     fn memory_dirty_throttle_suppresses_second_take() {
         let engine = make_engine(temp_db());
-        engine.mark_memory_dirty("ses-a");
-        assert!(engine.take_memory_dirty_throttled("ses-a"));
-        engine.mark_memory_dirty("ses-a");
+        engine.mark_memory_dirty("ses-65dd7c6b35b99687a424c2fd8bdb08a9");
+        assert!(engine.take_memory_dirty_throttled("ses-65dd7c6b35b99687a424c2fd8bdb08a9"));
+        engine.mark_memory_dirty("ses-65dd7c6b35b99687a424c2fd8bdb08a9");
         // min interval 0 → no throttle
-        assert!(engine.take_memory_dirty_throttled("ses-a"));
+        assert!(engine.take_memory_dirty_throttled("ses-65dd7c6b35b99687a424c2fd8bdb08a9"));
         let db = temp_db();
         let router = mock_router("[]");
         let engine = MemoryWorker::new(db.clone(), router, 4_000, 64, 40, 256, 3_600);
-        engine.mark_memory_dirty("ses-b");
-        assert!(engine.take_memory_dirty_throttled("ses-b"));
-        engine.mark_memory_dirty("ses-b");
-        assert!(!engine.take_memory_dirty_throttled("ses-b"));
+        engine.mark_memory_dirty("ses-a46f4e14d169d01e24d2481df833ce4d");
+        assert!(engine.take_memory_dirty_throttled("ses-a46f4e14d169d01e24d2481df833ce4d"));
+        engine.mark_memory_dirty("ses-a46f4e14d169d01e24d2481df833ce4d");
+        assert!(!engine.take_memory_dirty_throttled("ses-a46f4e14d169d01e24d2481df833ce4d"));
     }
 
     #[tokio::test]
     async fn prompt_prefetch_is_deduplicated_and_cancelled_on_cleanup() {
         let worker = Arc::new(make_engine(temp_db()));
 
-        worker.prefetch_prompt_memory("ses-prefetch", "workspace task");
-        worker.prefetch_prompt_memory("ses-prefetch", "workspace task");
+        worker.prefetch_prompt_memory("ses-33bf0ea96df0afa60c1e748a98407d97", "workspace task");
+        worker.prefetch_prompt_memory("ses-33bf0ea96df0afa60c1e748a98407d97", "workspace task");
         assert_eq!(worker.prompt_prefetches.lock().unwrap().len(), 1);
 
-        worker.clear_session("ses-prefetch");
+        worker.clear_session("ses-33bf0ea96df0afa60c1e748a98407d97");
         assert!(worker.prompt_prefetches.lock().unwrap().is_empty());
     }
 

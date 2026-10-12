@@ -1266,7 +1266,7 @@ mod tests {
                 MediaRepresentationKind::ManagedFileRef,
                 MediaProvenance::Original,
                 MediaRepresentationPayload::ManagedFileRef {
-                    asset_id: "asset-test".into(),
+                    asset_id: "asset-27a27979d2d6b7d63d4e22d35d002adb".into(),
                     filename: Some("report.pdf".into()),
                 },
             )],
