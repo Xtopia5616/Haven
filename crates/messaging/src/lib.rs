@@ -1,7 +1,8 @@
 //! Cross-session messaging contracts and the shared JSONL transport.
 //!
-//! Agent supplies the in-process session mailbox/runtime adapter, while Tools
-//! exposes the model-facing messaging tool over [`MessagingService`].
+//! The JSONL transport is the single owner of messaging lifecycle state for
+//! both local actors and independent processes. Tools exposes the
+//! model-facing messaging tool over [`MessagingService`].
 
 mod contract;
 mod inbox;
@@ -13,7 +14,6 @@ pub use inbox::{AgentInfo, AgentStatus, Envelope, MessageType, SendOutcome};
 pub use messaging_service::{
     AgentControlOperation, AgentControlRequest, AgentControlResult, AgentSpawnRequest,
     AgentSpawnResult, MessageClaim, MessagingRuntime, MessagingService, SentMessage,
-    SessionMailbox,
 };
 
 #[cfg(feature = "test-support")]

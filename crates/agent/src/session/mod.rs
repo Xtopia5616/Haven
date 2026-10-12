@@ -341,6 +341,12 @@ pub struct SessionSupervisor {
     /// ReAct turn runner. Keeping one store instance also makes the live event
     /// broadcast observe interaction/control events, not just transcript rows.
     store: SessionStore,
+    /// Shared durable messaging source used by local actors and peer tools.
+    /// Actor state only carries polling hints; it never owns message records.
+    messaging_service: Arc<haven_messaging::MessagingService>,
+    /// Keeps the isolated JSONL root alive for test supervisors.
+    #[cfg(test)]
+    messaging_root: Option<tempfile::TempDir>,
     execution: Arc<dyn tool_ports::ToolExecutionPort>,
     authorization: Arc<dyn tool_ports::ToolAuthorizationPort>,
     #[cfg(test)]
@@ -434,7 +440,6 @@ pub struct SessionSupervisor {
     /// paths.
     pub partials: Arc<crate::partial::PartialStore>,
     event_tx: broadcast::Sender<SessionSupervisorEvent>,
-    message_tx: watch::Sender<u64>,
     /// Notification body truncation for scheduled-tool outcomes (matches
     /// `ContextLimitsConfig::notification_summary_chars`).
     pub notification_summary_chars: AtomicUsize,
@@ -480,6 +485,9 @@ impl SessionSupervisor {
         Self {
             partials: Arc::new(crate::partial::PartialStore::new(store.clone())),
             store,
+            messaging_service: Arc::new(haven_messaging::MessagingService::default_root()),
+            #[cfg(test)]
+            messaging_root: None,
             execution,
             #[cfg(test)]
             tool_catalog: _catalog,
@@ -522,7 +530,6 @@ impl SessionSupervisor {
             scheduled_confirms: Arc::new(Mutex::new(HashMap::new())),
             confirmation_resolution_gate: Arc::new(Mutex::new(())),
             event_tx,
-            message_tx: watch::channel(0).0,
             notification_summary_chars: AtomicUsize::new(800),
         }
     }
@@ -536,7 +543,9 @@ impl SessionSupervisor {
     ) -> Self {
         let ports = tool_ports::SessionToolPorts::from_tools_facade(tools)
             .with_session_tool_overlay(session_tool_overlay_port);
-        Self::new(store, ports, max_concurrent)
+        let mut supervisor = Self::new(store, ports, max_concurrent);
+        supervisor.isolate_messaging_transport_for_test();
+        supervisor
     }
 
     /// Build an executor for unit tests while keeping the production
@@ -547,11 +556,22 @@ impl SessionSupervisor {
         tools: Arc<ToolsFacade>,
         max_concurrent: usize,
     ) -> Self {
-        Self::new(
+        let mut supervisor = Self::new(
             SessionStore::new(db),
             tool_ports::SessionToolPorts::from_tools_facade(tools),
             max_concurrent,
-        )
+        );
+        supervisor.isolate_messaging_transport_for_test();
+        supervisor
+    }
+
+    #[cfg(test)]
+    fn isolate_messaging_transport_for_test(&mut self) {
+        let root = tempfile::tempdir().expect("temporary messaging directory");
+        let transport = haven_messaging::file_transport_for_test(root.path());
+        self.messaging_service =
+            Arc::new(haven_messaging::MessagingService::new_for_test(transport));
+        self.messaging_root = Some(root);
     }
 
     pub(crate) fn register_managed_assets_for_session(
@@ -887,17 +907,10 @@ impl SessionSupervisor {
         self.actors.lock().await.remove(session_id)
     }
 
-    /// Return the in-process mailbox port used by `MessagingService`.
-    pub(crate) fn messaging_mailbox(self: &Arc<Self>) -> Arc<dyn haven_messaging::SessionMailbox> {
-        self.clone()
-    }
-
-    /// A service view for the ReAct inbox. It shares this supervisor's actor
-    /// registry while retaining the JSONL fallback for external processes.
-    pub(crate) fn messaging_service(self: &Arc<Self>) -> Arc<haven_messaging::MessagingService> {
-        Arc::new(haven_messaging::MessagingService::with_session_mailbox(
-            self.messaging_mailbox(),
-        ))
+    /// A service view for the ReAct inbox. Local sessions and external
+    /// processes share this same durable transport source.
+    pub(crate) fn messaging_service(&self) -> Arc<haven_messaging::MessagingService> {
+        self.messaging_service.clone()
     }
 
     pub(crate) fn emit_event(&self, event: SessionSupervisorEvent) {
@@ -928,89 +941,6 @@ impl SessionSupervisor {
         if let Some(actor) = self.actor_for(session_id).await {
             actor.set_has_children(false).await;
         }
-    }
-}
-
-impl haven_messaging::SessionMailbox for SessionSupervisor {
-    fn subscribe(&self) -> watch::Receiver<u64> {
-        self.message_tx.subscribe()
-    }
-
-    fn deliver(
-        &self,
-        to: &str,
-        envelope: &haven_messaging::Envelope,
-    ) -> anyhow::Result<Option<haven_messaging::SendOutcome>> {
-        let actor = self.actors.blocking_lock().get(to).cloned();
-        let Some(actor) = actor else {
-            return Ok(None);
-        };
-        actor.deliver_message(envelope.clone())?;
-        self.message_tx.send_modify(|counter| *counter += 1);
-        Ok(Some(haven_messaging::SendOutcome {
-            to_session_id: to.to_string(),
-            delivered: true,
-            status: haven_messaging::AgentStatus::Online,
-        }))
-    }
-
-    fn claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<haven_messaging::Envelope>>> {
-        let actor = self.actors.blocking_lock().get(recipient).cloned();
-        Ok(actor.map(|actor| actor.claim_messages()))
-    }
-
-    fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<haven_messaging::Envelope>>> {
-        self.claim(recipient)
-    }
-
-    fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<Option<()>> {
-        let actor = self.actors.blocking_lock().get(recipient).cloned();
-        let Some(actor) = actor else {
-            return Ok(None);
-        };
-        actor.ack_messages(ids.to_vec());
-        Ok(Some(()))
-    }
-
-    fn last_received(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<Option<Option<haven_messaging::Envelope>>> {
-        let actor = self.actors.blocking_lock().get(session_id).cloned();
-        Ok(actor.map(|actor| actor.last_received_message()))
-    }
-
-    fn find_message(
-        &self,
-        session_id: &str,
-        message_id: &str,
-    ) -> anyhow::Result<Option<Option<haven_messaging::Envelope>>> {
-        let actor = self.actors.blocking_lock().get(session_id).cloned();
-        Ok(actor.map(|actor| actor.find_message_by_id(message_id.to_string())))
-    }
-
-    fn take_matching_replies(
-        &self,
-        session_id: &str,
-        in_reply_to_message_id: &str,
-        expected_from_session_id: &str,
-    ) -> anyhow::Result<Option<Vec<haven_messaging::Envelope>>> {
-        let actor = self.actors.blocking_lock().get(session_id).cloned();
-        Ok(actor.map(|actor| {
-            actor.take_matching_replies_blocking(
-                in_reply_to_message_id.to_string(),
-                expected_from_session_id.to_string(),
-            )
-        }))
-    }
-
-    fn history(
-        &self,
-        session_id: &str,
-        limit: usize,
-    ) -> anyhow::Result<Option<Vec<haven_messaging::Envelope>>> {
-        let actor = self.actors.blocking_lock().get(session_id).cloned();
-        Ok(actor.map(|actor| actor.history_blocking(limit)))
     }
 }
 
@@ -2401,16 +2331,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn messaging_service_routes_full_lifecycle_through_actor_mailboxes() {
+    async fn messaging_service_uses_shared_transport_across_actor_removal() {
         let db = temp_db();
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 2));
         let sender = exec.create_session("sender").await.unwrap();
         let receiver = exec.create_session("receiver").await.unwrap();
         let service = exec.messaging_service();
+        let root = exec
+            .messaging_root
+            .as_ref()
+            .expect("test supervisor messaging root")
+            .path()
+            .to_path_buf();
+        let independent_service = Arc::new(haven_messaging::MessagingService::new_for_test(
+            haven_messaging::file_transport_for_test(root.clone()),
+        ));
+        {
+            let service = service.clone();
+            let sender_id = sender.session_id.clone();
+            let receiver_id = receiver.session_id.clone();
+            tokio::task::spawn_blocking(move || {
+                service.register(&sender_id, &[]).unwrap();
+                service.register(&receiver_id, &[]).unwrap();
+            })
+            .await
+            .unwrap();
+        }
 
         let request = {
-            let service = service.clone();
+            let service = independent_service.clone();
             let from = sender.session_id.clone();
             let to = receiver.session_id.clone();
             tokio::task::spawn_blocking(move || {
@@ -2438,8 +2388,19 @@ mod tests {
             .await
             .unwrap();
 
+        // The message was written by an independent service while the local
+        // Actor existed; local claim still reads the JSONL record. Removing
+        // the Actor before the next claim must preserve that same record.
+        {
+            let lifecycle = exec.lifecycle_gate.lock().await;
+            exec.remove_actor_locked(&receiver.session_id).await;
+            drop(lifecycle);
+        }
+
         let second_claim = {
-            let service = service.clone();
+            let service = Arc::new(haven_messaging::MessagingService::new_for_test(
+                haven_messaging::file_transport_for_test(root.clone()),
+            ));
             let recipient = receiver.session_id.clone();
             tokio::task::spawn_blocking(move || service.claim(&recipient).unwrap())
                 .await

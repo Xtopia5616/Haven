@@ -379,67 +379,14 @@ mod tests {
     use haven_common::config::{McpServerConfig, RouterConfig};
     use haven_memory::{MemoryQuery, MemoryRecall};
     use haven_messaging::{
-        AgentControlRequest, AgentControlResult, AgentSpawnRequest, AgentSpawnResult, Envelope,
-        MessagingRuntime, SendOutcome, SessionMailbox,
+        AgentControlRequest, AgentControlResult, AgentSpawnRequest, AgentSpawnResult,
+        MessagingRuntime,
     };
-
-    struct UnusedMailbox;
-
-    impl SessionMailbox for UnusedMailbox {
-        fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
-            tokio::sync::watch::channel(0).1
-        }
-
-        fn deliver(&self, _to: &str, _envelope: &Envelope) -> anyhow::Result<Option<SendOutcome>> {
-            Ok(None)
-        }
-
-        fn claim(&self, _recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>> {
-            Ok(None)
-        }
-
-        fn try_claim(&self, _recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>> {
-            Ok(None)
-        }
-
-        fn ack(&self, _recipient: &str, _ids: &[String]) -> anyhow::Result<Option<()>> {
-            Ok(None)
-        }
-
-        fn last_received(&self, _name: &str) -> anyhow::Result<Option<Option<Envelope>>> {
-            Ok(None)
-        }
-
-        fn find_message(
-            &self,
-            _name: &str,
-            _message_id: &str,
-        ) -> anyhow::Result<Option<Option<Envelope>>> {
-            Ok(None)
-        }
-
-        fn take_matching_replies(
-            &self,
-            _name: &str,
-            _in_reply_to: &str,
-            _expected_from: &str,
-        ) -> anyhow::Result<Option<Vec<Envelope>>> {
-            Ok(None)
-        }
-
-        fn history(&self, _name: &str, _limit: usize) -> anyhow::Result<Option<Vec<Envelope>>> {
-            Ok(None)
-        }
-    }
 
     struct UnusedMessagingRuntime;
 
     #[async_trait::async_trait]
     impl MessagingRuntime for UnusedMessagingRuntime {
-        fn mailbox(&self) -> Arc<dyn SessionMailbox> {
-            Arc::new(UnusedMailbox)
-        }
-
         async fn spawn_peer_session(
             &self,
             _request: AgentSpawnRequest,

@@ -1033,3 +1033,4 @@
 - [1042：收回未使用的 crate API 与重复入口](1042-narrow-unused-crate-apis.md)
 - [1043：统一回滚投影时间水位](1043-share-rollback-projection-watermark.md)
 - [1044：用稳定消息身份确认 Agent inbox](1044-use-stable-message-identities-for-inbox-ack.md)
+- [1045：统一 Messaging 的持久生命周期来源](1045-unify-durable-messaging-lifecycle-source.md)

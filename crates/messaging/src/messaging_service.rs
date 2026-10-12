@@ -1,9 +1,9 @@
 //! Domain service for cross-session messaging.
 //!
-//! [`InboxBus`] is deliberately kept behind this boundary. It remains the
-//! file transport adapter for cross-process interoperability, while callers
-//! use one lifecycle: send, claim, process, and complete (or drop to retry).
-//! This keeps transport recovery details out of tools and the ReAct loop.
+//! [`InboxBus`] is deliberately kept behind this boundary. Its JSONL files are
+//! shared by local actors and independent processes, while callers use one
+//! lifecycle: send, claim, process, and complete (or drop to retry). This
+//! keeps transport recovery details out of tools and the ReAct loop.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -20,11 +20,10 @@ macro_rules! define_message_transport {
     ($visibility:vis) => {
         /// Transport port used internally by [`MessagingService`].
         ///
-        /// `InboxBus` implements this port for the cross-process JSONL adapter.
-        /// In-process `SessionActor` delivery is exposed through [`SessionMailbox`];
-        /// the claim/complete contract remains above both adapters. This port is
-        /// available to other crates only through the non-default test-support
-        /// feature; production callers construct the service through its facade.
+        /// `InboxBus` implements this port for the shared JSONL adapter used by
+        /// both local actors and independent processes. This port is available
+        /// to other crates only through the non-default test-support feature;
+        /// production callers construct the service through its facade.
         $visibility trait MessageTransport: std::fmt::Debug + Send + Sync {
             fn subscribe(&self) -> watch::Receiver<u64>;
             fn register(&self, session_id: &str, capabilities: &[String]) -> anyhow::Result<()>;
@@ -182,47 +181,13 @@ pub fn file_transport_for_test(root: impl Into<std::path::PathBuf>) -> Arc<dyn M
     Arc::new(InboxBus::new(root))
 }
 
-/// In-process mailbox for sessions owned by the current Haven process.
-///
-/// The trait deliberately uses synchronous methods because the file transport
-/// is synchronous and the application-facing tool boundary already runs those
-/// operations on the blocking pool. Implementations backed by an async actor
-/// may use bounded mailbox sends plus `blocking_recv`; they must not expose the
-/// actor's mutable state to callers.
-pub trait SessionMailbox: Send + Sync {
-    /// A mailbox-local wake signal. It is a hint only; callers still claim.
-    fn subscribe(&self) -> watch::Receiver<u64>;
-    /// Return `Some` when `to` belongs to this process, otherwise `None` so the
-    /// service can fall back to the cross-process transport.
-    fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<Option<SendOutcome>>;
-    fn claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>>;
-    /// Session mailboxes are in-process and non-blocking by contract.
-    fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>>;
-    fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<Option<()>>;
-    fn last_received(&self, session_id: &str) -> anyhow::Result<Option<Option<Envelope>>>;
-    fn find_message(
-        &self,
-        session_id: &str,
-        message_id: &str,
-    ) -> anyhow::Result<Option<Option<Envelope>>>;
-    fn take_matching_replies(
-        &self,
-        session_id: &str,
-        in_reply_to_message_id: &str,
-        expected_from_session_id: &str,
-    ) -> anyhow::Result<Option<Vec<Envelope>>>;
-    fn history(&self, session_id: &str, limit: usize) -> anyhow::Result<Option<Vec<Envelope>>>;
-}
-
 /// Runtime port for peer-session lifecycle operations.
 ///
-/// This replaces the old mutable `Arc<dyn Fn>` spawn slot. The service owns a
-/// single typed port and obtains the mailbox from the same runtime, so peer
-/// creation, lifecycle control, and in-process delivery cannot silently point
-/// at different session registries.
+/// This replaces the old mutable `Arc<dyn Fn>` spawn slot. Message delivery
+/// and inbox state stay owned by the durable transport; this port only owns
+/// peer creation and lifecycle control.
 #[async_trait::async_trait]
 pub trait MessagingRuntime: Send + Sync {
-    fn mailbox(&self) -> Arc<dyn SessionMailbox>;
     async fn spawn_peer_session(
         &self,
         request: AgentSpawnRequest,
@@ -280,14 +245,12 @@ pub struct AgentControlResult {
 
 /// Cross-session messaging service.
 ///
-/// The service is the application-facing port. The current implementation is
-/// Backed by the JSONL adapter for independent processes and, when installed,
-/// an in-process session mailbox for local delivery. The service is the only
-/// place that decides which transport owns a message lifecycle.
+/// The service is the application-facing port. The transport is the sole
+/// owner of message delivery, claims, acknowledgements, history and replies;
+/// in-process actors only receive wake-up hints and poll this same source.
 #[derive(Clone)]
 pub struct MessagingService {
     transport: Arc<dyn MessageTransport>,
-    mailbox: Arc<OnceLock<Arc<dyn SessionMailbox>>>,
     runtime: Arc<OnceLock<Arc<dyn MessagingRuntime>>>,
 }
 
@@ -295,7 +258,6 @@ impl std::fmt::Debug for MessagingService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MessagingService")
             .field("transport", &self.transport)
-            .field("has_mailbox", &self.mailbox.get().is_some())
             .field("has_runtime", &self.runtime.get().is_some())
             .finish()
     }
@@ -305,14 +267,12 @@ impl MessagingService {
     fn new(transport: Arc<dyn MessageTransport>) -> Self {
         Self {
             transport,
-            mailbox: Arc::new(OnceLock::new()),
             runtime: Arc::new(OnceLock::new()),
         }
     }
 
     /// Build a service over an explicitly supplied transport for integration
-    /// tests. Production code uses [`Self::default_root`] or
-    /// [`Self::with_session_mailbox`].
+    /// tests. Production code uses [`Self::default_root`].
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_for_test(transport: Arc<dyn MessageTransport>) -> Self {
         Self::new(transport)
@@ -323,31 +283,13 @@ impl MessagingService {
         Self::new(Arc::new(InboxBus::default_root()))
     }
 
-    /// Build a service that routes sessions owned by `mailbox` in-process and
-    /// uses the shared JSONL adapter for all other recipients.
-    pub fn with_session_mailbox(mailbox: Arc<dyn SessionMailbox>) -> Self {
-        let service = Self::default_root();
-        assert!(
-            service.mailbox.set(mailbox).is_ok(),
-            "new messaging mailbox binding"
-        );
-        service
-    }
-
     /// Bind the runtime once at the composition boundary. Existing service
     /// clones observe the same immutable capability port.
     pub fn bind_runtime(&self, runtime: Arc<dyn MessagingRuntime>) -> anyhow::Result<()> {
-        let mailbox = runtime.mailbox();
         self.runtime
             .set(runtime)
             .map_err(|_| anyhow::anyhow!("messaging runtime is already bound"))?;
-        self.mailbox
-            .set(mailbox)
-            .map_err(|_| anyhow::anyhow!("messaging mailbox is already bound"))
-    }
-
-    fn mailbox(&self) -> Option<Arc<dyn SessionMailbox>> {
-        self.mailbox.get().cloned()
+        Ok(())
     }
 
     fn runtime(&self) -> Option<Arc<dyn MessagingRuntime>> {
@@ -357,9 +299,7 @@ impl MessagingService {
     /// Subscribe to delivery notifications. The signal is only a wake-up
     /// hint; callers must still claim from the service before processing.
     pub fn subscribe(&self) -> watch::Receiver<u64> {
-        self.mailbox()
-            .map(|mailbox| mailbox.subscribe())
-            .unwrap_or_else(|| self.transport.subscribe())
+        self.transport.subscribe()
     }
 
     pub fn register(&self, session_id: &str, capabilities: &[String]) -> anyhow::Result<()> {
@@ -444,16 +384,11 @@ impl MessagingService {
         Ok(descendants)
     }
 
-    /// Deliver one already-constructed envelope through the selected
-    /// transport. Identity and routing are checked here, before the adapter
-    /// writes anything, so all producers share the same message contract.
+    /// Deliver one already-constructed envelope through the authoritative
+    /// transport. Identity and routing are checked before the adapter writes,
+    /// so local sessions and independent processes share one durable source.
     pub fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome> {
         validate_message_envelope(to, envelope)?;
-        if let Some(mailbox) = self.mailbox()
-            && let Some(outcome) = mailbox.deliver(to, envelope)?
-        {
-            return Ok(outcome);
-        }
         self.transport.deliver(to, envelope)
     }
 
@@ -485,19 +420,12 @@ impl MessagingService {
         }
     }
 
-    /// Claim messages for durable processing. The returned claim owns the
-    /// delivery lease: dropping it leaves the processing file intact and the
-    /// next claim redelivers the same stable envelope ids.
+    /// Claim messages from the authoritative transport. Dropping the returned
+    /// claim leaves that transport's unacknowledged records available for
+    /// redelivery with their stable envelope ids.
     pub fn claim(&self, recipient: &str) -> anyhow::Result<MessageClaim> {
         validate_session_id(recipient)?;
-        let envelopes = if let Some(mailbox) = self.mailbox() {
-            match mailbox.claim(recipient)? {
-                Some(envelopes) => envelopes,
-                None => self.transport.claim(recipient)?,
-            }
-        } else {
-            self.transport.claim(recipient)?
-        };
+        let envelopes = self.transport.claim(recipient)?;
         validate_message_batch(recipient, &envelopes)?;
         Ok(MessageClaim {
             service: self.clone(),
@@ -507,19 +435,12 @@ impl MessagingService {
     }
 
     /// Best-effort claim used by automatic heartbeat polling. Unlike
-    /// [`Self::claim`], it never waits on the file transport's global lock.
+    /// [`Self::claim`], it never waits on the transport's global lock.
     /// A `None` result is an ordinary busy/no-op outcome, not a delivery
     /// failure.
     pub fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<MessageClaim>> {
         validate_session_id(recipient)?;
-        let envelopes = if let Some(mailbox) = self.mailbox() {
-            match mailbox.try_claim(recipient)? {
-                Some(envelopes) => Some(envelopes),
-                None => self.transport.try_claim(recipient)?,
-            }
-        } else {
-            self.transport.try_claim(recipient)?
-        };
+        let envelopes = self.transport.try_claim(recipient)?;
         if let Some(envelopes) = envelopes.as_deref() {
             validate_message_batch(recipient, envelopes)?;
         }
@@ -532,13 +453,7 @@ impl MessagingService {
 
     pub fn last_received(&self, session_id: &str) -> anyhow::Result<Option<Envelope>> {
         validate_session_id(session_id)?;
-        let result = if let Some(mailbox) = self.mailbox()
-            && let Some(result) = mailbox.last_received(session_id)?
-        {
-            result
-        } else {
-            self.transport.last_received(session_id)?
-        };
+        let result = self.transport.last_received(session_id)?;
         if let Some(envelope) = result.as_ref() {
             validate_message_envelope(session_id, envelope)?;
         }
@@ -552,13 +467,7 @@ impl MessagingService {
     ) -> anyhow::Result<Option<Envelope>> {
         validate_session_id(session_id)?;
         validate_message_id(message_id, "message_id")?;
-        let result = if let Some(mailbox) = self.mailbox()
-            && let Some(result) = mailbox.find_message(session_id, message_id)?
-        {
-            result
-        } else {
-            self.transport.find_message(session_id, message_id)?
-        };
+        let result = self.transport.find_message(session_id, message_id)?;
         if let Some(envelope) = result.as_ref() {
             validate_message_envelope(session_id, envelope)?;
             if envelope.message_id != message_id {
@@ -580,20 +489,11 @@ impl MessagingService {
         validate_session_id(session_id)?;
         validate_message_id(in_reply_to_message_id, "in_reply_to_message_id")?;
         validate_session_id(expected_from_session_id)?;
-        let replies = if let Some(mailbox) = self.mailbox()
-            && let Some(result) = mailbox.take_matching_replies(
-                session_id,
-                in_reply_to_message_id,
-                expected_from_session_id,
-            )? {
-            result
-        } else {
-            self.transport.take_matching_replies(
-                session_id,
-                in_reply_to_message_id,
-                expected_from_session_id,
-            )?
-        };
+        let replies = self.transport.take_matching_replies(
+            session_id,
+            in_reply_to_message_id,
+            expected_from_session_id,
+        )?;
         validate_message_batch(session_id, &replies)?;
         if !replies.is_empty() {
             let _ = self.send_receipts(session_id, &replies);
@@ -603,13 +503,7 @@ impl MessagingService {
 
     pub fn history(&self, session_id: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
         validate_session_id(session_id)?;
-        let entries = if let Some(mailbox) = self.mailbox()
-            && let Some(result) = mailbox.history(session_id, limit)?
-        {
-            result
-        } else {
-            self.transport.history(session_id, limit)?
-        };
+        let entries = self.transport.history(session_id, limit)?;
         validate_message_batch(session_id, &entries)?;
         Ok(entries)
     }
@@ -759,11 +653,6 @@ impl MessagingService {
         validate_session_id(recipient)?;
         for id in ids {
             validate_message_id(id, "message_id")?;
-        }
-        if let Some(mailbox) = self.mailbox()
-            && mailbox.ack(recipient, ids)?.is_some()
-        {
-            return Ok(());
         }
         self.transport.ack(recipient, ids)
     }

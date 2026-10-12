@@ -270,7 +270,7 @@ impl SessionSupervisor {
     }
 
     pub(super) async fn finish_ended_session(&self, session_id: &str, cascade: bool) {
-        Self::unregister_from_inbox(session_id);
+        self.unregister_from_inbox(session_id);
         self.unregister_session_tool_overlay(session_id).await;
         self.scheduled_confirms
             .lock()
@@ -283,11 +283,11 @@ impl SessionSupervisor {
         self.authorization.clear_session_trust(session_id).await;
     }
 
-    fn unregister_from_inbox(session_id: &str) {
+    fn unregister_from_inbox(&self, session_id: &str) {
         let session_id = session_id.to_string();
         let log_id = session_id.clone();
+        let messaging = self.messaging_service.clone();
         tokio::spawn(async move {
-            let messaging = haven_messaging::MessagingService::default_root();
             let result = tokio::task::spawn_blocking(move || {
                 let entry = messaging
                     .list_agents()?
@@ -315,10 +315,10 @@ impl SessionSupervisor {
 
     async fn cascade_end_children(&self, parent_session_id: &str) {
         let parent = parent_session_id.to_string();
+        let messaging = self.messaging_service.clone();
         let descendants = match tokio::task::spawn_blocking({
             let parent = parent.clone();
             move || -> anyhow::Result<Vec<String>> {
-                let messaging = haven_messaging::MessagingService::default_root();
                 let children = messaging.list_descendants(&parent)?;
                 for child in &children {
                     let _ = messaging.deliver_system_notice(

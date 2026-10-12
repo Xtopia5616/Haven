@@ -1413,10 +1413,6 @@ impl AgentLayer {
 
 #[async_trait::async_trait]
 impl haven_messaging::MessagingRuntime for AgentLayer {
-    fn mailbox(&self) -> Arc<dyn haven_messaging::SessionMailbox> {
-        self.executor.messaging_mailbox()
-    }
-
     async fn spawn_peer_session(
         &self,
         request: haven_messaging::AgentSpawnRequest,

@@ -23,10 +23,11 @@ use haven_memory::{
     INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
     INTERACTION_RESOLVED_EVENT_TYPE, SessionEventInput, SessionStore,
 };
-use haven_messaging::{Envelope, MessageType};
 use serde_json::Value;
 use std::any::Any;
-use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
@@ -54,10 +55,6 @@ pub(crate) const CONTEXT_QUEUE_MAX_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const CONTEXT_BATCH_MAX_ITEMS: usize = 16;
 pub(crate) const CONTEXT_BATCH_MAX_CHARS: usize = 16 * 1024;
 pub(crate) const CONTEXT_BATCH_MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
-
-const SESSION_INBOX_MAX_ITEMS: usize = 256;
-const SESSION_INBOX_ITEM_MAX_CHARS: usize = 16 * 1024;
-const SESSION_INBOX_ARCHIVE_MAX_ITEMS: usize = 1_024;
 
 #[derive(Debug)]
 pub(crate) struct StatusTransition {
@@ -256,33 +253,6 @@ pub(crate) enum ActorCommand {
         reply: oneshot::Sender<bool>,
     },
     ClearRuntime,
-    DeliverMessage {
-        envelope: Box<Envelope>,
-        reply: oneshot::Sender<anyhow::Result<()>>,
-    },
-    ClaimMessages {
-        reply: oneshot::Sender<Vec<Envelope>>,
-    },
-    AckMessages {
-        ids: Vec<String>,
-        reply: oneshot::Sender<()>,
-    },
-    LastReceived {
-        reply: oneshot::Sender<Option<Envelope>>,
-    },
-    FindMessage {
-        message_id: String,
-        reply: oneshot::Sender<Option<Envelope>>,
-    },
-    TakeMatchingReplies {
-        in_reply_to_message_id: String,
-        expected_from_session_id: String,
-        reply: oneshot::Sender<Vec<Envelope>>,
-    },
-    History {
-        limit: usize,
-        reply: oneshot::Sender<Vec<Envelope>>,
-    },
 }
 
 /// A cloneable mailbox endpoint for one session.
@@ -779,104 +749,6 @@ impl SessionActorHandle {
     pub(crate) fn clear_messaging_now(&self) {
         let _ = self.tx.try_send(ActorCommand::ClearMessaging);
     }
-
-    /// Synchronous mailbox operations are called from the service's blocking
-    /// transport boundary. Tokio's blocking channel/receiver methods preserve
-    /// actor serialization without exposing `SessionState`.
-    pub(crate) fn deliver_message(&self, envelope: Envelope) -> anyhow::Result<()> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .blocking_send(ActorCommand::DeliverMessage {
-                envelope: Box::new(envelope),
-                reply,
-            })
-            .map_err(|_| anyhow::anyhow!("session actor '{}' has stopped", self.session_id))?;
-        rx.blocking_recv().map_err(|_| {
-            anyhow::anyhow!(
-                "session actor '{}' dropped message delivery",
-                self.session_id
-            )
-        })?
-    }
-
-    pub(crate) fn claim_messages(&self) -> Vec<Envelope> {
-        let (reply, rx) = oneshot::channel();
-        if self
-            .tx
-            .blocking_send(ActorCommand::ClaimMessages { reply })
-            .is_err()
-        {
-            return Vec::new();
-        }
-        rx.blocking_recv().unwrap_or_default()
-    }
-
-    pub(crate) fn ack_messages(&self, ids: Vec<String>) {
-        let (reply, rx) = oneshot::channel();
-        if self
-            .tx
-            .blocking_send(ActorCommand::AckMessages { ids, reply })
-            .is_ok()
-        {
-            let _ = rx.blocking_recv();
-        }
-    }
-
-    pub(crate) fn last_received_message(&self) -> Option<Envelope> {
-        let (reply, rx) = oneshot::channel();
-        if self
-            .tx
-            .blocking_send(ActorCommand::LastReceived { reply })
-            .is_err()
-        {
-            return None;
-        }
-        rx.blocking_recv().ok().flatten()
-    }
-
-    pub(crate) fn find_message_by_id(&self, message_id: String) -> Option<Envelope> {
-        let (reply, rx) = oneshot::channel();
-        if self
-            .tx
-            .blocking_send(ActorCommand::FindMessage { message_id, reply })
-            .is_err()
-        {
-            return None;
-        }
-        rx.blocking_recv().ok().flatten()
-    }
-
-    pub(crate) fn take_matching_replies_blocking(
-        &self,
-        in_reply_to_message_id: String,
-        expected_from_session_id: String,
-    ) -> Vec<Envelope> {
-        let (reply, rx) = oneshot::channel();
-        if self
-            .tx
-            .blocking_send(ActorCommand::TakeMatchingReplies {
-                in_reply_to_message_id,
-                expected_from_session_id,
-                reply,
-            })
-            .is_err()
-        {
-            return Vec::new();
-        }
-        rx.blocking_recv().unwrap_or_default()
-    }
-
-    pub(crate) fn history_blocking(&self, limit: usize) -> Vec<Envelope> {
-        let (reply, rx) = oneshot::channel();
-        if self
-            .tx
-            .blocking_send(ActorCommand::History { limit, reply })
-            .is_err()
-        {
-            return Vec::new();
-        }
-        rx.blocking_recv().unwrap_or_default()
-    }
 }
 
 /// Complete mutable state for one session.
@@ -897,11 +769,6 @@ pub(crate) struct SessionState {
     steering_attachment_bytes: usize,
     has_children: bool,
     running: bool,
-    inbox: VecDeque<Envelope>,
-    processing: Vec<Envelope>,
-    archive: VecDeque<Envelope>,
-    active_message_ids: HashSet<String>,
-    archive_message_ids: HashSet<String>,
     /// Process-local messaging poll cursor and title cache.
     messaging: SessionMessagingState,
     /// The active ReAct run and its captured hot transcript are owned by this
@@ -1004,11 +871,6 @@ pub(crate) fn spawn(
             steering_attachment_bytes: 0,
             has_children: false,
             running: false,
-            inbox: VecDeque::new(),
-            processing: Vec::new(),
-            archive: VecDeque::new(),
-            active_message_ids: HashSet::new(),
-            archive_message_ids: HashSet::new(),
             messaging: SessionMessagingState::default(),
             react_run: None,
         };
@@ -1600,107 +1462,6 @@ pub(crate) fn spawn(
                     state.has_children = false;
                     clear_messaging(&mut state);
                 }
-                ActorCommand::DeliverMessage { envelope, reply } => {
-                    let result = if message_known(&state, &envelope.message_id) {
-                        Ok(())
-                    } else if state.inbox.len() >= SESSION_INBOX_MAX_ITEMS {
-                        Err(anyhow::anyhow!(
-                            "session inbox is full ({} items); message was retained by the sender and must be retried",
-                            SESSION_INBOX_MAX_ITEMS
-                        ))
-                    } else if envelope.text.chars().count() > SESSION_INBOX_ITEM_MAX_CHARS {
-                        Err(anyhow::anyhow!(
-                            "session inbox message exceeds {} characters; message was retained by the sender and must be retried",
-                            SESSION_INBOX_ITEM_MAX_CHARS
-                        ))
-                    } else {
-                        state.active_message_ids.insert(envelope.message_id.clone());
-                        state.inbox.push_back(*envelope);
-                        Ok(())
-                    };
-                    let _ = reply.send(result);
-                }
-                ActorCommand::ClaimMessages { reply } => {
-                    let _ = reply.send(claim_messages(&mut state));
-                }
-                ActorCommand::AckMessages { ids, reply } => {
-                    state
-                        .processing
-                        .retain(|envelope| !ids.iter().any(|id| id == &envelope.message_id));
-                    for id in ids {
-                        state.active_message_ids.remove(&id);
-                    }
-                    let _ = reply.send(());
-                }
-                ActorCommand::LastReceived { reply } => {
-                    let result = state
-                        .inbox
-                        .back()
-                        .cloned()
-                        .or_else(|| {
-                            state
-                                .processing
-                                .iter()
-                                .max_by_key(|env| &env.created_at)
-                                .cloned()
-                        })
-                        .or_else(|| state.archive.back().cloned());
-                    let _ = reply.send(result);
-                }
-                ActorCommand::FindMessage { message_id, reply } => {
-                    let result = state
-                        .inbox
-                        .iter()
-                        .find(|env| env.message_id == message_id)
-                        .cloned()
-                        .or_else(|| {
-                            state
-                                .processing
-                                .iter()
-                                .find(|env| env.message_id == message_id)
-                                .cloned()
-                        })
-                        .or_else(|| {
-                            state
-                                .archive
-                                .iter()
-                                .rev()
-                                .find(|env| env.message_id == message_id)
-                                .cloned()
-                        });
-                    let _ = reply.send(result);
-                }
-                ActorCommand::TakeMatchingReplies {
-                    in_reply_to_message_id,
-                    expected_from_session_id,
-                    reply,
-                } => {
-                    let mut matching = Vec::new();
-                    let mut rest = VecDeque::new();
-                    while let Some(envelope) = state.inbox.pop_front() {
-                        if is_matching_reply(
-                            &envelope,
-                            &in_reply_to_message_id,
-                            &expected_from_session_id,
-                        ) {
-                            let message_id = envelope.message_id.clone();
-                            if haven_messaging::is_expired(&envelope) {
-                                archive_once(&mut state, envelope);
-                            } else {
-                                archive_once(&mut state, envelope.clone());
-                                matching.push(envelope);
-                            }
-                            state.active_message_ids.remove(&message_id);
-                        } else {
-                            rest.push_back(envelope);
-                        }
-                    }
-                    state.inbox = rest;
-                    let _ = reply.send(matching);
-                }
-                ActorCommand::History { limit, reply } => {
-                    let _ = reply.send(history(&state, limit));
-                }
             }
         }
         actor_lifetime.cancel();
@@ -1718,75 +1479,6 @@ fn release_direct_session_run(state: &mut SessionState, run_state: &watch::Sende
         None => {}
     }
     let _ = run_state.send(false);
-}
-
-fn message_known(state: &SessionState, id: &str) -> bool {
-    state.active_message_ids.contains(id) || state.archive_message_ids.contains(id)
-}
-
-fn archive_once(state: &mut SessionState, envelope: Envelope) {
-    if !state
-        .archive_message_ids
-        .insert(envelope.message_id.clone())
-    {
-        return;
-    }
-    state.archive.push_back(envelope);
-    while state.archive.len() > SESSION_INBOX_ARCHIVE_MAX_ITEMS {
-        if let Some(evicted) = state.archive.pop_front() {
-            state.archive_message_ids.remove(&evicted.message_id);
-        }
-    }
-}
-
-fn claim_messages(state: &mut SessionState) -> Vec<Envelope> {
-    let mut candidates = Vec::with_capacity(state.processing.len() + state.inbox.len());
-    candidates.extend(std::mem::take(&mut state.processing));
-    candidates.extend(state.inbox.drain(..));
-
-    let mut seen = HashSet::new();
-    let mut claimed = Vec::new();
-    for mut envelope in candidates {
-        if !seen.insert(envelope.message_id.clone()) {
-            continue;
-        }
-        archive_once(state, envelope.clone());
-        if haven_messaging::is_expired(&envelope) {
-            continue;
-        }
-        envelope.delivery_attempt = envelope.delivery_attempt.saturating_add(1);
-        state.processing.push(envelope.clone());
-        claimed.push(envelope);
-    }
-    claimed
-}
-
-fn is_matching_reply(
-    envelope: &Envelope,
-    in_reply_to_message_id: &str,
-    expected_from_session_id: &str,
-) -> bool {
-    envelope.from_session_id == expected_from_session_id
-        && envelope.in_reply_to_message_id.as_deref() == Some(in_reply_to_message_id)
-        && matches!(envelope.r#type, MessageType::Reply | MessageType::Message)
-}
-
-fn history(state: &SessionState, limit: usize) -> Vec<Envelope> {
-    let mut by_id = HashMap::new();
-    for envelope in &state.archive {
-        by_id.insert(envelope.message_id.clone(), envelope.clone());
-    }
-    for envelope in &state.processing {
-        by_id.insert(envelope.message_id.clone(), envelope.clone());
-    }
-    for envelope in &state.inbox {
-        by_id.insert(envelope.message_id.clone(), envelope.clone());
-    }
-    let mut entries: Vec<Envelope> = by_id.into_values().collect();
-    entries.sort_by(|left, right| left.created_at.cmp(&right.created_at));
-    entries.reverse();
-    entries.truncate(limit);
-    entries
 }
 
 async fn transition(
@@ -2206,11 +1898,6 @@ mod queue_tests {
             steering_attachment_bytes: 0,
             has_children: false,
             running: false,
-            inbox: VecDeque::new(),
-            processing: Vec::new(),
-            archive: VecDeque::new(),
-            active_message_ids: HashSet::new(),
-            archive_message_ids: HashSet::new(),
             messaging: SessionMessagingState::default(),
             react_run: None,
         }
@@ -2690,26 +2377,6 @@ mod queue_tests {
         .expect_err("oversized input must apply back-pressure");
         assert!(error.to_string().contains("retained"));
         assert!(state.follow_up_queue.is_empty());
-    }
-
-    #[test]
-    fn inbox_archive_is_bounded_and_message_dedupe_is_indexed() {
-        let mut state = empty_state();
-        for index in 0..(SESSION_INBOX_ARCHIVE_MAX_ITEMS + 8) {
-            let mut envelope = Envelope::new("sender", "receiver", "message");
-            envelope.message_id = format!("msg-{index}");
-            archive_once(&mut state, envelope);
-        }
-
-        assert_eq!(state.archive.len(), SESSION_INBOX_ARCHIVE_MAX_ITEMS);
-        assert!(!message_known(&state, "msg-0"));
-        assert!(!message_known(&state, "msg-7"));
-        assert!(message_known(&state, "msg-8"));
-        assert!(message_known(
-            &state,
-            &format!("msg-{}", SESSION_INBOX_ARCHIVE_MAX_ITEMS + 7)
-        ));
-        assert_eq!(state.archive_message_ids.len(), state.archive.len());
     }
 
     #[test]

@@ -107,7 +107,7 @@ corepack pnpm run check
 - 序号类字段（u64 代次，非持久实体）：`run_id`（run 实例）、`gen_id`（流式代次）、MCP JSON-RPC `next_id`，保持现有命名并加文档说明。
 - 外部 ID（LLM `tool_call_id`、模型 ID、MCP `Mcp-Session-Id`）保持 provider 格式，不套用本规范。
 - kv_store key 用 `domain.key` 风格（如 `fact_extraction.{session_id}`、`fact_extraction_pending.{session_id}`），内嵌的实体 ID 必须是规范格式。
-- 定时 ToolRun 的持久执行权 claim value 表示执行来源身份：确认路径使用对应 `conf-*` request ID；无需确认的 auto-approved 路径复用当前 `tool_run_id` 作为 claim ID。持久边界只接受规范 `conf-*`，或与 `tool_run_id` 完全相同的规范 `toolrun-*`；不得将消息 inbox 专用的进程内 `claim-*` 用作此身份。
+- 定时 ToolRun 的持久执行权 claim value 表示执行来源身份：确认路径使用对应 `conf-*` request ID；无需确认的 auto-approved 路径复用当前 `tool_run_id` 作为 claim ID。持久边界只接受规范 `conf-*`，或与 `tool_run_id` 完全相同的规范 `toolrun-*`。Messaging inbox 确认直接使用稳定的 `message_id`，不生成独立领取 ID（ADR 1044）。
 - 步骤计数统一叫 `step_number`（事件/UI/DB 列名一致）。
 - 数据库 schema 由 `haven_memory::schema::init_schema` 管理：当前 `SCHEMA_SQL` 幂等建表并写入 `SCHEMA_VERSION`；旧版本数据库不做运行时迁移，直接按 `docs/release-and-reset.md` 重置。`user_version` 高于或不同于本二进制支持版本时拒绝打开。当前架构阶段与剩余工作见 `docs/architecture-refactor-roadmap.md`。
 

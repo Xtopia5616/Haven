@@ -33,9 +33,7 @@ use haven_messaging::{
     MessageType, MessagingService, SendOutcome,
 };
 #[cfg(test)]
-use haven_messaging::{
-    AgentControlResult, AgentSpawnResult, MessageTransport, MessagingRuntime, SessionMailbox,
-};
+use haven_messaging::{AgentControlResult, AgentSpawnResult, MessageTransport, MessagingRuntime};
 
 /// Max envelope field sizes (defensive caps; the bus is append-only JSONL).
 const MAX_TEXT_BYTES: usize = 16 * 1024;
@@ -1365,65 +1363,12 @@ mod tests {
         }
     }
 
-    struct TestMailbox;
-
-    impl SessionMailbox for TestMailbox {
-        fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
-            tokio::sync::watch::channel(0).1
-        }
-
-        fn deliver(&self, _to: &str, _envelope: &Envelope) -> anyhow::Result<Option<SendOutcome>> {
-            Ok(None)
-        }
-
-        fn claim(&self, _recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>> {
-            Ok(None)
-        }
-
-        fn try_claim(&self, _recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>> {
-            Ok(None)
-        }
-
-        fn ack(&self, _recipient: &str, _ids: &[String]) -> anyhow::Result<Option<()>> {
-            Ok(None)
-        }
-
-        fn last_received(&self, _name: &str) -> anyhow::Result<Option<Option<Envelope>>> {
-            Ok(None)
-        }
-
-        fn find_message(
-            &self,
-            _name: &str,
-            _message_id: &str,
-        ) -> anyhow::Result<Option<Option<Envelope>>> {
-            Ok(None)
-        }
-
-        fn take_matching_replies(
-            &self,
-            _name: &str,
-            _in_reply_to: &str,
-            _expected_from: &str,
-        ) -> anyhow::Result<Option<Vec<Envelope>>> {
-            Ok(None)
-        }
-
-        fn history(&self, _name: &str, _limit: usize) -> anyhow::Result<Option<Vec<Envelope>>> {
-            Ok(None)
-        }
-    }
-
     struct TestRuntime {
         bus: Arc<dyn MessageTransport>,
     }
 
     #[async_trait]
     impl MessagingRuntime for TestRuntime {
-        fn mailbox(&self) -> Arc<dyn SessionMailbox> {
-            Arc::new(TestMailbox)
-        }
-
         async fn spawn_peer_session(
             &self,
             request: AgentSpawnRequest,
