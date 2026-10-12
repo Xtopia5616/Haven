@@ -93,7 +93,7 @@ describe('ToolsView command boundary', () => {
 		expect(invoke).toHaveBeenNthCalledWith(1, 'list_builtin_tool_manifests');
 		expect(invoke).toHaveBeenNthCalledWith(2, 'list_mcp_servers');
 		expect(invoke).toHaveBeenNthCalledWith(3, 'list_skills');
-		expect(manifests).toBe(manifestResponse);
+		expect(manifests).toEqual(manifestResponse);
 		expect(servers).toEqual([
 			{
 				name: 'future-server',
@@ -120,6 +120,16 @@ describe('ToolsView command boundary', () => {
 		expect(servers[0]).not.toHaveProperty('last_error');
 		expect(skills).toEqual(emptySkills);
 	});
+
+	it.each([null, {}, { tools: null }, { tools: {} }, { tools: 'invalid' }])(
+		'rejects an invalid builtin manifest envelope %j',
+		async (response) => {
+			invoke.mockResolvedValueOnce(response);
+			await expect(listBuiltinToolManifests()).rejects.toThrow(
+				'Invalid builtin tool manifest list response',
+			);
+		},
+	);
 
 	it('maps Skills list responses to the renderer view', async () => {
 		invoke.mockResolvedValueOnce([makeSkillInfo()]);

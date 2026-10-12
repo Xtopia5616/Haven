@@ -2,6 +2,7 @@ import { invoke } from '$lib/tauri.ts';
 import { parseMcpRefreshResult, parseMcpServerSnapshots } from './contracts/mcp.ts';
 import type { McpRefreshResultView, McpServerSnapshotView } from './contracts/mcp.ts';
 import { parseSkillExecutionResponse, parseSkillInfoList } from './contracts/skills.ts';
+import { parseBuiltinToolManifestList } from './contracts/tools.ts';
 import type {
 	ReconnectMcpServerRequest,
 	RemoveMcpServerRequest,
@@ -11,15 +12,17 @@ import type {
 	SetToolEnabledRequest,
 	SkillInfo,
 	ToggleMcpServerRequest,
-	BuiltinToolManifestListResponse,
+	BuiltinToolManifestListView,
 	ExecuteSkillRequest,
 	SkillExecutionResponse,
 	UpdateMcpServerRequest,
 } from './contracts/tools.ts';
 
-/** List builtin tool manifests using their existing Rust wire shape. */
-export function listBuiltinToolManifests(): Promise<BuiltinToolManifestListResponse> {
-	return invoke('list_builtin_tool_manifests');
+/** Validate the list envelope; individual manifests are parsed by their catalog owner. */
+export function listBuiltinToolManifests(): Promise<BuiltinToolManifestListView> {
+	return invoke('list_builtin_tool_manifests').then((value: unknown) =>
+		parseBuiltinToolManifestList(value),
+	);
 }
 
 /** Read MCP catalog snapshots using the current Rust status variants. */

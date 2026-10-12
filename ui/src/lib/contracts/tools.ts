@@ -1,13 +1,25 @@
 /** Tools command types; Skills/MCP response projections live in their domain contracts. */
 import type {
 	McpServerConfig as GeneratedMcpServerConfig,
-	BuiltinToolManifestListResponse as GeneratedBuiltinToolManifestListResponse,
 	SkillExecutionResponse as GeneratedSkillExecutionResponse,
 	TauriCommandRequest,
 } from './generatedCommands.ts';
+import { isRecord } from './objectGuards.ts';
 import type { SkillInfoView } from './skills.ts';
 
-export type BuiltinToolManifestListResponse = GeneratedBuiltinToolManifestListResponse;
+/** The envelope is validated here; each dynamic manifest is parsed by toolManifest.ts. */
+export interface BuiltinToolManifestListView {
+	tools: unknown[];
+	[key: string]: unknown;
+}
+
+export function parseBuiltinToolManifestList(value: unknown): BuiltinToolManifestListView {
+	if (!isRecord(value) || !Array.isArray(value.tools)) {
+		throw new Error('Invalid builtin tool manifest list response');
+	}
+	return { ...value, tools: value.tools };
+}
+
 export type SkillInfo = SkillInfoView;
 export type SkillExecutionResponse = GeneratedSkillExecutionResponse;
 export type McpServerConfig = GeneratedMcpServerConfig;
