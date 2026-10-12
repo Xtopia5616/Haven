@@ -289,8 +289,9 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   不实现第二套重试。
 - `adapters/transport.rs`：所有 provider 共用的 reqwest client、代理/归因与
   认证头、HTTP 状态错误、流式响应头超时和健康检查；不解析 provider payload，
-  也不拥有 router 的重试与路由状态（ADR 0024）。Provider 的
-  `timeout_streaming_secs` 是从连接开始到响应 body 完成的 HTTP 总时限；未配置时，
+  也不拥有 router 的重试与路由状态（ADR 0024）。
+  `ProviderConfig.default_timeout_streaming_secs` 会物化为 `ModelEndpoint.timeout_streaming_secs`，
+  是从连接开始到响应 body 完成的 HTTP 总时限；未配置时，
   adapter 仍限制响应头等待，router 的 `max_total_duration_secs` 与
   `stream_idle_timeout_secs` 分别限制逻辑请求总时长和 body chunk 空闲间隔。
 - `adapters/stream.rs`：共享 SSE/JSON-lines framing、EOF flush 与空

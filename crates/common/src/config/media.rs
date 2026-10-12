@@ -10,11 +10,17 @@ use crate::media::MediaInputStrategy;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct AudioConfig {
+    /// PCM capture sample rate in hertz.
     pub sample_rate: u32,
+    /// Number of interleaved PCM channels.
     pub channels: u16,
+    /// PCM sample bit depth.
     pub bits_per_sample: u16,
+    /// Maximum recording duration in seconds.
     pub max_duration_secs: u64,
+    /// Continuous silence duration before VAD auto-stop, in milliseconds.
     pub silence_timeout_ms: u64,
+    /// VAD speech-probability threshold in the inclusive range 0.0–1.0.
     pub vad_threshold: f32,
 }
 
