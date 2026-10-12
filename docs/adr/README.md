@@ -1052,3 +1052,4 @@
 - [1061：统一 Session 步数预算的有效范围](1061-align-session-step-budget-ranges.md)
 - [1062：统一持久化与 UI 的 step_number 数值域](1062-align-step-number-width.md)
 - [1063：移除无效音频格式配置并统一录音范围](1063-remove-ineffective-audio-format-settings.md)
+- [1064：统一命令与前端错误报告所有权](1064-unify-command-and-renderer-error-reporting.md)
