@@ -11,6 +11,8 @@
 ## 决定
 
 - `session.prompt_history_limit` 的有效范围为 0–500 条；0 不附带历史消息。
+- `context_limits.max_known_facts` 的有效范围为 0–64 条；Common 与 Settings response parser 都拒绝超范围值。
+- `context_limits.input_ring_buffer_secs` 的有效范围为 0–120 秒；0 使用采集引擎默认容量，更改只在下次创建引擎时生效。
 - `context_limits.file_max_list_entries` 的上限为 10,000 条；0 返回空列表。
 - `context_limits.mcp_max_sse_buffer_bytes` 的上限为 4 MiB；0 丢弃所有 SSE 事件。
 - `context_limits.skills_max_md_bytes` 的上限为 1 MiB；0 跳过所有 `SKILL.md`。

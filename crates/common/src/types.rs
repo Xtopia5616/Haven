@@ -13,9 +13,13 @@ use serde::{Deserialize, Serialize};
 //     (ToolRuns — background and scheduled), `asset-` (managed media),
 //     `cred-` (Credential Manager references), and `usage-` (llm_usage).
 //   - Runtime-generated prefixes: `conf-` (confirmation request ids), `rec-`
-//     (voice recordings), `file-` (temporary files), `preview-` (streaming
-//     tool-call previews), and `call-` (fallback tool-call association ids).
-//     `rec-*`, `file-*`, and `preview-*` are process-local. `conf-*` may be
+//     (voice recordings), `preview-` (streaming tool-call previews), and
+//     `call-` (fallback tool-call association ids). `rec-*` and `preview-*`
+//     are process-local. `file-{uuid32}` is part of a managed-file namespace
+//     (upload batch, uploaded filename, or generated-media filename), not an
+//     entity ID; committed paths may be persisted as message attachment
+//     references, while `asset-*` is the media entity identity. `.file-{uuid32}.tmp`
+//     names transient staging directories. `conf-*` may be
 //     persisted by its owning interaction or scheduled ToolRun contract;
 //     `call-*` participates in durable tool-call history when a provider ID is
 //     empty or duplicated in the assistant batch.

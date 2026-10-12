@@ -332,7 +332,7 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 ### 标识符
 - 类型 / 枚举 / trait / 结构体 → **PascalCase**：`Modality`、`Intent`、`LlmConfig`。
 - 函数 / 方法 / 变量 / 字段 / 模块 → **snake_case**：`fn detect_intent`、`stt_default_base_url`。
-- 静态词表 / 固定选项常量 → **UPPER_SNAKE_CASE**；局部值与运行时状态仍用 camelCase：`MAX_SPEAK_CHARS`、`IMAGE_GEN_KEYWORDS`。
+- 静态词表 / 固定选项常量 → **UPPER_SNAKE_CASE**；局部值与运行时状态仍用语言对应的变量命名：Rust 使用 snake_case，TypeScript/JavaScript 使用 camelCase，例如 `MAX_SPEAK_CHARS`、`IMAGE_GEN_KEYWORDS`。
 - 构造 `pub const fn as_str` / `new` 保持惯例命名。
 - 跨模块返回多个具有稳定领域含义的值时使用具名结果结构体，字段名直接表达各自角色；不要让调用方通过 `.0` / `.1` 解读分类、版本时钟和 MIME 等语义。短生命周期局部组合、迭代器键值等仍可使用 tuple。不同分类空间即使都包含 `kind` 字段，也按 owner 命名具体结果（如 `FileClassification` 与 `ManagedMediaClassification`），不为形似而合并 enum。
 - 可复用的领域复合 key 使用具名结构体和闭合枚举表达各部分含义；不要用 tuple alias 加字符串标签编码固定身份。临时局部键值组合仍可用 tuple。

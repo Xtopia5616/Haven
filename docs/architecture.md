@@ -538,7 +538,7 @@ tool runner 执行 scheduled tool 或继续会话，再调用 `complete_schedule
 scheduled trigger 的输入分类和 due-time 计算由 crate-private 纯 typed policy
 `ScheduledTriggerRequest`/`ScheduledTriggerCandidate` 承担；ToolRunService 仍读取 horizon 配置并拥有
 durable admission、board insertion、timer/watch worker、fire、terminal commit/retry 与 lifecycle event。
-这只是 trigger admission 的窄边界，不把 `Immediate`/`At`/`After` 的触发选择与 ToolRun execution 生命周期合成一个抽象；
+这只是 trigger admission 的窄边界：scheduled trigger 只区分 `At` 与 `AfterToolRun`；background shell 的直接启动仍由独立入口表达，不与 ToolRun execution 生命周期合成一个抽象；
 schedule tool 对 LLM 输入的前置验证仍保留在工具边界，App command/event adapter 仍只做 UI DTO 投影（ADR 0343）。
 ToolRunService 仍是唯一状态 owner；实现按职责放在 `tool_run_service/background.rs`（shell 启动、终态与 session 清理）、
 `tool_run_service/scheduled.rs`（timer/dependency admission、fire、终态与恢复）和

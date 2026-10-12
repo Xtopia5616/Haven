@@ -84,15 +84,16 @@ corepack pnpm run check
 | `cred-` | Credential Manager 凭据引用（仅引用，不是密钥值） | `haven_common` / `haven_platform` |
 | `usage-` | 单次 LLM 调用用量明细 llm_usage.id | `haven_memory` |
 
-以下 ID 均由运行时生成；`rec-*`、`file-*`、`preview-*` 仅用于进程内生命周期；`conf-*`、`call-*` 是否持久化由对应领域契约明确规定：
+以下 ID 均由运行时生成；`rec-*`、`preview-*` 仅用于进程内生命周期；`conf-*`、`call-*` 是否持久化由对应领域契约明确规定。`file-*` 属于受管文件的命名空间（上传批次、上传文件名或生成媒体文件名），不是实体 ID；已提交路径可随消息引用持久保存，实体身份仍由 `asset-*` 表达：
 
 | 前缀 | 实体 | 位置 |
 |---|---|---|
 | `conf-` | 安全确认请求（request ID 可按 ADR 写入 durable interaction event 或 scheduled ToolRun claim） | `haven_agent` |
 | `rec-` | 录音（一次录音一个 id，`recording:started`/`transcription:*` 事件共用） | `haven_app` |
-| `file-` | 临时文件名 | `haven_app` |
 | `call-` | provider tool_call_id 缺失或同一 batch 重复时生成的 durable transcript 调用关联 fallback | `haven_agent` |
 | `preview-` | 流式工具调用参数预览身份 | `haven_agent` |
+
+`file-{uuid32}` 会作为上传批次目录名或生成文件名的身份部分；上传文件名还可带原始文件名，生成媒体可带扩展名。消息附件元数据可能持久引用这些路径。`.file-{uuid32}.tmp` 是独立 staging 名称，只用于崩溃清理，不是持久实体身份。媒体资产跨层身份仍使用 `asset-*`。
 
 规则：
 - **生成一律用 `haven_common::types::new_id(prefix)`**，禁止手拼 UUID。

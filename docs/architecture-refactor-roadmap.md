@@ -1,7 +1,7 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；§5.7 全项目概念与实现规范覆盖持续推进。已完成 ADR 1031–1062：IPC runtime shape 与语义校验、API owner、rollback 水位、稳定 inbox ack、Messaging 单一持久来源，以及运行时身份、跨边界 ID 校验、UI 静态词表和 Rust/UI 正向 ID 测试夹具的一致性。尚未完成全库覆盖；继续核对剩余跨层概念、实现命名与文档契约。此前审计没有发现值得合并/拆分的架构候选。桌面 `list_facts` 分页仍待 UI 设计；Windows 发布验收为独立 Open Gate（§5.1）。
-> 更新日期：2026-10-12
+> 状态：阶段 0–8 已完成；§5.7 全项目概念与实现规范覆盖持续推进。ADR 1031–1072 已覆盖 IPC runtime shape/API owner、持久与进程内身份、rollback 与 inbox lifecycle、配置语义和数值边界、资源预算、日志脱敏、UI renderer identity 与命名约定。当前切片已完成，Rust workspace、Clippy、格式、UI 与 IPC 门禁通过；全库终审仍需逐项收束矩阵中的长期复核项，不宣称所有私有实现与文档引用已穷尽。此前审计没有发现值得合并/拆分的架构候选。桌面 `list_facts` 分页仍待 UI 设计；Windows 发布验收为独立 Open Gate（§5.1）。
+> 更新日期：2026-10-13
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
 本文件只记录当前阶段、仍未完成的工作和验收条件。历史实现切片与决定见对应 ADR；提交历史用于追踪实现过程。
@@ -189,6 +189,8 @@ ToolRun cancel 在 App command 边界从 wire DTO 映射至 Tools runtime enum�
 Memory usage 与 Agent live event 使用 `request_kind`；新 `usage_recorded` durable payload 写 `request_kind`，旧 `role` 只作为 replay 反序列化 alias，SQLite 物理列 `llm_usage.role` 保持不变（ADR 1032）。Committed event projection 使用 `event_sequence` / `eventSequence`，流式分片仍使用 `seq`（ADR 1033）。Input `RecordingReason` 仅描述实际产生 `RecordingResult` 的停止原因；取消仍由 App lifecycle DTO 表达（ADR 1034）。Common/LLM model-config API 与 Session、FactExtraction、Messaging、ToolRun 调用身份均已使用完整领域名称（ADR 1035）。UI command registry 仅作 owner metadata，bootstrap status 与 builtin manifest projection 在 renderer 边界校验闭合值与唯一身份（ADR 1036）。
 
 #### 当前审计覆盖与剩余范围
+
+本轮将实现规范化沿“配置语义 → 资源预算 → 运行时边界 → renderer/日志 → 领域命名 → 文档与 ADR”推进：统一 OCR/STT/TTS/image-gen 与 web-search 的有效值和继承语义（ADR 1069）；对齐文件/搜索/embedding/provider tools、上下文窗口、重试和剪贴板资源上限（ADR 1067）；定时 due-time 统一使用配置 horizon（ADR 1068）；删除未执行的 Skill CPU/内存设置（ADR 1070）；日志长度指标标明 bytes/chars 并移除动态工具名（ADR 1071）；Memory/SessionHistory 的实体 ID 在 renderer 边界映射为 camelCase（ADR 1072）。Rust 命名规范矛盾、短 ID 缩写、稳定语义 tuple 和文件命名空间说明已同步修正。审计同时补齐文件读取零值、音频环形缓冲 UI 上限和 `max_known_facts` parser 的契约差异。对应 Rust/UI 正向与拒绝测试均已补充，workspace tests、Clippy、格式、UI 与 IPC 门禁通过；矩阵其余长期复核项仍按各自触发条件继续审计。
 
 | 范围 | 已核对的当前基线 | 长期复核/重开条件 |
 | --- | --- | --- |

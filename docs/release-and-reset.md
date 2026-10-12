@@ -18,9 +18,15 @@ schema v40 仅接受事实提取 marker 的当前完整格式：旧 boolean、�
 
 录音时长与静音停止范围由 Common 配置校验和 Settings UI 共同执行：`[media.audio].max_duration_secs` 为 10–300 秒，`silence_timeout_ms` 为 500–10,000 毫秒。`sample_rate`、`channels`、`bits_per_sample` 已移除，因为采集输入格式由设备运行时选择，转写 WAV 固定为 16 kHz、单声道、16-bit PCM。旧 `config.toml` 若含这三个键会被拒绝并备份；删除这些行即可保留其余设置。无需删除数据库。
 
+技能脚本执行配置已移除不生效的 `[skills_exec].cpu_time_secs` 与 `max_memory_mb`。旧 `config.toml` 若含任一键会因未知字段被拒绝并备份，当前进程使用默认配置；删除这两行即可保留其余设置。无需删除数据库。
+
 并发范围由 Common 配置校验和 Settings UI 共同执行：`[session].max_concurrent` 为 1–10，`[llm].max_concurrent_requests` 为 1–16，`[context_limits].max_running_background_tool_runs` 为 0–64。后台任务上限设为 0 会禁用新的后台任务。超出范围的 TOML 会备份整份配置并在当前进程使用默认值；Settings 更新会拒绝该值。需要保留其它配置时，先把数值改到范围内；无需删除数据库。
 
-资源配置边界现由 Common 与 Settings UI 共同执行：`[session].prompt_history_limit` 为 0–500；`file_max_list_entries` 最多 10,000；MCP SSE 缓冲最多 4 MiB；单个 `SKILL.md` 最多 1 MiB；网络响应体最多 16 MiB。以上容量设为 0 时分别表示不带历史、返回空目录列表、丢弃 SSE 事件、跳过所有技能说明、不保留响应体。超过上限的 TOML 会备份整份配置并在当前进程使用默认值；Settings 更新会拒绝越界值。把数值改到范围内即可保留其它配置；数据库不受影响。
+定时触发时间受 `context_limits.scheduled_tool_runs_due_horizon_secs` 限制，范围为 0 至 10 年；0 禁止未来的 `due_at` 和 `delay_secs` 时间触发。后台任务直接启动和等待另一 ToolRun 完成的 `watch_tool_run_id` 依赖触发不使用时间 horizon。Settings 与运行时使用相同边界；配置越界会备份并回退默认值，无需重置数据库。
+
+资源配置边界现由 Common 与 Settings UI 共同执行：`[session].prompt_history_limit` 为 0–500，`[session].history_retention_days` 为 0–365（0 禁用自动清理）；`file_max_list_entries` 最多 10,000；MCP SSE 缓冲最多 4 MiB；单个 `SKILL.md` 最多 1 MiB；网络响应体最多 16 MiB。以上容量设为 0 时分别表示不带历史、禁用会话自动清理、返回空目录列表、丢弃 SSE 事件、跳过所有技能说明、不保留响应体。超过上限的 TOML 会备份整份配置并在当前进程使用默认值；Settings 更新会拒绝越界值。把数值改到范围内即可保留其它配置；数据库不受影响。
+
+模型上下文窗口（`context_limits.default_context_window` 与模型级 `context_window`）为 1,000–2,000,000 tokens；压缩预留 token 必须小于每个有效窗口，`response_token_floor` 最多 2,000,000。`tool_settings.*.max_retries` 最多 10 次，重试退避最多 60 秒，单工具 timeout 为 1–3,600 秒。剪贴板历史保留和单次查询各最多 100 条；保留数为 0 会清空并停止记录，查询上限为 0 返回空列表。进程内每条保留文本最多 65,536 个 Unicode 字符，`clipboard_entry_max_chars` 只限制 history 输出。TOML 超界按既有策略回退默认值，Settings 更新拒绝，无需重置数据库。
 
 `config.toml` 只接受当前配置结构，不执行旧字段搬迁、旧名称映射、凭据导入或静默兼容。配置表启用未知字段拒绝；当前结构允许缺省的字段仍使用安全默认值。本版本将 `context_limits.cut_off_retries` 改为 `incomplete_tool_args_retries`，将后台/终态 Job 限制字段重命名为 ToolRun 字段，并删除 `empty_response_max_retries` 与 `empty_response_retry_delay_ms`；含这些旧字段的配置会导致整份配置解析失败。工具根名从 `actions` 改为 `tool_runs`，旧名称下的权限 key 不迁移。`llm.models[]` 中绑定连接的字段现为 `provider_name`；`[media.stt]`、`[media.tts]` 与 `[media.image_gen]` 的连接引用也统一使用 `provider_name`，旧媒体字段 `provider` 不再接受。若只需保留现有设置，可将这些媒体表中的 `provider` 手动改为 `provider_name`；否则仅重建 `config.toml`。这些配置变更无需删除数据库。Session 步数预算配置现为 `[session].max_steps_per_run` 与 `[session].max_steps_per_session`；旧 `max_steps` / `session_max_steps` 不接受，遇到旧 key 时整份配置解析失败；如需保留预算数值，先手动将两项改为新 key，否则重建配置。其它旧字段（例如 `[memory].history_retention_days`、`llm.balanced_model`、旧安全策略字段和已删除的顶层 `[audio]`）也会导致整份配置解析失败。
 
@@ -46,7 +52,13 @@ API 密钥、OCR 密钥与 MCP 环境变量只通过安全凭据存储的 opaque
 
 模型工具使用点号 operation view，例如 `files.*`、`system.*`、`clipboard.*`、`input.*`、`window.*`、`media.*`、`tool_runs.*`、`schedule.*` 和 `haven.*`。启用 Skill 由 `load_skill` 按名称加载为当前 session 的 `skill__...`；内置 operation 由 `tool_catalog` 的 `action=load` 加载，MCP 由 `load_mcp` 按服务器加载。配置和未完成会话都没有旧工具名的转换保证。
 
+媒体与搜索设置保持运行时定义的值域：`[media.ocr].provider` 仅接受 `llm`、`baidu`、`azure`、`tencent`、`none`；STT 的 `provider_name=mcp` 必须引用已配置的 `[mcp_servers]` 名称；TTS/image generation 的 provider 名称可用空值或大小写不敏感的 `none` 禁用。LLM provider/model 的 `default_web_search` / `web_search` 接受 `off`、`auto`、`always` 及 `required`、`on`、`1`、`true` 别名（大小写不敏感并忽略外围空格）；`null` 或空白继续回退到 `HAVEN_WEB_SEARCH`，显式 `off` 才关闭。未知 OCR/search 值和悬空 STT MCP 引用会使整份 TOML 备份并在当前进程使用默认值；Settings 更新拒绝错误字段。修正对应配置即可保留其它设置，无需重置数据库。
+
 Skill 名称现在统一限制为 1–128 个 ASCII 字母、数字、`-` 或 `_`，并拒绝 Windows 设备保留名（`CON`、`PRN`、`AUX`、`NUL`、`COM1`–`COM9`、`LPT1`–`LPT9`，不区分大小写）。扫描时，同名大小写变体会作为歧义组全部跳过。已有 `SKILL.md` 使用不符合规则的名称时，Skill 会被跳过；将清单中的名称改为有效名称即可恢复使用。若配置了 `[skills].enabled` allowlist，也要同步更新对应条目。此名称规则不会改变数据库契约，改名无需重置数据库。
+
+文件、搜索与模型工具资源边界由 Common、Settings UI 与运行时共同执行：`file_line_max_bytes` 为 1–128,000 字节，`file_byte_read_max_bytes` 为 1 字节–64 MiB，`search_max_results` 为 1–1,000，`search_window_bytes` 最多 16 MiB，`embedding_chunk_size` 为 1–10，`max_tools_per_request` 为 1–350。行长度和 byte-read 上限不能设为 0；配置 0 会备份并回退默认值，Settings 更新会拒绝。每次文件搜索的 `results` 数组最多物化 4 MiB 序列化字节，根路径最多 32,767 个 UTF-16 code unit，搜索模式最多 4,096 个 Unicode 字符；路径和模式另有独立长度上限，触及结果预算时返回明确截断提示。行范围窗口为 0 时仍改用流式全文件扫描。调整数值即可保留其它配置，无需重置数据库。
+
+`context_limits.input_ring_buffer_secs` 范围为 0–120 秒；设为 0 使用采集引擎默认环形缓冲容量（20 秒），更改仅在下次创建采集引擎时生效，当前运行中的引擎保持现有容量。`max_known_facts` 为 0–64；超范围的 Settings 响应会被拒绝，配置文件按现有策略备份并回退默认值。无需重置数据库。
 
 ## 用户数据位置
 
