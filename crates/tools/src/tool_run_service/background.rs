@@ -155,22 +155,23 @@ impl ToolRunService {
             let persist_command = command.to_string();
             let persist_started_at = started_at.clone();
             let persist_source_step_id = source_step_id.map(str::to_owned);
-            let persisted = tokio::spawn(async move {
-                let result = store
-                    .save_background_tool_run_with_source(
-                        persist_tool_run_id,
-                        persist_session_id,
-                        persist_command,
-                        persist_started_at,
-                        persist_source_step_id,
-                    )
-                    .await;
-                (persist_gate, result)
-            })
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!("background ToolRun persistence worker failed: {error}")
-            })?;
+            let persisted = self
+                .spawn_owned_task(async move {
+                    let result = store
+                        .save_background_tool_run_with_source(
+                            persist_tool_run_id,
+                            persist_session_id,
+                            persist_command,
+                            persist_started_at,
+                            persist_source_step_id,
+                        )
+                        .await;
+                    (persist_gate, result)
+                })
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("background ToolRun persistence worker failed: {error}")
+                })?;
             let (gate, result) = persisted;
             spawn_gate = gate;
             if let Err(error) = result {
@@ -278,7 +279,7 @@ impl ToolRunService {
         let runner_tail = tail.clone();
         let emit_tool_run_id = tool_run_id.clone();
         let shutdown_token = self.shutdown_token.clone();
-        tokio::spawn(
+        self.spawn_owned_task(
             async move {
                 // Keep the Job Object alive for the entire ToolRun. Its
                 // kill-on-close flag then cleans up descendants on cancellation
@@ -350,7 +351,7 @@ impl ToolRunService {
         let emit_me = self.clone();
         let emit_tail = tail;
         let shutdown_token = self.shutdown_token.clone();
-        tokio::spawn(async move {
+        self.spawn_owned_task(async move {
             let mut last_output = ToolRunTailSnapshot::default();
             loop {
                 tokio::select! {
@@ -473,6 +474,9 @@ impl ToolRunService {
     /// titlebar panel keeps a ghost "running" row that cannot be stopped.
     pub async fn cancel_owned_background_by_session(self: &Arc<Self>, session_id: &str) {
         let _mutation = self.spawn_gate.lock().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
         self.cancel_owned_background_by_session_locked(session_id)
             .await;
     }

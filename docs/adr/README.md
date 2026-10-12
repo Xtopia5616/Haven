@@ -1103,3 +1103,4 @@
 - [1112：限制 Memory 查询缓存 generation 并原子失效](1112-bound-memory-query-cache-generations.md)
 - [1113：统一 MCP 连接入口的并发上限](1113-bound-mcp-connections-across-entry-points.md)
 - [1114：串行化 InputPipeline 生命周期并 join 录音 worker](1114-serialize-input-pipeline-lifecycle.md)
+- [1115：统一 ToolRunService 后台任务所有权与 shutdown drain](1115-track-toolrun-service-tasks-through-shutdown.md)

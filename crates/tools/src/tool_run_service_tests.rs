@@ -4566,6 +4566,8 @@ async fn test_shutdown_stops_scheduled_timers_and_rejects_new_work() {
     service.shutdown().await;
     service.shutdown().await;
 
+    assert!(service.task_tracker.is_closed());
+    assert!(service.task_tracker.is_empty());
     assert_eq!(
         service.status_view(&tool_run_id).await.to_json(true)["status"],
         "waiting"
@@ -4594,4 +4596,79 @@ async fn test_shutdown_stops_scheduled_timers_and_rejects_new_work() {
             .is_err(),
         "new scheduled work must be rejected after shutdown"
     );
+}
+
+#[tokio::test]
+async fn test_shutdown_cancels_and_joins_background_runner_before_returning() {
+    let service = Arc::new(ToolRunService::new());
+    let tool_run_id = service
+        .spawn_shell("ping -n 30 127.0.0.1 >NUL", "cmd", 1024, None)
+        .await
+        .unwrap();
+
+    service.shutdown().await;
+
+    assert!(service.task_tracker.is_empty());
+    assert_eq!(
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
+        "cancelled"
+    );
+}
+
+#[tokio::test]
+async fn test_concurrent_shutdown_calls_wait_for_the_same_task_drain() {
+    let service = Arc::new(ToolRunService::new());
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let (child_started_tx, child_started_rx) = tokio::sync::oneshot::channel();
+    let (release_child_tx, release_child_rx) = tokio::sync::oneshot::channel();
+    let service_for_child = service.clone();
+    service.spawn_owned_task(async move {
+        let _ = started_tx.send(());
+        let _ = release_rx.await;
+        service_for_child.spawn_owned_task(async move {
+            let _ = child_started_tx.send(());
+            let _ = release_child_rx.await;
+        });
+    });
+    started_rx.await.unwrap();
+
+    let mut first_shutdown = {
+        let service = service.clone();
+        tokio::spawn(async move { service.shutdown().await })
+    };
+    tokio::task::yield_now().await;
+    assert!(!first_shutdown.is_finished());
+
+    let second_shutdown = {
+        let service = service.clone();
+        tokio::spawn(async move { service.shutdown().await })
+    };
+    tokio::task::yield_now().await;
+    assert!(!second_shutdown.is_finished());
+
+    release_tx.send(()).unwrap();
+    child_started_rx
+        .await
+        .expect("tracked task should admit its terminal cleanup child");
+    assert!(!first_shutdown.is_finished());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut first_shutdown)
+            .await
+            .is_err(),
+        "first shutdown must wait while the nested cleanup task is active"
+    );
+    release_child_tx.send(()).unwrap();
+    // A nested task is counted before its parent exits, so neither shutdown
+    // call can observe a transient empty tracker and return early.
+    tokio::time::timeout(Duration::from_secs(1), &mut first_shutdown)
+        .await
+        .expect("shutdown should complete after both tracked tasks exit")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), second_shutdown)
+        .await
+        .expect("second shutdown should wait for the same drain")
+        .unwrap();
+    assert!(service.task_tracker.is_closed());
+    assert!(service.task_tracker.is_empty());
 }

@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{RwLock, oneshot};
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tracing::Instrument;
 
 use crate::tool_run_completion::ToolRunCompletionBus;
@@ -292,7 +293,11 @@ pub struct ToolRunService {
     /// app restarts.
     tool_run_store: RwLock<Option<ToolRunStore>>,
     /// Cancels process runners, output preview loops and scheduled timers
-    /// during application teardown.
+    /// during application teardown. Every service-owned task is tracked here
+    /// so shutdown can wait until its future and destructor have completed.
+    task_tracker: TaskTracker,
+    /// Makes concurrent shutdown calls share one drain operation.
+    shutdown_gate: tokio::sync::Mutex<()>,
     shutdown_token: CancellationToken,
     shutting_down: AtomicBool,
 }
@@ -322,9 +327,22 @@ impl ToolRunService {
             max_due_horizon_secs: RwLock::new(365 * 24 * 3600),
             lifecycle_events: ToolRunLifecycle::default(),
             tool_run_store: RwLock::new(None),
+            task_tracker: TaskTracker::new(),
+            shutdown_gate: tokio::sync::Mutex::new(()),
             shutdown_token: CancellationToken::new(),
             shutting_down: AtomicBool::new(false),
         }
+    }
+
+    /// Spawn a service-owned task. Admission is serialized by `spawn_gate` at
+    /// every external entry point; children spawned by a tracked task remain
+    /// covered until their parent exits, including during shutdown drain.
+    fn spawn_owned_task<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.task_tracker.spawn(future)
     }
 
     /// Unified completion receiver consumed by the agent layer.
@@ -563,7 +581,7 @@ impl ToolRunService {
         let service = Arc::clone(self);
         let tool_run_id = tool_run_id.to_string();
         let reason = reason.to_string();
-        tokio::spawn(async move {
+        self.spawn_owned_task(async move {
             let retry_policy = ToolRunPersistenceRetryPolicy::terminal_persistence();
             let mut completed_attempts = 1;
             while let RetryDecision::Retry {
@@ -705,18 +723,17 @@ impl ToolRunService {
     /// the next process instead of being silently cancelled on a normal app
     /// exit.
     pub async fn shutdown(&self) {
-        if self
-            .shutting_down
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+        let _shutdown = self.shutdown_gate.lock().await;
+        if self.task_tracker.is_closed() && self.task_tracker.is_empty() {
             return;
         }
 
         // Serialize shutdown with ToolRun admission. This closes the window in
         // which a process could be published after the application has begun
-        // teardown.
+        // teardown. Set the terminal flag only after acquiring the same gate,
+        // so an admission already holding it can finish registering its task.
         let _spawn_gate = self.spawn_gate.lock().await;
+        self.shutting_down.store(true, Ordering::Release);
         self.shutdown_token.cancel();
         let ids = {
             let tool_runs = self.tool_runs.read().await;
@@ -739,6 +756,8 @@ impl ToolRunService {
         for id in ids {
             let _ = self.cancel(&id).await;
         }
+        self.task_tracker.close();
+        self.task_tracker.wait().await;
     }
 
     /// Post-restart cleanup: ToolRun rows a previous process left `running` are
@@ -927,7 +946,7 @@ impl ToolRunService {
         }
         let service = Arc::clone(self);
         let tool_run_id = tool_run_id.to_string();
-        tokio::spawn(async move {
+        self.spawn_owned_task(async move {
             let policy = ToolRunPersistenceRetryPolicy::terminal_persistence();
             let mut completed_attempts = 1;
             let mut signal = RetrySignal::Failure { retryable: true };
@@ -1389,6 +1408,9 @@ impl ToolRunService {
         // snapshot; scheduled admission already uses the same gate through its
         // durable write. Keep the established background-then-scheduled order.
         let _mutation = self.spawn_gate.lock().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Ok(());
+        }
         self.cancel_owned_background_by_session_locked(session_id)
             .await;
         self.cancel_owned_scheduled_by_session_checked_locked(session_id)
@@ -1547,6 +1569,9 @@ impl ToolRunService {
             return 0;
         };
         let _mutation = self.spawn_gate.lock().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return 0;
+        }
         let rows = match store.list_pending_scheduled_tool_runs().await {
             Ok(rows) => rows,
             Err(error) => {

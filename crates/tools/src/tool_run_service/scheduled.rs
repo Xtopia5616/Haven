@@ -105,27 +105,28 @@ impl ToolRunService {
             let persist_tool_name = tool_name.clone();
             let persist_prompt = prompt.clone();
             let persist_watch_tool_run_id = watch_tool_run_id.clone();
-            let persisted = tokio::spawn(async move {
-                let result = store
-                    .save_scheduled_tool_run(
-                        persist_tool_run_id,
-                        persist_due_at,
-                        persist_title,
-                        persist_body,
-                        persist_mode,
-                        persist_session_id,
-                        persist_tool_name,
-                        args_json,
-                        persist_prompt,
-                        persist_watch_tool_run_id,
-                    )
-                    .await;
-                (mutation, result)
-            })
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!("scheduled ToolRun persistence worker failed: {error}")
-            })?;
+            let persisted = self
+                .spawn_owned_task(async move {
+                    let result = store
+                        .save_scheduled_tool_run(
+                            persist_tool_run_id,
+                            persist_due_at,
+                            persist_title,
+                            persist_body,
+                            persist_mode,
+                            persist_session_id,
+                            persist_tool_name,
+                            args_json,
+                            persist_prompt,
+                            persist_watch_tool_run_id,
+                        )
+                        .await;
+                    (mutation, result)
+                })
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("scheduled ToolRun persistence worker failed: {error}")
+                })?;
             let (mutation, result) = persisted;
             result.map_err(|error| {
                 anyhow::anyhow!(
@@ -178,14 +179,14 @@ impl ToolRunService {
         let fired_tool_run_id = tool_run_id.clone();
         let shutdown_token = self.shutdown_token.clone();
         if let Some(watched_tool_run_id) = watch_tool_run_id {
-            tokio::spawn(async move {
+            self.spawn_owned_task(async move {
                 tokio::select! {
                     _ = shutdown_token.cancelled() => {}
                     _ = service.watch_tool_run_timer(fired_tool_run_id, watched_tool_run_id) => {}
                 }
             });
         } else {
-            tokio::spawn(async move {
+            self.spawn_owned_task(async move {
                 tokio::select! {
                     _ = shutdown_token.cancelled() => {}
                     _ = async {
@@ -252,6 +253,9 @@ impl ToolRunService {
 
     pub(super) async fn fire_scheduled(self: &Arc<Self>, tool_run_id: &str) {
         let _mutation = self.spawn_gate.lock().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
         let started_at = chrono::Utc::now().to_rfc3339();
         let (schedule, session_id) = {
             let tool_runs = self.tool_runs.read().await;
@@ -450,7 +454,7 @@ impl ToolRunService {
         let service = Arc::clone(self);
         let shutdown_token = self.shutdown_token.clone();
         if let Some(watched_tool_run_id) = schedule.watch_tool_run_id.clone() {
-            tokio::spawn(async move {
+            self.spawn_owned_task(async move {
                 tokio::select! {
                     _ = shutdown_token.cancelled() => {}
                     _ = service.watch_tool_run_timer(tool_run_id, watched_tool_run_id) => {}
@@ -466,7 +470,7 @@ impl ToolRunService {
                 return;
             }
         };
-        tokio::spawn(async move {
+        self.spawn_owned_task(async move {
             tokio::select! {
                 _ = shutdown_token.cancelled() => {}
                 _ = async {
@@ -622,7 +626,7 @@ impl ToolRunService {
             return;
         }
         let service = Arc::clone(self);
-        tokio::spawn(async move {
+        self.spawn_owned_task(async move {
             let policy = ToolRunPersistenceRetryPolicy::terminal_persistence();
             let mut completed_attempts = 1;
             let mut signal = RetrySignal::Failure { retryable: true };
@@ -712,6 +716,9 @@ impl ToolRunService {
         error_reason: Option<&str>,
     ) -> anyhow::Result<bool> {
         let _mutation = self.spawn_gate.lock().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Ok(false);
+        }
         let _terminal = self.terminal_transition.lock().await;
         let (schedule, started_at) = {
             let tool_runs = self.tool_runs.read().await;
