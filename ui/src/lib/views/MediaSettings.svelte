@@ -28,7 +28,7 @@
 		OcrConfigInput,
 		ProviderConfigInput,
 	} from '$lib/contracts/generatedCommands.ts';
-	import type { ModelInfo } from '$lib/contracts/model.ts';
+	import type { DiscoveredModelView } from '$lib/contracts/model.ts';
 	import type {
 		ImageGenConfigDraft,
 		SttConfigDraft,
@@ -141,7 +141,7 @@
 		if (kind === 'gemini') return 'gemini-2.5-flash';
 		return 'whisper-1';
 	}
-	let sttModels = $state<ModelInfo[]>([]);
+	let sttModels = $state<DiscoveredModelView[]>([]);
 	let sttFetching = $state(false);
 	let sttFetchTimer: ReturnType<typeof setTimeout> | undefined;
 	function sttModelOptions(kind: string) {
@@ -160,8 +160,8 @@
 				{ value: 'universal-3-pro', label: 'universal-3-pro' },
 			];
 		return (sttModels || []).map((model) => ({
-			value: model.id,
-			label: model.name || model.id,
+			value: model.providerModelId,
+			label: model.displayName || model.providerModelId,
 		}));
 	}
 	async function fetchSttModels() {

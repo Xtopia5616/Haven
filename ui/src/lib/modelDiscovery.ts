@@ -2,7 +2,7 @@ import { reportError } from '$lib/errorHandling.ts';
 import { addNotification } from '$lib/notificationStore.ts';
 import { isKeylessProvider } from '$lib/apiStyle.ts';
 import { discoverModels } from '$lib/modelDiscoveryCommands.ts';
-import type { DiscoveredModelsByProviderName, ModelInfo } from '$lib/contracts/model.ts';
+import type { DiscoveredModelView, DiscoveredModelsByProviderName } from '$lib/contracts/model.ts';
 import type { ModelDraft, ProviderDraft } from '$lib/settingsModelTypes.ts';
 
 export type ModelDiscoveryProvider = Pick<
@@ -31,7 +31,7 @@ type ModelDiscoverySkipReason =
 	| 'configuration_changed';
 
 type ModelDiscoveryRefreshOutcome =
-	| { status: 'discovered'; models: ModelInfo[] }
+	| { status: 'discovered'; models: DiscoveredModelView[] }
 	| { status: 'failed' }
 	| { status: 'skipped'; reason: ModelDiscoverySkipReason };
 
@@ -62,7 +62,7 @@ export function applyDiscoveredModelMeta(
 	modelId: string,
 	{ overwrite = false }: { overwrite?: boolean } = {},
 ): DiscoveredModelMetadataPatch {
-	const model = (models[providerName] || []).find((item) => item.id === modelId);
+	const model = (models[providerName] || []).find((item) => item.providerModelId === modelId);
 	if (!model) {
 		if (overwrite) {
 			slot.context_window = null;
@@ -75,7 +75,7 @@ export function applyDiscoveredModelMeta(
 	}
 	const wrote: DiscoveredModelMetadataPatch = {};
 	if (overwrite || slot.context_window == null || slot.context_window === 0) {
-		const next = model.context_window && model.context_window > 0 ? model.context_window : null;
+		const next = model.contextWindow && model.contextWindow > 0 ? model.contextWindow : null;
 		if (slot.context_window !== next) {
 			slot.context_window = next;
 			wrote.context_window = next;
@@ -83,9 +83,7 @@ export function applyDiscoveredModelMeta(
 	}
 	if (overwrite || slot.cost_per_1k_input_tokens == null) {
 		const next =
-			typeof model.cost_per_1k_input_tokens === 'number'
-				? model.cost_per_1k_input_tokens
-				: null;
+			typeof model.costPer1kInputTokens === 'number' ? model.costPer1kInputTokens : null;
 		if (slot.cost_per_1k_input_tokens !== next) {
 			slot.cost_per_1k_input_tokens = next;
 			wrote.cost_per_1k_input_tokens = next;
@@ -93,9 +91,7 @@ export function applyDiscoveredModelMeta(
 	}
 	if (overwrite || slot.cost_per_1k_output_tokens == null) {
 		const next =
-			typeof model.cost_per_1k_output_tokens === 'number'
-				? model.cost_per_1k_output_tokens
-				: null;
+			typeof model.costPer1kOutputTokens === 'number' ? model.costPer1kOutputTokens : null;
 		if (slot.cost_per_1k_output_tokens !== next) {
 			slot.cost_per_1k_output_tokens = next;
 			wrote.cost_per_1k_output_tokens = next;
@@ -359,8 +355,8 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 		invalidateProviderCatalog: clearProviderCatalog,
 		modelOptions: (providerName: string) =>
 			(context.getDiscoveredModels()[providerName] || []).map((model) => ({
-				value: model.id,
-				label: model.name || model.id,
+				value: model.providerModelId,
+				label: model.displayName || model.providerModelId,
 			})),
 	};
 }

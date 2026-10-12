@@ -31,7 +31,17 @@ describe('ModelSettings provider surface', () => {
 	it('renders configured providers and their discovered model count', async () => {
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'discover_models') {
-				return [{ id: 'gpt-test', name: 'GPT Test', context_window: 128000 }];
+				return [
+					{
+						id: 'gpt-test',
+						provider: 'openai',
+						name: 'GPT Test',
+						context_window: 128000,
+						supports_streaming: true,
+						supports_tools: true,
+						supports_vision: false,
+					},
+				];
 			}
 			return [];
 		});
@@ -96,7 +106,17 @@ describe('ModelSettings provider surface', () => {
 	});
 
 	it('applies custom proxy and bypass hosts to model discovery', async () => {
-		invoke.mockResolvedValue([{ id: 'gpt-added', name: 'GPT Added' }]);
+		invoke.mockResolvedValue([
+			{
+				id: 'gpt-added',
+				provider: 'openai',
+				name: 'GPT Added',
+				context_window: 0,
+				supports_streaming: true,
+				supports_tools: true,
+				supports_vision: false,
+			},
+		]);
 		const config = { providers: [], models: [], request_policies: [] };
 		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
 
@@ -133,7 +153,17 @@ describe('ModelSettings provider surface', () => {
 	});
 
 	it('fetches models immediately with the selected auth scheme when adding a provider', async () => {
-		invoke.mockResolvedValue([{ id: 'gpt-added', name: 'GPT Added' }]);
+		invoke.mockResolvedValue([
+			{
+				id: 'gpt-added',
+				provider: 'openai',
+				name: 'GPT Added',
+				context_window: 0,
+				supports_streaming: true,
+				supports_tools: true,
+				supports_vision: false,
+			},
+		]);
 		const onProviderDiscoveryFailure = vi.fn();
 		const config = { providers: [], models: [], request_policies: [] };
 		renderSettings({
@@ -198,7 +228,9 @@ describe('ModelSettings provider surface', () => {
 		};
 		const config = {
 			providers: [provider],
-			models: [{ id: 'default', providerName: 'local', model: 'llama3', capabilities: ['chat'] }],
+			models: [
+				{ id: 'default', providerName: 'local', model: 'llama3', capabilities: ['chat'] },
+			],
 			request_policies: [],
 		};
 		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
