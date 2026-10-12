@@ -1152,25 +1152,10 @@ impl ReActEngine {
         self.usage_runtime.invalidate_after_truncate(session_id);
     }
 
-    /// Resolve the model's true context window for the request used by
-    /// `request`. Explicit `context_window` on the model endpoint takes
-    /// precedence; callers fall back to the context-limit default. Prefer
-    /// writing the window from provider `/models` metadata into the model slot
-    /// when the user picks a model. This is the real input budget for the
-    /// token-usage display, not the per-response output cap (`max_tokens`).
-    pub(super) fn context_window_for_request(
-        cfg: &haven_common::config::RouterConfig,
-        request: RequestKind,
-    ) -> Option<u32> {
-        cfg.route(request)
-            .and_then(|model| haven_llm::context_window_for(&model.endpoint))
-    }
-
-    /// Resolve the model's true context window for `request` using a per-router
-    /// cache. Cloning the full LlmConfig on every step (compactor window +
-    /// usage display) is wasteful when the router only changes via
-    /// `replace_router`; the cache is keyed by the router instance pointer so
-    /// a hot-swapped router invalidates it immediately.
+    /// Resolve the model's true context window for the request using a
+    /// per-router cache. The LLM router owns the endpoint lookup and returns
+    /// only the resolved window; this avoids repeating that lookup for each
+    /// compactor and usage display update.
     pub(super) async fn cached_context_window(&self, request: RequestKind) -> u32 {
         let router = self.router();
         let ptr = Arc::as_ptr(&router) as usize;
@@ -1180,13 +1165,11 @@ impl ReActEngine {
         if let Some(window) = self.context_windows.get(ptr, request) {
             return window;
         }
-        // Slow path: resolve from the live router config. A concurrent
-        // router swap between the fast-path miss and the insert is harmless:
-        // the entry is stored under the pointer that was current at read
-        // time and recomputed on the next miss.
-        let cfg = router.config().await;
-        let window = Self::context_window_for_request(&cfg, request)
-            .unwrap_or(self.limits().default_context_window);
+        // Slow path asks the router owner for the current request window. A
+        // concurrent router swap between the fast-path miss and the insert is
+        // harmless: the entry is stored under the pointer that was current at
+        // read time and recomputed on the next miss.
+        let window = router.context_window_for_request(request).await;
         self.context_windows.insert(ptr, request, window);
         window
     }

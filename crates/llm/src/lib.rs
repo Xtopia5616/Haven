@@ -22,9 +22,8 @@ mod tts;
 mod types;
 
 pub use adapters::{
-    WebSearchMode, api_style_for, is_known_api_style, is_openai_family_wire_style,
-    is_stt_only_style, is_tts_only_style, normalize_api_style, parse_web_search_mode,
-    resolve_web_search_mode, supports_builtin_web_search, web_search_result_of,
+    WebSearchMode, is_openai_family_wire_style, is_stt_only_style, is_tts_only_style,
+    normalize_api_style, parse_web_search_mode, supports_builtin_web_search, web_search_result_of,
 };
 pub use client::{LlmClient, endpoint_host};
 pub use image_gen::{
@@ -34,7 +33,10 @@ pub use image_gen::{
 pub use media::project_media_plan;
 pub use ocr::{OcrClient, OcrResult, build_ocr_client};
 pub use registry::{ModelDiscoveryAuthHeader, ModelInfo, ModelRegistry, context_window_for};
-pub use router::{LlmRouter, StreamAttemptHooks, StreamAttemptOutputDisposition};
+pub use router::{
+    EmbeddingRouteIdentity, LlmRouter, RequestRouteDiagnostics, RequestRouteIssue,
+    StreamAttemptHooks, StreamAttemptOutputDisposition,
+};
 pub use stt::{
     McpToolCaller, McpToolOutcome, ResolvedSttConfig, SttClient, build_stt_client,
     resolve_stt_config,

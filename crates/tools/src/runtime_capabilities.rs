@@ -7,7 +7,7 @@
 use crate::builtin::media::MediaCapabilities;
 use crate::catalog::McpServerIndexEntry;
 use crate::tool_runtime::{PlatformRuntime, RuntimeCapabilities, WebSearchAvailability};
-use haven_common::config::{ModelEndpoint, RequestKind};
+use haven_common::config::RequestKind;
 use haven_llm::LlmRouter;
 use std::sync::Arc;
 
@@ -16,8 +16,14 @@ pub(crate) async fn resolve_snapshot(
     mcp_index: &[McpServerIndexEntry],
 ) -> ToolCapabilitySnapshot {
     let media = resolve_tool_media_capabilities(platform).await;
-    let chat_endpoint = configured_chat_endpoint(platform.router.as_ref()).await;
-    let provider_search_available = provider_search_available(chat_endpoint.as_ref());
+    let provider_search_available = match &platform.router {
+        Some(router) => {
+            router
+                .provider_web_search_available(RequestKind::Chat)
+                .await
+        }
+        None => false,
+    };
     assemble_tool_capability_snapshot(media, provider_search_available, mcp_index)
 }
 
@@ -79,54 +85,13 @@ async fn resolve_backend_media_capabilities(
             .image
             .is_supported();
 
-    let transcribe_available = if router
-        .is_request_configured(RequestKind::Transcription)
-        .await
-    {
-        let configured = router
-            .is_request_configured(RequestKind::Transcription)
-            .await;
-        let profile = router.capability_profile_for_request(RequestKind::Transcription);
-        let style = {
-            let config = router.config().await;
-            config
-                .route(RequestKind::Transcription)
-                .map(|model| haven_llm::api_style_for(&model.endpoint))
-                .unwrap_or("openai-chat")
-        };
-        let unknown_custom_route = profile.audio == haven_common::media::CapabilitySupport::Unknown
-            && !haven_llm::is_known_api_style(style);
-        configured
-            && (profile.audio.is_supported()
-                || haven_llm::is_stt_only_style(style)
-                || unknown_custom_route)
-    } else {
-        false
-    };
+    let transcribe_available = router.transcription_available().await;
 
     MediaCapabilities {
         describe: vision_available,
         transcribe: transcribe_available || dedicated_stt_available,
         ..MediaCapabilities::default()
     }
-}
-
-async fn configured_chat_endpoint(router: Option<&Arc<LlmRouter>>) -> Option<ModelEndpoint> {
-    let router = router?;
-    let config = router.config().await;
-    config
-        .route(RequestKind::Chat)
-        .map(|model| model.endpoint.clone())
-}
-
-fn provider_search_available(chat_endpoint: Option<&ModelEndpoint>) -> bool {
-    let Some(endpoint) = chat_endpoint else {
-        // A default endpoint is not evidence that a Chat route is configured.
-        return false;
-    };
-    let style = haven_llm::api_style_for(endpoint);
-    let mode = haven_llm::resolve_web_search_mode(endpoint);
-    !matches!(mode, haven_llm::WebSearchMode::Off) && haven_llm::supports_builtin_web_search(style)
 }
 
 fn assemble_tool_capability_snapshot(
@@ -193,11 +158,6 @@ mod tests {
             resolve_web_search_availability(false, false),
             WebSearchAvailability::Unavailable
         );
-    }
-
-    #[test]
-    fn provider_search_requires_a_configured_chat_route() {
-        assert!(!provider_search_available(None));
     }
 
     #[test]

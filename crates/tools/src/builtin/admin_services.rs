@@ -9,7 +9,7 @@ use crate::ToolRegistry;
 use anyhow::{Error, Result};
 use haven_common::config::{
     AppConfig, ConfigLoader, ConfigPatch, ConfigVersion, LogConfig, LogLevel, McpServerConfig,
-    RequestKind, RouterConfig, Settings, endpoint_credentials_ready,
+    RequestKind, Settings,
 };
 use haven_common::mcp::McpServerTransport;
 use haven_mcp::McpClientStatus;
@@ -473,15 +473,10 @@ impl AdminServices {
         }
 
         let models = if let Some(router) = &self.context.router {
-            let router_config = router.config().await.clone();
-            let route_details = RequestKind::ALL
-                .iter()
-                .copied()
-                .map(|request| (request, diagnostic_route_metadata(&router_config, request)))
-                .collect::<Vec<_>>();
+            let route_details = router.request_route_diagnostics().await;
             let configured = route_details
                 .iter()
-                .map(|(request, metadata)| (*request, metadata.configured))
+                .map(|metadata| (metadata.request, metadata.configured))
                 .collect::<Vec<_>>();
             let health_router = Arc::clone(router);
             let mut models = collect_diagnostic_model_health(
@@ -498,9 +493,9 @@ impl AdminServices {
                 },
             )
             .await;
-            for (request, metadata) in route_details {
-                if let Some(status) = models.get_mut(request.as_str()) {
-                    status.route_issue = metadata.route_issue.map(str::to_string);
+            for metadata in route_details {
+                if let Some(status) = models.get_mut(metadata.request.as_str()) {
+                    status.route_issue = metadata.issue.map(|issue| issue.as_str().to_string());
                     status.model_config_id = metadata.model_config_id;
                     status.provider = metadata.provider;
                     status.provider_model_id = metadata.provider_model_id;
@@ -1359,59 +1354,6 @@ where
     .collect()
 }
 
-struct DiagnosticRouteMetadata {
-    configured: bool,
-    route_issue: Option<&'static str>,
-    model_config_id: Option<String>,
-    provider: Option<String>,
-    provider_model_id: Option<String>,
-}
-
-fn diagnostic_route_metadata(
-    config: &RouterConfig,
-    request: RequestKind,
-) -> DiagnosticRouteMetadata {
-    let Some(policy) = config.policy(request) else {
-        return DiagnosticRouteMetadata {
-            configured: false,
-            route_issue: Some("missing_request_policy"),
-            model_config_id: None,
-            provider: None,
-            provider_model_id: None,
-        };
-    };
-    let Some(model) = config.model(&policy.primary) else {
-        return DiagnosticRouteMetadata {
-            configured: false,
-            route_issue: Some("missing_model_config"),
-            model_config_id: Some(policy.primary.clone()),
-            provider: None,
-            provider_model_id: None,
-        };
-    };
-    let model_config_id = Some(model.id.clone());
-    let provider =
-        (!model.endpoint.provider.trim().is_empty()).then(|| model.endpoint.provider.clone());
-    let provider_model_id =
-        (!model.endpoint.model_name.trim().is_empty()).then(|| model.endpoint.model_name.clone());
-    let issue = if provider.is_none() || provider_model_id.is_none() {
-        Some("model_assignment_incomplete")
-    } else if !model.capabilities.contains(&request.required_capability()) {
-        Some("required_capability_not_declared")
-    } else if !endpoint_credentials_ready(&model.endpoint) {
-        Some("provider_credentials_missing")
-    } else {
-        None
-    };
-    DiagnosticRouteMetadata {
-        configured: issue.is_none(),
-        route_issue: issue,
-        model_config_id,
-        provider,
-        provider_model_id,
-    }
-}
-
 pub(crate) fn sanitize_log_line(line: &str) -> String {
     const SENSITIVE_MARKERS: &[&str] = &[
         "api_key",
@@ -1450,48 +1392,7 @@ pub(crate) fn sanitize_diagnostic(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_common::config::{Capability, ModelEndpoint, RequestPolicy, RoutedModel};
     use tokio::sync::Barrier;
-
-    #[test]
-    fn diagnostic_route_explains_missing_policy_and_keeps_model_identities_distinct() {
-        let mut config = RouterConfig::default();
-        let missing_policy = diagnostic_route_metadata(&config, RequestKind::Vision);
-        assert!(!missing_policy.configured);
-        assert_eq!(missing_policy.route_issue, Some("missing_request_policy"));
-
-        config.request_policies.push(RequestPolicy {
-            request: RequestKind::Vision,
-            primary: "vision-profile".into(),
-        });
-        let missing_model = diagnostic_route_metadata(&config, RequestKind::Vision);
-        assert_eq!(missing_model.route_issue, Some("missing_model_config"));
-        assert_eq!(
-            missing_model.model_config_id.as_deref(),
-            Some("vision-profile")
-        );
-
-        config.models.push(RoutedModel {
-            id: "vision-profile".into(),
-            endpoint: ModelEndpoint {
-                provider: "deepseek".into(),
-                model_name: "deepseek-flash".into(),
-                api_key: "test-credential".into(),
-                ..Default::default()
-            },
-            capabilities: vec![Capability::Vision],
-        });
-        let configured = diagnostic_route_metadata(&config, RequestKind::Vision);
-        assert!(configured.configured);
-        assert_eq!(
-            configured.model_config_id.as_deref(),
-            Some("vision-profile")
-        );
-        assert_eq!(
-            configured.provider_model_id.as_deref(),
-            Some("deepseek-flash")
-        );
-    }
 
     #[tokio::test]
     async fn diagnostic_model_checks_run_concurrently_and_keep_unconfigured_routes() {

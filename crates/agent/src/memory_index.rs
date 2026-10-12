@@ -8,13 +8,10 @@
 
 use std::sync::Arc;
 
-use haven_common::config::{ModelEndpoint, RequestKind};
 use haven_llm::EmbeddingRequest;
 use haven_llm::LlmRouter;
-use haven_llm::api_style_for;
 use haven_memory::{MemoryEmbeddingStore, MemoryEmbeddingVector, MemoryRecallStore};
 use haven_memory::{MemoryHit, MemoryQuery};
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 /// Maximum inputs accepted by one embedding request, regardless of the
@@ -25,23 +22,6 @@ const MAX_EMBEDDING_BATCH_SIZE: usize = 10;
 /// Clamp a configured embedding batch to the provider-safe range.
 pub(crate) fn embedding_batch_size(configured_size: usize) -> usize {
     configured_size.clamp(1, MAX_EMBEDDING_BATCH_SIZE)
-}
-
-/// The persisted model column is a vector-space identity, not merely a
-/// provider model label. The same label served by two gateways can produce
-/// incompatible vectors, so include the effective wire style and endpoint in
-/// an opaque digest. Keeping the endpoint out of the stored value avoids
-/// leaking private gateway URLs through memory recall results.
-pub(crate) fn embedding_index_model(endpoint: &ModelEndpoint) -> String {
-    let canonical = format!(
-        "provider={}\nstyle={}\nbase_url={}\nmodel={}",
-        endpoint.provider.trim().to_ascii_lowercase(),
-        api_style_for(endpoint),
-        endpoint.base_url.trim().trim_end_matches('/'),
-        endpoint.model_name.trim(),
-    );
-    let digest = Sha256::digest(canonical.as_bytes());
-    format!("embedding-v2:{digest:x}")
 }
 
 #[derive(Debug, Clone)]
@@ -80,25 +60,13 @@ impl MemoryEmbeddingIndex {
     /// Resolve the configured vector-space identity once per operation rather
     /// than inferring it from persisted rows.
     async fn configured_identity(&self) -> Option<EmbeddingIdentity> {
-        if !self
-            .router
-            .is_request_configured(RequestKind::Embedding)
+        self.router
+            .embedding_route_identity()
             .await
-        {
-            return None;
-        }
-        let endpoint = self
-            .router
-            .config()
-            .await
-            .route(RequestKind::Embedding)
-            .map(|model| &model.endpoint)
-            .cloned()
-            .unwrap_or_default();
-        (!endpoint.model_name.trim().is_empty()).then_some(EmbeddingIdentity {
-            storage_model: embedding_index_model(&endpoint),
-            provider_model: endpoint.model_name,
-        })
+            .map(|identity| EmbeddingIdentity {
+                storage_model: identity.vector_space_id,
+                provider_model: identity.provider_model_id,
+            })
     }
 
     /// Return the identity used to scope persisted vectors and prompt-memory
@@ -373,7 +341,9 @@ impl MemoryEmbeddingIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_common::config::{Capability, RequestPolicy, RoutedModel, RouterConfig};
+    use haven_common::config::{
+        Capability, ModelEndpoint, RequestKind, RequestPolicy, RoutedModel, RouterConfig,
+    };
     use haven_memory::{Database, MemoryRecallStore};
 
     fn recall_store(db: Arc<Database>) -> MemoryRecallStore {
@@ -406,27 +376,6 @@ mod tests {
         assert_eq!(embedding_batch_size(0), 1);
         assert_eq!(embedding_batch_size(4), 4);
         assert_eq!(embedding_batch_size(64), MAX_EMBEDDING_BATCH_SIZE);
-    }
-
-    #[test]
-    fn embedding_index_model_partitions_same_label_across_endpoints() {
-        let first = ModelEndpoint {
-            provider: "openai".into(),
-            model_name: "text-embedding-3-small".into(),
-            base_url: "https://gateway-a.example/v1/".into(),
-            ..ModelEndpoint::default()
-        };
-        let second = ModelEndpoint {
-            base_url: "https://gateway-b.example/v1".into(),
-            ..first.clone()
-        };
-
-        assert_ne!(
-            embedding_index_model(&first),
-            embedding_index_model(&second)
-        );
-        assert!(embedding_index_model(&first).starts_with("embedding-v2:"));
-        assert!(!embedding_index_model(&first).contains("gateway-a"));
     }
 
     #[tokio::test]

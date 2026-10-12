@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -34,10 +35,113 @@ use crate::types::{
     StreamRequest, Usage,
 };
 use futures_util::future::join_all;
+use haven_common::config::ModelEndpoint;
 #[cfg(any(test, feature = "test-support"))]
-use haven_common::config::{Capability, ModelEndpoint, RoutedModel};
+use haven_common::config::{Capability, RoutedModel};
 use haven_common::config::{RequestKind, RouterConfig, compute_cost_usd};
 use haven_common::media::CapabilityProfile;
+use haven_common::media::CapabilitySupport;
+
+/// Safe route metadata for diagnostics. It intentionally omits endpoint URLs,
+/// credentials, proxy settings, and authentication details.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestRouteDiagnostics {
+    pub request: RequestKind,
+    pub configured: bool,
+    pub issue: Option<RequestRouteIssue>,
+    pub model_config_id: Option<String>,
+    pub provider: Option<String>,
+    pub provider_model_id: Option<String>,
+}
+
+/// Why a request kind does not currently resolve to a usable configured model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestRouteIssue {
+    MissingRequestPolicy,
+    MissingModelConfig,
+    ModelAssignmentIncomplete,
+    RequiredCapabilityNotDeclared,
+    ProviderCredentialsMissing,
+}
+
+impl RequestRouteIssue {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingRequestPolicy => "missing_request_policy",
+            Self::MissingModelConfig => "missing_model_config",
+            Self::ModelAssignmentIncomplete => "model_assignment_incomplete",
+            Self::RequiredCapabilityNotDeclared => "required_capability_not_declared",
+            Self::ProviderCredentialsMissing => "provider_credentials_missing",
+        }
+    }
+}
+
+/// The provider model label and an opaque, stable vector-space identity.
+///
+/// The identity includes provider, effective wire style, normalized endpoint
+/// URL, and provider model ID. The endpoint itself is never returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingRouteIdentity {
+    pub provider_model_id: String,
+    pub vector_space_id: String,
+}
+
+fn request_route_diagnostics(
+    config: &RouterConfig,
+    request: RequestKind,
+) -> RequestRouteDiagnostics {
+    let missing = |issue| RequestRouteDiagnostics {
+        request,
+        configured: false,
+        issue: Some(issue),
+        model_config_id: None,
+        provider: None,
+        provider_model_id: None,
+    };
+    let Some(policy) = config.policy(request) else {
+        return missing(RequestRouteIssue::MissingRequestPolicy);
+    };
+    let Some(model) = config.model(&policy.primary) else {
+        let mut diagnostics = missing(RequestRouteIssue::MissingModelConfig);
+        diagnostics.model_config_id = Some(policy.primary.clone());
+        return diagnostics;
+    };
+
+    let model_config_id = Some(model.id.clone());
+    let provider =
+        (!model.endpoint.provider.trim().is_empty()).then(|| model.endpoint.provider.clone());
+    let provider_model_id =
+        (!model.endpoint.model_name.trim().is_empty()).then(|| model.endpoint.model_name.clone());
+    let issue = if provider.is_none() || provider_model_id.is_none() {
+        Some(RequestRouteIssue::ModelAssignmentIncomplete)
+    } else if !model.capabilities.contains(&request.required_capability()) {
+        Some(RequestRouteIssue::RequiredCapabilityNotDeclared)
+    } else if !haven_common::config::endpoint_credentials_ready(&model.endpoint) {
+        Some(RequestRouteIssue::ProviderCredentialsMissing)
+    } else {
+        None
+    };
+    RequestRouteDiagnostics {
+        request,
+        configured: issue.is_none(),
+        issue,
+        model_config_id,
+        provider,
+        provider_model_id,
+    }
+}
+
+fn embedding_vector_space_id(endpoint: &ModelEndpoint) -> String {
+    let canonical = format!(
+        "provider={}\nstyle={}\nbase_url={}\nmodel={}",
+        endpoint.provider.trim().to_ascii_lowercase(),
+        crate::adapters::api_style_for(endpoint),
+        endpoint.base_url.trim().trim_end_matches('/'),
+        endpoint.model_name.trim(),
+    );
+    let digest = Sha256::digest(canonical.as_bytes());
+    format!("embedding-v2:{digest:x}")
+}
 
 // ---------------------------------------------------------------------------
 // §2.6: Per-endpoint circuit breaker state
@@ -478,6 +582,71 @@ impl LlmRouter {
     pub async fn is_request_configured(&self, request: RequestKind) -> bool {
         let config = self.config.read().await;
         self.model_directory.is_request_configured(&config, request)
+    }
+
+    /// Whether the configured transcription route can serve speech-to-text.
+    ///
+    /// This preserves the router's handling for declared adapter support,
+    /// STT-only providers, and unknown custom protocol routes.
+    pub async fn transcription_available(&self) -> bool {
+        let config = self.config.read().await;
+        let Some(endpoint) = self
+            .model_directory
+            .endpoint_for_request(&config, RequestKind::Transcription)
+        else {
+            return false;
+        };
+        let profile = self
+            .model_directory
+            .capability_profile_for_request(RequestKind::Transcription);
+        let style = crate::adapters::api_style_for(endpoint);
+        let unknown_custom_route = profile.audio == CapabilitySupport::Unknown
+            && !crate::adapters::is_known_api_style(style);
+
+        profile.audio.is_supported()
+            || crate::adapters::is_stt_only_style(style)
+            || unknown_custom_route
+    }
+
+    /// Whether the configured route has provider-native web search enabled
+    /// and supports the corresponding wire-level search tool.
+    pub async fn provider_web_search_available(&self, request: RequestKind) -> bool {
+        let config = self.config.read().await;
+        let Some(endpoint) = self.model_directory.endpoint_for_request(&config, request) else {
+            return false;
+        };
+        let style = crate::adapters::api_style_for(endpoint);
+        !matches!(
+            crate::adapters::resolve_web_search_mode(endpoint),
+            crate::adapters::WebSearchMode::Off
+        ) && haven_common::config::supports_builtin_web_search(style)
+    }
+
+    /// Return route diagnostics without exposing the router's configuration
+    /// snapshot or endpoint security settings.
+    pub async fn request_route_diagnostics(&self) -> Vec<RequestRouteDiagnostics> {
+        let config = self.config.read().await;
+        RequestKind::ALL
+            .iter()
+            .copied()
+            .map(|request| request_route_diagnostics(&config, request))
+            .collect()
+    }
+
+    /// Return the configured embedding model label and an opaque vector-space
+    /// identity. A missing or blank provider model label is not indexable.
+    pub async fn embedding_route_identity(&self) -> Option<EmbeddingRouteIdentity> {
+        let config = self.config.read().await;
+        let endpoint = self
+            .model_directory
+            .endpoint_for_request(&config, RequestKind::Embedding)?;
+        if endpoint.model_name.trim().is_empty() {
+            return None;
+        }
+        Some(EmbeddingRouteIdentity {
+            provider_model_id: endpoint.model_name.clone(),
+            vector_space_id: embedding_vector_space_id(endpoint),
+        })
     }
 
     /// Test utility: set the configured state of a request (empty vs non-empty
@@ -1113,10 +1282,6 @@ impl LlmRouter {
         );
     }
 
-    pub async fn config(&self) -> tokio::sync::RwLockReadGuard<'_, RouterConfig> {
-        self.config.read().await
-    }
-
     /// Compute USD cost with provider-normalized cache accounting. Unset
     /// cache-lane prices fall back to the ordinary input rate.
     pub async fn compute_cost(&self, request: RequestKind, usage: &Usage) -> Option<f64> {
@@ -1140,6 +1305,7 @@ mod tests {
     use crate::types::{FinishReason, LlmError::Unknown, PromptRequest, Usage};
     use async_trait::async_trait;
     use futures_util::{StreamExt, stream};
+    use haven_common::config::RequestPolicy;
     use haven_common::types::CanonicalToolCall;
     use std::pin::Pin;
 
@@ -2030,6 +2196,209 @@ mod tests {
         assert!(
             router.is_request_configured(RequestKind::Embedding).await,
             "embedding_model api_key is set"
+        );
+    }
+
+    #[test]
+    fn request_route_diagnostics_preserve_issue_order_and_omit_secrets() {
+        assert_eq!(
+            RequestRouteIssue::MissingRequestPolicy.as_str(),
+            "missing_request_policy"
+        );
+        assert_eq!(
+            RequestRouteIssue::MissingModelConfig.as_str(),
+            "missing_model_config"
+        );
+        assert_eq!(
+            RequestRouteIssue::ModelAssignmentIncomplete.as_str(),
+            "model_assignment_incomplete"
+        );
+        assert_eq!(
+            RequestRouteIssue::RequiredCapabilityNotDeclared.as_str(),
+            "required_capability_not_declared"
+        );
+        assert_eq!(
+            RequestRouteIssue::ProviderCredentialsMissing.as_str(),
+            "provider_credentials_missing"
+        );
+
+        let mut config = RouterConfig::default();
+        assert_eq!(
+            request_route_diagnostics(&config, RequestKind::Vision).issue,
+            Some(RequestRouteIssue::MissingRequestPolicy)
+        );
+
+        config.request_policies.push(RequestPolicy {
+            request: RequestKind::Vision,
+            primary: "vision-profile".into(),
+        });
+        let missing_model = request_route_diagnostics(&config, RequestKind::Vision);
+        assert_eq!(
+            missing_model.issue,
+            Some(RequestRouteIssue::MissingModelConfig)
+        );
+        assert_eq!(
+            missing_model.model_config_id.as_deref(),
+            Some("vision-profile")
+        );
+
+        let endpoint = ModelEndpoint {
+            provider: "deepseek".into(),
+            model_name: "deepseek-flash".into(),
+            api_key: "diagnostic-secret-key".into(),
+            base_url: "https://private-gateway.example/v1".into(),
+            proxy_url: Some("http://private-proxy.example:8080".into()),
+            no_proxy: Some("internal.example".into()),
+            ..Default::default()
+        };
+        config.models.push(RoutedModel {
+            id: "vision-profile".into(),
+            endpoint: endpoint.clone(),
+            capabilities: vec![Capability::Vision],
+        });
+        let configured = request_route_diagnostics(&config, RequestKind::Vision);
+        assert!(configured.configured);
+        assert_eq!(configured.issue, None);
+        assert_eq!(
+            configured.model_config_id.as_deref(),
+            Some("vision-profile")
+        );
+        assert_eq!(configured.provider.as_deref(), Some("deepseek"));
+        assert_eq!(
+            configured.provider_model_id.as_deref(),
+            Some("deepseek-flash")
+        );
+        let safe_diagnostics = format!("{configured:?}");
+        assert!(!safe_diagnostics.contains("diagnostic-secret-key"));
+        assert!(!safe_diagnostics.contains("private-gateway"));
+        assert!(!safe_diagnostics.contains("private-proxy"));
+
+        config.models[0].capabilities.clear();
+        assert_eq!(
+            request_route_diagnostics(&config, RequestKind::Vision).issue,
+            Some(RequestRouteIssue::RequiredCapabilityNotDeclared)
+        );
+        config.models[0].capabilities.push(Capability::Vision);
+        config.models[0].endpoint.api_key.clear();
+        assert_eq!(
+            request_route_diagnostics(&config, RequestKind::Vision).issue,
+            Some(RequestRouteIssue::ProviderCredentialsMissing)
+        );
+        config.models[0].endpoint.api_key = "diagnostic-secret-key".into();
+        config.models[0].endpoint.provider.clear();
+        assert_eq!(
+            request_route_diagnostics(&config, RequestKind::Vision).issue,
+            Some(RequestRouteIssue::ModelAssignmentIncomplete)
+        );
+    }
+
+    #[tokio::test]
+    async fn embedding_route_identity_preserves_the_opaque_index_key() {
+        let endpoint = ModelEndpoint {
+            provider: "openai".into(),
+            model_name: " text-embedding-3-small ".into(),
+            api_key: "diagnostic-secret-key".into(),
+            base_url: "https://gateway-a.example/v1/".into(),
+            ..Default::default()
+        };
+        let router = LlmRouter::new(RouterConfig {
+            models: vec![RoutedModel {
+                id: "embedding".into(),
+                endpoint,
+                capabilities: vec![Capability::Embedding],
+            }],
+            request_policies: vec![RequestPolicy {
+                request: RequestKind::Embedding,
+                primary: "embedding".into(),
+            }],
+            ..Default::default()
+        });
+        let identity = router.embedding_route_identity().await.unwrap();
+        assert_eq!(identity.provider_model_id, " text-embedding-3-small ");
+        assert_eq!(
+            identity.vector_space_id,
+            "embedding-v2:bfbf7507d669858025eb8dbd2803bf6b781232690bd951a14ae3ca785f25450d"
+        );
+        assert!(!format!("{identity:?}").contains("gateway-a"));
+        assert!(!format!("{identity:?}").contains("diagnostic-secret-key"));
+    }
+
+    #[tokio::test]
+    async fn narrow_provider_capability_queries_respect_route_and_adapter_policy() {
+        let make_router =
+            |request: RequestKind, api_style: &str, web_search: Option<&str>, provider: &str| {
+                LlmRouter::new(RouterConfig {
+                    models: vec![RoutedModel {
+                        id: "selected".into(),
+                        endpoint: ModelEndpoint {
+                            provider: provider.into(),
+                            api_style: Some(api_style.into()),
+                            model_name: "selected-model".into(),
+                            api_key: "test-key".into(),
+                            web_search: web_search.map(str::to_string),
+                            ..Default::default()
+                        },
+                        capabilities: vec![request.required_capability()],
+                    }],
+                    request_policies: vec![RequestPolicy {
+                        request,
+                        primary: "selected".into(),
+                    }],
+                    ..Default::default()
+                })
+            };
+
+        let search = make_router(
+            RequestKind::Chat,
+            "openai-responses",
+            Some("auto"),
+            "openai",
+        );
+        assert!(
+            search
+                .provider_web_search_available(RequestKind::Chat)
+                .await
+        );
+        let search_off = make_router(RequestKind::Chat, "openai-responses", Some("off"), "openai");
+        assert!(
+            !search_off
+                .provider_web_search_available(RequestKind::Chat)
+                .await
+        );
+        assert!(
+            !LlmRouter::new(RouterConfig::default())
+                .provider_web_search_available(RequestKind::Chat)
+                .await
+        );
+
+        let stt_only = make_router(RequestKind::Transcription, "deepgram", None, "deepgram");
+        assert!(stt_only.transcription_available().await);
+        let unsupported = make_router(RequestKind::Transcription, "anthropic", None, "anthropic");
+        assert!(!unsupported.transcription_available().await);
+        let custom = make_router(
+            RequestKind::Transcription,
+            "custom-wire",
+            None,
+            "custom-provider",
+        );
+        assert!(custom.transcription_available().await);
+        assert!(
+            !LlmRouter::new(RouterConfig::default())
+                .transcription_available()
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn request_route_diagnostics_return_all_routes_in_stable_order() {
+        let router = LlmRouter::new(RouterConfig::default());
+        let diagnostics = router.request_route_diagnostics().await;
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|route| route.request)
+                .collect::<Vec<_>>(),
+            RequestKind::ALL.to_vec()
         );
     }
 

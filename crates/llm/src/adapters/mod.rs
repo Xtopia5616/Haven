@@ -235,7 +235,7 @@ pub(crate) fn apply_wire_inject_prefix(
 /// Resolve the wire protocol style for an endpoint. An explicit canonical
 /// `api_style` wins; an omitted style uses the neutral OpenAI-compatible
 /// protocol. Unknown values remain invalid and are never remapped.
-pub fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
+pub(crate) fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
     if let Some(style) = &endpoint.api_style
         && !style.trim().is_empty()
     {
