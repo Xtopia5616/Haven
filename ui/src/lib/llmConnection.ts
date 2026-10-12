@@ -27,7 +27,7 @@ const REASONS: Record<LlmConnectionFailureReason, string> = {
 };
 
 export function llmConnectionReasonText(reason: unknown): string {
-	return typeof reason === 'string' && reason in REASONS
+	return typeof reason === 'string' && Object.hasOwn(REASONS, reason)
 		? REASONS[reason as LlmConnectionFailureReason]
 		: REASONS.unknown;
 }
@@ -41,9 +41,10 @@ export function normalizeLlmConnectionReport(value: unknown): LlmConnectionRepor
 	if (status !== 'ready' && status !== 'disconnected' && status !== 'unconfigured') {
 		return { status: 'disconnected', reason: 'unknown' };
 	}
-	const reason = typeof value.reason === 'string' && value.reason in REASONS
-		? (value.reason as LlmConnectionFailureReason)
-		: undefined;
+	const reason =
+		typeof value.reason === 'string' && Object.hasOwn(REASONS, value.reason)
+			? (value.reason as LlmConnectionFailureReason)
+			: undefined;
 	return {
 		status,
 		reason,
@@ -53,9 +54,8 @@ export function normalizeLlmConnectionReport(value: unknown): LlmConnectionRepor
 }
 
 export function formatLlmConnectionFailure(report: LlmConnectionReportView): string {
-	const identity = report.provider && report.model
-		? `（${report.provider} / ${report.model}）`
-		: '';
+	const identity =
+		report.provider && report.model ? `（${report.provider} / ${report.model}）` : '';
 	if (report.reason === 'circuit_open') {
 		return `默认模型${identity}处于保护状态，点击“继续生成”可立即重试`;
 	}
@@ -63,8 +63,7 @@ export function formatLlmConnectionFailure(report: LlmConnectionReportView): str
 }
 
 export function formatLlmConnectionRecovery(report: LlmConnectionReportView): string {
-	const identity = report.provider && report.model
-		? `（${report.provider} / ${report.model}）`
-		: '';
+	const identity =
+		report.provider && report.model ? `（${report.provider} / ${report.model}）` : '';
 	return `默认模型${identity}已恢复连接`;
 }

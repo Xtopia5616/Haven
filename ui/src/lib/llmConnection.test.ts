@@ -32,6 +32,15 @@ describe('llm connection report', () => {
 		expect(llmConnectionReasonText('secret')).toBe('暂时无法确定具体原因');
 	});
 
+	it('rejects inherited object-property names as failure reasons', () => {
+		for (const reason of ['constructor', 'toString', '__proto__']) {
+			expect(llmConnectionReasonText(reason)).toBe('暂时无法确定具体原因');
+			expect(
+				normalizeLlmConnectionReport({ status: 'disconnected', reason }).reason,
+			).toBeUndefined();
+		}
+	});
+
 	it('formats recovery without exposing an endpoint or credential', () => {
 		const text = formatLlmConnectionRecovery({
 			status: 'ready',
