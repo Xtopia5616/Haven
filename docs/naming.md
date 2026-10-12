@@ -39,7 +39,7 @@
 - **联网搜索模式复用闭合 enum**：`set_web_search.mode` 使用 LLM `WebSearchMode` / generated `WebSearchModeInput`，UI 选择只提交 `off` / `auto` / `always`；可选 `null` 仍表示清除模型覆盖，并不等于显式 `off`（ADR 0734）。
 - **Session history status filter 使用严格查询 enum**：搜索与导出请求使用 Memory `SessionHistoryStatusFilter` / generated `SessionHistoryStatusFilterInput`；空 UI 选择映射为无过滤。它与生命周期 `SessionStatus` 分开，避免把生命周期未知值的 fail-safe fallback 暴露为 IPC 输入行为（ADR 0735）。
 - **ToolRun completion notification 复用 App wire enum**：`notification:show` 的 source/status/discriminator 使用 App `ToolRunKindDto`、`ToolRunCompletionStatusDto`、`AgentNotificationKind`，前端 payload 类型与 runtime validator 引用 Rust 生成的类型和值清单。Agent 保留通知的 source/status runtime owner，App bridge 显式映射到 wire vocabulary（ADR 0736）。
-- **录音停止原因是 App wire enum**：`RecordingStopReasonDto` 覆盖 pipeline stop 与 App 手动取消，生成到前端事件 contract；Input `RecordingReason` 仍拥有采集域语义。VAD signal/state 按既有扩展约定保持开放字符串。Overlay renderer 不保留不可达的停止原因 prop（ADR 0768）。
+- **录音/VAD wire 值复用 App 闭枚举**：`RecordingStopReasonDto` 覆盖 pipeline stop 与 App 手动取消，`VadSignalDto` / `VadStateDto` 表达录音状态事件；三者生成到前端 contract 并由 mapper 校验。Input `RecordingReason` 与 `VadSignal` / `VadState` 仍拥有采集域语义。Overlay renderer 不保留不可达的停止原因 prop（ADR 0768、1018）。
 - **图标按钮使用注册表键**：`MaterialIconButton.icon` 只接受 `icons.ts::IconName`，固定应用按钮不传任意字符串；底层 `Icon.name` 继续接受动态元数据并对未知键回退 help，避免收窄 tool/navigation extension surface（ADR 0769）。
 - **Context menu 图标使用注册表键**：`ContextMenuItem.icon` 由应用内 action builder 创建，只接受 `icons.ts::IconName`；renderer 保留 `hasIcon` 运行时 guard，隔离 JS/dynamic 输入的异常值（ADR 0770）。
 - **ExpandableContextCard 类型标签是闭合 presentation 值**：`cardKind` 只接受 `builtin-family`、`builtin-root`、`mcp-server`，缺省时省略 data attribute，不用空字符串表示缺席（ADR 0771）。
@@ -143,7 +143,7 @@ ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion re
 | 音频输入管线（`InputPipeline`） | `haven-input` 对麦克风采集、VAD 与采集循环的唯一 owner；不拥有转写、provider fallback 或 App 的录音 UI 状态 | 常规采集用 `start_capture` / `stop_capture` / `cancel_capture`；固定时长采集用 `capture_for`；回调契约为 `InputEventHandler`。App 与 Tools 的字段统一叫 `input_pipeline` |
 | 快捷键解析（`KeyCombo`） | `haven-input` 将用户配置的快捷键文本解析成平台中立按键与修饰键组合 | 跨 crate 只经根导出使用；modifier 用 `KeyModifier`，内部 bit flags 不进入消费者 API；组合仅由 `KeyCombo::parse` 创建（ADR 0926） |
 | VAD 回调值（`VadSignal` / `VadState`） | `haven-input` 的采集生命周期回调契约 | 根导出只提供 signal/state 值；`vad` 模块、模型 engine 和状态 detector 是私有实现（ADR 0926） |
-| VAD 状态事件 | App 的 `VadStatusEvent` 是 `recording:vad_status` 的唯一 wire DTO；`signal` 与 `state` 保留开放字符串以允许新增值 | IPC 生成器导出 Rust DTO；UI `VadStatusPayload` 直接引用生成类型，`mapRecordingEvent` 仍在唯一事件入口处理畸形输入（ADR 0694） |
+| VAD 状态事件 | App 的 `VadStatusEvent` 是 `recording:vad_status` 的唯一 wire DTO；`signal` / `state` 使用 `VadSignalDto` / `VadStateDto` 闭枚举 | IPC 生成器导出 Rust DTO 与允许值；UI `VadStatusPayload` 直接引用生成类型，`mapRecordingEvent` 校验 envelope、payload 和枚举值，未知值失败关闭（ADR 1018；取代 ADR 0694 的开放字符串决定） |
 | 录音结果（`RecordingResult`） | `haven-input` 拥有的固定格式采集结果：16 kHz 单声道 PCM、停止原因、时长和采集错误 | 通过 `RecordingResult::encode_wav()` 编码；它与 Tools 持有的 `RecordedAudio`（已登记 WAV 资产结果）不是同一层结果 |
 | 持久会话事件（`SessionEvent`） | `session_events` 中 append-only 的恢复与回滚权威记录 | Memory 持有 event row、sequence 与存储；`TranscriptRecord` 是其版本化 payload，不是第二条日志 |
 | 会话消息（`Message`） | 从已提交 transcript 投影出的持久消息行，不是恢复来源 | UI reducer 的 `SessionMessage` 是独立 renderer shape；`TranscriptProjection` 是从事件流派生的读取视图，含 `canonical_messages` 与 `react_rounds` |

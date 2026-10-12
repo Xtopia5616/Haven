@@ -754,9 +754,10 @@ fail closed（ADR 0380）。mapper 不接触 ToolRunService completion outbox；
 `ui/src/lib/contracts/recording.ts` 只声明其它路由消费的 camelCase DTO，并由唯一的
 `mapRecordingEvent` 转换。没有第二份 snake_case wire interface，也没有布局内的字段映射；
 `recordingEventListeners` 是这组事件唯一进入该 mapper 的 listener 边界。转换保留既有可选字段省略与
-未知附加字段忽略；仅 VAD 的畸形 signal/state 使用安全默认，且不拒绝未知 signal/state，因为 Rust DTO
-将它们定义为字符串而非封闭枚举（ADR 0340、0694）。停止原因、错误文本和转写结果的必需字段按 ADR 0962
-失败关闭，不合成默认业务值。
+未知附加字段忽略；VAD signal/state 使用 App 闭枚举并从 Rust 生成允许值，畸形或未知值失败关闭。
+recording event mapper 也校验 Tauri envelope ID 和 object payload，不合成默认状态（ADR 1018；此前的
+开放字符串行为见历史 ADR 0340、0694）。停止原因、错误文本和转写结果的必需字段按 ADR 0962 失败关闭，
+不合成默认业务值。
 `recordingOverlayController.ts` 是共享 overlay state 与时长 timer 的唯一写 owner，并按 `rec-*`
 过滤 stop、error 和 transcription 对当前 overlay 的影响；`+layout.svelte` 仍拥有这些全局 listener、
 通知与 voice transcript submission，`Composer.svelte` 只调用 toolbar toggle，`AppShell` 和
