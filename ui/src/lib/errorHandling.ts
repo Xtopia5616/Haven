@@ -4,9 +4,7 @@ import logger from './logger.ts';
 import { invoke } from './tauri.ts';
 import type { FrontendFailureKindInput } from './contracts/generatedCommands.ts';
 
-const LOGGED_ERROR = Symbol('haven.loggedError');
-
-type LoggableError = object & { [LOGGED_ERROR]?: boolean };
+const loggedErrors = new WeakSet<object>();
 
 export type ErrorReportOptions = {
 	/** Full user-facing prefix, for example `保存设置失败`. */
@@ -26,17 +24,11 @@ export type ErrorReportOptions = {
 };
 
 function markLogged(error: unknown) {
-	if (error && typeof error === 'object') {
-		try {
-			Object.defineProperty(error, LOGGED_ERROR, { value: true, configurable: true });
-		} catch {
-			// Frozen errors are still safe to log; they simply cannot be marked.
-		}
-	}
+	if (error && typeof error === 'object') loggedErrors.add(error);
 }
 
 function wasLogged(error: unknown): boolean {
-	return !!(error && typeof error === 'object' && (error as LoggableError)[LOGGED_ERROR]);
+	return !!(error && typeof error === 'object' && loggedErrors.has(error));
 }
 
 /** Log one fixed error summary per object at the UI boundary. */
@@ -60,7 +52,7 @@ export function reportError(error: unknown, options: ErrorReportOptions): string
 			: `${safeMessage}: ${detail}`,
 	);
 	const notificationMessage = formatError(options.notificationMessage ?? message);
-	if (options.log !== false) {
+	if (options.log !== false && !wasLogged(error)) {
 		logError(options.context, error);
 		void invoke('log_frontend_error', {
 			failureKind: options.failureKind ?? 'operation_failure',

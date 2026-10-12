@@ -6,7 +6,7 @@ vi.mock('./tauri.ts', () => ({
 
 import { invoke } from './tauri.ts';
 import { notificationStore } from './notificationStore.ts';
-import { reportError } from './errorHandling.ts';
+import { logError, reportError } from './errorHandling.ts';
 
 describe('errorHandling', () => {
 	beforeEach(() => {
@@ -43,6 +43,23 @@ describe('errorHandling', () => {
 
 		expect(get(notificationStore)[0].msg).toBe('加载失败: already logged');
 		expect(spy).not.toHaveBeenCalled();
+		expect(invoke).not.toHaveBeenCalled();
+		spy.mockRestore();
+	});
+
+	it('does not submit a second backend log for an error already logged at invoke', () => {
+		const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const error = Object.freeze(new Error('already logged by invoke'));
+		logError('invoke', error);
+
+		const message = reportError(error, {
+			context: 'externalRef',
+			message: '打开失败',
+		});
+
+		expect(message).toBe('打开失败: already logged by invoke');
+		expect(get(notificationStore)[0].msg).toBe('打开失败: already logged by invoke');
+		expect(spy).toHaveBeenCalledTimes(1);
 		expect(invoke).not.toHaveBeenCalled();
 		spy.mockRestore();
 	});

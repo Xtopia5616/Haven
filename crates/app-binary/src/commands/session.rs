@@ -958,7 +958,12 @@ async fn resume_session_from_store(
         .load_session_record(session_id)
         .await
         .map_err(|e| log_err("get_session_for_resume", e))?
-        .ok_or_else(|| format!("Session not found: {}", session_id))?;
+        .ok_or_else(|| {
+            log_err(
+                "get_session_for_resume",
+                format!("Session not found: {session_id}"),
+            )
+        })?;
     resume_response_for_session(session_store, session).await
 }
 

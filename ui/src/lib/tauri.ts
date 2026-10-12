@@ -82,7 +82,12 @@ async function invokeUnknown(cmd: string, args?: unknown): Promise<unknown> {
 		} else if (formatError(error) === 'Confirmation request is stale or already resolved') {
 			logger.warn('invoke', 'command ended with a stale confirmation');
 		} else {
-			logError('invoke', error);
+			// Tauri can reject with a primitive string. Normalize it once so a
+			// caller's reportError catch can recognize that invoke already logged it.
+			const reportedError =
+				error && typeof error === 'object' ? error : new Error(formatError(error));
+			logError('invoke', reportedError);
+			throw reportedError;
 		}
 		throw error;
 	}

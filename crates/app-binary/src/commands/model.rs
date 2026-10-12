@@ -468,8 +468,10 @@ pub async fn discover_models(
     };
 
     let resolved_auth = resolved_auth.ok_or_else(|| {
-        "未找到可用的 API Key：请填写 API Key，或先保存 Provider 配置（其 Base URL 需与请求地址一致）"
-            .to_string()
+        log_err(
+            "discover_models",
+            "未找到可用的 API Key：请填写 API Key，或先保存 Provider 配置（其 Base URL 需与请求地址一致）",
+        )
     })?;
 
     let mut reg = ModelRegistry::new();

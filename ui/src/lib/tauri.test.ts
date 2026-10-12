@@ -35,6 +35,14 @@ describe('tauri.ts in a non-Tauri environment', () => {
 		);
 	});
 
+	it('normalizes primitive invoke rejections after logging them', async () => {
+		const w = window as any;
+		w.__TAURI_INTERNALS__ = {};
+		vi.mocked(rawInvoke).mockRejectedValueOnce('backend failure');
+
+		await expect(invoke('is_autostart_enabled')).rejects.toThrow('backend failure');
+	});
+
 	it('listen returns a no-op unsubscribe function', async () => {
 		const unsubscribe = await listen('some:event', vi.fn());
 		expect(typeof unsubscribe).toBe('function');
