@@ -1,0 +1,54 @@
+import { describe, expect, it } from 'vitest';
+import { matchesGeneratedWireShape, type GeneratedWireShape } from './generatedWireShape.ts';
+
+describe('generated Rust wire shapes', () => {
+	const shape: GeneratedWireShape = {
+		kind: 'object',
+		fields: {
+			name: { optional: false, shape: { kind: 'string' } },
+			mode: { optional: false, shape: { kind: 'enum', values: ['safe', 'fast'] } },
+			labels: { optional: false, shape: { kind: 'array', items: { kind: 'string' } } },
+			metadata: {
+				optional: false,
+				shape: { kind: 'record', values: { kind: 'nullable', inner: { kind: 'number' } } },
+			},
+			optional_note: { optional: true, shape: { kind: 'string' } },
+		},
+	};
+
+	it('checks required fields, closed enums, containers, nullability, and present optional fields', () => {
+		expect(
+			matchesGeneratedWireShape(
+				{
+					name: 'Haven',
+					mode: 'safe',
+					labels: ['one'],
+					metadata: { count: 2, note: null },
+					optional_note: 'future proof',
+				},
+				shape,
+			),
+		).toBe(true);
+	});
+
+	it('allows absent optional properties and additive response fields', () => {
+		expect(
+			matchesGeneratedWireShape(
+				{ name: 'Haven', mode: 'fast', labels: [], metadata: {}, future_field: true },
+				shape,
+			),
+		).toBe(true);
+	});
+
+	it('rejects incomplete and malformed nested response values', () => {
+		for (const invalid of [
+			{ mode: 'safe', labels: [], metadata: {} },
+			{ name: 'Haven', mode: 'unknown', labels: [], metadata: {} },
+			{ name: 'Haven', mode: 'safe', labels: [1], metadata: {} },
+			{ name: 'Haven', mode: 'safe', labels: [], metadata: { count: '2' } },
+			{ name: 'Haven', mode: 'safe', labels: [], metadata: {}, optional_note: null },
+		]) {
+			expect(matchesGeneratedWireShape(invalid, shape)).toBe(false);
+		}
+	});
+});

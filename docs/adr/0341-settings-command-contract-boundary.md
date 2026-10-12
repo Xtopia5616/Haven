@@ -4,6 +4,8 @@
 - 范围：Settings `get_settings` renderer ingress 与 `hotkey:rebind` event contract 审计
 - 关联：[ADR 0007](0007-settings-diagnostics-contracts.md)、[ADR 0330](0330-session-lifecycle-ui-contract-mapper.md)、[ADR 0335](0335-action-board-ui-contract-mapper.md)、[ADR 0340](0340-recording-event-contract-audit.md)
 
+> 部分决定已由 [ADR 1020](1020-validate-full-settings-response-shape.md) 修订：未知附加字段仍保留，闭枚举字符串现在按生成的 Rust response contract 校验。
+
 ## 背景
 
 全量设置的 Rust wire DTO 是 `haven_common::config::Settings`，由 `settings_pair!` 与 `AppConfig` 的共享字段表定义；TS 没有另一份全量嵌套 interface。此前 `SettingsView`、`+layout.svelte`、`+page.svelte` 和 `chatModelSync` 多处直接 `invoke('get_settings')`，并各自读取 wire 数据。Settings diagnostics 的 `get_log_info`、`read_log_tail`、`check_shell_available`、`get_api_key_status` 已在 `contracts/settings.ts` 有唯一 parser（ADR 0007）。`hotkey:rebind` 的 Rust DTO 则已由 `contracts/app.ts::mapAppEvent` 单点映射为 camelCase。

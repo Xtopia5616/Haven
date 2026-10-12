@@ -345,6 +345,1015 @@ export interface SkillInfo { name: string; description: string; version: string 
 export const SCHEDULE_MODE_VALUES = ['tool', 'continue'] as const;
 export type ScheduleMode = (typeof SCHEDULE_MODE_VALUES)[number];
 export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;
+export const SETTINGS_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'default_shell': {
+			optional: false,
+			shape: { kind: 'enum', values: SHELL_CHOICE_VALUES },
+		},
+		'llm': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'providers': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'name': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'provider': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'api_style': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								},
+								'base_url': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'api_key_ref': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'auth_header_name': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'auth_header_prefix': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'proxy_url': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								},
+								'no_proxy': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								},
+								'default_max_tokens': {
+									optional: true,
+									shape: { kind: 'number' },
+								},
+								'default_temperature': {
+									optional: true,
+									shape: { kind: 'number' },
+								},
+								'default_timeout_secs': {
+									optional: true,
+									shape: { kind: 'number' },
+								},
+								'default_timeout_streaming_secs': {
+									optional: true,
+									shape: { kind: 'number' },
+								},
+								'default_web_search': {
+									optional: true,
+									shape: { kind: 'string' },
+								}
+							}
+						} },
+					},
+					'models': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'id': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'provider_name': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'model': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'capabilities': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'enum', values: CAPABILITY_VALUES } },
+								},
+								'temperature': {
+									optional: true,
+									shape: { kind: 'number' },
+								},
+								'context_window': {
+									optional: true,
+									shape: { kind: 'number' },
+								},
+								'cost_per_1k_input_tokens': {
+									optional: true,
+									shape: { kind: 'number' },
+								},
+								'cost_per_1k_output_tokens': {
+									optional: true,
+									shape: { kind: 'number' },
+								},
+								'cost_per_1k_cache_read_tokens': {
+									optional: true,
+									shape: { kind: 'number' },
+								},
+								'cost_per_1k_cache_write_tokens': {
+									optional: true,
+									shape: { kind: 'number' },
+								},
+								'max_tokens': {
+									optional: true,
+									shape: { kind: 'number' },
+								},
+								'reasoning_effort': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'web_search': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'reasoning_echo_max_chars': {
+									optional: true,
+									shape: { kind: 'number' },
+								}
+							}
+						} },
+					},
+					'request_policies': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'request': {
+									optional: false,
+									shape: { kind: 'enum', values: REQUEST_KIND_VALUES },
+								},
+								'primary': {
+									optional: false,
+									shape: { kind: 'string' },
+								}
+							}
+						} },
+					},
+					'max_total_duration_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'stream_idle_timeout_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'retry_max_retries': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'retry_base_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'retry_factor': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'retry_max_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'retry_jitter': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_concurrent_requests': {
+						optional: false,
+						shape: { kind: 'number' },
+					}
+				}
+			},
+		},
+		'hotkey': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'mode': {
+						optional: false,
+						shape: { kind: 'enum', values: HOTKEY_MODE_VALUES },
+					},
+					'key_binding': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'mute_hotkey': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					}
+				}
+			},
+		},
+		'session': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'max_concurrent': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'prompt_history_limit': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'history_retention_days': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_steps_per_run': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_steps_per_session': {
+						optional: true,
+						shape: { kind: 'number' },
+					}
+				}
+			},
+		},
+		'context_limits': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'compaction_ratio': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'compaction_reserve_tokens': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'default_context_window': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'response_token_floor': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_observation_chars': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_transcript_chars': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_attachment_images': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_attachment_files': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_attachment_image_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_attachment_file_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_upload_total_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_attachment_image_dim_px': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'attachment_image_jpeg_quality': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'file_max_full_file_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'file_line_span': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'file_line_max_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'file_summary_input_chars': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'file_max_list_entries': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'file_byte_read_max_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'file_write_max_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'file_vision_max_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'search_snippet_chars': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'search_max_results': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'search_max_file_size_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'search_window_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'notification_summary_chars': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'tool_run_result_context_chars': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'partial_checkpoint_min_chars': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'partial_checkpoint_interval_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'fact_infer_interval_steps': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'fact_extraction_min_interval_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_known_facts': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'sanitize_field_max_chars': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'file_summary_timeout_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'turn_deadline_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'incomplete_tool_args_retries': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'stream_stall_warn_delay_ms': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'reasoning_echo_max_chars': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'background_tool_run_tail_max_chars': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'background_tool_run_output_emit_interval_ms': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'tool_run_terminal_ttl_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'mcp_max_binary_base64_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'mcp_max_sse_buffer_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'skills_max_md_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'skills_max_parse_lines': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'skills_max_line_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'self_tool_max_instructions_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'self_tool_max_script_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'network_max_retries': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'network_backoff_base_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'network_max_body_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'clipboard_history_entries': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'clipboard_history_max_entries': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'clipboard_entry_max_chars': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_pending_scheduled_tool_runs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'scheduled_tool_runs_due_horizon_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_running_background_tool_runs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'event_chunk_batch_max_bytes': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'input_ring_buffer_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'embedding_chunk_size': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_tools_per_request': {
+						optional: false,
+						shape: { kind: 'number' },
+					}
+				}
+			},
+		},
+		'memory': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'fact_inference_enabled': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					}
+				}
+			},
+		},
+		'security': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'permission_mode': {
+						optional: false,
+						shape: { kind: 'enum', values: PERMISSION_MODE_VALUES },
+					},
+					'sandbox_mode': {
+						optional: false,
+						shape: { kind: 'enum', values: SANDBOX_MODE_VALUES },
+					},
+					'writable_roots': {
+						optional: true,
+						shape: { kind: 'array', items: { kind: 'string' } },
+					},
+					'network_policy': {
+						optional: false,
+						shape: { kind: 'enum', values: NETWORK_POLICY_VALUES },
+					},
+					'encrypt_sensitive': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					},
+					'permissions': {
+						optional: true,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'key': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'effect': {
+									optional: false,
+									shape: { kind: 'enum', values: PERMISSION_EFFECT_VALUES },
+								}
+							}
+						} },
+					}
+				}
+			},
+		},
+		'media': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'input_strategy': {
+						optional: false,
+						shape: { kind: 'enum', values: MEDIA_INPUT_STRATEGY_VALUES },
+					},
+					'audio': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'sample_rate': {
+									optional: false,
+									shape: { kind: 'number' },
+								},
+								'channels': {
+									optional: false,
+									shape: { kind: 'number' },
+								},
+								'bits_per_sample': {
+									optional: false,
+									shape: { kind: 'number' },
+								},
+								'max_duration_secs': {
+									optional: false,
+									shape: { kind: 'number' },
+								},
+								'silence_timeout_ms': {
+									optional: false,
+									shape: { kind: 'number' },
+								},
+								'vad_threshold': {
+									optional: false,
+									shape: { kind: 'number' },
+								}
+							}
+						},
+					},
+					'stt': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'provider_name': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'mcp_server': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								},
+								'model': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'timeout_secs': {
+									optional: false,
+									shape: { kind: 'number' },
+								},
+								'min_confidence': {
+									optional: false,
+									shape: { kind: 'number' },
+								}
+							}
+						},
+					},
+					'ocr': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'provider': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'api_key_ref': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'api_secret_ref': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'base_url': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'timeout_secs': {
+									optional: false,
+									shape: { kind: 'number' },
+								},
+								'min_confidence': {
+									optional: false,
+									shape: { kind: 'number' },
+								}
+							}
+						},
+					},
+					'tts': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'provider_name': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'model': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'voice': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'timeout_secs': {
+									optional: false,
+									shape: { kind: 'number' },
+								}
+							}
+						},
+					},
+					'image_gen': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'provider_name': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'model': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'timeout_secs': {
+									optional: false,
+									shape: { kind: 'number' },
+								}
+							}
+						},
+					}
+				}
+			},
+		},
+		'skills': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'root': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'enabled': {
+						optional: true,
+						shape: { kind: 'array', items: { kind: 'string' } },
+					}
+				}
+			},
+		},
+		'skills_exec': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'venv_root': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'work_dir': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'timeout_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'max_output_lines': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'cpu_time_secs': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					},
+					'max_memory_mb': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					}
+				}
+			},
+		},
+		'mcp_discovery': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'health_interval_secs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'reconnect_initial_ms': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'reconnect_max_ms': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'reconnect_max_retries': {
+						optional: false,
+						shape: { kind: 'number' },
+					}
+				}
+			},
+		},
+		'mcp_servers': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'name': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'transport': {
+						optional: false,
+						shape: { kind: 'enum', values: MCP_SERVER_TRANSPORT_VALUES },
+					},
+					'command': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'args': {
+						optional: false,
+						shape: { kind: 'array', items: { kind: 'string' } },
+					},
+					'env_refs': {
+						optional: true,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'name': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'credential_ref': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'has_value': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								}
+							}
+						} },
+					},
+					'cwd': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'url': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'enabled': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					}
+				}
+			} },
+		},
+		'notification': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'session_created': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'in_app': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'windows': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								}
+							}
+						},
+					},
+					'session_completed': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'in_app': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'windows': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								}
+							}
+						},
+					},
+					'session_paused': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'in_app': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'windows': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								}
+							}
+						},
+					},
+					'session_resumed': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'in_app': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'windows': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								}
+							}
+						},
+					},
+					'session_error': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'in_app': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'windows': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								}
+							}
+						},
+					},
+					'permission_requested': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'in_app': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'windows': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								}
+							}
+						},
+					},
+					'tool_run_completed': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'in_app': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'windows': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								}
+							}
+						},
+					}
+				}
+			},
+		},
+		'log': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'level': {
+						optional: false,
+						shape: { kind: 'enum', values: LOG_LEVEL_VALUES },
+					},
+					'file_enabled': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					},
+					'file_path': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					}
+				}
+			},
+		},
+		'tool_settings': {
+			optional: false,
+			shape: { kind: 'record', values: {
+				kind: 'object',
+				fields: {
+					'enabled': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					},
+					'timeout_secs': {
+						optional: true,
+						shape: { kind: 'number' },
+					},
+					'max_output_chars': {
+						optional: true,
+						shape: { kind: 'number' },
+					},
+					'max_retries': {
+						optional: true,
+						shape: { kind: 'number' },
+					},
+					'retry_backoff_secs': {
+						optional: true,
+						shape: { kind: 'number' },
+					},
+					'allowed_paths': {
+						optional: false,
+						shape: { kind: 'array', items: { kind: 'string' } },
+					},
+					'allowed_domains': {
+						optional: false,
+						shape: { kind: 'array', items: { kind: 'string' } },
+					},
+					'disabled_operations': {
+						optional: false,
+						shape: { kind: 'array', items: { kind: 'string' } },
+					},
+					'risk_override': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'enum', values: RISK_LEVEL_VALUES } },
+					}
+				}
+			} },
+		}
+	}
+} as const;
 
 export interface TauriCommandMap {
 	add_fact: { request: { subject: string; predicate: string; object: string; tags?: string[] | null }; response: MemoryFactResponse };

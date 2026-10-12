@@ -21,23 +21,30 @@ vi.mock('$lib/tauri.ts', () => ({ invoke: vi.fn() }));
 
 import { invoke } from '$lib/tauri.ts';
 import type { SessionPermissionGrant, TauriCommandRequest } from './contracts/generatedCommands.ts';
+import { createSettingsFixture } from './contracts/settings-fixture.ts';
 
 const invokeMock = vi.mocked(invoke);
 
 describe('loadSettings', () => {
 	beforeEach(() => invokeMock.mockReset());
 
-	it('uses one command boundary and preserves future fields and enum values', async () => {
-		const payload = {
-			hotkey: { key_binding: 'Ctrl+Alt+H', mode: 'future_mode' },
-			llm: { models: [], future_llm_field: { enabled: true } },
+	it('uses one command boundary, preserves future fields, and rejects unknown enum values', async () => {
+		const payload = createSettingsFixture();
+		payload.hotkey.key_binding = 'Ctrl+Alt+H';
+		const responseWithFutureFields = {
+			...payload,
+			llm: { ...payload.llm, future_llm_field: { enabled: true } },
 			future_settings_field: 'kept',
 		};
-		invokeMock.mockResolvedValue(payload as never);
+		invokeMock.mockResolvedValue(responseWithFutureFields as never);
 
-		await expect(loadSettings()).resolves.toBe(payload);
+		await expect(loadSettings()).resolves.toBe(responseWithFutureFields);
 		expect(invokeMock).toHaveBeenCalledOnce();
 		expect(invokeMock).toHaveBeenCalledWith('get_settings');
+
+		const invalidPayload = { ...payload, hotkey: { ...payload.hotkey, mode: 'future_mode' } };
+		invokeMock.mockResolvedValue(invalidPayload as never);
+		await expect(loadSettings()).rejects.toThrow('Invalid get_settings response shape');
 	});
 
 	it('preserves the existing no-op result for malformed root values', async () => {

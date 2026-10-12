@@ -9,6 +9,8 @@ import type {
 	SessionPermissionGrant as GeneratedSessionPermissionGrant,
 	TauriCommandRequest,
 } from './generatedCommands.ts';
+import { SETTINGS_RESPONSE_SHAPE } from './generatedCommands.ts';
+import { findGeneratedWireShapeMismatch } from './generatedWireShape.ts';
 import { isRecord } from './objectGuards.ts';
 import {
 	isBoolean,
@@ -345,17 +347,17 @@ export function parseStagedCredentialReference(value: unknown): string {
 	return value;
 }
 
-/**
- * The full Settings shape is owned by haven_common::config::Settings. Keep the
- * renderer shape tied to the generated Rust contract, while malformed root
- * values keep the existing no-op behavior.
- */
+/** Validate a complete Settings response using the Rust-generated wire shape. */
 export function parseSettingsPayload(value: unknown): SettingsPayload | null {
 	if (!isRecord(value)) return null;
 	if (!hasValidSettingsCredentialReferences(value)) {
 		throw new Error('Invalid Settings credential reference');
 	}
 	validateSettingsNumbers(value);
+	const invalidPath = findGeneratedWireShapeMismatch(value, SETTINGS_RESPONSE_SHAPE);
+	if (invalidPath) {
+		throw new Error(`Invalid get_settings response shape at ${invalidPath}`);
+	}
 	return value as unknown as SettingsPayload;
 }
 

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsView from './SettingsView.svelte';
+import { createSettingsFixture } from '$lib/contracts/settings-fixture.ts';
 
 const { invoke, listen } = vi.hoisted(() => ({
 	invoke: vi.fn(),
@@ -63,33 +64,28 @@ describe('SettingsView diagnostics export', () => {
 	});
 
 	it('syncs the selected chat model into the matching model settings card', async () => {
-		const settings = {
-			llm: {
-				providers: [
-					{
-						name: 'primary',
-						provider: 'openai',
-						api_style: 'openai-chat',
-						base_url: 'https://example.test/v1',
-						api_key_ref: null,
-						auth_header_name: 'Authorization',
-						auth_header_prefix: 'Bearer',
-						proxy_url: null,
-						no_proxy: null,
-					},
-				],
-				models: [
-					{
-						id: 'chat-slot',
-						provider_name: 'primary',
-						model: 'before-switch',
-						capabilities: ['chat'],
-					},
-				],
-				request_policies: [{ request: 'chat', primary: 'chat-slot' }],
-				max_concurrent_requests: 2,
+		const settings = createSettingsFixture();
+		settings.llm.providers = [
+			{
+				name: 'primary',
+				provider: 'openai',
+				api_style: 'openai-chat',
+				base_url: 'https://example.test/v1',
+				auth_header_name: 'Authorization',
+				auth_header_prefix: 'Bearer',
+				proxy_url: null,
+				no_proxy: null,
 			},
-		};
+		];
+		settings.llm.models = [
+			{
+				id: 'chat-slot',
+				provider_name: 'primary',
+				model: 'before-switch',
+				capabilities: ['chat'],
+			},
+		];
+		settings.llm.request_policies = [{ request: 'chat', primary: 'chat-slot' }];
 		const handlers = new Map<string, (event: unknown) => void>();
 		listen.mockImplementation(async (event: string, handler: (event: unknown) => void) => {
 			handlers.set(event, handler);
@@ -131,33 +127,28 @@ describe('SettingsView diagnostics export', () => {
 	});
 
 	it('shows a chat route created by switching models when no route existed', async () => {
-		const settings = {
-			llm: {
-				providers: [
-					{
-						name: 'primary',
-						provider: 'openai',
-						api_style: 'openai-chat',
-						base_url: 'https://example.test/v1',
-						api_key_ref: null,
-						auth_header_name: 'Authorization',
-						auth_header_prefix: 'Bearer',
-						proxy_url: null,
-						no_proxy: null,
-					},
-				],
-				models: [
-					{
-						id: 'chat-slot',
-						provider_name: 'primary',
-						model: 'gpt-test',
-						capabilities: ['chat'],
-					},
-				],
-				request_policies: [] as Array<{ request: 'chat'; primary: string }>,
-				max_concurrent_requests: 2,
+		const settings = createSettingsFixture();
+		settings.llm.providers = [
+			{
+				name: 'primary',
+				provider: 'openai',
+				api_style: 'openai-chat',
+				base_url: 'https://example.test/v1',
+				auth_header_name: 'Authorization',
+				auth_header_prefix: 'Bearer',
+				proxy_url: null,
+				no_proxy: null,
 			},
-		};
+		];
+		settings.llm.models = [
+			{
+				id: 'chat-slot',
+				provider_name: 'primary',
+				model: 'gpt-test',
+				capabilities: ['chat'],
+			},
+		];
+		settings.llm.request_policies = [];
 		const handlers = new Map<string, (event: unknown) => void>();
 		listen.mockImplementation(async (event: string, handler: (event: unknown) => void) => {
 			handlers.set(event, handler);
@@ -248,13 +239,14 @@ describe('SettingsView diagnostics export', () => {
 		expect(screen.getByRole('heading', { name: '权限中心' })).toBeTruthy();
 	});
 
-	it.each(['null', 'reject'] as const)(
+	it.each(['null', 'reject', 'incomplete'] as const)(
 		'does not allow a full Settings save when get_settings %s',
 		async (failureKind) => {
 			invoke.mockImplementation(async (command: string) => {
 				switch (command) {
 					case 'get_settings':
 						if (failureKind === 'reject') throw new Error('settings unavailable');
+						if (failureKind === 'incomplete') return { llm: { providers: [] } };
 						return null;
 					case 'get_api_key_status':
 						return {
@@ -284,10 +276,14 @@ describe('SettingsView diagnostics export', () => {
 	);
 
 	it('persists ToolRun completion channels independently and applies the toast switch', async () => {
+		const settings = createSettingsFixture();
+		settings.notification.tool_run_completed.in_app = true;
+		settings.notification.tool_run_completed.windows = true;
+		settings.context_limits.scheduled_tool_runs_due_horizon_secs = 365 * 24 * 3600;
 		invoke.mockImplementation(async (command: string) => {
 			switch (command) {
 				case 'get_settings':
-					return {};
+					return settings;
 				case 'get_api_key_status':
 					return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
 				case 'is_autostart_enabled':
@@ -337,104 +333,92 @@ describe('SettingsView diagnostics export', () => {
 
 	it('preserves backend settings that are outside the visible category during a full save', async () => {
 		invoke.mockClear();
-		const settings = {
-			default_shell: 'powershell',
-			llm: {
-				providers: [
-					{
-						name: 'deepgram-voice',
-						provider: 'deepgram',
-						api_style: 'deepgram',
-						base_url: 'https://api.deepgram.com',
-						api_key_ref: null,
-						auth_header_name: 'Authorization',
-						auth_header_prefix: 'Token',
-						proxy_url: null,
-						no_proxy: null,
-					},
-					{
-						name: 'speech-connection',
-						provider: 'openai',
-						api_style: 'openai-chat',
-						base_url: 'https://speech.example/v1',
-						api_key_ref: null,
-						auth_header_name: 'Authorization',
-						auth_header_prefix: 'Bearer',
-						proxy_url: null,
-						no_proxy: null,
-					},
-					{
-						name: 'image-connection',
-						provider: 'openai',
-						api_style: 'openai-chat',
-						base_url: 'https://image.example/v1',
-						api_key_ref: null,
-						auth_header_name: 'Authorization',
-						auth_header_prefix: 'Bearer',
-						proxy_url: null,
-						no_proxy: null,
-					},
-				],
-				models: [],
-				request_policies: [],
-				max_concurrent_requests: 2,
+		const settings = createSettingsFixture();
+		settings.default_shell = 'powershell';
+		settings.llm.providers = [
+			{
+				name: 'deepgram-voice',
+				provider: 'deepgram',
+				api_style: 'deepgram',
+				base_url: 'https://api.deepgram.com',
+				auth_header_name: 'Authorization',
+				auth_header_prefix: 'Token',
+				proxy_url: null,
+				no_proxy: null,
 			},
-			hotkey: { mode: 'toggle', key_binding: 'Ctrl+Shift+Space', mute_hotkey: 'Ctrl+M' },
-			session: {
-				max_concurrent: 3,
-				prompt_history_limit: 73,
-				max_steps_per_run: 500,
-				history_retention_days: 90,
-				max_steps_per_session: 750,
+			{
+				name: 'speech-connection',
+				provider: 'openai',
+				api_style: 'openai-chat',
+				base_url: 'https://speech.example/v1',
+				auth_header_name: 'Authorization',
+				auth_header_prefix: 'Bearer',
+				proxy_url: null,
+				no_proxy: null,
 			},
-			context_limits: {
-				compaction_ratio: 0.65,
-				skills_max_line_bytes: 2048,
-				tool_run_result_context_chars: 4321,
-				fact_extraction_min_interval_secs: 77,
-				turn_deadline_secs: 901,
-				max_attachment_images: 4,
-				max_attachment_files: 5,
-				max_attachment_image_bytes: 10 * 1024 * 1024,
-				max_attachment_file_bytes: 20 * 1024 * 1024,
-				max_upload_total_bytes: 512 * 1024 * 1024,
-				max_attachment_image_dim_px: 1568,
-				attachment_image_jpeg_quality: 0.85,
-				response_token_floor: 64_000,
-				file_max_full_file_bytes: 256_000,
-				file_line_max_bytes: 32_000,
-				file_byte_read_max_bytes: 8 * 1024 * 1024,
-				file_write_max_bytes: 32 * 1024 * 1024,
-				mcp_max_binary_base64_bytes: 1024 * 1024,
-				max_pending_scheduled_tool_runs: 17,
-				max_running_background_tool_runs: 29,
+			{
+				name: 'image-connection',
+				provider: 'openai',
+				api_style: 'openai-chat',
+				base_url: 'https://image.example/v1',
+				auth_header_name: 'Authorization',
+				auth_header_prefix: 'Bearer',
+				proxy_url: null,
+				no_proxy: null,
 			},
-			memory: { fact_inference_enabled: false },
-			security: {
-				permission_mode: 'default',
-				sandbox_mode: 'workspace_write',
-				network_policy: 'ask',
-				writable_roots: [],
-				permissions: [],
-			},
-			media: {
-				stt: { provider_name: 'deepgram-voice', model: 'nova-3' },
-				ocr: { provider: 'azure' },
-				tts: { provider_name: 'speech-connection', model: 'tts-1' },
-				image_gen: { provider_name: 'image-connection', model: 'gpt-image-1' },
-			},
-			notification: {
-				session_created: { in_app: true, windows: false },
-				session_completed: { in_app: true, windows: true },
-				session_paused: { in_app: true, windows: false },
-				session_resumed: { in_app: true, windows: false },
-				session_error: { in_app: true, windows: true },
-				permission_requested: { in_app: true, windows: true },
-				tool_run_completed: { in_app: true, windows: true },
-			},
-			log: { level: 'info', file_enabled: true, file_path: 'C:\\Haven\\logs\\custom.log' },
-			mcp_servers: [],
-		};
+		];
+		settings.llm.max_concurrent_requests = 2;
+		settings.hotkey.mode = 'toggle';
+		settings.hotkey.key_binding = 'Ctrl+Shift+Space';
+		settings.hotkey.mute_hotkey = 'Ctrl+M';
+		settings.session.max_concurrent = 3;
+		settings.session.prompt_history_limit = 73;
+		settings.session.max_steps_per_run = 500;
+		settings.session.history_retention_days = 90;
+		settings.session.max_steps_per_session = 750;
+		Object.assign(settings.context_limits, {
+			compaction_ratio: 0.65,
+			skills_max_line_bytes: 2048,
+			tool_run_result_context_chars: 4321,
+			fact_extraction_min_interval_secs: 77,
+			turn_deadline_secs: 901,
+			max_attachment_images: 4,
+			max_attachment_files: 5,
+			max_attachment_image_bytes: 10 * 1024 * 1024,
+			max_attachment_file_bytes: 20 * 1024 * 1024,
+			max_upload_total_bytes: 512 * 1024 * 1024,
+			max_attachment_image_dim_px: 1568,
+			attachment_image_jpeg_quality: 0.85,
+			response_token_floor: 64_000,
+			file_max_full_file_bytes: 256_000,
+			file_line_max_bytes: 32_000,
+			file_byte_read_max_bytes: 8 * 1024 * 1024,
+			file_write_max_bytes: 32 * 1024 * 1024,
+			mcp_max_binary_base64_bytes: 1024 * 1024,
+			max_pending_scheduled_tool_runs: 17,
+			max_running_background_tool_runs: 29,
+		});
+		settings.memory.fact_inference_enabled = false;
+		settings.security.permission_mode = 'default';
+		settings.security.sandbox_mode = 'workspace_write';
+		settings.security.network_policy = 'ask';
+		settings.media.stt.provider_name = 'deepgram-voice';
+		settings.media.stt.model = 'nova-3';
+		settings.media.ocr.provider = 'azure';
+		settings.media.tts.provider_name = 'speech-connection';
+		settings.media.tts.model = 'tts-1';
+		settings.media.image_gen.provider_name = 'image-connection';
+		settings.media.image_gen.model = 'gpt-image-1';
+		Object.assign(settings.notification.session_created, { in_app: true, windows: false });
+		Object.assign(settings.notification.session_completed, { in_app: true, windows: true });
+		Object.assign(settings.notification.session_paused, { in_app: true, windows: false });
+		Object.assign(settings.notification.session_resumed, { in_app: true, windows: false });
+		Object.assign(settings.notification.session_error, { in_app: true, windows: true });
+		Object.assign(settings.notification.permission_requested, { in_app: true, windows: true });
+		Object.assign(settings.notification.tool_run_completed, { in_app: true, windows: true });
+		settings.log.level = 'info';
+		settings.log.file_enabled = true;
+		settings.log.file_path = 'C:\\Haven\\logs\\custom.log';
 		invoke.mockImplementation(async (command: string) => {
 			switch (command) {
 				case 'get_settings':
@@ -512,7 +496,7 @@ describe('SettingsView diagnostics export', () => {
 		invoke.mockImplementation(async (command: string) => {
 			switch (command) {
 				case 'get_settings':
-					return { llm: { providers: [], models: [], request_policies: [] } };
+					return createSettingsFixture();
 				case 'stage_provider_credential':
 					return 'cred-0123456789abcdef0123456789abcdef';
 				case 'get_api_key_status':

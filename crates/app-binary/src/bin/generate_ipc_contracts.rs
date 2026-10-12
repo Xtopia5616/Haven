@@ -173,6 +173,10 @@ fn generate(root: &Path) -> Result<String, String> {
         "MCP_CLIENT_STATUS_UNIT_VALUES",
         TypeUse::Response,
     )?;
+    type_graph.emit_response_shape(
+        "haven_common::config::loader::Settings",
+        "SETTINGS_RESPONSE_SHAPE",
+    )?;
 
     let mut output = String::from(
         "// Generated from Tauri commands and `crates/app-binary/src/events.rs` by `scripts/generate-ipc-contracts.ps1`.\n\
@@ -187,6 +191,7 @@ fn generate(root: &Path) -> Result<String, String> {
         output.push_str("] as const;\n\n");
     }
     output.push_str(&type_graph.declarations());
+    output.push_str(&type_graph.runtime_shape_declarations());
     output.push_str("\nexport interface TauriCommandMap {\n");
     for command in commands.values() {
         output.push_str(&format!(

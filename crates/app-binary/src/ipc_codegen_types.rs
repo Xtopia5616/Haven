@@ -47,6 +47,75 @@ enum TypeKind {
     Unsupported(String),
 }
 
+#[derive(Clone)]
+enum WireShape {
+    String,
+    Number,
+    Boolean,
+    Unknown,
+    Nullable(Box<WireShape>),
+    Array(Box<WireShape>),
+    Record(Box<WireShape>),
+    Enum(String),
+    Object(Vec<(String, WireShapeField)>),
+}
+
+#[derive(Clone)]
+struct WireShapeField {
+    optional: bool,
+    shape: WireShape,
+}
+
+impl WireShape {
+    fn to_typescript(&self, indent: usize) -> String {
+        match self {
+            Self::String => "{ kind: 'string' }".into(),
+            Self::Number => "{ kind: 'number' }".into(),
+            Self::Boolean => "{ kind: 'boolean' }".into(),
+            Self::Unknown => "{ kind: 'unknown' }".into(),
+            Self::Nullable(inner) => format!(
+                "{{ kind: 'nullable', inner: {} }}",
+                inner.to_typescript(indent)
+            ),
+            Self::Array(items) => {
+                format!(
+                    "{{ kind: 'array', items: {} }}",
+                    items.to_typescript(indent)
+                )
+            }
+            Self::Record(values) => format!(
+                "{{ kind: 'record', values: {} }}",
+                values.to_typescript(indent)
+            ),
+            Self::Enum(values) => format!("{{ kind: 'enum', values: {values} }}"),
+            Self::Object(fields) => {
+                if fields.is_empty() {
+                    return "{ kind: 'object', fields: {} }".into();
+                }
+                let base_indent = "\t".repeat(indent);
+                let child_indent = "\t".repeat(indent + 1);
+                let field_indent = "\t".repeat(indent + 2);
+                let rendered_fields = fields
+                    .iter()
+                    .map(|(name, field)| {
+                        let field_child_indent = "\t".repeat(indent + 3);
+                        format!(
+                            "{field_indent}{}: {{\n{field_child_indent}optional: {},\n{field_child_indent}shape: {},\n{field_indent}}}",
+                            quote_ts_string(name),
+                            field.optional,
+                            field.shape.to_typescript(indent + 3),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",\n");
+                format!(
+                    "{{\n{child_indent}kind: 'object',\n{child_indent}fields: {{\n{rendered_fields}\n{child_indent}}}\n{base_indent}}}"
+                )
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct SerdeOptions {
     rename: Option<String>,
@@ -82,6 +151,7 @@ pub(crate) struct RustTypeGraph {
     by_name: HashMap<String, Vec<String>>,
     emitted: BTreeMap<String, String>,
     emitted_names: HashMap<String, String>,
+    runtime_shapes: BTreeMap<String, WireShape>,
 }
 
 #[derive(Clone, Copy)]
@@ -276,6 +346,223 @@ impl RustTypeGraph {
             output.push('\n');
         }
         output
+    }
+
+    /// Generate a recursive runtime shape from a Rust response DTO.
+    ///
+    /// Named Rust structs are expanded inline so the emitted TypeScript value
+    /// stays a single self-contained literal. Serde-skipped fields are omitted
+    /// and `skip_serializing_if` is represented as property optionality.
+    pub(crate) fn emit_response_shape(
+        &mut self,
+        key: &str,
+        constant_name: &str,
+    ) -> Result<(), String> {
+        let mut stack = Vec::new();
+        let shape = self.response_shape_for_named_type(key, &mut stack)?;
+        self.runtime_shapes.insert(constant_name.to_string(), shape);
+        Ok(())
+    }
+
+    /// Render generated response shapes after the normal DTO declarations so
+    /// enum values referenced by a shape have already been initialized.
+    pub(crate) fn runtime_shape_declarations(&self) -> String {
+        let mut output = String::new();
+        for (name, shape) in &self.runtime_shapes {
+            output.push_str(&format!(
+                "export const {name} = {} as const;\n",
+                shape.to_typescript(0)
+            ));
+        }
+        output
+    }
+
+    fn response_shape_for_named_type(
+        &mut self,
+        key: &str,
+        stack: &mut Vec<String>,
+    ) -> Result<WireShape, String> {
+        let definition = self
+            .definitions
+            .get(key)
+            .cloned()
+            .ok_or_else(|| format!("no Rust DTO declaration for {key}"))?;
+        if !definition.serializable {
+            return Err(format!(
+                "Rust IPC response DTO {} does not derive Serialize",
+                definition.key
+            ));
+        }
+        if stack.iter().any(|entry| entry == key) {
+            return Err(format!(
+                "recursive Rust IPC response DTO {} cannot be inlined into a wire shape",
+                definition.key
+            ));
+        }
+
+        // Keep the generated TypeScript declaration and runtime schema on the
+        // same Serialize-aware path. This also emits enum value constants that
+        // the shape references below.
+        self.emit_definition(key, TypeUse::Response)?;
+        stack.push(key.to_string());
+        let result = match definition.kind {
+            TypeKind::Struct(fields) => {
+                if definition.serde.transparent {
+                    if fields.len() != 1 {
+                        Err(format!(
+                            "{} transparent DTO must have exactly one field",
+                            definition.key
+                        ))
+                    } else {
+                        self.response_shape_for_type(&fields[0].ty, &definition.context, stack)
+                    }
+                } else {
+                    let mut rendered = Vec::new();
+                    for field in fields {
+                        if field.skip_serializing {
+                            continue;
+                        }
+                        let (field_type, optional) = if field.response_optional {
+                            (option_inner(&field.ty)?.unwrap_or(&field.ty), true)
+                        } else {
+                            (&field.ty, false)
+                        };
+                        rendered.push((
+                            field.name,
+                            WireShapeField {
+                                optional,
+                                shape: self.response_shape_for_type(
+                                    field_type,
+                                    &definition.context,
+                                    stack,
+                                )?,
+                            },
+                        ));
+                    }
+                    Ok(WireShape::Object(rendered))
+                }
+            }
+            TypeKind::Alias(ty) => self.response_shape_for_type(&ty, &definition.context, stack),
+            TypeKind::Enum(variants) => {
+                let plain_string_enum = definition.manual_string_enum
+                    || (!definition.serde.untagged
+                        && definition.serde.tag.is_none()
+                        && definition.serde.content.is_none()
+                        && variants.iter().all(|variant| variant.unit));
+                if !plain_string_enum {
+                    Err(format!(
+                        "{} is a structured enum and needs an explicit runtime shape mapping",
+                        definition.key
+                    ))
+                } else {
+                    Ok(WireShape::Enum(enum_values_name(
+                        &definition.name,
+                        TypeUse::Response,
+                    )?))
+                }
+            }
+            TypeKind::Unsupported(reason) => Err(format!(
+                "Rust IPC response DTO {} needs an explicit runtime shape mapping: {reason}",
+                definition.key
+            )),
+        };
+        stack.pop();
+        result
+    }
+
+    fn response_shape_for_type(
+        &mut self,
+        ty: &Type,
+        context: &TypeContext,
+        stack: &mut Vec<String>,
+    ) -> Result<WireShape, String> {
+        match ty {
+            Type::Reference(value) => self.response_shape_for_type(&value.elem, context, stack),
+            Type::Paren(value) => self.response_shape_for_type(&value.elem, context, stack),
+            Type::Group(value) => self.response_shape_for_type(&value.elem, context, stack),
+            Type::Array(value) => Ok(WireShape::Array(Box::new(self.response_shape_for_type(
+                &value.elem,
+                context,
+                stack,
+            )?))),
+            Type::Tuple(_) => Err(format!(
+                "tuple field {} needs an explicit runtime shape mapping",
+                ty.to_token_stream()
+            )),
+            Type::Path(value) => {
+                let Some(segment) = value.path.segments.last() else {
+                    return Err("empty Rust IPC type path in response shape".into());
+                };
+                let name = segment.ident.to_string();
+                let arguments = match &segment.arguments {
+                    syn::PathArguments::AngleBracketed(arguments) => Some(&arguments.args),
+                    syn::PathArguments::None => None,
+                    other => {
+                        return Err(format!(
+                            "unsupported generic response shape type {}",
+                            other.to_token_stream()
+                        ));
+                    }
+                };
+                match name.as_str() {
+                    "String" | "str" | "PathBuf" | "Uuid" => Ok(WireShape::String),
+                    "bool" => Ok(WireShape::Boolean),
+                    "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32" | "u64"
+                    | "usize" | "f32" | "f64" => Ok(WireShape::Number),
+                    "i128" | "u128" => Err(format!(
+                        "Rust IPC integer `{name}` cannot map to a JavaScript number without precision loss"
+                    )),
+                    "Value" if self.is_json_value(&value.path, context) => Ok(WireShape::Unknown),
+                    "Option" => Ok(WireShape::Nullable(Box::new(
+                        self.response_shape_for_type(
+                            one_type_argument(arguments, &name)?,
+                            context,
+                            stack,
+                        )?,
+                    ))),
+                    "Vec" | "VecDeque" | "HashSet" | "BTreeSet" => {
+                        Ok(WireShape::Array(Box::new(self.response_shape_for_type(
+                            one_type_argument(arguments, &name)?,
+                            context,
+                            stack,
+                        )?)))
+                    }
+                    "HashMap" | "BTreeMap" => {
+                        let args =
+                            arguments.ok_or_else(|| format!("{name} missing generic arguments"))?;
+                        let types = args
+                            .iter()
+                            .filter_map(|argument| match argument {
+                                syn::GenericArgument::Type(ty) => Some(ty),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>();
+                        if types.len() != 2 {
+                            return Err(format!("{name} requires key and value types"));
+                        }
+                        if self.map_type(types[0], TypeUse::Response, context)?.ts != "string" {
+                            return Err("IPC map keys must be strings in response shapes".into());
+                        }
+                        Ok(WireShape::Record(Box::new(
+                            self.response_shape_for_type(types[1], context, stack)?,
+                        )))
+                    }
+                    "Arc" | "Box" | "Rc" | "Cow" => self.response_shape_for_type(
+                        one_type_argument(arguments, &name)?,
+                        context,
+                        stack,
+                    ),
+                    _ => {
+                        let key = self.resolve_type(&value.path, context)?;
+                        self.response_shape_for_named_type(&key, stack)
+                    }
+                }
+            }
+            other => Err(format!(
+                "unsupported Rust response shape type: {}",
+                other.to_token_stream()
+            )),
+        }
     }
 
     fn collect_items(&mut self, items: &[Item], context: &TypeContext) -> Result<(), String> {
@@ -1319,6 +1606,13 @@ fn emitted_key(key: &str, usage: TypeUse) -> String {
     }
 }
 
+fn enum_values_name(name: &str, usage: TypeUse) -> Result<String, String> {
+    apply_case(
+        &format!("{}_values", emitted_name(name, usage)),
+        Some("SCREAMING_SNAKE_CASE"),
+    )
+}
+
 fn apply_case(value: &str, case: Option<&str>) -> Result<String, String> {
     let output = match case {
         Some("camelCase") => {
@@ -1912,6 +2206,109 @@ mod tests {
         assert!(declarations.contains(
             "export interface SettingsInput { default_shell?: ShellChoiceInput; description?: string | null }"
         ));
+    }
+
+    #[test]
+    fn response_shape_uses_serde_wire_fields_and_recursively_maps_settings_types() {
+        let items: Vec<Item> = vec![
+            syn::parse_quote! {
+                #[derive(serde::Serialize, serde::Deserialize)]
+                #[serde(default)]
+                struct Settings {
+                    level: Level,
+                    nested: Nested,
+                    required_nullable: Option<String>,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    optional_value: Option<String>,
+                    #[serde(skip_serializing_if = "Vec::is_empty")]
+                    optional_labels: Vec<String>,
+                    #[serde(skip_serializing)]
+                    secret: String,
+                    #[serde(default)]
+                    defaulted: bool,
+                    list: Vec<Nested>,
+                    index: std::collections::HashMap<String, Level>,
+                    opaque: serde_json::Value,
+                    wrapper: TextWrapper,
+                }
+            },
+            syn::parse_quote! {
+                #[derive(serde::Serialize, serde::Deserialize)]
+                struct Nested {
+                    enabled: bool,
+                }
+            },
+            syn::parse_quote! {
+                #[derive(serde::Serialize, serde::Deserialize)]
+                #[serde(rename_all = "snake_case")]
+                enum Level {
+                    Low,
+                    High,
+                }
+            },
+            syn::parse_quote! {
+                #[derive(serde::Serialize, serde::Deserialize)]
+                #[serde(transparent)]
+                struct TextWrapper(String);
+            },
+        ];
+        let context = RustTypeGraph::test_context();
+        let mut graph = RustTypeGraph::default();
+        graph.collect_items(&items, &context).unwrap();
+
+        graph
+            .emit_response_shape("test_crate::Settings", "SETTINGS_RESPONSE_SHAPE")
+            .unwrap();
+
+        let declarations = graph.declarations();
+        let shape = graph.runtime_shape_declarations();
+        assert!(declarations.contains("export const LEVEL_VALUES = ['low', 'high'] as const;"));
+        assert!(shape.starts_with("export const SETTINGS_RESPONSE_SHAPE = {\n"));
+        assert!(shape.contains("'level': {\n\t\t\toptional: false,\n\t\t\tshape: { kind: 'enum', values: LEVEL_VALUES },"));
+        assert!(shape.contains(
+            "'nested': {\n\t\t\toptional: false,\n\t\t\tshape: {\n\t\t\t\tkind: 'object',"
+        ));
+        assert!(shape.contains("'required_nullable': {\n\t\t\toptional: false,\n\t\t\tshape: { kind: 'nullable', inner: { kind: 'string' } },"));
+        assert!(shape.contains(
+            "'optional_value': {\n\t\t\toptional: true,\n\t\t\tshape: { kind: 'string' },"
+        ));
+        assert!(shape.contains("'optional_labels': {\n\t\t\toptional: true,\n\t\t\tshape: { kind: 'array', items: { kind: 'string' } },"));
+        assert!(!shape.contains("'secret'"));
+        assert!(
+            shape.contains(
+                "'defaulted': {\n\t\t\toptional: false,\n\t\t\tshape: { kind: 'boolean' },"
+            )
+        );
+        assert!(shape.contains(
+            "'list': {\n\t\t\toptional: false,\n\t\t\tshape: { kind: 'array', items: {\n"
+        ));
+        assert!(shape.contains("'index': {\n\t\t\toptional: false,\n\t\t\tshape: { kind: 'record', values: { kind: 'enum', values: LEVEL_VALUES } },"));
+        assert!(
+            shape
+                .contains("'opaque': {\n\t\t\toptional: false,\n\t\t\tshape: { kind: 'unknown' },")
+        );
+        assert!(
+            shape
+                .contains("'wrapper': {\n\t\t\toptional: false,\n\t\t\tshape: { kind: 'string' },")
+        );
+    }
+
+    #[test]
+    fn response_shape_rejects_recursive_inline_dtos() {
+        let items: Vec<Item> = vec![syn::parse_quote! {
+            #[derive(serde::Serialize)]
+            struct Settings {
+                child: Option<Box<Settings>>,
+            }
+        }];
+        let context = RustTypeGraph::test_context();
+        let mut graph = RustTypeGraph::default();
+        graph.collect_items(&items, &context).unwrap();
+
+        let error = graph
+            .emit_response_shape("test_crate::Settings", "SETTINGS_RESPONSE_SHAPE")
+            .unwrap_err();
+        assert!(error.contains("recursive Rust IPC response DTO"));
     }
 
     #[test]

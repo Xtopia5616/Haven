@@ -765,8 +765,9 @@ recording event mapper 也校验 Tauri envelope ID 和 object payload，不合�
 （ADR 0472）。
 Settings 的完整 wire shape 由 `haven_common::config::Settings` 所有；前端不再从多个页面直接读取
 `invoke('get_settings')` 的原始结果，所有读取经 `ui/src/lib/settingsCommands.ts::loadSettings` 和
-`ui/src/lib/contracts/settings.ts::parseSettingsPayload`。validator 对根对象 shape 保持宽容，并校验已知凭据引用字段为规范
-`cred-*`；未知配置字段、未知枚举字符串和既有 snake_case 配置字段继续保留。null/非对象继续作为空结果，命令错误原样进入现有 catch。
+`ui/src/lib/contracts/settings.ts::parseSettingsPayload`。IPC generator 从 Rust Serialize/Serde 元数据生成
+`SETTINGS_RESPONSE_SHAPE`，parser 校验所有必需嵌套字段、primitive、数组/映射与闭枚举；可选字段仍可省略，未知附加字段继续保留。
+parser 另外校验已知凭据引用为规范 `cred-*` 并检查 Settings 数值域。null/非对象继续作为空结果，不完整对象作为无效响应，命令错误原样进入现有 catch（ADR 1020）。
 Settings 表单状态仍由 `SettingsView` 持有，`settingsSaveAction` 与 `settingsGuard` 只负责纯 UI 状态，
 没有额外的 settings store 或第二个 update serializer。`update_settings` 的唯一 builder 复用开放式
 `SettingsPayload`，其 Rust 参数和直接调用 owner 由 IPC contract script 校验；前端不复制 Rust nested Settings schema

@@ -99,7 +99,10 @@ Assert-Contains $toolRunContract 'mapped\.status\s*===\s*undefined' 'tool run co
 
 $settingsCommands = Get-Source 'ui/src/lib/settingsCommands.ts'
 Assert-Contains $settingsCommands 'invoke\(''get_settings''\)\.then\(parseSettingsPayload\)' 'settings response uses its runtime parser'
-Assert-Contains (Get-Source 'ui/src/lib/contracts/settings.ts') 'function parseSettingsPayload\(value:\s*unknown\):\s*SettingsPayload\s*\|\s*null' 'settings parser accepts unknown'
+$settingsContract = Get-Source 'ui/src/lib/contracts/settings.ts'
+Assert-Contains $settingsContract 'function parseSettingsPayload\(value:\s*unknown\):\s*SettingsPayload\s*\|\s*null' 'settings parser accepts unknown'
+Assert-Contains $generated 'export const SETTINGS_RESPONSE_SHAPE\s*=' 'Settings runtime shape is generated from Rust response DTOs'
+Assert-Contains $settingsContract 'findGeneratedWireShapeMismatch\(value,\s*SETTINGS_RESPONSE_SHAPE\)' 'Settings response validates its generated full wire shape'
 
 $toolsCommands = Get-Source 'ui/src/lib/toolsCommands.ts'
 $mcpContract = Get-Source 'ui/src/lib/contracts/mcp.ts'
