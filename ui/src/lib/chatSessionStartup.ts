@@ -1,7 +1,6 @@
 import { buildResumeMessages } from './resumeMessages.ts';
 import { createSessionRefreshScheduler } from './sessionRefresh.ts';
 import { isErrorStatus } from './sessionStatus.ts';
-import { resumeInteractions } from './sessionReducer.ts';
 import type { SessionAction, SessionReducer, SessionRunEndStatus } from './sessionReducer.ts';
 import type {
 	RuntimeSessionListResponse,
@@ -224,7 +223,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			type: 'session/messages/resume-loaded',
 			sessionId: latestSession.session.session_id,
 			messages: buildResumeMessages(latestSession),
-			interactions: resumeInteractions(latestSession),
+			interactions: latestSession.interactions,
 			preserveRequestIds: dependencies.getPendingInteractionRequestIds(
 				latestSession.session.session_id,
 			),

@@ -208,6 +208,7 @@ function resumeResponse(): ResumeFixture {
 				tool_index: 0,
 				risk_level: 'low',
 				created_at: '2026-10-12T08:00:04Z',
+				expires_at: '2026-10-12T08:01:04Z',
 			},
 		],
 	} as ResumeFixture;
@@ -371,8 +372,33 @@ describe('session history and resume contracts', () => {
 
 	it('accepts complete resume rows with canonical linkage and opaque provider IDs', () => {
 		const response = resumeResponse();
-		expect(parseSessionResumeResponse(response)).toBe(response);
-		expect(parseSessionResumeResponse(response, sessionId)).toBe(response);
+		const parsed = parseSessionResumeResponse(response);
+		expect(parsed).not.toBe(response);
+		expect(parsed.interactions).toEqual([
+			{
+				requestId: stepId,
+				sessionId,
+				owner: { kind: 'session', sessionId },
+				kind: 'ask',
+				status: 'pending',
+				options: [],
+				createdAt: '2026-10-12T08:00:03Z',
+			},
+			{
+				requestId: 'conf-00000000000000000000000000000005',
+				sessionId,
+				owner: { kind: 'session', sessionId },
+				kind: 'confirm',
+				status: 'pending',
+				options: [],
+				invocationStepId: stepId,
+				toolIndex: 0,
+				riskLevel: 'low',
+				createdAt: '2026-10-12T08:00:04Z',
+				expiresAt: '2026-10-12T08:01:04Z',
+			},
+		]);
+		expect(parseSessionResumeResponse(response, sessionId).interactions).toEqual(parsed.interactions);
 	});
 
 	it('rejects missing fields, invalid enums, and malformed nested media shapes', () => {
@@ -450,9 +476,18 @@ describe('session history and resume contracts', () => {
 		);
 	});
 
+	it('omits pending confirmations without a valid deadline from the renderer view', () => {
+		const response = resumeResponse();
+		delete response.interactions[1]!.expires_at;
+
+		expect(parseSessionResumeResponse(response).interactions).toEqual([
+			expect.objectContaining({ requestId: stepId, kind: 'ask' }),
+		]);
+	});
+
 	it('validates shared msg step identities and nested managed asset identities', () => {
 		const response = resumeResponseWithAssets();
-		expect(parseSessionResumeResponse(response)).toBe(response);
+		expect(parseSessionResumeResponse(response)).not.toBe(response);
 
 		const malformed = resumeResponseWithAssets();
 		malformed.messages[0]!.attachments[0]!.asset_id = 'asset-short';

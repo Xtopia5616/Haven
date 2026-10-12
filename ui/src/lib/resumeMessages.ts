@@ -231,9 +231,9 @@ export function buildResumeMessages<T extends ResumeTranscriptProjectionInput>(
 		(data.steps || []).filter((s) => s.tool_name === 'ask').map((s) => s.step_id),
 	);
 
-	const msgIds = new Set();
+	const messageIds = new Set();
 	for (const msg of msgs) {
-		msgIds.add(msg.message_id);
+		messageIds.add(msg.message_id);
 		// Ask question messages are persisted under the ask step row's id:
 		// skip them here (the ask CARD below renders them).
 		if (askStepIds.has(msg.message_id)) continue;
@@ -278,7 +278,7 @@ export function buildResumeMessages<T extends ResumeTranscriptProjectionInput>(
 		// not be deduped away.
 		const stepId = step.step_id;
 		if (!step.tool_name) continue;
-		if (msgIds.has(stepId) && step.tool_name !== 'ask') continue;
+		if (messageIds.has(stepId) && step.tool_name !== 'ask') continue;
 		const toolName = step.tool_name;
 		const obs = step.observation && step.observation !== '{}' ? step.observation : null;
 		// The `ask` tool surfaces the question as a dedicated question card

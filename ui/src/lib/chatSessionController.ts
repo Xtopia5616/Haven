@@ -12,7 +12,6 @@ import { processResultSessionId } from './submit.ts';
 import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachmentTypes.ts';
 import type { ProcessResult, CanonicalRole } from './contracts/generatedCommands.ts';
 import { isCanonicalEntityId } from './contracts/wireGuards.ts';
-import { resumeInteractions as resumeInteractionsFromProjection } from './sessionReducer.ts';
 import type { SessionAction, SessionReducer, SessionSummary } from './sessionReducer.ts';
 
 export interface RollbackRequest {
@@ -272,7 +271,7 @@ export class ChatSessionController {
 			type: 'session/messages/resume-loaded',
 			sessionId,
 			messages: buildResumeMessages(result),
-			interactions: resumeInteractionsFromProjection(result),
+			interactions: result.interactions,
 			preserveRequestIds: this.pendingInteractionRequestIdsForSession(sessionId),
 			usage: result.usage,
 			llmUsage: result.llm_usage,

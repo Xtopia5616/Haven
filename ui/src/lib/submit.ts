@@ -311,7 +311,7 @@ async function doSubmit({
 		};
 		const result = await processTranscript(request);
 		const createdId = processResultSessionId(result);
-		const dbMsgId = processResultMessageId(result);
+		const dbMessageId = processResultMessageId(result);
 		// Prefer the destination session after a SessionCreated migrate so the
 		// id rewrite lands on the bubble that was just moved.
 		let targetSessionId = sessionId;
@@ -331,8 +331,8 @@ async function doSubmit({
 				type: 'session/messages/accepted',
 				fromSessionId: sessionId,
 				toSessionId: createdId,
-				optimisticId: msg.id,
-				persistedId: dbMsgId,
+				optimisticMessageId: msg.id,
+				persistedMessageId: dbMessageId,
 			});
 			reducer.dispatch({ type: 'session/selected', sessionId: createdId });
 			targetSessionId = createdId;
@@ -344,8 +344,8 @@ async function doSubmit({
 				type: 'session/messages/accepted',
 				fromSessionId: sessionId,
 				toSessionId: targetSessionId,
-				optimisticId: msg.id,
-				persistedId: dbMsgId,
+				optimisticMessageId: msg.id,
+				persistedMessageId: dbMessageId,
 			});
 		}
 		return result;

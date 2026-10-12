@@ -1018,3 +1018,4 @@
 - [1027：对齐 UI 会话执行阶段与工具契约命名](1027-align-ui-session-and-tool-contract-owners.md)
 - [1028：统一 Memory 领域模型身份字段](1028-name-memory-domain-model-identities.md)
 - [1029：收窄 LLM Router 配置读取](1029-narrow-llm-router-configuration-reads.md)
+- [1030：统一 Session resume interaction 映射与消息身份命名](1030-align-resume-interaction-contract-and-message-identifiers.md)

@@ -4,7 +4,6 @@
 	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
 	import {
 		appSessionReducer,
-		resumeInteractions,
 		type SessionRunEndStatus,
 	} from '$lib/sessionReducer.ts';
 	import { formatMessageTime } from '$lib/messageFormat.ts';
@@ -357,7 +356,7 @@
 				type: 'session/messages/resume-loaded',
 				sessionId: session.session_id,
 				messages: buildResumeMessages(result),
-				interactions: resumeInteractions(result),
+				interactions: result.interactions,
 				preserveRequestIds: appSessionReducer.getPendingInteractionRequestIds(
 					session.session_id,
 				),

@@ -3,7 +3,6 @@ import {
 	initialSessionState,
 	SessionReducer,
 	reduceSession,
-	resumeInteractions,
 	type SessionMessage,
 	type SessionReducerState,
 	type SessionSummary,
@@ -17,156 +16,6 @@ const session = (sessionId: string, status: SessionStatus = 'pending'): SessionS
 const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState => ({
 	...initialSessionState,
 	...partial,
-});
-
-describe('resume interaction normalization', () => {
-	it('maps the snake_case resume DTO and skips malformed rows', () => {
-		const requests = resumeInteractions({
-			interactions: [
-				{
-					request_id: 'conf-9b2abfc29cc47494c87171177c2af369',
-					session_id: 'ses-9b2abfc29cc47494c87171177c2af369',
-					owner: { kind: 'session', session_id: 'ses-9b2abfc29cc47494c87171177c2af369' },
-					kind: 'confirm',
-					status: 'pending',
-					options: [],
-					tool_name: 'run_command',
-					risk_level: 'high',
-					invocation_step_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
-					tool_index: 2,
-					tool_call_id: 'call-1',
-					created_at: '2026-09-25T00:00:00Z',
-					expires_at: '2026-09-25T00:01:00Z',
-				},
-				{
-					id: 'ask-camel-case',
-					sessionId: 'ses-7b2306b03aab8c869ebd36097d21377a',
-					kind: 'ask',
-					status: 'pending',
-					options: ['A', 'B'],
-					createdAt: '2026-09-25T00:02:00Z',
-				},
-				{
-					request_id: 'step-ac1b56f05325da81cb2a5d291d608ad1',
-					session_id: 'ses-ac1b56f05325da81cb2a5d291d608ad1',
-					owner: { kind: 'session', session_id: 'ses-ac1b56f05325da81cb2a5d291d608ad1' },
-					kind: 'ask',
-					status: 'pending',
-					options: ['继续'],
-					created_at: '2026-09-25T00:02:00Z',
-				},
-				{
-					request_id: 'conf-41b3c317318c01a181144c5b80b77e1c',
-					session_id: 'ses-543ae65d6fcc5903c89349742cf3eb0d',
-					owner: {
-						kind: 'scheduled_tool_run',
-						tool_run_id: 'toolrun-a83a31320d921b888a48fa5edd0b4b5a',
-					},
-					kind: 'scheduled_confirm',
-					status: 'pending',
-					options: [],
-					created_at: '2026-09-25T00:02:00Z',
-					expires_at: '2026-09-25T00:03:00Z',
-				},
-				{ id: 'missing-session', kind: 'ask', status: 'pending' },
-				{ id: 'invalid-session', session_id: 7, kind: 'ask', status: 'pending' },
-				{
-					id: 'confirm-missing-deadline',
-					session_id: 'ses-9b2abfc29cc47494c87171177c2af369',
-					owner: { kind: 'session', session_id: 'ses-9b2abfc29cc47494c87171177c2af369' },
-					kind: 'confirm',
-					status: 'pending',
-					options: [],
-					created_at: '2026-09-25T00:00:00Z',
-				},
-				{
-					id: 'confirm-invalid-deadline',
-					session_id: 'ses-9b2abfc29cc47494c87171177c2af369',
-					owner: { kind: 'session', session_id: 'ses-9b2abfc29cc47494c87171177c2af369' },
-					kind: 'confirm',
-					status: 'pending',
-					options: [],
-					created_at: '2026-09-25T00:00:00Z',
-					expires_at: 'invalid',
-				},
-				{
-					id: 'ask-with-app-command-owner',
-					owner: { kind: 'app_command' },
-					kind: 'ask',
-					status: 'pending',
-					options: [],
-					created_at: '2026-09-25T00:00:00Z',
-				},
-				{
-					id: 'confirm-with-scheduled-owner',
-					owner: {
-						kind: 'scheduled_tool_run',
-						tool_run_id: 'toolrun-a83a31320d921b888a48fa5edd0b4b5a',
-					},
-					kind: 'confirm',
-					status: 'pending',
-					options: [],
-					created_at: '2026-09-25T00:00:00Z',
-					expires_at: '2026-09-25T00:01:00Z',
-				},
-				{
-					id: 'scheduled-confirm-with-session-owner',
-					session_id: 'ses-9b2abfc29cc47494c87171177c2af369',
-					owner: { kind: 'session', session_id: 'ses-9b2abfc29cc47494c87171177c2af369' },
-					kind: 'scheduled_confirm',
-					status: 'pending',
-					options: [],
-					created_at: '2026-09-25T00:00:00Z',
-					expires_at: '2026-09-25T00:01:00Z',
-				},
-			],
-		});
-
-		expect(requests).toEqual([
-			{
-				requestId: 'conf-9b2abfc29cc47494c87171177c2af369',
-				sessionId: 'ses-9b2abfc29cc47494c87171177c2af369',
-				owner: { kind: 'session', sessionId: 'ses-9b2abfc29cc47494c87171177c2af369' },
-				kind: 'confirm',
-				status: 'pending',
-				options: [],
-				toolName: 'run_command',
-				riskLevel: 'high',
-				invocationStepId: 'step-6b86b273ff34fce19d6b804eff5a3f57',
-				toolIndex: 2,
-				toolCallId: 'call-1',
-				createdAt: '2026-09-25T00:00:00Z',
-				expiresAt: '2026-09-25T00:01:00Z',
-			},
-			{
-				requestId: 'step-ac1b56f05325da81cb2a5d291d608ad1',
-				sessionId: 'ses-ac1b56f05325da81cb2a5d291d608ad1',
-				owner: { kind: 'session', sessionId: 'ses-ac1b56f05325da81cb2a5d291d608ad1' },
-				kind: 'ask',
-				status: 'pending',
-				options: ['继续'],
-				createdAt: '2026-09-25T00:02:00Z',
-			},
-			{
-				requestId: 'conf-41b3c317318c01a181144c5b80b77e1c',
-				sessionId: 'ses-543ae65d6fcc5903c89349742cf3eb0d',
-				owner: {
-					kind: 'scheduled_tool_run',
-					toolRunId: 'toolrun-a83a31320d921b888a48fa5edd0b4b5a',
-				},
-				kind: 'scheduled_confirm',
-				status: 'pending',
-				options: [],
-				createdAt: '2026-09-25T00:02:00Z',
-				expiresAt: '2026-09-25T00:03:00Z',
-			},
-		]);
-	});
-
-	it('returns an empty list for a malformed resume envelope', () => {
-		expect(resumeInteractions(null)).toEqual([]);
-		expect(resumeInteractions({ interactions: {} })).toEqual([]);
-	});
 });
 
 describe('SessionReducer', () => {
@@ -606,8 +455,8 @@ describe('SessionReducer', () => {
 			type: 'session/messages/accepted',
 			fromSessionId: '_draft',
 			toSessionId: 'ses-created',
-			optimisticId: optimistic.id,
-			persistedId: 'msg-123',
+			optimisticMessageId: optimistic.id,
+			persistedMessageId: 'msg-123',
 		});
 
 		expect(accepted.messages?._draft).toEqual([]);

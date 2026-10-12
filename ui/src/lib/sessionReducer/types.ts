@@ -146,8 +146,8 @@ export type SessionAction =
 			type: 'session/messages/accepted';
 			fromSessionId: string;
 			toSessionId: string;
-			optimisticId: string;
-			persistedId?: string | null;
+			optimisticMessageId: string;
+			persistedMessageId?: string | null;
 	  }
 	| { type: 'session/messages/rejected'; sessionId: string; messageId: string }
 	| { type: 'session/messages/cleared'; sessionId: string }

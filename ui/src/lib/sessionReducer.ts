@@ -29,7 +29,6 @@ export type {
 	SessionTokenStats,
 	StreamBlockIds,
 } from './sessionReducer/types.ts';
-export { resumeInteractions } from './sessionReducer/interaction.ts';
 export { backgroundToolRunResultContent } from './sessionReducer/transcript.ts';
 
 function clearSessionMessages(state: SessionReducerState, sessionId: string): SessionReducerState {

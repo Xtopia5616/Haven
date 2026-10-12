@@ -1,4 +1,5 @@
-/** Session history and resume command DTOs in their Rust/Tauri wire shape. */
+/** Session history wire DTOs and validated renderer projections. */
+import { mapInteractionRequest, type InteractionRequest } from './app.ts';
 import type {
 	LlmUsageRecord as GeneratedLlmUsageRecord,
 	SessionResumeMessageDto as GeneratedSessionResumeMessage,
@@ -33,8 +34,10 @@ export type SessionLlmUsage = Omit<Partial<GeneratedLlmUsageRecord>, 'cost_usd'>
 	cost_usd?: number | null;
 };
 
-/** Complete successful response from get_session_for_resume/get_latest_session_for_resume. */
-export type SessionResumeResponse = GeneratedSessionResumeResponse;
+/** Validated resume response with interactions mapped to the renderer contract. */
+export type SessionResumeResponse = Omit<GeneratedSessionResumeResponse, 'interactions'> & {
+	interactions: InteractionRequest[];
+};
 
 function hasSessionIdentity(
 	value: unknown,
@@ -388,5 +391,10 @@ export function parseSessionResumeResponse(
 	if (!hasValidResumeNumericValues(value)) {
 		throw new Error('Invalid resumed numeric value');
 	}
-	return value as unknown as SessionResumeResponse;
+	// A resume snapshot can contain a pending confirmation without a usable
+	// deadline; as before, omit that interaction while keeping the transcript.
+	const interactions = value.interactions
+		.map(mapInteractionRequest)
+		.filter((interaction): interaction is InteractionRequest => interaction !== null);
+	return { ...value, interactions } as unknown as SessionResumeResponse;
 }

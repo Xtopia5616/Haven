@@ -196,6 +196,72 @@ export function mapInteractionOwner(
 	}
 }
 
+/** Convert one interaction from its Rust/Tauri DTO into the renderer contract. */
+export function mapInteractionRequest(value: unknown): InteractionRequest | null {
+	if (!isRecord(value) || !isOneOf(value.kind, INTERACTION_KIND_VALUES)) return null;
+	const kind = value.kind as InteractionKind;
+	const requestId = readStringField(value, 'request_id');
+	const sessionId = value.session_id;
+	const status = value.status;
+	const createdAt = readStringField(value, 'created_at');
+	const options = value.options === undefined ? [] : value.options;
+	const expiresAt = value.expires_at;
+	const toolIndex = value.tool_index;
+	if (
+		requestId === null ||
+		!isCanonicalEntityId(requestId, kind === 'ask' ? 'step' : 'conf') ||
+		(sessionId !== undefined && !isCanonicalEntityId(sessionId, 'ses')) ||
+		!isOneOf(status, INTERACTION_STATUS_VALUES) ||
+		createdAt === null ||
+		!isStringArray(options) ||
+		!optionalStringFieldIsValid(value, 'tool_name') ||
+		!optionalOneOfIsValid(value, 'risk_level', RISK_LEVEL_VALUES) ||
+		!optionalStringFieldIsValid(value, 'summary') ||
+		!optionalStringFieldIsValid(value, 'permission_key') ||
+		!optionalCanonicalIdFieldIsValid(value, 'invocation_step_id', 'step') ||
+		!optionalStringFieldIsValid(value, 'tool_call_id') ||
+		!optionalStringFieldIsValid(value, 'expires_at') ||
+		!validPendingPermissionDeadline(kind, status, expiresAt) ||
+		(toolIndex !== undefined &&
+			(!isFiniteNumber(toolIndex) ||
+				!Number.isInteger(toolIndex) ||
+				toolIndex < 0 ||
+				toolIndex > 4_294_967_295))
+	) {
+		return null;
+	}
+	const owner = mapInteractionOwner(value.owner, sessionId);
+	if (!owner || !isValidInteractionKindOwnerPair(kind, owner)) return null;
+
+	const wire = value as unknown as GeneratedInteractionRequestedEvent;
+	const normalized = {
+		requestId,
+		owner,
+		status,
+		options,
+		...(wire.tool_name ? { toolName: wire.tool_name } : {}),
+		...(wire.risk_level ? { riskLevel: wire.risk_level } : {}),
+		...(wire.summary ? { summary: wire.summary } : {}),
+		...(wire.permission_key ? { permissionKey: wire.permission_key } : {}),
+		...(wire.invocation_step_id ? { invocationStepId: wire.invocation_step_id } : {}),
+		...(wire.tool_index != null ? { toolIndex: wire.tool_index } : {}),
+		...(wire.tool_call_id ? { toolCallId: wire.tool_call_id } : {}),
+		createdAt,
+		...(wire.expires_at ? { expiresAt: wire.expires_at } : {}),
+	};
+	if (owner.kind === 'session') {
+		return { ...normalized, kind, sessionId: owner.sessionId } as InteractionRequest;
+	}
+	if (owner.kind === 'app_command') {
+		return { ...normalized, kind } as InteractionRequest;
+	}
+	return {
+		...normalized,
+		kind,
+		...(sessionId === undefined ? {} : { sessionId }),
+	} as InteractionRequest;
+}
+
 /** Convert one known app-shell event from an untrusted Rust/Tauri payload. */
 export function mapAppEvent<K extends AppEventName>(
 	event: TauriEvent<unknown> & { event: K },
@@ -246,57 +312,8 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 				payload: p as unknown as AppEventPayloadMap['skills:status_change'],
 			};
 		case 'interaction:requested': {
-			const requestId = readStringField(p, 'request_id');
-			const sessionId = p.session_id;
-			const kind = p.kind;
-			const status = p.status;
-			const createdAt = readStringField(p, 'created_at');
-			const options = p.options === undefined ? [] : p.options;
-			const toolIndex = p.tool_index;
-			if (requestId === null || !isOneOf(kind, INTERACTION_KIND_VALUES)) return null;
-			if (!isCanonicalEntityId(requestId, kind === 'ask' ? 'step' : 'conf')) return null;
-			if (sessionId !== undefined && !isCanonicalEntityId(sessionId, 'ses')) return null;
-			if (
-				!isOneOf(status, INTERACTION_STATUS_VALUES) ||
-				createdAt === null ||
-				!isStringArray(options) ||
-				!optionalStringFieldIsValid(p, 'tool_name') ||
-				!optionalOneOfIsValid(p, 'risk_level', RISK_LEVEL_VALUES) ||
-				!optionalStringFieldIsValid(p, 'summary') ||
-				!optionalStringFieldIsValid(p, 'permission_key') ||
-				!optionalCanonicalIdFieldIsValid(p, 'invocation_step_id', 'step') ||
-				!optionalStringFieldIsValid(p, 'tool_call_id') ||
-				!optionalStringFieldIsValid(p, 'expires_at') ||
-				!validPendingPermissionDeadline(kind, status, p.expires_at) ||
-				(toolIndex !== undefined &&
-					(!isFiniteNumber(toolIndex) ||
-						!Number.isInteger(toolIndex) ||
-						toolIndex < 0 ||
-						toolIndex > 4_294_967_295))
-			)
-				return null;
-			const owner = mapInteractionOwner(p.owner, sessionId);
-			if (!owner || !isValidInteractionKindOwnerPair(kind, owner)) return null;
-
-			const wire = p as unknown as GeneratedInteractionRequestedEvent;
-			const payload = {
-				requestId,
-				...(sessionId === undefined ? {} : { sessionId }),
-				owner,
-				kind,
-				status,
-				options,
-				...(wire.tool_name ? { toolName: wire.tool_name } : {}),
-				...(wire.risk_level ? { riskLevel: wire.risk_level } : {}),
-				...(wire.summary ? { summary: wire.summary } : {}),
-				...(wire.permission_key ? { permissionKey: wire.permission_key } : {}),
-				...(wire.invocation_step_id ? { invocationStepId: wire.invocation_step_id } : {}),
-				...(wire.tool_index != null ? { toolIndex: wire.tool_index } : {}),
-				...(wire.tool_call_id ? { toolCallId: wire.tool_call_id } : {}),
-				createdAt,
-				...(wire.expires_at ? { expiresAt: wire.expires_at } : {}),
-			};
-			return { ...tauriEvent, payload: payload as InteractionRequest };
+			const payload = mapInteractionRequest(p);
+			return payload ? { ...tauriEvent, payload } : null;
 		}
 		case 'hotkey:conflict': {
 			const binding = readStringField(p, 'binding');

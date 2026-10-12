@@ -84,23 +84,26 @@ export function reduceTranscript(
 				state,
 				action.fromSessionId,
 				action.toSessionId,
-				new Set([action.optimisticId]),
+				new Set([action.optimisticMessageId]),
 			);
-			if (action.persistedId && action.persistedId !== action.optimisticId) {
+			if (
+				action.persistedMessageId &&
+				action.persistedMessageId !== action.optimisticMessageId
+			) {
 				next = withMessages(next, action.toSessionId, (messages) => {
 					const index = messages.findIndex(
-						(message) => message.id === action.optimisticId,
+						(message) => message.id === action.optimisticMessageId,
 					);
 					if (index < 0) return messages;
 					const result = messages.slice();
-					result[index] = { ...result[index], id: action.persistedId as string };
+					result[index] = { ...result[index], id: action.persistedMessageId as string };
 					return result;
 				});
 			}
 			const optimistic = { ...next.optimistic };
-			optimistic[action.optimisticId] = {
+			optimistic[action.optimisticMessageId] = {
 				sessionId: action.toSessionId,
-				messageId: action.persistedId || action.optimisticId,
+				messageId: action.persistedMessageId || action.optimisticMessageId,
 				status: 'accepted',
 			};
 			return { ...next, optimistic };

@@ -222,7 +222,7 @@ describe('session history command boundary', () => {
 		const resume = { ...resumeResponse(request.sessionId), future_field: { retained: true } };
 		invokeMock.mockResolvedValueOnce(resume as never).mockResolvedValueOnce(null);
 
-		await expect(getSessionForResume(request)).resolves.toBe(resume);
+		await expect(getSessionForResume(request)).resolves.toEqual(resume);
 		await expect(getLatestSessionForResume()).resolves.toBeNull();
 		expect(invokeMock.mock.calls).toEqual([
 			['get_session_for_resume', request],
@@ -271,7 +271,7 @@ describe('session history command boundary', () => {
 			steps: [resumeStep(stepId, sessionId)],
 		};
 		invokeMock.mockResolvedValueOnce(response as never);
-		await expect(getSessionForResume({ sessionId })).resolves.toBe(response);
+		await expect(getSessionForResume({ sessionId })).resolves.toEqual(response);
 
 		invokeMock.mockResolvedValueOnce({ ...response, steps: [] } as never);
 		await expect(getSessionForResume({ sessionId })).rejects.toThrow(
@@ -325,6 +325,6 @@ describe('session history command boundary', () => {
 
 		await expect(
 			getSessionForResume({ sessionId: 'ses-00000000000000000000000000000007' }),
-		).resolves.toBe(response);
+		).resolves.toEqual(response);
 	});
 });
