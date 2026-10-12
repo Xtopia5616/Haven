@@ -39,11 +39,8 @@ const U32_FIELDS = new Set([
 	'response_token_floor',
 	'retry_factor',
 	'retry_max_retries',
-	'sample_rate',
 	'compaction_reserve_tokens',
 ]);
-
-const U16_FIELDS = new Set(['bits_per_sample', 'channels']);
 
 const FLOAT_RANGES = new Map<string, readonly [number, number]>([
 	['attachment_image_jpeg_quality', [0, 1]],
@@ -69,8 +66,6 @@ const NUMERIC_FIELDS = new Set([
 	'attachment_image_jpeg_quality',
 	'background_tool_run_output_emit_interval_ms',
 	'background_tool_run_tail_max_chars',
-	'bits_per_sample',
-	'channels',
 	'clipboard_entry_max_chars',
 	'clipboard_history_entries',
 	'clipboard_history_max_entries',
@@ -148,7 +143,6 @@ const NUMERIC_FIELDS = new Set([
 	'retry_jitter',
 	'retry_max_retries',
 	'retry_max_secs',
-	'sample_rate',
 	'sanitize_field_max_chars',
 	'scheduled_tool_runs_due_horizon_secs',
 	'search_max_file_size_bytes',
@@ -204,6 +198,12 @@ export const MEDIA_TIMEOUT_BOUNDS = {
 export const SESSION_STEP_BUDGET_BOUNDS = {
 	perRun: { min: 1, max: 1_000 },
 	perSession: { minInput: 0, minValue: 1, max: 100_000 },
+} as const;
+
+/** Keep aligned with Common AudioConfig validation and Settings controls. */
+export const AUDIO_CAPTURE_BOUNDS = {
+	maxDurationSecs: { min: 10, max: 300 },
+	silenceTimeoutMs: { min: 500, max: 10_000 },
 } as const;
 
 export type SessionPermissionGrant = GeneratedSessionPermissionGrant;
@@ -277,7 +277,6 @@ function findInvalidSettingsNumber(
 		}
 		if (field !== undefined && U32_FIELDS.has(field)) return isU32(value) ? null : path;
 		if (!isSafeUnsignedInteger(value)) return path;
-		if (field !== undefined && U16_FIELDS.has(field) && value > 0xffff) return path;
 		if (field === 'input_ring_buffer_secs' && value > MAX_INPUT_RING_BUFFER_SECS) return path;
 		return null;
 	}
@@ -339,11 +338,7 @@ function findInvalidMediaTimeout(value: unknown): string | null {
 		const config = value.media[kind];
 		if (!isRecord(config) || config.timeout_secs === undefined) continue;
 		const timeout = config.timeout_secs;
-		if (
-			!isSafeUnsignedInteger(timeout) ||
-			timeout < bounds.min ||
-			timeout > bounds.max
-		) {
+		if (!isSafeUnsignedInteger(timeout) || timeout < bounds.min || timeout > bounds.max) {
 			return `settings.media.${kind}.timeout_secs`;
 		}
 	}
@@ -373,13 +368,36 @@ function findInvalidSessionStepBudget(value: unknown): string | null {
 	return null;
 }
 
+function findInvalidAudioCapture(value: unknown): string | null {
+	if (!isRecord(value) || !isRecord(value.media) || !isRecord(value.media.audio)) return null;
+	const { max_duration_secs: duration, silence_timeout_ms: silence } = value.media.audio;
+	if (
+		duration !== undefined &&
+		(!isSafeUnsignedInteger(duration) ||
+			duration < AUDIO_CAPTURE_BOUNDS.maxDurationSecs.min ||
+			duration > AUDIO_CAPTURE_BOUNDS.maxDurationSecs.max)
+	) {
+		return 'settings.media.audio.max_duration_secs';
+	}
+	if (
+		silence !== undefined &&
+		(!isSafeUnsignedInteger(silence) ||
+			silence < AUDIO_CAPTURE_BOUNDS.silenceTimeoutMs.min ||
+			silence > AUDIO_CAPTURE_BOUNDS.silenceTimeoutMs.max)
+	) {
+		return 'settings.media.audio.silence_timeout_ms';
+	}
+	return null;
+}
+
 /** Reject Settings numbers outside their Rust field domains or JavaScript-safe range. */
 export function validateSettingsNumbers(value: unknown): void {
 	const invalidPath =
 		findInvalidSettingsNumber(value) ??
 		findInvalidMcpInterval(value) ??
 		findInvalidMediaTimeout(value) ??
-		findInvalidSessionStepBudget(value);
+		findInvalidSessionStepBudget(value) ??
+		findInvalidAudioCapture(value);
 	if (invalidPath) throw new Error(`Invalid Settings numeric value at ${invalidPath}`);
 }
 
@@ -397,7 +415,9 @@ export function parseSessionPermissionGrantResponses(value: unknown): SessionPer
 			SESSION_PERMISSION_GRANT_RESPONSE_SHAPE,
 		);
 		if (invalidPath) {
-			throw new Error(`Invalid session permission grant at [${index}]${invalidPath.slice(1)}`);
+			throw new Error(
+				`Invalid session permission grant at [${index}]${invalidPath.slice(1)}`,
+			);
 		}
 		if (!isCapabilityScope(grant.capability)) {
 			throw new Error('Invalid session permission grant identity');

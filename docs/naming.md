@@ -141,7 +141,7 @@ ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion re
 | 后台工具运行（background ToolRun） | 工具调用选择后台执行后启动的持久运行 | 通过 `ToolExecutionMode::Background` 启动；UI 显示“后台任务” |
 | 定时工具运行（scheduled ToolRun） | 由时间或依赖触发的工具运行 | 仍由 `schedule` 工具负责设置触发条件；UI 显示“定时任务” |
 | Memory live consumer handoff | 把已准备的 Memory event receiver future 一次性交给 ApplicationRuntime task registry 的阶段值；注册成功后才产出 `MemoryReady` | 类型为 `MemoryLiveConsumerHandoff`；由 `MemoryStartup::prepare_live_consumer` 创建，通过 `register_consumer_with` 注册，不代表 `ToolRun` 或已运行的 JoinHandle |
-| 音频输入管线（`InputPipeline`） | `haven-input` 对麦克风采集、VAD 与采集循环的唯一 owner；不拥有转写、provider fallback 或 App 的录音 UI 状态 | 常规采集用 `start_capture` / `stop_capture` / `cancel_capture`；固定时长采集用 `capture_for`；回调契约为 `InputEventHandler`。App 与 Tools 的字段统一叫 `input_pipeline` |
+| 音频输入管线（`InputPipeline`） | `haven-input` 对麦克风采集、VAD 与采集循环的唯一 owner；不拥有转写、provider fallback 或 App 的录音 UI 状态 | 常规采集用 `start_capture` / `stop_capture` / `cancel_capture`；固定时长采集用 `capture_for`；回调契约为 `InputEventHandler`。App 与 Tools 的字段统一叫 `input_pipeline`。`AudioConfig` 只配置录音时长、静音超时和 VAD 阈值；输入设备格式由运行时选择，输出固定为 16 kHz、单声道、16-bit PCM，不保留无效的格式设置字段（ADR 1063） |
 | 快捷键解析（`KeyCombo`） | `haven-input` 将用户配置的快捷键文本解析成平台中立按键与修饰键组合 | 跨 crate 只经根导出使用；modifier 用 `KeyModifier`，内部 bit flags 不进入消费者 API；组合仅由 `KeyCombo::parse` 创建（ADR 0926） |
 | VAD 回调值（`VadSignal` / `VadState`） | `haven-input` 的采集生命周期回调契约 | 根导出只提供 signal/state 值；`vad` 模块、模型 engine 和状态 detector 是私有实现（ADR 0926） |
 | VAD 状态事件 | App 的 `VadStatusEvent` 是 `recording:vad_status` 的唯一 wire DTO；`signal` / `state` 使用 `VadSignalDto` / `VadStateDto` 闭枚举 | IPC 生成器导出 Rust DTO 与允许值；UI `VadStatusPayload` 直接引用生成类型，`mapRecordingEvent` 校验 envelope、payload 和枚举值，未知值失败关闭（ADR 1018；取代 ADR 0694 的开放字符串决定） |

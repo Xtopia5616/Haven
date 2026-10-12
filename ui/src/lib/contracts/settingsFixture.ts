@@ -2,7 +2,10 @@ import { SETTINGS_RESPONSE_SHAPE } from './generatedCommands.ts';
 import type { SettingsPayload } from './settings.ts';
 import type { GeneratedWireShape } from './generatedWireShape.ts';
 
-const MEDIA_TIMEOUT_FIXTURE_VALUES: Record<string, number> = {
+const SETTINGS_NUMERIC_FIXTURE_VALUES: Record<string, number> = {
+	'settings.media.audio.max_duration_secs': 60,
+	'settings.media.audio.silence_timeout_ms': 1_500,
+	'settings.media.audio.vad_threshold': 0.5,
 	'settings.media.stt.timeout_secs': 30,
 	'settings.media.ocr.timeout_secs': 30,
 	'settings.media.tts.timeout_secs': 60,
@@ -15,8 +18,8 @@ export function createWireValueFixture(shape: GeneratedWireShape, path = 'settin
 		case 'string':
 			return '';
 		case 'number':
-			if (MEDIA_TIMEOUT_FIXTURE_VALUES[path] !== undefined) {
-				return MEDIA_TIMEOUT_FIXTURE_VALUES[path];
+			if (SETTINGS_NUMERIC_FIXTURE_VALUES[path] !== undefined) {
+				return SETTINGS_NUMERIC_FIXTURE_VALUES[path];
 			}
 			return path.endsWith('.compaction_ratio') ? 0.5 : 1;
 		case 'boolean':

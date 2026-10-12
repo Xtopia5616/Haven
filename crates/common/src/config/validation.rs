@@ -40,6 +40,7 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         config.session.max_steps_per_run,
         config.session.max_steps_per_session,
     )?;
+    validate_audio_capture(&config.media.audio)?;
     validate_unique_llm_configuration_keys(&config.llm)?;
     if config.context_limits.max_known_facts > super::MAX_FACTS_IN_EXTRACTION_PROMPT {
         anyhow::bail!(
@@ -227,6 +228,28 @@ fn validate_media_timeouts(media: &super::MediaConfig) -> Result<()> {
         if !(min..=max).contains(&value) {
             anyhow::bail!("{path} must be within {min}..={max} seconds");
         }
+    }
+    Ok(())
+}
+
+fn validate_audio_capture(audio: &super::AudioConfig) -> Result<()> {
+    if !(super::MIN_AUDIO_MAX_DURATION_SECS..=super::MAX_AUDIO_MAX_DURATION_SECS)
+        .contains(&audio.max_duration_secs)
+    {
+        anyhow::bail!(
+            "media.audio.max_duration_secs must be within {}..={} seconds",
+            super::MIN_AUDIO_MAX_DURATION_SECS,
+            super::MAX_AUDIO_MAX_DURATION_SECS
+        );
+    }
+    if !(super::MIN_AUDIO_SILENCE_TIMEOUT_MS..=super::MAX_AUDIO_SILENCE_TIMEOUT_MS)
+        .contains(&audio.silence_timeout_ms)
+    {
+        anyhow::bail!(
+            "media.audio.silence_timeout_ms must be within {}..={} milliseconds",
+            super::MIN_AUDIO_SILENCE_TIMEOUT_MS,
+            super::MAX_AUDIO_SILENCE_TIMEOUT_MS
+        );
     }
     Ok(())
 }
@@ -471,6 +494,49 @@ mod tests {
             assert!(config_error.to_string().contains(expected_path));
             let settings_error = validate_settings_contract(&Settings::from(&config)).unwrap_err();
             assert!(settings_error.to_string().contains(expected_path));
+        }
+    }
+
+    #[test]
+    fn audio_capture_ranges_match_settings_controls_for_config_and_settings() {
+        for (duration, silence) in [
+            (
+                super::super::MIN_AUDIO_MAX_DURATION_SECS,
+                super::super::MIN_AUDIO_SILENCE_TIMEOUT_MS,
+            ),
+            (
+                super::super::MAX_AUDIO_MAX_DURATION_SECS,
+                super::super::MAX_AUDIO_SILENCE_TIMEOUT_MS,
+            ),
+        ] {
+            let mut config = AppConfig::default();
+            config.media.audio.max_duration_secs = duration;
+            config.media.audio.silence_timeout_ms = silence;
+            assert!(validate_app_config(&config).is_ok());
+            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        }
+
+        for (duration, silence, expected_path) in [
+            (0, 1_500, "max_duration_secs"),
+            (301, 1_500, "max_duration_secs"),
+            (60, 499, "silence_timeout_ms"),
+            (60, 10_001, "silence_timeout_ms"),
+        ] {
+            let mut config = AppConfig::default();
+            config.media.audio.max_duration_secs = duration;
+            config.media.audio.silence_timeout_ms = silence;
+            assert!(
+                validate_app_config(&config)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(expected_path)
+            );
+            assert!(
+                validate_settings_contract(&Settings::from(&config))
+                    .unwrap_err()
+                    .to_string()
+                    .contains(expected_path)
+            );
         }
     }
 

@@ -6,16 +6,15 @@
 use super::*;
 use crate::media::MediaInputStrategy;
 
+pub const MIN_AUDIO_MAX_DURATION_SECS: u64 = 10;
+pub const MAX_AUDIO_MAX_DURATION_SECS: u64 = 300;
+pub const MIN_AUDIO_SILENCE_TIMEOUT_MS: u64 = 500;
+pub const MAX_AUDIO_SILENCE_TIMEOUT_MS: u64 = 10_000;
+
 /// Microphone capture / VAD parameters. Lives under `[media.audio]`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct AudioConfig {
-    /// PCM capture sample rate in hertz.
-    pub sample_rate: u32,
-    /// Number of interleaved PCM channels.
-    pub channels: u16,
-    /// PCM sample bit depth.
-    pub bits_per_sample: u16,
     /// Maximum recording duration in seconds.
     pub max_duration_secs: u64,
     /// Continuous silence duration before VAD auto-stop, in milliseconds.
@@ -27,9 +26,6 @@ pub struct AudioConfig {
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
-            sample_rate: 16000,
-            channels: 1,
-            bits_per_sample: 16,
             max_duration_secs: 60,
             silence_timeout_ms: 1500,
             vad_threshold: 0.5,
@@ -220,7 +216,19 @@ pub struct MediaConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::OcrConfig;
+    use super::{AudioConfig, OcrConfig};
+
+    #[test]
+    fn audio_config_rejects_ineffective_format_fields() {
+        for field in ["sample_rate", "channels", "bits_per_sample"] {
+            let mut value = serde_json::Map::new();
+            value.insert(field.to_string(), serde_json::json!(16000));
+            assert!(
+                serde_json::from_value::<AudioConfig>(value.into()).is_err(),
+                "obsolete audio format field {field} must not be accepted"
+            );
+        }
+    }
 
     #[test]
     fn ocr_config_accepts_staged_secrets_and_redacts_debug() {

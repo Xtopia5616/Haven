@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	AUDIO_CAPTURE_BOUNDS,
 	MEDIA_TIMEOUT_BOUNDS,
 	SESSION_STEP_BUDGET_BOUNDS,
 	parseSessionPermissionGrantResponses,
@@ -33,10 +34,17 @@ describe('settings command contracts', () => {
 		};
 		expect(parseSessionPermissionGrantResponses([grant])).toEqual([grant]);
 
-		for (const capability of ['', ' system.power', 'system.power ', '.system', 'system..power', 'system:power']) {
-			expect(() =>
-				parseSessionPermissionGrantResponses([{ ...grant, capability }]),
-			).toThrow('Invalid session permission grant identity');
+		for (const capability of [
+			'',
+			' system.power',
+			'system.power ',
+			'.system',
+			'system..power',
+			'system:power',
+		]) {
+			expect(() => parseSessionPermissionGrantResponses([{ ...grant, capability }])).toThrow(
+				'Invalid session permission grant identity',
+			);
 		}
 	});
 
@@ -132,7 +140,6 @@ describe('settings command contracts', () => {
 		safe.context_limits.max_upload_total_bytes = Number.MAX_SAFE_INTEGER;
 		safe.context_limits.default_context_window = 0xffff_ffff;
 		safe.context_limits.input_ring_buffer_secs = 120;
-		safe.media.audio.channels = 0xffff;
 		expect(parseSettingsPayload(safe)).toBe(safe);
 
 		for (const [path, invalid] of [
@@ -141,7 +148,6 @@ describe('settings command contracts', () => {
 			[['session', 'max_steps_per_run'], -1],
 			[['context_limits', 'default_context_window'], 0x1_0000_0000],
 			[['context_limits', 'input_ring_buffer_secs'], 121],
-			[['media', 'audio', 'channels'], 0x1_0000],
 			[['media', 'stt', 'min_confidence'], 1.1],
 			[['llm', 'retry_jitter'], Number.NaN],
 			[['llm', 'retry_jitter'], Number.POSITIVE_INFINITY],
@@ -192,14 +198,8 @@ describe('settings command contracts', () => {
 		expect(() => validateSettingsNumbers(unlimited)).not.toThrow();
 
 		for (const [field, values] of [
-			[
-				'max_steps_per_run',
-				[0, SESSION_STEP_BUDGET_BOUNDS.perRun.max + 1],
-			],
-			[
-				'max_steps_per_session',
-				[0, SESSION_STEP_BUDGET_BOUNDS.perSession.max + 1],
-			],
+			['max_steps_per_run', [0, SESSION_STEP_BUDGET_BOUNDS.perRun.max + 1]],
+			['max_steps_per_session', [0, SESSION_STEP_BUDGET_BOUNDS.perSession.max + 1]],
 		] as const) {
 			for (const value of values) {
 				const invalid = withSetting(['session', field], value);
@@ -210,11 +210,37 @@ describe('settings command contracts', () => {
 		}
 	});
 
+	it('enforces audio capture bounds and keeps the Settings audio shape minimal', () => {
+		for (const [field, bounds] of Object.entries(AUDIO_CAPTURE_BOUNDS)) {
+			const wireField =
+				field === 'maxDurationSecs' ? 'max_duration_secs' : 'silence_timeout_ms';
+			for (const value of [bounds.min, bounds.max]) {
+				const valid = withSetting(['media', 'audio', wireField], value);
+				expect(parseSettingsPayload(valid)).toBe(valid);
+				expect(() => validateSettingsNumbers(valid)).not.toThrow();
+			}
+			for (const value of [bounds.min - 1, bounds.max + 1]) {
+				const invalid = withSetting(['media', 'audio', wireField], value);
+				expect(() => parseSettingsPayload(invalid)).toThrow(
+					`settings.media.audio.${wireField}`,
+				);
+				expect(() => validateSettingsNumbers(invalid)).toThrow(
+					`settings.media.audio.${wireField}`,
+				);
+			}
+		}
+
+		expect(createSettingsFixture().media.audio).toEqual({
+			max_duration_secs: 60,
+			silence_timeout_ms: 1_500,
+			vad_threshold: 0.5,
+		});
+	});
+
 	it('rejects malformed numeric types and accepts required nullable Settings values', () => {
 		for (const [path, invalid] of [
 			[['session', 'max_steps_per_run'], '12'],
 			[['llm', 'retry_jitter'], '0.5'],
-			[['media', 'audio', 'channels'], null],
 			[['media', 'stt', 'timeout_secs'], null],
 			[['context_limits', 'reasoning_echo_max_chars'], null],
 		] as const) {
@@ -244,5 +270,4 @@ describe('settings command contracts', () => {
 		invalidOrder.mcp_discovery.reconnect_max_ms = 1_000;
 		expect(() => parseSettingsPayload(invalidOrder)).toThrow('Invalid Settings numeric value');
 	});
-
 });

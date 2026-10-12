@@ -11,7 +11,7 @@
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
 	import ApiKeyDialog from '$lib/ApiKeyDialog.svelte';
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
-import { INPUT_FORMATS } from '$lib/inputFormats.ts';
+	import { INPUT_FORMATS } from '$lib/inputFormats.ts';
 	import {
 		inputElementValue,
 		withEventValue,
@@ -20,7 +20,7 @@ import { INPUT_FORMATS } from '$lib/inputFormats.ts';
 	} from '$lib/typedCallbacks.ts';
 	import { mediaCapabilityBackend, sttCapabilityBackend } from '$lib/apiStyle.ts';
 	import type { ApiKeyStatus } from '$lib/contracts/diagnostics.ts';
-	import { MEDIA_TIMEOUT_BOUNDS } from '$lib/contracts/settings.ts';
+	import { AUDIO_CAPTURE_BOUNDS, MEDIA_TIMEOUT_BOUNDS } from '$lib/contracts/settings.ts';
 	import type {
 		AudioConfig,
 		ContextLimitsConfigInput,
@@ -265,33 +265,14 @@ import { INPUT_FORMATS } from '$lib/inputFormats.ts';
 							录音转写由「transcription」请求策略选择模型；请在模型页配置 capability
 							与 fallback。
 						</p>
-						<div class="form-row settings-field-layout">
-							<label for="audio-sample-rate">采样率（Hz）</label><MaterialNumberField
-								id="audio-sample-rate"
-								value={audio.sample_rate}
-								onChange={withNumberValue((v) => {
-									audio.sample_rate = v;
-								})}
-							/>
-						</div>
-						<div class="form-row settings-field-layout">
-							<label for="audio-channels">声道数</label><MaterialNumberField
-								id="audio-channels"
-								value={audio.channels}
-								min={1}
-								max={2}
-								onChange={withNumberValue((v) => {
-									audio.channels = v;
-								})}
-							/>
-						</div>
+						<p class="model-hint">录音输出固定为 16 kHz、单声道、16-bit PCM。</p>
 						<div class="form-row settings-field-layout">
 							<label for="audio-max-duration">最长录音时长（秒）</label
 							><MaterialNumberField
 								id="audio-max-duration"
 								value={audio.max_duration_secs}
-								min={10}
-								max={300}
+								min={AUDIO_CAPTURE_BOUNDS.maxDurationSecs.min}
+								max={AUDIO_CAPTURE_BOUNDS.maxDurationSecs.max}
 								onChange={withNumberValue((v) => {
 									audio.max_duration_secs = v;
 								})}
@@ -302,8 +283,8 @@ import { INPUT_FORMATS } from '$lib/inputFormats.ts';
 							><MaterialNumberField
 								id="audio-silence-timeout"
 								value={audio.silence_timeout_ms}
-								min={500}
-								max={10000}
+								min={AUDIO_CAPTURE_BOUNDS.silenceTimeoutMs.min}
+								max={AUDIO_CAPTURE_BOUNDS.silenceTimeoutMs.max}
 								step={100}
 								onChange={withNumberValue((v) => {
 									audio.silence_timeout_ms = v;

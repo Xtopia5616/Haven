@@ -878,9 +878,6 @@ mod tests {
     async fn test_update_audio_config_changes_state() {
         let pipeline = InputPipeline::new();
         let config = AudioConfig {
-            sample_rate: 44100,
-            channels: 2,
-            bits_per_sample: 16,
             max_duration_secs: 30,
             silence_timeout_ms: 2000,
             vad_threshold: 0.3,
@@ -902,6 +899,8 @@ mod tests {
         assert_eq!(channels, 1);
         let sr = u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]);
         assert_eq!(sr, 16000);
+        let bits_per_sample = u16::from_le_bytes([wav[34], wav[35]]);
+        assert_eq!(bits_per_sample, 16);
     }
 
     #[tokio::test]

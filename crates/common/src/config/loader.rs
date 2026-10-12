@@ -490,7 +490,7 @@ mod tests {
             cfg.media.input_strategy,
             crate::media::MediaInputStrategy::Auto
         );
-        assert_eq!(cfg.media.audio.sample_rate, 16000);
+        assert_eq!(cfg.media.audio.max_duration_secs, 60);
         assert_eq!(cfg.hotkey.key_binding, "Ctrl+Shift+Space");
         assert!(cfg.notification.tool_run_completed.in_app);
         assert!(cfg.notification.tool_run_completed.windows);
@@ -1071,7 +1071,7 @@ mod tests {
         let path = dir.join("config.toml");
         let loader = ConfigLoader::load_from(&path).unwrap();
         assert!(path.exists());
-        assert_eq!(loader.config().media.audio.sample_rate, 16000);
+        assert_eq!(loader.config().media.audio.max_duration_secs, 60);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1145,7 +1145,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         let mut cfg = AppConfig::default();
-        cfg.media.audio.sample_rate = 44100;
+        cfg.media.audio.max_duration_secs = 37;
         cfg.context_limits.response_token_floor = 48_000;
         cfg.context_limits.file_max_full_file_bytes = 256_000;
         cfg.context_limits.file_line_max_bytes = 32_000;
@@ -1153,7 +1153,7 @@ mod tests {
         cfg.context_limits.file_write_max_bytes = 32 * 1024 * 1024;
         std::fs::write(&path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
         let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(loader.config().media.audio.sample_rate, 44100);
+        assert_eq!(loader.config().media.audio.max_duration_secs, 37);
         assert_eq!(loader.config().context_limits.response_token_floor, 48_000);
         assert_eq!(
             loader.config().context_limits.file_max_full_file_bytes,
@@ -1485,7 +1485,7 @@ model = "nova-3"
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         // Genuinely unparsable TOML (unterminated array).
-        let original = "media = { audio = { sample_rate = [1, 2\n";
+        let original = "media = { audio = { max_duration_secs = [1, 2\n";
         std::fs::write(&path, original).unwrap();
 
         // The corrupt file must NOT be silently discarded: it is backed up

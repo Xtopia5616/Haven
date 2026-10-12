@@ -157,9 +157,6 @@
 		pwsh: false,
 	});
 	let audio = $state<AudioConfig>({
-		sample_rate: 16000,
-		channels: 1,
-		bits_per_sample: 16,
 		max_duration_secs: 60,
 		silence_timeout_ms: 1500,
 		vad_threshold: 0.5,
@@ -464,9 +461,6 @@
 			media: {
 				input_strategy: mediaInputStrategy,
 				audio: {
-					sample_rate: asNumber(audio.sample_rate),
-					channels: asNumber(audio.channels),
-					bits_per_sample: asNumber(audio.bits_per_sample),
 					max_duration_secs: asNumber(audio.max_duration_secs),
 					silence_timeout_ms: asNumber(audio.silence_timeout_ms),
 					vad_threshold: asNumber(audio.vad_threshold),
@@ -1150,9 +1144,6 @@
 						media: {
 							input_strategy: mediaInputStrategy,
 							audio: {
-								sample_rate: audio.sample_rate,
-								channels: audio.channels,
-								bits_per_sample: audio.bits_per_sample,
 								max_duration_secs: audio.max_duration_secs,
 								silence_timeout_ms: audio.silence_timeout_ms,
 								vad_threshold: audio.vad_threshold,

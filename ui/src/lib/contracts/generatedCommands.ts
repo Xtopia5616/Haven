@@ -168,8 +168,8 @@ export interface RequestPolicyInput { request?: RequestKindInput; primary?: stri
 export interface RequestPolicy { request: RequestKind; primary: string }
 export interface SettingsInput { default_shell?: ShellChoiceInput; llm?: LlmConfigInput; hotkey?: HotkeyConfigInput; session?: SessionConfigInput; context_limits?: ContextLimitsConfigInput; memory?: MemoryConfigInput; security?: SecurityConfigInput; media?: MediaConfigInput; skills?: SkillsConfigInput; skills_exec?: SkillsExecConfigInput; mcp_discovery?: McpDiscoveryConfigInput; mcp_servers?: McpServerConfigInput[]; notification?: NotificationConfigInput; log?: LogConfigInput; tool_settings?: Record<string, ToolConfigInput> }
 export interface Settings { default_shell: ShellChoice; llm: LlmConfig; hotkey: HotkeyConfig; session: SessionConfig; context_limits: ContextLimitsConfig; memory: MemoryConfig; security: SecurityConfig; media: MediaConfig; skills: SkillsConfig; skills_exec: SkillsExecConfig; mcp_discovery: McpDiscoveryConfig; mcp_servers: McpServerConfig[]; notification: NotificationConfig; log: LogConfig; tool_settings: Record<string, ToolConfig> }
-export interface AudioConfigInput { sample_rate?: number; channels?: number; bits_per_sample?: number; max_duration_secs?: number; silence_timeout_ms?: number; vad_threshold?: number }
-export interface AudioConfig { sample_rate: number; channels: number; bits_per_sample: number; max_duration_secs: number; silence_timeout_ms: number; vad_threshold: number }
+export interface AudioConfigInput { max_duration_secs?: number; silence_timeout_ms?: number; vad_threshold?: number }
+export interface AudioConfig { max_duration_secs: number; silence_timeout_ms: number; vad_threshold: number }
 export interface ImageGenConfigInput { provider_name?: string; model?: string; timeout_secs?: number }
 export interface ImageGenConfig { provider_name: string; model: string; timeout_secs: number }
 export interface MediaConfigInput { input_strategy?: MediaInputStrategyInput; audio?: AudioConfigInput; stt?: SttConfigInput; ocr?: OcrConfigInput; tts?: TtsConfigInput; image_gen?: ImageGenConfigInput }
@@ -3827,18 +3827,6 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 						shape: {
 							kind: 'object',
 							fields: {
-								'sample_rate': {
-									optional: false,
-									shape: { kind: 'number' },
-								},
-								'channels': {
-									optional: false,
-									shape: { kind: 'number' },
-								},
-								'bits_per_sample': {
-									optional: false,
-									shape: { kind: 'number' },
-								},
 								'max_duration_secs': {
 									optional: false,
 									shape: { kind: 'number' },
@@ -7368,18 +7356,6 @@ export const SETTINGS_RESPONSE_SHAPE = {
 						shape: {
 							kind: 'object',
 							fields: {
-								'sample_rate': {
-									optional: false,
-									shape: { kind: 'number' },
-								},
-								'channels': {
-									optional: false,
-									shape: { kind: 'number' },
-								},
-								'bits_per_sample': {
-									optional: false,
-									shape: { kind: 'number' },
-								},
 								'max_duration_secs': {
 									optional: false,
 									shape: { kind: 'number' },
