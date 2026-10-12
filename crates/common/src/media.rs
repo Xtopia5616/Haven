@@ -6,7 +6,7 @@
 //! safe to expose; a later boundary is responsible for serializing that
 //! representation into a provider wire format.
 
-pub use crate::media_detection::DetectedMediaKind;
+use crate::media_detection::DetectedMediaKind;
 use crate::types::new_id;
 use serde::{Deserialize, Serialize};
 

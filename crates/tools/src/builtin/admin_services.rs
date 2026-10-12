@@ -711,7 +711,7 @@ impl AdminServices {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("configuration administration is unavailable"))?,
         );
-        if self.skill_registry.get_skill(name).await.is_none() {
+        if self.skill_registry.get_skill_info(name).await.is_none() {
             anyhow::bail!("skill '{}' not found", name);
         }
         self.skill_registry.set_enabled(name, enabled).await?;

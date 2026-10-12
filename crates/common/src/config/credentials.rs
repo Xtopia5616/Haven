@@ -17,13 +17,13 @@ pub trait CredentialStore: Send + Sync {
     fn delete(&self, reference: &str) -> anyhow::Result<()>;
 }
 
-/// Fail-closed default for builds that have not installed a persistent
-/// platform credential adapter. It permits configurations with no credential
-/// references, while making reads and writes fail explicitly when credentials
-/// are configured or changed.
+/// Test-only fail-closed adapter for configurations that contain credential
+/// references but do not inject a platform credential store.
 #[derive(Default)]
+#[cfg(test)]
 pub(crate) struct UnavailableCredentialStore;
 
+#[cfg(test)]
 impl CredentialStore for UnavailableCredentialStore {
     fn read(&self, _reference: &str) -> anyhow::Result<Option<String>> {
         anyhow::bail!("persistent credential storage is unavailable")

@@ -77,12 +77,13 @@ impl Skill {
     pub fn description(&self) -> &str {
         &self.manifest.description
     }
-    pub fn version(&self) -> Option<&str> {
+    fn version(&self) -> Option<&str> {
         self.manifest.version.as_deref()
     }
     pub fn language(&self) -> &Language {
         &self.manifest.language
     }
+    /// Return the author-provided instructions section from `SKILL.md`.
     pub fn instructions(&self) -> &str {
         &self.manifest.instructions
     }
@@ -695,6 +696,7 @@ impl SkillRegistry {
     }
 
     /// Return the raw `Skill` object for execution (M4-02).
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn get_skill(&self, name: &str) -> Option<Skill> {
         let g = self.inner.read().await;
         g.skills.get(name).cloned()

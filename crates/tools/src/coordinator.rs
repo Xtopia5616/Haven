@@ -142,6 +142,7 @@ impl ToolRuntimeCoordinator {
         );
     }
 
+    #[cfg(test)]
     pub(crate) async fn set_admin_context(
         &self,
         ctx: builtin::AdminContext,

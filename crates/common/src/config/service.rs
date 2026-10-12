@@ -5,9 +5,10 @@
 //! typed patches, and change notifications so callers do not coordinate a
 //! shared loader mutex themselves.
 
+#[cfg(test)]
+use super::credentials::UnavailableCredentialStore;
 use super::credentials::{
-    CredentialSlot, UnavailableCredentialStore, credential_references, hydrate_from_store,
-    prepare_after_edit,
+    CredentialSlot, credential_references, hydrate_from_store, prepare_after_edit,
 };
 use super::{
     AppConfig, ConfigLoader, CredentialStore, LlmConfig, LogLevel, McpDiscoveryConfig,
@@ -183,7 +184,8 @@ impl ConfigService {
     /// credential adapter. Configurations without credential references can
     /// load; configured references and credential writes return an error.
     /// Tests that need credentials must inject an explicit test store.
-    pub fn new(loader: ConfigLoader) -> anyhow::Result<Self> {
+    #[cfg(test)]
+    fn new(loader: ConfigLoader) -> anyhow::Result<Self> {
         Self::new_with_credential_store(loader, std::sync::Arc::new(UnavailableCredentialStore))
     }
 
@@ -205,10 +207,6 @@ impl ConfigService {
             }),
             subscribers: Mutex::new(Vec::new()),
         })
-    }
-
-    pub fn load() -> anyhow::Result<Self> {
-        Self::new(ConfigLoader::load()?)
     }
 
     /// Stage an API-key update without exposing the secret through the

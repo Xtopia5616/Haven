@@ -386,10 +386,6 @@ impl ConfigLoader {
         &mut self.config
     }
 
-    pub fn settings(&self) -> Settings {
-        Settings::from(&self.config)
-    }
-
     /// Apply a frontend `Settings` update in loader unit tests.
     #[cfg(test)]
     fn apply_settings(&mut self, settings: &Settings) {

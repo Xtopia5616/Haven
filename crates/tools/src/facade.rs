@@ -649,7 +649,10 @@ impl ToolsFacade {
     }
 
     /// Version identity for a session's complete tool-definition view.
-    pub async fn catalog_version_for_session(&self, session_id: &str) -> crate::ToolCatalogVersion {
+    pub(crate) async fn catalog_version_for_session(
+        &self,
+        session_id: &str,
+    ) -> crate::ToolCatalogVersion {
         self.coordinator
             .core
             .operations
@@ -718,7 +721,8 @@ impl ToolsFacade {
     /// desktop shell after the config loader exists; later catalog rebuilds
     /// keep the capability-scoped adapters registered. Durable ToolRun storage
     /// is injected separately through startup wiring by the composition root.
-    pub async fn set_admin_context(
+    #[cfg(test)]
+    pub(crate) async fn set_admin_context(
         &self,
         ctx: builtin::AdminContext,
     ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
@@ -750,7 +754,7 @@ impl ToolsFacade {
     /// the agent's next step. The config.toml persistence is done by the
     /// caller (the admin surface's `tool_enable`/`tool_disable` operations,
     /// which call this after persisting).
-    pub async fn set_tool_enabled(
+    async fn set_tool_enabled(
         &self,
         name: &str,
         enabled: bool,
@@ -789,7 +793,8 @@ impl ToolsFacade {
 
     /// Snapshot the limits that shape model-visible tool and observation
     /// budgets. Prompt assembly uses this instead of duplicating defaults.
-    pub async fn context_limits(&self) -> ContextLimitsConfig {
+    #[cfg(test)]
+    pub(crate) async fn context_limits(&self) -> ContextLimitsConfig {
         self.coordinator
             .runtime
             .platform()
@@ -801,7 +806,8 @@ impl ToolsFacade {
     /// Whether the model-facing `media.speak` operation has a live TTS
     /// backend. This is intentionally separate from the media tool's schema
     /// so prompt assembly can report the same capability state.
-    pub async fn tts_configured(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) async fn tts_configured(&self) -> bool {
         let platform = self.coordinator.runtime.platform().await;
         self.tool_capability_snapshot(&platform).await.media.speak
     }
