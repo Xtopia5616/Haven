@@ -1,6 +1,6 @@
 pub mod anthropic;
 pub mod assemblyai;
-pub mod capabilities;
+mod capabilities;
 pub mod deepgram;
 mod embedding;
 pub mod gemini;
@@ -13,11 +13,7 @@ mod tool_schema;
 mod transport;
 mod web_search;
 
-pub use capabilities::{
-    WebSearchMode, is_known_api_style, is_openai_family_wire_style, is_stt_only_style,
-    is_tts_only_style, normalize_api_style, parse_web_search_mode, resolve_web_search_mode,
-    supports_builtin_web_search, xai_search_mode,
-};
+pub use capabilities::{WebSearchMode, resolve_web_search_mode, xai_search_mode};
 pub(crate) use tool_arguments::{parse_completed_tool_arguments, serialize_tool_arguments};
 
 /// Bound provider-controlled tool-call indices before streaming aggregation.
@@ -27,7 +23,9 @@ pub(crate) const MAX_STREAM_CONTENT_BLOCKS: usize = 128;
 
 use crate::client::LlmClient;
 use crate::types::LlmError;
-use haven_common::config::ModelEndpoint;
+#[cfg(test)]
+use haven_common::config::supports_builtin_web_search;
+use haven_common::config::{ModelEndpoint, normalize_api_style};
 use haven_common::media::{CapabilityProfile, CapabilitySupport};
 use haven_common::prompts::COMPACTED_SUMMARY_PREFIX;
 use haven_common::types::{ContentPart, InjectSource};

@@ -1,7 +1,8 @@
 use crate::app_state::AppState;
 use crate::commands::{log_err, log_external_err};
 use haven_common::config::{
-    AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind, provider_config_wire_style,
+    AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind, is_stt_only_style,
+    normalize_api_style, provider_config_wire_style, supports_builtin_web_search,
 };
 use haven_llm::{ModelDiscoveryAuthHeader, ModelInfo, ModelRegistry};
 use serde::Deserialize;
@@ -84,7 +85,7 @@ fn validate_builtin_search(config: &AppConfig, request_kind: RequestKind) -> Res
         .find(|provider| provider.name == slot.provider_name)
         .map(provider_config_wire_style)
         .unwrap_or("openai-chat");
-    if !haven_llm::supports_builtin_web_search(style) {
+    if !supports_builtin_web_search(style) {
         return Err(format!(
             "provider wire style `{style}` does not support built-in search"
         ));
@@ -114,10 +115,10 @@ fn stt_only_catalog_for_url(base_url: &str) -> Option<Vec<ModelInfo>> {
 /// Static model catalog for STT-only providers that have no `/models` list.
 fn stt_only_catalog(api_style: Option<&str>) -> Option<Vec<ModelInfo>> {
     let raw = api_style?;
-    if !haven_llm::is_stt_only_style(raw) {
+    if !is_stt_only_style(raw) {
         return None;
     }
-    let style = haven_llm::normalize_api_style(raw);
+    let style = normalize_api_style(raw);
     let (provider, models): (&str, &[&str]) = match style {
         "deepgram" => (
             "deepgram",
@@ -185,7 +186,7 @@ fn provider_auth_scheme(p: &ProviderConfig) -> AuthHeaderScheme {
             prefix: p.auth_header_prefix.clone(),
         }
     } else {
-        match p.api_style.as_deref().map(haven_llm::normalize_api_style) {
+        match p.api_style.as_deref().map(normalize_api_style) {
             Some("anthropic") => AuthHeaderScheme {
                 header_name: "x-api-key".to_string(),
                 prefix: String::new(),

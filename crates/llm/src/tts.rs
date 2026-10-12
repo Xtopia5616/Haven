@@ -45,19 +45,19 @@ pub trait TtsClient: Send + Sync {
 /// entry. Credentials and endpoint details intentionally do not live in the
 /// persisted `TtsConfig`.
 #[derive(Debug, Clone, Default)]
-pub struct ResolvedTtsConfig {
-    pub provider: String,
-    pub api_key: String,
-    pub model: String,
-    pub voice: String,
-    pub base_url: String,
-    pub timeout_secs: u64,
+struct ResolvedTtsConfig {
+    provider: String,
+    api_key: String,
+    model: String,
+    voice: String,
+    base_url: String,
+    timeout_secs: u64,
 }
 
 /// Resolve TTS config against named LLM providers. Returns `None` when TTS
 /// is disabled (`none` / empty). Rewrites a provider connection name into a
 /// concrete backend (`openai` / `elevenlabs`) with that provider's URL + key.
-pub fn resolve_tts_config(
+fn resolve_tts_config(
     cfg: &TtsConfig,
     providers: &[ProviderConfig],
 ) -> Result<Option<ResolvedTtsConfig>> {
@@ -121,7 +121,7 @@ fn tts_http_client(timeout: Duration) -> reqwest::Client {
 
 /// OpenAI `/v1/audio/speech` client. `base_url` defaults to the OpenAI host
 /// so self-hosted OpenAI-compatible gateways can be used.
-pub struct OpenAiTtsClient {
+struct OpenAiTtsClient {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
@@ -130,7 +130,7 @@ pub struct OpenAiTtsClient {
 }
 
 impl OpenAiTtsClient {
-    pub fn new(cfg: &ResolvedTtsConfig, timeout: Duration) -> Self {
+    fn new(cfg: &ResolvedTtsConfig, timeout: Duration) -> Self {
         Self {
             client: tts_http_client(timeout),
             base_url: if cfg.base_url.trim().is_empty() {
@@ -202,7 +202,7 @@ impl OpenAiTtsClient {
 }
 
 /// ElevenLabs `/v1/text-to-speech/{voice_id}` client.
-pub struct ElevenLabsTtsClient {
+struct ElevenLabsTtsClient {
     client: reqwest::Client,
     api_key: String,
     model: Option<String>,
@@ -210,7 +210,7 @@ pub struct ElevenLabsTtsClient {
 }
 
 impl ElevenLabsTtsClient {
-    pub fn new(cfg: &ResolvedTtsConfig, timeout: Duration) -> Self {
+    fn new(cfg: &ResolvedTtsConfig, timeout: Duration) -> Self {
         Self {
             client: tts_http_client(timeout),
             api_key: cfg.api_key.clone(),

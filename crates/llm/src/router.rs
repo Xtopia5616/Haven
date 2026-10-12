@@ -35,9 +35,9 @@ use crate::types::{
     StreamRequest, Usage,
 };
 use futures_util::future::join_all;
-use haven_common::config::ModelEndpoint;
 #[cfg(any(test, feature = "test-support"))]
 use haven_common::config::{Capability, RoutedModel};
+use haven_common::config::{ModelEndpoint, is_known_api_style, is_stt_only_style};
 use haven_common::config::{RequestKind, RouterConfig, compute_cost_usd};
 use haven_common::media::CapabilityProfile;
 use haven_common::media::CapabilitySupport;
@@ -617,12 +617,10 @@ impl LlmRouter {
             .model_directory
             .capability_profile_for_request(RequestKind::Transcription);
         let style = crate::adapters::api_style_for(endpoint);
-        let unknown_custom_route = profile.audio == CapabilitySupport::Unknown
-            && !crate::adapters::is_known_api_style(style);
+        let unknown_custom_route =
+            profile.audio == CapabilitySupport::Unknown && !is_known_api_style(style);
 
-        profile.audio.is_supported()
-            || crate::adapters::is_stt_only_style(style)
-            || unknown_custom_route
+        profile.audio.is_supported() || is_stt_only_style(style) || unknown_custom_route
     }
 
     /// Whether the configured route has provider-native web search enabled

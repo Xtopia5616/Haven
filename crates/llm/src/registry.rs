@@ -54,7 +54,7 @@ pub(crate) const FALLBACK_CONTEXT_WINDOW: u32 = 128_000;
 /// [`FALLBACK_CONTEXT_WINDOW`]). Builtin id catalogs are intentionally not
 /// consulted; prefer provider `/models` metadata written into the role slot
 /// when the user picks a model.
-pub fn context_window_for(endpoint: &ModelEndpoint) -> Option<u32> {
+pub(crate) fn context_window_for(endpoint: &ModelEndpoint) -> Option<u32> {
     endpoint.context_window.filter(|w| *w > 0)
 }
 

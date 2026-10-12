@@ -213,7 +213,7 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
 
 ### 2.2 `haven-llm` —— 模型与媒体能力的唯一实现方
 
-- `haven_llm` crate root 是唯一跨 crate API 路径：稳定 router/client traits、请求 DTO、registry 与媒体投影操作从根导出；`adapters`、`client`、`router`、`types` 等源码模块不直接对下游开放。provider 和协议细节继续留在 LLM 内部。
+- `haven_llm` crate root 是唯一跨 crate API 路径：稳定 router/client traits、请求 DTO、registry 与媒体投影操作从根导出；`adapters`、`client`、`router`、`types` 等源码模块不直接对下游开放。provider 和协议细节继续留在 LLM 内部。provider wire-style 规范化和能力谓词由 Common 唯一拥有，App 直接从 Common 读取；adapter 相关根出口仅保留实际跨 crate 使用的 `WebSearchMode` / 搜索结果 helper，媒体 builder 内部解析器及含凭据 resolved config 不进入根 API（ADR 1058）。
 - `adapters/`：按 **`api_style`（线协议）** 分发的 provider 适配与统一 `LlmClient` +
   `with_retry`。LLM error 分类留在 `haven-llm`，attempt/backoff/stop 决策复用
   `haven-common::retry::RecoveryPolicy`（ADR 0447）。能力矩阵见 `adapters/capabilities.rs`：

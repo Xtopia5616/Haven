@@ -44,14 +44,13 @@ pub trait SttClient: Send + Sync {
 /// entry. Credentials and endpoint details intentionally do not live in the
 /// persisted `SttConfig`.
 #[derive(Debug, Clone, Default)]
-pub struct ResolvedSttConfig {
-    pub provider: String,
-    pub mcp_server: Option<String>,
-    pub api_key: String,
-    pub model: String,
-    pub base_url: String,
-    pub timeout_secs: u64,
-    pub min_confidence: f32,
+struct ResolvedSttConfig {
+    provider: String,
+    mcp_server: Option<String>,
+    api_key: String,
+    model: String,
+    base_url: String,
+    timeout_secs: u64,
 }
 
 /// Outcome of an MCP tool invocation, decoupled from the tools crate's
@@ -80,10 +79,7 @@ pub trait McpToolCaller: Send + Sync {
 /// connection name into a concrete backend (`openai` / `groq` / …) with that
 /// provider's URL + key. `none`, `llm`, and `mcp` remain local control modes;
 /// every cloud provider must be named in `llm.providers`.
-pub fn resolve_stt_config(
-    cfg: &SttConfig,
-    providers: &[ProviderConfig],
-) -> Result<ResolvedSttConfig> {
+fn resolve_stt_config(cfg: &SttConfig, providers: &[ProviderConfig]) -> Result<ResolvedSttConfig> {
     let name = cfg.provider_name.trim();
     if name.is_empty() || name.eq_ignore_ascii_case("none") || name == "llm" || name == "mcp" {
         return Ok(ResolvedSttConfig {
@@ -93,7 +89,6 @@ pub fn resolve_stt_config(
             model: cfg.model.clone(),
             base_url: String::new(),
             timeout_secs: cfg.timeout_secs,
-            min_confidence: cfg.min_confidence,
         });
     }
     if let Some(p) = providers.iter().find(|p| p.name == name) {
@@ -111,7 +106,6 @@ fn stt_from_provider(cfg: &SttConfig, p: &ProviderConfig) -> Result<ResolvedSttC
         base_url: p.base_url.clone(),
         model: cfg.model.clone(),
         timeout_secs: cfg.timeout_secs,
-        min_confidence: cfg.min_confidence,
     })
 }
 
@@ -179,7 +173,7 @@ pub fn build_stt_client(
 
 /// Map `[media.stt]` into a [`ModelEndpoint`] so dedicated STT providers share
 /// the same adapter dispatch as chat/vision roles.
-pub fn endpoint_from_resolved_stt_config(cfg: &ResolvedSttConfig) -> ModelEndpoint {
+fn endpoint_from_resolved_stt_config(cfg: &ResolvedSttConfig) -> ModelEndpoint {
     let (provider, api_style, default_base, default_model) = match cfg.provider.as_str() {
         "groq" => (
             "groq",
@@ -775,7 +769,6 @@ mod tests {
             mcp_server: None,
             model: String::new(),
             timeout_secs: 30,
-            min_confidence: 0.7,
         };
         let ep = endpoint_from_resolved_stt_config(&cfg);
         assert_eq!(ep.base_url, "https://gateway.example/v1");
@@ -789,7 +782,6 @@ mod tests {
             model: String::new(),
             base_url: String::new(),
             timeout_secs: 30,
-            min_confidence: 0.7,
         });
         assert_eq!(groq.base_url, "https://api.groq.com/openai/v1");
         assert!(groq.model_name.contains("whisper"));
@@ -801,7 +793,6 @@ mod tests {
             model: String::new(),
             base_url: String::new(),
             timeout_secs: 30,
-            min_confidence: 0.7,
         });
         assert_eq!(
             gemini.base_url,
@@ -817,7 +808,6 @@ mod tests {
             model: String::new(),
             base_url: String::new(),
             timeout_secs: 30,
-            min_confidence: 0.7,
         });
         assert_eq!(deepgram.api_style.as_deref(), Some("deepgram"));
         assert_eq!(deepgram.model_name, "nova-3");
@@ -829,7 +819,6 @@ mod tests {
             model: "universal-2".into(),
             base_url: "https://api.eu.assemblyai.com".into(),
             timeout_secs: 30,
-            min_confidence: 0.7,
         });
         assert_eq!(assembly.base_url, "https://api.eu.assemblyai.com");
         assert_eq!(assembly.model_name, "universal-2");

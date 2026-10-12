@@ -2,8 +2,8 @@
 //!
 //! Canonical normalize / capability predicates live in
 //! [`haven_common::config`] so model materialization can clear sticky
-//! `web_search` without depending on this crate. This module re-exports them
-//! and owns [`WebSearchMode`] resolution shared by every adapter.
+//! `web_search` without depending on this crate. This module imports those
+//! predicates and owns [`WebSearchMode`] resolution shared by every adapter.
 //!
 //! | Stored / derived style     | Normalized wire   | Built-in web search |
 //! |----------------------------|-------------------|---------------------|
@@ -17,11 +17,6 @@
 
 use haven_common::config::ModelEndpoint;
 use serde::{Deserialize, Serialize};
-
-pub use haven_common::config::{
-    is_known_api_style, is_openai_family_wire_style, is_stt_only_style, is_tts_only_style,
-    normalize_api_style, supports_builtin_web_search,
-};
 
 /// Web search mode for a provider's built-in search tool. Selected via the
 /// endpoint's `web_search` config field or the `HAVEN_WEB_SEARCH` environment
@@ -39,7 +34,7 @@ pub enum WebSearchMode {
 
 /// Parse a web search mode value (`off` | `auto` | `always`, case-insensitive).
 /// Unset/empty/unrecognized values fall back to [`WebSearchMode::Off`].
-pub fn parse_web_search_mode(value: Option<&str>) -> WebSearchMode {
+fn parse_web_search_mode(value: Option<&str>) -> WebSearchMode {
     match value
         .unwrap_or_default()
         .trim()
@@ -81,6 +76,9 @@ pub fn xai_search_mode(mode: WebSearchMode) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::config::{
+        is_known_api_style, normalize_api_style, supports_builtin_web_search,
+    };
 
     #[test]
     fn normalize_canonical_styles() {

@@ -32,12 +32,12 @@ pub struct GeneratedImage {
 /// `llm.providers` entry. Credentials and endpoint details intentionally do
 /// not live in the persisted `ImageGenConfig`.
 #[derive(Debug, Clone, Default)]
-pub struct ResolvedImageGenConfig {
-    pub provider: String,
-    pub api_key: String,
-    pub model: String,
-    pub base_url: String,
-    pub timeout_secs: u64,
+struct ResolvedImageGenConfig {
+    provider: String,
+    api_key: String,
+    model: String,
+    base_url: String,
+    timeout_secs: u64,
 }
 
 /// Trait for text-to-image generation.
@@ -49,7 +49,7 @@ pub trait ImageGenClient: Send + Sync {
 /// Resolve image-gen config against named LLM providers. Returns `None` when
 /// disabled. Rewrites a provider connection name into `openai` / `gemini` with
 /// that provider's URL + key.
-pub fn resolve_image_gen_config(
+fn resolve_image_gen_config(
     cfg: &ImageGenConfig,
     providers: &[ProviderConfig],
 ) -> Result<Option<ResolvedImageGenConfig>> {
@@ -259,7 +259,7 @@ fn gemini_image_from_response(body: &str) -> Result<GeneratedImage> {
 }
 
 /// OpenAI `/v1/images/generations` client.
-pub struct OpenAiImageGenClient {
+struct OpenAiImageGenClient {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
@@ -267,7 +267,7 @@ pub struct OpenAiImageGenClient {
 }
 
 impl OpenAiImageGenClient {
-    pub fn new(cfg: &ResolvedImageGenConfig, timeout: Duration) -> Self {
+    fn new(cfg: &ResolvedImageGenConfig, timeout: Duration) -> Self {
         Self {
             client: imagegen_http_client(timeout),
             base_url: if cfg.base_url.trim().is_empty() {
@@ -325,7 +325,7 @@ impl ImageGenClient for OpenAiImageGenClient {
 /// Google Gemini `generateContent` image-generation client. Requests the
 /// image modality via `responseModalities` and reads the `inlineData` part
 /// from the response.
-pub struct GeminiImageGenClient {
+struct GeminiImageGenClient {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
@@ -333,7 +333,7 @@ pub struct GeminiImageGenClient {
 }
 
 impl GeminiImageGenClient {
-    pub fn new(cfg: &ResolvedImageGenConfig, timeout: Duration) -> Self {
+    fn new(cfg: &ResolvedImageGenConfig, timeout: Duration) -> Self {
         Self {
             client: imagegen_http_client(timeout),
             base_url: if cfg.base_url.trim().is_empty() {
