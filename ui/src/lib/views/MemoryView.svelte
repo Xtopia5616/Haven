@@ -135,6 +135,7 @@
 		loading: false,
 		searched: false,
 	});
+	let memoryRecallRequestSeq = 0;
 	let facts = $state<Fact[]>([]);
 	let factsLoaded = $state(false);
 	let factSourceFilter = $state<MemoryFactSourceFilter>('');
@@ -186,6 +187,7 @@
 	});
 	onDestroy(() => {
 		lifecycleViewDisposed = true;
+		memoryRecallRequestSeq += 1;
 		if (searchTimer) clearTimeout(searchTimer);
 		sessionsRefresh.dispose();
 		unlistenLifecycle?.dispose();
@@ -324,9 +326,17 @@
 		handleFilterChange();
 	}
 	function handleRecallKindChange(value: MemoryRecallFilter) {
+		memoryRecallRequestSeq += 1;
+		memoryRecall.loading = false;
 		memoryRecall.kind = value;
 		memoryRecall.results = [];
 		memoryRecall.searched = false;
+	}
+	function handleRecallQueryChange(value: string) {
+		if (memoryRecall.query === value) return;
+		memoryRecallRequestSeq += 1;
+		memoryRecall.loading = false;
+		memoryRecall.query = value;
 	}
 	function handleStartDateChange(value: string) {
 		startDate = value;
@@ -561,30 +571,36 @@
 	async function runRecall() {
 		const query = memoryRecall.query.trim();
 		if (!query) return;
+		const sequence = ++memoryRecallRequestSeq;
+		const kindFilter = memoryRecall.kind;
 		memoryRecall.loading = true;
 		try {
 			const kinds: MemoryRecallKind[] =
-				memoryRecall.kind === 'all' ? ['fact', 'episode'] : [memoryRecall.kind];
-			const limit = memoryRecall.kind === 'all' ? 5 : 10;
+				kindFilter === 'all' ? ['fact', 'episode'] : [kindFilter];
+			const limit = kindFilter === 'all' ? 5 : 10;
 			const resultGroups = await Promise.all(
 				kinds.map(async (kind) => {
 					const results = (await recallMemory({ query, kind, limit })) || [];
 					return results.map((result) => ({ ...result, kind }));
 				}),
 			);
+			if (sequence !== memoryRecallRequestSeq) return;
 			memoryRecall.results = resultGroups.flat();
 			memoryRecall.searched = true;
 		} catch (e) {
+			if (sequence !== memoryRecallRequestSeq) return;
 			memoryRecall.results = [];
 			memoryRecall.searched = true;
 			reportError(e, { context: 'MemoryView', message: '记忆检索失败', log: false });
 		} finally {
-			memoryRecall.loading = false;
+			if (sequence === memoryRecallRequestSeq) memoryRecall.loading = false;
 		}
 	}
 	function clearMemoryRecall() {
+		memoryRecallRequestSeq += 1;
 		memoryRecall.query = '';
 		memoryRecall.results = [];
+		memoryRecall.loading = false;
 		memoryRecall.searched = false;
 	}
 </script>
@@ -722,6 +738,7 @@
 								{addingFact}
 								{memoryRecall}
 								onRecallKindChange={handleRecallKindChange}
+								onRecallQueryChange={handleRecallQueryChange}
 								onRunRecall={runRecall}
 								onClearRecall={clearMemoryRecall}
 								onFactSourceFilterChange={handleFactSourceFilterChange}

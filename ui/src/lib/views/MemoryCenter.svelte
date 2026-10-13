@@ -21,6 +21,7 @@
 		addingFact?: boolean;
 		memoryRecall: MemoryRecallState;
 		onRecallKindChange?: (value: MemoryRecallFilter) => void;
+		onRecallQueryChange?: (value: string) => void;
 		onRunRecall?: () => void;
 		onClearRecall?: () => void;
 		onFactSourceFilterChange?: (value: MemoryFactSourceFilter) => void;
@@ -37,6 +38,7 @@
 		addingFact = false,
 		memoryRecall,
 		onRecallKindChange = () => {},
+		onRecallQueryChange = () => {},
 		onRunRecall = () => {},
 		onClearRecall = () => {},
 		onFactSourceFilterChange = () => {},
@@ -65,6 +67,12 @@
 		}
 	}
 
+	function handleRecallQueryInput(event: Event) {
+		const value = (event.currentTarget as HTMLInputElement).value;
+		if (value === memoryRecall.query) return;
+		onRecallQueryChange(value);
+	}
+
 	function handleKeydown(event: KeyboardEvent) {
 		if (event.key === 'Enter') onRunRecall();
 	}
@@ -83,8 +91,9 @@
 				type="search"
 				class="md-input"
 				aria-label="记忆关键词"
-				bind:value={memoryRecall.query}
+				value={memoryRecall.query}
 				placeholder="搜索事实或过去的对话，例如：深色主题"
+				oninput={handleRecallQueryInput}
 				onkeydown={handleKeydown}
 				autocomplete="off"
 			/>
