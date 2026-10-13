@@ -15,6 +15,8 @@
 	interface Props {
 		facts?: Fact[];
 		factsLoaded?: boolean;
+		factsHasMore?: boolean;
+		factsLoadingMore?: boolean;
 		factSourceFilter?: MemoryFactSourceFilter;
 		factSourceOptions?: Array<{ value: MemoryFactSourceFilter; label: string }>;
 		newFact?: { predicate: string; object: string; tags: string };
@@ -25,6 +27,7 @@
 		onRunRecall?: () => void;
 		onClearRecall?: () => void;
 		onFactSourceFilterChange?: (value: MemoryFactSourceFilter) => void;
+		onLoadMoreFacts?: () => void;
 		onAddFact?: () => boolean | Promise<boolean>;
 		onDeleteFact?: (factId: string) => void;
 	}
@@ -32,6 +35,8 @@
 	let {
 		facts = [],
 		factsLoaded = false,
+		factsHasMore = false,
+		factsLoadingMore = false,
 		factSourceFilter = '',
 		factSourceOptions = [],
 		newFact = { predicate: '', object: '', tags: '' },
@@ -42,6 +47,7 @@
 		onRunRecall = () => {},
 		onClearRecall = () => {},
 		onFactSourceFilterChange = () => {},
+		onLoadMoreFacts = () => {},
 		onAddFact = () => false,
 		onDeleteFact = () => {},
 	}: Props = $props();
@@ -131,7 +137,7 @@
 		{#if memoryRecall.searched && !memoryRecall.loading}
 			<CountChip count={memoryRecall.results.length} label="条结果" />
 		{:else if factsLoaded}
-			<CountChip count={facts.length} label="条记忆" />
+			<CountChip count={facts.length} label={factsHasMore ? '条已加载' : '条记忆'} />
 		{/if}
 	</div>
 
@@ -144,7 +150,14 @@
 			{onRunRecall}
 		/>
 	{:else}
-		<LongTermFacts {facts} {factsLoaded} {onDeleteFact} />
+		<LongTermFacts
+			{facts}
+			{factsLoaded}
+			{factsHasMore}
+			{factsLoadingMore}
+			{onLoadMoreFacts}
+			{onDeleteFact}
+		/>
 	{/if}
 </div>
 

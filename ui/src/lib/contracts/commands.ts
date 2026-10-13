@@ -204,6 +204,10 @@ export const TAURI_COMMAND_CONTRACTS = {
 		security: 'deletes staged values not committed by a Settings save',
 	},
 	get_bootstrap_status: { boundary: 'read', security: 'status enum only' },
+	report_startup_ui_ready: {
+		boundary: 'mutate',
+		security: 'no arguments; releases the startup surface after the first hydrated app paint',
+	},
 	update_settings: {
 		boundary: 'mutate',
 		security: 'shared loader preserves masked secrets, tool sections, and permission rules',

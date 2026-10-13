@@ -14,6 +14,7 @@
       {
         "label": "main",
         "title": "Haven",
+        "visible": false,
         "width": 1280,
         "height": 720,
         "minWidth": 480,

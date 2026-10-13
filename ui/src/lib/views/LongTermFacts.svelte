@@ -8,16 +8,24 @@
 	interface Props {
 		facts?: Fact[];
 		factsLoaded?: boolean;
+		factsHasMore?: boolean;
+		factsLoadingMore?: boolean;
+		onLoadMoreFacts?: () => void;
 		onDeleteFact?: (factId: string) => void;
 	}
 
-	let { facts = [], factsLoaded = false, onDeleteFact = () => {} }: Props = $props();
+	let {
+		facts = [],
+		factsLoaded = false,
+		factsHasMore = false,
+		factsLoadingMore = false,
+		onLoadMoreFacts = () => {},
+		onDeleteFact = () => {},
+	}: Props = $props();
 
 	let selectedFactId = $state<string | null>(null);
 	let detailOpen = $state(false);
-	const selectedFact = $derived(
-		facts.find((fact) => fact.factId === selectedFactId) || null,
-	);
+	const selectedFact = $derived(facts.find((fact) => fact.factId === selectedFactId) || null);
 
 	$effect(() => {
 		if (selectedFactId && !selectedFact) {
@@ -147,6 +155,17 @@
 					</article>
 				{/each}
 			</div>
+			{#if factsHasMore}
+				<div class="fact-page-footer">
+					<MaterialButton
+						variant="outlined"
+						label={factsLoadingMore ? '正在加载…' : '加载更多'}
+						ariaBusy={factsLoadingMore}
+						disabled={factsLoadingMore}
+						onclick={onLoadMoreFacts}
+					/>
+				</div>
+			{/if}
 		{:else if factsLoaded}
 			<AsyncState
 				title="暂无长期记忆"
@@ -277,6 +296,11 @@
 		gap: var(--md-sys-space-sm);
 		min-width: 0;
 		padding: var(--md-sys-space-xs);
+	}
+	.fact-page-footer {
+		display: flex;
+		justify-content: center;
+		padding: var(--md-sys-space-md) var(--md-sys-space-xs);
 	}
 	.fact-card-type {
 		display: inline-flex;

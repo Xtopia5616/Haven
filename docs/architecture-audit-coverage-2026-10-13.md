@@ -8,15 +8,16 @@
 
 | 范围 | 清单数 | 完成核对/分类 | 未核对 |
 |---|---:|---:|---:|
-| Rust 生产源码（11 crates） | 268 | 268 | 0 |
-| UI `src` 生产文件 | 246 | 246 | 0 |
-| App binary（同时计入 Rust 268） | 37 | 37 | 0 |
+| Rust 生产源码（11 crates） | 271 | 271 | 0 |
+| UI `src` 生产文件 | 247 | 247 | 0 |
+| App binary（同时计入 Rust 271） | 40 | 40 | 0 |
 | IPC 生成/漂移检查脚本 | 3 | 3 | 0 |
 | 架构/契约核心文档与索引 | 9 | 9 | 0 |
 | 本轮直接影响的历史 ADR（候选） | 18 | 18 | 0 |
-| UI/App/IPC/文档组合清单（含 App binary） | 313 | 313 | 0 |
+| 本轮新增 ADR（Skills、事实分页、启动恢复） | 3 | 3 | 0 |
+| UI/App/IPC/文档组合清单（含 App binary） | 320 | 320 | 0 |
 
-Rust 生产文件按 crate 分布：`haven-agent` 37、`haven-app-binary` 37、`haven-common` 5、`haven-input` 8、`haven-llm` 63、`haven-mcp` 7、`haven-memory` 9、`haven-messaging` 4、`haven-platform` 4、`haven-skills` 2、`haven-tools` 92。LLM 的 9 个 test-only 源文件、MCP 的 1 个 test-only 源文件不计入生产清单；内联 `#[cfg(test)]` 与覆盖回归仍随对应生产源码复核。UI `src` 总数 399，其中 246 个生产文件、152 个测试/规格文件和 1 个测试 setup；本轮 UI 生产覆盖数不把测试文件混作生产代码。
+Rust 生产文件按 crate 分布：`haven-agent` 37、`haven-app-binary` 40、`haven-common` 5、`haven-input` 8、`haven-llm` 63、`haven-mcp` 7、`haven-memory` 9、`haven-messaging` 4、`haven-platform` 4、`haven-skills` 2、`haven-tools` 92。App binary 新增 `startup.rs`、`startup_splash.rs` 和 `commands/startup.rs`；总计 271。LLM 的 9 个 test-only 源文件、MCP 的 1 个 test-only 源文件不计入生产清单；内联 `#[cfg(test)]` 与覆盖回归仍随对应生产源码复核。UI `src` 总数 401，其中 247 个生产文件（含 `startupCommands.ts`）、153 个测试/规格文件和 1 个测试 setup；本轮 UI 生产覆盖数不把测试文件混作生产代码。组合清单按 247 个 UI 生产文件、40 个 App binary 文件、3 个 IPC 脚本、9 个核心文档、18 个既有 ADR 和 3 个新增 ADR 统计，共 320 项。
 
 ## 本轮修复与契约收敛
 
@@ -33,12 +34,12 @@ Rust 生产文件按 crate 分布：`haven-agent` 37、`haven-app-binary` 37、`
 
 ## 已核实的显式边界
 
-Skills `SKILL.md` 与 `requirements.txt` 的 canonical path 检查和后续 pathname open 之间，仍保留同一用户可并发改写目录时的局部竞态。该能力不构成 Windows 权限边界；ADR 0513/0515 明确 Job Object 只负责进程树生命周期，不是文件系统沙箱。此项已检查并记录为当前本地用户信任模型下的显式例外，不计作未核对；若将来 Skills root 支持不可信共享写入者，应改用句柄锚定 containment，并让 requirements fingerprint 与 pip 消费同一稳定 snapshot。
+审计发现的 Skills pathname TOCTOU 现由 ADR 1151 关闭：manifest 与 fingerprint 从已验证句柄读取，requirements fingerprint 与 pip 共用字节快照，入口脚本也从已验证句柄生成有界执行快照。Windows 读取句柄阻止并发写入/删除直到 snapshot 完成。文件身份检查和临时快照不能构成 Windows 用户间权限边界；ADR 0513/0515 的 Job Object 仍只负责进程树生命周期，不是文件系统沙箱。ADR 1151 的相关回归与 crate 门禁待执行。
 
 ## 验收门禁
 
 - Rust：`cargo fmt --all -- --check`、`cargo test --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings` 均通过。
 - UI：`corepack pnpm run check`、`corepack pnpm run test:run`（153 个测试文件 / 1281 项通过）、`corepack pnpm run build` 均通过。
-- 契约/仓库静态门禁：IPC command contract（79 handlers）、IPC events（36 channels）、ADR index（1133 entries）和 crate dependency inventory 均通过。
+- 契约/仓库静态门禁：IPC command contract（80 handlers）、IPC events（36 channels）、ADR index（1138 entries）和 crate dependency inventory 均通过。
 
 当前数据库 v42 重置要求及旧版拒绝行为见 [release-and-reset.md](release-and-reset.md)。本记录不关闭 ADR 0395 的 Windows 发布安装包验收 Open Gate。

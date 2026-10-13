@@ -18,6 +18,7 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
+	import LoadingState from '$lib/LoadingState.svelte';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { setToolRunCompletionNotificationChannels } from '$lib/toolRunCompletionNotificationSettings.ts';
 	import { validateSettingsModelDrafts } from '$lib/settingsModelValidation.ts';
@@ -1405,7 +1406,10 @@
 											}}
 										/>
 									{:else}
-										<p class="model-hint">正在加载模型与 API Key 状态…</p>
+										<LoadingState
+											label="正在加载模型与 API Key 状态…"
+											variant="inline"
+										/>
 									{/if}
 								</div>
 							{/if}
@@ -1617,13 +1621,6 @@
 		background: var(--md-sys-color-tertiary-container);
 		color: var(--md-sys-color-on-tertiary-container);
 		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.model-hint {
-		font-size: var(--md-sys-typescale-label-small-size);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-top: 0;
-		margin-bottom: var(--md-sys-space-md);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.provider-discovery-notice {

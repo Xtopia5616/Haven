@@ -1,5 +1,8 @@
 use crate::app_state::AppState;
-use crate::commands::contracts::{MemoryFactResponse, MemoryFactSource, MemoryRecallItem};
+use crate::commands::contracts::{
+    MemoryFactCursor, MemoryFactPageResponse, MemoryFactResponse, MemoryFactSource,
+    MemoryRecallItem,
+};
 use crate::commands::{log_err, validate_command_id};
 use haven_memory::{MemoryEntityKind, MemoryQuery};
 use std::sync::Arc;
@@ -51,19 +54,27 @@ pub async fn recall_memory(
 pub async fn list_facts(
     state: State<'_, Arc<AppState>>,
     source: Option<MemoryFactSource>,
-) -> Result<Vec<MemoryFactResponse>, String> {
+    cursor: Option<MemoryFactCursor>,
+    limit: Option<u32>,
+) -> Result<MemoryFactPageResponse, String> {
+    let limit = limit.unwrap_or(haven_memory::DEFAULT_FACT_PAGE_SIZE as u32);
+    if limit == 0 || limit as usize > haven_memory::MAX_FACT_PAGE_SIZE {
+        return Err(log_err(
+            "list_facts",
+            format!(
+                "limit must be between 1 and {}",
+                haven_memory::MAX_FACT_PAGE_SIZE
+            ),
+        ));
+    }
     let source = source.map(|source| source.as_str().to_string());
-    let facts = state
+    let page = state
         .runtime
         .memory_fact_store
-        .list_facts(source)
+        .list_facts_page(source, cursor.map(Into::into), limit as usize)
         .await
         .map_err(|e| log_err("list_facts", e))?;
-    facts
-        .into_iter()
-        .map(MemoryFactResponse::try_from)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| log_err("list_facts", e))
+    MemoryFactPageResponse::try_from(page).map_err(|e| log_err("list_facts", e))
 }
 
 #[derive(Debug, PartialEq, Eq)]

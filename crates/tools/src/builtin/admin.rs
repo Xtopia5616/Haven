@@ -2489,7 +2489,7 @@ mod tests {
                     "enabled": true,
                     "executable": true,
                     "description": "safe description",
-                    "root": skill_dir.to_string_lossy(),
+                    "root": skill_dir.canonicalize().unwrap().to_string_lossy(),
                 }]
             })
         );

@@ -22,7 +22,10 @@ pub use repositories::embedding_store::{
     MemoryEmbeddingSaveFailure, MemoryEmbeddingSaveReport, MemoryEmbeddingStore,
     MemoryEmbeddingVector, PendingMemoryEmbedding,
 };
-pub use repositories::fact_store::{MemoryFactStore, MemoryFactWrite};
+pub use repositories::fact_store::{
+    DEFAULT_FACT_PAGE_SIZE, FactPage, FactPageCursor, MAX_FACT_PAGE_SIZE, MemoryFactStore,
+    MemoryFactWrite,
+};
 pub use repositories::facts::{
     CANONICAL_MERGE_TARGETS, ContradictionCandidate, ContradictionKind, Fact, FactSourceRef,
     UpsertOutcome, fact_effective_confidence, fact_within_demote_age, is_canonical_merge_target,

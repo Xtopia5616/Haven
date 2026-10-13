@@ -9,6 +9,7 @@ use haven_platform::process_containment::ProcessContainment;
 use haven_skills::{Skill, VenvManager};
 use serde_json::Value;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -16,6 +17,91 @@ use tokio_util::sync::CancellationToken;
 /// continue draining after the cap so a child can never deadlock on a full
 /// pipe merely because its result is too large for Haven to keep.
 const MAX_SKILL_STREAM_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SKILL_SCRIPT_BYTES: u64 = 16 * 1024 * 1024;
+
+const SKILL_SCRIPT_LAUNCHER: &str = r#"
+def _haven_run_skill_snapshot():
+    import pathlib
+    import sys
+
+    snapshot_path, source_path = sys.argv[1:3]
+    sys.argv = [source_path]
+    source_dir = str(pathlib.Path(source_path).parent)
+    if sys.path:
+        sys.path[0] = source_dir
+    else:
+        sys.path.insert(0, source_dir)
+
+    namespace = sys.modules["__main__"].__dict__
+    namespace.update({
+        "__file__": source_path,
+        "__package__": None,
+        "__cached__": None,
+        "__spec__": None,
+        "__loader__": None,
+    })
+    del namespace["_haven_run_skill_snapshot"]
+    source = pathlib.Path(snapshot_path).read_bytes()
+    exec(compile(source, source_path, "exec"), namespace, namespace)
+
+_haven_run_skill_snapshot()
+"#;
+
+async fn stage_skill_script(
+    source: std::fs::File,
+    skill_name: &str,
+) -> anyhow::Result<tempfile::TempPath> {
+    let metadata = source
+        .metadata()
+        .map_err(|_| anyhow::anyhow!("failed to inspect entry script for skill '{skill_name}'"))?;
+    if !metadata.is_file() {
+        anyhow::bail!("entry script for skill '{skill_name}' is not a file");
+    }
+    if metadata.len() > MAX_SKILL_SCRIPT_BYTES {
+        anyhow::bail!(
+            "entry script for skill '{skill_name}' exceeds the {MAX_SKILL_SCRIPT_BYTES}-byte limit"
+        );
+    }
+
+    let temp_root = haven_common::config::default_runtime_temp_root();
+    tokio::fs::create_dir_all(&temp_root).await.map_err(|_| {
+        anyhow::anyhow!("failed to prepare script snapshot for skill '{skill_name}'")
+    })?;
+    let (destination, snapshot_path) = tempfile::Builder::new()
+        .prefix("haven-skill-script-")
+        .suffix(".py")
+        .tempfile_in(&temp_root)
+        .map_err(|_| anyhow::anyhow!("failed to prepare script snapshot for skill '{skill_name}'"))?
+        .into_parts();
+    let mut source = tokio::fs::File::from_std(source);
+    let mut destination = tokio::fs::File::from_std(destination);
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = source
+            .read(&mut buffer)
+            .await
+            .map_err(|_| anyhow::anyhow!("failed to read entry script for skill '{skill_name}'"))?;
+        if read == 0 {
+            break;
+        }
+        copied = copied.saturating_add(read as u64);
+        if copied > MAX_SKILL_SCRIPT_BYTES {
+            anyhow::bail!(
+                "entry script for skill '{skill_name}' exceeds the {MAX_SKILL_SCRIPT_BYTES}-byte limit"
+            );
+        }
+        destination.write_all(&buffer[..read]).await.map_err(|_| {
+            anyhow::anyhow!("failed to stage entry script for skill '{skill_name}'")
+        })?;
+    }
+    destination
+        .flush()
+        .await
+        .map_err(|_| anyhow::anyhow!("failed to stage entry script for skill '{skill_name}'"))?;
+    drop(destination);
+    Ok(snapshot_path)
+}
 
 struct SkillProcessOutput {
     exit_status: std::process::ExitStatus,
@@ -56,7 +142,7 @@ impl SkillRunner {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let deadline = Instant::now() + Duration::from_secs(self.config.timeout_secs);
-        let entry = skill.entry_script().ok_or_else(|| {
+        let (entry, entry_file) = skill.open_entry_script().ok_or_else(|| {
             anyhow::anyhow!(
                 "skill '{}' has no entry script; expected scripts/main.py or scripts/{}.py",
                 skill.name(),
@@ -70,6 +156,22 @@ impl SkillRunner {
                 skill.name()
             );
         }
+
+        // Snapshot the checked file before setup can run for a long time. The
+        // open handle denies Windows write/delete sharing until the copy ends.
+        let script_snapshot = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                return Ok(ToolResult::cancelled(format!("skill '{}' cancelled", skill.name())));
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                return Ok(ToolResult::timed_out(
+                    crate::ToolExecutionOutcome::TimedOutUnknown,
+                    format!("skill '{}' timed out after {}s", skill.name(), self.config.timeout_secs),
+                ));
+            }
+            result = stage_skill_script(entry_file, skill.name()) => result?,
+        };
 
         let python = tokio::select! {
             biased;
@@ -92,7 +194,10 @@ impl SkillRunner {
         let pid_label = skill.name().to_string();
 
         let mut cmd = tokio::process::Command::new(&python);
-        cmd.arg(&entry)
+        cmd.arg("-c")
+            .arg(SKILL_SCRIPT_LAUNCHER)
+            .arg(script_snapshot.as_os_str())
+            .arg(&entry)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

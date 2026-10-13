@@ -3,16 +3,17 @@ import type { TauriCommandRequest } from './contracts/generatedCommands.ts';
 import { parseCountResponse } from './contracts/count.ts';
 import {
 	parseFactResponse,
-	parseFactResponses,
+	parseFactPageResponse,
 	parseMemoryRecallResponses,
 	type Fact,
+	type FactPage,
 	type MemoryRecallItem,
 } from './contracts/memory.ts';
 
 /** List facts through the named memory command boundary. */
-export async function listFacts(request: TauriCommandRequest<'list_facts'>): Promise<Fact[]> {
+export async function listFacts(request: TauriCommandRequest<'list_facts'>): Promise<FactPage> {
 	const value: unknown = await invoke('list_facts', request);
-	return parseFactResponses(value);
+	return parseFactPageResponse(value);
 }
 
 /** Store a user-managed fact through the named memory command boundary. */

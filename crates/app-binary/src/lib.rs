@@ -17,6 +17,9 @@ mod notification;
 mod recording_lifecycle;
 mod router_media_builder;
 mod runtime;
+mod startup;
+#[cfg(windows)]
+mod startup_splash;
 #[cfg(windows)]
 mod window_resize;
 

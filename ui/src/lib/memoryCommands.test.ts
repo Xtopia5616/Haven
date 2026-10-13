@@ -33,44 +33,50 @@ describe('memory command boundary', () => {
 	beforeEach(() => invokeMock.mockReset());
 
 	it('maps fact IDs to camelCase while preserving the other response fields', async () => {
-		const response = [
-			{
-				fact_id: 'fact-00000000000000000000000000000001',
-				subject: 'user',
-				predicate: 'likes',
-				object: 'tea',
-				source: 'user' as const,
-				confidence: 1,
-				tags: [],
-				created_at: '2026-09-26T00:00:00Z',
-				mention_count: 0,
-				last_seen_at: null,
-				source_ref: null,
-				durability: 1,
-				future_field: 'retained',
-			},
-		];
+		const response = {
+			facts: [
+				{
+					fact_id: 'fact-00000000000000000000000000000001',
+					subject: 'user',
+					predicate: 'likes',
+					object: 'tea',
+					source: 'user' as const,
+					confidence: 1,
+					tags: [],
+					created_at: '2026-09-26T00:00:00Z',
+					mention_count: 0,
+					last_seen_at: null,
+					source_ref: null,
+					durability: 1,
+					future_field: 'retained',
+				},
+			],
+			next_cursor: null,
+		};
 		invokeMock.mockResolvedValue(response as never);
 
-		const facts = await listFacts({ source: null });
-		expect(facts).toEqual([
-			{
-				factId: response[0]!.fact_id,
-				subject: 'user',
-				predicate: 'likes',
-				object: 'tea',
-				source: 'user',
-				confidence: 1,
-				tags: [],
-				created_at: '2026-09-26T00:00:00Z',
-				mention_count: 0,
-				last_seen_at: null,
-				sourceRef: null,
-				durability: 1,
-				future_field: 'retained',
-			},
-		]);
-		expect(facts[0]).not.toHaveProperty('fact_id');
+		const page = await listFacts({ source: null });
+		expect(page).toEqual({
+			facts: [
+				{
+					factId: response.facts[0]!.fact_id,
+					subject: 'user',
+					predicate: 'likes',
+					object: 'tea',
+					source: 'user',
+					confidence: 1,
+					tags: [],
+					created_at: '2026-09-26T00:00:00Z',
+					mention_count: 0,
+					last_seen_at: null,
+					sourceRef: null,
+					durability: 1,
+					future_field: 'retained',
+				},
+			],
+			nextCursor: null,
+		});
+		expect(page.facts[0]).not.toHaveProperty('fact_id');
 		expect(invokeMock).toHaveBeenCalledWith('list_facts', { source: null });
 	});
 
@@ -142,28 +148,38 @@ describe('memory command boundary', () => {
 	});
 
 	it('rejects invalid fact and source-message IDs from Memory commands', async () => {
-		invokeMock.mockResolvedValueOnce([{ fact_id: 'fact-short', source_ref: null }] as never);
+		invokeMock.mockResolvedValueOnce({
+			facts: [{ fact_id: 'fact-short', source_ref: null }],
+			next_cursor: null,
+		} as never);
 		await expect(listFacts({ source: null })).rejects.toThrow('Invalid memory fact identity');
 
-		invokeMock.mockResolvedValueOnce([
-			{ id: 'fact-00000000000000000000000000000004', source_ref: null },
-		] as never);
+		invokeMock.mockResolvedValueOnce({
+			facts: [{ id: 'fact-00000000000000000000000000000004', source_ref: null }],
+			next_cursor: null,
+		} as never);
 		await expect(listFacts({ source: null })).rejects.toThrow('Invalid memory fact identity');
 
-		invokeMock.mockResolvedValueOnce([
-			{
-				fact_id: 'fact-00000000000000000000000000000004',
-				source_ref: { message_id: 'ses-00000000000000000000000000000005' },
-			},
-		] as never);
+		invokeMock.mockResolvedValueOnce({
+			facts: [
+				{
+					fact_id: 'fact-00000000000000000000000000000004',
+					source_ref: { message_id: 'ses-00000000000000000000000000000005' },
+				},
+			],
+			next_cursor: null,
+		} as never);
 		await expect(listFacts({ source: null })).rejects.toThrow('Invalid memory fact identity');
 
-		invokeMock.mockResolvedValueOnce([
-			{
-				fact_id: 'fact-00000000000000000000000000000004',
-				source_ref: { message_id: '', snippet: 'orphaned evidence' },
-			},
-		] as never);
+		invokeMock.mockResolvedValueOnce({
+			facts: [
+				{
+					fact_id: 'fact-00000000000000000000000000000004',
+					source_ref: { message_id: '', snippet: 'orphaned evidence' },
+				},
+			],
+			next_cursor: null,
+		} as never);
 		await expect(listFacts({ source: null })).rejects.toThrow('Invalid memory fact identity');
 	});
 
@@ -188,11 +204,32 @@ describe('memory command boundary', () => {
 		];
 
 		for (const row of invalidRows) {
-			invokeMock.mockResolvedValueOnce([row] as never);
+			invokeMock.mockResolvedValueOnce({ facts: [row], next_cursor: null } as never);
 			await expect(listFacts({ source: null })).rejects.toThrow(
 				/Invalid memory fact response (shape|value)/,
 			);
 		}
+	});
+
+	it('maps and validates stable fact page cursors', async () => {
+		const cursor = {
+			createdAt: '2026-09-26T00:00:00Z',
+			factId: 'fact-00000000000000000000000000000004',
+		};
+		invokeMock.mockResolvedValueOnce({
+			facts: [validFactResponse()],
+			next_cursor: cursor,
+		} as never);
+		await expect(listFacts({ source: null })).resolves.toMatchObject({
+			facts: [{ factId: 'fact-00000000000000000000000000000001' }],
+			nextCursor: cursor,
+		});
+
+		invokeMock.mockResolvedValueOnce({
+			facts: [],
+			next_cursor: { createdAt: '2026-09-26T00:00:00Z', factId: 'fact-short' },
+		} as never);
+		await expect(listFacts({ source: null })).rejects.toThrow('Invalid memory fact cursor');
 	});
 
 	it('uses the requested kind and fact as the omitted-kind default for recall IDs', async () => {

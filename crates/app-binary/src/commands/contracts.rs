@@ -7,7 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 79;
+pub const EXPECTED_COMMAND_COUNT: usize = 80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -345,6 +345,11 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "status enum only",
     },
     CommandContract {
+        name: "report_startup_ui_ready",
+        boundary: CommandBoundary::Mutate,
+        security: "no arguments; releases the startup surface after the first hydrated app paint",
+    },
+    CommandContract {
         name: "update_settings",
         boundary: CommandBoundary::Mutate,
         security: "rejects inline secrets; shared loader preserves credential refs, tool sections, and permission rules",
@@ -503,6 +508,33 @@ impl TryFrom<&str> for MemoryFactSource {
     }
 }
 
+/// Keyset position for a long-term fact page. Tauri input uses camelCase at
+/// the renderer boundary; the nested fact projection remains snake_case.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryFactCursor {
+    pub created_at: String,
+    pub fact_id: String,
+}
+
+impl From<haven_memory::FactPageCursor> for MemoryFactCursor {
+    fn from(cursor: haven_memory::FactPageCursor) -> Self {
+        Self {
+            created_at: cursor.created_at,
+            fact_id: cursor.fact_id,
+        }
+    }
+}
+
+impl From<MemoryFactCursor> for haven_memory::FactPageCursor {
+    fn from(cursor: MemoryFactCursor) -> Self {
+        Self {
+            created_at: cursor.created_at,
+            fact_id: cursor.fact_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MemoryFactResponse {
     pub fact_id: String,
@@ -517,6 +549,27 @@ pub struct MemoryFactResponse {
     pub last_seen_at: Option<String>,
     pub source_ref: Option<MemoryFactSourceRef>,
     pub durability: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryFactPageResponse {
+    pub facts: Vec<MemoryFactResponse>,
+    pub next_cursor: Option<MemoryFactCursor>,
+}
+
+impl TryFrom<haven_memory::FactPage> for MemoryFactPageResponse {
+    type Error = String;
+
+    fn try_from(page: haven_memory::FactPage) -> Result<Self, Self::Error> {
+        Ok(Self {
+            facts: page
+                .facts
+                .into_iter()
+                .map(MemoryFactResponse::try_from)
+                .collect::<Result<Vec<_>, _>>()?,
+            next_cursor: page.next_cursor.map(Into::into),
+        })
+    }
 }
 
 impl TryFrom<haven_memory::Fact> for MemoryFactResponse {
@@ -594,6 +647,26 @@ mod tests {
         })
         .unwrap();
         assert_eq!(skill["error"], "blocked");
+    }
+
+    #[test]
+    fn memory_fact_cursor_uses_renderer_camel_case_fields() {
+        let cursor = MemoryFactCursor {
+            created_at: "2026-10-06T00:00:00Z".into(),
+            fact_id: "fact-0123456789abcdef0123456789abcdef".into(),
+        };
+        let wire = serde_json::to_value(&cursor).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "createdAt": "2026-10-06T00:00:00Z",
+                "factId": "fact-0123456789abcdef0123456789abcdef",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<MemoryFactCursor>(wire).unwrap(),
+            cursor
+        );
     }
 
     #[test]

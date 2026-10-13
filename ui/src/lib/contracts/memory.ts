@@ -10,8 +10,11 @@ import {
 	MEMORY_FACT_RESPONSE_SHAPE,
 	MEMORY_FACT_SOURCE_INPUT_VALUES,
 	MEMORY_RECALL_ITEM_RESPONSE_SHAPE,
+	LIST_FACTS_RESPONSE_SHAPE,
 } from './generatedCommands.ts';
 import type {
+	MemoryFactCursor as GeneratedMemoryFactCursor,
+	MemoryFactPageResponse as GeneratedMemoryFactPageResponse,
 	MemoryFactResponse as GeneratedMemoryFactResponse,
 	MemoryRecallItem as GeneratedMemoryRecallItem,
 	MemoryEntityKindInput,
@@ -30,6 +33,11 @@ export type Fact = Omit<GeneratedMemoryFactResponse, 'fact_id' | 'source_ref'> &
 	factId: string;
 	sourceRef: MemoryFactSourceRef | null;
 };
+export type MemoryFactCursor = GeneratedMemoryFactCursor;
+export interface FactPage {
+	facts: Fact[];
+	nextCursor: MemoryFactCursor | null;
+}
 export type MemoryRecallItem = Omit<GeneratedMemoryRecallItem, 'entity_id'> & {
 	entityId: string;
 };
@@ -91,13 +99,33 @@ export function parseFactResponse(value: unknown): Fact {
 	return mapFactResponse(value as unknown as GeneratedMemoryFactResponse);
 }
 
-/** Validate complete fact rows before listing the persisted fact catalog. */
-export function parseFactResponses(value: unknown): Fact[] {
-	if (!Array.isArray(value) || !value.every(hasFactIdentity)) {
-		throw new Error('Invalid memory fact identity');
+/** Validate and map one bounded fact page, including its stable keyset cursor. */
+export function parseFactPageResponse(value: unknown): FactPage {
+	if (!isRecord(value) || !Array.isArray(value.facts)) {
+		throw new Error('Invalid memory fact page response shape');
 	}
-	for (const fact of value) validateFactResponse(fact);
-	return value.map((fact) => mapFactResponse(fact as GeneratedMemoryFactResponse));
+	if (!value.facts.every(hasFactIdentity)) throw new Error('Invalid memory fact identity');
+	for (const fact of value.facts) validateFactResponse(fact);
+	const mismatch = findGeneratedWireShapeMismatch(value, LIST_FACTS_RESPONSE_SHAPE);
+	if (mismatch) throw new Error(`Invalid memory fact page response shape at ${mismatch}`);
+	const page = value as unknown as GeneratedMemoryFactPageResponse;
+	let nextCursor: MemoryFactCursor | null = null;
+	if (page.next_cursor !== null) {
+		if (
+			!isCanonicalEntityId(page.next_cursor.factId, 'fact') ||
+			!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(
+				page.next_cursor.createdAt,
+			) ||
+			!Number.isFinite(Date.parse(page.next_cursor.createdAt))
+		) {
+			throw new Error('Invalid memory fact cursor');
+		}
+		nextCursor = page.next_cursor;
+	}
+	return {
+		facts: page.facts.map((fact) => mapFactResponse(fact)),
+		nextCursor,
+	};
 }
 
 function mapFactResponse(value: GeneratedMemoryFactResponse): Fact {

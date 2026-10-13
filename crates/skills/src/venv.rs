@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 
@@ -165,48 +166,51 @@ impl VenvManager {
         }
     }
 
-    async fn canonical_requirements_path(skill_root: &Path) -> anyhow::Result<Option<PathBuf>> {
+    async fn requirements_snapshot(
+        skill_root: &Path,
+        skill_name: &str,
+    ) -> anyhow::Result<Option<(PathBuf, Vec<u8>)>> {
         let canonical_root = tokio::fs::canonicalize(skill_root)
             .await
             .map_err(|_| anyhow::anyhow!("failed to resolve skill root"))?;
         let candidate = canonical_root.join("requirements.txt");
-        match tokio::fs::metadata(&candidate).await {
-            Ok(metadata) if metadata.is_file() => {}
-            Ok(_) => anyhow::bail!("requirements entry is not a file"),
+        // Open first. Validation then checks that the currently resolved path
+        // still identifies this handle, and all later reads use the handle.
+        let file = match haven_platform::filesystem::open_read_only(&candidate) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(_) => anyhow::bail!("failed to inspect skill requirements"),
-        }
-
-        // Use the resolved target for both hashing and pip. This rejects a
-        // symlink/junction escape and avoids handing pip the unchecked alias.
+        };
         let canonical_requirements = tokio::fs::canonicalize(&candidate)
             .await
             .map_err(|_| anyhow::anyhow!("failed to resolve skill requirements"))?;
-        if !canonical_requirements.starts_with(&canonical_root) {
-            anyhow::bail!("requirements entry resolves outside the skill root");
-        }
-        Ok(Some(canonical_requirements))
+        let resolved_file = haven_platform::filesystem::open_read_only(&canonical_requirements)
+            .map_err(|_| anyhow::anyhow!("failed to inspect skill requirements"))?;
+        super::validate_open_file_path(
+            &canonical_root,
+            &canonical_requirements,
+            &file,
+            &resolved_file,
+        )
+        .map_err(|_| anyhow::anyhow!("skill requirements failed path validation"))?;
+        let content = read_requirements_capped(tokio::fs::File::from_std(file), skill_name).await?;
+        Ok(Some((canonical_root, content)))
     }
 
+    #[cfg(test)]
     async fn checksum_file(path: &Path, skill_name: &str) -> anyhow::Result<String> {
-        let file = tokio::fs::File::open(path)
-            .await
-            .map_err(|_| anyhow::anyhow!("failed to read requirements for skill '{skill_name}'"))?;
-        let metadata = file.metadata().await.map_err(|_| {
-            anyhow::anyhow!("failed to inspect requirements for skill '{skill_name}'")
-        })?;
-        if !metadata.is_file() {
-            anyhow::bail!("requirements entry for skill '{skill_name}' is not a file");
-        }
-        if metadata.len() > MAX_REQUIREMENTS_BYTES as u64 {
-            anyhow::bail!(
-                "requirements for skill '{skill_name}' exceed the {MAX_REQUIREMENTS_BYTES}-byte limit"
-            );
-        }
-        let content = read_requirements_capped(file, skill_name).await?;
+        let root = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("failed to resolve skill root"))?;
+        let (_, content) = Self::requirements_snapshot(root, skill_name)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("failed to read requirements for skill '{skill_name}'")
+            })?;
         Ok(format!("sha256:{:x}", Sha256::digest(content)))
     }
 
+    #[cfg(test)]
     async fn ensure_requirements_with<F, Fut>(
         &self,
         skill_name: &str,
@@ -217,7 +221,30 @@ impl VenvManager {
         F: FnOnce() -> Fut,
         Fut: Future<Output = anyhow::Result<()>>,
     {
-        let fingerprint = Self::checksum_file(requirements_path, skill_name).await?;
+        let parent = requirements_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("failed to resolve skill root"))?;
+        let (canonical_root, content) = Self::requirements_snapshot(parent, skill_name)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("failed to read requirements for skill '{skill_name}'")
+            })?;
+        self.ensure_requirements_snapshot_with(skill_name, &canonical_root, &content, |_| install())
+            .await
+    }
+
+    async fn ensure_requirements_snapshot_with<F, Fut>(
+        &self,
+        skill_name: &str,
+        requirements_root: &Path,
+        content: &[u8],
+        install: F,
+    ) -> anyhow::Result<()>
+    where
+        F: FnOnce(PathBuf) -> Fut,
+        Fut: Future<Output = anyhow::Result<()>>,
+    {
+        let fingerprint = format!("sha256:{:x}", Sha256::digest(content));
         let marker_path = self
             .venv_dir(skill_name)
             .join(REQUIREMENTS_FINGERPRINT_FILE);
@@ -236,7 +263,27 @@ impl VenvManager {
             return Ok(());
         }
 
-        install().await?;
+        // Keep the path next to the original requirements file so pip resolves
+        // relative includes with the same directory context. The name is
+        // collision-resistant and the file is created exclusively.
+        let mut staged = tempfile::Builder::new()
+            .prefix(".haven-requirements-")
+            .suffix(".txt")
+            .tempfile_in(requirements_root)
+            .map_err(|_| {
+                anyhow::anyhow!("failed to stage requirements for skill '{skill_name}'")
+            })?;
+        staged
+            .write_all(content)
+            .and_then(|()| staged.flush())
+            .map_err(|_| {
+                anyhow::anyhow!("failed to stage requirements for skill '{skill_name}'")
+            })?;
+        let (file, staged_path_guard) = staged.into_parts();
+        let staged_path = staged_path_guard.to_path_buf();
+        drop(file);
+        install(staged_path).await?;
+        drop(staged_path_guard);
 
         // Persist only after pip succeeds. A failed install therefore remains
         // eligible for retry on the next ensure call.
@@ -272,20 +319,28 @@ impl VenvManager {
             }
         }
 
-        if let Some(req_path) = Self::canonical_requirements_path(skill_root).await? {
-            self.ensure_requirements_with(skill_name, &req_path, || async {
-                tracing::info!("installing requirements for skill");
-                let output = run_contained_output(
-                    pip_install_command(&python, &req_path),
-                    skill_name,
-                    "pip install failed",
-                )
-                .await?;
-                if !output.status.success() {
-                    anyhow::bail!("pip install failed for skill '{skill_name}'");
-                }
-                Ok(())
-            })
+        if let Some((requirements_root, content)) =
+            Self::requirements_snapshot(skill_root, skill_name).await?
+        {
+            let python_for_install = python.clone();
+            self.ensure_requirements_snapshot_with(
+                skill_name,
+                &requirements_root,
+                &content,
+                |req_path| async move {
+                    tracing::info!("installing requirements for skill");
+                    let output = run_contained_output(
+                        pip_install_command(&python_for_install, &req_path),
+                        skill_name,
+                        "pip install failed",
+                    )
+                    .await?;
+                    if !output.status.success() {
+                        anyhow::bail!("pip install failed for skill '{skill_name}'");
+                    }
+                    Ok(())
+                },
+            )
             .await?;
         }
 
@@ -498,7 +553,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn canonical_requirements_path_rejects_symlink_outside_skill_root() {
+    async fn requirements_snapshot_rejects_symlink_outside_skill_root() {
         let temp = tempdir().unwrap();
         let skill_root = temp.path().join("skills").join("example-skill");
         std::fs::create_dir_all(&skill_root).unwrap();
@@ -509,34 +564,57 @@ mod tests {
             return;
         }
 
-        let error = VenvManager::canonical_requirements_path(&skill_root)
+        let error = VenvManager::requirements_snapshot(&skill_root, "example-skill")
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("outside the skill root"));
+        assert!(error.to_string().contains("path validation"));
     }
 
     #[tokio::test]
-    async fn pip_install_receives_the_canonical_requirements_path() {
+    async fn pip_install_receives_the_verified_requirements_snapshot() {
         let temp = tempdir().unwrap();
         let (_, requirements_path) = test_paths(temp.path());
-        let canonical_path =
-            VenvManager::canonical_requirements_path(requirements_path.parent().unwrap())
-                .await
-                .unwrap()
-                .unwrap();
+        let (requirements_root, snapshot) = VenvManager::requirements_snapshot(
+            requirements_path.parent().unwrap(),
+            "example-skill",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        std::fs::write(&requirements_path, "example-package==2.0\n").unwrap();
+
         let python = PathBuf::from("venvs/example-skill/python");
+        let manager = VenvManager::new(temp.path().join("venvs"));
+        let expected_snapshot = snapshot.clone();
+        manager
+            .ensure_requirements_snapshot_with(
+                "example-skill",
+                &requirements_root,
+                &snapshot,
+                |snapshot_path| async move {
+                    let command = pip_install_command(&python, &snapshot_path);
+                    let args = command
+                        .as_std()
+                        .get_args()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>();
 
-        let command = pip_install_command(&python, &canonical_path);
-        let args = command
-            .as_std()
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
+                    assert_eq!(
+                        args.last(),
+                        Some(&snapshot_path.to_string_lossy().into_owned())
+                    );
+                    assert_ne!(snapshot_path, requirements_path);
+                    assert_eq!(
+                        tokio::fs::read(snapshot_path).await.unwrap(),
+                        expected_snapshot
+                    );
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
 
-        assert_eq!(
-            args.last(),
-            Some(&canonical_path.to_string_lossy().into_owned())
-        );
+        assert_eq!(snapshot, b"example-package==1.0\n");
     }
 
     #[tokio::test]

@@ -108,13 +108,37 @@ pub fn is_sensitive_text(text: &str) -> bool {
 /// as the Rust detectors. Prefixes use exact `substr` comparison: `_` in a
 /// credential prefix is a literal underscore, never a `LIKE` wildcard.
 pub(crate) fn sensitive_fact_where_sql() -> String {
-    let object = format!("lower(trim(object, {SQL_TRIM_WHITESPACE_CHARS}))");
+    let predicate = sensitive_predicate_where_sql("predicate");
+    let object = sensitive_object_where_sql("object");
+    format!("({predicate} OR {object})")
+}
+
+/// SQL equivalent of the row-level visibility rule used by fact list pages.
+/// Provenance snippets are intentionally not part of this predicate because
+/// they are redacted independently on otherwise visible rows.
+pub(crate) fn invisible_fact_where_sql() -> String {
+    let subject = sensitive_text_where_sql("subject");
+    let predicate = sensitive_predicate_where_sql("predicate");
+    let object = sensitive_object_where_sql("object");
+    format!("({subject} OR {predicate} OR {object})")
+}
+
+fn sensitive_predicate_where_sql(column: &str) -> String {
+    let clauses = SENSITIVE_PREDICATE_KEYWORDS
+        .iter()
+        .map(|keyword| format!("instr(lower({column}), '{keyword}') > 0"));
+    format!("({})", clauses.collect::<Vec<_>>().join(" OR "))
+}
+
+fn sensitive_text_where_sql(column: &str) -> String {
+    let objects = sensitive_object_where_sql(column);
+    let keywords = sensitive_predicate_where_sql(column);
+    format!("({objects} OR {keywords})")
+}
+
+fn sensitive_object_where_sql(column: &str) -> String {
+    let object = format!("lower(trim({column}, {SQL_TRIM_WHITESPACE_CHARS}))");
     let mut clauses = Vec::new();
-    clauses.extend(
-        SENSITIVE_PREDICATE_KEYWORDS
-            .iter()
-            .map(|keyword| format!("instr(lower(predicate), '{keyword}') > 0")),
-    );
     clauses.extend(
         SENSITIVE_OBJECT_PREFIXES
             .iter()

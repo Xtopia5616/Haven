@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MemoryView from './MemoryView.svelte';
+import type { Fact, FactPage, MemoryFactCursor } from '$lib/contracts/memory.ts';
 
 const {
 	goto,
@@ -27,7 +28,7 @@ const {
 	const goto = vi.fn(async (href: string) => page.setUrl(href));
 	return {
 		goto,
-		listFacts: vi.fn(async () => []),
+		listFacts: vi.fn(async (): Promise<FactPage> => ({ facts: [], nextCursor: null })),
 		page,
 		recallMemory: vi.fn(),
 		registerSessionLifecycleListener: vi.fn(async () => ({ dispose: vi.fn() })),
@@ -94,13 +95,58 @@ describe('MemoryView recall request lifecycle', () => {
 	beforeEach(() => {
 		page.setUrl('/');
 		goto.mockClear();
-		listFacts.mockReset().mockResolvedValue([]);
+		listFacts.mockReset().mockResolvedValue({ facts: [], nextCursor: null });
 		recallMemory.mockReset();
 		registerSessionLifecycleListener
 			.mockReset()
 			.mockResolvedValue({ dispose: vi.fn() });
 		reportError.mockReset();
 		searchSessionHistoryFiltered.mockReset().mockResolvedValue([]);
+	});
+
+	it('loads facts by cursor and restarts at the first page when source changes', async () => {
+		const cursor: MemoryFactCursor = {
+			createdAt: '2026-09-26T00:00:00Z',
+			factId: 'fact-00000000000000000000000000000002',
+		};
+		const firstFact: Fact = {
+			factId: 'fact-00000000000000000000000000000001',
+			subject: 'user',
+			predicate: 'likes',
+			object: 'tea',
+			source: 'user',
+			confidence: 1,
+			tags: [],
+			created_at: '2026-09-26T00:00:00Z',
+			mention_count: 0,
+			last_seen_at: null,
+			sourceRef: null,
+			durability: 1,
+		};
+		const secondFact = { ...firstFact, factId: cursor.factId, predicate: 'uses', object: 'coffee' };
+		listFacts
+			.mockResolvedValueOnce({ facts: [firstFact], nextCursor: cursor })
+			.mockResolvedValueOnce({ facts: [secondFact], nextCursor: null })
+			.mockResolvedValueOnce({ facts: [], nextCursor: null });
+
+		await openMemoryTab();
+		await screen.findByText('tea');
+		await fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+		await screen.findByText('coffee');
+		expect(listFacts).toHaveBeenNthCalledWith(2, {
+			source: null,
+			cursor,
+			limit: 50,
+		});
+
+		await fireEvent.click(screen.getByRole('button', { name: '事实来源' }));
+		await fireEvent.click(screen.getByRole('option', { name: '推断' }));
+		await waitFor(() => expect(listFacts).toHaveBeenCalledTimes(3));
+		expect(listFacts).toHaveBeenNthCalledWith(3, {
+			source: 'inferred',
+			cursor: null,
+			limit: 50,
+		});
 	});
 
 	it('keeps the newest query result and ignores an older request error', async () => {

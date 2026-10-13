@@ -42,6 +42,7 @@ haven-input = { path = "../input" }
 futures-util.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 encoding_rs.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 haven-memory = { path = "../memory", features = ["test-support"] }
@@ -50,7 +51,6 @@ haven-messaging = { path = "../messaging", features = ["test-support"] }
 haven-mcp = { path = "../mcp", features = ["test-support"] }
 haven-common = { path = "../common", features = ["test-support"] }
 haven-skills = { path = "../skills", features = ["test-support"] }
-tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

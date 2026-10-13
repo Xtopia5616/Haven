@@ -2,10 +2,7 @@
 	import { reportError } from '$lib/errorHandling.ts';
 	import { buildResumeMessages } from '$lib/resumeMessages.ts';
 	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
-	import {
-		appSessionReducer,
-		type SessionRunEndStatus,
-	} from '$lib/sessionReducer.ts';
+	import { appSessionReducer, type SessionRunEndStatus } from '$lib/sessionReducer.ts';
 	import { formatMessageTime } from '$lib/messageFormat.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { sessionResumeTargetStore } from '$lib/sessionIntentStore.ts';
@@ -48,6 +45,7 @@
 	import type { SessionHistoryStatusFilterInput } from '$lib/contracts/generatedCommands.ts';
 	import type {
 		Fact,
+		MemoryFactCursor,
 		MemoryFactSourceFilter,
 		MemoryRecallFilter,
 		MemoryRecallKind,
@@ -138,6 +136,9 @@
 	let memoryRecallRequestSeq = 0;
 	let facts = $state<Fact[]>([]);
 	let factsLoaded = $state(false);
+	let factsLoadingMore = $state(false);
+	let factCursor = $state<MemoryFactCursor | null>(null);
+	let factsHasMore = $derived(factCursor !== null);
 	let factSourceFilter = $state<MemoryFactSourceFilter>('');
 	let newFact = $state<{ predicate: string; object: string; tags: string }>({
 		predicate: '',
@@ -444,8 +445,11 @@
 		clearingMemory = true;
 		try {
 			const count = await clearFactsCommand();
+			loadFactsSeq += 1;
 			facts = [];
 			factsLoaded = true;
+			factsLoadingMore = false;
+			factCursor = null;
 			clearMemoryRecall();
 			addNotification(`已清空 ${count} 条长期记忆`, 'success', 3000);
 		} catch (error) {
@@ -515,20 +519,57 @@
 	}
 	async function loadFacts() {
 		const sequence = ++loadFactsSeq;
+		factsLoaded = false;
+		factsLoadingMore = false;
+		facts = [];
+		factCursor = null;
 		try {
-			const rows = (await listFacts({ source: factSourceFilter || null })) || [];
+			const page = await listFacts({
+				source: factSourceFilter || null,
+				cursor: null,
+				limit: PAGE_SIZE,
+			});
 			if (sequence !== loadFactsSeq) return;
-			facts = rows;
+			facts = page.facts;
+			factCursor = page.nextCursor;
 			factsLoaded = true;
 		} catch (error) {
 			if (sequence !== loadFactsSeq) return;
 			facts = [];
+			factCursor = null;
 			factsLoaded = true;
 			reportError(error, { context: 'MemoryView', message: '加载事实失败', log: false });
 		}
 	}
+	async function loadMoreFacts() {
+		if (!factCursor || factsLoadingMore) return;
+		const sequence = loadFactsSeq;
+		const cursor = factCursor;
+		factsLoadingMore = true;
+		try {
+			const page = await listFacts({
+				source: factSourceFilter || null,
+				cursor,
+				limit: PAGE_SIZE,
+			});
+			if (sequence !== loadFactsSeq) return;
+			facts = [...facts, ...page.facts];
+			factCursor = page.nextCursor;
+		} catch (error) {
+			if (sequence !== loadFactsSeq) return;
+			reportError(error, { context: 'MemoryView', message: '加载更多事实失败', log: false });
+		} finally {
+			if (sequence === loadFactsSeq) factsLoadingMore = false;
+		}
+	}
 	function handleFactSourceFilterChange(value: MemoryFactSourceFilter) {
+		if (value === factSourceFilter) return;
 		factSourceFilter = value;
+		loadFactsSeq += 1;
+		facts = [];
+		factsLoaded = false;
+		factsLoadingMore = false;
+		factCursor = null;
 	}
 	async function addFact() {
 		const predicate = newFact.predicate.trim();
@@ -563,6 +604,8 @@
 	async function deleteFact(factId: string) {
 		try {
 			await deleteFactCommand({ factId });
+			loadFactsSeq += 1;
+			factsLoadingMore = false;
 			facts = facts.filter((fact) => fact.factId !== factId);
 		} catch (e) {
 			reportError(e, { context: 'MemoryView', message: '删除事实失败', log: false });
@@ -732,6 +775,8 @@
 							<MemoryCenter
 								{facts}
 								{factsLoaded}
+								{factsHasMore}
+								{factsLoadingMore}
 								{factSourceFilter}
 								factSourceOptions={FACT_SOURCE_OPTIONS}
 								{newFact}
@@ -742,6 +787,7 @@
 								onRunRecall={runRecall}
 								onClearRecall={clearMemoryRecall}
 								onFactSourceFilterChange={handleFactSourceFilterChange}
+								onLoadMoreFacts={loadMoreFacts}
 								onAddFact={addFact}
 								onDeleteFact={deleteFact}
 							/>

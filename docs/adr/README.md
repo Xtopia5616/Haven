@@ -1139,5 +1139,8 @@
 - [1148：在发布工具缓存后再提升 MCP catalog generation](1148-publish-mcp-catalog-generation-after-cache.md)
 - [1149：跨 chunk 保留完整 MCP SSE 事件](1149-preserve-mcp-sse-events-across-chunks.md)
 - [1150：按 IANA 特殊用途登记分类网络目标](1150-classify-special-purpose-network-addresses.md)
+- [1151：以打开句柄固定 Skill 文件读取](1151-anchor-skill-file-reads-to-open-handles.md)
 - [1152：在 Tools 组合层适配 LLM 的 MCP caller](1152-adapt-llm-mcp-caller-in-tools.md)
+- [1153：为长期事实列表建立有界 keyset 分页](1153-page-long-term-facts-with-a-bounded-keyset.md)
+- [1154：在 WebView2 启动前显示原生加载画面并处理失败](1154-native-startup-surface-and-webview-recovery.md)
 - [1155：将文件读取授权绑定到打开句柄](1155-bind-file-read-authorization-to-open-handle.md)

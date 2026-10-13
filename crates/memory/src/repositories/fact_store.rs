@@ -7,6 +7,26 @@ use haven_common::types::is_canonical_id;
 use rusqlite::{Connection, OptionalExtension};
 use std::sync::Arc;
 
+/// Default number of facts returned by the paged long-term fact listing.
+pub const DEFAULT_FACT_PAGE_SIZE: usize = 50;
+/// Hard bound for one long-term fact listing response.
+pub const MAX_FACT_PAGE_SIZE: usize = 100;
+
+/// Stable keyset position for a fact page. Ordering is `created_at DESC, id
+/// DESC`; both fields come from the last returned row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactPageCursor {
+    pub created_at: String,
+    pub fact_id: String,
+}
+
+/// Bounded result of listing visible long-term facts.
+#[derive(Debug, Clone)]
+pub struct FactPage {
+    pub facts: Vec<Fact>,
+    pub next_cursor: Option<FactPageCursor>,
+}
+
 /// A fact already parsed, normalized, and sanitized by its owning caller,
 /// ready for inferred-fact persistence.
 #[derive(Debug, Clone)]
@@ -159,16 +179,56 @@ impl MemoryFactStore {
             .await
     }
 
-    /// List visible facts, optionally restricted to an exact source value.
-    /// An absent or empty source retains the existing all-facts behavior.
-    pub async fn list_facts(&self, source: Option<String>) -> anyhow::Result<Vec<Fact>> {
+    /// List a bounded page of visible facts, optionally restricted to an exact
+    /// source value. Pages use stable `(created_at DESC, id DESC)` keyset
+    /// order. Each request observes current database state; inserts newer than
+    /// a cursor appear before that cursor and are seen after restarting the
+    /// listing. Visibility is applied before the SQL limit so sensitive facts
+    /// never consume page slots.
+    pub async fn list_facts_page(
+        &self,
+        source: Option<String>,
+        cursor: Option<FactPageCursor>,
+        limit: usize,
+    ) -> anyhow::Result<FactPage> {
+        let limit = limit.min(MAX_FACT_PAGE_SIZE);
+        if limit == 0 {
+            return Ok(FactPage {
+                facts: Vec::new(),
+                next_cursor: None,
+            });
+        }
+        if let Some(cursor) = cursor.as_ref() {
+            anyhow::ensure!(
+                is_canonical_id(&cursor.fact_id, "fact"),
+                "fact page cursor fact_id must be canonical"
+            );
+            anyhow::ensure!(
+                cursor.created_at.len() <= 64,
+                "fact page cursor created_at is too long"
+            );
+            chrono::DateTime::parse_from_rfc3339(&cursor.created_at)
+                .map_err(|_| anyhow::anyhow!("fact page cursor created_at must be RFC3339"))?;
+        }
         self.db
             .run_blocking(move |db| {
-                let facts = match source.as_deref().filter(|source| !source.is_empty()) {
-                    Some(source) => db.list_facts_by_source(source)?,
-                    None => db.list_facts()?,
+                let source = source.as_deref().filter(|source| !source.is_empty());
+                let cursor_key = cursor
+                    .as_ref()
+                    .map(|cursor| (cursor.created_at.as_str(), cursor.fact_id.as_str()));
+                let facts = db.list_facts_page(source, cursor_key, limit + 1)?;
+                let mut facts = crate::repositories::facts::filter_visible_facts(facts);
+                let has_more = facts.len() > limit;
+                facts.truncate(limit);
+                let next_cursor = if has_more {
+                    facts.last().map(|fact| FactPageCursor {
+                        created_at: fact.created_at.clone(),
+                        fact_id: fact.fact_id.clone(),
+                    })
+                } else {
+                    None
                 };
-                Ok(crate::repositories::facts::filter_visible_facts(facts))
+                Ok(FactPage { facts, next_cursor })
             })
             .await
     }
@@ -335,7 +395,7 @@ fn set_kv_on_connection(conn: &Connection, key: &str, value: &str) -> anyhow::Re
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryFactStore, MemoryFactWrite};
+    use super::{MAX_FACT_PAGE_SIZE, MemoryFactStore, MemoryFactWrite};
     use crate::Database;
     use crate::repositories::facts::FactSourceRef;
     use haven_common::types::new_id;
@@ -357,6 +417,103 @@ mod tests {
             source_ref: None,
             durability: 0.6,
         }
+    }
+
+    #[tokio::test]
+    async fn fact_pages_are_bounded_stable_source_filtered_and_hide_sensitive_rows() {
+        let (db, store) = store();
+        let mut safe_ids = std::collections::HashSet::new();
+        for index in 0..257 {
+            let source = if index % 2 == 0 { "user" } else { "inferred" };
+            let predicate = if index % 7 == 0 { "api_key" } else { "likes" };
+            let subject = if index % 13 == 1 {
+                "password-holder"
+            } else {
+                "user"
+            };
+            let object = if index % 17 == 2 {
+                "sk-secret-value".to_string()
+            } else {
+                format!("item-{index}")
+            };
+            let hidden = index % 7 == 0 || index % 13 == 1 || index % 17 == 2;
+            let fact = db
+                .insert_fact(subject, predicate, &object, source, 0.8, &[])
+                .unwrap();
+            if !hidden {
+                safe_ids.insert(fact.fact_id);
+            }
+        }
+        db.conn()
+            .execute("UPDATE facts SET created_at = '2026-10-01T00:00:00Z'", [])
+            .unwrap();
+
+        let first = store.list_facts_page(None, None, usize::MAX).await.unwrap();
+        assert_eq!(first.facts.len(), MAX_FACT_PAGE_SIZE);
+        assert!(first.next_cursor.is_some());
+
+        let mut all_facts = first.facts;
+        let mut cursor = first.next_cursor;
+        while let Some(next_cursor) = cursor {
+            let page = store
+                .list_facts_page(None, Some(next_cursor), MAX_FACT_PAGE_SIZE)
+                .await
+                .unwrap();
+            all_facts.extend(page.facts);
+            cursor = page.next_cursor;
+        }
+        assert_eq!(all_facts.len(), safe_ids.len());
+        assert!(
+            all_facts
+                .iter()
+                .all(|fact| safe_ids.contains(&fact.fact_id))
+        );
+        assert_eq!(
+            all_facts
+                .iter()
+                .map(|fact| fact.fact_id.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            all_facts.len(),
+            "keyset pages must not repeat a fact"
+        );
+        assert!(all_facts.windows(2).all(|pair| {
+            pair[0].created_at > pair[1].created_at
+                || (pair[0].created_at == pair[1].created_at && pair[0].fact_id > pair[1].fact_id)
+        }));
+
+        let user_page = store
+            .list_facts_page(Some("user".into()), None, 3)
+            .await
+            .unwrap();
+        assert_eq!(user_page.facts.len(), 3);
+        assert!(user_page.facts.iter().all(|fact| fact.source == "user"));
+    }
+
+    #[tokio::test]
+    async fn fact_page_rejects_invalid_cursor_identity_and_timestamp() {
+        let (_db, store) = store();
+        let invalid_id = super::FactPageCursor {
+            created_at: "2026-10-01T00:00:00Z".into(),
+            fact_id: "fact-invalid".into(),
+        };
+        assert!(
+            store
+                .list_facts_page(None, Some(invalid_id), 10)
+                .await
+                .is_err()
+        );
+
+        let invalid_timestamp = super::FactPageCursor {
+            created_at: "yesterday".into(),
+            fact_id: "fact-0123456789abcdef0123456789abcdef".into(),
+        };
+        assert!(
+            store
+                .list_facts_page(None, Some(invalid_timestamp), 10)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -699,7 +856,7 @@ mod tests {
             .unwrap();
         }
 
-        let all = store.list_facts(None).await.unwrap();
+        let all = store.list_facts_page(None, None, 10).await.unwrap().facts;
         let all_objects: Vec<&str> = all.iter().map(|fact| fact.object.as_str()).collect();
         assert!(all_objects.contains(&"Rust"));
         assert!(all_objects.contains(&"SQLite"));
@@ -717,10 +874,18 @@ mod tests {
             "[redacted]"
         );
 
-        let empty_source = store.list_facts(Some(String::new())).await.unwrap();
+        let empty_source = store
+            .list_facts_page(Some(String::new()), None, 10)
+            .await
+            .unwrap()
+            .facts;
         assert_eq!(empty_source.len(), all.len());
 
-        let user_source = store.list_facts(Some("user".into())).await.unwrap();
+        let user_source = store
+            .list_facts_page(Some("user".into()), None, 10)
+            .await
+            .unwrap()
+            .facts;
         assert!(user_source.iter().all(|fact| fact.source == "user"));
         assert!(user_source.iter().any(|fact| fact.object == "Rust"));
         assert!(!user_source.iter().any(|fact| fact.object == "SQLite"));
@@ -741,7 +906,14 @@ mod tests {
         assert_eq!(fact.tags, ["preference", "workspace"]);
 
         store.delete_fact(fact.fact_id.clone()).await.unwrap();
-        assert!(store.list_facts(None).await.unwrap().is_empty());
+        assert!(
+            store
+                .list_facts_page(None, None, 10)
+                .await
+                .unwrap()
+                .facts
+                .is_empty()
+        );
     }
 
     #[tokio::test]

@@ -59,7 +59,8 @@ haven-skills ──► haven-common, haven-platform
 状态创建进程、先分配 Job 再恢复唯一初始线程；其他平台保持原有 no-op 行为。平台 crate 拥有该
 操作系统顺序和 FFI，adapter 仍拥有命令配置、管道、取消、等待与工具生命周期（ADR 0513、0515）。
 `haven-platform::filesystem::is_link_or_reparse_point` 统一检查单个 metadata 是否为 symlink 或 Windows
-reparse point；它不解析路径或制定允许根目录。`haven-common::path` 统一提供纯 lexical path equality 与
+reparse point；`open_read_only` 在 Windows 禁止新写入/删除句柄，`same_file_identity` 比较已打开句柄的文件身份，
+供调用方关闭路径解析与后续读取之间的竞态；这些 helper 不解析路径或制定允许根目录。`haven-common::path` 统一提供纯 lexical path equality 与
 equal-or-child 比较，不访问文件系统或 canonicalize 路径（ADR 0863）。App 上传/清理、Tools 资产登记和
 Tools 安全沙箱与 Memory 历史附件预览读取分别保留各自的路径遍历、canonicalization、根目录策略及 fail-closed 处理。
 Memory 只会从受信的 `default_runtime_temp_root()/uploads` 与 `default_generated_media_root()` 根目录重新读取预览 bytes；

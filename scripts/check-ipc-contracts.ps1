@@ -236,6 +236,7 @@ foreach ($file in $uiFiles) {
 # policy they already own.
 $ownedCommands = @{
     '+layout.svelte' = @('get_bootstrap_status', 'check_llm_connection', 'resolve_confirmation')
+    'startupCommands.ts' = @('report_startup_ui_ready')
     'errorHandling.ts' = @('log_frontend_error')
     'externalCommands.ts' = @('open_external')
     'recordingOverlayController.ts' = @('start_recording', 'stop_recording', 'cancel_recording')
@@ -306,9 +307,11 @@ Assert-NotContains $memoryView 'invoke\s*\(\s*''(?:list_facts|add_fact|delete_fa
 $memoryCommands = Get-Source 'crates/app-binary/src/commands/memory.rs'
 $memoryDtos = Get-Source 'crates/app-binary/src/commands/contracts.rs'
 $memoryUiContracts = Get-Source 'ui/src/lib/contracts/memory.ts'
-Assert-Contains $memoryCommands 'Result\s*<\s*Vec\s*<\s*MemoryFactResponse\s*>\s*,\s*String\s*>' 'list_facts returns the App-owned MemoryFactResponse DTO'
+Assert-Contains $memoryCommands 'Result\s*<\s*MemoryFactPageResponse\s*,\s*String\s*>' 'list_facts returns the bounded App-owned MemoryFactPageResponse DTO'
 Assert-Contains $memoryCommands 'Result\s*<\s*MemoryFactResponse\s*,\s*String\s*>' 'add_fact returns the App-owned MemoryFactResponse DTO'
 Assert-Contains $memoryDtos 'pub\s+struct\s+MemoryFactResponse' 'MemoryFactResponse is declared at the App IPC boundary'
+Assert-Contains $memoryDtos 'pub\s+struct\s+MemoryFactPageResponse' 'MemoryFactPageResponse is declared at the App IPC boundary'
+Assert-Contains $memoryDtos 'pub\s+struct\s+MemoryFactCursor' 'MemoryFactCursor is declared at the App IPC boundary'
 Assert-Contains $memoryDtos 'pub\s+struct\s+MemoryFactSourceRef' 'MemoryFactSourceRef is declared at the App IPC boundary'
 Assert-Contains $memoryUiContracts 'MemoryFactResponse\s+as\s+GeneratedMemoryFactResponse' 'UI Fact alias imports its generated Rust response type'
 Assert-Contains $generated 'export const MEMORY_FACT_RESPONSE_SHAPE\s*=' 'MemoryFactResponse runtime shape is generated from Rust'

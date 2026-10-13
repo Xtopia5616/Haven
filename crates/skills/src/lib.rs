@@ -9,6 +9,7 @@ use anyhow::Context;
 use haven_common::config::ConfigLoader;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -100,23 +101,58 @@ impl Skill {
     /// Whether the skill ships an executable entry script under `scripts/`.
     /// Looks for `scripts/main.py` first, then `scripts/<name>.py`.
     pub fn has_script(&self) -> bool {
-        self.entry_script().is_some()
+        self.open_entry_script().is_some()
     }
 
-    /// Resolve the entry script path for this skill.
-    /// Returns `None` when no recognised script exists or its resolved target
-    /// escapes the skill directory.
-    pub fn entry_script(&self) -> Option<PathBuf> {
+    /// Open the entry script and validate the opened file identity against its
+    /// resolved path while retaining the handle for callers that need a stable
+    /// content snapshot.
+    pub fn open_entry_script(&self) -> Option<(PathBuf, File)> {
         let root = self.root.canonicalize().ok()?;
-        let scripts = self.root.join("scripts");
+        let scripts = root.join("scripts");
         let main = scripts.join("main.py");
         let named = scripts.join(format!("{}.py", self.manifest.name));
-        let resolve_inside_root = |candidate: &Path| {
-            let resolved = candidate.canonicalize().ok()?;
-            (resolved.starts_with(&root) && resolved.is_file()).then_some(resolved)
-        };
-        resolve_inside_root(&main).or_else(|| resolve_inside_root(&named))
+        open_file_within_root(&root, &main)
+            .ok()
+            .or_else(|| open_file_within_root(&root, &named).ok())
     }
+}
+
+/// Open a file first, then verify that the path still resolves to that exact
+/// file identity beneath `root`. The returned handle remains the object whose
+/// identity was checked, so later pathname changes cannot redirect reads.
+fn open_file_within_root(root: &Path, candidate: &Path) -> io::Result<(PathBuf, File)> {
+    let file = haven_platform::filesystem::open_read_only(candidate)?;
+    let resolved_path = fs::canonicalize(candidate)?;
+    let resolved_file = haven_platform::filesystem::open_read_only(&resolved_path)?;
+    validate_open_file_path(root, &resolved_path, &file, &resolved_file)?;
+    Ok((resolved_path, file))
+}
+
+/// Confirm the current resolved pathname identifies the file already held by
+/// an open handle. Callers must perform the open before resolving the path.
+pub(crate) fn validate_open_file_path(
+    root: &Path,
+    resolved_path: &Path,
+    opened_file: &File,
+    resolved_file: &File,
+) -> io::Result<()> {
+    if !resolved_path.starts_with(root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "resolved file is outside the allowed root",
+        ));
+    }
+    if !opened_file.metadata()?.is_file()
+        || !resolved_file.metadata()?.is_file()
+        || !haven_platform::filesystem::same_file_identity(opened_file, resolved_file)?
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "file changed during path validation",
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -278,10 +314,10 @@ fn skip_case_insensitive_skill_collisions(candidates: Vec<Skill>) -> Vec<Skill> 
 }
 
 fn skip_case_insensitive_directory_collisions(
-    directories: Vec<(String, PathBuf, PathBuf)>,
-) -> Vec<(String, PathBuf, PathBuf)> {
+    directories: Vec<(String, PathBuf)>,
+) -> Vec<(String, PathBuf)> {
     let ambiguous_names =
-        case_insensitive_collisions(directories.iter().map(|(name, _, _)| name.as_str()));
+        case_insensitive_collisions(directories.iter().map(|(name, _)| name.as_str()));
     if !ambiguous_names.is_empty() {
         tracing::warn!(
             collision_count = ambiguous_names.len(),
@@ -290,7 +326,7 @@ fn skip_case_insensitive_directory_collisions(
     }
     directories
         .into_iter()
-        .filter(|(name, _, _)| !ambiguous_names.contains(&name.to_ascii_lowercase()))
+        .filter(|(name, _)| !ambiguous_names.contains(&name.to_ascii_lowercase()))
         .collect()
 }
 
@@ -469,7 +505,7 @@ fn scan_skill_directory(
         .canonicalize()
         .context("failed to canonicalize skills root")?;
 
-    let entries = std::fs::read_dir(root).context("failed to read skills root")?;
+    let entries = std::fs::read_dir(&root_canon).context("failed to read skills root")?;
 
     let mut skill_dirs = Vec::new();
     let mut root_entry_count = 0;
@@ -500,30 +536,33 @@ fn scan_skill_directory(
             continue;
         }
 
-        if !p.is_dir() {
+        if !p_canon.is_dir() {
             continue;
         }
 
-        skill_dirs.push((entry.file_name().to_string_lossy().into_owned(), p, p_canon));
+        skill_dirs.push((entry.file_name().to_string_lossy().into_owned(), p_canon));
     }
 
     let skill_dirs = skip_case_insensitive_directory_collisions(skill_dirs);
 
     let mut candidates = Vec::new();
-    for (directory_name, p, p_canon) in skill_dirs {
-        let skill_md = p.join("SKILL.md");
-        let skill_md = match skill_md.canonicalize() {
-            Ok(canonical) if canonical.starts_with(&p_canon) => canonical,
-            Ok(_) => {
-                tracing::warn!("skipping SKILL.md outside skill root");
+    for (directory_name, p_canon) in skill_dirs {
+        let skill_md = p_canon.join("SKILL.md");
+        // Open first, then validate the resolved path against the identity of
+        // that same handle. Reading the handle below cannot be redirected by a
+        // concurrent rename or symlink swap in the Skills directory.
+        let (_, file) = match open_file_within_root(&p_canon, &skill_md) {
+            Ok(opened) => opened,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                tracing::warn!("skipping SKILL.md that failed path validation");
                 continue;
             }
             Err(_) => continue,
         };
 
-        // File size cap (M4-01 review).
-        let md_len = match std::fs::metadata(&skill_md) {
-            Ok(m) => m.len(),
+        // File size cap (M4-01 review) comes from the opened file handle.
+        let md_len = match file.metadata() {
+            Ok(metadata) => metadata.len(),
             Err(_) => {
                 tracing::warn!("cannot stat SKILL.md");
                 continue;
@@ -538,9 +577,7 @@ fn scan_skill_directory(
             continue;
         }
 
-        let content = match std::fs::File::open(&skill_md)
-            .and_then(|file| read_bounded(file, limits.skills_max_md_bytes))
-        {
+        let content = match read_bounded(file, limits.skills_max_md_bytes) {
             Ok(Some(bytes)) => haven_common::encoding::decode_lossy(&bytes),
             Ok(None) => {
                 tracing::warn!("skipping SKILL.md that exceeded its byte cap while reading");
@@ -560,7 +597,7 @@ fn scan_skill_directory(
                     .unwrap_or(true);
                 candidates.push(Skill {
                     manifest,
-                    root: p,
+                    root: p_canon,
                     enabled,
                 });
             }
@@ -572,7 +609,7 @@ fn scan_skill_directory(
                         directory_name,
                         haven_common::error::sanitize_error_text(&error),
                     ),
-                    root: p,
+                    root: p_canon,
                 });
             }
         }
@@ -882,7 +919,7 @@ fn current_file_fingerprints_from_disk(root: &Path) -> anyhow::Result<Vec<SkillF
     let root_canon = root
         .canonicalize()
         .context("failed to canonicalize skills root")?;
-    let entries = std::fs::read_dir(root).context("failed to read skills root")?;
+    let entries = std::fs::read_dir(&root_canon).context("failed to read skills root")?;
     let mut fingerprints = Vec::new();
     let mut root_entry_count = 0;
     for entry in entries {
@@ -900,14 +937,11 @@ fn current_file_fingerprints_from_disk(root: &Path) -> anyhow::Result<Vec<SkillF
         if !skill_dir_canon.starts_with(&root_canon) {
             continue;
         }
-        let skill_md = skill_dir.join("SKILL.md");
-        let Ok(skill_md_canon) = skill_md.canonicalize() else {
+        let skill_md = skill_dir_canon.join("SKILL.md");
+        let Ok((_, file)) = open_file_within_root(&skill_dir_canon, &skill_md) else {
             continue;
         };
-        if !skill_md_canon.starts_with(&skill_dir_canon) {
-            continue;
-        }
-        if let Ok(metadata) = std::fs::metadata(&skill_md_canon)
+        if let Ok(metadata) = file.metadata()
             && let Ok(modified_at) = metadata.modified()
         {
             fingerprints.push(SkillFileFingerprint {
@@ -1190,13 +1224,9 @@ mod tests {
         );
 
         let directories = skip_case_insensitive_directory_collisions(vec![
-            ("Echo".into(), PathBuf::from("Echo"), PathBuf::from("Echo")),
-            ("echo".into(), PathBuf::from("echo"), PathBuf::from("echo")),
-            (
-                "single".into(),
-                PathBuf::from("single"),
-                PathBuf::from("single"),
-            ),
+            ("Echo".into(), PathBuf::from("Echo")),
+            ("echo".into(), PathBuf::from("echo")),
+            ("single".into(), PathBuf::from("single")),
         ]);
         assert_eq!(directories.len(), 1);
         assert_eq!(directories[0].0, "single");
@@ -1433,7 +1463,7 @@ mod tests {
         assert_eq!(listed[0].description, "valid");
         let catalog = registry.list_skill_catalog_entries().await;
         assert_eq!(catalog.len(), 1);
-        assert_eq!(catalog[0].root, valid);
+        assert_eq!(catalog[0].root, valid.canonicalize().unwrap());
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1483,7 +1513,7 @@ mod tests {
             .into_iter()
             .next()
             .unwrap();
-        assert!(skill.entry_script().is_none());
+        assert!(skill.open_entry_script().is_none());
         assert!(!SkillInfo::from(&skill).has_script);
     }
 

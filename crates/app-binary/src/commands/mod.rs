@@ -21,6 +21,7 @@ pub mod session;
 pub mod session_history;
 pub mod settings;
 pub mod skills;
+pub mod startup;
 pub mod tool_runs;
 pub mod tools;
 

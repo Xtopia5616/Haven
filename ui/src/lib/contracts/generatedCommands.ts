@@ -72,6 +72,9 @@ export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];
 export interface RuntimeSessionDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; waiting_reason?: SessionWaitingReason }
 export interface RuntimeSessionListResponse { sessions: RuntimeSessionDto[] }
 export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
+export interface MemoryFactCursorInput { createdAt: string; factId: string }
+export interface MemoryFactCursor { createdAt: string; factId: string }
+export interface MemoryFactPageResponse { facts: MemoryFactResponse[]; next_cursor: MemoryFactCursor | null }
 export interface MemoryFactResponse { fact_id: string; subject: string; predicate: string; object: string; source: MemoryFactSource; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
 export const MEMORY_FACT_SOURCE_INPUT_VALUES = ['user', 'inferred'] as const;
 export type MemoryFactSourceInput = (typeof MEMORY_FACT_SOURCE_INPUT_VALUES)[number];
@@ -4586,71 +4589,95 @@ export const LIST_BUILTIN_TOOL_MANIFESTS_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
-export const LIST_FACTS_RESPONSE_SHAPE = { kind: 'array', items: {
+export const LIST_FACTS_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
-		'fact_id': {
+		'facts': {
 			optional: false,
-			shape: { kind: 'string' },
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'fact_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'subject': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'predicate': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'object': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'source': {
+						optional: false,
+						shape: { kind: 'enum', values: MEMORY_FACT_SOURCE_VALUES },
+					},
+					'confidence': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'tags': {
+						optional: false,
+						shape: { kind: 'array', items: { kind: 'string' } },
+					},
+					'created_at': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'mention_count': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'last_seen_at': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'source_ref': {
+						optional: false,
+						shape: { kind: 'nullable', inner: {
+							kind: 'object',
+							fields: {
+								'message_id': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'snippet': {
+									optional: false,
+									shape: { kind: 'string' },
+								}
+							}
+						} },
+					},
+					'durability': {
+						optional: false,
+						shape: { kind: 'number' },
+					}
+				}
+			} },
 		},
-		'subject': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'predicate': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'object': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'source': {
-			optional: false,
-			shape: { kind: 'enum', values: MEMORY_FACT_SOURCE_VALUES },
-		},
-		'confidence': {
-			optional: false,
-			shape: { kind: 'number' },
-		},
-		'tags': {
-			optional: false,
-			shape: { kind: 'array', items: { kind: 'string' } },
-		},
-		'created_at': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'mention_count': {
-			optional: false,
-			shape: { kind: 'number' },
-		},
-		'last_seen_at': {
-			optional: false,
-			shape: { kind: 'nullable', inner: { kind: 'string' } },
-		},
-		'source_ref': {
+		'next_cursor': {
 			optional: false,
 			shape: { kind: 'nullable', inner: {
 				kind: 'object',
 				fields: {
-					'message_id': {
+					'createdAt': {
 						optional: false,
 						shape: { kind: 'string' },
 					},
-					'snippet': {
+					'factId': {
 						optional: false,
 						shape: { kind: 'string' },
 					}
 				}
 			} },
-		},
-		'durability': {
-			optional: false,
-			shape: { kind: 'number' },
 		}
 	}
-} } as const;
+} as const;
 export const LIST_MCP_SERVERS_RESPONSE_SHAPE = { kind: 'array', items: {
 	kind: 'object',
 	fields: {
@@ -5372,6 +5399,7 @@ export const REFRESH_MCP_SERVERS_RESPONSE_SHAPE = {
 export const REFRESH_SKILLS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const REMOVE_MCP_SERVER_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const REOPEN_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const REPORT_STARTUP_UI_READY_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const RESET_PERMISSIONS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const RESET_SESSION_PERMISSIONS_RESPONSE_SHAPE = { kind: 'number' } as const;
 export const RESET_TOOL_CIRCUITS_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -8100,6 +8128,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	refresh_skills: REFRESH_SKILLS_RESPONSE_SHAPE,
 	remove_mcp_server: REMOVE_MCP_SERVER_RESPONSE_SHAPE,
 	reopen_session: REOPEN_SESSION_RESPONSE_SHAPE,
+	report_startup_ui_ready: REPORT_STARTUP_UI_READY_RESPONSE_SHAPE,
 	reset_permissions: RESET_PERMISSIONS_RESPONSE_SHAPE,
 	reset_session_permissions: RESET_SESSION_PERMISSIONS_RESPONSE_SHAPE,
 	reset_tool_circuits: RESET_TOOL_CIRCUITS_RESPONSE_SHAPE,
@@ -8205,7 +8234,7 @@ export interface TauriCommandMap {
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
 	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
-	list_facts: { request: { source?: MemoryFactSourceInput | null }; response: MemoryFactResponse[] };
+	list_facts: { request: { source?: MemoryFactSourceInput | null; cursor?: MemoryFactCursorInput | null; limit?: number | null }; response: MemoryFactPageResponse };
 	list_mcp_servers: { request: undefined; response: McpServerSnapshot[] };
 	list_permissions: { request: undefined; response: StoredPermission[] };
 	list_runtime_sessions: { request: undefined; response: RuntimeSessionListResponse };
@@ -8225,6 +8254,7 @@ export interface TauriCommandMap {
 	refresh_skills: { request: undefined; response: void };
 	remove_mcp_server: { request: { name: string }; response: void };
 	reopen_session: { request: { sessionId: string }; response: void };
+	report_startup_ui_ready: { request: undefined; response: void };
 	reset_permissions: { request: undefined; response: void };
 	reset_session_permissions: { request: undefined; response: number };
 	reset_tool_circuits: { request: undefined; response: void };

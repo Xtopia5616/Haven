@@ -259,6 +259,9 @@ const SCHEMA_SQL: &[&str] = &[
         END",
     "CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject)",
     "CREATE INDEX IF NOT EXISTS idx_facts_confidence ON facts(confidence)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_created_at_id ON facts(created_at DESC, id DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_source_created_at_id
+        ON facts(source, created_at DESC, id DESC)",
     "CREATE INDEX IF NOT EXISTS idx_memory_items_session ON memory_items(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_memory_items_created ON memory_items(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_memory_nodes_label ON memory_nodes(label)",

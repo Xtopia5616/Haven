@@ -75,6 +75,7 @@
 | `stage_ocr_credential` | mutate | OCR 密钥只写入安全凭据存储，返回不透明引用 |
 | `discard_staged_credentials` | mutate | 删除未由 Settings 保存提交的暂存凭据 |
 | `get_bootstrap_status` | read | 返回 `loading` / `ready` 的 `BootstrapStatus`；与 `app:bootstrap.status` 共用闭合枚举 |
+| `report_startup_ui_ready` | mutate | 无参数；首个已 hydration 的界面绘制后释放原生启动画面 |
 | `update_settings` | mutate | shared loader 保留遮蔽密钥和工具段 |
 | `list_permissions` | read | 只返回永久规则 key/effect |
 | `list_session_permissions` | read | 返回会话 id/title、动态 capability；`target` / `effect` 使用 generated `PermissionTarget` / `PermissionEffect` |

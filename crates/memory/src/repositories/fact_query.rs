@@ -12,6 +12,7 @@ use haven_common::types::is_canonical_id;
 use rusqlite::types::Type;
 use std::collections::HashSet;
 
+use super::fact_security::invisible_fact_where_sql;
 use super::facts::{Fact, is_identity_predicate, is_volatile_predicate};
 
 /// Parse a JSON-encoded tag array from a DB string column.
@@ -28,6 +29,28 @@ pub(crate) const FACT_COLS: &str = "id, subject, predicate, object, source, conf
 /// Aliased variant for queries that prefix columns with a table alias (FTS
 /// join).
 pub(crate) const FACT_COLS_ALIASED: &str = "f.id, f.subject, f.predicate, f.object, f.source, f.confidence, f.tags, f.created_at, f.mention_count, f.last_seen_at, f.provenance_item_id, f.provenance_record_id, f.provenance_snippet, f.durability";
+
+fn list_facts_page_sql(source_filter: bool) -> String {
+    let invisible = invisible_fact_where_sql();
+    if source_filter {
+        format!(
+            "SELECT {FACT_COLS} FROM facts
+             WHERE NOT {invisible}
+               AND source = ?1
+               AND (?2 IS NULL OR created_at < ?2 OR (created_at = ?2 AND id < ?3))
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?4"
+        )
+    } else {
+        format!(
+            "SELECT {FACT_COLS} FROM facts
+             WHERE NOT {invisible}
+               AND (?1 IS NULL OR created_at < ?1 OR (created_at = ?1 AND id < ?2))
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?3"
+        )
+    }
+}
 
 /// Map a rusqlite Row with the standard fact SELECT order to a Fact.
 pub(crate) fn fact_from_row(row: &rusqlite::Row) -> rusqlite::Result<Fact> {
@@ -273,6 +296,40 @@ impl Database {
         Ok(facts)
     }
 
+    /// Return a bounded fact window in stable keyset order. The immutable
+    /// `(created_at, id)` pair defines both ordering and cursor position; the
+    /// shared visibility predicate is applied in SQL before LIMIT so hidden
+    /// facts never consume page slots.
+    pub(crate) fn list_facts_page(
+        &self,
+        source: Option<&str>,
+        cursor: Option<(&str, &str)>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Fact>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn();
+        let (cursor_created_at, cursor_fact_id) = cursor.unzip();
+        let facts = if let Some(source) = source {
+            let mut stmt = conn.prepare(&list_facts_page_sql(true))?;
+            let rows = stmt.query_map(
+                rusqlite::params![source, cursor_created_at, cursor_fact_id, limit as i64],
+                fact_from_row,
+            )?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            let mut stmt = conn.prepare(&list_facts_page_sql(false))?;
+            let rows = stmt.query_map(
+                rusqlite::params![cursor_created_at, cursor_fact_id, limit as i64],
+                fact_from_row,
+            )?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        Ok(facts)
+    }
+
+    #[cfg(test)]
     pub fn list_facts_by_source(&self, source: &str) -> anyhow::Result<Vec<Fact>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE source = ?1"))?;
@@ -531,10 +588,47 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::{sort_facts_effective, source_ref_from_provenance};
+    use super::{list_facts_page_sql, sort_facts_effective, source_ref_from_provenance};
     use crate::Database;
     use crate::repositories::facts::Fact;
     use haven_common::types::new_id;
+
+    #[test]
+    fn fact_page_queries_use_ordering_indexes_without_a_temp_sort() {
+        let db = Database::open_in_memory().unwrap();
+        for (source_filter, expected_index, params) in [
+            (
+                false,
+                "idx_facts_created_at_id",
+                vec![rusqlite::types::Value::Null; 3],
+            ),
+            (
+                true,
+                "idx_facts_source_created_at_id",
+                vec![
+                    rusqlite::types::Value::Text("user".into()),
+                    rusqlite::types::Value::Null,
+                    rusqlite::types::Value::Null,
+                    rusqlite::types::Value::Integer(50),
+                ],
+            ),
+        ] {
+            let sql = format!("EXPLAIN QUERY PLAN {}", list_facts_page_sql(source_filter));
+            let conn = db.conn();
+            let mut statement = conn.prepare(&sql).unwrap();
+            let plan = statement
+                .query_map(rusqlite::params_from_iter(params), |row| {
+                    row.get::<_, String>(3)
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+                .join(" ");
+
+            assert!(plan.contains(expected_index), "{plan}");
+            assert!(!plan.contains("USE TEMP B-TREE FOR ORDER BY"), "{plan}");
+        }
+    }
 
     fn fact(id: &str, last_seen_at: &str) -> Fact {
         Fact {
