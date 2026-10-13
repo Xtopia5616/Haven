@@ -13,6 +13,7 @@
 			media?: { asset_id?: string | null; content?: unknown } | null;
 			asset_id?: string | null;
 			windows?: Array<{
+				window_id: string;
 				hwnd?: number | string | null;
 				title?: string | null;
 				pid?: number | null;
@@ -62,7 +63,7 @@
 		<ToolResultList items={data.windows}>
 			{#snippet children(visibleWindows)}
 				<div class="tool-result-scroll-area">
-					{#each visibleWindows as window (window.hwnd ?? window.title)}
+				{#each visibleWindows as window (window.window_id)}
 						<div class="tool-result-window-row">
 							<span
 								class="tool-result-window-primary window-title"
@@ -143,7 +144,7 @@
 	<ToolResultList items={data.elements}>
 		{#snippet children(visibleElements)}
 			<div class="tool-result-scroll-area">
-				{#each visibleElements as element, index (element.element_token ?? index)}
+				{#each visibleElements as element (element.element_token)}
 					<div class="tool-result-window-row">
 						<span class="tool-result-window-primary window-title" title={element.name}
 							>{element.name || '(未命名元素)'}</span

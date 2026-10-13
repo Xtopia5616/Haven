@@ -1299,9 +1299,9 @@ impl SessionStore {
     /// Persist one checkpoint of an in-flight assistant stream.
     ///
     /// Partial stream rows remain scratch data and do not advance the
-    /// projection `last_msg_at` clock. Promotion delegates to the existing
-    /// Database operation, retaining its single-statement take and timestamp
-    /// guard.
+    /// projection `last_msg_at` clock. Promotion delegates to the Database
+    /// transaction that compares message ingress sequences and atomically
+    /// writes the message projection while consuming the checkpoint.
     pub async fn upsert_partial_stream(
         &self,
         session_id: &str,

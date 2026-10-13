@@ -20,7 +20,12 @@ use crate::types::LlmError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RequestOutcome {
     Success,
-    Failure { rate_limit_after: Option<Duration> },
+    Failure {
+        rate_limit_after: Option<Duration>,
+    },
+    /// The provider cannot perform this capability; this does not indicate an
+    /// unhealthy endpoint and must not affect circuit-breaker state.
+    Neutral,
 }
 
 impl RequestOutcome {
@@ -30,6 +35,7 @@ impl RequestOutcome {
             Err(LlmError::RateLimit { retry_after }) => Self::Failure {
                 rate_limit_after: *retry_after,
             },
+            Err(LlmError::UnsupportedCapability(_)) => Self::Neutral,
             Err(_) => Self::Failure {
                 rate_limit_after: None,
             },

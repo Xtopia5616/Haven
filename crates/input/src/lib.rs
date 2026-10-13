@@ -32,6 +32,8 @@ mod vad;
 mod wav;
 
 const VAD_THROTTLE_INTERVAL: Duration = Duration::from_millis(100);
+const VAD_COMMAND_QUEUE_CAPACITY: usize = 2;
+const VAD_RESPONSE_QUEUE_CAPACITY: usize = 1;
 const RECORDING_LOOP_INTERVAL: Duration = Duration::from_millis(30);
 const DIGITAL_SILENCE_FLOOR: f32 = 1e-4;
 
@@ -337,7 +339,7 @@ impl InputPipeline {
             // recording only needs the recurrent state reset, queued before
             // any inference on the worker's serialized command channel.
             if let Some(w) = &vad_worker
-                && let Err(error) = w.reset()
+                && let Err(error) = w.reset().await
             {
                 handle.stop_and_clear();
                 *self.state.lock().await = RecordingState::Pending;
@@ -800,11 +802,11 @@ enum VadCmd {
 /// exclusively, so inference needs no mutex and the model stays resident
 /// across recordings (graph compilation is the slow part).
 struct VadWorker {
-    cmd_tx: StdMutex<Option<std::sync::mpsc::Sender<VadCmd>>>,
+    cmd_tx: StdMutex<Option<tokio::sync::mpsc::Sender<VadCmd>>>,
     thread: StdMutex<Option<std::thread::JoinHandle<()>>>,
     /// Mutex-wrapped because only the recording loop consumes replies, and
     /// `recv` needs `&mut`; uncontended (single consumer), cheap.
-    speech_probability_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<(u64, Result<f32, String>)>>,
+    speech_probability_rx: Mutex<tokio::sync::mpsc::Receiver<(u64, Result<f32, String>)>>,
     /// Monotonic sequence counter shared with the worker: never reused, so a
     /// stale reply can never be mistaken for the current inference.
     seq: AtomicU64,
@@ -819,14 +821,14 @@ impl VadWorker {
 
     fn spawn_with_loop(
         worker_loop: impl FnOnce(
-            std::sync::mpsc::Receiver<VadCmd>,
-            tokio::sync::mpsc::UnboundedSender<(u64, Result<f32, String>)>,
+            tokio::sync::mpsc::Receiver<VadCmd>,
+            tokio::sync::mpsc::Sender<(u64, Result<f32, String>)>,
         ) + Send
         + 'static,
     ) -> std::io::Result<Arc<Self>> {
-        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(VAD_COMMAND_QUEUE_CAPACITY);
         let (speech_probability_tx, speech_probability_rx) =
-            tokio::sync::mpsc::unbounded_channel::<(u64, Result<f32, String>)>();
+            tokio::sync::mpsc::channel::<(u64, Result<f32, String>)>(VAD_RESPONSE_QUEUE_CAPACITY);
         let thread = std::thread::Builder::new()
             .name("vad-worker".into())
             .spawn(move || worker_loop(cmd_rx, speech_probability_tx))?;
@@ -838,15 +840,18 @@ impl VadWorker {
         }))
     }
 
-    fn reset(&self) -> Result<()> {
-        self.send_command(VadCmd::Reset)
+    async fn reset(&self) -> Result<()> {
+        self.send_command(VadCmd::Reset).await
     }
 
-    fn send_command(&self, command: VadCmd) -> Result<()> {
-        lock_std_or_recover(&self.cmd_tx, "vad_worker_command_sender")
+    async fn send_command(&self, command: VadCmd) -> Result<()> {
+        let sender = lock_std_or_recover(&self.cmd_tx, "vad_worker_command_sender")
             .as_ref()
-            .ok_or_else(|| anyhow!("VAD worker command channel is closed"))?
+            .cloned()
+            .ok_or_else(|| anyhow!("VAD worker command channel is closed"))?;
+        sender
             .send(command)
+            .await
             .map_err(|_| anyhow!("VAD worker command channel is closed"))
     }
 
@@ -854,7 +859,7 @@ impl VadWorker {
     /// loop. A failed VAD inference must not become a fabricated silence value.
     async fn infer_speech_probability(&self, frame: Vec<f32>) -> Result<f32> {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        self.send_command(VadCmd::Infer { seq, frame })?;
+        self.send_command(VadCmd::Infer { seq, frame }).await?;
         let mut rx = self.speech_probability_rx.lock().await;
         loop {
             match rx.recv().await {
@@ -867,6 +872,10 @@ impl VadWorker {
     }
 
     async fn shutdown(&self) -> Result<()> {
+        // A cancelled recording may have stopped consuming responses while the
+        // worker is blocked in `blocking_send`. Close the receiver first so
+        // that send wakes with an error before we join the OS thread.
+        self.speech_probability_rx.lock().await.close();
         lock_std_or_recover(&self.cmd_tx, "vad_worker_command_sender").take();
         let Some(thread) = lock_std_or_recover(&self.thread, "vad_worker_thread").take() else {
             return Ok(());
@@ -879,8 +888,8 @@ impl VadWorker {
 }
 
 fn vad_worker_loop(
-    cmd_rx: std::sync::mpsc::Receiver<VadCmd>,
-    speech_probability_tx: tokio::sync::mpsc::UnboundedSender<(u64, Result<f32, String>)>,
+    mut cmd_rx: tokio::sync::mpsc::Receiver<VadCmd>,
+    speech_probability_tx: tokio::sync::mpsc::Sender<(u64, Result<f32, String>)>,
 ) {
     let (mut engine, init_error) = match vad::VadEngine::new() {
         Ok(e) => (Some(e), None),
@@ -893,7 +902,7 @@ fn vad_worker_loop(
             (None, Some(message))
         }
     };
-    while let Ok(cmd) = cmd_rx.recv() {
+    while let Some(cmd) = cmd_rx.blocking_recv() {
         match cmd {
             VadCmd::Infer { seq, frame } => {
                 let result = match engine.as_mut() {
@@ -912,7 +921,7 @@ fn vad_worker_loop(
                 if result.is_err() {
                     tracing::error!(failure_kind = "vad_inference", "VAD inference failed");
                 }
-                if speech_probability_tx.send((seq, result)).is_err() {
+                if speech_probability_tx.blocking_send((seq, result)).is_err() {
                     break;
                 }
             }
@@ -1222,8 +1231,8 @@ mod tests {
     async fn vad_worker_shutdown_joins_the_os_thread() {
         let exited = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_exited = exited.clone();
-        let worker = VadWorker::spawn_with_loop(move |commands, _responses| {
-            while commands.recv().is_ok() {}
+        let worker = VadWorker::spawn_with_loop(move |mut commands, _responses| {
+            while commands.blocking_recv().is_some() {}
             worker_exited.store(true, Ordering::SeqCst);
         })
         .unwrap();
@@ -1231,6 +1240,47 @@ mod tests {
         worker.shutdown().await.unwrap();
         assert!(exited.load(Ordering::SeqCst));
         assert!(lock_std_or_recover(&worker.thread, "vad_worker_thread").is_none());
+    }
+
+    #[tokio::test]
+    async fn vad_worker_shutdown_unblocks_response_send_after_cancelled_inferences() {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = VadWorker::spawn_with_loop(move |mut commands, responses| {
+            while let Some(command) = commands.blocking_recv() {
+                if let VadCmd::Infer { seq, .. } = command {
+                    if seq == 0 {
+                        started_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                    }
+                    let _ = responses.blocking_send((seq, Ok(0.5)));
+                }
+            }
+        })
+        .unwrap();
+
+        let first_worker = Arc::clone(&worker);
+        let first =
+            tokio::spawn(async move { first_worker.infer_speech_probability(vec![0.1]).await });
+        tokio::task::spawn_blocking(move || started_rx.recv().unwrap())
+            .await
+            .unwrap();
+        first.abort();
+        let _ = first.await;
+
+        worker
+            .send_command(VadCmd::Infer {
+                seq: 1,
+                frame: vec![0.2],
+            })
+            .await
+            .unwrap();
+        release_tx.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), worker.shutdown())
+            .await
+            .expect("shutdown must release a worker blocked sending an unconsumed reply")
+            .unwrap();
     }
 
     #[tokio::test]

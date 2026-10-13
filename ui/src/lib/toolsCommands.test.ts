@@ -54,7 +54,6 @@ function makeSkillInfo(overrides: Record<string, unknown> = {}) {
 		language: 'python',
 		enabled: true,
 		executable: true,
-		root: 'C:\\skills\\meeting-notes',
 		has_script: true,
 		unavailable_reason: null,
 		manifest_error: null,
@@ -142,7 +141,6 @@ describe('ToolsView command boundary', () => {
 				language: 'python',
 				enabled: true,
 				executable: true,
-				rootPath: 'C:\\skills\\meeting-notes',
 				hasScript: true,
 				unavailableReason: null,
 				manifestError: null,
@@ -188,6 +186,29 @@ describe('ToolsView command boundary', () => {
 		invoke.mockResolvedValueOnce([makeMcpServerSnapshot(), makeMcpServerSnapshot()]);
 
 		await expect(listMcpServers()).rejects.toThrow('Duplicate MCP server name');
+	});
+
+	it('rejects duplicate tool identities within an MCP server snapshot', async () => {
+		invoke.mockResolvedValueOnce([
+			makeMcpServerSnapshot({
+				tools: [
+					{ name: 'duplicate', description: 'First', input_schema: {} },
+					{ name: 'duplicate', description: 'Second', input_schema: {} },
+				],
+			}),
+		]);
+
+		await expect(listMcpServers()).rejects.toThrow('Invalid MCP server snapshot');
+	});
+
+	it.each(['', '   '])('rejects blank MCP tool names (%j)', async (name) => {
+		invoke.mockResolvedValueOnce([
+			makeMcpServerSnapshot({
+				tools: [{ name, description: 'Blank name', input_schema: {} }],
+			}),
+		]);
+
+		await expect(listMcpServers()).rejects.toThrow('Invalid MCP server snapshot');
 	});
 
 	it('accepts an empty MCP list and null optional snapshot fields', async () => {

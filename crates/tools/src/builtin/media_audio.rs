@@ -227,13 +227,10 @@ impl AudioRuntime {
 
         let lower = path.to_ascii_lowercase();
         if !lower.ends_with(".wav") {
-            return Err(anyhow::anyhow!(
-                "media play: only .wav files are supported (got '{}')",
-                path
-            ));
+            return Err(anyhow::anyhow!("media play: only .wav files are supported"));
         }
         if !std::path::Path::new(path).is_file() {
-            return Err(anyhow::anyhow!("media play: file not found: {}", path));
+            return Err(anyhow::anyhow!("media play: audio file was not found"));
         }
 
         let path_owned = path.to_string();
@@ -270,7 +267,7 @@ impl AudioRuntime {
 
         let wav = tokio::select! {
             result = tts.synthesize_wav(text) => result
-                .map_err(|e| anyhow::anyhow!("media speak: TTS synthesis failed: {e}"))?,
+                .map_err(|_| anyhow::anyhow!("media speak: TTS synthesis failed"))?,
             _ = cancel.cancelled() => anyhow::bail!("media speak: speech synthesis cancelled"),
         };
         if cancel.is_cancelled() {
@@ -362,7 +359,7 @@ mod imp {
         let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
         let ok = unsafe { PlaySoundW(PCWSTR(wide.as_ptr()), None, SND_FILENAME | SND_ASYNC) };
         if !ok.as_bool() {
-            anyhow::bail!("PlaySoundW failed for '{}'", path);
+            anyhow::bail!("audio playback failed");
         }
         Ok(())
     }

@@ -146,7 +146,8 @@ fn is_blocked_ip(ip: IpAddr, allow_loopback: bool) -> bool {
                 || first == 0
                 || (first == 100 && (64..=127).contains(&second))
                 || (first == 192 && second == 0 && octets[2] == 2)
-                || (first == 192 && second == 0 && octets[2] == 0)
+                || (first == 192 && second == 0 && octets[2] == 0 && !matches!(octets[3], 9 | 10))
+                || (first == 192 && second == 88 && octets[2] == 99)
                 || (first == 198 && (18..=19).contains(&second))
                 || (first == 198 && second == 51 && octets[2] == 100)
                 || (first == 203 && second == 0 && octets[2] == 113)
@@ -154,17 +155,48 @@ fn is_blocked_ip(ip: IpAddr, allow_loopback: bool) -> bool {
         }
         IpAddr::V6(ip) => {
             if let Some(mapped) = ip.to_ipv4_mapped() {
-                return is_blocked_ip(IpAddr::V4(mapped), allow_loopback);
+                // Preserve the explicit loopback exception for mapped local
+                // addresses while treating all other mapped addresses as a
+                // special-use range.
+                return !(allow_loopback && mapped.is_loopback());
             }
             let segments = ip.segments();
+            let global_unicast = (segments[0] & 0xe000) == 0x2000; // 2000::/3
+            let in_ietf_protocol_assignments = segments[0] == 0x2001 && segments[1] <= 0x01ff;
+            let globally_reachable_ietf_exception = is_globally_reachable_ietf_assignment(segments);
+            let well_known_nat64 = segments[0] == 0x0064
+                && segments[1] == 0xff9b
+                && segments[2..6].iter().all(|segment| *segment == 0);
+            let nat64_embedded_ipv4 = well_known_nat64.then(|| {
+                let octets = ip.octets();
+                std::net::Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15])
+            });
             ip.is_unspecified()
                 || ip.is_loopback()
                 || ip.is_multicast()
+                || (!global_unicast && !well_known_nat64)
                 || (segments[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
                 || (segments[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8) // documentation 2001:db8::/32
+                || (in_ietf_protocol_assignments && !globally_reachable_ietf_exception)
+                || segments[0] == 0x2002 // 6to4 2002::/16
+                || (segments[0] == 0x3fff && segments[1] & 0xf000 == 0) // documentation 3fff::/20
+                || segments[0] == 0x5f00 // SRv6 SIDs 5f00::/16
+                || nat64_embedded_ipv4.is_some_and(|embedded| {
+                    is_blocked_ip(IpAddr::V4(embedded), allow_loopback)
+                })
         }
     }
+}
+
+fn is_globally_reachable_ietf_assignment(segments: [u16; 8]) -> bool {
+    (segments[1] == 1
+        && segments[2..7].iter().all(|segment| *segment == 0)
+        && matches!(segments[7], 1..=3))
+        || segments[1] == 3 // AMT 2001:3::/32
+        || (segments[1] == 4 && segments[2] == 0x0112) // AS112 2001:4:112::/48
+        || (0x0020..=0x002f).contains(&segments[1]) // ORCHIDv2 2001:20::/28
+        || (0x0030..=0x003f).contains(&segments[1]) // Drone Remote ID 2001:30::/28
 }
 
 #[cfg(test)]
@@ -182,16 +214,45 @@ mod tests {
             "192.168.1.2",
             "198.18.0.1",
             "240.0.0.1",
+            "192.88.99.1",
             "::1",
             "fc00::1",
             "fe80::1",
             "::ffff:127.0.0.1",
+            "::ffff:8.8.8.8",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a00:1",
+            "64:ff9b:1::1",
+            "100::1",
+            "100:0:0:1::1",
+            "2001::1",
+            "2001:2::1",
+            "2002::1",
+            "3fff::1",
+            "5f00::1",
         ] {
             assert!(is_blocked_ip(value.parse().unwrap(), false), "{value}");
         }
-        for value in ["1.1.1.1", "2606:4700:4700::1111"] {
+        for value in [
+            "1.1.1.1",
+            "192.0.0.9",
+            "192.0.0.10",
+            "2001:1::1",
+            "2001:1::2",
+            "2001:1::3",
+            "2001:3::1",
+            "2001:4:112::1",
+            "2001:20::1",
+            "2001:2f:ffff::1",
+            "2001:30::1",
+            "2001:3f:ffff::1",
+            "64:ff9b::808:808",
+            "2606:4700:4700::1111",
+        ] {
             assert!(!is_blocked_ip(value.parse().unwrap(), false), "{value}");
         }
+        assert!(!is_blocked_ip("::ffff:127.0.0.1".parse().unwrap(), true));
+        assert!(is_blocked_ip("::ffff:8.8.8.8".parse().unwrap(), true));
     }
 
     #[tokio::test]

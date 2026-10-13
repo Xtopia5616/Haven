@@ -105,7 +105,7 @@ pub(super) async fn edit(
     let content = haven_common::encoding::decode_lossy(&bytes);
     let positions: Vec<usize> = content.match_indices(old).map(|(i, _)| i).collect();
     if positions.is_empty() {
-        anyhow::bail!("old_string not found in '{}'", path);
+        anyhow::bail!("old_string not found in the target file");
     }
     if positions.len() > 1 {
         let lines: Vec<usize> = positions
@@ -193,10 +193,7 @@ pub(super) async fn patch(
     }
     let decoded = haven_common::encoding::decode_with_encoding(&bytes);
     if looks_like_binary(&bytes) && !matches!(decoded.encoding, "utf-16le" | "utf-16be") {
-        anyhow::bail!(
-            "file encoding is unsupported for patching '{}'; patch only supports text files",
-            path
-        );
+        anyhow::bail!("file encoding is unsupported for patching; patch only supports text files");
     }
     let patch = apply_patch_edits(&decoded.text, edits, max_write_bytes, cancel.clone())?;
     if cancel.is_cancelled() {

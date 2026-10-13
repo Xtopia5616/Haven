@@ -6,13 +6,16 @@
 
 Haven 处于测试阶段。数据库 schema、`config.toml` 与内部 IPC 契约可以进行破坏性调整；发布说明会明确本次是否需要重置。没有明确写出兼容承诺的旧数据不得假定可继续使用。
 
-截至 2026-10-13，当前数据库契约为 schema v41（v39 的持久数据与交互契约见 ADR 0392、0393、0402、0416、0442、0445、0458、0463、0464、0524、0633、0809）：后台与定时工具运行统一持久化在 `tool_runs`，`kind` 仅接受 `background` 与 `scheduled`，依赖关系使用 `watch_tool_run_id` / `result_summary`，定时运行完成结果使用 `tool_run_completion_outbox`；session authorization grants 由会话外键级联管理。`pending_session_inputs` 持久跟踪尚未进入 `UserInject` event 的用户输入，并在同一事务保存 `answer` / `follow_up` disposition，不再使用两天恢复窗口。唯一的 pending Answer reservation 防止 Ask 尚未由 `UserInject` 确认时后续输入被重复路由为答案；恢复只读取该 marker，不按重启时的交互 gate 重新判断。`sessions.origin` 与 `sessions.parent_session_id` 持久记录普通用户会话或 `agent.spawn` peer 的来源及 parent lineage，且不改变 session lifecycle。sessions.run_end_reason 保存最近一次 paused、completed 或 error 运行的净化后原因；新一轮进入 pending/running 时清除。后台 shell ToolRun 持久化 `tool_runs.source_step_id`，关联发起它的 Agent `ToolCall`，并在 ToolRun event 与终态结果交付中保留。v37 不再读取旧 interaction event 的 `prompt` 字段或缺少 payload `step_number` 的旧 compaction event，也不做旧 schema 运行时迁移；升级前，完全退出 Haven 后删除 `%APPDATA%\haven\haven.db`、`haven.db-wal` 与 `haven.db-shm`（非 Windows 开发环境为 `~/.local/share/haven` 下的同名文件），再启动应用。旧的 `actions` 表、`act-` ID、completion outbox 与 tool name 不做兼容迁移。删除数据库会清除会话、记忆、工具运行和用量。
+截至 2026-10-13，当前数据库契约为 schema v42（v39 的持久数据与交互契约见 ADR 0392、0393、0402、0416、0442、0445、0458、0463、0464、0524、0633、0809）：后台与定时工具运行统一持久化在 `tool_runs`，`kind` 仅接受 `background` 与 `scheduled`，依赖关系使用 `watch_tool_run_id` / `result_summary`，定时运行完成结果使用 `tool_run_completion_outbox`；session authorization grants 由会话外键级联管理。`pending_session_inputs` 持久跟踪尚未进入 `UserInject` event 的用户输入，并在同一事务保存 `answer` / `follow_up` disposition，不再使用两天恢复窗口。唯一的 pending Answer reservation 防止 Ask 尚未由 `UserInject` 确认时后续输入被重复路由为答案；恢复只读取该 marker，不按重启时的交互 gate 重新判断。`sessions.origin` 与 `sessions.parent_session_id` 持久记录普通用户会话或 `agent.spawn` peer 的来源及 parent lineage，且不改变 session lifecycle。sessions.run_end_reason 保存最近一次 paused、completed 或 error 运行的净化后原因；新一轮进入 pending/running 时清除。后台 shell ToolRun 持久化 `tool_runs.source_step_id`，关联发起它的 Agent `ToolCall`，并在 ToolRun event 与终态结果交付中保留。v37 不再读取旧 interaction event 的 `prompt` 字段或缺少 payload `step_number` 的旧 compaction event，也不做旧 schema 运行时迁移；升级前，完全退出 Haven 后删除 `%APPDATA%\haven\haven.db`、`haven.db-wal` 与 `haven.db-shm`（非 Windows 开发环境为 `~/.local/share/haven` 下的同名文件），再启动应用。旧的 `actions` 表、`act-` ID、completion outbox 与 tool name 不做兼容迁移。删除数据库会清除会话、记忆、工具运行和用量。
 
 schema v41 仅接受事实提取 marker 的当前完整格式：旧 boolean、缺 retry metadata 的短格式和 summary value-only marker 都不再解析；`CacheDiagnostics` 也要求当前完整 metadata shape。它还统一 BranchPoint 的 projection cutoff：旧 branch point 仅记录 message watermark，无法从 append-only event 中安全补算 step 与 usage 水位（ADR 1043）。它还为 `tool_runs.kind` 增加闭合集合约束（ADR 1080）。v40 数据库不含该约束，升级前必须按下文删除数据库。`MediaProbe` 使用 `media_kind` / `mime_type` Serde key，不接受旧 `media_type` key；它不属于持久表或当前 IPC DTO。MCP `inputSchema` 和 LLM provider wire 字段仍按当前外部协议解析，不属于 Haven 历史数据兼容。
+schema v42 为 `partial_messages` 增加 `ingress_seq` checkpoint 基线，并在同一事务中验证 checkpoint 未被后续消息覆盖、写入 canonical message 与删除 checkpoint；写入失败会保留 checkpoint，启动时继续重试（ADR 1143）。v41 及更早数据库不做运行时迁移，升级前需按下文删除数据库文件。
 
 跨 session 消息 inbox 只接受规范 `ses-{uuid32}` 身份及规范 `msg-{uuid32}` envelope id。旧 agent-name registry 或含非规范身份的 JSONL 不迁移：遇到旧 registry 时消息操作会报错，旧消息行会从当前读取、领取和回复匹配中忽略。当前 canonical JSONL mailbox/processing 无需为 bounded backlog 改版而重置；首次 claim 会通过同目录 rename 建立 `.jsonl.backlog` 与 `.jsonl.backlog.state.json`，逐批 drain 原正文。升级期间必须退出所有共享该目录的 Haven 进程，且不能让旧 binary 与新 sidecar 并发访问。每 recipient 新写入预算为 16 MiB，history 最多返回 100 条；既有单行大于 1 MiB 会 fail closed 并保留 source，不会自动丢弃，也不是升级前置重置条件。删除谱系 `deleted_sessions.json` 最多 64 MiB；超限时 Messaging 读写 fail closed 并保留文件。若该文件超限且需要恢复，或坏行阻塞队列且需要恢复投递，当前支持的人工恢复方式是先备份整个 `inbox/`，再按下方步骤显式重置整个收件箱；这会清除所有 peer 的 registry、未处理消息、backlog/processing、archive 与 deletion tombstone，但不删除 SQLite transcript、会话或记忆。备份保留原始行供离线检查，不能直接作为运行时数据恢复。
 
 ## 当前配置契约
+
+`config.toml` 文件上限为 4 MiB。超过上限的文件在启动读取或外部修改指纹检查时直接报错：原文件不备份、不改写，也不会回退到默认配置；Settings 序列化结果超限会拒绝更新并保留已有文件、快照和版本。请缩小 `config.toml` 后重启，无需删除数据库。
 
 媒体 provider timeout 的范围与 Settings UI 共用同一契约：`[media.stt].timeout_secs` 为 5–600 秒，`[media.ocr].timeout_secs` 与 `[media.tts].timeout_secs` 为 5–300 秒，`[media.image_gen].timeout_secs` 为 10–600 秒。超出范围的 TOML 会备份整份配置并在当前进程使用默认值；Settings 更新则拒绝写入并保留现有配置。需要保留其它配置时，先把这些值改到范围内；无需删除数据库。
 
@@ -77,7 +80,7 @@ Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：
 1. 完全退出 Haven，并确认没有 `Haven.exe` 进程仍在运行。
 2. 如需检查旧配置，先在 `%APPDATA%\haven` 之外复制 `config.toml`；旧文件或自动备份可能包含明文密钥，必须妥善保管。
 3. 删除 `%APPDATA%\haven\config.toml`（非 Windows 开发环境为 `~/.local/share/haven/config.toml`）。
-4. 重新启动 Haven，再配置模型、OCR 与 MCP 凭据。schema v41 版本升级还需按下方说明删除数据库。
+4. 重新启动 Haven，再配置模型、OCR 与 MCP 凭据。schema v42 版本升级还需按下方说明删除数据库。
 
 ### 仅重置消息收件箱
 
@@ -98,7 +101,7 @@ Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：
 3. 删除 `%APPDATA%\haven`（非 Windows 为 `~/.local/share/haven`）。
 4. 重新启动 Haven；应用会创建新的默认配置和数据库。
 
-完整重置会永久删除本机会话、记忆、后台/定时 ToolRun、授权决定、日志、技能和媒体缓存；除非先自行备份，否则无法恢复。schema v41 升级要求删除 `haven.db`、`haven.db-wal` 与 `haven.db-shm`，否则旧数据库会被拒绝打开。只有配置仍含不再接受的旧 key（如 `llm.models[].provider`）时，才另外按“仅重建配置”删除 `config.toml`。
+完整重置会永久删除本机会话、记忆、后台/定时 ToolRun、授权决定、日志、技能和媒体缓存；除非先自行备份，否则无法恢复。schema v42 升级要求删除 `haven.db`、`haven.db-wal` 与 `haven.db-shm`，否则旧数据库会被拒绝打开。只有配置仍含不再接受的旧 key（如 `llm.models[].provider`）时，才另外按“仅重建配置”删除 `config.toml`。
 
 ## 发布前验证
 

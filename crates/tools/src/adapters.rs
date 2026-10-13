@@ -282,8 +282,7 @@ impl Tool for McpToolAdapter {
         } else {
             Ok(ToolResult::failed_with_metadata(
                 out.output,
-                out.error
-                    .unwrap_or_else(|| "MCP tool returned an error".into()),
+                "MCP tool returned an error",
                 ToolErrorMetadata::unknown_failure(),
             ))
         }

@@ -1,5 +1,11 @@
 import { isRecord } from './contracts/objectGuards.ts';
-import { isBoolean, isFiniteNumber, isString, isStringArray } from './contracts/valueGuards.ts';
+import {
+	isBoolean,
+	isFiniteNumber,
+	isNonEmptyString,
+	isString,
+	isStringArray,
+} from './contracts/valueGuards.ts';
 import { isMediaRepresentationKind } from './contracts/media.ts';
 import { isSessionStatus } from './contracts/session.ts';
 import { isScheduleMode, isToolRunStatus } from './contracts/toolRun.ts';
@@ -69,6 +75,27 @@ function hasValidRecordArray(
 		Array.isArray(data[key]) &&
 		data[key].every((item: unknown) => isRecord(item) && validate(item))
 	);
+}
+
+function hasValidUniqueRecordArray(
+	data: JsonRecord,
+	key: string,
+	identityField: string,
+	identityGuard: FieldGuard,
+	validate: (value: JsonRecord) => boolean,
+): boolean {
+	if (!(key in data)) return true;
+	if (!Array.isArray(data[key])) return false;
+	const identities = new Set<string>();
+	return data[key].every((item: unknown) => {
+		if (!isRecord(item) || !validate(item)) return false;
+		const identity = item[identityField];
+		if (typeof identity !== 'string' || !identityGuard(identity) || identities.has(identity)) {
+			return false;
+		}
+		identities.add(identity);
+		return true;
+	});
 }
 
 function hasValidOptionalArrayField(data: JsonRecord, key: string, validate: FieldGuard): boolean {
@@ -192,11 +219,20 @@ function validSystemData(data: JsonRecord): boolean {
 				primary: isBoolean,
 			});
 		}) &&
+		hasValidUniqueRecordArray(data, 'windows', 'window_id', isNonEmptyString, (row) =>
+			hasValidRequiredFields(row, { window_id: isNonEmptyString }) &&
+			hasValidOptionalFields(row, {
+				hwnd: isStringOrNumber,
+				title: isString,
+				pid: isFiniteNumber,
+			}),
+		) &&
 		(['values', 'subkeys'] as const).every((key) =>
 			hasValidOptionalArrayField(data, key, isStringArray),
 		) &&
-		hasValidRecordArray(data, 'variables', (row) =>
-			hasValidOptionalFields(row, { name: isString, value: isString }),
+		hasValidUniqueRecordArray(data, 'variables', 'name', isNonEmptyString, (row) =>
+			hasValidRequiredFields(row, { name: isNonEmptyString }) &&
+			hasValidOptionalFields(row, { value: isString }),
 		)
 	);
 }
@@ -228,16 +264,19 @@ function validWindowData(data: JsonRecord): boolean {
 				pid: isFiniteNumber,
 			},
 		}) &&
-		hasValidRecordArray(data, 'windows', (row) =>
+		hasValidUniqueRecordArray(data, 'windows', 'window_id', isNonEmptyString, (row) =>
+			hasValidRequiredFields(row, { window_id: isNonEmptyString }) &&
 			hasValidOptionalFields(row, {
 				hwnd: isStringOrNumber,
 				title: isString,
 				pid: isFiniteNumber,
 			}),
 		) &&
-		hasValidRecordArray(data, 'elements', (row) =>
+		hasValidUniqueRecordArray(data, 'elements', 'element_token', (value) =>
+			typeof value === 'string' && value.trim().length > 0,
+		(row) =>
+			hasValidRequiredFields(row, { element_token: isString }) &&
 			hasValidOptionalFields(row, {
-				element_token: isString,
 				name: isString,
 				control_type: isToolWindowControlType,
 			}),
@@ -290,15 +329,8 @@ function validAdminData(data: JsonRecord): boolean {
 			connected: (value) => isBoolean(value) || Array.isArray(value),
 		}) &&
 		hasValidOptionalArrayField(data, 'lines', isStringArray) &&
-		hasValidRecordArray(data, 'servers', (row) =>
-			hasValidOptionalFields(row, {
-				name: isString,
-				connected: isBoolean,
-				tools: (value) => value === null || isFiniteNumber(value),
-				diagnostic: isString,
-			}),
-		) &&
-		hasValidRecordArray(data, 'skills', (row) =>
+		hasValidUniqueRecordArray(data, 'skills', 'name', isNonEmptyString, (row) =>
+			hasValidRequiredFields(row, { name: isNonEmptyString }) &&
 			hasValidOptionalFields(row, {
 				name: isString,
 				enabled: isBoolean,
@@ -425,7 +457,16 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					...numberFields('total'),
 					...booleanFields('written'),
 				}) &&
-				hasValidRecordArray(data, 'entries', (row) => isString(row.content)) &&
+				hasValidUniqueRecordArray(
+					data,
+					'entries',
+					'entry_id',
+					(value) => isCanonicalEntityId(value, 'clip'),
+					(row) =>
+						isString(row.content) &&
+						row.content.length > 0 &&
+						isCanonicalEntityId(row.entry_id, 'clip'),
+				) &&
 				(!Array.isArray(data.entries) ||
 					data.entries.length === 0 ||
 					isFiniteNumber(data.total))
@@ -513,19 +554,32 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					mode: isToolMemoryRecallMode,
 					deleted: isFiniteNumber,
 				}) &&
+				(!('hits' in data) || data.kind === 'fact' || data.kind === 'episode') &&
 				hasValidObjectFields(data, { stored: stringFields('predicate', 'object') }) &&
-				hasValidRecordArray(data, 'facts', (row) =>
-					hasValidOptionalFields(row, {
-						...stringFields('id', 'subject', 'predicate', 'object', 'source_snippet'),
-						confidence: isFiniteNumber,
-						tags: isStringArray,
-					}),
+				hasValidUniqueRecordArray(
+					data,
+					'facts',
+					'fact_id',
+					(value) => isCanonicalEntityId(value, 'fact'),
+					(row) =>
+						hasValidOptionalFields(row, {
+							...stringFields('id', 'subject', 'predicate', 'object', 'source_snippet'),
+							confidence: isFiniteNumber,
+							tags: isStringArray,
+						}) && isCanonicalEntityId(row.fact_id, 'fact'),
 				) &&
-				hasValidRecordArray(data, 'hits', (row) =>
-					hasValidOptionalFields(row, {
-						...stringFields('entity_id', 'text', 'model'),
-						score: isFiniteNumber,
-					}),
+				hasValidUniqueRecordArray(
+					data,
+					'hits',
+					'entity_id',
+					(value) =>
+						isCanonicalEntityId(value, data.kind === 'fact' ? 'fact' : 'msg'),
+					(row) =>
+						hasValidOptionalFields(row, {
+							...stringFields('text', 'model'),
+							score: isFiniteNumber,
+						}) &&
+						isCanonicalEntityId(row.entity_id, data.kind === 'fact' ? 'fact' : 'msg'),
 				)
 			);
 		case 'shell':

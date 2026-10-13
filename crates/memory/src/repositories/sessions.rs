@@ -551,16 +551,24 @@ impl Database {
     /// via the continue flow. `paused`/`pending` sessions are left untouched —
     /// they represent legitimately waiting work that should survive a
     /// restart. Checkpointed partial stream text is promoted into a real
-    /// assistant message (same dedup as the ses-end promote: a message
-    /// written after the last checkpoint is not duplicated) so the user
-    /// keeps what was already streamed before the crash.
+    /// assistant message (a message with a later ingress sequence than the
+    /// checkpoint is not duplicated) so the user keeps what was already
+    /// streamed before the crash. If promotion fails, its checkpoint remains
+    /// for a later startup attempt.
     pub fn finalize_orphaned_running_sessions(&self) -> anyhow::Result<usize> {
         let now = Utc::now().to_rfc3339();
         let ids: Vec<String> = {
             let conn = self.conn();
-            conn.prepare("SELECT id FROM sessions WHERE status = 'running'")?
-                .query_map([], session_id_from_row)?
-                .collect::<Result<_, _>>()?
+            conn.prepare(
+                "SELECT id FROM sessions
+                 WHERE status = 'running'
+                    OR EXISTS (
+                        SELECT 1 FROM partial_messages
+                        WHERE partial_messages.session_id = sessions.id
+                    )",
+            )?
+            .query_map([], session_id_from_row)?
+            .collect::<Result<_, _>>()?
         };
         let count = self.set_running_status(SessionStatus::Error, &now, None)?;
         for id in ids {
@@ -1256,6 +1264,44 @@ mod tests {
         assert_eq!(
             db.get_session(&done.session_id).unwrap().unwrap().status,
             SessionStatus::Completed
+        );
+    }
+
+    #[test]
+    fn orphan_finalizer_retries_retained_partial_checkpoints_on_later_startup() {
+        let db = create_db();
+        let session = db.create_session("orphan partial retry").unwrap();
+        db.update_session_status(&session.session_id, SessionStatus::Running)
+            .unwrap();
+        db.upsert_partial_message(&session.session_id, "crash-recovered text")
+            .unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER fail_partial_promotion
+                 BEFORE INSERT ON messages
+                 WHEN NEW.role = 'assistant'
+                 BEGIN SELECT RAISE(ABORT, 'forced partial insert failure'); END;",
+            )
+            .unwrap();
+
+        assert_eq!(db.finalize_orphaned_running_sessions().unwrap(), 1);
+        assert_eq!(
+            db.get_session(&session.session_id).unwrap().unwrap().status,
+            SessionStatus::Error
+        );
+        assert_eq!(
+            db.get_partial_message(&session.session_id).unwrap().content,
+            "crash-recovered text"
+        );
+
+        db.conn()
+            .execute_batch("DROP TRIGGER fail_partial_promotion")
+            .unwrap();
+        assert_eq!(db.finalize_orphaned_running_sessions().unwrap(), 0);
+        assert!(db.get_partial_message(&session.session_id).is_none());
+        assert_eq!(
+            db.list_session_messages(&session.session_id).unwrap()[0].content,
+            "crash-recovered text"
         );
     }
 

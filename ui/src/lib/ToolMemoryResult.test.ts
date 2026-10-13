@@ -23,4 +23,23 @@ describe('ToolMemoryResult', () => {
 
 		expect(screen.getByText('Alice').closest('.memory-row')).toBe(firstRow);
 	});
+
+	it('keeps recall rows associated with entity_id when results are reordered', () => {
+		const first = {
+			entity_id: 'fact-00000000000000000000000000000001',
+			text: 'Project Alpha uses Rust',
+		};
+		const second = {
+			entity_id: 'fact-00000000000000000000000000000002',
+			text: 'Project Beta uses Rust',
+		};
+		const { rerender } = render(ToolMemoryResult, {
+			data: { kind: 'fact', hits: [first, second] },
+		});
+		const firstRow = screen.getByText(first.text).closest('.memory-row');
+
+		rerender({ data: { kind: 'fact', hits: [second, first] } });
+
+		expect(screen.getByText(first.text).closest('.memory-row')).toBe(firstRow);
+	});
 });

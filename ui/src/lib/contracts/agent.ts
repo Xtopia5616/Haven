@@ -468,7 +468,9 @@ export function mapAgentEvent(
 			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
 			const silent = requiredBoolean(payload, 'silent');
 			const toolIndex = requiredU32(payload, 'tool_index');
-			const askOptions = isStringArray(payload.ask_options) ? payload.ask_options : null;
+			const askOptions = isStringArray(payload.ask_options)
+				? [...new Set(payload.ask_options.map((option) => option.trim()).filter(Boolean))]
+				: null;
 			const stepId = canonicalIdField(payload, 'step_id', 'step');
 			const idempotency = payload.idempotency;
 			const operationScope = payload.operation_scope;

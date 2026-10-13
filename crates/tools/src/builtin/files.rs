@@ -308,7 +308,7 @@ impl FilesTool {
                 .await;
             let mut result = match operation_result {
                 Ok(result) => result,
-                Err(error) => {
+                Err(_) => {
                     let mut output = media_tool.media_result_output(
                         operation,
                         Some(asset),
@@ -316,7 +316,7 @@ impl FilesTool {
                         None,
                     );
                     output["available"] = serde_json::Value::Bool(false);
-                    ToolResult::failed(output, format!("media operation failed: {error}"))
+                    ToolResult::failed(output, "media operation failed")
                 }
             };
             result = annotate_file_result(result, op, None, None);

@@ -39,6 +39,27 @@ fn range_token_cost(prefixes: &[u32], start: usize, end: usize) -> u32 {
         .saturating_sub(prefixes.get(start).copied().unwrap_or_default())
 }
 
+fn summary_request_kind(messages: &[CanonicalMessage]) -> RequestKind {
+    let has_visual_media = messages.iter().any(|message| {
+        message
+            .content
+            .iter()
+            .any(|part| matches!(part, ContentPart::Image { .. } | ContentPart::Video { .. }))
+    });
+    if has_visual_media {
+        return RequestKind::Vision;
+    }
+    if messages.iter().any(|message| {
+        message
+            .content
+            .iter()
+            .any(|part| matches!(part, ContentPart::Audio { .. }))
+    }) {
+        return RequestKind::AudioChat;
+    }
+    RequestKind::Chat
+}
+
 /// Keep summary requests bounded even when a long-running session has a very
 /// large middle region. The planner may summarize more messages than fit in
 /// this input window; this renderer keeps both edges and explicitly marks the
@@ -481,16 +502,7 @@ impl ContextCompactor {
             cached_message_tokens,
             tool_token_estimate,
         );
-        let summary_request = if middle.iter().any(|message| {
-            message
-                .content
-                .iter()
-                .any(|part| matches!(part, ContentPart::Image { .. }))
-        }) {
-            RequestKind::Vision
-        } else {
-            RequestKind::Chat
-        };
+        let summary_request = summary_request_kind(middle);
         let summary_window = router.context_window_for_request(summary_request).await;
         let summary_budget = SUMMARY_INPUT_TOKEN_BUDGET.min(
             summary_window
@@ -787,6 +799,25 @@ mod tests {
             part,
             ContentPart::Image { data, .. } if data == "encoded-image"
         )));
+    }
+
+    #[test]
+    fn summary_request_routes_video_and_audio_to_media_request_kinds() {
+        let mut video = make_msg(CanonicalRole::User, "video clip");
+        video.content.push(ContentPart::Video {
+            content_type: "video".into(),
+            media_type: "video/mp4".into(),
+            data: "encoded-video".into(),
+        });
+        assert_eq!(summary_request_kind(&[video]), RequestKind::Vision);
+
+        let mut audio = make_msg(CanonicalRole::User, "audio clip");
+        audio.content.push(ContentPart::Audio {
+            content_type: "audio".into(),
+            media_type: "audio/wav".into(),
+            data: "encoded-audio".into(),
+        });
+        assert_eq!(summary_request_kind(&[audio]), RequestKind::AudioChat);
     }
 
     fn make_tool_result(text: &str) -> CanonicalMessage {

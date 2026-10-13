@@ -200,12 +200,13 @@ impl std::fmt::Display for MessageType {
 pub struct Envelope {
     /// Unique message id, canonical `msg-{uuid32}`.
     pub message_id: String,
-    /// `message | reply | broadcast | request | system`.
+    /// `message | reply | broadcast | request | system | receipt`.
     #[serde(default)]
     pub r#type: MessageType,
     /// Sender session ID.
     pub from_session_id: String,
-    /// Recipient session id, or `*` for broadcast.
+    /// Canonical recipient session ID. Broadcast input is expanded into one
+    /// envelope per recipient before it reaches this durable field.
     pub to_session_id: String,
     /// Session id replies should target; defaults to `from_session_id` when absent.
     pub reply_to_session_id: Option<String>,

@@ -417,36 +417,18 @@ impl Database {
         );
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<(String, i64, Option<PendingInputDisposition>)> {
-            let created_at = next_projection_created_at(&conn, session_id, None)?;
-            conn.execute(
-                "INSERT INTO message_ingress_cursors (session_id, last_ingress_seq)
-                 VALUES (?1, 1)
-                 ON CONFLICT(session_id) DO UPDATE SET
-                     last_ingress_seq = message_ingress_cursors.last_ingress_seq + 1",
-                rusqlite::params![session_id],
-            )?;
-            let ingress_seq = conn.query_row(
-                "SELECT last_ingress_seq FROM message_ingress_cursors WHERE session_id = ?1",
-                rusqlite::params![session_id],
-                |row| row.get(0),
-            )?;
-            conn.execute(
-                "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, ui_metadata, voice, ingress_seq, media_inputs)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                rusqlite::params![
-                    message_id,
-                    session_id,
-            role.as_str(),
-                    content,
-                    message_type.map(TranscriptMessageKind::as_str),
-                    created_at,
-                    tool_call_id,
-                    Self::serialize_ui_metadata(attachments),
-                    voice,
-                    ingress_seq,
-                    Self::serialize_media_inputs(media_inputs),
-                ],
+        let result = (|| -> anyhow::Result<(Message, Option<PendingInputDisposition>)> {
+            let message = Self::insert_message_row_in_transaction(
+                &conn,
+                session_id,
+                role,
+                content,
+                message_type,
+                tool_call_id,
+                attachments,
+                voice,
+                &message_id,
+                media_inputs,
             )?;
             let mut disposition = pending_disposition;
             if let Some(requested) = disposition {
@@ -466,12 +448,16 @@ impl Database {
                 conn.execute(
                     "INSERT INTO pending_session_inputs (session_id, message_id, disposition)
                      VALUES (?1, ?2, ?3)",
-                    rusqlite::params![session_id, message_id, disposition.unwrap().as_db_value()],
+                    rusqlite::params![
+                        session_id,
+                        message.message_id,
+                        disposition.unwrap().as_db_value()
+                    ],
                 )?;
             }
-            Ok((created_at, ingress_seq, disposition))
+            Ok((message, disposition))
         })();
-        let (created_at, ingress_seq, disposition) = match result {
+        let (message, disposition) = match result {
             Ok(result) => {
                 conn.execute_batch("COMMIT")?;
                 result
@@ -483,22 +469,76 @@ impl Database {
         };
         drop(conn);
         self.cache_invalidate_messages(session_id);
-        Ok((
-            Message {
+        Ok((message, disposition))
+    }
+
+    /// Insert a message projection and advance its ingress cursor inside the
+    /// caller's existing SQLite write transaction. Used by normal message
+    /// writes and atomic partial-message promotion.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn insert_message_row_in_transaction(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+        role: CanonicalRole,
+        content: &str,
+        message_type: Option<TranscriptMessageKind>,
+        tool_call_id: Option<&str>,
+        attachments: &[MessageAttachment],
+        voice: bool,
+        message_id: &str,
+        media_inputs: &[MediaInput],
+    ) -> anyhow::Result<Message> {
+        ensure_session_id(session_id)?;
+        anyhow::ensure!(
+            is_message_row_identity_valid(message_id, role),
+            "message_id must be a canonical msg-* ID or an assistant step-* ID"
+        );
+        for media_input in media_inputs {
+            media_input.validate_asset_identities()?;
+        }
+        let created_at = next_projection_created_at(conn, session_id, None)?;
+        conn.execute(
+            "INSERT INTO message_ingress_cursors (session_id, last_ingress_seq)
+             VALUES (?1, 1)
+             ON CONFLICT(session_id) DO UPDATE SET
+                 last_ingress_seq = message_ingress_cursors.last_ingress_seq + 1",
+            rusqlite::params![session_id],
+        )?;
+        let ingress_seq = conn.query_row(
+            "SELECT last_ingress_seq FROM message_ingress_cursors WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, ui_metadata, voice, ingress_seq, media_inputs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
                 message_id,
-                session_id: session_id.into(),
-                role,
-                content: content.into(),
-                message_type,
+                session_id,
+                role.as_str(),
+                content,
+                message_type.map(TranscriptMessageKind::as_str),
                 created_at,
-                tool_call_id: tool_call_id.map(String::from),
-                attachments: attachments.to_vec(),
-                media_inputs: media_inputs.to_vec(),
+                tool_call_id,
+                Self::serialize_ui_metadata(attachments),
                 voice,
                 ingress_seq,
-            },
-            disposition,
-        ))
+                Self::serialize_media_inputs(media_inputs),
+            ],
+        )?;
+        Ok(Message {
+            message_id: message_id.into(),
+            session_id: session_id.into(),
+            role,
+            content: content.into(),
+            message_type,
+            created_at,
+            tool_call_id: tool_call_id.map(String::from),
+            attachments: attachments.to_vec(),
+            media_inputs: media_inputs.to_vec(),
+            voice,
+            ingress_seq,
+        })
     }
 
     fn serialize_ui_metadata(attachments: &[MessageAttachment]) -> Option<String> {
@@ -797,32 +837,6 @@ impl Database {
             rusqlite::params![session_id, message_id],
         )?;
         Ok(())
-    }
-
-    /// Return the most recent message timestamp when the read succeeds. A
-    /// database read failure is treated as unavailable; use the strict
-    /// variant when a missing cutoff could affect recovery correctness.
-    pub fn get_last_message_created_at_best_effort(&self, session_id: &str) -> Option<String> {
-        self.try_get_last_message_created_at(session_id)
-            .ok()
-            .flatten()
-    }
-
-    /// Return the most recent message timestamp and preserve SQLite read
-    /// errors so recovery callers never turn an unknown cutoff into `NULL`.
-    pub fn try_get_last_message_created_at(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<Option<String>> {
-        ensure_session_id(session_id)?;
-        let conn = self.conn();
-        Ok(conn
-            .query_row(
-                "SELECT created_at FROM messages WHERE session_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                rusqlite::params![session_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?)
     }
 
     /// Return the highest durable ingress cursor for a session.
@@ -1675,43 +1689,6 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert!(msgs[0].voice, "voice message must keep the flag");
         assert!(!msgs[1].voice, "typed message stays non-voice");
-    }
-
-    #[test]
-    fn get_last_message_created_at_best_effort_returns_latest() {
-        let db = test_db();
-        let tid = test_session(&db);
-        assert!(db.get_last_message_created_at_best_effort(&tid).is_none());
-        db.add_message(
-            &tid,
-            haven_common::types::CanonicalRole::User,
-            "first",
-            None,
-            None,
-        )
-        .unwrap();
-        let m2 = db
-            .add_message(
-                &tid,
-                haven_common::types::CanonicalRole::User,
-                "second",
-                None,
-                None,
-            )
-            .unwrap();
-        let last = db
-            .get_last_message_created_at_best_effort(&tid)
-            .expect("some timestamp");
-        assert_eq!(last, m2.created_at);
-    }
-
-    #[test]
-    fn strict_last_message_timestamp_surfaces_database_failure() {
-        let db = test_db();
-        let tid = test_session(&db);
-        db.conn().execute_batch("DROP TABLE messages").unwrap();
-
-        assert!(db.try_get_last_message_created_at(&tid).is_err());
     }
 
     #[test]

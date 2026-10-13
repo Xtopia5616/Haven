@@ -83,6 +83,7 @@ corepack pnpm run check
 | `asset-` | 受管媒体资产 MediaAsset.asset_id | `haven_common` |
 | `cred-` | Credential Manager 凭据引用（仅引用，不是密钥值） | `haven_common` / `haven_platform` |
 | `usage-` | 单次 LLM 调用用量明细 llm_usage.id | `haven_memory` |
+| `clip-` | 进程内剪贴板历史行身份（仅 UI 稳定键，不持久化） | `haven_tools` |
 
 以下 ID 均由运行时生成；`rec-*`、`preview-*` 仅用于进程内生命周期；`conf-*`、`call-*` 是否持久化由对应领域契约明确规定。`file-*` 属于受管文件的命名空间（上传批次、上传文件名或生成媒体文件名），不是实体 ID；已提交路径可随消息引用持久保存，实体身份仍由 `asset-*` 表达：
 

@@ -9,6 +9,10 @@ use serde_json::Value;
 /// parsed as JSON (an MCP JSON-RPC message).
 pub struct SseParser {
     buffer: Vec<u8>,
+    data_lines: Vec<String>,
+    event_bytes: usize,
+    discarding_line: bool,
+    discarding_event: bool,
     max_buffer: usize,
 }
 
@@ -28,6 +32,10 @@ impl SseParser {
     pub fn new(max_buffer: usize) -> Self {
         Self {
             buffer: Vec::new(),
+            data_lines: Vec::new(),
+            event_bytes: 0,
+            discarding_line: false,
+            discarding_event: false,
             max_buffer,
         }
     }
@@ -37,65 +45,112 @@ impl SseParser {
     /// larger than the configured cap is dropped (and the buffer reset) so a
     /// newline-free stream cannot grow the buffer without bound.
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<Value> {
-        if self.buffer.len().saturating_add(chunk.len()) > self.max_buffer {
-            self.buffer.clear();
-            return Vec::new();
-        }
-        self.buffer.extend_from_slice(chunk);
         let mut events = Vec::new();
-        let mut consumed = 0usize;
-        let mut data_lines: Vec<String> = Vec::new();
+        let mut offset = 0;
+        while offset < chunk.len() {
+            if self.discarding_line {
+                match chunk[offset..].iter().position(|byte| *byte == b'\n') {
+                    Some(relative_end) => {
+                        offset += relative_end + 1;
+                        self.discarding_line = false;
+                    }
+                    None => return events,
+                }
+                continue;
+            }
 
-        loop {
-            let bytes = &self.buffer[consumed..];
-            if bytes.is_empty() {
+            let relative_end = chunk[offset..].iter().position(|byte| *byte == b'\n');
+            let segment_end = relative_end.map_or(chunk.len(), |end| offset + end);
+            let segment = &chunk[offset..segment_end];
+            if self.buffer.len().saturating_add(segment.len()) > self.max_buffer {
+                self.buffer.clear();
+                self.drop_current_event();
+                if relative_end.is_some() {
+                    offset = segment_end + 1;
+                } else {
+                    self.discarding_line = true;
+                    return events;
+                }
+                continue;
+            }
+
+            self.buffer.extend_from_slice(segment);
+            if relative_end.is_some() {
+                offset = segment_end + 1;
+                let line = std::mem::take(&mut self.buffer);
+                self.process_line(&line, &mut events);
+            } else {
                 break;
             }
-            // Find the next LF; the line ends at that LF (excluding a leading CR).
-            let line_end = match bytes.iter().position(|&b| b == b'\n') {
-                Some(rel) => consumed + rel,
-                None => break,
-            };
-            let mut line = &self.buffer[consumed..line_end];
-            if line.last() == Some(&b'\r') {
-                line = &line[..line.len() - 1];
-            }
-            consumed = line_end + 1;
-
-            let line = match std::str::from_utf8(line) {
-                Ok(line) => line,
-                Err(_) => {
-                    tracing::warn!(
-                        line_bytes = line.len(),
-                        "MCP SSE ignored an invalid UTF-8 line"
-                    );
-                    ""
-                }
-            };
-            if line.is_empty() {
-                // Blank line: dispatch the accumulated event.
-                if !data_lines.is_empty() {
-                    let data = data_lines.join("\n");
-                    match serde_json::from_str(&data) {
-                        Ok(value) => events.push(value),
-                        Err(_) => tracing::warn!(
-                            data_bytes = data.len(),
-                            "MCP SSE ignored an invalid JSON event"
-                        ),
-                    }
-                    data_lines.clear();
-                }
-            } else if let Some(rest) = line.strip_prefix("data:") {
-                // SSE allows an optional single leading space after the colon.
-                data_lines.push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
-            }
-            // Comments (`:`) and `event:`/`id:`/`retry:` fields are ignored.
-        }
-
-        if consumed > 0 {
-            self.buffer.drain(..consumed);
         }
         events
+    }
+
+    fn process_line(&mut self, bytes: &[u8], events: &mut Vec<Value>) {
+        let mut bytes = bytes;
+        if bytes.last() == Some(&b'\r') {
+            bytes = &bytes[..bytes.len() - 1];
+        }
+        let line = match std::str::from_utf8(bytes) {
+            Ok(line) => line,
+            Err(_) => {
+                tracing::warn!(
+                    line_bytes = bytes.len(),
+                    "MCP SSE ignored an invalid UTF-8 line"
+                );
+                return;
+            }
+        };
+
+        if line.is_empty() {
+            if self.discarding_event {
+                self.reset_event();
+            } else if !self.data_lines.is_empty() {
+                let data = self.data_lines.join("\n");
+                match serde_json::from_str(&data) {
+                    Ok(value) => events.push(value),
+                    Err(_) => tracing::warn!(
+                        data_bytes = data.len(),
+                        "MCP SSE ignored an invalid JSON event"
+                    ),
+                }
+                self.reset_event();
+            }
+            return;
+        }
+
+        if self.discarding_event {
+            return;
+        }
+        if let Some(rest) = line.strip_prefix("data:") {
+            // SSE allows an optional single leading space after the colon.
+            let data = rest.strip_prefix(' ').unwrap_or(rest);
+            let separator_bytes = usize::from(!self.data_lines.is_empty());
+            if self
+                .event_bytes
+                .saturating_add(separator_bytes)
+                .saturating_add(data.len())
+                > self.max_buffer
+            {
+                self.drop_current_event();
+                return;
+            }
+            self.event_bytes += separator_bytes + data.len();
+            self.data_lines.push(data.to_string());
+        }
+        // Comments (`:`) and `event:`/`id:`/`retry:` fields are ignored.
+    }
+
+    fn drop_current_event(&mut self) {
+        self.data_lines.clear();
+        self.event_bytes = 0;
+        self.discarding_event = true;
+    }
+
+    fn reset_event(&mut self) {
+        self.data_lines.clear();
+        self.event_bytes = 0;
+        self.discarding_event = false;
     }
 }
 
@@ -140,6 +195,31 @@ mod tests {
     }
 
     #[test]
+    fn sse_data_lines_survive_chunk_boundaries() {
+        let mut parser = SseParser::new(DEFAULT_MAX_SSE_BUFFER);
+        assert!(parser.feed(b"data: {\n").is_empty());
+        let events = parser.feed(b"data: \"id\":7}\n\n");
+        assert_eq!(events, vec![json!({"id": 7})]);
+    }
+
+    #[test]
+    fn sse_large_chunk_with_many_small_events_is_parsed_incrementally() {
+        let mut parser = SseParser::new(32);
+        let events = parser.feed(
+            b"data: {\"id\":1}\n\ndata: {\"id\":2}\n\ndata: {\"id\":3}\n\ndata: {\"id\":4}\n\n",
+        );
+        assert_eq!(
+            events,
+            vec![
+                json!({"id": 1}),
+                json!({"id": 2}),
+                json!({"id": 3}),
+                json!({"id": 4})
+            ]
+        );
+    }
+
+    #[test]
     fn sse_multiple_events_in_one_chunk() {
         let mut parser = SseParser::new(DEFAULT_MAX_SSE_BUFFER);
         let events = parser.feed(b"data: {\"id\":1}\n\ndata: {\"id\":2}\n\n");
@@ -173,6 +253,10 @@ mod tests {
         assert!(parser.feed(&chunk).is_empty());
         assert!(parser.feed(&chunk).is_empty());
         assert!(parser.buffer.is_empty());
+        // Finish the oversized line and its event boundary; only after the
+        // blank-line delimiter can the parser safely resume event parsing.
+        assert!(parser.feed(b"\n").is_empty());
+        assert!(parser.feed(b"\n").is_empty());
         // A subsequent well-formed event still parses.
         let events = parser.feed(b"data: {\"id\":9}\n\n");
         assert_eq!(events.len(), 1);

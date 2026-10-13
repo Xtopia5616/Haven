@@ -1159,8 +1159,7 @@ fn path_sandbox_block(
             let path = resolve_relative_sandbox_path(path.clone());
             if !path_is_allowed(&path, &allowed) {
                 return Some(format!(
-                    "path '{}' is outside allowed_paths for tool '{tool_name}'",
-                    path.display()
+                    "operation '{tool_name}' is blocked by the allowed_paths policy"
                 ));
             }
         }

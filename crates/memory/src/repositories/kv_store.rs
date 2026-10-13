@@ -463,6 +463,7 @@ impl Database {
         next_attempt_at_ms: i64,
         clear_bypass_throttle: bool,
     ) -> anyhow::Result<bool> {
+        fact_extraction_session_id_from_key(key)?;
         anyhow::ensure!(next_attempt_at_ms >= 0, "retry deadline cannot be negative");
         let mut state = decode_fact_extraction_marker(expected_value)?;
         state.attempt = attempt;
@@ -488,6 +489,7 @@ impl Database {
         key: &str,
         expected_value: &str,
     ) -> anyhow::Result<bool> {
+        fact_extraction_session_id_from_key(key)?;
         let changed = self.conn().execute(
             "DELETE FROM kv_store WHERE key = ?1 AND value = ?2",
             rusqlite::params![key, expected_value],
@@ -784,6 +786,17 @@ fn fact_extraction_pending_key(session_id: &str) -> anyhow::Result<String> {
     Ok(format!("fact_extraction_pending.{session_id}"))
 }
 
+fn fact_extraction_session_id_from_key(key: &str) -> anyhow::Result<String> {
+    let session_id = key
+        .strip_prefix("fact_extraction_pending.")
+        .ok_or_else(|| anyhow::anyhow!("invalid fact extraction marker key"))?;
+    anyhow::ensure!(
+        is_canonical_id(session_id, "ses"),
+        "invalid session id for fact extraction marker"
+    );
+    Ok(session_id.to_owned())
+}
+
 pub(super) fn summary_extraction_pending_key(
     session_id: &str,
     episode_id: &str,
@@ -834,8 +847,8 @@ fn parse_memory_event_cursor(value: Option<&str>) -> anyhow::Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_MEMORY_OUTBOX_PAGE_SIZE, decode_fact_extraction_marker,
-        decode_summary_extraction_marker,
+        FactExtractionMarkerState, MAX_MEMORY_OUTBOX_PAGE_SIZE, decode_fact_extraction_marker,
+        decode_summary_extraction_marker, encode_fact_extraction_marker,
     };
     use crate::db::Database;
     use haven_common::types::new_id;
@@ -1522,6 +1535,37 @@ mod tests {
             0
         );
         assert!(next_generation.state.as_ref().unwrap().bypass_throttle);
+    }
+
+    #[test]
+    fn fact_extraction_cas_rejects_keys_from_other_domains_without_mutation() {
+        let db = test_db();
+        let session = db.create_session("outbox key scope").unwrap();
+        let key = format!("memory_event_cursor.{}", session.session_id);
+        let marker = encode_fact_extraction_marker(&FactExtractionMarkerState {
+            event_sequence: 4,
+            bypass_throttle: false,
+            attempt: 0,
+            next_attempt_at_ms: 0,
+        });
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO kv_store (key, value) VALUES (?1, ?2)",
+                rusqlite::params![key, marker],
+            )
+            .unwrap();
+        }
+
+        assert!(
+            db.update_pending_fact_extraction_retry_if_current(&key, &marker, 1, 10, false)
+                .is_err()
+        );
+        assert!(
+            db.clear_pending_fact_extraction_marker_if_current(&key, &marker)
+                .is_err()
+        );
+        assert_eq!(db.get_kv(&key).unwrap().as_deref(), Some(marker.as_str()));
     }
 
     #[test]

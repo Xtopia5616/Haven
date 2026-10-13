@@ -383,6 +383,10 @@ impl ConfigLoader {
         super::validate_app_config(&self.config)?;
         super::credentials::validate_config_references(&self.config)?;
         let toml_str = toml::to_string_pretty(&self.config)?;
+        anyhow::ensure!(
+            toml_str.len() <= MAX_CONFIG_FILE_BYTES,
+            "serialized config exceeds the {MAX_CONFIG_FILE_BYTES}-byte limit"
+        );
         static SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let file_name = self
             .path
@@ -400,11 +404,11 @@ impl ConfigLoader {
             return Err(error.into());
         }
         if let Some(expected) = self.source_fingerprint {
-            let current = match std::fs::read(&self.path) {
-                Ok(content) => fingerprint_config_file(&content),
+            let current = match read_config_file(&self.path) {
+                Ok(content) => fingerprint_config_file(content.as_bytes()),
                 Err(error) => {
                     let _ = std::fs::remove_file(&tmp_path);
-                    return Err(error.into());
+                    return Err(error);
                 }
             };
             if current != expected {
@@ -1812,6 +1816,51 @@ model = "nova-3"
 
         assert!(loader.save().is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_rejects_oversized_serialized_config_without_replacing_source() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        let path = dir.join("config.toml");
+        let mut loader = ConfigLoader::load_from(&path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        loader.config_mut().llm.providers.push(ProviderConfig {
+            name: "primary".into(),
+            no_proxy: Some("x".repeat(MAX_CONFIG_FILE_BYTES + 1)),
+            ..Default::default()
+        });
+
+        let error = loader.save().unwrap_err();
+
+        assert!(error.to_string().contains("serialized config exceeds"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(
+            dir.read_dir().unwrap().count(),
+            1,
+            "oversized config must be rejected before creating a temp file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_checks_external_source_fingerprint_with_a_bounded_read() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        let path = dir.join("config.toml");
+        let mut loader = ConfigLoader::load_from(&path).unwrap();
+        loader.config_mut().session.max_concurrent += 1;
+        let external = vec![b'x'; MAX_CONFIG_FILE_BYTES + 1];
+        std::fs::write(&path, &external).unwrap();
+
+        let error = loader.save().unwrap_err();
+
+        assert!(error.to_string().contains("exceeds the 4194304-byte limit"));
+        assert_eq!(std::fs::read(&path).unwrap(), external);
+        assert_eq!(
+            dir.read_dir().unwrap().count(),
+            1,
+            "failed fingerprint read must remove the staged config"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

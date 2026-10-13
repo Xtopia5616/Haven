@@ -3,13 +3,6 @@
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import type { SessionStatus } from './contracts/generatedCommands.ts';
 
-	interface AdminServerRow extends Record<string, unknown> {
-		name?: string | null;
-		connected?: boolean | null;
-		tools?: number | null;
-		diagnostic?: string | null;
-	}
-
 	interface AdminSkillRow extends Record<string, unknown> {
 		name?: string | null;
 		enabled?: boolean | null;
@@ -26,7 +19,6 @@
 
 	interface Props {
 		data?: {
-			servers?: AdminServerRow[];
 			skills?: AdminSkillRow[];
 			sessions?: AdminActivityRow[];
 			errors?: AdminActivityRow[];
@@ -51,36 +43,12 @@
 	}
 </script>
 
-{#if Array.isArray(data.servers)}
-	<div class="tool-result-label">{data.servers.length} 个 MCP 服务</div>
-	<ToolResultList items={data.servers}>
-		{#snippet children(visibleServers)}
-			<div class="admin-list tool-result-scroll-area">
-				{#each visibleServers as server, index (server.name ?? index)}
-					<div class="admin-row">
-						<span class="admin-name">{server.name || '未命名服务'}</span>
-						<span class:admin-ok={server.connected} class="admin-state"
-							>{statusLabel(server.connected)}</span
-						>
-						{#if server.tools != null}<span class="admin-meta"
-								>{server.tools} 个工具</span
-							>{/if}
-					</div>
-					{#if server.diagnostic}
-						<p class="tool-result-message tool-result-message--compact">
-							{server.diagnostic}
-						</p>
-					{/if}
-				{/each}
-			</div>
-		{/snippet}
-	</ToolResultList>
-{:else if Array.isArray(data.skills)}
+{#if Array.isArray(data.skills)}
 	<div class="tool-result-label">{data.skills.length} 个技能</div>
 	<ToolResultList items={data.skills}>
 		{#snippet children(visibleSkills)}
 			<div class="admin-list tool-result-scroll-area">
-				{#each visibleSkills as skill, index (skill.name ?? index)}
+				{#each visibleSkills as skill (skill.name)}
 					<div class="admin-row">
 						<span class="admin-name">{skill.name || '未命名技能'}</span>
 						<span class:admin-ok={skill.executable} class="admin-state"
@@ -192,11 +160,6 @@
 	}
 	.admin-ok {
 		color: var(--md-sys-color-success);
-	}
-	.admin-meta {
-		flex: none;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
 	}
 	.admin-action {
 		display: flex;

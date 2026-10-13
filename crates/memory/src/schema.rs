@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 41;
+pub const SCHEMA_VERSION: i32 = 42;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -245,7 +245,8 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS partial_messages (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         content TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        ingress_seq INTEGER NOT NULL DEFAULT 0 CHECK(ingress_seq >= 0)
     )",
     "CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_session_steps_session ON session_steps(session_id)",
@@ -660,6 +661,15 @@ mod tests {
             .unwrap();
         assert!(columns.iter().any(|column| column == "ui_metadata"));
         assert!(!columns.iter().any(|column| column == "attachments"));
+
+        let partial_columns = conn
+            .prepare("SELECT name FROM pragma_table_info('partial_messages')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(partial_columns.iter().any(|column| column == "ingress_seq"));
 
         let session_columns = conn
             .prepare("SELECT name FROM pragma_table_info('sessions')")

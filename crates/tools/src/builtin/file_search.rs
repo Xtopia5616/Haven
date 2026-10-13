@@ -333,16 +333,14 @@ impl FileSearchEngine {
             metadata = tokio::fs::metadata(&root_path) => match metadata {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    anyhow::bail!("root path '{}' does not exist", root)
+                    anyhow::bail!("search root was not found")
                 }
-                Err(error) => {
-                    anyhow::bail!("cannot access root path '{}': {error}", root)
-                }
+                Err(_) => anyhow::bail!("search root is inaccessible"),
             },
             _ = cancel.cancelled() => anyhow::bail!("cancelled"),
         };
         if !root_metadata.is_file() && !root_metadata.is_dir() {
-            anyhow::bail!("root path '{}' is not a file or directory", root);
+            anyhow::bail!("search root is not a file or directory");
         }
 
         let search_permit = tokio::select! {

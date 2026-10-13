@@ -88,11 +88,11 @@ pub(super) async fn summarize(
 
     let response = match call.await {
         Ok(Ok(resp)) => resp,
-        Ok(Err(e)) => {
+        Ok(Err(_)) => {
             return Ok(ToolResult {
                 success: false,
                 output: serde_json::json!({"summary_error": true, "path": path}),
-                error: Some(format!("summarizer call failed: {}", e)),
+                error: Some("summarizer request failed".into()),
                 error_class: Some(crate::ToolErrorClass::Transient),
                 retryability: crate::ToolRetryability::Retryable,
                 truncated: false,

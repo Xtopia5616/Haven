@@ -9,6 +9,7 @@ use anyhow::Context;
 use haven_common::config::ConfigLoader;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -133,8 +134,6 @@ pub struct SkillInfo {
     pub enabled: bool,
     /// Whether the skill is currently executable (enabled and has an entry script).
     pub executable: bool,
-    /// Absolute path (UTF-8 lossy) to the skill directory.
-    pub root: String,
     /// Whether a valid manifest resolves to an entry script. For an invalid
     /// manifest this is unknown; inspect `manifest_error` before interpreting it.
     pub has_script: bool,
@@ -143,6 +142,14 @@ pub struct SkillInfo {
     /// A SKILL.md parsing error. Invalid manifests remain visible in the
     /// catalog for diagnosis, but never enter the executable registry.
     pub manifest_error: Option<String>,
+}
+
+/// Skill metadata paired with its local directory for the Agent's explicit
+/// `skills_list` tool output. This path must not cross the renderer IPC.
+#[derive(Debug, Clone)]
+pub struct SkillCatalogEntry {
+    pub info: SkillInfo,
+    pub root: PathBuf,
 }
 
 impl From<&Skill> for SkillInfo {
@@ -159,7 +166,6 @@ impl From<&Skill> for SkillInfo {
             // enabled in policy, but cannot enter the executable tool catalog.
             enabled,
             executable,
-            root: s.root().to_string_lossy().to_string(),
             has_script,
             unavailable_reason: if !has_script {
                 Some(
@@ -176,7 +182,7 @@ impl From<&Skill> for SkillInfo {
 }
 
 impl SkillInfo {
-    fn invalid_manifest(name: String, root: &Path, error: String) -> Self {
+    fn invalid_manifest(name: String, error: String) -> Self {
         Self {
             name,
             description: String::new(),
@@ -184,7 +190,6 @@ impl SkillInfo {
             language: "unknown".into(),
             enabled: false,
             executable: false,
-            root: root.to_string_lossy().to_string(),
             has_script: false,
             unavailable_reason: None,
             manifest_error: Some(error),
@@ -431,7 +436,19 @@ fn scan_parsed_skill_entries(
 
 struct SkillScanResult {
     skills: Vec<Skill>,
-    diagnostics: Vec<SkillInfo>,
+    diagnostics: Vec<SkillCatalogEntry>,
+}
+
+fn read_bounded<R: Read>(reader: R, max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        Ok(None)
+    } else {
+        Ok(Some(bytes))
+    }
 }
 
 fn scan_skill_directory(
@@ -450,10 +467,9 @@ fn scan_skill_directory(
 
     let root_canon = root
         .canonicalize()
-        .with_context(|| format!("failed to canonicalize skills root: {}", root.display()))?;
+        .context("failed to canonicalize skills root")?;
 
-    let entries = std::fs::read_dir(root)
-        .with_context(|| format!("failed to read skills root: {}", root.display()))?;
+    let entries = std::fs::read_dir(root).context("failed to read skills root")?;
 
     let mut skill_dirs = Vec::new();
     let mut root_entry_count = 0;
@@ -522,8 +538,14 @@ fn scan_skill_directory(
             continue;
         }
 
-        let content = match std::fs::read(&skill_md) {
-            Ok(bytes) => haven_common::encoding::decode_lossy(&bytes),
+        let content = match std::fs::File::open(&skill_md)
+            .and_then(|file| read_bounded(file, limits.skills_max_md_bytes))
+        {
+            Ok(Some(bytes)) => haven_common::encoding::decode_lossy(&bytes),
+            Ok(None) => {
+                tracing::warn!("skipping SKILL.md that exceeded its byte cap while reading");
+                continue;
+            }
             Err(_) => {
                 tracing::warn!("skipping unreadable SKILL.md");
                 continue;
@@ -545,17 +567,24 @@ fn scan_skill_directory(
             Err(e) => {
                 let error = format!("Invalid SKILL.md: {}", e);
                 tracing::warn!("skill manifest could not be loaded");
-                diagnostics.push(SkillInfo::invalid_manifest(
-                    directory_name,
-                    &p,
-                    haven_common::error::sanitize_error_text(&error),
-                ));
+                diagnostics.push(SkillCatalogEntry {
+                    info: SkillInfo::invalid_manifest(
+                        directory_name,
+                        haven_common::error::sanitize_error_text(&error),
+                    ),
+                    root: p,
+                });
             }
         }
     }
 
     out.extend(skip_case_insensitive_skill_collisions(candidates));
-    diagnostics.sort_by(|a, b| a.name.cmp(&b.name));
+    let valid_names: BTreeSet<_> = out
+        .iter()
+        .map(|skill| skill.name().to_ascii_lowercase())
+        .collect();
+    diagnostics.retain(|entry| !valid_names.contains(&entry.info.name.to_ascii_lowercase()));
+    diagnostics.sort_by(|a, b| a.info.name.cmp(&b.info.name));
     Ok(SkillScanResult {
         skills: out,
         diagnostics,
@@ -573,7 +602,7 @@ struct Inner {
     skills: HashMap<String, Skill>,
     /// Invalid manifests shown in the catalog for diagnosis but never eligible
     /// for execution.
-    skill_diagnostics: Vec<SkillInfo>,
+    skill_diagnostics: Vec<SkillCatalogEntry>,
     /// Unified context limits (SKILL.md size / parse caps).
     limits: haven_common::config::ContextLimitsConfig,
 }
@@ -706,12 +735,29 @@ impl SkillRegistry {
     pub async fn list_skill_infos(&self) -> Vec<SkillInfo> {
         let g = self.inner.read().await;
         let mut skills: Vec<_> = g.skills.values().map(SkillInfo::from).collect();
-        skills.extend(g.skill_diagnostics.iter().cloned());
+        skills.extend(g.skill_diagnostics.iter().map(|entry| entry.info.clone()));
         // The short skill index is part of the cacheable system-prompt prefix.
         // Never let HashMap iteration order create a semantically identical but
         // byte-different prompt after a refresh or restart.
-        skills.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.root.cmp(&b.root)));
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
         skills
+    }
+
+    /// Return Skill metadata with local paths for the Agent-only diagnostic
+    /// tool. Renderer command DTOs must use [`Self::list_skill_infos`].
+    pub async fn list_skill_catalog_entries(&self) -> Vec<SkillCatalogEntry> {
+        let g = self.inner.read().await;
+        let mut entries: Vec<_> = g
+            .skills
+            .values()
+            .map(|skill| SkillCatalogEntry {
+                info: SkillInfo::from(skill),
+                root: skill.root().to_path_buf(),
+            })
+            .collect();
+        entries.extend(g.skill_diagnostics.iter().cloned());
+        entries.sort_by(|a, b| a.info.name.cmp(&b.info.name));
+        entries
     }
 
     pub async fn get_skill_info(&self, name: &str) -> Option<SkillInfo> {
@@ -835,9 +881,8 @@ fn current_file_fingerprints_from_disk(root: &Path) -> anyhow::Result<Vec<SkillF
     }
     let root_canon = root
         .canonicalize()
-        .with_context(|| format!("failed to canonicalize skills root: {}", root.display()))?;
-    let entries = std::fs::read_dir(root)
-        .with_context(|| format!("failed to read skills root: {}", root.display()))?;
+        .context("failed to canonicalize skills root")?;
+    let entries = std::fs::read_dir(root).context("failed to read skills root")?;
     let mut fingerprints = Vec::new();
     let mut root_entry_count = 0;
     for entry in entries {
@@ -918,6 +963,15 @@ mod tests {
 
     fn tmp_dir() -> PathBuf {
         std::env::temp_dir().join(format!("haven_skills_test_{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn bounded_skill_read_accepts_limit_and_rejects_one_byte_over() {
+        assert_eq!(
+            read_bounded(&b"abcd"[..], 4).unwrap().as_deref(),
+            Some(&b"abcd"[..])
+        );
+        assert_eq!(read_bounded(&b"abcde"[..], 4).unwrap(), None);
     }
 
     // -----------------------------------------------------------------------
@@ -1355,6 +1409,33 @@ mod tests {
         let names: Vec<&str> = skills.iter().map(|s| s.name()).collect();
         assert_eq!(names, vec!["small"], "oversized entry should be skipped");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn registry_listing_keeps_valid_names_unique_across_invalid_diagnostics() {
+        let root = tmp_dir();
+        let valid = write_skill(
+            &root,
+            "valid-folder",
+            "# Skill: valid-folder\n## Metadata\n- name: duplicate\n- description: valid\n## Instructions\nrun\n",
+            false,
+        );
+        let invalid = root.join("duplicate");
+        std::fs::create_dir_all(&invalid).unwrap();
+        std::fs::write(invalid.join("SKILL.md"), "not a valid skill manifest\n").unwrap();
+
+        let registry = SkillRegistry::new();
+        registry.set_config(Some(root.clone()), None).await.unwrap();
+
+        let listed = registry.list_skill_infos().await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "duplicate");
+        assert_eq!(listed[0].description, "valid");
+        let catalog = registry.list_skill_catalog_entries().await;
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].root, valid);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

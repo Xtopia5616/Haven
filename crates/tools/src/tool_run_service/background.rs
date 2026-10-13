@@ -264,10 +264,6 @@ impl ToolRunService {
         created.session_id = session_id.map(str::to_owned);
         created.source_step_id = source_step_id.map(str::to_owned);
         self.emit(ToolRunLifecycleEvent::Created(created));
-        // The direct child pid is captured before `run` moves `child`; on
-        // Windows, cancelling must kill the whole process tree, not just the
-        // cmd.exe/powershell.exe wrapper.
-        let child_pid = child.id();
         // The ToolRun runner outlives its spawner: give it a ToolRun-level span so
         // every log line emitted while the ToolRun runs/cancels (output-log
         // writes, completion) carries the ToolRun ID — parallel background ToolRuns
@@ -312,35 +308,34 @@ impl ToolRunService {
                     let success = matches!(status, Ok(s) if s.success());
                     (combined, success, exit_code, truncated)
                 };
-                tokio::pin!(run);
-                tokio::select! {
-                    _ = kill_rx => {
-                        // Dropping `run` drops the pipes and the child
-                        // (kill_on_drop), terminating the command.
-                        if let Some(pid) = child_pid {
-                            kill_process_tree(pid).await;
-                        }
-                        me.mark_cancelled(&runner_tool_run_id, &started_at).await;
+                let completion = {
+                    tokio::pin!(run);
+                    tokio::select! {
+                        _ = kill_rx => None,
+                        _ = shutdown_token.cancelled() => None,
+                        result = &mut run => Some(result),
                     }
-                    _ = shutdown_token.cancelled() => {
-                        if let Some(pid) = child_pid {
-                            kill_process_tree(pid).await;
-                        }
-                        me.mark_cancelled(&runner_tool_run_id, &started_at).await;
-                    }
-                    (combined, success, exit_code, truncated) = &mut run => {
-                        me.mark_finished(
-                            &runner_tool_run_id,
-                            &started_at,
-                            &shell_owned,
-                            &command_owned,
-                            combined,
-                            success,
-                            exit_code,
-                            truncated,
-                        )
-                        .await;
-                    }
+                };
+                if let Some((combined, success, exit_code, truncated)) = completion {
+                    me.mark_finished(
+                        &runner_tool_run_id,
+                        &started_at,
+                        &shell_owned,
+                        &command_owned,
+                        combined,
+                        success,
+                        exit_code,
+                        truncated,
+                    )
+                    .await;
+                } else {
+                    // The child is already attached to this ToolRun's Job
+                    // Object. Kill the shell handle, then close the object so
+                    // Windows terminates every contained descendant without
+                    // launching an unbounded PATH-resolved helper process.
+                    let _ = child.kill().await;
+                    drop(_containment);
+                    me.mark_cancelled(&runner_tool_run_id, &started_at).await;
                 }
             }
             .instrument(tool_run_span),

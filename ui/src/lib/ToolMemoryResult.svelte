@@ -16,7 +16,7 @@
 		source_snippet?: string | null;
 	};
 	type MemoryHit = {
-		entity_id?: string | null;
+		entity_id: string;
 		text?: string | null;
 		score?: number | null;
 		model?: string | null;
@@ -24,6 +24,7 @@
 
 	interface Props {
 		data?: {
+			kind?: 'fact' | 'episode' | null;
 			facts?: MemoryFact[];
 			hits?: MemoryHit[];
 			mode?: ToolMemoryRecallMode | null;
@@ -84,7 +85,7 @@
 		<ToolResultList items={hits}>
 			{#snippet children(visibleHits)}
 				<div class="memory-list tool-result-scroll-area">
-					{#each visibleHits as hit, index (hit.entity_id ?? index)}
+					{#each visibleHits as hit (hit.entity_id)}
 						<div class="memory-row">
 							<div class="memory-hit-text">{hit.text || '—'}</div>
 							<div class="memory-meta">

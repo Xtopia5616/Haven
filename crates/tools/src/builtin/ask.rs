@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
+use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -63,11 +64,13 @@ impl AskTool {
         {
             anyhow::bail!("context must be at most {MAX_CONTEXT_CHARS} characters");
         }
+        let mut seen_options = HashSet::new();
         let options: Vec<String> = params
             .options
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
+            .filter(|option| seen_options.insert(option.clone()))
             .collect();
         if options.len() > MAX_OPTIONS {
             anyhow::bail!("options must contain at most {MAX_OPTIONS} items");
@@ -293,6 +296,19 @@ mod tests {
             )
             .await
             .unwrap();
+        assert_eq!(result.output["options"], serde_json::json!(["A", "B"]));
+    }
+
+    #[tokio::test]
+    async fn test_ask_deduplicates_options_after_trimming() {
+        let result = AskTool
+            .execute(
+                json!({"question": "which?", "options": [" A ", "A", "B", " B "]}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
         assert_eq!(result.output["options"], serde_json::json!(["A", "B"]));
     }
 

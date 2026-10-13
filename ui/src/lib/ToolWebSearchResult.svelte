@@ -10,7 +10,23 @@
 		};
 	}
 
+	type Citation = { url: string; title: string; snippet?: string | null };
+
 	let { data = {} }: Props = $props();
+
+	function citationKey(results: Citation[], result: Citation, index: number): string {
+		const tuple = JSON.stringify([result.url, result.title, result.snippet ?? null]);
+		let occurrence = 0;
+		for (let prior = 0; prior < index; prior += 1) {
+			const candidate = results[prior];
+			if (
+				JSON.stringify([candidate.url, candidate.title, candidate.snippet ?? null]) === tuple
+			) {
+				occurrence += 1;
+			}
+		}
+		return JSON.stringify([tuple, occurrence]);
+	}
 </script>
 
 <div class="tool-result-label">{data.label}</div>
@@ -22,9 +38,7 @@
 		<ToolResultList items={data.results}>
 			{#snippet children(visibleResults)}
 				<div class="tool-result-scroll-area">
-					{#each visibleResults as result, index (
-						JSON.stringify([result.url, result.title, result.snippet ?? null, index])
-					)}
+					{#each visibleResults as result, index (citationKey(visibleResults, result, index))}
 						<div class="tool-result-search-row">
 							<ExternalRef class="tool-result-search-path" target={result.url} />
 							{#if result.title && result.title !== result.url}

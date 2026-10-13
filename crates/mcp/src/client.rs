@@ -8,6 +8,7 @@ use crate::transport::{
 };
 use haven_common::{mcp::McpServerTransport, types::NetworkPolicy};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -694,6 +695,7 @@ impl McpClient {
 
         let tools: Vec<McpToolInfo> = serde_json::from_value(result["tools"].clone())
             .map_err(|e| anyhow::anyhow!("invalid tools/list from '{}': {}", self.name, e))?;
+        validate_unique_tool_names(&tools)?;
         Ok(tools)
     }
 
@@ -715,6 +717,32 @@ impl McpClient {
             error: error.clone(),
         };
         *self.last_error.lock().await = Some(error);
+    }
+
+    async fn publish_tool_list_refresh<F>(
+        &self,
+        result: anyhow::Result<Vec<McpToolInfo>>,
+        on_tool_list_changed: F,
+    ) where
+        F: Fn(&str),
+    {
+        {
+            let mut cache = self.tools_cache.lock().await;
+            match result {
+                Ok(tools) => *cache = Some(tools),
+                Err(_) => {
+                    *cache = None;
+                    tracing::error!(
+                        server = %self.name,
+                        "MCP tools/list refresh failed; cache cleared"
+                    );
+                }
+            }
+        }
+        // The catalog version must describe the already-published cache.
+        // Bumping before the assignment can let a concurrent prompt cache old
+        // schemas under the new generation.
+        on_tool_list_changed(&self.name);
     }
 
     /// Set calls-per-second rate limit for this client (refine §4.5).
@@ -784,17 +812,11 @@ impl McpClient {
                         if !self.tools_list_changed.take() {
                             continue;
                         }
-                        on_tool_list_changed(&self.name);
-                        match self.list_tools().await {
-                            Ok(tools) => *self.tools_cache.lock().await = Some(tools),
-                            Err(_) => {
-                                *self.tools_cache.lock().await = None;
-                                tracing::error!(
-                                    server = %self.name,
-                                    "MCP tools/list refresh failed; cache cleared"
-                                );
-                            }
-                        }
+                        self.publish_tool_list_refresh(
+                            self.list_tools().await,
+                            &on_tool_list_changed,
+                        )
+                        .await;
                     }
                     Notification::Message(Some(msg)) => {
                         let method = msg["method"].as_str();
@@ -1097,6 +1119,17 @@ impl McpClient {
     }
 }
 
+fn validate_unique_tool_names(tools: &[McpToolInfo]) -> anyhow::Result<()> {
+    let mut names = HashSet::with_capacity(tools.len());
+    if tools
+        .iter()
+        .any(|tool| tool.name.trim().is_empty() || !names.insert(tool.name.as_str()))
+    {
+        anyhow::bail!("invalid tools/list: tool names must be non-empty and unique");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod stdio_poison_tests {
     use super::*;
@@ -1185,5 +1218,48 @@ mod stdio_poison_tests {
         loop {
             thread::sleep(Duration::from_secs(1));
         }
+    }
+}
+
+#[cfg(test)]
+mod tool_list_identity_tests {
+    use super::*;
+
+    fn tool(name: &str) -> McpToolInfo {
+        McpToolInfo {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    #[test]
+    fn tools_list_rejects_duplicate_and_blank_names() {
+        assert!(validate_unique_tool_names(&[tool("same"), tool("same")]).is_err());
+        assert!(validate_unique_tool_names(&[tool(" ")]).is_err());
+        assert!(validate_unique_tool_names(&[tool("first"), tool("second")]).is_ok());
+    }
+
+    #[tokio::test]
+    async fn tool_catalog_invalidation_runs_after_cache_publication() {
+        let client = McpClient::new(
+            &haven_common::config::McpServerConfig::default(),
+            1024,
+            1024,
+        );
+        let expected = vec![tool("published")];
+        let observed = client.tools_cache.clone();
+        client
+            .publish_tool_list_refresh(Ok(expected.clone()), move |_| {
+                assert_eq!(
+                    observed.try_lock().unwrap().as_ref().map(|tools| tools
+                        .iter()
+                        .map(|tool| tool.name.as_str())
+                        .collect::<Vec<_>>()),
+                    Some(expected.iter().map(|tool| tool.name.as_str()).collect()),
+                    "the cache must be visible before the new catalog generation is published"
+                );
+            })
+            .await;
     }
 }

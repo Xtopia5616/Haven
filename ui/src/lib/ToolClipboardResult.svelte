@@ -4,7 +4,7 @@
 	interface Props {
 		data?: {
 			written?: boolean | null;
-			entries?: Array<{ content: string }>;
+			entries?: Array<{ entry_id: string; content: string }>;
 			total?: number | null;
 			content?: string | null;
 		};
@@ -20,7 +20,7 @@
 		<ToolResultList items={data.entries}>
 			{#snippet children(visibleEntries)}
 				<div class="tool-result-scroll-area">
-					{#each visibleEntries as entry, index (index)}
+					{#each visibleEntries as entry (entry.entry_id)}
 						<div class="tool-result-search-row">
 							<span class="tool-result-search-detail">{entry.content}</span>
 						</div>

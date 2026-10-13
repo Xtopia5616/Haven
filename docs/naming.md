@@ -18,6 +18,7 @@
 - **闭合字段选择不用布尔值编码**：当调用方在两个以上具名字段、模式或操作间选择时，参数使用领域枚举并复用生成契约；`bool` 只表达本身有明确真假语义的状态。OCR 凭据选择使用 `OcrCredentialField`，而不是 `api_secret: bool`（ADR 1131）。
 - **多值结果具名**：若多个返回值各有稳定领域含义，使用具名结构体字段，不用位置元组让调用者记住各索引的语义；例如 `CreatedSession` 保存首条持久用户消息 ID，`ModelPricing` 区分 input/output 价格，`FactProvenanceColumns` 对应不同持久列，`StreamedLlmCall` 区分响应和耗时，`ToolRunEventProjection` 区分 channel 和 payload，`ParsedAgentResponse` 区分解析出的 thought 和 tool calls，`CappedText` 命名限长文本与截断状态，`ChatThinkingExtras` 区分 chat wire 的 thinking object 与 reasoning effort 字段，Anthropic request projection 分别区分 wire messages/system prompt 与 `thinking`/`output_config`，`GeminiContentConversion` 区分 provider content 与 system instruction，`ResponsesInputConversion` 区分 Responses input items 与 instructions，Tools process reader 用 `CappedStreamText` 和 `CappedStreamRead` 区分 decoded text 与 retained bytes/read error，`SkillProcessOutput` 则按 stdout/stderr 命名 Skill 进程结果，Agent 的 `CapabilityProjectedRequest` 区分 media-capability 处理后的 request context 与向 UI 发布的 `MediaPlan`，Common 的 `TruncatedOutput` 则把带省略标记的文本与截断状态放在同一结果中。
 - **稳定身份参数点名实体**：函数对实体 ID 执行删除、遍历或查询时，参数名使用对应领域名加 `_id`（如 `fact_id`、`root_session_id`）；不要以无角色的 `id`、`root`，或与查询根概念混淆的 `parent_session_id` 代替。集合读取统一使用 `list_*`，哪怕结果包含所有符合条件的记录。
+- **短生命周期 renderer 行使用 producer identity**：clipboard history 是进程内数据，新增行由 `clip-*` 标识；重复内容移到列表前部时保留同一 ID，UI keyed each 与边界 guard 都使用该 ID。该身份只支持同一进程历史列表的 DOM 稳定性，不代表持久实体，也不跨进程恢复。
 - **ToolResult 截断元数据与正文标记分层**：`ToolResult.truncated` 是执行结果级元数据；JSON 正文的 `truncated` 是具体工具的模型可见字段。正文标记为 `true` 时必须同步结果标记；工具正文契约包含该字段时，成功结果使用 `ToolResult::from_output` 统一同步，失败构造从已有正文标记推导结果标记。正文契约不包含该字段时可只设置结果标记，不为了对齐而扩展 JSON shape（ADR 0701）。
 - **结果结构区分阶段 owner**：adapter 前的解析/归一结果与对外执行 envelope 即使携带相似字段，也分别命名其阶段职责；例如 MCP content extraction 与 `McpCallOutput` 分开承载内容转换结果和最终工具调用状态。
 - **TranscriptProjection 按读取与提交阶段分名**：公开 `TranscriptProjection` 是从 durable event log 同次派生出的 canonical messages 与 ReAct rounds；Agent 内部 `CommittedTranscriptProjection` 是 durable commit 后应用到进程内 `ReActState` 的记录包。两者 shape 和生命周期不同，不合并，也不共用泛名（ADR 0602/0671）。
@@ -230,7 +231,7 @@ Tools manifest 的 generated `ToolManifest` 是 Rust snake_case wire DTO；rende
 
 MCP 列表命令的 generated `McpServerSnapshot` 保持 Rust snake_case wire shape；`contracts/mcp.ts` 校验完整快照、profile name 唯一性和动态 JSON Schema，再映射为 camelCase `McpServerSnapshotView` / `McpToolInfoView`。刷新结果以 profile name 表示，四个分类数组逐项校验精确身份与组内唯一性；`updated` 与 `failed` 可重叠，因为前者记录已尝试重连、后者记录重连失败（ADR 1002）。
 
-Skills 列表的 generated `SkillInfo` 保持 Rust snake_case wire shape；`contracts/skills.ts` 校验完整行和列表内 name 唯一性，再映射为 camelCase `SkillInfoView`，将 `root` 表达为 `rootPath`。`execute_skill` 在 adapter 校验固定 `success` / `output` / `error` envelope，动态 JSON `output` 保持开放并复用 generated `SkillExecutionResponse`（ADR 1003）。
+Skills 列表的 generated `SkillInfo` 保持 Rust snake_case wire shape；`contracts/skills.ts` 校验完整行和列表内 name 唯一性，再映射为 camelCase `SkillInfoView`。列表 DTO 不包含本机技能根路径；`SkillCard` 通过 `open_skills_dir` 提供目录入口。Agent `skills_list` 的路径仍是 ADR 0878 明确限定的独立工具投影。`execute_skill` 在 adapter 校验固定 `success` / `output` / `error` envelope，动态 JSON `output` 保持开放并复用 generated `SkillExecutionResponse`（ADR 1003、1142）。
 
 ToolRun lifecycle payload mapper 可保留稀疏字段；`list_tool_runs` 与 `list_tool_run_history` command adapter 使用 `ToolRunCommandRow`，要求完整 row 必须带 `status`。两个投影共用字段校验和 ID 归一逻辑，但由类型名标出 command row 与 lifecycle payload 的约束差别（ADR 1004）。
 

@@ -686,13 +686,17 @@ impl SystemPromptBuilder {
 
             // Select by score, then re-order stably so mid-run M2 patches do
             // not reshuffle lines when relative scores jitter.
-            let mut seen: HashSet<(String, String)> = HashSet::new();
+            let mut seen: HashSet<(String, String, String)> = HashSet::new();
             let mut selected_facts: Vec<&haven_memory::Fact> = Vec::new();
             for (_, fact) in scored {
                 if selected_facts.len() >= MAX_FACTS_IN_PROMPT {
                     break;
                 }
-                if !seen.insert((fact.predicate.clone(), fact.object.clone())) {
+                if !seen.insert((
+                    fact.subject.clone(),
+                    fact.predicate.clone(),
+                    fact.object.clone(),
+                )) {
                     continue;
                 }
                 selected_facts.push(fact);
@@ -1102,7 +1106,6 @@ mod tests {
             language: "en".into(),
             enabled: true,
             executable: true,
-            root: String::new(),
             has_script: true,
             unavailable_reason: None,
             manifest_error: None,
@@ -1260,7 +1263,6 @@ mod tests {
                 language: "en".into(),
                 enabled: true,
                 executable: true,
-                root: String::new(),
                 has_script: true,
                 unavailable_reason: None,
                 manifest_error: None,
@@ -2084,6 +2086,30 @@ mod tests {
             !block.contains(&"P".repeat(200)),
             "objects must truncate under FACT_OBJECT_MAX_CHARS; block={block}"
         );
+    }
+
+    #[tokio::test]
+    async fn facts_for_distinct_subjects_survive_prompt_deduplication() {
+        let dir = std::env::temp_dir().join(format!(
+            "haven_prompt_distinct_subjects_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&dir).unwrap());
+        db.insert_fact("project-a", "uses", "Rust", "inferred", 0.9, &["workspace"])
+            .unwrap();
+        db.insert_fact("project-b", "uses", "Rust", "inferred", 0.8, &["workspace"])
+            .unwrap();
+        let builder = SystemPromptBuilder::with_memory_service(
+            Arc::new(ToolsFacade::new()),
+            Arc::new(MemoryService::new(db, None, 64)),
+        );
+
+        let sections = builder
+            .build_memory_sections("project uses Rust", None)
+            .await;
+
+        assert!(sections.facts.contains("project-a | uses=Rust"));
+        assert!(sections.facts.contains("project-b | uses=Rust"));
     }
 
     #[tokio::test]

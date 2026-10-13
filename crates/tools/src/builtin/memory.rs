@@ -274,7 +274,7 @@ impl MemoryTool {
             .map(|l| l.clamp(1, MAX_RECALL_LIMIT as i64) as usize)
             .unwrap_or(5);
         let query = MemoryQuery::new(query, kind, limit)?
-            .with_excluded_session(session_id)
+            .with_excluded_session(session_id)?
             .with_fact_subject(params.subject.as_deref());
 
         let recall_port = self

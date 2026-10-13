@@ -13,25 +13,6 @@ pub(crate) struct CappedStreamRead {
     pub(crate) error: Option<std::io::Error>,
 }
 
-/// Terminate a child process together with its whole process tree. On
-/// Windows, dropping a tokio Child only terminates the direct process; the
-/// real command (a grandchild of the cmd.exe/powershell.exe wrapper) would
-/// survive as an orphan otherwise.
-pub(crate) async fn kill_process_tree(pid: u32) {
-    #[cfg(windows)]
-    {
-        if let Ok(mut actionkill) = tokio::process::Command::new("actionkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .kill_on_drop(true)
-            .spawn()
-        {
-            let _ = actionkill.wait().await;
-        }
-    }
-    #[cfg(not(windows))]
-    let _ = pid;
-}
-
 /// Read a child stdout/stderr stream into a String, capping at `max_bytes`
 /// so runaway output cannot exhaust memory. After the cap is reached the
 /// remaining bytes are still read and discarded: closing the pipe read end

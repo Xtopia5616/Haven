@@ -83,12 +83,18 @@ impl MemoryQuery {
         self.fact_subject.as_deref()
     }
 
-    pub fn with_excluded_session(mut self, session_id: Option<&str>) -> Self {
+    pub fn with_excluded_session(mut self, session_id: Option<&str>) -> anyhow::Result<Self> {
         self.exclude_session_id = session_id
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .map(str::to_string);
-        self
+        if let Some(session_id) = self.exclude_session_id.as_deref() {
+            anyhow::ensure!(
+                haven_common::types::is_canonical_id(session_id, "ses"),
+                "excluded session_id must be a canonical ses-* ID"
+            );
+        }
+        Ok(self)
     }
 
     pub fn with_fact_subject(mut self, subject: Option<&str>) -> Self {
@@ -453,6 +459,26 @@ mod tests {
         assert_eq!(recall.hits.len(), 1);
         assert_eq!(recall.hits[0].entity_id, safe.fact_id);
         assert_eq!(recall.hits[0].text, "likes=Rust");
+    }
+
+    #[test]
+    fn excluded_session_scope_rejects_noncanonical_identity() {
+        let query = MemoryQuery::new("recent", MemoryEntityKind::Episode, 5).unwrap();
+
+        let error = query
+            .clone()
+            .with_excluded_session(Some("ses-short"))
+            .unwrap_err();
+        assert!(error.to_string().contains("canonical ses-* ID"));
+
+        let session_id = "ses-0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            query
+                .with_excluded_session(Some(session_id))
+                .unwrap()
+                .excluded_session_id(),
+            Some(session_id)
+        );
     }
 
     #[test]

@@ -870,6 +870,7 @@ impl LlmRouter {
                         .await;
                 }
             }
+            RequestOutcome::Neutral => {}
         }
     }
 
@@ -1500,6 +1501,18 @@ mod tests {
                 .rate_limit_deadline_for_test(model_config_id)
                 .await
                 .is_none()
+        );
+
+        let unsupported: Result<(), LlmError> = Err(LlmError::UnsupportedCapability(
+            "native transcription is not supported".into(),
+        ));
+        router
+            .record_request_outcome(model_config_id, &unsupported)
+            .await;
+        assert_eq!(
+            router.endpoint_circuits.read().await[model_config_id].consecutive_failures,
+            1,
+            "capability fallback must not change endpoint health"
         );
 
         let success: Result<(), LlmError> = Ok(());

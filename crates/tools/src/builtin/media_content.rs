@@ -216,8 +216,8 @@ impl MediaTranscriber {
         };
         let result = match result {
             Ok(Ok(result)) => result,
-            Ok(Err(error)) => {
-                return MediaTranscriptionResult::failed(format!("STT fallback failed: {error}"));
+            Ok(Err(_)) => {
+                return MediaTranscriptionResult::failed("STT fallback request failed");
             }
             Err(_) => {
                 return MediaTranscriptionResult::timed_out(format!(
@@ -468,11 +468,15 @@ impl MediaTool {
             .expect("OCR capability requires an OCR client");
         let bytes = match self.read_bounded(&asset, &cancel).await {
             Ok(bytes) => bytes,
-            Err(error) => {
+            Err(_) => {
                 return Ok(if cancel.is_cancelled() {
                     self.cancelled_media_result(MediaOperation::Ocr, &asset, "OCR cancelled")
                 } else {
-                    self.failed_media_result(MediaOperation::Ocr, &asset, error.to_string())
+                    self.failed_media_result(
+                        MediaOperation::Ocr,
+                        &asset,
+                        "failed to read managed media asset",
+                    )
                 });
             }
         };
@@ -506,10 +510,10 @@ impl MediaTool {
                 &asset,
                 "OCR provider returned no acceptable result",
             )),
-            Ok(Err(error)) => Ok(self.failed_media_result(
+            Ok(Err(_)) => Ok(self.failed_media_result(
                 MediaOperation::Ocr,
                 &asset,
-                format!("OCR call failed: {error}"),
+                "OCR provider request failed",
             )),
             Err(_) => Ok(self.timed_out_media_result(MediaOperation::Ocr, &asset)),
         }
@@ -547,11 +551,15 @@ impl MediaTool {
         };
         let bytes = match self.read_bounded(&asset, &cancel).await {
             Ok(bytes) => bytes,
-            Err(error) => {
+            Err(_) => {
                 return Ok(if cancel.is_cancelled() {
                     self.cancelled_media_result(operation, &asset, "vision request cancelled")
                 } else {
-                    self.failed_media_result(operation, &asset, error.to_string())
+                    self.failed_media_result(
+                        operation,
+                        &asset,
+                        "failed to read managed media asset",
+                    )
                 });
             }
         };
@@ -575,11 +583,11 @@ impl MediaTool {
             ) => response,
         } {
             Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
+            Ok(Err(_)) => {
                 return Ok(self.failed_media_result(
                     operation,
                     &asset,
-                    format!("vision call failed: {error}"),
+                    "vision provider request failed",
                 ));
             }
             Err(_) => {
@@ -636,7 +644,7 @@ impl MediaTool {
         }
         let bytes = match self.read_bounded(&asset, &cancel).await {
             Ok(bytes) => bytes,
-            Err(error) => {
+            Err(_) => {
                 return Ok(if cancel.is_cancelled() {
                     self.cancelled_media_result(
                         MediaOperation::Transcribe,
@@ -644,7 +652,11 @@ impl MediaTool {
                         "transcription cancelled",
                     )
                 } else {
-                    self.failed_media_result(MediaOperation::Transcribe, &asset, error.to_string())
+                    self.failed_media_result(
+                        MediaOperation::Transcribe,
+                        &asset,
+                        "failed to read managed media asset",
+                    )
                 });
             }
         };
@@ -709,9 +721,7 @@ impl MediaTool {
             MediaTranscriptionStatus::Failed => Ok(self.failed_media_result(
                 MediaOperation::Transcribe,
                 &asset,
-                transcription
-                    .error
-                    .unwrap_or_else(|| "STT provider failed".into()),
+                "STT provider request failed",
             )),
         }
     }

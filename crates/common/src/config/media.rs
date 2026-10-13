@@ -121,7 +121,10 @@ impl std::fmt::Debug for OcrConfig {
             .field("api_key_ref", &self.api_key_ref)
             .field("api_secret", &"[REDACTED]")
             .field("api_secret_ref", &self.api_secret_ref)
-            .field("base_url", &self.base_url)
+            .field(
+                "base_url",
+                &(!self.base_url.is_empty()).then_some("[CONFIGURED]"),
+            )
             .field("timeout_secs", &self.timeout_secs)
             .field("min_confidence", &self.min_confidence)
             .finish()
@@ -234,13 +237,18 @@ mod tests {
     fn ocr_config_accepts_staged_secrets_and_redacts_debug() {
         let config: OcrConfig = serde_json::from_value(serde_json::json!({
             "api_key": "ocr-key",
-            "api_secret": "ocr-secret"
+            "api_secret": "ocr-secret",
+            "base_url": "https://ocr-host-sentinel.example/private/path?token=ocr-query-sentinel"
         }))
         .expect("settings DTO accepts values before command validation");
 
         let debug = format!("{config:?}");
         assert!(!debug.contains("ocr-key"));
         assert!(!debug.contains("ocr-secret"));
+        assert!(!debug.contains("ocr-host-sentinel.example"));
+        assert!(!debug.contains("/private/path"));
+        assert!(!debug.contains("ocr-query-sentinel"));
         assert_eq!(debug.matches("[REDACTED]").count(), 2);
+        assert!(debug.contains("[CONFIGURED]"));
     }
 }

@@ -8,6 +8,9 @@ use rusqlite::OptionalExtension;
 pub struct PartialMessageCheckpoint {
     pub content: String,
     pub updated_at: String,
+    /// Highest durable message ingress sequence visible when this checkpoint
+    /// was stored. This is scratch ordering metadata, not a rollback watermark.
+    pub ingress_seq: i64,
 }
 
 /// Scratch storage for in-flight streamed text. While an LLM response is
@@ -30,12 +33,21 @@ impl Database {
         ensure_session_id(session_id)?;
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
-        conn.execute(
-            "INSERT INTO partial_messages (session_id, content, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(session_id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
-            rusqlite::params![session_id, content, now],
-        )?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<()> {
+            let ingress_seq = last_message_ingress_seq(&conn, session_id)?;
+            conn.execute(
+                "INSERT INTO partial_messages (session_id, content, updated_at, ingress_seq)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                     content = excluded.content,
+                     updated_at = excluded.updated_at,
+                     ingress_seq = excluded.ingress_seq",
+                rusqlite::params![session_id, content, now, ingress_seq],
+            )?;
+            Ok(())
+        })();
+        finish_write_transaction(&conn, result)?;
         Ok(())
     }
 
@@ -44,39 +56,17 @@ impl Database {
     pub fn get_partial_message(&self, session_id: &str) -> Option<PartialMessageCheckpoint> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT content, updated_at FROM partial_messages WHERE session_id = ?1",
+            "SELECT content, updated_at, ingress_seq FROM partial_messages WHERE session_id = ?1",
             rusqlite::params![session_id],
             |row| {
                 Ok(PartialMessageCheckpoint {
                     content: row.get(0)?,
                     updated_at: row.get(1)?,
+                    ingress_seq: row.get(2)?,
                 })
             },
         )
         .ok()
-    }
-
-    /// Read and remove the partial row for a session. Atomic (single
-    /// `DELETE ... RETURNING` statement), so a concurrent writer can never
-    /// observe a row that was already taken.
-    pub fn take_partial_message(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<Option<PartialMessageCheckpoint>> {
-        ensure_session_id(session_id)?;
-        let conn = self.conn();
-        conn.query_row(
-            "DELETE FROM partial_messages WHERE session_id = ?1 RETURNING content, updated_at",
-            rusqlite::params![session_id],
-            |row| {
-                Ok(PartialMessageCheckpoint {
-                    content: row.get(0)?,
-                    updated_at: row.get(1)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(Into::into)
     }
 
     /// Drop the partial row for a session (superseded by a real message, or the
@@ -102,32 +92,87 @@ impl Database {
     /// trip; used by ses-end promotion and the startup orphan finalizer.
     pub fn promote_partial_message(&self, session_id: &str) -> anyhow::Result<bool> {
         ensure_session_id(session_id)?;
-        let Some(checkpoint) = self.take_partial_message(session_id)? else {
-            return Ok(false);
-        };
-        let PartialMessageCheckpoint {
-            content,
-            updated_at,
-        } = checkpoint;
-        if content.trim().is_empty() {
-            return Ok(false);
+        let conn = self.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<bool> {
+            let checkpoint = conn
+                .query_row(
+                    "SELECT content, updated_at, ingress_seq
+                     FROM partial_messages WHERE session_id = ?1",
+                    rusqlite::params![session_id],
+                    |row| {
+                        Ok(PartialMessageCheckpoint {
+                            content: row.get(0)?,
+                            updated_at: row.get(1)?,
+                            ingress_seq: row.get(2)?,
+                        })
+                    },
+                )
+                .optional()?;
+            let Some(checkpoint) = checkpoint else {
+                return Ok(false);
+            };
+            let superseded = last_message_ingress_seq(&conn, session_id)? > checkpoint.ingress_seq;
+            if checkpoint.content.trim().is_empty() || superseded {
+                conn.execute(
+                    "DELETE FROM partial_messages WHERE session_id = ?1",
+                    rusqlite::params![session_id],
+                )?;
+                return Ok(false);
+            }
+            let message_id = haven_common::types::new_id("msg");
+            Database::insert_message_row_in_transaction(
+                &conn,
+                session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                checkpoint.content.trim(),
+                Some(haven_common::types::TranscriptMessageKind::Text),
+                None,
+                &[],
+                false,
+                &message_id,
+                &[],
+            )?;
+            let deleted = conn.execute(
+                "DELETE FROM partial_messages WHERE session_id = ?1",
+                rusqlite::params![session_id],
+            )?;
+            anyhow::ensure!(
+                deleted == 1,
+                "partial message checkpoint disappeared during promotion"
+            );
+            Ok(true)
+        })();
+        let promoted = finish_write_transaction(&conn, result)?;
+        drop(conn);
+        if promoted {
+            self.cache_invalidate_messages(session_id);
         }
-        if let Some(last) = self.get_last_message_created_at_best_effort(session_id)
-            && last >= updated_at
-        {
-            return Ok(false);
+        Ok(promoted)
+    }
+}
+
+fn last_message_ingress_seq(conn: &rusqlite::Connection, session_id: &str) -> anyhow::Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COALESCE(MAX(ingress_seq), 0) FROM messages WHERE session_id = ?1",
+        rusqlite::params![session_id],
+        |row| row.get(0),
+    )?)
+}
+
+fn finish_write_transaction<T>(
+    conn: &rusqlite::Connection,
+    result: anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    match result {
+        Ok(value) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(value)
         }
-        self.add_message_full(
-            session_id,
-            haven_common::types::CanonicalRole::Assistant,
-            content.trim(),
-            Some(haven_common::types::TranscriptMessageKind::Text),
-            None,
-            &[],
-            false,
-            None,
-        )?;
-        Ok(true)
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
     }
 }
 
@@ -142,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_get_take_cycle() {
+    fn upsert_get_cycle() {
         let db = test_db();
         let session_id = db.create_session("input").unwrap().session_id;
         assert!(db.get_partial_message(&session_id).is_none());
@@ -154,12 +199,7 @@ mod tests {
             .get_partial_message(&session_id)
             .expect("partial exists after upsert");
         assert_eq!(checkpoint.content, "partial two");
-        let taken = db
-            .take_partial_message(&session_id)
-            .unwrap()
-            .expect("taken");
-        assert_eq!(taken.content, "partial two");
-        assert!(db.get_partial_message(&session_id).is_none());
+        assert_eq!(checkpoint.ingress_seq, 0);
     }
 
     #[test]
@@ -194,7 +234,6 @@ mod tests {
             db.upsert_partial_message(invalid_session_id, "must not overwrite")
                 .is_err()
         );
-        assert!(db.take_partial_message(invalid_session_id).is_err());
         assert!(db.delete_partial_message(invalid_session_id).is_err());
         assert!(db.promote_partial_message(invalid_session_id).is_err());
 
@@ -255,6 +294,44 @@ mod tests {
         let msgs = db.list_session_messages(&session_id).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "newer real message");
+    }
+
+    #[test]
+    fn failed_partial_promotion_keeps_checkpoint_and_retries_atomically() {
+        let db = test_db();
+        let session_id = db.create_session("partial retry").unwrap().session_id;
+        db.upsert_partial_message(&session_id, "preserve this reply")
+            .unwrap();
+        {
+            let conn = db.conn();
+            conn.execute_batch(
+                "CREATE TRIGGER fail_partial_promotion
+                 BEFORE INSERT ON messages
+                 WHEN NEW.role = 'assistant'
+                 BEGIN SELECT RAISE(ABORT, 'forced partial insert failure'); END;",
+            )
+            .unwrap();
+        }
+
+        assert!(db.promote_partial_message(&session_id).is_err());
+        assert_eq!(
+            db.get_partial_message(&session_id)
+                .expect("failed insert rolls checkpoint back")
+                .content,
+            "preserve this reply"
+        );
+        assert!(db.list_session_messages(&session_id).unwrap().is_empty());
+        assert_eq!(db.get_last_message_ingress_seq(&session_id), 0);
+
+        db.conn()
+            .execute_batch("DROP TRIGGER fail_partial_promotion")
+            .unwrap();
+        assert!(db.promote_partial_message(&session_id).unwrap());
+        assert!(db.get_partial_message(&session_id).is_none());
+        assert_eq!(
+            db.list_session_messages(&session_id).unwrap()[0].content,
+            "preserve this reply"
+        );
     }
 
     #[tokio::test]

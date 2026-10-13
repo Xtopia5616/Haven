@@ -69,10 +69,7 @@ pub(super) async fn atomic_replace(
             None => expected.trim().eq_ignore_ascii_case("missing"),
         };
         if !matches {
-            anyhow::bail!(
-                "write compare failed for '{}': expected_hash does not match the current file",
-                path.display()
-            );
+            anyhow::bail!("write compare failed: expected_hash does not match the current file");
         }
     }
     let sha256 = sha256_bytes(bytes);
@@ -215,7 +212,7 @@ pub(super) fn sanitize_path(path: &str) -> anyhow::Result<String> {
         .components()
         .any(|c| matches!(c, Component::ParentDir))
     {
-        anyhow::bail!("path traversal detected: '{}'", path);
+        anyhow::bail!("path traversal detected");
     }
     Ok(normalized.to_string_lossy().to_string())
 }

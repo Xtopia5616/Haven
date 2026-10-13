@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::collections::HashSet;
 use std::env;
 use tokio_util::sync::CancellationToken;
 
@@ -121,21 +122,12 @@ impl EnvTool {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_ascii_uppercase());
-                let mut vars: Vec<Value> = list_values(scope)?
-                    .filter(|(k, _)| {
-                        prefix
-                            .as_ref()
-                            .map(|p| k.to_ascii_uppercase().starts_with(p.as_str()))
-                            .unwrap_or(true)
-                    })
-                    .map(|(k, _)| serde_json::json!({"name": k}))
-                    .collect();
-                vars.sort_by(|a, b| {
-                    a["name"]
-                        .as_str()
-                        .unwrap_or("")
-                        .cmp(b["name"].as_str().unwrap_or(""))
-                });
+                let vars = normalize_variable_names(list_values(scope)?.filter(|(k, _)| {
+                    prefix
+                        .as_ref()
+                        .map(|p| k.to_ascii_uppercase().starts_with(p.as_str()))
+                        .unwrap_or(true)
+                }));
                 let count = vars.len();
                 let max_chars = self.max_output_chars;
                 let capped = crate::util::cap_json_list("variables", vars, count, max_chars);
@@ -154,6 +146,21 @@ impl EnvTool {
             }
         }
     }
+}
+
+fn normalize_variable_names(values: impl Iterator<Item = (String, String)>) -> Vec<Value> {
+    let mut seen_names = HashSet::new();
+    let mut variables: Vec<Value> = values
+        .filter(|(name, _)| seen_names.insert(name.to_ascii_uppercase()))
+        .map(|(name, _)| serde_json::json!({"name": name}))
+        .collect();
+    variables.sort_by(|left, right| {
+        left["name"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(right["name"].as_str().unwrap_or(""))
+    });
+    variables
 }
 
 fn read_value(scope: EnvScope, name: &str) -> anyhow::Result<Result<String, env::VarError>> {
@@ -237,6 +244,25 @@ impl Default for EnvTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn variable_names_are_unique_case_insensitively_and_sorted() {
+        let values = vec![
+            ("Path".to_string(), "first".to_string()),
+            ("HOME".to_string(), "home".to_string()),
+            ("PATH".to_string(), "duplicate".to_string()),
+        ];
+
+        let variables = normalize_variable_names(values.into_iter());
+
+        assert_eq!(
+            variables,
+            vec![
+                serde_json::json!({"name": "HOME"}),
+                serde_json::json!({"name": "Path"})
+            ]
+        );
+    }
 
     fn unique_var_name(tag: &str) -> String {
         use std::sync::atomic::{AtomicU64, Ordering};

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use haven_common::config::default_generated_media_root;
 use haven_common::config::{MAX_CLIPBOARD_ENTRY_OUTPUT_CHARS, MAX_CLIPBOARD_HISTORY_ENTRIES};
-use haven_common::types::RiskLevel;
+use haven_common::types::{RiskLevel, new_id};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::VecDeque;
@@ -22,6 +22,7 @@ const CLIPBOARD_HISTORY_TRUNCATION_MARKER: &str = "\n[clipboard history entry tr
 /// One clipboard history entry.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ClipboardEntry {
+    pub entry_id: String,
     pub content: String,
     pub timestamp_ms: u64,
 }
@@ -84,6 +85,7 @@ impl ClipboardHistory {
             state.entries.push_front(entry);
         } else {
             state.entries.push_front(ClipboardEntry {
+                entry_id: new_id("clip"),
                 content,
                 timestamp_ms,
             });
@@ -500,6 +502,7 @@ impl ClipboardTool {
                             self.entry_max_chars,
                         );
                         serde_json::json!({
+                            "entry_id": e.entry_id,
                             "content": output.text,
                             "timestamp_ms": e.timestamp_ms,
                         })
@@ -886,9 +889,10 @@ fn validate_file_paths_cancellable(
             anyhow::bail!("cancelled");
         }
         let path = PathBuf::from(path);
-        let metadata = std::fs::metadata(&path)?;
+        let metadata = std::fs::metadata(&path)
+            .map_err(|_| anyhow::anyhow!("clipboard source file is unavailable"))?;
         if !metadata.is_file() {
-            anyhow::bail!("clipboard path is not a file: {}", path.display());
+            anyhow::bail!("clipboard source is not a file");
         }
         validated.push(path);
     }
@@ -1318,8 +1322,35 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["content"], "beta");
         assert_eq!(entries[1]["content"], "alpha");
+        assert!(
+            entries[0]["entry_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("clip-")
+        );
+        assert!(
+            entries[1]["entry_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("clip-")
+        );
         assert_eq!(result.output["total"], 2);
         assert!(entries[0]["timestamp_ms"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn recording_duplicate_clipboard_content_preserves_row_identity() {
+        let history = ClipboardHistory::new(10);
+        history.record("alpha".into());
+        let alpha_id = history.recent(1)[0].entry_id.clone();
+        history.record("beta".into());
+
+        history.record("alpha".into());
+
+        let entries = history.recent(2);
+        assert_eq!(entries[0].content, "alpha");
+        assert_eq!(entries[0].entry_id, alpha_id);
+        assert_eq!(entries[1].content, "beta");
     }
 
     #[tokio::test]

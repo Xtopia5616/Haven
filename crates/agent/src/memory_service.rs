@@ -215,7 +215,7 @@ impl MemoryService {
                     Ok(_) => (None, true),
                     Err(error) => {
                         tracing::debug!(
-                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            failure_reason = prompt_memory_embedding_failure_reason(&error),
                             "prompt memory embedding failed; skipping memory cache for this pass"
                         );
                         (None, false)
@@ -243,7 +243,7 @@ impl MemoryService {
                         MemoryEntityKind::Episode,
                         MAX_EPISODES_IN_PROMPT,
                     )?
-                    .with_excluded_session(key.exclude_session_id.as_deref());
+                    .with_excluded_session(key.exclude_session_id.as_deref())?;
                     let fact_hits = self
                         .recall_store
                         .vector_recall(fact_query, vector.to_vec(), embedding_model.clone())
@@ -286,7 +286,7 @@ impl MemoryService {
                     MemoryEntityKind::Episode,
                     MAX_EPISODES_IN_PROMPT,
                 )?
-                .with_excluded_session(key.exclude_session_id.as_deref());
+                .with_excluded_session(key.exclude_session_id.as_deref())?;
                 self.recall_store.keyword_recall(query).await?
             };
 
@@ -363,9 +363,26 @@ impl MemoryService {
     }
 }
 
+fn prompt_memory_embedding_failure_reason(error: &haven_llm::LlmError) -> &'static str {
+    error.connection_failure_reason().as_str()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_embedding_failure_diagnostic_uses_stable_category() {
+        let error = haven_llm::LlmError::Network(
+            "provider returned secret response body and https://user:secret@example.com".into(),
+        );
+
+        let reason = prompt_memory_embedding_failure_reason(&error);
+
+        assert_eq!(reason, "network");
+        assert!(!reason.contains("secret"));
+        assert!(!reason.contains("example.com"));
+    }
     use haven_common::config::{
         Capability, ModelEndpoint, RequestPolicy, RoutedModel, RouterConfig,
     };

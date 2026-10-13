@@ -622,6 +622,28 @@ mod tests {
     }
 
     #[test]
+    fn oversized_settings_patch_preserves_snapshot_version_and_file() {
+        let (service, dir) = service();
+        let path = dir.path().join("config.toml");
+        let original = std::fs::read(&path).unwrap();
+        let before = service.snapshot().unwrap();
+        let mut settings = service.settings().unwrap();
+        settings.llm.providers.push(crate::config::ProviderConfig {
+            name: "primary".into(),
+            no_proxy: Some("x".repeat(4 * 1024 * 1024 + 1)),
+            ..Default::default()
+        });
+
+        let error = service
+            .apply_patch(ConfigPatch::Settings(Box::new(settings)))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("serialized config exceeds"));
+        assert_eq!(service.snapshot().unwrap(), before);
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
     fn no_op_patch_does_not_write_or_notify() {
         let (service, _dir) = service();
         let receiver = service.subscribe().unwrap();

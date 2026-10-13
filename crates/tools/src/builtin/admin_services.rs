@@ -696,13 +696,13 @@ impl AdminServices {
     pub(crate) async fn skills_list(&self) -> Result<SkillsListOutput> {
         let skills: Vec<SkillSummaryOutput> = self
             .skill_registry
-            .list_skill_infos()
+            .list_skill_catalog_entries()
             .await
             .into_iter()
             .map(|skill| {
-                let root = skill.root.clone();
+                let root = skill.root.to_string_lossy().into_owned();
                 SkillSummaryOutput {
-                    status: skill.into(),
+                    status: skill.info.into(),
                     root,
                 }
             })
@@ -804,7 +804,7 @@ impl AdminServices {
         let root = self.skill_registry.resolved_root().await;
         let skill_dir = root.join(name);
         if skill_dir.exists() {
-            anyhow::bail!("skill '{}' already exists at {}", name, skill_dir.display());
+            anyhow::bail!("skill '{name}' already exists");
         }
         tokio::fs::create_dir_all(&skill_dir).await?;
         let desc_line = description.replace(['\n', '\r'], " ");

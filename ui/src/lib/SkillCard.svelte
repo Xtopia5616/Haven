@@ -139,9 +139,6 @@
 			<p class="skill-unavailable-reason" role="status">{skill.unavailableReason}</p>
 		{/if}
 
-		<h4>技能路径</h4>
-		<code class="path">{skill.rootPath}</code>
-
 		{#if skill.hasScript}
 			<h4>执行预览</h4>
 			<div class="preview-row">
@@ -196,12 +193,6 @@
 	.script-badge--missing {
 		background: var(--md-sys-color-error-container);
 		color: var(--md-sys-color-on-error-container);
-	}
-	.path {
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		word-break: break-all;
 	}
 	.skill-unavailable-reason {
 		color: var(--md-sys-color-error);

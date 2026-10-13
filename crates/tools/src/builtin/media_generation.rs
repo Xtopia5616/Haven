@@ -54,10 +54,11 @@ impl MediaTool {
             result = tokio::time::timeout(
                 Duration::from_secs(timeout_secs),
                 client.generate(&prompt),
-            ) => result
-                .map_err(|_| {
-                    anyhow::anyhow!("image generation timed out after {}s", timeout_secs)
-                })??,
+            ) => match result {
+                Ok(Ok(image)) => image,
+                Ok(Err(_)) => anyhow::bail!("image generation provider request failed"),
+                Err(_) => anyhow::bail!("image generation timed out after {}s", timeout_secs),
+            },
         };
         if cancel.is_cancelled() {
             return Ok(ToolResult::cancelled("image generation cancelled"));

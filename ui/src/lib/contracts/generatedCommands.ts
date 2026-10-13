@@ -369,7 +369,7 @@ export type SessionHistoryStatusFilterInput = (typeof SESSION_HISTORY_STATUS_FIL
 export interface SessionStep { step_id: string; session_id: string; step_number: number; tool_index: number; thought: string | null; tool_name: string | null; tool_input: string | null; tool_call_id: string | null; observation: string | null; status: SessionStepStatus; is_high_risk: boolean; confirmed: boolean | null; silent: boolean; started_at: string | null; completed_at: string | null; created_at: string }
 export interface LlmUsageRecord { usage_id: string; session_id: string; step_number: number | null; request_kind: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: CacheAccounting; cache_diagnostics?: CacheDiagnostics; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
-export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; executable: boolean; root: string; has_script: boolean; unavailable_reason: string | null; manifest_error: string | null }
+export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; executable: boolean; has_script: boolean; unavailable_reason: string | null; manifest_error: string | null }
 export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;
 export const ADD_FACT_RESPONSE_SHAPE = {
 	kind: 'object',
@@ -4875,10 +4875,6 @@ export const LIST_SKILLS_RESPONSE_SHAPE = { kind: 'array', items: {
 		'executable': {
 			optional: false,
 			shape: { kind: 'boolean' },
-		},
-		'root': {
-			optional: false,
-			shape: { kind: 'string' },
 		},
 		'has_script': {
 			optional: false,

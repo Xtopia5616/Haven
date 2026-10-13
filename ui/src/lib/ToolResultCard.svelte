@@ -76,7 +76,7 @@
 		renderer = null,
 		result = null,
 		content = '',
-		options = [],
+		options: rawOptions = [],
 		awaiting = false,
 		messageId = '',
 		selectedAskOptions = [],
@@ -97,6 +97,9 @@
 		toolArgsTruncated = false,
 		showFallbackIntent = false,
 	}: Props = $props();
+	let options = $derived(
+		[...new Set(rawOptions.map((option) => option.trim()).filter((option) => option.length > 0))],
+	);
 
 	let toolSource = $derived(classifyToolSource(toolName));
 	let sourceBadge = $derived(toolSourceLabel(toolSource));
@@ -106,7 +109,9 @@
 
 	// Local multi-select for ask option chips. Click toggles; Enter in the
 	// chat input submits (page composes selected options + any typed text).
-	let selectedOptions = $state<string[]>(untrack(() => [...selectedAskOptions]));
+	let selectedOptions = $state<string[]>(
+		untrack(() => [...new Set(selectedAskOptions.map((option) => option.trim()).filter(Boolean))]),
+	);
 
 	function toggleAskOption(opt: string) {
 		if (!awaiting) return;
@@ -140,7 +145,9 @@
 	// Drop stale selections when the card leaves the awaiting state (answered,
 	// ignored, or session resumed) so a later ask never inherits them.
 	$effect(() => {
-		selectedOptions = awaiting ? [...selectedAskOptions] : [];
+		selectedOptions = awaiting
+			? [...new Set(selectedAskOptions.map((option) => option.trim()).filter(Boolean))]
+			: [];
 	});
 
 	// Tool result outcomes use a richer enum than the shared card display state.

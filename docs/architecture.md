@@ -146,7 +146,8 @@ operation 实现。边界见 ADR 0162、ADR 0211、ADR 0212 与 ADR 0213。
 compact `media` reference 回到工具 observation，后续调用可以复用同一个 asset id；持久化
 附件仍使用 common 层的 `MediaInput`。窗口截图和录音
 进入生成媒体根目录并登记 session lease，`files.read/summary` 对 rich path 也转交到该入口；
-宿主路径和 base64 不进入模型工具契约（ADR 0123）。媒体派生调用的 usage 作为
+媒体派生契约不接受宿主路径或 base64；`media.play.file_path` 是受 `allowed_paths` 校验的
+显式本机播放入口（ADR 0089、0123、0133）。媒体派生调用的 usage 作为
 `llm_usage.call_kind=media` 与 `call_kind=tool` 单独保留，不污染 Agent 主循环的累计
 cache rate（ADR 0124）。原始附件的 MediaPlan 投影同时留下短的 asset→representation
 notice，避免模型重复派生或猜测资产是否已经进入上下文（ADR 0129）。

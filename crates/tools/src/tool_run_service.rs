@@ -36,7 +36,7 @@ use haven_common::tool_run::ScheduleMode;
 use haven_memory::{ToolRunCompletionOutboxRow, ToolRunStore};
 
 use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
-use crate::process::{kill_process_tree, read_stream_text_capped};
+use crate::process::read_stream_text_capped;
 use crate::shell_runtime::{build_shell_command, collect_byte_cap, write_output_log};
 
 mod background;

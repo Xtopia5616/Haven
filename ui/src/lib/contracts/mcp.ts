@@ -2,7 +2,14 @@
 import { isValidMcpServerName } from '../mcpServerName.ts';
 import { isMcpClientStatus } from './mcpClientStatus.ts';
 import { isRecord } from './objectGuards.ts';
-import { isBoolean, isOneOf, isSafeInteger, isString, isStringArray } from './valueGuards.ts';
+import {
+	isBoolean,
+	isNonEmptyString,
+	isOneOf,
+	isSafeInteger,
+	isString,
+	isStringArray,
+} from './valueGuards.ts';
 import {
 	MCP_SERVER_TRANSPORT_VALUES,
 	type McpRefreshResult as GeneratedMcpRefreshResult,
@@ -55,7 +62,8 @@ function isNullableString(value: unknown): value is string | null {
 function isMcpToolInfo(value: unknown): value is ValidatedMcpToolInfo {
 	return (
 		isRecord(value) &&
-		isString(value.name) &&
+		isNonEmptyString(value.name) &&
+		value.name.trim().length > 0 &&
 		isString(value.description) &&
 		isRecord(value.input_schema)
 	);
@@ -76,6 +84,7 @@ function isMcpServerSnapshot(value: unknown): value is ValidatedMcpServerSnapsho
 		isMcpClientStatus(value.status) &&
 		Array.isArray(value.tools) &&
 		value.tools.every(isMcpToolInfo) &&
+		new Set(value.tools.map((tool) => tool.name)).size === value.tools.length &&
 		isNullableString(value.last_error) &&
 		isNullableString(value.diagnostic) &&
 		(value.last_seen_at === null || isSafeInteger(value.last_seen_at))

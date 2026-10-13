@@ -14,7 +14,6 @@ export interface SkillInfoView {
 	language: string;
 	enabled: boolean;
 	executable: boolean;
-	rootPath: string;
 	hasScript: boolean;
 	unavailableReason: string | null;
 	manifestError: string | null;
@@ -35,7 +34,6 @@ function isSkillInfo(value: unknown): value is ValidatedSkillInfo {
 		isString(value.language) &&
 		isBoolean(value.enabled) &&
 		isBoolean(value.executable) &&
-		isNonEmptyString(value.root) &&
 		isBoolean(value.has_script) &&
 		isNullableString(value.unavailable_reason) &&
 		isNullableString(value.manifest_error)
@@ -50,7 +48,6 @@ function toSkillInfoView(skill: ValidatedSkillInfo): SkillInfoView {
 		language: skill.language,
 		enabled: skill.enabled,
 		executable: skill.executable,
-		rootPath: skill.root,
 		hasScript: skill.has_script,
 		unavailableReason: skill.unavailable_reason,
 		manifestError: skill.manifest_error,

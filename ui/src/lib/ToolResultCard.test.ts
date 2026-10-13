@@ -71,7 +71,7 @@ describe('canRenderToolResult', () => {
 		expect(
 			canRenderToolResult(
 				'system',
-				JSON.stringify({ scope: 'window', windows: [{ title: 'x' }] }),
+				JSON.stringify({ scope: 'window', windows: [{ window_id: 'hwnd:1', title: 'x' }] }),
 			),
 		).toBe(true);
 		expect(
@@ -256,13 +256,26 @@ describe('operation view UI contract', () => {
 			{ renderer: 'agent', data: { auto: 'yes' } },
 			{ renderer: 'clipboard', data: { entries: [null] } },
 			{ renderer: 'clipboard', data: { entries: null } },
-			{ renderer: 'clipboard', data: { entries: [{ content: 'copied text' }] } },
+			{ renderer: 'clipboard', data: { entries: [{ entry_id: 'clip-00000000000000000000000000000001', content: 'copied text' }, { entry_id: 'clip-00000000000000000000000000000002', content: 'copied text' }] } },
+			{ renderer: 'clipboard', data: { entries: [{ content: 'missing identity' }] } },
+			{ renderer: 'clipboard', data: { entries: [{ entry_id: 'clip-short', content: 'invalid identity' }] } },
+			{ renderer: 'clipboard', data: { entries: [{ entry_id: 'clip-00000000000000000000000000000001', content: 'first' }, { entry_id: 'clip-00000000000000000000000000000001', content: 'second' }] } },
 			{ renderer: 'input', data: { operation: 'click', clicked: [12, '20'] } },
 			{ renderer: 'input', data: { operation: 'restart' } },
 			{ renderer: 'input', data: { operation: 'click', button: 'primary' } },
 			{ renderer: 'input', data: { operation: 'type', typed: 42 } },
 			{ renderer: 'window', data: { elements: [null] } },
 			{ renderer: 'window', data: { windows: [{ title: 42 }] } },
+			{ renderer: 'window', data: { windows: [{ title: 'missing identity' }] } },
+			{
+				renderer: 'window',
+				data: {
+					windows: [
+						{ window_id: 'hwnd:1' },
+						{ window_id: 'hwnd:1' },
+					],
+				},
+			},
 			{ renderer: 'window', data: { operation: 'restart' } },
 			{ renderer: 'window', data: { operation: 'screenshot', asset_id: 'asset-1' } },
 			{
@@ -273,6 +286,11 @@ describe('operation view UI contract', () => {
 			{ renderer: 'window', data: { operation: 'screenshot', format: 'jpeg' } },
 			{ renderer: 'window', data: { elements: [{ control_type: 'FutureControl' }] } },
 			{ renderer: 'window', data: { elements: [{ element_token: 1 }] } },
+			{ renderer: 'window', data: { elements: [{ element_token: '' }] } },
+			{
+				renderer: 'window',
+				data: { elements: [{ element_token: 'same' }, { element_token: 'same' }] },
+			},
 			{ renderer: 'tool_runs', data: { tool_runs: [null] } },
 			{ renderer: 'tool_runs', data: { operation: 'pause' } },
 			{ renderer: 'tool_runs', data: { tool_run_id: toolRunId(1), status: 'future-status' } },
@@ -328,6 +346,16 @@ describe('operation view UI contract', () => {
 			},
 			{ renderer: 'system', data: { networks: [{ name: 'Wi-Fi', state: 'up', ips: null }] } },
 			{ renderer: 'system', data: { disks: [{ mount: 'C:', available_bytes: 1 }] } },
+			{ renderer: 'system', data: { variables: [{ value: 'no name' }] } },
+			{
+				renderer: 'system',
+				data: { variables: [{ name: 'PATH' }, { name: 'PATH' }] },
+			},
+			{ renderer: 'admin', data: { skills: [{ enabled: true }] } },
+			{
+				renderer: 'admin',
+				data: { skills: [{ name: 'duplicate' }, { name: 'duplicate' }] },
+			},
 			{
 				renderer: 'system',
 				data: { displays: [{ name: 'DISPLAY1', height: 1080, primary: true }] },
@@ -337,7 +365,6 @@ describe('operation view UI contract', () => {
 			{ renderer: 'system', data: { scope: 'power', ac_power: 'plugged' } },
 			{ renderer: 'system', data: { scope: 'power', battery_status: 'empty' } },
 			{ renderer: 'shell', data: { tool_run_id: 'toolrun-short' } },
-			{ renderer: 'haven_mcp', data: { servers: [null] } },
 			{
 				renderer: 'haven_diagnostics',
 				data: {
@@ -369,8 +396,33 @@ describe('operation view UI contract', () => {
 			{ renderer: 'memory', data: { facts: [{ tags: 42 }] } },
 			{ renderer: 'memory', data: { operation: 'future-operation' } },
 			{ renderer: 'memory', data: { facts: [{ confidence: '0.75' }] } },
+			{ renderer: 'memory', data: { facts: [{ fact_id: 'fact-short' }] } },
+			{
+				renderer: 'memory',
+				data: {
+					facts: [
+						{ fact_id: 'fact-00000000000000000000000000000001' },
+						{ fact_id: 'fact-00000000000000000000000000000001' },
+					],
+				},
+			},
 			{ renderer: 'memory', data: { hits: null } },
-			{ renderer: 'memory', data: { hits: [{ score: '0.9' }] } },
+			{ renderer: 'memory', data: { kind: 'fact', hits: [{ score: '0.9' }] } },
+			{ renderer: 'memory', data: { hits: [] } },
+			{
+				renderer: 'memory',
+				data: { kind: 'fact', hits: [{ entity_id: 'msg-00000000000000000000000000000001' }] },
+			},
+			{
+				renderer: 'memory',
+				data: {
+					kind: 'fact',
+					hits: [
+						{ entity_id: 'fact-00000000000000000000000000000001' },
+						{ entity_id: 'fact-00000000000000000000000000000001' },
+					],
+				},
+			},
 			{ renderer: 'memory', data: { hits: [], mode: 'future-mode' } },
 		];
 
@@ -438,7 +490,7 @@ describe('operation view UI contract', () => {
 					networks: [{ name: 'Wi-Fi', state: 'up', ips: [] }],
 					disks: [{ mount: 'C:', total_bytes: 1024, available_bytes: 512 }],
 					displays: [{ name: 'DISPLAY1', width: 1920, height: 1080, primary: true }],
-					variables: [{ name: null, value: null }],
+					variables: [{ name: 'PATH', value: null }],
 					values: [],
 					subkeys: [],
 				},
@@ -481,8 +533,8 @@ describe('operation view UI contract', () => {
 				'window',
 				{
 					media: { asset_id: null, content: { opaque: true } },
-					windows: [{ hwnd: null, title: null, pid: null }],
-					elements: [{ name: null, control_type: null }],
+					windows: [{ window_id: 'hwnd:1', hwnd: null, title: null, pid: null }],
+					elements: [{ element_token: 'element:1', name: null, control_type: null }],
 					count: null,
 					available: null,
 					note: null,
@@ -560,7 +612,7 @@ describe('operation view UI contract', () => {
 			getToolResultRenderer(
 				'custom',
 				'clipboard',
-				{ entries: [{ content: 'copied text' }], total: 1, written: null, content: null },
+				{ entries: [{ entry_id: 'clip-00000000000000000000000000000001', content: 'copied text' }], total: 1, written: null, content: null },
 				'clipboard',
 			),
 		).toBe(ToolClipboardResult);
@@ -588,6 +640,7 @@ describe('operation view UI contract', () => {
 					mode: null,
 					facts: [
 						{
+							fact_id: 'fact-00000000000000000000000000000001',
 							id: null,
 							subject: null,
 							predicate: null,
@@ -660,7 +713,7 @@ describe('operation view UI contract', () => {
 				{
 					operation: 'wait',
 					condition: 'title_contains',
-					elements: [{ control_type: 'Unknown' }],
+					elements: [{ element_token: 'element:1', control_type: 'Unknown' }],
 				},
 				'window',
 			),
@@ -685,7 +738,7 @@ describe('operation view UI contract', () => {
 			getToolResultRenderer(
 				'custom',
 				'clipboard',
-				{ entries: [{ content: 'copied text', timestamp_ms: 'not rendered' }], total: 1 },
+				{ entries: [{ entry_id: 'clip-00000000000000000000000000000001', content: 'copied text', timestamp_ms: 'not rendered' }], total: 1 },
 				'clipboard',
 			),
 		).not.toBe(ToolJsonResult);
@@ -759,23 +812,6 @@ describe('operation view UI contract', () => {
 					],
 				},
 				'haven_diagnostics',
-			),
-		).not.toBe(ToolJsonResult);
-		expect(
-			getToolResultRenderer(
-				'custom',
-				'haven_mcp',
-				{
-					servers: [
-						{
-							name: 'server',
-							connected: true,
-							tools: 2,
-							status: { unexpected: true },
-						},
-					],
-				},
-				'haven_mcp',
 			),
 		).not.toBe(ToolJsonResult);
 		expect(
@@ -879,6 +915,20 @@ describe('ToolResultCard ask', () => {
 		expect(screen.queryByText('回答方式')).toBeNull();
 		expect(screen.getByText('方案 A')).toBeTruthy();
 		expect(screen.getByText('方案 B')).toBeTruthy();
+	});
+
+	it('trims and deduplicates restored quick reply options before rendering', () => {
+		const { container } = render(ToolResultCard, {
+			type: 'ask',
+			content: '选择？',
+			options: [' A ', 'A', '', 'B'],
+			selectedAskOptions: [' A ', 'A'],
+			awaiting: true,
+			messageId: 'ask-dedup',
+		});
+
+		expect(container.querySelectorAll('.ask-option')).toHaveLength(2);
+		expect(container.querySelector('.ask-selection-count')?.textContent?.trim()).toBe('1/2');
 	});
 
 	it('hides options and waiting once answered', () => {
@@ -1956,7 +2006,7 @@ describe('ToolResultCard memory', () => {
 			toolName: 'memory',
 			content: JSON.stringify({
 				operation: 'search',
-				facts: [{ subject: 'user', predicate: '喜欢', object: 'Rust', confidence: 0.92 }],
+				facts: [{ fact_id: 'fact-00000000000000000000000000000001', subject: 'user', predicate: '喜欢', object: 'Rust', confidence: 0.92 }],
 			}),
 		});
 		await expandToolCard(container);
@@ -1969,7 +2019,7 @@ describe('ToolResultCard memory', () => {
 	it('renders recall hits and empty states', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'memory',
-			content: JSON.stringify({ operation: 'recall', hits: [], mode: 'keyword' }),
+			content: JSON.stringify({ operation: 'recall', kind: 'fact', hits: [], mode: 'keyword' }),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('0 条召回结果 · keyword')).toBeTruthy();
