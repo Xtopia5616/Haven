@@ -171,6 +171,7 @@ type SessionStateListener = (state: SessionReducerState) => void;
 /** Observable wrapper used by the route and reducer-focused tests. */
 export class SessionReducer {
 	private state: SessionReducerState;
+	private userSelectionVersion = 0;
 	private readonly listeners = new Set<SessionStateListener>();
 	private readonly stateStore?: Writable<SessionReducerState>;
 
@@ -184,6 +185,20 @@ export class SessionReducer {
 
 	snapshot(): SessionReducerState {
 		return this.state;
+	}
+
+	/** Mark an explicit user selection intent before any asynchronous work begins. */
+	beginUserSelection(): number {
+		this.userSelectionVersion += 1;
+		return this.userSelectionVersion;
+	}
+
+	currentUserSelectionVersion(): number {
+		return this.userSelectionVersion;
+	}
+
+	isUserSelectionCurrent(version: number): boolean {
+		return this.userSelectionVersion === version;
 	}
 
 	getMessages(sessionId: string): SessionMessage[] {

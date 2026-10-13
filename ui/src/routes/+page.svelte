@@ -580,6 +580,7 @@
 	// Merged into existing onMount/onDestroy below
 
 	function newSession() {
+		chatSessionController.beginUserSessionSelection();
 		if (activeSessionId) {
 			dispatchSession({ type: 'session/memory-cleared', sessionId: activeSessionId });
 		}
@@ -963,6 +964,7 @@
 	}
 
 	async function switchToSession(sessionId: string) {
+		const selectionVersion = chatSessionController.beginUserSessionSelection();
 		const alreadyLoaded = sessionReducer
 			.snapshot()
 			.sessions.some((session) => session.sessionId === sessionId);
@@ -983,14 +985,19 @@
 			} else {
 				try {
 					await reopenSession({ sessionId });
+					if (!chatSessionController.isUserSessionSelectionCurrent(selectionVersion)) return;
 					await loadSessions();
+					if (!chatSessionController.isUserSessionSelectionCurrent(selectionVersion)) return;
 				} catch (error) {
-					reportError(error, { context: '+page', message: '恢复会话失败', log: false });
+					if (chatSessionController.isUserSessionSelectionCurrent(selectionVersion)) {
+						reportError(error, { context: '+page', message: '恢复会话失败', log: false });
+					}
 					return;
 				}
 			}
 		}
-		await chatSessionController.switchToSession(sessionId);
+		const switched = await chatSessionController.switchToSession(sessionId, selectionVersion);
+		if (!switched) return;
 		const historicalRunEndStatus: SessionRunEndStatus | undefined =
 			historical?.status === 'paused'
 				? 'paused'

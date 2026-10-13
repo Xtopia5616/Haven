@@ -75,6 +75,14 @@ export class ChatSessionController {
 		return this.dependencies.reducer.getPendingInteractionRequestIds(sessionId);
 	}
 
+	beginUserSessionSelection(): number {
+		return this.dependencies.reducer.beginUserSelection();
+	}
+
+	isUserSessionSelectionCurrent(version: number): boolean {
+		return this.dependencies.reducer.isUserSelectionCurrent(version);
+	}
+
 	evictTerminalSessionMemory(sessionId: string | null): void {
 		if (!sessionId || sessionId === this.dependencies.getActiveSessionId()) return;
 		this.dependencies.dispatch({ type: 'session/memory-cleared', sessionId });
@@ -93,6 +101,7 @@ export class ChatSessionController {
 	async confirmRollbackAction(request: RollbackRequest): Promise<void> {
 		const sessionId = this.dependencies.getActiveSessionId();
 		if (!sessionId || this.rollbackInFlight) return;
+		const userSelectionVersion = this.dependencies.reducer.currentUserSelectionVersion();
 		if (request.role === 'user' && !isCanonicalEntityId(request.messageId, 'msg')) {
 			this.dependencies.notify('消息仍在保存，请稍后再试', 'info', 2000);
 			return;
@@ -111,10 +120,17 @@ export class ChatSessionController {
 			this.dependencies.clearStepBlockIds(sessionId);
 			await this.resyncSessionMessages(sessionId);
 
-			if (request.role === 'user') {
+			if (
+				this.dependencies.reducer.isUserSelectionCurrent(userSelectionVersion) &&
+				this.dependencies.getActiveSessionId() === sessionId &&
+				request.role === 'user'
+			) {
 				this.dependencies.setInputDraft(request.content);
 				this.dependencies.notify('已回退，请编辑后重新发送', 'info', 3000);
-			} else {
+			} else if (
+				this.dependencies.reducer.isUserSelectionCurrent(userSelectionVersion) &&
+				this.dependencies.getActiveSessionId() === sessionId
+			) {
 				this.dependencies.notify(`已回退到第 ${request.stepNumber} 步`, 'info', 3000);
 			}
 		} catch (error) {
@@ -128,11 +144,16 @@ export class ChatSessionController {
 	}
 
 	/** Load and select a persisted session, then reclaim terminal prior-session memory. */
-	async switchToSession(sessionId: string): Promise<void> {
+	async switchToSession(sessionId: string, selectionVersion?: number): Promise<boolean> {
+		const currentSelectionVersion =
+			selectionVersion ?? this.beginUserSessionSelection();
 		this.dependencies.closeSessionMenu();
 		const previousSessionId = this.dependencies.getActiveSessionId();
 		try {
-			await this.reloadSessionMessages(sessionId);
+			const loaded = await this.reloadSessionMessages(sessionId, {
+				selectionVersion: currentSelectionVersion,
+			});
+			if (!loaded || !this.isUserSessionSelectionCurrent(currentSelectionVersion)) return false;
 			this.dependencies.setFreshSessionIntent(false);
 			this.dependencies.clearPersistedFreshSessionIntent();
 			this.dependencies.dispatch({ type: 'session/selected', sessionId });
@@ -154,8 +175,12 @@ export class ChatSessionController {
 				.getSessionSnapshot()
 					.find((item) => item.sessionId === sessionId);
 			this.dependencies.notify(`已切换到：${session?.title || '会话'}`, 'info', 1500);
+			return true;
 		} catch (error) {
-			this.report(error, '切换会话失败');
+			if (this.isUserSessionSelectionCurrent(currentSelectionVersion)) {
+				this.report(error, '切换会话失败');
+			}
+			return false;
 		}
 	}
 
@@ -192,6 +217,7 @@ export class ChatSessionController {
 	async handleContinue(): Promise<void> {
 		const sessionId = this.dependencies.getActiveSessionId();
 		if (!sessionId || this.continueInFlight) return;
+		const userSelectionVersion = this.dependencies.reducer.currentUserSelectionVersion();
 		this.continueInFlight = true;
 		this.dependencies.setContinuePending(true);
 
@@ -201,6 +227,12 @@ export class ChatSessionController {
 		const strategy: ContinueStrategy = pickContinueStrategy(currentMessages);
 		try {
 			await this.dependencies.commands.continueSession({ sessionId });
+			if (
+				!this.dependencies.reducer.isUserSelectionCurrent(userSelectionVersion) ||
+				this.dependencies.getActiveSessionId() !== sessionId
+			) {
+				return;
+			}
 			this.dependencies.dispatch({ type: 'session/run-end-notice-cleared', sessionId });
 
 			// A failed reload does not prove that visible messages were partial.
@@ -243,6 +275,7 @@ export class ChatSessionController {
 		files?: ChatFileAttachment[] | null,
 		submissionToken?: string,
 	): Promise<void> {
+		const userSelectionVersion = this.dependencies.reducer.currentUserSelectionVersion();
 		try {
 			const result = await this.dependencies.submitTranscript(text, {
 				images,
@@ -251,7 +284,11 @@ export class ChatSessionController {
 				submissionToken,
 			});
 			const createdSessionId = processResultSessionId(result);
-			if (createdSessionId) {
+			if (
+				createdSessionId &&
+				this.dependencies.reducer.isUserSelectionCurrent(userSelectionVersion) &&
+				this.dependencies.getActiveSessionId() !== createdSessionId
+			) {
 				this.dependencies.dispatch({
 					type: 'session/selected',
 					sessionId: createdSessionId,
@@ -265,9 +302,19 @@ export class ChatSessionController {
 
 	private async reloadSessionMessages(
 		sessionId: string,
-		options: { preserveStreamingOnly?: boolean; excludeMessageIds?: string[] } = {},
-	): Promise<void> {
+		options: {
+			preserveStreamingOnly?: boolean;
+			excludeMessageIds?: string[];
+			selectionVersion?: number;
+		} = {},
+	): Promise<boolean> {
 		const result = await this.dependencies.commands.getSessionForResume({ sessionId });
+		if (
+			options.selectionVersion != null &&
+			!this.isUserSessionSelectionCurrent(options.selectionVersion)
+		) {
+			return false;
+		}
 		this.dependencies.dispatch({
 			type: 'session/messages/resume-loaded',
 			sessionId,
@@ -279,6 +326,7 @@ export class ChatSessionController {
 			...(options.preserveStreamingOnly ? { preserveStreamingOnly: true } : {}),
 			...(options.excludeMessageIds ? { excludeMessageIds: options.excludeMessageIds } : {}),
 		});
+		return true;
 	}
 
 	private report(error: unknown, message: string): void {

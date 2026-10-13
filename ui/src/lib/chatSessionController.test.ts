@@ -13,6 +13,7 @@ import type { ResumeTranscriptProjectionInput } from './resumeMessages.ts';
 
 const SESSION_ID = 'ses-00000000000000000000000000000001';
 const OTHER_SESSION_ID = 'ses-00000000000000000000000000000002';
+const CREATED_SESSION_ID = 'ses-00000000000000000000000000000003';
 const USER_MESSAGE_ID = 'msg-00000000000000000000000000000001';
 
 function resumeResponseFixture(overrides: Partial<ResumeTranscriptProjectionInput> = {}) {
@@ -328,6 +329,33 @@ describe('ChatSessionController continue', () => {
 		expect(harness.submitCalls).toEqual([]);
 	});
 
+	it('does not continue an older session into a newer selection', async () => {
+		let resolveContinue!: () => void;
+		const harness = makeHarness({
+			runCommand: (command) =>
+				command === 'continue_session'
+					? new Promise<void>((resolve) => {
+						resolveContinue = resolve;
+					})
+					: resumeResponseFixture(),
+		});
+		addMessages(harness.reducer, {
+			id: USER_MESSAGE_ID,
+			role: 'user' as const,
+			content: '原会话输入',
+		});
+
+		const pendingContinue = harness.controller.handleContinue();
+		harness.controller.beginUserSessionSelection();
+		harness.reducer.dispatch({ type: 'session/selected', sessionId: OTHER_SESSION_ID });
+		resolveContinue();
+		await pendingContinue;
+
+		expect(harness.submitCalls).toEqual([]);
+		expect(harness.commandCalls.map((call) => call.command)).toEqual(['continue_session']);
+		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
+	});
+
 	it('preserves pending interactions when a resume snapshot contains none', async () => {
 		const harness = makeHarness();
 		harness.reducer.dispatch({
@@ -394,6 +422,32 @@ describe('ChatSessionController continue', () => {
 		finishRollback?.();
 		await first;
 	});
+
+	it('does not restore an old rollback draft after the user changes sessions', async () => {
+		let resolveRollback!: () => void;
+		const harness = makeHarness({
+			runCommand: (command) =>
+				command === 'rollback_session'
+					? new Promise<void>((resolve) => {
+						resolveRollback = resolve;
+					})
+					: resumeResponseFixture(),
+		});
+		const pendingRollback = harness.controller.confirmRollbackAction({
+			stepNumber: 4,
+			role: 'user' as const,
+			content: '旧会话草稿',
+			messageId: USER_MESSAGE_ID,
+		});
+
+		harness.controller.beginUserSessionSelection();
+		harness.reducer.dispatch({ type: 'session/selected', sessionId: OTHER_SESSION_ID });
+		resolveRollback();
+		await pendingRollback;
+
+		expect(harness.inputDrafts).toEqual([]);
+		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
+	});
 });
 
 describe('ChatSessionController session guards', () => {
@@ -406,6 +460,24 @@ describe('ChatSessionController session guards', () => {
 
 		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
 		expect(harness.loadSessionsCalls).toBe(1);
+	});
+
+	it('does not let an older pending submit override a newer session selection', async () => {
+		let resolveSubmit!: (result: ProcessResultView) => void;
+		const harness = makeHarness({
+			submit: () =>
+				new Promise((resolve) => {
+					resolveSubmit = resolve;
+				}),
+		});
+
+		const pendingSubmit = harness.controller.submitMessage('创建会话');
+		harness.controller.beginUserSessionSelection();
+		harness.reducer.dispatch({ type: 'session/selected', sessionId: OTHER_SESSION_ID });
+		resolveSubmit({ kind: 'session_created', sessionId: CREATED_SESSION_ID });
+		await pendingSubmit;
+
+		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
 	});
 
 	it('keeps the session selected when end fails and clears fresh-session intent', async () => {
@@ -452,5 +524,32 @@ describe('ChatSessionController session guards', () => {
 		expect(harness.reducer.getMessages(SESSION_ID)).toEqual([]);
 		expect(harness.persistedIntentClears).toBe(1);
 		expect(harness.notifications[0]?.message).toBe('已切换到：目标会话');
+	});
+
+	it('ignores a stale resume result after a newer session selection starts', async () => {
+		const resolvers: Array<(response: unknown) => void> = [];
+		const harness = makeHarness({
+			runCommand: (command) =>
+				command === 'get_session_for_resume'
+					? new Promise((resolve) => resolvers.push(resolve))
+					: undefined,
+		});
+
+		const olderSwitch = harness.controller.switchToSession(OTHER_SESSION_ID);
+		const newerSwitch = harness.controller.switchToSession(SESSION_ID);
+		resolvers[0]?.(resumeResponseFixture());
+		expect(await olderSwitch).toBe(false);
+		expect(
+			harness.actions.filter((action) => action.type === 'session/messages/resume-loaded'),
+		).toEqual([]);
+
+		resolvers[1]?.(resumeResponseFixture());
+		expect(await newerSwitch).toBe(true);
+		expect(harness.reducer.snapshot().activeSessionId).toBe(SESSION_ID);
+		expect(
+			harness.actions
+				.filter((action) => action.type === 'session/messages/resume-loaded')
+				.map((action) => action.sessionId),
+		).toEqual([SESSION_ID]);
 	});
 });

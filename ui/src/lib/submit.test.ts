@@ -110,6 +110,31 @@ describe('submitTranscript', () => {
 		expect(messagesFor(SESSION_DRAFT)[0].voice).toBe(true);
 	});
 
+	it('keeps a newer user selection when an older submit creates a session', async () => {
+		let resolveInvoke!: (value: unknown) => void;
+		invokeMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolveInvoke = resolve;
+			}),
+		);
+		select(SESSION_A);
+		const pending = submitTranscript('延迟中的发送', { voice: true });
+
+		reducer.beginUserSelection();
+		select(SESSION_B);
+		resolveInvoke!({
+			SessionCreated: {
+				session_id: SESSION_DRAFT,
+				message_id: 'msg-000001187bdf63db7309fc558e38e38e',
+			},
+		});
+		await pending;
+
+		expect(reducer.snapshot().activeSessionId).toBe(SESSION_B);
+		expect(messagesFor(SESSION_DRAFT)).toHaveLength(1);
+		expect(messagesFor(SESSION_DRAFT)[0].content).toBe('延迟中的发送');
+	});
+
 	it('passes the recording id so ingress STT usage can bind to the session', async () => {
 		invokeMock.mockResolvedValue({
 			SessionCreated: {

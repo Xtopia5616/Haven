@@ -1113,3 +1113,4 @@
 - [1122：按工具结果持久化定时工具终态](1122-persist-scheduled-tool-outcomes-from-domain-result.md)
 - [1123：限制所有会话事件批次](1123-bound-all-session-event-batches.md)
 - [1124：拒绝未知的持久化 cache accounting 值](1124-reject-unknown-persisted-cache-accounting.md)
+- [1125：用用户选择代次隔离过期异步会话结果](1125-guard-session-selection-against-stale-async-results.md)

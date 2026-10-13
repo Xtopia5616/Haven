@@ -63,6 +63,8 @@ interface SubmitPayload extends SubmitOptions {
 	text: string;
 	/** Session id (or null) captured when this submission was accepted. */
 	pinnedSessionId: string | null;
+	/** Explicit user selection intent captured when this submission was accepted. */
+	userSelectionVersion: number;
 	/** Fresh-start intent captured when this submission was accepted. */
 	freshStartAtEnqueue: boolean;
 }
@@ -234,6 +236,7 @@ export async function submitTranscript(
 		voice,
 		recordingId,
 		pinnedSessionId: reducer.snapshot().activeSessionId,
+		userSelectionVersion: reducer.currentUserSelectionVersion(),
 		freshStartAtEnqueue: get(newSessionIntentStore),
 		submissionToken:
 			submissionToken ?? (voice && recordingId ? `recording:${recordingId}` : undefined),
@@ -271,6 +274,7 @@ async function doSubmit({
 	recordingId,
 	pinnedSessionId,
 	freshStartAtEnqueue,
+	userSelectionVersion,
 	reducer,
 }: SubmitPayload): Promise<ProcessResultView> {
 	const hasImages = Array.isArray(images) && images.length > 0;
@@ -334,7 +338,9 @@ async function doSubmit({
 				optimisticMessageId: msg.id,
 				persistedMessageId: dbMessageId,
 			});
-			reducer.dispatch({ type: 'session/selected', sessionId: createdId });
+			if (reducer.isUserSelectionCurrent(userSelectionVersion)) {
+				reducer.dispatch({ type: 'session/selected', sessionId: createdId });
+			}
 			targetSessionId = createdId;
 		}
 		// Align the optimistic bubble with the persisted `msg-*` id so rollback
