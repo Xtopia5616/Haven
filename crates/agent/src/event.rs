@@ -475,26 +475,32 @@ impl EventBus {
         }
     }
 
-    /// Add (or, if `id` already exists, replace) a subscriber. Returns the
-    /// previously registered emitter for that id, if any.
+    /// Add (or, if `subscriber_id` already exists, replace) a subscriber.
+    /// Returns the previously registered emitter for that subscriber, if any.
     pub async fn subscribe(
         &self,
-        id: &str,
+        subscriber_id: &str,
         emitter: Arc<dyn AgentEventEmitter>,
     ) -> Option<Arc<dyn AgentEventEmitter>> {
         let mut subs = self.subscribers.write().await;
-        if let Some(slot) = subs.iter_mut().find(|(sid, _)| sid == id) {
+        if let Some(slot) = subs
+            .iter_mut()
+            .find(|(existing_subscriber_id, _)| existing_subscriber_id == subscriber_id)
+        {
             Some(std::mem::replace(&mut slot.1, emitter))
         } else {
-            subs.push((id.to_string(), emitter));
+            subs.push((subscriber_id.to_string(), emitter));
             None
         }
     }
 
-    /// Remove a subscriber by id. Returns the removed emitter, if any.
-    pub async fn unsubscribe(&self, id: &str) -> Option<Arc<dyn AgentEventEmitter>> {
+    /// Remove a subscriber by its identity. Returns the removed emitter, if any.
+    pub async fn unsubscribe(&self, subscriber_id: &str) -> Option<Arc<dyn AgentEventEmitter>> {
         let mut subs = self.subscribers.write().await;
-        if let Some(pos) = subs.iter().position(|(sid, _)| sid == id) {
+        if let Some(pos) = subs
+            .iter()
+            .position(|(existing_subscriber_id, _)| existing_subscriber_id == subscriber_id)
+        {
             Some(subs.swap_remove(pos).1)
         } else {
             None

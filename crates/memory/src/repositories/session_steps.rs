@@ -19,9 +19,9 @@ fn ensure_step_id(step_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn ensure_thought_id(id: &str) -> anyhow::Result<()> {
+fn ensure_thought_id(thought_id: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
-        is_canonical_id(id, "step") || is_canonical_id(id, "msg"),
+        is_canonical_id(thought_id, "step") || is_canonical_id(thought_id, "msg"),
         "thought identity must be a canonical step-* or shared msg-* ID"
     );
     Ok(())
@@ -255,10 +255,10 @@ impl Database {
         &self,
         session_id: &str,
         step_number: u32,
-        id: &str,
+        thought_id: &str,
     ) -> anyhow::Result<SessionStep> {
         ensure_session_id(session_id)?;
-        ensure_thought_id(id)?;
+        ensure_thought_id(thought_id)?;
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<String> {
@@ -267,7 +267,7 @@ impl Database {
                 "INSERT INTO session_steps (id, session_id, step_number, tool_name, input, thought, status, is_high_risk, created_at)
                  VALUES (?1, ?2, ?3, 'thought', ?1, NULL, ?4, 0, ?5)",
                 rusqlite::params![
-                    id,
+                    thought_id,
                     session_id,
                     step_number,
                     SessionStepStatus::Completed.as_str(),
@@ -288,7 +288,7 @@ impl Database {
             }
         };
         Ok(SessionStep {
-            step_id: id.into(),
+            step_id: thought_id.into(),
             session_id: session_id.into(),
             step_number,
             tool_index: 0,
@@ -311,7 +311,7 @@ impl Database {
     /// `confirmed` records whether the operation passed the safety gateway
     /// (Some(true)=approved, Some(false)=rejected, None=not gated) so the
     /// decision is persisted on the actual step row at creation time.
-    /// `id` is the pre-minted `step-*` id the live tool card already uses
+    /// `step_id` is the pre-minted `step-*` id the live tool card already uses
     /// (`None` mints a fresh one); passing the same id lets execute_step
     /// persist the row the frontend's streamed card references.
     #[allow(clippy::too_many_arguments)]
@@ -325,13 +325,13 @@ impl Database {
         is_high_risk: bool,
         silent: bool,
         confirmed: Option<bool>,
-        id: Option<&str>,
+        step_id: Option<&str>,
     ) -> anyhow::Result<SessionStep> {
-        let id = id
+        let step_id = step_id
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("step"));
         let fields = ToolStepFields {
-            step_id: &id,
+            step_id: &step_id,
             session_id,
             step_number,
             tool_index: 0,
@@ -360,11 +360,11 @@ impl Database {
         is_high_risk: bool,
         silent: bool,
         confirmed: Option<bool>,
-        id: &str,
+        step_id: &str,
     ) -> anyhow::Result<()> {
         self.ensure_tool_step_record(
             ToolStepFields {
-                step_id: id,
+                step_id,
                 session_id,
                 step_number,
                 tool_index,
@@ -383,12 +383,12 @@ impl Database {
     #[cfg(any(test, feature = "test-support"))]
     pub fn complete_tool_step(
         &self,
-        id: &str,
+        step_id: &str,
         observation: &str,
         success: bool,
     ) -> anyhow::Result<()> {
         self.finish_tool_step(
-            id,
+            step_id,
             observation,
             if success {
                 ToolStepOutcome::Completed
@@ -401,8 +401,8 @@ impl Database {
 
     /// Mark a pending action as running. The update is idempotent for an
     /// already-running row and refuses to revive a terminal row.
-    pub fn start_tool_step(&self, id: &str) -> anyhow::Result<bool> {
-        ensure_step_id(id)?;
+    pub fn start_tool_step(&self, step_id: &str) -> anyhow::Result<bool> {
+        ensure_step_id(step_id)?;
         let now = now_rfc3339_millis();
         let conn = self.conn();
         let changed = conn.execute(
@@ -411,7 +411,7 @@ impl Database {
             rusqlite::params![
                 SessionStepStatus::Running.as_str(),
                 now,
-                id,
+                step_id,
                 SessionStepStatus::Pending.as_str()
             ],
         )?;
@@ -423,11 +423,11 @@ impl Database {
     /// after rollback/cancellation has already finalized the row.
     pub fn finish_tool_step(
         &self,
-        id: &str,
+        step_id: &str,
         observation: &str,
         outcome: ToolStepOutcome,
     ) -> anyhow::Result<bool> {
-        ensure_step_id(id)?;
+        ensure_step_id(step_id)?;
         let now = now_rfc3339_millis();
         let conn = self.conn();
         let status = outcome.status();
@@ -438,7 +438,7 @@ impl Database {
                 status.as_str(),
                 observation,
                 now,
-                id,
+                step_id,
                 SessionStepStatus::Pending.as_str(),
                 SessionStepStatus::Running.as_str()
             ],
@@ -481,16 +481,21 @@ impl Database {
              FROM session_steps WHERE session_id = ?1 ORDER BY step_number ASC, tool_index ASC, created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
-            let id: String = row.get(0)?;
+            let step_or_thought_message_id: String = row.get(0)?;
             let row_session_id: String = row.get(1)?;
             let persisted_tool_name: Option<String> = row.get(4)?;
             let valid_step_id = if persisted_tool_name.as_deref() == Some("thought") {
-                is_canonical_id(&id, "step") || is_canonical_id(&id, "msg")
+                is_canonical_id(&step_or_thought_message_id, "step")
+                    || is_canonical_id(&step_or_thought_message_id, "msg")
             } else {
-                is_canonical_id(&id, "step")
+                is_canonical_id(&step_or_thought_message_id, "step")
             };
             if !valid_step_id {
-                return Err(invalid_row_id(0, &id, "step or thought message"));
+                return Err(invalid_row_id(
+                    0,
+                    &step_or_thought_message_id,
+                    "step or thought message",
+                ));
             }
             if !is_canonical_id(&row_session_id, "ses") {
                 return Err(invalid_row_id(1, &row_session_id, "session"));
@@ -507,7 +512,7 @@ impl Database {
                 )
             })?;
             Ok(SessionStep {
-                step_id: id,
+                step_id: step_or_thought_message_id,
                 session_id: row_session_id,
                 step_number: row.get(2)?,
                 thought: row.get(7)?,

@@ -10,18 +10,18 @@ const SEARCH_WHERE: &str = "WHERE input_text LIKE ?1 OR title LIKE ?1
     OR EXISTS (SELECT 1 FROM messages
                WHERE messages.session_id = sessions.id AND messages.content LIKE ?1)";
 
-fn validate_session_id(id: &str) -> anyhow::Result<()> {
+fn validate_session_id(session_id: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
-        is_canonical_id(id, "ses"),
+        is_canonical_id(session_id, "ses"),
         "invalid session_id: expected canonical ses- ID"
     );
     Ok(())
 }
 
 fn session_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<String> {
-    let id: String = row.get(0)?;
-    if is_canonical_id(&id, "ses") {
-        Ok(id)
+    let session_id: String = row.get(0)?;
+    if is_canonical_id(&session_id, "ses") {
+        Ok(session_id)
     } else {
         Err(rusqlite::Error::FromSqlConversionFailure(
             0,

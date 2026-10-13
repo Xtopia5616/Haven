@@ -368,7 +368,7 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 
 Rust/DB/event 领域字段与 Tauri DTO 中，实体身份字段使用实体名限定的 `xxx_id`（如 `session_id`、`step_id`、`message_id`、`tool_run_id`）；UI 自有模型可在边界映射为 `xxxId`。数据库既有物理主键列（如 `sessions.id`）保持原名，由 Repository 映射为领域字段。尚未迁移的存量 DTO 按实体归属逐步收敛，不以结构体上下文作为省略实体名的理由；外部 provider 标识按各自协议保留；Tauri renderer listener envelope 的 `event.id` 是本地事件序号，不是 Haven 实体 ID。
 
-Rust 函数参数若承载 Haven 实体身份，默认沿用完整实体名（如 `tool_run_id`）；只有函数名已明确指明单一实体且无同名混淆时，才允许用 `id` 简写。通用校验器的泛型 `id`、provider/protocol 外部 ID 和非实体用途的参数不套用此规则；文件名片段等值按其用途命名（如 `file_stem`），不冒充实体 ID。
+Rust 函数参数若承载 Haven 实体身份，默认沿用完整实体名（如 `tool_run_id`）；只有函数名已明确指明单一实体且无同名混淆时，才允许用 `id` 简写。若参数允许多个实体 ID 前缀或同一身份由两个持久实体共享，必须按实际关联命名（如 `step_or_thought_message_id`、`message_id`），不能只按操作名省略身份类型。通用校验器的泛型 `id`、provider/protocol 外部 ID 和非实体用途的参数不套用此规则；文件名片段等值按其用途命名（如 `file_stem`），不冒充实体 ID。
 
 局部变量若承载新生成或跨调用传递的 Haven 实体身份，也使用完整实体名（如 `tool_run_id`）；只在短小且身份已由局部作用域明确限定的迭代/解构中使用泛名 `id`。日志字段必须标识实际值的语义，文件名片段不能记录为实体 ID。
 

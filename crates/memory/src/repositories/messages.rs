@@ -121,7 +121,7 @@ fn invalid_row_id(column: usize, value: &str, expected: &str) -> rusqlite::Error
 /// created_at, tool_call_id, ui_metadata, voice, ingress_seq, media_inputs) into a `Message`. Shared by
 /// every read query so column order cannot drift between them.
 fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
-    let id: String = row.get(0)?;
+    let message_id: String = row.get(0)?;
     let session_id: String = row.get(1)?;
     if !is_canonical_id(&session_id, "ses") {
         return Err(invalid_row_id(1, &session_id, "session"));
@@ -134,11 +134,11 @@ fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
             format!("invalid CanonicalRole in messages.role: {role_text}").into(),
         )
     })?;
-    if !is_message_row_id(&id) {
-        return Err(invalid_row_id(0, &id, "message"));
+    if !is_message_row_id(&message_id) {
+        return Err(invalid_row_id(0, &message_id, "message"));
     }
-    if !is_message_row_identity_valid(&id, role) {
-        return Err(invalid_row_id(0, &id, "message ID for its role"));
+    if !is_message_row_identity_valid(&message_id, role) {
+        return Err(invalid_row_id(0, &message_id, "message ID for its role"));
     }
     let message_type_text: Option<String> = row.get(4)?;
     let message_type = message_type_text
@@ -155,7 +155,7 @@ fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
         })
         .transpose()?;
     Ok(Message {
-        message_id: id,
+        message_id,
         session_id,
         role,
         content: row.get(3)?,
@@ -326,7 +326,7 @@ impl Database {
         voice: bool,
         // When `Some`, insert the row under this pre-minted id (streamed
         // block ids minted at stream start); `None` mints a fresh `msg-*`.
-        id: Option<&str>,
+        message_id: Option<&str>,
     ) -> anyhow::Result<Message> {
         let media_inputs: Vec<MediaInput> = attachments
             .iter()
@@ -341,7 +341,7 @@ impl Database {
             tool_call_id,
             attachments,
             voice,
-            id,
+            message_id,
             &media_inputs,
             None,
         )
@@ -359,12 +359,12 @@ impl Database {
         message_type: Option<TranscriptMessageKind>,
         attachments: &[MessageAttachment],
         voice: bool,
-        id: Option<&str>,
+        message_id: Option<&str>,
         disposition: PendingInputDisposition,
     ) -> anyhow::Result<PendingSessionInput> {
         ensure_session_id(session_id)?;
-        if let Some(id) = id {
-            ensure_pending_message_id(id)?;
+        if let Some(message_id) = message_id {
+            ensure_pending_message_id(message_id)?;
         }
         let media_inputs: Vec<MediaInput> = attachments
             .iter()
@@ -379,7 +379,7 @@ impl Database {
             None,
             attachments,
             voice,
-            id,
+            message_id,
             &media_inputs,
             Some(disposition),
         )?;
@@ -400,7 +400,7 @@ impl Database {
         tool_call_id: Option<&str>,
         attachments: &[MessageAttachment],
         voice: bool,
-        id: Option<&str>,
+        message_id: Option<&str>,
         media_inputs: &[MediaInput],
         pending_disposition: Option<PendingInputDisposition>,
     ) -> anyhow::Result<(Message, Option<PendingInputDisposition>)> {
@@ -408,11 +408,11 @@ impl Database {
         for media_input in media_inputs {
             media_input.validate_asset_identities()?;
         }
-        let id = id
+        let message_id = message_id
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("msg"));
         anyhow::ensure!(
-            is_message_row_identity_valid(&id, role),
+            is_message_row_identity_valid(&message_id, role),
             "message_id must be a canonical msg-* ID or an assistant step-* ID"
         );
         let conn = self.conn();
@@ -435,7 +435,7 @@ impl Database {
                 "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, ui_metadata, voice, ingress_seq, media_inputs)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 rusqlite::params![
-                    id,
+                    message_id,
                     session_id,
             role.as_str(),
                     content,
@@ -466,7 +466,7 @@ impl Database {
                 conn.execute(
                     "INSERT INTO pending_session_inputs (session_id, message_id, disposition)
                      VALUES (?1, ?2, ?3)",
-                    rusqlite::params![session_id, id, disposition.unwrap().as_db_value()],
+                    rusqlite::params![session_id, message_id, disposition.unwrap().as_db_value()],
                 )?;
             }
             Ok((created_at, ingress_seq, disposition))
@@ -485,7 +485,7 @@ impl Database {
         self.cache_invalidate_messages(session_id);
         Ok((
             Message {
-                message_id: id,
+                message_id,
                 session_id: session_id.into(),
                 role,
                 content: content.into(),

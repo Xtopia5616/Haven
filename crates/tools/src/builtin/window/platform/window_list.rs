@@ -9,8 +9,8 @@ pub(crate) fn window_id(hwnd: HWND) -> String {
     format!("hwnd:{:x}", hwnd as usize)
 }
 
-pub(crate) fn hwnd_from_window_id(id: &str) -> anyhow::Result<HWND> {
-    let value = id
+pub(crate) fn hwnd_from_window_id(window_id: &str) -> anyhow::Result<HWND> {
+    let value = window_id
         .strip_prefix("hwnd:")
         .ok_or_else(|| anyhow::anyhow!("window_id must have the form hwnd:<hex>"))?;
     let raw = usize::from_str_radix(value, 16)

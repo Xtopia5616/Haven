@@ -1127,3 +1127,4 @@
 - [1136：用有界恢复与 OS 文件锁保护 Messaging 删除谱系](1136-recover-messaging-lineage-with-bounded-os-locks.md)
 - [1137：不在诊断与配置 Debug 输出中暴露敏感值](1137-keep-diagnostics-and-config-debug-output-private.md)
 - [1138：用具名结果表达文件摘要读取状态](1138-return-named-file-summary-read-result.md)
+- [1139：显式命名 Memory 与事件 API 的实体身份](1139-name-memory-and-event-identities-explicitly.md)

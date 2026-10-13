@@ -76,25 +76,25 @@ pub(super) fn ensure_session_id(session_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn ensure_message_or_step_id(id: &str, field: &str) -> anyhow::Result<()> {
+fn ensure_message_or_step_id(message_or_step_id: &str, field: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
-        is_canonical_id(id, "msg") || is_canonical_id(id, "step"),
+        is_canonical_id(message_or_step_id, "msg") || is_canonical_id(message_or_step_id, "step"),
         "{field} must be a canonical msg-* or step-* ID"
     );
     Ok(())
 }
 
-fn ensure_message_id(id: &str, field: &str) -> anyhow::Result<()> {
+fn ensure_message_id(message_id: &str, field: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
-        is_canonical_id(id, "msg"),
+        is_canonical_id(message_id, "msg"),
         "{field} must be a canonical msg-* ID"
     );
     Ok(())
 }
 
-fn ensure_step_id(id: &str, field: &str) -> anyhow::Result<()> {
+fn ensure_step_id(step_id: &str, field: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
-        is_canonical_id(id, "step"),
+        is_canonical_id(step_id, "step"),
         "{field} must be a canonical step-* ID"
     );
     Ok(())

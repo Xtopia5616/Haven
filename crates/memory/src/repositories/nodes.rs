@@ -30,28 +30,28 @@ pub(crate) fn ensure_node_on_connection(
     if let Some(existing) = existing {
         return validate_node_id(existing);
     }
-    let id = haven_common::types::new_id("node");
+    let node_id = haven_common::types::new_id("node");
     let now = Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO memory_nodes (id, kind, label, aliases, created_at, updated_at)
          VALUES (?1, ?2, ?3, '[]', ?4, ?4)
          ON CONFLICT(kind, label) DO NOTHING",
-        rusqlite::params![id, kind, label, now],
+        rusqlite::params![node_id, kind, label, now],
     )?;
-    let id = conn.query_row(
+    let node_id = conn.query_row(
         "SELECT id FROM memory_nodes WHERE kind = ?1 AND label = ?2",
         rusqlite::params![kind, label],
         |r| r.get::<_, String>(0),
     )?;
-    validate_node_id(id)
+    validate_node_id(node_id)
 }
 
-fn validate_node_id(id: String) -> anyhow::Result<String> {
+fn validate_node_id(node_id: String) -> anyhow::Result<String> {
     anyhow::ensure!(
-        is_canonical_id(&id, "node"),
+        is_canonical_id(&node_id, "node"),
         "invalid persisted memory_nodes.id: expected canonical node-* ID"
     );
-    Ok(id)
+    Ok(node_id)
 }
 
 #[cfg(test)]

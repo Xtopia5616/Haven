@@ -12,22 +12,22 @@ impl Database {
     /// prefix keeps `entity_id` values unambiguous without a separate prefix.
     #[cfg(any(test, feature = "test-support"))]
     pub fn add_episode(&self, session_id: &str, summary: &str) -> anyhow::Result<String> {
-        let id = haven_common::types::new_id("msg");
-        self.add_episode_with_id(session_id, summary, &id)?;
-        Ok(id)
+        let message_id = haven_common::types::new_id("msg");
+        self.add_episode_with_id(session_id, summary, &message_id)?;
+        Ok(message_id)
     }
 
     /// Persist a compaction summary under a caller-minted `msg-*` id so the
     /// canonical summary bubble and `memory_items` row share one identity.
-    /// `id` must already be a `msg-*` value from `new_id("msg")`.
+    /// `message_id` must already be a `msg-*` value from `new_id("msg")`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn add_episode_with_id(
         &self,
         session_id: &str,
         summary: &str,
-        id: &str,
+        message_id: &str,
     ) -> anyhow::Result<()> {
-        self.add_episode_structured(session_id, summary, id, &[], &[])
+        self.add_episode_structured(session_id, summary, message_id, &[], &[])
     }
 
     /// Persist a compaction episode and, when requested, its summary-fact
@@ -39,10 +39,10 @@ impl Database {
         &self,
         session_id: &str,
         summary: &str,
-        id: &str,
+        message_id: &str,
         enqueue_extraction: bool,
     ) -> anyhow::Result<()> {
-        let marker_key = summary_extraction_pending_key(session_id, id)?;
+        let marker_key = summary_extraction_pending_key(session_id, message_id)?;
         let now = chrono::Utc::now().to_rfc3339();
         let topics_json = "[]";
         let entities_json = "[]";
@@ -55,7 +55,7 @@ impl Database {
                  VALUES (?1, ?2, 'episode_summary', ?3, ?4, ?5, ?6)
                  ON CONFLICT(id) DO NOTHING",
                 rusqlite::params![
-                    id,
+                    message_id,
                     session_id,
                     summary,
                     topics_json,
@@ -65,7 +65,7 @@ impl Database {
             )?;
             let existing: (String, String, String) = conn.query_row(
                 "SELECT session_id, kind, content FROM memory_items WHERE id = ?1",
-                rusqlite::params![id],
+                rusqlite::params![message_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
             anyhow::ensure!(
@@ -73,7 +73,7 @@ impl Database {
                     && existing.1 == "episode_summary"
                     && existing.2 == summary,
                 "episode '{}' already exists with different content",
-                id
+                message_id
             );
             if enqueue_extraction {
                 conn.execute(
@@ -105,11 +105,11 @@ impl Database {
         &self,
         session_id: &str,
         summary: &str,
-        id: &str,
+        message_id: &str,
         topics: &[&str],
         entities: &[&str],
     ) -> anyhow::Result<()> {
-        ensure_summary_extraction_identity(session_id, id)?;
+        ensure_summary_extraction_identity(session_id, message_id)?;
         let now = chrono::Utc::now().to_rfc3339();
         let topics_json = serde_json::to_string(topics).unwrap_or_else(|_| "[]".into());
         let entities_json = serde_json::to_string(entities).unwrap_or_else(|_| "[]".into());
@@ -117,7 +117,14 @@ impl Database {
         conn.execute(
             "INSERT INTO memory_items (id, session_id, kind, content, topics, entities, created_at)
              VALUES (?1, ?2, 'episode_summary', ?3, ?4, ?5, ?6)",
-            rusqlite::params![id, session_id, summary, topics_json, entities_json, now],
+            rusqlite::params![
+                message_id,
+                session_id,
+                summary,
+                topics_json,
+                entities_json,
+                now
+            ],
         )?;
         self.cache_invalidate_embeddings(crate::embeddings::entity_kind::EPISODE);
         Ok(())

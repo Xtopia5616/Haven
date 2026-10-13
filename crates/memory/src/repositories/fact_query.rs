@@ -61,9 +61,9 @@ fn canonical_id_from_row(
     column: usize,
     prefix: &str,
 ) -> rusqlite::Result<String> {
-    let id: String = row.get(column)?;
-    if is_canonical_id(&id, prefix) {
-        Ok(id)
+    let entity_id: String = row.get(column)?;
+    if is_canonical_id(&entity_id, prefix) {
+        Ok(entity_id)
     } else {
         Err(rusqlite::Error::FromSqlConversionFailure(
             column,
@@ -170,11 +170,14 @@ impl Database {
     /// Fetch a single fact by id. Used by the prompt builder to resolve vector
     /// recall hits back into full facts for ranking and rendering.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn get_fact_by_id(&self, id: &str) -> anyhow::Result<Option<Fact>> {
-        anyhow::ensure!(is_canonical_id(id, "fact"), "fact id must be canonical");
+    pub fn get_fact_by_id(&self, fact_id: &str) -> anyhow::Result<Option<Fact>> {
+        anyhow::ensure!(
+            is_canonical_id(fact_id, "fact"),
+            "fact_id must be canonical"
+        );
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE id = ?1"))?;
-        let mut rows = stmt.query(rusqlite::params![id])?;
+        let mut rows = stmt.query(rusqlite::params![fact_id])?;
         match rows.next()? {
             Some(row) => Ok(Some(fact_from_row(row)?)),
             None => Ok(None),

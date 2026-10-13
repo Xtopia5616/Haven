@@ -282,22 +282,22 @@ impl<'db> FactMaintenance<'db> {
     }
 
     /// Scale confidence for the ids selected by a gated maintenance caller.
-    pub(crate) fn demote_fact_ids(&self, ids: Vec<String>) -> anyhow::Result<u64> {
-        self.demote_fact_ids_by_factor(ids, CONTRADICTION_DEMOTE_FACTOR)
+    pub(crate) fn demote_fact_ids(&self, fact_ids: Vec<String>) -> anyhow::Result<u64> {
+        self.demote_fact_ids_by_factor(fact_ids, CONTRADICTION_DEMOTE_FACTOR)
     }
 
-    fn demote_fact_ids_by_factor(&self, ids: Vec<String>, factor: f64) -> anyhow::Result<u64> {
-        if ids.is_empty() {
+    fn demote_fact_ids_by_factor(&self, fact_ids: Vec<String>, factor: f64) -> anyhow::Result<u64> {
+        if fact_ids.is_empty() {
             return Ok(0);
         }
         let factor = factor.clamp(0.0, 1.0);
         let conn = self.db.conn();
-        let placeholders = vec!["?"; ids.len()].join(",");
-        // Params: factor first, then ids (all anonymous `?` binders).
-        let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(ids.len() + 1);
+        let placeholders = vec!["?"; fact_ids.len()].join(",");
+        // Params: factor first, then fact ids (all anonymous `?` binders).
+        let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(fact_ids.len() + 1);
         params.push(factor.into());
-        for id in &ids {
-            params.push(id.clone().into());
+        for fact_id in &fact_ids {
+            params.push(fact_id.clone().into());
         }
         let n = conn.execute(
             &format!("UPDATE facts SET confidence = confidence * ? WHERE id IN ({placeholders})"),
