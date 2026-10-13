@@ -430,6 +430,28 @@ impl SessionSupervisor {
         Ok(())
     }
 
+    async fn tombstone_messaging_sessions(&self, session_ids: Vec<String>) -> anyhow::Result<()> {
+        if session_ids.is_empty() {
+            return Ok(());
+        }
+        let messaging = self.messaging_service.clone();
+        tokio::task::spawn_blocking(move || messaging.delete_sessions(&session_ids))
+            .await
+            .map_err(|error| anyhow::anyhow!("Messaging deletion worker failed: {error}"))??;
+        Ok(())
+    }
+
+    async fn tombstone_all_messaging_sessions(
+        &self,
+        known_session_ids: Vec<String>,
+    ) -> anyhow::Result<()> {
+        let messaging = self.messaging_service.clone();
+        tokio::task::spawn_blocking(move || messaging.delete_all_sessions(&known_session_ids))
+            .await
+            .map_err(|error| anyhow::anyhow!("Messaging bulk deletion worker failed: {error}"))??;
+        Ok(())
+    }
+
     pub async fn update_session_title(&self, session_id: &str, title: &str) {
         if let Some(actor) = self.actor_for(session_id).await {
             let _ = actor
@@ -548,6 +570,8 @@ impl SessionSupervisor {
         async {
             self.quiesce_session(session_id).await?;
             let _lifecycle = self.lifecycle_guard().await;
+            self.tombstone_messaging_sessions(vec![session_id.to_string()])
+                .await?;
             self.partials.forget_session(session_id).await;
             self.remove_session_locked(session_id).await?;
             self.store.delete_session(session_id).await?;
@@ -616,6 +640,8 @@ impl SessionSupervisor {
             for session_id in &session_ids {
                 self.cancel_session_tool_runs_checked(session_id).await?;
             }
+            self.tombstone_all_messaging_sessions(session_ids.clone())
+                .await?;
             self.clear_session_runtime_state_locked().await?;
             self.partials.forget_all_sessions().await;
             self.store.delete_all_sessions().await?;

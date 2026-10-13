@@ -1814,6 +1814,18 @@ mod tests {
     async fn delete_session_removes_durable_row_and_actor_together() {
         let (exec, db) = make_executor_with_db(1);
         let session = exec.create_session("delete atomically").await.unwrap();
+        let sender = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        exec.messaging_service.register(sender, &[]).unwrap();
+        exec.messaging_service
+            .register(&session.session_id, &[])
+            .unwrap();
+        exec.messaging_service
+            .send(haven_messaging::Envelope::new(
+                sender,
+                &session.session_id,
+                "pending before session deletion",
+            ))
+            .unwrap();
         db.add_message(
             &session.session_id,
             haven_common::types::CanonicalRole::User,
@@ -1842,11 +1854,64 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert!(
+            exec.messaging_service
+                .history(&session.session_id, 10)
+                .is_err()
+        );
+        assert!(
+            exec.messaging_service
+                .register(&session.session_id, &[])
+                .is_err()
+        );
         let error = exec.delete_session(&session.session_id).await.unwrap_err();
         assert_eq!(
             error.to_string(),
             format!("session '{}' not found in database", session.session_id)
         );
+    }
+
+    #[tokio::test]
+    async fn messaging_tombstone_stays_fail_closed_when_sql_delete_fails() {
+        let (exec, db) = make_executor_with_db(1);
+        let session = exec
+            .create_session("delete with messaging fence")
+            .await
+            .unwrap();
+        exec.messaging_service
+            .register(&session.session_id, &[])
+            .unwrap();
+        db.conn()
+            .execute_batch(&format!(
+                "CREATE TRIGGER block_session_delete
+                 BEFORE DELETE ON sessions WHEN OLD.id = '{}'
+                 BEGIN SELECT RAISE(ABORT, 'injected session delete failure'); END;",
+                session.session_id
+            ))
+            .unwrap();
+
+        let error = exec
+            .delete_session(&session.session_id)
+            .await
+            .expect_err("the injected SQLite failure must surface");
+        assert!(format!("{error:#}").contains("injected session delete failure"));
+        assert!(db.get_session(&session.session_id).unwrap().is_some());
+        assert!(
+            exec.messaging_service
+                .history(&session.session_id, 10)
+                .is_err()
+        );
+        assert!(
+            exec.messaging_service
+                .register(&session.session_id, &[])
+                .is_err()
+        );
+
+        db.conn()
+            .execute_batch("DROP TRIGGER block_session_delete")
+            .unwrap();
+        exec.delete_session(&session.session_id).await.unwrap();
+        assert!(db.get_session(&session.session_id).unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1955,6 +2020,15 @@ mod tests {
         let (exec, db) = make_executor_with_db(1);
         let first = exec.create_session("first to clear").await.unwrap();
         let second = exec.create_session("second to clear").await.unwrap();
+        exec.messaging_service
+            .register(&first.session_id, &[])
+            .unwrap();
+        exec.messaging_service
+            .register(&second.session_id, &[])
+            .unwrap();
+        exec.messaging_service
+            .unregister(&first.session_id)
+            .unwrap();
         db.add_message(
             &first.session_id,
             haven_common::types::CanonicalRole::User,
@@ -1978,6 +2052,16 @@ mod tests {
         assert_eq!(deleted.len(), 2);
         assert!(deleted.contains(&first.session_id));
         assert!(deleted.contains(&second.session_id));
+        assert!(
+            exec.messaging_service
+                .history(&first.session_id, 10)
+                .is_err()
+        );
+        assert!(
+            exec.messaging_service
+                .history(&second.session_id, 10)
+                .is_err()
+        );
 
         assert!(exec.actors.lock().await.is_empty());
         assert!(exec.pending_queue.lock().await.is_empty());

@@ -476,8 +476,8 @@ Parent session                    Child session(s)
 | 层 | 位置 | 职责 |
 |---|---|---|
 | 工具 | `haven-tools` `builtin/messaging.rs` | 统一工具名 `agent`；`operation=` list / children / history / send / inbox / ack / reply / profile / request / spawn / status / wait / stop / collect；通过 `haven-messaging::MessagingService` 调用 |
-| 服务 | `haven-messaging` `messaging_service.rs` | 唯一应用层消息 port：校验 Envelope identity、claim/complete/retry/expiry、request/reply selective wait 与 receipt 生命周期 |
-| 传输 | `haven-messaging` `inbox.rs` | 权威 JSONL file transport：`%APPDATA%/haven/inbox` 的 registry / mailbox / archive / lock；本地 Actor 与独立进程共用相同的消息生命周期 |
+| 服务 | `haven-messaging` `messaging_service.rs` | 唯一应用层消息 port：校验 Envelope identity、claim/complete/retry/expiry、request/reply selective wait、receipt 与删除 tombstone 生命周期 |
+| 传输 | `haven-messaging` `inbox.rs` | 权威 JSONL file transport：`%APPDATA%/haven/inbox` 的 registry / mailbox / processing / bounded audit archive / deleted-session tombstones / lock；本地 Actor 与独立进程共用相同的消息生命周期 |
 | 编排 | `haven-agent` `layer::spawn_peer_session` | 先落库 `peer_kickoff` 并 inbox 注册 parent，再 Pending 调度；返回 `queued`（相对 `session.max_concurrent`） |
 | 接线 | `haven-app-binary` `app_state` | 将 Agent 提供的 typed `MessagingRuntime` 接入 Tools runtime；消息服务与协作契约由 `haven-messaging` 提供 |
 | 运行时 | `react/context.rs` + `react/inject.rs` | `context` 负责每步 heartbeat、通知或每 3 步通过 `MessagingService::claim` poll inbox（receiver、节拍和标题缓存在 `SessionState`，heartbeat 合并仍是进程级）；每个 envelope 保留为独立上下文项，投影 durable 后由 `MessageClaim::complete` ack 并发 receipt；`inject` 经 `apply_transcript` 注入带消毒后的 `message_id`/`in_reply_to_message_id`/`subject`；`InjectSource::CrossSession` |
@@ -487,9 +487,13 @@ Parent session                    Child session(s)
 
 协议约定：同伴消息 ≠ 用户指令；JSONL envelope 与工具消息行使用 `message_id`（稳定的 `msg-{uuid32}`）、`from_session_id`、`to_session_id`、`reply_to_session_id` 和 `in_reply_to_message_id`；registry 使用 `session_id` 与 `parent_session_id`。工具收件人参数使用 `to_session_id`，生命周期目标使用 `target_session_id`；
 `delivery_attempt` 记录 JSONL transport 的 at-least-once 重投次数；批量消息必须走 `send → claim → process → ack`。
-显式 `agent.inbox` 默认只 claim 不 ack，并返回稳定的 `message_ids`；处理完成后由 `agent.ack(message_ids)` 确认，每次最多 100 个 ID。模型可见结果不包含进程内领取身份；文件 transport 的 processing 状态在重启后按相同 `msg-*` 重投。旧 transcript 中的 `claim_token` 不再有效，应重新读取 inbox 并用 `message_ids` 确认。`agent.history` 为只读恢复入口。`agent.status/wait/stop/collect` 只允许当前 session 或其后代，
+显式 `agent.inbox` 默认只 claim 不 ack，并返回稳定的 `message_ids`；处理完成后由 `agent.ack(message_ids)` 确认，每次最多 100 个 ID。模型可见结果不包含进程内领取身份；文件 transport 的 processing 状态在重启后按相同 `msg-*` 重投。`MessageClaim` 是未确认批次句柄，不是独占 lease；多个 consumer 可观察相同 ID。旧 transcript 中的 `claim_token` 不再有效，应重新读取 inbox 并用 `message_ids` 确认。`agent.history` 为只读恢复入口。`agent.status/wait/stop/collect` 只允许当前 session 或其后代，
 并通过 `MessagingRuntime` 进入真实 `SessionSupervisor` / `SessionActor` 状态机，`stop` 走正常取消与终端清理路径。
-同进程和跨进程 session 都通过同一个 JSONL transport 读取消息；`SessionActor` 只保存轮询游标、节拍和标题等运行提示，不持有第二份 inbox。投递、claim、ack、历史和回复查询始终访问同一 transport，因此 Actor 创建、移除或重启不会切换消息来源。JSONL processing 中未确认的消息在应用进程重启后以相同 `msg-*` 重投；文件 flush 不代表断电级持久性。此决定与验证见 ADR 1045。子会话默认工作目录仍为
+同进程和跨进程 session 都通过同一个 JSONL transport 读取消息；`SessionActor` 只保存轮询游标、节拍和标题等运行提示，不持有第二份 inbox。投递、claim、ack、历史和回复查询始终访问同一 transport，因此 Actor 创建、移除或重启不会切换消息来源。Claim 时写入的 bounded archive 是 delivery audit tail，不是 ack 状态；JSONL processing 中未确认的消息在应用进程重启后以相同 `msg-*` 重投；文件 flush 不代表断电级持久性。此决定与验证见 ADR 1045。
+
+显式删除、retention 与批量删除在清 SQLite session 前先将 Messaging identity 写入 `deleted_sessions.json` tombstone，墓碑只留 `session_id` 与可选 `parent_session_id`。写入、注册、投递、claim/ack、历史和消息查找共享 transport lock；已删除 ID 不可由 heartbeat 复活，也不接受新邮件。删除会清理该 session 的 mailbox、processing、bounded audit archive 及其临时文件，包含已 ack 的 archive 正文。批量删除还会枚举共享 inbox 的 registry、tombstone 与 canonical mailbox/processing/archive 文件名，封锁旧版本遗留的 unregistered recipient。普通 `unregister` 仍表示离线而非删除。墓碑不出现在 agent/child 列表，但 descendants traversal 会穿过它；child cap 仍计入累计墓碑身份（ADR 1116）。
+
+子会话默认工作目录仍为
 Temp（全局约束）。
 
 ### 2.5.2 内置 `system` 工具（机器信息与系统控制）

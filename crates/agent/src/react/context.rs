@@ -583,8 +583,20 @@ mod assembly_tests {
             self.inner.list_children(parent)
         }
 
+        fn count_registered_children(&self, parent: &str) -> anyhow::Result<usize> {
+            self.inner.count_registered_children(parent)
+        }
+
         fn list_descendants(&self, root_session_id: &str) -> anyhow::Result<Vec<String>> {
             self.inner.list_descendants(root_session_id)
+        }
+
+        fn delete_sessions(&self, session_ids: &[String]) -> anyhow::Result<()> {
+            self.inner.delete_sessions(session_ids)
+        }
+
+        fn delete_all_sessions(&self, known_session_ids: &[String]) -> anyhow::Result<()> {
+            self.inner.delete_all_sessions(known_session_ids)
         }
 
         fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome> {

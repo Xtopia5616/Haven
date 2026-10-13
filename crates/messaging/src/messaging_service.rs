@@ -46,7 +46,10 @@ macro_rules! define_message_transport {
             fn mark_offline(&self, session_id: &str) -> anyhow::Result<()>;
             fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>>;
             fn list_children(&self, parent_session_id: &str) -> anyhow::Result<Vec<AgentInfo>>;
+            fn count_registered_children(&self, parent_session_id: &str) -> anyhow::Result<usize>;
             fn list_descendants(&self, root_session_id: &str) -> anyhow::Result<Vec<String>>;
+            fn delete_sessions(&self, session_ids: &[String]) -> anyhow::Result<()>;
+            fn delete_all_sessions(&self, known_session_ids: &[String]) -> anyhow::Result<()>;
             fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome>;
             fn claim(&self, recipient: &str) -> anyhow::Result<Vec<Envelope>>;
             /// Best-effort claim for background polling. `None` means the transport
@@ -71,9 +74,9 @@ macro_rules! define_message_transport {
     };
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 define_message_transport!(pub);
-#[cfg(not(feature = "test-support"))]
+#[cfg(not(any(test, feature = "test-support")))]
 define_message_transport!(pub(crate));
 
 impl MessageTransport for InboxBus {
@@ -128,8 +131,20 @@ impl MessageTransport for InboxBus {
         InboxBus::list_children(self, parent_session_id)
     }
 
+    fn count_registered_children(&self, parent_session_id: &str) -> anyhow::Result<usize> {
+        InboxBus::count_registered_children(self, parent_session_id)
+    }
+
     fn list_descendants(&self, root_session_id: &str) -> anyhow::Result<Vec<String>> {
         InboxBus::list_descendants(self, root_session_id)
+    }
+
+    fn delete_sessions(&self, session_ids: &[String]) -> anyhow::Result<()> {
+        InboxBus::delete_sessions(self, session_ids)
+    }
+
+    fn delete_all_sessions(&self, known_session_ids: &[String]) -> anyhow::Result<()> {
+        InboxBus::delete_all_sessions(self, known_session_ids)
     }
 
     fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome> {
@@ -376,6 +391,14 @@ impl MessagingService {
         Ok(children)
     }
 
+    /// Count all child identities registered under a parent, including deleted
+    /// lineage tombstones. This preserves the cumulative child-cap contract
+    /// while public child listings omit deleted sessions.
+    pub fn count_registered_children(&self, parent_session_id: &str) -> anyhow::Result<usize> {
+        validate_session_id(parent_session_id)?;
+        self.transport.count_registered_children(parent_session_id)
+    }
+
     pub fn list_descendants(&self, root_session_id: &str) -> anyhow::Result<Vec<String>> {
         validate_session_id(root_session_id)?;
         let descendants = self.transport.list_descendants(root_session_id)?;
@@ -383,6 +406,24 @@ impl MessagingService {
             validate_session_id(session_id)?;
         }
         Ok(descendants)
+    }
+
+    /// Permanently block Messaging access for deleted sessions while retaining
+    /// only the parent links needed to preserve descendant lineage.
+    pub fn delete_sessions(&self, session_ids: &[String]) -> anyhow::Result<()> {
+        for session_id in session_ids {
+            validate_session_id(session_id)?;
+        }
+        self.transport.delete_sessions(session_ids)
+    }
+
+    /// Tombstone database sessions and every additional identity still present
+    /// in the shared inbox files, including legacy unregistered mailboxes.
+    pub fn delete_all_sessions(&self, known_session_ids: &[String]) -> anyhow::Result<()> {
+        for session_id in known_session_ids {
+            validate_session_id(session_id)?;
+        }
+        self.transport.delete_all_sessions(known_session_ids)
     }
 
     /// Deliver one already-constructed envelope through the authoritative
@@ -686,7 +727,9 @@ pub struct SentMessage {
     pub outcome: SendOutcome,
 }
 
-/// A durable delivery lease returned by [`MessagingService::claim`].
+/// A process-local handle for one unacknowledged message batch returned by
+/// [`MessagingService::claim`]. It does not grant exclusive ownership: another
+/// consumer can observe the same stable message ids until one acknowledges them.
 ///
 /// `complete` acknowledges only the claimed ids and then emits read receipts.
 /// If processing fails or the value is dropped, the processing file remains
@@ -854,6 +897,29 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn stale_claim_completion_after_deletion_cannot_recreate_mailbox_or_send_receipt() {
+        let (dir, service) = service();
+        let sender = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        service.register(sender, &[]).unwrap();
+        service.register(recipient, &[]).unwrap();
+        let envelope = Envelope::new(sender, recipient, "pending before deletion");
+        service.deliver(recipient, &envelope).unwrap();
+        let stale_claim = service.claim(recipient).unwrap();
+
+        service.delete_sessions(&[recipient.to_string()]).unwrap();
+        assert!(stale_claim.complete().is_err());
+
+        assert!(!dir.path().join(format!("{recipient}.jsonl")).exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(format!("{sender}.jsonl"))).unwrap(),
+            "",
+            "a rejected stale completion must not emit a receipt"
+        );
+        assert!(service.history(recipient, 10).is_err());
     }
 
     #[test]

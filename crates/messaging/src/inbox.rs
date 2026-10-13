@@ -5,8 +5,10 @@
 //!
 //! Layout:
 //! - `agents.json` — registry: agent session_id → metadata (`last_seen` heartbeat)
+//! - `deleted_sessions.json` — durable tombstones with only session/parent lineage
 //! - `<session_id>.jsonl` — per-agent mailbox (append-only, one JSON envelope per line)
-//! - `<session_id>.archive.jsonl` — read messages kept for audit
+//! - `<session_id>.archive.jsonl` — bounded delivery audit copies, appended
+//!   when a claim observes messages and therefore not proof of acknowledgement
 //! - `.lock` — cross-process file mutex (Windows-safe)
 //!
 //! Concurrency model: every mutation (append, claim/ack, registry
@@ -226,6 +228,15 @@ struct AgentEntry {
     pub capabilities: Vec<String>,
 }
 
+/// Minimal durable identity retained after explicit session deletion. The map
+/// key is the deleted session id; only the parent link is needed to preserve
+/// lineage through deleted nodes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DeletedSessionEntry {
+    #[serde(default)]
+    parent_session_id: Option<String>,
+}
+
 /// Liveness status computed from the heartbeat, never persisted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -252,9 +263,9 @@ pub struct AgentInfo {
 pub struct SendOutcome {
     pub to_session_id: String,
     /// Whether the envelope was appended to the recipient's mailbox.
-    /// Lenient delivery: `true` even when the recipient's heartbeat is stale
-    /// (they read it next time they poll); only agents that never registered
-    /// (no mailbox) are rejected up front.
+    /// Lenient delivery: `true` when the recipient mailbox exists even if its
+    /// registry entry is absent or its heartbeat is stale. Deleted-session
+    /// tombstones always reject delivery.
     pub delivered: bool,
     /// Recipient liveness at delivery time.
     pub status: AgentStatus,
@@ -319,6 +330,14 @@ impl InboxBus {
         self.root.join(format!("{session_id}.archive.jsonl.tmp"))
     }
 
+    fn deleted_sessions(&self) -> PathBuf {
+        self.root.join("deleted_sessions.json")
+    }
+
+    fn deleted_sessions_tmp(&self) -> PathBuf {
+        self.root.join("deleted_sessions.json.tmp")
+    }
+
     fn processing(&self, session_id: &str) -> PathBuf {
         self.root.join(format!("{session_id}.jsonl.processing"))
     }
@@ -372,6 +391,7 @@ impl InboxBus {
         }
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.ensure_session_not_deleted_unlocked(session_id, "register")?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
         let now = now_rfc3339();
         let mut reg = self.read_registry_unlocked()?;
@@ -443,6 +463,9 @@ impl InboxBus {
         validate_session_id(session_id)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        if self.is_deleted_session_unlocked(session_id)? {
+            return Ok(());
+        }
         let mut reg = self.read_registry_unlocked()?;
         let Some(entry) = reg.get_mut(session_id) else {
             return Ok(());
@@ -462,10 +485,14 @@ impl InboxBus {
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
         let now = Local::now();
+        let tombstones = self.read_deleted_sessions_unlocked()?;
         Ok(self
             .read_registry_unlocked()?
             .into_values()
-            .filter(|e| e.parent_session_id.as_deref() == Some(parent_session_id))
+            .filter(|e| {
+                !tombstones.contains_key(&e.session_id)
+                    && e.parent_session_id.as_deref() == Some(parent_session_id)
+            })
             .map(|e| AgentInfo {
                 status: if is_online(&e.last_seen, now) {
                     AgentStatus::Online
@@ -489,6 +516,7 @@ impl InboxBus {
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
         let reg = self.read_registry_unlocked()?;
+        let tombstones = self.read_deleted_sessions_unlocked()?;
         let mut by_parent: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
         for e in reg.values() {
@@ -497,6 +525,14 @@ impl InboxBus {
                     .entry(p.to_string())
                     .or_default()
                     .push(e.session_id.clone());
+            }
+        }
+        for (session_id, tombstone) in &tombstones {
+            if let Some(parent_session_id) = tombstone.parent_session_id.as_deref() {
+                by_parent
+                    .entry(parent_session_id.to_string())
+                    .or_default()
+                    .push(session_id.clone());
             }
         }
         let mut out = Vec::new();
@@ -509,7 +545,9 @@ impl InboxBus {
             };
             for child in kids {
                 if seen.insert(child.clone()) {
-                    out.push(child.clone());
+                    if !tombstones.contains_key(child) {
+                        out.push(child.clone());
+                    }
                     queue.push(child.clone());
                 }
             }
@@ -522,9 +560,11 @@ impl InboxBus {
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
         let now = Local::now();
+        let tombstones = self.read_deleted_sessions_unlocked()?;
         let mut out: Vec<AgentInfo> = self
             .read_registry_unlocked()?
             .into_values()
+            .filter(|e| !tombstones.contains_key(&e.session_id))
             .map(|e| AgentInfo {
                 status: if is_online(&e.last_seen, now) {
                     AgentStatus::Online
@@ -548,14 +588,140 @@ impl InboxBus {
         Ok(out)
     }
 
-    /// Append one envelope to the recipient's mailbox. Lenient delivery: a
-    /// registered-but-stale recipient still receives the message (its
-    /// heartbeat freshness is only reported in [`SendOutcome::status`]);
-    /// only a missing mailbox (never registered) is an error.
+    /// Count all child session identities, including tombstones, to preserve
+    /// the historical cumulative spawn-cap contract.
+    pub fn count_registered_children(&self, parent_session_id: &str) -> anyhow::Result<usize> {
+        validate_session_id(parent_session_id)?;
+        let _lock = LockGuard::acquire(&self.root)?;
+        self.ensure_dir()?;
+        let reg = self.read_registry_unlocked()?;
+        let tombstones = self.read_deleted_sessions_unlocked()?;
+        let mut children = HashSet::new();
+        for entry in reg.values() {
+            if entry.parent_session_id.as_deref() == Some(parent_session_id) {
+                children.insert(entry.session_id.as_str());
+            }
+        }
+        for (session_id, entry) in &tombstones {
+            if entry.parent_session_id.as_deref() == Some(parent_session_id) {
+                children.insert(session_id.as_str());
+            }
+        }
+        Ok(children.len())
+    }
+
+    /// Permanently tombstone session identities and remove their unacknowledged
+    /// messages. The tombstone is committed before file cleanup, so a failed or
+    /// interrupted cleanup remains fail-closed and can be retried idempotently.
+    pub fn delete_sessions(&self, session_ids: &[String]) -> anyhow::Result<()> {
+        let unique_ids = Self::unique_session_ids(session_ids)?;
+        if unique_ids.is_empty() {
+            return Ok(());
+        }
+
+        let _lock = LockGuard::acquire(&self.root)?;
+        self.ensure_dir()?;
+        self.delete_sessions_unlocked(&unique_ids)
+    }
+
+    /// Tombstone the database's session identities plus any legacy identity
+    /// still represented by files or registry metadata in the shared inbox.
+    pub fn delete_all_sessions(&self, known_session_ids: &[String]) -> anyhow::Result<()> {
+        let mut unique_ids = Self::unique_session_ids(known_session_ids)?;
+        let mut seen: HashSet<String> = unique_ids.iter().cloned().collect();
+        let _lock = LockGuard::acquire(&self.root)?;
+        self.ensure_dir()?;
+        for session_id in self
+            .read_registry_unlocked()?
+            .into_keys()
+            .chain(self.read_deleted_sessions_unlocked()?.into_keys())
+        {
+            if seen.insert(session_id.clone()) {
+                unique_ids.push(session_id);
+            }
+        }
+        for entry in std::fs::read_dir(&self.root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if let Some(session_id) = session_id_from_inbox_file_name(&name)
+                && seen.insert(session_id.clone())
+            {
+                unique_ids.push(session_id);
+            }
+        }
+        self.delete_sessions_unlocked(&unique_ids)
+    }
+
+    fn unique_session_ids(session_ids: &[String]) -> anyhow::Result<Vec<String>> {
+        let mut unique_ids = Vec::with_capacity(session_ids.len());
+        let mut seen = HashSet::with_capacity(session_ids.len());
+        for session_id in session_ids {
+            validate_session_id(session_id)?;
+            if seen.insert(session_id.as_str()) {
+                unique_ids.push(session_id.clone());
+            }
+        }
+        Ok(unique_ids)
+    }
+
+    fn delete_sessions_unlocked(&self, session_ids: &[String]) -> anyhow::Result<()> {
+        if session_ids.is_empty() {
+            return Ok(());
+        }
+        let mut tombstones = self.read_deleted_sessions_unlocked()?;
+        let mut registry = self.read_registry_unlocked()?;
+        for session_id in session_ids {
+            let parent_session_id = match tombstones.get(session_id) {
+                Some(entry) => entry.parent_session_id.clone(),
+                None => registry
+                    .get(session_id)
+                    .and_then(|entry| entry.parent_session_id.clone()),
+            };
+            tombstones.insert(
+                session_id.clone(),
+                DeletedSessionEntry { parent_session_id },
+            );
+        }
+        self.write_deleted_sessions_unlocked(&tombstones)?;
+
+        let mut registry_changed = false;
+        for session_id in session_ids {
+            registry_changed |= registry.remove(session_id).is_some();
+        }
+        if registry_changed {
+            self.write_registry_unlocked(&registry)?;
+        }
+
+        for session_id in session_ids {
+            self.delete_session_messages_unlocked(session_id)?;
+        }
+        Ok(())
+    }
+
+    /// Append one envelope to the recipient's mailbox. Lenient delivery: an
+    /// existing mailbox still accepts a message when the recipient is
+    /// unregistered or its heartbeat is stale (freshness is reported in
+    /// [`SendOutcome::status`]); a missing mailbox or deleted-session
+    /// tombstone is an error.
     pub fn deliver(&self, to: &str, env: &Envelope) -> anyhow::Result<SendOutcome> {
         validate_message_envelope_for_delivery(to, env)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        let tombstones = self.read_deleted_sessions_unlocked()?;
+        if tombstones.contains_key(to) {
+            anyhow::bail!("cannot deliver to deleted session '{to}'")
+        }
+        if tombstones.contains_key(&env.from_session_id) {
+            anyhow::bail!(
+                "cannot deliver from deleted session '{}'",
+                env.from_session_id
+            )
+        }
         self.recover_mailbox_tmp_unlocked(to)?;
         let mailbox = self.mailbox(to);
         if !mailbox.exists() {
@@ -612,6 +778,7 @@ impl InboxBus {
 
     fn claim_and_archive_unlocked(&self, session_id: &str) -> anyhow::Result<Vec<Envelope>> {
         self.ensure_dir()?;
+        self.ensure_session_not_deleted_unlocked(session_id, "claim messages for")?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
         // Recover an archive replacement left between Windows' remove and
         // rename steps before processing the current claim.
@@ -710,6 +877,7 @@ impl InboxBus {
         }
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.ensure_session_not_deleted_unlocked(session_id, "acknowledge messages for")?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
         self.recover_archive_tmp_unlocked(session_id)?;
         self.recover_processing_tmp_unlocked(session_id)?;
@@ -737,6 +905,7 @@ impl InboxBus {
         validate_session_id(session_id)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.ensure_session_not_deleted_unlocked(session_id, "query messages for")?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
         self.append_archive_unlocked(session_id, &[])?;
         if let Some(env) = last_valid_line(session_id, &self.mailbox(session_id))? {
@@ -758,6 +927,7 @@ impl InboxBus {
         validate_message_id(message_id, "message_id")?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.ensure_session_not_deleted_unlocked(session_id, "query messages for")?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
         self.append_archive_unlocked(session_id, &[])?;
         for (path, max_bytes) in [
@@ -804,6 +974,7 @@ impl InboxBus {
         validate_message_id(in_reply_to_message_id, "in_reply_to_message_id")?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.ensure_session_not_deleted_unlocked(session_id, "read replies for")?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
         self.append_archive_unlocked(session_id, &[])?;
         let mailbox = self.mailbox(session_id);
@@ -863,13 +1034,15 @@ impl InboxBus {
         Ok(matching)
     }
 
-    /// Message history of one agent: unread mailbox messages plus the
-    /// read archive, newest first, up to `limit` entries. Read-only view for
+    /// Message history of one agent: mailbox messages plus the bounded
+    /// delivery archive, newest first, up to `limit` entries. The archive is
+    /// appended before acknowledgement and is not a read-status marker. Read-only view for
     /// the UI / audit (never consumes the mailbox).
     pub fn history(&self, session_id: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
         validate_session_id(session_id)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.ensure_session_not_deleted_unlocked(session_id, "query history for")?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
         self.append_archive_unlocked(session_id, &[])?;
         let mut entries: Vec<Envelope> = Vec::new();
@@ -931,6 +1104,110 @@ impl InboxBus {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn is_deleted_session_unlocked(&self, session_id: &str) -> anyhow::Result<bool> {
+        Ok(self
+            .read_deleted_sessions_unlocked()?
+            .contains_key(session_id))
+    }
+
+    fn ensure_session_not_deleted_unlocked(
+        &self,
+        session_id: &str,
+        operation: &str,
+    ) -> anyhow::Result<()> {
+        if self.is_deleted_session_unlocked(session_id)? {
+            anyhow::bail!("cannot {operation} deleted session '{session_id}'")
+        }
+        Ok(())
+    }
+
+    fn read_deleted_sessions_unlocked(
+        &self,
+    ) -> anyhow::Result<HashMap<String, DeletedSessionEntry>> {
+        self.recover_deleted_sessions_tmp_unlocked()?;
+        let path = self.deleted_sessions();
+        match std::fs::read_to_string(path) {
+            Ok(contents) if contents.trim().is_empty() => Ok(HashMap::new()),
+            Ok(contents) => {
+                let deleted: HashMap<String, DeletedSessionEntry> = serde_json::from_str(&contents)
+                    .map_err(|error| anyhow::anyhow!("corrupt deleted_sessions.json: {error}"))?;
+                for (session_id, entry) in &deleted {
+                    validate_session_id(session_id).map_err(|error| {
+                        anyhow::anyhow!("invalid session id in deleted_sessions.json: {error}")
+                    })?;
+                    if let Some(parent_session_id) = entry.parent_session_id.as_deref() {
+                        validate_session_id(parent_session_id).map_err(|error| {
+                            anyhow::anyhow!(
+                                "invalid parent session ID in deleted_sessions.json: {error}"
+                            )
+                        })?;
+                    }
+                }
+                Ok(deleted)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn write_deleted_sessions_unlocked(
+        &self,
+        deleted: &HashMap<String, DeletedSessionEntry>,
+    ) -> anyhow::Result<()> {
+        for (session_id, entry) in deleted {
+            validate_session_id(session_id)?;
+            if let Some(parent_session_id) = entry.parent_session_id.as_deref() {
+                validate_session_id(parent_session_id)?;
+            }
+        }
+        let path = self.deleted_sessions();
+        let tmp = self.deleted_sessions_tmp();
+        let mut file = File::create(&tmp)?;
+        file.write_all(serde_json::to_string_pretty(deleted)?.as_bytes())?;
+        file.flush()?;
+        file.sync_all()?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        std::fs::rename(tmp, path)?;
+        Ok(())
+    }
+
+    fn delete_session_messages_unlocked(&self, session_id: &str) -> anyhow::Result<()> {
+        let message_paths = [
+            self.mailbox(session_id),
+            self.mailbox_tmp(session_id),
+            self.processing(session_id),
+            self.processing_tmp(session_id),
+            self.archive(session_id),
+            self.archive_tmp(session_id),
+        ];
+        for path in message_paths {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn recover_deleted_sessions_tmp_unlocked(&self) -> anyhow::Result<()> {
+        let path = self.deleted_sessions();
+        let tmp = self.deleted_sessions_tmp();
+        if !tmp.exists() {
+            return Ok(());
+        }
+        if path.exists() {
+            std::fs::remove_file(tmp)?;
+        } else {
+            std::fs::rename(tmp, path)?;
+        }
+        Ok(())
     }
 
     /// Append envelopes to the archive and compact it to a newest-record tail
@@ -1159,6 +1436,24 @@ impl InboxBus {
         }
         Ok(())
     }
+}
+
+fn session_id_from_inbox_file_name(file_name: &str) -> Option<String> {
+    for suffix in [
+        ".jsonl.processing.tmp",
+        ".jsonl.processing",
+        ".archive.jsonl.tmp",
+        ".archive.jsonl",
+        ".jsonl.tmp",
+        ".jsonl",
+    ] {
+        if let Some(session_id) = file_name.strip_suffix(suffix)
+            && validate_session_id(session_id).is_ok()
+        {
+            return Some(session_id.to_string());
+        }
+    }
+    None
 }
 
 fn parse_envelopes(session_id: &str, content: &str) -> Vec<Envelope> {
@@ -2416,7 +2711,7 @@ mod tests {
         )
         .unwrap();
         claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        // New unread message from session-c with a custom reply_to_session_id.
+        // New pending message from session-c with a custom reply_to_session_id.
         let mut fresh = env_from(
             "ses-cccccccccccccccccccccccccccccccc",
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -2435,7 +2730,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             last.message_id, fresh.message_id,
-            "unread mailbox wins over archive"
+            "mailbox entries are newer than archive entries"
         );
         assert_eq!(
             last.reply_target_session_id(),
@@ -3113,5 +3408,199 @@ mod tests {
             .unwrap();
         assert_eq!(capped.len(), 1);
         assert_eq!(capped[0].message_id, fresh.message_id);
+    }
+
+    #[test]
+    fn deletion_tombstone_blocks_resurrection_and_preserves_only_lineage() {
+        let (dir, bus) = test_bus();
+        let parent = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let deleted = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let descendant = "ses-cccccccccccccccccccccccccccccccc";
+        bus.register(parent, &[]).unwrap();
+        bus.register_with_profile(
+            deleted,
+            &["search".into()],
+            Some("private title"),
+            Some("private role"),
+            Some(parent),
+        )
+        .unwrap();
+        bus.register_with_profile(descendant, &[], None, None, Some(deleted))
+            .unwrap();
+
+        let acknowledged = env_from(parent, deleted, "already acknowledged");
+        bus.deliver(deleted, &acknowledged).unwrap();
+        assert_eq!(claim_and_ack(&bus, deleted).len(), 1);
+
+        let pending = env_from(parent, deleted, "still unread");
+        bus.deliver(deleted, &pending).unwrap();
+        assert_eq!(bus.claim_and_archive(deleted).unwrap().len(), 1);
+        assert!(bus.processing(deleted).exists());
+        std::fs::write(
+            bus.archive_tmp(deleted),
+            serde_json::to_string(&pending).unwrap(),
+        )
+        .unwrap();
+
+        bus.delete_sessions(&[deleted.to_string()]).unwrap();
+
+        let tombstones = bus.read_deleted_sessions_unlocked().unwrap();
+        assert_eq!(tombstones.len(), 1);
+        assert_eq!(
+            tombstones[deleted].parent_session_id.as_deref(),
+            Some(parent)
+        );
+        let serialized = std::fs::read_to_string(bus.deleted_sessions()).unwrap();
+        assert!(!serialized.contains("private title"));
+        assert!(!serialized.contains("private role"));
+        assert!(
+            bus.list_agents()
+                .unwrap()
+                .iter()
+                .all(|agent| agent.session_id != deleted)
+        );
+        assert!(bus.list_children(parent).unwrap().is_empty());
+        assert_eq!(bus.count_registered_children(parent).unwrap(), 1);
+        assert_eq!(
+            bus.list_descendants(parent).unwrap(),
+            vec![descendant.to_string()]
+        );
+
+        for path in [
+            bus.mailbox(deleted),
+            bus.mailbox_tmp(deleted),
+            bus.processing(deleted),
+            bus.processing_tmp(deleted),
+            bus.archive(deleted),
+            bus.archive_tmp(deleted),
+        ] {
+            assert!(
+                !path.exists(),
+                "session message file must be removed: {}",
+                path.display()
+            );
+        }
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let entry = entry.unwrap();
+            if let Ok(contents) = std::fs::read_to_string(entry.path()) {
+                assert!(!contents.contains("already acknowledged"));
+                assert!(!contents.contains("still unread"));
+            }
+        }
+
+        assert!(bus.register(deleted, &[]).is_err());
+        assert!(
+            bus.deliver(deleted, &env_from(parent, deleted, "late delivery"))
+                .is_err()
+        );
+        assert!(
+            bus.deliver(parent, &env_from(deleted, parent, "late sender"))
+                .is_err()
+        );
+        assert!(bus.claim_and_archive(deleted).is_err());
+        assert!(
+            bus.try_claim_and_archive(deleted)
+                .unwrap_err()
+                .to_string()
+                .contains("deleted")
+        );
+        assert!(
+            bus.ack_claimed(deleted, &[pending.message_id.clone()])
+                .is_err()
+        );
+        assert!(bus.last_received(deleted).is_err());
+        assert!(bus.find_message(deleted, &acknowledged.message_id).is_err());
+        assert!(
+            bus.take_matching_replies(deleted, &acknowledged.message_id, parent)
+                .is_err()
+        );
+        assert!(bus.history(deleted, 10).is_err());
+        assert!(
+            !bus.mailbox(deleted).exists(),
+            "stale reads/acks must not recreate mailbox"
+        );
+
+        bus.delete_sessions(&[deleted.to_string()]).unwrap();
+        assert_eq!(bus.count_registered_children(parent).unwrap(), 1);
+    }
+
+    #[test]
+    fn concurrent_delivery_and_deletion_are_linearized_by_the_shared_lock() {
+        let (dir, bus) = test_bus();
+        let sender = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(sender, &[]).unwrap();
+        bus.register(recipient, &[]).unwrap();
+
+        let bus = Arc::new(bus);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let delivery_bus = bus.clone();
+        let delivery_barrier = barrier.clone();
+        let delivery = std::thread::spawn(move || {
+            delivery_barrier.wait();
+            delivery_bus.deliver(recipient, &env_from(sender, recipient, "racing delivery"))
+        });
+        let deletion_bus = bus.clone();
+        let deletion_barrier = barrier.clone();
+        let deletion = std::thread::spawn(move || {
+            deletion_barrier.wait();
+            deletion_bus.delete_sessions(&[recipient.to_string()])
+        });
+        barrier.wait();
+
+        let _ = delivery.join().unwrap();
+        deletion.join().unwrap().unwrap();
+        assert!(!dir.path().join(format!("{recipient}.jsonl")).exists());
+        assert!(bus.history(recipient, 10).is_err());
+        assert!(
+            bus.register(recipient, &[]).is_err(),
+            "deletion must win permanently over a racing delivery"
+        );
+    }
+
+    #[test]
+    fn interrupted_tombstone_replacement_recovers_before_registration() {
+        let (_dir, bus) = test_bus();
+        let deleted = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let tombstone = DeletedSessionEntry {
+            parent_session_id: Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+        };
+        std::fs::write(
+            bus.deleted_sessions_tmp(),
+            serde_json::to_string(&HashMap::from([(deleted.to_string(), tombstone)])).unwrap(),
+        )
+        .unwrap();
+
+        assert!(bus.register(deleted, &[]).is_err());
+        assert!(bus.deleted_sessions().exists());
+        assert!(!bus.deleted_sessions_tmp().exists());
+        assert!(!bus.mailbox(deleted).exists());
+    }
+
+    #[test]
+    fn delete_all_also_tombstones_legacy_unregistered_mailboxes() {
+        let (_dir, bus) = test_bus();
+        let legacy = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let database_only = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(legacy, &[]).unwrap();
+        bus.unregister(legacy).unwrap();
+        write_mailbox(
+            &bus,
+            legacy,
+            &[env_from(database_only, legacy, "legacy pending")],
+        );
+
+        bus.delete_all_sessions(&[database_only.to_string()])
+            .unwrap();
+
+        assert!(!bus.mailbox(legacy).exists());
+        assert!(bus.history(legacy, 10).is_err());
+        assert!(bus.register(legacy, &[]).is_err());
+        assert!(bus.register(database_only, &[]).is_err());
+        assert!(
+            bus.read_deleted_sessions_unlocked()
+                .unwrap()
+                .contains_key(legacy)
+        );
     }
 }

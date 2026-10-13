@@ -1078,12 +1078,12 @@ impl AgentTool {
         let service = self.inner.service.clone();
         let parent_session_id = sid.clone();
         let child_count = blocking(service, move |service| {
-            Ok::<_, anyhow::Error>(service.list_children(&parent_session_id)?.len())
+            service.count_registered_children(&parent_session_id)
         })
         .await?;
         if child_count >= MAX_CHILDREN_PER_PARENT {
             anyhow::bail!(
-                "parent_session_id has {child_count} registered child sessions (maximum {MAX_CHILDREN_PER_PARENT}); offline and ended children still count, so no additional child can be spawned"
+                "parent_session_id has {child_count} registered child sessions (maximum {MAX_CHILDREN_PER_PARENT}); offline, ended, and deleted child identities still count, so no additional child can be spawned"
             );
         }
 
@@ -2861,7 +2861,7 @@ mod tests {
             .to_string();
         assert!(err.contains("maximum 8"), "{err}");
         assert!(
-            err.contains("offline and ended children still count"),
+            err.contains("offline, ended, and deleted child identities still count"),
             "{err}"
         );
         assert!(err.contains("no additional child can be spawned"), "{err}");

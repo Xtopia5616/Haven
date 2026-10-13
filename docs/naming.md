@@ -373,6 +373,8 @@ Rust 函数参数若承载 Haven 实体身份，默认沿用完整实体名（�
 
 Messaging 的 JSONL envelope、registry、工具参数与工具结果共用显式身份词汇：消息字段为 `message_id`、`from_session_id`、`to_session_id`、`reply_to_session_id`、`in_reply_to_message_id`；Agent registry/view 为 `session_id`、`parent_session_id`；工具收件人/目标分别为 `to_session_id`、`target_session_id`。前端只在 renderer 边界映射 camelCase，不使用 `id`、`name`、`from`、`to` 或 `parent` 作为这些实体字段的别名（ADR 1026）。
 
+Messaging 的 `MessageClaim` 是一批稳定 `message_ids` 的进程内 ack 句柄，不表示独占 lease 或消费权；未 ack 前其他 consumer 仍可能观察相同 ID。`.archive.jsonl` 使用 delivery/audit archive 术语：claim 时就会追加，不能命名或解释为已读、已确认；pending 状态以 mailbox/`.processing` 为准。显式 session deletion 使用 `deleted_sessions.json` lineage tombstone，与正常 `unregister`/offline 生命周期分开，并清除该 session 的 mailbox、processing、archive 与临时文件中的全部消息正文（ADR 1116）。
+
 ToolRun completion 消息身份是可重试投递的派生身份：`tool_run_result_id` 经 SHA-256 确定性映射到 `msg-*`，同一 completion 在 outbox 重投、进程恢复和 queue 重试中必须得到同一个 `message_id`，以保持 transcript/outbox 幂等。它不是新实体的随机 ID 生成；不得替换为每次调用 `new_id("msg")`（ADR 0998）。
 
 App 的 Memory fact command response 使用 `fact_id` 标识事实；repository 仍映射既有 `facts.id`，UI 使用生成 DTO 字段并在命令边界校验 `fact-*`，不接受泛名 `id`（ADR 0992）。
