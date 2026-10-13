@@ -375,6 +375,132 @@ describe('ToolsView toolbar actions', () => {
 		expect(reportError).not.toHaveBeenCalled();
 	});
 
+	it('marks an MCP refresh with any failed server as a warning, including mixed results', async () => {
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'list_builtin_tool_manifests') return { tools: [] };
+			if (command === 'list_mcp_servers') return [];
+			if (command === 'list_skills') return [];
+			if (command === 'refresh_mcp_servers') {
+				return {
+					added: ['new-server'],
+					removed: [],
+					updated: [],
+					failed: ['offline-server'],
+				};
+			}
+			return undefined;
+		});
+
+		render(ToolsView);
+		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
+		await fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+
+		await waitFor(() =>
+			expect(addNotification).toHaveBeenCalledWith(
+				'MCP 刷新: 新增 new-server；offline-server 连接失败',
+				'warning',
+				3000,
+			),
+		);
+	});
+
+	it('reports the MCP server name and add operation when adding fails', async () => {
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'list_builtin_tool_manifests') return { tools: [] };
+			if (command === 'list_mcp_servers') return [];
+			if (command === 'list_skills') return [];
+			if (command === 'add_mcp_server') throw new Error('add failed');
+			return undefined;
+		});
+
+		render(ToolsView);
+		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
+		await fireEvent.click(screen.getByRole('button', { name: '添加' }));
+		await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'new-server' } });
+		await fireEvent.input(screen.getByLabelText('Command'), {
+			target: { value: 'mcp-server' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+		await waitFor(() =>
+			expect(reportError).toHaveBeenCalledWith(new Error('add failed'), {
+				context: 'ToolsView',
+				message: '添加 MCP 服务器 new-server 失败',
+				log: false,
+			}),
+		);
+	});
+
+	it('reports the MCP server name and update operation when updating fails', async () => {
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'list_builtin_tool_manifests') return { tools: [] };
+			if (command === 'list_mcp_servers') return [mcpServer('docs-server', 'Connected')];
+			if (command === 'list_skills') return [];
+			if (command === 'update_mcp_server') throw new Error('update failed');
+			return undefined;
+		});
+
+		render(ToolsView);
+		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
+		await waitFor(() => expect(screen.getByText('docs-server')).toBeTruthy());
+		await fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+		await waitFor(() =>
+			expect(reportError).toHaveBeenCalledWith(new Error('update failed'), {
+				context: 'ToolsView',
+				message: '更新 MCP 服务器 docs-server 失败',
+				log: false,
+			}),
+		);
+	});
+
+	it('reports the MCP server name and remove operation when removal fails', async () => {
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'list_builtin_tool_manifests') return { tools: [] };
+			if (command === 'list_mcp_servers') return [mcpServer('docs-server', 'Connected')];
+			if (command === 'list_skills') return [];
+			if (command === 'remove_mcp_server') throw new Error('remove failed');
+			return undefined;
+		});
+
+		render(ToolsView);
+		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
+		await waitFor(() => expect(screen.getByText('docs-server')).toBeTruthy());
+		await fireEvent.click(screen.getByRole('button', { name: '移除' }));
+
+		await waitFor(() =>
+			expect(reportError).toHaveBeenCalledWith(new Error('remove failed'), {
+				context: 'ToolsView',
+				message: '移除 MCP 服务器 docs-server 失败',
+				log: false,
+			}),
+		);
+	});
+
+	it('reports the MCP server name and reconnect operation when reconnecting fails', async () => {
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'list_builtin_tool_manifests') return { tools: [] };
+			if (command === 'list_mcp_servers') return [mcpServer('docs-server', 'Connected')];
+			if (command === 'list_skills') return [];
+			if (command === 'reconnect_mcp_server') throw new Error('reconnect failed');
+			return undefined;
+		});
+
+		render(ToolsView);
+		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
+		await waitFor(() => expect(screen.getByText('docs-server')).toBeTruthy());
+		await fireEvent.click(screen.getAllByRole('button', { name: '刷新' })[1]);
+
+		await waitFor(() =>
+			expect(reportError).toHaveBeenCalledWith(new Error('reconnect failed'), {
+				context: 'ToolsView',
+				message: '刷新 MCP 服务器 docs-server 连接失败',
+				log: false,
+			}),
+		);
+	});
+
 	it('uses the same loading contract for skill refreshes', async () => {
 		let finishRefresh: (() => void) | undefined;
 		invoke.mockImplementation((command: string) => {

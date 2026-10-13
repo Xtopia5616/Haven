@@ -235,12 +235,7 @@
 				if (failed.length) parts.push(`${failed.join(', ')} 连接失败`);
 				addNotification(
 					`MCP 刷新: ${parts.join('；')}`,
-					failed.length &&
-						added.length === 0 &&
-						removed.length === 0 &&
-						updated.length === 0
-						? 'warning'
-						: 'success',
+					failed.length > 0 ? 'warning' : 'success',
 					3000,
 				);
 			}
@@ -355,7 +350,12 @@
 			closeDialog();
 			await refreshMcpServers();
 		} catch (e) {
-			reportError(e, { context: 'ToolsView', message: '操作失败', log: false });
+			const action = mcpEditServer ? '更新' : '添加';
+			reportError(e, {
+				context: 'ToolsView',
+				message: `${action} MCP 服务器 ${config.name} 失败`,
+				log: false,
+			});
 		}
 	}
 
@@ -365,7 +365,11 @@
 			addNotification(`已移除 ${name}`, 'success', 2000);
 			await refreshMcpServers();
 		} catch (e) {
-			reportError(e, { context: 'ToolsView', message: '移除失败', log: false });
+			reportError(e, {
+				context: 'ToolsView',
+				message: `移除 MCP 服务器 ${name} 失败`,
+				log: false,
+			});
 		}
 	}
 
@@ -376,7 +380,11 @@
 			await refreshMcpServers();
 		} catch (e) {
 			if (isAuthorizationConfirmationPending(e)) return;
-			reportError(e, { context: 'ToolsView', message: '刷新失败', log: false });
+			reportError(e, {
+				context: 'ToolsView',
+				message: `刷新 MCP 服务器 ${name} 连接失败`,
+				log: false,
+			});
 		}
 	}
 
