@@ -96,21 +96,15 @@ impl CaptureSignals {
 pub struct CpalBackend {
     ring: Arc<StdMutex<RingBuffer>>,
     signals: CaptureSignals,
-    device_name: String,
     stream: Option<cpal::Stream>,
     running: bool,
 }
 
 impl CpalBackend {
     pub fn new(ring: Arc<StdMutex<RingBuffer>>, signals: CaptureSignals) -> Result<Self> {
-        let device_name = cpal::default_host()
-            .default_input_device()
-            .and_then(|d| d.name().ok())
-            .unwrap_or_else(|| "default input".into());
         Ok(Self {
             ring,
             signals,
-            device_name,
             stream: None,
             running: false,
         })
@@ -138,11 +132,10 @@ impl CpalBackend {
         self.stream = Some(stream);
         self.running = true;
         tracing::info!(
-            "cpal capture running on {} ({} Hz, {} ch, {})",
-            self.device_name,
-            sample_rate,
+            sample_rate_hz = sample_rate,
             channels,
-            sample_format
+            sample_format = %sample_format,
+            "cpal capture running"
         );
         Ok(())
     }
