@@ -633,14 +633,47 @@ impl Database {
         session_id: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<Message>> {
+        self.list_recent_session_messages_with_pending_policy(session_id, limit, false)
+    }
+
+    /// List the latest textual messages used for fresh-session prompt
+    /// history, excluding inputs that still have an explicit delivery marker.
+    pub fn list_recent_session_prompt_messages(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Message>> {
+        self.list_recent_session_messages_with_pending_policy(session_id, limit, true)
+    }
+
+    fn list_recent_session_messages_with_pending_policy(
+        &self,
+        session_id: &str,
+        limit: usize,
+        exclude_pending_inputs: bool,
+    ) -> anyhow::Result<Vec<Message>> {
         ensure_session_id(session_id)?;
         let conn = self.conn();
-        let mut stmt = conn.prepare(
+        let sql = if exclude_pending_inputs {
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
                     ui_metadata, voice, ingress_seq, media_inputs
-             FROM messages WHERE session_id = ?1 AND (message_type IS NULL OR message_type = 'text' OR message_type = 'peer_kickoff')
-              ORDER BY created_at DESC, rowid DESC LIMIT ?2",
-        )?;
+             FROM messages
+             WHERE session_id = ?1
+               AND (message_type IS NULL OR message_type = 'text' OR message_type = 'peer_kickoff')
+               AND NOT EXISTS (
+                   SELECT 1 FROM pending_session_inputs p
+                   WHERE p.session_id = messages.session_id AND p.message_id = messages.id
+               )
+              ORDER BY created_at DESC, rowid DESC LIMIT ?2"
+        } else {
+            "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
+                    ui_metadata, voice, ingress_seq, media_inputs
+             FROM messages
+             WHERE session_id = ?1
+               AND (message_type IS NULL OR message_type = 'text' OR message_type = 'peer_kickoff')
+             ORDER BY created_at DESC, rowid DESC LIMIT ?2"
+        };
+        let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map(rusqlite::params![session_id, limit], map_message_row)?;
         let mut msgs = Vec::new();
         for row in rows {
@@ -648,6 +681,39 @@ impl Database {
         }
         msgs.reverse();
         Ok(msgs)
+    }
+
+    /// Check whether message projections exist beyond the initial user row
+    /// and explicitly pending inputs. These rows cannot be recovered safely
+    /// when the authoritative durable event stream is absent.
+    pub fn has_unrepresented_session_messages(
+        &self,
+        session_id: &str,
+        initial_message_id: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        ensure_session_id(session_id)?;
+        if let Some(message_id) = initial_message_id {
+            anyhow::ensure!(
+                is_canonical_id(message_id, "msg"),
+                "initial_message_id must be a canonical msg-* ID"
+            );
+        }
+
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM messages m
+                 WHERE m.session_id = ?1
+                   AND (?2 IS NULL OR m.id != ?2)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM pending_session_inputs p
+                       WHERE p.session_id = m.session_id AND p.message_id = m.id
+                   )
+             )",
+            rusqlite::params![session_id, initial_message_id],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
     }
 
     /// Return all user inputs whose durable delivery marker has not been

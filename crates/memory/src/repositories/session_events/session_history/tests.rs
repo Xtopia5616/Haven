@@ -147,6 +147,17 @@ async fn session_store_lists_latest_prompt_messages_in_chronological_order() {
             None,
         )
         .unwrap();
+    let pending = db
+        .add_pending_user_input(
+            &session_id,
+            "accepted but not yet delivered",
+            Some(haven_common::types::TranscriptMessageKind::Text),
+            &[],
+            false,
+            None,
+            crate::PendingInputDisposition::FollowUp,
+        )
+        .unwrap();
     let latest = db
         .add_message(
             &session_id,
@@ -176,6 +187,16 @@ async fn session_store_lists_latest_prompt_messages_in_chronological_order() {
                 content: "latest".into(),
             },
         ]
+    );
+    assert!(
+        window
+            .iter()
+            .all(|message| message.message_id != pending.message.message_id)
+    );
+    assert!(
+        window
+            .iter()
+            .all(|message| !message.content.contains("accepted but not yet delivered"))
     );
     let missing_session_id = haven_common::types::new_id("ses");
     assert!(

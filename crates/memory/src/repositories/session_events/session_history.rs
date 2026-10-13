@@ -98,7 +98,7 @@ impl SessionStore {
         self.db
             .run_blocking(move |db| {
                 Ok(db
-                    .list_recent_session_messages(&session_id, limit)?
+                    .list_recent_session_prompt_messages(&session_id, limit)?
                     .into_iter()
                     .map(|message| SessionMessageText {
                         message_id: message.message_id,
@@ -106,6 +106,23 @@ impl SessionStore {
                         content: message.content,
                     })
                     .collect())
+            })
+            .await
+    }
+
+    /// Check whether a session has materialized transcript rows that cannot
+    /// be reconstructed from its initial input or an explicit pending-input
+    /// marker. Agent uses this to refuse a fresh run when the authoritative
+    /// durable event stream is missing.
+    pub async fn has_unrepresented_session_messages(
+        &self,
+        session_id: &str,
+        initial_message_id: Option<String>,
+    ) -> anyhow::Result<bool> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                db.has_unrepresented_session_messages(&session_id, initial_message_id.as_deref())
             })
             .await
     }

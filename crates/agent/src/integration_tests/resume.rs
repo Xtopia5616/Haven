@@ -1022,6 +1022,17 @@ async fn run_session_from_id_recovers_pending_input_without_event_log() {
     );
     let saved = load_event_projection(&agent, &session.session_id).await;
     let canonical = saved.project().canonical_messages;
+    let pending_text_occurrences = canonical
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter(|part| {
+            matches!(part, ContentPart::Text(text) if text.contains("accepted before first run"))
+        })
+        .count();
+    assert_eq!(
+        pending_text_occurrences, 1,
+        "a recovered pending input must appear once, as its UserInject message"
+    );
     assert!(canonical.iter().any(|message| {
         message.role == CanonicalRole::User
             && message.source == Some(InjectSource::FollowUp)
@@ -1029,6 +1040,47 @@ async fn run_session_from_id_recovers_pending_input_without_event_log() {
                 matches!(part, ContentPart::Text(text) if text == "accepted before first run")
             })
     }));
+}
+
+#[tokio::test]
+async fn run_session_from_id_fails_closed_without_events_for_orphan_transcript_rows() {
+    let (agent, executor) = make_test_agent();
+    agent.set_emitter(make_recording_emitter());
+    let session = executor
+        .create_session_with_summary("initial", "initial")
+        .await
+        .unwrap();
+    agent
+        .persist_message_parts(
+            &session.session_id,
+            CanonicalRole::User,
+            "initial",
+            Some(haven_common::types::TranscriptMessageKind::Text),
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+    agent
+        .persist_message_parts(
+            &session.session_id,
+            CanonicalRole::Assistant,
+            "orphan projection without an event",
+            Some(haven_common::types::TranscriptMessageKind::Text),
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+
+    let error = agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .expect_err(
+            "a message projection without the authoritative event log must not be replayed",
+        );
+
+    assert!(error.to_string().contains("durable event log"));
 }
 
 #[tokio::test]

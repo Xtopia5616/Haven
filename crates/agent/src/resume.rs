@@ -327,10 +327,6 @@ impl AgentLayer {
         };
         let context = session.input.clone();
 
-        // Prompt history and message persistence are keyed by session_id;
-        // there is no separate session indirection anymore.
-        let session_prompt_history = self.load_session_prompt_history(session_id).await?;
-
         // Multimodal: carry the first user message's image attachments into
         // the initial canonical user message so the model sees them from the
         // first turn (they were persisted by process_input_with_attachments).
@@ -427,6 +423,27 @@ impl AgentLayer {
                 .await
             }
             None => {
+                let session_store = self.executor.session_store();
+                let has_unrepresented_messages = session_store
+                    .has_unrepresented_session_messages(
+                        session_id,
+                        initial_message_id.clone(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!(
+                            "failed to validate transcript projections without a durable event log: {error}"
+                        )
+                    })?;
+                anyhow::ensure!(
+                    !has_unrepresented_messages,
+                    "cannot start a fresh run without a durable event log when non-initial transcript messages exist"
+                );
+
+                // Prompt history is a fresh-run-only projection. Pending rows
+                // are excluded by Memory because they will be replayed as
+                // UserInject from their durable delivery marker below.
+                let session_prompt_history = self.load_session_prompt_history(session_id).await?;
                 let restored = self.restore_pending_user_inputs(session_id).await?;
                 if restored > 0 {
                     tracing::info!(
