@@ -10,7 +10,7 @@ Haven 处于测试阶段。数据库 schema、`config.toml` 与内部 IPC 契约
 
 schema v41 仅接受事实提取 marker 的当前完整格式：旧 boolean、缺 retry metadata 的短格式和 summary value-only marker 都不再解析；`CacheDiagnostics` 也要求当前完整 metadata shape。它还统一 BranchPoint 的 projection cutoff：旧 branch point 仅记录 message watermark，无法从 append-only event 中安全补算 step 与 usage 水位（ADR 1043）。它还为 `tool_runs.kind` 增加闭合集合约束（ADR 1080）。v40 数据库不含该约束，升级前必须按下文删除数据库。`MediaProbe` 使用 `media_kind` / `mime_type` Serde key，不接受旧 `media_type` key；它不属于持久表或当前 IPC DTO。MCP `inputSchema` 和 LLM provider wire 字段仍按当前外部协议解析，不属于 Haven 历史数据兼容。
 
-跨 session 消息 inbox 只接受规范 `ses-{uuid32}` 身份及规范 `msg-{uuid32}` envelope id。旧 agent-name registry 或含非规范身份的 JSONL 不迁移：遇到旧 registry 时消息操作会报错，旧消息行会从当前读取、领取和回复匹配中忽略。升级时如需继续使用 Messaging，按下方“仅重置消息收件箱”删除 `inbox/`；这会清除 peer registry、未处理消息与消息 archive，不删除 SQLite transcript、会话或记忆。
+跨 session 消息 inbox 只接受规范 `ses-{uuid32}` 身份及规范 `msg-{uuid32}` envelope id。旧 agent-name registry 或含非规范身份的 JSONL 不迁移：遇到旧 registry 时消息操作会报错，旧消息行会从当前读取、领取和回复匹配中忽略。当前 canonical JSONL mailbox/processing 无需为 bounded backlog 改版而重置；首次 claim 会通过同目录 rename 建立 `.jsonl.backlog` 与 `.jsonl.backlog.state.json`，逐批 drain 原正文。升级期间必须退出所有共享该目录的 Haven 进程，且不能让旧 binary 与新 sidecar 并发访问。每 recipient 新写入预算为 16 MiB，history 最多返回 100 条；既有单行大于 1 MiB 会 fail closed 并保留 source，不会自动丢弃或要求重置。只有上述旧 agent-name/非规范 ID 数据需要按下方步骤显式重置 `inbox/`；这会清除 peer registry、未处理消息与消息 archive，不删除 SQLite transcript、会话或记忆。
 
 ## 当前配置契约
 
@@ -82,7 +82,7 @@ Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：
 ### 仅重置消息收件箱
 
 1. 完全退出 Haven，并确认没有 `Haven.exe` 进程仍在运行。
-2. 确认所有共享该 inbox 的 Haven 进程都已升级到同一版本。新版 Messaging JSONL envelope 与 `agents.json` 使用显式 `message_id`、`from_session_id`、`to_session_id`、`session_id` 和 `parent_session_id` 字段；旧字段不会迁移或兼容读取。
+2. 确认所有共享该 inbox 的 Haven 进程都已升级到同一版本。新版 Messaging JSONL envelope 与 `agents.json` 使用显式 `message_id`、`from_session_id`、`to_session_id`、`session_id` 和 `parent_session_id` 字段；旧字段不会迁移或兼容读取。Canonical mailbox 会由新版本惰性提升为 backlog；不要单独删除 `.jsonl.backlog` 或 `.jsonl.backlog.state.json`，否则会断开未确认消息与 cursor。
 3. 如需保留待处理消息或 archive，先在 `%APPDATA%\haven` 之外备份 `inbox/`；内容可能包含会话消息。
 4. 删除 `%APPDATA%\haven\inbox`（非 Windows 开发环境为 `~/.local/share/haven/inbox`）。
 5. 重新启动 Haven；Messaging 会按规范 session ID 重建 registry 和 mailbox。SQLite transcript 不受影响。

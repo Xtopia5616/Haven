@@ -15,6 +15,8 @@ pub const MAX_MESSAGE_PAYLOAD_BYTES: usize = 64 * 1024;
 /// RFC3339 timestamp budget: a 4-digit date, nanosecond fraction, and numeric
 /// timezone offset (`YYYY-MM-DDTHH:MM:SS.fffffffff+HH:MM`).
 pub const MAX_MESSAGE_TIMESTAMP_BYTES: usize = 35;
+/// Hard result limit for message history, shared by service and tool callers.
+pub const MAX_MESSAGE_HISTORY_LIMIT: usize = 100;
 
 // JSON string escaping can expand a control byte to six bytes (`\\u00XX`).
 // The framing value below is derived from Envelope's field names, quotes,

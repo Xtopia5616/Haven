@@ -12,8 +12,8 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::contract::{
-    validate_message_batch, validate_message_envelope, validate_message_envelope_for_delivery,
-    validate_message_id, validate_session_id,
+    MAX_MESSAGE_HISTORY_LIMIT, validate_message_batch, validate_message_envelope,
+    validate_message_envelope_for_delivery, validate_message_id, validate_session_id,
 };
 use crate::inbox::{AgentInfo, Envelope, InboxBus, MessageType, SendOutcome};
 
@@ -545,7 +545,9 @@ impl MessagingService {
 
     pub fn history(&self, session_id: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
         validate_session_id(session_id)?;
-        let entries = self.transport.history(session_id, limit)?;
+        let entries = self
+            .transport
+            .history(session_id, limit.min(MAX_MESSAGE_HISTORY_LIMIT))?;
         validate_message_batch(session_id, &entries)?;
         Ok(entries)
     }
@@ -809,8 +811,8 @@ impl MessageClaim {
 mod tests {
     use super::*;
     use crate::contract::{
-        MAX_MESSAGE_PAYLOAD_BYTES, MAX_MESSAGE_SUBJECT_BYTES, MAX_MESSAGE_TEXT_BYTES,
-        MAX_MESSAGE_TIMESTAMP_BYTES,
+        MAX_MESSAGE_HISTORY_LIMIT, MAX_MESSAGE_PAYLOAD_BYTES, MAX_MESSAGE_SUBJECT_BYTES,
+        MAX_MESSAGE_TEXT_BYTES, MAX_MESSAGE_TIMESTAMP_BYTES,
     };
 
     fn service() -> (tempfile::TempDir, MessagingService) {
@@ -854,6 +856,29 @@ mod tests {
 
         let mailbox = dir.path().join(format!("{recipient}.jsonl"));
         assert_eq!(std::fs::read_to_string(mailbox).unwrap(), "");
+    }
+
+    #[test]
+    fn direct_service_history_applies_the_shared_result_limit() {
+        let (_dir, service) = service();
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        service.register(recipient, &[]).unwrap();
+        for index in 0..110 {
+            service
+                .deliver(
+                    recipient,
+                    &Envelope::new(
+                        "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        recipient,
+                        &format!("message {index}"),
+                    ),
+                )
+                .unwrap();
+        }
+
+        let history = service.history(recipient, usize::MAX).unwrap();
+
+        assert_eq!(history.len(), MAX_MESSAGE_HISTORY_LIMIT);
     }
 
     #[test]

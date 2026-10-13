@@ -6,21 +6,27 @@
 //! Layout:
 //! - `agents.json` — registry: agent session_id → metadata (`last_seen` heartbeat)
 //! - `deleted_sessions.json` — durable tombstones with only session/parent lineage
-//! - `<session_id>.jsonl` — per-agent mailbox (append-only, one JSON envelope per line)
+//! - `<session_id>.jsonl` — per-agent append mailbox (one JSON envelope per line)
+//! - `<session_id>.jsonl.backlog` — immutable source while bounded batches drain
+//! - `<session_id>.jsonl.backlog.state.json` — durable byte cursor and active batch end
+//! - `<session_id>.jsonl.processing` — at most one bounded, unacked claim batch
 //! - `<session_id>.archive.jsonl` — bounded delivery audit copies, appended
 //!   when a claim observes messages and therefore not proof of acknowledgement
 //! - `.lock` — cross-process file mutex (Windows-safe)
 //!
 //! Concurrency model: every mutation (append, claim/ack, registry
-//! update) runs under the `.lock` mutex; registry updates additionally write a
-//! temp file and atomically rename it. Inbox reads are "read then move": the
-//! mailbox is renamed to `.processing` under the lock, so a concurrent append
-//! can never tear a read. ReAct's claim/ack path intentionally keeps that
-//! `.processing` file until transcript projection and its snapshot are durable;
-//! a crash therefore causes at-least-once redelivery, which the agent
-//! de-duplicates by envelope id. Application callers use
+//! update) runs under the `.lock` mutex; registry, cursor, and mailbox rewrites
+//! use recoverable temp files. Claim promotes the older `.processing` or
+//! mailbox source to an immutable backlog by rename, then materializes at most
+//! 100 rows / 1 MiB into `.processing`. Its cursor advances only after every
+//! ID in that batch is acked. ReAct's claim/ack path therefore keeps a bounded
+//! batch until transcript projection is durable; a crash causes at-least-once
+//! redelivery with stable envelope IDs. Application callers use
 //! `haven_messaging::MessagingService`; this storage module stays private so
 //! wire storage cannot become a second application protocol.
+//! New writes are limited to 16 MiB of logical unread data per recipient;
+//! pending bytes include the unconsumed backlog and append mailbox, but not
+//! the processing copy. The limit is per recipient, not a global disk quota.
 //!
 //! Envelopes are single-line JSON per the interop format; ids are canonical
 //! `msg-{uuid32}` ([`haven_common::types::new_id`]). Session IDs are canonical
@@ -29,7 +35,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
@@ -41,8 +47,8 @@ use tokio::sync::watch;
 use haven_common::types::new_id;
 
 use crate::contract::{
-    is_expired, validate_message_envelope, validate_message_envelope_for_delivery,
-    validate_message_id, validate_session_id,
+    MAX_MESSAGE_HISTORY_LIMIT, is_expired, validate_message_envelope,
+    validate_message_envelope_for_delivery, validate_message_id, validate_session_id,
 };
 
 /// Heartbeat threshold: agents whose `last_seen` is older than this are
@@ -63,11 +69,53 @@ const LOCK_STALE_AFTER: Duration = Duration::from_secs(10);
 /// Archive tail scanned for duplicate ids when archiving (crash recovery:
 /// a message archived but not deleted from `.processing` must not be
 /// archived twice).
-const ARCHIVE_DEDUP_TAIL_BYTES: u64 = 64 * 1024;
 /// Hard byte budget for one agent's durable archive. The archive is an audit
 /// tail, not an unbounded event log; the newest complete JSONL records are
 /// retained when the budget is exceeded.
 const MAX_ARCHIVE_BYTES: u64 = 4 * 1024 * 1024;
+/// Logical unread byte budget per recipient, including the unconsumed portion
+/// of an immutable backlog and the append-only mailbox. The active processing
+/// batch is a copy of backlog rows and is not double-counted.
+const MAX_PENDING_BYTES: u64 = 16 * 1024 * 1024;
+/// Each claim scans at most this many source rows and bytes, except that one
+/// first row may exceed the batch budget to guarantee forward progress.
+const MAX_CLAIM_BATCH_LINES: usize = 100;
+const MAX_CLAIM_BATCH_BYTES: u64 = 1024 * 1024;
+const MAX_PROCESSING_BYTES: usize = MAX_CLAIM_BATCH_BYTES as usize + 1024;
+/// Historical rows predate outbound envelope limits. Keep them recoverable,
+/// but refuse to allocate an unbounded line while draining or inspecting them.
+const MAX_LEGACY_LINE_BYTES: usize = 1024 * 1024;
+const MAX_BACKLOG_STATE_BYTES: usize = 4 * 1024;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum BacklogSource {
+    Mailbox,
+    Processing,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum BacklogPhase {
+    Preparing,
+    Ready,
+    Complete,
+}
+
+/// The only cursor/claim authority for an immutable JSONL backlog. `active_end`
+/// remains set until every ID in the current bounded processing batch is acked;
+/// `active_attempts` lets a missing processing copy be rebuilt without changing
+/// stable IDs or resetting each envelope's retry count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BacklogState {
+    version: u8,
+    source: BacklogSource,
+    phase: BacklogPhase,
+    cursor_bytes: u64,
+    active_end_bytes: Option<u64>,
+    #[serde(default)]
+    active_attempts: u32,
+}
 
 /// Default bus root: `<data_dir>/inbox` (`%APPDATA%/haven/inbox` on Windows).
 fn default_inbox_dir() -> PathBuf {
@@ -344,6 +392,20 @@ impl InboxBus {
 
     fn processing_tmp(&self, session_id: &str) -> PathBuf {
         self.root.join(format!("{session_id}.jsonl.processing.tmp"))
+    }
+
+    fn backlog(&self, session_id: &str) -> PathBuf {
+        self.root.join(format!("{session_id}.jsonl.backlog"))
+    }
+
+    fn backlog_state(&self, session_id: &str) -> PathBuf {
+        self.root
+            .join(format!("{session_id}.jsonl.backlog.state.json"))
+    }
+
+    fn backlog_state_tmp(&self, session_id: &str) -> PathBuf {
+        self.root
+            .join(format!("{session_id}.jsonl.backlog.state.json.tmp"))
     }
 
     fn ensure_dir(&self) -> anyhow::Result<()> {
@@ -723,6 +785,9 @@ impl InboxBus {
             )
         }
         self.recover_mailbox_tmp_unlocked(to)?;
+        self.repair_mailbox_tail_unlocked(to)?;
+        self.recover_processing_tmp_unlocked(to)?;
+        self.recover_backlog_state_unlocked(to)?;
         let mailbox = self.mailbox(to);
         if !mailbox.exists() {
             anyhow::bail!("agent '{to}' not found or offline: no mailbox (never registered)")
@@ -734,9 +799,24 @@ impl InboxBus {
         };
         let mut line = serde_json::to_string(env)?;
         line.push('\n');
-        let mut f = OpenOptions::new().append(true).open(&mailbox)?;
-        f.write_all(line.as_bytes())?;
-        f.flush()?;
+        let pending_bytes = self.pending_bytes_unlocked(to)?;
+        let incoming_bytes = line.len() as u64;
+        if pending_bytes.saturating_add(incoming_bytes) > MAX_PENDING_BYTES {
+            anyhow::bail!(
+                "recipient inbox capacity exceeded: pending {pending_bytes} bytes, incoming {incoming_bytes} bytes, maximum {MAX_PENDING_BYTES} bytes"
+            )
+        }
+        let mut f = OpenOptions::new().append(true).read(true).open(&mailbox)?;
+        let original_len = f.metadata()?.len();
+        if let Err(write_error) = f.write_all(line.as_bytes()).and_then(|()| f.flush()) {
+            let rollback = f.set_len(original_len).and_then(|()| f.flush());
+            if let Err(rollback_error) = rollback {
+                anyhow::bail!(
+                    "message append failed ({write_error}); mailbox rollback also failed ({rollback_error})"
+                )
+            }
+            return Err(write_error.into());
+        }
         // In-process wake-up: the recipient's ReAct loop can react to the
         // notification instead of waiting for its next polling step.
         self.notifier.notify();
@@ -750,7 +830,7 @@ impl InboxBus {
     /// Claim mailbox messages for a durable consumer without acknowledging
     /// them yet.
     ///
-    /// This leaves the claimed envelopes in `<session_id>.jsonl.processing`. The
+    /// This leaves the claimed bounded batch in `<session_id>.jsonl.processing`. The
     /// service must call the acknowledgement primitive
     /// [`Self::ack_claimed`]
     /// after it has durably projected the batch. A crash between claim and ack
@@ -780,93 +860,86 @@ impl InboxBus {
         self.ensure_dir()?;
         self.ensure_session_not_deleted_unlocked(session_id, "claim messages for")?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
+        self.repair_mailbox_tail_unlocked(session_id)?;
+        self.recover_processing_tmp_unlocked(session_id)?;
+        self.recover_backlog_state_unlocked(session_id)?;
         // Recover an archive replacement left between Windows' remove and
         // rename steps before processing the current claim.
         self.append_archive_unlocked(session_id, &[])?;
-        self.recover_processing_tmp_unlocked(session_id)?;
-        let pending = self.processing(session_id);
-        let mailbox = self.mailbox(session_id);
-        let had_pending = pending.exists();
+        let Some(mut state) = self.ensure_backlog_ready_unlocked(session_id)? else {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.mailbox(session_id))?;
+            return Ok(Vec::new());
+        };
 
-        if !had_pending && mailbox.exists() {
-            std::fs::rename(&mailbox, &pending)?;
-        } else if had_pending && mailbox.exists() {
-            // A previous claim may have survived a crash while new messages
-            // arrived in the recreated mailbox. Merge both files atomically
-            // before parsing so the old claim is never stranded.
-            let old = std::fs::read_to_string(&pending)?;
-            let incoming = std::fs::read_to_string(&mailbox)?;
-            let tmp = self.processing_tmp(session_id);
-            let mut merged = old;
-            merged.push_str(&incoming);
-            std::fs::write(&tmp, merged)?;
-            match std::fs::remove_file(&pending) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
+        if let Some(active_end) = state.active_end_bytes {
+            let source = self.backlog(session_id);
+            let envs = read_backlog_range(session_id, &source, state.cursor_bytes, active_end)?;
+            let active = match self.read_processing_unlocked(session_id) {
+                Ok(mut active) if !active.is_empty() => {
+                    state.active_attempts =
+                        state.active_attempts.max(inferred_attempts(&envs, &active));
+                    for envelope in &mut active {
+                        envelope.delivery_attempt = envelope.delivery_attempt.saturating_add(1);
+                    }
+                    state.active_attempts = state.active_attempts.saturating_add(1);
+                    active
+                }
+                Ok(_) | Err(_) => {
+                    if state.active_attempts == 0 {
+                        let archive_ids = self.read_archive_tail_ids(session_id)?;
+                        let active = select_active_envelopes(&envs, &archive_ids);
+                        if !active.is_empty() {
+                            state.active_attempts = 1;
+                        }
+                        active
+                    } else {
+                        select_at_attempts(&envs, state.active_attempts)
+                    }
+                }
+            };
+            self.write_processing_unlocked(session_id, &active)?;
+            self.write_backlog_state_unlocked(session_id, &state)?;
+            // Archive from the immutable source range, so retries after an
+            // archive failure can reproduce the same records and dedupe IDs.
+            self.append_archive_unlocked(session_id, &envs)?;
+            if active.is_empty() {
+                self.advance_backlog_cursor_unlocked(session_id, &mut state, active_end)?;
+                return Ok(Vec::new());
             }
-            std::fs::rename(&tmp, &pending)?;
-            std::fs::remove_file(&mailbox)?;
+            return Ok(active);
         }
 
-        // Keep the mailbox present while the claim is in flight: senders may
-        // continue delivering new messages, which will be merged on the next
-        // claim after this one is acknowledged.
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&mailbox)?;
-
-        let content = match std::fs::read_to_string(&pending) {
-            Ok(content) => content,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e.into()),
+        let source = self.backlog(session_id);
+        let Some((end_bytes, envs)) = read_backlog_batch(session_id, &source, state.cursor_bytes)?
+        else {
+            state.phase = BacklogPhase::Complete;
+            self.write_backlog_state_unlocked(session_id, &state)?;
+            self.recover_backlog_state_unlocked(session_id)?;
+            return Ok(Vec::new());
         };
-        let envs = parse_envelopes(session_id, &content);
-        if envs.is_empty() {
-            let _ = std::fs::remove_file(&pending);
+
+        state.active_end_bytes = Some(end_bytes);
+        state.active_attempts = 0;
+        self.write_backlog_state_unlocked(session_id, &state)?;
+        let archive_ids = self.read_archive_tail_ids(session_id)?;
+        let active = select_active_envelopes(&envs, &archive_ids);
+        self.write_processing_unlocked(session_id, &active)?;
+        state.active_attempts = if active.is_empty() { 0 } else { 1 };
+        self.write_backlog_state_unlocked(session_id, &state)?;
+        self.append_archive_unlocked(session_id, &envs)?;
+        if active.is_empty() {
+            self.advance_backlog_cursor_unlocked(session_id, &mut state, end_bytes)?;
             return Ok(Vec::new());
         }
-
-        // Persist the claimed attempt before archiving. If the process dies
-        // between these two writes, the processing file still carries a
-        // non-zero attempt and will be redelivered; archive presence is never
-        // used as an acknowledgement.
-        let archive_ids = self.read_archive_tail_ids(session_id)?;
-        // Remove expired/corrupt entries from the durable claim and de-dupe
-        // repeated envelope ids before returning. Expired messages are still
-        // archived below, matching the service expiry/archive contract, but
-        // must not pin the processing file forever.
-        let mut seen = HashSet::new();
-        let active: Vec<Envelope> = envs
-            .iter()
-            .filter(|env| {
-                !is_expired(env)
-                    && seen.insert(env.message_id.clone())
-                    // A zero-attempt envelope in a fresh mailbox whose id is
-                    // already archived is a duplicate delivery. Claimed
-                    // envelopes carry their incremented attempt count in the
-                    // processing file, so crash recovery remains at-least-once.
-                    && (env.delivery_attempt > 0 || !archive_ids.contains(&env.message_id))
-            })
-            .cloned()
-            .map(|mut env| {
-                env.delivery_attempt = env.delivery_attempt.saturating_add(1);
-                env
-            })
-            .collect();
-        self.write_processing_unlocked(session_id, &active)?;
-
-        // Archive at claim time for auditability. The processing attempt is
-        // already durable, so a crash during this append remains recoverable.
-        self.append_archive_unlocked(session_id, &envs)?;
-
         Ok(active)
     }
 
     /// Acknowledge a previously claimed batch. Only matching ids are removed;
-    /// messages that arrived after the claim remain in the mailbox and are
-    /// merged by the next claim.
+    /// messages that arrived after the claim remain in the append mailbox and
+    /// are promoted after the older immutable backlog has drained.
     pub(crate) fn ack_claimed(&self, session_id: &str, ids: &[String]) -> anyhow::Result<()> {
         validate_session_id(session_id)?;
         for id in ids {
@@ -881,20 +954,47 @@ impl InboxBus {
         self.recover_mailbox_tmp_unlocked(session_id)?;
         self.recover_archive_tmp_unlocked(session_id)?;
         self.recover_processing_tmp_unlocked(session_id)?;
-        let pending = self.processing(session_id);
-        let mailbox = self.mailbox(session_id);
-        if !pending.exists() {
-            OpenOptions::new().create(true).append(true).open(mailbox)?;
+        self.recover_backlog_state_unlocked(session_id)?;
+        let Some(mut state) = self.ensure_backlog_ready_unlocked(session_id)? else {
             return Ok(());
+        };
+        let Some(active_end) = state.active_end_bytes else {
+            return Ok(());
+        };
+        let source_envelopes = read_backlog_range(
+            session_id,
+            &self.backlog(session_id),
+            state.cursor_bytes,
+            active_end,
+        )?;
+        let processing = match self.read_processing_unlocked(session_id) {
+            Ok(processing) if !processing.is_empty() => processing,
+            Ok(_) | Err(_) => {
+                if state.active_attempts == 0 {
+                    let archive_ids = self.read_archive_tail_ids(session_id)?;
+                    select_active_envelopes(&source_envelopes, &archive_ids)
+                } else {
+                    select_at_attempts(&source_envelopes, state.active_attempts)
+                }
+            }
+        };
+        state.active_attempts = state
+            .active_attempts
+            .max(inferred_attempts(&source_envelopes, &processing));
+        if state.active_attempts == 0 && !processing.is_empty() {
+            state.active_attempts = 1;
         }
-        let content = std::fs::read_to_string(&pending)?;
+        self.write_processing_unlocked(session_id, &processing)?;
+        self.write_backlog_state_unlocked(session_id, &state)?;
         let acknowledged: HashSet<&str> = ids.iter().map(String::as_str).collect();
-        let remaining_envelopes: Vec<Envelope> = parse_envelopes(session_id, &content)
+        let remaining_envelopes: Vec<Envelope> = processing
             .into_iter()
             .filter(|env| !acknowledged.contains(env.message_id.as_str()))
             .collect();
         self.write_processing_unlocked(session_id, &remaining_envelopes)?;
-        OpenOptions::new().create(true).append(true).open(mailbox)?;
+        if remaining_envelopes.is_empty() {
+            self.advance_backlog_cursor_unlocked(session_id, &mut state, active_end)?;
+        }
         Ok(())
     }
 
@@ -907,8 +1007,20 @@ impl InboxBus {
         self.ensure_dir()?;
         self.ensure_session_not_deleted_unlocked(session_id, "query messages for")?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
+        self.repair_mailbox_tail_unlocked(session_id)?;
+        self.recover_backlog_state_unlocked(session_id)?;
         self.append_archive_unlocked(session_id, &[])?;
         if let Some(env) = last_valid_line(session_id, &self.mailbox(session_id))? {
+            return Ok(Some(env));
+        }
+        if let Some(state) = self.read_backlog_state_unlocked(session_id)? {
+            if state.phase == BacklogPhase::Ready
+                && let Some(env) =
+                    last_valid_line_from(session_id, &self.backlog(session_id), state.cursor_bytes)?
+            {
+                return Ok(Some(env));
+            }
+        } else if let Some(env) = last_valid_line(session_id, &self.processing(session_id))? {
             return Ok(Some(env));
         }
         last_valid_line(session_id, &self.archive(session_id))
@@ -929,26 +1041,34 @@ impl InboxBus {
         self.ensure_dir()?;
         self.ensure_session_not_deleted_unlocked(session_id, "query messages for")?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
+        self.repair_mailbox_tail_unlocked(session_id)?;
+        self.recover_backlog_state_unlocked(session_id)?;
         self.append_archive_unlocked(session_id, &[])?;
-        for (path, max_bytes) in [
-            (self.mailbox(session_id), u64::MAX),
-            (self.archive(session_id), MAX_ARCHIVE_BYTES),
-        ] {
-            let content = if max_bytes == u64::MAX {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => content,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(error) => return Err(error.into()),
-                }
-            } else {
-                read_tail(&path, max_bytes)?
-            };
-            if let Some(env) = content.lines().find_map(|line| {
-                parse_envelope(session_id, line.trim())
-                    .ok()
-                    .filter(|envelope| envelope.message_id == message_id)
-            }) {
-                return Ok(Some(env));
+        let mut sources = vec![(self.mailbox(session_id), 0)];
+        if let Some(state) = self.read_backlog_state_unlocked(session_id)? {
+            if state.phase == BacklogPhase::Ready {
+                sources.push((self.backlog(session_id), state.cursor_bytes));
+            }
+        } else {
+            sources.push((self.processing(session_id), 0));
+        }
+        for (path, start_bytes) in sources {
+            if let Some(envelope) = find_in_jsonl_bounded(
+                session_id,
+                &path,
+                start_bytes,
+                MAX_PENDING_BYTES,
+                message_id,
+            )? {
+                return Ok(Some(envelope));
+            }
+        }
+        for line in read_tail(&self.archive(session_id), MAX_ARCHIVE_BYTES)?.lines() {
+            if let Some(envelope) = parse_envelope(session_id, line.trim())
+                .ok()
+                .filter(|envelope| envelope.message_id == message_id)
+            {
+                return Ok(Some(envelope));
             }
         }
         Ok(None)
@@ -976,31 +1096,40 @@ impl InboxBus {
         self.ensure_dir()?;
         self.ensure_session_not_deleted_unlocked(session_id, "read replies for")?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
+        self.repair_mailbox_tail_unlocked(session_id)?;
         self.append_archive_unlocked(session_id, &[])?;
         let mailbox = self.mailbox(session_id);
-        let content = match std::fs::read_to_string(&mailbox) {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e.into()),
+        let input = match File::open(&mailbox) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
         };
-
-        // Single pass: classify matches vs keepers. Miss path still parses
-        // once but never rewrites; hit path avoids a second full parse.
+        let tmp = self.mailbox_tmp(session_id);
+        let mut output = File::create(&tmp)?;
+        let mut reader = BufReader::new(input);
+        let mut scanned = 0u64;
         let mut matching: Vec<Envelope> = Vec::new();
         let mut archived_only: Vec<Envelope> = Vec::new();
-        let mut rest: Vec<String> = Vec::new();
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
+        loop {
+            let Some(line) = read_bounded_line(&mut reader)? else {
+                break;
+            };
+            scanned = scanned.saturating_add(line.len() as u64);
+            if scanned > MAX_PENDING_BYTES {
+                anyhow::bail!(
+                    "mailbox exceeds bounded reply-scan budget of {MAX_PENDING_BYTES} bytes; mailbox is preserved"
+                )
             }
-            match parse_envelope(session_id, trimmed) {
-                Ok(env)
+            let parsed = std::str::from_utf8(&line)
+                .ok()
+                .and_then(|line| parse_envelope(session_id, line.trim()).ok());
+            match parsed {
+                Some(env)
                     if is_reply_to_request(
                         &env,
                         in_reply_to_message_id,
                         expected_from_session_id,
-                    ) =>
+                    ) && matching.len() + archived_only.len() < MAX_CLAIM_BATCH_LINES =>
                 {
                     if is_expired(&env) {
                         archived_only.push(env);
@@ -1008,11 +1137,12 @@ impl InboxBus {
                         matching.push(env);
                     }
                 }
-                Ok(_) | Err(_) => rest.push(trimmed.to_string()),
+                _ => output.write_all(&line)?,
             }
         }
 
         if matching.is_empty() && archived_only.is_empty() {
+            remove_if_exists(&tmp)?;
             return Ok(Vec::new());
         }
 
@@ -1024,13 +1154,9 @@ impl InboxBus {
             .cloned()
             .collect();
         self.append_archive_unlocked(session_id, &to_archive)?;
-
-        // Rewrite mailbox without the taken replies (preserve other lines).
-        let mut rewritten = rest.join("\n");
-        if !rewritten.is_empty() {
-            rewritten.push('\n');
-        }
-        self.write_mailbox_unlocked(session_id, &rewritten)?;
+        output.flush()?;
+        output.sync_all()?;
+        self.commit_mailbox_tmp_unlocked(session_id)?;
         Ok(matching)
     }
 
@@ -1044,33 +1170,33 @@ impl InboxBus {
         self.ensure_dir()?;
         self.ensure_session_not_deleted_unlocked(session_id, "query history for")?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
+        self.repair_mailbox_tail_unlocked(session_id)?;
+        self.recover_processing_tmp_unlocked(session_id)?;
+        self.recover_backlog_state_unlocked(session_id)?;
         self.append_archive_unlocked(session_id, &[])?;
-        let mut entries: Vec<Envelope> = Vec::new();
-        // Archive (older) first, then the unread mailbox (newer), so the
-        // reversal below yields strictly newest-first across both files.
-        for (path, max_bytes) in [
-            (self.archive(session_id), MAX_ARCHIVE_BYTES),
-            (self.mailbox(session_id), u64::MAX),
-        ] {
-            let content = if max_bytes == u64::MAX {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => content,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(error) => return Err(error.into()),
-                }
-            } else {
-                read_tail(&path, max_bytes)?
-            };
-            {
-                for line in content.lines() {
-                    if let Ok(env) = parse_envelope(session_id, line.trim()) {
-                        entries.push(env);
-                    }
-                }
-            }
+        let limit = limit.min(MAX_MESSAGE_HISTORY_LIMIT);
+        if limit == 0 {
+            return Ok(Vec::new());
         }
-        // Mailbox lines are newer than archive lines, so reverse order gives
-        // newest first within each file; files are already in age order.
+        let mut entries = Vec::new();
+        let mut positions = HashMap::new();
+        let archive = read_tail(&self.archive(session_id), MAX_ARCHIVE_BYTES)?;
+        append_history_source(session_id, &archive, &mut entries, &mut positions)?;
+        if let Some(state) = self.read_backlog_state_unlocked(session_id)? {
+            if state.phase == BacklogPhase::Ready {
+                let backlog = read_tail_from(
+                    &self.backlog(session_id),
+                    state.cursor_bytes,
+                    MAX_PENDING_BYTES,
+                )?;
+                append_history_source(session_id, &backlog, &mut entries, &mut positions)?;
+            }
+        } else {
+            let processing = read_tail(&self.processing(session_id), MAX_PENDING_BYTES)?;
+            append_history_source(session_id, &processing, &mut entries, &mut positions)?;
+        }
+        let mailbox = read_tail(&self.mailbox(session_id), MAX_PENDING_BYTES)?;
+        append_history_source(session_id, &mailbox, &mut entries, &mut positions)?;
         entries.reverse();
         entries.truncate(limit);
         Ok(entries)
@@ -1183,6 +1309,9 @@ impl InboxBus {
             self.mailbox_tmp(session_id),
             self.processing(session_id),
             self.processing_tmp(session_id),
+            self.backlog(session_id),
+            self.backlog_state(session_id),
+            self.backlog_state_tmp(session_id),
             self.archive(session_id),
             self.archive_tmp(session_id),
         ];
@@ -1334,24 +1463,18 @@ impl InboxBus {
     /// Ids of the last messages in the archive, for append deduplication
     /// (crash recovery only; bounded scan keeps this O(1)-ish in practice).
     fn read_archive_tail_ids(&self, session_id: &str) -> anyhow::Result<HashSet<String>> {
-        Ok(
-            read_tail(&self.archive(session_id), ARCHIVE_DEDUP_TAIL_BYTES)?
-                .lines()
-                .filter_map(|line| parse_envelope(session_id, line.trim()).ok())
-                .map(|e| e.message_id)
-                .collect(),
-        )
+        Ok(read_tail(&self.archive(session_id), MAX_ARCHIVE_BYTES)?
+            .lines()
+            .filter_map(|line| parse_envelope(session_id, line.trim()).ok())
+            .map(|e| e.message_id)
+            .collect())
     }
 
-    /// Replace a selectively drained mailbox with a fully written file. The
-    /// temp file is recoverable after Windows' remove-then-rename window.
-    fn write_mailbox_unlocked(&self, session_id: &str, content: &str) -> anyhow::Result<()> {
+    /// Commit the fully written selective reply rewrite. The temp file is
+    /// recoverable across Windows' remove-then-rename window.
+    fn commit_mailbox_tmp_unlocked(&self, session_id: &str) -> anyhow::Result<()> {
         let mailbox = self.mailbox(session_id);
         let tmp = self.mailbox_tmp(session_id);
-        let mut file = File::create(&tmp)?;
-        file.write_all(content.as_bytes())?;
-        file.flush()?;
-        file.sync_all()?;
         match std::fs::remove_file(&mailbox) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1380,6 +1503,54 @@ impl InboxBus {
         Ok(())
     }
 
+    fn repair_mailbox_tail_unlocked(&self, session_id: &str) -> anyhow::Result<()> {
+        let path = self.mailbox(session_id);
+        let mut file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        let length = file.metadata()?.len();
+        if length == 0 {
+            return Ok(());
+        }
+        file.seek(SeekFrom::End(-1))?;
+        let mut last = [0; 1];
+        file.read_exact(&mut last)?;
+        if last[0] == b'\n' {
+            return Ok(());
+        }
+
+        let start = length.saturating_sub(MAX_LEGACY_LINE_BYTES as u64 + 1);
+        file.seek(SeekFrom::Start(start))?;
+        let mut tail = Vec::with_capacity((length - start) as usize);
+        file.read_to_end(&mut tail)?;
+        let last_newline = tail.iter().rposition(|byte| *byte == b'\n');
+        let line_start_in_tail = last_newline.map_or(0, |index| index + 1);
+        if start > 0 && last_newline.is_none() {
+            anyhow::bail!(
+                "unterminated legacy inbox row exceeds the bounded repair limit; the mailbox is preserved"
+            )
+        }
+        let final_line = &tail[line_start_in_tail..];
+        if final_line.len() > MAX_LEGACY_LINE_BYTES {
+            anyhow::bail!(
+                "unterminated legacy inbox row exceeds the bounded repair limit; the mailbox is preserved"
+            )
+        }
+        let line = std::str::from_utf8(final_line)?;
+        if parse_envelope(session_id, line.trim()).is_ok() {
+            file.seek(SeekFrom::End(0))?;
+            file.write_all(b"\n")?;
+            file.flush()?;
+        } else {
+            let truncate_to = start + line_start_in_tail as u64;
+            file.set_len(truncate_to)?;
+            file.flush()?;
+        }
+        Ok(())
+    }
+
     /// Rewrite a claimed processing file while the inbox lock is held. The
     /// contents are fully written before replacement, and an interrupted
     /// replacement is recovered from the temp file on the next claim. An
@@ -1400,12 +1571,24 @@ impl InboxBus {
             return Ok(());
         }
 
+        let lines = envelopes
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()?;
+        let serialized_bytes = lines
+            .iter()
+            .map(|line| line.len().saturating_add(1))
+            .sum::<usize>();
+        if serialized_bytes > MAX_PROCESSING_BYTES {
+            anyhow::bail!("processing batch exceeds its bounded byte budget")
+        }
         let tmp = self.processing_tmp(session_id);
         let mut file = File::create(&tmp)?;
-        for envelope in envelopes {
-            writeln!(file, "{}", serde_json::to_string(envelope)?)?;
+        for line in lines {
+            writeln!(file, "{line}")?;
         }
         file.flush()?;
+        file.sync_all()?;
         // Windows cannot rename over an existing destination. Remove-and-move
         // is still crash-safe here: if the process dies after removing the
         // old claim, the next claim/ack call restores this fully-written temp
@@ -1436,10 +1619,238 @@ impl InboxBus {
         }
         Ok(())
     }
+
+    fn recover_backlog_state_unlocked(&self, session_id: &str) -> anyhow::Result<()> {
+        let state_path = self.backlog_state(session_id);
+        let state_tmp = self.backlog_state_tmp(session_id);
+        if state_tmp.exists() {
+            if state_path.exists() {
+                std::fs::remove_file(state_tmp)?;
+            } else {
+                let candidate = read_bounded_text(&state_tmp, MAX_BACKLOG_STATE_BYTES)
+                    .ok()
+                    .and_then(|contents| serde_json::from_str::<BacklogState>(&contents).ok());
+                if candidate.as_ref().is_some_and(|state| {
+                    state.version == 1
+                        && state
+                            .active_end_bytes
+                            .is_none_or(|end| end >= state.cursor_bytes)
+                        && (state.active_end_bytes.is_some() || state.active_attempts == 0)
+                }) {
+                    std::fs::rename(state_tmp, &state_path)?;
+                } else if self.backlog(session_id).exists() {
+                    anyhow::bail!(
+                        "inbox backlog state replacement is corrupt; backlog source is preserved"
+                    )
+                } else {
+                    // State is written and synced before any source rename.
+                    // With the old source still in place, an incomplete first
+                    // temp file can be discarded and rebuilt safely.
+                    std::fs::remove_file(state_tmp)?;
+                }
+            }
+        }
+
+        let mut state = match read_bounded_text(&state_path, MAX_BACKLOG_STATE_BYTES) {
+            Ok(contents) => {
+                let state: BacklogState = serde_json::from_str(&contents)
+                    .map_err(|error| anyhow::anyhow!("corrupt inbox backlog state: {error}"))?;
+                if state.version != 1
+                    || state
+                        .active_end_bytes
+                        .is_some_and(|end| end < state.cursor_bytes)
+                    || (state.active_end_bytes.is_none() && state.active_attempts != 0)
+                {
+                    anyhow::bail!("unsupported or invalid inbox backlog state")
+                }
+                Some(state)
+            }
+            Err(error) if is_not_found(&error) => None,
+            Err(error) => return Err(error),
+        };
+
+        let Some(current) = state.as_mut() else {
+            if self.backlog(session_id).exists() {
+                anyhow::bail!("inbox backlog exists without its cursor state")
+            }
+            return Ok(());
+        };
+
+        match current.phase {
+            BacklogPhase::Preparing => {
+                let backlog = self.backlog(session_id);
+                if !backlog.exists() {
+                    let source = match current.source {
+                        BacklogSource::Mailbox => self.mailbox(session_id),
+                        BacklogSource::Processing => self.processing(session_id),
+                    };
+                    if !source.exists() {
+                        anyhow::bail!("inbox backlog preparation lost its source file")
+                    }
+                    std::fs::rename(source, backlog)?;
+                }
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(self.mailbox(session_id))?;
+                current.phase = BacklogPhase::Ready;
+                self.write_backlog_state_unlocked(session_id, current)?;
+            }
+            BacklogPhase::Ready => {
+                let length = std::fs::metadata(self.backlog(session_id))?.len();
+                if current.cursor_bytes > length
+                    || current.active_end_bytes.is_some_and(|end| end > length)
+                {
+                    anyhow::bail!("inbox backlog cursor is outside its source file")
+                }
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(self.mailbox(session_id))?;
+            }
+            BacklogPhase::Complete => {
+                remove_if_exists(&self.backlog(session_id))?;
+                remove_if_exists(&self.processing(session_id))?;
+                remove_if_exists(&self.processing_tmp(session_id))?;
+                remove_if_exists(&state_path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn read_backlog_state_unlocked(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<BacklogState>> {
+        match read_bounded_text(&self.backlog_state(session_id), MAX_BACKLOG_STATE_BYTES) {
+            Ok(contents) => Ok(Some(serde_json::from_str(&contents)?)),
+            Err(error) if is_not_found(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn ensure_backlog_ready_unlocked(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<BacklogState>> {
+        self.recover_backlog_state_unlocked(session_id)?;
+        let state_path = self.backlog_state(session_id);
+        if state_path.exists() {
+            return Ok(Some(serde_json::from_str(&read_bounded_text(
+                &state_path,
+                MAX_BACKLOG_STATE_BYTES,
+            )?)?));
+        }
+        if self.backlog(session_id).exists() {
+            anyhow::bail!("inbox backlog exists without its cursor state")
+        }
+
+        let source = if self.processing(session_id).exists()
+            && std::fs::metadata(self.processing(session_id))?.len() > 0
+        {
+            BacklogSource::Processing
+        } else if self.mailbox(session_id).exists()
+            && std::fs::metadata(self.mailbox(session_id))?.len() > 0
+        {
+            BacklogSource::Mailbox
+        } else {
+            return Ok(None);
+        };
+
+        let state = BacklogState {
+            version: 1,
+            source,
+            phase: BacklogPhase::Preparing,
+            cursor_bytes: 0,
+            active_end_bytes: None,
+            active_attempts: 0,
+        };
+        self.write_backlog_state_unlocked(session_id, &state)?;
+        // Recovery uses the same transition path if the process stops between
+        // the durable preparation record and the constant-time rename.
+        self.recover_backlog_state_unlocked(session_id)?;
+        Ok(Some(serde_json::from_str(&read_bounded_text(
+            &self.backlog_state(session_id),
+            MAX_BACKLOG_STATE_BYTES,
+        )?)?))
+    }
+
+    fn write_backlog_state_unlocked(
+        &self,
+        session_id: &str,
+        state: &BacklogState,
+    ) -> anyhow::Result<()> {
+        let path = self.backlog_state(session_id);
+        let tmp = self.backlog_state_tmp(session_id);
+        let contents = serde_json::to_vec(state)?;
+        if contents.len() > MAX_BACKLOG_STATE_BYTES {
+            anyhow::bail!("inbox backlog state exceeds its bounded byte budget")
+        }
+        let mut file = File::create(&tmp)?;
+        file.write_all(&contents)?;
+        file.flush()?;
+        file.sync_all()?;
+        remove_if_exists(&path)?;
+        std::fs::rename(tmp, path)?;
+        Ok(())
+    }
+
+    fn pending_bytes_unlocked(&self, session_id: &str) -> anyhow::Result<u64> {
+        let mailbox_bytes = file_len_or_zero(&self.mailbox(session_id))?;
+        let state_path = self.backlog_state(session_id);
+        let backlog_bytes = if state_path.exists() {
+            let state: BacklogState =
+                serde_json::from_str(&read_bounded_text(&state_path, MAX_BACKLOG_STATE_BYTES)?)?;
+            if state.phase != BacklogPhase::Ready {
+                anyhow::bail!("inbox backlog is not in a deliverable state")
+            }
+            file_len_or_zero(&self.backlog(session_id))?.saturating_sub(state.cursor_bytes)
+        } else {
+            file_len_or_zero(&self.processing(session_id))?
+        };
+        Ok(mailbox_bytes.saturating_add(backlog_bytes))
+    }
+
+    fn read_processing_unlocked(&self, session_id: &str) -> anyhow::Result<Vec<Envelope>> {
+        let path = self.processing(session_id);
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        if content.len() > MAX_PROCESSING_BYTES {
+            anyhow::bail!("processing batch exceeds its bounded byte budget")
+        }
+        content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| parse_envelope_with_limit(session_id, line.trim(), MAX_PROCESSING_BYTES))
+            .collect()
+    }
+
+    fn advance_backlog_cursor_unlocked(
+        &self,
+        session_id: &str,
+        state: &mut BacklogState,
+        end_bytes: u64,
+    ) -> anyhow::Result<()> {
+        self.write_processing_unlocked(session_id, &[])?;
+        state.cursor_bytes = end_bytes;
+        state.active_end_bytes = None;
+        state.active_attempts = 0;
+        if end_bytes >= std::fs::metadata(self.backlog(session_id))?.len() {
+            state.phase = BacklogPhase::Complete;
+        }
+        self.write_backlog_state_unlocked(session_id, state)?;
+        self.recover_backlog_state_unlocked(session_id)
+    }
 }
 
 fn session_id_from_inbox_file_name(file_name: &str) -> Option<String> {
     for suffix in [
+        ".jsonl.backlog.state.json.tmp",
+        ".jsonl.backlog.state.json",
+        ".jsonl.backlog",
         ".jsonl.processing.tmp",
         ".jsonl.processing",
         ".archive.jsonl.tmp",
@@ -1456,30 +1867,288 @@ fn session_id_from_inbox_file_name(file_name: &str) -> Option<String> {
     None
 }
 
-fn parse_envelopes(session_id: &str, content: &str) -> Vec<Envelope> {
-    content
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() {
-                return None;
-            }
-            match parse_envelope(session_id, line) {
-                Ok(envelope) => Some(envelope),
-                Err(_error) => {
-                    tracing::warn!(
-                        session_id,
-                        line_bytes = line.len(),
-                        "inbox: skipping invalid message envelope"
-                    );
-                    None
-                }
-            }
+fn append_history_source(
+    session_id: &str,
+    content: &str,
+    entries: &mut Vec<Envelope>,
+    positions: &mut HashMap<String, usize>,
+) -> anyhow::Result<()> {
+    for line in content.lines() {
+        if line.len() > MAX_LEGACY_LINE_BYTES {
+            anyhow::bail!(
+                "legacy messaging row exceeds the bounded read limit of {MAX_LEGACY_LINE_BYTES} bytes; the source row is preserved"
+            )
+        }
+        let Ok(envelope) = parse_envelope(session_id, line.trim()) else {
+            continue;
+        };
+        if let Some(index) = positions.get(&envelope.message_id).copied() {
+            entries[index] = envelope;
+        } else {
+            positions.insert(envelope.message_id.clone(), entries.len());
+            entries.push(envelope);
+        }
+    }
+    Ok(())
+}
+
+fn find_in_jsonl_bounded(
+    session_id: &str,
+    path: &Path,
+    start_bytes: u64,
+    max_bytes: u64,
+    message_id: &str,
+) -> anyhow::Result<Option<Envelope>> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let length = file.metadata()?.len();
+    if start_bytes >= length {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(start_bytes))?;
+    let mut reader = BufReader::new(file);
+    let mut scanned = 0u64;
+    loop {
+        let Some(line) = read_bounded_line(&mut reader)? else {
+            break;
+        };
+        let line_bytes = line.len() as u64;
+        if scanned > 0 && scanned.saturating_add(line_bytes) > max_bytes {
+            break;
+        }
+        scanned = scanned.saturating_add(line_bytes);
+        if let Ok(line) = std::str::from_utf8(&line)
+            && let Some(envelope) = parse_envelope(session_id, line.trim())
+                .ok()
+                .filter(|envelope| envelope.message_id == message_id)
+        {
+            return Ok(Some(envelope));
+        }
+        if scanned >= max_bytes || reader.stream_position()? >= length {
+            break;
+        }
+    }
+    Ok(None)
+}
+
+fn remove_if_exists(path: &Path) -> anyhow::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn read_bounded_text(path: &Path, max_bytes: usize) -> anyhow::Result<String> {
+    let reader = File::open(path)?.take(max_bytes as u64 + 1);
+    let mut contents = String::new();
+    let mut reader = reader;
+    reader.read_to_string(&mut contents)?;
+    if contents.len() > max_bytes {
+        anyhow::bail!("persistent inbox state exceeds its bounded byte budget")
+    }
+    Ok(contents)
+}
+
+fn is_not_found(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+}
+
+fn file_len_or_zero(path: &Path) -> anyhow::Result<u64> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.len()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn select_active_envelopes(
+    envelopes: &[Envelope],
+    archived_ids: &HashSet<String>,
+) -> Vec<Envelope> {
+    let mut seen = HashSet::new();
+    envelopes
+        .iter()
+        .filter(|envelope| {
+            !is_expired(envelope)
+                && seen.insert(envelope.message_id.clone())
+                && (envelope.delivery_attempt > 0 || !archived_ids.contains(&envelope.message_id))
+        })
+        .cloned()
+        .map(|mut envelope| {
+            envelope.delivery_attempt = envelope.delivery_attempt.saturating_add(1);
+            envelope
         })
         .collect()
 }
 
+fn select_at_attempts(envelopes: &[Envelope], attempts: u32) -> Vec<Envelope> {
+    let mut seen = HashSet::new();
+    envelopes
+        .iter()
+        .filter(|envelope| !is_expired(envelope) && seen.insert(envelope.message_id.clone()))
+        .cloned()
+        .map(|mut envelope| {
+            envelope.delivery_attempt = envelope.delivery_attempt.saturating_add(attempts);
+            envelope
+        })
+        .collect()
+}
+
+fn inferred_attempts(source: &[Envelope], processing: &[Envelope]) -> u32 {
+    let source_attempts: HashMap<&str, u32> = source
+        .iter()
+        .map(|envelope| (envelope.message_id.as_str(), envelope.delivery_attempt))
+        .collect();
+    processing
+        .iter()
+        .filter_map(|envelope| {
+            source_attempts
+                .get(envelope.message_id.as_str())
+                .map(|source_attempt| envelope.delivery_attempt.saturating_sub(*source_attempt))
+        })
+        .max()
+        .unwrap_or_default()
+}
+
+fn read_bounded_line(reader: &mut impl BufRead) -> anyhow::Result<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return if line.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(line))
+            };
+        }
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if line.len().saturating_add(take) > MAX_LEGACY_LINE_BYTES {
+            anyhow::bail!(
+                "legacy messaging row exceeds the bounded read limit of {MAX_LEGACY_LINE_BYTES} bytes; the source row is preserved"
+            )
+        }
+        let has_newline = available[take - 1] == b'\n';
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if has_newline {
+            return Ok(Some(line));
+        }
+    }
+}
+
+fn read_backlog_batch(
+    session_id: &str,
+    path: &Path,
+    start_bytes: u64,
+) -> anyhow::Result<Option<(u64, Vec<Envelope>)>> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("inbox backlog source is missing")
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let file_len = file.metadata()?.len();
+    if start_bytes > file_len {
+        anyhow::bail!("inbox backlog cursor is outside its source file")
+    }
+    file.seek(SeekFrom::Start(start_bytes))?;
+    let mut reader = BufReader::new(file);
+    let mut rows = 0usize;
+    let mut bytes = 0u64;
+    let mut envelopes = Vec::new();
+    loop {
+        if rows >= MAX_CLAIM_BATCH_LINES {
+            break;
+        }
+        let line_start = reader.stream_position()?;
+        let Some(line) = read_bounded_line(&mut reader)? else {
+            break;
+        };
+        let line_len = line.len() as u64;
+        if rows > 0 && bytes.saturating_add(line_len) > MAX_CLAIM_BATCH_BYTES {
+            reader.seek(SeekFrom::Start(line_start))?;
+            break;
+        }
+        rows += 1;
+        bytes = bytes.saturating_add(line_len);
+        let line = std::str::from_utf8(&line)?;
+        match parse_envelope(session_id, line.trim()) {
+            Ok(envelope) => envelopes.push(envelope),
+            Err(error) => tracing::warn!(
+                session_id,
+                line_bytes = line.len(),
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "inbox: skipping invalid message envelope"
+            ),
+        }
+        if reader.stream_position()? >= file_len {
+            break;
+        }
+    }
+    if rows == 0 {
+        return Ok(None);
+    }
+    Ok(Some((reader.stream_position()?, envelopes)))
+}
+
+fn read_backlog_range(
+    session_id: &str,
+    path: &Path,
+    start_bytes: u64,
+    end_bytes: u64,
+) -> anyhow::Result<Vec<Envelope>> {
+    if end_bytes < start_bytes
+        || end_bytes.saturating_sub(start_bytes)
+            > MAX_CLAIM_BATCH_BYTES.max(MAX_LEGACY_LINE_BYTES as u64)
+    {
+        anyhow::bail!("inbox active batch range is invalid or exceeds its byte budget")
+    }
+    let mut file = File::open(path)?;
+    if end_bytes > file.metadata()?.len() {
+        anyhow::bail!("inbox active batch range is outside its source file")
+    }
+    file.seek(SeekFrom::Start(start_bytes))?;
+    let mut reader = BufReader::new(file);
+    let mut envelopes = Vec::new();
+    while reader.stream_position()? < end_bytes {
+        let Some(line) = read_bounded_line(&mut reader)? else {
+            anyhow::bail!("inbox active batch ended before its durable cursor")
+        };
+        if reader.stream_position()? > end_bytes {
+            anyhow::bail!("inbox active batch cursor does not end on a row boundary")
+        }
+        let line = std::str::from_utf8(&line)?;
+        if let Ok(envelope) = parse_envelope(session_id, line.trim()) {
+            envelopes.push(envelope);
+        }
+    }
+    Ok(envelopes)
+}
+
 fn parse_envelope(session_id: &str, line: &str) -> anyhow::Result<Envelope> {
+    parse_envelope_with_limit(session_id, line, MAX_LEGACY_LINE_BYTES)
+}
+
+fn parse_envelope_with_limit(
+    session_id: &str,
+    line: &str,
+    max_bytes: usize,
+) -> anyhow::Result<Envelope> {
+    if line.len() > max_bytes {
+        anyhow::bail!(
+            "messaging row exceeds the bounded read limit of {max_bytes} bytes; the source row is preserved"
+        )
+    }
     let envelope: Envelope = serde_json::from_str(line)
         .map_err(|error| anyhow::anyhow!("corrupt message envelope: {error}"))?;
     validate_message_envelope(session_id, &envelope)?;
@@ -1519,13 +2188,20 @@ fn is_reply_to_request(
 /// failures propagate so permission/disk errors cannot silently disable reply
 /// resolution or deduplication.
 fn read_tail(path: &Path, max_bytes: u64) -> anyhow::Result<String> {
+    read_tail_from(path, 0, max_bytes)
+}
+
+fn read_tail_from(path: &Path, lower_bound: u64, max_bytes: u64) -> anyhow::Result<String> {
     let mut f = match File::open(path) {
         Ok(f) => f,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
         Err(error) => return Err(error.into()),
     };
     let len = f.metadata()?.len();
-    let start = len.saturating_sub(max_bytes);
+    if lower_bound >= len {
+        return Ok(String::new());
+    }
+    let start = lower_bound.max(len.saturating_sub(max_bytes));
     f.seek(SeekFrom::Start(start))?;
     let mut bytes = Vec::new();
     f.read_to_end(&mut bytes)?;
@@ -1533,21 +2209,71 @@ fn read_tail(path: &Path, max_bytes: u64) -> anyhow::Result<String> {
     // The seek can land in the middle of a JSONL record (and, for UTF-8,
     // the middle of a code point). Discard that partial first record so every
     // caller sees only complete lines from the bounded tail.
-    if start > 0 {
+    if start > lower_bound {
         if let Some(newline) = s.find('\n') {
             s.drain(..=newline);
         } else {
-            s.clear();
+            anyhow::bail!(
+                "legacy messaging row exceeds the bounded read window; the source row is preserved"
+            )
         }
     }
     Ok(s)
 }
 
 fn last_valid_line(session_id: &str, path: &Path) -> anyhow::Result<Option<Envelope>> {
-    Ok(read_tail(path, ARCHIVE_DEDUP_TAIL_BYTES)?
-        .lines()
-        .rev()
-        .find_map(|line| parse_envelope(session_id, line.trim()).ok()))
+    last_valid_line_from(session_id, path, 0)
+}
+
+fn last_valid_line_from(
+    session_id: &str,
+    path: &Path,
+    lower_bound: u64,
+) -> anyhow::Result<Option<Envelope>> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let length = file.metadata()?.len();
+    if lower_bound >= length {
+        return Ok(None);
+    }
+    let max_line_bytes = MAX_LEGACY_LINE_BYTES as u64 + 1;
+    let start = if length - lower_bound > max_line_bytes {
+        length - max_line_bytes
+    } else {
+        lower_bound
+    };
+    file.seek(SeekFrom::Start(start))?;
+    let mut tail = Vec::with_capacity((length - start) as usize);
+    file.read_to_end(&mut tail)?;
+    if start > lower_bound {
+        let Some(newline) = tail.iter().position(|byte| *byte == b'\n') else {
+            anyhow::bail!(
+                "legacy messaging row exceeds the bounded read limit of {MAX_LEGACY_LINE_BYTES} bytes; the source row is preserved"
+            )
+        };
+        tail.drain(..=newline);
+    }
+    if tail.last() == Some(&b'\n') {
+        tail.pop();
+    }
+    let line_start = tail
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |newline| newline + 1);
+    let line = &tail[line_start..];
+    if line.len() > MAX_LEGACY_LINE_BYTES {
+        anyhow::bail!(
+            "legacy messaging row exceeds the bounded read limit of {MAX_LEGACY_LINE_BYTES} bytes; the source row is preserved"
+        )
+    }
+    if line.is_empty() {
+        return Ok(None);
+    }
+    let line = std::str::from_utf8(line)?;
+    Ok(parse_envelope(session_id, line.trim()).ok())
 }
 
 /// Cross-process file mutex. Acquisition is atomic (`create_new`); stale
@@ -1707,7 +2433,7 @@ impl Drop for LockGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::MAX_MESSAGE_TEXT_BYTES;
+    use crate::contract::{MAX_MESSAGE_PAYLOAD_BYTES, MAX_MESSAGE_TEXT_BYTES};
     use serde_json::json;
 
     fn test_bus() -> (tempfile::TempDir, InboxBus) {
@@ -1724,6 +2450,28 @@ mod tests {
             .collect::<Vec<_>>();
         bus.ack_claimed(session_id, &ids).unwrap();
         messages
+    }
+
+    fn drain_all(bus: &InboxBus, session_id: &str) -> Vec<Envelope> {
+        let mut drained = Vec::new();
+        for _ in 0..1000 {
+            let batch = bus.claim_and_archive(session_id).unwrap();
+            if batch.is_empty() {
+                let pending_mailbox = file_len_or_zero(&bus.mailbox(session_id)).unwrap() > 0;
+                let pending_backlog = bus.backlog_state(session_id).exists();
+                if pending_mailbox || pending_backlog {
+                    continue;
+                }
+                break;
+            }
+            let ids = batch
+                .iter()
+                .map(|message| message.message_id.clone())
+                .collect::<Vec<_>>();
+            bus.ack_claimed(session_id, &ids).unwrap();
+            drained.extend(batch);
+        }
+        drained
     }
 
     use std::sync::Arc;
@@ -1927,7 +2675,7 @@ mod tests {
         assert!(outcome.delivered);
         assert_eq!(outcome.status, AgentStatus::Online);
 
-        let msgs = claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let msgs = drain_all(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert_eq!(msgs.len(), 1);
         let got = &msgs[0];
         assert_eq!(got.message_id, env.message_id);
@@ -1982,7 +2730,7 @@ mod tests {
             .collect::<Vec<_>>();
         write_mailbox(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &messages);
 
-        let claimed = claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let claimed = drain_all(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert_eq!(claimed.len(), messages.len());
         assert!(
             std::fs::metadata(bus.archive("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
@@ -2210,6 +2958,90 @@ mod tests {
     }
 
     #[test]
+    fn archive_failure_retries_the_same_active_backlog_range() {
+        let (_dir, bus) = test_bus();
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(recipient, &[]).unwrap();
+        let envelope = env_from("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "retry");
+        bus.deliver(recipient, &envelope).unwrap();
+        bus.fail_archive_append
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        assert!(bus.claim_and_archive(recipient).is_err());
+        let state_after_failure: BacklogState =
+            serde_json::from_str(&std::fs::read_to_string(bus.backlog_state(recipient)).unwrap())
+                .unwrap();
+        assert!(state_after_failure.active_end_bytes.is_some());
+        assert!(bus.backlog(recipient).exists());
+
+        let retried = bus.claim_and_archive(recipient).unwrap();
+        assert_eq!(retried.len(), 1);
+        assert_eq!(retried[0].message_id, envelope.message_id);
+        assert_eq!(retried[0].delivery_attempt, 2);
+        let archive = std::fs::read_to_string(bus.archive(recipient)).unwrap();
+        assert_eq!(archive.lines().count(), 1);
+        bus.ack_claimed(recipient, &[envelope.message_id]).unwrap();
+        assert!(bus.claim_and_archive(recipient).unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_processing_copy_rebuilds_from_cursor_with_stable_message_id() {
+        let (dir, bus) = test_bus();
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(recipient, &[]).unwrap();
+        let envelope = env_from("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "recover");
+        bus.deliver(recipient, &envelope).unwrap();
+        let first = bus.claim_and_archive(recipient).unwrap();
+        assert_eq!(first[0].delivery_attempt, 1);
+        remove_if_exists(&bus.processing(recipient)).unwrap();
+
+        let restarted_bus = InboxBus::new(dir.path());
+        let recovered = restarted_bus.claim_and_archive(recipient).unwrap();
+
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].message_id, envelope.message_id);
+        assert_eq!(recovered[0].delivery_attempt, 1);
+        restarted_bus
+            .ack_claimed(recipient, std::slice::from_ref(&envelope.message_id))
+            .unwrap();
+        assert!(
+            restarted_bus
+                .claim_and_archive(recipient)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn preparing_cursor_recovers_the_source_rename_after_restart() {
+        let (_dir, bus) = test_bus();
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(recipient, &[]).unwrap();
+        let envelope = env_from("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "prepare");
+        bus.deliver(recipient, &envelope).unwrap();
+        let state = BacklogState {
+            version: 1,
+            source: BacklogSource::Mailbox,
+            phase: BacklogPhase::Preparing,
+            cursor_bytes: 0,
+            active_end_bytes: None,
+            active_attempts: 0,
+        };
+        std::fs::write(
+            bus.backlog_state(recipient),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+
+        let recovered = bus.claim_and_archive(recipient).unwrap();
+
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].message_id, envelope.message_id);
+        assert!(bus.backlog(recipient).exists());
+        assert_eq!(file_len_or_zero(&bus.mailbox(recipient)).unwrap(), 0);
+    }
+
+    #[test]
     fn direct_delivery_rejects_noncanonical_envelope_before_write() {
         let (_dir, bus) = test_bus();
         let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -2246,6 +3078,131 @@ mod tests {
     }
 
     #[test]
+    fn delivery_rejects_when_cumulative_pending_bytes_exceed_session_budget() {
+        let (_dir, bus) = test_bus();
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(recipient, &[]).unwrap();
+        let mut existing = vec![b'x'; MAX_PENDING_BYTES as usize - 1];
+        *existing.last_mut().unwrap() = b'\n';
+        std::fs::write(bus.mailbox(recipient), &existing).unwrap();
+        let incoming = env_from("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "new");
+
+        let error = bus.deliver(recipient, &incoming).unwrap_err();
+
+        assert!(error.to_string().contains("inbox capacity exceeded"));
+        assert_eq!(
+            std::fs::metadata(bus.mailbox(recipient)).unwrap().len(),
+            existing.len() as u64
+        );
+    }
+
+    #[test]
+    fn claims_are_bounded_and_cursor_advances_only_after_full_batch_ack() {
+        let (_dir, bus) = test_bus();
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(recipient, &[]).unwrap();
+        let messages = (0..250)
+            .map(|index| {
+                env_from(
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    recipient,
+                    &format!("m{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        write_mailbox(&bus, recipient, &messages);
+
+        let first = bus.claim_and_archive(recipient).unwrap();
+        assert_eq!(first.len(), MAX_CLAIM_BATCH_LINES);
+        let state: BacklogState =
+            serde_json::from_str(&std::fs::read_to_string(bus.backlog_state(recipient)).unwrap())
+                .unwrap();
+        assert_eq!(
+            state.cursor_bytes, 0,
+            "claim alone must not advance the cursor"
+        );
+        assert!(state.active_end_bytes.is_some());
+
+        let first_half = first[..50]
+            .iter()
+            .map(|envelope| envelope.message_id.clone())
+            .collect::<Vec<_>>();
+        bus.ack_claimed(recipient, &first_half).unwrap();
+        let retry = bus.claim_and_archive(recipient).unwrap();
+        assert_eq!(
+            retry.len(),
+            50,
+            "only unacked IDs from the active batch return"
+        );
+        assert!(retry.iter().all(|envelope| envelope.delivery_attempt == 2));
+        let retry_ids = retry
+            .iter()
+            .map(|env| env.message_id.clone())
+            .collect::<HashSet<_>>();
+        let expected_ids = first[50..]
+            .iter()
+            .map(|env| env.message_id.clone())
+            .collect::<HashSet<_>>();
+        assert_eq!(retry_ids, expected_ids);
+        bus.ack_claimed(
+            recipient,
+            &retry
+                .iter()
+                .map(|env| env.message_id.clone())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+
+        let second = bus.claim_and_archive(recipient).unwrap();
+        assert_eq!(second.len(), MAX_CLAIM_BATCH_LINES);
+        assert!(second.iter().all(|env| env.delivery_attempt == 1));
+        bus.ack_claimed(
+            recipient,
+            &second
+                .iter()
+                .map(|env| env.message_id.clone())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let third = bus.claim_and_archive(recipient).unwrap();
+        assert_eq!(third.len(), 50);
+        bus.ack_claimed(
+            recipient,
+            &third
+                .iter()
+                .map(|env| env.message_id.clone())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(bus.claim_and_archive(recipient).unwrap().is_empty());
+        assert!(!bus.backlog_state(recipient).exists());
+    }
+
+    #[test]
+    fn oversized_legacy_backlog_row_fails_closed_without_advancing_or_deleting_source() {
+        let (_dir, bus) = test_bus();
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(recipient, &[]).unwrap();
+        let mut envelope = env_from("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "legacy");
+        envelope.text = "x".repeat(MAX_LEGACY_LINE_BYTES + 1);
+        write_mailbox(&bus, recipient, &[envelope]);
+        let original_len = std::fs::metadata(bus.mailbox(recipient)).unwrap().len();
+
+        let error = bus.claim_and_archive(recipient).unwrap_err();
+
+        assert!(error.to_string().contains("bounded read limit"));
+        assert_eq!(
+            std::fs::metadata(bus.backlog(recipient)).unwrap().len(),
+            original_len
+        );
+        let state: BacklogState =
+            serde_json::from_str(&std::fs::read_to_string(bus.backlog_state(recipient)).unwrap())
+                .unwrap();
+        assert_eq!(state.cursor_bytes, 0);
+        assert_eq!(state.active_end_bytes, None);
+    }
+
+    #[test]
     fn try_claim_returns_busy_without_waiting_for_global_lock() {
         let (_dir, bus) = test_bus();
         bus.register("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &[])
@@ -2270,7 +3227,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_merges_messages_arriving_while_previous_claim_is_pending() {
+    fn claim_preserves_fifo_when_messages_arrive_during_active_batch() {
         let (_dir, bus) = test_bus();
         bus.register("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &[])
             .unwrap();
@@ -2297,15 +3254,16 @@ mod tests {
 
         bus.deliver("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &second)
             .unwrap();
-        let merged = bus
+        let still_active = bus
             .claim_and_archive("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
         assert_eq!(
-            merged
+            still_active
                 .iter()
                 .map(|env| env.message_id.as_str())
                 .collect::<Vec<_>>(),
-            [first.message_id.as_str(), second.message_id.as_str()]
+            [first.message_id.as_str()],
+            "a newer mailbox row must wait behind the unacked immutable batch"
         );
 
         bus.ack_claimed(
@@ -2567,7 +3525,7 @@ mod tests {
                 "第二次",
             )],
         );
-        let msgs = claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let msgs = drain_all(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert_eq!(
             msgs.len(),
             2,
@@ -2651,7 +3609,7 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        let msgs = claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let msgs = drain_all(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert_eq!(
             msgs.len(),
             8 * 25,
@@ -2761,6 +3719,23 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn last_received_can_parse_a_maximum_sized_new_envelope() {
+        let (_dir, bus) = test_bus();
+        let sender = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(recipient, &[]).unwrap();
+        let mut envelope = env_from(sender, recipient, &"\0".repeat(MAX_MESSAGE_TEXT_BYTES));
+        envelope.payload = Some(json!("x".repeat(MAX_MESSAGE_PAYLOAD_BYTES - 2)));
+        validate_message_envelope_for_delivery(recipient, &envelope).unwrap();
+        assert!(serde_json::to_vec(&envelope).unwrap().len() > 64 * 1024);
+        bus.deliver(recipient, &envelope).unwrap();
+
+        let last = bus.last_received(recipient).unwrap().unwrap();
+
+        assert_eq!(last.message_id, envelope.message_id);
     }
 
     #[test]
@@ -3436,6 +4411,12 @@ mod tests {
         bus.deliver(deleted, &pending).unwrap();
         assert_eq!(bus.claim_and_archive(deleted).unwrap().len(), 1);
         assert!(bus.processing(deleted).exists());
+        assert!(bus.backlog(deleted).exists());
+        std::fs::write(
+            bus.backlog_state_tmp(deleted),
+            std::fs::read(bus.backlog_state(deleted)).unwrap(),
+        )
+        .unwrap();
         std::fs::write(
             bus.archive_tmp(deleted),
             serde_json::to_string(&pending).unwrap(),
@@ -3471,6 +4452,9 @@ mod tests {
             bus.mailbox_tmp(deleted),
             bus.processing(deleted),
             bus.processing_tmp(deleted),
+            bus.backlog(deleted),
+            bus.backlog_state(deleted),
+            bus.backlog_state_tmp(deleted),
             bus.archive(deleted),
             bus.archive_tmp(deleted),
         ] {
@@ -3582,6 +4566,7 @@ mod tests {
         let (_dir, bus) = test_bus();
         let legacy = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let database_only = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let sidecar_only = "ses-cccccccccccccccccccccccccccccccc";
         bus.register(legacy, &[]).unwrap();
         bus.unregister(legacy).unwrap();
         write_mailbox(
@@ -3589,6 +4574,7 @@ mod tests {
             legacy,
             &[env_from(database_only, legacy, "legacy pending")],
         );
+        std::fs::write(bus.backlog_state_tmp(sidecar_only), "orphan state").unwrap();
 
         bus.delete_all_sessions(&[database_only.to_string()])
             .unwrap();
@@ -3597,10 +4583,17 @@ mod tests {
         assert!(bus.history(legacy, 10).is_err());
         assert!(bus.register(legacy, &[]).is_err());
         assert!(bus.register(database_only, &[]).is_err());
+        assert!(bus.register(sidecar_only, &[]).is_err());
         assert!(
             bus.read_deleted_sessions_unlocked()
                 .unwrap()
                 .contains_key(legacy)
         );
+        assert!(
+            bus.read_deleted_sessions_unlocked()
+                .unwrap()
+                .contains_key(sidecar_only)
+        );
+        assert!(!bus.backlog_state_tmp(sidecar_only).exists());
     }
 }

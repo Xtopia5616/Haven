@@ -31,9 +31,9 @@ use super::canonical_entity_id_schema;
 use crate::{OperationIdempotency, Tool, ToolResult};
 use haven_messaging::{
     AgentControlOperation, AgentControlRequest, AgentSpawnRequest, AgentStatus, Envelope,
-    MAX_MESSAGE_PAYLOAD_BYTES, MAX_MESSAGE_SUBJECT_BYTES, MAX_MESSAGE_TEXT_BYTES,
-    MAX_MESSAGE_TIMESTAMP_BYTES, MessageType, MessagingService, SendOutcome,
-    validate_message_payload_size,
+    MAX_MESSAGE_HISTORY_LIMIT as MAX_HISTORY_LIMIT, MAX_MESSAGE_PAYLOAD_BYTES,
+    MAX_MESSAGE_SUBJECT_BYTES, MAX_MESSAGE_TEXT_BYTES, MAX_MESSAGE_TIMESTAMP_BYTES, MessageType,
+    MessagingService, SendOutcome, validate_message_payload_size,
 };
 #[cfg(test)]
 use haven_messaging::{AgentControlResult, AgentSpawnResult, MessageTransport, MessagingRuntime};
@@ -49,7 +49,6 @@ const MAX_TASK_BYTES: usize = 16 * 1024;
 const DEFAULT_LIST_LIMIT: usize = 50;
 const MAX_LIST_LIMIT: usize = 100;
 const DEFAULT_HISTORY_LIMIT: usize = 20;
-const MAX_HISTORY_LIMIT: usize = 100;
 const MAX_INBOX_ACK_IDS: usize = 100;
 /// Soft cap on concurrently discoverable children per parent session (online or offline
 /// registry entries with `parent_session_id` set). Prevents unbounded spawn storms.
@@ -658,6 +657,7 @@ impl AgentTool {
                     anyhow::bail!("no online agents to broadcast to");
                 }
                 let mut outcomes = Vec::with_capacity(online.len());
+                let mut failures = Vec::new();
                 for r in &online {
                     let mut env = Envelope::new(&sid, r, &text);
                     env.r#type = MessageType::Broadcast;
@@ -666,21 +666,34 @@ impl AgentTool {
                     env.expires_at = expires_at.clone();
                     match service.send(env) {
                         Ok(sent) => outcomes.push(sent.outcome),
-                        Err(error) => tracing::warn!(
-                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                            "message broadcast delivery failed"
-                        ),
+                        Err(error) => {
+                            let error =
+                                haven_common::error::sanitize_error_text(&error.to_string());
+                            tracing::warn!(
+                                to_session_id = %r,
+                                error = %error,
+                                "message broadcast delivery failed"
+                            );
+                            failures.push(json!({
+                                "to_session_id": r,
+                                "error": error,
+                            }));
+                        }
                     }
                 }
-                Ok(outcomes)
+                Ok((outcomes, failures))
             })
             .await?;
+            let (recipients, failed_recipients) = recipients;
             let delivered = recipients.iter().filter(|o| o.delivered).count();
+            let failed_count = failed_recipients.len();
             return Ok(ToolResult::ok(json!({
                 "ok": true,
                 "broadcast": true,
                 "recipients": recipients,
                 "delivered_count": delivered,
+                "failed_recipients": failed_recipients,
+                "failed_count": failed_count,
             })));
         }
 
@@ -1835,6 +1848,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn broadcast_reports_recipients_rejected_by_inbox_capacity() {
+        let (_dir, bus, tool) = test_tools();
+        let full = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let available = "ses-cccccccccccccccccccccccccccccccc";
+        bus.register(full, &[]).unwrap();
+        bus.register(available, &[]).unwrap();
+
+        for _ in 0..110 {
+            let mut envelope = Envelope::new(
+                "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                full,
+                &"\0".repeat(MAX_MESSAGE_TEXT_BYTES),
+            );
+            envelope.r#type = MessageType::Broadcast;
+            envelope.subject = Some("\0".repeat(MAX_MESSAGE_SUBJECT_BYTES));
+            envelope.payload = Some(json!("x".repeat(MAX_MESSAGE_PAYLOAD_BYTES - 2)));
+            if bus.deliver(full, &envelope).is_err() {
+                break;
+            }
+        }
+        loop {
+            let mut envelope = Envelope::new("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", full, "quota");
+            envelope.r#type = MessageType::Broadcast;
+            if bus.deliver(full, &envelope).is_err() {
+                break;
+            }
+        }
+
+        let result = tool
+            .execute(
+                with_sid(
+                    op("send", json!({"to_session_id": "*", "text": "quota"})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.output["delivered_count"], 1);
+        assert_eq!(result.output["failed_count"], 1);
+        assert_eq!(result.output["failed_recipients"][0]["to_session_id"], full);
+        assert_eq!(result.output["recipients"][0]["to_session_id"], available);
+    }
+
+    #[tokio::test]
     async fn broadcast_with_no_online_agents_errors() {
         let (_dir, _bus, tool) = test_tools();
         let result = tool
@@ -2848,6 +2907,7 @@ mod tests {
                 bus.mark_offline(&name).unwrap();
             }
         }
+
         let err = tool
             .execute(
                 with_sid(

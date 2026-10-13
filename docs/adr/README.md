@@ -1105,3 +1105,4 @@
 - [1114：串行化 InputPipeline 生命周期并 join 录音 worker](1114-serialize-input-pipeline-lifecycle.md)
 - [1115：统一 ToolRunService 后台任务所有权与 shutdown drain](1115-track-toolrun-service-tasks-through-shutdown.md)
 - [1116：为已删除会话保留 Messaging 谱系墓碑](1116-tombstone-deleted-messaging-sessions.md)
+- [1117：限制 Messaging 累计容量并分批排空 backlog](1117-bound-messaging-backlog-and-claims.md)
