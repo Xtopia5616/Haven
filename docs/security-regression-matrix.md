@@ -65,7 +65,7 @@
 | HTTP allowlist | 配置 `allowed_domains` 后访问未列出的 host、或 `*.example.com` 访问根域 | `Blocked`；通配符只匹配子域，不扩大到根域或其他后缀 |
 | structured error class | `transient`、`unknown_outcome`、`validation`、`permission`、`side_effect_may_have_happened` | agent 按 class 决定 retry/verify/ask；不得把错误文本作为主要策略条件 |
 | cancellation | gate 后、实际文件/进程/网络提交前取消 | 不调用下游，或下游按 token 停止；不以取消作为授权 |
-| race/TOCTOU | check 后替换路径 component 为 reparse point | 执行入口重新 check；发现不一致即拒绝并记录净化错误 |
+| race/TOCTOU | 文件读授权后、打开前替换目标或路径 component；打开后再替换 pathname | 文件读入口先打开并持有 handle，再解析路径、验证允许根和 handle/file identity；无法证明相同对象时 fail-closed；读取、摘要、outline、inspect/hash、内容搜索及受管媒体读取都消费已验证的同一 handle。仅在执行入口重查 pathname 不足以满足此项 |
 | 输出泄漏 | denial、tool error、日志 tail、MCP env | 不返回 key/token、完整命令输出或原始 provider/MCP secret |
 
 以上矩阵由 `haven-tools` 的 AuthorizationEngine 单元测试覆盖核心判定；文件系统

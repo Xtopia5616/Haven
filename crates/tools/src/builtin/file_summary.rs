@@ -18,6 +18,7 @@ use crate::{OutputBudget, ToolLlmUsage, ToolResult};
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn summarize(
     path: &str,
+    file: tokio::fs::File,
     start_line: u64,
     end_line: u64,
     focus: Option<&str>,
@@ -50,8 +51,8 @@ pub(super) async fn summarize(
         anyhow::bail!("cancelled");
     }
 
-    let source = read_summary_source(
-        path,
+    let source = read_summary_source_from_file(
+        file,
         start_line,
         end_line,
         input_budget,
@@ -166,8 +167,8 @@ pub(super) struct SummaryFileRead {
     pub(super) truncated: bool,
 }
 
-async fn read_summary_source(
-    path: &str,
+async fn read_summary_source_from_file(
+    file: tokio::fs::File,
     start_line: u64,
     end_line: u64,
     input_budget: usize,
@@ -177,7 +178,8 @@ async fn read_summary_source(
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
-    let read = read_for_summary(path, start_line, end_line, input_budget, max_line_bytes).await?;
+    let read = read_for_summary_from_file(file, start_line, end_line, input_budget, max_line_bytes)
+        .await?;
     Ok(SummaryInput {
         content: read.content,
         actual_start_line: read.actual_start_line,
@@ -220,6 +222,7 @@ pub(super) fn build_summary_messages(
 
 /// Stream a file's lines `start_line`..=`end_line` (1-based; `end_line=0` means
 /// to EOF), capped at `max_chars`. Returns content plus actual line bounds.
+#[cfg(test)]
 pub(super) async fn read_for_summary(
     path: &str,
     start_line: u64,
@@ -228,6 +231,16 @@ pub(super) async fn read_for_summary(
     max_line_bytes: usize,
 ) -> anyhow::Result<SummaryFileRead> {
     let file = tokio::fs::File::open(path).await?;
+    read_for_summary_from_file(file, start_line, end_line, max_chars, max_line_bytes).await
+}
+
+async fn read_for_summary_from_file(
+    file: tokio::fs::File,
+    start_line: u64,
+    end_line: u64,
+    max_chars: usize,
+    max_line_bytes: usize,
+) -> anyhow::Result<SummaryFileRead> {
     let size = file.metadata().await?.len();
     let mut reader = BufReader::new(file);
     let mut line_buf = Vec::new();

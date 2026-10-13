@@ -12,6 +12,7 @@ use crate::builtin::file_line_reader::read_line_bounded;
 /// budget can hold instead of pulling the whole file into memory first.
 pub(super) async fn read_full(
     path: &str,
+    mut file: tokio::fs::File,
     max_chars: usize,
     max_read_bytes: u64,
     cancel: CancellationToken,
@@ -20,7 +21,7 @@ pub(super) async fn read_full(
         anyhow::bail!("cancelled");
     }
     let classification = classify_file_by_extension(path);
-    let meta = tokio::fs::metadata(path).await?;
+    let meta = file.metadata().await?;
     let size = meta.len();
     if matches!(
         classification.file_kind,
@@ -34,7 +35,6 @@ pub(super) async fn read_full(
         // Still return a bounded content prefix (budget-sized read, never the
         // whole file) so callers can see the head and reconstruct if needed.
         let to_read = ((max_chars as u64).saturating_mul(4)).min(size).max(1) as usize;
-        let mut file = tokio::fs::File::open(path).await?;
         let mut buf = vec![0u8; to_read];
         let n = file.read(&mut buf).await?;
         buf.truncate(n);
@@ -60,7 +60,6 @@ pub(super) async fn read_full(
     // Output is truncated to max_chars anyway; reading more bytes than 4x that
     // (worst-case UTF-8 width) is wasted IO.
     let to_read = (max_chars as u64).saturating_mul(4).min(size).max(1) as usize;
-    let mut file = tokio::fs::File::open(path).await?;
     let mut buf = vec![0u8; to_read];
     let n = file.read(&mut buf).await?;
     buf.truncate(n);
@@ -177,12 +176,12 @@ fn is_gbk_trail(byte: u8) -> bool {
 /// Byte-mode segmented read (B): seek to `offset` and read at most `limit` bytes.
 pub(super) async fn read_bytes(
     path: &str,
+    mut file: tokio::fs::File,
     offset: u64,
     limit: u64,
     max_chars: usize,
     max_byte_read_bytes: u64,
 ) -> anyhow::Result<ToolResult> {
-    let mut file = tokio::fs::File::open(path).await?;
     let total = file.metadata().await?.len();
     if offset >= total {
         return Ok(ToolResult::ok(serde_json::json!({
@@ -240,12 +239,12 @@ pub(super) async fn read_bytes(
 /// Line-mode segmented read (C): return lines `start_line`..=`end_line` (1-based).
 pub(super) async fn read_lines(
     path: &str,
+    file: tokio::fs::File,
     start_line: u64,
     end_line: u64,
     max_chars: usize,
     max_line_bytes: usize,
 ) -> anyhow::Result<ToolResult> {
-    let file = tokio::fs::File::open(path).await?;
     let total = file.metadata().await?.len();
     let mut reader = BufReader::new(file);
     let mut line_buf = Vec::new();

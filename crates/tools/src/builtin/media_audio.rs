@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use super::media::{MediaOperation, MediaParams, MediaTool, register_generated_asset};
+use crate::security::FileReadPolicy;
 use crate::{ManagedAsset, ManagedAssetRegistry, ToolResult};
 
 /// Default capture window when the LLM omits `duration`.
@@ -217,7 +218,11 @@ impl AudioRuntime {
         })
     }
 
-    pub(crate) async fn play(&self, params: &MediaParams) -> anyhow::Result<()> {
+    pub(crate) async fn play(
+        &self,
+        params: &MediaParams,
+        access_policy: FileReadPolicy,
+    ) -> anyhow::Result<()> {
         let path = params
             .file_path
             .as_deref()
@@ -229,12 +234,20 @@ impl AudioRuntime {
         if !lower.ends_with(".wav") {
             return Err(anyhow::anyhow!("media play: only .wav files are supported"));
         }
-        if !std::path::Path::new(path).is_file() {
-            return Err(anyhow::anyhow!("media play: audio file was not found"));
+        let file = tokio::fs::File::from_std(access_policy.open_read(std::path::Path::new(path))?);
+        let size = file.metadata().await?.len();
+        if size > haven_common::config::MAX_FILE_OPERATION_BYTES {
+            anyhow::bail!("media play: audio file exceeds the local playback limit");
         }
-
-        let path_owned = path.to_string();
-        tokio::task::spawn_blocking(move || imp::play_wav(&path_owned)).await??;
+        use tokio::io::AsyncReadExt;
+        let mut bytes = Vec::with_capacity(size as usize);
+        let mut reader = file.take(haven_common::config::MAX_FILE_OPERATION_BYTES + 1);
+        reader.read_to_end(&mut bytes).await?;
+        if bytes.len() as u64 > haven_common::config::MAX_FILE_OPERATION_BYTES {
+            anyhow::bail!("media play: audio file exceeds the local playback limit");
+        }
+        let playback = Arc::clone(&self.playback);
+        tokio::task::spawn_blocking(move || playback.play_wav(&bytes)).await??;
         Ok(())
     }
 
@@ -303,8 +316,8 @@ impl AudioRuntime {
 mod imp {
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
     use windows::Win32::Media::Audio::{
-        IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, PlaySoundW, SND_ASYNC, SND_FILENAME,
-        SND_MEMORY, SND_SYNC, eConsole, eRender,
+        IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, PlaySoundW, SND_MEMORY, SND_SYNC,
+        eConsole, eRender,
     };
     use windows::Win32::System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
@@ -355,15 +368,6 @@ mod imp {
         Ok(())
     }
 
-    pub fn play_wav(path: &str) -> anyhow::Result<()> {
-        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-        let ok = unsafe { PlaySoundW(PCWSTR(wide.as_ptr()), None, SND_FILENAME | SND_ASYNC) };
-        if !ok.as_bool() {
-            anyhow::bail!("audio playback failed");
-        }
-        Ok(())
-    }
-
     pub fn play_wav_bytes(data: &[u8]) -> anyhow::Result<()> {
         if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
             anyhow::bail!("audio playback requires a valid WAV payload");
@@ -401,10 +405,6 @@ mod imp {
 
     pub fn set_mute(_muted: bool) -> anyhow::Result<()> {
         anyhow::bail!("audio control requires Windows")
-    }
-
-    pub fn play_wav(_path: &str) -> anyhow::Result<()> {
-        anyhow::bail!("audio playback requires Windows")
     }
 
     pub fn play_wav_bytes(_data: &[u8]) -> anyhow::Result<()> {
@@ -470,7 +470,11 @@ impl MediaTool {
                     .file_path
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("file_path (.wav) is required for play"))?;
-                self.audio_runtime.play(&params).await?;
+                let access_policy = match self.authorization.as_ref() {
+                    Some(authorization) => authorization.file_read_policy("media.play").await,
+                    None => FileReadPolicy::default(),
+                };
+                self.audio_runtime.play(&params, access_policy).await?;
                 let mut output = self.media_result_output(MediaOperation::Play, None, None, None);
                 output["played"] = json!(true);
                 output["format"] = json!("wav");
@@ -554,7 +558,10 @@ mod tests {
     async fn runtime_rejects_non_wav_playback() {
         let mut params = params(MediaOperation::Play);
         params.file_path = Some("x.mp3".into());
-        let err = AudioRuntime::new(None).play(&params).await.unwrap_err();
+        let err = AudioRuntime::new(None)
+            .play(&params, FileReadPolicy::default())
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains(".wav"));
     }
 

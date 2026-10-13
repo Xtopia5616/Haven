@@ -1,5 +1,6 @@
 //! Rich file handoff from `files` into the managed media registry.
 
+use crate::security::FileReadPolicy;
 use crate::{ManagedAsset, ManagedAssetRegistry};
 use std::future::Future;
 use std::path::Path;
@@ -25,6 +26,7 @@ pub(super) async fn register_rich_path_asset(
     registry: &ManagedAssetRegistry,
     session_id: Option<&str>,
     path: &str,
+    access_policy: &FileReadPolicy,
 ) -> anyhow::Result<Option<ManagedAsset>> {
     let classification = classify_file_by_extension(path);
     if !matches!(
@@ -37,19 +39,26 @@ pub(super) async fn register_rich_path_asset(
     ) {
         return Ok(None);
     }
+    let opened = access_policy.open_read(Path::new(path))?;
     let canonical = tokio::fs::canonicalize(path).await?;
     let generated_media_root =
         tokio::fs::canonicalize(haven_common::config::default_generated_media_root())
             .await
             .ok();
-    register_canonical_rich_path_asset(
+    let asset = register_canonical_rich_path_asset(
         registry,
         session_id,
         &canonical,
         classification.mime_type,
         generated_media_root.as_deref(),
     )
-    .await
+    .await?;
+    let Some(asset) = asset else {
+        return Ok(None);
+    };
+    Ok(Some(
+        registry.pin_source_identity(&asset.asset_id, &opened)?,
+    ))
 }
 
 async fn register_canonical_rich_path_asset(

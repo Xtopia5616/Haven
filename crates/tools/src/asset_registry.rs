@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, Utc};
 use haven_common::types::is_canonical_id;
-use haven_platform::filesystem::is_link_or_reparse_point;
+use haven_platform::filesystem::{FileIdentity, file_identity, is_link_or_reparse_point};
 
 /// Host-owned metadata needed to resolve a managed attachment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,7 @@ pub struct ManagedAsset {
     pub sha256: Option<String>,
     pub size_bytes: Option<u64>,
     pub expires_at: Option<DateTime<Utc>>,
+    source_identity: Option<FileIdentity>,
 }
 
 /// In-process mapping from opaque asset ids to host-owned files.
@@ -164,6 +165,30 @@ impl ManagedAssetRegistry {
         {
             return false;
         }
+        let Ok(source) = haven_platform::filesystem::open_read_only(&path) else {
+            return false;
+        };
+        let Ok(source_identity) = file_identity(&source) else {
+            return false;
+        };
+        if !is_safe_managed_file(root, &path) {
+            return false;
+        }
+        let Ok(canonical) = path.canonicalize() else {
+            return false;
+        };
+        let Ok(canonical_root) = root.canonicalize() else {
+            return false;
+        };
+        if canonical == canonical_root || !canonical.starts_with(&canonical_root) {
+            return false;
+        }
+        let Ok(resolved) = haven_platform::filesystem::open_read_only(&canonical) else {
+            return false;
+        };
+        if !haven_platform::filesystem::same_file_identity(&source, &resolved).unwrap_or(false) {
+            return false;
+        }
         let asset = ManagedAsset {
             asset_id: asset_id.clone(),
             path,
@@ -173,6 +198,7 @@ impl ManagedAssetRegistry {
             sha256,
             size_bytes,
             expires_at,
+            source_identity: Some(source_identity),
         };
         self.assets
             .write()
@@ -453,6 +479,7 @@ impl ManagedAssetRegistry {
                     sha256: None,
                     size_bytes: None,
                     expires_at: None,
+                    source_identity: None,
                 },
             );
     }
@@ -484,6 +511,69 @@ impl ManagedAssetRegistry {
         self.resolve(&asset.asset_id)
             .is_some_and(|current| current == *asset)
             && is_safe_managed_file(&asset.managed_root, &asset.path)
+    }
+
+    /// Open a managed asset while binding its current path validation to the
+    /// exact object returned to the caller. Callers must read from this handle
+    /// instead of reopening `asset.path` after validation.
+    pub(crate) fn open_for_read(&self, asset: &ManagedAsset) -> std::io::Result<std::fs::File> {
+        let denied = || {
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "managed asset failed path validation",
+            )
+        };
+        if !self
+            .resolve(&asset.asset_id)
+            .is_some_and(|current| current == *asset)
+        {
+            return Err(denied());
+        }
+        let opened = haven_platform::filesystem::open_read_only(&asset.path)?;
+        if !opened.metadata()?.is_file() || !is_safe_managed_file(&asset.managed_root, &asset.path)
+        {
+            return Err(denied());
+        }
+        let canonical = asset.path.canonicalize().map_err(|_| denied())?;
+        let resolved = haven_platform::filesystem::open_read_only(&canonical)?;
+        if !haven_platform::filesystem::same_file_identity(&opened, &resolved)? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "managed asset changed during path validation",
+            ));
+        }
+        if asset
+            .source_identity
+            .is_some_and(|identity| file_identity(&opened).ok() != Some(identity))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "managed asset source identity changed",
+            ));
+        }
+        Ok(opened)
+    }
+
+    /// Pin a path-backed asset to the source object authorized before
+    /// registration. Later reads reject a replacement at the same pathname.
+    pub(crate) fn pin_source_identity(
+        &self,
+        asset_id: &str,
+        source: &std::fs::File,
+    ) -> std::io::Result<ManagedAsset> {
+        let identity = file_identity(source)?;
+        let mut assets = self
+            .assets
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(asset) = assets.get_mut(asset_id) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "managed asset disappeared during registration",
+            ));
+        };
+        asset.source_identity = Some(identity);
+        Ok(asset.clone())
     }
 
     pub fn contains(&self, asset_id: &str) -> bool {
@@ -856,6 +946,59 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn opened_managed_asset_remains_bound_after_path_replacement() {
+        use std::io::Read;
+
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("asset.txt");
+        let moved = root.path().join("original.txt");
+        std::fs::write(&path, b"registered contents").unwrap();
+        let registry = ManagedAssetRegistry::default();
+        let asset_id = test_id("asset");
+        assert!(registry.register_under_root(
+            root.path(),
+            asset_id.clone(),
+            path.clone(),
+            Some("asset.txt".into()),
+            "text/plain",
+        ));
+        let asset = registry.resolve(&asset_id).unwrap();
+        let mut opened = registry.open_for_read(&asset).unwrap();
+
+        std::fs::rename(&path, &moved).unwrap();
+        std::fs::write(&path, b"replacement contents").unwrap();
+
+        let mut bytes = Vec::new();
+        opened.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"registered contents");
+    }
+
+    #[test]
+    fn registered_managed_asset_rejects_path_replacement() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("asset.txt");
+        let moved = root.path().join("original.txt");
+        std::fs::write(&path, b"authorized contents").unwrap();
+        let registry = ManagedAssetRegistry::default();
+        let asset_id = test_id("asset");
+        assert!(registry.register_under_root(
+            root.path(),
+            asset_id.clone(),
+            path.clone(),
+            Some("asset.txt".into()),
+            "text/plain",
+        ));
+        let asset = registry.resolve(&asset_id).unwrap();
+
+        std::fs::rename(&path, &moved).unwrap();
+        std::fs::write(&path, b"replacement contents").unwrap();
+
+        let error = registry.open_for_read(&asset).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
     fn prune_missing_removes_deleted_assets() {
         let root = TempDir::new().unwrap();
         let path = root.path().join("gone.txt");
@@ -1097,6 +1240,7 @@ mod tests {
             let write_guard = producer_registry.lock_generated_media_write().await;
             let mut file = std::fs::File::create(&fresh_path_for_producer).unwrap();
             file.write_all(b"fresh").unwrap();
+            drop(file);
             assert!(producer_registry.register_under_root_for_session(
                 &session_id,
                 &producer_root,

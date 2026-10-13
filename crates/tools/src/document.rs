@@ -6,8 +6,9 @@
 //! normal untrusted-content fence. Unsupported/encrypted documents are
 //! reported explicitly instead of being treated as empty text.
 
+#[cfg(test)]
 use std::fs::File;
-use std::io::Read;
+use std::io::{Cursor, Read, Seek};
 use std::path::Path;
 
 use flate2::read::ZlibDecoder;
@@ -89,6 +90,7 @@ pub fn extract_document(
 /// Extract one logical page/section. The returned `next_page` is an explicit
 /// zero-based cursor; callers do not need to split the aggregate text or
 /// guess how a PDF/Office parser partitioned the document.
+#[cfg(test)]
 pub fn extract_document_page_with_cancel(
     path: &Path,
     max_chars: usize,
@@ -105,6 +107,28 @@ pub fn extract_document_page_with_cancel(
     )
 }
 
+/// Extract a document snapshot that was read from an already-validated file
+/// handle. The supplied path is used only to select the document format; no
+/// file is reopened during parsing.
+pub fn extract_document_page_from_bytes_with_cancel(
+    path: &Path,
+    bytes: &[u8],
+    max_chars: usize,
+    max_document_bytes: u64,
+    page_index: usize,
+    cancel: &CancellationToken,
+) -> anyhow::Result<DocumentExtraction> {
+    extract_document_bytes_inner(
+        path,
+        bytes,
+        max_chars,
+        max_document_bytes,
+        Some(cancel),
+        Some(page_index),
+    )
+}
+
+#[cfg(test)]
 fn extract_document_inner(
     path: &Path,
     max_chars: usize,
@@ -113,7 +137,7 @@ fn extract_document_inner(
     page_index: Option<usize>,
 ) -> anyhow::Result<DocumentExtraction> {
     check_cancel(cancel)?;
-    let format = format_for_path(path)
+    let _format = format_for_path(path)
         .ok_or_else(|| anyhow::anyhow!("document extraction is unsupported for this file type"))?;
     let metadata = std::fs::metadata(path)?;
     let size_bytes = metadata.len();
@@ -131,10 +155,30 @@ fn extract_document_inner(
         anyhow::bail!("document exceeds the local extraction size limit");
     }
 
+    extract_document_bytes_inner(path, &bytes, max_chars, byte_limit, cancel, page_index)
+}
+
+fn extract_document_bytes_inner(
+    path: &Path,
+    bytes: &[u8],
+    max_chars: usize,
+    max_document_bytes: u64,
+    cancel: Option<&CancellationToken>,
+    page_index: Option<usize>,
+) -> anyhow::Result<DocumentExtraction> {
+    check_cancel(cancel)?;
+    let format = format_for_path(path)
+        .ok_or_else(|| anyhow::anyhow!("document extraction is unsupported for this file type"))?;
+    let byte_limit = max_document_bytes.min(MAX_DOCUMENT_BYTES);
+    let size_bytes = bytes.len() as u64;
+    if size_bytes > byte_limit {
+        anyhow::bail!("document exceeds the local extraction size limit");
+    }
+
     let pages = match format {
-        DocumentFormat::Pdf => extract_pdf(&bytes, cancel)?,
+        DocumentFormat::Pdf => extract_pdf(bytes, cancel)?,
         DocumentFormat::Docx | DocumentFormat::Xlsx | DocumentFormat::Pptx => {
-            extract_open_xml(path, format, cancel)?
+            extract_open_xml(bytes, format, cancel)?
         }
     };
     let total_pages = pages.len().max(1);
@@ -523,12 +567,11 @@ fn decode_pdf_bytes(bytes: &[u8]) -> String {
 }
 
 fn extract_open_xml(
-    path: &Path,
+    bytes: &[u8],
     format: DocumentFormat,
     cancel: Option<&CancellationToken>,
 ) -> anyhow::Result<Vec<String>> {
-    let file = File::open(path)?;
-    let mut archive = ZipArchive::new(file)?;
+    let mut archive = ZipArchive::new(Cursor::new(bytes))?;
     let mut names = Vec::new();
     for index in 0..archive.len() {
         check_cancel(cancel)?;
@@ -598,8 +641,8 @@ fn extract_open_xml(
     Ok(pages)
 }
 
-fn read_zip_entry(
-    archive: &mut ZipArchive<File>,
+fn read_zip_entry<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
     name: &str,
     max_bytes: u64,
     cancel: Option<&CancellationToken>,
@@ -863,6 +906,27 @@ mod tests {
         let extracted = extract_document(file.path(), 1_000, MAX_DOCUMENT_BYTES).unwrap();
         assert_eq!(extracted.format, DocumentFormat::Pdf);
         assert_eq!(extracted.text, "Hello PDF");
+    }
+
+    #[test]
+    fn extracts_from_the_verified_byte_snapshot_without_reopening_the_path() {
+        let path = Path::new("snapshot.pdf");
+        let body = b"BT\n(Page from verified handle) Tj\nET\n";
+        let mut bytes =
+            format!("%PDF-1.4\n1 0 obj\n<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        bytes.extend_from_slice(body);
+        bytes.extend_from_slice(b"endstream\nendobj\n");
+
+        let extracted = extract_document_page_from_bytes_with_cancel(
+            path,
+            &bytes,
+            1_000,
+            MAX_DOCUMENT_BYTES,
+            0,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(extracted.text, "Page from verified handle");
     }
 
     #[test]

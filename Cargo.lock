@@ -2426,6 +2426,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "haven-common",
+ "libc",
  "windows-sys 0.61.2",
 ]
 

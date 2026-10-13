@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::canonical_entity_id_schema;
 use crate::asset_registry::GeneratedMediaWriteGuard;
+use crate::security::FileReadPolicy;
 use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResult};
 
 const MAX_CLIPBOARD_FILES: usize = 32;
@@ -664,7 +665,11 @@ fn write_clipboard(
             let asset = registry
                 .resolve(&asset_id)
                 .ok_or_else(|| anyhow::anyhow!("unknown managed asset '{asset_id}'"))?;
-            let decoded = image::open(&asset.path)?.to_rgba8();
+            let file = registry.open_for_read(&asset)?;
+            let decoded = image::ImageReader::new(std::io::BufReader::new(file))
+                .with_guessed_format()?
+                .decode()?
+                .to_rgba8();
             let image = arboard::ImageData {
                 width: decoded.width() as usize,
                 height: decoded.height() as usize,
@@ -807,7 +812,7 @@ async fn copy_file_assets(
             }
             let mut created_file = false;
             let result = (|| -> anyhow::Result<Option<ManagedAsset>> {
-                let mut source_file = std::fs::File::open(&source_for_copy)?;
+                let mut source_file = FileReadPolicy::default().open_read(&source_for_copy)?;
                 let source_metadata = source_file.metadata()?;
                 if source_metadata.len() > MAX_CLIPBOARD_FILE_BYTES {
                     anyhow::bail!(

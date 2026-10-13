@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::security::AuthorizationEngine;
 use crate::{ManagedAssetRegistry, OperationIdempotency, Tool, ToolConcurrency, ToolResult};
 
 use super::canonical_entity_id_schema;
@@ -216,6 +217,7 @@ pub struct MediaTool {
     ocr_min_confidence: f32,
     stt_timeout_secs: u64,
     managed_assets: ManagedAssetRegistry,
+    pub(super) authorization: Option<Arc<AuthorizationEngine>>,
     max_bytes: u64,
     timeout_secs: u64,
     max_output_chars: usize,
@@ -251,6 +253,7 @@ impl MediaTool {
             ocr_min_confidence: 0.0,
             stt_timeout_secs: timeout_secs.max(1),
             managed_assets,
+            authorization: None,
             max_bytes: max_bytes.min(MAX_FILE_OPERATION_BYTES),
             timeout_secs,
             max_output_chars: max_output_chars.max(1),
@@ -303,6 +306,14 @@ impl MediaTool {
         self.capabilities.record = audio_runtime.record_available();
         self.capabilities.speak = audio_runtime.tts_available();
         self.audio_runtime = audio_runtime;
+        self
+    }
+
+    pub(crate) fn with_authorization_engine(
+        mut self,
+        authorization: Arc<AuthorizationEngine>,
+    ) -> Self {
+        self.authorization = Some(authorization);
         self
     }
 

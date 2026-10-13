@@ -8,11 +8,15 @@ use haven_common::types::{
     CapabilityScope, NetworkPolicy, PermissionEffect, PermissionMode, PermissionScope, RiskLevel,
     SandboxMode,
 };
-use haven_platform::filesystem::is_link_or_reparse_point;
+use haven_platform::filesystem::{
+    is_link_or_reparse_point, open_for_metadata, open_read_only, same_file_identity,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+use std::fs::File;
+use std::io;
 use std::path::{Path, PathBuf};
 use tokio::sync::RwLock;
 
@@ -464,6 +468,61 @@ pub struct AuthorizationEngine {
     config: RwLock<SafetyConfig>,
 }
 
+/// Captured path roots for one read operation. Each opened file is checked
+/// against these roots by identity before the caller consumes the handle.
+#[derive(Clone, Default)]
+pub(crate) struct FileReadPolicy {
+    allowed_roots: Vec<Vec<PathBuf>>,
+}
+
+impl FileReadPolicy {
+    pub(crate) fn open_read(&self, path: &Path) -> io::Result<File> {
+        let opened = open_read_only(path)?;
+        self.validate_opened(path, &opened, true)?;
+        Ok(opened)
+    }
+
+    pub(crate) fn open_metadata(&self, path: &Path) -> io::Result<File> {
+        let opened = open_for_metadata(path)?;
+        self.validate_opened(path, &opened, false)?;
+        Ok(opened)
+    }
+
+    fn validate_opened(&self, path: &Path, opened: &File, require_file: bool) -> io::Result<()> {
+        let denied = || io::Error::new(io::ErrorKind::PermissionDenied, "path is not allowed");
+        if !path.is_absolute() || is_unc_or_device_path(path) {
+            return Err(denied());
+        }
+        let opened_metadata = opened.metadata()?;
+        if (require_file && !opened_metadata.is_file())
+            || (!opened_metadata.is_file() && !opened_metadata.is_dir())
+            || is_link_or_reparse_point(&opened_metadata)
+        {
+            return Err(denied());
+        }
+        let Some(resolved) = resolve_path_without_reparse(path) else {
+            return Err(denied());
+        };
+        let resolved_file = if opened_metadata.is_dir() {
+            open_for_metadata(&resolved)?
+        } else {
+            open_read_only(&resolved)?
+        };
+        if !same_file_identity(opened, &resolved_file)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "file changed during path validation",
+            ));
+        }
+        for roots in &self.allowed_roots {
+            if !resolved_path_is_allowed(&resolved, roots) {
+                return Err(denied());
+            }
+        }
+        Ok(())
+    }
+}
+
 impl AuthorizationEngine {
     pub fn new() -> Self {
         Self {
@@ -570,6 +629,16 @@ impl AuthorizationEngine {
     pub async fn effective_risk(&self, tool_name: &str, reported: RiskLevel) -> RiskLevel {
         let cfg = self.config.read().await;
         effective_risk_from(&cfg, tool_name, reported)
+    }
+
+    pub(crate) async fn file_read_policy(&self, tool_name: &str) -> FileReadPolicy {
+        let cfg = self.config.read().await;
+        let allowed_roots = tool_setting_names(tool_name)
+            .filter_map(|name| cfg.tool_settings.get(name))
+            .filter(|setting| !setting.allowed_paths.is_empty())
+            .map(|setting| setting.allowed_paths.iter().map(PathBuf::from).collect())
+            .collect();
+        FileReadPolicy { allowed_roots }
     }
 
     /// Evaluate one typed authorization request. The operation policy and
@@ -1237,6 +1306,10 @@ fn path_is_allowed(path: &Path, allowed: &[PathBuf]) -> bool {
     let Some(canon) = resolve_path_without_reparse(path) else {
         return false;
     };
+    resolved_path_is_allowed(&canon, allowed)
+}
+
+fn resolved_path_is_allowed(canon: &Path, allowed: &[PathBuf]) -> bool {
     for base in allowed {
         if !base.is_absolute() || is_unc_or_device_path(base) {
             continue;
@@ -1244,7 +1317,7 @@ fn path_is_allowed(path: &Path, allowed: &[PathBuf]) -> bool {
         let Some(base_abs) = resolve_path_without_reparse(base) else {
             continue;
         };
-        if path_is_within(&canon, &base_abs) {
+        if path_is_within(canon, &base_abs) {
             return true;
         }
     }
@@ -3378,6 +3451,98 @@ mod tests {
             &link.join("secret.txt"),
             &[allowed.path().to_path_buf()]
         ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn file_read_policy_rejects_replacement_after_open_and_keeps_handle_bound() {
+        use std::io::Read;
+
+        let allowed = tempfile::tempdir().unwrap();
+        let path = allowed.path().join("note.txt");
+        let moved = allowed.path().join("original.txt");
+        std::fs::write(&path, b"authorized contents").unwrap();
+        let opened = open_read_only(&path).unwrap();
+        let policy = FileReadPolicy {
+            allowed_roots: vec![vec![allowed.path().to_path_buf()]],
+        };
+
+        std::fs::rename(&path, &moved).unwrap();
+        std::fs::write(&path, b"replacement contents").unwrap();
+
+        assert!(policy.validate_opened(&path, &opened, true).is_err());
+        let mut contents = Vec::new();
+        let mut opened = opened;
+        opened.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"authorized contents");
+    }
+
+    #[test]
+    fn file_read_policy_rejects_file_outside_configured_root() {
+        let allowed = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = outside.path().join("secret.txt");
+        std::fs::write(&path, b"secret").unwrap();
+        let policy = FileReadPolicy {
+            allowed_roots: vec![vec![allowed.path().to_path_buf()]],
+        };
+
+        assert_eq!(
+            policy.open_read(&path).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn file_read_policy_rejects_a_symlink_path() {
+        let allowed = tempfile::tempdir().unwrap();
+        let target = allowed.path().join("target.txt");
+        let link = allowed.path().join("link.txt");
+        std::fs::write(&target, b"target").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let policy = FileReadPolicy {
+            allowed_roots: vec![vec![allowed.path().to_path_buf()]],
+        };
+
+        assert!(policy.open_read(&link).is_err());
+    }
+
+    #[test]
+    fn file_read_policy_returns_the_validated_file_handle() {
+        use std::io::Read;
+
+        let allowed = tempfile::tempdir().unwrap();
+        let path = allowed.path().join("note.txt");
+        std::fs::write(&path, b"same handle").unwrap();
+        let policy = FileReadPolicy {
+            allowed_roots: vec![vec![allowed.path().to_path_buf()]],
+        };
+
+        let mut opened = policy.open_read(&path).unwrap();
+        let mut contents = Vec::new();
+        opened.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"same handle");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn file_read_policy_blocks_replacement_while_the_handle_is_open() {
+        use std::io::Read;
+
+        let allowed = tempfile::tempdir().unwrap();
+        let path = allowed.path().join("note.txt");
+        let moved = allowed.path().join("moved.txt");
+        std::fs::write(&path, b"authorized contents").unwrap();
+        let policy = FileReadPolicy {
+            allowed_roots: vec![vec![allowed.path().to_path_buf()]],
+        };
+
+        let mut opened = policy.open_read(&path).unwrap();
+        assert!(std::fs::rename(&path, &moved).is_err());
+        let mut contents = Vec::new();
+        opened.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"authorized contents");
     }
 
     #[test]

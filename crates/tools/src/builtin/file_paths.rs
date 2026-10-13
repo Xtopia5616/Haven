@@ -1,6 +1,7 @@
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path};
+use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 
 use super::file_classification::{FileClassificationKind, classify_file_by_extension};
@@ -149,24 +150,13 @@ async fn replace_file(temporary: &Path, destination: &Path) -> anyhow::Result<()
     }
 }
 
-pub(super) async fn inspect_file(
-    path: &Path,
+pub(super) async fn inspect_open_file(
+    path: &str,
+    mut file: tokio::fs::File,
     include_hash: bool,
     max_hash_bytes: u64,
 ) -> anyhow::Result<ToolResult> {
-    let metadata = match tokio::fs::metadata(path).await {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(ToolResult::ok(serde_json::json!({
-                "exists": false,
-                "file_type": "missing",
-                "path": path,
-                "hash": null,
-                "encoding": null,
-            })));
-        }
-        Err(error) => return Err(error.into()),
-    };
+    let metadata = file.metadata().await?;
     let file_type = if metadata.is_file() {
         "file"
     } else if metadata.is_dir() {
@@ -174,6 +164,15 @@ pub(super) async fn inspect_file(
     } else {
         "other"
     };
+    if include_hash
+        && metadata.is_file()
+        && (metadata.len() > max_hash_bytes || metadata.len() > MAX_INSPECT_HASH_BYTES)
+    {
+        anyhow::bail!(
+            "file is too large to hash safely (limit {} bytes)",
+            max_hash_bytes.min(MAX_INSPECT_HASH_BYTES)
+        );
+    }
     let modified_at = metadata
         .modified()
         .ok()
@@ -184,16 +183,12 @@ pub(super) async fn inspect_file(
         && metadata.len() <= max_hash_bytes
         && metadata.len() <= MAX_INSPECT_HASH_BYTES
     {
-        let bytes = tokio::fs::read(path).await?;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.read_to_end(&mut bytes).await?;
         encoding = Some(haven_common::encoding::decode_with_encoding(&bytes).encoding);
         if include_hash {
             hash = Some(sha256_bytes(&bytes));
         }
-    } else if include_hash && metadata.is_file() {
-        anyhow::bail!(
-            "file is too large to hash safely (limit {} bytes)",
-            max_hash_bytes.min(MAX_INSPECT_HASH_BYTES)
-        );
     }
     Ok(ToolResult::ok(serde_json::json!({
         "exists": true,
@@ -204,6 +199,16 @@ pub(super) async fn inspect_file(
         "hash": hash,
         "encoding": encoding,
     })))
+}
+
+pub(super) fn missing_file(path: &str) -> ToolResult {
+    ToolResult::ok(serde_json::json!({
+        "exists": false,
+        "file_type": "missing",
+        "path": path,
+        "hash": null,
+        "encoding": null,
+    }))
 }
 
 pub(super) fn sanitize_path(path: &str) -> anyhow::Result<String> {

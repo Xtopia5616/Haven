@@ -17,12 +17,12 @@ const MAX_SYMBOLS: usize = 500;
 
 pub(crate) async fn outline(
     path: &str,
+    file: tokio::fs::File,
     start_line: u64,
     max_symbols: usize,
     max_line_bytes: usize,
     cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
-    let file = tokio::fs::File::open(path).await?;
     let size = file.metadata().await?.len();
     let mut reader = BufReader::new(file);
     let mut line_buf = Vec::new();

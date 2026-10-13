@@ -73,6 +73,7 @@ impl ToolBuiltins {
             messaging_service: runtime.messaging_service.clone(),
             memory_recall: runtime.memory_recall.clone(),
             managed_assets: runtime.managed_assets.clone(),
+            authorization: core.authorization.clone(),
             media: MediaDeps {
                 router,
                 input_pipeline,

@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ToolResult;
 use crate::cancellable_reader::CancellableReader;
+use crate::security::FileReadPolicy;
 use haven_common::config::{
     MAX_SEARCH_FILE_SIZE_BYTES, MAX_SEARCH_MAX_RESULTS, MAX_SEARCH_PATTERN_CHARS,
     MAX_SEARCH_RESULT_BYTES, MAX_SEARCH_ROOT_UTF16_UNITS, MAX_SEARCH_SNIPPET_CHARS,
@@ -291,10 +292,21 @@ impl FileSearchEngine {
         self.search_request(request, cancel).await
     }
 
-    pub async fn search_request(
+    #[cfg(test)]
+    async fn search_request(
+        &self,
+        request: SearchRequest,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.search_request_with_policy(request, cancel, FileReadPolicy::default())
+            .await
+    }
+
+    pub(crate) async fn search_request_with_policy(
         &self,
         mut request: SearchRequest,
         cancel: CancellationToken,
+        access_policy: FileReadPolicy,
     ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
@@ -369,6 +381,7 @@ impl FileSearchEngine {
                 snippet_chars,
                 max_window_bytes,
                 cancel: cancel_inner,
+                access_policy,
             })
         })
         .await?;
@@ -433,6 +446,7 @@ struct SearchParams<'a> {
     snippet_chars: usize,
     max_window_bytes: u64,
     cancel: CancellationToken,
+    access_policy: FileReadPolicy,
 }
 
 /// Content-mode search parameters (subset of [`SearchParams`]).
@@ -448,6 +462,7 @@ struct ContentSearchParams<'a> {
     snippet_chars: usize,
     max_window_bytes: u64,
     cancel: CancellationToken,
+    access_policy: FileReadPolicy,
 }
 
 fn search_files(params: SearchParams<'_>) -> FileSearchResult {
@@ -464,6 +479,7 @@ fn search_files(params: SearchParams<'_>) -> FileSearchResult {
             snippet_chars: params.snippet_chars,
             max_window_bytes: params.max_window_bytes,
             cancel: params.cancel,
+            access_policy: params.access_policy,
         }),
         FileSearchMode::Filename => search_filenames_parallel(
             params.root,
@@ -607,6 +623,7 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
     let snippet_chars = p.snippet_chars;
     let max_window_bytes = p.max_window_bytes;
     let cancel = p.cancel.clone();
+    let access_policy = p.access_policy.clone();
     let matcher = match RegexMatcher::new(pattern) {
         Ok(m) => m,
         Err(_) => {
@@ -658,6 +675,7 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
         let scan_limit_hit = scan_limit_hit.clone();
         let result_collector = result_collector.clone();
         let cancel = cancel.clone();
+        let access_policy = access_policy.clone();
         Box::new(move |entry| {
             if cancel.is_cancelled() || found_flag.load(Ordering::Relaxed) {
                 return ignore::WalkState::Quit;
@@ -701,11 +719,12 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
                     &result_collector,
                     max_window_bytes,
                     &cancel,
+                    &access_policy,
                 );
             } else {
                 let sink =
                     CollectingSink::new(entry.path().to_path_buf(), result_collector.clone());
-                let Ok(file) = std::fs::File::open(entry.path()) else {
+                let Ok(file) = access_policy.open_read(entry.path()) else {
                     record_search_io_error(&result_collector.io_error_count, &cancel);
                     return ignore::WalkState::Continue;
                 };
@@ -758,8 +777,9 @@ fn search_content_line_range(
     result_collector: &SearchResultCollector,
     max_window_bytes: u64,
     cancel: &CancellationToken,
+    access_policy: &FileReadPolicy,
 ) {
-    let (start, end) = match line_range_bytes(path, start_line, end_line, cancel) {
+    let (start, end) = match line_range_bytes(path, start_line, end_line, cancel, access_policy) {
         Ok(Some(range)) => range,
         Ok(None) => return,
         Err(_) => {
@@ -771,7 +791,7 @@ fn search_content_line_range(
     if window_len > max_window_bytes {
         let sink = CollectingSink::new(path.to_path_buf(), result_collector.clone())
             .with_line_filter(start_line, end_line);
-        let Ok(file) = std::fs::File::open(path) else {
+        let Ok(file) = access_policy.open_read(path) else {
             record_search_io_error(&result_collector.io_error_count, cancel);
             return;
         };
@@ -784,7 +804,7 @@ fn search_content_line_range(
         }
         return;
     }
-    let Ok(mut file) = std::fs::File::open(path) else {
+    let Ok(mut file) = access_policy.open_read(path) else {
         record_search_io_error(&result_collector.io_error_count, cancel);
         return;
     };
@@ -827,8 +847,9 @@ fn line_range_bytes(
     start_line: u64,
     end_line: u64,
     cancel: &CancellationToken,
+    access_policy: &FileReadPolicy,
 ) -> std::io::Result<Option<(u64, u64)>> {
-    let file = std::fs::File::open(path)?;
+    let file = access_policy.open_read(path)?;
     let total = file.metadata()?.len();
     let mut reader = cancellable_search_reader(file, cancel);
     let mut buf = [0u8; 65536];
@@ -1222,6 +1243,7 @@ mod tests {
             &collector,
             MAX_SEARCH_WINDOW_BYTES,
             &cancel,
+            &FileReadPolicy::default(),
         );
 
         assert_eq!(collector.io_error_count.load(Ordering::Relaxed), 1);
@@ -1724,6 +1746,7 @@ mod tests {
             snippet_chars: 200,
             max_window_bytes: 16 * 1024 * 1024,
             cancel: CancellationToken::new(),
+            access_policy: FileReadPolicy::default(),
         })
         .results;
         let elapsed = started_at.elapsed();

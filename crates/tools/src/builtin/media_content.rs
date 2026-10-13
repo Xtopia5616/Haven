@@ -8,10 +8,11 @@ use haven_llm::{LlmRouter, SttClient};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::document::{
-    MAX_DOCUMENT_BYTES, extract_document_page_with_cancel, supports_document_path,
+    MAX_DOCUMENT_BYTES, extract_document_page_from_bytes_with_cancel, supports_document_path,
 };
 use crate::{ManagedAsset, OutputBudget, ToolLlmUsage, ToolResult};
 
@@ -416,16 +417,32 @@ impl MediaTool {
         asset: &ManagedAsset,
         cancel: &CancellationToken,
     ) -> anyhow::Result<Vec<u8>> {
-        let metadata = tokio::fs::metadata(&asset.path).await?;
-        let size = metadata.len();
-        if size > self.max_bytes {
+        self.read_bounded_with_limit(asset, cancel, self.max_bytes)
+            .await
+    }
+
+    async fn read_bounded_with_limit(
+        &self,
+        asset: &ManagedAsset,
+        cancel: &CancellationToken,
+        max_bytes: u64,
+    ) -> anyhow::Result<Vec<u8>> {
+        let file = self.managed_assets.open_for_read(asset)?;
+        let file = tokio::fs::File::from_std(file);
+        let size = file.metadata().await?.len();
+        if size > max_bytes {
             anyhow::bail!(
                 "media asset is {} bytes, above the {} byte media limit",
                 size,
-                self.max_bytes
+                max_bytes
             );
         }
-        let bytes = tokio::fs::read(&asset.path).await?;
+        let mut bytes = Vec::with_capacity(size as usize);
+        let mut reader = file.take(max_bytes.saturating_add(1));
+        reader.read_to_end(&mut bytes).await?;
+        if bytes.len() as u64 > max_bytes {
+            anyhow::bail!("media asset exceeds the configured byte limit");
+        }
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
@@ -740,13 +757,17 @@ impl MediaTool {
             anyhow::bail!("extract requires a supported PDF, DOCX, XLSX, or PPTX asset");
         }
         let path = asset.path.clone();
+        let bytes = self
+            .read_bounded_with_limit(&asset, &cancel, self.max_bytes.min(MAX_DOCUMENT_BYTES))
+            .await?;
         let max_chars = self.max_output_chars.min(100_000);
         let page_index = page_index.unwrap_or(0);
         let page_index =
             usize::try_from(page_index).map_err(|_| anyhow::anyhow!("page_index is too large"))?;
         let extracted = tokio::task::spawn_blocking(move || {
-            extract_document_page_with_cancel(
+            extract_document_page_from_bytes_with_cancel(
                 &path,
+                &bytes,
                 max_chars,
                 MAX_DOCUMENT_BYTES,
                 page_index,

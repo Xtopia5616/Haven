@@ -123,6 +123,7 @@ pub(crate) struct BuiltinContext {
     pub messaging_service: Arc<haven_messaging::MessagingService>,
     pub memory_recall: MemoryRecallSlot,
     pub managed_assets: crate::ManagedAssetRegistry,
+    pub authorization: Arc<crate::security::AuthorizationEngine>,
     pub media: MediaDeps,
     pub tool_runs: ToolRunDeps,
 }
@@ -147,6 +148,7 @@ pub(crate) async fn register_builtin_tools(
         messaging_service,
         memory_recall,
         managed_assets,
+        authorization,
         media:
             MediaDeps {
                 router,
@@ -203,7 +205,8 @@ pub(crate) async fn register_builtin_tools(
         )
         .with_stt_timeout_secs(media_config.stt.timeout_secs)
         .with_capabilities(capabilities)
-        .with_audio_runtime(audio_runtime),
+        .with_audio_runtime(audio_runtime)
+        .with_authorization_engine(authorization.clone()),
     );
     add_operation_views(tools, media_tool.clone(), settings, MEDIA_OPERATION_VIEWS);
     let files_tool: ToolHandle = Arc::new(
@@ -226,6 +229,7 @@ pub(crate) async fn register_builtin_tools(
             managed_assets.clone(),
         )
         .with_max_write_bytes(limits.file_write_max_bytes)
+        .with_authorization_engine(authorization.clone())
         .with_media_tool(media_tool.clone()),
     );
     for contract in operation_specs(limits.search_max_results) {
