@@ -205,7 +205,7 @@ impl ScheduleTool {
                     None
                 };
                 let prompt = params.prompt.map(|prompt| prompt.trim().to_string());
-                let id = self
+                let tool_run_id = self
                     .service
                     .schedule(ScheduledToolRunSpec {
                         due_at: due_at.clone(),
@@ -233,7 +233,7 @@ impl ScheduleTool {
                 };
                 let mut output = serde_json::json!({
                     "operation": "set",
-                    "tool_run_id": id,
+                    "tool_run_id": tool_run_id,
                     "mode": mode.as_str(),
                     "fires_at": fires_at,
                     "wakes_session": mode == ScheduleMode::Continue,
@@ -280,16 +280,23 @@ impl ScheduleTool {
                     .session_id
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("schedule cancel requires a session context"))?;
-                let id = params
+                let tool_run_id = params
                     .tool_run_id
                     .ok_or_else(|| anyhow::anyhow!("tool_run_id is required for cancel"))?;
-                crate::tool_contract::validate_entity_id(&id, "tool_run_id", "toolrun")?;
-                if self.service.cancel_for_session(&id, session_id).await {
+                crate::tool_contract::validate_entity_id(&tool_run_id, "tool_run_id", "toolrun")?;
+                if self
+                    .service
+                    .cancel_for_session(&tool_run_id, session_id)
+                    .await
+                {
                     Ok(ToolResult::ok(
-                        serde_json::json!({ "operation": "cancel", "tool_run_id": id }),
+                        serde_json::json!({ "operation": "cancel", "tool_run_id": tool_run_id }),
                     ))
                 } else {
-                    anyhow::bail!("scheduled ToolRun '{}' not found or no longer waiting", id)
+                    anyhow::bail!(
+                        "scheduled ToolRun '{}' not found or no longer waiting",
+                        tool_run_id
+                    )
                 }
             }
         }
@@ -788,7 +795,7 @@ mod tests {
         // Unknown producers are retained as an in-memory dependency and resolve
         // to a not_found result rather than hanging forever.
         let center = Arc::new(ToolRunService::new());
-        let id = center
+        let tool_run_id = center
             .schedule(ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: None,
@@ -807,7 +814,7 @@ mod tests {
             center.list().await[0]["watch_tool_run_id"],
             "toolrun-00000000000000000000000000000001"
         );
-        assert!(id.starts_with("toolrun-"));
+        assert!(tool_run_id.starts_with("toolrun-"));
     }
 
     #[cfg(windows)]
@@ -820,7 +827,7 @@ mod tests {
             .spawn_shell("echo tool-run-watch-result", "cmd", 20_000, None)
             .await
             .unwrap();
-        let id = center
+        let scheduled_tool_run_id = center
             .schedule(ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: None,
@@ -840,7 +847,7 @@ mod tests {
         let fired = tokio::time::timeout(Duration::from_secs(15), recv_scheduled(&mut rx))
             .await
             .expect("timed out waiting for ToolRun-watch fire");
-        assert_eq!(fired.tool_run_id, id);
+        assert_eq!(fired.tool_run_id, scheduled_tool_run_id);
         assert_eq!(fired.mode, ScheduleMode::Continue);
         assert_eq!(
             fired.session_id.as_deref(),
@@ -855,7 +862,10 @@ mod tests {
             prompt.contains("completed"),
             "prompt must carry the status: {prompt}"
         );
-        center.complete_scheduled(&id).await.unwrap();
+        center
+            .complete_scheduled(&scheduled_tool_run_id)
+            .await
+            .unwrap();
         // Not persisted (in-memory only).
         assert!(center.list().await.is_empty());
     }
@@ -867,7 +877,7 @@ mod tests {
         center
             .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
             .await;
-        let id = center
+        let scheduled_tool_run_id = center
             .schedule(ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: None,
@@ -884,7 +894,7 @@ mod tests {
             .unwrap();
         let rows = db.list_pending_scheduled_tool_runs().unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].tool_run_id, id);
+        assert_eq!(rows[0].tool_run_id, scheduled_tool_run_id);
         assert!(rows[0].due_at.is_empty());
         assert_eq!(
             rows[0].watch_tool_run_id.as_deref(),
@@ -1039,7 +1049,7 @@ mod tests {
 
         // Absolute time 2s out, continue mode with a wake prompt.
         let due = (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339();
-        let id = center
+        let tool_run_id = center
             .schedule(ScheduledToolRunSpec {
                 due_at: Some(due),
                 delay_secs: None,
@@ -1069,7 +1079,7 @@ mod tests {
         let fired = tokio::time::timeout(Duration::from_secs(5), recv_scheduled(&mut rx))
             .await
             .expect("timed out waiting for scheduled_tool_run");
-        assert_eq!(fired.tool_run_id, id);
+        assert_eq!(fired.tool_run_id, tool_run_id);
         assert_eq!(fired.mode, ScheduleMode::Continue);
         assert_eq!(
             fired.session_id.as_deref(),
@@ -1089,7 +1099,7 @@ mod tests {
             .await;
         let mut rx = center.take_tool_run_receiver().expect("receiver available");
 
-        let id = center
+        let tool_run_id = center
             .schedule(ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: Some(1),
@@ -1115,7 +1125,7 @@ mod tests {
         let fired = tokio::time::timeout(Duration::from_secs(5), recv_scheduled(&mut rx))
             .await
             .expect("timed out waiting for scheduled_tool_run");
-        assert_eq!(fired.tool_run_id, id);
+        assert_eq!(fired.tool_run_id, tool_run_id);
         assert_eq!(fired.mode, ScheduleMode::Tool);
         assert_eq!(fired.tool_name.as_deref(), Some("files"));
         assert_eq!(
@@ -1180,7 +1190,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let id = result.output["tool_run_id"].as_str().unwrap().to_string();
+        let tool_run_id = result.output["tool_run_id"].as_str().unwrap().to_string();
         assert!(result.output.get("id").is_none());
 
         let list = tool
@@ -1196,7 +1206,7 @@ mod tests {
         );
         assert_eq!(
             list.output["scheduled_tool_runs"][0]["tool_run_id"],
-            json!(id)
+            json!(tool_run_id)
         );
         assert_eq!(
             list.output["scheduled_tool_runs"][0]["body"],
@@ -1206,18 +1216,18 @@ mod tests {
 
         let cancelled = tool
             .execute(
-                json!({"operation": "cancel", "tool_run_id": id, "_session_id": "ses-1872990a7c081158e9a352240d551918"}),
+                json!({"operation": "cancel", "tool_run_id": tool_run_id, "_session_id": "ses-1872990a7c081158e9a352240d551918"}),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
-        assert_eq!(cancelled.output["tool_run_id"], json!(id));
+        assert_eq!(cancelled.output["tool_run_id"], json!(tool_run_id));
         assert!(cancelled.output.get("cancelled").is_none());
 
         // Cancelling again fails.
         let err = tool
             .execute(
-                json!({"operation": "cancel", "tool_run_id": id, "_session_id": "ses-1872990a7c081158e9a352240d551918"}),
+                json!({"operation": "cancel", "tool_run_id": tool_run_id, "_session_id": "ses-1872990a7c081158e9a352240d551918"}),
                 CancellationToken::new(),
             )
             .await;
@@ -1247,14 +1257,14 @@ mod tests {
             service: center.clone(),
             registry: None,
         };
-        let id = center
+        let tool_run_id = center
             .schedule(tool_spec(1, "Test", "fire now"))
             .await
             .unwrap();
         let fired = tokio::time::timeout(Duration::from_secs(5), recv_scheduled(&mut rx))
             .await
             .expect("timed out waiting for scheduled_tool_run");
-        assert_eq!(fired.tool_run_id, id);
+        assert_eq!(fired.tool_run_id, tool_run_id);
         assert_eq!(fired.mode, ScheduleMode::Tool);
         assert_eq!(fired.tool_name.as_deref(), Some("notify"));
         assert_eq!(fired.title, "Test");
@@ -1262,19 +1272,17 @@ mod tests {
 
         // A new admission must preserve the running ToolRun until its consumer
         // acknowledges the work; both live entries remain on the board.
-        let next_id = center
+        let next_tool_run_id = center
             .schedule(tool_spec(3600, "Next", "still pending"))
             .await
             .unwrap();
         let tool_runs = center.list().await;
         assert_eq!(tool_runs.len(), 2);
-        assert!(
-            tool_runs.iter().any(|tool_run| {
-                tool_run["tool_run_id"] == id && tool_run["status"] == "running"
-            })
-        );
         assert!(tool_runs.iter().any(|tool_run| {
-            tool_run["tool_run_id"] == next_id && tool_run["status"] == "waiting"
+            tool_run["tool_run_id"] == tool_run_id && tool_run["status"] == "running"
+        }));
+        assert!(tool_runs.iter().any(|tool_run| {
+            tool_run["tool_run_id"] == next_tool_run_id && tool_run["status"] == "waiting"
         }));
         let _ = tool;
     }
@@ -1291,9 +1299,9 @@ mod tests {
         // A future scheduled_tool_run (5s out) and an overdue one (already past).
         // Insert directly so only the restored service owns the future timer;
         // two service instances must still durably claim it at most once.
-        let future_id = haven_common::types::new_id("toolrun");
+        let future_tool_run_id = haven_common::types::new_id("toolrun");
         db.save_scheduled_tool_run(
-            &future_id,
+            &future_tool_run_id,
             &(chrono::Utc::now() + chrono::Duration::seconds(5)).to_rfc3339(),
             "Future",
             "later",
@@ -1305,9 +1313,9 @@ mod tests {
             None,
         )
         .unwrap();
-        let overdue_id = haven_common::types::new_id("toolrun");
+        let overdue_tool_run_id = haven_common::types::new_id("toolrun");
         db.save_scheduled_tool_run(
-            &overdue_id,
+            &overdue_tool_run_id,
             &(chrono::Utc::now() - chrono::Duration::seconds(60)).to_rfc3339(),
             "Overdue",
             "should fire now",
@@ -1338,7 +1346,7 @@ mod tests {
         let fired = tokio::time::timeout(Duration::from_secs(5), recv_scheduled(&mut rx2))
             .await
             .expect("timed out waiting for overdue fire");
-        assert_eq!(fired.tool_run_id, overdue_id);
+        assert_eq!(fired.tool_run_id, overdue_tool_run_id);
         assert_eq!(fired.title, "Overdue");
         assert_eq!(fired.mode, ScheduleMode::Continue);
         assert_eq!(
@@ -1346,14 +1354,20 @@ mod tests {
             Some("ses-09df36791e54c51f7be063867e10b9af")
         );
         assert_eq!(fired.prompt.as_deref(), Some("keep going"));
-        restored.complete_scheduled(&overdue_id).await.unwrap();
+        restored
+            .complete_scheduled(&overdue_tool_run_id)
+            .await
+            .unwrap();
 
         // Future scheduled_tool_run re-armed and fires after its remaining delay.
         let fired = tokio::time::timeout(Duration::from_secs(10), recv_scheduled(&mut rx2))
             .await
             .expect("timed out waiting for future fire");
-        assert_eq!(fired.tool_run_id, future_id);
-        restored.complete_scheduled(&future_id).await.unwrap();
+        assert_eq!(fired.tool_run_id, future_tool_run_id);
+        restored
+            .complete_scheduled(&future_tool_run_id)
+            .await
+            .unwrap();
 
         // Both are terminal in the DB; pending list is empty.
         assert!(db.list_pending_scheduled_tool_runs().unwrap().is_empty());
@@ -1437,18 +1451,18 @@ mod tests {
         center
             .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
             .await;
-        let id = center
+        let tool_run_id = center
             .schedule(tool_spec(3600, "Drink", "water"))
             .await
             .unwrap();
         let pending = db.list_pending_scheduled_tool_runs().unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].tool_run_id, id);
+        assert_eq!(pending[0].tool_run_id, tool_run_id);
         assert_eq!(pending[0].body, "water");
         assert_eq!(pending[0].mode, "tool");
 
         // Cancel removes the row.
-        assert!(center.cancel(&id).await);
+        assert!(center.cancel(&tool_run_id).await);
         assert!(db.list_pending_scheduled_tool_runs().unwrap().is_empty());
     }
 
@@ -1472,7 +1486,7 @@ mod tests {
         let mut rx = center.take_tool_run_receiver().expect("receiver available");
 
         // set -> tool_run:created event with the payload.
-        let id = center
+        let tool_run_id = center
             .schedule(tool_spec(1, "Evt", "fire me"))
             .await
             .unwrap();
@@ -1482,7 +1496,7 @@ mod tests {
                 .iter()
                 .find(|(n, _)| n == "tool_run:created")
                 .expect("tool_run:created emitted");
-            assert_eq!(set_evt.1["tool_run_id"], id);
+            assert_eq!(set_evt.1["tool_run_id"], tool_run_id);
             assert_eq!(set_evt.1["body"], "fire me");
             assert!(set_evt.1["due_at"].as_str().is_some());
         }
@@ -1491,45 +1505,49 @@ mod tests {
         let fired = tokio::time::timeout(Duration::from_secs(5), recv_scheduled(&mut rx))
             .await
             .expect("timed out waiting for fire");
-        assert_eq!(fired.tool_run_id, id);
+        assert_eq!(fired.tool_run_id, tool_run_id);
         {
             let evs = events.lock().unwrap();
             let running_evt = evs
                 .iter()
-                .find(|(name, payload)| name == "tool_run:updated" && payload["tool_run_id"] == id)
+                .find(|(name, payload)| {
+                    name == "tool_run:updated" && payload["tool_run_id"] == tool_run_id
+                })
                 .expect("tool_run:updated emitted when scheduled ToolRun starts");
             assert_eq!(running_evt.1["status"], "running");
             assert!(running_evt.1["started_at"].as_str().is_some());
-            assert!(
-                !evs.iter().any(|(n, payload)| {
-                    n == "tool_run:finished" && payload["tool_run_id"] == id
-                })
-            );
+            assert!(!evs.iter().any(|(n, payload)| {
+                n == "tool_run:finished" && payload["tool_run_id"] == tool_run_id
+            }));
         }
-        center.complete_scheduled(&id).await.unwrap();
+        center.complete_scheduled(&tool_run_id).await.unwrap();
         {
             let evs = events.lock().unwrap();
             let fired_evt = evs
                 .iter()
-                .find(|(n, payload)| n == "tool_run:finished" && payload["tool_run_id"] == id)
+                .find(|(n, payload)| {
+                    n == "tool_run:finished" && payload["tool_run_id"] == tool_run_id
+                })
                 .expect("tool_run:finished emitted after completion acknowledgement");
-            assert_eq!(fired_evt.1["tool_run_id"], id);
+            assert_eq!(fired_evt.1["tool_run_id"], tool_run_id);
             assert_eq!(fired_evt.1["mode"], "tool");
         }
 
         // cancel -> tool_run:finished event.
-        let id2 = center
+        let pending_tool_run_id = center
             .schedule(tool_spec(3600, "Keep", "pending"))
             .await
             .unwrap();
-        assert!(center.cancel(&id2).await);
+        assert!(center.cancel(&pending_tool_run_id).await);
         {
             let evs = events.lock().unwrap();
             let cancel_evt = evs
                 .iter()
-                .find(|(n, payload)| n == "tool_run:finished" && payload["tool_run_id"] == id2)
+                .find(|(n, payload)| {
+                    n == "tool_run:finished" && payload["tool_run_id"] == pending_tool_run_id
+                })
                 .expect("tool_run:finished emitted");
-            assert_eq!(cancel_evt.1["tool_run_id"], id2);
+            assert_eq!(cancel_evt.1["tool_run_id"], pending_tool_run_id);
             assert_eq!(cancel_evt.1["status"], "cancelled");
         }
     }

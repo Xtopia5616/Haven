@@ -289,8 +289,8 @@ impl GeminiAdapter {
                                         let call = &state.tool_calls_acc[idx];
                                         chunk.tool_call_updates.push(
                                             crate::types::StreamToolCallUpdate {
-                                                index: tool_index as u32,
-                                                id: (!call.tool_call_id.is_empty())
+                                                tool_index: tool_index as u32,
+                                                tool_call_id: (!call.tool_call_id.is_empty())
                                                     .then(|| call.tool_call_id.clone()),
                                                 name: (!call.name.is_empty())
                                                     .then(|| call.name.clone()),

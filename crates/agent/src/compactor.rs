@@ -202,7 +202,7 @@ impl ContextCompactor {
                 }
             }
             if let Some(tool_call_id) = &msg.tool_call_id {
-                let _ = writeln!(line, "[tool result id={}]", tool_call_id);
+                let _ = writeln!(line, "[tool result tool_call_id={}]", tool_call_id);
             }
             if !line.is_empty() {
                 lines.push(line);
@@ -778,7 +778,7 @@ mod tests {
             message_id: None,
         };
         let prompt = ContextCompactor::build_summary_prompt(&[result, image.clone()]);
-        assert!(prompt.contains("tool result id=call-42"));
+        assert!(prompt.contains("tool result tool_call_id=call-42"));
         assert!(prompt.contains("image attachment media_type=image/png"));
 
         let summary_messages =

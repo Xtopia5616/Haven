@@ -760,7 +760,7 @@ impl StreamForwarder {
                     step_number,
                     run_id,
                     ToolCallPreviewUpdate {
-                        tool_index: update.index,
+                        tool_index: update.tool_index,
                         tool_name: update.name.as_deref(),
                         arguments_delta: update.arguments_delta.as_deref(),
                         arguments_snapshot: update.arguments_snapshot.as_deref(),

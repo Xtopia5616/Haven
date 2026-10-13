@@ -755,9 +755,9 @@ pub struct StreamChunk {
 #[derive(Debug, Clone, Default)]
 pub struct StreamToolCallUpdate {
     /// Zero-based position in the provider's assistant tool-call list.
-    pub index: u32,
+    pub tool_index: u32,
     /// Provider call id when it is available in this stream frame.
-    pub id: Option<String>,
+    pub tool_call_id: Option<String>,
     /// Latest observed name text. Providers may split the name across frames.
     pub name: Option<String>,
     /// Raw JSON argument fragment; may be empty or incomplete JSON.

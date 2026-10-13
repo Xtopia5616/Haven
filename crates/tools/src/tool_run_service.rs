@@ -519,7 +519,7 @@ impl ToolRunService {
     /// returns but the runtime cannot parse.
     async fn try_quarantine_invalid_scheduled_row(
         &self,
-        id: &str,
+        tool_run_id: &str,
         reason: &str,
         finished_at: &str,
     ) -> anyhow::Result<bool> {
@@ -531,7 +531,7 @@ impl ToolRunService {
         for attempt in 1..=retry_policy.max_attempts() {
             match store
                 .quarantine_waiting_scheduled_tool_run(
-                    id.to_string(),
+                    tool_run_id.to_string(),
                     reason.to_string(),
                     finished_at.to_string(),
                 )
@@ -659,13 +659,13 @@ impl ToolRunService {
         // failure as a last-resort compensation; restore_after_restart can then
         // safely treat the row as history even if the delete path is unavailable.
         let finished_at = chrono::Utc::now().to_rfc3339();
-        let id = tool_run_id.to_string();
+        let tool_run_id = tool_run_id.to_string();
         let reason = "background ToolRun failed before its process was admitted";
         let mut fallback_error = None;
         for attempt in 1..=retry_policy.max_attempts() {
             match store
                 .finish_background_tool_run(
-                    id.clone(),
+                    tool_run_id.clone(),
                     ToolRunStatus::Failed,
                     None,
                     Some(reason.to_string()),
@@ -699,7 +699,7 @@ impl ToolRunService {
         }
 
         let mut tool_runs = self.tool_runs.write().await;
-        if let Some(entry) = tool_runs.get_mut(tool_run_id) {
+        if let Some(entry) = tool_runs.get_mut(&tool_run_id) {
             entry.kill = None;
             entry.tail = None;
             let started_at = match &entry.state {

@@ -193,8 +193,8 @@ impl OpenAiResponsesAdapter {
                             chunk
                                 .tool_call_updates
                                 .push(crate::types::StreamToolCallUpdate {
-                                    index: index as u32,
-                                    id: (!call_id.is_empty()).then(|| call_id.clone()),
+                                    tool_index: index as u32,
+                                    tool_call_id: (!call_id.is_empty()).then(|| call_id.clone()),
                                     name: (!name.is_empty()).then(|| name.clone()),
                                     arguments_delta: Some(d),
                                     arguments_snapshot: None,
@@ -224,8 +224,9 @@ impl OpenAiResponsesAdapter {
                                         chunk.model = state.last_model.clone();
                                         chunk.tool_call_updates.push(
                                             crate::types::StreamToolCallUpdate {
-                                                index: index as u32,
-                                                id: (!call_id.is_empty()).then_some(call_id),
+                                                tool_index: index as u32,
+                                                tool_call_id: (!call_id.is_empty())
+                                                    .then_some(call_id),
                                                 name: (!name.is_empty()).then_some(name),
                                                 arguments_snapshot: Some(arguments),
                                                 arguments_delta: None,
@@ -309,8 +310,9 @@ impl OpenAiResponsesAdapter {
                                 chunk
                                     .tool_call_updates
                                     .push(crate::types::StreamToolCallUpdate {
-                                        index: index as u32,
-                                        id: (!call_id.is_empty()).then(|| call_id.clone()),
+                                        tool_index: index as u32,
+                                        tool_call_id: (!call_id.is_empty())
+                                            .then(|| call_id.clone()),
                                         name: (!name.is_empty()).then(|| name.clone()),
                                         arguments_snapshot: Some(arguments.clone()),
                                         arguments_delta: None,

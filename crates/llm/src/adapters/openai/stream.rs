@@ -251,10 +251,11 @@ impl OpenAiAdapter {
                                         c.function.name.as_deref(),
                                         c.function.arguments.as_deref(),
                                     );
-                                    let (id, name, _) = &state.tool_calls_acc[idx];
+                                    let (tool_call_id, name, _) = &state.tool_calls_acc[idx];
                                     tool_call_updates.push(crate::types::StreamToolCallUpdate {
-                                        index: idx as u32,
-                                        id: (!id.is_empty()).then(|| id.clone()),
+                                        tool_index: idx as u32,
+                                        tool_call_id: (!tool_call_id.is_empty())
+                                            .then(|| tool_call_id.clone()),
                                         name: (!name.is_empty()).then(|| name.clone()),
                                         arguments_delta: c.function.arguments.clone(),
                                         arguments_snapshot: None,

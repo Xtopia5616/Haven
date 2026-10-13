@@ -12,10 +12,10 @@ fn dependency_prompt_payload(prompt: &str) -> Value {
 }
 
 /// Poll `status` until it is no longer "running" (or timeout).
-async fn wait_terminal(tool_runs: &ToolRunService, id: &str, timeout_secs: u64) -> Value {
+async fn wait_terminal(tool_runs: &ToolRunService, tool_run_id: &str, timeout_secs: u64) -> Value {
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
-        let v = tool_runs.status_view(id).await.to_json(true);
+        let v = tool_runs.status_view(tool_run_id).await.to_json(true);
         if v["status"] != "running" || std::time::Instant::now() > deadline {
             return v;
         }
@@ -134,12 +134,12 @@ async fn background_terminal_race_publishes_only_the_database_cas_winner() {
 
     let complete_service = Arc::clone(&service);
     let complete_barrier = Arc::clone(&barrier);
-    let complete_id = tool_run_id.clone();
+    let complete_tool_run_id = tool_run_id.clone();
     let complete = tokio::spawn(async move {
         complete_barrier.wait().await;
         complete_service
             .mark_finished(
-                &complete_id,
+                &complete_tool_run_id,
                 "2026-09-24T10:00:00Z",
                 "test",
                 "echo terminal-test",
@@ -153,11 +153,11 @@ async fn background_terminal_race_publishes_only_the_database_cas_winner() {
 
     let cancel_service = Arc::clone(&service);
     let cancel_barrier = Arc::clone(&barrier);
-    let cancel_id = tool_run_id.clone();
+    let cancel_tool_run_id = tool_run_id.clone();
     let cancel = tokio::spawn(async move {
         cancel_barrier.wait().await;
         cancel_service
-            .mark_cancelled(&cancel_id, "2026-09-24T10:00:00Z")
+            .mark_cancelled(&cancel_tool_run_id, "2026-09-24T10:00:00Z")
             .await;
     });
 
@@ -612,17 +612,27 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
     let store = ToolRunStore::new(db);
     let session_id = haven_common::types::new_id("ses");
     let other_session_id = haven_common::types::new_id("ses");
-    let older_id = haven_common::types::new_id("toolrun");
-    let newer_id = haven_common::types::new_id("toolrun");
-    let outside_id = haven_common::types::new_id("toolrun");
-    let running_id = haven_common::types::new_id("toolrun");
-    let scheduled_id = haven_common::types::new_id("toolrun");
+    let older_tool_run_id = haven_common::types::new_id("toolrun");
+    let newer_tool_run_id = haven_common::types::new_id("toolrun");
+    let outside_tool_run_id = haven_common::types::new_id("toolrun");
+    let running_tool_run_id = haven_common::types::new_id("toolrun");
+    let scheduled_tool_run_id = haven_common::types::new_id("toolrun");
 
-    for (id, owner, started_at, output) in [
-        (&older_id, &session_id, "2026-09-24T10:00:00Z", "older"),
-        (&newer_id, &session_id, "2026-09-24T11:00:00Z", "newer"),
+    for (tool_run_id, owner_session_id, started_at, output) in [
         (
-            &outside_id,
+            &older_tool_run_id,
+            &session_id,
+            "2026-09-24T10:00:00Z",
+            "older",
+        ),
+        (
+            &newer_tool_run_id,
+            &session_id,
+            "2026-09-24T11:00:00Z",
+            "newer",
+        ),
+        (
+            &outside_tool_run_id,
             &other_session_id,
             "2026-09-24T12:00:00Z",
             "outside",
@@ -630,8 +640,8 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
     ] {
         store
             .save_background_tool_run(
-                id.clone(),
-                Some(owner.clone()),
+                tool_run_id.clone(),
+                Some(owner_session_id.clone()),
                 format!("echo {output}"),
                 started_at.to_owned(),
             )
@@ -639,7 +649,7 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
             .unwrap();
         store
             .finish_background_tool_run(
-                id.clone(),
+                tool_run_id.clone(),
                 ToolRunStatus::Completed,
                 Some(output.to_owned()),
                 None,
@@ -657,7 +667,7 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
     }
     store
         .save_background_tool_run(
-            running_id,
+            running_tool_run_id,
             Some(session_id.clone()),
             "echo live".into(),
             "2026-09-24T13:00:00Z".into(),
@@ -666,7 +676,7 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
         .unwrap();
     store
         .save_scheduled_tool_run(
-            scheduled_id.clone(),
+            scheduled_tool_run_id.clone(),
             "2026-09-25T10:00:00Z".into(),
             "Scheduled".into(),
             "body".into(),
@@ -680,12 +690,12 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
         .await
         .unwrap();
     store
-        .start_scheduled_tool_run(scheduled_id.clone(), "2026-09-25T10:00:00Z".into())
+        .start_scheduled_tool_run(scheduled_tool_run_id.clone(), "2026-09-25T10:00:00Z".into())
         .await
         .unwrap();
     store
         .finish_scheduled_tool_run(
-            scheduled_id.clone(),
+            scheduled_tool_run_id.clone(),
             ToolRunStatus::Completed,
             Some("scheduled result".into()),
             None,
@@ -703,9 +713,9 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
         .unwrap();
     assert_eq!(all.len(), 3);
     assert_eq!(all[0].kind, ToolRunKind::Scheduled);
-    assert_eq!(all[0].tool_run_id, scheduled_id);
-    assert_eq!(all[1].tool_run_id, newer_id);
-    assert_eq!(all[2].tool_run_id, older_id);
+    assert_eq!(all[0].tool_run_id, scheduled_tool_run_id);
+    assert_eq!(all[1].tool_run_id, newer_tool_run_id);
+    assert_eq!(all[2].tool_run_id, older_tool_run_id);
 
     let background_page = service
         .list_history(ToolRunHistoryQuery::new(
@@ -720,7 +730,7 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
             .iter()
             .map(|view| view.tool_run_id.as_str())
             .collect::<Vec<_>>(),
-        [newer_id.as_str()]
+        [newer_tool_run_id.as_str()]
     );
     let board_history = service.list_board_history().await.unwrap();
     assert_eq!(board_history.len(), 3);
@@ -735,21 +745,21 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
 /// Spawn the two fixture echo ToolRuns (`tool-run-a` / `tool-run-b`) and attach them to
 /// Attach two echo ToolRuns to canonical sessions. Shared by the board and scoped-list tests.
 async fn spawn_two_echo_tool_runs(tool_runs: &Arc<ToolRunService>) -> (String, String) {
-    let id_a = tool_runs
+    let first_tool_run_id = tool_runs
         .spawn_shell("echo tool-run-a", "cmd", 20_000, None)
         .await
         .unwrap();
-    let id_b = tool_runs
+    let second_tool_run_id = tool_runs
         .spawn_shell("echo tool-run-b", "cmd", 20_000, None)
         .await
         .unwrap();
     tool_runs
-        .attach_session(&id_a, "ses-09df36791e54c51f7be063867e10b9af")
+        .attach_session(&first_tool_run_id, "ses-09df36791e54c51f7be063867e10b9af")
         .await;
     tool_runs
-        .attach_session(&id_b, "ses-9faf101bcfff72cb42cfe3bcfe2a11e1")
+        .attach_session(&second_tool_run_id, "ses-9faf101bcfff72cb42cfe3bcfe2a11e1")
         .await;
-    (id_a, id_b)
+    (first_tool_run_id, second_tool_run_id)
 }
 
 #[cfg(windows)]
@@ -761,19 +771,19 @@ async fn test_completion_notified_on_finish() {
         .expect("receiver available");
     // Attach the session BEFORE the ToolRun finishes (normal path): the
     // completion must carry the session_id.
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell("echo done", "cmd", 20_000, None)
         .await
         .unwrap();
     tool_runs
-        .attach_session(&id, "ses-92f863021d24c9259b49c176ea2845df")
+        .attach_session(&tool_run_id, "ses-92f863021d24c9259b49c176ea2845df")
         .await;
-    let v = wait_terminal(&tool_runs, &id, 10).await;
+    let v = wait_terminal(&tool_runs, &tool_run_id, 10).await;
     assert_eq!(v["status"], "completed");
     let comp = tokio::time::timeout(Duration::from_secs(2), recv_background(&mut rx))
         .await
         .expect("completion received");
-    assert_eq!(comp.tool_run_id, id);
+    assert_eq!(comp.tool_run_id, tool_run_id);
     assert_eq!(
         comp.status,
         haven_common::lifecycle::ToolRunStatus::Completed
@@ -792,7 +802,7 @@ async fn test_spawn_for_session_binds_owner_before_completion() {
     let mut rx = tool_runs
         .take_tool_run_receiver()
         .expect("receiver available");
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell_for_session(
             "echo prebound",
             "cmd",
@@ -806,20 +816,20 @@ async fn test_spawn_for_session_binds_owner_before_completion() {
     let completion = tokio::time::timeout(Duration::from_secs(10), recv_background(&mut rx))
         .await
         .expect("completion received");
-    assert_eq!(completion.tool_run_id, id);
+    assert_eq!(completion.tool_run_id, tool_run_id);
     assert_eq!(
         completion.session_id.as_deref(),
         Some("ses-c9727d934ca3dbc6a3ef095ac246a427")
     );
     assert_eq!(
         tool_runs
-            .status_for_session_view(&id, "ses-c9727d934ca3dbc6a3ef095ac246a427")
+            .status_for_session_view(&tool_run_id, "ses-c9727d934ca3dbc6a3ef095ac246a427")
             .await
             .to_json(true)["status"],
         "completed"
     );
     tool_runs
-        .attach_session(&id, "ses-c9727d934ca3dbc6a3ef095ac246a427")
+        .attach_session(&tool_run_id, "ses-c9727d934ca3dbc6a3ef095ac246a427")
         .await;
     assert!(
         tokio::time::timeout(Duration::from_millis(100), recv_background(&mut rx))
@@ -1030,7 +1040,7 @@ async fn test_tool_run_result_persisted_to_db() {
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
 
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell(
             "echo live-line & ping -n 4 127.0.0.1 >nul",
             "cmd",
@@ -1040,9 +1050,9 @@ async fn test_tool_run_result_persisted_to_db() {
         .await
         .unwrap();
     tool_runs
-        .attach_session(&id, "ses-8427891e09582e8e6b03246b585c69b5")
+        .attach_session(&tool_run_id, "ses-8427891e09582e8e6b03246b585c69b5")
         .await;
-    let v = wait_terminal(&tool_runs, &id, 10).await;
+    let v = wait_terminal(&tool_runs, &tool_run_id, 10).await;
     assert_eq!(v["status"], "completed");
 
     // The status flips to completed before the terminal row is persisted
@@ -1052,7 +1062,8 @@ async fn test_tool_run_result_persisted_to_db() {
     let row = loop {
         let rows = db.list_tool_runs(Some("background")).unwrap();
         if let Some(row) = rows.iter().find(|r| {
-            r.tool_run_id == id && r.status == haven_common::lifecycle::ToolRunStatus::Completed
+            r.tool_run_id == tool_run_id
+                && r.status == haven_common::lifecycle::ToolRunStatus::Completed
         }) {
             break row.clone();
         }
@@ -1086,19 +1097,19 @@ async fn test_completion_refired_after_late_attach() {
     let mut rx = tool_runs
         .take_tool_run_receiver()
         .expect("receiver available");
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell("echo fast", "cmd", 20_000, None)
         .await
         .unwrap();
     // Wait for the ToolRun to finish BEFORE attaching (simulate the race).
-    let v = wait_terminal(&tool_runs, &id, 10).await;
+    let v = wait_terminal(&tool_runs, &tool_run_id, 10).await;
     assert_eq!(v["status"], "completed");
     // Drain the session_id=None completion fired by mark_finished.
     let none_comp = recv_background(&mut rx).await;
     assert!(none_comp.session_id.is_none());
     // Now attach: should re-fire with the session_id.
     tool_runs
-        .attach_session(&id, "ses-ee19b99e43f404f74b13f81e4b3dffcf")
+        .attach_session(&tool_run_id, "ses-ee19b99e43f404f74b13f81e4b3dffcf")
         .await;
     let comp = tokio::time::timeout(Duration::from_secs(2), recv_background(&mut rx))
         .await
@@ -1275,11 +1286,11 @@ async fn terminal_history_delete_and_completion_ack_are_atomic() {
 #[tokio::test]
 async fn test_spawn_shell_completes_with_output() {
     let tool_runs = Arc::new(ToolRunService::new());
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell("echo bg-hello", "cmd", 20_000, None)
         .await
         .unwrap();
-    let v = wait_terminal(&tool_runs, &id, 10).await;
+    let v = wait_terminal(&tool_runs, &tool_run_id, 10).await;
     assert_eq!(v["status"], "completed", "got: {}", v);
     assert!(v["output"].as_str().unwrap().contains("bg-hello"));
     assert!(v["finished_at"].as_str().is_some());
@@ -1289,7 +1300,7 @@ async fn test_spawn_shell_completes_with_output() {
 #[tokio::test]
 async fn test_running_status_includes_command_and_live_output() {
     let tool_runs = Arc::new(ToolRunService::new());
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell(
             "echo live-line & ping -n 3 127.0.0.1 >nul",
             "cmd",
@@ -1299,7 +1310,7 @@ async fn test_running_status_includes_command_and_live_output() {
         .await
         .unwrap();
     // While the ToolRun runs, status must carry the command line it executes.
-    let v = tool_runs.status_view(&id).await.to_json(true);
+    let v = tool_runs.status_view(&tool_run_id).await.to_json(true);
     assert_eq!(v["status"], "running", "got: {}", v);
     assert_eq!(v["shell"], "cmd");
     assert!(
@@ -1309,7 +1320,7 @@ async fn test_running_status_includes_command_and_live_output() {
     // And the live output tail once the command has produced something.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        let v = tool_runs.status_view(&id).await.to_json(true);
+        let v = tool_runs.status_view(&tool_run_id).await.to_json(true);
         if v["output"].as_str().unwrap_or("").contains("live-line") {
             break;
         }
@@ -1323,7 +1334,7 @@ async fn test_running_status_includes_command_and_live_output() {
     let board = tool_runs.board().await;
     let row = board
         .iter()
-        .find(|row| row.tool_run_id == id)
+        .find(|row| row.tool_run_id == tool_run_id)
         .expect("on board");
     assert!(row.command.as_deref().unwrap().contains("live-line"));
     assert!(row.preview.as_deref().unwrap_or("").contains("live-line"));
@@ -1333,11 +1344,11 @@ async fn test_running_status_includes_command_and_live_output() {
 #[tokio::test]
 async fn test_spawn_shell_failure_reported() {
     let tool_runs = Arc::new(ToolRunService::new());
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell("exit 7", "cmd", 20_000, None)
         .await
         .unwrap();
-    let v = wait_terminal(&tool_runs, &id, 10).await;
+    let v = wait_terminal(&tool_runs, &tool_run_id, 10).await;
     assert_eq!(v["status"], "failed", "got: {}", v);
 }
 
@@ -1345,11 +1356,11 @@ async fn test_spawn_shell_failure_reported() {
 #[tokio::test]
 async fn test_spawn_shell_stderr_captured() {
     let tool_runs = Arc::new(ToolRunService::new());
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell("echo err-msg 1>&2", "cmd", 20_000, None)
         .await
         .unwrap();
-    let v = wait_terminal(&tool_runs, &id, 10).await;
+    let v = wait_terminal(&tool_runs, &tool_run_id, 10).await;
     assert_eq!(v["status"], "completed", "got: {}", v);
     assert!(v["output"].as_str().unwrap().contains("err-msg"));
 }
@@ -1358,16 +1369,19 @@ async fn test_spawn_shell_stderr_captured() {
 #[tokio::test]
 async fn test_spawn_shell_cancelled() {
     let tool_runs = Arc::new(ToolRunService::new());
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000, None)
         .await
         .unwrap();
     assert_eq!(
-        tool_runs.status_view(&id).await.to_json(true)["status"],
+        tool_runs.status_view(&tool_run_id).await.to_json(true)["status"],
         "running"
     );
-    assert!(tool_runs.cancel(&id).await, "cancel must report success");
-    let v = wait_terminal(&tool_runs, &id, 10).await;
+    assert!(
+        tool_runs.cancel(&tool_run_id).await,
+        "cancel must report success"
+    );
+    let v = wait_terminal(&tool_runs, &tool_run_id, 10).await;
     assert_eq!(v["status"], "cancelled", "got: {}", v);
 }
 
@@ -1380,15 +1394,15 @@ async fn test_cancel_for_session_cleans_up() {
     tool_runs.set_lifecycle_event_sink(Arc::new(move |event| {
         sink_events.lock().unwrap().push(event.into_test_parts());
     }));
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000, None)
         .await
         .unwrap();
     tool_runs
-        .attach_session(&id, "ses-09df36791e54c51f7be063867e10b9af")
+        .attach_session(&tool_run_id, "ses-09df36791e54c51f7be063867e10b9af")
         .await;
     assert_eq!(
-        tool_runs.status_view(&id).await.to_json(true)["status"],
+        tool_runs.status_view(&tool_run_id).await.to_json(true)["status"],
         "running"
     );
     tool_runs
@@ -1396,7 +1410,7 @@ async fn test_cancel_for_session_cleans_up() {
         .await
         .unwrap();
     assert_eq!(
-        tool_runs.status_view(&id).await.to_json(true)["status"],
+        tool_runs.status_view(&tool_run_id).await.to_json(true)["status"],
         "not_found"
     );
     let evs = events.lock().unwrap();
@@ -1404,7 +1418,7 @@ async fn test_cancel_for_session_cleans_up() {
         .iter()
         .find(|(n, _)| n == "tool_run:finished")
         .expect("cancel_for_session must emit tool_run:finished so the UI drops the ghost");
-    assert_eq!(finished.1["tool_run_id"], id);
+    assert_eq!(finished.1["tool_run_id"], tool_run_id);
     assert_eq!(finished.1["status"], "cancelled");
 }
 
@@ -1722,14 +1736,14 @@ async fn lifecycle_event_sink_receives_lifecycle_events() {
     tool_runs.set_lifecycle_event_sink(Arc::new(move |event| {
         sink_events.lock().unwrap().push(event.into_test_parts());
     }));
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell("echo bg-event", "cmd", 20_000, None)
         .await
         .unwrap();
     tool_runs
-        .attach_session(&id, "ses-a07db86895e9387dbc8e4517a8bae2da")
+        .attach_session(&tool_run_id, "ses-a07db86895e9387dbc8e4517a8bae2da")
         .await;
-    wait_terminal(&tool_runs, &id, 10).await;
+    wait_terminal(&tool_runs, &tool_run_id, 10).await;
 
     let evs = events.lock().unwrap();
     let names: Vec<&str> = evs.iter().map(|(n, _)| n.as_str()).collect();
@@ -1740,7 +1754,7 @@ async fn lifecycle_event_sink_receives_lifecycle_events() {
         .iter()
         .find(|(n, _)| n == "tool_run:created")
         .expect("created event");
-    assert_eq!(created.1["tool_run_id"], id);
+    assert_eq!(created.1["tool_run_id"], tool_run_id);
     assert_eq!(created.1["status"], "running");
     assert_eq!(created.1["kind"], "background");
     let term = evs
@@ -1748,16 +1762,16 @@ async fn lifecycle_event_sink_receives_lifecycle_events() {
         .find(|(n, _)| n == "tool_run:finished")
         .expect("terminal event");
     assert_eq!(term.1["status"], "completed");
-    assert_eq!(term.1["tool_run_id"], id);
+    assert_eq!(term.1["tool_run_id"], tool_run_id);
 }
 
 #[cfg(windows)]
 #[tokio::test]
 async fn test_board_lists_all_tool_runs_by_session() {
     let tool_runs = Arc::new(ToolRunService::new());
-    let (id_a, id_b) = spawn_two_echo_tool_runs(&tool_runs).await;
-    wait_terminal(&tool_runs, &id_a, 10).await;
-    wait_terminal(&tool_runs, &id_b, 10).await;
+    let (first_tool_run_id, second_tool_run_id) = spawn_two_echo_tool_runs(&tool_runs).await;
+    wait_terminal(&tool_runs, &first_tool_run_id, 10).await;
+    wait_terminal(&tool_runs, &second_tool_run_id, 10).await;
 
     let rows = tool_runs.board().await;
     assert_eq!(rows.len(), 2, "all tool_runs on board: {rows:?}");
@@ -1766,16 +1780,19 @@ async fn test_board_lists_all_tool_runs_by_session() {
         .map(|row| (row.tool_run_id.as_str(), row))
         .collect();
     assert_eq!(
-        by_id[&id_a.as_str()].session_id.as_deref(),
+        by_id[&first_tool_run_id.as_str()].session_id.as_deref(),
         Some("ses-09df36791e54c51f7be063867e10b9af")
     );
     assert_eq!(
-        by_id[&id_b.as_str()].session_id.as_deref(),
+        by_id[&second_tool_run_id.as_str()].session_id.as_deref(),
         Some("ses-9faf101bcfff72cb42cfe3bcfe2a11e1")
     );
-    assert_eq!(by_id[&id_a.as_str()].status, ToolRunStatus::Completed);
+    assert_eq!(
+        by_id[&first_tool_run_id.as_str()].status,
+        ToolRunStatus::Completed
+    );
     assert!(
-        by_id[&id_a.as_str()]
+        by_id[&first_tool_run_id.as_str()]
             .preview
             .as_deref()
             .unwrap()
@@ -1935,7 +1952,7 @@ async fn test_tool_run_output_preview_emitted() {
     }));
     // A ToolRun that keeps running past one emit interval while producing
     // output (ping lasts ~3s), so the preview event has time to fire.
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell(
             "echo preview-line-123 && ping -n 4 127.0.0.1 > nul",
             "cmd",
@@ -1951,7 +1968,7 @@ async fn test_tool_run_output_preview_emitted() {
             .iter()
             .find(|(n, _)| n == "tool_run:output")
             .expect("tool_run:output event must be emitted while running");
-        assert_eq!(output_evt.1["tool_run_id"], id);
+        assert_eq!(output_evt.1["tool_run_id"], tool_run_id);
         assert!(
             output_evt.1["output"]
                 .as_str()
@@ -1961,16 +1978,16 @@ async fn test_tool_run_output_preview_emitted() {
             output_evt.1["output"]
         );
     }
-    let _ = tool_runs.cancel(&id).await;
+    let _ = tool_runs.cancel(&tool_run_id).await;
 }
 
 #[cfg(windows)]
 #[tokio::test]
 async fn test_list_for_session_scopes_to_owning_session() {
     let tool_runs = Arc::new(ToolRunService::new());
-    let (id_a, id_b) = spawn_two_echo_tool_runs(&tool_runs).await;
-    wait_terminal(&tool_runs, &id_a, 10).await;
-    wait_terminal(&tool_runs, &id_b, 10).await;
+    let (first_tool_run_id, second_tool_run_id) = spawn_two_echo_tool_runs(&tool_runs).await;
+    wait_terminal(&tool_runs, &first_tool_run_id, 10).await;
+    wait_terminal(&tool_runs, &second_tool_run_id, 10).await;
 
     let rows = tool_runs
         .list_for_session_views("ses-09df36791e54c51f7be063867e10b9af")
@@ -1983,7 +2000,7 @@ async fn test_list_for_session_scopes_to_owning_session() {
         1,
         "only ses-09df36791e54c51f7be063867e10b9af's tool_runs: {rows:?}"
     );
-    assert_eq!(rows[0]["tool_run_id"], id_a);
+    assert_eq!(rows[0]["tool_run_id"], first_tool_run_id);
     assert_eq!(rows[0]["status"], "completed");
     assert!(
         rows[0]["preview"].as_str().unwrap().contains("tool-run-a"),
@@ -1997,18 +2014,18 @@ async fn test_list_for_session_scopes_to_owning_session() {
         .map(|row| row.to_json())
         .collect::<Vec<_>>();
     assert_eq!(all.len(), 1);
-    assert_eq!(all[0]["tool_run_id"], id_b);
+    assert_eq!(all[0]["tool_run_id"], second_tool_run_id);
 }
 
 #[cfg(windows)]
 #[tokio::test]
 async fn test_failed_tool_run_reports_exit_code_and_reason() {
     let tool_runs = Arc::new(ToolRunService::new());
-    let id = tool_runs
+    let tool_run_id = tool_runs
         .spawn_shell("echo progress... && exit 42", "cmd", 20_000, None)
         .await
         .unwrap();
-    let v = wait_terminal(&tool_runs, &id, 10).await;
+    let v = wait_terminal(&tool_runs, &tool_run_id, 10).await;
     assert_eq!(v["status"], "failed", "got: {v}");
     assert_eq!(v["exit_code"], 42, "exit code must be captured, got: {v}");
     assert!(
@@ -2161,15 +2178,15 @@ async fn owned_live_cancellation_selection_is_typed_sequential_and_non_short_cir
 
     let visited = Arc::new(std::sync::Mutex::new(Vec::new()));
     let visited_by_callback = Arc::clone(&visited);
-    let failure_id = live_a.to_string();
+    let failure_tool_run_id = live_a.to_string();
     let selection = service
-        .cancel_owned_live_tool_runs(owner, ToolRunKind::Background, move |id| {
+        .cancel_owned_live_tool_runs(owner, ToolRunKind::Background, move |tool_run_id| {
             let visited = Arc::clone(&visited_by_callback);
-            let failure_id = failure_id.clone();
+            let failure_tool_run_id = failure_tool_run_id.clone();
             async move {
-                visited.lock().unwrap().push(id.clone());
+                visited.lock().unwrap().push(tool_run_id.clone());
                 tokio::task::yield_now().await;
-                if id == failure_id {
+                if tool_run_id == failure_tool_run_id {
                     Err("injected cancellation failure")
                 } else {
                     Ok(())
@@ -4363,7 +4380,7 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
     assert_eq!(event["started_at"].as_str(), row.started_at.as_deref());
     assert_eq!(event["finished_at"].as_str(), row.finished_at.as_deref());
 
-    let cancel_id = service
+    let cancel_tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
@@ -4378,18 +4395,20 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
         })
         .await
         .unwrap();
-    assert!(service.cancel(&cancel_id).await);
-    assert!(!service.cancel(&cancel_id).await);
+    assert!(service.cancel(&cancel_tool_run_id).await);
+    assert!(!service.cancel(&cancel_tool_run_id).await);
     assert_eq!(terminal_event_count(&events), 2);
     let cancel_event = events
         .lock()
         .unwrap()
         .iter()
-        .find(|(name, payload)| name == "tool_run:finished" && payload["tool_run_id"] == cancel_id)
+        .find(|(name, payload)| {
+            name == "tool_run:finished" && payload["tool_run_id"] == cancel_tool_run_id
+        })
         .map(|(_, payload)| payload.clone())
         .expect("scheduled cancellation event");
     let cancel_row = db
-        .get_tool_run(&cancel_id)
+        .get_tool_run(&cancel_tool_run_id)
         .unwrap()
         .expect("cancelled scheduled history row");
     assert_eq!(
@@ -4519,16 +4538,16 @@ async fn test_background_registration_rollback_removes_durable_row() {
     service
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
-    let id = haven_common::types::new_id("toolrun");
+    let tool_run_id = haven_common::types::new_id("toolrun");
     db.save_tool_run(
-        &id,
+        &tool_run_id,
         Some("ses-2bc2cb1b18f43fcb787d84f06a06a1e8"),
         "echo rollback",
         "2026-09-19T00:00:00Z",
     )
     .unwrap();
     service.tool_runs.write().await.insert(
-        id.clone(),
+        tool_run_id.clone(),
         ToolRunEntry {
             kind: ToolRunKind::Background,
             session_id: Some("ses-2bc2cb1b18f43fcb787d84f06a06a1e8".into()),
@@ -4544,11 +4563,11 @@ async fn test_background_registration_rollback_removes_durable_row() {
         },
     );
 
-    service.rollback_background_registration(&id).await;
+    service.rollback_background_registration(&tool_run_id).await;
 
-    assert!(db.get_tool_run(&id).unwrap().is_none());
+    assert!(db.get_tool_run(&tool_run_id).unwrap().is_none());
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "not_found"
     );
 }

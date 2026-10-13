@@ -380,8 +380,8 @@ impl AnthropicAdapter {
                             let block = &state.blocks[index];
                             chunk.tool_call_updates.push(
                                 crate::types::StreamToolCallUpdate {
-                                    index: tool_index as u32,
-                                    id: (!block.tool_id.is_empty())
+                                    tool_index: tool_index as u32,
+                                    tool_call_id: (!block.tool_id.is_empty())
                                         .then(|| block.tool_id.clone()),
                                     name: (!block.tool_name.is_empty())
                                         .then(|| block.tool_name.clone()),
@@ -425,8 +425,8 @@ impl AnthropicAdapter {
                                     if block.kind == BlockKind::ToolUse {
                                         chunk.tool_call_updates.push(
                                             crate::types::StreamToolCallUpdate {
-                                                index: tool_index as u32,
-                                                id: (!block.tool_id.is_empty())
+                                                tool_index: tool_index as u32,
+                                                tool_call_id: (!block.tool_id.is_empty())
                                                     .then(|| block.tool_id.clone()),
                                                 name: (!block.tool_name.is_empty())
                                                     .then(|| block.tool_name.clone()),
