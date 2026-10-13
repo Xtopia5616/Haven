@@ -10,7 +10,7 @@ Haven 处于测试阶段。数据库 schema、`config.toml` 与内部 IPC 契约
 
 schema v41 仅接受事实提取 marker 的当前完整格式：旧 boolean、缺 retry metadata 的短格式和 summary value-only marker 都不再解析；`CacheDiagnostics` 也要求当前完整 metadata shape。它还统一 BranchPoint 的 projection cutoff：旧 branch point 仅记录 message watermark，无法从 append-only event 中安全补算 step 与 usage 水位（ADR 1043）。它还为 `tool_runs.kind` 增加闭合集合约束（ADR 1080）。v40 数据库不含该约束，升级前必须按下文删除数据库。`MediaProbe` 使用 `media_kind` / `mime_type` Serde key，不接受旧 `media_type` key；它不属于持久表或当前 IPC DTO。MCP `inputSchema` 和 LLM provider wire 字段仍按当前外部协议解析，不属于 Haven 历史数据兼容。
 
-跨 session 消息 inbox 只接受规范 `ses-{uuid32}` 身份及规范 `msg-{uuid32}` envelope id。旧 agent-name registry 或含非规范身份的 JSONL 不迁移：遇到旧 registry 时消息操作会报错，旧消息行会从当前读取、领取和回复匹配中忽略。当前 canonical JSONL mailbox/processing 无需为 bounded backlog 改版而重置；首次 claim 会通过同目录 rename 建立 `.jsonl.backlog` 与 `.jsonl.backlog.state.json`，逐批 drain 原正文。升级期间必须退出所有共享该目录的 Haven 进程，且不能让旧 binary 与新 sidecar 并发访问。每 recipient 新写入预算为 16 MiB，history 最多返回 100 条；既有单行大于 1 MiB 会 fail closed 并保留 source，不会自动丢弃，也不是升级前置重置条件。若该行阻塞队列且需要恢复投递，当前支持的人工恢复方式是先备份整个 `inbox/`，再按下方步骤显式重置整个收件箱；这会清除所有 peer 的 registry、未处理消息、backlog/processing、archive 与 deletion tombstone，但不删除 SQLite transcript、会话或记忆。备份保留原始行供离线检查，不能直接作为运行时数据恢复。
+跨 session 消息 inbox 只接受规范 `ses-{uuid32}` 身份及规范 `msg-{uuid32}` envelope id。旧 agent-name registry 或含非规范身份的 JSONL 不迁移：遇到旧 registry 时消息操作会报错，旧消息行会从当前读取、领取和回复匹配中忽略。当前 canonical JSONL mailbox/processing 无需为 bounded backlog 改版而重置；首次 claim 会通过同目录 rename 建立 `.jsonl.backlog` 与 `.jsonl.backlog.state.json`，逐批 drain 原正文。升级期间必须退出所有共享该目录的 Haven 进程，且不能让旧 binary 与新 sidecar 并发访问。每 recipient 新写入预算为 16 MiB，history 最多返回 100 条；既有单行大于 1 MiB 会 fail closed 并保留 source，不会自动丢弃，也不是升级前置重置条件。删除谱系 `deleted_sessions.json` 最多 64 MiB；超限时 Messaging 读写 fail closed 并保留文件。若该文件超限且需要恢复，或坏行阻塞队列且需要恢复投递，当前支持的人工恢复方式是先备份整个 `inbox/`，再按下方步骤显式重置整个收件箱；这会清除所有 peer 的 registry、未处理消息、backlog/processing、archive 与 deletion tombstone，但不删除 SQLite transcript、会话或记忆。备份保留原始行供离线检查，不能直接作为运行时数据恢复。
 
 ## 当前配置契约
 
@@ -86,6 +86,8 @@ Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：
 3. 如需保留待处理消息或 archive，先在 `%APPDATA%\haven` 之外备份 `inbox/`；内容可能包含会话消息。
 4. 删除 `%APPDATA%\haven\inbox`（非 Windows 开发环境为 `~/.local/share/haven/inbox`）。
 5. 重新启动 Haven；Messaging 会按规范 session ID 重建 registry 和 mailbox。SQLite transcript 不受影响。
+
+`.lock` 是持久的 OS 文件锁载体，正常运行时文件会保留；不要单独删除。若有进程仍持有该文件，删除整个 inbox 后启动的新进程可能锁住新的文件对象，因此执行重置前必须退出所有共享该目录的 Haven 进程。
 
 既有 backlog 单行超过 1 MiB 时，claim 会保留原始 source 与 cursor 并停止该队列后续排空。当前没有针对单个坏行的在线跳过或 quarantine 工具；若必须恢复投递，只能选择上述完整 inbox reset。该操作影响所有 peer，并清除 deletion tombstone；执行前应确认所有旧 Haven 进程均已退出，并在 `%APPDATA%\haven` 之外保留完整备份。若不接受这些消息状态损失，应保留 inbox 原样等待专门恢复工具，不要手工删除或改写 backlog/cursor sidecar。
 

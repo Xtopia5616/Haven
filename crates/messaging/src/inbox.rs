@@ -34,11 +34,11 @@
 //! mailbox filenames.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, SecondsFormat};
 use serde::{Deserialize, Serialize};
@@ -56,16 +56,10 @@ use crate::contract::{
 /// deleted — history is kept).
 const OFFLINE_AFTER: Duration = Duration::from_secs(300);
 
-/// Wait between lock-file acquisition retries.
+/// Wait between OS lock acquisition retries.
 const LOCK_WAIT: Duration = Duration::from_millis(20);
-/// Upper bound for waiting on a held lock before failing the operation.
-/// Deliberately LONGER than [`LOCK_STALE_AFTER`] so a crashed holder's stale
-/// lock is broken within a single call's wait instead of erroring until the
-/// lock ages past the stale threshold.
+/// Upper bound for waiting on a held OS lock before failing the operation.
 const LOCK_TIMEOUT: Duration = Duration::from_secs(15);
-/// A lock file older than this is considered stale (crashed holder) and is
-/// broken.
-const LOCK_STALE_AFTER: Duration = Duration::from_secs(10);
 /// Archive tail scanned for duplicate ids when archiving (crash recovery:
 /// a message archived but not deleted from `.processing` must not be
 /// archived twice).
@@ -86,6 +80,10 @@ const MAX_PROCESSING_BYTES: usize = MAX_CLAIM_BATCH_BYTES as usize + 1024;
 /// but refuse to allocate an unbounded line while draining or inspecting them.
 const MAX_LEGACY_LINE_BYTES: usize = 1024 * 1024;
 const MAX_BACKLOG_STATE_BYTES: usize = 4 * 1024;
+/// Bound the durable lineage map so recovery never promotes or parses an
+/// unbounded tombstone file. The cap still allows hundreds of thousands of
+/// minimal session entries.
+const MAX_DELETED_SESSIONS_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -384,6 +382,10 @@ impl InboxBus {
 
     fn deleted_sessions_tmp(&self) -> PathBuf {
         self.root.join("deleted_sessions.json.tmp")
+    }
+
+    fn deleted_sessions_backup(&self) -> PathBuf {
+        self.root.join("deleted_sessions.json.bak")
     }
 
     fn processing(&self, session_id: &str) -> PathBuf {
@@ -1254,27 +1256,11 @@ impl InboxBus {
     ) -> anyhow::Result<HashMap<String, DeletedSessionEntry>> {
         self.recover_deleted_sessions_tmp_unlocked()?;
         let path = self.deleted_sessions();
-        match std::fs::read_to_string(path) {
+        match read_bounded_text(&path, MAX_DELETED_SESSIONS_BYTES) {
             Ok(contents) if contents.trim().is_empty() => Ok(HashMap::new()),
-            Ok(contents) => {
-                let deleted: HashMap<String, DeletedSessionEntry> = serde_json::from_str(&contents)
-                    .map_err(|error| anyhow::anyhow!("corrupt deleted_sessions.json: {error}"))?;
-                for (session_id, entry) in &deleted {
-                    validate_session_id(session_id).map_err(|error| {
-                        anyhow::anyhow!("invalid session id in deleted_sessions.json: {error}")
-                    })?;
-                    if let Some(parent_session_id) = entry.parent_session_id.as_deref() {
-                        validate_session_id(parent_session_id).map_err(|error| {
-                            anyhow::anyhow!(
-                                "invalid parent session ID in deleted_sessions.json: {error}"
-                            )
-                        })?;
-                    }
-                }
-                Ok(deleted)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
-            Err(error) => Err(error.into()),
+            Ok(contents) => parse_deleted_sessions(&contents),
+            Err(error) if is_not_found(&error) => Ok(HashMap::new()),
+            Err(error) => Err(error),
         }
     }
 
@@ -1290,16 +1276,23 @@ impl InboxBus {
         }
         let path = self.deleted_sessions();
         let tmp = self.deleted_sessions_tmp();
+        let backup = self.deleted_sessions_backup();
+        let contents = serde_json::to_vec_pretty(deleted)?;
+        validate_deleted_sessions_size(contents.len())?;
         let mut file = File::create(&tmp)?;
-        file.write_all(serde_json::to_string_pretty(deleted)?.as_bytes())?;
+        file.write_all(&contents)?;
         file.flush()?;
         file.sync_all()?;
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+
+        // Keep the prior committed lineage recoverable until the new complete
+        // file is installed. A crash after moving the canonical file must not
+        // turn a damaged temp into an empty tombstone set.
+        remove_if_exists(&backup)?;
+        if path.exists() {
+            std::fs::rename(&path, &backup)?;
         }
-        std::fs::rename(tmp, path)?;
+        std::fs::rename(&tmp, &path)?;
+        remove_if_exists(&backup)?;
         Ok(())
     }
 
@@ -1328,13 +1321,46 @@ impl InboxBus {
     fn recover_deleted_sessions_tmp_unlocked(&self) -> anyhow::Result<()> {
         let path = self.deleted_sessions();
         let tmp = self.deleted_sessions_tmp();
-        if !tmp.exists() {
+        let backup = self.deleted_sessions_backup();
+        if path.exists() {
+            // The canonical file is authoritative when present. Validate it
+            // before removing recovery files so corruption remains fail-closed.
+            parse_deleted_sessions_file(&path)?;
+            remove_if_exists(&tmp)?;
+            remove_if_exists(&backup)?;
             return Ok(());
         }
-        if path.exists() {
-            std::fs::remove_file(tmp)?;
-        } else {
-            std::fs::rename(tmp, path)?;
+
+        if tmp.exists() {
+            match parse_deleted_sessions_file(&tmp) {
+                Ok(_) => {
+                    std::fs::rename(&tmp, &path)?;
+                    remove_if_exists(&backup)?;
+                    return Ok(());
+                }
+                Err(error) if is_transient_file_read_error(&error) => return Err(error),
+                Err(temp_error) if backup.exists() => {
+                    // A prior committed map may have been moved aside before
+                    // an interrupted replacement. Restore it before allowing
+                    // reads or writes to proceed.
+                    parse_deleted_sessions_file(&backup).map_err(|backup_error| {
+                        anyhow::anyhow!(
+                            "invalid deleted-session temp and backup; temp: {temp_error:#}; backup: {backup_error:#}"
+                        )
+                    })?;
+                    std::fs::rename(&backup, &path)?;
+                    remove_if_exists(&tmp)?;
+                    return Ok(());
+                }
+                // With no prior canonical map or backup, an invalid first
+                // write was never committed and can be retried safely.
+                Err(_) => remove_if_exists(&tmp)?,
+            }
+        }
+
+        if backup.exists() {
+            parse_deleted_sessions_file(&backup)?;
+            std::fs::rename(&backup, &path)?;
         }
         Ok(())
     }
@@ -1846,6 +1872,47 @@ impl InboxBus {
     }
 }
 
+fn parse_deleted_sessions(contents: &str) -> anyhow::Result<HashMap<String, DeletedSessionEntry>> {
+    let deleted: HashMap<String, DeletedSessionEntry> = serde_json::from_str(contents)
+        .map_err(|error| anyhow::anyhow!("corrupt deleted_sessions.json: {error}"))?;
+    for (session_id, entry) in &deleted {
+        validate_session_id(session_id).map_err(|error| {
+            anyhow::anyhow!("invalid session id in deleted_sessions.json: {error}")
+        })?;
+        if let Some(parent_session_id) = entry.parent_session_id.as_deref() {
+            validate_session_id(parent_session_id).map_err(|error| {
+                anyhow::anyhow!("invalid parent session ID in deleted_sessions.json: {error}")
+            })?;
+        }
+    }
+    Ok(deleted)
+}
+
+fn parse_deleted_sessions_file(
+    path: &Path,
+) -> anyhow::Result<HashMap<String, DeletedSessionEntry>> {
+    let contents = read_bounded_text(path, MAX_DELETED_SESSIONS_BYTES)?;
+    if contents.trim().is_empty() {
+        return Ok(HashMap::new());
+    }
+    parse_deleted_sessions(&contents)
+}
+
+fn validate_deleted_sessions_size(byte_len: usize) -> anyhow::Result<()> {
+    if byte_len > MAX_DELETED_SESSIONS_BYTES {
+        anyhow::bail!(
+            "deleted session lineage exceeds its bounded byte budget of {MAX_DELETED_SESSIONS_BYTES} bytes"
+        )
+    }
+    Ok(())
+}
+
+fn is_transient_file_read_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() != std::io::ErrorKind::InvalidData)
+}
+
 fn session_id_from_inbox_file_name(file_name: &str) -> Option<String> {
     for suffix in [
         ".jsonl.backlog.state.json.tmp",
@@ -2276,156 +2343,52 @@ fn last_valid_line_from(
     Ok(parse_envelope(session_id, line.trim()).ok())
 }
 
-/// Cross-process file mutex. Acquisition is atomic (`create_new`); stale
-/// locks (crashed holder, mtime older than [`LOCK_STALE_AFTER`]) are broken;
-/// release removes the file only if it still carries our pid so a broken
-/// lock held by someone else is never deleted.
+/// Cross-process file mutex held by the operating system. The `.lock` file is
+/// persistent: removing it could let another process lock a different inode
+/// while a holder still owns the original one. Dropping the handle releases
+/// the OS lock after normal return, error, or process exit.
 struct LockGuard {
-    path: PathBuf,
+    _file: File,
 }
 
 impl LockGuard {
-    /// Try one lock acquisition without sleeping. A stale lock is removed and
-    /// retried once so a crashed writer does not suppress the next poll, but a
-    /// live contender immediately returns `Ok(None)`.
-    fn try_acquire(root: &Path) -> anyhow::Result<Option<Self>> {
+    fn open_lock_file(root: &Path) -> anyhow::Result<(PathBuf, File)> {
         std::fs::create_dir_all(root)?;
         let path = root.join(".lock");
-        let pid = std::process::id();
-        for attempt in 0..2 {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(mut f) => {
-                    if let Err(error) = writeln!(f, "pid={pid}") {
-                        let _ = remove_lock_file(&path);
-                        return Err(error.into());
-                    }
-                    if let Err(error) = f.sync_all() {
-                        let _ = remove_lock_file(&path);
-                        return Err(error.into());
-                    }
-                    return Ok(Some(Self { path }));
-                }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
-                    ) =>
-                {
-                    if attempt == 0 && lock_is_stale(&path)? {
-                        remove_lock_file(&path)?;
-                        continue;
-                    }
-                    return Ok(None);
-                }
-                Err(error) => return Err(error.into()),
-            }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        Ok((path, file))
+    }
+
+    /// Try one OS lock acquisition without waiting. A live contender
+    /// immediately returns `Ok(None)`.
+    fn try_acquire(root: &Path) -> anyhow::Result<Option<Self>> {
+        let (_, file) = Self::open_lock_file(root)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(error)) => Err(error.into()),
         }
-        Ok(None)
     }
 
     fn acquire(root: &Path) -> anyhow::Result<Self> {
-        std::fs::create_dir_all(root)?;
-        let path = root.join(".lock");
-        let deadline = SystemTime::now() + LOCK_TIMEOUT;
-        let pid = std::process::id();
+        let (path, file) = Self::open_lock_file(root)?;
+        let deadline = Instant::now() + LOCK_TIMEOUT;
         loop {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(mut f) => {
-                    if let Err(error) = writeln!(f, "pid={pid}") {
-                        if let Err(cleanup) = remove_lock_file(&path) {
-                            tracing::error!(
-                                error = %haven_common::error::sanitize_error_text(&cleanup.to_string()),
-                                "failed to clean up inbox lock after write failure"
-                            );
-                        }
-                        return Err(error.into());
-                    }
-                    if let Err(error) = f.sync_all() {
-                        if let Err(cleanup) = remove_lock_file(&path) {
-                            tracing::error!(
-                                error = %haven_common::error::sanitize_error_text(&cleanup.to_string()),
-                                "failed to clean up inbox lock after sync failure"
-                            );
-                        }
-                        return Err(error.into());
-                    }
-                    return Ok(Self { path });
-                }
-                // Windows quirk: a `create_new` racing with another thread's
-                // release-delete can hit ERROR_ACCESS_DENIED (delete-pending)
-                // instead of ERROR_FILE_EXISTS — both mean "lock busy, retry".
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
-                    ) =>
-                {
-                    if lock_is_stale(&path)? {
-                        remove_lock_file(&path)?;
-                        continue;
-                    }
-                    if SystemTime::now() >= deadline {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
                         anyhow::bail!("inbox lock timed out: another agent holds {path:?}");
                     }
                     std::thread::sleep(LOCK_WAIT);
                 }
-                Err(e) => return Err(e.into()),
+                Err(TryLockError::Error(error)) => return Err(error.into()),
             }
-        }
-    }
-}
-
-fn lock_is_stale(path: &Path) -> anyhow::Result<bool> {
-    match std::fs::metadata(path) {
-        Ok(metadata) => Ok(metadata.modified()?.elapsed()? > LOCK_STALE_AFTER),
-        // A just-deleted Windows lock can remain delete-pending briefly;
-        // metadata then reports access denied even though the contender must
-        // simply retry the create_new operation.
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            Ok(false)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn remove_lock_file(path: &Path) -> anyhow::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-impl Drop for LockGuard {
-    fn drop(&mut self) {
-        match std::fs::read_to_string(&self.path) {
-            Ok(mine) if mine.trim() == format!("pid={}", std::process::id()) => {
-                if let Err(error) = remove_lock_file(&self.path) {
-                    tracing::error!(
-                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                        "failed to remove inbox lock"
-                    );
-                }
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => tracing::error!(
-                error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                "failed to verify inbox lock owner; leaving lock in place"
-            ),
         }
     }
 }
@@ -3787,38 +3750,21 @@ mod tests {
     }
 
     #[test]
-    fn stale_lock_is_broken() {
+    fn os_lock_is_exclusive_and_released_by_dropping_handle() {
         let (_dir, bus) = test_bus();
-        bus.register("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &[])
-            .unwrap();
         let lock_path = bus.root().join(".lock");
-        // A crashed holder left a lock older than LOCK_STALE_AFTER behind.
-        std::fs::write(&lock_path, "pid=999999").unwrap();
-        let file = File::options().write(true).open(&lock_path).unwrap();
-        file.set_modified(SystemTime::now() - Duration::from_secs(30))
-            .unwrap();
-        drop(file);
         let guard = LockGuard::acquire(bus.root()).unwrap();
-        drop(guard);
-        assert!(!lock_path.exists(), "release must remove the lock");
-    }
+        assert!(lock_path.exists());
+        assert!(LockGuard::try_acquire(bus.root()).unwrap().is_none());
 
-    #[test]
-    fn lock_not_released_if_stolen_by_another_pid() {
-        let (_dir, bus) = test_bus();
-        bus.register("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &[])
-            .unwrap();
-        let lock_path = bus.root().join(".lock");
-        // Simulate a stolen/replaced lock: our guard's drop must not delete a
-        // lock file that no longer carries our pid.
-        let guard = LockGuard::acquire(bus.root()).unwrap();
-        std::fs::write(&lock_path, "pid=1").unwrap();
         drop(guard);
-        assert!(
-            lock_path.exists(),
-            "another pid's lock must survive our drop"
-        );
-        let _ = std::fs::remove_file(&lock_path);
+        assert!(lock_path.exists(), "the lock file inode is persistent");
+
+        let next_guard = LockGuard::try_acquire(bus.root())
+            .unwrap()
+            .expect("dropping the first handle must release the OS lock");
+        drop(next_guard);
+        assert!(lock_path.exists(), "release must not remove the lock file");
     }
 
     #[test]
@@ -4559,6 +4505,70 @@ mod tests {
         assert!(bus.deleted_sessions().exists());
         assert!(!bus.deleted_sessions_tmp().exists());
         assert!(!bus.mailbox(deleted).exists());
+    }
+
+    #[test]
+    fn invalid_initial_tombstone_temp_is_discarded_before_retry() {
+        let (_dir, bus) = test_bus();
+        let session_id = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(session_id, &[]).unwrap();
+        std::fs::write(
+            bus.deleted_sessions_tmp(),
+            format!("{{\"{session_id}\":{{\"parent_session_id\":"),
+        )
+        .unwrap();
+
+        // A partial first write was never committed. It must not poison all
+        // future reads or prevent the still-existing session from retrying.
+        bus.delete_sessions(&[session_id.to_string()]).unwrap();
+
+        assert!(!bus.deleted_sessions_tmp().exists());
+        assert!(bus.deleted_sessions().exists());
+        assert!(
+            bus.read_deleted_sessions_unlocked()
+                .unwrap()
+                .contains_key(session_id)
+        );
+        assert!(!bus.mailbox(session_id).exists());
+    }
+
+    #[test]
+    fn invalid_replacement_temp_restores_previous_tombstones_before_retry() {
+        let (_dir, bus) = test_bus();
+        let previously_deleted = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let retry_session = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(retry_session, &[]).unwrap();
+        bus.write_deleted_sessions_unlocked(&HashMap::from([(
+            previously_deleted.to_string(),
+            DeletedSessionEntry {
+                parent_session_id: None,
+            },
+        )]))
+        .unwrap();
+
+        // Model interruption after the old canonical file was moved aside,
+        // followed by a damaged replacement temp.
+        std::fs::rename(bus.deleted_sessions(), bus.deleted_sessions_backup()).unwrap();
+        std::fs::write(
+            bus.deleted_sessions_tmp(),
+            format!("{{\"{retry_session}\":{{\"parent_session_id\":"),
+        )
+        .unwrap();
+
+        bus.delete_sessions(&[retry_session.to_string()]).unwrap();
+
+        let tombstones = bus.read_deleted_sessions_unlocked().unwrap();
+        assert!(tombstones.contains_key(previously_deleted));
+        assert!(tombstones.contains_key(retry_session));
+        assert!(!bus.deleted_sessions_tmp().exists());
+        assert!(!bus.deleted_sessions_backup().exists());
+        assert!(!bus.mailbox(retry_session).exists());
+    }
+
+    #[test]
+    fn deleted_session_lineage_byte_budget_accepts_limit_and_rejects_overflow() {
+        assert!(validate_deleted_sessions_size(MAX_DELETED_SESSIONS_BYTES).is_ok());
+        assert!(validate_deleted_sessions_size(MAX_DELETED_SESSIONS_BYTES + 1).is_err());
     }
 
     #[test]
