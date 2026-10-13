@@ -25,12 +25,12 @@ export default defineConfig({
 	test: {
 		include: ['src/**/*.{test,spec}.ts'],
 		environment: 'jsdom',
-		setupFiles: ['src/test-setup.ts'],
+		setupFiles: ['src/testSetup.ts'],
 		coverage: {
 			provider: 'v8',
 			reporter: ['text', 'html'],
 			include: ['src/**'],
-			exclude: ['src/**/*.{test,spec}.ts', 'src/test-setup.ts'],
+			exclude: ['src/**/*.{test,spec}.ts', 'src/testSetup.ts'],
 		},
 	},
 });
