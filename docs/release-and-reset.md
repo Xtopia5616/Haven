@@ -44,7 +44,7 @@ ToolRun 数量上限按实际计数状态重命名：`scheduled_tool_runs_max` �
 
 Session prompt 首次上下文条数目前配置在 `[session].prompt_history_limit`（默认 50）；旧 `[memory].session_window_size` 不再接受或自动搬迁。若要保留其它配置，手动将数值移到新 key 并删除旧 key；否则按“仅重建配置”删除 `config.toml` 后重新设置。遇到旧 key 时配置会整体解析失败、先备份原文件并在当前进程使用默认值；数据库不受影响。
 
-解析失败时，Haven 将原文件复制到带时间戳的 `config.toml.*.bak`，并在当前进程使用默认配置；原文件不会在启动时自动转换或覆盖。需要继续使用时，按下文“仅重建配置”删除当前 `config.toml`，再在应用中重新配置。
+配置解析或语义校验失败时，Haven 将原文件复制到带时间戳的 `config.toml.*.bak`，并在当前进程以默认值提供运行时配置；该恢复态为只读，Settings 加载和配置修改、凭据暂存都会返回恢复错误，避免把默认值写回并覆盖原文件。若自动备份失败，原文件仍保留，恢复态也仍然只读。需要继续使用时，先从备份恢复并修正原文件，或按下文“仅重建配置”删除 `config.toml`，然后重启应用；启动时重新加载有效文件或创建新默认配置后，Settings 才恢复可写。无需删除数据库。
 
 当前会话保留期配置位于 `[session].history_retention_days`，默认 90 天，设为 `0` 可禁用自动删除；旧 `[memory]` 位置不迁移。`security.permission_mode` 支持 `plan`、`default`、`auto_edit`、`autonomous`，文件沙箱和网络策略分别使用 `sandbox_mode` 与 `network_policy`；旧确认模式字段不再解释。权限 key 使用点号 operation 名（如 `files.read`）；旧冒号 key 不转换，无法解析的持久权限规则在运行时被忽略并 fail-closed。
 

@@ -244,8 +244,9 @@ impl ConfigService {
     }
 
     fn stage_credential(&self, slot: CredentialSlot, value: &str) -> anyhow::Result<String> {
-        let reference = crate::types::new_id("cred");
         let mut state = self.lock_state_mut()?;
+        state.loader.ensure_writable()?;
+        let reference = crate::types::new_id("cred");
         state
             .credential_store
             .write(&reference, value)
@@ -291,8 +292,9 @@ impl ConfigService {
     }
 
     pub fn settings(&self) -> anyhow::Result<Settings> {
-        let snapshot = self.snapshot()?;
-        Ok(Settings::from(&snapshot.config))
+        let state = self.lock_state()?;
+        state.loader.ensure_writable()?;
+        Ok(Settings::from(state.loader.config()))
     }
 
     pub fn path(&self) -> anyhow::Result<std::path::PathBuf> {
@@ -326,6 +328,7 @@ impl ConfigService {
     ) -> anyhow::Result<ConfigUpdate<T>> {
         let (update, change) = {
             let mut state = self.lock_state_mut()?;
+            state.loader.ensure_writable()?;
             let before = state.loader.config().clone();
             let value = match edit(state.loader.config_mut()) {
                 Ok(value) => value,
@@ -484,6 +487,38 @@ mod tests {
             .unwrap(),
             dir,
         )
+    }
+
+    #[test]
+    fn invalid_config_fallback_remains_read_only_until_restart_recovery() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "media = { audio = { max_duration_secs = [1, 2\n";
+        std::fs::write(&path, original).unwrap();
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        let service = ConfigService::new_with_credential_store(
+            loader,
+            std::sync::Arc::new(InMemoryCredentialStore::default()),
+        )
+        .unwrap();
+
+        assert_eq!(service.snapshot().unwrap().config, AppConfig::default());
+        let settings_error = service.settings().unwrap_err();
+        assert!(settings_error.to_string().contains("只读恢复"));
+
+        let edit_error = service
+            .edit(|config| {
+                config.session.max_steps_per_run += 1;
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(edit_error.to_string().contains("只读恢复"));
+        let credential_error = service
+            .stage_provider_credential("primary", "secret")
+            .unwrap_err();
+        assert!(credential_error.to_string().contains("只读恢复"));
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 
     #[test]

@@ -105,6 +105,7 @@ pub struct ConfigLoader {
     path: PathBuf,
     config: AppConfig,
     source_fingerprint: Option<u64>,
+    recovery_required: bool,
 }
 
 /// Non-cryptographic freshness marker only; the file is still protected by
@@ -332,12 +333,13 @@ impl ConfigLoader {
                 path: path.to_path_buf(),
                 config: default_cfg,
                 source_fingerprint: Some(source_fingerprint),
+                recovery_required: false,
             });
         }
         tracing::info!("loading config");
         let content = read_config_file(path)?;
         let source_fingerprint = Some(fingerprint_config_file(content.as_bytes()));
-        let config = match toml::from_str::<AppConfig>(&content) {
+        let (config, recovery_required) = match toml::from_str::<AppConfig>(&content) {
             Ok(mut config) => {
                 if config.context_limits.max_known_facts > MAX_FACTS_IN_EXTRACTION_PROMPT {
                     tracing::warn!(
@@ -349,20 +351,21 @@ impl ConfigLoader {
                 }
                 if invalid_config_entry(&config).is_some() {
                     backup_unparsable_config(path, content.as_bytes(), "semantic_validation");
-                    AppConfig::default()
+                    (AppConfig::default(), true)
                 } else {
-                    config
+                    (config, false)
                 }
             }
             Err(_) => {
                 backup_unparsable_config(path, content.as_bytes(), "toml_parse");
-                AppConfig::default()
+                (AppConfig::default(), true)
             }
         };
         Ok(Self {
             path: path.to_path_buf(),
             config,
             source_fingerprint,
+            recovery_required,
         })
     }
 
@@ -376,6 +379,7 @@ impl ConfigLoader {
     /// A successful return confirms the replacement call succeeded; it does
     /// not guarantee survival across an OS crash or sudden power loss.
     pub(crate) fn save(&mut self) -> anyhow::Result<()> {
+        self.ensure_writable()?;
         super::validate_app_config(&self.config)?;
         super::credentials::validate_config_references(&self.config)?;
         let toml_str = toml::to_string_pretty(&self.config)?;
@@ -434,6 +438,14 @@ impl ConfigLoader {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(crate) fn ensure_writable(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.recovery_required,
+            "配置文件解析或校验失败，当前以默认值只读恢复；请修复或恢复 config.toml 备份，或删除 config.toml 后重启再编辑"
+        );
+        Ok(())
     }
 }
 
@@ -971,6 +983,7 @@ mod tests {
             path: PathBuf::from("unused"),
             config: cfg,
             source_fingerprint: None,
+            recovery_required: false,
         };
         loader.apply_settings(&settings);
         // Keys preserved by provider name.
@@ -1020,6 +1033,7 @@ mod tests {
             path: PathBuf::from("unused"),
             config: cfg,
             source_fingerprint: None,
+            recovery_required: false,
         };
         loader.apply_settings(&settings);
         let media = &loader.config().media;
@@ -1080,6 +1094,7 @@ mod tests {
             path: PathBuf::from("unused"),
             config: cfg,
             source_fingerprint: None,
+            recovery_required: false,
         };
         loader.apply_settings(&settings);
 
@@ -1111,6 +1126,7 @@ mod tests {
         let path = dir.join("config.toml");
         let loader = ConfigLoader::load_from(&path).unwrap();
         assert!(path.exists());
+        assert!(!loader.recovery_required);
         assert_eq!(loader.config().media.audio.max_duration_secs, 60);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1570,9 +1586,11 @@ model = "nova-3"
         std::fs::write(&path, original).unwrap();
 
         // The corrupt file must NOT be silently discarded: it is backed up
-        // (timestamped .bak) and the loader starts with defaults so a later
-        // save() can never overwrite the user's config unnoticed.
-        let _loader = ConfigLoader::load_from(&path).unwrap();
+        // (timestamped .bak), defaults remain available to runtime readers,
+        // and the loader records that writes must be refused.
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert!(loader.recovery_required);
+        assert!(loader.ensure_writable().is_err());
         let backups: Vec<_> = dir
             .read_dir()
             .unwrap()
@@ -1629,6 +1647,8 @@ model = "nova-3"
         let loader = ConfigLoader::load_from(&path).unwrap();
 
         assert_eq!(loader.config().skills_exec, SkillsExecConfig::default());
+        assert!(loader.recovery_required);
+        assert!(loader.ensure_writable().is_err());
         let backups: Vec<_> = dir
             .read_dir()
             .unwrap()

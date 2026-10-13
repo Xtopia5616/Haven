@@ -1109,3 +1109,4 @@
 - [1118：报告文件搜索完整性](1118-report-file-search-completeness.md)
 - [1119：无事件流时限制会话投影恢复](1119-fail-closed-fresh-runs-without-event-log.md)
 - [1120：为 renderer 列表使用稳定且无碰撞的身份键](1120-use-stable-renderer-list-keys.md)
+- [1121：配置无效回退保持只读直到显式恢复](1121-keep-invalid-config-fallback-read-only.md)
