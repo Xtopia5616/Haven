@@ -6,6 +6,8 @@ use std::collections::{HashMap, HashSet};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
+
 use super::{AppConfig, McpEnvironmentCredentialRef, McpServerConfig, OcrConfig};
 use crate::types::{is_canonical_id, new_id};
 
@@ -416,8 +418,9 @@ fn validate_reference_changes(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum OcrCredentialField {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OcrCredentialField {
     ApiKey,
     ApiSecret,
 }
@@ -573,6 +576,20 @@ pub(crate) fn credential_references(config: &AppConfig) -> HashSet<String> {
 mod tests {
     use super::*;
     use crate::config::{McpEnvironmentCredentialRef, McpServerConfig, ProviderConfig};
+
+    #[test]
+    fn ocr_credential_field_uses_a_closed_snake_case_wire_vocabulary() {
+        assert_eq!(
+            serde_json::from_str::<OcrCredentialField>("\"api_key\"").unwrap(),
+            OcrCredentialField::ApiKey
+        );
+        assert_eq!(
+            serde_json::from_str::<OcrCredentialField>("\"api_secret\"").unwrap(),
+            OcrCredentialField::ApiSecret
+        );
+        assert!(serde_json::from_str::<OcrCredentialField>("\"apiSecret\"").is_err());
+        assert!(serde_json::from_str::<OcrCredentialField>("true").is_err());
+    }
 
     #[test]
     fn settings_credentials_are_persisted_only_as_secure_references() {

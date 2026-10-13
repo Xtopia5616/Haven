@@ -1081,14 +1081,14 @@
 		}
 		if (ocr.api_key) {
 			ocr.api_key_ref = await stageOcrCredential({
-				apiSecret: false,
+				field: 'api_key',
 				value: ocr.api_key,
 			});
 			ocr.api_key = '';
 		}
 		if (ocr.api_secret) {
 			ocr.api_secret_ref = await stageOcrCredential({
-				apiSecret: true,
+				field: 'api_secret',
 				value: ocr.api_secret,
 			});
 			ocr.api_secret = '';

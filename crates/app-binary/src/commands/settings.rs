@@ -103,13 +103,13 @@ pub async fn stage_provider_credential(
 #[tauri::command]
 pub async fn stage_ocr_credential(
     state: State<'_, Arc<AppState>>,
-    api_secret: bool,
+    field: haven_common::config::OcrCredentialField,
     value: String,
 ) -> Result<String, String> {
     state
         .runtime
         .config_service
-        .stage_ocr_credential(api_secret, &value)
+        .stage_ocr_credential(field, &value)
         .map_err(|error| log_err("stage_ocr_credential", error))
 }
 

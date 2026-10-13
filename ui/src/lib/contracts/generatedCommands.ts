@@ -149,6 +149,8 @@ export type VadSignalDto = (typeof VAD_SIGNAL_DTO_VALUES)[number];
 export const VAD_STATE_DTO_VALUES = ['silent', 'speech', 'silence_after_speech'] as const;
 export type VadStateDto = (typeof VAD_STATE_DTO_VALUES)[number];
 export interface VadStatusEvent { signal: VadSignalDto; state: VadStateDto }
+export const OCR_CREDENTIAL_FIELD_INPUT_VALUES = ['api_key', 'api_secret'] as const;
+export type OcrCredentialFieldInput = (typeof OCR_CREDENTIAL_FIELD_INPUT_VALUES)[number];
 export const CAPABILITY_INPUT_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
 export type CapabilityInput = (typeof CAPABILITY_INPUT_VALUES)[number];
 export const CAPABILITY_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
@@ -8243,7 +8245,7 @@ export interface TauriCommandMap {
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_tool_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_web_search: { request: { requestKind: RequestKindInput; mode?: WebSearchModeInput | null }; response: void };
-	stage_ocr_credential: { request: { apiSecret: boolean; value: string }; response: string };
+	stage_ocr_credential: { request: { field: OcrCredentialFieldInput; value: string }; response: string };
 	stage_provider_credential: { request: { providerName: string; apiKey: string }; response: string };
 	start_recording: { request: undefined; response: void };
 	stop_recording: { request: undefined; response: void };

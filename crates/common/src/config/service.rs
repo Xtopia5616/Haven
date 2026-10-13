@@ -8,7 +8,8 @@
 #[cfg(test)]
 use super::credentials::UnavailableCredentialStore;
 use super::credentials::{
-    CredentialSlot, credential_references, hydrate_from_store, prepare_after_edit,
+    CredentialSlot, OcrCredentialField, credential_references, hydrate_from_store,
+    prepare_after_edit,
 };
 use super::{
     AppConfig, ConfigLoader, CredentialStore, LlmConfig, LogLevel, McpDiscoveryConfig,
@@ -229,15 +230,18 @@ impl ConfigService {
     }
 
     /// Stage one of the dedicated OCR credentials.
-    pub fn stage_ocr_credential(&self, api_secret: bool, value: &str) -> anyhow::Result<String> {
+    pub fn stage_ocr_credential(
+        &self,
+        field: OcrCredentialField,
+        value: &str,
+    ) -> anyhow::Result<String> {
         if value.is_empty() {
             anyhow::bail!("OCR credential cannot be empty");
         }
         self.stage_credential(
-            if api_secret {
-                CredentialSlot::OcrApiSecret
-            } else {
-                CredentialSlot::OcrApiKey
+            match field {
+                OcrCredentialField::ApiKey => CredentialSlot::OcrApiKey,
+                OcrCredentialField::ApiSecret => CredentialSlot::OcrApiSecret,
             },
             value,
         )

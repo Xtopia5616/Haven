@@ -115,10 +115,10 @@ describe('Settings commands', () => {
 		expect(await stageProviderCredential({ providerName: 'provider', apiKey: 'secret' })).toBe(
 			'cred-0000008c3defb1edb984fe2ac71c71c7',
 		);
-		expect(await stageOcrCredential({ apiSecret: false, value: 'key' })).toBe(
+		expect(await stageOcrCredential({ field: 'api_key', value: 'key' })).toBe(
 			'cred-000001187bdf63db7309fc558e38e38e',
 		);
-		expect(await stageOcrCredential({ apiSecret: true, value: 'secret' })).toBe(
+		expect(await stageOcrCredential({ field: 'api_secret', value: 'secret' })).toBe(
 			'cred-000001a4b9cf15c92c8efa8055555555',
 		);
 		await updateSettings(settingsRequest);
@@ -142,8 +142,8 @@ describe('Settings commands', () => {
 			['reset_session_permissions'],
 			['set_hotkey_capture_active', { active: true }],
 			['stage_provider_credential', { providerName: 'provider', apiKey: 'secret' }],
-			['stage_ocr_credential', { apiSecret: false, value: 'key' }],
-			['stage_ocr_credential', { apiSecret: true, value: 'secret' }],
+			['stage_ocr_credential', { field: 'api_key', value: 'key' }],
+			['stage_ocr_credential', { field: 'api_secret', value: 'secret' }],
 			['update_settings', settingsRequest],
 			['enable_autostart'],
 			['disable_autostart'],
@@ -212,7 +212,7 @@ describe('Settings commands', () => {
 		).rejects.toThrow('Invalid staged credential reference');
 
 		invokeMock.mockResolvedValueOnce('plain-reference' as never);
-		await expect(stageOcrCredential({ apiSecret: false, value: 'secret' })).rejects.toThrow(
+		await expect(stageOcrCredential({ field: 'api_key', value: 'secret' })).rejects.toThrow(
 			'Invalid staged credential reference',
 		);
 	});
