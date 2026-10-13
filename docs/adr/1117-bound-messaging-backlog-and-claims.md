@@ -29,6 +29,8 @@
 
 每个收件人的逻辑 pending data 有上限，最旧 backlog 按稳定行序逐批确认；agent `inbox` 每次最多返回 100 条，最多 1 MiB JSONL 源数据。history 直接调用不再接受超过 100 的返回量。单个超过 1 MiB 的历史行会阻塞该 source 的后续 claim，正文仍原样保留。历史 mailbox 大于 16 MiB 的已有数据不会被截断；delivery 会继续拒绝，直到旧 pending 降到容量内。全局 `.lock`、archive 4 MiB 上限、稳定 message ID 与 duplicate consumer 可见性保持不变。
 
+`crates/messaging/src/inbox.rs` 超过 800 行，本 ADR 暂不拆文件。`InboxBus` 的 mailbox、processing、backlog、archive 与 deletion tombstone 共享同一跨进程锁；状态迁移要求 `active_end`、processing 副本、archive 与 cursor 更新保持同一恢复协议。把文件写入/恢复 helper 拆成可独立调用的模块会让“持锁期间完成整段迁移”这一前提更难表达和审查。当前没有独立 storage owner 或稳定内部事务接口，故保留私有实现和同文件测试；若后续引入清晰的 storage transaction boundary，再按该边界拆分，不为行数本身拆分。
+
 ## 验证
 
 - Messaging 测试覆盖累计预算拒绝、并发 append、100 行/1 MiB 批次、部分 ack、同 ID 重投、archive 失败重试、超大历史行保留、最大新 envelope 的 last-received、history 结果上限与 tombstone sidecar 清理。
