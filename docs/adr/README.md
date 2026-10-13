@@ -1139,3 +1139,4 @@
 - [1148：在发布工具缓存后再提升 MCP catalog generation](1148-publish-mcp-catalog-generation-after-cache.md)
 - [1149：跨 chunk 保留完整 MCP SSE 事件](1149-preserve-mcp-sse-events-across-chunks.md)
 - [1150：按 IANA 特殊用途登记分类网络目标](1150-classify-special-purpose-network-addresses.md)
+- [1152：在 Tools 组合层适配 LLM 的 MCP caller](1152-adapt-llm-mcp-caller-in-tools.md)

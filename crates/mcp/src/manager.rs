@@ -3,7 +3,6 @@ use crate::protocol::{
     McpCallOutput, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
 use futures_util::FutureExt;
-use haven_llm::{McpToolCaller, McpToolOutcome};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
@@ -1311,29 +1310,6 @@ impl McpManager {
             .await
             .ok_or_else(|| anyhow::anyhow!("MCP client '{}' not found", client_name))?;
         client.call_tool(tool_name, input, cancel).await
-    }
-}
-
-/// Bridge from the llm crate's generic MCP tool surface into the live
-/// `McpManager`, so the STT `mcp` provider can be built without the llm
-/// crate depending on tools.
-#[async_trait::async_trait]
-impl McpToolCaller for McpManager {
-    async fn invoke_tool(
-        &self,
-        server_name: &str,
-        tool_name: &str,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<McpToolOutcome> {
-        let result = self
-            .call_tool(server_name, tool_name, input, cancel)
-            .await?;
-        Ok(McpToolOutcome {
-            success: result.success,
-            error: result.error,
-            output: result.output,
-        })
     }
 }
 

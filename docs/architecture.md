@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.28 | 日期: 2026-10-11
+> 版本: v1.29 | 日期: 2026-10-13
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -23,7 +23,7 @@ haven-platform ──► haven-common（credential store 端口）
 
 haven-agent ──► haven-tools, haven-memory, haven-messaging, haven-llm, haven-common
 haven-tools ──► haven-input, haven-mcp, haven-memory, haven-messaging, haven-skills, haven-llm, haven-common, haven-platform
-haven-mcp   ──► haven-llm, haven-common, haven-platform
+haven-mcp   ──► haven-common, haven-platform
 haven-messaging ──► haven-common
 haven-input / haven-llm / haven-memory ──► haven-common
 haven-skills ──► haven-common, haven-platform
@@ -39,7 +39,7 @@ haven-skills ──► haven-common, haven-platform
 | `haven-memory` | `haven-common` | 持久化（当前 SQLite schema、版本拒绝与 reset contract、仓库） |
 | `haven-skills` | `haven-common`, `haven-platform` | 技能目录解析、变更检测与 venv 子进程 containment；Skills root API 拥有目录变更判断，`venv` 是私有实现模块 |
 | `haven-messaging` | `haven-common` | 消息服务与 inbox transport |
-| `haven-mcp` | `haven-common`, `haven-llm`, `haven-platform` | MCP 客户端 / 传输（媒体能力复用 LLM 协议） |
+| `haven-mcp` | `haven-common`, `haven-platform` | MCP 客户端 / 传输；不依赖消费方接口 |
 | `haven-input` | `haven-common` | 录音 / VAD / PCM/WAV 采集（不实现 provider 或转写） |
 | `haven-tools` | `haven-common`, `haven-input`, `haven-llm`, `haven-mcp`, `haven-memory`, `haven-messaging`, `haven-platform`, `haven-skills` | 工具注册表 + 各内置工具 |
 | `haven-agent` | `haven-common`, `haven-llm`, `haven-memory`, `haven-messaging`, `haven-tools` | ReAct 循环 + 会话执行 |
@@ -48,8 +48,9 @@ haven-skills ──► haven-common, haven-platform
 > 表格是内部 crate 直接依赖的校验基准；`scripts/check-crate-dependencies.ps1` 从此表读取期望边，
 > 并与 Cargo workspace metadata 做精确比对。外部依赖不列入内部边集合。依赖图是该表的概览。
 > 依据 `crates/*/Cargo.toml` 实际 workspace 依赖整理。`haven-agent` 与 `haven-app-binary` 是最上层，
-> 其余全部是它们的底层依赖。`haven-llm` 不允许被业务 crate 反向依赖。
-> 语音转写的运行时调用路径是 app → tools → llm；`haven-input` 只产出采集结果，不直接依赖 `haven-llm`。
+> 其余全部是它们的底层依赖。`haven-llm` 不依赖 MCP、Tools 或 Agent；LLM-owned 的 STT MCP caller
+> 由 Tools 装配 wrapper 适配到 `McpManager`。语音转写运行时调用路径仍是 app → tools → llm；
+> `haven-input` 只产出采集结果，不直接依赖 `haven-llm`。
 
 `haven-platform` 只依赖 common 中稳定的 `CredentialStore` 端口与 credential reference validator，
 不依赖 Tools、MCP 或 Tauri。Windows adapter 用 Credential Manager 保存密钥；其他平台对带凭据配置
@@ -860,7 +861,8 @@ native admin authorization、连接副作用和 status event。`refresh_mcp_serv
 `ToolsFacade::transcribe_recording` 把采集到的 WAV 交给工具边界。云端 STT（Whisper / Groq /
 Gemini / Deepgram / AssemblyAI）与 chat 共用 `adapter_for` 分发；`provider_name = "llm"` 走
 `LlmRouter::transcribe_audio`（原生 `transcribe`，否则 multimodal chat 回退）。
-MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。两条录音路径的生命周期仍显式
+MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`），Tools 在组合 MCP manager 时用私有 wrapper
+实现该 LLM-owned 接口。两条录音路径的生命周期仍显式
 不同：UI 麦克风是 `voice input`，只提交转写文本并用 `rec-*` 关联事件；`media.record` 是
 `recorded media asset`，先登记 WAV 并返回可复用的 `asset_id`，再附带转写结果。`record`
 只依赖采集管线，转写不可用时仍可保留资产并返回结构化 capability 状态。

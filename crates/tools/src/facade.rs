@@ -416,7 +416,7 @@ impl ToolServices {
             mcp: Arc::new(SharedMcpRuntimePort {
                 manager: mcp_manager.clone(),
             }),
-            mcp_tool_caller: Arc::new(mcp_manager),
+            mcp_tool_caller: crate::mcp_llm_adapter::adapt(mcp_manager.clone()),
             skills: Arc::new(SharedSkillCatalogPort {
                 registry: coordinator.builtins.skill_registry.clone(),
             }),
