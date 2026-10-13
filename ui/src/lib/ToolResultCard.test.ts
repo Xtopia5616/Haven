@@ -1436,6 +1436,33 @@ describe('ToolResultCard collapsible', () => {
 });
 
 describe('ToolResultCard files', () => {
+	it('keeps file search rows distinct when path and line concatenations collide', () => {
+		const { container } = render(ToolFileSearchResult, {
+			data: {
+				results: [
+					{ path: '/a1', line: 23 },
+					{ path: '/a12', line: 3 },
+				],
+			},
+		});
+
+		expect(container.querySelectorAll('.tool-result-search-row')).toHaveLength(2);
+	});
+
+	it('keeps web citations distinct when concatenated fields collide or repeat', () => {
+		const { container } = render(ToolWebSearchResult, {
+			data: {
+				results: [
+					{ url: 'https://a1', title: '23', snippet: 'first' },
+					{ url: 'https://a12', title: '3', snippet: 'second' },
+					{ url: 'https://a12', title: '3', snippet: 'second' },
+				],
+			},
+		});
+
+		expect(container.querySelectorAll('.tool-result-search-row')).toHaveLength(3);
+	});
+
 	it('renders tool hints only when the dynamic value is text', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'files',

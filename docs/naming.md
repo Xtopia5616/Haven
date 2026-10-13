@@ -425,6 +425,7 @@ Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalT
 - 从共享 discriminated union 提取给不同 reducer 使用的私有动作子集，以 `<Domain>ReducerAction` 标明实际消费者；`Action`、`Props` 等短名只在明确的组件或模块作用域内作为私有局部类型使用。
 - 静态词表 / 固定选项常量 → **UPPER_SNAKE_CASE**：`SESSION_STATUS_VALUES`、`COLOR_MAP`、`ROLE_KEYS`；普通局部值仍用 camelCase。
 - 局部变量 / 函数参数 → **camelCase**：`newKeyValue`、`reasoningOpen`、`ctxMenuItems`。
+- Svelte keyed each 的行 key 必须稳定且无歧义：优先使用真实实体身份；没有实体 ID 时，使用带边界编码的语义字段 tuple。Composer 草稿附件在加入时分配 renderer-only 本地 key，移除按 key 定位，提交时剥离；不以位置、内容拼接或文件名单独作为列表身份（ADR 1120）。
 
 ### 路由
 遵循 SvelteKit 约定：`+page.svelte`、`+layout.svelte`。当前工作区只保留根路由，设置、工具和记忆通过根路由的 `?tab=` 查询参数切换，不保留旧的目录路由。

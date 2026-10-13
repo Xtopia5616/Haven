@@ -41,7 +41,7 @@
 	<ToolResultList items={resultList}>
 		{#snippet children(visibleResults)}
 			<div class="tool-result-scroll-area">
-				{#each visibleResults as result (result.path + (result.line ?? ''))}
+				{#each visibleResults as result (JSON.stringify([result.path, result.line ?? null]))}
 					<div class="tool-result-search-row">
 						<ExternalRef class="tool-result-search-path" target={result.path} />
 						{#if result.line != null}

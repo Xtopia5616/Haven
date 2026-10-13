@@ -142,6 +142,104 @@ describe('Composer context menu', () => {
 });
 
 describe('Composer attachment intake', () => {
+	it('keeps same-name file preview identity stable and omits local keys on submit', async () => {
+		const onsubmit = vi.fn();
+		const readers: FileReader[] = [];
+		const readAsDataURL = vi
+			.spyOn(FileReader.prototype, 'readAsDataURL')
+			.mockImplementation(function (this: FileReader) {
+				readers.push(this);
+			});
+
+		try {
+			const { container } = render(Composer, { onsubmit });
+			const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+			await fireEvent.change(fileInput, {
+				target: {
+					files: [
+						new File(['first'], 'same.txt', { type: 'text/plain' }),
+						new File(['second'], 'same.txt', { type: 'text/plain' }),
+					],
+				},
+			});
+			await vi.waitFor(() => expect(readers).toHaveLength(1));
+
+			Object.defineProperty(readers[0], 'result', {
+				configurable: true,
+				value: 'data:text/plain;base64,Zmlyc3Q=',
+			});
+			readers[0].dispatchEvent(new ProgressEvent('load'));
+			await vi.waitFor(() => expect(readers).toHaveLength(2));
+
+			Object.defineProperty(readers[1], 'result', {
+				configurable: true,
+				value: 'data:text/plain;base64,c2Vjb25k',
+			});
+			readers[1].dispatchEvent(new ProgressEvent('load'));
+			await vi.waitFor(() => expect(container.querySelectorAll('.file-preview')).toHaveLength(2));
+
+			const remainingPreview = container.querySelectorAll('.file-preview')[1];
+			await fireEvent.click(screen.getAllByRole('button', { name: '移除文件' })[0]);
+			expect(container.querySelector('.file-preview')).toBe(remainingPreview);
+
+			await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+			expect(onsubmit).toHaveBeenCalledWith({
+				text: '',
+				images: [],
+				files: [{ media_type: 'text/plain', data: 'c2Vjb25k', filename: 'same.txt' }],
+			});
+		} finally {
+			readAsDataURL.mockRestore();
+		}
+	});
+
+	it('keeps identical image preview identity stable and omits local keys on submit', async () => {
+		const onsubmit = vi.fn();
+		const readers: FileReader[] = [];
+		const readAsDataURL = vi
+			.spyOn(FileReader.prototype, 'readAsDataURL')
+			.mockImplementation(function (this: FileReader) {
+				readers.push(this);
+			});
+
+		try {
+			const { container } = render(Composer, { onsubmit });
+			const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+			await fireEvent.change(fileInput, {
+				target: {
+					files: [
+						new File(['same image'], 'first.png', { type: 'image/png' }),
+						new File(['same image'], 'second.png', { type: 'image/png' }),
+					],
+				},
+			});
+			await vi.waitFor(() => expect(readers).toHaveLength(1));
+
+			for (let index = 0; index < 2; index += 1) {
+				Object.defineProperty(readers[index], 'result', {
+					configurable: true,
+					value: 'data:image/png;base64,c2FtZS1pbWFnZQ==',
+				});
+				readers[index].dispatchEvent(new ProgressEvent('load'));
+				if (index === 0) await vi.waitFor(() => expect(readers).toHaveLength(2));
+			}
+			await vi.waitFor(() => expect(container.querySelectorAll('.image-preview')).toHaveLength(2));
+
+			const remainingPreview = container.querySelectorAll('.image-preview')[1];
+			await fireEvent.click(screen.getAllByRole('button', { name: '移除图片' })[0]);
+			expect(container.querySelector('.image-preview')).toBe(remainingPreview);
+
+			await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+			expect(onsubmit).toHaveBeenCalledWith({
+				text: '',
+				images: [{ media_type: 'image/png', data: 'c2FtZS1pbWFnZQ==' }],
+				files: [],
+			});
+		} finally {
+			readAsDataURL.mockRestore();
+		}
+	});
+
 	it('keeps a draft from submitting until selected attachments finish reading', async () => {
 		const onsubmit = vi.fn();
 		const readers: FileReader[] = [];

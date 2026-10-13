@@ -16,8 +16,13 @@
 	import type { ChatAttachmentPayload, ChatFileAttachment } from '$lib/chatAttachmentTypes.ts';
 	import { DRAFT_SESSION_ID } from '$lib/sessionReducer.ts';
 
+	interface PendingChatImageAttachment extends ChatAttachmentPayload {
+		previewKey: string;
+	}
+
 	interface PendingChatFileAttachment extends ChatFileAttachment {
 		size: number;
+		previewKey: string;
 	}
 
 	interface ComposerSubmitPayload {
@@ -82,12 +87,17 @@
 	// Pending image attachments (multimodal): [{ mediaType, data }] with data
 	// holding base64 bytes (no data: prefix). Filled by paste / file picker,
 	// sent along with the next message, cleared on submit.
-	let pendingImages = $state<ChatAttachmentPayload[]>([]);
+	let pendingImages = $state<PendingChatImageAttachment[]>([]);
 
 	// Pending non-image attachments: [{ media_type, data, filename, size }].
 	// Ordinary files are persisted by the backend and handed to the agent as a
 	// managed asset; audio/video keep their base64 payload for multimodal chat.
 	let pendingFiles = $state<PendingChatFileAttachment[]>([]);
+	let nextAttachmentPreviewKey = 0;
+
+	function newAttachmentPreviewKey(): string {
+		return `draft-attachment-${++nextAttachmentPreviewKey}`;
+	}
 	// Reserve slots while asynchronous reads are in flight so overlapping
 	// picker/paste events cannot exceed the configured attachment limits.
 	let pendingImageReads = 0;
@@ -286,7 +296,10 @@
 		pendingAttachmentReads += imageFiles.length;
 		for (const f of imageFiles) {
 			try {
-				pendingImages = [...pendingImages, await fileToAttachment(f)];
+				pendingImages = [
+					...pendingImages,
+					{ ...(await fileToAttachment(f)), previewKey: newAttachmentPreviewKey() },
+				];
 			} catch (e) {
 				reportError(e, { context: 'Composer', message: '图片读取失败' });
 			} finally {
@@ -312,8 +325,8 @@
 		}
 	}
 
-	function removePendingImage(index: number) {
-		pendingImages = pendingImages.filter((_, i) => i !== index);
+	function removePendingImage(previewKey: string) {
+		pendingImages = pendingImages.filter((image) => image.previewKey !== previewKey);
 	}
 
 	function formatFileSize(bytes: number): string {
@@ -350,7 +363,13 @@
 				const { media_type, data } = await readAsAttachment(f);
 				pendingFiles = [
 					...pendingFiles,
-					{ media_type, data, filename: f.name, size: f.size },
+					{
+						media_type,
+						data,
+						filename: f.name,
+						size: f.size,
+						previewKey: newAttachmentPreviewKey(),
+					},
 				];
 			} catch (e) {
 				reportError(e, { context: 'Composer', message: '文件读取失败' });
@@ -374,8 +393,8 @@
 		input.value = '';
 	}
 
-	function removePendingFile(index: number) {
-		pendingFiles = pendingFiles.filter((_, i) => i !== index);
+	function removePendingFile(previewKey: string) {
+		pendingFiles = pendingFiles.filter((file) => file.previewKey !== previewKey);
 	}
 
 	// Collect whatever is currently pending (text, images, files) into a
@@ -387,7 +406,7 @@
 			return;
 		}
 		const text = transcriptInput.trim();
-		const images = pendingImages;
+		const images = pendingImages.map(({ media_type, data }) => ({ media_type, data }));
 		const files = pendingFiles.map(({ media_type, data, filename }) => ({
 			media_type,
 			data,
@@ -572,7 +591,7 @@
 <div class="input-area">
 	{#if pendingFiles.length > 0}
 		<div class="file-preview-row">
-			{#each pendingFiles as file, i (file.filename + i)}
+			{#each pendingFiles as file (file.previewKey)}
 				<div class="file-preview">
 					{#if (file.media_type || '').startsWith('video/') && file.data}
 						<video
@@ -608,7 +627,7 @@
 						className="file-preview-remove"
 						label="移除文件"
 						title="移除文件"
-						onclick={() => removePendingFile(i)}
+						onclick={() => removePendingFile(file.previewKey)}
 					/>
 				</div>
 			{/each}
@@ -616,14 +635,14 @@
 	{/if}
 	{#if pendingImages.length > 0}
 		<div class="image-preview-row">
-			{#each pendingImages as img, i (img.data + i)}
+			{#each pendingImages as img (img.previewKey)}
 				<div class="image-preview">
 					<img src={mediaDataUrl(img)} alt="待发送图片" />
 					<MaterialIconButton
 						icon="close"
 						className="image-preview-remove"
 						label="移除图片"
-						onclick={() => removePendingImage(i)}
+						onclick={() => removePendingImage(img.previewKey)}
 					/>
 				</div>
 			{/each}

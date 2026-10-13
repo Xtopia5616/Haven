@@ -22,7 +22,9 @@
 		<ToolResultList items={data.results}>
 			{#snippet children(visibleResults)}
 				<div class="tool-result-scroll-area">
-					{#each visibleResults as result (result.url + result.title)}
+					{#each visibleResults as result, index (
+						JSON.stringify([result.url, result.title, result.snippet ?? null, index])
+					)}
 						<div class="tool-result-search-row">
 							<ExternalRef class="tool-result-search-path" target={result.url} />
 							{#if result.title && result.title !== result.url}
