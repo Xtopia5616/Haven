@@ -358,6 +358,16 @@ pub struct ToolExecution {
     pub confirmed: Option<bool>,
 }
 
+/// Whether a scheduled tool execution may be recorded as completed.
+///
+/// `execute_gated` can return `Ok` with a failed `ToolResult`, because a
+/// rejected or blocked operation is represented as a normal tool observation
+/// for the ReAct loop. Scheduled ToolRuns must use the result's domain status,
+/// not only the outer Rust error channel.
+pub(crate) fn scheduled_tool_execution_succeeded(execution: &ToolExecution) -> bool {
+    execution.confirmed != Some(false) && execution.result.success
+}
+
 pub struct SessionSupervisor {
     /// The single durable session event boundary shared by all actors and the
     /// ReAct turn runner. Keeping one store instance also makes the live event

@@ -677,51 +677,21 @@ impl AgentLayer {
                     let _fire_guard = fire_span.enter();
                     let mut deferred = false;
                     let mut result_summary = None;
+                    let mut scheduled_tool_notification = None;
+                    let scheduled_tool_name = fired
+                        .tool_name
+                        .as_deref()
+                        .unwrap_or("未知工具")
+                        .to_string();
                     let outcome: Result<(), String> = match fired.mode {
-                        ScheduleMode::Tool => {
+                        ScheduleMode::Tool => match fired.tool_name {
+                            None => Err("缺少要调用的工具".into()),
+                            Some(tool_name) => {
                             if let Some(session_id) = fired.session_id.as_deref()
                                 && !agent.executor.session_is_live(session_id).await
                             {
-                                agent
-                                    .events
-                                    .emit_tool_run_completion_notification(
-                                        ToolRunNotificationSource::Scheduled,
-                                        &fired.tool_run_id,
-                                        fired.session_id.as_deref(),
-                                        None,
-                                        &fired.title,
-                                        "定时任务未执行：关联会话已结束或不存在。",
-                                    )
-                                    .await;
                                 Err("关联会话已结束或不存在".into())
                             } else {
-                                let tool_name = match fired.tool_name {
-                                    Some(tool_name) => tool_name,
-                                    None => {
-                                        agent
-                                            .events
-                                            .emit_tool_run_completion_notification(
-                                                ToolRunNotificationSource::Scheduled,
-                                                &fired.tool_run_id,
-                                                fired.session_id.as_deref(),
-                                                None,
-                                                &fired.title,
-                                                "定时任务未执行：缺少要调用的工具。",
-                                            )
-                                            .await;
-                                        if let Err(error) = tool_run_port
-                                            .fail_scheduled(&fired.tool_run_id, "缺少要调用的工具")
-                                            .await
-                                        {
-                                            tracing::warn!(
-                                                tool_run_id = %fired.tool_run_id,
-                                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                                                "failed to persist scheduled ToolRun failure"
-                                            );
-                                        }
-                                        continue;
-                                    }
-                                };
                                 let args = fired.tool_args.unwrap_or(Value::Null);
                                 let decision = agent
                                     .executor
@@ -735,10 +705,6 @@ impl AgentLayer {
                                     haven_tools::AuthorizationDecision::Blocked {
                                         reason, ..
                                     } => {
-                                        agent.events.emit_tool_run_completion_notification(ToolRunNotificationSource::Scheduled, &fired.tool_run_id, fired.session_id.as_deref(), None,
-                                            &fired.title,
-                                            &format!("定时任务未执行：工具“{tool_name}”被安全策略拦截（{reason}）。"),
-                                        ).await;
                                         Err(reason)
                                     }
                                     haven_tools::AuthorizationDecision::RequiresConfirmation {
@@ -761,10 +727,6 @@ impl AgentLayer {
                                             deferred = true;
                                             Ok(())
                                         } else {
-                                            agent.events.emit_tool_run_completion_notification(ToolRunNotificationSource::Scheduled, &fired.tool_run_id, fired.session_id.as_deref(), None,
-                                                &fired.title,
-                                                &format!("定时任务未执行：工具“{tool_name}”的确认被拒绝或已超时。"),
-                                            ).await;
                                             Err("确认通道不可用或确认被拒绝".into())
                                         }
                                     }
@@ -799,11 +761,19 @@ impl AgentLayer {
                                                 .await
                                             {
                                                 Ok(g) if g.confirmed == Some(false) => {
-                                                    agent.events.emit_tool_run_completion_notification(ToolRunNotificationSource::Scheduled, &fired.tool_run_id, fired.session_id.as_deref(), None,
-                                                    &fired.title,
-                                                    &format!("定时任务未执行：工具“{tool_name}”的确认被拒绝或已超时。"),
-                                                ).await;
                                                     Err("确认被拒绝或已超时".into())
+                                                }
+                                                Ok(g)
+                                                    if !crate::session::scheduled_tool_execution_succeeded(
+                                                        &g,
+                                                    ) =>
+                                                {
+                                                    Err(truncate_notification(
+                                                        &g.result.summary_text(),
+                                                        agent
+                                                            .limits()
+                                                            .notification_summary_chars,
+                                                    ))
                                                 }
                                                 Ok(g) => {
                                                     let summary = truncate_notification(
@@ -811,26 +781,18 @@ impl AgentLayer {
                                                         agent.limits().notification_summary_chars,
                                                     );
                                                     result_summary = Some(summary.clone());
-                                                    agent.events.emit_tool_run_completion_notification(ToolRunNotificationSource::Scheduled, &fired.tool_run_id, fired.session_id.as_deref(), None,
-                                                    &fired.title,
-                                                    &format!("定时任务调用工具“{tool_name}”的结果：\n{summary}"),
-                                                ).await;
                                                     Ok(())
                                                 }
                                                 Err(error) => {
-                                                    let reason = error.to_string();
-                                                    agent.events.emit_tool_run_completion_notification(ToolRunNotificationSource::Scheduled, &fired.tool_run_id, fired.session_id.as_deref(), None,
-                                                    &fired.title,
-                                                    &format!("定时任务调用工具“{tool_name}”失败：{reason}"),
-                                                ).await;
-                                                    Err(reason)
+                                                    Err(error.to_string())
                                                 }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
+                            }
+                        },
                         ScheduleMode::Continue => {
                             let message = match fired
                                 .prompt
@@ -973,6 +935,15 @@ impl AgentLayer {
                             }
                         }
                     };
+                    if matches!(fired.mode, ScheduleMode::Tool) && !deferred {
+                        scheduled_tool_notification = Some(match (&outcome, &result_summary) {
+                            (Ok(()), Some(summary)) => {
+                                format!("定时任务调用工具“{scheduled_tool_name}”的结果：\n{summary}")
+                            }
+                            (Ok(()), None) => "定时任务已完成。".to_string(),
+                            (Err(reason), _) => format!("定时任务未完成：{reason}"),
+                        });
+                    }
                     if !deferred {
                         let result = if outcome.is_ok() {
                             if let Some(result) = result_summary.as_deref() {
@@ -997,12 +968,38 @@ impl AgentLayer {
                                 .fail_scheduled(&fired.tool_run_id, &failure_reason)
                                 .await
                         };
-                        if let Err(error) = result {
-                            tracing::warn!(
-                                tool_run_id = %fired.tool_run_id,
-                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                                "failed to persist scheduled ToolRun terminal state"
-                            );
+                        let persisted = match result {
+                            Ok(true) => true,
+                            Ok(false) => {
+                                tracing::debug!(
+                                    tool_run_id = %fired.tool_run_id,
+                                    "scheduled ToolRun terminal transition was already won"
+                                );
+                                false
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    tool_run_id = %fired.tool_run_id,
+                                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                                    "failed to persist scheduled ToolRun terminal state"
+                                );
+                                false
+                            }
+                        };
+                        if persisted
+                            && let Some(body) = scheduled_tool_notification.as_deref()
+                        {
+                            agent
+                                .events
+                                .emit_tool_run_completion_notification(
+                                    ToolRunNotificationSource::Scheduled,
+                                    &fired.tool_run_id,
+                                    fired.session_id.as_deref(),
+                                    None,
+                                    &fired.title,
+                                    body,
+                                )
+                                .await;
                         }
                     }
                 }

@@ -1777,23 +1777,25 @@ impl SessionSupervisor {
             ),
             _ => return,
         };
-        let tool_run_service = self.tool_runs.clone();
         if confirmed
             && let Some(live_session_id) = session_id.as_deref()
             && !self.session_is_live(live_session_id).await
         {
-            self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
-                tool_run_id: tool_run_id.clone(),
-                session_id: session_id.clone(),
-                title,
-                body: format!(
-                    "Scheduled tool '{}' was NOT executed: its session is no longer active.",
-                    tool_name
-                ),
-            });
-            let _ = tool_run_service
-                .fail_scheduled(&tool_run_id, "关联会话已结束或不存在")
-                .await;
+            let body = format!(
+                "Scheduled tool '{}' was NOT executed: its session is no longer active.",
+                tool_name
+            );
+            if self
+                .persist_scheduled_terminal_state(&tool_run_id, Err("关联会话已结束或不存在"))
+                .await
+            {
+                self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
+                    tool_run_id,
+                    session_id,
+                    title,
+                    body,
+                });
+            }
             return;
         }
         if !confirmed {
@@ -1802,22 +1804,24 @@ impl SessionSupervisor {
             } else {
                 "confirmation was declined"
             };
-            self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
-                tool_run_id: tool_run_id.clone(),
-                session_id: session_id.clone(),
-                title,
-                body: format!("Scheduled tool '{tool_name}' was NOT executed: {reason}."),
-            });
-            let _ = tool_run_service
-                .fail_scheduled(
+            if self
+                .persist_scheduled_terminal_state(
                     &tool_run_id,
-                    if expired {
+                    Err(if expired {
                         "确认超时"
                     } else {
                         "确认被拒绝"
-                    },
+                    }),
                 )
-                .await;
+                .await
+            {
+                self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
+                    tool_run_id,
+                    session_id,
+                    title,
+                    body: format!("Scheduled tool '{tool_name}' was NOT executed: {reason}."),
+                });
+            }
             return;
         }
         let outcome = self
@@ -1838,36 +1842,72 @@ impl SessionSupervisor {
         let summary_chars = self
             .notification_summary_chars
             .load(std::sync::atomic::Ordering::Relaxed);
-        let succeeded = outcome.is_ok();
+        let succeeded = outcome
+            .as_ref()
+            .is_ok_and(crate::session::scheduled_tool_execution_succeeded);
         let mut result_summary = None;
         let body = match outcome {
-            Ok(g) => {
+            Ok(g) if succeeded => {
                 let summary = crate::truncate_notification(&g.result.summary_text(), summary_chars);
                 result_summary = Some(summary.clone());
                 format!("schedule tool '{tool_name}':\n{summary}")
             }
+            Ok(g) => {
+                let summary = crate::truncate_notification(&g.result.summary_text(), summary_chars);
+                format!("schedule tool '{tool_name}' failed: {summary}")
+            }
             Err(e) => format!("schedule tool '{tool_name}' failed: {e}"),
         };
-        if succeeded {
-            if let Some(result) = result_summary.as_deref() {
-                let _ = tool_run_service
-                    .complete_scheduled_with_result(&tool_run_id, result)
-                    .await;
-            } else {
-                let _ = tool_run_service.complete_scheduled(&tool_run_id).await;
-            }
+        let persisted = if succeeded {
+            self.persist_scheduled_terminal_state(&tool_run_id, Ok(result_summary.as_deref()))
+                .await
         } else {
             let failure_summary = crate::truncate_notification(&body, summary_chars);
-            let _ = tool_run_service
-                .fail_scheduled(&tool_run_id, &failure_summary)
-                .await;
+            self.persist_scheduled_terminal_state(&tool_run_id, Err(&failure_summary))
+                .await
+        };
+        if persisted {
+            self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
+                tool_run_id,
+                session_id,
+                title,
+                body,
+            });
         }
-        self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
-            tool_run_id,
-            session_id,
-            title,
-            body,
-        });
+    }
+
+    async fn persist_scheduled_terminal_state(
+        &self,
+        tool_run_id: &str,
+        outcome: Result<Option<&str>, &str>,
+    ) -> bool {
+        let transition = match outcome {
+            Ok(Some(summary)) => {
+                self.tool_runs
+                    .complete_scheduled_with_result(tool_run_id, summary)
+                    .await
+            }
+            Ok(None) => self.tool_runs.complete_scheduled(tool_run_id).await,
+            Err(reason) => self.tool_runs.fail_scheduled(tool_run_id, reason).await,
+        };
+        match transition {
+            Ok(true) => true,
+            Ok(false) => {
+                tracing::debug!(
+                    tool_run_id,
+                    "scheduled ToolRun terminal transition was already won"
+                );
+                false
+            }
+            Err(error) => {
+                tracing::warn!(
+                    tool_run_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to persist scheduled ToolRun terminal state"
+                );
+                false
+            }
+        }
     }
 
     /// Check authorization using the turn's immutable catalog snapshot. The
@@ -1950,6 +1990,7 @@ mod scheduled_authorization_tests {
         name: String,
         risk_level: RiskLevel,
         on_execute: Option<Arc<dyn Fn() + Send + Sync>>,
+        result: Option<ToolResult>,
     }
 
     #[async_trait::async_trait]
@@ -1973,7 +2014,13 @@ mod scheduled_authorization_tests {
         ) -> anyhow::Result<haven_tools::ToolResult> {
             if let Some(on_execute) = &self.on_execute {
                 on_execute();
-                return Ok(haven_tools::ToolResult::ok(json!({"ok": true})));
+                return Ok(self
+                    .result
+                    .clone()
+                    .unwrap_or_else(|| haven_tools::ToolResult::ok(json!({"ok": true}))));
+            }
+            if let Some(result) = &self.result {
+                return Ok(result.clone());
             }
             unreachable!("scheduled authorization tests never execute a tool")
         }
@@ -2018,6 +2065,7 @@ mod scheduled_authorization_tests {
                     on_execute: Some(Arc::new(move || {
                         executed_by_tool.store(true, std::sync::atomic::Ordering::SeqCst);
                     })),
+                    result: None,
                 }),
             )
             .await;
@@ -2122,6 +2170,84 @@ mod scheduled_authorization_tests {
     }
 
     #[tokio::test]
+    async fn scheduled_confirmation_persists_failed_tool_result_as_failed() {
+        let (supervisor, tools, _database, _directory) = test_supervisor();
+        let session = supervisor
+            .create_session("scheduled failed result status")
+            .await
+            .unwrap();
+        let tool_name = "scheduled.failed-result";
+        let input = json!({"operation": "test"});
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                &session.session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::High,
+                    on_execute: Some(Arc::new(|| {})),
+                    result: Some(ToolResult::failed(
+                        json!({"error": "expected failure"}),
+                        "expected tool failure",
+                    )),
+                }),
+            )
+            .await;
+
+        let authorization_request = supervisor
+            .scheduled_authorization_request(Some(&session.session_id), tool_name, &input)
+            .await
+            .unwrap();
+        let receipt = match supervisor
+            .authorization
+            .authorize(&authorization_request)
+            .await
+        {
+            AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
+            decision => panic!("expected confirmation, got {decision:?}"),
+        };
+        let tool_run_id =
+            running_scheduled_tool_run(&supervisor, Some(&session.session_id), tool_name).await;
+        let request = crate::interaction::InteractionRequest::scheduled_confirm(
+            tool_run_id.clone(),
+            Some(&session.session_id),
+            tool_name.into(),
+            input,
+            receipt,
+            "failed result test".into(),
+        );
+        let mut events = supervisor.subscribe_events();
+
+        supervisor
+            .finish_scheduled_confirm(request.clone(), true, false)
+            .await;
+
+        assert_eq!(
+            supervisor
+                .tool_run_test_support()
+                .status_view(&tool_run_id)
+                .await
+                .status(),
+            Some(haven_common::lifecycle::ToolRunStatus::Failed)
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Ok(SessionSupervisorEvent::ScheduledConfirmOutcome { .. })
+        ));
+
+        // A competing terminal transition that already won must not produce
+        // a second user-visible completion event.
+        supervisor
+            .finish_scheduled_confirm(request, false, false)
+            .await;
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
     async fn scheduled_authorization_preserves_request_and_decision_behavior() {
         let (supervisor, tools, _database, _directory) = test_supervisor();
         let session_id = "ses-00000000000000000000000000000001";
@@ -2136,6 +2262,7 @@ mod scheduled_authorization_tests {
                     name: tool_name.into(),
                     risk_level: RiskLevel::Critical,
                     on_execute: None,
+                    result: None,
                 }),
             )
             .await;
@@ -2174,6 +2301,7 @@ mod scheduled_authorization_tests {
                     name: safe_tool_name.into(),
                     risk_level: RiskLevel::Safe,
                     on_execute: None,
+                    result: None,
                 }),
             )
             .await;
@@ -2237,6 +2365,7 @@ mod scheduled_authorization_tests {
                             std::sync::atomic::Ordering::SeqCst,
                         );
                     })),
+                    result: None,
                 }),
             )
             .await;
@@ -2443,6 +2572,7 @@ mod scheduled_authorization_tests {
                     name: tool_name.into(),
                     risk_level: RiskLevel::High,
                     on_execute: None,
+                    result: None,
                 }),
             )
             .await;
@@ -2684,6 +2814,7 @@ mod scheduled_authorization_tests {
                     on_execute: Some(Arc::new(move || {
                         executed.store(true, std::sync::atomic::Ordering::SeqCst);
                     })),
+                    result: None,
                 }),
             )
             .await;
