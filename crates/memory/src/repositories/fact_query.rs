@@ -183,24 +183,24 @@ impl Database {
 
     /// Fetch multiple facts by id in one query. The result is in database row
     /// order; callers that need ranking should use `list_facts_by_subject`/search APIs.
-    pub fn list_facts_by_ids(&self, ids: &[String]) -> anyhow::Result<Vec<Fact>> {
-        if ids.is_empty() {
+    pub fn list_facts_by_ids(&self, fact_ids: &[String]) -> anyhow::Result<Vec<Fact>> {
+        if fact_ids.is_empty() {
             return Ok(Vec::new());
         }
         anyhow::ensure!(
-            ids.iter().all(|id| is_canonical_id(id, "fact")),
+            fact_ids.iter().all(|id| is_canonical_id(id, "fact")),
             "fact ids must be canonical"
         );
         let conn = self.conn();
-        let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
+        let placeholders: Vec<String> = (1..=fact_ids.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
             "SELECT {FACT_COLS} FROM facts WHERE id IN ({})",
             placeholders.join(",")
         );
         let mut stmt = conn.prepare(&sql)?;
-        let params = rusqlite::params_from_iter(ids.iter().map(|s| s.as_str()));
+        let params = rusqlite::params_from_iter(fact_ids.iter().map(|s| s.as_str()));
         let mut rows = stmt.query(params)?;
-        let mut out = Vec::with_capacity(ids.len());
+        let mut out = Vec::with_capacity(fact_ids.len());
         while let Some(row) = rows.next()? {
             out.push(fact_from_row(row)?);
         }

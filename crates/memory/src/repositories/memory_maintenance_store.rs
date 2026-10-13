@@ -137,8 +137,8 @@ impl MemoryMaintenanceStore {
 
     /// Demote the selected fact ids after the caller has applied its policy
     /// gate. An empty list retains the repository's zero-count behavior.
-    pub async fn demote_fact_ids(&self, ids: Vec<String>) -> anyhow::Result<u64> {
-        self.run_blocking_operation(None, move |db| db.demote_fact_ids(ids))
+    pub async fn demote_fact_ids(&self, fact_ids: Vec<String>) -> anyhow::Result<u64> {
+        self.run_blocking_operation(None, move |db| db.demote_fact_ids(fact_ids))
             .await
     }
 

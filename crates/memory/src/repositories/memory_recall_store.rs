@@ -70,10 +70,10 @@ impl MemoryRecallStore {
 
     /// Hydrate candidate facts by id and filter/redact them before they leave
     /// the Memory boundary. Database row order is preserved.
-    pub async fn visible_facts_by_ids(&self, ids: Vec<String>) -> anyhow::Result<Vec<Fact>> {
+    pub async fn visible_facts_by_ids(&self, fact_ids: Vec<String>) -> anyhow::Result<Vec<Fact>> {
         self.db
             .run_blocking(move |db| {
-                let facts = db.list_facts_by_ids(&ids)?;
+                let facts = db.list_facts_by_ids(&fact_ids)?;
                 Ok(crate::repositories::facts::filter_visible_facts(facts))
             })
             .await

@@ -160,7 +160,7 @@ impl Database {
                 "invalid parent session id"
             );
         }
-        let id = haven_common::types::new_id("ses");
+        let session_id = haven_common::types::new_id("ses");
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
@@ -181,7 +181,14 @@ impl Database {
                 "INSERT INTO sessions (
                     id, input_text, status, created_at, updated_at, origin, parent_session_id
                  ) VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6)",
-                rusqlite::params![id, input_text, now, now, origin_kind, parent_session_id],
+                rusqlite::params![
+                    session_id,
+                    input_text,
+                    now,
+                    now,
+                    origin_kind,
+                    parent_session_id
+                ],
             )?;
             Ok(())
         })();
@@ -196,7 +203,7 @@ impl Database {
         drop(conn);
         self.cache_invalidate_session_history_page();
         Ok(Session {
-            session_id: id,
+            session_id,
             input_text: input_text.into(),
             title: None,
             status: SessionStatus::Pending,

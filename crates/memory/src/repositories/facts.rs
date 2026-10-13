@@ -455,12 +455,12 @@ impl Database {
     /// Halve (or scale by `factor`) confidence for specific fact ids. Used by
     /// the maintenance LLM arbitrator after gated proposals. Preserves SPO and
     /// provenance. Returns how many rows were updated.
-    pub fn demote_fact_ids(&self, ids: Vec<String>) -> anyhow::Result<u64> {
+    pub fn demote_fact_ids(&self, fact_ids: Vec<String>) -> anyhow::Result<u64> {
         anyhow::ensure!(
-            ids.iter().all(|id| is_canonical_id(id, "fact")),
+            fact_ids.iter().all(|id| is_canonical_id(id, "fact")),
             "fact ids must be canonical"
         );
-        self.with_fact_write(|| FactMaintenance::new(self).demote_fact_ids(ids))
+        self.with_fact_write(|| FactMaintenance::new(self).demote_fact_ids(fact_ids))
     }
 }
 

@@ -95,7 +95,7 @@ pub struct ToolStepWrite {
 
 #[derive(Clone, Copy)]
 struct ToolStepFields<'a> {
-    id: &'a str,
+    step_id: &'a str,
     session_id: &'a str,
     step_number: u32,
     tool_index: i32,
@@ -136,7 +136,7 @@ impl Database {
         ignore_existing: bool,
     ) -> anyhow::Result<String> {
         ensure_session_id(fields.session_id)?;
-        ensure_step_id(fields.id)?;
+        ensure_step_id(fields.step_id)?;
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<String> {
@@ -151,7 +151,7 @@ impl Database {
             conn.execute(
                 sql,
                 rusqlite::params![
-                    fields.id,
+                    fields.step_id,
                     fields.session_id,
                     fields.step_number,
                     fields.tool_index,
@@ -185,7 +185,7 @@ impl Database {
     #[cfg(any(test, feature = "test-support"))]
     fn tool_step_from_fields(fields: ToolStepFields<'_>, created_at: String) -> SessionStep {
         SessionStep {
-            step_id: fields.id.into(),
+            step_id: fields.step_id.into(),
             session_id: fields.session_id.into(),
             step_number: fields.step_number,
             tool_index: fields.tool_index,
@@ -206,13 +206,17 @@ impl Database {
 
     fn update_pending_confirmation(
         conn: &rusqlite::Connection,
-        id: &str,
+        step_id: &str,
         confirmed: Option<bool>,
     ) -> anyhow::Result<()> {
         if let Some(confirmed) = confirmed {
             conn.execute(
                 "UPDATE session_steps SET confirmed = ?1 WHERE id = ?2 AND status = ?3",
-                rusqlite::params![confirmed as i32, id, SessionStepStatus::Pending.as_str()],
+                rusqlite::params![
+                    confirmed as i32,
+                    step_id,
+                    SessionStepStatus::Pending.as_str()
+                ],
             )?;
         }
         Ok(())
@@ -231,12 +235,12 @@ impl Database {
                 rusqlite::params![
                     fields.tool_index,
                     fields.tool_call_id,
-                    fields.id,
+                    fields.step_id,
                     SessionStepStatus::Pending.as_str()
                 ],
             )?;
         }
-        Self::update_pending_confirmation(&conn, fields.id, fields.confirmed)
+        Self::update_pending_confirmation(&conn, fields.step_id, fields.confirmed)
     }
 
     /// Create a thought-only step row under a PRE-MINTED id.
@@ -327,7 +331,7 @@ impl Database {
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("step"));
         let fields = ToolStepFields {
-            id: &id,
+            step_id: &id,
             session_id,
             step_number,
             tool_index: 0,
@@ -360,7 +364,7 @@ impl Database {
     ) -> anyhow::Result<()> {
         self.ensure_tool_step_record(
             ToolStepFields {
-                id,
+                step_id: id,
                 session_id,
                 step_number,
                 tool_index,
