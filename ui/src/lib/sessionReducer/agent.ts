@@ -321,12 +321,13 @@ export function reduceAgent(
 		}
 		case 'agent/web-search': {
 			const payload = action.payload;
-			if (!payload.sessionId || !payload.callId) return state;
+			if (!payload.sessionId || (!payload.callId && payload.callIndex === undefined)) return state;
 			const searchId = webSearchId(
 				payload.sessionId,
 				payload.stepNumber,
 				payload.runId,
 				payload.callId,
+				payload.callIndex,
 			);
 			const ids = blockIdsOf(state, payload.sessionId, payload.stepNumber, payload.runId);
 			return withMessages(state, payload.sessionId, (messages) => {

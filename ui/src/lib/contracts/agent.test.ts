@@ -951,4 +951,31 @@ describe('agent IPC contract', () => {
 		});
 		expect(unknown).toBeNull();
 	});
+
+	it('validates the web-search fallback index and rejects conflicting identity fields', () => {
+		const base = {
+			session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+			phase: 'completed',
+			step_number: 2,
+			run_id: 3,
+		};
+		const invalidIndex = mapAgentEventContract({
+			event: 'agent:web_search',
+			id: 15,
+			payload: { ...base, call_index: -1 },
+		});
+		const validFallback = mapAgentEventContract({
+			event: 'agent:web_search',
+			id: 17,
+			payload: { ...base, call_index: 0 },
+		});
+		const conflictingIdentity = mapAgentEventContract({
+			event: 'agent:web_search',
+			id: 16,
+			payload: { ...base, call_id: 'provider-1', call_index: 0 },
+		});
+		expect(invalidIndex).toBeNull();
+		expect(validFallback?.payload).toMatchObject({ callIndex: 0 });
+		expect(conflictingIdentity).toBeNull();
+	});
 });

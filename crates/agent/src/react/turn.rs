@@ -68,19 +68,31 @@ impl ReActEngine {
         web_search_calls: &[serde_json::Value],
     ) -> Vec<crate::event::AgentEvent> {
         let mut events = Vec::new();
-        for item in web_search_calls {
+        for (item_index, item) in web_search_calls.iter().enumerate() {
             let Some(result) = haven_llm::web_search_result_of(item) else {
                 continue;
+            };
+            let call_id = item
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|call_id| !call_id.is_empty())
+                .map(str::to_string);
+            let call_index = if call_id.is_none() {
+                let Ok(call_index) = u32::try_from(item_index) else {
+                    tracing::warn!(item_index, "web-search item index exceeds u32");
+                    continue;
+                };
+                Some(call_index)
+            } else {
+                None
             };
             events.push(crate::event::AgentEvent::WebSearch {
                 session_id: session_id.to_string(),
                 phase: haven_llm::WebSearchPhase::Completed,
                 step_number,
                 run_id,
-                call_id: item
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string),
+                call_id,
+                call_index,
                 action: item
                     .pointer("/action/type")
                     .and_then(serde_json::Value::as_str)
@@ -621,5 +633,60 @@ mod search_context_tests {
                 .is_some_and(|message_id| message_id.starts_with("step-")),
             "synthetic final must carry its shared thought-step message identity"
         );
+    }
+
+    #[test]
+    fn completed_search_results_without_provider_ids_receive_distinct_call_indices() {
+        let events = ReActEngine::web_search_return_effects(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            7,
+            3,
+            &[
+                json!({"action": {"type": "search", "queries": ["first"], "citations": [{"title": "A", "url": "https://a.test"}]}}),
+                json!({"action": {"type": "search", "queries": ["second"], "citations": [{"title": "B", "url": "https://b.test"}]}}),
+            ],
+        );
+
+        let [
+            AgentEvent::WebSearch {
+                call_id: first_call_id,
+                call_index: Some(0),
+                result: Some(first_result),
+                ..
+            },
+            AgentEvent::WebSearch {
+                call_id: second_call_id,
+                call_index: Some(1),
+                result: Some(second_result),
+                ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("each id-less citation result must retain its response position");
+        };
+        assert_eq!(first_call_id, &None);
+        assert_eq!(second_call_id, &None);
+        assert_ne!(first_result, second_result);
+    }
+
+    #[test]
+    fn completed_search_result_uses_nonempty_provider_id_without_call_index() {
+        let events = ReActEngine::web_search_return_effects(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            7,
+            3,
+            &[
+                json!({"id": "provider-search-1", "action": {"type": "search", "queries": ["first"]}}),
+            ],
+        );
+
+        assert!(matches!(
+            events.as_slice(),
+            [AgentEvent::WebSearch {
+                call_id: Some(call_id),
+                call_index: None,
+                ..
+            }] if call_id == "provider-search-1"
+        ));
     }
 }

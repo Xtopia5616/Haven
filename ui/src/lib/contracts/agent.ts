@@ -168,6 +168,7 @@ export interface AgentWebSearchPayload {
 	stepNumber: number;
 	runId: number;
 	callId?: string;
+	callIndex?: number;
 	action?: string;
 	result?: unknown;
 }
@@ -604,7 +605,11 @@ export function mapAgentEvent(
 				stepNumber === null ||
 				runId === null ||
 				!optionalStringFieldIsValid(payload, 'call_id') ||
-				!optionalStringFieldIsValid(payload, 'action')
+				!optionalU32IsValid(payload, 'call_index') ||
+				!optionalStringFieldIsValid(payload, 'action') ||
+				(payload.call_id !== undefined &&
+					payload.call_id !== '' &&
+					payload.call_index !== undefined)
 			)
 				return null;
 			return {
@@ -615,6 +620,9 @@ export function mapAgentEvent(
 					stepNumber,
 					runId,
 					...(payload.call_id !== undefined ? { callId: payload.call_id as string } : {}),
+					...(payload.call_index !== undefined
+						? { callIndex: payload.call_index as number }
+						: {}),
 					...(payload.action !== undefined ? { action: payload.action as string } : {}),
 					...(payload.result !== undefined ? { result: payload.result } : {}),
 				},

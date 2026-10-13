@@ -1,5 +1,6 @@
-use crate::{ScheduleMode, ToolRunKind};
+use crate::ToolRunKind;
 use haven_common::lifecycle::ToolRunStatus;
+use haven_common::tool_run::ScheduleMode;
 #[cfg(test)]
 use serde_json::{Value, json};
 

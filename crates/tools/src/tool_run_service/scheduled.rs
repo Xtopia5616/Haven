@@ -100,7 +100,7 @@ impl ToolRunService {
             let persist_due_at = due_at.clone();
             let persist_title = title.clone();
             let persist_body = body.clone();
-            let persist_mode = mode.as_str().to_string();
+            let persist_mode = mode;
             let persist_session_id = session_id.clone();
             let persist_tool_name = tool_name.clone();
             let persist_prompt = prompt.clone();

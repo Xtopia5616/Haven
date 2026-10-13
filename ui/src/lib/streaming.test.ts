@@ -450,8 +450,14 @@ describe('webSearchId', () => {
 	});
 
 	it('keys one card per call id so multi-action searches stay separate', () => {
-		expect(webSearchId('t', 3, 7, 'ws_1')).toBe('tool-t-3-7-web_search-ws_1');
-		expect(webSearchId('t', 3, 7, 'ws_2')).toBe('tool-t-3-7-web_search-ws_2');
+		expect(webSearchId('t', 3, 7, 'ws_1')).toBe('tool-t-3-7-web_search-call-ws_1');
+		expect(webSearchId('t', 3, 7, 'ws_2')).toBe('tool-t-3-7-web_search-call-ws_2');
+	});
+
+	it('keeps id-less aggregate calls distinct from provider ids', () => {
+		expect(webSearchId('t', 3, 7, undefined, 0)).toBe('tool-t-3-7-web_search-index-0');
+		expect(webSearchId('t', 3, 7, undefined, 1)).toBe('tool-t-3-7-web_search-index-1');
+		expect(webSearchId('t', 3, 7, 'index-1')).toBe('tool-t-3-7-web_search-call-index-1');
 	});
 });
 
@@ -558,7 +564,7 @@ describe('insertAgentMessage / steering anchors', () => {
 		expect(m.map((x) => x.id)).toEqual([
 			'u1',
 			STEP_ID,
-			'tool-t-1-0-web_search-ws_1',
+			'tool-t-1-0-web_search-call-ws_1',
 			STEP_ID + '-1',
 			'u2',
 		]);
@@ -604,7 +610,7 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 		];
 		m = chunk(m, '根据搜索结果');
 		m = chunk(m, '，今天20度');
-		expect(m.map((x) => x.id)).toEqual([STEP_ID, 'tool-t-1-0-web_search-ws_1', STEP_ID + '-1']);
+		expect(m.map((x) => x.id)).toEqual([STEP_ID, 'tool-t-1-0-web_search-call-ws_1', STEP_ID + '-1']);
 		expect(m[0]).toMatchObject({ content: '我先查一下', streaming: false });
 		expect(m[2]).toMatchObject({ content: '根据搜索结果，今天20度', streaming: true });
 	});
@@ -627,7 +633,7 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 		m = accumulateStreamChunk(m, { ...r, delta: '，再下结论' });
 		expect(m.map((x) => x.id)).toEqual([
 			REASONING_ID,
-			'tool-t-1-0-web_search-ws_1',
+			'tool-t-1-0-web_search-call-ws_1',
 			REASONING_ID + '-1',
 		]);
 		expect(m[0]).toMatchObject({
@@ -660,7 +666,7 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 		m = accumulateStreamChunk(m, { ...r, delta: '搜前搜后完整' });
 		expect(m.map((x) => x.id)).toEqual([
 			REASONING_ID,
-			'tool-t-1-0-web_search-ws_1',
+			'tool-t-1-0-web_search-call-ws_1',
 			REASONING_ID + '-1',
 		]);
 		expect(m[0]).toMatchObject({ content: '搜前', streaming: false });
@@ -684,7 +690,7 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 		m = accumulateStreamChunk(m, { ...r, delta: '搜前搜后完整' });
 		expect(m.map((x) => x.id)).toEqual([
 			REASONING_ID,
-			'tool-t-1-0-web_search-ws_1',
+			'tool-t-1-0-web_search-call-ws_1',
 			REASONING_ID + '-1',
 		]);
 		expect(m[0]).toMatchObject({ content: '搜前', streaming: false });
@@ -719,9 +725,9 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 		m = chunk(m, '最终答案');
 		expect(m.map((x) => x.id)).toEqual([
 			STEP_ID,
-			'tool-t-1-0-web_search-ws_1',
+			'tool-t-1-0-web_search-call-ws_1',
 			STEP_ID + '-1',
-			'tool-t-1-0-web_search-ws_2',
+			'tool-t-1-0-web_search-call-ws_2',
 			STEP_ID + '-2',
 		]);
 		expect(m[2]).toMatchObject({ content: '再打开页面', streaming: false });
@@ -747,7 +753,7 @@ describe('applyThoughtSnap with websearch segments', () => {
 		const out = snap(m, '我先查一下今天20度');
 		expect(out.map((x) => x.id)).toEqual([
 			STEP_ID,
-			'tool-t-1-0-web_search-ws_1',
+			'tool-t-1-0-web_search-call-ws_1',
 			STEP_ID + '-1',
 		]);
 		expect(out[0]).toMatchObject({ content: '我先查一下', streaming: false });
@@ -773,7 +779,7 @@ describe('applyThoughtSnap with websearch segments', () => {
 		const out = snap(m, '最终回答');
 		expect(out.map((x) => x.id)).toEqual([
 			REASONING_ID,
-			'tool-t-1-0-web_search-ws_1',
+			'tool-t-1-0-web_search-call-ws_1',
 			REASONING_ID + '-1',
 			STEP_ID,
 		]);
@@ -802,7 +808,7 @@ describe('applyThoughtSnap with websearch segments', () => {
 		expect(out).toBe(before);
 		expect(out.map((x) => x.id)).toEqual([
 			STEP_ID,
-			'tool-t-1-0-web_search-ws_1',
+			'tool-t-1-0-web_search-call-ws_1',
 			STEP_ID + '-1',
 		]);
 	});

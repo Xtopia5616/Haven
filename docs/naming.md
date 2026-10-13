@@ -163,7 +163,7 @@ Session reducer 中的 `waitingReason` state/action 字段引用 generated `Sess
 
 `SessionSummary` 是 Session rail/switcher/reducer 使用的 UI projection，仅声明 `id`、`status`、`title`、`input`、`inputText` 与 `waitingReason`；runtime list、history 和 lineage 各自从 generated DTO 映射，不把蛇形 wire 字段或未消费字段整行 spread 进 reducer（ADR 0767）。
 
-定时工具运行的 `mode` 只作为行为说明：`tool` 显示“调用工具”，`continue` 显示“继续会话”。运行状态统一显示“待执行 / 运行中 / 已完成 / 失败 / 已取消”；原始枚举值只留在 wire、日志或调试详情中。
+定时工具运行的 `mode` 由 Common `ScheduleMode` 闭合枚举统一定义；Memory 同步与异步写入只接收该类型，SQLite 读取仍保留原始字符串，以便 restore 隔离未知历史值。UI 使用生成的相同枚举。`tool` 显示“调用工具”，`continue` 显示“继续会话”。运行状态统一显示“待执行 / 运行中 / 已完成 / 失败 / 已取消”；原始枚举值只留在 wire、日志或调试详情中（ADR 1126）。
 
 `SessionRun` 是 SessionSupervisor 的会话执行/准入单位；`ToolRun` 是可脱离当前 turn 持久运行的工具工作单元，二者不共享身份或生命周期。`ReActRunInput`、`ReActRunReplay`、`ReActRunOutput` 是 ReActEngine 一次循环的调用数据，不新增持久 run 实体。准入计数器、RAII permit、直接运行 lease 与 actor claim 有不同释放点，保持独立结构并按 owner 命名（ADR 0635）。
 

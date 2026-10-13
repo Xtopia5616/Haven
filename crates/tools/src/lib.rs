@@ -146,6 +146,7 @@ pub use facade::{
 };
 #[cfg(feature = "test-support")]
 pub use facade::{ToolCatalogTestSupportPort, ToolRunTestSupportPort};
+pub use haven_common::tool_run::ScheduleMode;
 #[cfg(any(test, feature = "test-support"))]
 pub use haven_mcp::McpManager;
 #[cfg(any(test, feature = "test-support"))]
@@ -205,9 +206,9 @@ pub use tool_run_service::{
     ToolRunStateView, ToolRunStatusView, ToolRunView,
 };
 pub(crate) use tool_run_service::{ToolRunCompletionReceiver, ToolRunService};
+pub use tool_run_types::ScheduledToolRunFired;
 #[cfg(feature = "test-support")]
 pub use tool_run_types::ScheduledToolRunSpec;
-pub use tool_run_types::{ScheduleMode, ScheduledToolRunFired};
 pub(crate) use tool_runtime::MemoryRecallSlot;
 pub use tool_runtime::{
     LogLevelPort, MemoryRecallPort, RuntimeCapabilities, StartupWiring, ToolControlPort,

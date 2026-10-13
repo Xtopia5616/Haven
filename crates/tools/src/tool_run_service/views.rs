@@ -1,5 +1,6 @@
 use super::*;
 use haven_common::ToolRunCompletionPayload;
+use haven_common::tool_run::ScheduleMode;
 use haven_memory::ToolRunRow;
 
 /// A bounded request for terminal ToolRun history.

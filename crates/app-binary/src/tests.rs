@@ -174,6 +174,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 step_number: 1,
                 run_id: 1,
                 call_id: Some("ws_1".into()),
+                call_index: None,
                 action: Some("search".into()),
                 result: None,
             },

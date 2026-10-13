@@ -1042,7 +1042,7 @@ mod tests {
                 watch_tool_run_id: None,
                 title: "Keep after exit".into(),
                 body: "restore me".into(),
-                mode: haven_tools::ScheduleMode::Continue,
+                mode: haven_common::tool_run::ScheduleMode::Continue,
                 session_id: Some(session.session_id.clone()),
                 tool_name: None,
                 tool_args: None,

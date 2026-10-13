@@ -64,11 +64,11 @@ pub use session::{
 pub use storage_error::sqlite_storage_failure_message;
 
 use haven_common::config::ContextLimitsConfig;
+use haven_common::tool_run::ScheduleMode;
 use haven_common::types::MessageAttachment;
 use haven_llm::LlmRouter;
 #[cfg(test)]
 use haven_memory::Database;
-use haven_tools::ScheduleMode;
 #[cfg(test)]
 pub(crate) use react::ParsedAgentResponse;
 pub use types::ProcessResult;

@@ -353,7 +353,7 @@ mod tests {
             tool_run_id: tool_run_id.into(),
             title: "Scheduled".into(),
             body: "fire".into(),
-            mode: crate::tool_run_types::ScheduleMode::Tool,
+            mode: haven_common::tool_run::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,

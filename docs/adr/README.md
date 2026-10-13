@@ -1114,3 +1114,5 @@
 - [1123：限制所有会话事件批次](1123-bound-all-session-event-batches.md)
 - [1124：拒绝未知的持久化 cache accounting 值](1124-reject-unknown-persisted-cache-accounting.md)
 - [1125：用用户选择代次隔离过期异步会话结果](1125-guard-session-selection-against-stale-async-results.md)
+- [1126：用闭合枚举约束定时 ToolRun mode 写入](1126-type-scheduled-toolrun-mode-writes.md)
+- [1127：为无 provider ID 的搜索结果分配 renderer 身份](1127-identify-idless-web-search-results.md)

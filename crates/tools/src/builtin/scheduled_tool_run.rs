@@ -9,8 +9,9 @@ use crate::ToolRunService;
 use crate::registry::RegistryProbe;
 #[cfg(test)]
 use crate::tool_run_types::ScheduledToolRunFired;
-use crate::tool_run_types::{ScheduleMode, ScheduledToolRunSpec};
+use crate::tool_run_types::ScheduledToolRunSpec;
 use crate::{Tool, ToolConcurrency, ToolResult};
+use haven_common::tool_run::ScheduleMode;
 
 /// Schedule in-app ToolRuns: set a timer that fires a ToolRun after a
 /// delay, list pending ones, or cancel one. Timers run detached from the
@@ -1296,7 +1297,7 @@ mod tests {
             &(chrono::Utc::now() + chrono::Duration::seconds(5)).to_rfc3339(),
             "Future",
             "later",
-            "tool",
+            haven_common::tool_run::ScheduleMode::Tool,
             None,
             Some("notify"),
             None,
@@ -1310,7 +1311,7 @@ mod tests {
             &(chrono::Utc::now() - chrono::Duration::seconds(60)).to_rfc3339(),
             "Overdue",
             "should fire now",
-            "continue",
+            haven_common::tool_run::ScheduleMode::Continue,
             Some("ses-09df36791e54c51f7be063867e10b9af"),
             None,
             None,
@@ -1371,7 +1372,7 @@ mod tests {
             "not-a-timestamp",
             "Bad due",
             "must not run",
-            "continue",
+            haven_common::tool_run::ScheduleMode::Continue,
             Some("ses-09df36791e54c51f7be063867e10b9af"),
             None,
             None,
@@ -1384,7 +1385,7 @@ mod tests {
             &(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
             "Bad mode",
             "must not run",
-            "unknown-mode",
+            haven_common::tool_run::ScheduleMode::Tool,
             None,
             None,
             None,
@@ -1392,12 +1393,18 @@ mod tests {
             None,
         )
         .unwrap();
+        db.conn()
+            .execute_batch(
+                "UPDATE tool_runs SET mode = 'unknown-mode' \
+                 WHERE id = 'toolrun-00000000000000000000000000000002'",
+            )
+            .unwrap();
         db.save_scheduled_tool_run(
             "toolrun-00000000000000000000000000000003",
             &(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
             "Bad args",
             "must not run",
-            "tool",
+            haven_common::tool_run::ScheduleMode::Tool,
             None,
             Some("notify"),
             Some("{not-json"),

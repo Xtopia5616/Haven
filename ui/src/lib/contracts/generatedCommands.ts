@@ -114,7 +114,7 @@ export interface AgentToolCallChunkEvent { session_id: string; preview_id: strin
 export interface AgentToolCallEvent { session_id: string; tool_name: string; input: unknown; step_number: number; run_id: number; tool_call_id: string | null; tool_index: number; step_id: string; suppress_streamed_thought: boolean; silent: boolean; event_sequence?: number }
 export interface AgentToolOutputEvent { session_id: string; step_id: string; output: string }
 export interface AgentUsageEvent { session_id: string; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; cache_exclusive: boolean; cache_accounting: CacheAccounting; cost_usd: number | null; model: string | null; cumulative_prompt_tokens: number; cumulative_completion_tokens: number; cumulative_total_tokens: number; cumulative_cached_tokens: number; cumulative_cache_creation_tokens: number; cumulative_cache_miss_tokens: number; cache_diagnostics?: CacheDiagnostics; cumulative_cost_usd: number | null; context_window: number | null; step_number?: number; duration_ms?: number; request_kind?: RequestKind; call_kind: LlmCallKind; has_cost: boolean }
-export interface AgentWebSearchEvent { session_id: string; phase: WebSearchPhase; step_number: number; run_id: number; call_id?: string; action?: string; result?: unknown }
+export interface AgentWebSearchEvent { session_id: string; phase: WebSearchPhase; step_number: number; run_id: number; call_id?: string; call_index?: number; action?: string; result?: unknown }
 export interface AppBootstrapEvent { status: BootstrapStatus }
 export interface HotkeyConflictEvent { binding: string; error: string }
 export interface HotkeyRebindEvent { old_binding: string; new_binding: string }
@@ -259,6 +259,8 @@ export const MEDIA_REPRESENTATION_KIND_VALUES = ['raw_image', 'raw_audio', 'raw_
 export type MediaRepresentationKind = (typeof MEDIA_REPRESENTATION_KIND_VALUES)[number];
 export type MediaRepresentationPayloadInput = { kind: 'inline_data'; value: { media_type: string; data: string } } | { kind: 'text'; value: string } | { kind: 'structured'; value: unknown } | { kind: 'managed_file_ref'; value: { asset_id: string; filename?: string | null } };
 export type MediaRepresentationPayload = { kind: 'inline_data'; value: { media_type: string; data: string } } | { kind: 'text'; value: string } | { kind: 'structured'; value: unknown } | { kind: 'managed_file_ref'; value: { asset_id: string; filename: string | null } };
+export const SCHEDULE_MODE_VALUES = ['tool', 'continue'] as const;
+export type ScheduleMode = (typeof SCHEDULE_MODE_VALUES)[number];
 export const CONFIRMATION_REQUIREMENT_VALUES = ['none', 'security_policy', 'required'] as const;
 export type ConfirmationRequirement = (typeof CONFIRMATION_REQUIREMENT_VALUES)[number];
 export const DATA_SENSITIVITY_VALUES = ['none', 'user_data', 'sensitive'] as const;
@@ -366,8 +368,6 @@ export interface SessionStep { step_id: string; session_id: string; step_number:
 export interface LlmUsageRecord { usage_id: string; session_id: string; step_number: number | null; request_kind: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: CacheAccounting; cache_diagnostics?: CacheDiagnostics; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; executable: boolean; root: string; has_script: boolean; unavailable_reason: string | null; manifest_error: string | null }
-export const SCHEDULE_MODE_VALUES = ['tool', 'continue'] as const;
-export type ScheduleMode = (typeof SCHEDULE_MODE_VALUES)[number];
 export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;
 export const ADD_FACT_RESPONSE_SHAPE = {
 	kind: 'object',
@@ -1093,6 +1093,10 @@ export const AGENT_WEB_SEARCH_EVENT_PAYLOAD_SHAPE = {
 		'call_id': {
 			optional: true,
 			shape: { kind: 'string' },
+		},
+		'call_index': {
+			optional: true,
+			shape: { kind: 'number' },
 		},
 		'action': {
 			optional: true,

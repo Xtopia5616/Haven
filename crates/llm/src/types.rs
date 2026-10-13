@@ -282,8 +282,10 @@ impl WebSearchPhase {
 
 /// One live web-search status update. DeepSeek can emit several
 /// `web_search_call` items in a single turn (`search` → `open_page` →
-/// `find_in_page`); `call_id` / `action` let the UI render each as its own
-/// card instead of collapsing them into one indicator.
+/// `find_in_page`); `call_id` / `action` let the UI render each identified
+/// call as its own card instead of collapsing them into one indicator.
+/// Aggregate completed items without a provider ID receive a response-list
+/// `call_index` at the Agent event boundary.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct WebSearchUpdate {
     pub phase: WebSearchPhase,

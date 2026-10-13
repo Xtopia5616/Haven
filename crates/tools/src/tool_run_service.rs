@@ -27,11 +27,12 @@ use crate::tool_run_terminal::{
     can_claim_terminal,
 };
 use crate::tool_run_trigger_policy::{ScheduledTrigger, ScheduledTriggerRequest};
-use crate::tool_run_types::{ScheduleMode, ScheduledToolRunFired, ScheduledToolRunSpec};
+use crate::tool_run_types::{ScheduledToolRunFired, ScheduledToolRunSpec};
 use crate::{
     ToolRunLifecycle, ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunLifecycleState,
     ToolRunLifecycleUpdate, ToolRunOutputPayload, ToolRunSessionAttachedPayload,
 };
+use haven_common::tool_run::ScheduleMode;
 use haven_memory::{ToolRunCompletionOutboxRow, ToolRunStore};
 
 use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};

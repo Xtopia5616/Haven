@@ -299,6 +299,7 @@ fn coalesce_web_search_event(
         step_number,
         run_id,
         call_id,
+        call_index,
         action,
         ..
     } = event
@@ -311,6 +312,7 @@ fn coalesce_web_search_event(
             step_number: existing_step_number,
             run_id: existing_run_id,
             call_id: existing_call_id,
+            call_index: existing_call_index,
             action: existing_action,
             ..
         } = existing
@@ -321,6 +323,7 @@ fn coalesce_web_search_event(
             && existing_step_number == step_number
             && existing_run_id == run_id
             && existing_call_id == call_id
+            && existing_call_index == call_index
             && existing_action == action
     }) else {
         return false;
@@ -799,6 +802,7 @@ impl StreamForwarder {
                     step_number,
                     run_id,
                     call_id: ws.call_id.clone(),
+                    call_index: None,
                     action: ws.action.clone(),
                     result: ws.result.clone(),
                 };
@@ -1449,6 +1453,7 @@ mod tests {
                     step_number: 1,
                     run_id: 1,
                     call_id: Some(format!("call-{index}")),
+                    call_index: None,
                     action: Some("search".into()),
                     result: None,
                 },

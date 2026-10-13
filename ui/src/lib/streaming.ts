@@ -104,16 +104,19 @@ export function insertAgentMessage<T extends StreamMessage>(messages: T[], msg: 
 	return next;
 }
 
-/** `tool-<sessionId>-<step>-<run>-web_search[-<callId>]` (provider built-in
- *  search card; not a persisted entity, so its id never needs to match a DB
- *  row). One card per `callId` so DeepSeek's search → open_page → find_in_page
- *  sequence renders as separate steps. */
+/** Renderer identity for a provider built-in search card. Provider IDs and
+ * response positions use distinct namespaces so arbitrary provider strings
+ * cannot collide with the id-less aggregate fallback. */
 export const webSearchId = (
 	sessionId: string,
 	stepNumber: number,
 	runId: number | null | undefined,
 	callId: string | null | undefined = null,
-) => `tool-${sessionId}-${stepNumber}-${runId ?? 0}-web_search${callId ? `-${callId}` : ''}`;
+	callIndex: number | null | undefined = null,
+) =>
+	`tool-${sessionId}-${stepNumber}-${runId ?? 0}-web_search${
+		callId ? `-call-${callId}` : callIndex !== null && callIndex !== undefined ? `-index-${callIndex}` : ''
+	}`;
 
 /** Live label for a built-in web_search card, keyed by phase + action. */
 export function webSearchLabel(

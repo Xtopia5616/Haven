@@ -912,7 +912,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("transcript batch exceeds"));
+        assert!(error.to_string().contains("session event batch exceeds"));
         assert!(
             engine
                 .event_store

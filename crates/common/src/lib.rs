@@ -14,6 +14,7 @@ pub mod path;
 pub mod prompts;
 pub mod retry;
 pub mod text;
+pub mod tool_run;
 mod tool_run_completion;
 mod tool_run_lease;
 pub mod tools;

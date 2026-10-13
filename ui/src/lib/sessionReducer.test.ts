@@ -137,11 +137,32 @@ describe('SessionReducer', () => {
 		const messages = next.messages['ses-0ecf371384ab79d597760ca41f2ba21c'];
 		expect(messages).toHaveLength(1);
 		expect(messages[0]).toMatchObject({
-			id: 'tool-ses-0ecf371384ab79d597760ca41f2ba21c-2-3-web_search-ws_1',
+			id: 'tool-ses-0ecf371384ab79d597760ca41f2ba21c-2-3-web_search-call-ws_1',
 			toolName: 'web_search',
 			streaming: false,
 		});
 		expect(messages[0].content).toContain('"count":1');
+	});
+
+	it('projects a completed id-less aggregate search result with its response index', () => {
+		const next = reduceSession(initialSessionState, {
+			type: 'agent/web-search',
+			payload: {
+				sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+				phase: 'completed',
+				stepNumber: 2,
+				runId: 3,
+				callIndex: 0,
+				action: 'search',
+				result: { queries: ['first'], results: [{ title: 'A' }] },
+			},
+		});
+		const messages = next.messages['ses-0ecf371384ab79d597760ca41f2ba21c'];
+		expect(messages).toHaveLength(1);
+		expect(messages[0].id).toBe(
+			'tool-ses-0ecf371384ab79d597760ca41f2ba21c-2-3-web_search-index-0',
+		);
+		expect(messages[0].content).toContain('"title":"A"');
 	});
 
 	it('does not resolve a confirmation through the Ask-only reducer action', () => {

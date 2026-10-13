@@ -38,7 +38,7 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
             &due_at,
             "Rollback closing",
             "must remain untouched",
-            "tool",
+            haven_common::tool_run::ScheduleMode::Tool,
             Some(&session.session_id),
             Some("notify"),
             None,

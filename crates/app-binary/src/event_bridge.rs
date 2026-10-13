@@ -391,6 +391,7 @@ impl TauriEmitter {
                 step_number,
                 run_id,
                 call_id,
+                call_index,
                 action,
                 result,
             } => serialize(AgentWebSearchEvent {
@@ -399,6 +400,7 @@ impl TauriEmitter {
                 step_number: *step_number,
                 run_id: *run_id,
                 call_id: call_id.clone(),
+                call_index: *call_index,
                 action: action.clone(),
                 result: result.clone(),
             }),
