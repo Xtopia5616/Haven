@@ -23,10 +23,17 @@ impl CacheAccounting {
     }
 
     pub fn parse(value: &str) -> Self {
+        Self::parse_closed(value).unwrap_or(Self::Unknown)
+    }
+
+    /// Parse the persisted/runtime enum vocabulary without accepting a
+    /// misspelled or future value as `unknown`.
+    pub fn parse_closed(value: &str) -> Option<Self> {
         match value {
-            "inclusive" => Self::Inclusive,
-            "exclusive" => Self::Exclusive,
-            _ => Self::Unknown,
+            "inclusive" => Some(Self::Inclusive),
+            "exclusive" => Some(Self::Exclusive),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
         }
     }
 }
@@ -301,5 +308,21 @@ mod tests {
         }
         assert_eq!(LlmCallKind::parse("unknown"), None);
         assert!(serde_json::from_str::<LlmCallKind>("\"unknown\"").is_err());
+    }
+
+    #[test]
+    fn cache_accounting_parser_distinguishes_unknown_from_invalid_values() {
+        for (accounting, value) in [
+            (CacheAccounting::Inclusive, "inclusive"),
+            (CacheAccounting::Exclusive, "exclusive"),
+            (CacheAccounting::Unknown, "unknown"),
+        ] {
+            assert_eq!(accounting.as_str(), value);
+            assert_eq!(CacheAccounting::parse_closed(value), Some(accounting));
+            assert_eq!(CacheAccounting::parse(value), accounting);
+        }
+
+        assert_eq!(CacheAccounting::parse_closed("future"), None);
+        assert_eq!(CacheAccounting::parse("future"), CacheAccounting::Unknown);
     }
 }

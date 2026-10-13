@@ -1117,7 +1117,19 @@ impl Database {
                 cached_tokens: row.get(9)?,
                 cache_creation_tokens: row.get(10)?,
                 cache_miss_tokens: row.get(11)?,
-                cache_accounting: CacheAccounting::parse(&row.get::<_, String>(12)?),
+                cache_accounting: {
+                    let value: String = row.get(12)?;
+                    CacheAccounting::parse_closed(&value).ok_or_else(|| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            12,
+                            Type::Text,
+                            format!(
+                                "invalid CacheAccounting in llm_usage.cache_accounting: {value}"
+                            )
+                            .into(),
+                        )
+                    })?
+                },
                 cache_diagnostics: row
                     .get::<_, Option<String>>(13)?
                     .and_then(|value| deserialize_cache_diagnostics(Some(&value))),
@@ -1321,6 +1333,47 @@ mod tests {
             error
                 .to_string()
                 .contains("invalid LlmCallKind in llm_usage.call_kind")
+        );
+    }
+
+    #[test]
+    fn list_usage_rejects_unknown_cache_accounting_from_storage() {
+        let db = test_db();
+        let session = db.create_session("hello").unwrap();
+        db.persist_llm_call_and_refresh_session_usage(
+            &session.session_id,
+            Some(1),
+            RequestKind::Chat,
+            None,
+            1,
+            1,
+            2,
+            0,
+            0,
+            0.0,
+            false,
+            None,
+        )
+        .unwrap();
+
+        {
+            let conn = db.conn();
+            conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+                .unwrap();
+            conn.execute(
+                "UPDATE llm_usage SET cache_accounting = 'future' WHERE session_id = ?1",
+                [&session.session_id],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA ignore_check_constraints = OFF")
+                .unwrap();
+        }
+
+        let error = db.list_session_llm_usage(&session.session_id).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid CacheAccounting in llm_usage.cache_accounting: future")
         );
     }
 

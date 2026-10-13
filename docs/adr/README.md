@@ -1112,3 +1112,4 @@
 - [1121：配置无效回退保持只读直到显式恢复](1121-keep-invalid-config-fallback-read-only.md)
 - [1122：按工具结果持久化定时工具终态](1122-persist-scheduled-tool-outcomes-from-domain-result.md)
 - [1123：限制所有会话事件批次](1123-bound-all-session-event-batches.md)
+- [1124：拒绝未知的持久化 cache accounting 值](1124-reject-unknown-persisted-cache-accounting.md)
