@@ -101,7 +101,7 @@ impl AnthropicAdapter {
                     let tc = &calls[call_idx];
                     out.push(json!({
                         "type": "tool_use",
-                        "id": tc.id,
+                        "id": tc.tool_call_id,
                         "name": tc.name,
                         "input": tc.arguments
                     }));
@@ -141,7 +141,7 @@ impl AnthropicAdapter {
             for tc in calls {
                 blocks.push(json!({
                     "type": "tool_use",
-                    "id": tc.id,
+                    "id": tc.tool_call_id,
                     "name": tc.name,
                     "input": tc.arguments
                 }));

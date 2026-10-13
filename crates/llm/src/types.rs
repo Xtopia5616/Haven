@@ -1089,7 +1089,7 @@ mod tests {
             tool_call_updates: Vec::new(),
             text: None,
             tool_calls: vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "shell".into(),
                 arguments: serde_json::json!({}),
             }],

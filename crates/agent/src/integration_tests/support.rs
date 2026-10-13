@@ -48,7 +48,7 @@ impl LlmClient for FinalAnswerMock {
             tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -75,7 +75,7 @@ impl LlmClient for FinalAnswerMock {
             tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -212,7 +212,7 @@ pub(super) fn make_assistant_with_calls(ids: &[&str]) -> CanonicalMessage {
     m.tool_calls = Some(
         ids.iter()
             .map(|id| CanonicalToolCall {
-                id: id.to_string(),
+                tool_call_id: id.to_string(),
                 name: "tool".into(),
                 arguments: serde_json::Value::Null,
             })

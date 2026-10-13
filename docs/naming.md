@@ -393,7 +393,7 @@ Session resume 的 App-owned `SessionResumeMessageDto` 使用 `message_id`，从
 
 共享授权身份 `CapabilityScope` 由 Common 定义；所有 Rust 调用方统一从 `haven_common::types::CapabilityScope` 导入，不经 Tools 根 alias。新值只通过 fallible `CapabilityScope::try_new` 构造，禁止无校验 `new` / `From` 转换；Serde 反序列化执行相同校验。每次调用的 policy resolver 返回 `Result`，构造失败必须在授权与执行前失败关闭。
 
-Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalToolCall`、`ContentPart`、`FollowUp`、`InjectSource`、`MessageAttachment`、`TranscriptMessageKind`）统一从 `haven_common::types` 导入；`CanonicalMessage` 的可选 compaction 摘要身份使用 `message_id`，新 durable payload 序列化该字段，Agent 仅在 replay 中兼容历史 `id`（ADR 0998）。不使用 Common crate root aliases。
+Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalToolCall`、`ContentPart`、`FollowUp`、`InjectSource`、`MessageAttachment`、`TranscriptMessageKind`）统一从 `haven_common::types` 导入；`CanonicalMessage` 的可选 compaction 摘要身份使用 `message_id`，`CanonicalToolCall` 的 provider 调用身份使用 `tool_call_id`。新 durable payload 只序列化这两个 canonical 字段；Agent replay reader 仅兼容历史 `id`，provider adapter 则在协议边界显式映射 provider 自有 ID（ADR 0998、1128）。不使用 Common crate root aliases。
 
 `agent:supplement.inject_source` 使用 Rust `InjectSource` 的生成 TypeScript union 与运行时值集；UI event mapper 拒绝未知枚举值，不用任意字符串填充 reducer（ADR 1014）。
 

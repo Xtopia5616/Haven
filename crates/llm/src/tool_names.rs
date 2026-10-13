@@ -231,7 +231,7 @@ mod tests {
         let messages = [CanonicalMessage::assistant(
             Vec::new(),
             Some(vec![haven_common::types::CanonicalToolCall {
-                id: "call_1".into(),
+                tool_call_id: "call_1".into(),
                 name: "files.read".into(),
                 arguments: serde_json::json!({}),
             }]),

@@ -513,12 +513,12 @@ mod tests {
             text: "run both".into(),
             tool_calls: vec![
                 haven_common::types::CanonicalToolCall {
-                    id: "call-a".into(),
+                    tool_call_id: "call-a".into(),
                     name: "tool_a".into(),
                     arguments: serde_json::json!({}),
                 },
                 haven_common::types::CanonicalToolCall {
-                    id: "call-b".into(),
+                    tool_call_id: "call-b".into(),
                     name: "tool_b".into(),
                     arguments: serde_json::json!({}),
                 },

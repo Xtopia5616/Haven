@@ -834,7 +834,7 @@ async fn rollback_while_ask_wait_clears_interaction_gate() {
             tool_call_updates: Vec::new(),
             text: Some("Need a choice.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "ask".into(),
                 arguments: serde_json::json!({"question": "A or B?"}),
             }],
@@ -937,12 +937,12 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
             text: Some("Running both.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
-                    id: "tc1".into(),
+                    tool_call_id: "tc1".into(),
                     name: "delay_a".into(),
                     arguments: serde_json::json!({}),
                 },
                 CanonicalToolCall {
-                    id: "tc2".into(),
+                    tool_call_id: "tc2".into(),
                     name: "delay_b".into(),
                     arguments: serde_json::json!({}),
                 },
@@ -959,7 +959,7 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
             tool_call_updates: Vec::new(),
             text: Some("Should not run after rollback.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -1037,7 +1037,7 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
             tool_call_updates: Vec::new(),
             text: Some("Need a choice.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "ask".into(),
                 arguments: serde_json::json!({"question": "A or B?"}),
             }],

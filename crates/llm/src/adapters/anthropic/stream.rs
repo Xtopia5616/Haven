@@ -459,7 +459,7 @@ impl AnthropicAdapter {
                             match block.kind {
                                 BlockKind::ToolUse => {
                                     state.pending_tool_calls.push(CanonicalToolCall {
-                                        id: block.tool_id.clone(),
+                                        tool_call_id: block.tool_id.clone(),
                                         name: state.tool_names.to_canonical(&block.tool_name),
                                         arguments: parse_completed_tool_arguments(&block.tool_input),
                                     });

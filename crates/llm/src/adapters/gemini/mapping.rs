@@ -153,8 +153,8 @@ impl GeminiAdapter {
                     if let Some(calls) = &m.tool_calls {
                         declared_order.clear();
                         for tc in calls {
-                            call_id_to_name.insert(tc.id.clone(), tc.name.clone());
-                            declared_order.push(tc.id.clone());
+                            call_id_to_name.insert(tc.tool_call_id.clone(), tc.name.clone());
+                            declared_order.push(tc.tool_call_id.clone());
                             let thought_signature = Self::take_thought_signature(
                                 &m.thinking_blocks,
                                 &mut used_signatures,
@@ -165,7 +165,7 @@ impl GeminiAdapter {
                                 text: None,
                                 inline_data: None,
                                 function_call: Some(json!({
-                                    "id": tc.id,
+                                    "id": tc.tool_call_id,
                                     "name": tc.name,
                                     "args": tc.arguments
                                 })),

@@ -1157,7 +1157,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
             tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -1202,7 +1202,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
             role: CanonicalRole::Assistant,
             content: vec![ContentPart::text("calling echo")],
             tool_calls: Some(vec![CanonicalToolCall {
-                id: "call_1".into(),
+                tool_call_id: "call_1".into(),
                 name: "echo".into(),
                 arguments: serde_json::json!({"text": "hi"}),
             }]),

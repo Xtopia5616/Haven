@@ -41,7 +41,7 @@ impl OpenAiResponsesAdapter {
                 Some("function_call") => {
                     if let Some(name) = item.name {
                         tool_calls.push(CanonicalToolCall {
-                            id: item.call_id.or(item.id).unwrap_or_default(),
+                            tool_call_id: item.call_id.or(item.id).unwrap_or_default(),
                             name,
                             arguments: item
                                 .arguments

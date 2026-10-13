@@ -205,7 +205,7 @@ fn convert_contents_tool_result_uses_function_name_of_matching_call() {
             content: vec![ContentPart::text("checking")],
             tool_call_id: None,
             tool_calls: Some(vec![CanonicalToolCall {
-                id: "call_0".into(),
+                tool_call_id: "call_0".into(),
                 name: "read_file".into(),
                 arguments: serde_json::json!({"path": "/tmp"}),
             }]),
@@ -250,12 +250,12 @@ fn convert_contents_parallel_same_tool_results_follow_declaration_order() {
             tool_call_id: None,
             tool_calls: Some(vec![
                 CanonicalToolCall {
-                    id: "c1".into(),
+                    tool_call_id: "c1".into(),
                     name: "shell".into(),
                     arguments: serde_json::json!({"cmd": "echo one"}),
                 },
                 CanonicalToolCall {
-                    id: "c2".into(),
+                    tool_call_id: "c2".into(),
                     name: "shell".into(),
                     arguments: serde_json::json!({"cmd": "echo two"}),
                 },
@@ -309,12 +309,12 @@ fn convert_contents_multiple_tool_results_map_their_own_call_names() {
             tool_call_id: None,
             tool_calls: Some(vec![
                 CanonicalToolCall {
-                    id: "c1".into(),
+                    tool_call_id: "c1".into(),
                     name: "shell".into(),
                     arguments: serde_json::json!({}),
                 },
                 CanonicalToolCall {
-                    id: "c2".into(),
+                    tool_call_id: "c2".into(),
                     name: "ask".into(),
                     arguments: serde_json::json!({}),
                 },
@@ -362,7 +362,7 @@ fn convert_contents_assistant_function_call() {
         content: vec![ContentPart::text("checking")],
         tool_call_id: None,
         tool_calls: Some(vec![CanonicalToolCall {
-            id: "call_2".into(),
+            tool_call_id: "call_2".into(),
             name: "file".into(),
             arguments: serde_json::json!({"operation": "read"}),
         }]),
@@ -387,7 +387,7 @@ fn convert_contents_echoes_function_call_thought_signature() {
         content: vec![ContentPart::text("checking")],
         tool_call_id: None,
         tool_calls: Some(vec![CanonicalToolCall {
-            id: "fc_1".into(),
+            tool_call_id: "fc_1".into(),
             name: "file".into(),
             arguments: json!({"operation": "read"}),
         }]),
@@ -755,7 +755,7 @@ fn parse_response_captures_official_function_call_signature_and_id() {
     let parsed = client
         .parse_response(response, Some("gemini-3.7-flash".into()))
         .unwrap();
-    assert_eq!(parsed.tool_calls[0].id, "fc_1");
+    assert_eq!(parsed.tool_calls[0].tool_call_id, "fc_1");
     assert_eq!(parsed.thinking_blocks[0]["signature"], "sig_1");
     assert_eq!(parsed.model.as_deref(), Some("gemini-3.7-flash"));
 }

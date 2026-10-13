@@ -63,7 +63,7 @@ impl AnthropicAdapter {
                 Some("tool_use") => {
                     if let Some(name) = block.name {
                         tool_calls.push(CanonicalToolCall {
-                            id: block.id.unwrap_or_default(),
+                            tool_call_id: block.id.unwrap_or_default(),
                             name,
                             arguments: block.input.unwrap_or_default(),
                         });

@@ -113,7 +113,7 @@ impl OpenAiAdapter {
                         .map(|tc| {
                             let args = serialize_tool_arguments(&tc.arguments);
                             OpenAiMessageToolCall {
-                                id: tc.id.clone(),
+                                id: tc.tool_call_id.clone(),
                                 call_type: "function".into(),
                                 function: OpenAiMessageToolFunction {
                                     name: tc.name.clone(),
@@ -260,7 +260,7 @@ impl OpenAiAdapter {
                 let id = c.id.clone().unwrap_or_default();
                 if !name.is_empty() {
                     out.push(CanonicalToolCall {
-                        id,
+                        tool_call_id: id,
                         name,
                         arguments: parse_completed_tool_arguments(&args),
                     });

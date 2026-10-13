@@ -107,9 +107,9 @@ pub(crate) fn sanitize_canonical(canonical: &mut Vec<CanonicalMessage>) -> usize
                     continue;
                 }
                 let matching_call = m.tool_call_id.as_ref().and_then(|call_id| {
-                    pending_calls
-                        .iter()
-                        .position(|pending| pending.result.is_none() && &pending.call.id == call_id)
+                    pending_calls.iter().position(|pending| {
+                        pending.result.is_none() && &pending.call.tool_call_id == call_id
+                    })
                 });
                 let result_index = matching_call.or_else(|| {
                     // Keep the fallback for providers that omit or alter
@@ -173,12 +173,12 @@ fn append_tool_batch_results(
         } else {
             tracing::info!(
                 "repairing interrupted tool_call {} with an Interrupted result",
-                pending.call.id
+                pending.call.tool_call_id
             );
             let text = interrupted_result_text(&pending.call.name, &pending.call.arguments);
             out.push(CanonicalMessage::tool(
                 vec![ContentPart::text(text)],
-                Some(pending.call.id),
+                Some(pending.call.tool_call_id),
             ));
             n += 1;
         }

@@ -1395,7 +1395,7 @@ mod tests {
                 TranscriptEvent::ToolCall {
                     text: "calling".into(),
                     tool_calls: vec![CanonicalToolCall {
-                        id: "call-1".into(),
+                        tool_call_id: "call-1".into(),
                         name: "echo".into(),
                         arguments: serde_json::json!({"x": 1}),
                     }],
@@ -1757,7 +1757,7 @@ mod tests {
                 TranscriptEvent::ToolCall {
                     text: String::new(),
                     tool_calls: vec![CanonicalToolCall {
-                        id: "call-1".into(),
+                        tool_call_id: "call-1".into(),
                         name: "echo".into(),
                         arguments: serde_json::json!({}),
                     }],

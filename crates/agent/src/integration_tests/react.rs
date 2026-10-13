@@ -87,7 +87,7 @@ async fn empty_response_stops_with_continue_instead_of_auto_retry() {
         tool_call_updates: Vec::new(),
         text: Some("Recovered after retry.".into()),
         tool_calls: vec![CanonicalToolCall {
-            id: "final-after-empty".into(),
+            tool_call_id: "final-after-empty".into(),
             name: "final_answer".into(),
             arguments: serde_json::json!({}),
         }],
@@ -219,7 +219,7 @@ async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
         tool_call_updates: Vec::new(),
         text: None,
         tool_calls: vec![CanonicalToolCall {
-            id: "incomplete-call".into(),
+            tool_call_id: "incomplete-call".into(),
             name: "echo".into(),
             arguments: serde_json::Value::Null,
         }],
@@ -235,7 +235,7 @@ async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
         tool_call_updates: Vec::new(),
         text: None,
         tool_calls: vec![CanonicalToolCall {
-            id: "rebuilt-call".into(),
+            tool_call_id: "rebuilt-call".into(),
             name: "echo".into(),
             arguments: serde_json::json!({"text": "safe"}),
         }],
@@ -251,7 +251,7 @@ async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
         tool_call_updates: Vec::new(),
         text: Some("Recovered safely.".into()),
         tool_calls: vec![CanonicalToolCall {
-            id: "final-call".into(),
+            tool_call_id: "final-call".into(),
             name: "final_answer".into(),
             arguments: serde_json::json!({}),
         }],
@@ -309,7 +309,7 @@ async fn interrupt_then_continue_on_same_actor_uses_a_fresh_run_token() {
         tool_call_updates: Vec::new(),
         text: Some(text.into()),
         tool_calls: vec![CanonicalToolCall {
-            id: id.into(),
+            tool_call_id: id.into(),
             name: "final_answer".into(),
             arguments: serde_json::json!({}),
         }],
@@ -449,7 +449,7 @@ async fn turn_deadline_stops_after_non_cooperative_blocking_tool() {
             tool_call_updates: Vec::new(),
             text: Some("Run the blocking operation.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "blocking-call".into(),
+                tool_call_id: "blocking-call".into(),
                 name: "blocking_tool".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -515,7 +515,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
         CanonicalMessage::assistant(
             vec![ContentPart::text("let me ask")],
             Some(vec![CanonicalToolCall {
-                id: "call_ask".into(),
+                tool_call_id: "call_ask".into(),
                 name: "ask".into(),
                 arguments: serde_json::json!({"question": "which file?"}),
             }]),
@@ -575,7 +575,7 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
             tool_call_updates: Vec::new(),
             text: Some("keep working".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "c1".into(),
+                tool_call_id: "c1".into(),
                 name: "read_file".into(),
                 arguments: serde_json::json!({"path": "x"}),
             }],
@@ -708,7 +708,7 @@ async fn run_session_executes_tool_then_final_answer() {
             tool_call_updates: Vec::new(),
             text: Some("I'll echo that.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "echo".into(),
                 arguments: serde_json::json!({"text": "hello"}),
             }],
@@ -724,7 +724,7 @@ async fn run_session_executes_tool_then_final_answer() {
             tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -818,7 +818,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
             tool_call_updates: Vec::new(),
             text: Some("I will inspect the image.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "media-call".into(),
+                tool_call_id: "media-call".into(),
                 name: "media".into(),
                 arguments: serde_json::json!({
                     "operation": "describe",
@@ -837,7 +837,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
             tool_call_updates: Vec::new(),
             text: Some("The image was inspected.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -912,7 +912,7 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
             tool_call_updates: Vec::new(),
             text: Some("I'll echo that.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: String::new(), // provider sends empty id
+                tool_call_id: String::new(), // provider sends empty id
                 name: "echo".into(),
                 arguments: serde_json::json!({"text": "hello"}),
             }],
@@ -928,7 +928,7 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
             tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -958,8 +958,11 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
     for m in &canonical {
         if let Some(calls) = &m.tool_calls {
             for tc in calls {
-                assert!(!tc.id.is_empty(), "declared id must not be empty");
-                declared = Some(tc.id.clone());
+                assert!(
+                    !tc.tool_call_id.is_empty(),
+                    "declared tool_call_id must not be empty"
+                );
+                declared = Some(tc.tool_call_id.clone());
             }
         }
         if let Some(tid) = &m.tool_call_id {
@@ -996,7 +999,7 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
             tool_call_updates: Vec::new(),
             text: Some("I'll echo that.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "echo".into(),
                 arguments: serde_json::json!({"text": "hello"}),
             }],
@@ -1015,7 +1018,7 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
                 tool_call_updates: Vec::new(),
                 text: Some("Done.".into()),
                 tool_calls: vec![CanonicalToolCall {
-                    id: "final".into(),
+                    tool_call_id: "final".into(),
                     name: "final_answer".into(),
                     arguments: serde_json::json!({}),
                 }],
@@ -1034,7 +1037,7 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
             tool_call_updates: Vec::new(),
             text: Some("Understood, continuing in French.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final2".into(),
+                tool_call_id: "final2".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -1125,7 +1128,7 @@ async fn run_session_injects_steering_between_tool_calls() {
             tool_call_updates: Vec::new(),
             text: Some("Running the tool.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "delay_a".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -1141,7 +1144,7 @@ async fn run_session_injects_steering_between_tool_calls() {
             tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -1215,7 +1218,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
             tool_call_updates: Vec::new(),
             text: Some("I need to clarify before proceeding.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "ask".into(),
                 arguments: serde_json::json!({"question": "Which path should I take: A or B?"}),
             }],
@@ -1234,7 +1237,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
             tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -1307,7 +1310,7 @@ async fn ask_interaction_survives_executor_restart_from_event_replay() {
             tool_call_updates: Vec::new(),
             text: Some("Need a decision.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "ask-restart".into(),
+                tool_call_id: "ask-restart".into(),
                 name: "ask".into(),
                 arguments: serde_json::json!({"question": "Which path?"}),
             }],
@@ -1395,7 +1398,7 @@ async fn run_session_ask_resumes_after_user_answer() {
             tool_call_updates: Vec::new(),
             text: Some("Clarifying.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "ask".into(),
                 arguments: serde_json::json!({"question": "A or B?"}),
             }],
@@ -1412,7 +1415,7 @@ async fn run_session_ask_resumes_after_user_answer() {
             tool_call_updates: Vec::new(),
             text: Some("Going with A.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -1489,7 +1492,7 @@ async fn retry_after_ask_answer_error_retains_failed_recovery_projection() {
             tool_call_updates: Vec::new(),
             text: Some("Asking.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "ask".into(),
                 arguments: serde_json::json!({"question": "Proceed?"}),
             }],
@@ -1522,7 +1525,7 @@ async fn retry_after_ask_answer_error_retains_failed_recovery_projection() {
             tool_call_updates: Vec::new(),
             text: Some("Answer accepted.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -1655,7 +1658,7 @@ async fn run_session_notify_tool_emits_notification_without_pausing() {
             tool_call_updates: Vec::new(),
             text: Some("Notifying the user.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "notify".into(),
                 arguments: serde_json::json!({"title": "Build", "body": "Compilation finished"}),
             }],
@@ -1671,7 +1674,7 @@ async fn run_session_notify_tool_emits_notification_without_pausing() {
             tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -1732,12 +1735,12 @@ async fn run_session_multiple_asks_surface_all_questions() {
             text: Some("Two questions.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
-                    id: "tc1".into(),
+                    tool_call_id: "tc1".into(),
                     name: "ask".into(),
                     arguments: serde_json::json!({"question": "First?"}),
                 },
                 CanonicalToolCall {
-                    id: "tc2".into(),
+                    tool_call_id: "tc2".into(),
                     name: "ask".into(),
                     arguments: serde_json::json!({"question": "Second?"}),
                 },
@@ -1945,7 +1948,7 @@ async fn run_session_compaction_retry_on_context_exceeded() {
             tool_call_updates: Vec::new(),
             text: Some("Calling echo.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "echo".into(),
                 arguments: serde_json::json!({"text": "data"}),
             }],
@@ -1962,7 +1965,7 @@ async fn run_session_compaction_retry_on_context_exceeded() {
             tool_call_updates: Vec::new(),
             text: Some("Done after compaction.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],

@@ -62,12 +62,12 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
             text: Some("Run both operations after confirmation.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
-                    id: "safe-call".into(),
+                    tool_call_id: "safe-call".into(),
                     name: "batch_safe".into(),
                     arguments: serde_json::json!({}),
                 },
                 CanonicalToolCall {
-                    id: "gated-call".into(),
+                    tool_call_id: "gated-call".into(),
                     name: "batch_gated".into(),
                     arguments: serde_json::json!({}),
                 },
@@ -84,7 +84,7 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
             tool_call_updates: Vec::new(),
             text: Some("Both operations completed.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -245,12 +245,12 @@ async fn run_session_parallel_tool_execution() {
             text: Some("Running both in parallel.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
-                    id: "tc1".into(),
+                    tool_call_id: "tc1".into(),
                     name: "delay_a".into(),
                     arguments: serde_json::json!({}),
                 },
                 CanonicalToolCall {
-                    id: "tc2".into(),
+                    tool_call_id: "tc2".into(),
                     name: "delay_b".into(),
                     arguments: serde_json::json!({}),
                 },
@@ -267,7 +267,7 @@ async fn run_session_parallel_tool_execution() {
             tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -341,12 +341,12 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
             text: Some("Run the fast and slow tools.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
-                    id: "fast-call".into(),
+                    tool_call_id: "fast-call".into(),
                     name: "delay_fast".into(),
                     arguments: serde_json::json!({}),
                 },
                 CanonicalToolCall {
-                    id: "slow-call".into(),
+                    tool_call_id: "slow-call".into(),
                     name: "delay_slow".into(),
                     arguments: serde_json::json!({}),
                 },
@@ -363,7 +363,7 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
             tool_call_updates: Vec::new(),
             text: Some("Both tools finished.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -473,7 +473,7 @@ async fn run_session_contains_custom_extension_panic() {
         .iter()
         .enumerate()
         .map(|(index, name)| CanonicalToolCall {
-            id: format!("panic-{index}"),
+            tool_call_id: format!("panic-{index}"),
             name: (*name).into(),
             arguments: serde_json::json!({}),
         })
@@ -495,7 +495,7 @@ async fn run_session_contains_custom_extension_panic() {
             tool_call_updates: Vec::new(),
             text: Some("Recovered after extension failures.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -638,12 +638,12 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
             text: Some("Running adapter checks.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
-                    id: "mcp-panic".into(),
+                    tool_call_id: "mcp-panic".into(),
                     name: mcp_name.into(),
                     arguments: serde_json::json!({}),
                 },
                 CanonicalToolCall {
-                    id: "skill-panic".into(),
+                    tool_call_id: "skill-panic".into(),
                     name: skill_name.into(),
                     arguments: serde_json::json!({"params": {}}),
                 },
@@ -660,7 +660,7 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
             tool_call_updates: Vec::new(),
             text: Some("Recovered after adapter failures.".into()),
             tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
+                tool_call_id: "final".into(),
                 name: "final_answer".into(),
                 arguments: serde_json::json!({}),
             }],
@@ -731,12 +731,12 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
             text: Some("Running both in parallel.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
-                    id: "tc1".into(),
+                    tool_call_id: "tc1".into(),
                     name: "delay_a".into(),
                     arguments: serde_json::json!({}),
                 },
                 CanonicalToolCall {
-                    id: "tc2".into(),
+                    tool_call_id: "tc2".into(),
                     name: "delay_b".into(),
                     arguments: serde_json::json!({}),
                 },
@@ -868,7 +868,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
                 pending = m
                     .tool_calls
                     .as_ref()
-                    .map(|tc| tc.iter().map(|t| t.id.clone()).collect())
+                    .map(|tc| tc.iter().map(|t| t.tool_call_id.clone()).collect())
                     .unwrap_or_default();
             }
             _ => {}

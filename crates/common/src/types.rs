@@ -766,7 +766,11 @@ impl CanonicalMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanonicalToolCall {
-    pub id: String,
+    /// Opaque provider-owned tool-call id. `id` is accepted only as a legacy
+    /// durable transcript replay alias; new serialized canonical payloads
+    /// always use the contract name `tool_call_id`.
+    #[serde(alias = "id")]
+    pub tool_call_id: String,
     pub name: String,
     pub arguments: serde_json::Value,
 }
@@ -1171,7 +1175,7 @@ mod tests {
             role: CanonicalRole::Assistant,
             content: vec![],
             tool_calls: Some(vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "run".into(),
                 arguments: serde_json::json!({"cmd": "ls"}),
             }]),
@@ -1206,13 +1210,25 @@ mod tests {
     #[test]
     fn canonical_tool_call_construction() {
         let call = CanonicalToolCall {
-            id: "tc_123".into(),
+            tool_call_id: "tc_123".into(),
             name: "search".into(),
             arguments: serde_json::json!({"query": "rust"}),
         };
-        assert_eq!(call.id, "tc_123");
+        assert_eq!(call.tool_call_id, "tc_123");
         assert_eq!(call.name, "search");
         assert_eq!(call.arguments["query"], "rust");
+
+        let value = serde_json::to_value(&call).unwrap();
+        assert_eq!(value["tool_call_id"], "tc_123");
+        assert!(value.get("id").is_none());
+
+        let legacy: CanonicalToolCall = serde_json::from_value(serde_json::json!({
+            "id": "tc_legacy",
+            "name": "search",
+            "arguments": {"query": "rust"}
+        }))
+        .unwrap();
+        assert_eq!(legacy.tool_call_id, "tc_legacy");
     }
 
     #[test]
@@ -1291,7 +1307,7 @@ mod tests {
         let msg = CanonicalMessage::assistant(
             vec![ContentPart::text("thinking")],
             Some(vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "run".into(),
                 arguments: serde_json::json!({"cmd": "ls"}),
             }]),
@@ -1609,7 +1625,7 @@ mod tests {
             role: CanonicalRole::Assistant,
             content: vec![],
             tool_calls: Some(vec![CanonicalToolCall {
-                id: "tc1".into(),
+                tool_call_id: "tc1".into(),
                 name: "exec".into(),
                 arguments: serde_json::json!({"path": "/tmp"}),
             }]),

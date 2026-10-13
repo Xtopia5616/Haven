@@ -718,7 +718,7 @@ impl ReActEngine {
                     let is_final = tc.name == "final_answer";
                     // Provider tool-call IDs are opaque and may later be
                     // replayed into provider history, so preserve them exactly.
-                    let provider_id = &tc.id;
+                    let provider_id = &tc.tool_call_id;
                     let tool_call_id = if provider_id.is_empty()
                         || !seen_tool_call_ids.insert(provider_id.clone())
                     {
@@ -1876,7 +1876,7 @@ mod tests {
     #[test]
     fn parse_tool_calls_produce_tool_calls() {
         let tc = CanonicalToolCall {
-            id: "call_1".into(),
+            tool_call_id: "call_1".into(),
             name: "read_file".into(),
             arguments: serde_json::json!({"path": "x.txt"}),
         };
@@ -1896,7 +1896,7 @@ mod tests {
     #[test]
     fn parse_short_fragment_before_tool_call_is_not_a_thought() {
         let tc = CanonicalToolCall {
-            id: "call_1".into(),
+            tool_call_id: "call_1".into(),
             name: "read_file".into(),
             arguments: serde_json::json!({"path": "x.txt"}),
         };
@@ -1914,7 +1914,7 @@ mod tests {
     #[test]
     fn parse_tool_call_keeps_meaningful_preamble() {
         let tc = CanonicalToolCall {
-            id: "call_1".into(),
+            tool_call_id: "call_1".into(),
             name: "read_file".into(),
             arguments: serde_json::json!({"path": "x.txt"}),
         };
@@ -1930,7 +1930,7 @@ mod tests {
     #[test]
     fn parse_final_answer_tool_call_marked_final() {
         let tc = CanonicalToolCall {
-            id: "c2".into(),
+            tool_call_id: "c2".into(),
             name: "final_answer".into(),
             arguments: serde_json::json!({"answer": "done"}),
         };
@@ -1946,7 +1946,7 @@ mod tests {
         // names like `answer`/`done` are ordinary tool calls now.
         for name in ["answer", "done"] {
             let tc = CanonicalToolCall {
-                id: String::new(),
+                tool_call_id: String::new(),
                 name: name.into(),
                 arguments: serde_json::json!({}),
             };
@@ -1960,7 +1960,7 @@ mod tests {
     #[test]
     fn parse_empty_tool_call_id_gets_generated() {
         let tc = CanonicalToolCall {
-            id: String::new(),
+            tool_call_id: String::new(),
             name: "read_file".into(),
             arguments: serde_json::json!({}),
         };
@@ -1975,12 +1975,12 @@ mod tests {
     fn parse_multiple_tool_calls_preserve_order() {
         let tcs = vec![
             CanonicalToolCall {
-                id: "a".into(),
+                tool_call_id: "a".into(),
                 name: "search".into(),
                 arguments: serde_json::json!({}),
             },
             CanonicalToolCall {
-                id: "b".into(),
+                tool_call_id: "b".into(),
                 name: "read_file".into(),
                 arguments: serde_json::json!({}),
             },
@@ -1997,12 +1997,12 @@ mod tests {
     fn parse_duplicate_provider_tool_call_ids_get_distinct_fallback_ids() {
         let tcs = vec![
             CanonicalToolCall {
-                id: "same".into(),
+                tool_call_id: "same".into(),
                 name: "search".into(),
                 arguments: serde_json::json!({"q": "x"}),
             },
             CanonicalToolCall {
-                id: "same".into(),
+                tool_call_id: "same".into(),
                 name: "search".into(),
                 arguments: serde_json::json!({"q": "x"}),
             },
@@ -2025,12 +2025,12 @@ mod tests {
     fn parse_provider_tool_call_ids_preserve_exact_values() {
         let tcs = vec![
             CanonicalToolCall {
-                id: " provider/call-id".into(),
+                tool_call_id: " provider/call-id".into(),
                 name: "search".into(),
                 arguments: serde_json::json!({}),
             },
             CanonicalToolCall {
-                id: "provider/call-id ".into(),
+                tool_call_id: "provider/call-id ".into(),
                 name: "search".into(),
                 arguments: serde_json::json!({}),
             },
@@ -2053,7 +2053,7 @@ mod tests {
     fn parse_tool_calls_take_precedence_over_text_final() {
         // Even with Stop finish + step>0, tool_calls win over implicit final.
         let tc = CanonicalToolCall {
-            id: "x".into(),
+            tool_call_id: "x".into(),
             name: "read_file".into(),
             arguments: serde_json::json!({}),
         };

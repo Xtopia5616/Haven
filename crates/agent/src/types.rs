@@ -685,7 +685,7 @@ mod tests {
                 step_number: 1,
                 text: "call".into(),
                 tool_calls: vec![CanonicalToolCall {
-                    id: "provider/call-id".into(),
+                    tool_call_id: "provider/call-id".into(),
                     name: "example".into(),
                     arguments: serde_json::json!({}),
                 }],
@@ -723,7 +723,30 @@ mod tests {
         let TranscriptRecord::ToolCall { tool_calls, .. } = &records[2] else {
             unreachable!()
         };
-        assert_eq!(tool_calls[0].id, "provider/call-id");
+        assert_eq!(tool_calls[0].tool_call_id, "provider/call-id");
+
+        let call_event = TranscriptRecord::ToolCall {
+            step_number: 1,
+            text: "call".into(),
+            tool_calls: tool_calls.clone(),
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        };
+        let payload = call_event.to_payload().unwrap();
+        let mut value: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["tool_calls"][0]["tool_call_id"], "provider/call-id");
+        assert!(value["tool_calls"][0].get("id").is_none());
+
+        let call = value["tool_calls"][0].as_object_mut().unwrap();
+        let legacy_id = call.remove("tool_call_id").unwrap();
+        call.insert("id".into(), legacy_id);
+        let replayed: TranscriptRecord = serde_json::from_value(value).unwrap();
+        replayed.validate_identity().unwrap();
+        let TranscriptRecord::ToolCall { tool_calls, .. } = replayed else {
+            unreachable!()
+        };
+        assert_eq!(tool_calls[0].tool_call_id, "provider/call-id");
 
         let mut bad_reasoning = records[1].clone();
         if let TranscriptRecord::Reasoning { message_id, .. } = &mut bad_reasoning {
@@ -867,12 +890,12 @@ mod tests {
                 text: "calling".into(),
                 tool_calls: vec![
                     CanonicalToolCall {
-                        id: "c1".into(),
+                        tool_call_id: "c1".into(),
                         name: "a".into(),
                         arguments: serde_json::json!({}),
                     },
                     CanonicalToolCall {
-                        id: "c2".into(),
+                        tool_call_id: "c2".into(),
                         name: "b".into(),
                         arguments: serde_json::json!({}),
                     },

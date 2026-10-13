@@ -647,7 +647,7 @@ mod tests {
             CanonicalMessage::assistant(
                 Vec::new(),
                 Some(vec![CanonicalToolCall {
-                    id: "call-1".into(),
+                    tool_call_id: "call-1".into(),
                     name: "read_file".into(),
                     arguments: serde_json::json!({"path": "notes.txt"}),
                 }]),

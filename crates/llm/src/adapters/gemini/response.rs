@@ -64,7 +64,7 @@ impl GeminiAdapter {
                         && let Some(name) = fc.name
                     {
                         tool_calls.push(CanonicalToolCall {
-                            id: fc
+                            tool_call_id: fc
                                 .id
                                 .unwrap_or_else(|| format!("call_{}", tool_calls.len())),
                             name,

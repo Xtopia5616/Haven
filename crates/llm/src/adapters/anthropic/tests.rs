@@ -77,7 +77,7 @@ async fn stream_message_stop_releases_completed_tool_call() {
     }
     server.await.unwrap();
     assert_eq!(tool_calls.len(), 1);
-    assert_eq!(tool_calls[0].id, "toolu_1");
+    assert_eq!(tool_calls[0].tool_call_id, "toolu_1");
     assert_eq!(tool_calls[0].name, "file");
     assert_eq!(tool_calls[0].arguments["operation"], "read");
 }
@@ -259,7 +259,7 @@ fn convert_messages_assistant_tool_use_blocks() {
         content: vec![ContentPart::text("let me check")],
         tool_call_id: None,
         tool_calls: Some(vec![CanonicalToolCall {
-            id: "toolu_2".into(),
+            tool_call_id: "toolu_2".into(),
             name: "file".into(),
             arguments: serde_json::json!({"operation": "read"}),
         }]),
@@ -292,7 +292,7 @@ fn convert_messages_echoes_thinking_blocks_verbatim() {
         content: vec![ContentPart::text("checking")],
         tool_call_id: None,
         tool_calls: Some(vec![CanonicalToolCall {
-            id: "toolu_3".into(),
+            tool_call_id: "toolu_3".into(),
             name: "file".into(),
             arguments: serde_json::json!({"operation": "read"}),
         }]),
@@ -508,7 +508,7 @@ fn convert_messages_echo_uses_front_loaded_order_for_inconsistent_layout() {
         content: vec![ContentPart::text("checking")],
         tool_call_id: None,
         tool_calls: Some(vec![CanonicalToolCall {
-            id: "toolu_9".into(),
+            tool_call_id: "toolu_9".into(),
             name: "file".into(),
             arguments: serde_json::json!({"operation": "read"}),
         }]),
@@ -1331,7 +1331,7 @@ fn parse_response_tool_use_blocks() {
     let resp = client.parse_response(json, None).unwrap();
     assert_eq!(resp.text, "calling tool");
     assert_eq!(resp.tool_calls.len(), 1);
-    assert_eq!(resp.tool_calls[0].id, "toolu_9");
+    assert_eq!(resp.tool_calls[0].tool_call_id, "toolu_9");
     assert_eq!(resp.tool_calls[0].name, "file");
     assert_eq!(resp.tool_calls[0].arguments["operation"], "read");
     assert_eq!(resp.finish_reason, Some(FinishReason::ToolCalls));

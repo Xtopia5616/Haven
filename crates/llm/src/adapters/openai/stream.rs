@@ -179,7 +179,7 @@ impl OpenAiAdapter {
                                 tool_calls: std::mem::take(&mut state.tool_calls_acc)
                                     .into_iter()
                                     .map(|(id, name, args)| CanonicalToolCall {
-                                        id,
+                                        tool_call_id: id,
                                         name: state.tool_names.to_canonical(&name),
                                         arguments: parse_completed_tool_arguments(&args),
                                     })

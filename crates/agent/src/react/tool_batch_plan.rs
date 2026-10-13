@@ -342,7 +342,7 @@ impl ToolBatchPlan {
             .zip(calls)
             .map(|(identity, call)| {
                 anyhow::ensure!(
-                    identity.tool_call_id.as_deref().unwrap_or_default() == call.id,
+                    identity.tool_call_id.as_deref().unwrap_or_default() == call.tool_call_id,
                     "confirmation batch tool identity does not match its transcript call"
                 );
                 Ok(PlannedTool {
@@ -350,7 +350,7 @@ impl ToolBatchPlan {
                         tool_name: call.name.clone(),
                         tool_input: call.arguments.clone(),
                         is_final: false,
-                        tool_call_id: Some(call.id.clone()),
+                        tool_call_id: Some(call.tool_call_id.clone()),
                     },
                     step_id: identity.step_id.clone(),
                     tool_index: identity.tool_index,
@@ -386,7 +386,7 @@ impl ToolBatchPlan {
         self.tools
             .iter()
             .map(|tool| CanonicalToolCall {
-                id: tool.tool_call.tool_call_id.clone().unwrap_or_default(),
+                tool_call_id: tool.tool_call.tool_call_id.clone().unwrap_or_default(),
                 name: tool.tool_call.tool_name.clone(),
                 arguments: tool.tool_call.tool_input.clone(),
             })
@@ -482,7 +482,10 @@ mod tests {
         let card = &plan.tool_call_cards(false)[0];
 
         assert_eq!(plan.len(), 1);
-        assert_eq!(call.id, planned.tool_call.tool_call_id.clone().unwrap());
+        assert_eq!(
+            call.tool_call_id,
+            planned.tool_call.tool_call_id.clone().unwrap()
+        );
         assert_eq!(card.step_id, planned.step_id);
         assert_eq!(card.tool_index, planned.tool_index);
     }

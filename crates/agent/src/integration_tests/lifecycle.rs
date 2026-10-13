@@ -691,7 +691,7 @@ fn parse_default_model_response_with_tool_calls() {
     let resp = LlmResponse {
         text: "Opening file.".into(),
         tool_calls: vec![CanonicalToolCall {
-            id: "tc1".into(),
+            tool_call_id: "tc1".into(),
             name: "open_file".into(),
             arguments: serde_json::json!({"path": "/tmp/test"}),
         }],
@@ -721,7 +721,7 @@ fn parse_default_model_response_final_answer_tool_call() {
     let resp = LlmResponse {
         text: "All done.".into(),
         tool_calls: vec![CanonicalToolCall {
-            id: "final".into(),
+            tool_call_id: "final".into(),
             name: "final_answer".into(),
             arguments: serde_json::json!({}),
         }],

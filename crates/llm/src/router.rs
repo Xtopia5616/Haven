@@ -1819,7 +1819,7 @@ mod tests {
             data: "base64".into(),
         });
         msg.tool_calls = Some(vec![CanonicalToolCall {
-            id: "call-1".into(),
+            tool_call_id: "call-1".into(),
             name: "shell".into(),
             arguments: serde_json::json!({"cmd": "echo hi"}),
         }]);
@@ -1988,7 +1988,7 @@ mod tests {
         let mut tool_message = llm_message(vec![ContentPart::text("tool prompt")]);
         tool_message.reasoning = Some("opaque reasoning context".into());
         tool_message.tool_calls = Some(vec![CanonicalToolCall {
-            id: "call-1".into(),
+            tool_call_id: "call-1".into(),
             name: "prior_tool".into(),
             arguments: serde_json::json!({"arg": "value"}),
         }]);
@@ -2019,7 +2019,7 @@ mod tests {
             chunks: vec![StreamChunk {
                 tool_call_updates: Vec::new(),
                 tool_calls: vec![CanonicalToolCall {
-                    id: "result-call".into(),
+                    tool_call_id: "result-call".into(),
                     name: "probe_tool".into(),
                     arguments: serde_json::json!({"value": "ok"}),
                 }],
@@ -2616,7 +2616,7 @@ mod tests {
                 tool_call_updates: Vec::new(),
                 text: None,
                 tool_calls: vec![CanonicalToolCall {
-                    id: "tc_1".into(),
+                    tool_call_id: "tc_1".into(),
                     name: "file".into(),
                     arguments: serde_json::json!({"operation": "read", "path": "."}),
                 }],

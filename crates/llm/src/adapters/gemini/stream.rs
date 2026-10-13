@@ -270,13 +270,16 @@ impl GeminiAdapter {
                                             .count();
                                         while state.tool_calls_acc.len() <= idx {
                                             state.tool_calls_acc.push(CanonicalToolCall {
-                                                id: format!("call_{}", state.tool_calls_acc.len()),
+                                                tool_call_id: format!(
+                                                    "call_{}",
+                                                    state.tool_calls_acc.len()
+                                                ),
                                                 name: String::new(),
                                                 arguments: Value::Null,
                                             });
                                         }
                                         if let Some(id) = fc.id {
-                                            state.tool_calls_acc[idx].id = id;
+                                            state.tool_calls_acc[idx].tool_call_id = id;
                                         }
                                         state.tool_calls_acc[idx].name =
                                             state.tool_names.to_canonical(&name);
@@ -287,7 +290,8 @@ impl GeminiAdapter {
                                         chunk.tool_call_updates.push(
                                             crate::types::StreamToolCallUpdate {
                                                 index: tool_index as u32,
-                                                id: (!call.id.is_empty()).then(|| call.id.clone()),
+                                                id: (!call.tool_call_id.is_empty())
+                                                    .then(|| call.tool_call_id.clone()),
                                                 name: (!call.name.is_empty())
                                                     .then(|| call.name.clone()),
                                                 arguments_delta: None,

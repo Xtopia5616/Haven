@@ -151,7 +151,7 @@ fn convert_messages_derives_reasoning_from_thinking_blocks() {
         content: vec![ContentPart::text("checked")],
         tool_call_id: None,
         tool_calls: Some(vec![CanonicalToolCall {
-            id: "call_1".into(),
+            tool_call_id: "call_1".into(),
             name: "file".into(),
             arguments: serde_json::json!({"operation": "read"}),
         }]),
@@ -1461,7 +1461,7 @@ fn extract_tool_calls_missing_id_defaults_to_empty() {
     let tc = OpenAiAdapter::extract_tool_calls(&choice);
     assert_eq!(tc.len(), 1);
     assert_eq!(tc[0].name, "run");
-    assert_eq!(tc[0].id, "");
+    assert_eq!(tc[0].tool_call_id, "");
 }
 
 #[test]

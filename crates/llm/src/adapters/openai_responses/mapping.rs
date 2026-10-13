@@ -209,7 +209,7 @@ impl OpenAiResponsesAdapter {
                         for tc in calls {
                             items.push(json!({
                                 "type": "function_call",
-                                "call_id": tc.id,
+                                "call_id": tc.tool_call_id,
                                 "name": tc.name,
                                 "arguments": serialize_tool_arguments(&tc.arguments)
                             }));

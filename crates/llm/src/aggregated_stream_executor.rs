@@ -582,7 +582,7 @@ mod tests {
             StreamChunk {
                 tool_call_updates: Vec::new(),
                 tool_calls: vec![haven_common::types::CanonicalToolCall {
-                    id: "call-1".into(),
+                    tool_call_id: "call-1".into(),
                     name: "file".into(),
                     arguments: serde_json::json!({}),
                 }],

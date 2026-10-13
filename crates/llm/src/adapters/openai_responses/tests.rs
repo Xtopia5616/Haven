@@ -104,7 +104,7 @@ fn convert_input_function_call_and_output() {
             content: vec![ContentPart::text("let me check")],
             tool_call_id: None,
             tool_calls: Some(vec![CanonicalToolCall {
-                id: "call_1".into(),
+                tool_call_id: "call_1".into(),
                 name: "file".into(),
                 arguments: serde_json::json!({"operation": "read"}),
             }]),
@@ -155,7 +155,7 @@ fn convert_input_echoes_reasoning_for_thinking_mode() {
             content: vec![ContentPart::text("let me check")],
             tool_call_id: None,
             tool_calls: Some(vec![CanonicalToolCall {
-                id: "call_1".into(),
+                tool_call_id: "call_1".into(),
                 name: "file".into(),
                 arguments: serde_json::json!({"operation": "read"}),
             }]),
@@ -224,7 +224,7 @@ fn convert_input_synthesizes_empty_reasoning_for_tool_turns_when_echo_required()
             content: vec![ContentPart::text("let me check")],
             tool_call_id: None,
             tool_calls: Some(vec![CanonicalToolCall {
-                id: "call_1".into(),
+                tool_call_id: "call_1".into(),
                 name: "file".into(),
                 arguments: serde_json::json!({"operation": "read"}),
             }]),
@@ -538,7 +538,7 @@ fn deepseek_responses_projects_tool_names_and_historical_calls() {
     let messages = vec![CanonicalMessage::assistant(
         Vec::new(),
         Some(vec![CanonicalToolCall {
-            id: "call_1".into(),
+            tool_call_id: "call_1".into(),
             name: "files.read".into(),
             arguments: json!({"path": "notes.txt"}),
         }]),
@@ -810,7 +810,7 @@ fn parse_response_text_tool_call_usage() {
     let resp = client.parse_response(json, Some("gpt-5".into())).unwrap();
     assert_eq!(resp.text, "checking");
     assert_eq!(resp.tool_calls.len(), 1);
-    assert_eq!(resp.tool_calls[0].id, "call_1");
+    assert_eq!(resp.tool_calls[0].tool_call_id, "call_1");
     assert_eq!(resp.tool_calls[0].name, "file");
     assert_eq!(resp.finish_reason, Some(FinishReason::Stop));
     assert_eq!(resp.usage.total_tokens, 15);
@@ -1171,7 +1171,7 @@ fn responses_memory_refresh_preserves_the_conversation_prefix() {
             CanonicalMessage::assistant(
                 vec![ContentPart::text("checking")],
                 Some(vec![CanonicalToolCall {
-                    id: "call_1".into(),
+                    tool_call_id: "call_1".into(),
                     name: "read".into(),
                     arguments: json!({"path": "notes.txt"}),
                 }]),

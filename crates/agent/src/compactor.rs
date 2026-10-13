@@ -196,8 +196,8 @@ impl ContextCompactor {
                 for call in calls {
                     let _ = writeln!(
                         line,
-                        "[assistant tool_call id={} name={} arguments={}]",
-                        call.id, call.name, call.arguments
+                        "[assistant tool_call tool_call_id={} name={} arguments={}]",
+                        call.tool_call_id, call.name, call.arguments
                     );
                 }
             }
@@ -807,7 +807,7 @@ mod tests {
     fn compact_degrades_to_marker_and_retains_recent_tool_boundary() {
         let mut first_call = make_msg(CanonicalRole::Assistant, "old call");
         first_call.tool_calls = Some(vec![haven_common::types::CanonicalToolCall {
-            id: "call-old".into(),
+            tool_call_id: "call-old".into(),
             name: "read".into(),
             arguments: serde_json::json!({"path": "old.txt"}),
         }]);
@@ -816,7 +816,7 @@ mod tests {
 
         let mut recent_call = make_msg(CanonicalRole::Assistant, "recent call");
         recent_call.tool_calls = Some(vec![haven_common::types::CanonicalToolCall {
-            id: "call-recent".into(),
+            tool_call_id: "call-recent".into(),
             name: "read".into(),
             arguments: serde_json::json!({"path": "recent.txt"}),
         }]);
@@ -929,7 +929,7 @@ mod tests {
         ];
         let mut with_calls = msgs.clone();
         with_calls[1].tool_calls = Some(vec![haven_common::types::CanonicalToolCall {
-            id: "call_1".into(),
+            tool_call_id: "call_1".into(),
             name: "tool".into(),
             arguments: serde_json::Value::Null,
         }]);
@@ -945,7 +945,7 @@ mod tests {
     fn safe_suffix_start_keeps_complete_tool_round() {
         let mut assistant = make_msg(CanonicalRole::Assistant, "call");
         assistant.tool_calls = Some(vec![haven_common::types::CanonicalToolCall {
-            id: "call-1".into(),
+            tool_call_id: "call-1".into(),
             name: "read".into(),
             arguments: serde_json::json!({"path": "notes.txt"}),
         }]);
@@ -1005,7 +1005,7 @@ mod tests {
     fn compaction_range_summarizes_complete_trailing_tool_round() {
         let mut assistant = make_msg(CanonicalRole::Assistant, "calling tool");
         assistant.tool_calls = Some(vec![haven_common::types::CanonicalToolCall {
-            id: "call-1".into(),
+            tool_call_id: "call-1".into(),
             name: "read".into(),
             arguments: serde_json::json!({}),
         }]);

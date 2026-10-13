@@ -136,7 +136,7 @@ impl OpenAiResponsesAdapter {
                                     .tool_calls
                                     .drain(..)
                                     .map(|(_, id, name, args)| CanonicalToolCall {
-                                        id,
+                                        tool_call_id: id,
                                         name: state.tool_names.to_canonical(&name),
                                         arguments: parse_completed_tool_arguments(&args),
                                     })
@@ -465,7 +465,7 @@ impl OpenAiResponsesAdapter {
                                 .tool_calls
                                 .drain(..)
                                 .map(|(_, id, name, args)| CanonicalToolCall {
-                                    id,
+                                    tool_call_id: id,
                                     name: state.tool_names.to_canonical(&name),
                                     arguments: parse_completed_tool_arguments(&args),
                                 })
