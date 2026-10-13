@@ -1116,3 +1116,5 @@
 - [1125：用用户选择代次隔离过期异步会话结果](1125-guard-session-selection-against-stale-async-results.md)
 - [1126：用闭合枚举约束定时 ToolRun mode 写入](1126-type-scheduled-toolrun-mode-writes.md)
 - [1127：为无 provider ID 的搜索结果分配 renderer 身份](1127-identify-idless-web-search-results.md)
+- [1128：统一持久工具调用身份字段](1128-name-durable-tool-call-identity.md)
+- [1129：由 MCP manager 统一拥有连接尝试生命周期](1129-own-mcp-connection-attempt-lifecycle.md)
