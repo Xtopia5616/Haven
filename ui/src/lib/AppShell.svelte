@@ -17,6 +17,7 @@
 	interface Props extends NavigationTabsProps {
 		theme?: ThemeMode;
 		onToggleTheme?: () => void;
+		onRefreshApp?: () => void;
 		overlay?: RecordingOverlayState;
 		duration?: number;
 		onCancelRecording?: (() => Promise<void>) | null;
@@ -33,6 +34,7 @@
 		tabs = [],
 		theme = 'dark',
 		onToggleTheme = () => {},
+		onRefreshApp = () => {},
 		onNavigate = () => {},
 		overlay = {
 			visible: false,
@@ -78,9 +80,9 @@
 			<MaterialButton
 				variant="text"
 				className="titlebar-logo"
-				ariaLabel="回到对话"
-				title="回到对话"
-				onclick={() => onNavigate('chat')}
+				ariaLabel="刷新应用状态"
+				title="刷新应用状态"
+				onclick={() => onRefreshApp?.()}
 			>
 				{#snippet children()}
 					<Logo size={22} withText={true} />

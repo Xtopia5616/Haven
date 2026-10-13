@@ -320,6 +320,10 @@
 		appSessionReducer.dispatch({ type: 'session/cleared' });
 		switchTab('chat');
 	}
+
+	function refreshApplication() {
+		window.location.reload();
+	}
 	let theme = $state(themeStore.currentTheme);
 	$effect(() => syncStore(themeStore, (v) => (theme = v.theme)));
 
@@ -1223,6 +1227,7 @@
 	{tabs}
 	{theme}
 	onToggleTheme={toggleTheme}
+	onRefreshApp={refreshApplication}
 	onNavigate={switchTab}
 	{overlay}
 	{duration}

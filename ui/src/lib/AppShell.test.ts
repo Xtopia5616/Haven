@@ -3,12 +3,12 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 import AppShell from './AppShell.svelte';
 
 describe('AppShell', () => {
-	it('returns to the chat workspace when the Haven logo is clicked', async () => {
-		const onNavigate = vi.fn();
-		render(AppShell, { activeTab: 'memory', tabs: [], onNavigate } as any);
+	it('refreshes the application when the Haven title is clicked', async () => {
+		const onRefreshApp = vi.fn();
+		render(AppShell, { activeTab: 'memory', tabs: [], onRefreshApp } as any);
 
-		await fireEvent.click(screen.getByRole('button', { name: '回到对话' }));
+		await fireEvent.click(screen.getByRole('button', { name: '刷新应用状态' }));
 
-		expect(onNavigate).toHaveBeenCalledWith('chat');
+		expect(onRefreshApp).toHaveBeenCalledOnce();
 	});
 });
