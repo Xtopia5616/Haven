@@ -106,7 +106,8 @@ async fn join_notification_listener(server_name: &str, mut task: tokio::task::Jo
         Ok(Ok(())) => {}
         Ok(Err(error)) => tracing::warn!(
             server = %server_name,
-            error = %error,
+            task_panicked = error.is_panic(),
+            task_cancelled = error.is_cancelled(),
             "MCP notification listener task failed"
         ),
         Err(_) => {
@@ -968,10 +969,10 @@ impl McpManager {
         }
 
         for (name, waiter) in pending {
-            if let Err(error) = waiter.wait().await {
+            if waiter.wait().await.is_err() {
                 tracing::warn!(
                     server = %name,
-                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    failure_kind = "connection_attempt",
                     "MCP server connection attempt did not complete successfully"
                 );
             }

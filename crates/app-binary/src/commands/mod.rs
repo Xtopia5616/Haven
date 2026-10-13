@@ -104,6 +104,37 @@ pub(crate) use crate::logging::log_err;
 pub(crate) use crate::logging::log_external_err;
 pub(crate) use crate::logging::log_storage_err;
 
+/// These MCP operation paths can return server-controlled connection detail.
+/// Keep that detail in the sanitized caller result while logging a fixed category.
+fn admin_operation_failure_kind(request: &haven_tools::AdminRequest) -> Option<&'static str> {
+    use haven_tools::{AdminRequest, McpOperationArgs, NativeMcpOperationArgs};
+
+    match request {
+        AdminRequest::Mcp(
+            McpOperationArgs::McpConnect { .. }
+            | McpOperationArgs::McpAdd { .. }
+            | McpOperationArgs::McpUpdate { .. }
+            | McpOperationArgs::McpToggle { .. }
+            | McpOperationArgs::McpReload,
+        )
+        | AdminRequest::NativeMcp(
+            NativeMcpOperationArgs::McpReconnect { .. } | NativeMcpOperationArgs::McpRefresh { .. },
+        ) => Some("mcp_operation"),
+        _ => None,
+    }
+}
+
+fn log_admin_operation_error(
+    ctx: &str,
+    failure_kind: Option<&'static str>,
+    error: impl std::fmt::Display,
+) -> String {
+    match failure_kind {
+        Some(failure_kind) => log_external_err(ctx, failure_kind, error),
+        None => log_err(ctx, error),
+    }
+}
+
 /// Reject non-canonical Haven entity IDs at the Tauri boundary before they
 /// reach stores, actors, or side effects. The shared Common helper owns the
 /// format; callers supply the entity prefix without its separator.
@@ -125,6 +156,7 @@ pub(crate) async fn execute_admin_operation(
     ctx: &str,
     request: haven_tools::AdminRequest,
 ) -> Result<haven_tools::ToolResult, String> {
+    let external_failure_kind = admin_operation_failure_kind(&request);
     let admin_operations = state
         .runtime
         .tools
@@ -135,10 +167,11 @@ pub(crate) async fn execute_admin_operation(
     let result = admin_operations
         .execute(request, cancel)
         .await
-        .map_err(|e| log_err(ctx, e))?;
+        .map_err(|error| log_admin_operation_error(ctx, external_failure_kind, error))?;
     if !result.success {
-        return Err(log_err(
+        return Err(log_admin_operation_error(
             ctx,
+            external_failure_kind,
             result
                 .error
                 .unwrap_or_else(|| "admin operation failed".into()),
@@ -534,15 +567,16 @@ fn redact_mcp_admin_confirmation_input(
 #[cfg(test)]
 mod tests {
     use super::{
-        app_command_authorization_request, dispatch_authorized_admin_request,
-        log_blocked_admin_request, parse_mcp_refresh_failed_names,
-        redact_mcp_admin_confirmation_input, validate_command_id,
+        admin_operation_failure_kind, app_command_authorization_request,
+        dispatch_authorized_admin_request, log_blocked_admin_request,
+        parse_mcp_refresh_failed_names, redact_mcp_admin_confirmation_input, validate_command_id,
     };
     use haven_common::tools::NetworkAccess;
     use haven_common::types::{CapabilityScope, PermissionEffect, PermissionScope, RiskLevel};
     use haven_tools::{
-        AuthorizationDecision, AuthorizationReasonCode, ConfirmationReceipt, McpRefreshAction,
-        McpRefreshPlan, OperationPolicy, ToolResult, ToolsFacade,
+        AdminRequest, AuthorizationDecision, AuthorizationReasonCode, ConfirmationReceipt,
+        McpOperationArgs, McpRefreshAction, McpRefreshPlan, OperationPolicy, ToolResult,
+        ToolsFacade,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -732,5 +766,23 @@ mod tests {
         );
         assert!(message.contains("network policy denied request"));
         assert!(!message.contains("secret-value"));
+    }
+
+    #[test]
+    fn mcp_connection_admin_failures_use_external_error_logging() {
+        let update = AdminRequest::Mcp(McpOperationArgs::McpUpdate {
+            name: "server".into(),
+            transport: None,
+            command: None,
+            url: None,
+            args: None,
+            env: None,
+            cwd: None,
+            enabled: None,
+        });
+        assert_eq!(admin_operation_failure_kind(&update), Some("mcp_operation"));
+
+        let list = AdminRequest::Mcp(McpOperationArgs::McpList);
+        assert_eq!(admin_operation_failure_kind(&list), None);
     }
 }

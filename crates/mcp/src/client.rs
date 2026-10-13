@@ -641,7 +641,8 @@ impl McpClient {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => tracing::warn!(
                     server = %self.name,
-                    error = %error,
+                    task_panicked = error.is_panic(),
+                    task_cancelled = error.is_cancelled(),
                     "MCP SSE listener task failed"
                 ),
                 Err(_) => {

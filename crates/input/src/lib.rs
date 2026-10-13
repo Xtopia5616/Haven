@@ -699,7 +699,8 @@ impl InputPipeline {
             while let Some(result) = tasks.join_next().await {
                 if let Err(error) = result {
                     tracing::warn!(
-                        error = %error,
+                        task_panicked = error.is_panic(),
+                        task_cancelled = error.is_cancelled(),
                         "input auto-stop callback failed during shutdown"
                     );
                 }
@@ -957,7 +958,11 @@ fn notify_auto_stop(
         let mut tasks = lock_std_or_recover(auto_stop_tasks, "auto_stop_tasks");
         while let Some(result) = tasks.try_join_next() {
             if let Err(error) = result {
-                tracing::warn!(error = %error, "previous input auto-stop callback failed");
+                tracing::warn!(
+                    task_panicked = error.is_panic(),
+                    task_cancelled = error.is_cancelled(),
+                    "previous input auto-stop callback failed"
+                );
             }
         }
         let handler = handler.clone();

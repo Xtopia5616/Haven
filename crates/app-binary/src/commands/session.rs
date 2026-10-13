@@ -514,10 +514,10 @@ async fn resolve_app_confirmation(
             let result = execute_ui_confirmation_action(&task_state, &task_app, pending).await;
             let (title, body) = match result {
                 Ok(()) => ("操作已完成", "已授权的操作已经完成。"),
-                Err(error) => {
+                Err(_) => {
                     tracing::error!(
                         request_id,
-                        error = %sanitize_error_text(&error),
+                        failure_kind = "confirmed_ui_action",
                         "renderer permission continuation failed"
                     );
                     (
