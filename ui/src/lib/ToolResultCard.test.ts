@@ -8,6 +8,7 @@ import { toolRunStore, upsertToolRun } from './toolRunStore.ts';
 import {
 	clearToolOutputPreview,
 	clearToolOutputPreviewsForSession,
+	getToolOutputPreviewStore,
 	setToolOutputPreview,
 } from './toolOutputPreviewStore.ts';
 import { getToolResultRenderer } from './toolResultRenderers.ts';
@@ -1432,6 +1433,30 @@ describe('ToolResultCard collapsible', () => {
 		await tick();
 
 		expect(header.getAttribute('aria-expanded')).toBe('false');
+	});
+
+	it('reclaims empty preview stores when tool cards unmount', () => {
+		for (let index = 0; index < 32; index += 1) {
+			const messageId = `step-${index.toString(16).padStart(32, '0')}`;
+			const store = getToolOutputPreviewStore(messageId);
+			const { unmount } = render(ToolResultCard, {
+				toolName: 'shell',
+				messageId,
+				content: '',
+			});
+
+			unmount();
+			// If the empty keyed store was retained, this write would be visible
+			// through the next lookup for the same step identity.
+			store.set('stale output');
+			let nextValue: string | undefined;
+			const unsubscribe = getToolOutputPreviewStore(messageId).subscribe((value) => {
+				nextValue = value;
+			});
+			unsubscribe();
+
+			expect(nextValue).toBeUndefined();
+		}
 	});
 });
 
