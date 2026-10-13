@@ -1,6 +1,6 @@
 # Haven 通知 / 日志 / 错误处理规范
 
-> 版本: v1.7 | 日期: 2026-09-30
+> 版本: v1.8 | 日期: 2026-10-13
 
 本文档统一 Haven 项目中**通知（Notification）**、**日志（Logging）**、**错误处理（Error Handling）** 三套规范，覆盖 Rust 后端（Tauri 2）与 Svelte 5 前端。
 
@@ -98,6 +98,7 @@ SQLite 等待，但不伪装成 SQLite 内部 lock wait；队列长度与 UI fra
 - 事件消息优先 `模块::方法: 描述`（与 `TauriEmitter::trace_event` 一致）。
 - 上下文优先用 **tracing 结构化字段**（`session_id = %session_id`），便于 grep；存量文本内联 ID（`session {}`）保留，新增/修改优先结构化字段。
 - 不记录用户输入、模型正文、通知正文、凭据、本机路径、完整工具输出或外部协议原文；内部错误文本先经 `haven_common::error::sanitize_error_text` 再写日志。正文型数据即使经过脱敏也不落日志；需要观测内容时只记长度、计数、分类或稳定实体 ID。
+- 配置与连接类型的 `Debug` 输出也按日志内容处理：命令参数、工作目录、URL path/query、代理例外和认证 header 前缀必须省略或替换为固定占位符。不要假定 `Debug` 可安全用于日志或错误上下文。
 - Provider、MCP 等外部服务返回的错误即使经过清洗也不写入日志；使用稳定错误类别或固定事件描述。错误正文继续走原有返回、状态和 UI 路径。
 - 日志中的长度字段必须写明单位；`str.len()` 和序列化 payload 长度按 UTF-8 **bytes** 命名。受控 Provider/model 身份、MCP profile 名称和 endpoint **host** 可用于定位运行配置；endpoint URL 的 userinfo、path 与 query 不得记录。
 - 禁止为打日志而改变函数签名；拿不到 ID 时依赖所在并发边界的 span。

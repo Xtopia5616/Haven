@@ -41,7 +41,7 @@ fn capture_error_for(mode: LoopMode, pcm: &[f32], duration_ms: u64) -> Option<St
     }
     let rms = (pcm.iter().map(|sample| sample * sample).sum::<f32>() / pcm.len() as f32).sqrt();
     if rms < DIGITAL_SILENCE_FLOOR {
-        tracing::error!("captured audio is digital silence (RMS={rms:.6})");
+        tracing::error!("captured audio is digital silence");
         Some("麦克风没有检测到声音，请检查系统麦克风是否被静音或已禁用".into())
     } else {
         None

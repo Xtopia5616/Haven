@@ -105,7 +105,10 @@ impl std::fmt::Debug for ModelEndpoint {
             .debug_struct("ModelEndpoint")
             .field("provider", &self.provider)
             .field("api_style", &self.api_style)
-            .field("base_url", &self.base_url)
+            .field(
+                "base_url",
+                &(!self.base_url.is_empty()).then_some("[CONFIGURED]"),
+            )
             .field("api_key", &"[REDACTED]")
             .field("model_name", &self.model_name)
             .field("max_tokens", &self.max_tokens)
@@ -122,9 +125,9 @@ impl std::fmt::Debug for ModelEndpoint {
                 "proxy_url",
                 &self.proxy_url.as_ref().map(|_| "[CONFIGURED]"),
             )
-            .field("no_proxy", &self.no_proxy)
+            .field("no_proxy", &self.no_proxy.as_ref().map(|_| "[CONFIGURED]"))
             .field("auth_header_name", &self.auth_header_name)
-            .field("auth_header_prefix", &self.auth_header_prefix)
+            .field("auth_header_prefix", &"[REDACTED]")
             .field("timeout_streaming_secs", &self.timeout_streaming_secs)
             .field("reasoning_effort", &self.reasoning_effort)
             .field("web_search", &self.web_search)
@@ -284,16 +287,19 @@ impl std::fmt::Debug for ProviderConfig {
             .field("name", &self.name)
             .field("provider", &self.provider)
             .field("api_style", &self.api_style)
-            .field("base_url", &self.base_url)
+            .field(
+                "base_url",
+                &(!self.base_url.is_empty()).then_some("[CONFIGURED]"),
+            )
             .field("api_key", &"[REDACTED]")
             .field("api_key_ref", &self.api_key_ref)
             .field("auth_header_name", &self.auth_header_name)
-            .field("auth_header_prefix", &self.auth_header_prefix)
+            .field("auth_header_prefix", &"[REDACTED]")
             .field(
                 "proxy_url",
                 &self.proxy_url.as_ref().map(|_| "[CONFIGURED]"),
             )
-            .field("no_proxy", &self.no_proxy)
+            .field("no_proxy", &self.no_proxy.as_ref().map(|_| "[CONFIGURED]"))
             .field("default_max_tokens", &self.default_max_tokens)
             .field("default_temperature", &self.default_temperature)
             .field("default_timeout_secs", &self.default_timeout_secs)
@@ -1007,6 +1013,63 @@ mod tests {
         let endpoint_debug = format!("{endpoint:?}");
         assert!(!endpoint_debug.contains("proxy-secret"));
         assert!(endpoint_debug.contains("[CONFIGURED]"));
+    }
+
+    #[test]
+    fn provider_and_endpoint_debug_redact_connection_details() {
+        let provider = ProviderConfig {
+            name: "safe-provider-name".into(),
+            base_url: "https://provider-host-sentinel.example/private/provider-path?token=provider-query-sentinel".into(),
+            api_key: "provider-api-key-sentinel".into(),
+            auth_header_prefix: "provider-auth-prefix-sentinel".into(),
+            no_proxy: Some("provider-bypass-sentinel.internal".into()),
+            ..Default::default()
+        };
+        let provider_debug = format!("{provider:?}");
+
+        for sentinel in [
+            "provider-host-sentinel.example",
+            "/private/provider-path",
+            "provider-query-sentinel",
+            "provider-api-key-sentinel",
+            "provider-auth-prefix-sentinel",
+            "provider-bypass-sentinel.internal",
+        ] {
+            assert!(
+                !provider_debug.contains(sentinel),
+                "provider Debug leaked {sentinel:?}: {provider_debug}"
+            );
+        }
+        assert!(provider_debug.contains("safe-provider-name"));
+        assert!(provider_debug.contains("[CONFIGURED]"));
+        assert!(provider_debug.contains("[REDACTED]"));
+
+        let endpoint = ModelEndpoint {
+            provider: "safe-endpoint-provider".into(),
+            base_url: "https://endpoint-host-sentinel.example/private/endpoint-path?key=endpoint-query-sentinel".into(),
+            api_key: "endpoint-api-key-sentinel".into(),
+            auth_header_prefix: "endpoint-auth-prefix-sentinel".into(),
+            no_proxy: Some("endpoint-bypass-sentinel.internal".into()),
+            ..Default::default()
+        };
+        let endpoint_debug = format!("{endpoint:?}");
+
+        for sentinel in [
+            "endpoint-host-sentinel.example",
+            "/private/endpoint-path",
+            "endpoint-query-sentinel",
+            "endpoint-api-key-sentinel",
+            "endpoint-auth-prefix-sentinel",
+            "endpoint-bypass-sentinel.internal",
+        ] {
+            assert!(
+                !endpoint_debug.contains(sentinel),
+                "ModelEndpoint Debug leaked {sentinel:?}: {endpoint_debug}"
+            );
+        }
+        assert!(endpoint_debug.contains("safe-endpoint-provider"));
+        assert!(endpoint_debug.contains("[CONFIGURED]"));
+        assert!(endpoint_debug.contains("[REDACTED]"));
     }
 
     #[test]

@@ -206,13 +206,13 @@ fn open_path(path: &Path) -> std::io::Result<()> {
             } else {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    format!("path not found: {}", path.display()),
+                    "path not found",
                 ));
             }
         } else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("path not found: {}", path.display()),
+                "path not found",
             ));
         }
         Ok(())
@@ -228,7 +228,7 @@ fn open_path(path: &Path) -> std::io::Result<()> {
         } else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("path not found: {}", path.display()),
+                "path not found",
             ));
         }
         Ok(())
@@ -242,7 +242,7 @@ fn open_path(path: &Path) -> std::io::Result<()> {
         } else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("path not found: {}", path.display()),
+                "path not found",
             ));
         };
         Command::new("xdg-open").arg(target).spawn()?;
@@ -270,6 +270,20 @@ mod tests {
     #[test]
     fn rejects_control_chars_in_urls() {
         assert!(validate_http_url("https://example.com/\ncalc").is_err());
+    }
+
+    #[test]
+    fn missing_path_errors_do_not_include_the_local_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing_path = directory
+            .path()
+            .join("missing-parent")
+            .join("private-file.txt");
+
+        let error = open_path(&missing_path).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(error.to_string(), "path not found");
     }
 
     #[test]

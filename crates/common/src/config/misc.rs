@@ -761,12 +761,15 @@ impl std::fmt::Debug for McpServerConfig {
             .debug_struct("McpServerConfig")
             .field("name", &self.name)
             .field("transport", &self.transport)
-            .field("command", &self.command)
-            .field("args", &self.args)
+            .field(
+                "command",
+                &(!self.command.is_empty()).then_some("[CONFIGURED]"),
+            )
+            .field("args", &(!self.args.is_empty()).then_some("[CONFIGURED]"))
             .field("env", &"[REDACTED]")
             .field("env_refs", &self.env_refs)
-            .field("cwd", &self.cwd)
-            .field("url", &self.url)
+            .field("cwd", &self.cwd.as_ref().map(|_| "[CONFIGURED]"))
+            .field("url", &(!self.url.is_empty()).then_some("[CONFIGURED]"))
             .field("enabled", &self.enabled)
             .finish()
     }
@@ -843,6 +846,45 @@ mod credential_debug_tests {
         let debug = format!("{config:?}");
         assert!(!serialized.contains("server-secret"));
         assert!(!debug.contains("server-secret"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn mcp_server_debug_redacts_process_and_endpoint_details() {
+        let config = McpServerConfig {
+            name: "safe-mcp-profile".into(),
+            command: "command-path-sentinel\\private\\server.exe".into(),
+            args: vec![
+                "--token=argument-secret-sentinel".into(),
+                "argument-path-sentinel\\private\\data".into(),
+            ],
+            env: vec!["TOKEN=environment-secret-sentinel".into()],
+            cwd: Some("cwd-path-sentinel\\private\\working".into()),
+            url: "https://mcp-host-sentinel.example/private/mcp-path?token=url-secret-sentinel"
+                .into(),
+            enabled: false,
+            ..Default::default()
+        };
+        let debug = format!("{config:?}");
+
+        for sentinel in [
+            "command-path-sentinel",
+            "argument-secret-sentinel",
+            "argument-path-sentinel",
+            "environment-secret-sentinel",
+            "cwd-path-sentinel",
+            "mcp-host-sentinel.example",
+            "/private/mcp-path",
+            "url-secret-sentinel",
+        ] {
+            assert!(
+                !debug.contains(sentinel),
+                "McpServerConfig Debug leaked {sentinel:?}: {debug}"
+            );
+        }
+        assert!(debug.contains("safe-mcp-profile"));
+        assert!(debug.contains("enabled: false"));
+        assert!(debug.contains("[CONFIGURED]"));
         assert!(debug.contains("[REDACTED]"));
     }
 }

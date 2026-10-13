@@ -32,17 +32,13 @@ pub(crate) const TARGET_SAMPLE_RATE: u32 = 16000;
 /// Set below a quiet room's typical noise floor (≈ -60..-90 dBFS) so the
 /// silent-capture abort only fires on genuinely dead streams.
 const SIGNAL_FLOOR: f32 = 1e-5;
-/// Emit a debug-level amplitude report every N callbacks (~10 ms each).
+/// Emit a debug-level callback count every N callbacks (~10 ms each).
 const DIAG_INTERVAL: u32 = 250;
 
-/// Per-stream diagnostic counter for the audio callback: logs a rolling
-/// peak amplitude so silent-capture and "no speech at the head" issues can
-/// be diagnosed from logs instead of by listening to saved WAVs. The peak
-/// itself is computed by the mixdown loop (one pass over the chunk); this
-/// only counts callbacks and logs.
+/// Per-stream callback counter. Diagnostics record stream activity without
+/// logging measurements derived from captured audio samples.
 struct CallbackDiag {
     callbacks: u32,
-    window_peak: f32,
     poison_logged: bool,
 }
 
@@ -50,23 +46,17 @@ impl CallbackDiag {
     fn new() -> Self {
         Self {
             callbacks: 0,
-            window_peak: 0.0,
             poison_logged: false,
         }
     }
 
-    fn observe(&mut self, peak: f32) {
+    fn observe(&mut self) {
         self.callbacks += 1;
-        if peak > self.window_peak {
-            self.window_peak = peak;
-        }
         if self.callbacks.is_multiple_of(DIAG_INTERVAL) {
             tracing::debug!(
-                "capture callback: {} chunks, window peak {:.6}",
-                self.callbacks,
-                self.window_peak
+                callback_chunks = self.callbacks,
+                "capture callbacks observed"
             );
-            self.window_peak = 0.0;
         }
     }
 }
@@ -280,8 +270,8 @@ fn process_chunk<T: Sample>(
     let frames = data.len() / ch;
     mono.clear();
     mono.reserve(frames);
-    // Peak of the chunk's mono mixdown: drives the signal-floor check and
-    // the rolling diagnostic without a second scan.
+    // Peak of the chunk's mono mixdown drives the signal-floor check without
+    // a second scan. It is never recorded in diagnostics.
     let mut peak = 0.0f32;
     for frame in data.chunks_exact(ch) {
         let mut sum = 0.0f32;
@@ -295,7 +285,7 @@ fn process_chunk<T: Sample>(
         }
         mono.push(sum / ch as f32);
     }
-    diag.observe(peak);
+    diag.observe();
     resampler.resample_into(mono, resampled);
     // Checked on the source mixdown: if any source sample exceeds the floor,
     // the resampled stream carries signal too (interpolation of the peak's
@@ -440,11 +430,10 @@ mod tests {
     }
 
     #[test]
-    fn diag_tracks_rolling_peak() {
+    fn diag_tracks_callback_count_without_sample_values() {
         let mut diag = CallbackDiag::new();
-        diag.observe(0.3);
-        diag.observe(0.9);
+        diag.observe();
+        diag.observe();
         assert_eq!(diag.callbacks, 2);
-        assert!((diag.window_peak - 0.9).abs() < 1e-6);
     }
 }
