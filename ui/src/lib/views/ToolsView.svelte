@@ -63,6 +63,15 @@
 		transport?: string;
 	}
 
+	interface ToggleState {
+		generation: number;
+		latestEnabled: boolean;
+		confirmedEnabled: boolean;
+		pending: Promise<void> | null;
+	}
+
+	type ToggleScope = 'skill' | 'mcp' | 'builtin';
+
 	const TOOL_TAB_IDS = ['builtin', 'mcp', 'skills'] as const;
 	type ToolTabId = (typeof TOOL_TAB_IDS)[number];
 	const TOOL_TAB_LABELS: Record<ToolTabId, string> = {
@@ -77,6 +86,7 @@
 	let mcpRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let mcpRefreshing = $state(false);
 	let skillsRefreshing = $state(false);
+	const toggleStates = new Map<string, ToggleState>();
 
 	function matchesResource(item: ResourceFilterItem) {
 		const query = searchQuery.trim().toLocaleLowerCase();
@@ -176,6 +186,7 @@
 		if (mcpRefreshTimer) clearTimeout(mcpRefreshTimer);
 		unlistenSkills?.dispose();
 		unlistenMcp?.dispose();
+		toggleStates.clear();
 	});
 
 	async function refreshMcpServers(notifyOnError = true) {
@@ -265,38 +276,92 @@
 		}
 	}
 
-	// Shared optimistic toggle for skills / MCP servers / builtin tools:
-	// flip the item locally, invoke the backend command, and roll back on
-	// failure. `refresh` runs after a successful toggle. One implementation
-	// so the three handlers cannot drift (e.g. one forgetting the refresh).
+	// Serialize each resource's writes. The UI stays optimistic, while a failed
+	// latest write is reconciled from the backend before falling back to the last
+	// confirmed value. Older failures must never roll back a newer user intent.
 	async function toggleItem<T extends { name: string; enabled: boolean }>(
-		list: T[],
+		scope: ToggleScope,
+		getList: () => T[],
 		name: string,
 		enabled: boolean,
 		setList: (items: T[]) => void,
 		update: () => Promise<void>,
-		refresh: (() => void | Promise<unknown>) | null,
+		refresh: (() => Promise<boolean>) | null,
 	) {
-		const prev = list.map((x) => ({ ...x }));
-		setList(list.map((x) => (x.name === name ? { ...x, enabled } : x)));
-		try {
-			await update();
-			addNotification(`${name} 已${enabled ? '启用' : '禁用'}`, 'success', 2000);
-			if (refresh) await refresh();
-		} catch (e) {
-			setList(prev);
-			reportError(e, { context: 'ToolsView', message: `切换 ${name} 失败`, log: false });
+		const key = JSON.stringify([scope, name]);
+		let state = toggleStates.get(key);
+		if (!state) {
+			const current = getList().find((item) => item.name === name)?.enabled ?? enabled;
+			state = {
+				generation: 0,
+				latestEnabled: current,
+				confirmedEnabled: current,
+				pending: null,
+			};
+			toggleStates.set(key, state);
 		}
+
+		const currentState = state;
+		const generation = ++currentState.generation;
+		currentState.latestEnabled = enabled;
+		const applyEnabled = (value: boolean) => {
+			setList(
+				getList().map((item) => (item.name === name ? { ...item, enabled: value } : item)),
+			);
+		};
+		applyEnabled(enabled);
+
+		const previous = currentState.pending;
+		let task!: Promise<void>;
+		task = (previous ?? Promise.resolve())
+			.catch(() => undefined)
+			.then(async () => {
+				if (disposed || currentState.generation !== generation) return;
+				try {
+					await update();
+					if (disposed) return;
+					currentState.confirmedEnabled = enabled;
+					if (refresh) await refresh();
+					if (disposed) return;
+					if (currentState.generation !== generation) {
+						applyEnabled(currentState.latestEnabled);
+						return;
+					}
+					addNotification(`${name} 已${enabled ? '启用' : '禁用'}`, 'success', 2000);
+				} catch (error) {
+					if (disposed || currentState.generation !== generation) return;
+					const refreshed = refresh ? await refresh() : false;
+					if (disposed) return;
+					if (currentState.generation !== generation) {
+						applyEnabled(currentState.latestEnabled);
+						return;
+					}
+					if (!refreshed) applyEnabled(currentState.confirmedEnabled);
+					reportError(error, {
+						context: 'ToolsView',
+						message: `切换 ${name} 失败`,
+						log: false,
+					});
+				}
+			})
+			.finally(() => {
+				if (currentState.pending !== task) return;
+				currentState.pending = null;
+				if (toggleStates.get(key) === currentState) toggleStates.delete(key);
+			});
+		currentState.pending = task;
+		await task;
 	}
 
 	async function handleToggle(name: string, enabled: boolean) {
 		await toggleItem(
-			skills,
+			'skill',
+			() => skills,
 			name,
 			enabled,
 			(v) => (skills = v),
 			() => setSkillEnabled({ name, enabled }),
-			null,
+			() => refreshSkillList(false),
 		);
 	}
 
@@ -390,7 +455,8 @@
 
 	async function handleMcpToggle(name: string, enabled: boolean) {
 		await toggleItem(
-			mcpServers,
+			'mcp',
+			() => mcpServers,
 			name,
 			enabled,
 			(v) => (mcpServers = v),
@@ -401,7 +467,8 @@
 
 	async function handleToolToggle(name: string, enabled: boolean) {
 		await toggleItem(
-			builtinTools,
+			'builtin',
+			() => builtinTools,
 			name,
 			enabled,
 			(v) => (builtinTools = v),

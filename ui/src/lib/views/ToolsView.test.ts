@@ -13,10 +13,12 @@ const { addNotification, reportError } = vi.hoisted(() => ({
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
-	const promise = new Promise<T>((resolvePromise) => {
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
 		resolve = resolvePromise;
+		reject = rejectPromise;
 	});
-	return { promise, resolve };
+	return { promise, resolve, reject };
 }
 
 vi.mock('$lib/tauri.ts', () => ({
@@ -89,16 +91,16 @@ function mcpServer(name: string, status: string) {
 	};
 }
 
-function skillInfo(name: string) {
+function skillInfo(name: string, enabled = false, hasScript = false) {
 	return {
 		name,
 		description: `${name} skill`,
 		version: null,
 		language: 'markdown',
-		enabled: false,
+		enabled,
 		executable: false,
 		root: `C:\\skills\\${name}`,
-		has_script: false,
+		has_script: hasScript,
 		unavailable_reason: null,
 		manifest_error: null,
 	};
@@ -106,6 +108,7 @@ function skillInfo(name: string) {
 
 describe('ToolsView toolbar actions', () => {
 	beforeEach(() => {
+		invoke.mockClear();
 		registerAppListener.mockClear();
 		registerAppListener.mockImplementation(async () => ({ dispose: vi.fn() }));
 		addNotification.mockClear();
@@ -215,6 +218,112 @@ describe('ToolsView toolbar actions', () => {
 		for (const button of [...mcpToolbarButtons, ...skillToolbarButtons]) {
 			expect(button.classList.contains('md-btn')).toBe(true);
 		}
+	});
+
+	it('serializes skill toggles and reconciles the latest failed intent from the backend', async () => {
+		const skillWrites = [deferred<void>(), deferred<void>()];
+		let writeIndex = 0;
+		invoke.mockImplementation((command: string) => {
+			if (command === 'list_builtin_tool_manifests') return Promise.resolve({ tools: [] });
+			if (command === 'list_mcp_servers') return Promise.resolve([]);
+			if (command === 'list_skills') return Promise.resolve([skillInfo('docs', true, true)]);
+			if (command === 'set_skill_enabled') return skillWrites[writeIndex++].promise;
+			return Promise.resolve(undefined);
+		});
+
+		render(ToolsView);
+		await fireEvent.click(await screen.findByRole('tab', { name: '技能' }));
+		const getSkillSwitch = () =>
+			screen.getByRole('switch', { name: '切换技能 docs' }) as HTMLInputElement;
+		await waitFor(() => expect(getSkillSwitch().checked).toBe(true));
+
+		await fireEvent.click(getSkillSwitch());
+		await waitFor(() =>
+			expect(invoke).toHaveBeenCalledWith('set_skill_enabled', {
+				name: 'docs',
+				enabled: false,
+			}),
+		);
+		await fireEvent.click(getSkillSwitch());
+		expect(getSkillSwitch().checked).toBe(true);
+		expect(
+			invoke.mock.calls.filter(([command]) => command === 'set_skill_enabled'),
+		).toHaveLength(1);
+
+		skillWrites[0].reject(new Error('disable failed'));
+		await waitFor(() =>
+			expect(
+				invoke.mock.calls.filter(([command]) => command === 'set_skill_enabled'),
+			).toHaveLength(2),
+		);
+		skillWrites[1].reject(new Error('enable failed'));
+
+		await waitFor(() => {
+			expect(invoke.mock.calls.filter(([command]) => command === 'list_skills')).toHaveLength(
+				2,
+			);
+			expect(getSkillSwitch().checked).toBe(true);
+		});
+		expect(reportError).toHaveBeenCalledTimes(1);
+		expect(reportError).toHaveBeenCalledWith(new Error('enable failed'), {
+			context: 'ToolsView',
+			message: '切换 docs 失败',
+			log: false,
+		});
+	});
+
+	it('serializes MCP toggles and preserves the latest intent across two failures', async () => {
+		const mcpWrites = [deferred<void>(), deferred<void>()];
+		let writeIndex = 0;
+		invoke.mockImplementation((command: string) => {
+			if (command === 'list_builtin_tool_manifests') return Promise.resolve({ tools: [] });
+			if (command === 'list_mcp_servers') {
+				return Promise.resolve([mcpServer('docs-server', 'Connected')]);
+			}
+			if (command === 'list_skills') return Promise.resolve([]);
+			if (command === 'toggle_mcp_server') return mcpWrites[writeIndex++].promise;
+			return Promise.resolve(undefined);
+		});
+
+		render(ToolsView);
+		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
+		const getMcpSwitch = () =>
+			screen.getByRole('switch', { name: '切换 docs-server' }) as HTMLInputElement;
+		await waitFor(() => expect(getMcpSwitch().checked).toBe(true));
+
+		await fireEvent.click(getMcpSwitch());
+		await waitFor(() =>
+			expect(invoke).toHaveBeenCalledWith('toggle_mcp_server', {
+				name: 'docs-server',
+				enabled: false,
+			}),
+		);
+		await fireEvent.click(getMcpSwitch());
+		expect(getMcpSwitch().checked).toBe(true);
+		expect(
+			invoke.mock.calls.filter(([command]) => command === 'toggle_mcp_server'),
+		).toHaveLength(1);
+
+		mcpWrites[0].reject(new Error('disable failed'));
+		await waitFor(() =>
+			expect(
+				invoke.mock.calls.filter(([command]) => command === 'toggle_mcp_server'),
+			).toHaveLength(2),
+		);
+		mcpWrites[1].reject(new Error('enable failed'));
+
+		await waitFor(() => {
+			expect(
+				invoke.mock.calls.filter(([command]) => command === 'list_mcp_servers'),
+			).toHaveLength(2);
+			expect(getMcpSwitch().checked).toBe(true);
+		});
+		expect(reportError).toHaveBeenCalledTimes(1);
+		expect(reportError).toHaveBeenCalledWith(new Error('enable failed'), {
+			context: 'ToolsView',
+			message: '切换 docs-server 失败',
+			log: false,
+		});
 	});
 
 	it('shows the active resource count in the shared filter bar', async () => {
