@@ -1118,3 +1118,7 @@
 - [1127：为无 provider ID 的搜索结果分配 renderer 身份](1127-identify-idless-web-search-results.md)
 - [1128：统一持久工具调用身份字段](1128-name-durable-tool-call-identity.md)
 - [1129：由 MCP manager 统一拥有连接尝试生命周期](1129-own-mcp-connection-attempt-lifecycle.md)
+- [1130：显式命名流式工具调用元数据](1130-name-stream-tool-call-metadata.md)
+- [1131：用领域枚举表达 OCR 凭据字段](1131-use-enum-for-ocr-credential-field.md)
+- [1132：将 Credential Manager target 规范为小写](1132-lowercase-credential-manager-target.md)
+- [1133：按资源串行化工具开关写入](1133-serialize-tool-setting-toggles.md)
