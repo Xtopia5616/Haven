@@ -3,12 +3,18 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 import AppShell from './AppShell.svelte';
 
 describe('AppShell', () => {
-	it('refreshes the application when the Haven title is clicked', async () => {
+	it('refreshes the application from both responsive Haven title buttons', async () => {
 		const onRefreshApp = vi.fn();
 		render(AppShell, { activeTab: 'memory', tabs: [], onRefreshApp } as any);
+		const refreshButtons = screen.getAllByRole('button', {
+			name: '刷新应用状态',
+			hidden: true,
+		});
 
-		await fireEvent.click(screen.getByRole('button', { name: '刷新应用状态' }));
+		expect(refreshButtons).toHaveLength(2);
+		await fireEvent.click(refreshButtons[0]);
+		await fireEvent.click(refreshButtons[1]);
 
-		expect(onRefreshApp).toHaveBeenCalledOnce();
+		expect(onRefreshApp).toHaveBeenCalledTimes(2);
 	});
 });

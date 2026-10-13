@@ -98,9 +98,9 @@
 		<button
 			type="button"
 			class="rail-brand"
-			aria-label="返回聊天工作区"
-			title="返回聊天工作区"
-			onclick={() => onNavigate('chat')}
+			aria-label="刷新应用状态"
+			title="刷新应用状态"
+			onclick={() => onRefreshApp?.()}
 		>
 			<Logo size={30} withText={true} />
 		</button>
