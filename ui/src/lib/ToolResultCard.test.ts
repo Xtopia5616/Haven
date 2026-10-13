@@ -204,6 +204,14 @@ describe('operation view UI contract', () => {
 			{ renderer: 'files.search', data: { results: null } },
 			{ renderer: 'files.search', data: { results: [{ path: 'a.rs', snippet: 42 }] } },
 			{ renderer: 'files.search', data: { results: [], mode: 'future-mode' } },
+			{ renderer: 'files.search', data: { results: [], search_complete: 'false' } },
+			{ renderer: 'files.search', data: { results: [], io_error_count: -1 } },
+			{ renderer: 'files.search', data: { results: [], io_error_count: 1.5 } },
+			{
+				renderer: 'files.search',
+				data: { results: [], search_complete: true, io_error_count: 1 },
+			},
+			{ renderer: 'files.search', data: { results: [], search_complete: true, has_more: true } },
 			{ renderer: 'files', data: { results: [{ path: 42 }] } },
 			{ renderer: 'files', data: { operation: 'future-operation' } },
 			{ renderer: 'files', data: { symbols: [{ kind: 'macro' }] } },
@@ -1518,6 +1526,18 @@ describe('ToolResultCard files', () => {
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('Results hit the max_results cap.')).toBeTruthy();
+	});
+
+	it('does not report an empty search when traversal or reads were incomplete', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'files',
+			content: searchJson([], { search_complete: false, io_error_count: 2 }),
+		});
+		await expandToolCard(container);
+
+		expect(screen.getByText(/搜索未完整完成，当前结果可能不完整。/)).toBeTruthy();
+		expect(screen.getByText(/有 2 次文件或目录读取失败。/)).toBeTruthy();
+		expect(screen.queryByText('没有匹配的结果')).toBeNull();
 	});
 });
 

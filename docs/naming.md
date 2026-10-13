@@ -187,7 +187,7 @@ SessionReducer 的当前 run 结束提示统一为 `SessionRunEndNotice { sessio
 
 录音 overlay controller 的命令注入范围命名为 `RecordingCommandName`，由 generated `TauriCommandName` 显式提取 `start_recording`、`stop_recording` 与 `cancel_recording`；它是 controller 的窄能力边界，命令值仍由 generated IPC contract 持有（ADR 0640）。测试 mock 直接从 controller dependency 的 `invoke` 字段取得函数类型，不复制一份命令 union。
 
-Tools 文件名与全文搜索共用 `FileSearchResult`；匹配项由 `results` 表达，有限扫描或结果上限则由独立的 `truncation_reason` 表达。匹配数据与搜索完整性是不同结果维度，不能只根据 tuple 位置恢复。
+Tools 文件名与全文搜索共用 `FileSearchResult`；匹配项由 `results` 表达，有限扫描或结果上限由 `truncation_reason` 表达，遍历/读取失败由 `io_error_count` 表达。工具输出的 `search_complete` 仅当既未触发截断又没有文件系统错误时为 `true`；`has_more` 与顶层 `truncated` 只表示达到搜索上限，不表示文件系统完整性。匹配数据、容量截断与文件系统覆盖是不同结果维度（ADR 0603、1118）。
 
 Memory summary extraction marker 的序列化值解码为 `DecodedSummaryExtractionMarker { session_id, attempt, next_attempt_at_ms }`；它是解析出的持久值，不等同于分页查询对消费者暴露的 `SummaryExtractionMarker` 或其重试状态。
 

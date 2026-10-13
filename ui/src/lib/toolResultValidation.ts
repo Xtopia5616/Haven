@@ -361,11 +361,25 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 	switch (renderer) {
 		case 'files.search':
 		case 'file_search':
-			return (
-				hasValidOptionalFields(data, {
+			if (
+				!hasValidOptionalFields(data, {
 					count: isFiniteNumber,
 					mode: isToolFileSearchMode,
-				}) && hasValidRecordArray(data, 'results', validFileSearchResult)
+					search_complete: isBoolean,
+					io_error_count: (value) =>
+						isFiniteNumber(value) && Number.isInteger(value) && value >= 0,
+					has_more: isBoolean,
+					truncated: isBoolean,
+				}) ||
+				!hasValidRecordArray(data, 'results', validFileSearchResult)
+			) {
+				return false;
+			}
+			return !(
+				data.search_complete === true &&
+				((typeof data.io_error_count === 'number' && data.io_error_count > 0) ||
+					data.has_more === true ||
+					data.truncated === true)
 			);
 		case 'files':
 			return validFileData(data);

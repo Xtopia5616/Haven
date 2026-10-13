@@ -8,6 +8,8 @@
 			results?: Array<{ path: string; line?: number | null; snippet?: string | null }>;
 			count?: number | null;
 			mode?: ToolFileSearchMode | null;
+			search_complete?: boolean | null;
+			io_error_count?: number | null;
 		};
 	}
 
@@ -19,11 +21,22 @@
 			? Math.max(0, data.count)
 			: resultList.length,
 	);
+	let searchComplete = $derived(data.search_complete !== false);
+	let ioErrorCount = $derived(
+		typeof data.io_error_count === 'number' && Number.isInteger(data.io_error_count)
+			? Math.max(0, data.io_error_count)
+			: 0,
+	);
 </script>
 
 <div class="tool-result-label">
 	{resultCount} 个结果 · {data.mode === 'content' ? '全文' : '文件名'}
 </div>
+{#if !searchComplete}
+	<p class="tool-result-message" role="status">
+		搜索未完整完成，当前结果可能不完整。{#if ioErrorCount > 0}有 {ioErrorCount} 次文件或目录读取失败。{/if}
+	</p>
+{/if}
 {#if resultList.length > 0}
 	<ToolResultList items={resultList}>
 		{#snippet children(visibleResults)}
@@ -41,7 +54,9 @@
 		{/snippet}
 	</ToolResultList>
 {:else}
-	<p class="tool-result-message">没有匹配的结果</p>
+	{#if searchComplete}
+		<p class="tool-result-message">没有匹配的结果</p>
+	{/if}
 {/if}
 
 <style>

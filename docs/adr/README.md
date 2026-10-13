@@ -1106,3 +1106,4 @@
 - [1115：统一 ToolRunService 后台任务所有权与 shutdown drain](1115-track-toolrun-service-tasks-through-shutdown.md)
 - [1116：为已删除会话保留 Messaging 谱系墓碑](1116-tombstone-deleted-messaging-sessions.md)
 - [1117：限制 Messaging 累计容量并分批排空 backlog](1117-bound-messaging-backlog-and-claims.md)
+- [1118：报告文件搜索完整性](1118-report-file-search-completeness.md)

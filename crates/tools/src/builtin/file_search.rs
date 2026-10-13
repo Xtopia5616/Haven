@@ -40,6 +40,17 @@ enum TruncationReason {
 struct FileSearchResult {
     results: Vec<Value>,
     truncation_reason: Option<TruncationReason>,
+    io_error_count: usize,
+}
+
+fn search_is_complete(truncation_reason: Option<TruncationReason>, io_error_count: usize) -> bool {
+    truncation_reason.is_none() && io_error_count == 0
+}
+
+fn record_search_io_error(io_error_count: &AtomicUsize, cancel: &CancellationToken) {
+    if !cancel.is_cancelled() {
+        io_error_count.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 fn truncation_reason(
@@ -370,6 +381,7 @@ impl FileSearchEngine {
         let FileSearchResult {
             results,
             truncation_reason: truncation,
+            io_error_count,
         } = search_result;
         let truncated = truncation.is_some();
         let mut output = serde_json::json!({
@@ -379,9 +391,12 @@ impl FileSearchEngine {
             "root": root,
             "pattern": pattern_for_output,
             "has_more": truncated,
+            "search_complete": search_is_complete(truncation, io_error_count),
+            "io_error_count": io_error_count,
         });
+        let mut hints = Vec::new();
         if let Some(reason) = truncation {
-            output["hint"] = serde_json::Value::String(match reason {
+            hints.push(match reason {
                 TruncationReason::ResultCount => format!(
                     "Results hit the max_results cap ({max_results}). Narrow the pattern, add a line range (start_line/end_line), or raise max_results."
                 ),
@@ -393,6 +408,14 @@ impl FileSearchEngine {
                     MAX_SEARCH_RESULT_BYTES / (1024 * 1024)
                 ),
             });
+        }
+        if io_error_count > 0 {
+            hints.push(format!(
+                "Search encountered {io_error_count} filesystem errors; results may be incomplete."
+            ));
+        }
+        if !hints.is_empty() {
+            output["hint"] = serde_json::Value::String(hints.join(" "));
         }
         Ok(ToolResult::from_output(output, truncated))
     }
@@ -502,6 +525,7 @@ fn search_filenames_parallel(
     let results = Arc::new(Mutex::new(Vec::new()));
     let result_bytes = Arc::new(AtomicUsize::new(0));
     let result_bytes_limit_hit = Arc::new(AtomicBool::new(false));
+    let io_error_count = Arc::new(AtomicUsize::new(0));
     let re = regex::Regex::new(&glob_to_regex(pattern)).ok();
     let glob = pattern.to_string();
 
@@ -516,6 +540,7 @@ fn search_filenames_parallel(
         let results = results.clone();
         let result_bytes = result_bytes.clone();
         let result_bytes_limit_hit = result_bytes_limit_hit.clone();
+        let io_error_count = io_error_count.clone();
         let cancel = cancel.clone();
         Box::new(move |entry| {
             if cancel.is_cancelled() || found_flag.load(Ordering::Relaxed) {
@@ -526,7 +551,10 @@ fn search_filenames_parallel(
             }
             let entry = match entry {
                 Ok(e) => e,
-                Err(_) => return ignore::WalkState::Continue,
+                Err(_) => {
+                    record_search_io_error(&io_error_count, &cancel);
+                    return ignore::WalkState::Continue;
+                }
             };
             let name = entry.file_name().to_string_lossy();
             let matched = re
@@ -560,6 +588,7 @@ fn search_filenames_parallel(
             scan_limit_hit.load(Ordering::Relaxed),
             result_bytes_limit_hit.load(Ordering::Relaxed),
         ),
+        io_error_count: io_error_count.load(Ordering::Relaxed),
     }
 }
 
@@ -610,6 +639,7 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
     let results = Arc::new(Mutex::new(Vec::new()));
     let result_bytes = Arc::new(AtomicUsize::new(0));
     let result_bytes_limit_hit = Arc::new(AtomicBool::new(false));
+    let io_error_count = Arc::new(AtomicUsize::new(0));
     let result_collector = SearchResultCollector {
         max_results,
         stop_flag: found_flag.clone(),
@@ -617,6 +647,7 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
         results,
         result_bytes,
         result_bytes_limit_hit,
+        io_error_count,
         snippet_chars,
     };
 
@@ -638,16 +669,29 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
             }
             let entry = match entry {
                 Ok(e) => e,
-                Err(_) => return ignore::WalkState::Continue,
+                Err(_) => {
+                    record_search_io_error(&result_collector.io_error_count, &cancel);
+                    return ignore::WalkState::Continue;
+                }
             };
-            if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            let Some(file_type) = entry.file_type() else {
+                record_search_io_error(&result_collector.io_error_count, &cancel);
+                return ignore::WalkState::Continue;
+            };
+            if !file_type.is_file() {
                 return ignore::WalkState::Continue;
             }
-            if max_file_size > 0
-                && let Ok(meta) = entry.metadata()
-                && meta.len() > max_file_size
-            {
-                return ignore::WalkState::Continue;
+            if max_file_size > 0 {
+                match entry.metadata() {
+                    Ok(metadata) if metadata.len() > max_file_size => {
+                        return ignore::WalkState::Continue;
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        record_search_io_error(&result_collector.io_error_count, &cancel);
+                        return ignore::WalkState::Continue;
+                    }
+                }
             }
             if let Some((sl, el)) = line_range {
                 search_content_line_range(
@@ -664,10 +708,16 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
                 let sink =
                     CollectingSink::new(entry.path().to_path_buf(), result_collector.clone());
                 let Ok(file) = std::fs::File::open(entry.path()) else {
+                    record_search_io_error(&result_collector.io_error_count, &cancel);
                     return ignore::WalkState::Continue;
                 };
                 let reader = cancellable_search_reader(file, &cancel);
-                let _ = searcher.search_reader(matcher.clone(), reader, sink);
+                if searcher
+                    .search_reader(matcher.clone(), reader, sink)
+                    .is_err()
+                {
+                    record_search_io_error(&result_collector.io_error_count, &cancel);
+                }
             }
             ignore::WalkState::Continue
         })
@@ -681,6 +731,7 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
                 .result_bytes_limit_hit
                 .load(Ordering::Relaxed),
         ),
+        io_error_count: result_collector.io_error_count.load(Ordering::Relaxed),
     }
 }
 
@@ -692,6 +743,7 @@ struct SearchResultCollector {
     results: Arc<Mutex<Vec<Value>>>,
     result_bytes: Arc<AtomicUsize>,
     result_bytes_limit_hit: Arc<AtomicBool>,
+    io_error_count: Arc<AtomicUsize>,
     snippet_chars: usize,
 }
 
@@ -709,25 +761,38 @@ fn search_content_line_range(
     max_window_bytes: u64,
     cancel: &CancellationToken,
 ) {
-    let Ok(Some((start, end))) = line_range_bytes(path, start_line, end_line, cancel) else {
-        return;
+    let (start, end) = match line_range_bytes(path, start_line, end_line, cancel) {
+        Ok(Some(range)) => range,
+        Ok(None) => return,
+        Err(_) => {
+            record_search_io_error(&result_collector.io_error_count, cancel);
+            return;
+        }
     };
     let window_len = end - start;
     if window_len > max_window_bytes {
         let sink = CollectingSink::new(path.to_path_buf(), result_collector.clone())
             .with_line_filter(start_line, end_line);
         let Ok(file) = std::fs::File::open(path) else {
+            record_search_io_error(&result_collector.io_error_count, cancel);
             return;
         };
         let reader = cancellable_search_reader(file, cancel);
-        let _ = searcher.search_reader(matcher.clone(), reader, sink);
+        if searcher
+            .search_reader(matcher.clone(), reader, sink)
+            .is_err()
+        {
+            record_search_io_error(&result_collector.io_error_count, cancel);
+        }
         return;
     }
     let Ok(mut file) = std::fs::File::open(path) else {
+        record_search_io_error(&result_collector.io_error_count, cancel);
         return;
     };
     use std::io::{Read, Seek, SeekFrom};
     if file.seek(SeekFrom::Start(start)).is_err() {
+        record_search_io_error(&result_collector.io_error_count, cancel);
         return;
     }
     let mut bytes = vec![0u8; window_len as usize];
@@ -739,13 +804,21 @@ fn search_content_line_range(
         match file.read(&mut bytes[filled..]) {
             Ok(0) => break,
             Ok(n) => filled += n,
-            Err(_) => break,
+            Err(_) => {
+                record_search_io_error(&result_collector.io_error_count, cancel);
+                return;
+            }
         }
     }
     bytes.truncate(filled);
     let sink = CollectingSink::new(path.to_path_buf(), result_collector.clone())
         .with_line_offset(start_line - 1);
-    let _ = searcher.search_slice(matcher.clone(), &bytes, sink);
+    if searcher
+        .search_slice(matcher.clone(), &bytes, sink)
+        .is_err()
+    {
+        record_search_io_error(&result_collector.io_error_count, cancel);
+    }
 }
 
 /// Byte range `[start, end)` covering lines `start_line`..=`end_line` (1-based,
@@ -1115,6 +1188,52 @@ mod tests {
     }
 
     #[test]
+    fn search_completeness_accounts_for_caps_and_filesystem_errors() {
+        assert!(search_is_complete(None, 0));
+        assert!(!search_is_complete(
+            Some(TruncationReason::ScanEntryBudget),
+            0
+        ));
+        assert!(!search_is_complete(None, 1));
+    }
+
+    #[test]
+    fn line_range_io_failure_is_counted_as_incomplete_search() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let missing_path = temp_dir.path().join("missing.txt");
+        let collector = SearchResultCollector {
+            max_results: 10,
+            stop_flag: Arc::new(AtomicBool::new(false)),
+            result_count: Arc::new(AtomicUsize::new(0)),
+            results: Arc::new(Mutex::new(Vec::new())),
+            result_bytes: Arc::new(AtomicUsize::new(0)),
+            result_bytes_limit_hit: Arc::new(AtomicBool::new(false)),
+            io_error_count: Arc::new(AtomicUsize::new(0)),
+            snippet_chars: 100,
+        };
+        let matcher = RegexMatcher::new("needle").unwrap();
+        let mut searcher = SearcherBuilder::new().build();
+        let cancel = CancellationToken::new();
+
+        search_content_line_range(
+            &missing_path,
+            &matcher,
+            &mut searcher,
+            1,
+            1,
+            &collector,
+            MAX_SEARCH_WINDOW_BYTES,
+            &cancel,
+        );
+
+        assert_eq!(collector.io_error_count.load(Ordering::Relaxed), 1);
+        assert!(!search_is_complete(
+            None,
+            collector.io_error_count.load(Ordering::Relaxed)
+        ));
+    }
+
+    #[test]
     fn test_snippet_of_short() {
         assert_eq!(snippet_of(b"hello world\n", 200), "hello world");
     }
@@ -1206,6 +1325,8 @@ mod tests {
         assert_eq!(result.output["root"], tmp.path().to_string_lossy().as_ref());
         assert_eq!(result.output["pattern"], "alpha");
         assert_eq!(result.output["has_more"], false);
+        assert_eq!(result.output["search_complete"], true);
+        assert_eq!(result.output["io_error_count"], 0);
         let results = result.output["results"].as_array().unwrap();
         assert_eq!(results.len(), 2);
         for r in results {
@@ -1383,6 +1504,7 @@ mod tests {
                 .unwrap()
                 .contains("max_results")
         );
+        assert_eq!(result.output["search_complete"], false);
     }
 
     #[tokio::test]
