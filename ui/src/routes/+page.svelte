@@ -208,14 +208,14 @@
 						.getMessages(request.owner.sessionId)
 						.find((message) => message.id === request.requestId)?.content;
 					return {
-						id: request.requestId,
+						requestId: request.requestId,
 						kind: request.kind,
 						title: `待回答 · ${sessionTitle}`,
 						detail: question || 'Haven 正在等待你的回答',
 					};
 				}
 				return {
-					id: request.requestId,
+					requestId: request.requestId,
 					kind: request.kind,
 					title: `权限确认 · ${sessionTitle}`,
 					detail: request.summary || request.toolName || '等待你的许可',
@@ -1026,8 +1026,8 @@
 		dismissedAskIds = new Set(dismissedAskIds).add(messageId);
 	}
 
-	async function openPendingInteraction(id: string) {
-		const request = interactionDict[id];
+	async function openPendingInteraction(requestId: string) {
+		const request = interactionDict[requestId];
 		if (!request || request.status !== 'pending') return;
 		if (request.kind !== 'ask') {
 			requestConfirmationOpen(request.requestId);
@@ -1036,12 +1036,14 @@
 		if (request.owner.kind !== 'session') return;
 		if (request.sessionId !== activeSessionId) await switchToSession(request.owner.sessionId);
 		if (sessionReducer.snapshot().activeSessionId !== request.owner.sessionId) return;
-		dismissedAskIds = new Set([...dismissedAskIds].filter((dismissedId) => dismissedId !== id));
+		dismissedAskIds = new Set(
+			[...dismissedAskIds].filter((dismissedId) => dismissedId !== requestId),
+		);
 		chatViewController.setAutoFollow(false);
 		await tick();
 		const askCard = Array.from(
 			messagesEl?.querySelectorAll('[data-interaction-id]') || [],
-		).find((element) => element.getAttribute('data-interaction-id') === id);
+		).find((element) => element.getAttribute('data-interaction-id') === requestId);
 		if (askCard instanceof HTMLElement)
 			askCard.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
 	}

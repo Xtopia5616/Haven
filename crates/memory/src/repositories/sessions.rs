@@ -214,15 +214,15 @@ impl Database {
         })
     }
 
-    pub fn get_session(&self, id: &str) -> anyhow::Result<Option<Session>> {
-        validate_session_id(id)?;
+    pub fn get_session(&self, session_id: &str) -> anyhow::Result<Option<Session>> {
+        validate_session_id(session_id)?;
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     origin, parent_session_id, run_end_reason
              FROM sessions WHERE id = ?1",
         )?;
-        let mut rows = stmt.query(rusqlite::params![id])?;
+        let mut rows = stmt.query(rusqlite::params![session_id])?;
         match rows.next()? {
             Some(row) => Ok(Some(map_session_list_row(row)?)),
             None => Ok(None),
@@ -261,7 +261,7 @@ impl Database {
             })?)
     }
 
-    pub fn session_ids_page(
+    pub fn list_session_ids_page(
         &self,
         after_session_id: Option<&str>,
         high_water_session_id: &str,
@@ -290,22 +290,26 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub fn update_session_status(&self, id: &str, status: SessionStatus) -> anyhow::Result<()> {
-        validate_session_id(id)?;
+    pub fn update_session_status(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+    ) -> anyhow::Result<()> {
+        validate_session_id(session_id)?;
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
             "UPDATE sessions SET status = ?1, updated_at = ?2,
                 run_end_reason = CASE WHEN ?1 IN ('pending', 'running') THEN NULL ELSE run_end_reason END
              WHERE id = ?3",
-            rusqlite::params![status.as_str(), now, id],
+            rusqlite::params![status.as_str(), now, session_id],
         )?;
         self.cache_invalidate_session_history_page();
         Ok(())
     }
 
-    pub fn set_session_run_end_reason(&self, id: &str, reason: &str) -> anyhow::Result<()> {
-        validate_session_id(id)?;
+    pub fn set_session_run_end_reason(&self, session_id: &str, reason: &str) -> anyhow::Result<()> {
+        validate_session_id(session_id)?;
         let reason = haven_common::error::sanitize_error_text(reason)
             .trim()
             .to_owned();
@@ -318,26 +322,26 @@ impl Database {
         let changed = conn.execute(
             "UPDATE sessions SET run_end_reason = ?1, updated_at = ?2
              WHERE id = ?3 AND status IN ('paused', 'completed', 'error')",
-            rusqlite::params![reason, now, id],
+            rusqlite::params![reason, now, session_id],
         )?;
         anyhow::ensure!(
             changed > 0,
             "session '{}' is missing or no longer in a run-end status",
-            id
+            session_id
         );
         self.cache_invalidate_session_history_page();
         Ok(())
     }
 
-    pub fn update_session_title(&self, id: &str, title: &str) -> anyhow::Result<()> {
-        validate_session_id(id)?;
+    pub fn update_session_title(&self, session_id: &str, title: &str) -> anyhow::Result<()> {
+        validate_session_id(session_id)?;
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         let updated = conn.execute(
             "UPDATE sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![title, now, id],
+            rusqlite::params![title, now, session_id],
         )?;
-        anyhow::ensure!(updated == 1, "session '{id}' not found");
+        anyhow::ensure!(updated == 1, "session '{session_id}' not found");
         self.cache_invalidate_session_history_page();
         Ok(())
     }
@@ -449,20 +453,23 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub fn delete_session(&self, id: &str) -> anyhow::Result<()> {
-        validate_session_id(id)?;
+    pub fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
+        validate_session_id(session_id)?;
         let conn = self.conn();
         let episode_ids: Vec<String> = {
             let mut stmt = conn.prepare("SELECT id FROM memory_items WHERE session_id = ?1")?;
-            let rows = stmt.query_map(rusqlite::params![id], |row| row.get(0))?;
+            let rows = stmt.query_map(rusqlite::params![session_id], |row| row.get(0))?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
         // messages, session_steps and partial_messages cascade on session delete
         // (ON DELETE CASCADE). The memory-item trigger removes episode
         // embeddings in the same database operation.
-        let affected = conn.execute("DELETE FROM sessions WHERE id = ?1", rusqlite::params![id])?;
+        let affected = conn.execute(
+            "DELETE FROM sessions WHERE id = ?1",
+            rusqlite::params![session_id],
+        )?;
         if affected == 0 {
-            anyhow::bail!("session '{}' not found in database", id);
+            anyhow::bail!("session '{}' not found in database", session_id);
         }
         // Drop all session-scoped fact-extraction and event-consumer state for
         // this session; otherwise deletion leaves permanent kv_store rows.
@@ -471,12 +478,12 @@ impl Database {
              WHERE key = ?1 OR key = ?2 OR key = ?3 OR key = ?4
                 OR key LIKE ?5 OR key LIKE ?6",
             rusqlite::params![
-                format!("fact_extraction.{}", id),
-                format!("fact_extraction_last_run.{}", id),
-                format!("fact_extraction_pending.{}", id),
-                format!("memory_event_cursor.{}", id),
-                format!("fact_extraction_episode_pending.{}.%", id),
-                format!("fact_extraction_episode_done.{}.%", id)
+                format!("fact_extraction.{}", session_id),
+                format!("fact_extraction_last_run.{}", session_id),
+                format!("fact_extraction_pending.{}", session_id),
+                format!("memory_event_cursor.{}", session_id),
+                format!("fact_extraction_episode_pending.{}.%", session_id),
+                format!("fact_extraction_episode_done.{}.%", session_id)
             ],
         )?;
         drop(conn);
@@ -485,7 +492,7 @@ impl Database {
             &episode_ids,
         );
         self.cache_invalidate_session_history_page();
-        self.cache_invalidate_messages(id);
+        self.cache_invalidate_messages(session_id);
         self.cache_invalidate_memory();
         Ok(())
     }
@@ -611,7 +618,7 @@ impl Database {
     pub fn delete_old_sessions(&self, retention_days: u32) -> anyhow::Result<usize> {
         let cutoff = (Utc::now() - chrono::Duration::days(retention_days as i64)).to_rfc3339();
         // Validate IDs before the retention delete can cascade through session-owned data.
-        self.old_session_ids(retention_days)?;
+        self.list_old_session_ids(retention_days)?;
         let conn = self.conn();
         let episode_ids: Vec<String> = {
             let mut stmt = conn.prepare(
@@ -646,7 +653,7 @@ impl Database {
     /// Return session ids that would be removed by the retention pass. The
     /// supervisor uses this snapshot to quiesce live actors and release their
     /// process-local grants and asset leases before deleting each row.
-    pub fn old_session_ids(&self, retention_days: u32) -> anyhow::Result<Vec<String>> {
+    pub fn list_old_session_ids(&self, retention_days: u32) -> anyhow::Result<Vec<String>> {
         let cutoff = (Utc::now() - chrono::Duration::days(retention_days as i64)).to_rfc3339();
         let conn = self.conn();
         let mut statement =
@@ -938,7 +945,7 @@ mod tests {
         let mut actual = Vec::new();
         loop {
             let page = db
-                .session_ids_page(after_session_id.as_deref(), &high_water_session_id, 64)
+                .list_session_ids_page(after_session_id.as_deref(), &high_water_session_id, 64)
                 .unwrap();
             assert!(page.len() <= 64);
             if page.is_empty() {
@@ -949,11 +956,11 @@ mod tests {
         }
         assert_eq!(actual, expected);
         assert!(
-            db.session_ids_page(None, &high_water_session_id, 0)
+            db.list_session_ids_page(None, &high_water_session_id, 0)
                 .is_err()
         );
         assert!(
-            db.session_ids_page(None, &high_water_session_id, 65)
+            db.list_session_ids_page(None, &high_water_session_id, 65)
                 .is_err()
         );
     }
@@ -1475,7 +1482,7 @@ mod tests {
         assert!(db.list_session_ids().is_err());
         assert!(db.session_id_high_water().is_err());
         assert!(db.list_persisted_sessions(50, 0).is_err());
-        assert!(db.old_session_ids(1).is_err());
+        assert!(db.list_old_session_ids(1).is_err());
         assert!(db.delete_old_sessions(1).is_err());
     }
 }

@@ -4495,7 +4495,12 @@ async fn test_tool_run_kind_and_terminal_delete_guards() {
             .cancel_for_kind(&tool_run_id, ToolRunKind::Background)
             .await
     );
-    assert!(!service.delete(&tool_run_id, "scheduled").await.unwrap());
+    assert!(
+        !service
+            .delete(&tool_run_id, ToolRunKind::Scheduled)
+            .await
+            .unwrap()
+    );
     assert!(
         service
             .cancel_for_kind(&tool_run_id, ToolRunKind::Scheduled)
@@ -4506,6 +4511,38 @@ async fn test_tool_run_kind_and_terminal_delete_guards() {
         service.status_view(&tool_run_id).await.to_json(true)["status"],
         "not_found"
     );
+}
+
+#[tokio::test]
+async fn delete_terminal_rejects_unknown_persisted_tool_run_kind() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let tool_run_id = haven_common::types::new_id("toolrun");
+    let now = chrono::Utc::now().to_rfc3339();
+    db.save_tool_run(&tool_run_id, None, "echo terminal-test", &now)
+        .unwrap();
+    assert!(db.cancel_background_tool_run(&tool_run_id, &now).unwrap());
+    let connection = db.conn();
+    connection
+        .pragma_update(None, "ignore_check_constraints", true)
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE tool_runs SET kind = 'unknown' WHERE id = ?1",
+            [&tool_run_id],
+        )
+        .unwrap();
+    connection
+        .pragma_update(None, "ignore_check_constraints", false)
+        .unwrap();
+    drop(connection);
+
+    let service = Arc::new(ToolRunService::new());
+    service
+        .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+        .await;
+
+    assert!(!service.delete_terminal(&tool_run_id).await.unwrap());
+    assert!(db.get_tool_run(&tool_run_id).unwrap().is_some());
 }
 
 #[tokio::test]

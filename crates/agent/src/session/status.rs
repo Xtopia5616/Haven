@@ -593,7 +593,7 @@ impl SessionSupervisor {
             return Ok(0);
         }
         self.ensure_lifecycle_open()?;
-        let candidates = self.store.old_session_ids(retention_days).await?;
+        let candidates = self.store.list_old_session_ids(retention_days).await?;
         let mut deleted = 0;
         for session_id in candidates {
             match self.delete_session(&session_id).await {

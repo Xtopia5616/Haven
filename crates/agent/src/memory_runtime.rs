@@ -265,7 +265,7 @@ impl MemoryRuntime {
             anyhow::ensure!(!cancellation.is_cancelled(), "session recovery cancelled");
             let page = self
                 .session_store
-                .session_ids_page_cancellable(
+                .list_session_ids_page_cancellable(
                     after_session_id.clone(),
                     high_water_session_id.clone(),
                     cancellation.clone(),

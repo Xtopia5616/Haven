@@ -73,6 +73,14 @@ impl ToolRunKind {
             Self::Scheduled => "scheduled",
         }
     }
+
+    fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "background" => Some(Self::Background),
+            "scheduled" => Some(Self::Scheduled),
+            _ => None,
+        }
+    }
 }
 
 /// Counts produced by restoring process-local ToolRun state after startup.
@@ -1309,17 +1317,12 @@ impl ToolRunService {
     /// Delete terminal ToolRun history through the same owner that controls
     /// live ToolRun state. Waiting/running rows, kind mismatches and absent rows
     /// are all rejected and return `false`.
-    pub async fn delete(&self, tool_run_id: &str, kind: &str) -> anyhow::Result<bool> {
-        let expected = match kind {
-            "background" => ToolRunKind::Background,
-            "scheduled" => ToolRunKind::Scheduled,
-            _ => return Ok(false),
-        };
+    async fn delete(&self, tool_run_id: &str, expected_kind: ToolRunKind) -> anyhow::Result<bool> {
         let _mutation = self.spawn_gate.lock().await;
         let memory_terminal = {
             let tool_runs = self.tool_runs.read().await;
             match tool_runs.get(tool_run_id) {
-                Some(entry) if entry.kind == expected => entry.state.is_terminal(),
+                Some(entry) if entry.kind == expected_kind => entry.state.is_terminal(),
                 Some(_) => return Ok(false),
                 None => false,
             }
@@ -1330,7 +1333,7 @@ impl ToolRunService {
                 let Some(row) = row else {
                     return Ok(false);
                 };
-                if row.kind != kind || !row.status.is_terminal() {
+                if row.kind != expected_kind.as_str() || !row.status.is_terminal() {
                     return Ok(false);
                 }
                 if !store.delete_tool_run(tool_run_id.to_string()).await? {
@@ -1342,7 +1345,7 @@ impl ToolRunService {
         } else if let Some(store) = self.tool_run_store.read().await.clone()
             && let Some(row) = store.get_tool_run(tool_run_id.to_string()).await?
         {
-            if row.kind != kind || !row.status.is_terminal() {
+            if row.kind != expected_kind.as_str() || !row.status.is_terminal() {
                 return Ok(false);
             }
             if !store.delete_tool_run(tool_run_id.to_string()).await? {
@@ -1359,13 +1362,10 @@ impl ToolRunService {
     pub async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool> {
         let memory_kind = {
             let tool_runs = self.tool_runs.read().await;
-            tool_runs.get(tool_run_id).map(|entry| match entry.kind {
-                ToolRunKind::Background => "background",
-                ToolRunKind::Scheduled => "scheduled",
-            })
+            tool_runs.get(tool_run_id).map(|entry| entry.kind)
         };
-        if let Some(kind) = memory_kind {
-            return self.delete(tool_run_id, kind).await;
+        if let Some(expected_kind) = memory_kind {
+            return self.delete(tool_run_id, expected_kind).await;
         }
         let Some(store) = self.tool_run_store.read().await.clone() else {
             return Ok(false);
@@ -1373,7 +1373,10 @@ impl ToolRunService {
         let Some(row) = store.get_tool_run(tool_run_id.to_string()).await? else {
             return Ok(false);
         };
-        self.delete(tool_run_id, &row.kind).await
+        let Some(expected_kind) = ToolRunKind::from_storage(&row.kind) else {
+            return Ok(false);
+        };
+        self.delete(tool_run_id, expected_kind).await
     }
 
     /// Clear persisted terminal ToolRun history without touching waiting or

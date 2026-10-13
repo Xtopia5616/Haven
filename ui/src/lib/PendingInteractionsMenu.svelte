@@ -4,7 +4,7 @@
 	import type { InteractionKind } from './contracts/generatedCommands.ts';
 
 	interface PendingInteractionItem {
-		id: string;
+		requestId: string;
 		kind: InteractionKind;
 		title: string;
 		detail: string;
@@ -12,15 +12,15 @@
 
 	interface Props {
 		items?: PendingInteractionItem[];
-		onSelect?: (id: string) => void;
+		onSelect?: (requestId: string) => void;
 	}
 
 	let { items = [], onSelect = () => {} }: Props = $props();
 	let open = $state(false);
 
-	function select(id: string) {
+	function select(requestId: string) {
 		open = false;
-		onSelect(id);
+		onSelect(requestId);
 	}
 </script>
 
@@ -36,13 +36,13 @@
 		/>
 		{#if open}
 			<div class="pending-interactions-menu" role="menu" aria-label="待操作项目">
-				{#each items as item (item.id)}
+				{#each items as item (item.requestId)}
 					<button
 						class="pending-interaction-item"
 						type="button"
 						role="menuitem"
 						aria-label={`${item.title}：${item.detail}`}
-						onclick={() => select(item.id)}
+						onclick={() => select(item.requestId)}
 					>
 						<Icon name={item.kind === 'ask' ? 'help' : 'alertTriangle'} size={16} />
 						<span class="pending-interaction-copy">

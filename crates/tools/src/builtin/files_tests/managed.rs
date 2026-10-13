@@ -218,13 +218,15 @@ async fn rejects_noncanonical_asset_id_before_registry_lookup() {
             .await
             .unwrap();
 
-        let (content, _, _, _, truncated) =
-            read_for_summary(&file.to_string_lossy(), 1, 0, 3, 128_000)
-                .await
-                .unwrap();
-        assert_eq!(content, "你好\n");
-        assert!(!truncated);
-        assert_eq!(content.chars().count(), 3);
+        let read = read_for_summary(&file.to_string_lossy(), 1, 0, 3, 128_000)
+            .await
+            .unwrap();
+        assert_eq!(read.content, "你好\n");
+        assert!(!read.truncated);
+        assert_eq!(read.content.chars().count(), 3);
+        assert_eq!(read.actual_start_line, 1);
+        assert_eq!(read.actual_end_line, 1);
+        assert_eq!(read.file_size_bytes, 5);
     }
 
     #[tokio::test]

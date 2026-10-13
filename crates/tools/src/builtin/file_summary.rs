@@ -64,8 +64,8 @@ pub(super) async fn summarize(
         return Ok(ToolResult::ok(serde_json::json!({
             "summary": "(empty)",
             "path": path,
-            "size": source.size,
-            "lines": [source.actual_start, source.actual_end],
+            "size": source.file_size_bytes,
+            "lines": [source.actual_start_line, source.actual_end_line],
             "input_provenance": source.provenance,
             "untrusted_content": true,
         })));
@@ -125,8 +125,8 @@ pub(super) async fn summarize(
     let mut result = serde_json::json!({
         "summary": response.text.trim().to_string(),
         "path": path,
-        "size": source.size,
-        "lines": [source.actual_start, source.actual_end],
+        "size": source.file_size_bytes,
+        "lines": [source.actual_start_line, source.actual_end_line],
         "model": model,
         "request_kind": request.as_str(),
         "input_provenance": source.provenance,
@@ -151,11 +151,19 @@ pub(super) async fn summarize(
 
 struct SummaryInput {
     content: String,
-    actual_start: u64,
-    actual_end: u64,
-    size: u64,
+    actual_start_line: u64,
+    actual_end_line: u64,
+    file_size_bytes: u64,
     truncated: bool,
     provenance: &'static str,
+}
+
+pub(super) struct SummaryFileRead {
+    pub(super) content: String,
+    pub(super) actual_start_line: u64,
+    pub(super) actual_end_line: u64,
+    pub(super) file_size_bytes: u64,
+    pub(super) truncated: bool,
 }
 
 async fn read_summary_source(
@@ -169,14 +177,13 @@ async fn read_summary_source(
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
-    let (content, actual_start, actual_end, size, truncated) =
-        read_for_summary(path, start_line, end_line, input_budget, max_line_bytes).await?;
+    let read = read_for_summary(path, start_line, end_line, input_budget, max_line_bytes).await?;
     Ok(SummaryInput {
-        content,
-        actual_start,
-        actual_end,
-        size,
-        truncated,
+        content: read.content,
+        actual_start_line: read.actual_start_line,
+        actual_end_line: read.actual_end_line,
+        file_size_bytes: read.file_size_bytes,
+        truncated: read.truncated,
         provenance: "file_read",
     })
 }
@@ -219,7 +226,7 @@ pub(super) async fn read_for_summary(
     end_line: u64,
     max_chars: usize,
     max_line_bytes: usize,
-) -> anyhow::Result<(String, u64, u64, u64, bool)> {
+) -> anyhow::Result<SummaryFileRead> {
     let file = tokio::fs::File::open(path).await?;
     let size = file.metadata().await?.len();
     let mut reader = BufReader::new(file);
@@ -263,11 +270,11 @@ pub(super) async fn read_for_summary(
         }
     }
 
-    Ok((
-        out,
-        start_line,
-        if last_line > 0 { last_line } else { start_line },
-        size,
+    Ok(SummaryFileRead {
+        content: out,
+        actual_start_line: start_line,
+        actual_end_line: if last_line > 0 { last_line } else { start_line },
+        file_size_bytes: size,
         truncated,
-    ))
+    })
 }

@@ -8,13 +8,13 @@ describe('PendingInteractionsMenu', () => {
 		render(PendingInteractionsMenu, {
 			items: [
 				{
-					id: 'ask-1',
+					requestId: 'step-00000000000000000000000000000001',
 					kind: 'ask',
 					title: '待回答 · 测试会话',
 					detail: '选择部署方式',
 				},
 				{
-					id: 'conf-00000000000000000000000000000001',
+					requestId: 'conf-00000000000000000000000000000001',
 					kind: 'confirm',
 					title: '权限确认 · 测试会话',
 					detail: '写入文件',

@@ -658,9 +658,9 @@ impl SessionStore {
 
     /// Return sessions past the supplied retention age so the owning
     /// supervisor can quiesce runtime state before it deletes their rows.
-    pub async fn old_session_ids(&self, retention_days: u32) -> anyhow::Result<Vec<String>> {
+    pub async fn list_old_session_ids(&self, retention_days: u32) -> anyhow::Result<Vec<String>> {
         self.db
-            .run_blocking(move |db| db.old_session_ids(retention_days))
+            .run_blocking(move |db| db.list_old_session_ids(retention_days))
             .await
     }
 
@@ -959,7 +959,7 @@ impl SessionStore {
         Ok(session_id)
     }
 
-    pub async fn session_ids_page_cancellable(
+    pub async fn list_session_ids_page_cancellable(
         &self,
         after_session_id: Option<String>,
         high_water_session_id: String,
@@ -972,7 +972,7 @@ impl SessionStore {
         let ids = self
             .db
             .run_blocking_cancellable(cancel, move |db| {
-                db.session_ids_page(
+                db.list_session_ids_page(
                     after_session_id.as_deref(),
                     &high_water_session_id,
                     MAX_MEMORY_SESSION_ID_PAGE_SIZE,
@@ -5786,7 +5786,7 @@ mod tests {
         );
         assert!(
             store
-                .session_ids_page_cancellable(
+                .list_session_ids_page_cancellable(
                     Some(invalid_session_id.to_owned()),
                     session_id.clone(),
                     CancellationToken::new(),
@@ -5796,7 +5796,7 @@ mod tests {
         );
         assert!(
             store
-                .session_ids_page_cancellable(
+                .list_session_ids_page_cancellable(
                     None,
                     invalid_session_id.to_owned(),
                     CancellationToken::new(),
