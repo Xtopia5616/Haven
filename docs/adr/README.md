@@ -1111,3 +1111,4 @@
 - [1120：为 renderer 列表使用稳定且无碰撞的身份键](1120-use-stable-renderer-list-keys.md)
 - [1121：配置无效回退保持只读直到显式恢复](1121-keep-invalid-config-fallback-read-only.md)
 - [1122：按工具结果持久化定时工具终态](1122-persist-scheduled-tool-outcomes-from-domain-result.md)
+- [1123：限制所有会话事件批次](1123-bound-all-session-event-batches.md)

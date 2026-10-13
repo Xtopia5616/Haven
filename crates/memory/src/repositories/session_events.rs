@@ -59,15 +59,14 @@ pub const CONFIRMATION_BATCH_PLANNED_EVENT_TYPE: &str = "confirmation_batch_plan
 /// even when materialized projection rows are incomplete.
 const RECOVERY_PERSISTENCE_EVENT_TYPE: &str = "recovery_persistence";
 pub const CURRENT_EVENT_VERSION: i64 = 1;
-/// Hard ceiling for one live transcript transaction. ReAct context/tool
-/// batches are smaller; this protects the persistence boundary if a future
-/// caller constructs a batch without going through those planners.
-pub(crate) const MAX_TRANSCRIPT_BATCH_EVENTS: usize = 128;
+/// Hard ceiling for one session-event append transaction, including pure
+/// domain-event batches. ReAct context/tool batches are smaller; this protects
+/// the persistence boundary if a caller bypasses those planners.
+pub(crate) const MAX_SESSION_EVENT_BATCH_EVENTS: usize = 128;
 pub(crate) const MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS: usize = 256;
-/// Hard ceiling for the total variable-width payload persisted by one live
-/// transcript transaction. This includes event JSON and projection text so a
-/// bounded row count cannot be bypassed with one oversized tool input.
-pub const MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
+/// Hard ceiling for serialized session-event batches and the complete
+/// transcript commit payload, including materialized projection text.
+pub const MAX_SESSION_EVENT_BATCH_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 
 pub(super) fn ensure_session_id(session_id: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -210,6 +209,49 @@ pub struct SessionEventInput {
     pub payload: String,
     pub run_id: Option<u64>,
     pub step_number: Option<u32>,
+}
+
+#[derive(serde::Serialize)]
+struct SessionEventInputRef<'a> {
+    event_type: &'a str,
+    payload: &'a str,
+    run_id: Option<u64>,
+    step_number: Option<u32>,
+}
+
+impl<'a> From<&'a SessionEventInput> for SessionEventInputRef<'a> {
+    fn from(event: &'a SessionEventInput) -> Self {
+        Self {
+            event_type: &event.event_type,
+            payload: &event.payload,
+            run_id: event.run_id,
+            step_number: event.step_number,
+        }
+    }
+}
+
+#[derive(Default)]
+struct BoundedByteCounter {
+    bytes: usize,
+    exceeded: bool,
+}
+
+impl std::io::Write for BoundedByteCounter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let next_bytes = self.bytes.saturating_add(buffer.len());
+        if next_bytes > MAX_SESSION_EVENT_BATCH_PAYLOAD_BYTES {
+            self.exceeded = true;
+            return Err(std::io::Error::other(
+                "session event payload budget exceeded",
+            ));
+        }
+        self.bytes = next_bytes;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// The only cursor view exposed to the Agent layer.
@@ -1688,6 +1730,8 @@ impl SessionStore {
         run_id: Option<u64>,
         step_number: Option<u32>,
     ) -> anyhow::Result<SessionEvent> {
+        ensure_session_id(session_id)?;
+        Self::validate_single_event(event_type, payload, run_id, step_number)?;
         let input = SessionEventInput {
             event_type: event_type.into(),
             payload: payload.into(),
@@ -1726,6 +1770,7 @@ impl SessionStore {
     ) -> anyhow::Result<SessionEvent> {
         ensure_session_id(session_id)?;
         ensure_domain_event_type(event_type)?;
+        Self::validate_single_event(event_type, payload, None, None)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         let event_type = event_type.to_owned();
@@ -1748,6 +1793,7 @@ impl SessionStore {
         events: &[SessionEventInput],
     ) -> anyhow::Result<Vec<SessionEvent>> {
         anyhow::ensure!(!events.is_empty(), "domain event batch cannot be empty");
+        Self::validate_inputs(events)?;
         ensure_domain_event_types(events)?;
         anyhow::ensure!(
             events
@@ -1780,7 +1826,6 @@ impl SessionStore {
         ensure_session_id(session_id)?;
         ensure_domain_event_types(events)?;
         Self::validate_inputs(events)?;
-        Self::validate_transcript_events(events)?;
         let now = Utc::now().to_rfc3339();
         let conn = self.db.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
@@ -1831,7 +1876,6 @@ impl SessionStore {
     ) -> anyhow::Result<Vec<SessionEvent>> {
         ensure_session_id(session_id)?;
         Self::validate_inputs(events)?;
-        Self::validate_transcript_events(events)?;
         if events.is_empty() {
             return Ok(Vec::new());
         }
@@ -1865,7 +1909,7 @@ impl SessionStore {
         cancel: Option<CancellationToken>,
     ) -> anyhow::Result<SessionCommitResult> {
         ensure_session_id(session_id)?;
-        Self::validate_projections(&committed.projections)?;
+        Self::validate_committed_batch(&committed)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         let write = move |_db: &Database| store.commit_transcript_sync(&session_id, &committed);
@@ -1887,27 +1931,9 @@ impl SessionStore {
         committed: &SessionCommitted,
     ) -> anyhow::Result<SessionCommitResult> {
         ensure_session_id(session_id)?;
-        Self::validate_projections(&committed.projections)?;
+        Self::validate_committed_batch(committed)?;
         let events = committed.event_inputs();
         Self::validate_inputs(&events)?;
-        anyhow::ensure!(
-            events.len() <= MAX_TRANSCRIPT_BATCH_EVENTS,
-            "transcript batch exceeds {} events",
-            MAX_TRANSCRIPT_BATCH_EVENTS
-        );
-        Self::validate_transcript_events(&events)?;
-        anyhow::ensure!(
-            committed.projections.len() <= MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS,
-            "transcript batch exceeds {} projection rows",
-            MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS
-        );
-        let payload_bytes = Self::payload_bytes(committed)?;
-        anyhow::ensure!(
-            payload_bytes <= MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES,
-            "transcript batch exceeds {} payload bytes ({} bytes)",
-            MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES,
-            payload_bytes
-        );
         if committed.events.is_empty() {
             anyhow::ensure!(
                 committed.projections.is_empty() && committed.trailing_events.is_empty(),
@@ -1964,13 +1990,95 @@ impl SessionStore {
     }
 
     fn validate_inputs(events: &[SessionEventInput]) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            events.len() <= MAX_SESSION_EVENT_BATCH_EVENTS,
+            "session event batch exceeds {} events",
+            MAX_SESSION_EVENT_BATCH_EVENTS
+        );
+        let event_refs = events
+            .iter()
+            .map(SessionEventInputRef::from)
+            .collect::<Vec<_>>();
+        Self::validate_event_input_refs(&event_refs)
+    }
+
+    fn validate_single_event(
+        event_type: &str,
+        payload: &str,
+        run_id: Option<u64>,
+        step_number: Option<u32>,
+    ) -> anyhow::Result<()> {
+        let event = SessionEventInputRef {
+            event_type,
+            payload,
+            run_id,
+            step_number,
+        };
+        Self::validate_event_input_refs(std::slice::from_ref(&event))
+    }
+
+    fn validate_committed_event_batch(committed: &SessionCommitted) -> anyhow::Result<()> {
+        let event_count = committed
+            .events
+            .len()
+            .checked_add(committed.trailing_events.len())
+            .ok_or_else(|| anyhow::anyhow!("session event batch event count overflow"))?;
+        anyhow::ensure!(
+            event_count <= MAX_SESSION_EVENT_BATCH_EVENTS,
+            "session event batch exceeds {} events",
+            MAX_SESSION_EVENT_BATCH_EVENTS
+        );
+        let mut event_refs = Vec::with_capacity(event_count);
+        event_refs.extend(committed.events.iter().map(|event| SessionEventInputRef {
+            event_type: TRANSCRIPT_EVENT_TYPE,
+            payload: &event.payload,
+            run_id: Some(event.run_id),
+            step_number: Some(event.step_number),
+        }));
+        event_refs.extend(
+            committed
+                .trailing_events
+                .iter()
+                .map(SessionEventInputRef::from),
+        );
+        Self::validate_event_input_refs(&event_refs)
+    }
+
+    fn validate_committed_batch(committed: &SessionCommitted) -> anyhow::Result<()> {
+        Self::validate_committed_event_batch(committed)?;
+        anyhow::ensure!(
+            committed.projections.len() <= MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS,
+            "transcript batch exceeds {} projection rows",
+            MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS
+        );
+        Self::validate_projections(&committed.projections)?;
+        Self::payload_bytes(committed)?;
+        Ok(())
+    }
+
+    fn validate_event_input_refs(events: &[SessionEventInputRef<'_>]) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            events.len() <= MAX_SESSION_EVENT_BATCH_EVENTS,
+            "session event batch exceeds {} events",
+            MAX_SESSION_EVENT_BATCH_EVENTS
+        );
+        let mut byte_counter = BoundedByteCounter::default();
+        if let Err(error) = serde_json::to_writer(&mut byte_counter, events) {
+            if byte_counter.exceeded {
+                anyhow::bail!(
+                    "session event batch exceeds {} payload bytes",
+                    MAX_SESSION_EVENT_BATCH_PAYLOAD_BYTES
+                );
+            }
+            return Err(error.into());
+        }
         for event in events {
             anyhow::ensure!(
                 !event.event_type.trim().is_empty(),
                 "session event type must not be empty"
             );
             anyhow::ensure!(
-                serde_json::from_str::<serde_json::Value>(&event.payload).is_ok(),
+                serde_json::from_str::<serde_json::Value>(event.payload).is_ok(),
                 "session event payload must be valid JSON"
             );
         }
@@ -1997,32 +2105,6 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Keep the generic append paths subject to the same hard ceiling as the
-    /// projection-aware transcript writer. Control events remain on the
-    /// generic path, but a batch containing transcript records must not be a
-    /// back door around the transcript budget.
-    fn validate_transcript_events(events: &[SessionEventInput]) -> anyhow::Result<()> {
-        if !events
-            .iter()
-            .any(|event| event.event_type == TRANSCRIPT_EVENT_TYPE)
-        {
-            return Ok(());
-        }
-        anyhow::ensure!(
-            events.len() <= MAX_TRANSCRIPT_BATCH_EVENTS,
-            "transcript batch exceeds {} events",
-            MAX_TRANSCRIPT_BATCH_EVENTS
-        );
-        let payload_bytes = serde_json::to_vec(events)?.len();
-        anyhow::ensure!(
-            payload_bytes <= MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES,
-            "transcript batch exceeds {} payload bytes ({} bytes)",
-            MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES,
-            payload_bytes
-        );
-        Ok(())
-    }
-
     fn payload_bytes(committed: &SessionCommitted) -> anyhow::Result<usize> {
         // The guard is defined over the exact JSON batch representation rather
         // than a hand-maintained sum of selected string fields. This accounts
@@ -2036,7 +2118,17 @@ impl SessionStore {
             projections: &committed.projections,
             trailing_events: &committed.trailing_events,
         };
-        Ok(serde_json::to_vec(&payload)?.len())
+        let mut byte_counter = BoundedByteCounter::default();
+        if let Err(error) = serde_json::to_writer(&mut byte_counter, &payload) {
+            if byte_counter.exceeded {
+                anyhow::bail!(
+                    "transcript batch exceeds {} payload bytes",
+                    MAX_SESSION_EVENT_BATCH_PAYLOAD_BYTES
+                );
+            }
+            return Err(error.into());
+        }
+        Ok(byte_counter.bytes)
     }
 
     fn append_batch_in_transaction(
@@ -2045,6 +2137,7 @@ impl SessionStore {
         events: &[SessionEventInput],
     ) -> anyhow::Result<Vec<SessionEvent>> {
         ensure_session_id(session_id)?;
+        Self::validate_inputs(events)?;
         let mut sequence: i64 = conn.query_row(
             "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
             rusqlite::params![session_id],
@@ -2263,7 +2356,6 @@ impl SessionStore {
             ensure_message_id(message_id, "rollback target message_id")?;
         }
         Self::validate_inputs(replacement_transcript)?;
-        Self::validate_transcript_events(replacement_transcript)?;
         let conn = self.db.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<RollbackResult> {
@@ -3318,7 +3410,6 @@ impl SessionStore {
     ) -> anyhow::Result<Vec<SessionEvent>> {
         ensure_session_id(session_id)?;
         Self::validate_inputs(events)?;
-        Self::validate_transcript_events(events)?;
         if events.is_empty() {
             return Ok(Vec::new());
         }
@@ -4380,6 +4471,102 @@ mod tests {
             db.get_session(&session_id).unwrap().unwrap().status,
             SessionStatus::Pending
         );
+    }
+
+    #[tokio::test]
+    async fn session_event_budget_applies_to_domain_batches_and_status_is_atomic() {
+        let (db, event_store, session_id) = store();
+        let mut at_limit = (0..MAX_SESSION_EVENT_BATCH_EVENTS)
+            .map(|index| {
+                SessionEventInput::new("test_domain_event", format!(r#"{{"index":{index}}}"#))
+            })
+            .collect::<Vec<_>>();
+        let appended = event_store
+            .append_domain_event_batch_with_session_status(
+                &session_id,
+                SessionStatus::Pending,
+                SessionStatus::Paused,
+                &at_limit,
+            )
+            .await
+            .expect("a domain event batch at the shared limit should commit");
+        assert_eq!(appended.len(), MAX_SESSION_EVENT_BATCH_EVENTS);
+        assert_eq!(event_store.latest_sequence(&session_id).unwrap(), 128);
+        assert_eq!(
+            db.get_session(&session_id).unwrap().unwrap().status,
+            SessionStatus::Paused
+        );
+
+        let (db, event_store, session_id) = store();
+        let mut live = event_store.subscribe();
+        at_limit.push(SessionEventInput::new(
+            "test_domain_event",
+            r#"{"index":128}"#,
+        ));
+        let error = event_store
+            .append_domain_event_batch_with_session_status(
+                &session_id,
+                SessionStatus::Pending,
+                SessionStatus::Paused,
+                &at_limit,
+            )
+            .await
+            .expect_err("a domain event batch over the shared limit must be rejected");
+
+        assert!(error.to_string().contains("128 events"));
+        assert_eq!(event_store.latest_sequence(&session_id).unwrap(), 0);
+        assert_eq!(
+            db.get_session(&session_id).unwrap().unwrap().status,
+            SessionStatus::Pending
+        );
+        assert!(matches!(
+            live.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn single_domain_event_respects_shared_payload_budget_before_append() {
+        let (db, event_store, session_id) = store();
+        let mut live = event_store.subscribe();
+        let payload = format!(
+            r#"{{"body":"{}"}}"#,
+            "x".repeat(MAX_SESSION_EVENT_BATCH_PAYLOAD_BYTES)
+        );
+
+        let error = event_store
+            .append_domain_event(&session_id, "test_domain_event", &payload)
+            .await
+            .expect_err("an oversized domain event must be rejected");
+
+        assert!(error.to_string().contains("payload bytes"));
+        assert_eq!(event_store.latest_sequence(&session_id).unwrap(), 0);
+        assert_eq!(
+            db.get_session(&session_id).unwrap().unwrap().status,
+            SessionStatus::Pending
+        );
+        assert!(matches!(
+            live.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn event_payload_budget_accepts_the_exact_serialized_limit() {
+        let base_event = SessionEventInputRef {
+            event_type: "test_domain_event",
+            payload: "\"\"",
+            run_id: None,
+            step_number: None,
+        };
+        let base_bytes = serde_json::to_vec(std::slice::from_ref(&base_event))
+            .unwrap()
+            .len();
+        let payload_chars = MAX_SESSION_EVENT_BATCH_PAYLOAD_BYTES - base_bytes;
+        let payload = format!("\"{}\"", "x".repeat(payload_chars));
+
+        SessionStore::validate_single_event("test_domain_event", &payload, None, None)
+            .expect("the exact serialized payload limit should be accepted");
     }
 
     #[tokio::test]
@@ -6448,7 +6635,7 @@ mod tests {
             }
             // Transcript batches are deliberately bounded for live writes;
             // build the long history through the same bounded append path.
-            for chunk in events.chunks(MAX_TRANSCRIPT_BATCH_EVENTS) {
+            for chunk in events.chunks(MAX_SESSION_EVENT_BATCH_EVENTS) {
                 store.append_batch(&session_id, chunk).unwrap();
             }
             store
@@ -6858,15 +7045,18 @@ mod tests {
     #[test]
     fn session_commit_budget_includes_serialization_overhead() {
         let (_db, store, session_id) = store();
-        let content = "x".repeat(MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES - 80);
+        let content = "x".repeat(MAX_SESSION_EVENT_BATCH_PAYLOAD_BYTES - 80);
         let committed = SessionCommitted::transcript(
             format!(r#"{{"type":"overhead","content":"{content}"}}"#),
             1,
             1,
         );
-        assert!(committed.events[0].payload.len() < MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES);
+        assert!(committed.events[0].payload.len() < MAX_SESSION_EVENT_BATCH_PAYLOAD_BYTES);
         assert!(
-            SessionStore::payload_bytes(&committed).unwrap() > MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES
+            SessionStore::payload_bytes(&committed)
+                .unwrap_err()
+                .to_string()
+                .contains("payload bytes")
         );
 
         let error = store
@@ -6879,7 +7069,7 @@ mod tests {
     #[test]
     fn generic_transcript_append_cannot_bypass_batch_budget() {
         let (_db, store, session_id) = store();
-        let oversized = "x".repeat(MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES);
+        let oversized = "x".repeat(MAX_SESSION_EVENT_BATCH_PAYLOAD_BYTES);
         let event = SessionEventInput::transcript(
             format!(r#"{{"type":"oversized","content":"{oversized}"}}"#),
             1,
@@ -6895,7 +7085,7 @@ mod tests {
     #[test]
     fn session_commit_rejects_oversized_event_and_projection_payloads() {
         let (db, store, session_id) = store();
-        let oversized = "x".repeat(MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES);
+        let oversized = "x".repeat(MAX_SESSION_EVENT_BATCH_PAYLOAD_BYTES);
         let oversized_event = SessionCommitted::transcript(
             format!(r#"{{"type":"oversized","content":"{oversized}"}}"#),
             1,
@@ -7043,7 +7233,7 @@ mod tests {
     fn session_commit_accepts_128_events_and_rejects_129() {
         let (_db, at_limit_store, session_id) = store();
         let at_limit = SessionCommitted {
-            events: (0..MAX_TRANSCRIPT_BATCH_EVENTS)
+            events: (0..MAX_SESSION_EVENT_BATCH_EVENTS)
                 .map(|index| {
                     SessionCommittedEvent::new(
                         format!(r#"{{"type":"boundary","index":{index}}}"#),
@@ -7060,12 +7250,12 @@ mod tests {
                 .unwrap()
                 .events
                 .len(),
-            MAX_TRANSCRIPT_BATCH_EVENTS
+            MAX_SESSION_EVENT_BATCH_EVENTS
         );
 
         let (_db, store, session_id) = store();
         let over_limit = SessionCommitted {
-            events: (0..=MAX_TRANSCRIPT_BATCH_EVENTS)
+            events: (0..=MAX_SESSION_EVENT_BATCH_EVENTS)
                 .map(|index| {
                     SessionCommittedEvent::new(
                         format!(r#"{{"type":"boundary","index":{index}}}"#),

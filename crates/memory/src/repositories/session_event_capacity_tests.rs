@@ -1,7 +1,7 @@
 //! File-backed capacity and SQLITE_FULL probes for the durable session log.
 
 use super::session_events::{
-    MAX_TRANSCRIPT_BATCH_EVENTS, SessionCommitted, SessionEventInput, SessionStore,
+    MAX_SESSION_EVENT_BATCH_EVENTS, SessionCommitted, SessionEventInput, SessionStore,
 };
 use crate::db::Database;
 use std::sync::Arc;
@@ -229,7 +229,7 @@ fn session_event_disk_capacity_profile() {
         let event = SessionEventInput::transcript(payload, 1, 1);
         let events = vec![event; EVENTS_PER_PROFILE];
         let mut wal_peak_bytes = 0;
-        for batch in events.chunks(MAX_TRANSCRIPT_BATCH_EVENTS) {
+        for batch in events.chunks(MAX_SESSION_EVENT_BATCH_EVENTS) {
             store.append_batch(&session.session_id, batch).unwrap();
             wal_peak_bytes = wal_peak_bytes.max(file_len(&wal_path));
         }
@@ -450,7 +450,7 @@ fn session_event_representative_mixture_capacity_profile() {
     let max_payload_bytes = payload_sizes[EVENTS - 1];
 
     let mut wal_peak_bytes = 0;
-    for batch in events.chunks(MAX_TRANSCRIPT_BATCH_EVENTS) {
+    for batch in events.chunks(MAX_SESSION_EVENT_BATCH_EVENTS) {
         store.append_batch(&session.session_id, batch).unwrap();
         wal_peak_bytes = wal_peak_bytes.max(file_len(&wal_path));
     }
