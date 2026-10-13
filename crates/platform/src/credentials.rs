@@ -163,8 +163,20 @@ impl CredentialStore for PlatformCredentialStore {
 
 #[cfg(windows)]
 fn target_name(reference: &str) -> Vec<u16> {
-    format!("Haven/{reference}")
+    format!("haven/{reference}")
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect()
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::target_name;
+
+    #[test]
+    fn credential_manager_targets_use_the_machine_namespace() {
+        let target =
+            String::from_utf16(&target_name("cred-00000000000000000000000000000000")).unwrap();
+        assert_eq!(target, "haven/cred-00000000000000000000000000000000\0");
+    }
 }
