@@ -594,16 +594,14 @@ async fn reopen_session_without_pending_inputs_stays_paused() {
 }
 
 #[tokio::test]
-async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
-    // Follow-up/steering inputs are pushed into the canonical with a
-    // text prefix ("Additional context from user: —, "Steering: —)
-    // while the DB stores the raw text. This historical fixture has no
-    // pending marker, so it is not re-injected as a fresh user turn.
+async fn resume_does_not_backfill_projection_messages_when_event_log_exists() {
+    // The durable event log is the transcript authority. This ordinary
+    // historical message exists only in the materialized messages projection
+    // and must not be imported into the replayed transcript.
     let (agent, executor) = make_test_agent();
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("hello").await.unwrap();
-    // DB stores the RAW user text (this is what process_input persists).
-    agent
+    let projection_message = agent
         .persist_message_parts(
             &session.session_id,
             haven_common::types::CanonicalRole::User,
@@ -614,7 +612,8 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
         )
         .await
         .unwrap();
-    // Canonical carries the prefixed form (as push_user_context emits it).
+    // These canonical messages are represented by the seeded event log; the
+    // separate database row above has no corresponding durable event.
     let canonical = vec![
         CanonicalMessage::system(vec![ContentPart::text("sys")]),
         CanonicalMessage::user_text("hello"),
@@ -634,25 +633,19 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
         .unwrap();
 
     let saved = load_event_projection(&agent, &session.session_id).await;
-    let canonical = saved.project().canonical_messages;
-    let user_texts: Vec<String> = canonical
-        .iter()
-        .filter(|m| m.role == CanonicalRole::User)
-        .filter_map(|m| {
-            m.content.iter().find_map(|p| match p {
-                ContentPart::Text(t) => Some(t.clone()),
-                _ => None,
-            })
-        })
-        .collect();
-    assert_eq!(
-        user_texts
+    let projection_message_id = projection_message.message_id.as_str();
+    let projection_was_backfilled = saved.events.iter().any(|event| match event {
+        TranscriptRecord::UserInject { message_id, .. } => {
+            message_id.as_deref() == Some(projection_message_id)
+        }
+        TranscriptRecord::CompactSummary { compacted, .. } => compacted
             .iter()
-            .filter(|t| t.as_str() == "[conversation] [user] please be brief")
-            .count(),
-        0,
-        "supplement text already present (prefixed) must not be re-seeded: {:?}",
-        user_texts
+            .any(|message| message.message_id.as_deref() == Some(projection_message_id)),
+        _ => false,
+    });
+    assert!(
+        !projection_was_backfilled,
+        "a message present only in the materialized projection must not be added to the durable event log"
     );
 }
 
