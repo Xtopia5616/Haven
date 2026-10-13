@@ -1122,3 +1122,8 @@
 - [1131：用领域枚举表达 OCR 凭据字段](1131-use-enum-for-ocr-credential-field.md)
 - [1132：将 Credential Manager target 规范为小写](1132-lowercase-credential-manager-target.md)
 - [1133：按资源串行化工具开关写入](1133-serialize-tool-setting-toggles.md)
+- [1134：将 ToolRun 删除 helper 限定为私有并使用闭合 kind](1134-keep-toolrun-delete-helper-private-and-typed.md)
+- [1135：将 Session 集合查询统一命名为 list](1135-name-session-collection-queries-as-lists.md)
+- [1136：用有界恢复与 OS 文件锁保护 Messaging 删除谱系](1136-recover-messaging-lineage-with-bounded-os-locks.md)
+- [1137：不在诊断与配置 Debug 输出中暴露敏感值](1137-keep-diagnostics-and-config-debug-output-private.md)
+- [1138：用具名结果表达文件摘要读取状态](1138-return-named-file-summary-read-result.md)
