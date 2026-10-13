@@ -99,27 +99,22 @@ export async function listen(
 ): Promise<() => void> {
 	await init();
 	if (isTauri() && _tauriListen) {
-		try {
-			const unlisten = await _tauriListen(event, (rawEvent) => {
-				handler(rawEvent as TauriEvent<unknown>);
-			});
-			return () => {
-				if (typeof unlisten !== 'function') return;
-				try {
-					const result = unlisten();
-					if (result && typeof (result as Promise<unknown>).catch === 'function') {
-						(result as Promise<unknown>).catch(() =>
-							logger.warn('tauri', 'event listener cleanup failed'),
-						);
-					}
-				} catch {
-					logger.warn('tauri', 'event listener cleanup failed');
+		const unlisten = await _tauriListen(event, (rawEvent) => {
+			handler(rawEvent as TauriEvent<unknown>);
+		});
+		return () => {
+			if (typeof unlisten !== 'function') return;
+			try {
+				const result = unlisten();
+				if (result && typeof (result as Promise<unknown>).catch === 'function') {
+					(result as Promise<unknown>).catch(() =>
+						logger.warn('tauri', 'event listener cleanup failed'),
+					);
 				}
-			};
-		} catch (error) {
-			logError('listen', error);
-			throw error;
-		}
+			} catch {
+				logger.warn('tauri', 'event listener cleanup failed');
+			}
+		};
 	}
 	if (isTauri()) throw new Error(`Tauri event API not available, cannot listen '${event}'`);
 	return () => {};
