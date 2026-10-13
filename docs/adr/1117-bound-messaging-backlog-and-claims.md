@@ -15,7 +15,7 @@
 - 每批最多扫描 100 个 JSONL 行和 1 MiB，首行可占满整个 1 MiB。`.processing` 仅持有当前仍未 ack 的批次。部分 ack 不推进 cursor；全部 ID ack 后，先清空 processing，再原子地推进 cursor。崩溃发生在两步之间时允许同一批 at-least-once 重投，不跳过未确认行。旧 processing 先排空，随后才提升 mailbox；claim 期间新 delivery 继续追加到新 mailbox。
 - archive 在 claim 时记录当前 source range；它不是 ack 状态。archive 去重扫描有界的完整 4 MiB archive，因此一个批次在 archive 成功后、游标推进前重试不会产生重复记录。archive 写失败时 active range 和 source 均保留。
 - history 的直接 service 调用和工具调用共用 100 条结果上限，并从 archive、未确认 backlog 与 append mailbox 的有界 tail 合并稳定 `message_id`。find、last-received 与 selective reply 都使用有界行读取；selective reply 只从当前 mailbox 取最多 100 条，绝不移除已经进入 active processing 的邮件。broadcast 会将失败 recipient 和净化后的错误显式返回，容量拒绝不再静默消失。
-- 已有 canonical JSONL backlog 无需重置：旧 `.processing` 与 mailbox 在首次 claim 时惰性提升，正文不复制或丢弃。单条历史行超过 1 MiB 时 claim/read 会 fail closed，保留原 backlog 与 cursor，不分配无界内存，也不静默丢弃；该异常需人工处理。旧非 canonical registry/JSONL 仍按 `docs/release-and-reset.md` 的 inbox reset 规则处理。
+- 已有 canonical JSONL backlog 无需重置：旧 `.processing` 与 mailbox 在首次 claim 时惰性提升，正文不复制或丢弃。单条历史行超过 1 MiB 时 claim/read 会 fail closed，保留原 backlog 与 cursor，不分配无界内存，也不静默丢弃；若用户需要恢复该队列投递，当前人工恢复路径是备份后按 `docs/release-and-reset.md` 重置整个 inbox。此举影响所有 peer、未处理消息、archive 与 deletion tombstone；备份只供离线检查，不会自动重新导入。旧非 canonical registry/JSONL 也仍按该 reset 流程处理。
 - session tombstone 删除 `.jsonl.backlog`、cursor state、active processing、mailbox、archive 及所有 temp 内容。数据库 schema 与 IPC shape 不变，无数据库重置要求。共享 inbox 的进程必须在同一版本运行；不要与不认识 backlog sidecar 的旧进程同时操作。
 
 ## 替代方案
