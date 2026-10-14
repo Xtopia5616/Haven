@@ -1446,7 +1446,7 @@ async fn run_session_ask_resumes_after_user_answer() {
 
     // User answers; the supplement flips the session back to Pending.
     executor
-        .add_follow_up(&session.session_id, "Use option A.")
+        .add_answer_with_attachments(&session.session_id, "Use option A.", &[], None)
         .await
         .unwrap();
     executor
@@ -1556,7 +1556,7 @@ async fn retry_after_ask_answer_error_retains_failed_recovery_projection() {
 
     // Turn 2: the user answers; the resumed step fails mid-stream.
     executor
-        .add_follow_up(&session.session_id, "Yes")
+        .add_answer_with_attachments(&session.session_id, "Yes", &[], None)
         .await
         .unwrap();
     executor
@@ -2413,4 +2413,113 @@ async fn continue_session_non_error_fails() {
     // Session is Pending, not Error ??should refuse.
     let result = agent.continue_session(&session.session_id).await;
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn queued_follow_up_does_not_auto_resume_ask() {
+    let tools = Arc::new(ToolsFacade::new());
+    tools
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(haven_tools::builtin::ask::AskTool) as ToolHandle)
+        .await
+        .unwrap();
+    let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+        StreamChunk {
+            tool_calls: vec![CanonicalToolCall {
+                tool_call_id: "question".into(),
+                name: "ask".into(),
+                arguments: serde_json::json!({"question":"Which option?"}),
+            }],
+            finish_reason: Some(FinishReason::ToolCalls),
+            ..Default::default()
+        },
+    )]));
+    let (agent, executor) = make_test_agent_with(mock.clone(), tools);
+    agent.set_emitter(make_recording_emitter());
+    let session = executor
+        .create_session("ask before next work")
+        .await
+        .unwrap();
+    executor
+        .add_follow_up(&session.session_id, "next work")
+        .await
+        .unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
+        Some(SessionStatus::Paused)
+    );
+    assert_eq!(mock.seen.lock().unwrap().len(), 1);
+    assert!(
+        executor
+            .pending_interaction_gates(&session.session_id)
+            .await
+            .ask_pending
+    );
+    let batch = executor
+        .drain_react_context_at(&session.session_id, crate::session::ContextBoundary::Turn)
+        .await;
+    assert!(batch.follow_ups.is_empty());
+    assert!(executor.has_pending_context(&session.session_id).await);
+}
+
+#[tokio::test]
+async fn follow_up_waits_until_tool_work_finishes() {
+    let tool_chunk = StreamChunk {
+        tool_calls: vec![CanonicalToolCall {
+            tool_call_id: "work".into(),
+            name: "echo".into(),
+            arguments: serde_json::json!({"text":"work"}),
+        }],
+        finish_reason: Some(FinishReason::ToolCalls),
+        ..Default::default()
+    };
+    let final_chunk = StreamChunk {
+        text: Some("finished".into()),
+        finish_reason: Some(FinishReason::Stop),
+        ..Default::default()
+    };
+    let mock = Arc::new(ScriptedMock::new(vec![
+        ScriptedResponse::Chunk(tool_chunk),
+        ScriptedResponse::Chunk(final_chunk.clone()),
+        ScriptedResponse::Chunk(final_chunk),
+    ]));
+    let tools = Arc::new(ToolsFacade::new());
+    tools
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(EchoTool) as ToolHandle)
+        .await
+        .unwrap();
+    let (agent, executor) = make_test_agent_with(mock.clone(), tools);
+    agent.set_emitter(make_recording_emitter());
+    let session = executor.create_session("work").await.unwrap();
+    executor
+        .add_follow_up(&session.session_id, "do this afterwards")
+        .await
+        .unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
+    let requests = mock.seen.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    for request in &requests[..2] {
+        assert!(
+            !request
+                .iter()
+                .any(|message| message.source == Some(InjectSource::FollowUp))
+        );
+    }
+    assert!(
+        requests[2]
+            .iter()
+            .any(|message| message.source == Some(InjectSource::FollowUp))
+    );
 }

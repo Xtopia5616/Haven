@@ -742,6 +742,7 @@ pub(crate) fn run() {
             commands::settings::is_autostart_enabled,
             commands::session::get_session_for_resume,
             commands::session::rollback_session,
+            commands::session::fork_session_from_message,
             commands::session::continue_session,
             commands::session::update_session_title,
             commands::log::get_log_info,

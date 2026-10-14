@@ -177,7 +177,7 @@
 						{/snippet}
 					</MenuItem>
 				{/each}
-				<div class="session-lineage" role="group" aria-label="Agent 子会话与来源会话">
+				<div class="session-lineage" role="group" aria-label="关联会话">
 					<div class="session-lineage-heading">会话关系</div>
 					{#if sessionLineageLoading}
 						<div class="session-lineage-empty">正在加载会话关系…</div>
@@ -221,7 +221,7 @@
 												'未命名子会话'}</span
 										>
 										<span class="session-menu-item-status"
-											>Agent 子会话 · {sessionStatusLabel(child)}</span
+											>子会话 · {sessionStatusLabel(child)}</span
 										>
 									</span>
 								{/snippet}

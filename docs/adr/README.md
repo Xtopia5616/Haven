@@ -1144,3 +1144,6 @@
 - [1153：为长期事实列表建立有界 keyset 分页](1153-page-long-term-facts-with-a-bounded-keyset.md)
 - [1154：在 WebView2 启动前显示原生加载画面并处理失败](1154-native-startup-surface-and-webview-recovery.md)
 - [1155：将文件读取授权绑定到打开句柄](1155-bind-file-read-authorization-to-open-handle.md)
+- [1156：显式区分立即调整与完成后追加](1156-explicit-input-delivery-boundaries.md)
+- [1157：从用户消息派生独立会话](1157-derive-session-from-user-message.md)
+- [1158：在 provider 请求前有界重查 steering](1158-recheck-steering-before-provider-request.md)

@@ -58,7 +58,8 @@
 | `process_transcript` | execute | 附件限制和文件持久化校验 |
 | `reopen_session` | mutate | session id 选择持久化会话 |
 | `list_runtime_sessions` | read | 仅当前进程中驻留且未终结的会话；App allowlist 返回 `session_id` / `input_text`、`title`、`status` 和可选 `waiting_reason`，不暴露 Agent summary 或步骤详情 |
-| `get_session_lineage` | read | 当前会话的父会话和直接 Agent 子会话 |
+| `get_session_lineage` | read | 当前会话的父会话和直接子会话 |
+| `fork_session_from_message` | mutate | 从指定用户消息创建独立子会话并重新运行该输入；源会话不变 |
 | `end_session` | mutate | 仅显式结束 |
 | `interrupt_session` | mutate | 停止当前输出但保留会话，可继续 |
 | `resolve_confirmation` | mutate | 显式 owner + `request_id` 选路；`effect` / `scope` / `target` 使用生成的权限 enum，receipt 与目标祖先仍由后端复核；返回 `resolved`/`expired`/`stale`，可重试失败保留 pending |
@@ -105,11 +106,12 @@ repository source 值后显式投影字段，repository 新增字段不会自动
 | 命令 | 边界 | 说明 |
 |---|---|---|
 | `list_runtime_sessions` | read | 当前进程中驻留且未终结的会话列表；Rust `session_id` / `input_text` / `waiting_reason` 在 renderer 边界映射为 `sessionId` / `inputText` / `waitingReason`；响应仅包含会话切换器所需字段 |
-| `get_session_lineage` | read | 当前会话的父会话和直接 Agent 子会话 |
+| `get_session_lineage` | read | 当前会话的父会话和直接子会话 |
 | `get_session_for_resume` | read | 恢复指定会话所需的持久化投影 |
 | `get_latest_session_for_resume` | read | 最近持久化会话 |
 | `reopen_session` / `continue_session` / `end_session` / `interrupt_session` | mutate | 会话生命周期控制；中断保留会话 |
 | `rollback_session` | mutate | 回滚分支并同步截断事件和投影 |
+| `fork_session_from_message` | mutate | 按精确用户消息身份创建独立子会话；从消息处重放，可能再次触发工具 |
 | `update_session_title` | mutate | 更新非空标题 |
 | `delete_session` / `delete_all_sessions` | mutate | 删除一条或全部持久会话，并广播 `session:lifecycle(deleted)` |
 | `resolve_confirmation` | mutate | 输入 `{ owner, requestId, effect: PermissionEffectInput, scope: PermissionScopeInput, target: PermissionTargetInput }`；Tauri 只接受 Rust permission enum 的规范 snake_case 值。owner 只选择唯一 pending registry，AppCommand 不经过 Agent executor；期限由 owner 按登记的 `expires_at` 仲裁，不接受 renderer 的超时决定。结果为 `resolved`、`expired` 或 `stale`；解码/命令错误表示可重试失败，pending UI 保留 |

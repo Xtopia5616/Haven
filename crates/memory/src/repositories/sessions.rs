@@ -35,14 +35,17 @@ fn session_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<String> {
 fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
     let id = session_id_from_row(row)?;
     let status = row.get::<_, String>(3)?;
-    let origin =
-        SessionOrigin::from_storage(row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?)?;
+    let origin = SessionOrigin::from_storage(
+        row.get::<_, String>(6)?,
+        row.get::<_, Option<String>>(7)?,
+        row.get::<_, Option<String>>(8)?,
+    )?;
     Ok(Session {
         session_id: id,
         input_text: row.get(1)?,
         title: row.get(2)?,
         status: SessionStatus::from_status_str(&status),
-        run_end_reason: row.get(8)?,
+        run_end_reason: row.get(9)?,
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
         origin,
@@ -87,8 +90,8 @@ pub struct Session {
     pub origin: SessionOrigin,
 }
 
-/// Durable provenance for a session. Peer sessions remain ordinary sessions;
-/// this only records which creation path admitted the row and its parent id.
+/// Durable provenance for a session. Forks preserve the source session and
+/// selected user message while keeping their transcript in a separate session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionOrigin {
@@ -96,6 +99,10 @@ pub enum SessionOrigin {
     User,
     AgentSpawn {
         parent_session_id: String,
+    },
+    Fork {
+        parent_session_id: String,
+        source_message_id: String,
     },
 }
 
@@ -106,26 +113,50 @@ impl SessionOrigin {
         match self {
             Self::User => haven_common::types::TranscriptMessageKind::Text,
             Self::AgentSpawn { .. } => haven_common::types::TranscriptMessageKind::PeerKickoff,
+            Self::Fork { .. } => haven_common::types::TranscriptMessageKind::Text,
         }
     }
 
-    fn storage_parts(&self) -> (&'static str, Option<&str>) {
+    fn storage_parts(&self) -> (&'static str, Option<&str>, Option<&str>) {
         match self {
-            Self::User => ("user", None),
-            Self::AgentSpawn { parent_session_id } => ("agent_spawn", Some(parent_session_id)),
+            Self::User => ("user", None, None),
+            Self::AgentSpawn { parent_session_id } => {
+                ("agent_spawn", Some(parent_session_id), None)
+            }
+            Self::Fork {
+                parent_session_id,
+                source_message_id,
+            } => ("fork", Some(parent_session_id), Some(source_message_id)),
         }
     }
 
-    fn from_storage(origin: String, parent_session_id: Option<String>) -> rusqlite::Result<Self> {
-        match (origin.as_str(), parent_session_id) {
-            ("user", None) => Ok(Self::User),
-            ("agent_spawn", Some(parent_session_id))
+    fn from_storage(
+        origin: String,
+        parent_session_id: Option<String>,
+        source_message_id: Option<String>,
+    ) -> rusqlite::Result<Self> {
+        match (origin.as_str(), parent_session_id, source_message_id) {
+            ("user", None, None) => Ok(Self::User),
+            ("agent_spawn", Some(parent_session_id), None)
                 if is_canonical_id(&parent_session_id, "ses") =>
             {
                 Ok(Self::AgentSpawn { parent_session_id })
             }
+            ("fork", Some(parent_session_id), Some(source_message_id))
+                if is_canonical_id(&parent_session_id, "ses")
+                    && is_canonical_id(&source_message_id, "msg") =>
+            {
+                Ok(Self::Fork {
+                    parent_session_id,
+                    source_message_id,
+                })
+            }
             _ => {
-                let invalid_column = if origin == "agent_spawn" { 7 } else { 6 };
+                let invalid_column = match origin.as_str() {
+                    "agent_spawn" => 7,
+                    "fork" => 8,
+                    _ => 6,
+                };
                 Err(rusqlite::Error::FromSqlConversionFailure(
                     invalid_column,
                     rusqlite::types::Type::Text,
@@ -145,7 +176,7 @@ impl Database {
         self.create_session_with_origin(input_text, SessionOrigin::User)
     }
 
-    /// Create a durable peer session and validate that its parent identity is
+    /// Create a durable session and validate that its parent identity is
     /// canonical and present. The parent id is provenance, not a foreign key:
     /// deleting a parent must not rewrite a surviving child's origin.
     pub fn create_session_with_origin(
@@ -153,11 +184,21 @@ impl Database {
         input_text: &str,
         origin: SessionOrigin,
     ) -> anyhow::Result<Session> {
-        let (origin_kind, parent_session_id) = origin.storage_parts();
+        anyhow::ensure!(
+            !matches!(&origin, SessionOrigin::Fork { .. }),
+            "fork sessions must be created with an atomic transcript snapshot"
+        );
+        let (origin_kind, parent_session_id, source_message_id) = origin.storage_parts();
         if let Some(parent_session_id) = parent_session_id {
             anyhow::ensure!(
                 is_canonical_id(parent_session_id, "ses"),
                 "invalid parent session id"
+            );
+        }
+        if let Some(source_message_id) = source_message_id {
+            anyhow::ensure!(
+                is_canonical_id(source_message_id, "msg"),
+                "invalid fork source message id"
             );
         }
         let session_id = haven_common::types::new_id("ses");
@@ -177,17 +218,34 @@ impl Database {
                     parent_session_id
                 );
             }
+            if let (Some(parent_session_id), Some(source_message_id)) =
+                (parent_session_id, source_message_id)
+            {
+                let source_exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM messages
+                     WHERE session_id = ?1 AND id = ?2 AND role = 'user')",
+                    rusqlite::params![parent_session_id, source_message_id],
+                    |row| row.get(0),
+                )?;
+                anyhow::ensure!(
+                    source_exists,
+                    "fork source user message '{}' not found in parent session",
+                    source_message_id
+                );
+            }
             conn.execute(
                 "INSERT INTO sessions (
-                    id, input_text, status, created_at, updated_at, origin, parent_session_id
-                 ) VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6)",
+                    id, input_text, status, created_at, updated_at, origin, parent_session_id,
+                    fork_source_message_id
+                 ) VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6, ?7)",
                 rusqlite::params![
                     session_id,
                     input_text,
                     now,
                     now,
                     origin_kind,
-                    parent_session_id
+                    parent_session_id,
+                    source_message_id
                 ],
             )?;
             Ok(())
@@ -219,7 +277,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id, run_end_reason
+            origin, parent_session_id, fork_source_message_id, run_end_reason
              FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![session_id])?;
@@ -358,7 +416,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id, run_end_reason
+                    origin, parent_session_id, fork_source_message_id, run_end_reason
              FROM sessions ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit, offset], map_session_list_row)?;
@@ -377,7 +435,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id, run_end_reason
+                    origin, parent_session_id, fork_source_message_id, run_end_reason
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT 50",
         ))?;
@@ -415,7 +473,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id, run_end_reason
+                    origin, parent_session_id, fork_source_message_id, run_end_reason
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
         ))?;
@@ -441,9 +499,9 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id, run_end_reason
+                    origin, parent_session_id, fork_source_message_id, run_end_reason
              FROM sessions
-             WHERE origin = 'agent_spawn' AND parent_session_id = ?1
+             WHERE origin IN ('agent_spawn', 'fork') AND parent_session_id = ?1
              ORDER BY created_at DESC, id ASC LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(
@@ -747,7 +805,7 @@ impl Database {
 
         let sql = format!(
             "SELECT id, input_text, title, status, created_at, updated_at, \
-                    origin, parent_session_id, run_end_reason \
+                    origin, parent_session_id, fork_source_message_id, run_end_reason \
              FROM sessions {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
 

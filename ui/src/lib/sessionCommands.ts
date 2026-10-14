@@ -2,6 +2,7 @@ import { invoke } from './tauri.ts';
 import type { TauriCommandRequest } from './contracts/generatedCommands.ts';
 import { parseProcessResult, type ProcessResultView } from './contracts/processResult.ts';
 import { parseCountResponse } from './contracts/count.ts';
+import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 import type {
 	SessionHistoryRow,
 	SessionLineageResponse,
@@ -110,6 +111,17 @@ export function updateSessionTitle(
 /** Roll back a session's durable transcript and runtime state. */
 export function rollbackSession(request: TauriCommandRequest<'rollback_session'>): Promise<void> {
 	return invoke('rollback_session', request);
+}
+
+/** Create a child session from one exact user message identity. */
+export async function forkSessionFromMessage(
+	request: TauriCommandRequest<'fork_session_from_message'>,
+): Promise<string> {
+	const value: unknown = await invoke('fork_session_from_message', request);
+	if (typeof value !== 'string' || !isCanonicalEntityId(value, 'ses')) {
+		throw new Error('Invalid fork_session_from_message response');
+	}
+	return value;
 }
 
 /** End the active session through the session lifecycle boundary. */

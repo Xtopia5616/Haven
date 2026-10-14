@@ -178,6 +178,10 @@ export const TAURI_COMMAND_CONTRACTS = {
 		boundary: 'mutate',
 		security: 'event cursor and projection clock rollback',
 	},
+	fork_session_from_message: {
+		boundary: 'mutate',
+		security: 'canonical parent and user message ids; creates an independent re-keyed transcript prefix',
+	},
 	continue_session: {
 		boundary: 'mutate',
 		security: 'replay durable session_events and truncate partial projection',

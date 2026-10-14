@@ -957,9 +957,39 @@ impl From<&str> for FollowUp {
     }
 }
 
+/// User-selected ingress semantics, independent of runtime status.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputDeliveryMode {
+    #[default]
+    Auto,
+    Steering,
+    FollowUp,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_delivery_mode_has_explicit_wire_values_and_rejects_unknown_modes() {
+        for (mode, wire) in [
+            (super::InputDeliveryMode::Auto, "auto"),
+            (super::InputDeliveryMode::Steering, "steering"),
+            (super::InputDeliveryMode::FollowUp, "follow_up"),
+        ] {
+            let value = serde_json::Value::String(wire.into());
+            assert_eq!(serde_json::to_value(mode).unwrap(), value);
+            assert_eq!(
+                serde_json::from_value::<super::InputDeliveryMode>(value).unwrap(),
+                mode
+            );
+        }
+        assert!(
+            serde_json::from_value::<super::InputDeliveryMode>(serde_json::json!("immediate"))
+                .is_err()
+        );
+    }
 
     #[test]
     fn permission_decisions_use_closed_snake_case_serde_values() {

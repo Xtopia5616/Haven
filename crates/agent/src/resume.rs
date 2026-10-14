@@ -174,25 +174,35 @@ impl AgentLayer {
                 .register_managed_assets_for_session(session_id, &message.attachments);
             let is_answer =
                 pending_input.disposition == haven_memory::PendingInputDisposition::Answer;
-            let queued = if is_answer {
-                self.executor
-                    .add_answer_with_attachments(
-                        session_id,
-                        &message.content,
-                        &message.attachments,
-                        Some(message.message_id.clone()),
-                    )
-                    .await
-            } else {
-                self.executor
-                    .add_follow_up_with_attachments(
-                        session_id,
-                        &message.content,
-                        &message.attachments,
-                        Some(message.message_id.clone()),
-                    )
-                    .await
-            };
+            let queued =
+                if pending_input.disposition == haven_memory::PendingInputDisposition::Steering {
+                    self.executor
+                        .add_steering_with_attachments(
+                            session_id,
+                            &message.content,
+                            &message.attachments,
+                            Some(message.message_id.clone()),
+                        )
+                        .await
+                } else if is_answer {
+                    self.executor
+                        .add_answer_with_attachments(
+                            session_id,
+                            &message.content,
+                            &message.attachments,
+                            Some(message.message_id.clone()),
+                        )
+                        .await
+                } else {
+                    self.executor
+                        .add_follow_up_with_attachments(
+                            session_id,
+                            &message.content,
+                            &message.attachments,
+                            Some(message.message_id.clone()),
+                        )
+                        .await
+                };
             match queued {
                 Ok(()) => {
                     restored += 1;

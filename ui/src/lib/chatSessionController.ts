@@ -1,3 +1,4 @@
+import type { InputDeliveryModeInput } from './contracts/generatedCommands.ts';
 import { reportError, type ErrorReportOptions } from './errorHandling.ts';
 import { addNotification, type NotificationType } from './notificationStore.ts';
 import { buildResumeMessages } from './resumeMessages.ts';
@@ -27,6 +28,7 @@ export interface ChatSessionControllerDependencies {
 		typeof sessionCommandAdapter,
 		| 'continueSession'
 		| 'endSession'
+		| 'forkSessionFromMessage'
 		| 'getSessionForResume'
 		| 'interruptSession'
 		| 'rollbackSession'
@@ -38,6 +40,7 @@ export interface ChatSessionControllerDependencies {
 			files: ChatFileAttachment[] | null | undefined;
 			reducer: SessionReducer;
 			submissionToken?: string;
+			deliveryMode?: InputDeliveryModeInput;
 		},
 	) => Promise<ProcessResultView>;
 	reducer: SessionReducer;
@@ -52,6 +55,8 @@ export interface ChatSessionControllerDependencies {
 	setFreshSessionIntent: (value: boolean) => void;
 	clearPersistedFreshSessionIntent: () => void;
 	setRollbackLoading: (loading: boolean) => void;
+	setForkLoading: (loading: boolean) => void;
+	closeForkDialog: () => void;
 	closeRollbackDialog: () => void;
 	closeSessionMenu: () => void;
 	setContinuePending: (pending: boolean) => void;
@@ -65,6 +70,7 @@ export class ChatSessionController {
 	private rollbackInFlight = false;
 	private continueInFlight = false;
 	private interruptInFlight = false;
+	private forkInFlight = false;
 
 	constructor(dependencies: ChatSessionControllerDependencies) {
 		this.dependencies = dependencies;
@@ -143,17 +149,52 @@ export class ChatSessionController {
 		}
 	}
 
+	/** Create and select an independent child session from one user message. */
+	async forkSessionFromMessage(messageId: string): Promise<void> {
+		const sourceSessionId = this.dependencies.getActiveSessionId();
+		if (!sourceSessionId || this.forkInFlight) return;
+		if (!isCanonicalEntityId(messageId, 'msg')) {
+			this.dependencies.notify('消息仍在保存，请稍后再试', 'info', 2000);
+			return;
+		}
+
+		const selectionVersion = this.dependencies.reducer.currentUserSelectionVersion();
+		this.forkInFlight = true;
+		this.dependencies.setForkLoading(true);
+		try {
+			const childSessionId = await this.dependencies.commands.forkSessionFromMessage({
+				sessionId: sourceSessionId,
+				messageId,
+			});
+			await this.dependencies.loadSessions();
+			if (
+				this.dependencies.reducer.isUserSelectionCurrent(selectionVersion) &&
+				this.dependencies.getActiveSessionId() === sourceSessionId
+			) {
+				await this.switchToSession(childSessionId, selectionVersion);
+			} else {
+				this.dependencies.notify('已创建派生会话', 'info', 2000);
+			}
+		} catch (error) {
+			this.report(error, '创建派生会话失败');
+		} finally {
+			this.forkInFlight = false;
+			this.dependencies.setForkLoading(false);
+			this.dependencies.closeForkDialog();
+		}
+	}
+
 	/** Load and select a persisted session, then reclaim terminal prior-session memory. */
 	async switchToSession(sessionId: string, selectionVersion?: number): Promise<boolean> {
-		const currentSelectionVersion =
-			selectionVersion ?? this.beginUserSessionSelection();
+		const currentSelectionVersion = selectionVersion ?? this.beginUserSessionSelection();
 		this.dependencies.closeSessionMenu();
 		const previousSessionId = this.dependencies.getActiveSessionId();
 		try {
 			const loaded = await this.reloadSessionMessages(sessionId, {
 				selectionVersion: currentSelectionVersion,
 			});
-			if (!loaded || !this.isUserSessionSelectionCurrent(currentSelectionVersion)) return false;
+			if (!loaded || !this.isUserSessionSelectionCurrent(currentSelectionVersion))
+				return false;
 			this.dependencies.setFreshSessionIntent(false);
 			this.dependencies.clearPersistedFreshSessionIntent();
 			this.dependencies.dispatch({ type: 'session/selected', sessionId });
@@ -173,7 +214,7 @@ export class ChatSessionController {
 
 			const session = this.dependencies
 				.getSessionSnapshot()
-					.find((item) => item.sessionId === sessionId);
+				.find((item) => item.sessionId === sessionId);
 			this.dependencies.notify(`已切换到：${session?.title || '会话'}`, 'info', 1500);
 			return true;
 		} catch (error) {
@@ -274,6 +315,7 @@ export class ChatSessionController {
 		images?: ChatAttachmentPayload[] | null,
 		files?: ChatFileAttachment[] | null,
 		submissionToken?: string,
+		deliveryMode?: InputDeliveryModeInput,
 	): Promise<void> {
 		const userSelectionVersion = this.dependencies.reducer.currentUserSelectionVersion();
 		try {
@@ -282,6 +324,7 @@ export class ChatSessionController {
 				files,
 				reducer: this.dependencies.reducer,
 				submissionToken,
+				...(deliveryMode ? { deliveryMode } : {}),
 			});
 			const createdSessionId = processResultSessionId(result);
 			if (

@@ -1,7 +1,11 @@
 import { get } from 'svelte/store';
+import type { InputDeliveryModeInput } from './contracts/generatedCommands.ts';
 import { browser } from '$app/environment';
 import { DRAFT_SESSION_ID, type SessionReducer } from './sessionReducer.ts';
-import { reactExecutionPhaseForSession, reactExecutionPhaseStore } from './reactExecutionPhaseStore.ts';
+import {
+	reactExecutionPhaseForSession,
+	reactExecutionPhaseStore,
+} from './reactExecutionPhaseStore.ts';
 import { newMessage } from './messageFactory.ts';
 import { newSessionIntentStore, NEW_SESSION_INTENT_STORAGE_KEY } from './sessionIntentStore.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
@@ -208,6 +212,7 @@ function drainQueue(lane: SubmissionLane) {
  * @returns the validated camelCase process result view
  */
 interface SubmitOptions {
+	deliveryMode?: InputDeliveryModeInput;
 	images?: ChatAttachmentPayload[] | null;
 	files?: ChatFileAttachment[] | null;
 	voice?: boolean;
@@ -225,6 +230,7 @@ export async function submitTranscript(
 		files = null,
 		voice = false,
 		recordingId,
+		deliveryMode,
 		submissionToken,
 		reducer,
 	}: SubmitOptions,
@@ -235,6 +241,7 @@ export async function submitTranscript(
 		files,
 		voice,
 		recordingId,
+		deliveryMode,
 		pinnedSessionId: reducer.snapshot().activeSessionId,
 		userSelectionVersion: reducer.currentUserSelectionVersion(),
 		freshStartAtEnqueue: get(newSessionIntentStore),
@@ -272,6 +279,7 @@ async function doSubmit({
 	files = null,
 	voice = false,
 	recordingId,
+	deliveryMode,
 	pinnedSessionId,
 	freshStartAtEnqueue,
 	userSelectionVersion,
@@ -312,6 +320,7 @@ async function doSubmit({
 			attachments: hasAttachments ? attachments : null,
 			voice,
 			...(recordingId ? { recordingId } : {}),
+			...(deliveryMode ? { deliveryMode } : {}),
 		};
 		const result = await processTranscript(request);
 		const createdId = processResultSessionId(result);
@@ -362,7 +371,9 @@ async function doSubmit({
 }
 
 /** Session created by this submission, if it was a fresh-session result. */
-export function processResultSessionId(result: ProcessResultView | null | undefined): string | null {
+export function processResultSessionId(
+	result: ProcessResultView | null | undefined,
+): string | null {
 	if (result?.kind !== 'session_created') return null;
 	const sessionId = result.sessionId;
 	if (isCanonicalEntityId(sessionId, 'ses')) return sessionId;
@@ -370,7 +381,9 @@ export function processResultSessionId(result: ProcessResultView | null | undefi
 }
 
 /** Persisted user-message id from either ProcessResult variant. */
-export function processResultMessageId(result: ProcessResultView | null | undefined): string | null {
+export function processResultMessageId(
+	result: ProcessResultView | null | undefined,
+): string | null {
 	const messageId = result?.messageId;
 	return isCanonicalEntityId(messageId, 'msg') ? messageId : null;
 }

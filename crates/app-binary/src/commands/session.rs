@@ -136,7 +136,10 @@ async fn session_lineage_from_store(
         .await?
         .ok_or_else(|| anyhow::anyhow!("session not found: {session_id}"))?;
     let parent_session_id = match &session.origin {
-        SessionOrigin::AgentSpawn { parent_session_id } => Some(parent_session_id.clone()),
+        SessionOrigin::AgentSpawn { parent_session_id }
+        | SessionOrigin::Fork {
+            parent_session_id, ..
+        } => Some(parent_session_id.clone()),
         SessionOrigin::User => None,
     };
     let parent = match parent_session_id.as_deref() {
@@ -149,7 +152,10 @@ async fn session_lineage_from_store(
         .into_iter()
         .map(|child| {
             let child_parent_session_id = match &child.origin {
-                SessionOrigin::AgentSpawn { parent_session_id } => parent_session_id.clone(),
+                SessionOrigin::AgentSpawn { parent_session_id }
+                | SessionOrigin::Fork {
+                    parent_session_id, ..
+                } => parent_session_id.clone(),
                 SessionOrigin::User => {
                     anyhow::bail!("session lineage child has no parent session identity")
                 }
@@ -815,6 +821,26 @@ pub async fn delete_all_sessions(state: State<'_, Arc<AppState>>) -> Result<u64,
         .map_err(|e| log_err("delete_all_sessions", e))?;
     cleanup_unreferenced_session_media(state.inner().as_ref(), "delete_all_sessions").await;
     Ok(count)
+}
+
+/// Create an independent child session from a selected user message. The
+/// source session remains unchanged; the child replays that user request.
+#[tauri::command]
+pub async fn fork_session_from_message(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    message_id: String,
+) -> Result<String, String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("fork_session_from_message", error))?;
+    validate_command_id(&message_id, "message_id", "msg")
+        .map_err(|error| log_err("fork_session_from_message", error))?;
+    state
+        .runtime
+        .agent
+        .fork_session_from_message(&session_id, &message_id)
+        .await
+        .map_err(|error| log_err("fork_session_from_message", error))
 }
 
 /// Roll back a session to a specific branch point. The session is rewound to

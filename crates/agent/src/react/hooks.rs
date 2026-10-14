@@ -2,10 +2,11 @@
 //! Phase 7 / G6 infer owned by hooks).
 //!
 //! Order contract (documented at the call site in `loop.rs`):
-//! `inject_pending_context` → `hooks.before_step` → `RequestContext` → LLM
+//! `inject_pending_context` → `hooks.before_step` → request preparation
+//! → one bounded steering poll → optional budget/compaction rebuild → LLM
 //! → `hooks.after_llm` (response policy) → tools (`before_tool` per call) / pause.
 //!
-//! Default hooks own prologue side effects (inbox / compact / interval intent),
+//! Default hooks own prologue side effects (compact / interval intent),
 //! incomplete tool-call classification, confirm pre-check, and pause-time intent.
 //! Tests use [`NoopHooks`] so the thin loop can run without messaging or
 //! SQLite maintenance.
@@ -129,8 +130,8 @@ pub(crate) trait LoopHooks: Send + Sync {
     }
 }
 
-/// No-op hooks for thin-loop tests: never touch inbox / compact / infer /
-/// response policy / confirm gate.
+/// No-op prologue/policy hooks for thin-loop tests. Turn-owned input collection
+/// and the late-steering budget check still run independently of these hooks.
 #[cfg(test)]
 pub(crate) struct NoopHooks;
 

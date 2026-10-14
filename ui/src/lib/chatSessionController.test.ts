@@ -88,6 +88,8 @@ function makeHarness(
 		continueSession: async (request) => {
 			await runCommand('continue_session', request);
 		},
+		forkSessionFromMessage: async (request) =>
+			(await runCommand('fork_session_from_message', request)) as string,
 		getSessionForResume: async (request) =>
 			(await runCommand('get_session_for_resume', request)) as SessionResumeResponse,
 	};
@@ -121,6 +123,8 @@ function makeHarness(
 		},
 		clearPersistedFreshSessionIntent: () => persistedIntentClears++,
 		setRollbackLoading: (loading) => rollbackLoading.push(loading),
+		setForkLoading: () => {},
+		closeForkDialog: () => {},
 		closeRollbackDialog: () => rollbackDialogClosed++,
 		closeSessionMenu: () => sessionMenuClosed++,
 		setContinuePending: (pending) => continuePending.push(pending),

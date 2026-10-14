@@ -47,6 +47,16 @@ describe('submitTranscript', () => {
 		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
 	});
 
+	it('preserves explicit follow-up mode through the submission lane', async () => {
+		invokeMock.mockResolvedValue(supplemented(SESSION_A));
+		select(SESSION_A);
+		await submitTranscript('afterwards', { deliveryMode: 'follow_up' });
+		expect(invoke).toHaveBeenCalledWith(
+			'process_transcript',
+			expect.objectContaining({ deliveryMode: 'follow_up' }),
+		);
+	});
+
 	it('appends an optimistic user message under the active session id', async () => {
 		invokeMock.mockResolvedValue(supplemented(SESSION_A));
 		select(SESSION_A);

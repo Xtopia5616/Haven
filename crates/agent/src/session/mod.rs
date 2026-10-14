@@ -31,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 /// guards against a stuck handler so rollback cannot hang forever.
 const RUN_EXIT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+pub(crate) use actor::ContextBoundary;
 /// User-queue payload (steering or follow-up). Defined in `haven-common`;
 /// re-exported so session code uses the canonical queue type.
 pub use haven_common::types::FollowUp;
@@ -3155,6 +3156,76 @@ mod tests {
             .unwrap();
         let status = exec.end_session(&session.session_id).await.unwrap();
         assert_eq!(status, SessionStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn deferred_context_is_not_an_ask_answer() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsFacade::new());
+        let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
+        let session = exec.create_session("ask eligibility").await.unwrap();
+        exec.add_follow_up(&session.session_id, "after-work")
+            .await
+            .unwrap();
+        exec.enqueue_tool_run_result(
+            &session.session_id,
+            haven_common::types::new_id("toolrun"),
+            "result",
+        )
+        .await
+        .unwrap();
+        assert!(!exec.prepare_queued_ask_answer(&session.session_id).await);
+        exec.add_steering(&session.session_id, "early reply")
+            .await
+            .unwrap();
+        assert!(exec.prepare_queued_ask_answer(&session.session_id).await);
+        let batch = exec
+            .drain_react_context_at(&session.session_id, ContextBoundary::Turn)
+            .await;
+        assert!(batch.steering[0].is_answer);
+        assert!(batch.follow_ups.is_empty());
+    }
+
+    #[tokio::test]
+    async fn before_request_drain_only_takes_steering() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsFacade::new());
+        let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
+        let session = exec.create_session("delivery phases").await.unwrap();
+        exec.add_follow_up(&session.session_id, "after-work")
+            .await
+            .unwrap();
+        exec.add_answer_with_attachments(&session.session_id, "answer", &[], None)
+            .await
+            .unwrap();
+        exec.add_steering(&session.session_id, "adjust")
+            .await
+            .unwrap();
+        exec.enqueue_tool_run_result(
+            &session.session_id,
+            haven_common::types::new_id("toolrun"),
+            "result",
+        )
+        .await
+        .unwrap();
+        let late = exec
+            .drain_react_context_at(&session.session_id, ContextBoundary::BeforeRequest)
+            .await;
+        assert_eq!(late.steering.len(), 1);
+        assert!(late.follow_ups.is_empty());
+        assert!(late.tool_run_results.is_empty());
+        let turn = exec
+            .drain_react_context_at(&session.session_id, ContextBoundary::Turn)
+            .await;
+        assert!(turn.steering.is_empty());
+        assert_eq!(turn.follow_ups.len(), 1);
+        assert!(turn.follow_ups[0].is_answer);
+        assert_eq!(turn.tool_run_results.len(), 1);
+        let end = exec
+            .drain_react_context_at(&session.session_id, ContextBoundary::WorkComplete)
+            .await;
+        assert_eq!(end.follow_ups.len(), 1);
+        assert_eq!(end.follow_ups[0].text, "after-work");
     }
 
     #[tokio::test]

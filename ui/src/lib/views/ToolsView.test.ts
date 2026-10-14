@@ -344,9 +344,9 @@ describe('ToolsView toolbar actions', () => {
 
 		render(ToolsView);
 
-		await waitFor(() => expect(screen.getByText('共 1 项')).toBeTruthy());
+		await waitFor(() => expect(screen.getByText('共 2 个操作')).toBeTruthy());
 		const resourceToolbar = () => document.querySelector('.resource-toolbar');
-		expect(resourceToolbar()?.querySelector('.count-chip')?.textContent).toBe('共 1 项');
+		expect(resourceToolbar()?.querySelector('.count-chip')?.textContent).toBe('共 2 个操作');
 		expect(document.querySelectorAll('.section .count-chip')).toHaveLength(0);
 
 		await fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
@@ -374,7 +374,7 @@ describe('ToolsView toolbar actions', () => {
 
 		render(ToolsView);
 
-		await waitFor(() => expect(screen.getByText('共 1 项')).toBeTruthy());
+		await waitFor(() => expect(screen.getByText('共 3 个操作')).toBeTruthy());
 		expect(document.querySelectorAll('[data-card-kind="builtin-family"]')).toHaveLength(1);
 		expect(screen.getByText('System')).toBeTruthy();
 		expect(screen.queryByText('files.read')).toBeNull();

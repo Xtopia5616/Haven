@@ -60,16 +60,26 @@ fn summary_request_kind(messages: &[CanonicalMessage]) -> RequestKind {
     RequestKind::Chat
 }
 
-/// Keep summary requests bounded even when a long-running session has a very
-/// large middle region. The planner may summarize more messages than fit in
-/// this input window; this renderer keeps both edges and explicitly marks the
-/// omitted middle so the summary model sees the shape of the missing region.
-const SUMMARY_INPUT_TOKEN_BUDGET: u32 = 16_000;
-/// The summary message is deliberately smaller than the input budget. A
-/// little framing overhead is reserved by the range planner below.
-const SUMMARY_TEXT_TOKEN_BUDGET: u32 = 768;
-const SUMMARY_MESSAGE_TOKEN_BUDGET: u32 = 1_024;
+/// Bound each summary request while covering long sessions in separate
+/// chunks. The hard segment cap limits serial provider calls and temporary
+/// summary state; exceeding it degrades the entire compaction instead of
+/// silently dropping a portion of the task history.
+const SUMMARY_INPUT_TOKEN_BUDGET: u32 = 24_000;
+const MAX_SUMMARY_SEGMENTS: usize = 64;
+/// Hard cap across source and merge requests. Requests are serial so
+/// cancellation stops the pipeline without concurrent provider work.
+const MAX_SUMMARY_REQUESTS: usize = 128;
+/// Each chunk needs enough room for durable constraints and task state to
+/// survive the merge pass. The compaction range reserves this much plus
+/// framing for the summary message retained in canonical context.
+const SUMMARY_TEXT_TOKEN_BUDGET: u32 = 1_024;
+const SUMMARY_MESSAGE_TOKEN_BUDGET: u32 = 1_280;
 const SUMMARY_REQUEST_OVERHEAD_TOKENS: u32 = PROVIDER_REQUEST_OVERHEAD_TOKENS;
+
+struct SummarySegment {
+    transcript: String,
+    media: Vec<ContentPart>,
+}
 
 #[derive(Debug, Clone)]
 pub struct CompactionResult {
@@ -175,61 +185,67 @@ impl ContextCompactor {
         messages: &[CanonicalMessage],
         input_budget: u32,
     ) -> String {
+        let lines: Vec<_> = messages
+            .iter()
+            .map(Self::format_summary_message)
+            .filter(|line| !line.is_empty())
+            .collect();
+        Self::build_summary_prompt_from_lines(&lines, input_budget)
+    }
+
+    fn format_summary_message(msg: &CanonicalMessage) -> String {
         use std::fmt::Write as _;
-        let mut lines = Vec::with_capacity(messages.len());
-        for msg in messages {
-            let role = match msg.role {
-                haven_common::types::CanonicalRole::System => "system",
-                haven_common::types::CanonicalRole::User => "user",
-                haven_common::types::CanonicalRole::Assistant => "assistant",
-                haven_common::types::CanonicalRole::Tool => "tool",
-            };
-            let mut line = String::new();
-            for part in &msg.content {
-                match part {
-                    ContentPart::Text(t) => {
-                        let _ = writeln!(line, "[{}] {}", role, t);
-                    }
-                    ContentPart::Image { media_type, .. } => {
-                        let _ = writeln!(
-                            line,
-                            "[{} image attachment media_type={} follows]",
-                            role, media_type
-                        );
-                    }
-                    ContentPart::Audio { media_type, .. } => {
-                        let _ = writeln!(
-                            line,
-                            "[{} audio attachment media_type={} follows]",
-                            role, media_type
-                        );
-                    }
-                    ContentPart::Video { media_type, .. } => {
-                        let _ = writeln!(
-                            line,
-                            "[{} video attachment media_type={} follows]",
-                            role, media_type
-                        );
-                    }
+        let role = match msg.role {
+            haven_common::types::CanonicalRole::System => "system",
+            haven_common::types::CanonicalRole::User => "user",
+            haven_common::types::CanonicalRole::Assistant => "assistant",
+            haven_common::types::CanonicalRole::Tool => "tool",
+        };
+        let mut line = String::new();
+        for part in &msg.content {
+            match part {
+                ContentPart::Text(text) => {
+                    let _ = writeln!(line, "[{}] {}", role, text);
                 }
-            }
-            if let Some(calls) = &msg.tool_calls {
-                for call in calls {
+                ContentPart::Image { media_type, .. } => {
                     let _ = writeln!(
                         line,
-                        "[assistant tool_call tool_call_id={} name={} arguments={}]",
-                        call.tool_call_id, call.name, call.arguments
+                        "[{} image attachment media_type={} follows]",
+                        role, media_type
+                    );
+                }
+                ContentPart::Audio { media_type, .. } => {
+                    let _ = writeln!(
+                        line,
+                        "[{} audio attachment media_type={} follows]",
+                        role, media_type
+                    );
+                }
+                ContentPart::Video { media_type, .. } => {
+                    let _ = writeln!(
+                        line,
+                        "[{} video attachment media_type={} follows]",
+                        role, media_type
                     );
                 }
             }
-            if let Some(tool_call_id) = &msg.tool_call_id {
-                let _ = writeln!(line, "[tool result tool_call_id={}]", tool_call_id);
-            }
-            if !line.is_empty() {
-                lines.push(line);
+        }
+        if let Some(calls) = &msg.tool_calls {
+            for call in calls {
+                let _ = writeln!(
+                    line,
+                    "[assistant tool_call tool_call_id={} name={} arguments={}]",
+                    call.tool_call_id, call.name, call.arguments
+                );
             }
         }
+        if let Some(tool_call_id) = &msg.tool_call_id {
+            let _ = writeln!(line, "[tool result tool_call_id={}]", tool_call_id);
+        }
+        line
+    }
 
+    fn build_summary_prompt_from_lines(lines: &[String], input_budget: u32) -> String {
         let marker = format!(
             "\n[... {} transcript entries omitted from this summary input ...]\n",
             lines.len().saturating_sub(2)
@@ -284,6 +300,197 @@ impl ContextCompactor {
         let mut content = vec![ContentPart::text(prompt)];
         content.extend(media);
         vec![CanonicalMessage::user(content)]
+    }
+
+    /// Serialize the complete source history into bounded chronological
+    /// requests. An oversized individual message is split into consecutive
+    /// text pieces; media parts stay with the first piece. Returning `None`
+    /// at the segment cap makes compaction degrade as a whole instead of
+    /// sending a partial transcript to the summarizer.
+    fn build_summary_segments(
+        messages: &[CanonicalMessage],
+        input_budget: u32,
+    ) -> Option<Vec<CanonicalMessage>> {
+        let fixed_prompt_tokens = estimate_tokens(SESSION_COMPACTION_SUMMARY_PROMPT)
+            .saturating_add(estimate_tokens("\n---\nSummary:"))
+            .saturating_add(estimate_tokens("[user] "))
+            .saturating_add(4);
+        let content_budget = input_budget.checked_sub(fixed_prompt_tokens)?;
+        let mut segments = Vec::new();
+        let mut current = SummarySegment {
+            transcript: String::new(),
+            media: Vec::new(),
+        };
+        let mut current_tokens = 0u32;
+
+        for message in messages {
+            let line = Self::format_summary_message(message);
+            let media: Vec<_> = message
+                .content
+                .iter()
+                .filter(|part| !matches!(part, ContentPart::Text(_)))
+                .cloned()
+                .collect();
+            let media_tokens = estimate_message_tokens(&[CanonicalMessage::user(media.clone())]);
+            if media_tokens > content_budget {
+                return None;
+            }
+            let line_tokens = estimate_tokens(&line);
+            let entry_tokens = line_tokens.saturating_add(media_tokens);
+
+            if entry_tokens <= content_budget {
+                if (!current.transcript.is_empty() || !current.media.is_empty())
+                    && current_tokens.saturating_add(entry_tokens) > content_budget
+                {
+                    Self::push_summary_segment(&mut segments, &mut current)?;
+                    current_tokens = 0;
+                }
+                current.transcript.push_str(&line);
+                current.media.extend(media);
+                current_tokens = current_tokens.saturating_add(entry_tokens);
+                continue;
+            }
+
+            if !current.transcript.is_empty() || !current.media.is_empty() {
+                Self::push_summary_segment(&mut segments, &mut current)?;
+                current_tokens = 0;
+            }
+
+            let text_budget = content_budget.saturating_sub(media_tokens);
+            if line.is_empty() {
+                current.media = media;
+                Self::push_summary_segment(&mut segments, &mut current)?;
+                current_tokens = 0;
+                continue;
+            }
+
+            let mut offset = 0usize;
+            let mut first_piece = true;
+            while offset < line.len() {
+                let piece_budget = if first_piece {
+                    text_budget
+                } else {
+                    content_budget
+                };
+                let piece = truncate_prefix_to_token_budget(&line[offset..], piece_budget);
+                if piece.is_empty() {
+                    return None;
+                }
+                offset += piece.len();
+                current.transcript = piece;
+                if first_piece {
+                    current.media = media.clone();
+                }
+                Self::push_summary_segment(&mut segments, &mut current)?;
+                current_tokens = 0;
+                first_piece = false;
+            }
+        }
+
+        if !current.transcript.is_empty() || !current.media.is_empty() {
+            Self::push_summary_segment(&mut segments, &mut current)?;
+        }
+        Some(segments)
+    }
+
+    fn push_summary_segment(
+        segments: &mut Vec<CanonicalMessage>,
+        segment: &mut SummarySegment,
+    ) -> Option<()> {
+        if segments.len() >= MAX_SUMMARY_SEGMENTS {
+            return None;
+        }
+        let mut content = Vec::with_capacity(segment.media.len() + 1);
+        if !segment.transcript.is_empty() {
+            content.push(ContentPart::text(std::mem::take(&mut segment.transcript)));
+        }
+        content.append(&mut segment.media);
+        segments.push(CanonicalMessage::user(content));
+        Some(())
+    }
+
+    fn build_summary_segment_request(
+        segment: &CanonicalMessage,
+        input_budget: u32,
+    ) -> Option<Vec<CanonicalMessage>> {
+        let expected_text = segment
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        let request = Self::build_summary_messages(std::slice::from_ref(segment), input_budget);
+        let request_text = request
+            .iter()
+            .flat_map(|message| &message.content)
+            .find_map(|part| match part {
+                ContentPart::Text(text) => Some(text.as_str()),
+                _ => None,
+            })?;
+        if !expected_text.is_empty() && !request_text.contains(&expected_text) {
+            tracing::warn!(
+                "summary segment exceeded its input budget after prompt framing; degrading"
+            );
+            return None;
+        }
+        Some(request)
+    }
+
+    fn summary_input_budget(context_window: u32) -> u32 {
+        SUMMARY_INPUT_TOKEN_BUDGET.min(
+            context_window
+                .saturating_sub(SUMMARY_TEXT_TOKEN_BUDGET)
+                .saturating_sub(SUMMARY_REQUEST_OVERHEAD_TOKENS)
+                .max(1),
+        )
+    }
+
+    async fn request_summary(
+        router: &Arc<LlmRouter>,
+        request_kind: RequestKind,
+        summary_messages: Vec<CanonicalMessage>,
+        context_window: u32,
+        cancel: CancellationToken,
+    ) -> Result<Option<String>, LlmError> {
+        let summary_input_tokens = estimate_provider_request_tokens(&summary_messages, &[]);
+        let summary_fits = summary_input_tokens
+            .saturating_add(1)
+            .saturating_add(SUMMARY_REQUEST_OVERHEAD_TOKENS)
+            <= context_window;
+        if !summary_fits {
+            tracing::warn!(
+                "compaction summary request does not fit model window {}; degrading",
+                context_window
+            );
+            return Ok(None);
+        }
+
+        let output_cap = router
+            .effective_output_tokens(request_kind, summary_input_tokens)
+            .await
+            .clamp(1, SUMMARY_TEXT_TOKEN_BUDGET);
+        match router
+            .chat_messages_cancellable(request_kind, summary_messages, Some(output_cap), cancel)
+            .await
+        {
+            Ok(response) => {
+                let text = truncate_prefix_to_token_budget(
+                    response.text.trim(),
+                    SUMMARY_TEXT_TOKEN_BUDGET,
+                );
+                Ok((!text.is_empty()).then_some(text))
+            }
+            Err(LlmError::Cancelled) => Err(LlmError::Cancelled),
+            Err(error) => {
+                tracing::warn!(
+                    failure_reason = error.connection_failure_reason().as_str(),
+                    "compaction summary request failed; degrading"
+                );
+                Ok(None)
+            }
+        }
     }
 
     /// Compute a safe cutoff index that never splits a tool-call/tool-result
@@ -504,56 +711,117 @@ impl ContextCompactor {
         );
         let summary_request = summary_request_kind(middle);
         let summary_window = router.context_window_for_request(summary_request).await;
-        let summary_budget = SUMMARY_INPUT_TOKEN_BUDGET.min(
-            summary_window
-                .saturating_sub(SUMMARY_TEXT_TOKEN_BUDGET)
-                .saturating_sub(SUMMARY_REQUEST_OVERHEAD_TOKENS)
-                .max(1),
-        );
-        let summary_messages = Self::build_summary_messages(middle, summary_budget);
-        let summary_input_tokens = estimate_provider_request_tokens(&summary_messages, &[]);
-        let summary_fits = summary_input_tokens
-            .saturating_add(1)
-            .saturating_add(SUMMARY_REQUEST_OVERHEAD_TOKENS)
-            <= summary_window;
+        let summary_budget = Self::summary_input_budget(summary_window);
+        let mut summary = None;
+        let mut summary_request_count = 0usize;
 
-        let summary = if summary_fits {
-            let output_cap = router
-                .effective_output_tokens(summary_request, summary_input_tokens)
-                .await
-                .clamp(1, SUMMARY_TEXT_TOKEN_BUDGET);
-            match router
-                .chat_messages_cancellable(
+        if let Some(segments) = Self::build_summary_segments(middle, summary_budget) {
+            let mut partial_summaries = Vec::with_capacity(segments.len());
+            for segment in segments {
+                let Some(summary_messages) =
+                    Self::build_summary_segment_request(&segment, summary_budget)
+                else {
+                    partial_summaries.clear();
+                    break;
+                };
+                if summary_request_count >= MAX_SUMMARY_REQUESTS {
+                    tracing::warn!(
+                        request_limit = MAX_SUMMARY_REQUESTS,
+                        "compaction summary request limit reached; degrading"
+                    );
+                    partial_summaries.clear();
+                    break;
+                }
+                summary_request_count += 1;
+                let Some(partial) = Self::request_summary(
+                    router,
                     summary_request,
                     summary_messages,
-                    Some(output_cap),
-                    cancel,
+                    summary_window,
+                    cancel.clone(),
                 )
-                .await
-            {
-                Ok(response) => {
-                    let text = truncate_prefix_to_token_budget(
-                        response.text.trim(),
-                        SUMMARY_TEXT_TOKEN_BUDGET,
-                    );
-                    (!text.is_empty()).then_some(text)
+                .await?
+                else {
+                    partial_summaries.clear();
+                    break;
+                };
+                partial_summaries.push(partial);
+            }
+
+            let merge_window = router.context_window_for_request(RequestKind::Chat).await;
+            let merge_budget = Self::summary_input_budget(merge_window);
+            while partial_summaries.len() > 1 {
+                let partial_messages: Vec<_> = partial_summaries
+                    .iter()
+                    .enumerate()
+                    .map(|(index, partial)| {
+                        CanonicalMessage::user(vec![ContentPart::text(format!(
+                            "Partial summary {} in chronological order:\n{}",
+                            index + 1,
+                            partial
+                        ))])
+                    })
+                    .collect();
+                let Some(merge_segments) =
+                    Self::build_summary_segments(&partial_messages, merge_budget)
+                else {
+                    partial_summaries.clear();
+                    break;
+                };
+                if merge_segments.len() >= partial_summaries.len() {
+                    // The merge model's window is too small to combine any
+                    // summaries. Do not loop or keep a lossy subset.
+                    partial_summaries.clear();
+                    break;
                 }
-                Err(LlmError::Cancelled) => return Err(LlmError::Cancelled),
-                Err(error) => {
-                    tracing::warn!(
-                        failure_reason = error.connection_failure_reason().as_str(),
-                        "compaction summary request failed; degrading"
-                    );
-                    None
+
+                let mut merged = Vec::with_capacity(merge_segments.len());
+                for segment in merge_segments {
+                    let Some(merge_messages) =
+                        Self::build_summary_segment_request(&segment, merge_budget)
+                    else {
+                        merged.clear();
+                        break;
+                    };
+                    if summary_request_count >= MAX_SUMMARY_REQUESTS {
+                        tracing::warn!(
+                            request_limit = MAX_SUMMARY_REQUESTS,
+                            "compaction summary request limit reached; degrading"
+                        );
+                        merged.clear();
+                        break;
+                    }
+                    summary_request_count += 1;
+                    let Some(summary) = Self::request_summary(
+                        router,
+                        RequestKind::Chat,
+                        merge_messages,
+                        merge_window,
+                        cancel.clone(),
+                    )
+                    .await?
+                    else {
+                        merged.clear();
+                        break;
+                    };
+                    merged.push(summary);
                 }
+                if merged.is_empty() {
+                    partial_summaries.clear();
+                    break;
+                }
+                partial_summaries = merged;
+            }
+
+            if partial_summaries.len() == 1 {
+                summary = partial_summaries.pop();
             }
         } else {
             tracing::warn!(
-                "compaction summary request does not fit model window {}; degrading",
-                summary_window
+                segment_limit = MAX_SUMMARY_SEGMENTS,
+                "compaction history cannot fit the bounded summary requests; degrading"
             );
-            None
-        };
+        }
 
         let degraded = summary.is_none();
         let summary = summary.unwrap_or_else(|| "[older context omitted]".into());
@@ -604,6 +872,65 @@ mod tests {
     use haven_common::types::CanonicalRole;
     use haven_llm::{LlmClient, LlmResponse, LlmToolDefinition, StreamChunk};
     use std::pin::Pin;
+
+    #[derive(Default)]
+    struct RecordingSummaryClient {
+        requests: std::sync::Mutex<Vec<Vec<CanonicalMessage>>>,
+    }
+
+    impl RecordingSummaryClient {
+        fn respond(&self, messages: Vec<CanonicalMessage>) -> LlmResponse {
+            let preserved_constraints = messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|part| match part {
+                    ContentPart::Text(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .flat_map(str::lines)
+                .filter(|line| line.contains("CRITICAL CONSTRAINT"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.requests.lock().unwrap().push(messages);
+            LlmResponse {
+                text: if preserved_constraints.is_empty() {
+                    "Summary generated from the supplied task history.".into()
+                } else {
+                    preserved_constraints
+                },
+                ..LlmResponse::default()
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for RecordingSummaryClient {
+        async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            Ok(self.respond(messages))
+        }
+
+        async fn chat_with_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<LlmResponse, LlmError> {
+            Ok(self.respond(messages))
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
 
     struct FailingSummaryClient;
 
@@ -910,6 +1237,114 @@ mod tests {
         assert!(crate::canonical::canonical_pairing_healthy(
             &result.compacted
         ));
+    }
+
+    #[tokio::test]
+    async fn long_task_compaction_sends_middle_constraints_to_summary_request() {
+        let client = Arc::new(RecordingSummaryClient::default());
+        let llm_client: Arc<dyn LlmClient> = client.clone();
+        let router = Arc::new(haven_llm::LlmRouter::new_with_test_clients(
+            llm_client.clone(),
+            llm_client.clone(),
+            llm_client.clone(),
+            llm_client,
+        ));
+        let compactor = ContextCompactor::new(100_000, 8_000);
+        let mut messages: Vec<_> = (0..150)
+            .map(|index| {
+                make_msg(
+                    CanonicalRole::User,
+                    &format!("task log {index}: {}", "routine detail ".repeat(400)),
+                )
+            })
+            .collect();
+        let prefixes = message_token_prefixes(&messages);
+        let (_, start, end) = compactor
+            .compaction_range(&messages, &prefixes)
+            .expect("long task should be compactable");
+        let middle_message = start + (end - start) / 2;
+        let critical_constraint = "CRITICAL CONSTRAINT: never upload customer data";
+        let original = match &messages[middle_message].content[0] {
+            ContentPart::Text(text) => text,
+            _ => unreachable!("fixture messages contain text"),
+        };
+        messages[middle_message].content[0] =
+            ContentPart::text(format!("{critical_constraint}\n{original}"));
+
+        let result = compactor
+            .compact(&messages, &[], &router, CancellationToken::new())
+            .await
+            .unwrap()
+            .expect("long task should compact");
+        let requests = client.requests.lock().unwrap();
+
+        assert!(!result.degraded);
+        assert!(result.summary.contains(critical_constraint));
+        assert!(
+            requests.len() > 1,
+            "long task must be summarized in multiple bounded requests"
+        );
+        assert!(requests.iter().all(|request| {
+            request.iter().flat_map(|message| &message.content).all(|part| {
+                !matches!(part, ContentPart::Text(text) if text.contains("omitted from this summary input"))
+            })
+        }));
+        let submitted_text = requests
+            .iter()
+            .flat_map(|request| request.iter())
+            .flat_map(|message| &message.content)
+            .filter_map(|part| match part {
+                ContentPart::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert!(submitted_text.contains("Partial summary"));
+        assert!(
+            submitted_text.contains(critical_constraint),
+            "a constraint in the middle of a long task must reach the summary model"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_stops_segmented_compaction_before_provider_work() {
+        let client = Arc::new(RecordingSummaryClient::default());
+        let llm_client: Arc<dyn LlmClient> = client.clone();
+        let router = Arc::new(haven_llm::LlmRouter::new_with_test_clients(
+            llm_client.clone(),
+            llm_client.clone(),
+            llm_client.clone(),
+            llm_client,
+        ));
+        let compactor = ContextCompactor::new(100, 20);
+        let messages = vec![
+            make_msg(CanonicalRole::User, "task anchor"),
+            make_msg(CanonicalRole::Assistant, "work in progress"),
+            make_msg(CanonicalRole::User, "latest task state"),
+        ];
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = compactor.compact(&messages, &[], &router, cancel).await;
+
+        assert!(matches!(result, Err(LlmError::Cancelled)));
+        assert!(client.requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn summary_segmentation_rejects_input_beyond_the_bounded_segment_cap() {
+        let messages: Vec<_> = (0..150)
+            .map(|index| {
+                make_msg(
+                    CanonicalRole::User,
+                    &format!("section-{index}: {}", "payload ".repeat(1_000)),
+                )
+            })
+            .collect();
+
+        assert!(
+            ContextCompactor::build_summary_segments(&messages, 1_024).is_none(),
+            "over-cap history must degrade as a whole instead of omitting later sections"
+        );
     }
 
     #[test]

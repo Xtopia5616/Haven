@@ -45,6 +45,10 @@ pub(crate) enum TranscriptRecord {
         step_number: u32,
         text: String,
         tool_calls: Vec<CanonicalToolCall>,
+        /// Identity of the assistant text projection, when this event also
+        /// materialized a user-visible message. Older event payloads omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -115,7 +119,12 @@ impl TranscriptRecord {
             Self::Reasoning { message_id, .. } => {
                 ensure_canonical_id(message_id, "msg", "message_id")
             }
-            Self::ToolCall { .. } => Ok(()),
+            Self::ToolCall { message_id, .. } => {
+                if let Some(message_id) = message_id {
+                    ensure_canonical_id(message_id, "msg", "message_id")?;
+                }
+                Ok(())
+            }
             Self::ToolResult { step_id, .. } => ensure_canonical_id(step_id, "step", "step_id"),
             Self::UserInject {
                 media_inputs,
@@ -689,6 +698,7 @@ mod tests {
                     name: "example".into(),
                     arguments: serde_json::json!({}),
                 }],
+                message_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
@@ -730,6 +740,7 @@ mod tests {
             text: "call".into(),
             tool_calls: tool_calls.clone(),
             reasoning: None,
+            message_id: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
         };
@@ -900,6 +911,7 @@ mod tests {
                         arguments: serde_json::json!({}),
                     },
                 ],
+                message_id: None,
                 reasoning: None,
                 web_search_calls: vec![],
                 thinking_blocks: vec![],

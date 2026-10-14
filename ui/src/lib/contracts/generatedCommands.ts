@@ -307,6 +307,8 @@ export const HOTKEY_MODE_VALUES = ['toggle', 'hold'] as const;
 export type HotkeyMode = (typeof HOTKEY_MODE_VALUES)[number];
 export const INJECT_SOURCE_VALUES = ['steering', 'follow_up', 'answer', 'tool_run_result', 'cross_session'] as const;
 export type InjectSource = (typeof INJECT_SOURCE_VALUES)[number];
+export const INPUT_DELIVERY_MODE_INPUT_VALUES = ['auto', 'steering', 'follow_up'] as const;
+export type InputDeliveryModeInput = (typeof INPUT_DELIVERY_MODE_INPUT_VALUES)[number];
 export interface MessageAttachmentInput { asset_id?: string | null; media_type: string; data: string; filename?: string | null; path?: string | null; sha256?: string | null; size_bytes?: number | null; expires_at?: string | null; representations?: MediaRepresentationInput[]; preferred_representation?: MediaRepresentationKindInput | null }
 export interface MessageAttachment { asset_id?: string; media_type: string; data: string; filename?: string; path?: string; sha256?: string; size_bytes?: number; expires_at?: string; representations?: MediaRepresentation[]; preferred_representation?: MediaRepresentationKind }
 export const NETWORK_POLICY_INPUT_VALUES = ['deny', 'ask', 'restricted', 'open'] as const;
@@ -1226,6 +1228,7 @@ export const EXECUTE_SKILL_RESPONSE_SHAPE = {
 	}
 } as const;
 export const EXPORT_SESSION_HISTORY_RESPONSE_SHAPE = { kind: 'string' } as const;
+export const FORK_SESSION_FROM_MESSAGE_RESPONSE_SHAPE = { kind: 'string' } as const;
 export const GET_API_KEY_STATUS_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -8096,6 +8099,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	end_session: END_SESSION_RESPONSE_SHAPE,
 	execute_skill: EXECUTE_SKILL_RESPONSE_SHAPE,
 	export_session_history: EXPORT_SESSION_HISTORY_RESPONSE_SHAPE,
+	fork_session_from_message: FORK_SESSION_FROM_MESSAGE_RESPONSE_SHAPE,
 	get_api_key_status: GET_API_KEY_STATUS_RESPONSE_SHAPE,
 	get_bootstrap_status: GET_BOOTSTRAP_STATUS_RESPONSE_SHAPE,
 	get_latest_session_for_resume: GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE,
@@ -8222,6 +8226,7 @@ export interface TauriCommandMap {
 	end_session: { request: { sessionId: string }; response: void };
 	execute_skill: { request: { name: string; params: unknown }; response: SkillExecutionResponse };
 	export_session_history: { request: { startDate?: string | null; endDate?: string | null; status?: SessionHistoryStatusFilterInput | null }; response: string };
+	fork_session_from_message: { request: { sessionId: string; messageId: string }; response: string };
 	get_api_key_status: { request: undefined; response: ApiKeyStatus };
 	get_bootstrap_status: { request: undefined; response: BootstrapStatus };
 	get_latest_session_for_resume: { request: undefined; response: SessionResumeResponse | null };
@@ -8246,7 +8251,7 @@ export interface TauriCommandMap {
 	log_frontend_error: { request: { failureKind: FrontendFailureKindInput }; response: void };
 	open_external: { request: { target: string }; response: void };
 	open_skills_dir: { request: undefined; response: void };
-	process_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingId?: string | null }; response: ProcessResult };
+	process_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingId?: string | null; deliveryMode?: InputDeliveryModeInput | null }; response: ProcessResult };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
 	recall_memory: { request: { query: string; kind?: MemoryEntityKindInput | null; limit?: number | null }; response: MemoryRecallItem[] };
 	reconnect_mcp_server: { request: { name: string }; response: void };

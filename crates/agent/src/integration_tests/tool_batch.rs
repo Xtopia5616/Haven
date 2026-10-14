@@ -1,6 +1,113 @@
 use super::support::*;
 use super::*;
 
+struct DeadlineTool {
+    tool_name: &'static str,
+    executions: Arc<std::sync::atomic::AtomicUsize>,
+    started: Arc<tokio::sync::Notify>,
+    hold_open: bool,
+}
+
+#[async_trait]
+impl Tool for DeadlineTool {
+    fn name(&self) -> String {
+        self.tool_name.into()
+    }
+
+    fn description(&self) -> String {
+        "Controls a side effect around a turn deadline".into()
+    }
+
+    fn risk_level(&self, _: &serde_json::Value) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn concurrency(&self, _: &serde_json::Value) -> ToolConcurrency {
+        ToolConcurrency::ReadOnly
+    }
+
+    fn idempotency(&self, _: &serde_json::Value) -> haven_common::tools::OperationIdempotency {
+        haven_common::tools::OperationIdempotency::NonIdempotent
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    async fn execute(
+        &self,
+        _: serde_json::Value,
+        _: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.executions
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.started.notify_one();
+        if self.hold_open {
+            std::future::pending::<()>().await;
+        }
+        Ok(ToolResult::ok(serde_json::json!({"executed": true})))
+    }
+}
+
+fn tool_batch_response(calls: Vec<CanonicalToolCall>) -> ScriptedResponse {
+    ScriptedResponse::Chunk(StreamChunk {
+        tool_call_updates: Vec::new(),
+        text: Some("Run the requested tools.".into()),
+        tool_calls: calls,
+        finish_reason: Some(FinishReason::ToolCalls),
+        usage: None,
+        model: None,
+        reasoning: None,
+        web_search: None,
+        web_search_calls: Vec::new(),
+        thinking_blocks: Vec::new(),
+    })
+}
+
+fn final_answer_response() -> ScriptedResponse {
+    ScriptedResponse::Chunk(StreamChunk {
+        tool_call_updates: Vec::new(),
+        text: Some("The operation was interrupted; I will not repeat it.".into()),
+        tool_calls: vec![CanonicalToolCall {
+            tool_call_id: "final".into(),
+            name: "final_answer".into(),
+            arguments: serde_json::json!({}),
+        }],
+        finish_reason: Some(FinishReason::Stop),
+        usage: None,
+        model: None,
+        reasoning: None,
+        web_search: None,
+        web_search_calls: Vec::new(),
+        thinking_blocks: Vec::new(),
+    })
+}
+
+fn assert_tool_calls_have_ordered_results(messages: &[CanonicalMessage], expected: &[&str]) {
+    let calls = messages
+        .iter()
+        .filter(|message| message.role == CanonicalRole::Assistant)
+        .flat_map(|message| {
+            message
+                .tool_calls
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|call| call.tool_call_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    let results = messages
+        .iter()
+        .filter(|message| message.role == CanonicalRole::Tool)
+        .filter_map(|message| message.tool_call_id.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(calls, expected, "the declared calls must retain plan order");
+    assert_eq!(
+        results, expected,
+        "each result must match its declared call"
+    );
+}
+
 struct ConfirmationBatchCounterTool {
     tool_name: &'static str,
     risk: RiskLevel,
@@ -904,5 +1011,254 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
             .iter()
             .map(|s| (s.tool_name.clone(), s.status, s.observation.clone()))
             .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn turn_deadline_repairs_side_effecting_tool_before_resume() {
+    let tools = Arc::new(ToolsFacade::new());
+    let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let started = Arc::new(tokio::sync::Notify::new());
+    tools
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(DeadlineTool {
+            tool_name: "deadline_effect",
+            executions: executions.clone(),
+            started: started.clone(),
+            hold_open: true,
+        }) as ToolHandle)
+        .await
+        .unwrap();
+    let mock = Arc::new(ScriptedMock::new(vec![
+        tool_batch_response(vec![CanonicalToolCall {
+            tool_call_id: "effect-call".into(),
+            name: "deadline_effect".into(),
+            arguments: serde_json::json!({"operation": "non_idempotent"}),
+        }]),
+        final_answer_response(),
+    ]));
+    let limits = ContextLimitsConfig {
+        turn_deadline_secs: 5,
+        ..ContextLimitsConfig::default()
+    };
+    let (agent, executor) = make_test_agent_with_limits(mock.clone(), tools, limits);
+    agent.set_emitter(Arc::new(EventCollector::new()));
+    let session = executor
+        .create_session("side effect before deadline")
+        .await
+        .unwrap();
+
+    let mut first_run = tokio::spawn({
+        let agent = agent.clone();
+        let session_id = session.session_id.clone();
+        async move { agent.run_session_from_id(&session_id).await }
+    });
+    tokio::select! {
+        result = &mut first_run => panic!("agent run ended before the side effect started: {result:?}"),
+        _ = started.notified() => {},
+        _ = tokio::time::sleep(std::time::Duration::from_secs(4)) => {
+            panic!("the non-idempotent side effect must happen before the deadline");
+        }
+    }
+    let deadline_error = tokio::time::timeout(std::time::Duration::from_secs(7), first_run)
+        .await
+        .expect("the deadline must bound the first run")
+        .expect("the run task must join")
+        .expect_err("the blocked result must exceed the turn deadline");
+    assert!(deadline_error.to_string().contains("deadline"));
+    assert_eq!(
+        executions.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the side effect must have occurred exactly once before timeout"
+    );
+
+    let projection = load_event_projection(&agent, &session.session_id).await;
+    let projected = projection.project().canonical_messages;
+    assert_tool_calls_have_ordered_results(&projected, &["effect-call"]);
+    assert!(projected.iter().any(|message| {
+        message.role == CanonicalRole::Tool
+            && message.tool_call_id.as_deref() == Some("effect-call")
+            && message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Text(text) if text.contains("Interrupted")))
+    }));
+    let step = agent
+        .db
+        .list_session_steps(&session.session_id)
+        .unwrap()
+        .into_iter()
+        .find(|step| step.tool_call_id.as_deref() == Some("effect-call"))
+        .expect("the attempted tool step must remain visible");
+    assert_eq!(
+        step.status,
+        haven_common::lifecycle::SessionStepStatus::Unknown,
+        "a side effect with no returned result must be recorded as unknown"
+    );
+
+    agent.continue_session(&session.session_id).await.unwrap();
+    let resumed = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        agent.run_session_from_id(&session.session_id),
+    )
+    .await
+    .expect("the resumed turn should finish")
+    .unwrap();
+    assert!(!resumed.is_empty());
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2, "resume should make one model request");
+    assert_tool_calls_have_ordered_results(&seen[1], &["effect-call"]);
+    assert_eq!(
+        executions.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "resume must not replay the result-unknown non-idempotent tool"
+    );
+}
+
+#[tokio::test]
+async fn turn_deadline_preserves_committed_parallel_result_and_repairs_running_sibling() {
+    let tools = Arc::new(ToolsFacade::new());
+    let fast_executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let slow_executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fast_started = Arc::new(tokio::sync::Notify::new());
+    let slow_started = Arc::new(tokio::sync::Notify::new());
+    for (tool_name, executions, started, hold_open) in [
+        (
+            "deadline_fast",
+            fast_executions.clone(),
+            fast_started.clone(),
+            false,
+        ),
+        (
+            "deadline_slow",
+            slow_executions.clone(),
+            slow_started.clone(),
+            true,
+        ),
+    ] {
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_installed_tool(Arc::new(DeadlineTool {
+                tool_name,
+                executions,
+                started,
+                hold_open,
+            }) as ToolHandle)
+            .await
+            .unwrap();
+    }
+    let mock = Arc::new(ScriptedMock::new(vec![
+        tool_batch_response(vec![
+            CanonicalToolCall {
+                tool_call_id: "fast-call".into(),
+                name: "deadline_fast".into(),
+                arguments: serde_json::json!({}),
+            },
+            CanonicalToolCall {
+                tool_call_id: "slow-call".into(),
+                name: "deadline_slow".into(),
+                arguments: serde_json::json!({"operation": "non_idempotent"}),
+            },
+        ]),
+        final_answer_response(),
+    ]));
+    let limits = ContextLimitsConfig {
+        turn_deadline_secs: 5,
+        ..ContextLimitsConfig::default()
+    };
+    let (agent, executor) = make_test_agent_with_limits(mock.clone(), tools, limits);
+    agent.set_emitter(Arc::new(EventCollector::new()));
+    let session = executor
+        .create_session("partial parallel result at deadline")
+        .await
+        .unwrap();
+
+    let mut first_run = tokio::spawn({
+        let agent = agent.clone();
+        let session_id = session.session_id.clone();
+        async move { agent.run_session_from_id(&session_id).await }
+    });
+    tokio::select! {
+        result = &mut first_run => panic!("agent run ended before both tools started: {result:?}"),
+        _ = async { tokio::join!(fast_started.notified(), slow_started.notified()); } => {},
+        _ = tokio::time::sleep(std::time::Duration::from_secs(4)) => {
+            panic!("both parallel tool executions must start before the deadline");
+        }
+    }
+    tokio::time::timeout(std::time::Duration::from_millis(300), async {
+        loop {
+            let projection = load_event_projection(&agent, &session.session_id).await;
+            if projection.events.iter().any(|event| {
+                matches!(event, TranscriptRecord::ToolResult { tool_call_id: Some(id), .. } if id == "fast-call")
+            }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the fast result must commit while its sibling remains blocked");
+
+    let deadline_error = tokio::time::timeout(std::time::Duration::from_secs(7), first_run)
+        .await
+        .expect("the deadline must bound the parallel batch")
+        .expect("the run task must join")
+        .expect_err("the slow sibling must exceed the turn deadline");
+    assert!(deadline_error.to_string().contains("deadline"));
+    assert_eq!(fast_executions.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(slow_executions.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let projection = load_event_projection(&agent, &session.session_id).await;
+    let projected = projection.project().canonical_messages;
+    assert_tool_calls_have_ordered_results(&projected, &["fast-call", "slow-call"]);
+    assert!(projected.iter().any(|message| {
+        message.role == CanonicalRole::Tool
+            && message.tool_call_id.as_deref() == Some("slow-call")
+            && message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Text(text) if text.contains("Interrupted")))
+    }));
+    let steps = agent.db.list_session_steps(&session.session_id).unwrap();
+    let fast_step = steps
+        .iter()
+        .find(|step| step.tool_call_id.as_deref() == Some("fast-call"))
+        .expect("the committed sibling step must be present");
+    let slow_step = steps
+        .iter()
+        .find(|step| step.tool_call_id.as_deref() == Some("slow-call"))
+        .expect("the interrupted sibling step must be present");
+    assert_eq!(
+        fast_step.status,
+        haven_common::lifecycle::SessionStepStatus::Completed
+    );
+    assert_eq!(
+        slow_step.status,
+        haven_common::lifecycle::SessionStepStatus::Unknown
+    );
+
+    agent.continue_session(&session.session_id).await.unwrap();
+    let resumed = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        agent.run_session_from_id(&session.session_id),
+    )
+    .await
+    .expect("the resumed parallel turn should finish")
+    .unwrap();
+    assert!(!resumed.is_empty());
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2, "resume should make one model request");
+    assert_tool_calls_have_ordered_results(&seen[1], &["fast-call", "slow-call"]);
+    assert_eq!(
+        fast_executions.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the committed sibling must not execute again on resume"
+    );
+    assert_eq!(
+        slow_executions.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the result-unknown sibling must not execute again on resume"
     );
 }

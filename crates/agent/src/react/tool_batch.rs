@@ -689,8 +689,7 @@ impl ReActEngine {
         run_id: u64,
         pending: crate::interaction::InteractionRequest,
     ) -> anyhow::Result<ToolBatchOutcome> {
-        self.executor.mark_user_queues_as_answer(session_id).await;
-        let has_answer = self.executor.has_pending_context(session_id).await;
+        let has_answer = self.executor.prepare_queued_ask_answer(session_id).await;
         let status = if has_answer {
             // Keep the Ask gate pending until the queued answer is committed
             // as a UserInject event. The inject path clears the persisted gate

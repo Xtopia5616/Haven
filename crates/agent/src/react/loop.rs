@@ -19,6 +19,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
 
+/// Let the turn-boundary cancellation finish its durable result repair before
+/// the outer timeout drops the turn future. Provider and tool work still see
+/// cancellation at the absolute turn deadline.
+const TURN_CANCELLATION_CLEANUP_GRACE: Duration = Duration::from_secs(1);
+
 /// Why a ReAct run stopped at a cooperative boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PauseReason {
@@ -238,42 +243,45 @@ impl ReActEngine {
             });
             state.turn_cancel = Some(turn_cancel.clone());
             let turn_engine = self.turn_engine();
-            let turn_result = tokio::time::timeout(remaining, async {
-                let batch = turn_engine
-                    .run(TurnInput {
-                        ctx: StepCtx {
+            let turn_result = tokio::time::timeout(
+                remaining.saturating_add(TURN_CANCELLATION_CLEANUP_GRACE),
+                async {
+                    let batch = turn_engine
+                        .run(TurnInput {
+                            ctx: StepCtx {
+                                session_id: session_id.to_string(),
+                                step_number,
+                                run_id,
+                                emitter: emitter.clone(),
+                            },
+                            state,
+                            cancel: turn_cancel.clone(),
+                            deadline,
+                            // The turn receives the policy result, not the budget
+                            // representation. This keeps tool execution independent
+                            // from run accounting and fixes resumed-run boundaries.
+                            allow_tool_retry: budget.allows_tool_retry(step_number),
+                            tool_retry_budget: &mut tool_retry_budget,
+                            incomplete_tool_args_retries: &mut incomplete_tool_args_retries,
+                        })
+                        .instrument(tracing::info_span!("turn", session_id, step_number))
+                        .await?;
+                    // Tool execution is one effect of the batch, so it shares this
+                    // absolute deadline and cancellation token with provider work.
+                    self.apply_effect_batch(
+                        &StepCtx {
                             session_id: session_id.to_string(),
                             step_number,
                             run_id,
                             emitter: emitter.clone(),
                         },
                         state,
-                        cancel: turn_cancel.clone(),
-                        deadline,
-                        // The turn receives the policy result, not the budget
-                        // representation. This keeps tool execution independent
-                        // from run accounting and fixes resumed-run boundaries.
-                        allow_tool_retry: budget.allows_tool_retry(step_number),
-                        tool_retry_budget: &mut tool_retry_budget,
-                        incomplete_tool_args_retries: &mut incomplete_tool_args_retries,
-                    })
-                    .instrument(tracing::info_span!("turn", session_id, step_number))
-                    .await?;
-                // Tool execution is one effect of the batch, so it shares this
-                // absolute deadline and cancellation token with provider work.
-                self.apply_effect_batch(
-                    &StepCtx {
-                        session_id: session_id.to_string(),
-                        step_number,
-                        run_id,
-                        emitter: emitter.clone(),
-                    },
-                    state,
-                    batch,
-                    &mut tool_retry_budget,
-                )
-                .await
-            })
+                        batch,
+                        &mut tool_retry_budget,
+                    )
+                    .await
+                },
+            )
             .await;
             if turn_result.is_err() {
                 turn_cancel.cancel();
@@ -281,6 +289,25 @@ impl ReActEngine {
             deadline_task.abort();
             state.turn_cancel = None;
             let outcome = match turn_result {
+                Ok(Ok(_)) if deadline.is_expired() && !parent_cancel.is_cancelled() => {
+                    let error = anyhow::anyhow!(
+                        "turn deadline exceeded at session '{}' step {}",
+                        session_id,
+                        step_number
+                    );
+                    if !self
+                        .ensure_event_boundary(session_id, state, step_number)
+                        .await
+                    {
+                        tracing::error!(
+                            session_id,
+                            step_number,
+                            "failed to verify event boundary after turn deadline"
+                        );
+                    }
+                    self.mark_session_error(session_id).await;
+                    return Err(error);
+                }
                 Ok(Ok(outcome)) => outcome,
                 Ok(Err(error)) => {
                     if !self

@@ -50,8 +50,8 @@ pub(crate) const CONTEXT_ITEM_MAX_ATTACHMENTS: usize = 8;
 pub(crate) const CONTEXT_ITEM_MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const CONTEXT_QUEUE_MAX_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
 
-/// A single model turn receives a bounded slice.  Items left in the actor
-/// queue are deliberately retained for a later turn.
+/// Each context poll receives a bounded slice. A turn may perform one extra
+/// steering-only poll before its request; unselected items stay queued.
 pub(crate) const CONTEXT_BATCH_MAX_ITEMS: usize = 16;
 pub(crate) const CONTEXT_BATCH_MAX_CHARS: usize = 16 * 1024;
 pub(crate) const CONTEXT_BATCH_MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
@@ -212,6 +212,7 @@ pub(crate) enum ActorCommand {
     },
     ClearMessaging,
     DrainReActContext {
+        boundary: ContextBoundary,
         reply: oneshot::Sender<ReActContextBatch>,
     },
     HasPendingContext {
@@ -220,7 +221,9 @@ pub(crate) enum ActorCommand {
     ContextQueueStats {
         reply: oneshot::Sender<ContextQueueStats>,
     },
-    MarkQueuesAsAnswer,
+    PrepareQueuedAskAnswer {
+        reply: oneshot::Sender<bool>,
+    },
     RequestInteraction {
         request: Box<InteractionRequest>,
         reply: oneshot::Sender<anyhow::Result<()>>,
@@ -497,10 +500,10 @@ impl SessionActorHandle {
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped steering", self.session_id))?
     }
 
-    pub(crate) async fn drain_react_context(&self) -> ReActContextBatch {
+    pub(crate) async fn drain_react_context(&self, boundary: ContextBoundary) -> ReActContextBatch {
         let (reply, rx) = oneshot::channel();
         if self
-            .send(ActorCommand::DrainReActContext { reply })
+            .send(ActorCommand::DrainReActContext { boundary, reply })
             .await
             .is_err()
         {
@@ -533,8 +536,16 @@ impl SessionActorHandle {
         rx.await.unwrap_or_default()
     }
 
-    pub(crate) async fn mark_queues_as_answer(&self) {
-        let _ = self.send(ActorCommand::MarkQueuesAsAnswer).await;
+    pub(crate) async fn prepare_queued_ask_answer(&self) -> bool {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::PrepareQueuedAskAnswer { reply })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        rx.await.unwrap_or(false)
     }
 
     pub(crate) async fn enqueue_tool_run_result(
@@ -1224,7 +1235,7 @@ pub(crate) fn spawn(
                     let running = matches!(&state.react_run, Some(ActiveReActRun::Running { .. }));
                     let _ = reply.send(running);
                 }
-                ActorCommand::DrainReActContext { reply } => {
+                ActorCommand::DrainReActContext { boundary, reply } => {
                     let mut budget = ContextBatchBudget::default();
                     let had_steering = !state.steering_queue.is_empty();
                     let steering = take_follow_ups(
@@ -1237,7 +1248,7 @@ pub(crate) fn spawn(
                     // steering was queued at the boundary, follow-ups stay
                     // deferred until the next drain even if this batch had
                     // enough budget to consume the entire steering queue.
-                    let follow_ups = if !had_steering {
+                    let follow_ups = if !had_steering && boundary == ContextBoundary::WorkComplete {
                         take_follow_ups(
                             &mut state.follow_up_queue,
                             &mut state.follow_up_chars,
@@ -1247,11 +1258,25 @@ pub(crate) fn spawn(
                     } else {
                         Vec::new()
                     };
-                    let tool_run_results = take_tool_run_results(
-                        &mut state.tool_run_results,
-                        &mut state.tool_run_result_chars,
-                        &mut budget,
-                    );
+                    let follow_ups = if boundary == ContextBoundary::Turn {
+                        take_answers(
+                            &mut state.follow_up_queue,
+                            &mut state.follow_up_chars,
+                            &mut state.follow_up_attachment_bytes,
+                            &mut budget,
+                        )
+                    } else {
+                        follow_ups
+                    };
+                    let tool_run_results = if boundary == ContextBoundary::BeforeRequest {
+                        Vec::new()
+                    } else {
+                        take_tool_run_results(
+                            &mut state.tool_run_results,
+                            &mut state.tool_run_result_chars,
+                            &mut budget,
+                        )
+                    };
                     let _ = reply.send(ReActContextBatch {
                         steering,
                         follow_ups,
@@ -1272,13 +1297,13 @@ pub(crate) fn spawn(
                         tool_run_result_items: state.tool_run_results.len(),
                     });
                 }
-                ActorCommand::MarkQueuesAsAnswer => {
-                    for item in &mut state.follow_up_queue {
-                        item.is_answer = true;
-                    }
+                ActorCommand::PrepareQueuedAskAnswer { reply } => {
                     for item in &mut state.steering_queue {
                         item.is_answer = true;
                     }
+                    let has_answer = !state.steering_queue.is_empty()
+                        || state.follow_up_queue.iter().any(|item| item.is_answer);
+                    let _ = reply.send(has_answer);
                 }
                 ActorCommand::RequestInteraction { request, reply } => {
                     let request = *request;
@@ -1874,9 +1899,64 @@ fn clear_messaging(state: &mut SessionState) {
     state.messaging = SessionMessagingState::default();
 }
 
+/// Tool continuations consume steering/answers; follow-ups require completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextBoundary {
+    Turn,
+    WorkComplete,
+    /// One bounded steering-only poll after slow request preparation.
+    BeforeRequest,
+}
+
+fn take_answers(
+    queue: &mut Vec<FollowUp>,
+    chars: &mut usize,
+    bytes: &mut usize,
+    budget: &mut ContextBatchBudget,
+) -> Vec<FollowUp> {
+    let mut taken = Vec::new();
+    let mut i = 0;
+    while i < queue.len() {
+        if !queue[i].is_answer {
+            i += 1;
+            continue;
+        }
+        let count = queue[i].text.chars().count();
+        let size = attachment_bytes(&queue[i].attachments);
+        if !fits_budget(budget, count, size) {
+            break;
+        }
+        budget.items += 1;
+        budget.chars += count;
+        budget.attachment_bytes += size;
+        *chars = chars.saturating_sub(count);
+        *bytes = bytes.saturating_sub(size);
+        taken.push(queue.remove(i));
+    }
+    taken
+}
+
 #[cfg(test)]
 mod queue_tests {
     use super::*;
+
+    #[test]
+    fn answer_drain_bypasses_deferred_inputs_without_losing_budget_or_tail() {
+        let mut queue = vec![FollowUp::new("later", Vec::new())];
+        for _ in 0..=CONTEXT_BATCH_MAX_ITEMS {
+            queue.push(FollowUp::answer_with_message_id("answer", Vec::new(), None));
+        }
+        let mut chars = queue.iter().map(|item| item.text.chars().count()).sum();
+        let mut bytes = 0;
+        let mut budget = ContextBatchBudget::default();
+        let answers = take_answers(&mut queue, &mut chars, &mut bytes, &mut budget);
+        assert_eq!(answers.len(), CONTEXT_BATCH_MAX_ITEMS);
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].text, "later");
+        assert!(queue[1].is_answer);
+        assert_eq!(chars, "lateranswer".chars().count());
+        assert_eq!(bytes, 0);
+    }
 
     fn empty_state() -> SessionState {
         SessionState {

@@ -40,6 +40,8 @@ mod inject;
 mod r#loop;
 mod metrics;
 mod request_context;
+#[cfg(test)]
+mod request_preparation_tests;
 mod response_cycle;
 mod response_policy;
 pub(crate) mod sidecars;
@@ -414,7 +416,7 @@ pub(super) struct StepCtx {
 
 /// Result of one step's LLM call (including the compaction retry). The loop
 /// dispatches on this instead of inlining ~130 lines of error handling.
-pub(super) enum StepCallOutcome {
+enum StepCallOutcome {
     /// A usable response and the exact request snapshot that produced it,
     /// possibly from the post-compaction retry.
     Response(Box<stream_step::StreamedLlmCall>),

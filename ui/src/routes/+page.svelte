@@ -34,6 +34,7 @@
 		listRuntimeSessions,
 		reopenSession,
 		rollbackSession,
+		forkSessionFromMessage,
 		endSession as endSessionCommand,
 		interruptSession,
 		continueSession,
@@ -77,6 +78,7 @@
 		closeContextMenu as closeGlobalContextMenu,
 		openContextMenuAt,
 	} from '$lib/contextMenuStore.ts';
+	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 	import SessionToolbar from '$lib/SessionToolbar.svelte';
 	import SessionRail from '$lib/SessionRail.svelte';
 	import ModelToolbar from '$lib/ModelToolbar.svelte';
@@ -110,6 +112,7 @@
 		WebSearchModeInput,
 	} from '$lib/contracts/generatedCommands.ts';
 	import type { SessionMessageContextMenuRequest } from '$lib/sessionTimeline.ts';
+	import { isCanonicalEntityId } from '$lib/contracts/wireGuards.ts';
 	import type { ReActExecutionPhaseSnapshot } from '$lib/reactExecutionPhaseStore.ts';
 
 	let chatPageEl = $state<HTMLElement | null>(null);
@@ -240,6 +243,12 @@
 		messageId: '',
 	});
 	let rollbackLoading = $state(false);
+	let forkDialog = $state<{ open: boolean; messageId: string; content: string }>({
+		open: false,
+		messageId: '',
+		content: '',
+	});
+	let forkLoading = $state(false);
 
 	// Model switcher state: configured chat-capable model profiles and the
 	// current primary profile selected by the Chat request route.
@@ -468,7 +477,16 @@
 			selectedContent: ev.selectedContent || '',
 		};
 		ctxMenu = next;
-		openContextMenuAt(ev.x, ev.y, [
+		const items: ContextMenuItem[] = [];
+		if (ev.role === 'user' && isCanonicalEntityId(ev.messageId, 'msg')) {
+			items.push({
+				id: 'fork',
+				label: '从此处创建新会话',
+				icon: 'branch',
+				action: handleCtxFork,
+			});
+		}
+		items.push(
 			{
 				id: 'rollback',
 				label: '回退到此消息',
@@ -476,7 +494,21 @@
 				action: handleCtxRollback,
 			},
 			{ id: 'copy', label: '复制', icon: 'copy', action: handleCtxCopy },
-		]);
+		);
+		openContextMenuAt(ev.x, ev.y, items);
+	}
+
+	function handleCtxFork() {
+		if (ctxMenu.role !== 'user' || !isCanonicalEntityId(ctxMenu.messageId, 'msg')) {
+			closeCtxMenu();
+			return;
+		}
+		forkDialog = {
+			open: true,
+			messageId: ctxMenu.messageId,
+			content: ctxMenu.content,
+		};
+		closeCtxMenu();
 	}
 
 	// Rollback: find step number from click context or parse from message id
@@ -913,6 +945,7 @@
 		commands: {
 			getSessionForResume,
 			rollbackSession,
+			forkSessionFromMessage,
 			endSession: endSessionCommand,
 			interruptSession,
 			continueSession,
@@ -932,6 +965,10 @@
 			if (browser) localStorage.removeItem(NEW_SESSION_INTENT_STORAGE_KEY);
 		},
 		setRollbackLoading: (loading) => (rollbackLoading = loading),
+		setForkLoading: (loading) => (forkLoading = loading),
+		closeForkDialog: () => {
+			forkDialog = { open: false, messageId: '', content: '' };
+		},
 		closeRollbackDialog: () => {
 			rollbackDialog = {
 				open: false,
@@ -959,6 +996,11 @@
 		});
 	}
 
+	function confirmForkSession() {
+		if (!forkDialog.messageId) return;
+		return chatSessionController.forkSessionFromMessage(forkDialog.messageId);
+	}
+
 	function pendingInteractionRequestIdsForSession(sessionId: string) {
 		return chatSessionController.pendingInteractionRequestIdsForSession(sessionId);
 	}
@@ -968,9 +1010,7 @@
 		const alreadyLoaded = sessionReducer
 			.snapshot()
 			.sessions.some((session) => session.sessionId === sessionId);
-		const historical = recentHistorySessions.find(
-			(session) => session.sessionId === sessionId,
-		);
+		const historical = recentHistorySessions.find((session) => session.sessionId === sessionId);
 		if (!alreadyLoaded && historical) {
 			if (isErrorStatus(historical.status)) {
 				dispatchSession({
@@ -985,12 +1025,18 @@
 			} else {
 				try {
 					await reopenSession({ sessionId });
-					if (!chatSessionController.isUserSessionSelectionCurrent(selectionVersion)) return;
+					if (!chatSessionController.isUserSessionSelectionCurrent(selectionVersion))
+						return;
 					await loadSessions();
-					if (!chatSessionController.isUserSessionSelectionCurrent(selectionVersion)) return;
+					if (!chatSessionController.isUserSessionSelectionCurrent(selectionVersion))
+						return;
 				} catch (error) {
 					if (chatSessionController.isUserSessionSelectionCurrent(selectionVersion)) {
-						reportError(error, { context: '+page', message: '恢复会话失败', log: false });
+						reportError(error, {
+							context: '+page',
+							message: '恢复会话失败',
+							log: false,
+						});
 					}
 					return;
 				}
@@ -1091,8 +1137,8 @@
 		setSelectionsReady: (ready) => {
 			askSelectionsReady = ready;
 		},
-		submitMessage: (text, images, files) => {
-			void chatSessionController.submitMessage(text, images, files);
+		submitMessage: (text, images, files, deliveryMode) => {
+			void chatSessionController.submitMessage(text, images, files, undefined, deliveryMode);
 		},
 		reducer: sessionReducer,
 	});
@@ -1139,6 +1185,36 @@
 				};
 		}}
 	/>
+	<MaterialDialog
+		open={forkDialog.open}
+		title="从此处创建新会话"
+		onClose={() => {
+			if (!forkLoading) forkDialog = { open: false, messageId: '', content: '' };
+		}}
+	>
+		{#snippet children()}
+			<p>
+				新会话会保留这条消息之前的有效对话，并从所选用户消息重新运行。原会话保持不变；重新运行时可能再次触发工具或外部操作。
+			</p>
+			{#if forkDialog.content}
+				<p class="fork-source-preview">“{forkDialog.content}”</p>
+			{/if}
+		{/snippet}
+		{#snippet footer()}
+			<MaterialButton
+				variant="text"
+				label="取消"
+				disabled={forkLoading}
+				onclick={() => (forkDialog = { open: false, messageId: '', content: '' })}
+			/>
+			<MaterialButton
+				variant="filled"
+				label={forkLoading ? '创建中…' : '创建并切换'}
+				disabled={forkLoading}
+				onclick={confirmForkSession}
+			/>
+		{/snippet}
+	</MaterialDialog>
 	<MaterialDialog
 		open={deleteTarget !== null}
 		title="删除会话"

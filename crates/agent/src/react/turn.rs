@@ -198,9 +198,8 @@ impl ReActEngine {
         deadline.ensure_remaining("turn start")?;
         self.metrics.increment(MetricsCounter::TurnStarts);
 
-        // Context is collected once at the turn boundary and projected by the
-        // single transcript writer. Hooks may compact or refresh the context,
-        // but they never own queue reads or persistence.
+        // The turn boundary owns context collection, including the sole inbox
+        // poll. A separate bounded steering poll follows slow preparation.
         {
             let _timer = self.metrics.start(
                 MetricsPhase::ContextInject,
@@ -281,11 +280,44 @@ impl ReActEngine {
         let tools = prepared_tools.definitions;
         let tool_token_estimate = prepared_tools.token_estimate;
         let router = self.router();
-        let request = choose_agent_request(&router, &request_context).await;
-        let projection = request_context.project_for_capabilities(
+        let mut request = choose_agent_request(&router, &request_context).await;
+        let mut projection = request_context.project_for_capabilities(
             &router.capability_profile_for_request(request),
             self.media_strategy(),
         );
+        deadline.ensure_remaining("request preparation")?;
+        if cancel.is_cancelled() {
+            return Ok(EffectBatch::done(LoopExit::Cancelled));
+        }
+        // Exactly one bounded poll: steering received during compaction or
+        // catalog/routing preparation should reach this provider request.
+        // Arrivals during the rebuild wait for the next normal boundary.
+        if self.inject_before_request_steering(&ctx, state).await? {
+            let requirements = state.media_requirements();
+            self.maybe_compact(
+                &ctx,
+                state,
+                requirements,
+                tool_token_estimate,
+                cancel.clone(),
+            )
+            .await?;
+            deadline.ensure_remaining("late steering preparation")?;
+            if cancel.is_cancelled() {
+                return Ok(EffectBatch::done(LoopExit::Cancelled));
+            }
+            let cached_message_tokens = state.estimate_canonical_tokens();
+            let refreshed = RequestContext::from_state_with_estimate(
+                state,
+                retry_nudge.as_ref(),
+                Some(cached_message_tokens),
+            );
+            request = choose_agent_request(&router, &refreshed).await;
+            projection = refreshed.project_for_capabilities(
+                &router.capability_profile_for_request(request),
+                self.media_strategy(),
+            );
+        }
         // The media plan is a request-preparation signal, not a deferred
         // turn-end projection. Publish it before streaming so cancellation
         // and provider errors cannot drop or reorder it.

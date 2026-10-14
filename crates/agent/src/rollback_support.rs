@@ -165,6 +165,7 @@ mod tests {
             step_number: 1,
             text: "done".into(),
             tool_calls: Vec::new(),
+            message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),

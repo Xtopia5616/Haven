@@ -157,8 +157,9 @@ impl ContextSource {
     pub(super) async fn assemble_turn_start_context(
         &self,
         session_id: &str,
+        boundary: crate::session::ContextBoundary,
     ) -> PendingContextBatch {
-        let mut batch = self.drain_local_context(session_id).await;
+        let mut batch = self.drain_local_context(session_id, boundary).await;
         batch.append(self.poll_inbox(session_id).await);
         batch
     }
@@ -167,7 +168,11 @@ impl ContextSource {
     /// [`Self::assemble_turn_start_context`]: turn-end delivery must catch
     /// inputs that arrived during sampling without polling the inbox a second
     /// time in the same turn.
-    pub(super) async fn drain_local_context(&self, session_id: &str) -> PendingContextBatch {
+    pub(super) async fn drain_local_context(
+        &self,
+        session_id: &str,
+        boundary: crate::session::ContextBoundary,
+    ) -> PendingContextBatch {
         let queue_stats = self.executor.context_queue_stats(session_id).await;
         self.metrics
             .set_context_queue_items(queue_stats.total_items());
@@ -175,7 +180,10 @@ impl ContextSource {
             steering,
             follow_ups,
             tool_run_results,
-        } = self.executor.drain_react_context(session_id).await;
+        } = self
+            .executor
+            .drain_react_context_at(session_id, boundary)
+            .await;
         let mut batch = PendingContextBatch::default();
 
         for steering_item in steering {

@@ -32,6 +32,27 @@ impl AgentLayer {
         attachments: &[MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<ProcessResult> {
+        self.process_input_with_delivery(
+            transcript,
+            active_session_id,
+            attachments,
+            voice,
+            haven_common::types::InputDeliveryMode::Auto,
+        )
+        .await
+    }
+
+    /// Freeze explicit steering/follow-up intent before enqueue.
+    pub async fn process_input_with_delivery(
+        &self,
+        transcript: &str,
+        active_session_id: Option<String>,
+        attachments: &[MessageAttachment],
+        voice: bool,
+        delivery_mode: haven_common::types::InputDeliveryMode,
+    ) -> anyhow::Result<ProcessResult> {
+        use haven_common::types::InputDeliveryMode;
+        use haven_memory::PendingInputDisposition;
         tracing::debug!(
             active_session_id = ?active_session_id,
             transcript_bytes = transcript.len(),
@@ -70,13 +91,18 @@ impl AgentLayer {
         } else {
             crate::session::PendingInteractionGates::default()
         };
-        let requested_disposition = if state != Some(SessionStatus::Running)
+        let requested_disposition = if delivery_mode == InputDeliveryMode::Auto
+            && state != Some(SessionStatus::Running)
             && interaction_gates.ask_pending
             && !interaction_gates.confirmation_pending
         {
             haven_memory::PendingInputDisposition::Answer
+        } else if delivery_mode == InputDeliveryMode::Steering
+            || (delivery_mode == InputDeliveryMode::Auto && state == Some(SessionStatus::Running))
+        {
+            PendingInputDisposition::Steering
         } else {
-            haven_memory::PendingInputDisposition::FollowUp
+            PendingInputDisposition::FollowUp
         };
 
         let mut persisted_input = if let Some(session_id) = active_session_id.as_ref() {
@@ -105,18 +131,15 @@ impl AgentLayer {
         let is_answer = persisted_input.as_ref().is_some_and(|input| {
             input.disposition == haven_memory::PendingInputDisposition::Answer
         });
+        let is_steering = persisted_input
+            .as_ref()
+            .is_some_and(|input| input.disposition == PendingInputDisposition::Steering);
         let mut persisted_msg = persisted_input.take().map(|input| input.message);
         if let Some(session_id) = active_session_id.as_ref() {
-            // Phase 4 / D1 routing (+ Phase 5 / E3 confirm gate):
-            //   Running                 → steering
-            //   Paused + available Ask  → reserved answer follow-up
-            //   Pending Answer / Confirm → ordinary follow-up
-            //   Paused / other          → follow_up
-            // If the steering queue is unavailable (session vanished from
-            // memory between the state read and the enqueue), fall through
-            // to the follow-up path instead of failing: the user message is
-            // already persisted, and that path reloads / wakes the session.
-            let steering_delivered = state == Some(SessionStatus::Running)
+            // The durable disposition, not a later runtime status read, owns
+            // routing. Explicit follow-ups never become steering or Ask answers.
+            // A missing actor is reloaded below without changing that intent.
+            let steering_delivered = is_steering
                 && match self
                     .executor
                     .add_steering_with_attachments(
@@ -146,7 +169,9 @@ impl AgentLayer {
                 // this queue operation, so recovery preserves the route if
                 // gates change before UserInject commits.
                 let message_id = persisted_msg.as_ref().map(|m| m.message_id.clone());
-                let was_in_memory = if is_answer {
+                let was_in_memory = if is_steering {
+                    false
+                } else if is_answer {
                     self.executor
                         .add_answer_with_attachments(
                             session_id,
@@ -251,7 +276,16 @@ impl AgentLayer {
                         self.executor.remove_session(session_id).await?;
                         return Ok(ProcessResult::supplemented(session_id.clone(), None));
                     } else {
-                        if is_answer {
+                        if is_steering {
+                            self.executor
+                                .add_steering_with_attachments(
+                                    session_id,
+                                    transcript,
+                                    attachments,
+                                    message_id.clone(),
+                                )
+                                .await?;
+                        } else if is_answer {
                             self.executor
                                 .add_answer_with_attachments(
                                     session_id,
@@ -276,7 +310,11 @@ impl AgentLayer {
                             .executor
                             .is_confirm_gated_with(session_id, fresh_state.as_ref())
                             .await;
-                        if matches!(fresh_state, Some(s) if s.is_paused()) && !confirm_blocked {
+                        if matches!(fresh_state, Some(s) if s.is_paused())
+                            && !confirm_blocked
+                            && !(delivery_mode == InputDeliveryMode::FollowUp
+                                && interaction_gates.ask_pending)
+                        {
                             self.set_session_status_if(
                                 session_id,
                                 SessionStatus::Paused,
@@ -287,18 +325,21 @@ impl AgentLayer {
                     }
                     return Ok(ProcessResult::supplemented(session_id.clone(), message_id));
                 }
-                let confirm_blocked = self
-                    .executor
-                    .is_confirm_gated_with(session_id, state.as_ref())
-                    .await;
-                if matches!(state.as_ref(), Some(s) if s.is_paused()) && !confirm_blocked {
-                    self.set_session_status_if(
-                        session_id,
-                        SessionStatus::Paused,
-                        SessionStatus::Pending,
-                    )
-                    .await?;
-                }
+            }
+            let confirm_blocked = self
+                .executor
+                .is_confirm_gated_with(session_id, state.as_ref())
+                .await;
+            if matches!(state.as_ref(), Some(s) if s.is_paused())
+                && !confirm_blocked
+                && !(delivery_mode == InputDeliveryMode::FollowUp && interaction_gates.ask_pending)
+            {
+                self.set_session_status_if(
+                    session_id,
+                    SessionStatus::Paused,
+                    SessionStatus::Pending,
+                )
+                .await?;
             }
             Ok(ProcessResult::supplemented(
                 session_id.clone(),

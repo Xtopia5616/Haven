@@ -121,7 +121,10 @@ export function parseToolManifest(value: unknown): ToolManifestView | null {
 		presentation.represented_source,
 	);
 	const whenToUse = requiredString(prompt.when_to_use);
-	const whenNotToUse = requiredString(prompt.when_not_to_use);
+	// This field is allowed to be empty by the backend contract. Some operation
+	// views do not need a separate exclusion hint, so emptiness must not hide the
+	// rest of the builtin catalog from the UI.
+	const whenNotToUse = isString(prompt.when_not_to_use) ? prompt.when_not_to_use : null;
 	const keyOperations = prompt.key_operations;
 	if (
 		riskLevel === null ||
@@ -138,7 +141,7 @@ export function parseToolManifest(value: unknown): ToolManifestView | null {
 		!icon ||
 		representedSource === null ||
 		!whenToUse ||
-		!whenNotToUse ||
+		whenNotToUse === null ||
 		!Array.isArray(keyOperations) ||
 		!keyOperations.every(isString)
 	) {

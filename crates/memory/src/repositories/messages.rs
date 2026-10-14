@@ -257,6 +257,7 @@ pub struct Message {
 /// stream owns transcript recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingInputDisposition {
+    Steering,
     Answer,
     FollowUp,
 }
@@ -264,6 +265,7 @@ pub enum PendingInputDisposition {
 impl PendingInputDisposition {
     fn as_db_value(self) -> &'static str {
         match self {
+            Self::Steering => "steering",
             Self::Answer => "answer",
             Self::FollowUp => "follow_up",
         }
@@ -271,6 +273,7 @@ impl PendingInputDisposition {
 
     fn from_db_value(value: &str) -> rusqlite::Result<Self> {
         match value {
+            "steering" => Ok(Self::Steering),
             "answer" => Ok(Self::Answer),
             "follow_up" => Ok(Self::FollowUp),
             other => Err(rusqlite::Error::FromSqlConversionFailure(

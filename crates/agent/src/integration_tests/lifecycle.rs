@@ -1097,3 +1097,134 @@ async fn run_fact_inference_does_not_panic() {
     executor.end_session(&session.session_id).await.unwrap();
     agent.memory_worker.infer_facts(&session.session_id).await;
 }
+
+#[tokio::test]
+async fn explicit_delivery_preserves_intent_across_turn_boundaries_and_recovery() {
+    use crate::session::ContextBoundary;
+    use haven_common::types::InputDeliveryMode;
+    let (agent, executor) = make_test_agent();
+    let session = executor.create_session("delivery modes").await.unwrap();
+    executor
+        .update_session_status(&session.session_id, SessionStatus::Running)
+        .await
+        .unwrap();
+    for (text, mode) in [
+        ("later", InputDeliveryMode::FollowUp),
+        ("adjust", InputDeliveryMode::Steering),
+    ] {
+        agent
+            .process_input_with_delivery(text, Some(session.session_id.clone()), &[], false, mode)
+            .await
+            .unwrap();
+    }
+    let pending = agent
+        .db
+        .list_pending_session_inputs(&session.session_id)
+        .unwrap();
+    assert_eq!(
+        pending[0].disposition,
+        haven_memory::PendingInputDisposition::FollowUp
+    );
+    assert_eq!(
+        pending[1].disposition,
+        haven_memory::PendingInputDisposition::Steering
+    );
+    // A tool continuation must not consume the deferred input.
+    let batch = executor
+        .drain_react_context_at(&session.session_id, ContextBoundary::Turn)
+        .await;
+    assert_eq!(batch.steering.len(), 1);
+    assert_eq!(batch.steering[0].text, "adjust");
+    assert!(batch.follow_ups.is_empty());
+    assert!(
+        executor
+            .drain_react_context_at(&session.session_id, ContextBoundary::Turn)
+            .await
+            .follow_ups
+            .is_empty()
+    );
+    let batch = executor
+        .drain_react_context_at(&session.session_id, ContextBoundary::WorkComplete)
+        .await;
+    assert_eq!(batch.follow_ups[0].text, "later");
+    // No UserInject committed: recovery must restore the exact durable routes.
+    executor
+        .update_session_status(&session.session_id, SessionStatus::Completed)
+        .await
+        .unwrap();
+    let (reopened_agent, executor) = make_test_agent_with_db(
+        agent.db.clone(),
+        Arc::new(FinalAnswerMock),
+        Arc::new(ToolsFacade::new()),
+        ContextLimitsConfig::default(),
+    );
+    reopened_agent
+        .reopen_session(&session.session_id)
+        .await
+        .unwrap();
+    let batch = executor
+        .drain_react_context_at(&session.session_id, ContextBoundary::Turn)
+        .await;
+    assert_eq!(batch.steering[0].text, "adjust");
+    assert!(batch.follow_ups.is_empty());
+    let batch = executor
+        .drain_react_context_at(&session.session_id, ContextBoundary::WorkComplete)
+        .await;
+    assert_eq!(batch.follow_ups[0].text, "later");
+}
+
+#[tokio::test]
+async fn deferred_follow_up_does_not_answer_or_wake_an_ask() {
+    use crate::session::ContextBoundary;
+    use haven_common::types::InputDeliveryMode;
+    let (agent, executor) = make_test_agent();
+    let session = executor.create_session("ask delivery").await.unwrap();
+    executor
+        .update_session_status(&session.session_id, SessionStatus::Paused)
+        .await
+        .unwrap();
+    executor
+        .request_interaction(crate::interaction::InteractionRequest::ask(
+            &session.session_id,
+            Vec::new(),
+            vec![haven_common::types::new_id("step")],
+        ))
+        .await
+        .unwrap();
+    agent
+        .process_input_with_delivery(
+            "afterwards",
+            Some(session.session_id.clone()),
+            &[],
+            false,
+            InputDeliveryMode::FollowUp,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
+        Some(SessionStatus::Paused)
+    );
+    assert!(
+        !executor
+            .prepare_queued_ask_answer(&session.session_id)
+            .await
+    );
+    agent
+        .process_input("answer", Some(session.session_id.clone()))
+        .await
+        .unwrap();
+    let batch = executor
+        .drain_react_context_at(&session.session_id, ContextBoundary::Turn)
+        .await;
+    assert_eq!(batch.follow_ups.len(), 1);
+    assert!(batch.follow_ups[0].is_answer);
+    assert_eq!(batch.follow_ups[0].text, "answer");
+    let batch = executor
+        .drain_react_context_at(&session.session_id, ContextBoundary::WorkComplete)
+        .await;
+    assert_eq!(batch.follow_ups[0].text, "afterwards");
+    assert!(!batch.follow_ups[0].is_answer);
+}

@@ -6,6 +6,7 @@ mod compactor;
 mod event;
 mod fact_extraction;
 mod fact_inference;
+mod fork;
 mod ingress;
 mod interaction;
 mod lifecycle;

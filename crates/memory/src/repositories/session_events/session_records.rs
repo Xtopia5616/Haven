@@ -180,7 +180,7 @@ impl SessionStore {
             .await
     }
 
-    /// Create a session with typed provenance. Agent-spawn parents are
+    /// Create a session with typed provenance. Parent and fork source ids are
     /// validated and persisted by the same SessionStore boundary as user
     /// sessions; runtime admission remains owned by Agent.
     pub async fn create_session_with_origin(
@@ -188,8 +188,14 @@ impl SessionStore {
         input_text: &str,
         origin: SessionOrigin,
     ) -> anyhow::Result<Session> {
-        if let SessionOrigin::AgentSpawn { parent_session_id } = &origin {
-            ensure_session_id(parent_session_id)?;
+        match &origin {
+            SessionOrigin::AgentSpawn { parent_session_id } => {
+                ensure_session_id(parent_session_id)?;
+            }
+            SessionOrigin::Fork { .. } => {
+                anyhow::bail!("fork sessions must be created with an atomic transcript snapshot")
+            }
+            SessionOrigin::User => {}
         }
         let input_text = input_text.to_owned();
         let session = self

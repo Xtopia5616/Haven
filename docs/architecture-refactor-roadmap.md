@@ -38,7 +38,7 @@
 
 ### 阶段 2（已完成）：恢复、回滚和事件/投影边界再收口（P0）
 
-**已完成。** `session_events` 是恢复权威；pending input 的持久路由、Ask 恢复、回滚截断和提交后 UI 发布各有明确边界。待投递输入在 durable marker 中保存 answer/follow_up 路由，恢复不重算；见 ADR 0207、0209、0210、0385、0416、0440、0458。
+**已完成。** `session_events` 是恢复权威；pending input 的持久路由、Ask 恢复、回滚截断和提交后 UI 发布各有明确边界。待投递输入在 durable marker 中保存 answer/steering/follow_up 路由，恢复不重算；显式投递及 turn/工作完成边界见 ADR 1156；见 ADR 0207、0209、0210、0385、0416、0440、0458。
 
 ### 阶段 3（已完成）：存储 domain ports 与 typed projection（P1）
 

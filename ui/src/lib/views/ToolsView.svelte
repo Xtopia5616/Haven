@@ -120,11 +120,20 @@
 	const hasFilters = $derived(Boolean(searchQuery.trim() || enabledFilter !== 'all'));
 	const activeResourceCount = $derived(
 		activeTab === 'builtin'
-			? visibleBuiltinTools.length
+			? visibleBuiltinTools.reduce(
+					(total, family) =>
+						total +
+						family.roots.reduce(
+							(familyTotal, root) => familyTotal + root.operations.length,
+							0,
+						),
+					0,
+				)
 			: activeTab === 'mcp'
 				? visibleMcpServers.length
 				: visibleSkills.length,
 	);
+	const activeResourceCountLabel = $derived(activeTab === 'builtin' ? '个操作' : '项');
 
 	function scheduleMcpRefresh() {
 		// Cold start emits Connecting+Connected per server; coalesce into one
@@ -541,7 +550,7 @@
 					</div>
 					<CountChip
 						count={activeResourceCount}
-						label="项"
+						label={activeResourceCountLabel}
 						className="resource-count"
 						live
 					/>

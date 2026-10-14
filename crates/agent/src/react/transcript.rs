@@ -146,11 +146,13 @@ impl TranscriptEvent {
                 reasoning,
                 web_search_calls,
                 thinking_blocks,
+                persist_text_id,
                 ..
             } => TranscriptRecord::ToolCall {
                 step_number,
                 text: text.clone(),
                 tool_calls: tool_calls.clone(),
+                message_id: persist_text_id.clone(),
                 reasoning: reasoning.clone(),
                 web_search_calls: web_search_calls.clone(),
                 thinking_blocks: thinking_blocks.clone(),

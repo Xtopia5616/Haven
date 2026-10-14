@@ -219,15 +219,22 @@
 	}
 	.operation-schema {
 		margin-top: var(--md-sys-space-sm);
+		padding-top: var(--md-sys-space-xs);
+		border-top: 1px solid var(--md-sys-color-outline-variant);
 	}
 	.operation-schema :global(.md-collapsible-header) {
-		color: var(--md-sys-color-primary);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	/* Separate the first operation card from the expanded section divider. */
+	:global(.expandable-context-card[data-card-kind='builtin-root'] .card-body) {
+		padding-top: var(--md-sys-space-sm);
 	}
 	:global(.expandable-context-card[data-card-kind='builtin-root'] .card-body pre) {
-		margin-top: var(--md-sys-space-xs);
-		padding: var(--md-sys-space-sm);
+		margin-top: var(--md-sys-space-2xs);
+		padding: var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-outline-variant);
 		background: var(--md-sys-color-surface-container-highest);
 		border-radius: var(--md-sys-shape-small);
 		font-family: var(--md-sys-typescale-mono);

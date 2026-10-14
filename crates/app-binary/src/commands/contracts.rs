@@ -7,7 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 80;
+pub const EXPECTED_COMMAND_COUNT: usize = 81;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -266,7 +266,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "get_session_lineage",
         boundary: CommandBoundary::Read,
-        security: "parent and direct children of the selected session only",
+        security: "parent and direct child sessions of the selected session only",
     },
     CommandContract {
         name: "end_session",
@@ -302,6 +302,11 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "rollback_session",
         boundary: CommandBoundary::Mutate,
         security: "event cursor and projection clock rollback",
+    },
+    CommandContract {
+        name: "fork_session_from_message",
+        boundary: CommandBoundary::Mutate,
+        security: "canonical parent and user message ids; creates an independent re-keyed transcript prefix",
     },
     CommandContract {
         name: "continue_session",

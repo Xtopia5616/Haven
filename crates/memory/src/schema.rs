@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 42;
+pub const SCHEMA_VERSION: i32 = 44;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -21,11 +21,18 @@ const SCHEMA_SQL: &[&str] = &[
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         origin TEXT NOT NULL DEFAULT 'user'
-            CHECK(origin IN ('user','agent_spawn')),
+            CHECK(origin IN ('user','agent_spawn','fork')),
         parent_session_id TEXT,
-        CHECK((origin = 'user' AND parent_session_id IS NULL)
+        fork_source_message_id TEXT,
+        CHECK((origin = 'user' AND parent_session_id IS NULL
+                AND fork_source_message_id IS NULL)
             OR (origin = 'agent_spawn' AND parent_session_id IS NOT NULL
-                AND length(trim(parent_session_id)) > 0))
+                AND length(trim(parent_session_id)) > 0
+                AND fork_source_message_id IS NULL)
+            OR (origin = 'fork' AND parent_session_id IS NOT NULL
+                AND length(trim(parent_session_id)) > 0
+                AND fork_source_message_id IS NOT NULL
+                AND length(trim(fork_source_message_id)) > 0))
     )",
     "CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
@@ -52,7 +59,7 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS pending_session_inputs (
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
-        disposition TEXT NOT NULL CHECK(disposition IN ('answer', 'follow_up')),
+        disposition TEXT NOT NULL CHECK(disposition IN ('answer', 'follow_up', 'steering')),
         PRIMARY KEY(session_id, message_id)
     )",
     "CREATE UNIQUE INDEX IF NOT EXISTS pending_session_one_answer

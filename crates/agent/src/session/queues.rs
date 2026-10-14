@@ -85,9 +85,19 @@ impl SessionSupervisor {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn drain_react_context(&self, session_id: &str) -> ReActContextBatch {
+        self.drain_react_context_at(session_id, super::actor::ContextBoundary::WorkComplete)
+            .await
+    }
+
+    pub(crate) async fn drain_react_context_at(
+        &self,
+        session_id: &str,
+        boundary: super::actor::ContextBoundary,
+    ) -> ReActContextBatch {
         match self.actor_for(session_id).await {
-            Some(actor) => actor.drain_react_context().await,
+            Some(actor) => actor.drain_react_context(boundary).await,
             None => ReActContextBatch::default(),
         }
     }
@@ -106,9 +116,12 @@ impl SessionSupervisor {
         }
     }
 
-    pub async fn mark_user_queues_as_answer(&self, session_id: &str) {
-        if let Some(actor) = self.actor_for(session_id).await {
-            actor.mark_queues_as_answer().await;
+    /// Early steering may answer a just-produced Ask. Deferred work and
+    /// background results never authorize resuming that interaction.
+    pub(crate) async fn prepare_queued_ask_answer(&self, session_id: &str) -> bool {
+        match self.actor_for(session_id).await {
+            Some(actor) => actor.prepare_queued_ask_answer().await,
+            None => false,
         }
     }
 

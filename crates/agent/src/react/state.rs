@@ -43,6 +43,9 @@ pub(crate) struct RetryNudge {
 /// therefore live with it. `retry_nudge` is intentionally not part of either
 /// persisted representation.
 pub(crate) struct ReActState {
+    /// One startup poll may consume follow-ups behind an already completed
+    /// plain assistant response. Live tool/search continuations never set it.
+    pub(super) follow_up_ready: bool,
     pub(crate) events: Vec<TranscriptRecord>,
     /// Event indexes that can carry durable media metadata. Request-context
     /// reconstruction walks this compact index instead of scanning every
@@ -95,6 +98,11 @@ impl ReActState {
             }
         }
         Self {
+            follow_up_ready: canonical.last().is_some_and(|message| {
+                message.role == haven_common::types::CanonicalRole::Assistant
+                    && message.tool_calls.as_ref().is_none_or(Vec::is_empty)
+                    && message.web_search_calls.is_empty()
+            }),
             applied_inject_message_ids: events
                 .iter()
                 .filter_map(|event| match event {

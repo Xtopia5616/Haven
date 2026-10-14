@@ -1,3 +1,4 @@
+import type { InputDeliveryModeInput } from './contracts/generatedCommands.ts';
 import type { SessionMessage, SessionReducer } from './sessionReducer.ts';
 import type { InteractionKind } from './contracts/generatedCommands.ts';
 import type { AskResponseView } from './contracts/app.ts';
@@ -11,6 +12,7 @@ interface AskInteractionContext {
 		text: string,
 		images?: ChatAttachmentPayload[] | null,
 		files?: ChatFileAttachment[] | null,
+		deliveryMode?: InputDeliveryModeInput,
 	) => void;
 	reducer: SessionReducer;
 }
@@ -20,6 +22,7 @@ interface ResolveAskOptions {
 }
 
 interface InputSubmitPayload {
+	deliveryMode?: InputDeliveryModeInput;
 	text: string;
 	images: ChatAttachmentPayload[];
 	files: ChatFileAttachment[];
@@ -227,11 +230,17 @@ export function createAskInteractionController({
 	}
 
 	/** Route composer submissions through the pending ask batch when it is ready. */
-	function handleInputSubmit({ text, images, files }: InputSubmitPayload) {
+	function handleInputSubmit({ text, images, files, deliveryMode }: InputSubmitPayload) {
 		setAutoFollow();
 		const sessionId = getActiveSessionId();
-		if (sessionId && trySubmitAskSelections(sessionId, text, images, files)) return;
-		submitMessage(text, images, files);
+		if (
+			deliveryMode !== 'follow_up' &&
+			sessionId &&
+			trySubmitAskSelections(sessionId, text, images, files)
+		)
+			return;
+		if (deliveryMode) submitMessage(text, images, files, deliveryMode);
+		else submitMessage(text, images, files);
 	}
 
 	function handleIgnoreAsk(messageId: string) {

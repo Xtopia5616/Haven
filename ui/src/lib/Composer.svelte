@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { InputDeliveryModeInput } from '$lib/contracts/generatedCommands.ts';
 	import { tick, untrack } from 'svelte';
 	import type { Snippet } from 'svelte';
 	import logger from '$lib/logger.ts';
@@ -26,6 +27,7 @@
 	}
 
 	interface ComposerSubmitPayload {
+		deliveryMode?: InputDeliveryModeInput;
 		text: string;
 		images: ChatAttachmentPayload[];
 		files: ChatFileAttachment[];
@@ -116,6 +118,7 @@
 		}),
 	);
 
+	let deliveryMode = $state<InputDeliveryModeInput>('steering');
 	let transcriptInput = $state('');
 	let transcriptDraftSessionId = DRAFT_SESSION_ID;
 	const cachedDrafts = new Map<string, string>();
@@ -417,7 +420,12 @@
 		transcriptInput = '';
 		pendingImages = [];
 		pendingFiles = [];
-		onsubmit?.({ text, images, files });
+		onsubmit?.({
+			text,
+			images,
+			files,
+			...(sessionRunning && !askAwaiting ? { deliveryMode } : {}),
+		});
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -667,6 +675,18 @@
 			{@render toolbarLeft?.()}
 		</div>
 		<div class="toolbar-right">
+			{#if sessionRunning && !askAwaiting}
+				<select
+					aria-label="消息投递方式"
+					bind:value={deliveryMode}
+					title={deliveryMode === 'follow_up'
+						? '等待当前工作完成后追加'
+						: '在下一个安全边界调整当前工作'}
+				>
+					<option value="steering">立即调整</option>
+					<option value="follow_up">完成后追加</option>
+				</select>
+			{/if}
 			<MaterialIconButton
 				size="toolbar"
 				label="添加附件"

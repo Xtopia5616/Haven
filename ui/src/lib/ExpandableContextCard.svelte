@@ -2,6 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import { openContextMenu } from '$lib/contextMenuStore.ts';
 	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
+	import Icon from '$lib/Icon.svelte';
 	import { slide } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 
@@ -75,6 +76,9 @@
 				{@render actions()}
 			</div>
 		{/if}
+		<span class="card-disclosure" class:expanded aria-hidden="true">
+			<Icon name="chevronDown" size={18} />
+		</span>
 	</div>
 	{#if expanded}
 		<div class="card-body" transition:slide={{ duration: 180, easing: cubicOut }}>
@@ -124,6 +128,20 @@
 		flex-shrink: 0;
 		margin-left: var(--md-sys-space-md);
 		padding-top: var(--md-sys-space-2xs);
+	}
+	.card-disclosure {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: 0 0 auto;
+		margin-top: var(--md-sys-space-2xs);
+		color: var(--md-sys-color-on-surface-variant);
+		transform: rotate(-90deg);
+		transition: transform var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard);
+	}
+	.card-disclosure.expanded {
+		transform: rotate(0deg);
 	}
 	.card-body {
 		padding: 0 var(--md-sys-space-md) var(--md-sys-space-md);

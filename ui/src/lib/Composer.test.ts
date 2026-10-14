@@ -12,6 +12,21 @@ describe('Composer context menu', () => {
 		});
 	});
 
+	it('submits the selected delivery mode while work is running', async () => {
+		const onsubmit = vi.fn();
+		render(Composer, { sessionRunning: true, onsubmit });
+		await fireEvent.change(screen.getByRole('combobox', { name: '消息投递方式' }), {
+			target: { value: 'follow_up' },
+		});
+		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
+			target: { value: 'later' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+		expect(onsubmit).toHaveBeenCalledWith(
+			expect.objectContaining({ text: 'later', deliveryMode: 'follow_up' }),
+		);
+	});
+
 	it('uses the shared toolbar control for attachment, recording, and send actions', () => {
 		render(Composer, { onsubmit: vi.fn() });
 
@@ -176,7 +191,9 @@ describe('Composer attachment intake', () => {
 				value: 'data:text/plain;base64,c2Vjb25k',
 			});
 			readers[1].dispatchEvent(new ProgressEvent('load'));
-			await vi.waitFor(() => expect(container.querySelectorAll('.file-preview')).toHaveLength(2));
+			await vi.waitFor(() =>
+				expect(container.querySelectorAll('.file-preview')).toHaveLength(2),
+			);
 
 			const remainingPreview = container.querySelectorAll('.file-preview')[1];
 			await fireEvent.click(screen.getAllByRole('button', { name: '移除文件' })[0]);
@@ -223,7 +240,9 @@ describe('Composer attachment intake', () => {
 				readers[index].dispatchEvent(new ProgressEvent('load'));
 				if (index === 0) await vi.waitFor(() => expect(readers).toHaveLength(2));
 			}
-			await vi.waitFor(() => expect(container.querySelectorAll('.image-preview')).toHaveLength(2));
+			await vi.waitFor(() =>
+				expect(container.querySelectorAll('.image-preview')).toHaveLength(2),
+			);
 
 			const remainingPreview = container.querySelectorAll('.image-preview')[1];
 			await fireEvent.click(screen.getAllByRole('button', { name: '移除图片' })[0]);
@@ -377,8 +396,14 @@ describe('Composer per-session drafts', () => {
 
 		expect(submit).toHaveBeenCalledWith({ text: 'send once', images: [], files: [] });
 		expect(textarea.value).toBe('');
-		await rerender({ activeSessionId: 'ses-b77487af9bb14e5ec4d60572f1248bce', onsubmit: submit });
-		await rerender({ activeSessionId: 'ses-32f23b1e00f85571a60f75dde5588074', onsubmit: submit });
+		await rerender({
+			activeSessionId: 'ses-b77487af9bb14e5ec4d60572f1248bce',
+			onsubmit: submit,
+		});
+		await rerender({
+			activeSessionId: 'ses-32f23b1e00f85571a60f75dde5588074',
+			onsubmit: submit,
+		});
 		expect(textarea.value).toBe('');
 	});
 

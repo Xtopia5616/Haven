@@ -13,9 +13,10 @@ use haven_common::types::InjectSource;
 
 impl ReActEngine {
     /// Assemble and project every turn-start context source: steering
-    /// (mid-run user interjections), follow-ups (paused-session replies / ask
-    /// answers), completed background ToolRun results, and the cross-session
-    /// inbox. Each item remains a separate `User` message so its source,
+    /// (mid-run user interjections), Ask answers, completed background ToolRun
+    /// results, and the cross-session
+    /// inbox. Follow-ups are eligible only at a completed-work boundary.
+    /// Each item remains a separate `User` message so its source,
     /// message id, and attachments survive into the canonical transcript.
     ///
     /// Returns `true` when at least one new item was projected. The inbox is
@@ -26,9 +27,15 @@ impl ReActEngine {
         ctx: &StepCtx,
         state: &mut ReActState,
     ) -> anyhow::Result<bool> {
+        use crate::session::ContextBoundary;
+        let boundary = if std::mem::take(&mut state.follow_up_ready) {
+            ContextBoundary::WorkComplete
+        } else {
+            ContextBoundary::Turn
+        };
         let batch = self
             .context_source
-            .assemble_turn_start_context(&ctx.session_id)
+            .assemble_turn_start_context(&ctx.session_id, boundary)
             .await;
         self.apply_pending_context_batch(ctx, state, batch).await
     }
@@ -44,7 +51,27 @@ impl ReActEngine {
     ) -> anyhow::Result<bool> {
         let batch = self
             .context_source
-            .drain_local_context(&ctx.session_id)
+            .drain_local_context(
+                &ctx.session_id,
+                crate::session::ContextBoundary::WorkComplete,
+            )
+            .await;
+        self.apply_pending_context_batch(ctx, state, batch).await
+    }
+
+    /// One late steering batch, without polling answers, follow-ups, results,
+    /// or the inbox. The caller rebuilds its immutable request after commit.
+    pub(super) async fn inject_before_request_steering(
+        &self,
+        ctx: &StepCtx,
+        state: &mut ReActState,
+    ) -> anyhow::Result<bool> {
+        let batch = self
+            .context_source
+            .drain_local_context(
+                &ctx.session_id,
+                crate::session::ContextBoundary::BeforeRequest,
+            )
             .await;
         self.apply_pending_context_batch(ctx, state, batch).await
     }

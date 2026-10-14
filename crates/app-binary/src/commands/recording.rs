@@ -623,6 +623,7 @@ pub async fn process_transcript(
     attachments: Option<Vec<haven_common::types::MessageAttachment>>,
     voice: Option<bool>,
     recording_id: Option<String>,
+    delivery_mode: Option<haven_common::types::InputDeliveryMode>,
 ) -> Result<haven_agent::ProcessResult, String> {
     if let Some(session_id) = active_session_id.as_deref() {
         validate_command_id(session_id, "active_session_id", "ses")
@@ -662,7 +663,13 @@ pub async fn process_transcript(
     let result = match state
         .runtime
         .agent
-        .process_input_with_attachments(&transcript, active_session_id.clone(), &attachments, voice)
+        .process_input_with_delivery(
+            &transcript,
+            active_session_id.clone(),
+            &attachments,
+            voice,
+            delivery_mode.unwrap_or_default(),
+        )
         .await
     {
         Ok(result) => result,

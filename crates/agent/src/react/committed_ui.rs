@@ -523,6 +523,7 @@ mod tests {
                     arguments: serde_json::json!({}),
                 },
             ],
+            message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
