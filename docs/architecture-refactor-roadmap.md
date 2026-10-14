@@ -187,8 +187,8 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | Complete | CodeMode 合成调用面与 per-server allowlist 后端链路 | 只有存在已启用的 CodeMode MCP capability 时才向会话加入单个合成 `codemode_run`；脚本只看到该快照中的工具描述，MCP 子调用不进入 provider-native surface。每个子调用重新授权并走标准执行、sandbox/network、目标绑定和结果上限；每次重试也重查 live exposure。QuickJS 资源边界、Agent proof/确认拒绝、Tools 暴露边界测试及全 Tools/Agent 测试通过。 |
 | Complete | CodeMode 与 Legacy 的 per-server 切换和受限调用链 | 单个合成 `codemode_run`、快照 allowlist、逐子调用授权 proof、Tools live exposure/target 校验、Legacy/CodeMode per-server UI 及 per-tool overrides 已接通。Agent→ToolsFacade→evaluator→子工具授权链、confirmation fail-closed、预算/取消和 MCP 暴露撤销测试通过；授权型子调用当前需用户改走 Legacy。 |
 | Complete | MCP resources/read 与 user-selected prompts | modern/legacy capability 协商、分页和 typed 响应预算、连接代次缓存与显式刷新、四个 target-bound IPC 命令和用户浏览 UI 已接通；用户预览后只可将可表达的纯用户文本加入 Composer 草稿，模型不可调用，随后普通发送进入现有 ingress。Resources templates、订阅和 MRTR 未暴露，保持 fail closed。 |
-| **Active** | 声明式 Workflow | 有界版本化 DTO、literal/object/array/result-pointer 映射、依赖合并与无环确定性拓扑验证已落地（ADR 1165）；下一切片接入同步 `workflow_run` 与逐步骤实时 exposure、target、独立授权及标准执行网关；仍拒绝任意表达式/动态路由，跨 turn 生命周期另行证明后才考虑复用 ToolRun。 |
-| Deferred | ExecutionWorkspace 与 sandbox 权限范围收敛 | 明确区分 UI workspace 与执行根；文件句柄/path、进程树、网络目标和取消均由后端验证；Windows 边界另做真实系统验收。 |
+| Complete | 声明式 Workflow | 有界版本化 DAG 与同步 `workflow_run` 已接通；只接受当前 Legacy MCP surface 上的 Direct/已加载 Deferred capability。每步独立授权并经过标准 Tools live exposure/target/sandbox/network 检查；确认类子步骤 handler 前失败关闭，部分结果不可自动重放，不持久化、不后台运行。详见 ADR 1165/1166。 |
+| **Active** | ExecutionWorkspace 与 sandbox 权限范围收敛 | 明确区分 UI workspace 与执行根；文件句柄/path、进程树、网络目标和取消均由后端验证；Windows 边界另做真实系统验收。 |
 
 实施仍遵守“证据与契约 → 单条垂直调用链 → 负向/恢复验证 → 适用门禁 → 独立提交”的顺序。每完成一行，只把下一行提升为 Active，并在该提交中更新本节。
 

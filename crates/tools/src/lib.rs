@@ -49,6 +49,8 @@ mod tool_run_types;
 mod tool_runtime;
 mod util;
 mod workflow;
+mod workflow_execution;
+mod workflow_tool;
 
 use haven_common::config::{
     ContextLimitsConfig, McpServerConfig, SecurityConfig, SkillsExecConfig, ToolConfig,
@@ -151,7 +153,10 @@ pub use codemode::{
     CodeModeSubcallPort, CodeModeToolDefinition,
 };
 pub use codemode_tool::CODEMODE_RUN_TOOL_NAME;
-pub use execution::{AuthorizedCodeModeSubcallExecution, AuthorizedCodeModeToolExecution};
+pub use execution::{
+    AuthorizedCodeModeSubcallExecution, AuthorizedCodeModeToolExecution,
+    AuthorizedWorkflowToolExecution,
+};
 pub use facade::{
     AdminOperationPort, McpRuntimePort, McpStatusEventReceiver, SkillCatalogPort,
     ToolRunAgentCapability, ToolRunCompletionCapability, ToolRunManagementCapability,
@@ -229,10 +234,10 @@ pub use tool_runtime::{
     LogLevelPort, MemoryRecallPort, RuntimeCapabilities, StartupWiring, ToolControlPort,
     WebSearchAvailability,
 };
-pub use workflow::{
-    ValidatedWorkflow, WORKFLOW_DEFINITION_VERSION, WorkflowDefinition, WorkflowLimits,
-    WorkflowStep, WorkflowValidationError, WorkflowValue, validate_workflow,
+pub use workflow_execution::{
+    WorkflowCapabilityDefinition, WorkflowSubcallPort, WorkflowSubcallResult,
 };
+pub use workflow_tool::WORKFLOW_RUN_TOOL_NAME;
 
 /// Convert an internal qualified tool name (`mcp::server::tool`, `skill::name`)
 /// into a provider-safe form (`mcp__server__tool`, `skill__name`) accepted by

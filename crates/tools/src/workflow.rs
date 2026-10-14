@@ -8,12 +8,12 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// The only workflow definition version accepted by this build.
-pub const WORKFLOW_DEFINITION_VERSION: u16 = 1;
+pub(crate) const WORKFLOW_DEFINITION_VERSION: u16 = 1;
 
 /// Resource ceilings for one inline workflow. Callers may lower these limits;
 /// model-controlled input cannot raise the process ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WorkflowLimits {
+pub(crate) struct WorkflowLimits {
     pub max_definition_bytes: usize,
     pub max_steps: usize,
     pub max_dependency_depth: usize,
@@ -25,8 +25,11 @@ pub struct WorkflowLimits {
     pub max_result_pointer_bytes: usize,
     pub max_result_pointer_segments: usize,
     pub max_step_input_bytes: usize,
+    pub max_total_input_bytes: usize,
     pub max_step_output_bytes: usize,
     pub max_total_output_bytes: usize,
+    pub max_final_observation_bytes: usize,
+    pub max_execution_duration_secs: u64,
 }
 
 impl Default for WorkflowLimits {
@@ -43,8 +46,11 @@ impl Default for WorkflowLimits {
             max_result_pointer_bytes: 256,
             max_result_pointer_segments: 16,
             max_step_input_bytes: 16 * 1024,
+            max_total_input_bytes: 64 * 1024,
             max_step_output_bytes: 16 * 1024,
             max_total_output_bytes: 64 * 1024,
+            max_final_observation_bytes: 32 * 1024,
+            max_execution_duration_secs: 90,
         }
     }
 }
@@ -71,12 +77,21 @@ impl WorkflowLimits {
             .max_result_pointer_segments
             .min(ceiling.max_result_pointer_segments);
         self.max_step_input_bytes = self.max_step_input_bytes.min(ceiling.max_step_input_bytes);
+        self.max_total_input_bytes = self
+            .max_total_input_bytes
+            .min(ceiling.max_total_input_bytes);
         self.max_step_output_bytes = self
             .max_step_output_bytes
             .min(ceiling.max_step_output_bytes);
         self.max_total_output_bytes = self
             .max_total_output_bytes
             .min(ceiling.max_total_output_bytes);
+        self.max_final_observation_bytes = self
+            .max_final_observation_bytes
+            .min(ceiling.max_final_observation_bytes);
+        self.max_execution_duration_secs = self
+            .max_execution_duration_secs
+            .min(ceiling.max_execution_duration_secs);
         self
     }
 }
@@ -84,7 +99,7 @@ impl WorkflowLimits {
 /// A serialized workflow accepted by `workflow_run`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkflowDefinition {
+pub(crate) struct WorkflowDefinition {
     pub version: u16,
     pub steps: Vec<WorkflowStep>,
 }
@@ -93,7 +108,7 @@ pub struct WorkflowDefinition {
 /// inferred from `WorkflowValue::Result` references.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkflowStep {
+pub(crate) struct WorkflowStep {
     pub id: String,
     pub capability: String,
     #[serde(default)]
@@ -105,7 +120,7 @@ pub struct WorkflowStep {
 /// explicit JSON Pointer into an earlier step's completed output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum WorkflowValue {
+pub(crate) enum WorkflowValue {
     Literal {
         value: Value,
     },
@@ -124,23 +139,23 @@ pub enum WorkflowValue {
 /// A validated deterministic execution order. It is still only a plan:
 /// authorization and live capability checks are required for every step.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ValidatedWorkflow {
+pub(crate) struct ValidatedWorkflow {
     steps: Vec<WorkflowStep>,
     limits: WorkflowLimits,
 }
 
 impl ValidatedWorkflow {
-    pub fn steps(&self) -> &[WorkflowStep] {
+    pub(crate) fn steps(&self) -> &[WorkflowStep] {
         &self.steps
     }
 
-    pub fn limits(&self) -> WorkflowLimits {
+    pub(crate) fn limits(&self) -> WorkflowLimits {
         self.limits
     }
 
     /// Materialize one step's arguments from outputs already completed by the
     /// caller. Missing values and oversize resolved inputs fail closed.
-    pub fn resolve_input(
+    pub(crate) fn resolve_input(
         &self,
         step_id: &str,
         completed_outputs: &HashMap<String, Value>,
@@ -170,7 +185,7 @@ impl ValidatedWorkflow {
 /// Stable validation failures. Messages intentionally omit model-provided
 /// capability names, values, and resource contents.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum WorkflowValidationError {
+pub(crate) enum WorkflowValidationError {
     #[error("workflow definition is invalid")]
     InvalidDefinition,
     #[error("workflow definition version is unsupported")]
@@ -211,7 +226,7 @@ pub enum WorkflowValidationError {
 
 /// Validate against capability names taken from the current trusted catalog
 /// snapshot. The allowlist is data supplied by the host, never the model.
-pub fn validate_workflow(
+pub(crate) fn validate_workflow(
     definition: &WorkflowDefinition,
     allowed_capabilities: &BTreeSet<String>,
     requested_limits: WorkflowLimits,
@@ -739,6 +754,7 @@ mod tests {
         let requested = WorkflowLimits {
             max_steps: usize::MAX,
             max_total_output_bytes: usize::MAX,
+            max_execution_duration_secs: u64::MAX,
             ..WorkflowLimits::default()
         };
         let invalid_count = workflow(
@@ -757,6 +773,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.limits().max_total_output_bytes, 64 * 1024);
+        assert_eq!(plan.limits().max_execution_duration_secs, 90);
 
         let small = WorkflowLimits {
             max_definition_bytes: 64,

@@ -1202,6 +1202,28 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// Immutable MCP capability descriptions accepted by a declarative
+    /// Workflow. The list is derived from the same active session surface as
+    /// the synthetic tool and is not supplied by model input.
+    fn workflow_capability_definitions(&self) -> Option<Vec<crate::WorkflowCapabilityDefinition>> {
+        None
+    }
+
+    /// Execute a declarative Workflow with Agent-owned per-step authorization.
+    /// Ordinary tools refuse the nested port by default.
+    async fn execute_with_workflow_subcalls(
+        &self,
+        _input: Value,
+        _cancel: CancellationToken,
+        _target_binding: Option<&str>,
+        _subcalls: Arc<dyn crate::WorkflowSubcallPort>,
+    ) -> anyhow::Result<ToolResult> {
+        anyhow::bail!(
+            "tool '{}' does not accept a Workflow subcall authority",
+            self.name()
+        )
+    }
+
     /// Execute a CodeMode tool with an Agent-owned subcall authority. The
     /// default refuses this capability so ordinary tools cannot accidentally
     /// receive or ignore a nested execution bridge.
@@ -1260,6 +1282,54 @@ pub trait Tool: Send + Sync {
         }
     }
 
+    async fn execute_with_workflow_subcalls_timeout(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        timeout_secs: u64,
+        target_binding: Option<&str>,
+        subcalls: Arc<dyn crate::WorkflowSubcallPort>,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            return Ok(ToolResult::cancelled(format!(
+                "tool '{}' cancelled before execution",
+                self.name()
+            )));
+        }
+        let execution_cancel = cancel.child_token();
+        tokio::select! {
+            result = self.execute_with_workflow_subcalls(
+                input,
+                execution_cancel.clone(),
+                target_binding,
+                subcalls,
+            ) => result,
+            _ = cancel.cancelled() => {
+                execution_cancel.cancel();
+                Ok(ToolResult::cancelled(format!("tool '{}' cancelled", self.name())))
+            }
+            _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => {
+                execution_cancel.cancel();
+                let outcome = self.timeout_outcome();
+                tracing::warn!(
+                    timeout_secs,
+                    outcome = ?outcome,
+                    "tool execution timed out"
+                );
+                Ok(ToolResult::timed_out(
+                    outcome,
+                    format!("tool '{}' timed out after {}s", self.name(), timeout_secs),
+                ))
+            }
+        }
+    }
+
+    /// Raw identity for an activated MCP adapter. Name prefixes are not a
+    /// reliable discriminator because test and custom tools can use the same
+    /// provider-safe names.
+    fn mcp_tool_identity(&self) -> Option<(&str, &str)> {
+        None
+    }
 
     /// Authored operation record, when this tool has one. Catalog projection
     /// and per-call policy both read it. Aggregates and test doubles return

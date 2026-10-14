@@ -503,6 +503,29 @@ impl ToolExecutionPort for ToolsFacadeAgentAdapter {
             .await
     }
 
+    async fn execute_workflow(
+        &self,
+        context: ToolExecutionContext,
+        subcalls: Arc<dyn haven_tools::WorkflowSubcallPort>,
+    ) -> anyhow::Result<ToolResult> {
+        let proof = context.authorization_proof.ok_or_else(|| {
+            anyhow::anyhow!("Workflow execution is missing an authorization proof")
+        })?;
+        self.tools
+            .execute_authorized_workflow_tool_with_step(
+                haven_tools::AuthorizedWorkflowToolExecution {
+                    session_id: context.session_id,
+                    tool_name: context.tool_name,
+                    input: context.input,
+                    cancel: context.cancel,
+                    step_id: context.step_id,
+                    proof,
+                    subcalls,
+                },
+            )
+            .await
+    }
+
     async fn execute_codemode_subcall(
         &self,
         context: ToolExecutionContext,

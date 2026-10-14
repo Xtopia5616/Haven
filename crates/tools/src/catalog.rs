@@ -664,6 +664,38 @@ impl OperationCatalog<'_> {
         tool
     }
 
+    /// Build a synthetic Workflow tool only from MCP capabilities already
+    /// visible through the current Legacy session surface. CodeMode-only,
+    /// hidden, and not-yet-loaded deferred operations never enter this set.
+    fn workflow_tool_for_session(
+        &self,
+        session: &[ToolHandle],
+        direct: &[ToolHandle],
+        settings: &HashMap<String, ToolConfig>,
+    ) -> Option<ToolHandle> {
+        let mut definitions = std::collections::BTreeMap::new();
+        for tool in session.iter().chain(direct) {
+            if tool.mcp_tool_identity().is_none() {
+                continue;
+            }
+            let definition = tool.tool_def();
+            if !tool_config_enabled(settings, &definition.name) {
+                continue;
+            }
+            definitions.insert(
+                definition.name.clone(),
+                crate::WorkflowCapabilityDefinition {
+                    name: definition.name,
+                    description: definition.description,
+                    input_schema: definition.input_schema,
+                },
+            );
+        }
+        crate::workflow_tool::WorkflowInvocationTool::from_definitions(
+            definitions.into_values().collect(),
+        )
+    }
+
     /// Refresh only the MCP adapters already active in this session. A live
     /// tools/list response can update or remove selected tools, but never
     /// activates newly discovered names without an explicit `load_mcp` call.
@@ -759,6 +791,9 @@ impl OperationCatalog<'_> {
                 .await;
             let direct = self.direct_mcp_tools_for_session().await;
             let codemode = self.codemode_tool_for_session().await;
+            let platform = self.facade.coordinator.runtime.platform().await;
+            let workflow =
+                self.workflow_tool_for_session(&session, &direct, &platform.tool_settings);
             let after = self.facade.catalog_version_for_session(session_id).await;
 
             let mut tools = HashMap::with_capacity(global.len() + session.len() + direct.len());
@@ -766,6 +801,9 @@ impl OperationCatalog<'_> {
             let mut session_defs: Vec<_> = session.iter().map(|tool| tool.tool_def()).collect();
             session_defs.extend(direct.iter().map(|tool| tool.tool_def()));
             if let Some(tool) = codemode.as_ref() {
+                session_defs.push(tool.tool_def());
+            }
+            if let Some(tool) = workflow.as_ref() {
                 session_defs.push(tool.tool_def());
             }
             for tool in global {
@@ -780,15 +818,10 @@ impl OperationCatalog<'_> {
             if let Some(tool) = codemode {
                 tools.insert(tool.name(), tool);
             }
-            let max = self
-                .facade
-                .coordinator
-                .runtime
-                .platform()
-                .await
-                .context_limits
-                .max_tools_per_request
-                .max(1);
+            if let Some(tool) = workflow {
+                tools.insert(tool.name(), tool);
+            }
+            let max = platform.context_limits.max_tools_per_request.max(1);
             let provider_definitions =
                 select_tool_definitions_for_budget(global_defs, session_defs, max).selected_tools;
             snapshot = Some((after, tools, provider_definitions));
@@ -802,15 +835,8 @@ impl OperationCatalog<'_> {
     }
 
     pub async fn list_tool_definitions_for_session(&self, session_id: &str) -> Vec<ToolDef> {
-        let max = self
-            .facade
-            .coordinator
-            .runtime
-            .platform()
-            .await
-            .context_limits
-            .max_tools_per_request
-            .max(1);
+        let platform = self.facade.coordinator.runtime.platform().await;
+        let max = platform.context_limits.max_tools_per_request.max(1);
         let global_defs = self
             .facade
             .coordinator
@@ -831,6 +857,19 @@ impl OperationCatalog<'_> {
         let direct = self.direct_mcp_tools_for_session().await;
         session_defs.extend(direct.iter().map(|tool| tool.tool_def()));
         if let Some(tool) = self.codemode_tool_for_session().await {
+            session_defs.push(tool.tool_def());
+        }
+        let session_tools = self
+            .facade
+            .coordinator
+            .core
+            .operations
+            .session_tool_overlay
+            .list(session_id)
+            .await;
+        if let Some(tool) =
+            self.workflow_tool_for_session(&session_tools, &direct, &platform.tool_settings)
+        {
             session_defs.push(tool.tool_def());
         }
         let total = global_len + session_defs.len();

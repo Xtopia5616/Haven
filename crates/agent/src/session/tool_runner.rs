@@ -1088,6 +1088,33 @@ impl SessionSupervisor {
         } else {
             None
         };
+        let workflow_subcalls = if tool_name == haven_tools::WORKFLOW_RUN_TOOL_NAME {
+            let Some(session_id) = session_id else {
+                return Err(anyhow::anyhow!("Workflow requires a live session context"));
+            };
+            let snapshot = self.tool_catalog.catalog_snapshot(session_id).await;
+            let definitions = snapshot
+                .get(tool_name)
+                .and_then(|tool| tool.workflow_capability_definitions());
+            let Some(definitions) = definitions.filter(|definitions| !definitions.is_empty())
+            else {
+                return Ok(ToolExecution {
+                    result: ToolResult::failed_with_class(
+                        Value::Null,
+                        "Workflow capabilities are no longer exposed in this session",
+                        haven_common::tools::ToolErrorClass::Permission,
+                    ),
+                    risk_level,
+                    confirmed: Some(false),
+                });
+            };
+            Some(self.workflow_subcall_port(
+                session_id,
+                definitions.into_iter().map(|definition| definition.name),
+            ))
+        } else {
+            None
+        };
         let context = ToolExecutionContext {
             session_id: session_id.map(str::to_owned),
             tool_name: tool_name.to_owned(),
@@ -1096,9 +1123,11 @@ impl SessionSupervisor {
             step_id: step_id.map(str::to_owned),
             authorization_proof: Some(execution_proof),
         };
-        let result = match codemode_subcalls {
-            Some(subcalls) => self.execution.execute_codemode(context, subcalls).await?,
-            None => self.execution.execute(context).await?,
+        let result = match (codemode_subcalls, workflow_subcalls) {
+            (Some(subcalls), None) => self.execution.execute_codemode(context, subcalls).await?,
+            (None, Some(subcalls)) => self.execution.execute_workflow(context, subcalls).await?,
+            (None, None) => self.execution.execute(context).await?,
+            (Some(_), Some(_)) => anyhow::bail!("tool cannot receive two nested execution ports"),
         };
         Ok(ToolExecution {
             result,
@@ -2039,6 +2068,10 @@ mod scheduled_authorization_tests {
         definitions: Vec<haven_tools::CodeModeToolDefinition>,
     }
 
+    struct WorkflowInvocationTestTool {
+        definitions: Vec<haven_tools::WorkflowCapabilityDefinition>,
+    }
+
     #[async_trait::async_trait]
     impl haven_tools::Tool for CodeModeInvocationTestTool {
         fn name(&self) -> String {
@@ -2094,6 +2127,102 @@ mod scheduled_authorization_tests {
                 .map_err(anyhow::Error::msg)?;
             Ok(ToolResult::from_output(
                 json!({"output": execution.output, "call_count": execution.call_count}),
+                false,
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl haven_tools::Tool for WorkflowInvocationTestTool {
+        fn name(&self) -> String {
+            haven_tools::WORKFLOW_RUN_TOOL_NAME.to_owned()
+        }
+
+        fn description(&self) -> String {
+            "test-only declarative Workflow invocation".into()
+        }
+
+        fn risk_level(&self, _input: &Value) -> RiskLevel {
+            RiskLevel::Safe
+        }
+
+        fn workflow_capability_definitions(
+            &self,
+        ) -> Option<Vec<haven_tools::WorkflowCapabilityDefinition>> {
+            Some(self.definitions.clone())
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+
+        async fn execute(
+            &self,
+            _input: Value,
+            _cancel: CancellationToken,
+        ) -> anyhow::Result<ToolResult> {
+            anyhow::bail!("Workflow test tool requires its subcall port")
+        }
+
+        async fn execute_with_workflow_subcalls(
+            &self,
+            input: Value,
+            cancel: CancellationToken,
+            target_binding: Option<&str>,
+            subcalls: Arc<dyn haven_tools::WorkflowSubcallPort>,
+        ) -> anyhow::Result<ToolResult> {
+            if target_binding.is_some() {
+                anyhow::bail!("Workflow test invocation cannot have an external target")
+            }
+            let step = input
+                .pointer("/workflow/steps/0")
+                .ok_or_else(|| anyhow::anyhow!("missing workflow step"))?;
+            let step_id = step
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing workflow step id"))?;
+            let capability = step
+                .get("capability")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing workflow capability"))?;
+            if !self
+                .definitions
+                .iter()
+                .any(|definition| definition.name == capability)
+            {
+                anyhow::bail!("workflow capability is outside the test allowlist");
+            }
+            let input_fields = step
+                .get("input")
+                .and_then(Value::as_object)
+                .ok_or_else(|| anyhow::anyhow!("missing workflow input"))?;
+            let child_input = input_fields
+                .iter()
+                .map(|(name, mapping)| {
+                    if mapping.get("kind").and_then(Value::as_str) != Some("literal") {
+                        anyhow::bail!("test workflow accepts only literal input mappings");
+                    }
+                    let value = mapping
+                        .get("value")
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("missing literal mapping value"))?;
+                    Ok((name.clone(), value))
+                })
+                .collect::<anyhow::Result<serde_json::Map<_, _>>>()?;
+            let child = subcalls
+                .call(capability, Value::Object(child_input), cancel)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            Ok(ToolResult::from_output(
+                json!({
+                    "status": "completed",
+                    "completed_step_ids": [step_id],
+                    "steps": [{
+                        "step_id": step_id,
+                        "capability": capability,
+                        "observation": child.observation
+                    }]
+                }),
                 false,
             ))
         }
@@ -2592,6 +2721,204 @@ mod scheduled_authorization_tests {
             .call(tool_name, json!({}), CancellationToken::new())
             .await
             .expect_err("unlisted tool must not reach authorization or execution");
+
+        assert!(error.contains("allowlist"));
+        assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn workflow_subcalls_execute_with_a_fresh_auto_approved_proof() {
+        let (supervisor, tools, _database, _directory) = test_supervisor();
+        let session_id = "ses-76767676767676767676767676767676";
+        let tool_name = "mcp__notes__read";
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let executed_by_tool = executed.clone();
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::Safe,
+                    on_execute: Some(Arc::new(move || {
+                        executed_by_tool.store(true, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                    result: None,
+                }),
+            )
+            .await;
+
+        let request = supervisor
+            .authorization
+            .authorization_request(Some(session_id), tool_name, &json!({"id": "n-1"}))
+            .await
+            .unwrap();
+        supervisor
+            .authorization
+            .grant(
+                Some(session_id),
+                request.policy.capability,
+                haven_common::types::PermissionEffect::Allow,
+                haven_common::types::PermissionScope::Session,
+            )
+            .await;
+
+        let port = supervisor.workflow_subcall_port(session_id, [tool_name.to_owned()]);
+        let result = port
+            .call(tool_name, json!({"id": "n-1"}), CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert!(result.result.success);
+        assert_eq!(result.result.output, json!({"ok": true}));
+        assert!(result.observation.contains("ok"));
+        assert!(executed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn gated_workflow_routes_each_node_through_agent_and_tools_authorization() {
+        let (supervisor, tools, _database, _directory) = test_supervisor();
+        let session_id = "ses-78797979797979797979797979797979";
+        let child_name = "mcp__notes__read";
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let executed_by_tool = executed.clone();
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(PolicyTestTool {
+                    name: child_name.into(),
+                    risk_level: RiskLevel::Safe,
+                    on_execute: Some(Arc::new(move || {
+                        executed_by_tool.store(true, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                    result: None,
+                }),
+            )
+            .await;
+        let request = supervisor
+            .authorization
+            .authorization_request(Some(session_id), child_name, &json!({"id": "n-1"}))
+            .await
+            .unwrap();
+        supervisor
+            .authorization
+            .grant(
+                Some(session_id),
+                request.policy.capability,
+                haven_common::types::PermissionEffect::Allow,
+                haven_common::types::PermissionScope::Session,
+            )
+            .await;
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(WorkflowInvocationTestTool {
+                    definitions: vec![haven_tools::WorkflowCapabilityDefinition {
+                        name: child_name.into(),
+                        description: "read a test note".into(),
+                        input_schema: json!({"type": "object"}),
+                    }],
+                }),
+            )
+            .await;
+
+        let execution = supervisor
+            .execute_gated(
+                Some(session_id),
+                haven_tools::WORKFLOW_RUN_TOOL_NAME,
+                json!({
+                    "workflow": {
+                        "version": 1,
+                        "steps": [{
+                            "id": "read",
+                            "capability": child_name,
+                            "input": {"id": {"kind": "literal", "value": "n-1"}}
+                        }]
+                    }
+                }),
+                CancellationToken::new(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(execution.result.success, "{:?}", execution.result.error);
+        assert_eq!(execution.result.output["status"], "completed");
+        assert_eq!(execution.result.output["completed_step_ids"][0], "read");
+        assert!(executed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn workflow_confirmation_required_child_fails_before_side_effect() {
+        let (supervisor, tools, _database, _directory) = test_supervisor();
+        let session_id = "ses-34353535353535353535353535353535";
+        let tool_name = "mcp__notes__write";
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let executed_by_tool = executed.clone();
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::Critical,
+                    on_execute: Some(Arc::new(move || {
+                        executed_by_tool.store(true, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                    result: None,
+                }),
+            )
+            .await;
+
+        let port = supervisor.workflow_subcall_port(session_id, [tool_name.to_owned()]);
+        let error = port
+            .call(
+                tool_name,
+                json!({"id": "n-1", "text": "change"}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("a Workflow child must not inherit outer approval");
+
+        assert!(error.contains("requires its own user confirmation"));
+        assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn workflow_subcall_port_rejects_names_outside_its_run_allowlist() {
+        let (supervisor, tools, _database, _directory) = test_supervisor();
+        let session_id = "ses-56575757575757575757575757575757";
+        let tool_name = "mcp__notes__read";
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let executed_by_tool = executed.clone();
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::Safe,
+                    on_execute: Some(Arc::new(move || {
+                        executed_by_tool.store(true, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                    result: None,
+                }),
+            )
+            .await;
+
+        let port = supervisor.workflow_subcall_port(session_id, std::iter::empty());
+        let error = port
+            .call(tool_name, json!({}), CancellationToken::new())
+            .await
+            .expect_err("an unlisted child must stop before authorization");
 
         assert!(error.contains("allowlist"));
         assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));

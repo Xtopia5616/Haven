@@ -49,6 +49,16 @@ pub trait ToolExecutionPort: Send + Sync {
         anyhow::bail!("CodeMode execution is unavailable on this execution port")
     }
 
+    /// Execute Haven's synthetic Workflow tool with an Agent-owned,
+    /// independently authorized child-call port.
+    async fn execute_workflow(
+        &self,
+        _context: ToolExecutionContext,
+        _subcalls: Arc<dyn haven_tools::WorkflowSubcallPort>,
+    ) -> anyhow::Result<ToolResult> {
+        anyhow::bail!("Workflow execution is unavailable on this execution port")
+    }
+
     /// Execute one child through the CodeMode-only MCP exposure boundary.
     async fn execute_codemode_subcall(
         &self,
@@ -269,6 +279,29 @@ impl ToolExecutionPort for ToolsFacadeToolExecutionAdapter {
         self.tools
             .execute_authorized_codemode_tool_with_step(
                 haven_tools::AuthorizedCodeModeToolExecution {
+                    session_id: context.session_id,
+                    tool_name: context.tool_name,
+                    input: context.input,
+                    cancel: context.cancel,
+                    step_id: context.step_id,
+                    proof,
+                    subcalls,
+                },
+            )
+            .await
+    }
+
+    async fn execute_workflow(
+        &self,
+        context: ToolExecutionContext,
+        subcalls: Arc<dyn haven_tools::WorkflowSubcallPort>,
+    ) -> anyhow::Result<ToolResult> {
+        let proof = context.authorization_proof.ok_or_else(|| {
+            anyhow::anyhow!("Workflow execution is missing an authorization proof")
+        })?;
+        self.tools
+            .execute_authorized_workflow_tool_with_step(
+                haven_tools::AuthorizedWorkflowToolExecution {
                     session_id: context.session_id,
                     tool_name: context.tool_name,
                     input: context.input,

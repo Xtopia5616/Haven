@@ -492,6 +492,7 @@ mod run_engine;
 mod status;
 mod tool_ports;
 mod tool_runner;
+mod workflow;
 #[cfg(test)]
 pub(crate) use dispatcher::DirectSessionRunLease;
 pub use tool_ports::SessionToolPorts;
@@ -521,6 +522,22 @@ impl SessionSupervisor {
             allowed_tool_names,
             Arc::clone(&self.authorization),
             Arc::clone(&self.execution),
+        ))
+    }
+
+    /// Bind a Workflow invocation to its captured MCP allowlist and this
+    /// session's authorization, execution, and observation owners.
+    pub(crate) fn workflow_subcall_port(
+        &self,
+        session_id: &str,
+        allowed_tool_names: impl IntoIterator<Item = String>,
+    ) -> Arc<dyn haven_tools::WorkflowSubcallPort> {
+        Arc::new(workflow::AuthorizedWorkflowSubcallPort::new(
+            session_id,
+            allowed_tool_names,
+            Arc::clone(&self.authorization),
+            Arc::clone(&self.execution),
+            Arc::clone(&self.observation_port),
         ))
     }
 

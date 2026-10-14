@@ -1,7 +1,8 @@
 use crate::{
     CODEMODE_RUN_TOOL_NAME, McpManager, McpToolAdapter, McpToolInfo, ToolHandle, ToolsFacade,
+    WORKFLOW_RUN_TOOL_NAME,
 };
-use haven_common::config::{McpExposureConfig, McpServerConfig};
+use haven_common::config::{McpExposureConfig, McpServerConfig, ToolConfig};
 use haven_common::mcp::{McpServerTransport, McpToolExposure};
 use haven_common::types::NetworkPolicy;
 use serde_json::Value;
@@ -302,6 +303,115 @@ async fn codemode_exposure_is_only_visible_through_the_synthetic_bounded_tool() 
             .provider_definitions()
             .iter()
             .all(|definition| definition.name != CODEMODE_RUN_TOOL_NAME)
+    );
+    assert!(
+        snapshot
+            .provider_definitions()
+            .iter()
+            .all(|definition| definition.name != WORKFLOW_RUN_TOOL_NAME),
+        "CodeMode-only capabilities must not enter the Legacy Workflow surface"
+    );
+
+    manager.shutdown_all().await;
+    cancellation.cancel();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn workflow_surface_tracks_direct_and_loaded_deferred_mcp_exposure() {
+    let facade = ToolsFacade::new();
+    let manager = facade.coordinator.builtins.mcp_manager.clone();
+    manager.set_network_policy(NetworkPolicy::Open).await;
+
+    let catalog = Arc::new(RwLock::new(vec![serde_json::json!({
+        "name": "calendar_status",
+        "description": "Read calendar status",
+        "inputSchema": {"type": "object", "properties": {"view": {"type": "string"}}}
+    })]));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let cancellation = CancellationToken::new();
+    let server = tokio::spawn(serve_mcp_catalog(listener, catalog, cancellation.clone()));
+
+    let config = McpServerConfig {
+        name: "calendar".into(),
+        transport: McpServerTransport::Http,
+        url: format!("http://{address}/mcp"),
+        exposure: McpExposureConfig {
+            default: McpToolExposure::Direct,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    facade.upsert_mcp_server_config(config.clone()).await;
+    manager.connect_server(&config).await.unwrap();
+
+    let session_id = "ses-41414141414141414141414141414141";
+    let child_name = McpToolAdapter::qualified_name_of("calendar", "calendar_status");
+    let direct = facade.tool_catalog_snapshot(session_id).await;
+    let workflow = direct
+        .get(WORKFLOW_RUN_TOOL_NAME)
+        .expect("Direct MCP capability exposes Workflow");
+    assert_eq!(
+        workflow
+            .workflow_capability_definitions()
+            .unwrap()
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect::<Vec<_>>(),
+        [child_name.as_str()]
+    );
+
+    let mut deferred_config = config.clone();
+    deferred_config.exposure.default = McpToolExposure::Deferred;
+    facade.upsert_mcp_server_config(deferred_config).await;
+    let unloaded = facade.tool_catalog_snapshot(session_id).await;
+    assert!(
+        unloaded.get(WORKFLOW_RUN_TOOL_NAME).is_none(),
+        "unloaded Deferred tools do not enter a session Workflow allowlist"
+    );
+    assert!(
+        facade
+            .register_mcp_for_session(session_id, "calendar", None)
+            .await
+    );
+    let loaded = facade.tool_catalog_snapshot(session_id).await;
+    let workflow = loaded
+        .get(WORKFLOW_RUN_TOOL_NAME)
+        .expect("loaded Deferred MCP capability exposes Workflow");
+    assert_eq!(
+        workflow.workflow_capability_definitions().unwrap()[0].name,
+        child_name
+    );
+
+    facade
+        .coordinator
+        .runtime
+        .update_platform(|current| {
+            let mut next = current.clone();
+            next.tool_settings.insert(
+                child_name.clone(),
+                ToolConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
+            next
+        })
+        .await;
+    let disabled = facade.tool_catalog_snapshot(session_id).await;
+    assert!(
+        disabled.get(WORKFLOW_RUN_TOOL_NAME).is_none(),
+        "disabled MCP tools do not enter the Workflow allowlist"
+    );
+
+    let mut hidden_config = config;
+    hidden_config.exposure.default = McpToolExposure::Hidden;
+    facade.upsert_mcp_server_config(hidden_config).await;
+    let hidden = facade.tool_catalog_snapshot(session_id).await;
+    assert!(
+        hidden.get(WORKFLOW_RUN_TOOL_NAME).is_none(),
+        "Hidden capabilities are removed from both top-level and Workflow surfaces"
     );
 
     manager.shutdown_all().await;
