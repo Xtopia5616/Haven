@@ -32,6 +32,10 @@
 | `log_frontend_error` | mutate | 只接收 `operation_failure` / `unhandled_ui_error` / `unhandled_rejection`；错误正文、通知正文和 payload 不进入后端日志 |
 | `get_performance_metrics` | read | 仅返回有界、无内容的后端与渲染器计数 |
 | `list_mcp_servers` | read | 返回服务器配置/状态/工具清单快照，不执行工具，env 值统一遮蔽 |
+| `list_mcp_resources` | execute | 用户打开资源浏览后，按当前 enabled server 和连接绑定发现资源；有界分页，不暴露模型可调用工具 |
+| `read_mcp_resource` | execute | 仅读取用户从当前 server 目录选中的不透明 URI；检查 live target binding 和响应上限 |
+| `list_mcp_prompts` | execute | 用户打开提示词浏览后发现可选项；不暴露模型可调用工具 |
+| `get_mcp_prompt` | execute | 仅渲染用户选定的 prompt 和已声明参数；结果有界且进入预览/草稿确认流程 |
 | `reconnect_mcp_server` | execute | 只重连一个已启用且当前连接的服务器；连接前经过 AuthorizationEngine |
 | `refresh_mcp_servers` | execute | renderer 触发的配置客户端 reconcile；不接收进程参数 |
 | `add_mcp_server` | execute | 共享 self 操作校验并持久化 |

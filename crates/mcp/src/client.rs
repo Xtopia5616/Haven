@@ -1,3 +1,6 @@
+mod feature_runtime;
+
+use crate::features::{McpPromptList, McpResourceList, McpResourceRead, McpServerCapabilities};
 use crate::protocol::{
     LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, McpCallOutput, McpClientStatus,
     McpProtocolMode, McpRpcError, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
@@ -10,7 +13,7 @@ use crate::transport::{
 };
 use haven_common::{mcp::McpServerTransport, types::NetworkPolicy};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -34,6 +37,24 @@ pub(crate) struct McpToolListSnapshot {
     pub(crate) tools: Vec<McpToolInfo>,
     expires_at: Option<Instant>,
     _cache_scope: McpToolCacheScope,
+}
+
+#[derive(Debug, Clone)]
+struct McpResourceListSnapshot {
+    result: McpResourceList,
+    expires_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+struct McpResourceReadCacheEntry {
+    result: McpResourceRead,
+    expires_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+struct McpPromptListSnapshot {
+    result: McpPromptList,
+    expires_at: Option<Instant>,
 }
 
 impl McpToolListSnapshot {
@@ -60,10 +81,16 @@ pub struct McpClient {
     pub(crate) inner: Arc<Mutex<Option<McpClientInner>>>,
     /// Protocol era and negotiated version for the active connection.
     pub(crate) protocol_mode: Arc<Mutex<McpProtocolMode>>,
+    server_capabilities: Arc<Mutex<McpServerCapabilities>>,
     pub(crate) status: Arc<Mutex<McpClientStatus>>,
     pub(crate) next_id: Arc<AtomicU64>,
     pub(crate) tools_cache: Arc<Mutex<Option<McpToolListSnapshot>>>,
     tool_list_refresh: Mutex<()>,
+    resource_list_cache: Mutex<Option<McpResourceListSnapshot>>,
+    resource_list_refresh: Mutex<()>,
+    resource_read_cache: Mutex<HashMap<String, McpResourceReadCacheEntry>>,
+    prompt_list_cache: Mutex<Option<McpPromptListSnapshot>>,
+    prompt_list_refresh: Mutex<()>,
     pub(crate) last_error: Arc<Mutex<Option<String>>>,
     /// Protocol selection and tool-discovery diagnostics; see `McpServerSnapshot`.
     pub(crate) last_diagnostic: Arc<Mutex<Option<String>>>,
@@ -264,10 +291,16 @@ impl McpClient {
             enabled: Arc::new(AtomicBool::new(config.enabled)),
             inner: Arc::new(Mutex::new(None)),
             protocol_mode: Arc::new(Mutex::new(McpProtocolMode::Uninitialized)),
+            server_capabilities: Arc::new(Mutex::new(McpServerCapabilities::default())),
             status: Arc::new(Mutex::new(McpClientStatus::Disconnected)),
             next_id: Arc::new(AtomicU64::new(1)),
             tools_cache: Arc::new(Mutex::new(None)),
             tool_list_refresh: Mutex::new(()),
+            resource_list_cache: Mutex::new(None),
+            resource_list_refresh: Mutex::new(()),
+            resource_read_cache: Mutex::new(HashMap::new()),
+            prompt_list_cache: Mutex::new(None),
+            prompt_list_refresh: Mutex::new(()),
             last_error: Arc::new(Mutex::new(None)),
             last_diagnostic: Arc::new(Mutex::new(None)),
             last_seen_at: Arc::new(Mutex::new(None)),
@@ -420,6 +453,7 @@ impl McpClient {
     }
 
     pub async fn snapshot(&self) -> McpServerSnapshot {
+        let capabilities = *self.server_capabilities.lock().await;
         McpServerSnapshot {
             name: self.name.clone(),
             transport: self.transport.clone(),
@@ -429,6 +463,9 @@ impl McpClient {
             cwd: self.cwd.clone(),
             url: self.url.clone(),
             enabled: self.enabled(),
+            target_binding: None,
+            supports_resources: capabilities.resources,
+            supports_prompts: capabilities.prompts,
             exposure: haven_common::config::McpExposureConfig::default(),
             status: self.status.lock().await.clone(),
             tools: self.all_cached_tools().await,
@@ -636,7 +673,7 @@ impl McpClient {
 
         let mut modern_tools_supported = false;
         let mut modern_tools_list_changed = false;
-        let (mode, server_name, server_version, server_protocol) = match discovery {
+        let (mode, server_name, server_version, server_protocol, capabilities) = match discovery {
             Ok(result) => {
                 let versions = result["supportedVersions"].as_array().ok_or_else(|| {
                     anyhow::anyhow!("MCP server discovery response omitted supportedVersions")
@@ -657,12 +694,15 @@ impl McpClient {
                     .and_then(|value| value.get("listChanged"))
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                let capabilities =
+                    McpServerCapabilities::from_wire_capabilities(result.get("capabilities"));
                 let server_info = &result["_meta"]["io.modelcontextprotocol/serverInfo"];
                 (
                     modern_mode,
                     server_info["name"].as_str().unwrap_or("?").to_string(),
                     server_info["version"].as_str().unwrap_or("?").to_string(),
                     MODERN_PROTOCOL_VERSION.to_string(),
+                    capabilities,
                 )
             }
             Err(error)
@@ -711,6 +751,8 @@ impl McpClient {
                     .as_str()
                     .unwrap_or(LEGACY_PROTOCOL_VERSION)
                     .to_string();
+                let capabilities =
+                    McpServerCapabilities::from_wire_capabilities(initialize.get("capabilities"));
                 if let Some(warning) = initialize["warning"].as_str() {
                     tracing::warn!(
                         server = %self.name,
@@ -734,6 +776,7 @@ impl McpClient {
                     server_name,
                     server_version,
                     server_protocol,
+                    capabilities,
                 )
             }
             Err(error) => {
@@ -755,6 +798,7 @@ impl McpClient {
             }
         };
         *self.protocol_mode.lock().await = mode.clone();
+        *self.server_capabilities.lock().await = capabilities;
         inner.set_modern(mode.is_modern());
 
         tracing::info!(
@@ -915,6 +959,10 @@ impl McpClient {
         }
         *guard = None;
         *self.protocol_mode.lock().await = McpProtocolMode::Uninitialized;
+        *self.server_capabilities.lock().await = McpServerCapabilities::default();
+        *self.resource_list_cache.lock().await = None;
+        self.resource_read_cache.lock().await.clear();
+        *self.prompt_list_cache.lock().await = None;
         *self.status.lock().await = McpClientStatus::Disconnected;
         Ok(())
     }
@@ -1616,6 +1664,44 @@ mod modern_tool_list_tests {
         stream.write_all(response.as_bytes()).await.unwrap();
     }
 
+    async fn modern_http_client(
+        address: std::net::SocketAddr,
+        resources: bool,
+        prompts: bool,
+    ) -> McpClient {
+        let config = haven_common::config::McpServerConfig {
+            name: "feature-test".into(),
+            transport: McpServerTransport::Http,
+            url: format!("http://{address}/mcp"),
+            ..Default::default()
+        };
+        let client = McpClient::new(&config, 1024, 1024);
+        *client.protocol_mode.lock().await = McpProtocolMode::modern(MODERN_PROTOCOL_VERSION);
+        *client.server_capabilities.lock().await = McpServerCapabilities {
+            tools: false,
+            resources,
+            prompts,
+        };
+        *client.status.lock().await = McpClientStatus::Connected;
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let cancel = client.cancel_token.lock().await.clone();
+        let shared = Arc::new(HttpShared {
+            http: reqwest::Client::new(),
+            url: config.url,
+            headers: Vec::new(),
+            mcp_session_id: Arc::new(Mutex::new(String::new())),
+            cancel,
+        });
+        *client.inner.lock().await = Some(McpClientInner::Http(HttpInner {
+            shared,
+            notification_tx,
+            max_sse_buffer: 1024,
+            tools_list_changed: client.tools_list_changed.clone(),
+        }));
+        client
+    }
+
     #[tokio::test]
     async fn tools_list_aggregates_pages_and_uses_the_most_restrictive_cache_hint() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1770,6 +1856,341 @@ mod modern_tool_list_tests {
                 );
             })
             .await;
+        server.await.unwrap();
+    }
+    #[tokio::test]
+    async fn resource_and_user_selected_prompt_calls_are_bounded_and_cached() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "resources/list");
+            assert_eq!(
+                request["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"],
+                MODERN_PROTOCOL_VERSION
+            );
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "resources": [{"uri": "mcp://demo/one", "name": "one"}],
+                    "nextCursor": "second-page",
+                    "ttlMs": 60_000,
+                    "cacheScope": "public"
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "resources/list");
+            assert_eq!(request["params"]["cursor"], "second-page");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "resources": [{
+                        "uri": "mcp://demo/two",
+                        "name": "two",
+                        "mimeType": "text/plain"
+                    }],
+                    "ttlMs": 20_000,
+                    "cacheScope": "private"
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "resources/read");
+            assert_eq!(request["params"]["uri"], "file:///opaque/resource?key=1");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "contents": [
+                        {"uri": "file:///opaque/resource?key=1", "mimeType": "text/plain", "text": "untrusted resource text"},
+                        {"uri": "mcp://demo/image", "mimeType": "image/png", "blob": "aGVsbG8="}
+                    ],
+                    "ttlMs": 30_000,
+                    "cacheScope": "private"
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "prompts/list");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "prompts": [{
+                        "name": "review",
+                        "title": "Review source",
+                        "arguments": [{"name": "source", "required": true}]
+                    }],
+                    "ttlMs": 45_000,
+                    "cacheScope": "public"
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "prompts/get");
+            assert_eq!(request["params"]["name"], "review");
+            assert_eq!(request["params"]["arguments"]["source"], "fn main() {}");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "description": "Rendered by an untrusted MCP server",
+                    "messages": [{
+                        "role": "user",
+                        "content": {"type": "text", "text": "Review this source."}
+                    }],
+                    "ttlMs": 15_000,
+                    "cacheScope": "private"
+                }),
+            )
+            .await;
+        });
+
+        let client = modern_http_client(address, true, true).await;
+        let resources = client
+            .list_resources(false, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(resources.resources.len(), 2);
+        assert_eq!(resources.ttl_ms, Some(20_000));
+        assert_eq!(
+            resources.cache_scope,
+            crate::features::McpCacheScope::Private
+        );
+        let cached_resources = client
+            .list_resources(false, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(cached_resources.resources.len(), 2);
+
+        let uri = "file:///opaque/resource?key=1";
+        let resource = client
+            .read_resource(uri, false, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(resource.contents.len(), 2);
+        assert_eq!(
+            resource.contents[0].text.as_deref(),
+            Some("untrusted resource text")
+        );
+        assert_eq!(resource.contents[1].blob.as_deref(), Some("aGVsbG8="));
+        assert_eq!(
+            client
+                .read_resource(uri, false, CancellationToken::new())
+                .await
+                .unwrap()
+                .contents,
+            resource.contents
+        );
+
+        let prompts = client
+            .list_prompts(false, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(prompts.prompts[0].name, "review");
+        let rendered = client
+            .get_prompt(
+                "review",
+                HashMap::from([("source".into(), "fn main() {}".into())]),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rendered.messages.len(), 1);
+        assert_eq!(rendered.ttl_ms, Some(15_000));
+        assert_eq!(
+            rendered.cache_scope,
+            crate::features::McpCacheScope::Private
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resource_read_rejects_mrtr_without_retry_or_state_echo() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "resources/read");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "resultType": "input_required",
+                    "requestState": "sensitive opaque state",
+                    "inputRequests": {"user": {"method": "elicitation/create"}}
+                }),
+            )
+            .await;
+        });
+
+        let client = modern_http_client(address, true, false).await;
+        let error = client
+            .read_resource("mcp://demo/private", false, CancellationToken::new())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("requires additional interaction"));
+        assert!(!error.contains("sensitive opaque state"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unsupported_resources_and_prompts_capabilities_make_no_rpc() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = modern_http_client(address, false, false).await;
+        assert!(
+            client
+                .list_resources(false, CancellationToken::new())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("does not advertise resources")
+        );
+        assert!(
+            client
+                .list_prompts(false, CancellationToken::new())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("does not advertise prompts")
+        );
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn explicit_refresh_and_expired_feature_caches_use_the_live_server() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "resources/list");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "resources": [{"uri": "mcp://demo/fresh", "name": "fresh"}],
+                    "ttlMs": 60_000,
+                    "cacheScope": "public"
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "resources/read");
+            assert_eq!(request["params"]["uri"], "mcp://demo/expired");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "contents": [{"uri": "mcp://demo/expired", "text": "fresh content"}],
+                    "ttlMs": 10_000,
+                    "cacheScope": "private"
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "prompts/list");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "prompts": [{"name": "fresh-prompt", "arguments": []}],
+                    "ttlMs": 10_000,
+                    "cacheScope": "private"
+                }),
+            )
+            .await;
+        });
+
+        let client = modern_http_client(address, true, true).await;
+        *client.resource_list_cache.lock().await = Some(McpResourceListSnapshot {
+            result: McpResourceList {
+                resources: vec![crate::features::McpResourceInfo {
+                    uri: "mcp://demo/stale".into(),
+                    name: "stale".into(),
+                    title: None,
+                    description: None,
+                    mime_type: None,
+                    size: None,
+                }],
+                ttl_ms: Some(60_000),
+                cache_scope: crate::features::McpCacheScope::Public,
+            },
+            expires_at: Some(Instant::now() + Duration::from_secs(60)),
+        });
+        let expired_at = Instant::now() - Duration::from_millis(1);
+        client.resource_read_cache.lock().await.insert(
+            "mcp://demo/expired".into(),
+            McpResourceReadCacheEntry {
+                result: McpResourceRead {
+                    contents: vec![crate::features::McpResourceContent {
+                        uri: "mcp://demo/expired".into(),
+                        mime_type: Some("text/plain".into()),
+                        text: Some("stale content".into()),
+                        blob: None,
+                    }],
+                    ttl_ms: Some(60_000),
+                    cache_scope: crate::features::McpCacheScope::Private,
+                },
+                expires_at: Some(expired_at),
+            },
+        );
+        *client.prompt_list_cache.lock().await = Some(McpPromptListSnapshot {
+            result: McpPromptList {
+                prompts: vec![],
+                ttl_ms: Some(60_000),
+                cache_scope: crate::features::McpCacheScope::Private,
+            },
+            expires_at: Some(expired_at),
+        });
+
+        let resources = client
+            .list_resources(true, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(resources.resources[0].name, "fresh");
+        let resource = client
+            .read_resource("mcp://demo/expired", false, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(resource.contents[0].text.as_deref(), Some("fresh content"));
+        let prompts = client
+            .list_prompts(false, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(prompts.prompts[0].name, "fresh-prompt");
+
+        client.shutdown_inner(false).await.unwrap();
+        assert!(client.resource_list_cache.lock().await.is_none());
+        assert!(client.resource_read_cache.lock().await.is_empty());
+        assert!(client.prompt_list_cache.lock().await.is_none());
         server.await.unwrap();
     }
 }

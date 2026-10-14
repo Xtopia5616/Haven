@@ -3,7 +3,9 @@ use crate::commands::log_err;
 use crate::events::{MCP_STATUS_CHANGED_EVENT, McpStatusChangedEvent};
 use haven_common::config::McpServerConfig;
 use haven_common::error::sanitize_error_text;
-use haven_tools::{McpClientStatus, McpServerSnapshot};
+use haven_tools::{
+    McpClientStatus, McpPrompt, McpPromptList, McpResourceList, McpResourceRead, McpServerSnapshot,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::AppHandle;
@@ -45,6 +47,9 @@ pub async fn list_mcp_servers(
                 cwd: config.cwd.clone(),
                 url: config.url.clone(),
                 enabled: config.enabled,
+                target_binding: None,
+                supports_resources: false,
+                supports_prompts: false,
                 exposure: config.exposure.clone(),
                 status: McpClientStatus::Disconnected,
                 tools: vec![],
@@ -64,6 +69,94 @@ pub async fn list_mcp_servers(
         redact_mcp_snapshot(snapshot);
     }
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn list_mcp_resources(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    target_binding: String,
+    force_refresh: bool,
+) -> Result<McpResourceList, String> {
+    state
+        .runtime
+        .services
+        .mcp
+        .list_resources_at_target_binding(
+            &name,
+            &target_binding,
+            force_refresh,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .map_err(|error| log_err("list_mcp_resources", error))
+}
+
+#[tauri::command]
+pub async fn read_mcp_resource(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    target_binding: String,
+    uri: String,
+    force_refresh: bool,
+) -> Result<McpResourceRead, String> {
+    state
+        .runtime
+        .services
+        .mcp
+        .read_resource_at_target_binding(
+            &name,
+            &target_binding,
+            &uri,
+            force_refresh,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .map_err(|error| log_err("read_mcp_resource", error))
+}
+
+#[tauri::command]
+pub async fn list_mcp_prompts(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    target_binding: String,
+    force_refresh: bool,
+) -> Result<McpPromptList, String> {
+    state
+        .runtime
+        .services
+        .mcp
+        .list_prompts_at_target_binding(
+            &name,
+            &target_binding,
+            force_refresh,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .map_err(|error| log_err("list_mcp_prompts", error))
+}
+
+#[tauri::command]
+pub async fn get_mcp_prompt(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    target_binding: String,
+    prompt_name: String,
+    arguments: HashMap<String, String>,
+) -> Result<McpPrompt, String> {
+    state
+        .runtime
+        .services
+        .mcp
+        .get_prompt_at_target_binding(
+            &name,
+            &target_binding,
+            &prompt_name,
+            arguments,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .map_err(|error| log_err("get_mcp_prompt", error))
 }
 
 /// MCP env entries are configuration secrets in practice (API keys, bearer
@@ -407,6 +500,9 @@ mod tests {
             cwd: None,
             url: String::new(),
             enabled: true,
+            target_binding: None,
+            supports_resources: false,
+            supports_prompts: false,
             exposure: Default::default(),
             status: McpClientStatus::Disconnected,
             tools: vec![],

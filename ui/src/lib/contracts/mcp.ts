@@ -39,6 +39,9 @@ export interface McpServerSnapshotView {
 	cwd: string | null;
 	url: string;
 	enabled: boolean;
+	targetBinding: string | null;
+	supportsResources: boolean;
+	supportsPrompts: boolean;
 	exposure: McpExposureConfigView;
 	status: GeneratedMcpServerSnapshot['status'];
 	tools: McpToolInfoView[];
@@ -65,6 +68,10 @@ interface ValidatedMcpServerSnapshot extends Omit<GeneratedMcpServerSnapshot, 't
 
 function isNullableString(value: unknown): value is string | null {
 	return value === null || isString(value);
+}
+
+function isNullableMcpTargetBinding(value: unknown): value is string | null {
+	return value === null || (isString(value) && /^mcp-target:[0-9a-f]{16}:[0-9a-f]{16}$/u.test(value));
 }
 
 function isMcpExposureMode(value: unknown): value is McpToolExposureMode {
@@ -108,6 +115,9 @@ function isMcpServerSnapshot(value: unknown): value is ValidatedMcpServerSnapsho
 		isNullableString(value.cwd) &&
 		isString(value.url) &&
 		isBoolean(value.enabled) &&
+		isNullableMcpTargetBinding(value.target_binding) &&
+		isBoolean(value.supports_resources) &&
+		isBoolean(value.supports_prompts) &&
 		isMcpExposureConfig(value.exposure) &&
 		isMcpClientStatus(value.status) &&
 		Array.isArray(value.tools) &&
@@ -129,6 +139,9 @@ function toMcpServerSnapshotView(snapshot: ValidatedMcpServerSnapshot): McpServe
 		cwd: snapshot.cwd,
 		url: snapshot.url,
 		enabled: snapshot.enabled,
+		targetBinding: snapshot.target_binding,
+		supportsResources: snapshot.supports_resources,
+		supportsPrompts: snapshot.supports_prompts,
 		exposure: snapshot.exposure,
 		status: snapshot.status,
 		tools: snapshot.tools.map((tool) => ({

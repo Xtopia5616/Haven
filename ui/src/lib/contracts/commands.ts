@@ -64,6 +64,22 @@ export const TAURI_COMMAND_CONTRACTS = {
 		boundary: 'read',
 		security: 'snapshot only; env values redacted; invocation remains gated',
 	},
+	list_mcp_resources: {
+		boundary: 'execute',
+		security: 'enabled server and live connection binding; bounded host-driven list only',
+	},
+	read_mcp_resource: {
+		boundary: 'execute',
+		security: 'user-selected opaque URI; enabled server and live connection binding; bounded response',
+	},
+	list_mcp_prompts: {
+		boundary: 'execute',
+		security: 'enabled server and live connection binding; user-visible prompt discovery only',
+	},
+	get_mcp_prompt: {
+		boundary: 'execute',
+		security: 'user-selected prompt and bounded arguments; enabled server and live connection binding',
+	},
 	reconnect_mcp_server: {
 		boundary: 'execute',
 		security:

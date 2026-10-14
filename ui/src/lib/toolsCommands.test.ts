@@ -3,9 +3,13 @@ import {
 	addMcpServer,
 	executeSkill,
 	listBuiltinToolManifests,
+	listMcpPrompts,
+	listMcpResources,
 	listMcpServers,
 	listSkills,
 	openSkillsDir,
+	getMcpPrompt,
+	readMcpResource,
 	reconnectMcpServer,
 	refreshMcpServers,
 	refreshSkills,
@@ -31,6 +35,9 @@ function makeMcpServerSnapshot(overrides: Record<string, unknown> = {}) {
 		cwd: null,
 		url: '',
 		enabled: true,
+		target_binding: 'mcp-target:0123456789abcdef:fedcba9876543210',
+		supports_resources: false,
+		supports_prompts: false,
 		exposure: { default: 'deferred', tools: {} },
 		status: 'Disconnected',
 		tools: [
@@ -104,6 +111,9 @@ describe('ToolsView command boundary', () => {
 				cwd: null,
 				url: '',
 				enabled: true,
+				targetBinding: 'mcp-target:0123456789abcdef:fedcba9876543210',
+				supportsResources: false,
+				supportsPrompts: false,
 				exposure: { default: 'deferred', tools: {} },
 				status: { Offline: { error: 'server unavailable' } },
 				tools: [
@@ -120,6 +130,45 @@ describe('ToolsView command boundary', () => {
 		]);
 		expect(servers[0]).not.toHaveProperty('last_error');
 		expect(skills).toEqual(emptySkills);
+	});
+
+	it('forwards user-selected MCP resource and prompt requests with the live target binding', async () => {
+		const target = {
+			name: 'future-server',
+			targetBinding: 'mcp-target:0123456789abcdef:fedcba9876543210',
+		};
+		invoke
+			.mockResolvedValueOnce({ resources: [], ttlMs: null, cacheScope: 'private' })
+			.mockResolvedValueOnce({ contents: [], ttlMs: null, cacheScope: 'private' })
+			.mockResolvedValueOnce({ prompts: [], ttlMs: null, cacheScope: 'private' })
+			.mockResolvedValueOnce({
+				description: null,
+				messages: [{ role: 'user', content: { type: 'text', text: 'Hello' } }],
+				ttlMs: null,
+				cacheScope: 'private',
+			});
+
+		expect(await listMcpResources({ ...target, forceRefresh: false })).toMatchObject({ resources: [] });
+		expect(
+			await readMcpResource({ ...target, uri: 'mcp://selected/doc', forceRefresh: false }),
+		).toMatchObject({ contents: [] });
+		expect(await listMcpPrompts({ ...target, forceRefresh: false })).toMatchObject({ prompts: [] });
+		expect(
+			await getMcpPrompt({
+				...target,
+				promptName: 'review',
+				arguments: { topic: 'selected by user' },
+			}),
+		).toMatchObject({ description: null, messages: [{ role: 'user' }] });
+		expect(invoke.mock.calls).toEqual([
+			['list_mcp_resources', { ...target, forceRefresh: false }],
+			['read_mcp_resource', { ...target, uri: 'mcp://selected/doc', forceRefresh: false }],
+			['list_mcp_prompts', { ...target, forceRefresh: false }],
+			[
+				'get_mcp_prompt',
+				{ ...target, promptName: 'review', arguments: { topic: 'selected by user' } },
+			],
+		]);
 	});
 
 	it.each([null, {}, { tools: null }, { tools: {} }, { tools: 'invalid' }])(

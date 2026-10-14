@@ -2,6 +2,7 @@ use crate::client::McpClient;
 use crate::protocol::{
     McpCallOutput, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
+use crate::{McpPrompt, McpPromptList, McpResourceList, McpResourceRead};
 use futures_util::FutureExt;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -803,8 +804,34 @@ impl McpManager {
     /// Opaque identity for the manager and live connection that route this
     /// server name. It contains no endpoint or credential data.
     pub async fn client_target_binding(&self, name: &str) -> Option<String> {
-        let generation = self.client(name).await?.manager_generation();
+        let client = self.client(name).await?;
+        self.target_binding_for(&client)
+    }
+
+    fn target_binding_for(&self, client: &McpClient) -> Option<String> {
+        let generation = client.manager_generation();
         (generation != 0).then(|| format!("mcp-target:{:016x}:{generation:016x}", self.manager_id))
+    }
+
+    async fn client_at_target_binding(
+        &self,
+        client_name: &str,
+        expected_binding: &str,
+    ) -> anyhow::Result<Arc<McpClient>> {
+        let client = self
+            .client(client_name)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("MCP client '{}' not found", client_name))?;
+        let generation = client.manager_generation();
+        let actual_binding = (generation != 0)
+            .then(|| format!("mcp-target:{:016x}:{generation:016x}", self.manager_id));
+        if actual_binding.as_deref() != Some(expected_binding) {
+            return Err(anyhow::Error::new(McpTargetChanged));
+        }
+        if !client.enabled() {
+            anyhow::bail!("MCP client '{}' is disabled", client_name);
+        }
+        Ok(client)
     }
 
     /// Read a client status through the manager boundary. Missing clients are
@@ -819,7 +846,9 @@ impl McpManager {
     /// Return the public connection snapshot for one managed server.
     pub async fn client_snapshot(&self, name: &str) -> Option<McpServerSnapshot> {
         let client = self.client(name).await?;
-        Some(client.snapshot().await)
+        let mut snapshot = client.snapshot().await;
+        snapshot.target_binding = self.target_binding_for(&client);
+        Some(snapshot)
     }
 
     /// Cached tool count. `None` means no tools/list result is available yet;
@@ -1287,7 +1316,12 @@ impl McpManager {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        futures_util::future::join_all(clients.iter().map(|client| client.snapshot())).await
+        futures_util::future::join_all(clients.iter().map(|client| async move {
+            let mut snapshot = client.snapshot().await;
+            snapshot.target_binding = self.target_binding_for(client);
+            snapshot
+        }))
+        .await
     }
 
     /// Manually trigger a reconnect for a client, bypassing the retry-limit.
@@ -1372,16 +1406,72 @@ impl McpManager {
         cancel: CancellationToken,
     ) -> anyhow::Result<McpCallOutput> {
         let client = self
-            .client(client_name)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("MCP client '{}' not found", client_name))?;
-        let generation = client.manager_generation();
-        let actual_binding = (generation != 0)
-            .then(|| format!("mcp-target:{:016x}:{generation:016x}", self.manager_id));
-        if actual_binding.as_deref() != Some(expected_binding) {
-            return Err(anyhow::Error::new(McpTargetChanged));
-        }
+            .client_at_target_binding(client_name, expected_binding)
+            .await?;
         self.call_tool_on_client(client, tool_name, input, cancel)
+            .await
+    }
+
+    /// List the current resource catalog through the selected live connection.
+    /// UI callers must pass the binding from the snapshot they acted on so a
+    /// stale selection cannot be redirected to a replacement server.
+    pub async fn list_resources_at_target_binding(
+        &self,
+        client_name: &str,
+        expected_binding: &str,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpResourceList> {
+        self.client_at_target_binding(client_name, expected_binding)
+            .await?
+            .list_resources(force_refresh, cancel)
+            .await
+    }
+
+    /// Read only the opaque URI selected by the UI from the selected live
+    /// server. The MCP client never maps it to a local path or HTTP fetch.
+    pub async fn read_resource_at_target_binding(
+        &self,
+        client_name: &str,
+        expected_binding: &str,
+        uri: &str,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpResourceRead> {
+        self.client_at_target_binding(client_name, expected_binding)
+            .await?
+            .read_resource(uri, force_refresh, cancel)
+            .await
+    }
+
+    /// List prompts for explicit user selection; prompts are never model
+    /// callable by this API.
+    pub async fn list_prompts_at_target_binding(
+        &self,
+        client_name: &str,
+        expected_binding: &str,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpPromptList> {
+        self.client_at_target_binding(client_name, expected_binding)
+            .await?
+            .list_prompts(force_refresh, cancel)
+            .await
+    }
+
+    /// Render a prompt only after the caller has selected its name and passed
+    /// the prompt's declared string arguments.
+    pub async fn get_prompt_at_target_binding(
+        &self,
+        client_name: &str,
+        expected_binding: &str,
+        name: &str,
+        arguments: HashMap<String, String>,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpPrompt> {
+        self.client_at_target_binding(client_name, expected_binding)
+            .await?
+            .get_prompt(name, arguments, cancel)
             .await
     }
 
@@ -1459,6 +1549,16 @@ mod manager_lifecycle_tests {
                 &first_binding,
                 "probe",
                 Value::Null,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<McpTargetChanged>().is_some());
+        let error = second_manager
+            .list_resources_at_target_binding(
+                "target-binding",
+                &first_binding,
+                false,
                 CancellationToken::new(),
             )
             .await

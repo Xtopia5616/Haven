@@ -7,7 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 81;
+pub const EXPECTED_COMMAND_COUNT: usize = 85;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -128,6 +128,26 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "list_mcp_servers",
         boundary: CommandBoundary::Read,
         security: "snapshot only; env values redacted; invocation remains gated",
+    },
+    CommandContract {
+        name: "list_mcp_resources",
+        boundary: CommandBoundary::Execute,
+        security: "explicit host discovery; enabled live target binding; bounded opaque resource metadata",
+    },
+    CommandContract {
+        name: "read_mcp_resource",
+        boundary: CommandBoundary::Execute,
+        security: "explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content",
+    },
+    CommandContract {
+        name: "list_mcp_prompts",
+        boundary: CommandBoundary::Execute,
+        security: "user-driven prompt discovery; enabled live target binding; no model callable surface",
+    },
+    CommandContract {
+        name: "get_mcp_prompt",
+        boundary: CommandBoundary::Execute,
+        security: "explicit user-selected prompt and declared arguments; enabled live target binding; bounded untrusted messages",
     },
     CommandContract {
         name: "reconnect_mcp_server",

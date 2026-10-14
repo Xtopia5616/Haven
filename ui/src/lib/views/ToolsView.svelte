@@ -8,6 +8,7 @@
 	let enabledFilter = $state<'all' | 'enabled' | 'disabled'>('all');
 	let mcpDialogOpen = $state(false);
 	let mcpEditServer = $state<McpServerSnapshotView | null>(null);
+	let mcpFeatureServer = $state<McpServerSnapshotView | null>(null);
 
 	import { onMount, onDestroy } from 'svelte';
 	import {
@@ -34,6 +35,7 @@
 	import SkillCard from '$lib/SkillCard.svelte';
 	import McpServerCard from '$lib/McpServerCard.svelte';
 	import McpEditDialog from '$lib/McpEditDialog.svelte';
+	import McpFeatureDialog from '$lib/McpFeatureDialog.svelte';
 	import BuiltinToolCard from '$lib/BuiltinToolCard.svelte';
 	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -107,6 +109,18 @@
 	function clearFilters() {
 		searchQuery = '';
 		enabledFilter = 'all';
+	}
+
+	function openMcpFeatures(server: McpServerSnapshotView) {
+		if (!server.enabled || server.status !== 'Connected' || !server.targetBinding) {
+			reportError(new Error('MCP target is no longer connected'), {
+				context: 'ToolsView',
+				message: '该 MCP 服务器已断开或目标已变化，请刷新连接状态',
+				log: false,
+			});
+			return;
+		}
+		mcpFeatureServer = server;
 	}
 
 	const builtinToolCards = $derived(groupBuiltinTools(builtinTools));
@@ -629,6 +643,7 @@
 							{#each visibleMcpServers as server (server.name)}
 								<McpServerCard
 									{server}
+										onBrowseFeatures={openMcpFeatures}
 									onEdit={openEditDialog}
 									onRemove={handleRemove}
 									onReconnect={handleReconnect}
@@ -693,6 +708,10 @@
 		onSave={handleSave}
 		existingNames={mcpServers.map((s) => s.name)}
 	/>
+{/if}
+
+{#if mcpFeatureServer}
+	<McpFeatureDialog server={mcpFeatureServer} onClose={() => (mcpFeatureServer = null)} />
 {/if}
 
 <style>

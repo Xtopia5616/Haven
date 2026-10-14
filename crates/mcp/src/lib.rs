@@ -1,4 +1,5 @@
 mod client;
+mod features;
 mod manager;
 mod network;
 mod protocol;
@@ -10,6 +11,10 @@ mod tests;
 
 #[cfg(feature = "test-support")]
 pub use client::McpClient;
+pub use features::{
+    McpCacheScope, McpPrompt, McpPromptArgument, McpPromptContent, McpPromptInfo, McpPromptList,
+    McpPromptMessage, McpResourceContent, McpResourceInfo, McpResourceList, McpResourceRead,
+};
 pub use manager::{McpManager, McpReconcile, McpTargetChanged};
 pub use protocol::{
     MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpCallOutput, McpClientStatus, McpServerSnapshot,

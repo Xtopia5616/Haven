@@ -184,6 +184,12 @@
 		transcriptInput = text ?? '';
 	}
 
+	/** Append approved host-provided text while keeping the existing draft intact. */
+	export function appendDraft(text: string) {
+		if (!text) return;
+		transcriptInput = transcriptInput ? `${transcriptInput}\n\n${text}` : text;
+	}
+
 	async function handleRecordClick() {
 		try {
 			await recordingOverlayController.toggleFromToolbar();

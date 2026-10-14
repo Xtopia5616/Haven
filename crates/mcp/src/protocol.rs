@@ -621,6 +621,12 @@ pub struct McpServerSnapshot {
     pub cwd: Option<String>,
     pub url: String,
     pub enabled: bool,
+    /// Opaque identity for the exact live manager connection represented by
+    /// this snapshot. UI initiated reads pass it back to reject stale targets.
+    pub target_binding: Option<String>,
+    /// Negotiated server capabilities used to enable explicit host-side UI.
+    pub supports_resources: bool,
+    pub supports_prompts: bool,
     /// Haven-side model exposure policy for this configured server.
     pub exposure: McpExposureConfig,
     pub status: McpClientStatus,

@@ -372,8 +372,20 @@ export const LLM_CONNECTION_STATUS_VALUES = ['ready', 'disconnected', 'unconfigu
 export type LlmConnectionStatus = (typeof LLM_CONNECTION_STATUS_VALUES)[number];
 export const WEB_SEARCH_PHASE_VALUES = ['in_progress', 'searching', 'completed'] as const;
 export type WebSearchPhase = (typeof WEB_SEARCH_PHASE_VALUES)[number];
+export const MCP_CACHE_SCOPE_VALUES = ['public', 'private'] as const;
+export type McpCacheScope = (typeof MCP_CACHE_SCOPE_VALUES)[number];
+export interface McpPrompt { description: string | null; messages: McpPromptMessage[]; ttlMs: number | null; cacheScope: McpCacheScope }
+export interface McpPromptArgument { name: string; title?: string; description?: string; required: boolean }
+export type McpPromptContent = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string } | { type: 'audio'; data: string; mimeType: string } | { type: 'resource_link'; uri: string; name: string; title?: string | null; description?: string | null; mimeType?: string | null; size?: number | null } | { type: 'resource'; resource: McpResourceContent };
+export interface McpPromptInfo { name: string; title?: string; description?: string; arguments: McpPromptArgument[] }
+export interface McpPromptList { prompts: McpPromptInfo[]; ttlMs: number | null; cacheScope: McpCacheScope }
+export interface McpPromptMessage { role: string; content: McpPromptContent }
+export interface McpResourceContent { uri: string; mimeType?: string; text?: string; blob?: string }
+export interface McpResourceInfo { uri: string; name: string; title?: string; description?: string; mimeType?: string; size?: number }
+export interface McpResourceList { resources: McpResourceInfo[]; ttlMs: number | null; cacheScope: McpCacheScope }
+export interface McpResourceRead { contents: McpResourceContent[]; ttlMs: number | null; cacheScope: McpCacheScope }
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };
-export interface McpServerSnapshot { name: string; transport: McpServerTransport; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; exposure: McpExposureConfig; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
+export interface McpServerSnapshot { name: string; transport: McpServerTransport; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; target_binding: string | null; supports_resources: boolean; supports_prompts: boolean; exposure: McpExposureConfig; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
 export const MEMORY_ENTITY_KIND_INPUT_VALUES = ['fact', 'episode'] as const;
 export type MemoryEntityKindInput = (typeof MEMORY_ENTITY_KIND_INPUT_VALUES)[number];
@@ -2166,6 +2178,153 @@ export const GET_LOG_INFO_RESPONSE_SHAPE = {
 		'path': {
 			optional: false,
 			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		}
+	}
+} as const;
+export const GET_MCP_PROMPT_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'description': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'messages': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'role': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'content': {
+						optional: false,
+						shape: { kind: 'union', anyOf: [
+							{
+								kind: 'object',
+								fields: {
+									'type': {
+										optional: false,
+										shape: { kind: 'literal', value: 'text' },
+									},
+									'text': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'type': {
+										optional: false,
+										shape: { kind: 'literal', value: 'image' },
+									},
+									'data': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'mimeType': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'type': {
+										optional: false,
+										shape: { kind: 'literal', value: 'audio' },
+									},
+									'data': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'mimeType': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'type': {
+										optional: false,
+										shape: { kind: 'literal', value: 'resource_link' },
+									},
+									'uri': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'name': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'title': {
+										optional: true,
+										shape: { kind: 'string' },
+									},
+									'description': {
+										optional: true,
+										shape: { kind: 'string' },
+									},
+									'mimeType': {
+										optional: true,
+										shape: { kind: 'string' },
+									},
+									'size': {
+										optional: true,
+										shape: { kind: 'number' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'type': {
+										optional: false,
+										shape: { kind: 'literal', value: 'resource' },
+									},
+									'resource': {
+										optional: false,
+										shape: {
+											kind: 'object',
+											fields: {
+												'uri': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'mimeType': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'text': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'blob': {
+													optional: true,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+									}
+								}
+							}
+						] },
+					}
+				}
+			} },
+		},
+		'ttlMs': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'cacheScope': {
+			optional: false,
+			shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
 		}
 	}
 } as const;
@@ -4725,6 +4884,108 @@ export const LIST_FACTS_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const LIST_MCP_PROMPTS_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'prompts': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'name': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'title': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'description': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'arguments': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'name': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'title': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'description': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'required': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								}
+							}
+						} },
+					}
+				}
+			} },
+		},
+		'ttlMs': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'cacheScope': {
+			optional: false,
+			shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
+		}
+	}
+} as const;
+export const LIST_MCP_RESOURCES_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'resources': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'uri': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'name': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'title': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'description': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'mimeType': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'size': {
+						optional: true,
+						shape: { kind: 'number' },
+					}
+				}
+			} },
+		},
+		'ttlMs': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'cacheScope': {
+			optional: false,
+			shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
+		}
+	}
+} as const;
 export const LIST_MCP_SERVERS_RESPONSE_SHAPE = { kind: 'array', items: {
 	kind: 'object',
 	fields: {
@@ -4757,6 +5018,18 @@ export const LIST_MCP_SERVERS_RESPONSE_SHAPE = { kind: 'array', items: {
 			shape: { kind: 'string' },
 		},
 		'enabled': {
+			optional: false,
+			shape: { kind: 'boolean' },
+		},
+		'target_binding': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'supports_resources': {
+			optional: false,
+			shape: { kind: 'boolean' },
+		},
+		'supports_prompts': {
 			optional: false,
 			shape: { kind: 'boolean' },
 		},
@@ -5345,6 +5618,43 @@ export const READ_LOG_TAIL_RESPONSE_SHAPE = {
 		'content': {
 			optional: false,
 			shape: { kind: 'string' },
+		}
+	}
+} as const;
+export const READ_MCP_RESOURCE_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'contents': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'uri': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'mimeType': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'text': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'blob': {
+						optional: true,
+						shape: { kind: 'string' },
+					}
+				}
+			} },
+		},
+		'ttlMs': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'cacheScope': {
+			optional: false,
+			shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
 		}
 	}
 } as const;
@@ -8200,6 +8510,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	get_bootstrap_status: GET_BOOTSTRAP_STATUS_RESPONSE_SHAPE,
 	get_latest_session_for_resume: GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE,
 	get_log_info: GET_LOG_INFO_RESPONSE_SHAPE,
+	get_mcp_prompt: GET_MCP_PROMPT_RESPONSE_SHAPE,
 	get_performance_metrics: GET_PERFORMANCE_METRICS_RESPONSE_SHAPE,
 	get_recording_state: GET_RECORDING_STATE_RESPONSE_SHAPE,
 	get_session_for_resume: GET_SESSION_FOR_RESUME_RESPONSE_SHAPE,
@@ -8209,6 +8520,8 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	is_autostart_enabled: IS_AUTOSTART_ENABLED_RESPONSE_SHAPE,
 	list_builtin_tool_manifests: LIST_BUILTIN_TOOL_MANIFESTS_RESPONSE_SHAPE,
 	list_facts: LIST_FACTS_RESPONSE_SHAPE,
+	list_mcp_prompts: LIST_MCP_PROMPTS_RESPONSE_SHAPE,
+	list_mcp_resources: LIST_MCP_RESOURCES_RESPONSE_SHAPE,
 	list_mcp_servers: LIST_MCP_SERVERS_RESPONSE_SHAPE,
 	list_permissions: LIST_PERMISSIONS_RESPONSE_SHAPE,
 	list_runtime_sessions: LIST_RUNTIME_SESSIONS_RESPONSE_SHAPE,
@@ -8222,6 +8535,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	open_skills_dir: OPEN_SKILLS_DIR_RESPONSE_SHAPE,
 	process_transcript: PROCESS_TRANSCRIPT_RESPONSE_SHAPE,
 	read_log_tail: READ_LOG_TAIL_RESPONSE_SHAPE,
+	read_mcp_resource: READ_MCP_RESOURCE_RESPONSE_SHAPE,
 	recall_memory: RECALL_MEMORY_RESPONSE_SHAPE,
 	reconnect_mcp_server: RECONNECT_MCP_SERVER_RESPONSE_SHAPE,
 	refresh_mcp_servers: REFRESH_MCP_SERVERS_RESPONSE_SHAPE,
@@ -8327,6 +8641,7 @@ export interface TauriCommandMap {
 	get_bootstrap_status: { request: undefined; response: BootstrapStatus };
 	get_latest_session_for_resume: { request: undefined; response: SessionResumeResponse | null };
 	get_log_info: { request: undefined; response: LogInfo };
+	get_mcp_prompt: { request: { name: string; targetBinding: string; promptName: string; arguments: Record<string, string> }; response: McpPrompt };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };
 	get_recording_state: { request: undefined; response: RecordingStatus };
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
@@ -8336,6 +8651,8 @@ export interface TauriCommandMap {
 	is_autostart_enabled: { request: undefined; response: boolean };
 	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
 	list_facts: { request: { source?: MemoryFactSourceInput | null; cursor?: MemoryFactCursorInput | null; limit?: number | null }; response: MemoryFactPageResponse };
+	list_mcp_prompts: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpPromptList };
+	list_mcp_resources: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpResourceList };
 	list_mcp_servers: { request: undefined; response: McpServerSnapshot[] };
 	list_permissions: { request: undefined; response: StoredPermission[] };
 	list_runtime_sessions: { request: undefined; response: RuntimeSessionListResponse };
@@ -8349,6 +8666,7 @@ export interface TauriCommandMap {
 	open_skills_dir: { request: undefined; response: void };
 	process_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingId?: string | null; deliveryMode?: InputDeliveryModeInput | null }; response: ProcessResult };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
+	read_mcp_resource: { request: { name: string; targetBinding: string; uri: string; forceRefresh: boolean }; response: McpResourceRead };
 	recall_memory: { request: { query: string; kind?: MemoryEntityKindInput | null; limit?: number | null }; response: MemoryRecallItem[] };
 	reconnect_mcp_server: { request: { name: string }; response: void };
 	refresh_mcp_servers: { request: undefined; response: McpRefreshResult };

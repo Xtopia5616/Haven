@@ -16,9 +16,10 @@
 		onEdit?: (server: McpServerSnapshotView) => void | Promise<void>;
 		onRemove?: (name: string) => void | Promise<void>;
 		onReconnect?: (name: string) => void | Promise<void>;
+		onBrowseFeatures?: (server: McpServerSnapshotView) => void | Promise<void>;
 	}
 
-	let { server, onToggle, onEdit, onRemove, onReconnect }: Props = $props();
+	let { server, onToggle, onEdit, onRemove, onReconnect, onBrowseFeatures }: Props = $props();
 	let refreshing = $state(false);
 
 	async function handleReconnect() {
@@ -162,6 +163,15 @@
 			title="刷新 MCP 连接"
 			onclick={handleReconnect}
 		/>
+		{#if server.supportsResources || server.supportsPrompts}
+			<MaterialIconButton
+				icon="fileSearch"
+				label="浏览资源与提示词"
+				title="浏览此 MCP 服务器的资源与提示词"
+				disabled={!server.enabled || !isConnected() || !server.targetBinding}
+				onclick={() => onBrowseFeatures?.(server)}
+			/>
+		{/if}
 		<MaterialIconButton
 			icon="edit"
 			label="编辑"

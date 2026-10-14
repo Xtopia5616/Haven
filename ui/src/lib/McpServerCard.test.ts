@@ -19,6 +19,9 @@ function server(tools: McpToolInfoView[]): McpServerSnapshotView {
 		lastError: null,
 		diagnostic: null,
 		lastSeenAt: null,
+		targetBinding: 'mcp-target:0123456789abcdef:fedcba9876543210',
+		supportsResources: false,
+		supportsPrompts: false,
 	};
 }
 

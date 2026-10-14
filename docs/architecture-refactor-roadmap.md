@@ -186,8 +186,8 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | Complete | 授权与 sandbox 对嵌套 capability 的安全审计和必要收敛 | proof 精确绑定 session/tool/capability/input/target，不能跨子 capability 或 session；每次 attempt 重检当前 deny、policy revision、sandbox/network；MCP 路由验证 target 并固定 client；撤销、策略变化、替换目标和 handler 前拒绝均有负向测试。CodeMode Agent child port 对每个子调用单独取 proof；Tools 按实时 CodeMode exposure 重新查找并验证目标后执行，确认必需/策略拒绝均在 handler 前 fail closed。 |
 | Complete | CodeMode 合成调用面与 per-server allowlist 后端链路 | 只有存在已启用的 CodeMode MCP capability 时才向会话加入单个合成 `codemode_run`；脚本只看到该快照中的工具描述，MCP 子调用不进入 provider-native surface。每个子调用重新授权并走标准执行、sandbox/network、目标绑定和结果上限；每次重试也重查 live exposure。QuickJS 资源边界、Agent proof/确认拒绝、Tools 暴露边界测试及全 Tools/Agent 测试通过。 |
 | Complete | CodeMode 与 Legacy 的 per-server 切换和受限调用链 | 单个合成 `codemode_run`、快照 allowlist、逐子调用授权 proof、Tools live exposure/target 校验、Legacy/CodeMode per-server UI 及 per-tool overrides 已接通。Agent→ToolsFacade→evaluator→子工具授权链、confirmation fail-closed、预算/取消和 MCP 暴露撤销测试通过；授权型子调用当前需用户改走 Legacy。 |
-| **Active** | MCP resources/read 与 user-selected prompts | 按最新协议能力协商实现有界、带来源和 auth context 的资源读取与显式选择的 prompt；资源 URI、授权目标、缓存/字节上限与会话上下文由 MCP owner 管理；未实现的交互/任务能力 fail closed。 |
-| Deferred | 声明式 Workflow | DAG/参数映射验证、无任意表达式/动态路由；每步单独授权；仅有跨 turn 生命周期时接入 ToolRun，不再建平行 job owner。 |
+| Complete | MCP resources/read 与 user-selected prompts | modern/legacy capability 协商、分页和 typed 响应预算、连接代次缓存与显式刷新、四个 target-bound IPC 命令和用户浏览 UI 已接通；用户预览后只可将可表达的纯用户文本加入 Composer 草稿，模型不可调用，随后普通发送进入现有 ingress。Resources templates、订阅和 MRTR 未暴露，保持 fail closed。 |
+| **Active** | 声明式 Workflow | 定义可执行 DAG 和输入/输出契约；参数映射静态验证，不支持任意表达式或动态路由；每步重新检查 exposure、target 与授权；只有真正跨 turn 的生命周期才接入 ToolRun，不建立平行 job owner。 |
 | Deferred | ExecutionWorkspace 与 sandbox 权限范围收敛 | 明确区分 UI workspace 与执行根；文件句柄/path、进程树、网络目标和取消均由后端验证；Windows 边界另做真实系统验收。 |
 
 实施仍遵守“证据与契约 → 单条垂直调用链 → 负向/恢复验证 → 适用门禁 → 独立提交”的顺序。每完成一行，只把下一行提升为 Active，并在该提交中更新本节。

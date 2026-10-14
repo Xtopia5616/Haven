@@ -1,6 +1,18 @@
 import { invoke } from '$lib/tauri.ts';
 import { parseMcpRefreshResult, parseMcpServerSnapshots } from './contracts/mcp.ts';
 import type { McpRefreshResultView, McpServerSnapshotView } from './contracts/mcp.ts';
+import {
+	parseMcpPrompt,
+	parseMcpPromptList,
+	parseMcpResourceList,
+	parseMcpResourceRead,
+} from './contracts/mcpFeatures.ts';
+import type {
+	McpPromptListView,
+	McpPromptView,
+	McpResourceListView,
+	McpResourceReadView,
+} from './contracts/mcpFeatures.ts';
 import { parseSkillExecutionResponse, parseSkillInfoList } from './contracts/skills.ts';
 import type { SkillInfoView } from './contracts/skills.ts';
 import { parseBuiltinToolManifestList } from './contracts/tools.ts';
@@ -28,6 +40,44 @@ export function listBuiltinToolManifests(): Promise<BuiltinToolManifestListView>
 /** Read MCP catalog snapshots using the current Rust status variants. */
 export function listMcpServers(): Promise<McpServerSnapshotView[]> {
 	return invoke('list_mcp_servers').then((value: unknown) => parseMcpServerSnapshots(value));
+}
+
+/** Discover bounded metadata from the server selected in the current snapshot. */
+export function listMcpResources(request: {
+	name: string;
+	targetBinding: string;
+	forceRefresh: boolean;
+}): Promise<McpResourceListView> {
+	return invoke('list_mcp_resources', request).then((value: unknown) => parseMcpResourceList(value));
+}
+
+/** Read only the exact opaque URI selected by the user from its live target. */
+export function readMcpResource(request: {
+	name: string;
+	targetBinding: string;
+	uri: string;
+	forceRefresh: boolean;
+}): Promise<McpResourceReadView> {
+	return invoke('read_mcp_resource', request).then((value: unknown) => parseMcpResourceRead(value));
+}
+
+/** Discover prompts for explicit user selection. */
+export function listMcpPrompts(request: {
+	name: string;
+	targetBinding: string;
+	forceRefresh: boolean;
+}): Promise<McpPromptListView> {
+	return invoke('list_mcp_prompts', request).then((value: unknown) => parseMcpPromptList(value));
+}
+
+/** Render a selected prompt with string arguments declared by that prompt. */
+export function getMcpPrompt(request: {
+	name: string;
+	targetBinding: string;
+	promptName: string;
+	arguments: Record<string, string>;
+}): Promise<McpPromptView> {
+	return invoke('get_mcp_prompt', request).then((value: unknown) => parseMcpPrompt(value));
 }
 
 /** Read the current Skill metadata projection. */

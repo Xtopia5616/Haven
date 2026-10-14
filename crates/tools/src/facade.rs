@@ -3,10 +3,11 @@ use crate::live_output::LiveOutputHub;
 #[cfg(test)]
 use crate::registry::OperationRegistry;
 use crate::skill_runner::SkillRunner;
-use haven_mcp::McpManager;
+use haven_mcp::{McpManager, McpPrompt, McpPromptList, McpResourceList, McpResourceRead};
 #[cfg(feature = "test-support")]
 use haven_skills::Skill;
 use haven_skills::SkillRegistry;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
@@ -36,6 +37,40 @@ pub trait McpRuntimePort: Send + Sync {
     async fn shutdown(&self);
 
     async fn snapshot(&self) -> Vec<McpServerSnapshot>;
+
+    async fn list_resources_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpResourceList>;
+
+    async fn read_resource_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        uri: &str,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpResourceRead>;
+
+    async fn list_prompts_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpPromptList>;
+
+    async fn get_prompt_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        name: &str,
+        arguments: HashMap<String, String>,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpPrompt>;
 
     async fn has_client(&self, name: &str) -> bool;
 
@@ -73,6 +108,62 @@ impl McpRuntimePort for SharedMcpRuntimePort {
 
     async fn snapshot(&self) -> Vec<McpServerSnapshot> {
         self.manager.snapshot().await
+    }
+
+    async fn list_resources_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpResourceList> {
+        self.manager
+            .list_resources_at_target_binding(client_name, target_binding, force_refresh, cancel)
+            .await
+    }
+
+    async fn read_resource_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        uri: &str,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpResourceRead> {
+        self.manager
+            .read_resource_at_target_binding(
+                client_name,
+                target_binding,
+                uri,
+                force_refresh,
+                cancel,
+            )
+            .await
+    }
+
+    async fn list_prompts_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpPromptList> {
+        self.manager
+            .list_prompts_at_target_binding(client_name, target_binding, force_refresh, cancel)
+            .await
+    }
+
+    async fn get_prompt_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        name: &str,
+        arguments: HashMap<String, String>,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpPrompt> {
+        self.manager
+            .get_prompt_at_target_binding(client_name, target_binding, name, arguments, cancel)
+            .await
     }
 
     async fn has_client(&self, name: &str) -> bool {

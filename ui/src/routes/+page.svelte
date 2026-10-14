@@ -58,6 +58,7 @@
 		updateReactExecutionPhase,
 	} from '$lib/reactExecutionPhaseStore.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
+	import { subscribeMcpDraft } from '$lib/mcpDraftBridge.ts';
 	import {
 		sessionResumeTargetStore,
 		NEW_SESSION_INTENT_STORAGE_KEY,
@@ -116,7 +117,11 @@
 	import type { ReActExecutionPhaseSnapshot } from '$lib/reactExecutionPhaseStore.ts';
 
 	let chatPageEl = $state<HTMLElement | null>(null);
-	let composerRef = $state<{ setDraft: (text: string) => void } | null>(null);
+	let composerRef = $state<{
+		setDraft: (text: string) => void;
+		appendDraft: (text: string) => void;
+	} | null>(null);
+	let unsubscribeMcpDraft: (() => void) | null = null;
 	let recentHistorySessions = $state<SessionHistoryRow[]>([]);
 	let historyRefreshSeq = 0;
 	let sessionLineage = $state<{
@@ -790,6 +795,7 @@
 	$effect(() => chatViewController.observeComposerClearance(chatPageEl, browser));
 
 	onMount(async () => {
+		unsubscribeMcpDraft = subscribeMcpDraft((text) => composerRef?.appendDraft(text));
 		// Hydrate the fresh-start intent from localStorage BEFORE any data
 		// load: the store is in-memory only, but the intent survives app
 		// restarts via the persisted `haven.no_auto_restore` intent. Without this,
@@ -904,6 +910,8 @@
 
 	onDestroy(() => {
 		dead = true;
+		unsubscribeMcpDraft?.();
+		unsubscribeMcpDraft = null;
 		unregisterPerformanceMetricsProvider();
 		// Flush any queued streaming chunks so the in-memory message store is
 		// complete before the listeners are disposed (a re-entry to this page
