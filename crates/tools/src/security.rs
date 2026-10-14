@@ -1748,6 +1748,31 @@ mod tests {
                 .is_ok()
         );
 
+        let child_input = json!({"path": "child.txt"});
+        let child_request = AuthorizationRequest::new(
+            request.session_id.as_deref(),
+            "files.read",
+            child_input.clone(),
+            fixture_policy("files.read", &child_input, RiskLevel::Safe),
+        );
+        assert!(
+            engine
+                .verify_execution_proof(&child_request, &proof)
+                .await
+                .is_err(),
+            "a parent tool proof cannot authorize a child capability"
+        );
+
+        let mut other_session_request = request.clone();
+        other_session_request.session_id = Some("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into());
+        assert!(
+            engine
+                .verify_execution_proof(&other_session_request, &proof)
+                .await
+                .is_err(),
+            "a proof cannot be replayed in another session"
+        );
+
         let mut changed_request = request.clone();
         changed_request.input = serde_json::json!({"value": "changed"});
         assert!(
@@ -1786,6 +1811,45 @@ mod tests {
                 .await
                 .is_err(),
             "an authorization proof cannot be redirected to a replacement target"
+        );
+    }
+
+    #[tokio::test]
+    async fn execution_proof_rechecks_a_deny_added_after_authorization() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let input = json!({});
+        let request = AuthorizationRequest::new(
+            Some(session_id),
+            "ask",
+            input.clone(),
+            fixture_policy("ask", &input, RiskLevel::Safe),
+        );
+        let check = engine.authorize_for_execution(&request).await;
+        assert!(matches!(
+            check.decision,
+            AuthorizationDecision::AutoApproved
+        ));
+        let proof = check.execution_proof.unwrap();
+
+        engine
+            .grant(
+                Some(session_id),
+                request.capability().clone(),
+                PermissionEffect::Deny,
+                PermissionScope::Session,
+            )
+            .await;
+
+        assert!(
+            engine
+                .verify_execution_proof(&request, &proof)
+                .await
+                .is_err(),
+            "a newly installed session deny takes effect before the handler starts"
         );
     }
 

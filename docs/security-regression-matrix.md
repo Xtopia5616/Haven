@@ -30,7 +30,7 @@
 
 | 入口 | 必须执行的检查 | 回归断言 |
 |---|---|---|
-| ReAct 工具执行 | `AgentExecutor::execute_gated` → `AuthorizationPort` decision/proof → `AuthorizedExecutor` 每次 attempt 复核 → 执行 | auto proof 绑定 request、operation policy 与 policy revision；confirmation 绑定 receipt；attempt gate 发现输入、目标策略或 revision 已变化时不进入 handler；retry 前再次检查；handler 已开始后的撤销不回滚已发起的外部副作用；parent proof 不授权 child |
+| ReAct 工具执行 | `AgentExecutor::execute_gated` → `AuthorizationPort` decision/proof → `AuthorizedExecutor` 每次 attempt 复核 → 执行 | auto proof 绑定 session/tool/capability/input/target、operation policy 与 policy revision；confirmation 绑定 receipt；跨 child capability 或 session 的 proof 被拒绝；attempt gate 重检当前 deny、sandbox/network 与 revision，失败时不进入 handler；retry 前再次检查；handler 已开始后的撤销不回滚已发起的外部副作用 |
 | 定时任务触发 | 设定时按 registry 风险检查，触发时再次经过 executor gate | 设定时的允许不能替代触发时的当前拒绝 |
 | MCP 适配器 | `mcp__server__tool` 使用 adapter 的 high 风险和同一授权 key；proof 绑定 manager/client target identity，manager 路由前再次比较 | UI 预览与 Agent 调用共享 permanent grant；session grant 不泄漏到无 session 入口；client/manager 替换后旧确认不被重定向 |
 | skill 适配器 | `skill__name` 使用 adapter 的 high 风险和同一授权 key | skill 脚本不能由 `confirmed` 参数绕过 deny/path gate |
