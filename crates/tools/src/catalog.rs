@@ -369,6 +369,47 @@ impl ToolsFacade {
         self.coordinator.core.operations.installed.get(name).await
     }
 
+    /// Resolve an MCP adapter exclusively through a CodeMode allowlist. This
+    /// path intentionally does not consult the provider-native surface, and
+    /// refuses tools whose live config no longer selects CodeMode.
+    pub(crate) async fn get_codemode_subcall_tool_for_session(
+        &self,
+        session_id: Option<&str>,
+        name: &str,
+    ) -> Option<ToolHandle> {
+        if !session_id.is_some_and(|id| haven_common::types::is_canonical_id(id, "ses")) {
+            return None;
+        }
+        let configs = self
+            .coordinator
+            .builtins
+            .mcp_server_config_source
+            .list()
+            .await
+            .ok()?;
+        let manager = &self.coordinator.builtins.mcp_manager;
+        let platform = self.coordinator.runtime.platform().await;
+        let settings = &platform.tool_settings;
+        for config in configs.into_iter().filter(|config| config.enabled) {
+            let Some(available) = manager.cached_tools(&config.name).await else {
+                continue;
+            };
+            for info in available {
+                if config.exposure.for_tool(&info.name) != McpToolExposure::CodeMode {
+                    continue;
+                }
+                let qualified_name = McpToolAdapter::qualified_name_of(&config.name, &info.name);
+                if qualified_name == name && tool_config_enabled(settings, &qualified_name) {
+                    return Some(
+                        Arc::new(McpToolAdapter::new(manager.clone(), &config.name, info))
+                            as ToolHandle,
+                    );
+                }
+            }
+        }
+        None
+    }
+
     /// Build an MCP server index (name + available tool names) for injection
     /// into the system prompt. The LLM uses `load_mcp` to get full schemas.
     /// Only enabled servers are listed — disabled ones cannot be loaded.
@@ -578,6 +619,51 @@ impl OperationCatalog<'_> {
         tools
     }
 
+    /// Build the trusted MCP tool description set for the synthetic CodeMode
+    /// invocation. These capabilities never become top-level model tools.
+    async fn codemode_tool_for_session(&self) -> Option<ToolHandle> {
+        let configs = match self
+            .facade
+            .coordinator
+            .builtins
+            .mcp_server_config_source
+            .list()
+            .await
+        {
+            Ok(configs) => configs,
+            Err(error) => {
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to read MCP exposure config while building CodeMode tool surface"
+                );
+                return None;
+            }
+        };
+        let manager = &self.facade.coordinator.builtins.mcp_manager;
+        let platform = self.facade.coordinator.runtime.platform().await;
+        let settings = &platform.tool_settings;
+        let mut definitions = Vec::new();
+        for config in configs.into_iter().filter(|config| config.enabled) {
+            let Some(available) = manager.cached_tools(&config.name).await else {
+                continue;
+            };
+            definitions.extend(available.iter().filter_map(|info| {
+                let name = McpToolAdapter::qualified_name_of(&config.name, &info.name);
+                (config.exposure.for_tool(&info.name) == McpToolExposure::CodeMode
+                    && tool_config_enabled(settings, &name))
+                .then(|| {
+                    crate::codemode_tool::mcp_code_mode_definition(manager, &config.name, info)
+                })
+            }));
+        }
+        definitions.sort_by(|left, right| left.name.cmp(&right.name));
+        let tool = crate::codemode_tool::CodeModeInvocationTool::from_definitions(definitions);
+        if tool.is_none() {
+            tracing::debug!("no eligible MCP CodeMode tools are available for this session");
+        }
+        tool
+    }
+
     /// Refresh only the MCP adapters already active in this session. A live
     /// tools/list response can update or remove selected tools, but never
     /// activates newly discovered names without an explicit `load_mcp` call.
@@ -672,12 +758,16 @@ impl OperationCatalog<'_> {
                 .list(session_id)
                 .await;
             let direct = self.direct_mcp_tools_for_session().await;
+            let codemode = self.codemode_tool_for_session().await;
             let after = self.facade.catalog_version_for_session(session_id).await;
 
             let mut tools = HashMap::with_capacity(global.len() + session.len() + direct.len());
             let global_defs = global.iter().map(|tool| tool.tool_def()).collect();
             let mut session_defs: Vec<_> = session.iter().map(|tool| tool.tool_def()).collect();
             session_defs.extend(direct.iter().map(|tool| tool.tool_def()));
+            if let Some(tool) = codemode.as_ref() {
+                session_defs.push(tool.tool_def());
+            }
             for tool in global {
                 tools.insert(tool.name(), tool);
             }
@@ -685,6 +775,9 @@ impl OperationCatalog<'_> {
                 tools.insert(tool.name(), tool);
             }
             for tool in direct {
+                tools.insert(tool.name(), tool);
+            }
+            if let Some(tool) = codemode {
                 tools.insert(tool.name(), tool);
             }
             let max = self
@@ -737,6 +830,9 @@ impl OperationCatalog<'_> {
             .await;
         let direct = self.direct_mcp_tools_for_session().await;
         session_defs.extend(direct.iter().map(|tool| tool.tool_def()));
+        if let Some(tool) = self.codemode_tool_for_session().await {
+            session_defs.push(tool.tool_def());
+        }
         let total = global_len + session_defs.len();
         let selection = select_tool_definitions_for_budget(global_defs, session_defs, max);
         if !selection.omitted.is_empty() {

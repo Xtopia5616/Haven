@@ -1,4 +1,6 @@
-use crate::{McpManager, McpToolAdapter, McpToolInfo, ToolHandle, ToolsFacade};
+use crate::{
+    CODEMODE_RUN_TOOL_NAME, McpManager, McpToolAdapter, McpToolInfo, ToolHandle, ToolsFacade,
+};
 use haven_common::config::{McpExposureConfig, McpServerConfig};
 use haven_common::mcp::{McpServerTransport, McpToolExposure};
 use haven_common::types::NetworkPolicy;
@@ -197,6 +199,109 @@ async fn direct_mcp_tools_are_advertised_and_hidden_tools_are_not_executable() {
             .get_tool_for_session(Some(session_id), &name)
             .await
             .is_none()
+    );
+
+    manager.shutdown_all().await;
+    cancellation.cancel();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn codemode_exposure_is_only_visible_through_the_synthetic_bounded_tool() {
+    let facade = ToolsFacade::new();
+    let manager = facade.coordinator.builtins.mcp_manager.clone();
+    manager.set_network_policy(NetworkPolicy::Open).await;
+
+    let catalog = Arc::new(RwLock::new(vec![serde_json::json!({
+        "name": "calendar_status",
+        "description": "Read calendar status",
+        "inputSchema": {"type": "object", "properties": {"view": {"type": "string"}}}
+    })]));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let cancellation = CancellationToken::new();
+    let server = tokio::spawn(serve_mcp_catalog(listener, catalog, cancellation.clone()));
+
+    let config = McpServerConfig {
+        name: "calendar".into(),
+        transport: McpServerTransport::Http,
+        url: format!("http://{address}/mcp"),
+        exposure: McpExposureConfig {
+            default: McpToolExposure::CodeMode,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    facade.upsert_mcp_server_config(config.clone()).await;
+    manager.connect_server(&config).await.unwrap();
+
+    let session_id = "ses-65dd7c6b35b99687a424c2fd8bdb08a9";
+    let child_name = McpToolAdapter::qualified_name_of("calendar", "calendar_status");
+    let snapshot = facade.tool_catalog_snapshot(session_id).await;
+    assert!(
+        snapshot
+            .provider_definitions()
+            .iter()
+            .any(|definition| definition.name == CODEMODE_RUN_TOOL_NAME)
+    );
+    assert!(
+        snapshot
+            .provider_definitions()
+            .iter()
+            .all(|definition| definition.name != child_name)
+    );
+    let code_mode_tool = snapshot
+        .get(CODEMODE_RUN_TOOL_NAME)
+        .expect("the synthetic tool is available when one MCP child is exposed");
+    let definitions = code_mode_tool
+        .codemode_tool_definitions()
+        .expect("synthetic CodeMode tool has a trusted capability set");
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].name, child_name);
+
+    assert!(
+        facade
+            .get_tool_for_session(Some(session_id), &child_name)
+            .await
+            .is_none(),
+        "CodeMode children never enter the provider-native lookup"
+    );
+    assert!(
+        facade
+            .get_codemode_subcall_tool_for_session(Some(session_id), &child_name)
+            .await
+            .is_some()
+    );
+    let request = facade
+        .resolve_codemode_subcall_authorization_request(
+            Some(session_id),
+            &child_name,
+            &serde_json::json!({ "view": "agenda" }),
+        )
+        .await
+        .expect("the child uses the ordinary MCP operation policy and live target");
+    assert!(request.target_binding.is_some());
+
+    let mut hidden = config;
+    hidden.exposure.default = McpToolExposure::Hidden;
+    facade.upsert_mcp_server_config(hidden).await;
+    assert!(
+        facade
+            .resolve_codemode_subcall_authorization_request(
+                Some(session_id),
+                &child_name,
+                &serde_json::json!({}),
+            )
+            .await
+            .is_err(),
+        "stale CodeMode allowlists must fail after exposure changes"
+    );
+    let snapshot = facade.tool_catalog_snapshot(session_id).await;
+    assert!(
+        snapshot
+            .provider_definitions()
+            .iter()
+            .all(|definition| definition.name != CODEMODE_RUN_TOOL_NAME)
     );
 
     manager.shutdown_all().await;

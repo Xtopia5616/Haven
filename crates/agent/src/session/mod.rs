@@ -382,7 +382,6 @@ pub struct SessionSupervisor {
     messaging_root: Option<tempfile::TempDir>,
     execution: Arc<dyn tool_ports::ToolExecutionPort>,
     authorization: Arc<dyn tool_ports::ToolAuthorizationPort>,
-    #[cfg(test)]
     tool_catalog: Arc<dyn crate::react::ToolCatalogPort>,
     /// ToolCall lifecycle capability used for session-owned cancellation and
     /// terminal ToolRun reconciliation.
@@ -485,8 +484,7 @@ pub struct SessionSupervisor {
 }
 
 mod actor;
-// The next slice connects this port to the synthetic CodeMode model tool.
-#[allow(dead_code)]
+// Agent-owned authorization for nested CodeMode child calls.
 mod codemode;
 mod dispatcher;
 mod queues;
@@ -513,7 +511,6 @@ impl SessionSupervisor {
     /// Bind a CodeMode invocation to this session's authorization and execution
     /// owners. The supplied names come from the run's resolved CodeMode-only
     /// catalog; this port never exposes a tool registry or raw adapter.
-    #[allow(dead_code)] // Kept private until the CodeMode tool surface is wired.
     pub(crate) fn codemode_subcall_port(
         &self,
         session_id: &str,
@@ -531,7 +528,7 @@ impl SessionSupervisor {
         let SessionToolPorts {
             execution,
             authorization,
-            catalog: _catalog,
+            catalog,
             tool_runs,
             #[cfg(test)]
             tool_run_test_support,
@@ -548,8 +545,7 @@ impl SessionSupervisor {
             #[cfg(test)]
             messaging_root: None,
             execution,
-            #[cfg(test)]
-            tool_catalog: _catalog,
+            tool_catalog: catalog,
             authorization,
             tool_runs,
             #[cfg(test)]

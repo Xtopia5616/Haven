@@ -1061,17 +1061,45 @@ impl SessionSupervisor {
         let execution_proof = execution_proof.ok_or_else(|| {
             anyhow::anyhow!("authorization decision did not issue an execution proof")
         })?;
-        let result = self
-            .execution
-            .execute(ToolExecutionContext {
-                session_id: session_id.map(str::to_owned),
-                tool_name: tool_name.to_owned(),
-                input,
-                cancel,
-                step_id: step_id.map(str::to_owned),
-                authorization_proof: Some(execution_proof),
-            })
-            .await?;
+        let codemode_subcalls = if tool_name == haven_tools::CODEMODE_RUN_TOOL_NAME {
+            let Some(session_id) = session_id else {
+                return Err(anyhow::anyhow!("CodeMode requires a live session context"));
+            };
+            let snapshot = self.tool_catalog.catalog_snapshot(session_id).await;
+            let definitions = snapshot
+                .get(tool_name)
+                .and_then(|tool| tool.codemode_tool_definitions());
+            let Some(definitions) = definitions.filter(|definitions| !definitions.is_empty())
+            else {
+                return Ok(ToolExecution {
+                    result: ToolResult::failed_with_class(
+                        Value::Null,
+                        "CodeMode tools are no longer exposed in this session",
+                        haven_common::tools::ToolErrorClass::Permission,
+                    ),
+                    risk_level,
+                    confirmed: Some(false),
+                });
+            };
+            Some(self.codemode_subcall_port(
+                session_id,
+                definitions.into_iter().map(|definition| definition.name),
+            ))
+        } else {
+            None
+        };
+        let context = ToolExecutionContext {
+            session_id: session_id.map(str::to_owned),
+            tool_name: tool_name.to_owned(),
+            input,
+            cancel,
+            step_id: step_id.map(str::to_owned),
+            authorization_proof: Some(execution_proof),
+        };
+        let result = match codemode_subcalls {
+            Some(subcalls) => self.execution.execute_codemode(context, subcalls).await?,
+            None => self.execution.execute(context).await?,
+        };
         Ok(ToolExecution {
             result,
             risk_level,

@@ -61,7 +61,7 @@ impl CodeModeSubcallPort for AuthorizedCodeModeSubcallPort {
 
         let request = self
             .authorization
-            .authorization_request(Some(&self.session_id), tool_name, &input)
+            .authorization_request_for_codemode_subcall(Some(&self.session_id), tool_name, &input)
             .await?;
         let authorization = self.authorization.authorize_for_execution(&request).await;
         let proof = match authorization.decision {
@@ -78,16 +78,17 @@ impl CodeModeSubcallPort for AuthorizedCodeModeSubcallPort {
             }
         };
 
+        let context = ToolExecutionContext {
+            session_id: Some(self.session_id.clone()),
+            tool_name: tool_name.to_owned(),
+            input,
+            cancel,
+            step_id: None,
+            authorization_proof: Some(proof),
+        };
         let result = self
             .execution
-            .execute(ToolExecutionContext {
-                session_id: Some(self.session_id.clone()),
-                tool_name: tool_name.to_owned(),
-                input,
-                cancel,
-                step_id: None,
-                authorization_proof: Some(proof),
-            })
+            .execute_codemode_subcall(context)
             .await
             .map_err(|error| error.to_string())?;
 

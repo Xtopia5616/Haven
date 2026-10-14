@@ -97,6 +97,28 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         )
     }
 
+    async fn codemode_subcall_authorization_request(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> Result<AuthorizationRequest, String> {
+        let tool = self
+            .tools
+            .get_codemode_subcall_tool_for_session(session_id, tool_name)
+            .await
+            .ok_or_else(|| {
+                "MCP capability is not enabled for CodeMode in this session".to_owned()
+            })?;
+        let policy = Self::operation_policy_for(Some(&tool), tool_name, input)?;
+        let authorization_input = Self::authorization_input_for(Some(&tool), input);
+        let target_binding = tool.authorization_target_binding(input).await?;
+        Ok(
+            AuthorizationRequest::new(session_id, tool_name, authorization_input, policy)
+                .with_target_binding(target_binding),
+        )
+    }
+
     async fn authorization_request_from_snapshot(
         catalog: &ToolCatalogSnapshot,
         session_id: Option<&str>,
@@ -166,6 +188,19 @@ impl ToolsFacade {
     ) -> Result<AuthorizationRequest, String> {
         ToolAuthorizationRequestResolver::new(self)
             .authorization_request(session_id, tool_name, input)
+            .await
+    }
+
+    /// Build an authorization request only for a currently enabled MCP tool
+    /// whose exposure resolver selects CodeMode.
+    pub async fn resolve_codemode_subcall_authorization_request(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> Result<AuthorizationRequest, String> {
+        ToolAuthorizationRequestResolver::new(self)
+            .codemode_subcall_authorization_request(session_id, tool_name, input)
             .await
     }
 

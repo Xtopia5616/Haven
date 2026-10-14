@@ -232,6 +232,22 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
             .await
     }
 
+    async fn authorization_request_for_codemode_subcall(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> Result<AuthorizationRequest, String> {
+        if tool_name.starts_with("mcp__") {
+            self.tools
+                .resolve_codemode_subcall_authorization_request(session_id, tool_name, input)
+                .await
+        } else {
+            self.authorization_request(session_id, tool_name, input)
+                .await
+        }
+    }
+
     async fn authorization_request_from_catalog(
         &self,
         catalog: &ToolCatalogSnapshot,
@@ -462,6 +478,63 @@ impl ToolExecutionPort for ToolsFacadeAgentAdapter {
                 proof,
             )
             .await
+    }
+
+    async fn execute_codemode(
+        &self,
+        context: ToolExecutionContext,
+        subcalls: Arc<dyn haven_tools::CodeModeSubcallPort>,
+    ) -> anyhow::Result<ToolResult> {
+        let proof = context.authorization_proof.ok_or_else(|| {
+            anyhow::anyhow!("CodeMode execution is missing an authorization proof")
+        })?;
+        self.tools
+            .execute_authorized_codemode_tool_with_step(
+                haven_tools::AuthorizedCodeModeToolExecution {
+                    session_id: context.session_id,
+                    tool_name: context.tool_name,
+                    input: context.input,
+                    cancel: context.cancel,
+                    step_id: context.step_id,
+                    proof,
+                    subcalls,
+                },
+            )
+            .await
+    }
+
+    async fn execute_codemode_subcall(
+        &self,
+        context: ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        let proof = context
+            .authorization_proof
+            .ok_or_else(|| anyhow::anyhow!("CodeMode child is missing an authorization proof"))?;
+        if context.tool_name.starts_with("mcp__") {
+            self.tools
+                .execute_authorized_codemode_subcall_with_step(
+                    haven_tools::AuthorizedCodeModeSubcallExecution {
+                        session_id: context.session_id,
+                        tool_name: context.tool_name,
+                        input: context.input,
+                        cancel: context.cancel,
+                        step_id: context.step_id,
+                        proof,
+                    },
+                )
+                .await
+        } else {
+            self.tools
+                .execute_authorized_tool_with_step(
+                    context.session_id.as_deref(),
+                    &context.tool_name,
+                    context.input,
+                    context.cancel,
+                    context.step_id.as_deref(),
+                    proof,
+                )
+                .await
+        }
     }
 
     async fn registrations(

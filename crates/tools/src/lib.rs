@@ -9,6 +9,7 @@ mod cancellable_reader;
 mod catalog;
 mod circuit;
 mod codemode;
+mod codemode_tool;
 mod coordinator;
 mod document;
 mod execution;
@@ -148,6 +149,8 @@ pub use codemode::{
     CodeModeCallResult, CodeModeError, CodeModeEvaluator, CodeModeExecution, CodeModeLimits,
     CodeModeSubcallPort, CodeModeToolDefinition,
 };
+pub use codemode_tool::CODEMODE_RUN_TOOL_NAME;
+pub use execution::{AuthorizedCodeModeSubcallExecution, AuthorizedCodeModeToolExecution};
 pub use facade::{
     AdminOperationPort, McpRuntimePort, McpStatusEventReceiver, SkillCatalogPort,
     ToolRunAgentCapability, ToolRunCompletionCapability, ToolRunManagementCapability,

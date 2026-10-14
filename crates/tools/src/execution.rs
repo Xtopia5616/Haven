@@ -16,6 +16,45 @@ pub(crate) struct AuthorizedExecutor<'a> {
     tools: &'a ToolsFacade,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionSurface {
+    Model,
+    CodeModeSubcall,
+}
+
+/// Proof-carrying execution request for the synthetic model-facing CodeMode
+/// tool. Constructed by Agent after it binds the call to one session catalog.
+pub struct AuthorizedCodeModeToolExecution {
+    pub session_id: Option<String>,
+    pub tool_name: String,
+    pub input: Value,
+    pub cancel: CancellationToken,
+    pub step_id: Option<String>,
+    pub proof: crate::AuthorizationExecutionProof,
+    pub subcalls: Arc<dyn crate::CodeModeSubcallPort>,
+}
+
+/// Proof-carrying request for one CodeMode-only MCP child operation.
+pub struct AuthorizedCodeModeSubcallExecution {
+    pub session_id: Option<String>,
+    pub tool_name: String,
+    pub input: Value,
+    pub cancel: CancellationToken,
+    pub step_id: Option<String>,
+    pub proof: crate::AuthorizationExecutionProof,
+}
+
+struct ExecutionRequest {
+    session_id: Option<String>,
+    tool_name: String,
+    input: Value,
+    cancel: CancellationToken,
+    step_id: Option<String>,
+    authorization_proof: Option<crate::AuthorizationExecutionProof>,
+    surface: ExecutionSurface,
+    codemode_subcalls: Option<Arc<dyn crate::CodeModeSubcallPort>>,
+}
+
 impl ToolsFacade {
     pub(crate) fn executor(&self) -> AuthorizedExecutor<'_> {
         AuthorizedExecutor { tools: self }
@@ -62,6 +101,24 @@ impl ToolsFacade {
     ) -> anyhow::Result<ToolResult> {
         self.executor()
             .execute_authorized_tool_with_step(session_id, tool_name, input, cancel, step_id, proof)
+            .await
+    }
+
+    pub async fn execute_authorized_codemode_tool_with_step(
+        &self,
+        execution: AuthorizedCodeModeToolExecution,
+    ) -> anyhow::Result<ToolResult> {
+        self.executor()
+            .execute_authorized_codemode_tool_with_step(execution)
+            .await
+    }
+
+    pub async fn execute_authorized_codemode_subcall_with_step(
+        &self,
+        execution: AuthorizedCodeModeSubcallExecution,
+    ) -> anyhow::Result<ToolResult> {
+        self.executor()
+            .execute_authorized_codemode_subcall_with_step(execution)
             .await
     }
 
@@ -114,8 +171,17 @@ impl AuthorizedExecutor<'_> {
         cancel: CancellationToken,
         step_id: Option<&str>,
     ) -> anyhow::Result<ToolResult> {
-        self.execute_tool_inner(session_id, tool_name, input, cancel, step_id, None)
-            .await
+        self.execute_tool_inner(ExecutionRequest {
+            session_id: session_id.map(str::to_owned),
+            tool_name: tool_name.to_owned(),
+            input,
+            cancel,
+            step_id: step_id.map(str::to_owned),
+            authorization_proof: None,
+            surface: ExecutionSurface::Model,
+            codemode_subcalls: None,
+        })
+        .await
     }
 
     pub async fn execute_authorized_tool_with_step(
@@ -127,19 +193,67 @@ impl AuthorizedExecutor<'_> {
         step_id: Option<&str>,
         proof: crate::AuthorizationExecutionProof,
     ) -> anyhow::Result<ToolResult> {
-        self.execute_tool_inner(session_id, tool_name, input, cancel, step_id, Some(proof))
-            .await
+        self.execute_tool_inner(ExecutionRequest {
+            session_id: session_id.map(str::to_owned),
+            tool_name: tool_name.to_owned(),
+            input,
+            cancel,
+            step_id: step_id.map(str::to_owned),
+            authorization_proof: Some(proof),
+            surface: ExecutionSurface::Model,
+            codemode_subcalls: None,
+        })
+        .await
     }
 
-    async fn execute_tool_inner(
+    pub async fn execute_authorized_codemode_tool_with_step(
         &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        input: Value,
-        cancel: CancellationToken,
-        step_id: Option<&str>,
-        authorization_proof: Option<crate::AuthorizationExecutionProof>,
+        execution: AuthorizedCodeModeToolExecution,
     ) -> anyhow::Result<ToolResult> {
+        self.execute_tool_inner(ExecutionRequest {
+            session_id: execution.session_id,
+            tool_name: execution.tool_name,
+            input: execution.input,
+            cancel: execution.cancel,
+            step_id: execution.step_id,
+            authorization_proof: Some(execution.proof),
+            surface: ExecutionSurface::Model,
+            codemode_subcalls: Some(execution.subcalls),
+        })
+        .await
+    }
+
+    pub async fn execute_authorized_codemode_subcall_with_step(
+        &self,
+        execution: AuthorizedCodeModeSubcallExecution,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_tool_inner(ExecutionRequest {
+            session_id: execution.session_id,
+            tool_name: execution.tool_name,
+            input: execution.input,
+            cancel: execution.cancel,
+            step_id: execution.step_id,
+            authorization_proof: Some(execution.proof),
+            surface: ExecutionSurface::CodeModeSubcall,
+            codemode_subcalls: None,
+        })
+        .await
+    }
+
+    async fn execute_tool_inner(&self, request: ExecutionRequest) -> anyhow::Result<ToolResult> {
+        let ExecutionRequest {
+            session_id,
+            tool_name,
+            input,
+            cancel,
+            step_id,
+            authorization_proof,
+            surface: execution_surface,
+            codemode_subcalls,
+        } = request;
+        let session_id = session_id.as_deref();
+        let tool_name = tool_name.as_str();
+        let step_id = step_id.as_deref();
         if !self
             .tools
             .coordinator
@@ -169,16 +283,20 @@ impl AuthorizedExecutor<'_> {
             )));
         }
 
-        let tool = self
-            .tools
-            .get_tool_for_session(session_id, tool_name)
-            .await
-            .ok_or_else(|| {
-                anyhow::Error::new(StructuredToolError::new(
-                    format!("tool '{}' not found in registry", tool_name),
-                    ToolErrorMetadata::other(),
-                ))
-            })?;
+        let tool = match execution_surface {
+            ExecutionSurface::Model => self.tools.get_tool_for_session(session_id, tool_name).await,
+            ExecutionSurface::CodeModeSubcall => {
+                self.tools
+                    .get_codemode_subcall_tool_for_session(session_id, tool_name)
+                    .await
+            }
+        }
+        .ok_or_else(|| {
+            anyhow::Error::new(StructuredToolError::new(
+                format!("tool '{}' not found in registry", tool_name),
+                ToolErrorMetadata::other(),
+            ))
+        })?;
 
         // Private fields (`_session_id` / `_step_id` / `_idempotency_key`) are never trusted from
         // the LLM or scheduled tool_args: always strip first, validate the
@@ -271,13 +389,54 @@ impl AuthorizedExecutor<'_> {
                 return Ok(ToolResult::cancelled("tool execution cancelled"));
             }
 
+            let attempt_tool = match execution_surface {
+                ExecutionSurface::Model => tool.clone(),
+                ExecutionSurface::CodeModeSubcall => {
+                    let Some(current) = self
+                        .tools
+                        .get_codemode_subcall_tool_for_session(session_id, tool_name)
+                        .await
+                    else {
+                        return Ok(ToolResult::failed_with_class(
+                            Value::Null,
+                            "MCP capability is no longer enabled for CodeMode",
+                            ToolErrorClass::Permission,
+                        ));
+                    };
+                    if let Err(error) = current.validate_input(&exec_input) {
+                        return Ok(ToolResult::failed_with_class(
+                            Value::Null,
+                            error.to_string(),
+                            ToolErrorClass::Validation,
+                        ));
+                    }
+                    current
+                }
+            };
+
             let mut authorization_target_binding = None;
             if let Some(proof) = authorization_proof.as_ref() {
-                let request = self
-                    .tools
-                    .resolve_authorization_request(session_id, tool_name, &authorization_input)
-                    .await
-                    .map_err(anyhow::Error::msg)?;
+                let request = match execution_surface {
+                    ExecutionSurface::Model => {
+                        self.tools
+                            .resolve_authorization_request(
+                                session_id,
+                                tool_name,
+                                &authorization_input,
+                            )
+                            .await
+                    }
+                    ExecutionSurface::CodeModeSubcall => {
+                        self.tools
+                            .resolve_codemode_subcall_authorization_request(
+                                session_id,
+                                tool_name,
+                                &authorization_input,
+                            )
+                            .await
+                    }
+                }
+                .map_err(anyhow::Error::msg)?;
                 if let Err(reason) = self
                     .tools
                     .coordinator
@@ -295,15 +454,27 @@ impl AuthorizedExecutor<'_> {
                 authorization_target_binding = request.target_binding;
             }
 
-            let mut result = match tool
-                .execute_with_authorization_target_timeout(
-                    exec_input.clone(),
-                    cancel.clone(),
-                    timeout_secs,
-                    authorization_target_binding.as_deref(),
-                )
-                .await
-            {
+            let execution = if let Some(subcalls) = codemode_subcalls.clone() {
+                attempt_tool
+                    .execute_with_codemode_subcalls_timeout(
+                        exec_input.clone(),
+                        cancel.clone(),
+                        timeout_secs,
+                        authorization_target_binding.as_deref(),
+                        subcalls,
+                    )
+                    .await
+            } else {
+                attempt_tool
+                    .execute_with_authorization_target_timeout(
+                        exec_input.clone(),
+                        cancel.clone(),
+                        timeout_secs,
+                        authorization_target_binding.as_deref(),
+                    )
+                    .await
+            };
+            let mut result = match execution {
                 Ok(result) => result,
                 Err(e) => {
                     let message = e.to_string();
@@ -315,7 +486,7 @@ impl AuthorizedExecutor<'_> {
                     if cancel.is_cancelled() {
                         ToolResult::cancelled(message)
                     } else {
-                        let metadata = tool.error_metadata(&e);
+                        let metadata = attempt_tool.error_metadata(&e);
                         ToolResult::failed_with_metadata(Value::Null, message.clone(), metadata)
                     }
                 }
@@ -329,7 +500,7 @@ impl AuthorizedExecutor<'_> {
                     .record_success(tool_name);
                 // Attach the tool's declared side-channel signals (ask
                 // question / notify toast) BEFORE returning.
-                result.signals = tool.signals(&result.output);
+                result.signals = attempt_tool.signals(&result.output);
                 return Ok(result);
             }
 
