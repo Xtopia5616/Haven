@@ -1253,7 +1253,7 @@ impl SessionSupervisor {
                 .fetch_add(1, Ordering::SeqCst);
             if self
                 .pending_session_recovery_failures
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
                     remaining.checked_sub(1)
                 })
                 .is_ok()

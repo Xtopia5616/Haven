@@ -62,4 +62,4 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_LibraryLoader",
 ] }
-webview2-com = "0.38.2"
+webview2-com = "0.39.1"

@@ -6,7 +6,7 @@
 Haven is a voice assistant for Windows PC built on the Pi Coding Agent (ReAct loop) architecture.
 Tech stack: Rust (Tauri 2) backend, Svelte 5 frontend.
 
-固定开发工具链：Rust 1.98.0、Node.js 24.20.0、pnpm 11.24.0；版本分别由 `rust-toolchain.toml`、`.node-version` 和 `ui/package.json` 固定。
+固定开发工具链：Rust 1.99.0、Node.js 24.21.0、pnpm 12.12.1；版本分别由 `rust-toolchain.toml`、`.node-version` 和 `ui/package.json` 固定。
 
 架构重构阶段状态与未决事项以 `docs/architecture-refactor-roadmap.md` 和对应 ADR 为准；ADR 记录历史决策，路线图只维护当前状态与未完成项。
 

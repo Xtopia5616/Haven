@@ -2,7 +2,7 @@
 	"name": "haven",
 	"private": true,
 	"type": "module",
-	"packageManager": "pnpm@11.24.0",
+	"packageManager": "pnpm@12.12.1",
 	"scripts": {
 		"dev": "cargo tauri dev",
 		"dev:ui": "corepack pnpm --dir ui run dev"
