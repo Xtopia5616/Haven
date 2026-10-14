@@ -1,8 +1,331 @@
 use haven_common::mcp::McpServerTransport;
 use serde_json::Value;
+use std::error::Error;
+use std::fmt;
 
-pub(crate) const PROTOCOL_VERSION: &str = "2024-11-05";
+pub(crate) const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
+pub(crate) const LEGACY_PROTOCOL_VERSION: &str = "2024-11-05";
 pub(crate) const REQUEST_TIMEOUT_SECS: u64 = 30;
+
+const MCP_META_PREFIX: &str = "io.modelcontextprotocol/";
+const MCP_RPC_HEADER_MISMATCH: i64 = -32020;
+const MCP_RPC_MISSING_CLIENT_CAPABILITY: i64 = -32021;
+const MCP_RPC_UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
+
+/// Wire behavior selected for a peer. The protocol version belongs to the
+/// MCP peer, not to Haven's own session identity.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum McpProtocolMode {
+    #[default]
+    Uninitialized,
+    Modern {
+        version: String,
+    },
+    Legacy {
+        version: String,
+    },
+}
+
+impl McpProtocolMode {
+    pub(crate) fn modern(version: impl Into<String>) -> Self {
+        Self::Modern {
+            version: version.into(),
+        }
+    }
+
+    pub(crate) fn legacy(version: impl Into<String>) -> Self {
+        Self::Legacy {
+            version: version.into(),
+        }
+    }
+
+    pub(crate) fn is_modern(&self) -> bool {
+        matches!(self, Self::Modern { .. })
+    }
+
+    pub(crate) fn is_legacy(&self) -> bool {
+        matches!(self, Self::Legacy { .. })
+    }
+}
+
+/// Modern MCP carries client identity, capabilities, and protocol version on
+/// every request. This helper is also used for the `server/discover` probe.
+pub(crate) fn params_with_protocol_meta(params: Option<Value>, version: &str) -> Value {
+    let mut params = match params {
+        Some(Value::Object(params)) => params,
+        Some(_) | None => serde_json::Map::new(),
+    };
+    params.insert(
+        "_meta".into(),
+        serde_json::json!({
+            format!("{MCP_META_PREFIX}protocolVersion"): version,
+            format!("{MCP_META_PREFIX}clientInfo"): {
+                "name": "Haven",
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            format!("{MCP_META_PREFIX}clientCapabilities"): {},
+        }),
+    );
+    Value::Object(params)
+}
+
+/// Structured protocol error retained long enough for transport-era
+/// detection. Display text intentionally excludes server-controlled details.
+#[derive(Debug)]
+pub(crate) struct McpRpcError {
+    pub(crate) code: i64,
+    pub(crate) data: Option<Value>,
+    pub(crate) http_status: Option<u16>,
+}
+
+impl McpRpcError {
+    pub(crate) fn from_response(value: &Value, http_status: Option<u16>) -> Option<Self> {
+        if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+            return None;
+        }
+        let error = value.get("error")?;
+        Some(Self {
+            code: error.get("code")?.as_i64()?,
+            data: error.get("data").cloned(),
+            http_status,
+        })
+    }
+
+    pub(crate) fn is_recognized_modern(&self) -> bool {
+        matches!(
+            self.code,
+            MCP_RPC_HEADER_MISMATCH
+                | MCP_RPC_MISSING_CLIENT_CAPABILITY
+                | MCP_RPC_UNSUPPORTED_PROTOCOL_VERSION
+        ) || (self.http_status == Some(404) && self.code == -32601)
+    }
+}
+
+impl fmt::Display for McpRpcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MCP JSON-RPC request failed (code {})", self.code)
+    }
+}
+
+impl Error for McpRpcError {}
+
+#[derive(Debug)]
+pub(crate) struct McpHttpStatusError {
+    pub(crate) status: u16,
+}
+
+impl fmt::Display for McpHttpStatusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MCP HTTP request failed (status {})", self.status)
+    }
+}
+
+impl Error for McpHttpStatusError {}
+
+pub(crate) fn should_fallback_to_legacy(error: &anyhow::Error, is_http: bool) -> bool {
+    if error
+        .downcast_ref::<McpRpcError>()
+        .is_some_and(McpRpcError::is_recognized_modern)
+    {
+        return false;
+    }
+    if !is_http {
+        return true;
+    }
+    error
+        .downcast_ref::<McpHttpStatusError>()
+        .is_some_and(|error| matches!(error.status, 400 | 404 | 405))
+        || error
+            .downcast_ref::<McpRpcError>()
+            .is_some_and(|error| matches!(error.http_status, Some(400 | 404 | 405)))
+}
+
+pub(crate) fn supported_legacy_version(error: &anyhow::Error) -> Option<&'static str> {
+    let rpc_error = error.downcast_ref::<McpRpcError>()?;
+    if rpc_error.code != MCP_RPC_UNSUPPORTED_PROTOCOL_VERSION {
+        return None;
+    }
+    let supported = rpc_error.data.as_ref()?.get("supported")?.as_array()?;
+    [
+        "2025-11-25",
+        "2025-06-18",
+        "2025-03-26",
+        LEGACY_PROTOCOL_VERSION,
+    ]
+    .into_iter()
+    .find(|version| {
+        supported
+            .iter()
+            .any(|candidate| candidate.as_str() == Some(*version))
+    })
+}
+
+/// Encode an HTTP routing-header value per Streamable HTTP. Header values
+/// outside the safe visible-ASCII set, surrounding whitespace, or the
+/// reserved sentinel syntax are carried as UTF-8 Base64.
+pub(crate) fn encode_mcp_header_value(value: &str) -> String {
+    let safe_ascii = value.bytes().all(|byte| (0x20..=0x7e).contains(&byte));
+    let trimmed = value.trim_matches([' ', '\t']);
+    let sentinel = value.starts_with("=?base64?") && value.ends_with("?=");
+    if safe_ascii && value == trimmed && !sentinel {
+        value.to_string()
+    } else {
+        use base64::Engine;
+        format!(
+            "=?base64?{}?=",
+            base64::engine::general_purpose::STANDARD.encode(value.as_bytes())
+        )
+    }
+}
+
+#[derive(Debug)]
+struct McpParameterHeader {
+    name: String,
+    path: Vec<String>,
+    value_type: String,
+}
+
+/// Validate the 2026 HTTP parameter-header extension and return its headers
+/// for the supplied arguments. Only paths made entirely of `properties`
+/// entries are accepted, matching the protocol's static-path rule.
+pub(crate) fn http_parameter_headers(
+    schema: &Value,
+    arguments: &Value,
+) -> Result<Vec<(String, String)>, String> {
+    let mut definitions = Vec::new();
+    let mut names = std::collections::HashSet::new();
+    collect_parameter_headers(schema, &mut Vec::new(), true, &mut definitions, &mut names)?;
+
+    let mut result = Vec::with_capacity(definitions.len());
+    for definition in definitions {
+        let mut value = arguments;
+        let mut present = true;
+        for key in &definition.path {
+            let Some(next) = value.get(key) else {
+                present = false;
+                break;
+            };
+            value = next;
+        }
+        if present && !value.is_null() {
+            result.push(encode_parameter_header(definition, value)?);
+        }
+    }
+    Ok(result)
+}
+
+fn collect_parameter_headers(
+    value: &Value,
+    path: &mut Vec<String>,
+    static_properties_path: bool,
+    definitions: &mut Vec<McpParameterHeader>,
+    names: &mut std::collections::HashSet<String>,
+) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            if let Some(header_name) = object.get("x-mcp-header") {
+                let header_name = header_name
+                    .as_str()
+                    .ok_or_else(|| "x-mcp-header must be a string".to_string())?;
+                if !static_properties_path || path.is_empty() {
+                    return Err("x-mcp-header must be inside a static properties path".into());
+                }
+                if header_name.is_empty() || !header_name.bytes().all(is_http_token_byte) {
+                    return Err("x-mcp-header must be a valid HTTP field-name token".into());
+                }
+                let value_type = object
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .filter(|kind| matches!(*kind, "string" | "integer" | "boolean"))
+                    .ok_or_else(|| {
+                        "x-mcp-header is allowed only for string, integer, or boolean properties"
+                            .to_string()
+                    })?;
+                if !names.insert(header_name.to_ascii_lowercase()) {
+                    return Err("x-mcp-header values must be unique ignoring case".into());
+                }
+                definitions.push(McpParameterHeader {
+                    name: header_name.to_string(),
+                    path: path.clone(),
+                    value_type: value_type.to_string(),
+                });
+            }
+
+            for (key, child) in object {
+                if key == "properties" {
+                    if let Some(properties) = child.as_object() {
+                        for (property_name, property_schema) in properties {
+                            path.push(property_name.clone());
+                            collect_parameter_headers(
+                                property_schema,
+                                path,
+                                static_properties_path,
+                                definitions,
+                                names,
+                            )?;
+                            path.pop();
+                        }
+                    } else {
+                        collect_parameter_headers(child, path, false, definitions, names)?;
+                    }
+                } else {
+                    collect_parameter_headers(child, path, false, definitions, names)?;
+                }
+            }
+            Ok(())
+        }
+        Value::Array(values) => {
+            for child in values {
+                collect_parameter_headers(child, path, false, definitions, names)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn is_http_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+}
+
+fn encode_parameter_header(
+    definition: McpParameterHeader,
+    value: &Value,
+) -> Result<(String, String), String> {
+    let raw = match definition.value_type.as_str() {
+        "string" => value
+            .as_str()
+            .ok_or_else(|| "MCP tool argument does not match its string header schema".to_string())?
+            .to_string(),
+        "boolean" => value
+            .as_bool()
+            .ok_or_else(|| {
+                "MCP tool argument does not match its boolean header schema".to_string()
+            })?
+            .to_string(),
+        "integer" => {
+            const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+            if let Some(number) = value.as_i64() {
+                if number.unsigned_abs() > MAX_SAFE_INTEGER {
+                    return Err("MCP integer header argument exceeds the safe integer range".into());
+                }
+                number.to_string()
+            } else if let Some(number) = value.as_u64() {
+                if number > MAX_SAFE_INTEGER {
+                    return Err("MCP integer header argument exceeds the safe integer range".into());
+                }
+                number.to_string()
+            } else {
+                return Err("MCP tool argument does not match its integer header schema".into());
+            }
+        }
+        _ => return Err("unsupported MCP parameter header type".into()),
+    };
+    Ok((
+        format!("Mcp-Param-{}", definition.name),
+        encode_mcp_header_value(&raw),
+    ))
+}
 
 // ---------------------------------------------------------------------------
 // Neutral tool-call output
@@ -286,7 +609,7 @@ pub struct McpServerSnapshot {
     pub status: McpClientStatus,
     pub tools: Vec<McpToolInfo>,
     pub last_error: Option<String>,
-    /// Handshake/tool-discovery diagnostics (protocol version mismatch,
+    /// Protocol-selection/tool-discovery diagnostics (protocol mismatch,
     /// connected-but-zero-tools, failed list_tools). Lets the UI and the
     /// agent distinguish "the server has no tools" from "the client and the
     /// server are incompatible".

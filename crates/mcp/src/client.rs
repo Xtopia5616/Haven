@@ -1,6 +1,8 @@
 use crate::protocol::{
-    McpCallOutput, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
-    PROTOCOL_VERSION, extract_mcp_content,
+    LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, McpCallOutput, McpClientStatus,
+    McpProtocolMode, McpRpcError, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
+    extract_mcp_content, http_parameter_headers, should_fallback_to_legacy,
+    supported_legacy_version,
 };
 use crate::transport::{
     HttpInner, HttpShared, McpClientInner, NOTIFICATION_QUEUE_CAPACITY, StdioInner,
@@ -28,11 +30,13 @@ pub struct McpClient {
     pub(crate) url: String,
     pub(crate) enabled: Arc<AtomicBool>,
     pub(crate) inner: Arc<Mutex<Option<McpClientInner>>>,
+    /// Protocol era and negotiated version for the active connection.
+    pub(crate) protocol_mode: Arc<Mutex<McpProtocolMode>>,
     pub(crate) status: Arc<Mutex<McpClientStatus>>,
     pub(crate) next_id: AtomicU64,
     pub(crate) tools_cache: Arc<Mutex<Option<Vec<McpToolInfo>>>>,
     pub(crate) last_error: Arc<Mutex<Option<String>>>,
-    /// Handshake/tool-discovery diagnostics; see `McpServerSnapshot`.
+    /// Protocol selection and tool-discovery diagnostics; see `McpServerSnapshot`.
     pub(crate) last_diagnostic: Arc<Mutex<Option<String>>>,
     pub(crate) last_seen_at: Arc<Mutex<Option<i64>>>,
     pub(crate) reconnect_retries: Arc<Mutex<u32>>,
@@ -229,6 +233,7 @@ impl McpClient {
             url: config.url.clone(),
             enabled: Arc::new(AtomicBool::new(config.enabled)),
             inner: Arc::new(Mutex::new(None)),
+            protocol_mode: Arc::new(Mutex::new(McpProtocolMode::Uninitialized)),
             status: Arc::new(Mutex::new(McpClientStatus::Disconnected)),
             next_id: AtomicU64::new(1),
             tools_cache: Arc::new(Mutex::new(None)),
@@ -434,9 +439,20 @@ impl McpClient {
             .iter()
             .filter_map(|e| {
                 e.split_once('=')
-                    .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+                    .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
             })
             .collect::<Vec<_>>();
+        if headers.iter().any(|(key, _)| {
+            matches!(
+                key.to_ascii_lowercase().as_str(),
+                "mcp-protocol-version" | "mcp-method" | "mcp-name" | "mcp-session-id"
+            ) || key.to_ascii_lowercase().starts_with("mcp-param-")
+        }) {
+            anyhow::bail!(
+                "MCP server '{}' configures an HTTP header managed by the MCP protocol",
+                self.name
+            );
+        }
         // Disable redirects: user-configured credential headers (e.g.
         // X-API-Key) and the MCP session id are attached to every request,
         // and reqwest only strips the fixed auth-header list on cross-host
@@ -460,10 +476,8 @@ impl McpClient {
         Ok((shared, inner))
     }
 
-    /// Connect to the server (initialize handshake + tool discovery). On
-    /// failure, records a diagnostic explaining what happened at the
-    /// handshake level, so the caller can tell "server down" from "client
-    /// and server are incompatible".
+    /// Select a protocol mode and discover tools. On failure, record whether
+    /// the peer was unreachable or incompatible with the supported protocols.
     pub async fn connect(&self) -> anyhow::Result<()> {
         let network_policy = *self.network_policy.read().await;
         if matches!(self.transport, McpServerTransport::Stdio)
@@ -512,6 +526,7 @@ impl McpClient {
         // the new transport's requests (and the SSE listener) abort
         // immediately after a reconnect.
         *self.cancel_token.lock().await = CancellationToken::new();
+        *self.protocol_mode.lock().await = McpProtocolMode::Uninitialized;
 
         let mut http_shared: Option<Arc<HttpShared>> = None;
         let mut inner = match self.transport {
@@ -525,58 +540,146 @@ impl McpClient {
             }
         };
 
-        // Initialize handshake
+        // Discover the modern stateless protocol first. stdio needs this probe
+        // because a legacy server may otherwise process an era-ambiguous RPC
+        // before initialization; HTTP identifies legacy peers through its
+        // transport-level rejection.
+        let modern_mode = McpProtocolMode::modern(MODERN_PROTOCOL_VERSION);
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let result = inner
-            .request(
-                id,
-                "initialize",
-                Some(serde_json::json!({
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {
-                        "name": "haven",
-                        "version": "0.1.0",
-                    },
-                })),
-            )
-            .await?;
+        let discovery = inner
+            .request(id, "server/discover", None, &modern_mode, &[])
+            .await;
 
-        let server_name = result["serverInfo"]["name"].as_str().unwrap_or("?");
-        let server_version = result["serverInfo"]["version"].as_str().unwrap_or("?");
-        let server_protocol = result["protocolVersion"].as_str().unwrap_or("?");
-        if let Some(warning) = result["warning"].as_str() {
-            tracing::warn!(
-                server = %self.name,
-                warning_bytes = warning.len(),
-                "MCP server returned a warning"
-            );
-        }
-        if server_protocol != PROTOCOL_VERSION {
-            tracing::warn!(
-                server = %self.name,
-                negotiated_protocol_bytes = server_protocol.len(),
-                "MCP server protocol version mismatch"
-            );
-            *self.last_diagnostic.lock().await = Some(format!(
-                "protocol version mismatch: server negotiated '{}', client supports '{}' — tool discovery may be limited or fail",
-                server_protocol, PROTOCOL_VERSION
-            ));
-        }
+        let (mode, server_name, server_version, server_protocol) = match discovery {
+            Ok(result) => {
+                let versions = result["supportedVersions"].as_array().ok_or_else(|| {
+                    anyhow::anyhow!("MCP server discovery response omitted supportedVersions")
+                })?;
+                if !versions
+                    .iter()
+                    .any(|version| version.as_str() == Some(MODERN_PROTOCOL_VERSION))
+                {
+                    anyhow::bail!(
+                        "MCP server discovery did not advertise the requested protocol version"
+                    );
+                }
+                let server_info = &result["_meta"]["io.modelcontextprotocol/serverInfo"];
+                (
+                    modern_mode,
+                    server_info["name"].as_str().unwrap_or("?").to_string(),
+                    server_info["version"].as_str().unwrap_or("?").to_string(),
+                    MODERN_PROTOCOL_VERSION.to_string(),
+                )
+            }
+            Err(error)
+                if should_fallback_to_legacy(
+                    &error,
+                    matches!(self.transport, McpServerTransport::Http),
+                ) || supported_legacy_version(&error).is_some() =>
+            {
+                if self.cancel_token.lock().await.is_cancelled() {
+                    return Err(error);
+                }
+                let legacy_request_version =
+                    supported_legacy_version(&error).unwrap_or(LEGACY_PROTOCOL_VERSION);
+                // A timed-out stdio probe may have consumed part of a frame.
+                // Never send initialize into that poisoned byte stream.
+                if matches!(&inner, McpClientInner::Stdio(stdio) if stdio.poisoned) {
+                    inner = McpClientInner::Stdio(Box::new(
+                        self.spawn_stdio(notification_tx.clone()).await?,
+                    ));
+                }
+                let initialize = inner
+                    .request(
+                        self.next_id.fetch_add(1, Ordering::SeqCst),
+                        "initialize",
+                        Some(serde_json::json!({
+                            "protocolVersion": legacy_request_version,
+                            "capabilities": {},
+                            "clientInfo": {
+                                "name": "haven",
+                                "version": env!("CARGO_PKG_VERSION"),
+                            },
+                        })),
+                        &McpProtocolMode::Uninitialized,
+                        &[],
+                    )
+                    .await?;
+                let server_name = initialize["serverInfo"]["name"]
+                    .as_str()
+                    .unwrap_or("?")
+                    .to_string();
+                let server_version = initialize["serverInfo"]["version"]
+                    .as_str()
+                    .unwrap_or("?")
+                    .to_string();
+                let server_protocol = initialize["protocolVersion"]
+                    .as_str()
+                    .unwrap_or(LEGACY_PROTOCOL_VERSION)
+                    .to_string();
+                if let Some(warning) = initialize["warning"].as_str() {
+                    tracing::warn!(
+                        server = %self.name,
+                        warning_bytes = warning.len(),
+                        "MCP server returned a warning"
+                    );
+                }
+                if server_protocol != legacy_request_version {
+                    tracing::warn!(
+                        server = %self.name,
+                        negotiated_protocol_bytes = server_protocol.len(),
+                        "MCP server selected a different legacy protocol version"
+                    );
+                    *self.last_diagnostic.lock().await = Some(format!(
+                        "server negotiated legacy MCP protocol '{}'; Haven requested '{}'",
+                        server_protocol, legacy_request_version
+                    ));
+                }
+                (
+                    McpProtocolMode::legacy(server_protocol.clone()),
+                    server_name,
+                    server_version,
+                    server_protocol,
+                )
+            }
+            Err(error) => {
+                if let Some(rpc_error) = error.downcast_ref::<McpRpcError>()
+                    && rpc_error.code == -32022
+                {
+                    let advertised = rpc_error
+                        .data
+                        .as_ref()
+                        .and_then(|data| data["supported"].as_array())
+                        .map_or(0, Vec::len);
+                    anyhow::bail!(
+                        "MCP server does not support protocol version '{}'; it advertised {} supported version(s)",
+                        MODERN_PROTOCOL_VERSION,
+                        advertised
+                    );
+                }
+                return Err(error.context("MCP modern protocol discovery failed"));
+            }
+        };
+        *self.protocol_mode.lock().await = mode.clone();
+
         tracing::info!(
             server = %self.name,
             transport = self.transport.as_str(),
-            "MCP server connected"
+            protocol_version = server_protocol,
+            "MCP server protocol selected"
         );
 
-        // Send initialized notification
-        inner.notify("notifications/initialized", None).await?;
+        if mode.is_legacy() {
+            inner
+                .notify("notifications/initialized", None, &mode)
+                .await?;
+        }
 
         *self.inner.lock().await = Some(inner);
 
         // HTTP: keep an SSE stream open so server-to-client notifications
         // (e.g. tools/list_changed) are received.
-        if let Some(shared) = http_shared {
+        if let Some(shared) = http_shared.filter(|_| mode.is_legacy()) {
             let cancel = self.cancel_token.lock().await.clone();
             let listener = spawn_sse_listener(
                 self.name.clone(),
@@ -585,6 +688,7 @@ impl McpClient {
                 notification_tx,
                 self.max_sse_buffer,
                 self.tools_list_changed.clone(),
+                mode.clone(),
             );
             *self.sse_listener_task.lock().await = Some(listener);
         }
@@ -598,8 +702,8 @@ impl McpClient {
                 *self.tools_cache.lock().await = Some(tools.clone());
                 if tools.is_empty() {
                     *self.last_diagnostic.lock().await = Some(format!(
-                        "Connected, but tools/list returned 0 tools (server {} v{}, protocol {} vs client {}). Either the server exposes no tools, or the client/server protocols are incompatible — check the server's logs and its SDK protocol support.",
-                        server_name, server_version, server_protocol, PROTOCOL_VERSION
+                        "Connected, but tools/list returned 0 tools (server {} v{}, protocol {}). Either the server exposes no tools, or the client/server protocols are incompatible — check the server's logs and its SDK protocol support.",
+                        server_name, server_version, server_protocol
                     ));
                 }
             }
@@ -629,6 +733,7 @@ impl McpClient {
     }
 
     async fn shutdown_inner(&self, stop_notification_listener: bool) -> anyhow::Result<()> {
+        let protocol_mode = self.protocol_mode.lock().await.clone();
         // Cancel the client's own token first so any in-flight `call_tool`
         // (which selects on this token) aborts and releases the `inner` lock.
         self.cancel_token.lock().await.cancel();
@@ -658,27 +763,47 @@ impl McpClient {
         }
 
         let mut guard = self.inner.lock().await;
-        if let Some(McpClientInner::Stdio(s)) = guard.as_mut() {
-            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-            if s.request(id, "shutdown", None).await.is_err() {
-                tracing::debug!("MCP stdio shutdown request failed");
+        if matches!(guard.as_ref(), Some(McpClientInner::Stdio(_))) {
+            if protocol_mode.is_legacy() {
+                let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+                if guard
+                    .as_mut()
+                    .expect("checked stdio client")
+                    .request(id, "shutdown", None, &protocol_mode, &[])
+                    .await
+                    .is_err()
+                {
+                    tracing::debug!("MCP stdio shutdown request failed");
+                }
+                if guard
+                    .as_mut()
+                    .expect("checked stdio client")
+                    .notify("exit", None, &protocol_mode)
+                    .await
+                    .is_err()
+                {
+                    tracing::debug!("MCP stdio exit notification failed");
+                }
             }
-            if s.notify("exit", None).await.is_err() {
-                tracing::debug!("MCP stdio exit notification failed");
-            }
-            if s.child.start_kill().is_err() {
+            if let Some(McpClientInner::Stdio(s)) = guard.as_mut()
+                && s.child.start_kill().is_err()
+            {
                 tracing::debug!("MCP stdio child kill failed");
             }
-            if s.child.wait().await.is_err() {
+            if let Some(McpClientInner::Stdio(s)) = guard.as_mut()
+                && s.child.wait().await.is_err()
+            {
                 tracing::debug!("MCP stdio child wait failed");
             }
         }
         *guard = None;
+        *self.protocol_mode.lock().await = McpProtocolMode::Uninitialized;
         *self.status.lock().await = McpClientStatus::Disconnected;
         Ok(())
     }
 
     pub async fn list_tools(&self) -> anyhow::Result<Vec<McpToolInfo>> {
+        let protocol_mode = self.protocol_mode.lock().await.clone();
         let mut guard = self.inner.lock().await;
         if guard.is_none() {
             anyhow::bail!("MCP client '{}' is not connected", self.name);
@@ -688,14 +813,29 @@ impl McpClient {
         let result = guard
             .as_mut()
             .expect("checked MCP client inner")
-            .request(id, "tools/list", None)
+            .request(id, "tools/list", None, &protocol_mode, &[])
             .await;
         self.discard_interrupted_stdio(&mut guard).await;
         let result = result?;
 
-        let tools: Vec<McpToolInfo> = serde_json::from_value(result["tools"].clone())
+        let mut tools: Vec<McpToolInfo> = serde_json::from_value(result["tools"].clone())
             .map_err(|e| anyhow::anyhow!("invalid tools/list from '{}': {}", self.name, e))?;
         validate_unique_tool_names(&tools)?;
+        if protocol_mode.is_modern() && matches!(self.transport, McpServerTransport::Http) {
+            tools.retain(|tool| {
+                if let Err(reason) = http_parameter_headers(&tool.input_schema, &Value::Null) {
+                    tracing::warn!(
+                        server = %self.name,
+                        tool = %tool.name,
+                        reason_bytes = reason.len(),
+                        "MCP tool excluded because its HTTP parameter-header schema is invalid"
+                    );
+                    false
+                } else {
+                    true
+                }
+            });
+        }
         Ok(tools)
     }
 
@@ -887,6 +1027,24 @@ impl McpClient {
         }
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let protocol_mode = self.protocol_mode.lock().await.clone();
+        let parameter_headers = if protocol_mode.is_modern()
+            && matches!(self.transport, McpServerTransport::Http)
+        {
+            let schema = self
+                .tools_cache
+                .lock()
+                .await
+                .as_ref()
+                .and_then(|tools| tools.iter().find(|tool| tool.name == tool_name))
+                .map(|tool| tool.input_schema.clone())
+                .ok_or_else(|| anyhow::anyhow!("MCP tool schema is unavailable for this call"))?;
+            http_parameter_headers(&schema, &input).map_err(|_| {
+                anyhow::anyhow!("MCP tool arguments do not match HTTP routing metadata")
+            })?
+        } else {
+            Vec::new()
+        };
         let (result, cancelled_by_client) = tokio::select! {
             r = guard.as_mut().expect("checked MCP client inner").request(
                 id,
@@ -895,6 +1053,8 @@ impl McpClient {
                     "name": tool_name,
                     "arguments": input,
                 })),
+                &protocol_mode,
+                &parameter_headers,
             ) => (Some(r), None),
             _ = client_cancel.cancelled() => (None, Some(true)),
             _ = cancel.cancelled() => (None, Some(false)),

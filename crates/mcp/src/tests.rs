@@ -1,8 +1,11 @@
 use crate::client::{McpClient, RateLimiter};
 use crate::manager::McpManager;
 use crate::protocol::{
-    McpClientStatus, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo, extract_mcp_content,
-    jsonrpc_notification, jsonrpc_request,
+    LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, McpClientStatus, McpHttpStatusError,
+    McpProtocolMode, McpRpcError, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
+    encode_mcp_header_value, extract_mcp_content, http_parameter_headers, jsonrpc_notification,
+    jsonrpc_request, params_with_protocol_meta, should_fallback_to_legacy,
+    supported_legacy_version,
 };
 use base64::Engine;
 use haven_common::config::McpServerConfig;
@@ -23,6 +26,123 @@ fn jsonrpc_request_basic() {
 fn jsonrpc_request_with_params() {
     let req = jsonrpc_request(2, "tools/call", Some(json!({"name": "test"})));
     assert_eq!(req["params"]["name"], "test");
+}
+
+#[test]
+fn modern_request_metadata_is_self_describing() {
+    let params = params_with_protocol_meta(Some(json!({"name": "echo"})), MODERN_PROTOCOL_VERSION);
+    assert_eq!(params["name"], "echo");
+    assert_eq!(
+        params["_meta"]["io.modelcontextprotocol/protocolVersion"],
+        MODERN_PROTOCOL_VERSION
+    );
+    assert_eq!(
+        params["_meta"]["io.modelcontextprotocol/clientInfo"]["name"],
+        "Haven"
+    );
+    assert!(params["_meta"]["io.modelcontextprotocol/clientCapabilities"].is_object());
+    assert_eq!(
+        McpProtocolMode::legacy(LEGACY_PROTOCOL_VERSION).is_legacy(),
+        true
+    );
+}
+
+#[test]
+fn modern_protocol_headers_encode_unsafe_values() {
+    use base64::Engine;
+
+    let expected = format!(
+        "=?base64?{}?=",
+        base64::engine::general_purpose::STANDARD.encode("東京".as_bytes())
+    );
+    assert_eq!(encode_mcp_header_value("東京"), expected);
+    assert_eq!(encode_mcp_header_value("hello"), "hello");
+
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "region": {"type": "string", "x-mcp-header": "Region"},
+            "options": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "x-mcp-header": "Limit"}
+                }
+            },
+            "enabled": {"type": "boolean", "x-mcp-header": "Enabled"}
+        }
+    });
+    let headers = http_parameter_headers(
+        &schema,
+        &json!({"region": "東京", "options": {"limit": 42}, "enabled": true}),
+    )
+    .expect("valid annotated properties become HTTP headers");
+    assert!(headers.contains(&("Mcp-Param-Region".into(), expected)));
+    assert!(headers.contains(&("Mcp-Param-Limit".into(), "42".into())));
+    assert!(headers.contains(&("Mcp-Param-Enabled".into(), "true".into())));
+}
+
+#[test]
+fn modern_parameter_header_schema_fails_closed() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {"type": "string", "x-mcp-header": "Item"}
+            }
+        }
+    });
+    assert!(http_parameter_headers(&schema, &json!({"items": ["x"]})).is_err());
+
+    let duplicate = json!({
+        "type": "object",
+        "properties": {
+            "first": {"type": "string", "x-mcp-header": "Region"},
+            "second": {"type": "string", "x-mcp-header": "region"}
+        }
+    });
+    assert!(http_parameter_headers(&duplicate, &json!({})).is_err());
+}
+
+#[test]
+fn legacy_fallback_only_uses_transport_compatibility_signals() {
+    let status = anyhow::Error::new(McpHttpStatusError { status: 400 });
+    assert!(should_fallback_to_legacy(&status, true));
+    assert!(!should_fallback_to_legacy(
+        &anyhow::anyhow!("connection failed"),
+        true
+    ));
+    assert!(should_fallback_to_legacy(
+        &anyhow::anyhow!("unknown method"),
+        false
+    ));
+
+    let modern_error = McpRpcError::from_response(
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32022, "message": "unsupported", "data": {"supported": ["2026-07-28"]}}
+        }),
+        Some(400),
+    )
+    .expect("protocol error is retained structurally");
+    let supported_legacy = McpRpcError::from_response(
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32022, "message": "unsupported", "data": {"supported": ["2024-11-05", "2025-11-25"]}}
+        }),
+        Some(400),
+    )
+    .expect("unsupported-version response is retained");
+    assert_eq!(
+        supported_legacy_version(&anyhow::Error::new(supported_legacy)),
+        Some("2025-11-25")
+    );
+    assert!(!should_fallback_to_legacy(
+        &anyhow::Error::new(modern_error),
+        true
+    ));
 }
 
 #[test]

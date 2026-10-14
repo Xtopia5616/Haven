@@ -1,4 +1,7 @@
-use crate::protocol::{REQUEST_TIMEOUT_SECS, jsonrpc_notification, jsonrpc_request};
+use crate::protocol::{
+    McpHttpStatusError, McpProtocolMode, McpRpcError, REQUEST_TIMEOUT_SECS,
+    encode_mcp_header_value, jsonrpc_notification, jsonrpc_request, params_with_protocol_meta,
+};
 use crate::sse::SseParser;
 use futures_util::StreamExt;
 use haven_common::bounded_bytes::BoundedBytes;
@@ -141,7 +144,7 @@ where
                     *poisoned = false;
                     // Shared error extraction with the HTTP transport so the
                     // two paths cannot drift.
-                    return unpack_jsonrpc(parsed);
+                    return unpack_jsonrpc(parsed, None);
                 }
                 // Route non-matching responses to notification handler (refine §4.6)
                 if parsed.get("id").is_none() {
@@ -196,9 +199,9 @@ async fn write_stdio_line_with_timeout<W: tokio::io::AsyncWrite + Unpin>(
 }
 
 /// Shared state for the Streamable HTTP transport: the reqwest client, the
-/// endpoint URL, request headers (from the config `env` list), and the session
-/// MCP protocol session id returned by the server (`Mcp-Session-Id`, per the
-/// MCP Streamable HTTP spec). It is not a Haven conversation session id.
+/// endpoint URL, request headers (from the config `env` list), and the legacy
+/// MCP protocol session id returned by the server (`Mcp-Session-Id`). It is
+/// not a Haven conversation session id and is unused by stateless peers.
 pub(crate) struct HttpShared {
     pub(crate) http: reqwest::Client,
     pub(crate) url: String,
@@ -207,10 +210,10 @@ pub(crate) struct HttpShared {
     pub(crate) cancel: CancellationToken,
 }
 
-/// Streamable HTTP transport (MCP spec, transport 2025-03-26). Requests are
-/// POSTed to the endpoint; the server replies with JSON or an SSE stream.
-/// Server-to-client notifications arrive over a long-lived SSE stream opened
-/// with a GET request.
+/// Streamable HTTP transport for modern stateless requests and older
+/// session-based peers. Requests are POSTed to the endpoint; responses may be
+/// JSON or request-scoped SSE. The legacy mode also opens a GET SSE stream for
+/// server-to-client notifications.
 pub(crate) struct HttpInner {
     pub(crate) shared: Arc<HttpShared>,
     pub(crate) notification_tx: tokio::sync::mpsc::Sender<Value>,
@@ -225,7 +228,19 @@ impl HttpInner {
         id: u64,
         method: &str,
         params: Option<Value>,
+        mode: &McpProtocolMode,
+        parameter_headers: &[(String, String)],
     ) -> anyhow::Result<Value> {
+        if mode.is_modern()
+            && method == "tools/call"
+            && params
+                .as_ref()
+                .and_then(|params| params.get("name"))
+                .and_then(Value::as_str)
+                .is_none()
+        {
+            anyhow::bail!("modern MCP tools/call requires params.name");
+        }
         let req = jsonrpc_request(id, method, params);
         let builder = self
             .shared
@@ -233,7 +248,15 @@ impl HttpInner {
             .post(&self.shared.url)
             .json(&req)
             .header("Accept", "application/json, text/event-stream");
-        let builder = apply_http_mcp_session_headers(builder, &self.shared).await;
+        let builder = apply_http_request_headers(
+            builder,
+            &self.shared,
+            method,
+            &req,
+            mode,
+            parameter_headers,
+        )
+        .await;
 
         let resp = tokio::select! {
             _ = self.shared.cancel.cancelled() => {
@@ -246,19 +269,22 @@ impl HttpInner {
         };
         let status = resp.status();
         if !status.is_success() {
-            let body = read_text_bounded(resp, MAX_JSON_BODY_BYTES, &self.shared.cancel).await?;
-            anyhow::bail!(
-                "MCP HTTP error (status {}): {}",
-                status.as_u16(),
-                haven_common::error::sanitize_error_text(&body)
-            );
+            let status = status.as_u16();
+            let body = read_bytes_bounded(resp, MAX_JSON_BODY_BYTES, &self.shared.cancel).await?;
+            if let Ok(value) = serde_json::from_slice::<Value>(&body)
+                && let Some(error) = McpRpcError::from_response(&value, Some(status))
+            {
+                return Err(error.into());
+            }
+            return Err(McpHttpStatusError { status }.into());
         }
         // Capture/refresh the session id so subsequent requests (and the SSE
         // listener) can attach it.
-        if let Some(mcp_session_id) = resp
-            .headers()
-            .get("mcp-session-id")
-            .and_then(|v| v.to_str().ok())
+        if !mode.is_modern()
+            && let Some(mcp_session_id) = resp
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|value| value.to_str().ok())
         {
             *self.shared.mcp_session_id.lock().await = mcp_session_id.to_string();
         }
@@ -282,7 +308,7 @@ impl HttpInner {
             .await
         } else {
             let value = read_json_bounded(resp, MAX_JSON_BODY_BYTES, &self.shared.cancel).await?;
-            unpack_jsonrpc(value)
+            unpack_jsonrpc(value, None)
         }
     }
 
@@ -290,7 +316,11 @@ impl HttpInner {
         &mut self,
         method: &str,
         params: Option<Value>,
+        mode: &McpProtocolMode,
     ) -> anyhow::Result<()> {
+        if mode.is_modern() {
+            anyhow::bail!("MCP notifications are not supported by the modern HTTP protocol");
+        }
         let notification = jsonrpc_notification(method, params);
         let builder = self
             .shared
@@ -298,7 +328,9 @@ impl HttpInner {
             .post(&self.shared.url)
             .json(&notification)
             .header("Accept", "application/json");
-        let builder = apply_http_mcp_session_headers(builder, &self.shared).await;
+        let builder =
+            apply_http_request_headers(builder, &self.shared, method, &notification, mode, &[])
+                .await;
         let resp = tokio::select! {
             _ = self.shared.cancel.cancelled() => {
                 anyhow::bail!("MCP HTTP notify '{}' cancelled", method)
@@ -336,10 +368,16 @@ impl McpClientInner {
         id: u64,
         method: &str,
         params: Option<Value>,
+        mode: &McpProtocolMode,
+        parameter_headers: &[(String, String)],
     ) -> anyhow::Result<Value> {
+        let params = match mode {
+            McpProtocolMode::Modern { version } => Some(params_with_protocol_meta(params, version)),
+            McpProtocolMode::Uninitialized | McpProtocolMode::Legacy { .. } => params,
+        };
         match self {
             McpClientInner::Stdio(s) => s.request(id, method, params).await,
-            McpClientInner::Http(h) => h.request(id, method, params).await,
+            McpClientInner::Http(h) => h.request(id, method, params, mode, parameter_headers).await,
         }
     }
 
@@ -347,10 +385,11 @@ impl McpClientInner {
         &mut self,
         method: &str,
         params: Option<Value>,
+        mode: &McpProtocolMode,
     ) -> anyhow::Result<()> {
         match self {
             McpClientInner::Stdio(s) => s.notify(method, params).await,
-            McpClientInner::Http(h) => h.notify(method, params).await,
+            McpClientInner::Http(h) => h.notify(method, params, mode).await,
         }
     }
 }
@@ -367,15 +406,9 @@ impl Drop for McpClientInner {
 
 /// Read an SSE streamed response body until the JSON-RPC response matching
 /// `id` arrives; id-less messages in the stream are routed as notifications.
-fn unpack_jsonrpc(value: Value) -> anyhow::Result<Value> {
-    if let Some(err) = value.get("error") {
-        let code = err["code"].as_i64().unwrap_or(-1);
-        let msg = err["message"].as_str().unwrap_or("unknown error");
-        anyhow::bail!(
-            "MCP error ({}): {}",
-            code,
-            haven_common::error::sanitize_error_text(msg)
-        );
+fn unpack_jsonrpc(value: Value, http_status: Option<u16>) -> anyhow::Result<Value> {
+    if let Some(error) = McpRpcError::from_response(&value, http_status) {
+        return Err(error.into());
     }
     Ok(value["result"].clone())
 }
@@ -386,13 +419,61 @@ fn unpack_jsonrpc(value: Value) -> anyhow::Result<Value> {
 pub(crate) async fn apply_http_mcp_session_headers(
     mut builder: reqwest::RequestBuilder,
     shared: &HttpShared,
+    mode: Option<&McpProtocolMode>,
 ) -> reqwest::RequestBuilder {
+    for (k, v) in &shared.headers {
+        builder = builder.header(k.as_str(), v);
+    }
     let mcp_session_id = shared.mcp_session_id.lock().await;
     if !mcp_session_id.is_empty() {
         builder = builder.header("Mcp-Session-Id", mcp_session_id.as_str());
     }
-    for (k, v) in &shared.headers {
-        builder = builder.header(k.as_str(), v);
+    if let Some(McpProtocolMode::Legacy { version }) = mode
+        && version.as_str() >= "2025-06-18"
+    {
+        builder = builder.header("MCP-Protocol-Version", version.as_str());
+    }
+    builder
+}
+
+async fn apply_http_request_headers(
+    mut builder: reqwest::RequestBuilder,
+    shared: &HttpShared,
+    method: &str,
+    request: &Value,
+    mode: &McpProtocolMode,
+    parameter_headers: &[(String, String)],
+) -> reqwest::RequestBuilder {
+    for (key, value) in &shared.headers {
+        builder = builder.header(key.as_str(), value.as_str());
+    }
+    for (key, value) in parameter_headers {
+        builder = builder.header(key.as_str(), value.as_str());
+    }
+    match mode {
+        McpProtocolMode::Uninitialized => {}
+        McpProtocolMode::Legacy { version } => {
+            let session_id = shared.mcp_session_id.lock().await;
+            if !session_id.is_empty() {
+                builder = builder.header("Mcp-Session-Id", session_id.as_str());
+            }
+            // Versions before 2025-06-18 predate this header. Omitting it for
+            // those peers preserves the established legacy wire contract.
+            if version.as_str() >= "2025-06-18" {
+                builder = builder.header("MCP-Protocol-Version", version.as_str());
+            }
+        }
+        McpProtocolMode::Modern { version } => {
+            builder = builder
+                .header("MCP-Protocol-Version", version.as_str())
+                .header("Mcp-Method", method);
+            let name = request["params"]["name"]
+                .as_str()
+                .or_else(|| request["params"]["uri"].as_str());
+            if let Some(name) = name {
+                builder = builder.header("Mcp-Name", encode_mcp_header_value(name));
+            }
+        }
     }
     builder
 }
@@ -418,7 +499,7 @@ async fn read_sse_response(
             Some(Ok(bytes)) => {
                 for ev in parser.feed(&bytes) {
                     if ev.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                        return unpack_jsonrpc(ev);
+                        return unpack_jsonrpc(ev, None);
                     }
                     if cancel.is_cancelled() {
                         anyhow::bail!("MCP HTTP request cancelled");
@@ -445,12 +526,13 @@ async fn listen_sse(
     cancel: &CancellationToken,
     max_sse_buffer: usize,
     tools_list_changed: &ToolsListChangedSignal,
+    mode: &McpProtocolMode,
 ) -> anyhow::Result<()> {
     let builder = shared
         .http
         .get(&shared.url)
         .header("Accept", "text/event-stream");
-    let req = apply_http_mcp_session_headers(builder, shared).await;
+    let req = apply_http_mcp_session_headers(builder, shared, Some(mode)).await;
     let resp = tokio::select! {
         _ = cancel.cancelled() => return Ok(()),
         result = tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), req.send()) => {
@@ -493,6 +575,7 @@ pub(crate) fn spawn_sse_listener(
     notification_tx: tokio::sync::mpsc::Sender<Value>,
     max_sse_buffer: usize,
     tools_list_changed: Arc<ToolsListChangedSignal>,
+    mode: McpProtocolMode,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut backoff = Duration::from_secs(2);
@@ -506,6 +589,7 @@ pub(crate) fn spawn_sse_listener(
                 &cancel,
                 max_sse_buffer,
                 &tools_list_changed,
+                &mode,
             )
             .await
             {
@@ -681,7 +765,7 @@ pub(crate) async fn http_is_alive(shared: &Arc<HttpShared>) -> bool {
         .http
         .get(&shared.url)
         .header("Accept", "text/event-stream");
-    let req = apply_http_mcp_session_headers(builder, shared).await;
+    let req = apply_http_mcp_session_headers(builder, shared, None).await;
     tokio::select! {
         biased;
         _ = shared.cancel.cancelled() => false,
@@ -716,6 +800,47 @@ mod tests {
             .unwrap();
         let _ = task.await;
         result
+    }
+
+    #[tokio::test]
+    async fn modern_http_headers_route_each_request_without_a_session() {
+        use base64::Engine;
+
+        let shared = HttpShared {
+            http: reqwest::Client::new(),
+            url: "http://127.0.0.1:1/mcp".into(),
+            headers: vec![("Authorization".into(), "Bearer token".into())],
+            mcp_session_id: Arc::new(tokio::sync::Mutex::new("legacy-session".into())),
+            cancel: CancellationToken::new(),
+        };
+        let request = jsonrpc_request(
+            1,
+            "tools/call",
+            Some(serde_json::json!({"name": "東京", "arguments": {}})),
+        );
+        let builder = shared.http.post(&shared.url).json(&request);
+        let builder = apply_http_request_headers(
+            builder,
+            &shared,
+            "tools/call",
+            &request,
+            &McpProtocolMode::modern("2026-07-28"),
+            &[],
+        )
+        .await;
+        let headers = builder.build().unwrap().headers().clone();
+
+        assert_eq!(headers["mcp-protocol-version"], "2026-07-28");
+        assert_eq!(headers["mcp-method"], "tools/call");
+        assert_eq!(
+            headers["mcp-name"],
+            format!(
+                "=?base64?{}?=",
+                base64::engine::general_purpose::STANDARD.encode("東京".as_bytes())
+            )
+        );
+        assert!(headers.get("mcp-session-id").is_none());
+        assert_eq!(headers["authorization"], "Bearer token");
     }
 
     #[tokio::test]

@@ -1147,3 +1147,4 @@
 - [1156：显式区分立即调整与完成后追加](1156-explicit-input-delivery-boundaries.md)
 - [1157：从用户消息派生独立会话](1157-derive-session-from-user-message.md)
 - [1158：在 provider 请求前有界重查 steering](1158-recheck-steering-before-provider-request.md)
+- [1159：支持无状态 MCP 协议并保留旧版回退](1159-support-stateless-mcp-with-legacy-fallback.md)

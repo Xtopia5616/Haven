@@ -16,8 +16,8 @@ chrono.workspace = true
 futures-util.workspace = true
 tokio-util.workspace = true
 reqwest = { version = "0.13.4", features = ["json", "multipart", "stream"] }
+base64.workspace = true
 haven-common = { path = "../common" }
 haven-platform = { path = "../platform" }
 
 [dev-dependencies]
-base64.workspace = true
