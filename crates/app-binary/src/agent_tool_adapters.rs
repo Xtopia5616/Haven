@@ -193,10 +193,12 @@ impl PromptToolPort for ToolsFacadeAgentAdapter {
         let default_shell = self.tools.default_shell_name().await;
         let capabilities = self.tools.runtime_capabilities().await;
         let permission_summary = self.authorization.prompt_summary().await;
+        let execution_workspace = self.tools.execution_workspace_snapshot().await;
         PromptRuntimeContext {
             default_shell,
             capabilities,
             permission_summary,
+            execution_workspace,
         }
     }
 }

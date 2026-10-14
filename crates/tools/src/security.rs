@@ -1,5 +1,6 @@
 #[cfg(test)]
 use crate::ToolConcurrency;
+use crate::execution_workspace::{ExecutionWorkspace, ExecutionWorkspaceSnapshot};
 use crate::{
     ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationPolicy,
 };
@@ -533,6 +534,7 @@ struct SafetyConfig {
     permission_mode: PermissionMode,
     sandbox_mode: SandboxMode,
     writable_roots: Vec<PathBuf>,
+    execution_workspace: ExecutionWorkspace,
     network_policy: NetworkPolicy,
     /// Monotonic process-local revision. Configuration/policy changes
     /// invalidate outstanding receipts; the grant attached to the decision
@@ -615,11 +617,16 @@ impl FileReadPolicy {
 
 impl AuthorizationEngine {
     pub fn new() -> Self {
+        Self::new_with_workspace(ExecutionWorkspace::discover())
+    }
+
+    fn new_with_workspace(execution_workspace: ExecutionWorkspace) -> Self {
         Self {
             config: RwLock::new(SafetyConfig {
                 permission_mode: PermissionMode::Default,
                 sandbox_mode: SandboxMode::WorkspaceWrite,
                 writable_roots: Vec::new(),
+                execution_workspace,
                 network_policy: NetworkPolicy::Ask,
                 policy_revision: 0,
                 permanent: HashMap::new(),
@@ -627,6 +634,14 @@ impl AuthorizationEngine {
                 tool_settings: HashMap::new(),
             }),
         }
+    }
+
+    pub(crate) async fn execution_workspace(&self) -> ExecutionWorkspace {
+        self.config.read().await.execution_workspace.clone()
+    }
+
+    pub async fn execution_workspace_snapshot(&self) -> ExecutionWorkspaceSnapshot {
+        self.config.read().await.execution_workspace.snapshot()
     }
 
     /// Replace the policy and permanent rules atomically. Clears the
@@ -765,6 +780,7 @@ impl AuthorizationEngine {
             &cfg.tool_settings,
             cfg.sandbox_mode,
             &cfg.writable_roots,
+            &cfg.execution_workspace,
             tool_name,
             params,
             policy,
@@ -923,6 +939,7 @@ impl AuthorizationEngine {
             &cfg.tool_settings,
             cfg.sandbox_mode,
             &cfg.writable_roots,
+            &cfg.execution_workspace,
             tool_name,
             params,
             &effective_policy,
@@ -1015,6 +1032,7 @@ impl AuthorizationEngine {
             &cfg.tool_settings,
             cfg.sandbox_mode,
             &cfg.writable_roots,
+            &cfg.execution_workspace,
             tool_name,
             &request.input,
             &request.policy,
@@ -1437,6 +1455,7 @@ fn path_sandbox_block(
     settings: &HashMap<String, ToolConfig>,
     sandbox_mode: SandboxMode,
     writable_roots: &[PathBuf],
+    execution_workspace: &ExecutionWorkspace,
     tool_name: &str,
     params: &Value,
     policy: &OperationPolicy,
@@ -1459,7 +1478,7 @@ fn path_sandbox_block(
         }
         let allowed: Vec<PathBuf> = cfg.allowed_paths.iter().map(PathBuf::from).collect();
         for path in &paths {
-            let path = resolve_relative_sandbox_path(path.clone());
+            let path = resolve_relative_sandbox_path(path.clone(), execution_workspace);
             if !path_is_allowed(&path, &allowed) {
                 return Some(format!(
                     "operation '{tool_name}' is blocked by the allowed_paths policy"
@@ -1468,32 +1487,40 @@ fn path_sandbox_block(
         }
     }
     if matches!(sandbox_mode, SandboxMode::WorkspaceWrite) && !policy.is_read_only() {
-        let allowed: Vec<PathBuf> = writable_roots.to_vec();
-        if !allowed.is_empty()
-            && paths.iter().any(|path| {
-                let path = resolve_relative_sandbox_path(path.clone());
-                !path_is_allowed(&path, &allowed)
-            })
-        {
+        let allowed: Vec<PathBuf> = if writable_roots.is_empty() {
+            execution_workspace
+                .root()
+                .map(Path::to_path_buf)
+                .into_iter()
+                .collect()
+        } else {
+            writable_roots.to_vec()
+        };
+        if allowed.is_empty() {
             return Some(format!(
-                "a path for mutating operation '{tool_name}' is outside writable_roots"
+                "workspace-write sandbox has no execution root for '{tool_name}'"
+            ));
+        }
+        if paths.iter().any(|path| {
+            let path = resolve_relative_sandbox_path(path.clone(), execution_workspace);
+            !path_is_allowed(&path, &allowed)
+        }) {
+            return Some(format!(
+                "a path for mutating operation '{tool_name}' is outside its writable roots"
             ));
         }
     }
     None
 }
 
-fn resolve_relative_sandbox_path(path: PathBuf) -> PathBuf {
+fn resolve_relative_sandbox_path(
+    path: PathBuf,
+    execution_workspace: &ExecutionWorkspace,
+) -> PathBuf {
     if path.is_absolute() || is_unc_or_device_path(&path) {
         return path;
     }
-    let Some(root) = std::env::current_dir()
-        .ok()
-        .and_then(|current| haven_common::discover_workspace_root(&current))
-    else {
-        return path;
-    };
-    root.join(path)
+    execution_workspace.resolve_relative(&path).unwrap_or(path)
 }
 
 fn collect_path_params(params: &Value) -> Vec<PathBuf> {
@@ -2394,6 +2421,109 @@ mod tests {
             )
             .await,
             ConfirmationResult::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn workspace_write_defaults_to_the_captured_execution_workspace() {
+        let workspace = ExecutionWorkspace::from_root(&std::env::current_dir().unwrap()).unwrap();
+        let root = workspace.root().unwrap().to_path_buf();
+        let outside = root
+            .parent()
+            .expect("workspace checkout has a parent directory")
+            .join("haven-workspace-outside.md");
+        let gateway = AuthorizationEngine::new_with_workspace(workspace.clone());
+        gateway
+            .set_boundaries(
+                SandboxMode::WorkspaceWrite,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
+            .await;
+        let mut policy = fixture_policy("files.write", &json!({}), RiskLevel::Medium);
+        policy.effect = OperationEffect::WorkspaceWrite;
+        policy.idempotency = crate::OperationIdempotency::NonIdempotent;
+        policy.network_access = NetworkAccess::None;
+
+        assert!(matches!(
+            authorize(
+                &gateway,
+                None,
+                "files.write",
+                &json!({"path": outside}),
+                &policy,
+            )
+            .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+
+        let inside_path = root.join("notes.md");
+        let canonical_root = resolve_path_without_reparse(workspace.root().unwrap())
+            .expect("workspace root should resolve without reparse points");
+        let canonical_inside = resolve_path_without_reparse(&inside_path)
+            .expect("new file under workspace should resolve through its existing parent");
+        assert!(
+            path_is_within(&canonical_inside, &canonical_root),
+            "resolved file path must be within the resolved workspace root"
+        );
+        let inside_decision = authorize(
+            &gateway,
+            None,
+            "files.write",
+            &json!({"path": inside_path}),
+            &policy,
+        )
+        .await;
+        assert!(
+            matches!(
+                &inside_decision,
+                ConfirmationResult::RequiresConfirmation { .. }
+            ),
+            "unexpected inside-workspace decision: {inside_decision:?}"
+        );
+
+        assert!(matches!(
+            authorize(
+                &gateway,
+                None,
+                "files.write",
+                &json!({"path": "notes.md"}),
+                &policy,
+            )
+            .await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn workspace_write_fails_closed_without_a_workspace_or_explicit_roots() {
+        let gateway = AuthorizationEngine::new_with_workspace(ExecutionWorkspace::unavailable());
+        gateway
+            .set_boundaries(
+                SandboxMode::WorkspaceWrite,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
+            .await;
+        let mut policy = fixture_policy("files.write", &json!({}), RiskLevel::Medium);
+        policy.effect = OperationEffect::WorkspaceWrite;
+        policy.idempotency = crate::OperationIdempotency::NonIdempotent;
+        policy.network_access = NetworkAccess::None;
+
+        let decision = authorize(
+            &gateway,
+            None,
+            "files.write",
+            &json!({"path": "C:\\outside\\notes.md"}),
+            &policy,
+        )
+        .await;
+        assert!(matches!(
+            decision,
+            ConfirmationResult::Blocked {
+                reason_code: AuthorizationReasonCode::SandboxBoundary,
+                ..
+            }
         ));
     }
 

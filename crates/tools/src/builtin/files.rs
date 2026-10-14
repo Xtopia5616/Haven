@@ -279,15 +279,16 @@ impl FilesTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let op = params.operation.unwrap_or(FilesOperation::Read);
+        let execution_workspace = self.authorization.execution_workspace().await;
         let search_root = params
             .root
             .as_deref()
-            .map(resolve_workspace_path)
+            .map(|path| resolve_workspace_path(&execution_workspace, path))
             .transpose()?;
         let requested_path = params
             .path
             .as_deref()
-            .map(resolve_workspace_path)
+            .map(|path| resolve_workspace_path(&execution_workspace, path))
             .transpose()?;
         let mut managed_asset = if let Some(asset_id) = params.asset_id.as_deref() {
             crate::tool_contract::validate_entity_id(asset_id, "asset_id", "asset")?;
@@ -526,11 +527,17 @@ impl FilesTool {
                 .await
             }
             FilesOperation::Copy => {
-                let dest = resolve_workspace_path(&params.destination.unwrap_or_default())?;
+                let dest = resolve_workspace_path(
+                    &execution_workspace,
+                    &params.destination.unwrap_or_default(),
+                )?;
                 file_mutations::copy(&path, &dest, cancel.clone()).await
             }
             FilesOperation::Move => {
-                let dest = resolve_workspace_path(&params.destination.unwrap_or_default())?;
+                let dest = resolve_workspace_path(
+                    &execution_workspace,
+                    &params.destination.unwrap_or_default(),
+                )?;
                 file_mutations::move_file(&path, &dest, cancel.clone()).await
             }
             FilesOperation::Delete => file_mutations::delete(&path, cancel.clone()).await,

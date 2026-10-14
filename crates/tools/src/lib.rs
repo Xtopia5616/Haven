@@ -13,6 +13,7 @@ mod codemode_tool;
 mod coordinator;
 mod document;
 mod execution;
+mod execution_workspace;
 mod facade;
 mod live_output;
 #[cfg(test)]
@@ -157,6 +158,7 @@ pub use execution::{
     AuthorizedCodeModeSubcallExecution, AuthorizedCodeModeToolExecution,
     AuthorizedWorkflowToolExecution,
 };
+pub use execution_workspace::ExecutionWorkspaceSnapshot;
 pub use facade::{
     AdminOperationPort, McpRuntimePort, McpStatusEventReceiver, SkillCatalogPort,
     ToolRunAgentCapability, ToolRunCompletionCapability, ToolRunManagementCapability,

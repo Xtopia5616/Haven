@@ -955,6 +955,16 @@ impl ToolsFacade {
             .project_runtime_capabilities()
     }
 
+    /// Return the immutable backend execution root used by file path
+    /// resolution and WorkspaceWrite authorization.
+    pub async fn execution_workspace_snapshot(&self) -> ExecutionWorkspaceSnapshot {
+        self.coordinator
+            .core
+            .authorization
+            .execution_workspace_snapshot()
+            .await
+    }
+
     /// Construct the single capability view used by facade reads and builtin
     /// catalog assembly. Each call resolves current platform, router and MCP
     /// inputs instead of returning a cached value whose invalidation would

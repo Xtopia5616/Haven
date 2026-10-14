@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::path::Path;
 use std::sync::Arc;
 
 use haven_common::prompts::SESSION_CONTEXT_FENCE_START;
@@ -423,7 +422,11 @@ impl SystemPromptBuilder {
         let process_cwd = std::env::current_dir()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "unknown".into());
-        let workspace_root = haven_common::discover_workspace_root(Path::new(&process_cwd))
+        let runtime = self.context_provider.tools().runtime_context().await;
+        let workspace_root = runtime
+            .execution_workspace
+            .root
+            .as_ref()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "unknown".into());
         let tool_sandbox_cwd = haven_common::config::default_runtime_temp_root()
@@ -434,7 +437,6 @@ impl SystemPromptBuilder {
         } else {
             workspace_root.clone()
         };
-        let runtime = self.context_provider.tools().runtime_context().await;
 
         format!(
             "- local_date: {}\n\
@@ -1194,6 +1196,10 @@ mod tests {
                     web_search: WebSearchAvailability::Unavailable,
                 },
                 permission_summary: String::new(),
+                execution_workspace: haven_tools::ExecutionWorkspaceSnapshot {
+                    root: None,
+                    generation: 1,
+                },
             }
         }
     }

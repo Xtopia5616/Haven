@@ -6,6 +6,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::file_classification::{FileClassificationKind, classify_file_by_extension};
 use super::{FilesOperation, MAX_INSPECT_HASH_BYTES};
+use crate::execution_workspace::ExecutionWorkspace;
 use crate::{ManagedAsset, ToolResult};
 
 pub(super) fn sha256_bytes(bytes: &[u8]) -> String {
@@ -222,10 +223,13 @@ pub(super) fn sanitize_path(path: &str) -> anyhow::Result<String> {
     Ok(normalized.to_string_lossy().to_string())
 }
 
-/// Resolve a relative model path against the detected repository root. The
-/// shell/files tools still use the shared Temp directory as their fallback;
-/// explicit absolute paths and managed asset paths are never rewritten.
-pub(super) fn resolve_workspace_path(path: &str) -> anyhow::Result<String> {
+/// Resolve relative file paths against the same immutable root used by the
+/// authorization gateway. Explicit absolute paths are preserved for the live
+/// sandbox policy to accept or reject.
+pub(super) fn resolve_workspace_path(
+    workspace: &ExecutionWorkspace,
+    path: &str,
+) -> anyhow::Result<String> {
     let sanitized = sanitize_path(path)?;
     if sanitized.trim().is_empty() {
         anyhow::bail!("path is required");
@@ -234,12 +238,10 @@ pub(super) fn resolve_workspace_path(path: &str) -> anyhow::Result<String> {
     if path.is_absolute() {
         return Ok(sanitized);
     }
-    let current = std::env::current_dir().unwrap_or_default();
-    Ok(haven_common::discover_workspace_root(&current)
-        .map(|root| root.join(path))
-        .unwrap_or_else(|| path.to_path_buf())
-        .to_string_lossy()
-        .into_owned())
+    let resolved = workspace
+        .resolve_relative(path)
+        .ok_or_else(|| anyhow::anyhow!("execution workspace is unavailable for relative paths"))?;
+    Ok(resolved.to_string_lossy().into_owned())
 }
 
 /// NUL byte in the first sample bytes is a strong binary indicator.

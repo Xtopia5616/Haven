@@ -47,10 +47,26 @@ use super::*;
 
     #[test]
     fn relative_file_paths_use_workspace_root_when_available() {
-        let resolved = resolve_workspace_path("docs/architecture.md").unwrap();
-        let current = std::env::current_dir().unwrap();
-        let root = haven_common::discover_workspace_root(&current).unwrap();
+        let workspace = crate::execution_workspace::ExecutionWorkspace::discover();
+        let root = workspace.root().expect("test checkout has a workspace root");
+        let resolved = resolve_workspace_path(&workspace, "docs/architecture.md").unwrap();
         assert_eq!(Path::new(&resolved), root.join("docs/architecture.md"));
+    }
+
+    #[test]
+    fn relative_file_paths_use_the_injected_execution_workspace() {
+        let root = TempDir::new().unwrap();
+        let workspace = crate::execution_workspace::ExecutionWorkspace::from_root(root.path())
+            .expect("temporary directory is a valid execution root");
+        let resolved = resolve_workspace_path(&workspace, "nested/notes.md").unwrap();
+        let canonical_root = workspace.root().unwrap();
+        assert_eq!(Path::new(&resolved), canonical_root.join("nested/notes.md"));
+    }
+
+    #[test]
+    fn relative_file_paths_fail_when_the_execution_workspace_is_unavailable() {
+        let workspace = crate::execution_workspace::ExecutionWorkspace::unavailable();
+        assert!(resolve_workspace_path(&workspace, "nested/notes.md").is_err());
     }
 
     #[test]

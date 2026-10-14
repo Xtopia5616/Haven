@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use haven_common::tools::ToolDef;
 #[cfg(test)]
 use haven_tools::ToolsFacade;
-use haven_tools::{McpServerIndexEntry, RuntimeCapabilities, SkillInfo};
+use haven_tools::{
+    ExecutionWorkspaceSnapshot, McpServerIndexEntry, RuntimeCapabilities, SkillInfo,
+};
 
 use crate::memory_service::MemoryService;
 
@@ -37,6 +39,7 @@ pub struct PromptRuntimeContext {
     pub default_shell: String,
     pub capabilities: RuntimeCapabilities,
     pub permission_summary: String,
+    pub execution_workspace: ExecutionWorkspaceSnapshot,
 }
 
 /// Read-only snapshot contract for the model-facing capability prompt.
@@ -77,10 +80,12 @@ impl PromptToolPort for ToolsFacade {
         let default_shell = self.default_shell_name().await;
         let capabilities = self.runtime_capabilities().await;
         let permission_summary = services.authorization.prompt_summary().await;
+        let execution_workspace = self.execution_workspace_snapshot().await;
         PromptRuntimeContext {
             default_shell,
             capabilities,
             permission_summary,
+            execution_workspace,
         }
     }
 }
