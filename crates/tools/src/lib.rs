@@ -8,6 +8,7 @@ mod builtin;
 mod cancellable_reader;
 mod catalog;
 mod circuit;
+mod codemode;
 mod coordinator;
 mod document;
 mod execution;
@@ -143,6 +144,10 @@ pub use builtin::{
     MediaTranscriptionStatus, NativeMcpOperationArgs, SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use catalog::McpServerIndexEntry;
+pub use codemode::{
+    CodeModeCallResult, CodeModeError, CodeModeEvaluator, CodeModeExecution, CodeModeLimits,
+    CodeModeSubcallPort, CodeModeToolDefinition,
+};
 pub use facade::{
     AdminOperationPort, McpRuntimePort, McpStatusEventReceiver, SkillCatalogPort,
     ToolRunAgentCapability, ToolRunCompletionCapability, ToolRunManagementCapability,

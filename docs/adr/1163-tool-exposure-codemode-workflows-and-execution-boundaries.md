@@ -31,7 +31,7 @@ Pi 将 MCP 工具暴露细分为 `direct`、`deferred`、`codemode`、`hidden`�
 - `direct` 与 `deferred` 走现有 ReAct/provider-native tool-call 路径（Legacy）。`codemode` 暴露要求用户在 MCP server/tool 设置中明确选择该值。两种调用面按 capability 混用；一次会话可使用原生工具和 CodeMode，但同一 capability 不会因为 CodeMode 存在而自动提高暴露等级。
 - CodeMode 只接受受限脚本输入，不提供宿主文件系统、进程、环境变量、网络 socket、动态模块加载或时钟/timer API。脚本只能通过 typed tool bridge 调用当前策略允许的 capability。
 - 每个子调用重新经过 Tools 的标准执行与授权边界，并继承 cancellation、确认、sandbox/network 检查、并发策略和单次结果限制；CodeMode executor 不能拿到可绕开这些检查的裸 adapter 或 manager。
-- 限制脚本字节数、执行期限、最大子调用数、并行度、累积 observation 字符数和最终返回大小。预算耗尽时停止新调用并收束已完成结果；调用已产生的外部副作用不回滚。确认必须针对具体子调用发起，不能由批准外层脚本推导出对子调用的 blanket grant。
+- 限制脚本字节数、工具描述总量、执行期限、最大子调用数、并行度、单次输入/结果、累积 observation 字节数和最终返回大小。预算耗尽时停止新调用并收束已完成结果；调用已产生的外部副作用不回滚。确认必须针对具体子调用发起，不能由批准外层脚本推导出对子调用的 blanket grant。
 - 每个脚本执行使用独立 run-local 状态；跨脚本状态只有经显式、有界的 workflow/workspace 存储契约后才能持久化。不要把 QuickJS heap、ReAct scratch 或 MCP server session 当持久权威。
 
 ### 3. MCP resources 与 prompts 使用独立交互面
@@ -53,7 +53,7 @@ Pi 将 MCP 工具暴露细分为 `direct`、`deferred`、`codemode`、`hidden`�
 - 保留 `AuthorizationEngine` 作为授权唯一 owner。先审计并补齐现有 operation policy、capability scope、target binding、permission receipt 和 `SandboxMode` 对 MCP/嵌套调用的覆盖；不新增一套 Codemode-only 权限系统。
 - capability name/exposure、permission key、目标资源、网络目的地、文件路径及数据敏感级别分开表达。用户确认绑定具体子调用规范化参数、能力、目标、策略 revision 和期限；授权重检发生在副作用前。
 - 定义 `ExecutionWorkspace` 为后端执行上下文，明确规范化根目录、读/写能力、temp/scratch 路径、生命周期和 generation。它与 UI 页面导航用的 workspace/tab 完全不同；不能由 renderer 传入一个未经验证的路径来扩大 sandbox。
-- 文件、进程、注册表、系统设置和网络仍由 Tools/Platform 的安全网关拥有。MCP stdio child process、远程 MCP 请求、CodeMode evaluator 和 workflow 都必须经过各自已有的 Windows Job Object、destination validator、文件句柄/path validator 与 cancellation 生命周期；workspace 不能暗示对外部 MCP server 的数据操作已被本机文件沙箱限制。
+- 文件、进程、注册表、系统设置和网络仍由 Tools/Platform 的安全网关拥有。MCP stdio child process 使用 Windows Job Object；远程 MCP 请求由 destination validator 管理；CodeMode evaluator 是没有宿主 API 的进程内解释器，不能据此宣称获得 OS 进程隔离，其子调用必须回到标准 tool gateway；workflow 的每一步也走相同安全网关。workspace 不能暗示对外部 MCP server 的数据操作已被本机文件沙箱限制。
 
 ## 实施顺序
 
@@ -78,11 +78,13 @@ Pi 将 MCP 工具暴露细分为 `direct`、`deferred`、`codemode`、`hidden`�
 
 第一条垂直切片已落地：`McpServerConfig.exposure` 管理 server 默认模式和 per-tool pattern；Common resolver 同时驱动 Direct provider surface、Deferred 目录/加载、Hidden 目录过滤和后端 stale-call 拒绝。配置经 IPC 暴露到 MCP 设置 UI，旧配置缺少该字段时采用 `deferred`，不涉及数据库 schema。模式切换不触发 MCP 重连，只刷新工具目录。
 
-基础执行安全审计已将 Agent 的授权结果变成 Tools 执行入口必需的 opaque proof：自动放行绑定精确请求、operation policy、30 秒期限和 policy revision；确认 receipt 只有经受信交互 owner 校验后才转换成 proof，receipt 本身不可直接执行。执行 owner 在每次尝试前复核当前配置、deny、sandbox 和 network 边界。默认生产构建不再暴露无 proof 的原始执行入口，测试构建保留仅供夹具使用的入口。负向测试确认 proof 不能跨 tool/capability、session 或 MCP target 复用，新 deny 和策略边界变化会在 handler 前被重检；MCP 路由还会检查 manager/client identity 并固定已选 client。该审计已关闭，但它不等于 CodeMode evaluator 已有隔离：CodeMode/Workflow 的每个子调用仍需独立解析 policy、授权、确认，并经同一 observation 上限。验证发生在 handler 启动前，不能撤回已启动的不可逆外部副作用；运行中取消与资源隔离仍由各原生 executor/sandbox 承担。
+基础执行安全审计已将 Agent 的授权结果变成 Tools 执行入口必需的 opaque proof：自动放行绑定精确请求、operation policy、30 秒期限和 policy revision；确认 receipt 只有经受信交互 owner 校验后才转换成 proof，receipt 本身不可直接执行。执行 owner 在每次尝试前复核当前配置、deny、sandbox 和 network 边界。默认生产构建不再暴露无 proof 的原始执行入口，测试构建保留仅供夹具使用的入口。负向测试确认 proof 不能跨 tool/capability、session 或 MCP target 复用，新 deny 和策略边界变化会在 handler 前被重检；MCP 路由还会检查 manager/client identity 并固定已选 client。该审计已关闭，但它不表示 CodeMode 子调用已接入该证明链：后续 Agent bridge 仍需为每个子调用独立解析 policy、授权、确认，并经同一 observation 上限。验证发生在 handler 启动前，不能撤回已启动的不可逆外部副作用；运行中取消与资源隔离仍由各原生 executor/sandbox 承担。
 
 MCP 外部调用的 `AuthorizationRequest` 现另带 opaque target binding：由同一 `McpManager` 实例与被授权 server 对应的 live `McpClient` 生命周期生成，不含 URL、命令行或凭据。confirmation hash 和 execution proof 都覆盖该值；MCP adapter 把它交给 manager，manager 在 RPC 前比较并保留选中的 client Arc，因此 manager/server client 替换不能把待执行授权转给另一个路由目标。相同 client 配置的原地 reconnect 保持同一 target identity。
 
-CodeMode 的 enum 和 pattern resolver 已有契约，但执行器尚未开放。当前 UI 不允许新选 CodeMode（只在已有配置中保留并允许改回），Legacy 的目录、加载和执行入口对 CodeMode fail closed。嵌套授权与现有 sandbox/network 重检审计已完成；下一切片实现 evaluator、预算和按 server 切换，且必须继续保持 CodeMode fail closed，直到 evaluator 的隔离和硬上限全部通过验收。workflow、MCP resources/prompts 和 ExecutionWorkspace 仍按实施顺序等待各自垂直切片。现有数据库的 `session_events`、tool-call identity、ToolRun completion/outbox 和 X12 投影契约保持权威。
+`haven-tools` 已加入独立的 QuickJS evaluator：每次执行使用新 Runtime/Context，不启用模块 loader，隐藏进程、文件、网络、时钟和动态代码入口，并移除函数原型链上的动态构造器。model 脚本只有冻结的 tool description 与一个 typed subcall bridge；evaluator 本身不持有 MCP manager、adapter 或授权证明。进程硬上限为脚本 64 KiB、工具描述 128 KiB、最多 64 个工具、16 次串行子调用、单次输入 16 KiB、单次结果 16 KiB、累计结果 64 KiB、最终结果 32 KiB、QuickJS 内存 8 MiB、栈 256 KiB、运行 30 秒；调用方只能降低上限。QuickJS 运行于受限的 blocking worker，超时/取消会打断解释器并唤醒等待子调用；这些限制是进程内解释器边界，不等同于 Windows Job Object 或操作系统级 sandbox。
+
+该 evaluator 当前只完成了引擎和资源预算切片：Windows MSVC 本机构建、allowlist、原型链绕过、元数据/输入/结果上限、调用数、取消、超时和内存限制测试均通过。UI 仍不允许启用 CodeMode，新配置不能选择它，Legacy 目录/加载/执行入口仍 fail closed。下一切片需把 typed bridge 接入 Agent/Tools 的标准授权、逐子调用确认和结果治理，并完成用户可见的 per-server Legacy/CodeMode 切换；在这条垂直链和额外运行时审计完成前不能开放切换。Workflow、MCP resources/prompts 和 ExecutionWorkspace 仍按实施顺序等待各自垂直切片。现有数据库的 `session_events`、tool-call identity、ToolRun completion/outbox 和 X12 投影契约保持权威。
 
 ## 验收要求
 
