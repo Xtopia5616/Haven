@@ -1150,3 +1150,4 @@
 - [1159：支持无状态 MCP 协议并保留旧版回退](1159-support-stateless-mcp-with-legacy-fallback.md)
 - [1163：统一工具暴露、CodeMode 与受限工作流的执行边界](1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)
 - [1164：MCP Resources 与用户选择的 Prompts](1164-mcp-resources-and-user-selected-prompts.md)
+- [1165：定义有界声明式 Workflow 图契约](1165-bounded-declarative-workflow-validation.md)

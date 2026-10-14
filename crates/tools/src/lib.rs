@@ -48,6 +48,7 @@ mod tool_run_trigger_policy;
 mod tool_run_types;
 mod tool_runtime;
 mod util;
+mod workflow;
 
 use haven_common::config::{
     ContextLimitsConfig, McpServerConfig, SecurityConfig, SkillsExecConfig, ToolConfig,
@@ -227,6 +228,10 @@ pub(crate) use tool_runtime::MemoryRecallSlot;
 pub use tool_runtime::{
     LogLevelPort, MemoryRecallPort, RuntimeCapabilities, StartupWiring, ToolControlPort,
     WebSearchAvailability,
+};
+pub use workflow::{
+    ValidatedWorkflow, WORKFLOW_DEFINITION_VERSION, WorkflowDefinition, WorkflowLimits,
+    WorkflowStep, WorkflowValidationError, WorkflowValue, validate_workflow,
 };
 
 /// Convert an internal qualified tool name (`mcp::server::tool`, `skill::name`)
