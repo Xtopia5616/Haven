@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳并实施；首个文件工具与写入授权垂直切片完成。workspace 切换、句柄锚定写入和进程级文件隔离仍在路线图 Active。
+已采纳并实施；Files 目录句柄锚定由 [ADR 1169](1169-anchor-file-mutations-to-authorized-directories.md) 完成。workspace 切换、scratch 生命周期和进程级文件隔离仍在路线图 Active。
 
 ## 背景
 
