@@ -21,6 +21,7 @@ impl ToolsFacade {
         AuthorizedExecutor { tools: self }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn execute_tool(
         &self,
         session_id: Option<&str>,
@@ -33,6 +34,7 @@ impl ToolsFacade {
             .await
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn execute_tool_with_step(
         &self,
         session_id: Option<&str>,
@@ -43,6 +45,23 @@ impl ToolsFacade {
     ) -> anyhow::Result<ToolResult> {
         self.executor()
             .execute_tool_with_step(session_id, tool_name, input, cancel, step_id)
+            .await
+    }
+
+    /// Execute one operation using a proof returned by the authorization owner.
+    /// The proof is revalidated against the live operation contract at the
+    /// start of every attempt, including retries.
+    pub async fn execute_authorized_tool_with_step(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+        step_id: Option<&str>,
+        proof: crate::AuthorizationExecutionProof,
+    ) -> anyhow::Result<ToolResult> {
+        self.executor()
+            .execute_authorized_tool_with_step(session_id, tool_name, input, cancel, step_id, proof)
             .await
     }
 
@@ -71,6 +90,7 @@ impl ToolsFacade {
 }
 
 impl AuthorizedExecutor<'_> {
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn execute_tool(
         &self,
         session_id: Option<&str>,
@@ -85,6 +105,7 @@ impl AuthorizedExecutor<'_> {
     /// Like [`Self::execute_tool`], but also injects the pre-minted `step-*`
     /// id so tools that stream live output (shell) can key `agent:tool_output`
     /// events to the matching chat card.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn execute_tool_with_step(
         &self,
         session_id: Option<&str>,
@@ -92,6 +113,32 @@ impl AuthorizedExecutor<'_> {
         input: Value,
         cancel: CancellationToken,
         step_id: Option<&str>,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_tool_inner(session_id, tool_name, input, cancel, step_id, None)
+            .await
+    }
+
+    pub async fn execute_authorized_tool_with_step(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+        step_id: Option<&str>,
+        proof: crate::AuthorizationExecutionProof,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_tool_inner(session_id, tool_name, input, cancel, step_id, Some(proof))
+            .await
+    }
+
+    async fn execute_tool_inner(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+        step_id: Option<&str>,
+        authorization_proof: Option<crate::AuthorizationExecutionProof>,
     ) -> anyhow::Result<ToolResult> {
         if !self
             .tools
@@ -137,6 +184,7 @@ impl AuthorizedExecutor<'_> {
         // the LLM or scheduled tool_args: always strip first, validate the
         // LLM-facing input, then re-inject only caller-supplied values.
         // Declared via `Tool::requires_session_id` / `supports_live_output`.
+        let authorization_input = input.clone();
         let mut exec_input = input;
         tool_contract::strip_private_tool_fields(&mut exec_input);
         if let Err(error) = tool.validate_input(&exec_input) {
@@ -221,6 +269,28 @@ impl AuthorizedExecutor<'_> {
             }
             if cancel.is_cancelled() {
                 return Ok(ToolResult::cancelled("tool execution cancelled"));
+            }
+
+            if let Some(proof) = authorization_proof.as_ref() {
+                let request = self
+                    .tools
+                    .resolve_authorization_request(session_id, tool_name, &authorization_input)
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                if let Err(reason) = self
+                    .tools
+                    .coordinator
+                    .core
+                    .authorization
+                    .verify_execution_proof(&request, proof)
+                    .await
+                {
+                    return Ok(ToolResult::failed_with_class(
+                        Value::Null,
+                        format!("operation authorization is no longer valid: {reason}"),
+                        ToolErrorClass::Permission,
+                    ));
+                }
             }
 
             let mut result = match tool

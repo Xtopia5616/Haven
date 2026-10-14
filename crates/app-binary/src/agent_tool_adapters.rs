@@ -247,12 +247,39 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
         self.authorization.authorize(request).await
     }
 
+    async fn authorize_for_execution(
+        &self,
+        request: &AuthorizationRequest,
+    ) -> haven_tools::AuthorizationCheck {
+        self.authorization.authorize_for_execution(request).await
+    }
+
     async fn verify_receipt(
         &self,
         request: &AuthorizationRequest,
         receipt: &ConfirmationReceipt,
     ) -> Result<(), String> {
         self.authorization.verify_receipt(request, receipt).await
+    }
+
+    async fn confirm_for_execution(
+        &self,
+        request: &AuthorizationRequest,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<haven_tools::AuthorizationExecutionProof, String> {
+        self.authorization
+            .confirm_for_execution(request, receipt)
+            .await
+    }
+
+    async fn verify_execution_proof(
+        &self,
+        request: &AuthorizationRequest,
+        proof: &haven_tools::AuthorizationExecutionProof,
+    ) -> Result<(), String> {
+        self.authorization
+            .verify_execution_proof(request, proof)
+            .await
     }
 
     async fn grant(
@@ -421,13 +448,17 @@ impl ToolRunCompletionReceiverPort for ToolsFacadeToolRunCompletionAdapter {
 #[async_trait]
 impl ToolExecutionPort for ToolsFacadeAgentAdapter {
     async fn execute(&self, context: ToolExecutionContext) -> anyhow::Result<ToolResult> {
+        let proof = context
+            .authorization_proof
+            .ok_or_else(|| anyhow::anyhow!("tool execution is missing an authorization proof"))?;
         self.tools
-            .execute_tool_with_step(
+            .execute_authorized_tool_with_step(
                 context.session_id.as_deref(),
                 &context.tool_name,
                 context.input,
                 context.cancel,
                 context.step_id.as_deref(),
+                proof,
             )
             .await
     }

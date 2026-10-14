@@ -361,6 +361,68 @@ pub struct AuthorizationRequest {
     pub policy: OperationPolicy,
 }
 
+#[derive(Debug)]
+struct AuthorizationExecutionBinding {
+    session_id: Option<String>,
+    tool_name: String,
+    capability: CapabilityScope,
+    canonical_input_hash: String,
+    policy: OperationPolicy,
+    policy_revision: u64,
+    expires_at: u64,
+}
+
+#[derive(Debug)]
+enum ExecutionAuthorizationKind {
+    AutoApproved,
+    Confirmed(ConfirmationReceipt),
+}
+
+/// Opaque proof carried from the Agent authorization gate to the Tools
+/// execution owner. A proof is move-only, and only the authorization owner can construct it;
+/// confirmation receipts cannot be wrapped into executable authority by
+/// consumers. A proof authorizes one exact operation, never its child calls.
+#[derive(Debug)]
+pub struct AuthorizationExecutionProof {
+    binding: AuthorizationExecutionBinding,
+    authorization: ExecutionAuthorizationKind,
+}
+
+/// A policy decision plus the execution proof, if the operation can proceed
+/// without a user confirmation.
+#[derive(Debug)]
+pub struct AuthorizationCheck {
+    pub decision: AuthorizationDecision,
+    pub execution_proof: Option<AuthorizationExecutionProof>,
+}
+
+impl AuthorizationCheck {
+    fn without_proof(decision: AuthorizationDecision) -> Self {
+        Self {
+            decision,
+            execution_proof: None,
+        }
+    }
+
+    fn auto_approved(request: &AuthorizationRequest, policy_revision: u64) -> Self {
+        Self {
+            decision: AuthorizationDecision::AutoApproved,
+            execution_proof: Some(AuthorizationExecutionProof {
+                binding: AuthorizationExecutionBinding {
+                    session_id: request.session_id.clone(),
+                    tool_name: request.tool_name.clone(),
+                    capability: request.capability().clone(),
+                    canonical_input_hash: canonical_input_hash(&request.input),
+                    policy: request.policy.clone(),
+                    policy_revision,
+                    expires_at: execution_proof_expiry(),
+                },
+                authorization: ExecutionAuthorizationKind::AutoApproved,
+            }),
+        }
+    }
+}
+
 /// Stable capability boundary for authorization consumers outside `haven-tools`.
 ///
 /// The policy engine is deliberately kept private to this crate. Callers can
@@ -381,10 +443,27 @@ pub trait AuthorizationPort: Send + Sync {
 
     async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision;
 
+    async fn authorize_for_execution(&self, request: &AuthorizationRequest) -> AuthorizationCheck;
+
     async fn verify_receipt(
         &self,
         request: &AuthorizationRequest,
         receipt: &ConfirmationReceipt,
+    ) -> Result<(), String>;
+
+    /// Turn a receipt selected by the trusted interaction owner into the
+    /// opaque proof consumed by execution. Callers must invoke this only
+    /// after the matching user interaction has resolved as approved.
+    async fn confirm_for_execution(
+        &self,
+        request: &AuthorizationRequest,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<AuthorizationExecutionProof, String>;
+
+    async fn verify_execution_proof(
+        &self,
+        request: &AuthorizationRequest,
+        proof: &AuthorizationExecutionProof,
     ) -> Result<(), String>;
 
     async fn grant(
@@ -645,7 +724,10 @@ impl AuthorizationEngine {
     /// capability scope are produced by the same contract that executes the
     /// operation; the engine never reconstructs authorization from a tool
     /// name or a renderer-provided flag.
-    pub async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision {
+    pub async fn authorize_for_execution(
+        &self,
+        request: &AuthorizationRequest,
+    ) -> AuthorizationCheck {
         let session_id = request.session_id.as_deref();
         let tool_name = &request.tool_name;
         let params = &request.input;
@@ -655,18 +737,18 @@ impl AuthorizationEngine {
         let risk = effective_risk_from(&cfg, tool_name, policy.risk_level);
 
         if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, key) {
-            return AuthorizationDecision::Blocked {
+            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason,
                 reason_code: AuthorizationReasonCode::DisabledOperation,
-            };
+            });
         }
         if let Some(reason) =
             network_policy_block(cfg.network_policy, cfg.sandbox_mode, tool_name, policy)
         {
-            return AuthorizationDecision::Blocked {
+            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason,
                 reason_code: AuthorizationReasonCode::NetworkPolicy,
-            };
+            });
         }
         if let Some(reason) = path_sandbox_block(
             &cfg.tool_settings,
@@ -676,39 +758,39 @@ impl AuthorizationEngine {
             params,
             policy,
         ) {
-            return AuthorizationDecision::Blocked {
+            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason,
                 reason_code: AuthorizationReasonCode::SandboxBoundary,
-            };
+            });
         }
 
         // Plan is a capability boundary, not a prompting preference. It must
         // run before permanent/session allows so an old Always grant cannot
         // silently turn Plan back into an execution mode.
         if matches!(cfg.permission_mode, PermissionMode::Plan) && !policy.is_read_only() {
-            return AuthorizationDecision::Blocked {
+            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason: "plan mode only permits read-only operations".into(),
                 reason_code: AuthorizationReasonCode::PlanMode,
-            };
+            });
         }
 
         // Deny always wins over Allow (permanent deny → session deny →
         // permanent allow → session allow). Session deny can override a
         // permanent allow for the rest of that session.
         if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Deny) {
-            return AuthorizationDecision::Blocked {
+            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason: format!("permanently denied: {key}"),
                 reason_code: AuthorizationReasonCode::PermanentDeny,
-            };
+            });
         }
         if let Some(sid) = session_id
             && let Some(grants) = cfg.session_grants.get(sid)
             && match_key_set(&grants.deny, key)
         {
-            return AuthorizationDecision::Blocked {
+            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason: format!("denied for this session: {key}"),
                 reason_code: AuthorizationReasonCode::SessionDeny,
-            };
+            });
         }
         // Critical operations are a hard confirmation floor. An allow grant
         // can streamline ordinary work, but it must never turn an
@@ -717,13 +799,13 @@ impl AuthorizationEngine {
             risk >= RiskLevel::Critical || policy.confirmation == ConfirmationRequirement::Required;
         if !hard_confirmation {
             if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Allow) {
-                return AuthorizationDecision::AutoApproved;
+                return AuthorizationCheck::auto_approved(request, cfg.policy_revision);
             }
             if let Some(sid) = session_id
                 && let Some(grants) = cfg.session_grants.get(sid)
                 && match_key_set(&grants.allow, key)
             {
-                return AuthorizationDecision::AutoApproved;
+                return AuthorizationCheck::auto_approved(request, cfg.policy_revision);
             }
         }
 
@@ -750,7 +832,7 @@ impl AuthorizationEngine {
         };
 
         if !needs_prompt {
-            return AuthorizationDecision::AutoApproved;
+            return AuthorizationCheck::auto_approved(request, cfg.policy_revision);
         }
 
         let reason_code = if hard_confirmation {
@@ -769,12 +851,19 @@ impl AuthorizationEngine {
             policy_revision: cfg.policy_revision,
             expires_at: confirmation_expiry(),
         };
-        AuthorizationDecision::RequiresConfirmation {
+        AuthorizationCheck::without_proof(AuthorizationDecision::RequiresConfirmation {
             capability: key.clone(),
             risk_level: risk,
             receipt,
             reason_code,
-        }
+        })
+    }
+
+    /// Compatibility-free decision helper for callers that do not execute the
+    /// operation themselves. Execution callers must retain the proof returned
+    /// by `authorize_for_execution` and pass it to the Tools owner.
+    pub async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision {
+        self.authorize_for_execution(request).await.decision
     }
 
     /// Verify a receipt against the exact typed request that created it.
@@ -837,6 +926,104 @@ impl AuthorizationEngine {
             && match_key_set(&grants.deny, key)
         {
             return Err(format!("denied for this session: {key}"));
+        }
+        Ok(())
+    }
+
+    /// Issue an opaque execution proof after the trusted interaction owner has
+    /// accepted this exact confirmation receipt. Receipts are display/IPC
+    /// records and are never executable authority on their own.
+    pub async fn confirm_for_execution(
+        &self,
+        request: &AuthorizationRequest,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<AuthorizationExecutionProof, String> {
+        self.verify_receipt(request, receipt).await?;
+        Ok(AuthorizationExecutionProof {
+            binding: AuthorizationExecutionBinding {
+                session_id: request.session_id.clone(),
+                tool_name: request.tool_name.clone(),
+                capability: request.capability().clone(),
+                canonical_input_hash: canonical_input_hash(&request.input),
+                policy: request.policy.clone(),
+                policy_revision: receipt.policy_revision,
+                expires_at: execution_proof_expiry().min(receipt.expires_at),
+            },
+            authorization: ExecutionAuthorizationKind::Confirmed(receipt.clone()),
+        })
+    }
+
+    /// Revalidate a proof immediately before an operation attempt. Auto
+    /// approvals bind the operation contract and current policy revision;
+    /// confirmations retain the existing input-bound receipt semantics.
+    pub async fn verify_execution_proof(
+        &self,
+        request: &AuthorizationRequest,
+        proof: &AuthorizationExecutionProof,
+    ) -> Result<(), String> {
+        let binding = &proof.binding;
+        if binding.session_id != request.session_id
+            || binding.tool_name != request.tool_name
+            || binding.capability != *request.capability()
+            || binding.canonical_input_hash != canonical_input_hash(&request.input)
+            || binding.policy != request.policy
+        {
+            return Err("execution proof does not match the operation request".into());
+        }
+        if confirmation_now() >= binding.expires_at {
+            return Err("execution proof has expired".into());
+        }
+        if let ExecutionAuthorizationKind::Confirmed(receipt) = &proof.authorization {
+            if receipt.policy_revision != binding.policy_revision {
+                return Err("execution proof receipt has a mismatched policy revision".into());
+            }
+            return self.verify_receipt(request, receipt).await;
+        }
+        let cfg = self.config.read().await;
+        if binding.policy_revision != cfg.policy_revision {
+            return Err("execution proof was issued under an older policy".into());
+        }
+        let session_id = request.session_id.as_deref();
+        let tool_name = request.tool_name.as_str();
+        let key = request.capability();
+        let risk = effective_risk_from(&cfg, tool_name, request.policy.risk_level);
+        if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, key) {
+            return Err(reason);
+        }
+        if let Some(reason) = network_policy_block(
+            cfg.network_policy,
+            cfg.sandbox_mode,
+            tool_name,
+            &request.policy,
+        ) {
+            return Err(reason);
+        }
+        if let Some(reason) = path_sandbox_block(
+            &cfg.tool_settings,
+            cfg.sandbox_mode,
+            &cfg.writable_roots,
+            tool_name,
+            &request.input,
+            &request.policy,
+        ) {
+            return Err(reason);
+        }
+        if matches!(cfg.permission_mode, PermissionMode::Plan) && !request.policy.is_read_only() {
+            return Err("plan mode only permits read-only operations".into());
+        }
+        if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Deny) {
+            return Err(format!("permanently denied: {key}"));
+        }
+        if let Some(session_id) = session_id
+            && let Some(grants) = cfg.session_grants.get(session_id)
+            && match_key_set(&grants.deny, key)
+        {
+            return Err(format!("denied for this session: {key}"));
+        }
+        if risk >= RiskLevel::Critical
+            || request.policy.confirmation == ConfirmationRequirement::Required
+        {
+            return Err("operation now requires a fresh user confirmation".into());
         }
         Ok(())
     }
@@ -992,12 +1179,32 @@ impl AuthorizationPort for AuthorizationEngine {
         AuthorizationEngine::authorize(self, request).await
     }
 
+    async fn authorize_for_execution(&self, request: &AuthorizationRequest) -> AuthorizationCheck {
+        AuthorizationEngine::authorize_for_execution(self, request).await
+    }
+
     async fn verify_receipt(
         &self,
         request: &AuthorizationRequest,
         receipt: &ConfirmationReceipt,
     ) -> Result<(), String> {
         AuthorizationEngine::verify_receipt(self, request, receipt).await
+    }
+
+    async fn confirm_for_execution(
+        &self,
+        request: &AuthorizationRequest,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<AuthorizationExecutionProof, String> {
+        AuthorizationEngine::confirm_for_execution(self, request, receipt).await
+    }
+
+    async fn verify_execution_proof(
+        &self,
+        request: &AuthorizationRequest,
+        proof: &AuthorizationExecutionProof,
+    ) -> Result<(), String> {
+        AuthorizationEngine::verify_execution_proof(self, request, proof).await
     }
 
     async fn grant(
@@ -1078,6 +1285,10 @@ fn confirmation_now() -> u64 {
 
 fn confirmation_expiry() -> u64 {
     confirmation_now().saturating_add(5 * 60)
+}
+
+fn execution_proof_expiry() -> u64 {
+    confirmation_now().saturating_add(30)
 }
 
 fn canonical_input_hash(input: &Value) -> String {
@@ -1480,6 +1691,106 @@ mod tests {
         let request =
             AuthorizationRequest::new(session_id, tool_name, params.clone(), policy.clone());
         engine.authorize(&request).await
+    }
+
+    #[tokio::test]
+    async fn execution_proof_binds_input_and_policy_revision() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let input = serde_json::json!({"value": "approved"});
+        let request = AuthorizationRequest::new(
+            Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            "ask",
+            input,
+            fixture_policy(
+                "ask",
+                &serde_json::json!({"value": "approved"}),
+                RiskLevel::Safe,
+            ),
+        );
+        let check = engine.authorize_for_execution(&request).await;
+        assert!(matches!(
+            check.decision,
+            AuthorizationDecision::AutoApproved
+        ));
+        let proof = check
+            .execution_proof
+            .expect("auto-approved requests carry an execution proof");
+        assert!(
+            engine
+                .verify_execution_proof(&request, &proof)
+                .await
+                .is_ok()
+        );
+
+        let mut changed_request = request.clone();
+        changed_request.input = serde_json::json!({"value": "changed"});
+        assert!(
+            engine
+                .verify_execution_proof(&changed_request, &proof)
+                .await
+                .is_err(),
+            "proof cannot be replayed with different input"
+        );
+
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        assert!(
+            engine
+                .verify_execution_proof(&request, &proof)
+                .await
+                .is_err(),
+            "even an equivalent boundary update invalidates an outstanding proof"
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmed_execution_proof_is_opaque_and_revalidates_the_receipt() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let input = serde_json::json!({"path": "report.txt"});
+        let mut policy = fixture_policy("files.write", &input, RiskLevel::High);
+        policy.confirmation = ConfirmationRequirement::Required;
+        let request = AuthorizationRequest::new(
+            Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            "files.write",
+            input.clone(),
+            policy,
+        );
+        let check = engine.authorize_for_execution(&request).await;
+        let AuthorizationDecision::RequiresConfirmation { receipt, .. } = check.decision else {
+            panic!("the explicit confirmation policy must require user approval")
+        };
+        assert!(
+            check.execution_proof.is_none(),
+            "a display receipt is not an execution proof"
+        );
+
+        let proof = engine
+            .confirm_for_execution(&request, &receipt)
+            .await
+            .expect("the interaction owner can convert its accepted receipt to an opaque proof");
+        assert!(
+            engine
+                .verify_execution_proof(&request, &proof)
+                .await
+                .is_ok()
+        );
+
+        let mut changed_request = request.clone();
+        changed_request.policy.effect = OperationEffect::WorkspaceWrite;
+        assert!(
+            engine
+                .verify_execution_proof(&changed_request, &proof)
+                .await
+                .is_err(),
+            "a receipt cannot authorize a changed operation contract"
+        );
     }
 
     // Keep threshold fixtures terse while production tests use the new policy

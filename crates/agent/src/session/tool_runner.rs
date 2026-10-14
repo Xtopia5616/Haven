@@ -989,7 +989,12 @@ impl SessionSupervisor {
                 confirmed: Some(false),
             });
         }
-        match self.authorization.authorize(&authorization_request).await {
+        let authorization_check = self
+            .authorization
+            .authorize_for_execution(&authorization_request)
+            .await;
+        let mut execution_proof = authorization_check.execution_proof;
+        match authorization_check.decision {
             AuthorizationDecision::AutoApproved => {}
             AuthorizationDecision::Blocked { reason, .. } => {
                 return Ok(ToolExecution {
@@ -1016,8 +1021,14 @@ impl SessionSupervisor {
                 // Callers must pre-decide via pause-confirm or
                 // `request_scheduled_confirm`. Missing receipt fails closed.
                 match receipt {
-                    Some(_) => {
+                    Some(receipt) => {
                         confirmed = Some(true);
+                        execution_proof = Some(
+                            self.authorization
+                                .confirm_for_execution(&authorization_request, &receipt)
+                                .await
+                                .map_err(anyhow::Error::msg)?,
+                        );
                     }
                     None => {
                         tracing::warn!(
@@ -1047,6 +1058,9 @@ impl SessionSupervisor {
                 }
             }
         }
+        let execution_proof = execution_proof.ok_or_else(|| {
+            anyhow::anyhow!("authorization decision did not issue an execution proof")
+        })?;
         let result = self
             .execution
             .execute(ToolExecutionContext {
@@ -1055,6 +1069,7 @@ impl SessionSupervisor {
                 input,
                 cancel,
                 step_id: step_id.map(str::to_owned),
+                authorization_proof: Some(execution_proof),
             })
             .await?;
         Ok(ToolExecution {

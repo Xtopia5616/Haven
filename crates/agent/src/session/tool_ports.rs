@@ -19,7 +19,6 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// One execution request crossing the Agent-to-Tools runtime boundary.
-#[derive(Clone)]
 pub struct ToolExecutionContext {
     /// Trusted session identity. It is never read from model-supplied input.
     pub session_id: Option<String>,
@@ -29,9 +28,13 @@ pub struct ToolExecutionContext {
     pub cancel: CancellationToken,
     /// Stable step identity, separate from the provider's input payload.
     pub step_id: Option<String>,
+    /// Proof issued by the Tools authorization owner for this exact child
+    /// operation. Test-only execution adapters may omit it.
+    pub authorization_proof: Option<haven_tools::AuthorizationExecutionProof>,
 }
 
-/// Executes an already-authorized tool request and resolves its registrations.
+/// Executes a request carrying the authorization owner's proof and resolves
+/// the tool's registrations. Tools revalidates that proof before each attempt.
 #[async_trait]
 pub trait ToolExecutionPort: Send + Sync {
     async fn execute(&self, context: ToolExecutionContext) -> anyhow::Result<ToolResult>;
@@ -74,10 +77,27 @@ pub trait ToolAuthorizationPort: Send + Sync {
 
     async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision;
 
+    async fn authorize_for_execution(
+        &self,
+        request: &AuthorizationRequest,
+    ) -> haven_tools::AuthorizationCheck;
+
     async fn verify_receipt(
         &self,
         request: &AuthorizationRequest,
         receipt: &ConfirmationReceipt,
+    ) -> Result<(), String>;
+
+    async fn confirm_for_execution(
+        &self,
+        request: &AuthorizationRequest,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<haven_tools::AuthorizationExecutionProof, String>;
+
+    async fn verify_execution_proof(
+        &self,
+        request: &AuthorizationRequest,
+        proof: &haven_tools::AuthorizationExecutionProof,
     ) -> Result<(), String>;
 
     async fn grant(
@@ -184,15 +204,28 @@ impl ToolsFacadeToolExecutionAdapter {
 #[async_trait]
 impl ToolExecutionPort for ToolsFacadeToolExecutionAdapter {
     async fn execute(&self, context: ToolExecutionContext) -> anyhow::Result<ToolResult> {
-        self.tools
-            .execute_tool_with_step(
-                context.session_id.as_deref(),
-                &context.tool_name,
-                context.input,
-                context.cancel,
-                context.step_id.as_deref(),
-            )
-            .await
+        if let Some(proof) = context.authorization_proof {
+            self.tools
+                .execute_authorized_tool_with_step(
+                    context.session_id.as_deref(),
+                    &context.tool_name,
+                    context.input,
+                    context.cancel,
+                    context.step_id.as_deref(),
+                    proof,
+                )
+                .await
+        } else {
+            self.tools
+                .execute_tool_with_step(
+                    context.session_id.as_deref(),
+                    &context.tool_name,
+                    context.input,
+                    context.cancel,
+                    context.step_id.as_deref(),
+                )
+                .await
+        }
     }
 
     async fn registrations(
@@ -267,12 +300,39 @@ impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
         self.authorization.authorize(request).await
     }
 
+    async fn authorize_for_execution(
+        &self,
+        request: &AuthorizationRequest,
+    ) -> haven_tools::AuthorizationCheck {
+        self.authorization.authorize_for_execution(request).await
+    }
+
     async fn verify_receipt(
         &self,
         request: &AuthorizationRequest,
         receipt: &ConfirmationReceipt,
     ) -> Result<(), String> {
         self.authorization.verify_receipt(request, receipt).await
+    }
+
+    async fn confirm_for_execution(
+        &self,
+        request: &AuthorizationRequest,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<haven_tools::AuthorizationExecutionProof, String> {
+        self.authorization
+            .confirm_for_execution(request, receipt)
+            .await
+    }
+
+    async fn verify_execution_proof(
+        &self,
+        request: &AuthorizationRequest,
+        proof: &haven_tools::AuthorizationExecutionProof,
+    ) -> Result<(), String> {
+        self.authorization
+            .verify_execution_proof(request, proof)
+            .await
     }
 
     async fn grant(
@@ -765,6 +825,7 @@ mod tests {
                 }),
                 cancel,
                 step_id: Some("step-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
+                authorization_proof: None,
             })
             .await
             .unwrap();
@@ -802,6 +863,7 @@ mod tests {
                 input: json!({"value": "kept"}),
                 cancel,
                 step_id: None,
+                authorization_proof: None,
             })
             .await
             .unwrap();

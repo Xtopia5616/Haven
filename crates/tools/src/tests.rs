@@ -463,6 +463,73 @@ async fn execute_tool_does_not_inject_idempotency_key_into_strict_tool_args() {
 }
 
 #[tokio::test]
+async fn authorized_execution_rejects_a_revoked_proof_before_calling_the_tool() {
+    use haven_common::types::{NetworkPolicy, SandboxMode};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CounterTool(Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Tool for CounterTool {
+        fn name(&self) -> String {
+            "proof_gate_probe".into()
+        }
+        fn description(&self) -> String {
+            "Counts execution attempts for authorization proof tests".into()
+        }
+        fn risk_level(&self, _: &Value) -> RiskLevel {
+            RiskLevel::Safe
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object", "additionalProperties": false})
+        }
+        async fn execute(&self, _: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolResult::ok(json!({"executed": true})))
+        }
+    }
+
+    let tools = ToolsFacade::new();
+    let executions = Arc::new(AtomicUsize::new(0));
+    tools
+        .registry()
+        .register(Arc::new(CounterTool(executions.clone())))
+        .await
+        .unwrap();
+    let input = json!({});
+    let request = tools
+        .resolve_authorization_request(None, "proof_gate_probe", &input)
+        .await
+        .unwrap();
+    let authorization = tools.share_services().authorization;
+    let check = authorization.authorize_for_execution(&request).await;
+    assert!(matches!(
+        check.decision,
+        AuthorizationDecision::AutoApproved
+    ));
+    let proof = check.execution_proof.unwrap();
+
+    authorization
+        .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+        .await;
+    let result = tools
+        .execute_authorized_tool_with_step(
+            None,
+            "proof_gate_probe",
+            input,
+            CancellationToken::new(),
+            None,
+            proof,
+        )
+        .await
+        .unwrap();
+
+    assert!(!result.success);
+    assert_eq!(result.error_class, Some(ToolErrorClass::Permission));
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn test_tools_facade_set_tool_settings() {
     let mgr = ToolsFacade::new();
     let mut settings = HashMap::new();

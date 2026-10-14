@@ -173,9 +173,9 @@ pub use registry::{ToolCatalogSnapshot, ToolCatalogVersion};
 #[cfg(test)]
 pub(crate) use security::AuthorizationEngine;
 pub use security::{
-    AuthorizationDecision, AuthorizationPort, AuthorizationReasonCode, AuthorizationRequest,
-    ConfirmationReceipt, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, is_safe_local_path,
-    permission_prompt_summary,
+    AuthorizationCheck, AuthorizationDecision, AuthorizationExecutionProof, AuthorizationPort,
+    AuthorizationReasonCode, AuthorizationRequest, ConfirmationReceipt, LOCAL_TOOL_SECURITY_MATRIX,
+    LocalToolSecurityCase, is_safe_local_path, permission_prompt_summary,
 };
 #[cfg(windows)]
 pub(crate) use shell_runtime::CREATE_NO_WINDOW;
