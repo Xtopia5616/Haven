@@ -15,6 +15,18 @@ use tokio_util::sync::CancellationToken;
 
 const NOTIFICATION_LISTENER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECTION_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+static NEXT_MANAGER_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Copy)]
+pub struct McpTargetChanged;
+
+impl std::fmt::Display for McpTargetChanged {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("MCP target changed after authorization")
+    }
+}
+
+impl std::error::Error for McpTargetChanged {}
 
 struct OwnedNotificationListener {
     client: Arc<McpClient>,
@@ -143,6 +155,7 @@ pub struct McpReconcile {
 }
 
 pub struct McpManager {
+    manager_id: u64,
     clients: Arc<Mutex<HashMap<String, Arc<McpClient>>>>,
     monitors: Arc<Mutex<HashMap<String, OwnedMonitor>>>,
     notification_listeners: Arc<StdMutex<HashMap<usize, OwnedNotificationListener>>>,
@@ -167,6 +180,7 @@ pub struct McpManager {
 impl Clone for McpManager {
     fn clone(&self) -> Self {
         Self {
+            manager_id: self.manager_id,
             clients: self.clients.clone(),
             monitors: self.monitors.clone(),
             notification_listeners: self.notification_listeners.clone(),
@@ -198,6 +212,7 @@ impl McpManager {
     fn new_with_network_policy(network_policy: haven_common::types::NetworkPolicy) -> Self {
         let (status_tx, _) = tokio::sync::broadcast::channel(256);
         Self {
+            manager_id: NEXT_MANAGER_ID.fetch_add(1, Ordering::SeqCst),
             clients: Arc::new(Mutex::new(HashMap::new())),
             monitors: Arc::new(Mutex::new(HashMap::new())),
             notification_listeners: Arc::new(StdMutex::new(HashMap::new())),
@@ -324,6 +339,7 @@ impl McpManager {
         let generation = self
             .next_connection_generation
             .fetch_add(1, Ordering::SeqCst);
+        client.set_manager_generation(generation);
         let cancel = CancellationToken::new();
         let reservation = Arc::new(ConnectionReservation {
             generation,
@@ -714,6 +730,10 @@ impl McpManager {
             if self.shutting_down.load(Ordering::SeqCst) {
                 false
             } else {
+                let generation = self
+                    .next_connection_generation
+                    .fetch_add(1, Ordering::SeqCst);
+                client.set_manager_generation(generation);
                 self.clients
                     .lock()
                     .await
@@ -778,6 +798,13 @@ impl McpManager {
     /// This reports presence; use [`Self::client_status`] for connection state.
     pub async fn has_client(&self, name: &str) -> bool {
         self.clients.lock().await.contains_key(name)
+    }
+
+    /// Opaque identity for the manager and live connection that route this
+    /// server name. It contains no endpoint or credential data.
+    pub async fn client_target_binding(&self, name: &str) -> Option<String> {
+        let generation = self.client(name).await?.manager_generation();
+        (generation != 0).then(|| format!("mcp-target:{:016x}:{generation:016x}", self.manager_id))
     }
 
     /// Read a client status through the manager boundary. Missing clients are
@@ -1329,12 +1356,48 @@ impl McpManager {
             .client(client_name)
             .await
             .ok_or_else(|| anyhow::anyhow!("MCP client '{}' not found", client_name))?;
+        self.call_tool_on_client(client, tool_name, input, cancel)
+            .await
+    }
+
+    /// Call only the connection generation that was included in the
+    /// authorization request. Holding the selected client Arc prevents a
+    /// concurrent replacement from redirecting this call to a new target.
+    pub async fn call_tool_at_target_binding(
+        &self,
+        client_name: &str,
+        expected_binding: &str,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpCallOutput> {
+        let client = self
+            .client(client_name)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("MCP client '{}' not found", client_name))?;
+        let generation = client.manager_generation();
+        let actual_binding = (generation != 0)
+            .then(|| format!("mcp-target:{:016x}:{generation:016x}", self.manager_id));
+        if actual_binding.as_deref() != Some(expected_binding) {
+            return Err(anyhow::Error::new(McpTargetChanged));
+        }
+        self.call_tool_on_client(client, tool_name, input, cancel)
+            .await
+    }
+
+    async fn call_tool_on_client(
+        &self,
+        client: Arc<McpClient>,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpCallOutput> {
         let (tools, refreshed) = client
             .ensure_tool_cache_fresh()
             .await
             .map_err(|error| anyhow::anyhow!("MCP tool catalog refresh failed: {error}"))?;
         if tools.is_none() {
-            anyhow::bail!("MCP tool catalog is not available for '{}'", client_name);
+            anyhow::bail!("MCP tool catalog is not available for '{}'", client.name());
         }
         if refreshed {
             self.bump_catalog_version();
@@ -1367,6 +1430,61 @@ mod manager_lifecycle_tests {
             url: "http://127.0.0.1:1/mcp".to_string(),
             ..McpServerConfig::default()
         }
+    }
+
+    #[tokio::test]
+    async fn mcp_target_binding_rejects_replacement_and_other_managers() {
+        let config = unreachable_http_server("target-binding");
+        let first_manager = McpManager::new();
+        first_manager
+            .add_client(Arc::new(McpClient::new(&config, 1024, 1024)))
+            .await;
+        let first_binding = first_manager
+            .client_target_binding("target-binding")
+            .await
+            .unwrap();
+
+        let second_manager = McpManager::new();
+        second_manager
+            .add_client(Arc::new(McpClient::new(&config, 1024, 1024)))
+            .await;
+        let second_binding = second_manager
+            .client_target_binding("target-binding")
+            .await
+            .unwrap();
+        assert_ne!(first_binding, second_binding);
+        let error = second_manager
+            .call_tool_at_target_binding(
+                "target-binding",
+                &first_binding,
+                "probe",
+                Value::Null,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<McpTargetChanged>().is_some());
+
+        second_manager.remove_client("target-binding").await;
+        second_manager
+            .add_client(Arc::new(McpClient::new(&config, 1024, 1024)))
+            .await;
+        let replacement_binding = second_manager
+            .client_target_binding("target-binding")
+            .await
+            .unwrap();
+        assert_ne!(second_binding, replacement_binding);
+        let error = second_manager
+            .call_tool_at_target_binding(
+                "target-binding",
+                &second_binding,
+                "probe",
+                Value::Null,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<McpTargetChanged>().is_some());
     }
 
     struct MockHttpServer {

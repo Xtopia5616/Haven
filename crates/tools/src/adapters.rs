@@ -234,6 +234,60 @@ impl McpToolAdapter {
     fn qualified_name(&self) -> String {
         Self::qualified_name_of(&self.server_name, &self.info.name)
     }
+
+    async fn execute_target_bound(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<String>,
+    ) -> anyhow::Result<ToolResult> {
+        #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
+        if self.panic_on_execute {
+            panic!("simulated MCP adapter panic");
+        }
+        let result = match target_binding {
+            Some(target_binding) => {
+                self.manager
+                    .call_tool_at_target_binding(
+                        &self.server_name,
+                        &target_binding,
+                        &self.info.name,
+                        input,
+                        cancel,
+                    )
+                    .await
+            }
+            None => {
+                self.manager
+                    .call_tool(&self.server_name, &self.info.name, input, cancel)
+                    .await
+            }
+        };
+        let out = result.map_err(|error| {
+            let metadata = if error
+                .downcast_ref::<haven_mcp::McpTargetChanged>()
+                .is_some()
+            {
+                ToolErrorMetadata {
+                    class: haven_common::tools::ToolErrorClass::Permission,
+                    outcome: haven_common::tools::ToolExecutionOutcome::Failed,
+                    retryability: haven_common::tools::ToolRetryability::NotRetryable,
+                }
+            } else {
+                ToolErrorMetadata::unknown_outcome()
+            };
+            anyhow::Error::new(StructuredToolError::new(error.to_string(), metadata))
+        })?;
+        if out.success {
+            Ok(ToolResult::from_output(out.output, false))
+        } else {
+            Ok(ToolResult::failed_with_metadata(
+                out.output,
+                "MCP tool returned an error",
+                ToolErrorMetadata::unknown_failure(),
+            ))
+        }
+    }
 }
 
 #[async_trait]
@@ -262,30 +316,42 @@ impl Tool for McpToolAdapter {
         sanitize_external_schema(&self.info.input_schema)
     }
 
+    async fn authorization_target_binding(&self, _input: &Value) -> Result<Option<String>, String> {
+        #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
+        if self.panic_on_execute {
+            return Ok(None);
+        }
+        let binding = self
+            .manager
+            .client_target_binding(&self.server_name)
+            .await
+            .ok_or_else(|| "MCP server target is not connected".to_string())?;
+        Ok(Some(binding))
+    }
+
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        self.execute_target_bound(input, cancel, None).await
+    }
+
+    async fn execute_with_authorization_target(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<&str>,
+    ) -> anyhow::Result<ToolResult> {
         #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
         if self.panic_on_execute {
             panic!("simulated MCP adapter panic");
         }
-        let out = self
-            .manager
-            .call_tool(&self.server_name, &self.info.name, input, cancel)
+        let Some(target_binding) = target_binding else {
+            return Ok(ToolResult::failed_with_class(
+                Value::Null,
+                "MCP execution is missing a valid target binding",
+                haven_common::tools::ToolErrorClass::Permission,
+            ));
+        };
+        self.execute_target_bound(input, cancel, Some(target_binding.to_owned()))
             .await
-            .map_err(|error| {
-                anyhow::Error::new(StructuredToolError::new(
-                    error.to_string(),
-                    ToolErrorMetadata::unknown_outcome(),
-                ))
-            })?;
-        if out.success {
-            Ok(ToolResult::from_output(out.output, false))
-        } else {
-            Ok(ToolResult::failed_with_metadata(
-                out.output,
-                "MCP tool returned an error",
-                ToolErrorMetadata::unknown_failure(),
-            ))
-        }
     }
 }
 

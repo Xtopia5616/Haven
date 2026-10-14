@@ -232,7 +232,7 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
             .await
     }
 
-    fn authorization_request_from_catalog(
+    async fn authorization_request_from_catalog(
         &self,
         catalog: &ToolCatalogSnapshot,
         session_id: Option<&str>,
@@ -241,6 +241,7 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
     ) -> Result<AuthorizationRequest, String> {
         self.tools
             .resolve_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
+            .await
     }
 
     async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision {

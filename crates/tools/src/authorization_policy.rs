@@ -59,16 +59,6 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         Self::operation_policy_for(tool.as_ref(), tool_name, input)
     }
 
-    async fn authorization_input(
-        &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        input: &Value,
-    ) -> Value {
-        let tool = self.tools.get_tool_for_session(session_id, tool_name).await;
-        Self::authorization_input_for(tool.as_ref(), input)
-    }
-
     async fn risk_level(
         &self,
         session_id: Option<&str>,
@@ -94,19 +84,20 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         tool_name: &str,
         input: &Value,
     ) -> Result<AuthorizationRequest, String> {
-        // Keep the existing live lookup order: the operation contract and
-        // canonical input are each resolved through the session-first lookup.
-        let policy = self.operation_policy(session_id, tool_name, input).await?;
-        let authorization_input = self.authorization_input(session_id, tool_name, input).await;
-        Ok(AuthorizationRequest::new(
-            session_id,
-            tool_name,
-            authorization_input,
-            policy,
-        ))
+        let tool = self.tools.get_tool_for_session(session_id, tool_name).await;
+        let policy = Self::operation_policy_for(tool.as_ref(), tool_name, input)?;
+        let authorization_input = Self::authorization_input_for(tool.as_ref(), input);
+        let target_binding = match tool.as_ref() {
+            Some(tool) => tool.authorization_target_binding(input).await?,
+            None => None,
+        };
+        Ok(
+            AuthorizationRequest::new(session_id, tool_name, authorization_input, policy)
+                .with_target_binding(target_binding),
+        )
     }
 
-    fn authorization_request_from_snapshot(
+    async fn authorization_request_from_snapshot(
         catalog: &ToolCatalogSnapshot,
         session_id: Option<&str>,
         tool_name: &str,
@@ -115,12 +106,14 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         let tool = catalog.get(tool_name);
         let authorization_input = Self::authorization_input_for(tool, input);
         let policy = Self::operation_policy_for(tool, tool_name, input)?;
-        Ok(AuthorizationRequest::new(
-            session_id,
-            tool_name,
-            authorization_input,
-            policy,
-        ))
+        let target_binding = match tool {
+            Some(tool) => tool.authorization_target_binding(input).await?,
+            None => None,
+        };
+        Ok(
+            AuthorizationRequest::new(session_id, tool_name, authorization_input, policy)
+                .with_target_binding(target_binding),
+        )
     }
 }
 
@@ -178,7 +171,7 @@ impl ToolsFacade {
 
     /// Build a request from the turn's immutable tool lookup view. The live
     /// authorization engine still evaluates current grants and policy.
-    pub fn resolve_authorization_request_from_snapshot(
+    pub async fn resolve_authorization_request_from_snapshot(
         &self,
         catalog: &ToolCatalogSnapshot,
         session_id: Option<&str>,
@@ -188,5 +181,6 @@ impl ToolsFacade {
         ToolAuthorizationRequestResolver::authorization_request_from_snapshot(
             catalog, session_id, tool_name, input,
         )
+        .await
     }
 }

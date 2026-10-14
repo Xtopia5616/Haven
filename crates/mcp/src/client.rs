@@ -45,6 +45,10 @@ impl McpToolListSnapshot {
 
 pub struct McpClient {
     pub(crate) name: String,
+    /// Manager-owned identity of the live connection generation. Authorization
+    /// binds opaque MCP calls to this value so reconnects cannot redirect a
+    /// pending confirmation to a different endpoint.
+    manager_generation: AtomicU64,
     pub(crate) transport: McpServerTransport,
     pub(crate) command: String,
     pub(crate) args: Vec<String>,
@@ -250,6 +254,7 @@ impl McpClient {
     ) -> Self {
         Self {
             name: config.name.clone(),
+            manager_generation: AtomicU64::new(0),
             transport: config.transport.clone(),
             command: config.command.clone(),
             args: config.args.clone(),
@@ -281,6 +286,14 @@ impl McpClient {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub(crate) fn set_manager_generation(&self, generation: u64) {
+        self.manager_generation.store(generation, Ordering::SeqCst);
+    }
+
+    pub(crate) fn manager_generation(&self) -> u64 {
+        self.manager_generation.load(Ordering::SeqCst)
     }
 
     pub fn enabled(&self) -> bool {

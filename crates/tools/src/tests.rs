@@ -245,6 +245,10 @@ impl Tool for SessionAuthorizationTool {
         Value::Object(canonical)
     }
 
+    async fn authorization_target_binding(&self, _: &Value) -> Result<Option<String>, String> {
+        Ok(Some("mcp-target:0000000000000001:0000000000000002".into()))
+    }
+
     async fn execute(&self, _: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
         Ok(ToolResult::ok(json!({"ok": true})))
     }
@@ -267,6 +271,7 @@ async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
         .unwrap();
     let snapshot = mgr
         .resolve_authorization_request_from_snapshot(&catalog, Some(session_id), tool_name, &input)
+        .await
         .unwrap();
 
     assert_eq!(live.session_id.as_deref(), Some(session_id));
@@ -280,6 +285,11 @@ async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
     assert_eq!(snapshot.tool_name, live.tool_name);
     assert_eq!(snapshot.input, live.input);
     assert_eq!(snapshot.policy, live.policy);
+    assert_eq!(snapshot.target_binding, live.target_binding);
+    assert_eq!(
+        live.target_binding.as_deref(),
+        Some("mcp-target:0000000000000001:0000000000000002")
+    );
 
     let missing_name = "mcp__missing__invoke";
     let live_unknown = mgr
@@ -293,6 +303,7 @@ async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
             missing_name,
             &input,
         )
+        .await
         .unwrap();
     assert_eq!(snapshot_unknown.session_id, live_unknown.session_id);
     assert_eq!(snapshot_unknown.tool_name, live_unknown.tool_name);

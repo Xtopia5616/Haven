@@ -92,7 +92,7 @@ operation 与执行策略）、`registry.rs`（全局注册表、SessionToolOver
 crate-private `ToolAuthorizationRequestResolver` 负责从 live session lookup 或 turn snapshot 生成同一 typed
 `AuthorizationRequest`；未命中工具的保守 fallback 也只有一份。它不作 allow/deny/confirm 决定，
 该决定仍由调用方在 `execute_tool` 之前交给唯一的授权 owner，不在工具 future 里阻塞；跨 crate 调用只依赖 `AuthorizationPort`，具体 `AuthorizationEngine` 不进入默认生产 API（ADR 0893）。
-生产工具执行必须携带 `AuthorizationPort` 为该请求签发的 opaque execution proof：auto-approval proof 绑定 session、tool、capability、canonical input、operation policy、policy revision 与短期限；确认 receipt 经受信交互 owner 校验后才可换成执行 proof，receipt 本身不可直接执行。`AuthorizedExecutor` 在每次真实尝试（包括 retry）前由 AuthorizationEngine 复核 proof 与当前禁用项、deny、sandbox、network 边界。无 proof 的原始执行入口仅存在于测试/test-support 构建，不进入默认生产 API。
+生产工具执行必须携带 `AuthorizationPort` 为该请求签发的 opaque execution proof：auto-approval proof 绑定 session、tool、capability、canonical input、opaque target binding、operation policy、policy revision 与短期限；确认 receipt 经受信交互 owner 校验后才可换成执行 proof，receipt 本身不可直接执行。`AuthorizedExecutor` 在每次真实尝试（包括 retry）前由 AuthorizationEngine 复核 proof 与当前禁用项、deny、sandbox、network 边界。无 proof 的原始执行入口仅存在于测试/test-support 构建，不进入默认生产 API。MCP target binding 由 manager 实例和 live client 生命周期生成，不包含 server URL 或凭据；MCP manager 在路由前再次比较并固定所选 client，server/client 替换后旧 proof 不会被重定向。
 `OperationSpec` 是运行时
 策略和 manifest 的唯一定义，覆盖 builtin operation view、root tool，以及 MCP/Skill adapter；spec 没有
 handler。`policy_for` 是一次调用的 `OperationPolicy`，`catalog_policy` 是目录上界。`ToolManifest`、

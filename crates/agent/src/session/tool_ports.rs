@@ -67,7 +67,7 @@ pub trait ToolAuthorizationPort: Send + Sync {
         input: &Value,
     ) -> Result<AuthorizationRequest, String>;
 
-    fn authorization_request_from_catalog(
+    async fn authorization_request_from_catalog(
         &self,
         catalog: &haven_tools::ToolCatalogSnapshot,
         session_id: Option<&str>,
@@ -285,7 +285,7 @@ impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
             .await
     }
 
-    fn authorization_request_from_catalog(
+    async fn authorization_request_from_catalog(
         &self,
         catalog: &haven_tools::ToolCatalogSnapshot,
         session_id: Option<&str>,
@@ -294,6 +294,7 @@ impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
     ) -> Result<AuthorizationRequest, String> {
         self.tools
             .resolve_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
+            .await
     }
 
     async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision {

@@ -10,7 +10,7 @@ mod tests;
 
 #[cfg(feature = "test-support")]
 pub use client::McpClient;
-pub use manager::{McpManager, McpReconcile};
+pub use manager::{McpManager, McpReconcile, McpTargetChanged};
 pub use protocol::{
     MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpCallOutput, McpClientStatus, McpServerSnapshot,
     McpStatusChangeEvent, McpToolInfo,

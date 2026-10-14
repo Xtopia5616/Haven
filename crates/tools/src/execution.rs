@@ -271,6 +271,7 @@ impl AuthorizedExecutor<'_> {
                 return Ok(ToolResult::cancelled("tool execution cancelled"));
             }
 
+            let mut authorization_target_binding = None;
             if let Some(proof) = authorization_proof.as_ref() {
                 let request = self
                     .tools
@@ -291,10 +292,16 @@ impl AuthorizedExecutor<'_> {
                         ToolErrorClass::Permission,
                     ));
                 }
+                authorization_target_binding = request.target_binding;
             }
 
             let mut result = match tool
-                .execute_with_timeout(exec_input.clone(), cancel.clone(), timeout_secs)
+                .execute_with_authorization_target_timeout(
+                    exec_input.clone(),
+                    cancel.clone(),
+                    timeout_secs,
+                    authorization_target_binding.as_deref(),
+                )
                 .await
             {
                 Ok(result) => result,

@@ -1935,12 +1935,11 @@ impl SessionSupervisor {
         input: &Value,
         catalog: &haven_tools::ToolCatalogSnapshot,
     ) -> haven_tools::AuthorizationDecision {
-        let authorization_request = match self.authorization.authorization_request_from_catalog(
-            catalog,
-            Some(session_id),
-            tool_name,
-            input,
-        ) {
+        let authorization_request = match self
+            .authorization
+            .authorization_request_from_catalog(catalog, Some(session_id), tool_name, input)
+            .await
+        {
             Ok(request) => request,
             Err(reason) => {
                 return haven_tools::AuthorizationDecision::Blocked {

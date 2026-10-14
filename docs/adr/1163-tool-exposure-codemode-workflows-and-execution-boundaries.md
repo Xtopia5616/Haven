@@ -80,6 +80,8 @@ Pi 将 MCP 工具暴露细分为 `direct`、`deferred`、`codemode`、`hidden`�
 
 基础执行安全审计已将 Agent 的授权结果变成 Tools 执行入口必需的 opaque proof：自动放行绑定精确请求、operation policy、30 秒期限和 policy revision；确认 receipt 只有经受信交互 owner 校验后才转换成 proof，receipt 本身不可直接执行。执行 owner 在每次尝试前复核当前配置、deny、sandbox 和 network 边界。默认生产构建不再暴露无 proof 的原始执行入口，测试构建保留仅供夹具使用的入口。该 proof 只授权自身 operation；CodeMode/Workflow 的每个子调用仍需独立解析 policy、授权、确认，并经同一 observation 上限。验证发生在 handler 启动前，不能撤回已启动的不可逆外部副作用；运行中取消与资源隔离仍由各原生 executor/sandbox 承担。
 
+MCP 外部调用的 `AuthorizationRequest` 现另带 opaque target binding：由同一 `McpManager` 实例与被授权 server 对应的 live `McpClient` 生命周期生成，不含 URL、命令行或凭据。confirmation hash 和 execution proof 都覆盖该值；MCP adapter 把它交给 manager，manager 在 RPC 前比较并保留选中的 client Arc，因此 manager/server client 替换不能把待执行授权转给另一个路由目标。相同 client 配置的原地 reconnect 保持同一 target identity。
+
 CodeMode 的 enum 和 pattern resolver 已有契约，但执行器尚未开放。当前 UI 不允许新选 CodeMode（只在已有配置中保留并允许改回），Legacy 的目录、加载和执行入口对 CodeMode fail closed。必须先完成 §5.8 的嵌套授权与 sandbox 审计，再实现 evaluator、预算和按 server 切换。workflow、MCP resources/prompts 和 ExecutionWorkspace 仍按实施顺序等待各自垂直切片。现有数据库的 `session_events`、tool-call identity、ToolRun completion/outbox 和 X12 投影契约保持权威。
 
 ## 验收要求

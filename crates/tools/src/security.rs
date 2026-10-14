@@ -359,6 +359,9 @@ pub struct AuthorizationRequest {
     pub tool_name: String,
     pub input: Value,
     pub policy: OperationPolicy,
+    /// Opaque, non-secret identity of the concrete execution target. MCP
+    /// adapters use this to bind consent to one live server generation.
+    pub target_binding: Option<String>,
 }
 
 #[derive(Debug)]
@@ -367,6 +370,7 @@ struct AuthorizationExecutionBinding {
     tool_name: String,
     capability: CapabilityScope,
     canonical_input_hash: String,
+    target_binding: Option<String>,
     policy: OperationPolicy,
     policy_revision: u64,
     expires_at: u64,
@@ -412,7 +416,8 @@ impl AuthorizationCheck {
                     session_id: request.session_id.clone(),
                     tool_name: request.tool_name.clone(),
                     capability: request.capability().clone(),
-                    canonical_input_hash: canonical_input_hash(&request.input),
+                    canonical_input_hash: canonical_authorization_hash(request),
+                    target_binding: request.target_binding.clone(),
                     policy: request.policy.clone(),
                     policy_revision,
                     expires_at: execution_proof_expiry(),
@@ -501,7 +506,13 @@ impl AuthorizationRequest {
             tool_name: tool_name.into(),
             input,
             policy,
+            target_binding: None,
         }
+    }
+
+    pub fn with_target_binding(mut self, target_binding: Option<String>) -> Self {
+        self.target_binding = target_binding;
+        self
     }
 
     pub fn capability(&self) -> &CapabilityScope {
@@ -846,7 +857,7 @@ impl AuthorizationEngine {
         let receipt = ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: key.clone(),
-            canonical_input_hash: canonical_input_hash(params),
+            canonical_input_hash: canonical_authorization_hash(request),
             effective_risk: risk,
             policy_revision: cfg.policy_revision,
             expires_at: confirmation_expiry(),
@@ -881,7 +892,7 @@ impl AuthorizationEngine {
         if receipt.capability != *key {
             return Err("confirmation receipt does not match the capability scope".into());
         }
-        if receipt.canonical_input_hash != canonical_input_hash(params) {
+        if receipt.canonical_input_hash != canonical_authorization_hash(request) {
             return Err("confirmation receipt does not match the tool input".into());
         }
         if receipt.policy_revision != cfg.policy_revision {
@@ -944,7 +955,8 @@ impl AuthorizationEngine {
                 session_id: request.session_id.clone(),
                 tool_name: request.tool_name.clone(),
                 capability: request.capability().clone(),
-                canonical_input_hash: canonical_input_hash(&request.input),
+                canonical_input_hash: canonical_authorization_hash(request),
+                target_binding: request.target_binding.clone(),
                 policy: request.policy.clone(),
                 policy_revision: receipt.policy_revision,
                 expires_at: execution_proof_expiry().min(receipt.expires_at),
@@ -965,7 +977,8 @@ impl AuthorizationEngine {
         if binding.session_id != request.session_id
             || binding.tool_name != request.tool_name
             || binding.capability != *request.capability()
-            || binding.canonical_input_hash != canonical_input_hash(&request.input)
+            || binding.canonical_input_hash != canonical_authorization_hash(request)
+            || binding.target_binding != request.target_binding
             || binding.policy != request.policy
         {
             return Err("execution proof does not match the operation request".into());
@@ -1294,6 +1307,16 @@ fn execution_proof_expiry() -> u64 {
 fn canonical_input_hash(input: &Value) -> String {
     let digest = Sha256::digest(haven_common::json::canonical_json_bytes(input));
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn canonical_authorization_hash(request: &AuthorizationRequest) -> String {
+    match &request.target_binding {
+        Some(target_binding) => canonical_input_hash(&serde_json::json!({
+            "input": &request.input,
+            "target_binding": target_binding,
+        })),
+        None => canonical_input_hash(&request.input),
+    }
 }
 
 fn is_auto_edit_safe(key: &CapabilityScope, policy: &OperationPolicy) -> bool {
@@ -1745,6 +1768,25 @@ mod tests {
                 .is_err(),
             "even an equivalent boundary update invalidates an outstanding proof"
         );
+
+        let target_request = request
+            .clone()
+            .with_target_binding(Some("mcp-target:0000000000000001:0000000000000002".into()));
+        let target_proof = engine
+            .authorize_for_execution(&target_request)
+            .await
+            .execution_proof
+            .expect("auto-approved target-bound calls carry a proof");
+        let changed_target = target_request
+            .clone()
+            .with_target_binding(Some("mcp-target:0000000000000001:0000000000000003".into()));
+        assert!(
+            engine
+                .verify_execution_proof(&changed_target, &target_proof)
+                .await
+                .is_err(),
+            "an authorization proof cannot be redirected to a replacement target"
+        );
     }
 
     #[tokio::test]
@@ -1761,7 +1803,8 @@ mod tests {
             "files.write",
             input.clone(),
             policy,
-        );
+        )
+        .with_target_binding(Some("mcp-target:0000000000000001:0000000000000002".into()));
         let check = engine.authorize_for_execution(&request).await;
         let AuthorizationDecision::RequiresConfirmation { receipt, .. } = check.decision else {
             panic!("the explicit confirmation policy must require user approval")
@@ -1790,6 +1833,16 @@ mod tests {
                 .await
                 .is_err(),
             "a receipt cannot authorize a changed operation contract"
+        );
+        let changed_target = request
+            .clone()
+            .with_target_binding(Some("mcp-target:0000000000000001:0000000000000003".into()));
+        assert!(
+            engine
+                .verify_receipt(&changed_target, &receipt)
+                .await
+                .is_err(),
+            "a confirmation receipt cannot be redirected to a replacement target"
         );
     }
 

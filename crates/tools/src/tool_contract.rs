@@ -1288,6 +1288,31 @@ pub trait Tool: Send + Sync {
     fn authorization_input(&self, input: &Value) -> Value {
         input.clone()
     }
+
+    /// Bind consent to a concrete runtime target when the adapter routes to a
+    /// replaceable external endpoint. Returned values must be opaque and must
+    /// not contain credentials, URLs, or other renderer-visible secrets.
+    async fn authorization_target_binding(&self, input: &Value) -> Result<Option<String>, String> {
+        let _ = input;
+        Ok(None)
+    }
+
+    /// Execute against the target whose binding was authorized. The default
+    /// path refuses a target binding it cannot enforce.
+    async fn execute_with_authorization_target(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<&str>,
+    ) -> anyhow::Result<ToolResult> {
+        if target_binding.is_some() {
+            anyhow::bail!(
+                "tool '{}' cannot enforce its authorization target",
+                self.name()
+            );
+        }
+        self.execute(input, cancel).await
+    }
     /// Retry policy is an operation property, not a safety-risk property.
     /// The default is conservative because an unknown operation may have
     /// performed an external side effect before returning an error.
@@ -1479,6 +1504,17 @@ pub trait Tool: Send + Sync {
         cancel: CancellationToken,
         timeout_secs: u64,
     ) -> anyhow::Result<ToolResult> {
+        self.execute_with_authorization_target_timeout(input, cancel, timeout_secs, None)
+            .await
+    }
+
+    async fn execute_with_authorization_target_timeout(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        timeout_secs: u64,
+        target_binding: Option<&str>,
+    ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             return Ok(ToolResult::cancelled(format!(
                 "tool '{}' cancelled before execution",
@@ -1487,7 +1523,7 @@ pub trait Tool: Send + Sync {
         }
         let execution_cancel = cancel.child_token();
         tokio::select! {
-            result = self.execute(input, execution_cancel.clone()) => result,
+            result = self.execute_with_authorization_target(input, execution_cancel.clone(), target_binding) => result,
             _ = cancel.cancelled() => {
                 execution_cancel.cancel();
                 Ok(ToolResult::cancelled(format!("tool '{}' cancelled", self.name())))
