@@ -214,6 +214,20 @@ pub(crate) fn http_parameter_headers(
     Ok(result)
 }
 
+/// Wire page returned by `tools/list`. New protocol revisions add pagination
+/// and cache hints while legacy peers may omit all three fields.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpToolListPage {
+    pub(crate) tools: Vec<McpToolInfo>,
+    #[serde(default)]
+    pub(crate) next_cursor: Option<String>,
+    #[serde(default)]
+    pub(crate) ttl_ms: Option<u64>,
+    #[serde(default)]
+    pub(crate) cache_scope: Option<String>,
+}
+
 fn collect_parameter_headers(
     value: &Value,
     path: &mut Vec<String>,

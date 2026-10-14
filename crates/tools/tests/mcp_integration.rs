@@ -97,6 +97,21 @@ async fn serve_connection(mut stream: TcpStream) {
 
     let id = request["id"].clone();
     let response = match request["method"].as_str() {
+        Some("server/discover") => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "resultType": "complete",
+                "supportedVersions": ["2026-07-28"],
+                "capabilities": {"tools": {}},
+                "_meta": {
+                    "io.modelcontextprotocol/serverInfo": {
+                        "name": "test-mcp",
+                        "version": "1.0.0"
+                    }
+                },
+            },
+        }),
         Some("initialize") => serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -113,14 +128,14 @@ async fn serve_connection(mut stream: TcpStream) {
                 {"name": "reverse", "description": "reverse", "inputSchema": {"type": "object"}},
                 {"name": "image", "description": "image", "inputSchema": {"type": "object"}},
                 {"name": "resource", "description": "resource", "inputSchema": {"type": "object"}},
-            ]},
+            ], "ttlMs": 60_000, "cacheScope": "private"},
         }),
         Some("tools/call") => tool_call_response(id, &request),
         _ => serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {}}),
     };
     let body = serde_json::to_vec(&response).unwrap();
     let headers = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nMcp-Session-Id: test-session\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(headers.as_bytes()).await;
@@ -172,56 +187,100 @@ async fn read_http_request(stream: &mut TcpStream) -> Option<(String, serde_json
 }
 
 async fn serve_notification_connection(mut stream: TcpStream, updated: Arc<AtomicBool>) {
-    let Some((method, request)) = read_http_request(&mut stream).await else {
+    let Some((_method, request)) = read_http_request(&mut stream).await else {
         return;
     };
-    if method == "GET" {
-        if stream
-            .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: keep-alive\r\n\r\n",
-            )
-            .await
-            .is_err()
-        {
-            return;
+    match request["method"].as_str() {
+        Some("server/discover") => {
+            let body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "resultType": "complete",
+                    "supportedVersions": ["2026-07-28"],
+                    "capabilities": {"tools": {"listChanged": true}},
+                    "_meta": {
+                        "io.modelcontextprotocol/serverInfo": {
+                            "name": "notification-test-mcp",
+                            "version": "1.0.0"
+                        }
+                    },
+                },
+            })
+            .to_string();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(headers.as_bytes()).await;
+            let _ = stream.write_all(body.as_bytes()).await;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        updated.store(true, Ordering::Release);
-        let notification = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/tools/list_changed"
-        });
-        let event = format!("data: {}\n\n", notification);
-        let _ = stream.write_all(event.as_bytes()).await;
-        std::future::pending::<()>().await;
-    } else if request.get("id").is_none() {
-        let _ = stream
-            .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .await;
-    } else {
-        let id = request["id"].clone();
-        let tools = if updated.load(Ordering::Acquire) {
-            serde_json::json!([
-                {"name": "new_tool", "description": "new", "inputSchema": {"type": "object"}}
-            ])
-        } else {
-            serde_json::json!([
-                {"name": "old_tool", "description": "old", "inputSchema": {"type": "object"}}
-            ])
-        };
-        let response = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {"tools": tools}
-        });
-        let body = serde_json::to_vec(&response).unwrap();
-        let headers = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nMcp-Session-Id: notification-session\r\n\r\n",
-            body.len()
-        );
-        let _ = stream.write_all(headers.as_bytes()).await;
-        let _ = stream.write_all(&body).await;
+        Some("subscriptions/listen") => {
+            if stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n",
+                )
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let subscription_id = request["id"].clone();
+            let acknowledged = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/subscriptions/acknowledged",
+                "params": {
+                    "_meta": {"io.modelcontextprotocol/subscriptionId": subscription_id},
+                    "notifications": {"toolsListChanged": true}
+                }
+            });
+            if write_sse_event(&mut stream, &acknowledged).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            updated.store(true, Ordering::Release);
+            let notification = serde_json::json!({
+                "jsonrpc": "2.0",
+                    "method": "notifications/tools/list_changed",
+                    "params": {
+                        "_meta": {"io.modelcontextprotocol/subscriptionId": subscription_id}
+                    }
+            });
+            let _ = write_sse_event(&mut stream, &notification).await;
+            std::future::pending::<()>().await;
+        }
+        Some("tools/list") => {
+            let id = request["id"].clone();
+            let tools = if updated.load(Ordering::Acquire) {
+                serde_json::json!([
+                    {"name": "new_tool", "description": "new", "inputSchema": {"type": "object"}}
+                ])
+            } else {
+                serde_json::json!([
+                    {"name": "old_tool", "description": "old", "inputSchema": {"type": "object"}}
+                ])
+            };
+            let response = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"tools": tools, "ttlMs": 60_000, "cacheScope": "private"}
+            });
+            let body = serde_json::to_vec(&response).unwrap();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(headers.as_bytes()).await;
+            let _ = stream.write_all(&body).await;
+        }
+        _ => {}
     }
+}
+
+async fn write_sse_event(stream: &mut TcpStream, event: &serde_json::Value) -> std::io::Result<()> {
+    let data = format!("data: {}\n\n", event);
+    let chunk = format!("{:X}\r\n{}\r\n", data.len(), data);
+    stream.write_all(chunk.as_bytes()).await
 }
 
 fn tool_call_response(id: serde_json::Value, request: &serde_json::Value) -> serde_json::Value {
@@ -272,7 +331,7 @@ async fn create_client() -> (Arc<McpClient>, TestMcpServer) {
 }
 
 #[tokio::test]
-async fn initialize_handshake_and_tools_are_discovered() {
+async fn modern_discovery_and_tools_are_discovered() {
     let (client, _server) = create_client().await;
     assert!(matches!(
         client.status().await,
@@ -282,7 +341,7 @@ async fn initialize_handshake_and_tools_are_discovered() {
         client.snapshot().await.transport,
         haven_common::mcp::McpServerTransport::Http
     );
-    let tools = client.list_tools().await.unwrap();
+    let tools = client.wait_for_tools(Duration::ZERO).await;
     assert_eq!(tools.len(), 4);
     assert_eq!(tools[0].name, "echo");
     client.shutdown().await.unwrap();

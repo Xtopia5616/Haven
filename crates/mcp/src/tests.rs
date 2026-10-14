@@ -41,10 +41,7 @@ fn modern_request_metadata_is_self_describing() {
         "Haven"
     );
     assert!(params["_meta"]["io.modelcontextprotocol/clientCapabilities"].is_object());
-    assert_eq!(
-        McpProtocolMode::legacy(LEGACY_PROTOCOL_VERSION).is_legacy(),
-        true
-    );
+    assert!(McpProtocolMode::legacy(LEGACY_PROTOCOL_VERSION).is_legacy());
 }
 
 #[test]
@@ -485,7 +482,7 @@ async fn mcp_rate_limit_wait_honors_session_cancellation() {
 }
 
 #[tokio::test]
-async fn client_shutdown_joins_sse_listener_task() {
+async fn client_shutdown_joins_notification_stream_task() {
     let client = Arc::new(McpClient::new(
         &McpServerConfig {
             name: "notification-listener".into(),
@@ -507,7 +504,7 @@ async fn client_shutdown_joins_sse_listener_task() {
             finished.store(true, std::sync::atomic::Ordering::Release);
         })
     };
-    *client.sse_listener_task.lock().await = Some(listener);
+    *client.notification_stream_task.lock().await = Some(listener);
     started.notified().await;
 
     client.shutdown().await.unwrap();

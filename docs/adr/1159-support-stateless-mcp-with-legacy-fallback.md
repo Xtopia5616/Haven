@@ -17,16 +17,21 @@ Haven 的 MCP client 固定请求 `2024-11-05`，所有服务器都先经过 `in
 - `UnsupportedProtocolVersionError` 若列出 Haven 支持的旧版协议，则选择最新的已知旧版本并走 initialize；否则向调用方报告不支持。其余旧版回退继续请求 `2024-11-05`，保留现有初始化与 HTTP session 行为。
 - initialize 返回较新的旧版协议时，后续 HTTP 请求在该协议要求时附带 `MCP-Protocol-Version`。只在旧版模式下打开已有 GET SSE listener。
 - 不因一次 `tools/call` 失败自动改换协议后重试，避免对非幂等工具重复执行。
+- 现代 `server/discover` 的 `tools` capability 缺失时，工具集是已发现的空集；存在时按 cursor 拉取完整 `tools/list`，限制单次最多 100 页、10,000 个工具和 4 KiB cursor，并拒绝重复工具名、空/超长 cursor 和循环 cursor。
+- 现代 `tools/list` 的缓存按 `ttlMs` 过期；跨页取最短 TTL，缺少 TTL 按立即过期处理，最大本地 TTL 限制为 24 小时。未知、缺失或不一致的 `cacheScope` 按 private 处理；快照只存于对应配置的单个客户端，不跨服务器或凭据上下文共享。
+- `listChanged` 能力为真时，通过 `subscriptions/listen` 订阅工具列表变化：HTTP 使用 POST SSE；stdio 使用共享 stdout reader 按 JSON-RPC id 分发响应，并按 subscription id 过滤变化通知。stdio 关闭时发送 `notifications/cancelled`；旧协议继续使用原 GET SSE。通知后先使缓存过期、刷新并发布新快照，再推进 MCP catalog generation。
 
 ## 影响
 
-协议选择只保存在活动 MCP 连接中，不改变配置格式、数据库或 durable 数据，无需重置用户数据。现代 `tools/list` 与 `tools/call` 可无会话工作；已支持的 initialize/session 路径继续可用。身份验证错误、普通 HTTP 服务错误及网络失败不会被误判为协议代际差异。
+协议选择只保存在活动 MCP 连接中，不改变配置格式、数据库或 durable 数据，无需重置用户数据。现代 `tools/list` 与 `tools/call` 可无会话工作；已支持的 initialize/session 路径继续可用。工具缓存只在 MCP client 内存中，失效由 TTL、工具列表通知和 manager 刷新入口负责；目录 generation 在新快照发布后推进。身份验证错误、普通 HTTP 服务错误及网络失败不会被误判为协议代际差异。
 
 ## 验证
 
 - 覆盖现代逐请求元数据、HTTP 路由头及不安全头值编码、参数头 schema 校验和旧版选择规则。
 - 覆盖 HTTP 服务器拒绝现代探测后的 initialize/session 回退。
-- `cargo test --locked -p haven-mcp` 与 `cargo clippy --locked -p haven-mcp -- -D warnings`。
+- 覆盖现代分页、跨页缓存提示、HTTP/stdio 订阅通知、stdio 并发请求分发及关闭后的取消通知。
+- `cargo test --locked -p haven-mcp -p haven-tools`、`cargo clippy --locked -p haven-mcp -p haven-tools -- -D warnings`，以及 `cargo fmt --all -- --check`。
+- 额外尝试 `cargo clippy --locked --all-targets -p haven-mcp -p haven-tools -- -D warnings`；目前因 `haven-tools` 中 registry、mcp_server_config、security、skill_runner 的既有测试 lint 报错，未通过。这些位置不属于本次变更。
 
 ## 回滚
 

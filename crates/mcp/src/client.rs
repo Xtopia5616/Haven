@@ -1,7 +1,7 @@
 use crate::protocol::{
     LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, McpCallOutput, McpClientStatus,
     McpProtocolMode, McpRpcError, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
-    extract_mcp_content, http_parameter_headers, should_fallback_to_legacy,
+    McpToolListPage, extract_mcp_content, http_parameter_headers, should_fallback_to_legacy,
     supported_legacy_version,
 };
 use crate::transport::{
@@ -14,10 +14,34 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::io::BufReader;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
+
+const MAX_TOOL_LIST_PAGES: usize = 100;
+const MAX_TOOLS_PER_SERVER: usize = 10_000;
+const MAX_TOOL_LIST_CURSOR_BYTES: usize = 4096;
+const MAX_TOOL_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpToolCacheScope {
+    Public,
+    Private,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct McpToolListSnapshot {
+    pub(crate) tools: Vec<McpToolInfo>,
+    expires_at: Option<Instant>,
+    _cache_scope: McpToolCacheScope,
+}
+
+impl McpToolListSnapshot {
+    fn is_fresh(&self) -> bool {
+        self.expires_at
+            .is_none_or(|expires_at| Instant::now() < expires_at)
+    }
+}
 
 pub struct McpClient {
     pub(crate) name: String,
@@ -33,8 +57,9 @@ pub struct McpClient {
     /// Protocol era and negotiated version for the active connection.
     pub(crate) protocol_mode: Arc<Mutex<McpProtocolMode>>,
     pub(crate) status: Arc<Mutex<McpClientStatus>>,
-    pub(crate) next_id: AtomicU64,
-    pub(crate) tools_cache: Arc<Mutex<Option<Vec<McpToolInfo>>>>,
+    pub(crate) next_id: Arc<AtomicU64>,
+    pub(crate) tools_cache: Arc<Mutex<Option<McpToolListSnapshot>>>,
+    tool_list_refresh: Mutex<()>,
     pub(crate) last_error: Arc<Mutex<Option<String>>>,
     /// Protocol selection and tool-discovery diagnostics; see `McpServerSnapshot`.
     pub(crate) last_diagnostic: Arc<Mutex<Option<String>>>,
@@ -45,9 +70,9 @@ pub struct McpClient {
     /// transport token, it survives reconnects so the listener can reuse the
     /// receiver after a new connection is installed.
     pub(crate) notification_cancel: CancellationToken,
-    /// Join owner for the SSE notification producer of the current HTTP
-    /// connection generation. The producer does not capture this client.
-    pub(crate) sse_listener_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Join owner for the current generation's server notification stream:
+    /// legacy HTTP GET SSE or modern `subscriptions/listen`.
+    pub(crate) notification_stream_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub(crate) rate_limiter: Arc<Mutex<RateLimiter>>,
     pub(crate) notification_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<Value>>>>,
     pub(crate) tools_list_changed: Arc<ToolsListChangedSignal>,
@@ -235,15 +260,16 @@ impl McpClient {
             inner: Arc::new(Mutex::new(None)),
             protocol_mode: Arc::new(Mutex::new(McpProtocolMode::Uninitialized)),
             status: Arc::new(Mutex::new(McpClientStatus::Disconnected)),
-            next_id: AtomicU64::new(1),
+            next_id: Arc::new(AtomicU64::new(1)),
             tools_cache: Arc::new(Mutex::new(None)),
+            tool_list_refresh: Mutex::new(()),
             last_error: Arc::new(Mutex::new(None)),
             last_diagnostic: Arc::new(Mutex::new(None)),
             last_seen_at: Arc::new(Mutex::new(None)),
             reconnect_retries: Arc::new(Mutex::new(0)),
             cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
             notification_cancel: CancellationToken::new(),
-            sse_listener_task: Mutex::new(None),
+            notification_stream_task: Mutex::new(None),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(10.0))),
             notification_rx: Arc::new(Mutex::new(None)),
             tools_list_changed: Arc::new(ToolsListChangedSignal::new()),
@@ -290,18 +316,58 @@ impl McpClient {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub async fn tools_cache(&self) -> Vec<McpToolInfo> {
-        self.tools_cache.lock().await.clone().unwrap_or_default()
+        self.all_cached_tools().await
+    }
+
+    async fn all_cached_tools(&self) -> Vec<McpToolInfo> {
+        self.tools_cache
+            .lock()
+            .await
+            .as_ref()
+            .map(|snapshot| snapshot.tools.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) async fn cached_tools(&self) -> Option<Vec<McpToolInfo>> {
-        self.tools_cache.lock().await.clone()
+        self.tools_cache
+            .lock()
+            .await
+            .as_ref()
+            .filter(|snapshot| snapshot.is_fresh())
+            .map(|snapshot| snapshot.tools.clone())
     }
 
-    /// Number of tools in a completed tools/list response. `None` means no
-    /// response has been received for the current client yet.
-    pub async fn cached_tools_count(&self) -> Option<usize> {
-        self.cached_tools().await.map(|tools| tools.len())
+    /// Return a fresh discovered list, re-fetching only after the server's
+    /// cache hint expires. The boolean reports whether this call performed a
+    /// refresh so the manager can advance its catalog generation afterward.
+    pub(crate) async fn ensure_tool_cache_fresh(
+        &self,
+    ) -> anyhow::Result<(Option<Vec<McpToolInfo>>, bool)> {
+        self.refresh_tool_cache(false).await
+    }
+
+    pub(crate) async fn refresh_tool_cache(
+        &self,
+        force: bool,
+    ) -> anyhow::Result<(Option<Vec<McpToolInfo>>, bool)> {
+        let _refresh_guard = self.tool_list_refresh.lock().await;
+        let cache = self.tools_cache.lock().await.clone();
+        if let Some(snapshot) = cache.as_ref().filter(|snapshot| snapshot.is_fresh()) {
+            if !force {
+                return Ok((Some(snapshot.tools.clone()), false));
+            }
+        } else if cache.is_none() && !force {
+            // A connection may still be in progress. Do not issue tools/list
+            // until its protocol mode and transport are installed.
+            return Ok((None, false));
+        }
+
+        let snapshot = self.list_tool_snapshot().await?;
+        let tools = snapshot.tools.clone();
+        *self.tools_cache.lock().await = Some(snapshot);
+        Ok((Some(tools), true))
     }
 
     /// Wait up to `timeout` for the server to finish connecting and populate
@@ -315,14 +381,19 @@ impl McpClient {
     pub async fn wait_for_tools(&self, timeout: Duration) -> Vec<McpToolInfo> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            if let Some(tools) = self.tools_cache.lock().await.clone() {
+            if let Some(tools) = self.cached_tools().await {
                 return tools;
             }
             if matches!(&*self.status.lock().await, McpClientStatus::Offline { .. }) {
                 return Vec::new();
             }
             if tokio::time::Instant::now() >= deadline {
-                return self.tools_cache.lock().await.clone().unwrap_or_default();
+                return self.all_cached_tools().await;
+            }
+            if matches!(&*self.status.lock().await, McpClientStatus::Connected)
+                && let Ok((Some(tools), _)) = self.ensure_tool_cache_fresh().await
+            {
+                return tools;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -346,7 +417,7 @@ impl McpClient {
             url: self.url.clone(),
             enabled: self.enabled(),
             status: self.status.lock().await.clone(),
-            tools: self.tools_cache.lock().await.clone().unwrap_or_default(),
+            tools: self.all_cached_tools().await,
             last_error: self.last_error.lock().await.clone(),
             diagnostic: self.last_diagnostic.lock().await.clone(),
             last_seen_at: *self.last_seen_at.lock().await,
@@ -412,16 +483,15 @@ impl McpClient {
             .take()
             .ok_or_else(|| anyhow::anyhow!("failed to capture stdout for '{}'", self.name))?;
 
-        Ok(StdioInner {
+        Ok(StdioInner::new(
             child,
-            _containment: containment,
+            containment,
             stdin,
-            stdout: BufReader::new(stdout),
+            stdout,
             notification_tx,
-            tools_list_changed: self.tools_list_changed.clone(),
-            cancel: self.cancel_token.lock().await.clone(),
-            poisoned: false,
-        })
+            self.tools_list_changed.clone(),
+            self.cancel_token.lock().await.clone(),
+        ))
     }
 
     async fn spawn_http(
@@ -523,7 +593,7 @@ impl McpClient {
 
         // Refresh the cancel token: `shutdown()` (called before every
         // reconnect) cancels it, and reusing the cancelled token would make
-        // the new transport's requests (and the SSE listener) abort
+        // the new transport's requests (and notification stream) abort
         // immediately after a reconnect.
         *self.cancel_token.lock().await = CancellationToken::new();
         *self.protocol_mode.lock().await = McpProtocolMode::Uninitialized;
@@ -550,6 +620,8 @@ impl McpClient {
             .request(id, "server/discover", None, &modern_mode, &[])
             .await;
 
+        let mut modern_tools_supported = false;
+        let mut modern_tools_list_changed = false;
         let (mode, server_name, server_version, server_protocol) = match discovery {
             Ok(result) => {
                 let versions = result["supportedVersions"].as_array().ok_or_else(|| {
@@ -563,6 +635,14 @@ impl McpClient {
                         "MCP server discovery did not advertise the requested protocol version"
                     );
                 }
+                let tools_capabilities = result
+                    .get("capabilities")
+                    .and_then(|value| value.get("tools"));
+                modern_tools_supported = tools_capabilities.is_some();
+                modern_tools_list_changed = tools_capabilities
+                    .and_then(|value| value.get("listChanged"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let server_info = &result["_meta"]["io.modelcontextprotocol/serverInfo"];
                 (
                     modern_mode,
@@ -582,9 +662,9 @@ impl McpClient {
                 }
                 let legacy_request_version =
                     supported_legacy_version(&error).unwrap_or(LEGACY_PROTOCOL_VERSION);
-                // A timed-out stdio probe may have consumed part of a frame.
-                // Never send initialize into that poisoned byte stream.
-                if matches!(&inner, McpClientInner::Stdio(stdio) if stdio.poisoned) {
+                // If the stdio reader died during the probe, do not reuse the
+                // broken stream for the legacy initialize handshake.
+                if matches!(&inner, McpClientInner::Stdio(stdio) if stdio.poisoned()) {
                     inner = McpClientInner::Stdio(Box::new(
                         self.spawn_stdio(notification_tx.clone()).await?,
                     ));
@@ -661,6 +741,7 @@ impl McpClient {
             }
         };
         *self.protocol_mode.lock().await = mode.clone();
+        inner.set_modern(mode.is_modern());
 
         tracing::info!(
             server = %self.name,
@@ -690,17 +771,27 @@ impl McpClient {
                 self.tools_list_changed.clone(),
                 mode.clone(),
             );
-            *self.sse_listener_task.lock().await = Some(listener);
+            *self.notification_stream_task.lock().await = Some(listener);
         }
 
         // Cache tools after successful connection. A successful handshake
         // with zero tools is suspicious (often a client/server SDK protocol
         // mismatch rather than an empty server), so record a diagnostic that
         // distinguishes the two cases.
-        match self.list_tools().await {
-            Ok(tools) => {
-                *self.tools_cache.lock().await = Some(tools.clone());
-                if tools.is_empty() {
+        let list_result = if mode.is_modern() && !modern_tools_supported {
+            Ok(McpToolListSnapshot {
+                tools: Vec::new(),
+                expires_at: None,
+                _cache_scope: McpToolCacheScope::Private,
+            })
+        } else {
+            self.list_tool_snapshot().await
+        };
+        match list_result {
+            Ok(snapshot) => {
+                let tools = snapshot.tools.clone();
+                *self.tools_cache.lock().await = Some(snapshot);
+                if tools.is_empty() && (!mode.is_modern() || modern_tools_supported) {
                     *self.last_diagnostic.lock().await = Some(format!(
                         "Connected, but tools/list returned 0 tools (server {} v{}, protocol {}). Either the server exposes no tools, or the client/server protocols are incompatible — check the server's logs and its SDK protocol support.",
                         server_name, server_version, server_protocol
@@ -725,6 +816,18 @@ impl McpClient {
         *self.last_error.lock().await = None;
         *self.last_seen_at.lock().await = Some(chrono::Utc::now().timestamp());
 
+        if mode.is_modern() && modern_tools_list_changed {
+            let inner = self.inner.lock().await;
+            if let Some(inner) = inner.as_ref() {
+                let listener = inner.spawn_tools_subscription(
+                    self.name.clone(),
+                    self.next_id.clone(),
+                    mode.clone(),
+                );
+                *self.notification_stream_task.lock().await = Some(listener);
+            }
+        }
+
         Ok(())
     }
 
@@ -741,20 +844,20 @@ impl McpClient {
             self.notification_cancel.cancel();
         }
 
-        let sse_listener = self.sse_listener_task.lock().await.take();
-        if let Some(mut listener) = sse_listener {
+        let notification_stream = self.notification_stream_task.lock().await.take();
+        if let Some(mut listener) = notification_stream {
             match tokio::time::timeout(Duration::from_secs(5), &mut listener).await {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => tracing::warn!(
                     server = %self.name,
                     task_panicked = error.is_panic(),
                     task_cancelled = error.is_cancelled(),
-                    "MCP SSE listener task failed"
+                    "MCP notification stream task failed"
                 ),
                 Err(_) => {
                     tracing::warn!(
                         server = %self.name,
-                        "MCP SSE listener did not stop after cancellation; aborting"
+                        "MCP notification stream did not stop after cancellation; aborting"
                     );
                     listener.abort();
                     let _ = listener.await;
@@ -802,24 +905,70 @@ impl McpClient {
         Ok(())
     }
 
-    pub async fn list_tools(&self) -> anyhow::Result<Vec<McpToolInfo>> {
+    async fn list_tool_snapshot(&self) -> anyhow::Result<McpToolListSnapshot> {
         let protocol_mode = self.protocol_mode.lock().await.clone();
-        let mut guard = self.inner.lock().await;
-        if guard.is_none() {
+        if self.inner.lock().await.is_none() {
             anyhow::bail!("MCP client '{}' is not connected", self.name);
         }
 
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let result = guard
-            .as_mut()
-            .expect("checked MCP client inner")
-            .request(id, "tools/list", None, &protocol_mode, &[])
-            .await;
-        self.discard_interrupted_stdio(&mut guard).await;
-        let result = result?;
+        let mut tools = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors = HashSet::new();
+        let mut pages = 0usize;
+        let mut ttl_ms = None::<u64>;
+        let mut cache_scope = McpToolCacheScope::Public;
+        let fetched_at = Instant::now();
+        loop {
+            pages += 1;
+            if pages > MAX_TOOL_LIST_PAGES {
+                anyhow::bail!(
+                    "MCP tools/list from '{}' exceeded the page limit",
+                    self.name
+                );
+            }
+            let params = cursor
+                .as_ref()
+                .map(|cursor| serde_json::json!({"cursor": cursor}));
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+            let result = {
+                let mut guard = self.inner.lock().await;
+                let Some(inner) = guard.as_mut() else {
+                    anyhow::bail!("MCP client '{}' disconnected during tools/list", self.name);
+                };
+                let result = inner
+                    .request(id, "tools/list", params, &protocol_mode, &[])
+                    .await;
+                self.discard_interrupted_stdio(&mut guard).await;
+                result?
+            };
+            let page: McpToolListPage = serde_json::from_value(result)
+                .map_err(|e| anyhow::anyhow!("invalid tools/list from '{}': {}", self.name, e))?;
+            if protocol_mode.is_modern() {
+                let page_ttl = page.ttl_ms.unwrap_or(0);
+                ttl_ms = Some(ttl_ms.map_or(page_ttl, |current| current.min(page_ttl)));
+                if page.cache_scope.as_deref() != Some("public") {
+                    cache_scope = McpToolCacheScope::Private;
+                }
+            }
+            if tools.len().saturating_add(page.tools.len()) > MAX_TOOLS_PER_SERVER {
+                anyhow::bail!(
+                    "MCP tools/list from '{}' exceeded the tool limit",
+                    self.name
+                );
+            }
+            tools.extend(page.tools);
+            cursor = page.next_cursor;
+            let Some(next_cursor) = cursor.as_ref() else {
+                break;
+            };
+            if next_cursor.is_empty() || next_cursor.len() > MAX_TOOL_LIST_CURSOR_BYTES {
+                anyhow::bail!("MCP tools/list returned an invalid pagination cursor");
+            }
+            if !seen_cursors.insert(next_cursor.clone()) {
+                anyhow::bail!("MCP tools/list repeated a pagination cursor");
+            }
+        }
 
-        let mut tools: Vec<McpToolInfo> = serde_json::from_value(result["tools"].clone())
-            .map_err(|e| anyhow::anyhow!("invalid tools/list from '{}': {}", self.name, e))?;
         validate_unique_tool_names(&tools)?;
         if protocol_mode.is_modern() && matches!(self.transport, McpServerTransport::Http) {
             tools.retain(|tool| {
@@ -836,7 +985,13 @@ impl McpClient {
                 }
             });
         }
-        Ok(tools)
+        let expires_at =
+            ttl_ms.map(|ttl_ms| fetched_at + Duration::from_millis(ttl_ms).min(MAX_TOOL_CACHE_TTL));
+        Ok(McpToolListSnapshot {
+            tools,
+            expires_at,
+            _cache_scope: cache_scope,
+        })
     }
 
     /// Drop a stdio client after an interrupted request. Its line reader may
@@ -845,7 +1000,7 @@ impl McpClient {
     async fn discard_interrupted_stdio(&self, guard: &mut Option<McpClientInner>) {
         let interrupted = matches!(
             guard.as_ref(),
-            Some(McpClientInner::Stdio(stdio)) if stdio.poisoned
+            Some(McpClientInner::Stdio(stdio)) if stdio.poisoned()
         );
         if !interrupted {
             return;
@@ -859,24 +1014,25 @@ impl McpClient {
         *self.last_error.lock().await = Some(error);
     }
 
-    async fn publish_tool_list_refresh<F>(
-        &self,
-        result: anyhow::Result<Vec<McpToolInfo>>,
-        on_tool_list_changed: F,
-    ) where
+    async fn refresh_tool_list_after_notification<F>(&self, on_tool_list_changed: F)
+    where
         F: Fn(&str),
     {
-        {
-            let mut cache = self.tools_cache.lock().await;
-            match result {
-                Ok(tools) => *cache = Some(tools),
-                Err(_) => {
-                    *cache = None;
-                    tracing::error!(
-                        server = %self.name,
-                        "MCP tools/list refresh failed; cache cleared"
-                    );
-                }
+        // Serialize notification refreshes with TTL-driven reads and mark the
+        // prior snapshot stale before the network round trip. A reader waiting
+        // on `tool_list_refresh` will then observe only the refreshed result.
+        let _refresh_guard = self.tool_list_refresh.lock().await;
+        if let Some(snapshot) = self.tools_cache.lock().await.as_mut() {
+            snapshot.expires_at = Some(Instant::now());
+        }
+        match self.list_tool_snapshot().await {
+            Ok(snapshot) => *self.tools_cache.lock().await = Some(snapshot),
+            Err(_) => {
+                *self.tools_cache.lock().await = None;
+                tracing::error!(
+                    server = %self.name,
+                    "MCP tools/list refresh failed; cache cleared"
+                );
             }
         }
         // The catalog version must describe the already-published cache.
@@ -952,11 +1108,8 @@ impl McpClient {
                         if !self.tools_list_changed.take() {
                             continue;
                         }
-                        self.publish_tool_list_refresh(
-                            self.list_tools().await,
-                            &on_tool_list_changed,
-                        )
-                        .await;
+                        self.refresh_tool_list_after_notification(&on_tool_list_changed)
+                            .await;
                     }
                     Notification::Message(Some(msg)) => {
                         let method = msg["method"].as_str();
@@ -1036,7 +1189,7 @@ impl McpClient {
                 .lock()
                 .await
                 .as_ref()
-                .and_then(|tools| tools.iter().find(|tool| tool.name == tool_name))
+                .and_then(|snapshot| snapshot.tools.iter().find(|tool| tool.name == tool_name))
                 .map(|tool| tool.input_schema.clone())
                 .ok_or_else(|| anyhow::anyhow!("MCP tool schema is unavailable for this call"))?;
             http_parameter_headers(&schema, &input).map_err(|_| {
@@ -1094,7 +1247,7 @@ impl McpClient {
             McpServerTransport::Stdio => {
                 let mut guard = self.inner.lock().await;
                 match guard.as_mut() {
-                    Some(McpClientInner::Stdio(s)) if s.poisoned => false,
+                    Some(McpClientInner::Stdio(s)) if s.poisoned() => false,
                     Some(McpClientInner::Stdio(s)) => {
                         s.child.try_wait().map(|st| st.is_none()).unwrap_or(false)
                     }
@@ -1320,18 +1473,20 @@ mod stdio_poison_tests {
             .expect("mark fake server working directory");
         let files = TestFiles { root };
 
-        let mut config = haven_common::config::McpServerConfig::default();
-        config.name = "poisoned-stdio-test".into();
-        config.command = std::env::current_exe()
-            .expect("current test executable")
-            .to_string_lossy()
-            .into_owned();
-        config.args = vec![
-            "--exact".into(),
-            "client::stdio_poison_tests::stdio_liveness_child_helper".into(),
-            "--nocapture".into(),
-        ];
-        config.cwd = Some(files.root.to_string_lossy().into_owned());
+        let config = haven_common::config::McpServerConfig {
+            name: "poisoned-stdio-test".into(),
+            command: std::env::current_exe()
+                .expect("current test executable")
+                .to_string_lossy()
+                .into_owned(),
+            args: vec![
+                "--exact".into(),
+                "client::stdio_poison_tests::stdio_liveness_child_helper".into(),
+                "--nocapture".into(),
+            ],
+            cwd: Some(files.root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
 
         let client = McpClient::new(&config, 1024, 1024);
         let (notification_tx, _notification_rx) =
@@ -1348,7 +1503,7 @@ mod stdio_poison_tests {
                 .is_none(),
             "the test child must still be alive"
         );
-        stdio.poisoned = true;
+        stdio.mark_reader_failed_for_test();
         *client.inner.lock().await = Some(McpClientInner::Stdio(Box::new(stdio)));
 
         assert!(
@@ -1399,27 +1554,208 @@ mod tool_list_identity_tests {
         assert!(validate_unique_tool_names(&[tool(" ")]).is_err());
         assert!(validate_unique_tool_names(&[tool("first"), tool("second")]).is_ok());
     }
+}
+
+#[cfg(test)]
+mod modern_tool_list_tests {
+    use super::*;
+    use crate::transport::HttpInner;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::{TcpListener, TcpStream};
+
+    async fn read_http_jsonrpc_request(
+        stream: TcpStream,
+    ) -> (tokio::net::tcp::OwnedWriteHalf, Value) {
+        let (read_half, write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let mut content_length = 0usize;
+        loop {
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                content_length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; content_length];
+        reader.read_exact(&mut body).await.unwrap();
+        (write_half, serde_json::from_slice(&body).unwrap())
+    }
+
+    async fn respond_jsonrpc(
+        mut stream: tokio::net::tcp::OwnedWriteHalf,
+        id: Value,
+        result: Value,
+    ) {
+        let body = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    }
 
     #[tokio::test]
-    async fn tool_catalog_invalidation_runs_after_cache_publication() {
-        let client = McpClient::new(
-            &haven_common::config::McpServerConfig::default(),
-            1024,
-            1024,
+    async fn tools_list_aggregates_pages_and_uses_the_most_restrictive_cache_hint() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "tools/list");
+            assert!(request["params"].get("cursor").is_none());
+            assert_eq!(
+                request["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"],
+                MODERN_PROTOCOL_VERSION
+            );
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "tools": [{"name": "first", "inputSchema": {"type": "object"}}],
+                    "nextCursor": "page-two",
+                    "ttlMs": 50_000,
+                    "cacheScope": "public"
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "tools/list");
+            assert_eq!(request["params"]["cursor"], "page-two");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "tools": [{"name": "second", "inputSchema": {"type": "object"}}],
+                    "ttlMs": 5_000,
+                    "cacheScope": "private"
+                }),
+            )
+            .await;
+        });
+
+        let config = haven_common::config::McpServerConfig {
+            name: "paged-modern-list".into(),
+            transport: McpServerTransport::Http,
+            url: format!("http://{address}/mcp"),
+            ..Default::default()
+        };
+        let client = McpClient::new(&config, 1024, 1024);
+        *client.protocol_mode.lock().await = McpProtocolMode::modern(MODERN_PROTOCOL_VERSION);
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let cancel = client.cancel_token.lock().await.clone();
+        let shared = Arc::new(HttpShared {
+            http: reqwest::Client::new(),
+            url: config.url,
+            headers: Vec::new(),
+            mcp_session_id: Arc::new(Mutex::new(String::new())),
+            cancel,
+        });
+        *client.inner.lock().await = Some(McpClientInner::Http(HttpInner {
+            shared,
+            notification_tx,
+            max_sse_buffer: 1024,
+            tools_list_changed: client.tools_list_changed.clone(),
+        }));
+
+        let started = Instant::now();
+        let snapshot = client.list_tool_snapshot().await.unwrap();
+        server.await.unwrap();
+        assert_eq!(
+            snapshot
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
         );
-        let expected = vec![tool("published")];
+        assert_eq!(snapshot._cache_scope, McpToolCacheScope::Private);
+        assert!(snapshot.is_fresh());
+        assert!(snapshot.expires_at.unwrap() <= started + Duration::from_secs(6));
+    }
+
+    #[tokio::test]
+    async fn notification_publishes_refreshed_cache_before_catalog_invalidation() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "tools/list");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "tools": [{"name": "published", "inputSchema": {"type": "object"}}],
+                    "ttlMs": 60_000,
+                    "cacheScope": "private"
+                }),
+            )
+            .await;
+        });
+
+        let config = haven_common::config::McpServerConfig {
+            name: "catalog-publication".into(),
+            transport: McpServerTransport::Http,
+            url: format!("http://{address}/mcp"),
+            ..Default::default()
+        };
+        let client = McpClient::new(&config, 1024, 1024);
+        *client.protocol_mode.lock().await = McpProtocolMode::modern(MODERN_PROTOCOL_VERSION);
+        *client.tools_cache.lock().await = Some(McpToolListSnapshot {
+            tools: vec![McpToolInfo {
+                name: "stale".into(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }],
+            expires_at: Some(Instant::now() + Duration::from_secs(60)),
+            _cache_scope: McpToolCacheScope::Private,
+        });
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let cancel = client.cancel_token.lock().await.clone();
+        let shared = Arc::new(HttpShared {
+            http: reqwest::Client::new(),
+            url: config.url,
+            headers: Vec::new(),
+            mcp_session_id: Arc::new(Mutex::new(String::new())),
+            cancel,
+        });
+        *client.inner.lock().await = Some(McpClientInner::Http(HttpInner {
+            shared,
+            notification_tx,
+            max_sse_buffer: 1024,
+            tools_list_changed: client.tools_list_changed.clone(),
+        }));
+
         let observed = client.tools_cache.clone();
         client
-            .publish_tool_list_refresh(Ok(expected.clone()), move |_| {
+            .refresh_tool_list_after_notification(move |_| {
                 assert_eq!(
-                    observed.try_lock().unwrap().as_ref().map(|tools| tools
-                        .iter()
-                        .map(|tool| tool.name.as_str())
-                        .collect::<Vec<_>>()),
-                    Some(expected.iter().map(|tool| tool.name.as_str()).collect()),
+                    observed
+                        .try_lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(|snapshot| snapshot
+                            .tools
+                            .iter()
+                            .map(|tool| tool.name.as_str())
+                            .collect::<Vec<_>>()),
+                    Some(vec!["published"]),
                     "the cache must be visible before the new catalog generation is published"
                 );
             })
             .await;
+        server.await.unwrap();
     }
 }

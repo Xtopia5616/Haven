@@ -798,20 +798,38 @@ impl McpManager {
     /// Cached tool count. `None` means no tools/list result is available yet;
     /// `Some(0)` means discovery completed and returned an empty list.
     pub async fn cached_tool_count(&self, name: &str) -> Option<usize> {
-        let client = self.client(name).await?;
-        client.cached_tools_count().await
+        self.cached_tools(name).await.map(|tools| tools.len())
     }
 
     /// Read the completed tools/list cache. `None` means the client is absent
     /// or discovery has not completed; `Some(vec![])` is a known empty list.
     pub async fn cached_tools(&self, name: &str) -> Option<Vec<McpToolInfo>> {
         let client = self.client(name).await?;
-        client.cached_tools().await
+        let (tools, refreshed) = match client.ensure_tool_cache_fresh().await {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::warn!(
+                    server = %name,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "MCP tools/list refresh after cache expiry failed"
+                );
+                return None;
+            }
+        };
+        if refreshed {
+            // Cache publication precedes the generation bump so a concurrent
+            // prompt cannot memoize stale tool schemas under the new version.
+            self.bump_catalog_version();
+        }
+        tools
     }
 
     /// Wait for tools/list discovery without exposing the concrete client.
     pub async fn wait_for_tools(&self, name: &str, timeout: Duration) -> Option<Vec<McpToolInfo>> {
         let client = self.client(name).await?;
+        if let Some(tools) = self.cached_tools(name).await {
+            return Some(tools);
+        }
         Some(client.wait_for_tools(timeout).await)
     }
 
@@ -1276,13 +1294,15 @@ impl McpManager {
         for client in clients {
             let name = client.name().to_string();
             handles.push(tokio::spawn(async move {
-                match client.list_tools().await {
-                    Ok(tools) => {
-                        *client.tools_cache.lock().await = Some(tools);
+                match client.refresh_tool_cache(true).await {
+                    Ok((Some(_), _)) => {
                         // The client may have been added directly in tests or
                         // by a native host path, bypassing load_from_config.
                         // Refreshing its discovery cache still invalidates
                         // the model-facing catalog.
+                    }
+                    Ok((None, _)) => {
+                        tracing::debug!(server = %name, "MCP tools refresh skipped before discovery completed");
                     }
                     Err(_) => {
                         tracing::warn!(server = %name, "MCP tools refresh failed");
@@ -1309,6 +1329,16 @@ impl McpManager {
             .client(client_name)
             .await
             .ok_or_else(|| anyhow::anyhow!("MCP client '{}' not found", client_name))?;
+        let (tools, refreshed) = client
+            .ensure_tool_cache_fresh()
+            .await
+            .map_err(|error| anyhow::anyhow!("MCP tool catalog refresh failed: {error}"))?;
+        if tools.is_none() {
+            anyhow::bail!("MCP tool catalog is not available for '{}'", client_name);
+        }
+        if refreshed {
+            self.bump_catalog_version();
+        }
         client.call_tool(tool_name, input, cancel).await
     }
 }
@@ -1612,7 +1642,11 @@ mod manager_lifecycle_tests {
                 serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": request.get("id"),
-                    "result": {"tools": []}
+                    "result": {
+                        "tools": [],
+                        "ttlMs": 60_000,
+                        "cacheScope": "private"
+                    }
                 })
                 .to_string(),
             ),

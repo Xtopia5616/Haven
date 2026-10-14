@@ -7,12 +7,14 @@ use futures_util::StreamExt;
 use haven_common::bounded_bytes::BoundedBytes;
 use haven_platform::process_containment::ProcessContainment;
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
-use tokio::sync::Notify;
+use tokio::sync::{Mutex as AsyncMutex, Notify, oneshot};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 const MAX_STDIO_LINE_BYTES: usize = 1024 * 1024;
@@ -55,113 +57,306 @@ impl ToolsListChangedSignal {
 pub(crate) struct StdioInner {
     pub(crate) child: Child,
     pub(crate) _containment: ProcessContainment,
-    pub(crate) stdin: ChildStdin,
-    pub(crate) stdout: BufReader<ChildStdout>,
-    pub(crate) notification_tx: tokio::sync::mpsc::Sender<Value>,
-    pub(crate) tools_list_changed: Arc<ToolsListChangedSignal>,
-    pub(crate) cancel: CancellationToken,
-    /// Set while a request has been written but its matching response has
-    /// not been consumed. If its future is cancelled or times out, the caller
-    /// must discard this byte stream instead of reusing it.
-    pub(crate) poisoned: bool,
+    pub(crate) io: Arc<StdioIo>,
+    reader_task: JoinHandle<()>,
+}
+
+pub(crate) struct StdioIo {
+    stdin: AsyncMutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>,
+    pending: AsyncMutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
+    active_subscriptions: std::sync::Mutex<HashSet<u64>>,
+    modern: AtomicBool,
+    reader_failed: AtomicBool,
+    notification_tx: tokio::sync::mpsc::Sender<Value>,
+    tools_list_changed: Arc<ToolsListChangedSignal>,
+    cancel: CancellationToken,
 }
 
 impl StdioInner {
+    pub(crate) fn new(
+        child: Child,
+        containment: ProcessContainment,
+        stdin: ChildStdin,
+        stdout: ChildStdout,
+        notification_tx: tokio::sync::mpsc::Sender<Value>,
+        tools_list_changed: Arc<ToolsListChangedSignal>,
+        cancel: CancellationToken,
+    ) -> Self {
+        let io = Arc::new(StdioIo {
+            stdin: AsyncMutex::new(Box::new(stdin)),
+            pending: AsyncMutex::new(HashMap::new()),
+            active_subscriptions: std::sync::Mutex::new(HashSet::new()),
+            modern: AtomicBool::new(false),
+            reader_failed: AtomicBool::new(false),
+            notification_tx,
+            tools_list_changed,
+            cancel,
+        });
+        let reader_task = tokio::spawn(read_stdio_messages(BufReader::new(stdout), io.clone()));
+        Self {
+            child,
+            _containment: containment,
+            io,
+            reader_task,
+        }
+    }
+
+    pub(crate) fn poisoned(&self) -> bool {
+        self.io.reader_failed.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_reader_failed_for_test(&self) {
+        self.io.reader_failed.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn set_modern(&self, modern: bool) {
+        self.io.modern.store(modern, Ordering::Release);
+    }
+
     pub(crate) async fn request(
-        &mut self,
+        &self,
         id: u64,
         method: &str,
         params: Option<Value>,
+        modern: bool,
     ) -> anyhow::Result<Value> {
-        if self.poisoned {
-            anyhow::bail!("MCP stdio connection has an interrupted request and cannot be reused");
+        self.io.request(id, method, params, modern).await
+    }
+
+    pub(crate) async fn notify(&self, method: &str, params: Option<Value>) -> anyhow::Result<()> {
+        self.io.notify(method, params).await
+    }
+
+    pub(crate) fn spawn_tools_subscription(
+        &self,
+        name: String,
+        next_id: Arc<std::sync::atomic::AtomicU64>,
+        mode: McpProtocolMode,
+    ) -> JoinHandle<()> {
+        spawn_stdio_tools_subscription(name, self.io.clone(), next_id, mode)
+    }
+}
+
+impl Drop for StdioInner {
+    fn drop(&mut self) {
+        self.reader_task.abort();
+        if self.child.start_kill().is_err() {
+            tracing::debug!("MCP stdio child cleanup failed");
+        }
+    }
+}
+
+impl StdioIo {
+    async fn request(
+        &self,
+        id: u64,
+        method: &str,
+        params: Option<Value>,
+        modern: bool,
+    ) -> anyhow::Result<Value> {
+        if self.reader_failed.load(Ordering::Acquire) {
+            anyhow::bail!("MCP stdio response reader has stopped");
+        }
+        let (response_tx, response_rx) = oneshot::channel();
+        self.pending.lock().await.insert(id, response_tx);
+        if modern && method == "subscriptions/listen" {
+            self.active_subscriptions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(id);
         }
         let req = jsonrpc_request(id, method, params);
         let mut line = serde_json::to_string(&req)?;
         line.push('\n');
+        let write_result = {
+            let mut stdin = self.stdin.lock().await;
+            write_stdio_line(&mut **stdin, &line, method, &self.cancel).await
+        };
+        if let Err(error) = write_result {
+            self.pending.lock().await.remove(&id);
+            self.remove_subscription(id);
+            return Err(error);
+        }
 
-        self.poisoned = true;
-        write_stdio_line(&mut self.stdin, &line, method, &self.cancel).await?;
-        read_stdio_response(
-            &mut self.stdout,
-            id,
-            method,
-            StdioResponseContext {
-                notification_tx: &self.notification_tx,
-                tools_list_changed: &self.tools_list_changed,
-                cancel: &self.cancel,
-                timeout: Duration::from_secs(REQUEST_TIMEOUT_SECS),
-            },
-            &mut self.poisoned,
+        let response = if method == "subscriptions/listen" {
+            tokio::select! {
+                _ = self.cancel.cancelled() => Err(anyhow::anyhow!("MCP stdio subscription cancelled")),
+                result = response_rx => match result {
+                    Err(_) => Err(anyhow::anyhow!("MCP stdio response reader stopped")),
+                    Ok(Err(error)) => Err(anyhow::anyhow!("{error}")),
+                    Ok(Ok(value)) => Ok(unpack_jsonrpc(value, None)?),
+                }
+            }
+        } else {
+            tokio::select! {
+                _ = self.cancel.cancelled() => Err(anyhow::anyhow!("MCP stdio request '{}' cancelled", method)),
+                result = tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), response_rx) => {
+                    match result {
+                        Err(_) => Err(anyhow::anyhow!("MCP request '{}' timed out", method)),
+                        Ok(Err(_)) => Err(anyhow::anyhow!("MCP stdio response reader stopped")),
+                        Ok(Ok(Err(error))) => Err(anyhow::anyhow!("{error}")),
+                        Ok(Ok(Ok(value))) => Ok(unpack_jsonrpc(value, None)?),
+                    }
+                }
+            }
+        };
+        self.pending.lock().await.remove(&id);
+        self.remove_subscription(id);
+        response
+    }
+
+    async fn notify(&self, method: &str, params: Option<Value>) -> anyhow::Result<()> {
+        let notification = jsonrpc_notification(method, params);
+        let mut line = serde_json::to_string(&notification)?;
+        line.push('\n');
+        let mut stdin = self.stdin.lock().await;
+        write_stdio_line(&mut **stdin, &line, method, &self.cancel).await
+    }
+
+    async fn notify_cancelled_request(&self, request_id: u64) -> anyhow::Result<()> {
+        let notification = jsonrpc_notification(
+            "notifications/cancelled",
+            Some(serde_json::json!({"requestId": request_id})),
+        );
+        let mut line = serde_json::to_string(&notification)?;
+        line.push('\n');
+        let mut stdin = self.stdin.lock().await;
+        // This is the cancellation signal for the stdio request itself, so it
+        // must still be written after the connection's normal work token has
+        // been cancelled. Keep the write bounded while allowing shutdown to
+        // proceed if the child has already stopped reading.
+        write_stdio_line_with_timeout(
+            &mut **stdin,
+            &line,
+            "notifications/cancelled",
+            &CancellationToken::new(),
+            Duration::from_secs(2),
         )
         .await
     }
 
-    pub(crate) async fn notify(
-        &mut self,
-        method: &str,
-        params: Option<Value>,
-    ) -> anyhow::Result<()> {
-        let notification = jsonrpc_notification(method, params);
-        let mut line = serde_json::to_string(&notification)?;
-        line.push('\n');
-        write_stdio_line(&mut self.stdin, &line, method, &self.cancel).await
+    fn remove_subscription(&self, id: u64) {
+        self.active_subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
     }
-}
 
-struct StdioResponseContext<'a> {
-    notification_tx: &'a tokio::sync::mpsc::Sender<Value>,
-    tools_list_changed: &'a ToolsListChangedSignal,
-    cancel: &'a CancellationToken,
-    timeout: Duration,
-}
-
-async fn read_stdio_response<R>(
-    reader: &mut R,
-    id: u64,
-    method: &str,
-    context: StdioResponseContext<'_>,
-    poisoned: &mut bool,
-) -> anyhow::Result<Value>
-where
-    R: AsyncBufRead + Unpin,
-{
-    tokio::select! {
-        _ = context.cancel.cancelled() => {
-            anyhow::bail!("MCP stdio request '{}' cancelled", method)
+    fn accepts_notification(&self, value: &Value) -> bool {
+        if !self.modern.load(Ordering::Acquire)
+            || value.get("method").and_then(Value::as_str)
+                != Some("notifications/tools/list_changed")
+        {
+            return true;
         }
-        result = tokio::time::timeout(context.timeout, async {
-            loop {
-                let buf = read_line_bounded(reader).await?;
-                let buf = String::from_utf8_lossy(&buf).trim().to_string();
-                if buf.is_empty() {
-                    anyhow::bail!("MCP server stdout closed (process died)");
-                }
-                let parsed: Value = serde_json::from_str(&buf)?;
-                if parsed.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                    // The complete frame has been consumed, so even a valid
-                    // JSON-RPC error response leaves the stream reusable.
-                    *poisoned = false;
-                    // Shared error extraction with the HTTP transport so the
-                    // two paths cannot drift.
-                    return unpack_jsonrpc(parsed, None);
-                }
-                // Route non-matching responses to notification handler (refine §4.6)
-                if parsed.get("id").is_none() {
-                    enqueue_notification(context.notification_tx, context.tools_list_changed, parsed)?;
-                }
-            }
-        }) => result
+        let Some(subscription_id) =
+            value["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"].as_u64()
+        else {
+            return false;
+        };
+        self.active_subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&subscription_id)
     }
-    .map_err(|_| anyhow::anyhow!("MCP request '{}' timed out", method))?
 }
 
-async fn write_stdio_line(
-    stdin: &mut ChildStdin,
+async fn read_stdio_messages<R>(mut stdout: BufReader<R>, io: Arc<StdioIo>)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let failure = loop {
+        let line = tokio::select! {
+            _ = io.cancel.cancelled() => return,
+            result = read_line_bounded(&mut stdout) => result,
+        };
+        let line = match line {
+            Ok(line) if !line.is_empty() => line,
+            Ok(_) => break "MCP server stdout closed (process died)".to_string(),
+            Err(error) => break error.to_string(),
+        };
+        let parsed = match serde_json::from_slice::<Value>(&line) {
+            Ok(value) => value,
+            Err(error) => break format!("invalid MCP stdio JSON-RPC message: {error}"),
+        };
+        if let Some(id) = parsed.get("id").and_then(Value::as_u64) {
+            if let Some(tx) = io.pending.lock().await.remove(&id) {
+                let _ = tx.send(Ok(parsed));
+            }
+            continue;
+        }
+        if io.accepts_notification(&parsed)
+            && let Err(error) =
+                enqueue_notification(&io.notification_tx, &io.tools_list_changed, parsed)
+        {
+            tracing::debug!(
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "MCP stdio notification could not be routed"
+            );
+        }
+    };
+
+    io.reader_failed.store(true, Ordering::Release);
+    let pending = std::mem::take(&mut *io.pending.lock().await);
+    for (_, tx) in pending {
+        let _ = tx.send(Err(failure.clone()));
+    }
+}
+
+fn spawn_stdio_tools_subscription(
+    name: String,
+    io: Arc<StdioIo>,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
+    mode: McpProtocolMode,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut backoff = Duration::from_secs(2);
+        loop {
+            if io.cancel.is_cancelled() {
+                break;
+            }
+            let version = match &mode {
+                McpProtocolMode::Modern { version } => version,
+                _ => break,
+            };
+            let id = next_id.fetch_add(1, Ordering::SeqCst);
+            let params = params_with_protocol_meta(
+                Some(serde_json::json!({
+                    "notifications": {"toolsListChanged": true}
+                })),
+                version,
+            );
+            let result = io
+                .request(id, "subscriptions/listen", Some(params), true)
+                .await;
+            if io.cancel.is_cancelled() {
+                if io.notify_cancelled_request(id).await.is_err() {
+                    tracing::debug!(server = %name, "MCP stdio subscription cancellation could not be sent");
+                }
+                break;
+            }
+            if result.is_err() {
+                tracing::debug!(server = %name, "MCP stdio tool-list subscription ended; retrying");
+            }
+            tokio::select! {
+                _ = io.cancel.cancelled() => break,
+                _ = tokio::time::sleep(backoff) => {}
+            }
+            backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+        }
+    })
+}
+
+async fn write_stdio_line<W>(
+    stdin: &mut W,
     line: &str,
     method: &str,
     cancel: &CancellationToken,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin + ?Sized,
+{
     write_stdio_line_with_timeout(
         stdin,
         line,
@@ -172,7 +367,7 @@ async fn write_stdio_line(
     .await
 }
 
-async fn write_stdio_line_with_timeout<W: tokio::io::AsyncWrite + Unpin>(
+async fn write_stdio_line_with_timeout<W: tokio::io::AsyncWrite + Unpin + ?Sized>(
     stdin: &mut W,
     line: &str,
     method: &str,
@@ -363,6 +558,12 @@ pub(crate) enum McpClientInner {
 }
 
 impl McpClientInner {
+    pub(crate) fn set_modern(&self, modern: bool) {
+        if let McpClientInner::Stdio(stdio) = self {
+            stdio.set_modern(modern);
+        }
+    }
+
     pub(crate) async fn request(
         &mut self,
         id: u64,
@@ -376,7 +577,7 @@ impl McpClientInner {
             McpProtocolMode::Uninitialized | McpProtocolMode::Legacy { .. } => params,
         };
         match self {
-            McpClientInner::Stdio(s) => s.request(id, method, params).await,
+            McpClientInner::Stdio(s) => s.request(id, method, params, mode.is_modern()).await,
             McpClientInner::Http(h) => h.request(id, method, params, mode, parameter_headers).await,
         }
     }
@@ -392,14 +593,24 @@ impl McpClientInner {
             McpClientInner::Http(h) => h.notify(method, params, mode).await,
         }
     }
-}
 
-impl Drop for McpClientInner {
-    fn drop(&mut self) {
-        if let McpClientInner::Stdio(s) = self
-            && s.child.start_kill().is_err()
-        {
-            tracing::debug!("MCP stdio child cleanup failed");
+    pub(crate) fn spawn_tools_subscription(
+        &self,
+        name: String,
+        next_id: Arc<std::sync::atomic::AtomicU64>,
+        mode: McpProtocolMode,
+    ) -> JoinHandle<()> {
+        match self {
+            McpClientInner::Stdio(stdio) => stdio.spawn_tools_subscription(name, next_id, mode),
+            McpClientInner::Http(http) => spawn_http_tools_subscription(
+                name,
+                http.shared.clone(),
+                http.notification_tx.clone(),
+                http.max_sse_buffer,
+                http.tools_list_changed.clone(),
+                next_id,
+                mode,
+            ),
         }
     }
 }
@@ -616,6 +827,143 @@ pub(crate) fn spawn_sse_listener(
             }
         }
     })
+}
+
+fn spawn_http_tools_subscription(
+    name: String,
+    shared: Arc<HttpShared>,
+    notification_tx: tokio::sync::mpsc::Sender<Value>,
+    max_sse_buffer: usize,
+    tools_list_changed: Arc<ToolsListChangedSignal>,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
+    mode: McpProtocolMode,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let version = match &mode {
+            McpProtocolMode::Modern { version } => version.clone(),
+            _ => return,
+        };
+        let mut backoff = Duration::from_secs(2);
+        loop {
+            if shared.cancel.is_cancelled() {
+                break;
+            }
+            let id = next_id.fetch_add(1, Ordering::SeqCst);
+            let params = params_with_protocol_meta(
+                Some(serde_json::json!({
+                    "notifications": {"toolsListChanged": true}
+                })),
+                &version,
+            );
+            let request = jsonrpc_request(id, "subscriptions/listen", Some(params));
+            let builder = shared
+                .http
+                .post(&shared.url)
+                .json(&request)
+                .header("Accept", "application/json, text/event-stream");
+            let builder = apply_http_request_headers(
+                builder,
+                &shared,
+                "subscriptions/listen",
+                &request,
+                &mode,
+                &[],
+            )
+            .await;
+            let response = tokio::select! {
+                _ = shared.cancel.cancelled() => break,
+                result = tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), builder.send()) => result
+                    .map_err(|_| anyhow::anyhow!("MCP subscriptions/listen request timed out"))
+                    .and_then(|result| result.map_err(anyhow::Error::from)),
+            };
+            let stream_result = match response {
+                Ok(response) if response.status().is_success() => {
+                    let is_sse = response
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(|content_type| content_type.contains("text/event-stream"));
+                    if is_sse {
+                        read_tools_subscription_stream(
+                            response,
+                            id,
+                            &notification_tx,
+                            max_sse_buffer,
+                            &shared.cancel,
+                            &tools_list_changed,
+                        )
+                        .await
+                    } else {
+                        let body = read_text_bounded(response, MAX_JSON_BODY_BYTES, &shared.cancel)
+                            .await
+                            .unwrap_or_default();
+                        Err(anyhow::anyhow!(
+                            "MCP subscriptions/listen did not return an SSE stream (body bytes: {})",
+                            body.len()
+                        ))
+                    }
+                }
+                Ok(response) => Err(anyhow::anyhow!(
+                    "MCP subscriptions/listen returned HTTP status {}",
+                    response.status().as_u16()
+                )),
+                Err(error) => Err(error),
+            };
+            if shared.cancel.is_cancelled() {
+                break;
+            }
+            if let Err(error) = stream_result {
+                tracing::debug!(
+                    server = %name,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "MCP tool-list subscription ended; retrying"
+                );
+            }
+            tokio::select! {
+                _ = shared.cancel.cancelled() => break,
+                _ = tokio::time::sleep(backoff) => {}
+            }
+            backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+        }
+    })
+}
+
+async fn read_tools_subscription_stream(
+    response: reqwest::Response,
+    subscription_id: u64,
+    notification_tx: &tokio::sync::mpsc::Sender<Value>,
+    max_sse_buffer: usize,
+    cancel: &CancellationToken,
+    tools_list_changed: &ToolsListChangedSignal,
+) -> anyhow::Result<()> {
+    let mut stream = response.bytes_stream();
+    let mut parser = SseParser::new(max_sse_buffer);
+    loop {
+        let chunk = tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            chunk = stream.next() => chunk,
+        };
+        match chunk {
+            Some(Ok(bytes)) => {
+                for event in parser.feed(&bytes) {
+                    if cancel.is_cancelled() {
+                        return Ok(());
+                    }
+                    if event.get("id").and_then(Value::as_u64) == Some(subscription_id) {
+                        unpack_jsonrpc(event, None)?;
+                        return Ok(());
+                    }
+                    let event_subscription_id =
+                        event["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"].as_u64();
+                    if event_subscription_id == Some(subscription_id) {
+                        enqueue_notification(notification_tx, tools_list_changed, event)?;
+                    }
+                }
+            }
+            Some(Err(error)) => return Err(error.into()),
+            None => return Ok(()),
+        }
+    }
 }
 
 /// Read one JSON-RPC line without allowing a peer to force an unbounded
@@ -1028,123 +1376,223 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stdio_cancel_after_partial_response_keeps_connection_poisoned() {
-        let (client_stream, mut server_stream) = tokio::io::duplex(1024);
-        let mut reader = BufReader::new(client_stream);
-        let (notification_tx, _notification_rx) = tokio::sync::mpsc::channel(1);
-        let tools_list_changed = ToolsListChangedSignal::new();
+    async fn stdio_subscription_does_not_block_concurrent_requests() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let (client_read, client_write) = tokio::io::split(client_stream);
+        let (server_read, mut server_write) = tokio::io::split(server_stream);
+        let (notification_tx, _notification_rx) = tokio::sync::mpsc::channel(4);
+        let tools_list_changed = Arc::new(ToolsListChangedSignal::new());
         let cancel = CancellationToken::new();
-        let mut poisoned = true;
+        let io = Arc::new(StdioIo {
+            stdin: AsyncMutex::new(Box::new(client_write)),
+            pending: AsyncMutex::new(HashMap::new()),
+            active_subscriptions: std::sync::Mutex::new(HashSet::new()),
+            modern: AtomicBool::new(true),
+            reader_failed: AtomicBool::new(false),
+            notification_tx,
+            tools_list_changed: tools_list_changed.clone(),
+            cancel: cancel.clone(),
+        });
+        let reader_task =
+            tokio::spawn(read_stdio_messages(BufReader::new(client_read), io.clone()));
 
-        server_stream
-            .write_all(
-                br#"{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"partial"#,
-            )
-            .await
-            .unwrap();
-        server_stream.flush().await.unwrap();
-
-        let error = {
-            let response = read_stdio_response(
-                &mut reader,
-                7,
-                "tools/call",
-                StdioResponseContext {
-                    notification_tx: &notification_tx,
-                    tools_list_changed: &tools_list_changed,
-                    cancel: &cancel,
-                    timeout: Duration::from_secs(1),
-                },
-                &mut poisoned,
-            );
-            tokio::pin!(response);
-            assert!(
-                tokio::time::timeout(Duration::from_millis(25), &mut response)
-                    .await
-                    .is_err(),
-                "a partial frame without its terminating newline must remain in progress"
-            );
-
-            cancel.cancel();
-            response
+        let subscription = tokio::spawn({
+            let io = io.clone();
+            async move {
+                io.request(
+                    1,
+                    "subscriptions/listen",
+                    Some(serde_json::json!({"notifications": {"toolsListChanged": true}})),
+                    true,
+                )
                 .await
-                .expect_err("cancelling a partially consumed frame must fail")
-        };
-        assert!(error.to_string().contains("cancelled"));
-        assert!(
-            poisoned,
-            "cancelled reads must keep the byte stream poisoned"
-        );
-    }
+            }
+        });
+        let request = tokio::spawn({
+            let io = io.clone();
+            async move { io.request(2, "tools/list", None, true).await }
+        });
 
-    #[tokio::test]
-    async fn stdio_timeout_after_partial_response_keeps_connection_poisoned() {
-        let (client_stream, mut server_stream) = tokio::io::duplex(1024);
-        let mut reader = BufReader::new(client_stream);
-        let (notification_tx, _notification_rx) = tokio::sync::mpsc::channel(1);
-        let tools_list_changed = ToolsListChangedSignal::new();
-        let mut poisoned = true;
+        let mut server_reader = BufReader::new(server_read);
+        let mut first = String::new();
+        let mut second = String::new();
+        server_reader.read_line(&mut first).await.unwrap();
+        server_reader.read_line(&mut second).await.unwrap();
+        let first: Value = serde_json::from_str(&first).unwrap();
+        let second: Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(first["method"], "subscriptions/listen");
+        assert_eq!(second["method"], "tools/list");
 
-        server_stream
+        server_write
+            .write_all(br#"{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}"#)
+            .await
+            .unwrap();
+        server_write.write_all(b"\n").await.unwrap();
+        server_write
             .write_all(
-                br#"{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"partial"#,
+                br#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":1}}}"#,
             )
             .await
             .unwrap();
-        server_stream.flush().await.unwrap();
+        server_write.write_all(b"\n").await.unwrap();
+        server_write
+            .write_all(br#"{"jsonrpc":"2.0","id":1,"result":{}}"#)
+            .await
+            .unwrap();
+        server_write.write_all(b"\n").await.unwrap();
 
-        let error = read_stdio_response(
-            &mut reader,
-            7,
-            "tools/call",
-            StdioResponseContext {
-                notification_tx: &notification_tx,
-                tools_list_changed: &tools_list_changed,
-                cancel: &CancellationToken::new(),
-                timeout: Duration::from_millis(25),
-            },
-            &mut poisoned,
-        )
-        .await
-        .expect_err("partial frames must time out");
-        assert!(error.to_string().contains("timed out"));
-        assert!(
-            poisoned,
-            "timed out reads must keep the byte stream poisoned"
-        );
+        let result = tokio::time::timeout(Duration::from_secs(1), request)
+            .await
+            .expect("normal request must complete while the subscription is open")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["tools"], serde_json::json!([]));
+        tokio::time::timeout(Duration::from_secs(1), subscription)
+            .await
+            .expect("subscription stream response must be correlated independently")
+            .unwrap()
+            .unwrap();
+        assert!(tools_list_changed.take());
+
+        cancel.cancel();
+        reader_task.abort();
     }
 
     #[tokio::test]
-    async fn stdio_complete_matching_frame_clears_connection_poison() {
-        let (client_stream, mut server_stream) = tokio::io::duplex(1024);
-        let mut reader = BufReader::new(client_stream);
-        let (notification_tx, _notification_rx) = tokio::sync::mpsc::channel(1);
-        let tools_list_changed = ToolsListChangedSignal::new();
-        let mut poisoned = true;
+    async fn stdio_subscription_cancellation_is_sent_after_transport_cancel() {
+        let (client_stream, server_stream) = tokio::io::duplex(1024);
+        let (server_read, _server_write) = tokio::io::split(server_stream);
+        let (_notification_tx, notification_rx) = tokio::sync::mpsc::channel(1);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let io = StdioIo {
+            stdin: AsyncMutex::new(Box::new(client_stream)),
+            pending: AsyncMutex::new(HashMap::new()),
+            active_subscriptions: std::sync::Mutex::new(HashSet::new()),
+            modern: AtomicBool::new(true),
+            reader_failed: AtomicBool::new(false),
+            notification_tx: _notification_tx,
+            tools_list_changed: Arc::new(ToolsListChangedSignal::new()),
+            cancel,
+        };
 
-        server_stream
-            .write_all(br#"{"jsonrpc":"2.0","id":7,"result":{"content":[]}}"#)
+        io.notify_cancelled_request(42)
             .await
-            .unwrap();
-        server_stream.write_all(b"\n").await.unwrap();
-        server_stream.flush().await.unwrap();
+            .expect("subscription cancellation must still be writable after shutdown starts");
+        let mut reader = BufReader::new(server_read);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let notification: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(notification["method"], "notifications/cancelled");
+        assert_eq!(notification["params"]["requestId"], 42);
+        drop(notification_rx);
+    }
 
-        let result = read_stdio_response(
-            &mut reader,
-            7,
-            "tools/call",
-            StdioResponseContext {
-                notification_tx: &notification_tx,
-                tools_list_changed: &tools_list_changed,
-                cancel: &CancellationToken::new(),
-                timeout: Duration::from_secs(1),
-            },
-            &mut poisoned,
-        )
-        .await
-        .expect("complete matching frame must succeed");
-        assert_eq!(result["content"], serde_json::json!([]));
-        assert!(!poisoned, "a complete matching frame restores reusability");
+    #[tokio::test]
+    async fn modern_http_subscription_routes_only_correlated_tool_changes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let cancel = CancellationToken::new();
+        let server_cancel = cancel.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let mut content_length = 0usize;
+            let mut headers = HashMap::new();
+            loop {
+                line.clear();
+                reader.read_line(&mut line).await.unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    let name = name.trim().to_ascii_lowercase();
+                    let value = value.trim().to_string();
+                    if name == "content-length" {
+                        content_length = value.parse().unwrap();
+                    }
+                    headers.insert(name, value);
+                }
+            }
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body).await.unwrap();
+            let request: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(request["method"], "subscriptions/listen");
+            assert_eq!(
+                headers.get("mcp-method").map(String::as_str),
+                Some("subscriptions/listen")
+            );
+            assert_eq!(
+                headers.get("mcp-protocol-version").map(String::as_str),
+                Some("2026-07-28")
+            );
+            assert!(!headers.contains_key("mcp-session-id"));
+
+            write_half
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            for event in [
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/subscriptions/acknowledged",
+                    "params": {
+                        "_meta": {"io.modelcontextprotocol/subscriptionId": 1},
+                        "notifications": {"toolsListChanged": true}
+                    }
+                }),
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/tools/list_changed",
+                    "params": {"_meta": {"io.modelcontextprotocol/subscriptionId": 1}}
+                }),
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/tools/list_changed",
+                    "params": {"_meta": {"io.modelcontextprotocol/subscriptionId": 999}}
+                }),
+            ] {
+                let data = format!("data: {}\n\n", event);
+                let chunk = format!("{:X}\r\n{}\r\n", data.len(), data);
+                write_half.write_all(chunk.as_bytes()).await.unwrap();
+                write_half.flush().await.unwrap();
+            }
+            server_cancel.cancelled().await;
+        });
+
+        let (notification_tx, _notification_rx) = tokio::sync::mpsc::channel(4);
+        let signal = Arc::new(ToolsListChangedSignal::new());
+        let shared = Arc::new(HttpShared {
+            http: reqwest::Client::new(),
+            url: format!("http://{address}/mcp"),
+            headers: Vec::new(),
+            mcp_session_id: Arc::new(AsyncMutex::new(String::new())),
+            cancel: cancel.clone(),
+        });
+        let task = spawn_http_tools_subscription(
+            "subscription-test".into(),
+            shared,
+            notification_tx,
+            1024,
+            signal.clone(),
+            Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            McpProtocolMode::modern("2026-07-28"),
+        );
+        tokio::time::timeout(Duration::from_secs(2), signal.notified())
+            .await
+            .expect("the correlated list-changed event should invalidate the cache");
+        assert!(signal.take());
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("subscription task should stop on cancellation")
+            .expect("subscription task should not panic");
+        server.await.unwrap();
     }
 
     #[test]
