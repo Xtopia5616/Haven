@@ -314,7 +314,9 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
     }
 
     async fn apply_security(&self, security: &haven_common::config::SecurityConfig) {
-        self.authorization.apply_security(security).await;
+        if let Err(error) = self.authorization.apply_security(security).await {
+            tracing::error!(%error, "security configuration applied with execution workspace unavailable");
+        }
     }
 
     async fn set_permission_mode(&self, mode: haven_common::types::PermissionMode) {

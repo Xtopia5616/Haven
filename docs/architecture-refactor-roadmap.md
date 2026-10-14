@@ -188,7 +188,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | Complete | CodeMode 与 Legacy 的 per-server 切换和受限调用链 | 单个合成 `codemode_run`、快照 allowlist、逐子调用授权 proof、Tools live exposure/target 校验、Legacy/CodeMode per-server UI 及 per-tool overrides 已接通。Agent→ToolsFacade→evaluator→子工具授权链、confirmation fail-closed、预算/取消和 MCP 暴露撤销测试通过；授权型子调用当前需用户改走 Legacy。 |
 | Complete | MCP resources/read 与 user-selected prompts | modern/legacy capability 协商、分页和 typed 响应预算、连接代次缓存与显式刷新、四个 target-bound IPC 命令和用户浏览 UI 已接通；用户预览后只可将可表达的纯用户文本加入 Composer 草稿，模型不可调用，随后普通发送进入现有 ingress。Resources templates、订阅和 MRTR 未暴露，保持 fail closed。 |
 | Complete | 声明式 Workflow | 有界版本化 DAG 与同步 `workflow_run` 已接通；只接受当前 Legacy MCP surface 上的 Direct/已加载 Deferred capability。每步独立授权并经过标准 Tools live exposure/target/sandbox/network 检查；确认类子步骤 handler 前失败关闭，部分结果不可自动重放，不持久化、不后台运行。详见 ADR 1165/1166。 |
-| **Active** | ExecutionWorkspace 与 sandbox 权限范围收敛 | 后端进程级执行根由唯一授权 owner 管理；Files 默认写入范围、打开目录句柄和 Shell 默认 `cwd` 已纳入同一 proof/policy revision 语义（ADR 1167–1170）。运行时 workspace 切换按 generation 原子替换，旧 proof 失效；选择器、renderer IPC 与跨重启持久化尚未接入。剩余：scratch 生命周期，以及 Shell/Skill/MCP 子进程与网络边界的分别验证；不能把 Job Object 或 cwd 当作 OS filesystem sandbox，Windows 真实系统验收仍开放。 |
+| **Active** | ExecutionWorkspace 与 sandbox 权限范围收敛 | 后端执行根由唯一授权 owner 管理；Files 默认写入范围、目录句柄和 Shell 默认 `cwd` 使用同一 attempt snapshot（ADR 1167–1170）。安全设置现可持久化执行根；保存前验证目录，应用时更换 generation 并使旧 proof 失效；重启后失效路径 fail closed（ADR 1171）。剩余：原生目录选择器、scratch 生命周期，以及 Shell/Skill/MCP 子进程与网络边界的分别验证；不能把 Job Object 或 cwd 当作 OS filesystem sandbox，Windows 真实系统验收仍开放。 |
 
 实施仍遵守“证据与契约 → 单条垂直调用链 → 负向/恢复验证 → 适用门禁 → 独立提交”的顺序。每完成一行，只把下一行提升为 Active，并在该提交中更新本节。
 

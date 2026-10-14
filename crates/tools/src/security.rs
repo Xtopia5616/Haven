@@ -438,7 +438,7 @@ impl AuthorizationCheck {
 /// access to the mutable policy implementation.
 #[async_trait::async_trait]
 pub trait AuthorizationPort: Send + Sync {
-    async fn apply_security(&self, security: &SecurityConfig);
+    async fn apply_security(&self, security: &SecurityConfig) -> Result<(), String>;
 
     async fn set_permission_mode(&self, mode: PermissionMode);
 
@@ -750,8 +750,42 @@ impl AuthorizationEngine {
     /// Replace the policy and permanent rules atomically. Clears the
     /// process-local session map; the Agent restores grants whose owning
     /// persisted sessions still exist after a live security apply.
-    pub async fn apply_security(&self, security: &SecurityConfig) {
+    pub async fn apply_security(&self, security: &SecurityConfig) -> Result<(), String> {
+        let candidate = match security.execution_root.as_deref() {
+            Some(root) => ExecutionWorkspace::open_root(root, 1)
+                .map_err(|_| "configured execution workspace is unavailable".to_string()),
+            None => Ok(ExecutionWorkspace::discover()),
+        };
         let mut cfg = self.config.write().await;
+        let current_workspace = cfg.execution_workspace.clone();
+        let (workspace, workspace_error) = match candidate {
+            Ok(candidate) if current_workspace.same_root(&candidate) => {
+                (current_workspace.clone(), None)
+            }
+            Err(_error) if current_workspace.root().is_none() => {
+                // Keep an already-unavailable workspace unavailable without
+                // blocking unrelated security settings from being applied.
+                (current_workspace.clone(), None)
+            }
+            candidate => {
+                if let Some(generation) = current_workspace.generation().checked_add(1) {
+                    match candidate {
+                        Ok(candidate) => (candidate.with_generation(generation), None),
+                        Err(error) => (
+                            ExecutionWorkspace::unavailable().with_generation(generation),
+                            Some(error),
+                        ),
+                    }
+                } else {
+                    (
+                        ExecutionWorkspace::unavailable()
+                            .with_generation(current_workspace.generation()),
+                        Some("execution workspace generation is exhausted".to_string()),
+                    )
+                }
+            }
+        };
+        cfg.execution_workspace = workspace;
         cfg.permission_mode = security.permission_mode;
         cfg.sandbox_mode = security.sandbox_mode;
         cfg.writable_roots = security.writable_roots.iter().map(PathBuf::from).collect();
@@ -772,6 +806,14 @@ impl AuthorizationEngine {
         }
         cfg.session_grants.clear();
         bump_policy_revision(&mut cfg);
+        if let Some(error) = workspace_error {
+            tracing::warn!(
+                error,
+                "execution workspace configuration could not be applied"
+            );
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Update the policy profile. Clears session grants.
@@ -1352,8 +1394,8 @@ impl AuthorizationEngine {
 
 #[async_trait::async_trait]
 impl AuthorizationPort for AuthorizationEngine {
-    async fn apply_security(&self, security: &SecurityConfig) {
-        AuthorizationEngine::apply_security(self, security).await;
+    async fn apply_security(&self, security: &SecurityConfig) -> Result<(), String> {
+        AuthorizationEngine::apply_security(self, security).await
     }
 
     async fn set_permission_mode(&self, mode: PermissionMode) {
@@ -2111,6 +2153,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn security_configuration_persists_or_rediscovers_the_execution_root() {
+        let initial_root = tempfile::tempdir().unwrap();
+        let configured_root = tempfile::tempdir().unwrap();
+        let engine = AuthorizationEngine::new_with_workspace(
+            ExecutionWorkspace::from_root(initial_root.path()).unwrap(),
+        );
+        let initial = engine.execution_workspace_snapshot().await;
+        let mut security = SecurityConfig {
+            execution_root: Some(configured_root.path().to_path_buf()),
+            ..SecurityConfig::default()
+        };
+
+        engine
+            .apply_security(&security)
+            .await
+            .expect("configured local workspace is available");
+        let configured = engine.execution_workspace_snapshot().await;
+        assert_eq!(configured.generation, initial.generation + 1);
+        assert_eq!(
+            configured.root,
+            ExecutionWorkspace::open_root(configured_root.path(), 1)
+                .unwrap()
+                .snapshot()
+                .root
+        );
+
+        security.execution_root = None;
+        engine
+            .apply_security(&security)
+            .await
+            .expect("missing config root selects startup discovery");
+        let discovered = ExecutionWorkspace::discover().snapshot();
+        let reset = engine.execution_workspace_snapshot().await;
+        assert_eq!(reset.generation, configured.generation + 1);
+        assert_eq!(reset.root, discovered.root);
+    }
+
+    #[tokio::test]
+    async fn unavailable_persisted_execution_root_fails_closed() {
+        let initial_root = tempfile::tempdir().unwrap();
+        let missing_root = initial_root.path().join("missing-workspace");
+        let engine = AuthorizationEngine::new_with_workspace(
+            ExecutionWorkspace::from_root(initial_root.path()).unwrap(),
+        );
+        let before = engine.execution_workspace_snapshot().await;
+        let security = SecurityConfig {
+            execution_root: Some(missing_root),
+            ..SecurityConfig::default()
+        };
+
+        let error = engine
+            .apply_security(&security)
+            .await
+            .expect_err("a missing persisted workspace must be rejected");
+        assert!(error.contains("execution workspace is unavailable"));
+        let after = engine.execution_workspace_snapshot().await;
+        assert_eq!(after.generation, before.generation + 1);
+        assert_eq!(after.root, None);
+
+        let follow_up = SecurityConfig {
+            sandbox_mode: SandboxMode::ReadOnly,
+            ..security
+        };
+        engine
+            .apply_security(&follow_up)
+            .await
+            .expect("already-unavailable workspace does not block other security updates");
+        assert_eq!(engine.execution_workspace_snapshot().await.root, None);
+    }
+
+    #[tokio::test]
     async fn execution_proof_rechecks_a_deny_added_after_authorization() {
         let engine = AuthorizationEngine::new();
         engine
@@ -2474,7 +2587,10 @@ mod tests {
         let gateway = AuthorizationEngine::new();
         let default_security = SecurityConfig::default();
         assert_eq!(default_security.network_policy, NetworkPolicy::Ask);
-        gateway.apply_security(&default_security).await;
+        gateway
+            .apply_security(&default_security)
+            .await
+            .expect("default security uses the discovered workspace");
 
         let public_policy = fixture_policy("http", &json!({}), RiskLevel::Medium);
         assert!(matches!(
@@ -2586,7 +2702,10 @@ mod tests {
             network_policy: NetworkPolicy::Deny,
             ..SecurityConfig::default()
         };
-        gateway.apply_security(&security).await;
+        gateway
+            .apply_security(&security)
+            .await
+            .expect("valid security workspace applies");
         assert!(matches!(
             gateway
                 .check(
@@ -2636,7 +2755,10 @@ mod tests {
             sandbox_mode: SandboxMode::ReadOnly,
             ..SecurityConfig::default()
         };
-        gateway.apply_security(&read_only).await;
+        gateway
+            .apply_security(&read_only)
+            .await
+            .expect("valid read-only security applies");
         assert!(matches!(
             gateway
                 .check(
@@ -3345,7 +3467,8 @@ mod tests {
             }],
             ..SecurityConfig::default()
         })
-        .await;
+        .await
+        .expect("invalid grants are ignored while security applies");
 
         assert!(gw.list_permanent().await.is_empty());
     }
@@ -3380,7 +3503,9 @@ mod tests {
             permission_mode: PermissionMode::Autonomous,
             ..SecurityConfig::default()
         };
-        gw.apply_security(&security).await;
+        gw.apply_security(&security)
+            .await
+            .expect("valid security workspace applies");
         assert!(matches!(
             gw.check(None, "shell", &json!({}), RiskLevel::High).await,
             ConfirmationResult::RequiresConfirmation { .. }

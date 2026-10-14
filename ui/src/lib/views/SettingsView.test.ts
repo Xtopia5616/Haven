@@ -408,6 +408,7 @@ describe('SettingsView diagnostics export', () => {
 		settings.security.permission_mode = 'default';
 		settings.security.sandbox_mode = 'workspace_write';
 		settings.security.network_policy = 'ask';
+		settings.security.execution_root = 'C:\\Haven\\Projects\\demo';
 		settings.media.stt.provider_name = 'deepgram-voice';
 		settings.media.stt.model = 'nova-3';
 		settings.media.ocr.provider = 'azure';
@@ -474,6 +475,7 @@ describe('SettingsView diagnostics export', () => {
 		expect(saved.session.max_steps_per_session).toBe(750);
 		expect(saved.session.prompt_history_limit).toBe(73);
 		expect(saved.memory.fact_inference_enabled).toBe(false);
+		expect(saved.security.execution_root).toBe('C:\\Haven\\Projects\\demo');
 		expect(saved.hotkey.mute_hotkey).toBe('Ctrl+M');
 		expect(saved.log.file_path).toBe('C:\\Haven\\logs\\custom.log');
 		expect(saved.media.stt.provider_name).toBe('deepgram-voice');

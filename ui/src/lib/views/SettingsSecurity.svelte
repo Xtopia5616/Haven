@@ -345,6 +345,36 @@
 			</div>
 		</div>
 
+		<div class="execution-workspace-boundary">
+			<div class="subsection-heading">
+				<div>
+					<h3>执行工作区</h3>
+					<p>
+						Files 的相对路径、默认 Shell
+						工作目录和未单独配置写入目录时的工作区写入范围共用此根。留空使用启动时发现的仓库根。
+						已开始的调用继续使用旧工作区；这不会限制 Shell、技能或 MCP
+						子进程访问其他系统路径。
+					</p>
+				</div>
+			</div>
+			<SettingsField
+				label="执行工作区目录"
+				id="security-execution-root"
+				description="填写已存在的本地绝对路径；应用设置后，新调用使用新目录。"
+				stacked
+			>
+				<textarea
+					id="security-execution-root"
+					class="md-textarea md-textarea--code security-roots"
+					rows="1"
+					value={security.execution_root || ''}
+					placeholder="留空使用启动时发现的仓库根"
+					oninput={(event) => {
+						security.execution_root = inputElementValue(event).trim() || null;
+					}}></textarea>
+			</SettingsField>
+		</div>
+
 		<div class="advanced-boundary">
 			<MaterialCollapsible bind:open={advancedBoundaryOpen}>
 				{#snippet header()}

@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳并实施；Files 目录句柄锚定见 [ADR 1169](1169-anchor-file-mutations-to-authorized-directories.md)，按代次切换 workspace 见 [ADR 1170](1170-version-execution-workspace-switches.md)。renderer 选择/持久化、scratch 生命周期和进程级文件隔离仍在路线图 Active。
+已采纳并实施；Files 目录句柄锚定见 [ADR 1169](1169-anchor-file-mutations-to-authorized-directories.md)，按代次切换 workspace 见 [ADR 1170](1170-version-execution-workspace-switches.md)，配置持久化见 [ADR 1171](1171-persist-execution-workspace-in-security-settings.md)。原生目录选择器、scratch 生命周期和进程级文件隔离仍在路线图 Active。
 
 ## 背景
 
@@ -13,7 +13,7 @@
 ## 决策
 
 - 在 `haven-tools` 内部由唯一 AuthorizationEngine 持有只读 `ExecutionWorkspace` 快照。快照从进程启动目录通过现有仓库根发现规则解析；根必须规范化为本地绝对目录。不能解析或发现到根时记为 unavailable，不回退到未经发现的当前目录或 Temp。
-- 快照具有进程内 generation。当前进程只创建 generation `1`，不提供 renderer 修改根目录的入口。未来根目录替换必须由后端 owner 串行化、增加 generation，并更新策略 revision 以废止旧 execution proof。
+- 快照具有进程内 generation。启动发现或设置应用的根必须由后端 owner 打开；根替换增加 generation，并更新策略 revision 以废止旧 execution proof。
 - `FilesTool` 相对 path/root/destination 与授权器相对路径检查使用同一快照；Agent prompt 从 Tools facade 的只读快照展示 `workspace_root`，不再自行推导第二份根目录。
 - `workspace_write` 下，显式 `writable_roots` 非空时只允许这些 roots；为空时以 `ExecutionWorkspace.root` 作为默认写入根。根不可用且请求带写入路径时 fail closed。该检查仍受工具 `allowed_paths`、`read_only`、live policy 和每次 execution proof 复核约束。
 - 该 workspace 是后端执行上下文，不是 renderer 的页面/tab workspace。它不改变 Shell `cwd`、Skills `work_dir`/venv、MCP stdio `cwd`、MCP 远端目标或 UI 导航状态，也不声称 Job Object 能约束子进程文件系统。

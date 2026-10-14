@@ -792,6 +792,18 @@ mod tests {
             PermissionMode::Default
         );
         assert_eq!(SecurityConfig::default().network_policy, NetworkPolicy::Ask);
+        assert_eq!(SecurityConfig::default().execution_root, None);
+    }
+
+    #[test]
+    fn security_execution_root_round_trips_as_an_optional_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut security = SecurityConfig::default();
+        security.execution_root = Some(directory.path().to_path_buf());
+
+        let encoded = toml::to_string(&security).unwrap();
+        let decoded: SecurityConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.execution_root, security.execution_root);
     }
 
     #[test]

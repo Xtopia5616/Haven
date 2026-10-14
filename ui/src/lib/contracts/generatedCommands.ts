@@ -210,8 +210,8 @@ export interface NotificationConfigInput { session_created?: NotifyChannelsInput
 export interface NotificationConfig { session_created: NotifyChannels; session_completed: NotifyChannels; session_paused: NotifyChannels; session_resumed: NotifyChannels; session_error: NotifyChannels; permission_requested: NotifyChannels; tool_run_completed: NotifyChannels }
 export interface NotifyChannelsInput { in_app?: boolean; windows?: boolean }
 export interface NotifyChannels { in_app: boolean; windows: boolean }
-export interface SecurityConfigInput { permission_mode?: PermissionModeInput; sandbox_mode?: SandboxModeInput; writable_roots?: string[]; network_policy?: NetworkPolicyInput; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
-export interface SecurityConfig { permission_mode: PermissionMode; sandbox_mode: SandboxMode; writable_roots?: string[]; network_policy: NetworkPolicy; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
+export interface SecurityConfigInput { permission_mode?: PermissionModeInput; sandbox_mode?: SandboxModeInput; execution_root?: string | null; writable_roots?: string[]; network_policy?: NetworkPolicyInput; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
+export interface SecurityConfig { permission_mode: PermissionMode; sandbox_mode: SandboxMode; execution_root?: string; writable_roots?: string[]; network_policy: NetworkPolicy; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
 export interface SessionConfigInput { max_concurrent?: number; prompt_history_limit?: number; history_retention_days?: number; max_steps_per_run?: number; max_steps_per_session?: number | null }
 export interface SessionConfig { max_concurrent: number; prompt_history_limit: number; history_retention_days: number; max_steps_per_run: number; max_steps_per_session?: number }
 export interface SkillsConfigInput { root?: string | null; enabled?: string[] | null }
@@ -3980,6 +3980,10 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'enum', values: SANDBOX_MODE_VALUES },
 					},
+					'execution_root': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
 					'writable_roots': {
 						optional: true,
 						shape: { kind: 'array', items: { kind: 'string' } },
@@ -7620,6 +7624,10 @@ export const SETTINGS_RESPONSE_SHAPE = {
 					'sandbox_mode': {
 						optional: false,
 						shape: { kind: 'enum', values: SANDBOX_MODE_VALUES },
+					},
+					'execution_root': {
+						optional: true,
+						shape: { kind: 'string' },
 					},
 					'writable_roots': {
 						optional: true,

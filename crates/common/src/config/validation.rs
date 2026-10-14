@@ -36,6 +36,14 @@ fn validate_settings_numbers(settings: &Settings) -> Result<()> {
 /// Keep persistence-only secret checks in their owning boundaries.
 pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
     validate_app_config_numbers(config)?;
+    if config
+        .security
+        .execution_root
+        .as_ref()
+        .is_some_and(|root| !root.is_absolute())
+    {
+        anyhow::bail!("security.execution_root must be an absolute local directory path");
+    }
     validate_session_step_budgets(
         config.session.max_steps_per_run,
         config.session.max_steps_per_session,
@@ -902,6 +910,16 @@ mod tests {
 
         assert!(validate_app_config_numbers(&config).is_ok());
         assert!(validate_settings_numbers(&Settings::from(&config)).is_ok());
+    }
+
+    #[test]
+    fn configured_execution_root_must_be_absolute() {
+        let mut config = AppConfig::default();
+        config.security.execution_root = Some(std::path::PathBuf::from("relative/project"));
+
+        let error = validate_app_config(&config).unwrap_err();
+        assert!(error.to_string().contains("security.execution_root"));
+        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
     }
 
     #[test]

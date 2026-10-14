@@ -200,7 +200,12 @@ async fn execute_settings_apply_phase(
             }
         }
         SettingsRuntimeApplyPhase::Security => {
-            state.runtime.tools.apply_security(&config.security).await;
+            if let Err(error) = state.runtime.tools.apply_security(&config.security).await {
+                return SettingsRuntimeApplyOutcome::failed(
+                    "update_settings execution workspace",
+                    error,
+                );
+            }
             match state
                 .runtime
                 .executor
@@ -500,6 +505,23 @@ pub async fn update_settings(
     let state = app.state::<Arc<AppState>>();
     let state = Arc::clone(&*state);
     let _apply_guard = state.runtime.config_runtime_coordinator.lock().await;
+    let current_execution_root = state
+        .runtime
+        .config_service
+        .snapshot()
+        .map_err(|error| log_err("update_settings execution workspace", error))?
+        .config
+        .security
+        .execution_root;
+    if settings.security.execution_root != current_execution_root
+        && let Some(root) = settings.security.execution_root.as_deref()
+    {
+        state
+            .runtime
+            .tools
+            .validate_execution_workspace(root)
+            .map_err(|error| log_err("update_settings execution workspace", error))?;
+    }
     let Some(update) = apply_settings_edit(&state.runtime.config_service, &settings)
         .map_err(|error| log_err("update_settings", error))?
     else {

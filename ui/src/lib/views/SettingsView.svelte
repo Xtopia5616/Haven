@@ -252,6 +252,7 @@
 		permission_mode: 'default',
 		sandbox_mode: 'workspace_write',
 		network_policy: 'ask',
+		execution_root: null,
 		writable_roots: [],
 		permissions: [],
 	});
@@ -453,6 +454,7 @@
 				permission_mode: security.permission_mode,
 				sandbox_mode: security.sandbox_mode,
 				network_policy: security.network_policy,
+				execution_root: security.execution_root,
 				writable_roots: security.writable_roots,
 				permissions: security.permissions,
 			},
@@ -884,6 +886,7 @@
 				permission_mode: settings.security?.permission_mode || 'default',
 				sandbox_mode: settings.security?.sandbox_mode || 'workspace_write',
 				network_policy: settings.security?.network_policy || 'ask',
+				execution_root: settings.security?.execution_root ?? null,
 				writable_roots: Array.isArray(settings.security?.writable_roots)
 					? settings.security.writable_roots
 					: [],
@@ -1136,6 +1139,7 @@
 							permission_mode: security.permission_mode,
 							sandbox_mode: security.sandbox_mode,
 							network_policy: security.network_policy,
+							execution_root: security.execution_root,
 							writable_roots: security.writable_roots,
 							permissions: security.permissions,
 						},

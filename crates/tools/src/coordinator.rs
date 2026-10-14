@@ -81,7 +81,9 @@ impl ToolRuntimeCoordinator {
             .live_outputs
             .set_emit_interval(&context_limits)
             .await;
-        self.core.authorization.apply_security(&security).await;
+        if let Err(error) = self.core.authorization.apply_security(&security).await {
+            tracing::error!(%error, "configured execution workspace unavailable at startup; relative file access is disabled");
+        }
         self.builtins
             .mcp_server_config_source
             .bind_config_service(admin_context.config_service.clone())?;
@@ -126,8 +128,8 @@ impl ToolRuntimeCoordinator {
         Ok(())
     }
 
-    pub(crate) async fn apply_security(&self, security: &SecurityConfig) {
-        self.core.authorization.apply_security(security).await;
+    pub(crate) async fn apply_security(&self, security: &SecurityConfig) -> Result<(), String> {
+        let authorization_result = self.core.authorization.apply_security(security).await;
         self.builtins
             .mcp_manager
             .set_network_policy(security.network_policy)
@@ -144,6 +146,7 @@ impl ToolRuntimeCoordinator {
             network_policy = ?applied.security.network_policy,
             "applied security configuration to the platform snapshot"
         );
+        authorization_result
     }
 
     #[cfg(test)]

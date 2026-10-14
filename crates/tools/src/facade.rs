@@ -804,8 +804,8 @@ impl ToolsFacade {
     /// the same snapshot. The authorization engine protects tool execution;
     /// the MCP manager additionally protects startup, refresh, reconnect, and
     /// health-monitor connection paths.
-    pub async fn apply_security(&self, security: &SecurityConfig) {
-        self.coordinator.apply_security(security).await;
+    pub async fn apply_security(&self, security: &SecurityConfig) -> Result<(), String> {
+        self.coordinator.apply_security(security).await
     }
 
     /// Wire the app-level context for the five native admin operations. Called by the
@@ -963,6 +963,14 @@ impl ToolsFacade {
             .authorization
             .execution_workspace_snapshot()
             .await
+    }
+
+    /// Validate a configured execution root without changing the active
+    /// workspace. Settings commands use this before committing the config.
+    pub fn validate_execution_workspace(&self, root: &Path) -> Result<(), String> {
+        crate::execution_workspace::ExecutionWorkspace::open_root(root, 1)
+            .map(|_| ())
+            .map_err(|_| "workspace root is not an available local directory".to_string())
     }
 
     /// Replace the active backend execution workspace after validating and

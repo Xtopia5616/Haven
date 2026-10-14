@@ -11,12 +11,26 @@ function createSecurity(): SecurityConfigInput & {
 		permission_mode: 'default',
 		sandbox_mode: 'workspace_write',
 		network_policy: 'restricted',
+		execution_root: null,
 		writable_roots: [],
 		permissions: [{ key: 'files.delete', effect: 'deny' }],
 	};
 }
 
 describe('SettingsSecurity', () => {
+	it('edits the execution workspace independently from writable roots', async () => {
+		const security = createSecurity();
+		render(SettingsSecurity, { security });
+
+		await fireEvent.input(screen.getByLabelText('执行工作区目录'), {
+			target: { value: 'C:\\Projects\\demo' },
+		});
+
+		expect(security.execution_root).toBe('C:\\Projects\\demo');
+		expect(security.writable_roots).toEqual([]);
+		expect(screen.getByText(/不会限制 Shell、技能或 MCP 子进程/)).toBeTruthy();
+	});
+
 	it('uses a readable rule description and confirms clearing all rules in-app', async () => {
 		const onResetPermissions = vi.fn(async () => true);
 		render(SettingsSecurity, {
