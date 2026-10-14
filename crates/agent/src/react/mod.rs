@@ -415,8 +415,9 @@ pub(super) struct StepCtx {
 /// Result of one step's LLM call (including the compaction retry). The loop
 /// dispatches on this instead of inlining ~130 lines of error handling.
 pub(super) enum StepCallOutcome {
-    /// A usable response (possibly from the post-compaction retry).
-    Response(Box<LlmResponse>),
+    /// A usable response and the exact request snapshot that produced it,
+    /// possibly from the post-compaction retry.
+    Response(Box<stream_step::StreamedLlmCall>),
     /// Cancelled mid-call (end_session / rollback): exit silently.
     Cancelled,
     /// Persisted/emitted error already; the loop must propagate it.

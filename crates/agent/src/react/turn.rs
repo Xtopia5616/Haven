@@ -322,16 +322,16 @@ impl ReActEngine {
             &partial_reasoning,
         );
         deadline.ensure_remaining("provider request")?;
-        let response = {
+        let streamed_call = {
             let _timer =
                 self.metrics
                     .start(MetricsPhase::LlmStream, session_id, ctx.run_id, step_number);
             match stream
-                .run(state, &request_context, retry_nudge.as_ref())
+                .run(state, &projection.request_context, retry_nudge.as_ref())
                 .instrument(tracing::info_span!("llm", session_id, step_number))
                 .await
             {
-                StepCallOutcome::Response(response) => *response,
+                StepCallOutcome::Response(streamed_call) => *streamed_call,
                 StepCallOutcome::Cancelled => {
                     if deadline.is_expired() {
                         return Err(anyhow::anyhow!(
@@ -349,6 +349,11 @@ impl ReActEngine {
                 }
             }
         };
+        let super::stream_step::StreamedLlmCall {
+            response,
+            request_context: provider_request_context,
+            ..
+        } = streamed_call;
         deadline.ensure_remaining("provider response")?;
 
         // Cancellation wins over a late provider response. This prevents a
@@ -384,7 +389,7 @@ impl ReActEngine {
                 &ctx,
                 state,
                 &mut stream,
-                &projection.request_context,
+                &provider_request_context,
                 response,
                 thought,
                 tool_calls,
@@ -415,6 +420,8 @@ impl ReActEngine {
         // next canonical append can then mutate the run vector in place
         // instead of triggering an avoidable COW copy of the full history.
         drop(request_context);
+        drop(projection.request_context);
+        drop(provider_request_context);
 
         if let Some(reasoning) = response.reasoning.clone() {
             let reasoning_id = state.stream_block_message_id_or_new(

@@ -17,6 +17,10 @@ use haven_llm::{
 pub(super) struct StreamedLlmCall {
     pub(super) response: LlmResponse,
     pub(super) duration_ms: u64,
+    /// Exact immutable provider-visible context used for this response. A
+    /// context-length retry may rebuild it after compaction, so callers must
+    /// carry this snapshot into response-policy retries.
+    pub(super) request_context: RequestContext,
 }
 
 struct CheckpointRequest {
@@ -1073,6 +1077,7 @@ impl ReActEngine {
                 Ok(StreamedLlmCall {
                     response: resp,
                     duration_ms,
+                    request_context: request_context.clone(),
                 })
             }
             Err(e) => Err(e),
@@ -1144,7 +1149,7 @@ impl ReActEngine {
                     cancel.clone(),
                 )
                 .await;
-                StepCallOutcome::Response(Box::new(streamed_call.response))
+                StepCallOutcome::Response(Box::new(streamed_call))
             }
             Err(haven_llm::LlmError::ContextLengthExceeded) => {
                 tracing::warn!(
@@ -1268,7 +1273,7 @@ impl ReActEngine {
                                     cancel.clone(),
                                 )
                                 .await;
-                                StepCallOutcome::Response(Box::new(retry_call.response))
+                                StepCallOutcome::Response(Box::new(retry_call))
                             }
                             Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,
                             Err(e2) => {
@@ -1498,6 +1503,30 @@ mod tests {
         async fn emit(&self, _event: AgentEvent) {}
     }
 
+    struct ResponsePolicyHooks;
+
+    #[async_trait]
+    impl super::super::hooks::LoopHooks for ResponsePolicyHooks {
+        async fn before_step(
+            &self,
+            _engine: &ReActEngine,
+            _ctx: &StepCtx,
+            _state: &mut ReActState,
+            _cancel: CancellationToken,
+        ) -> anyhow::Result<super::super::hooks::BeforeStepOutput> {
+            Ok(super::super::hooks::BeforeStepOutput::default())
+        }
+
+        async fn after_llm(
+            &self,
+            _engine: &ReActEngine,
+            _ctx: &StepCtx,
+            input: super::super::response_policy::ResponsePolicyInput<'_>,
+        ) -> super::super::response_policy::ResponsePolicyDecision {
+            super::super::response_policy::ResponsePolicy::classify(&input)
+        }
+    }
+
     enum ProbeResponse {
         Error(LlmError),
         Chunk(Box<StreamChunk>),
@@ -1506,6 +1535,7 @@ mod tests {
     struct ProbeClient {
         stream_responses: Mutex<VecDeque<ProbeResponse>>,
         stream_calls: AtomicUsize,
+        stream_requests: Mutex<Vec<Vec<CanonicalMessage>>>,
     }
 
     impl ProbeClient {
@@ -1513,7 +1543,12 @@ mod tests {
             Self {
                 stream_responses: Mutex::new(responses.into()),
                 stream_calls: AtomicUsize::new(0),
+                stream_requests: Mutex::new(Vec::new()),
             }
+        }
+
+        fn stream_requests(&self) -> Vec<Vec<CanonicalMessage>> {
+            self.stream_requests.lock().unwrap().clone()
         }
     }
 
@@ -1548,13 +1583,14 @@ mod tests {
 
         async fn chat_stream_with_tools(
             &self,
-            _messages: Vec<CanonicalMessage>,
+            messages: Vec<CanonicalMessage>,
             _tools: Vec<LlmToolDefinition>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
         > {
             self.stream_calls.fetch_add(1, Ordering::Relaxed);
+            self.stream_requests.lock().unwrap().push(messages);
             match self.stream_responses.lock().unwrap().pop_front() {
                 Some(ProbeResponse::Error(error)) => Err(error),
                 Some(ProbeResponse::Chunk(chunk)) => Ok(Box::pin(stream::iter(vec![Ok(*chunk)]))),
@@ -1564,7 +1600,7 @@ mod tests {
 
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
-            _messages: Arc<[CanonicalMessage]>,
+            messages: Arc<[CanonicalMessage]>,
             _tools: Arc<[LlmToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
@@ -1572,6 +1608,10 @@ mod tests {
             LlmError,
         > {
             self.stream_calls.fetch_add(1, Ordering::Relaxed);
+            self.stream_requests
+                .lock()
+                .unwrap()
+                .push(messages.as_ref().to_vec());
             match self.stream_responses.lock().unwrap().pop_front() {
                 Some(ProbeResponse::Error(error)) => Err(error),
                 Some(ProbeResponse::Chunk(chunk)) => Ok(Box::pin(stream::iter(vec![Ok(*chunk)]))),
@@ -1624,6 +1664,139 @@ mod tests {
             usage: Some(Usage::default()),
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn structural_retry_after_compaction_uses_the_compacted_turn_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&directory.path().join("response-cycle.db")).unwrap());
+        let executor = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsFacade::new()),
+            1,
+        ));
+        let session = db.create_session("compaction response cycle").unwrap();
+        let chat_client = Arc::new(ProbeClient::new(vec![
+            ProbeResponse::Chunk(Box::new(StreamChunk {
+                tool_calls: vec![haven_common::types::CanonicalToolCall {
+                    tool_call_id: "provider-call-1".into(),
+                    name: "files".into(),
+                    arguments: serde_json::Value::Null,
+                }],
+                finish_reason: Some(FinishReason::ToolCalls),
+                ..Default::default()
+            })),
+            ProbeResponse::Chunk(Box::new(chunk("Done.", FinishReason::Stop))),
+        ]));
+        let vision_client = Arc::new(ProbeClient::new(vec![ProbeResponse::Error(
+            LlmError::ContextLengthExceeded,
+        )]));
+        let unused_client = Arc::new(ProbeClient::new(Vec::new()));
+        let router = Arc::new(LlmRouter::new_with_test_clients(
+            unused_client.clone(),
+            chat_client.clone(),
+            vision_client.clone(),
+            unused_client,
+        ));
+        router
+            .set_request_configured_for_test(RequestKind::Vision, true)
+            .await;
+        let engine = ReActEngine::new(
+            router,
+            crate::react::test_tool_catalog_port(&executor),
+            executor,
+            haven_memory::MemoryOutboxStore::new(db),
+            8,
+            ContextLimitsConfig::default(),
+        )
+        .with_hooks(Arc::new(ResponsePolicyHooks));
+
+        let old_context = format!("pre-compaction-only-marker {}", "context ".repeat(110_000));
+        let mut image_message = image_message();
+        image_message.role = CanonicalRole::User;
+        image_message.content.push(ContentPart::text(old_context));
+        let mut state = ReActState::new(
+            Vec::new(),
+            vec![
+                text_message(CanonicalRole::System, "system"),
+                text_message(CanonicalRole::User, "anchor"),
+                text_message(CanonicalRole::Assistant, "sticky assistant"),
+                image_message,
+                text_message(CanonicalRole::User, "recent request"),
+            ],
+            HashMap::new(),
+        );
+        let ctx = StepCtx {
+            session_id: session.session_id,
+            step_number: 2,
+            run_id: 1,
+            emitter: Arc::new(NoopEmitter),
+        };
+        let mut incomplete_tool_args_retries = 0;
+        let mut tool_retry_budget = super::super::tool_batch_policy::ToolRetryBudget::default();
+
+        let _effects = engine
+            .turn_engine()
+            .run(super::super::turn::TurnInput {
+                ctx,
+                state: &mut state,
+                cancel: CancellationToken::new(),
+                deadline: super::super::r#loop::TurnDeadline::from_now(60),
+                allow_tool_retry: false,
+                tool_retry_budget: &mut tool_retry_budget,
+                incomplete_tool_args_retries: &mut incomplete_tool_args_retries,
+            })
+            .await
+            .unwrap();
+
+        let request_text = |messages: &[CanonicalMessage]| {
+            messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|part| match part {
+                    ContentPart::Text(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>()
+        };
+        let vision_requests = vision_client.stream_requests();
+        assert_eq!(
+            vision_requests.len(),
+            1,
+            "the original image request uses vision"
+        );
+        assert!(request_text(&vision_requests[0]).contains("pre-compaction-only-marker"));
+
+        let requests = chat_client.stream_requests();
+        assert_eq!(
+            requests.len(),
+            2,
+            "the compacted call and its structural retry both use chat"
+        );
+        assert!(
+            state.events.iter().any(|event| matches!(
+                event,
+                crate::types::TranscriptRecord::CompactSummary { .. }
+            ))
+        );
+        assert_eq!(
+            requests[1].len(),
+            requests[0].len() + 1,
+            "the structural retry appends only its provider-only instruction"
+        );
+        assert_eq!(
+            serde_json::to_value(&requests[1][..requests[0].len()]).unwrap(),
+            serde_json::to_value(requests[0].as_slice()).unwrap(),
+            "the structural retry must preserve the exact compacted request prefix"
+        );
+        assert!(
+            !request_text(&requests[0]).contains("pre-compaction-only-marker"),
+            "the compaction retry must omit the pre-compaction context"
+        );
+        assert!(
+            !request_text(&requests[1]).contains("pre-compaction-only-marker"),
+            "the structural retry must not resurrect the pre-compaction request"
+        );
     }
 
     #[tokio::test]
