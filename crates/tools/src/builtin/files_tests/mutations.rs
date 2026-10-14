@@ -1,4 +1,6 @@
 use super::*;
+use crate::security::FileWritePolicy;
+use crate::{Tool, ToolExecutionContext};
 
 #[tokio::test]
     async fn test_file_execute_write() {
@@ -87,6 +89,56 @@ use super::*;
         assert!(!parent.exists());
         assert!(!file.exists());
     }
+
+#[tokio::test]
+async fn proof_derived_directory_policy_confines_file_writes() {
+    let tmp = TempDir::new().unwrap();
+    let allowed = tmp.path().join("allowed");
+    let outside = tmp.path().join("outside");
+    tokio::fs::create_dir(&allowed).await.unwrap();
+    tokio::fs::create_dir(&outside).await.unwrap();
+    let policy = FileWritePolicy::for_test_roots(std::slice::from_ref(&allowed));
+    let context = ToolExecutionContext {
+        file_write_policy: Some(policy),
+    };
+    let tool = FilesTool::default();
+
+    let allowed_file = allowed.join("created.txt");
+    let allowed_result = tool
+        .execute_with_authorization_context(
+            json!({
+                "operation": "write",
+                "path": allowed_file.to_string_lossy(),
+                "content": "inside capability"
+            }),
+            CancellationToken::new(),
+            None,
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(allowed_result.success);
+    assert_eq!(
+        tokio::fs::read_to_string(&allowed_file).await.unwrap(),
+        "inside capability"
+    );
+
+    let denied_file = outside.join("denied.txt");
+    let denied_result = tool
+        .execute_with_authorization_context(
+            json!({
+                "operation": "write",
+                "path": denied_file.to_string_lossy(),
+                "content": "outside capability"
+            }),
+            CancellationToken::new(),
+            None,
+            &context,
+        )
+        .await;
+    assert!(denied_result.is_err());
+    assert!(!denied_file.exists());
+}
 
     #[tokio::test]
     async fn test_file_execute_edit() {

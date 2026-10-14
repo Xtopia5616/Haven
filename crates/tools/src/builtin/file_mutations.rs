@@ -1,8 +1,13 @@
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
-use super::file_paths::{atomic_replace, looks_like_binary};
-use super::{FilesPatchEdit, MAX_PATCH_EDITS, MAX_PATCH_INPUT_BYTES};
+use super::file_paths::{atomic_replace, looks_like_binary, sha256_bytes};
+use super::{FilesPatchEdit, MAX_INSPECT_HASH_BYTES, MAX_PATCH_EDITS, MAX_PATCH_INPUT_BYTES};
 use crate::ToolResult;
+use crate::security::FileWritePolicy;
+use haven_platform::filesystem::DirectoryCapability;
 
 async fn run_file_mutation<T>(
     cancel: &CancellationToken,
@@ -42,6 +47,173 @@ pub(super) struct MutationLimits {
     pub(super) max_write_bytes: u64,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct MutationContext<'a> {
+    pub(super) cancel: &'a CancellationToken,
+    pub(super) write_policy: Option<&'a FileWritePolicy>,
+}
+
+#[derive(Clone)]
+struct MutationTarget {
+    directory: DirectoryCapability,
+    relative_path: PathBuf,
+}
+
+async fn blocking_io<T>(
+    operation: impl FnOnce() -> io::Result<T> + Send + 'static,
+) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| anyhow::anyhow!("filesystem operation failed: {error}"))?
+        .map_err(Into::into)
+}
+
+async fn mutation_target(
+    path: &str,
+    policy: Option<&FileWritePolicy>,
+) -> anyhow::Result<Option<MutationTarget>> {
+    let Some(policy) = policy else {
+        return Ok(None);
+    };
+    let policy = policy.clone();
+    let path = PathBuf::from(path);
+    let (directory, relative_path) = blocking_io(move || policy.resolve(&path)).await?;
+    Ok(Some(MutationTarget {
+        directory,
+        relative_path,
+    }))
+}
+
+async fn read_target_bytes(
+    path: &str,
+    target: Option<&MutationTarget>,
+    max_bytes: u64,
+) -> anyhow::Result<Vec<u8>> {
+    if let Some(target) = target {
+        let target = target.clone();
+        return blocking_io(move || {
+            let mut file = target.directory.open_read(&target.relative_path)?;
+            if file.metadata()?.len() > max_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("file exceeds the {max_bytes} byte read limit"),
+                ));
+            }
+            let mut bytes = Vec::new();
+            file.by_ref()
+                .take(max_bytes.saturating_add(1))
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > max_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("file exceeds the {max_bytes} byte read limit"),
+                ));
+            }
+            Ok(bytes)
+        })
+        .await;
+    }
+
+    let file = tokio::fs::File::open(path).await?;
+    if file.metadata().await?.len() > max_bytes {
+        anyhow::bail!("file exceeds the {max_bytes} byte read limit");
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() as u64 > max_bytes {
+        anyhow::bail!("file exceeds the {max_bytes} byte read limit");
+    }
+    Ok(bytes)
+}
+
+fn expected_hash_matches(expected: &str, actual: &str) -> bool {
+    let expected = expected
+        .trim()
+        .strip_prefix("sha256:")
+        .unwrap_or(expected.trim());
+    let actual = actual.strip_prefix("sha256:").unwrap_or(actual);
+    expected.eq_ignore_ascii_case(actual)
+}
+
+fn is_not_found(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<io::Error>()
+        .is_some_and(|error| error.kind() == io::ErrorKind::NotFound)
+}
+
+async fn replace_target(
+    path: &str,
+    target: Option<&MutationTarget>,
+    bytes: &[u8],
+    expected_hash: Option<&str>,
+    max_write_bytes: u64,
+    dry_run: bool,
+) -> anyhow::Result<super::file_paths::AtomicWriteResult> {
+    let size = u64::try_from(bytes.len()).map_err(|_| anyhow::anyhow!("file is too large"))?;
+    if size > max_write_bytes {
+        anyhow::bail!(
+            "write is {} bytes, above the {} byte write limit",
+            size,
+            max_write_bytes
+        );
+    }
+    let current_hash = if expected_hash.is_some() {
+        match read_target_bytes(path, target, MAX_INSPECT_HASH_BYTES).await {
+            Ok(current) => Some(sha256_bytes(&current)),
+            Err(error) if is_not_found(&error) => None,
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
+    if let Some(expected) = expected_hash {
+        let matches = match current_hash.as_deref() {
+            Some(actual) => expected_hash_matches(expected, actual),
+            None => expected.trim().eq_ignore_ascii_case("missing"),
+        };
+        if !matches {
+            anyhow::bail!("write compare failed: expected_hash does not match the current file");
+        }
+    }
+    let hash = sha256_bytes(bytes);
+    if dry_run {
+        return Ok(super::file_paths::AtomicWriteResult {
+            bytes: size,
+            sha256: hash,
+            dry_run: true,
+        });
+    }
+    if let Some(target) = target {
+        let target = target.clone();
+        let bytes = bytes.to_vec();
+        blocking_io(move || {
+            target
+                .directory
+                .atomic_replace(&target.relative_path, &bytes)
+        })
+        .await?;
+        Ok(super::file_paths::AtomicWriteResult {
+            bytes: size,
+            sha256: hash,
+            dry_run: false,
+        })
+    } else {
+        atomic_replace(
+            Path::new(path),
+            bytes,
+            expected_hash,
+            max_write_bytes,
+            false,
+        )
+        .await
+    }
+}
+
 pub(super) async fn write(
     path: &str,
     content: &str,
@@ -49,12 +221,15 @@ pub(super) async fn write(
     max_write_bytes: u64,
     dry_run: bool,
     cancel: CancellationToken,
+    policy: Option<&FileWritePolicy>,
 ) -> anyhow::Result<ToolResult> {
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
-    let write = atomic_replace(
-        std::path::Path::new(path),
+    let target = mutation_target(path, policy).await?;
+    let write = replace_target(
+        path,
+        target.as_ref(),
         content.as_bytes(),
         expected_hash,
         max_write_bytes,
@@ -72,10 +247,14 @@ pub(super) async fn write(
 
 pub(super) async fn create_dir(
     path: &str,
-    cancel: CancellationToken,
+    context: MutationContext<'_>,
 ) -> anyhow::Result<ToolResult> {
-    run_file_mutation(&cancel, async {
-        tokio::fs::create_dir_all(path).await?;
+    run_file_mutation(context.cancel, async {
+        if let Some(target) = mutation_target(path, context.write_policy).await? {
+            blocking_io(move || target.directory.create_dir_all(&target.relative_path)).await?;
+        } else {
+            tokio::fs::create_dir_all(path).await?;
+        }
         Ok(ToolResult::ok(
             serde_json::json!({"created": true, "path": path}),
         ))
@@ -90,18 +269,26 @@ pub(super) async fn edit(
     expected_hash: Option<&str>,
     limits: MutationLimits,
     dry_run: bool,
-    cancel: CancellationToken,
+    context: MutationContext<'_>,
 ) -> anyhow::Result<ToolResult> {
     let old = old.ok_or_else(|| anyhow::anyhow!("'old_string' is required for edit operation"))?;
-    let meta = tokio::fs::metadata(path).await?;
-    if meta.len() > limits.max_read_bytes {
-        anyhow::bail!(
-            "file is {} bytes, above the {} byte edit limit. Locate the text with search(mode=content) and rewrite the file in smaller pieces.",
-            meta.len(),
-            limits.max_read_bytes
-        );
-    }
-    let bytes = tokio::fs::read(path).await?;
+    let target = mutation_target(path, context.write_policy).await?;
+    let bytes = read_target_bytes(path, target.as_ref(), limits.max_read_bytes)
+        .await
+        .map_err(|error| {
+            if error
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::InvalidData)
+                || error.to_string().contains("byte read limit")
+            {
+                anyhow::anyhow!(
+                    "file is above the {} byte edit limit. Locate the text with search(mode=content) and rewrite the file in smaller pieces.",
+                    limits.max_read_bytes
+                )
+            } else {
+                error
+            }
+        })?;
     let content = haven_common::encoding::decode_lossy(&bytes);
     let positions: Vec<usize> = content.match_indices(old).map(|(i, _)| i).collect();
     if positions.is_empty() {
@@ -147,11 +334,12 @@ pub(super) async fn edit(
         });
     }
     let result = content.replace(old, new);
-    if cancel.is_cancelled() {
+    if context.cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
-    let write = atomic_replace(
-        std::path::Path::new(path),
+    let write = replace_target(
+        path,
+        target.as_ref(),
         result.as_bytes(),
         expected_hash,
         limits.max_write_bytes,
@@ -176,32 +364,46 @@ pub(super) async fn patch(
     max_read_bytes: u64,
     max_write_bytes: u64,
     dry_run: bool,
-    cancel: CancellationToken,
+    context: MutationContext<'_>,
 ) -> anyhow::Result<ToolResult> {
     let edits = edits.ok_or_else(|| anyhow::anyhow!("'edits' is required for patch operation"))?;
-    let meta = tokio::fs::metadata(path).await?;
-    if meta.len() > max_read_bytes {
-        anyhow::bail!(
-            "file is {} bytes, above the {} byte patch limit. Locate the text with search(mode=content) and rewrite the file in smaller pieces.",
-            meta.len(),
-            max_read_bytes
-        );
-    }
-    let bytes = tokio::fs::read(path).await?;
-    if cancel.is_cancelled() {
+    let target = mutation_target(path, context.write_policy).await?;
+    let bytes = read_target_bytes(path, target.as_ref(), max_read_bytes)
+        .await
+        .map_err(|error| {
+            if error
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::InvalidData)
+                || error.to_string().contains("byte read limit")
+            {
+                anyhow::anyhow!(
+                    "file is above the {} byte patch limit. Locate the text with search(mode=content) and rewrite the file in smaller pieces.",
+                    max_read_bytes
+                )
+            } else {
+                error
+            }
+        })?;
+    if context.cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
     let decoded = haven_common::encoding::decode_with_encoding(&bytes);
     if looks_like_binary(&bytes) && !matches!(decoded.encoding, "utf-16le" | "utf-16be") {
         anyhow::bail!("file encoding is unsupported for patching; patch only supports text files");
     }
-    let patch = apply_patch_edits(&decoded.text, edits, max_write_bytes, cancel.clone())?;
-    if cancel.is_cancelled() {
+    let patch = apply_patch_edits(
+        &decoded.text,
+        edits,
+        max_write_bytes,
+        context.cancel.clone(),
+    )?;
+    if context.cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
     let encoded = encode_patched_text(&patch.content, decoded.encoding)?;
-    let write = atomic_replace(
-        std::path::Path::new(path),
+    let write = replace_target(
+        path,
+        target.as_ref(),
         &encoded,
         expected_hash,
         max_write_bytes,
@@ -230,10 +432,27 @@ pub(super) async fn patch(
 pub(super) async fn copy(
     path: &str,
     destination: &str,
-    cancel: CancellationToken,
+    context: MutationContext<'_>,
 ) -> anyhow::Result<ToolResult> {
-    run_file_mutation(&cancel, async {
-        tokio::fs::copy(path, destination).await?;
+    run_file_mutation(context.cancel, async {
+        let source_target = mutation_target(path, context.write_policy).await?;
+        let destination_target = mutation_target(destination, context.write_policy).await?;
+        match (source_target, destination_target) {
+            (Some(source), Some(destination)) => {
+                blocking_io(move || {
+                    source.directory.copy_file_to(
+                        &source.relative_path,
+                        &destination.directory,
+                        &destination.relative_path,
+                    )
+                })
+                .await?;
+            }
+            (None, None) => {
+                tokio::fs::copy(path, destination).await?;
+            }
+            _ => anyhow::bail!("file copy requires authorized source and destination roots"),
+        }
         Ok(ToolResult::ok(
             serde_json::json!({"copied": true, "from": path, "to": destination}),
         ))
@@ -244,16 +463,51 @@ pub(super) async fn copy(
 pub(super) async fn move_file(
     path: &str,
     destination: &str,
-    cancel: CancellationToken,
+    context: MutationContext<'_>,
 ) -> anyhow::Result<ToolResult> {
-    run_file_mutation(&cancel, async {
-        match tokio::fs::rename(path, destination).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
-                tokio::fs::copy(path, destination).await?;
-                tokio::fs::remove_file(path).await?;
+    run_file_mutation(context.cancel, async {
+        let source_target = mutation_target(path, context.write_policy).await?;
+        let destination_target = mutation_target(destination, context.write_policy).await?;
+        match (source_target, destination_target) {
+            (Some(source), Some(destination)) => {
+                let source_for_rename = source.clone();
+                let destination_for_rename = destination.clone();
+                match blocking_io(move || {
+                    source_for_rename.directory.rename_to(
+                        &source_for_rename.relative_path,
+                        &destination_for_rename.directory,
+                        &destination_for_rename.relative_path,
+                    )
+                })
+                .await
+                {
+                    Ok(()) => {}
+                    Err(error) if is_cross_device(&error) => {
+                        let source_for_copy = source.clone();
+                        let destination_for_copy = destination.clone();
+                        blocking_io(move || {
+                            source_for_copy.directory.copy_file_to(
+                                &source_for_copy.relative_path,
+                                &destination_for_copy.directory,
+                                &destination_for_copy.relative_path,
+                            )
+                        })
+                        .await?;
+                        blocking_io(move || source.directory.remove_file(&source.relative_path))
+                            .await?;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
-            Err(e) => return Err(e.into()),
+            (None, None) => match tokio::fs::rename(path, destination).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
+                    tokio::fs::copy(path, destination).await?;
+                    tokio::fs::remove_file(path).await?;
+                }
+                Err(error) => return Err(error.into()),
+            },
+            _ => anyhow::bail!("file move requires authorized source and destination roots"),
         }
         Ok(ToolResult::ok(
             serde_json::json!({"moved": true, "from": path, "to": destination}),
@@ -262,26 +516,41 @@ pub(super) async fn move_file(
     .await
 }
 
-pub(super) async fn delete(path: &str, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-    if cancel.is_cancelled() {
+pub(super) async fn delete(path: &str, context: MutationContext<'_>) -> anyhow::Result<ToolResult> {
+    if context.cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
-    let path_ref = std::path::Path::new(path);
-    let metadata = tokio::fs::symlink_metadata(path_ref).await?;
-    let file_type = metadata.file_type();
-    let (kind, result) = if file_type.is_dir() {
-        // Deliberately remove only empty directories. Recursive deletion is a
-        // separate, more destructive operation and is not implied by delete.
-        ("directory", tokio::fs::remove_dir(path_ref).await)
+    let kind = if let Some(target) = mutation_target(path, context.write_policy).await? {
+        blocking_io(move || {
+            target
+                .directory
+                .remove_file_or_empty_dir(&target.relative_path)
+        })
+        .await?
     } else {
-        ("file", tokio::fs::remove_file(path_ref).await)
+        let path_ref = Path::new(path);
+        let metadata = tokio::fs::symlink_metadata(path_ref).await?;
+        if metadata.file_type().is_dir() {
+            // Deliberately remove only empty directories. Recursive deletion is a
+            // separate, more destructive operation and is not implied by delete.
+            tokio::fs::remove_dir(path_ref).await?;
+            "directory"
+        } else {
+            tokio::fs::remove_file(path_ref).await?;
+            "file"
+        }
     };
-    result?;
     Ok(ToolResult::ok(serde_json::json!({
         "deleted": true,
         "path": path,
         "file_type": kind
     })))
+}
+
+fn is_cross_device(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<io::Error>()
+        .is_some_and(|error| error.kind() == io::ErrorKind::CrossesDevices)
 }
 
 pub(super) async fn list(
@@ -471,7 +740,7 @@ pub(super) fn encode_patched_text(text: &str, encoding: &str) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{copy, create_dir, move_file, run_file_mutation};
+    use super::{MutationContext, copy, create_dir, move_file, run_file_mutation};
     use tokio::sync::oneshot;
     use tokio_util::sync::CancellationToken;
 
@@ -488,23 +757,39 @@ mod tests {
         cancel.cancel();
 
         assert!(
-            create_dir(new_dir.to_str().unwrap(), cancel.clone())
-                .await
-                .is_err()
-        );
-        assert!(
-            copy(
-                source.to_str().unwrap(),
-                copied.to_str().unwrap(),
-                cancel.clone(),
+            create_dir(
+                new_dir.to_str().unwrap(),
+                MutationContext {
+                    cancel: &cancel,
+                    write_policy: None,
+                },
             )
             .await
             .is_err()
         );
         assert!(
-            move_file(source.to_str().unwrap(), moved.to_str().unwrap(), cancel,)
-                .await
-                .is_err()
+            copy(
+                source.to_str().unwrap(),
+                copied.to_str().unwrap(),
+                MutationContext {
+                    cancel: &cancel,
+                    write_policy: None,
+                },
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            move_file(
+                source.to_str().unwrap(),
+                moved.to_str().unwrap(),
+                MutationContext {
+                    cancel: &cancel,
+                    write_policy: None,
+                }
+            )
+            .await
+            .is_err()
         );
 
         assert!(!new_dir.exists());

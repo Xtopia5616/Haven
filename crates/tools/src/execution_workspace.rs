@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 /// This is separate from any renderer navigation state. It is discovered
 /// once, canonicalized, and then shared by file path resolution and sandbox
 /// authorization for the lifetime of the Tools facade.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct ExecutionWorkspace {
     root: Option<PathBuf>,
+    directory: Option<haven_platform::filesystem::DirectoryCapability>,
     generation: u64,
 }
 
@@ -20,10 +21,16 @@ pub struct ExecutionWorkspaceSnapshot {
 
 impl ExecutionWorkspace {
     pub(crate) fn discover() -> Self {
-        let root = std::env::current_dir()
+        let discovered_root = std::env::current_dir()
             .ok()
             .and_then(|current| haven_common::discover_workspace_root(&current))
             .and_then(|root| canonical_workspace_root(&root).ok());
+        let directory = discovered_root
+            .as_deref()
+            .and_then(|root| haven_platform::filesystem::DirectoryCapability::open(root).ok());
+        let root = directory
+            .as_ref()
+            .map(|directory| directory.root().to_path_buf());
 
         if root.is_none() {
             tracing::warn!(
@@ -33,6 +40,7 @@ impl ExecutionWorkspace {
 
         Self {
             root,
+            directory,
             generation: 1,
         }
     }
@@ -40,8 +48,10 @@ impl ExecutionWorkspace {
     #[cfg(test)]
     pub(crate) fn from_root(root: &Path) -> anyhow::Result<Self> {
         let root = canonical_workspace_root(root)?;
+        let directory = haven_platform::filesystem::DirectoryCapability::open(&root)?;
         Ok(Self {
-            root: Some(root),
+            root: Some(directory.root().to_path_buf()),
+            directory: Some(directory),
             generation: 1,
         })
     }
@@ -50,12 +60,17 @@ impl ExecutionWorkspace {
     pub(crate) fn unavailable() -> Self {
         Self {
             root: None,
+            directory: None,
             generation: 1,
         }
     }
 
     pub(crate) fn root(&self) -> Option<&Path> {
         self.root.as_deref()
+    }
+
+    pub(crate) fn directory(&self) -> Option<haven_platform::filesystem::DirectoryCapability> {
+        self.directory.clone()
     }
 
     pub(crate) fn resolve_relative(&self, path: &Path) -> Option<PathBuf> {

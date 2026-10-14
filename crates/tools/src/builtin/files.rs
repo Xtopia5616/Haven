@@ -273,12 +273,41 @@ impl FilesTool {
 
     /// Dispatch all file capabilities after common path, managed-asset, and
     /// result-boundary handling.
-    pub async fn run(
+    #[cfg(test)]
+    async fn run(
         &self,
         params: FilesParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        let policy = crate::security::FileWritePolicy::ambient_for_test();
+        self.run_with_file_write_policy(params, cancel, Some(&policy))
+            .await
+    }
+
+    pub(super) async fn run_with_file_write_policy(
+        &self,
+        params: FilesParams,
+        cancel: CancellationToken,
+        write_policy: Option<&crate::security::FileWritePolicy>,
+    ) -> anyhow::Result<ToolResult> {
         let op = params.operation.unwrap_or(FilesOperation::Read);
+        let mutates_files = matches!(
+            op,
+            FilesOperation::Write
+                | FilesOperation::CreateDir
+                | FilesOperation::Edit
+                | FilesOperation::Patch
+                | FilesOperation::Copy
+                | FilesOperation::Move
+                | FilesOperation::Delete
+        );
+        if mutates_files && write_policy.is_none() {
+            anyhow::bail!("file mutation requires proof-derived directory authority");
+        }
+        let mutation_context = file_mutations::MutationContext {
+            cancel: &cancel,
+            write_policy,
+        };
         let execution_workspace = self.authorization.execution_workspace().await;
         let search_root = params
             .root
@@ -495,10 +524,11 @@ impl FilesTool {
                     self.max_write_bytes,
                     params.dry_run.unwrap_or(false),
                     cancel.clone(),
+                    write_policy,
                 )
                 .await
             }
-            FilesOperation::CreateDir => file_mutations::create_dir(&path, cancel.clone()).await,
+            FilesOperation::CreateDir => file_mutations::create_dir(&path, mutation_context).await,
             FilesOperation::Edit => {
                 file_mutations::edit(
                     &path,
@@ -510,7 +540,7 @@ impl FilesTool {
                         max_write_bytes: self.max_write_bytes,
                     },
                     params.dry_run.unwrap_or(false),
-                    cancel.clone(),
+                    mutation_context,
                 )
                 .await
             }
@@ -522,7 +552,7 @@ impl FilesTool {
                     self.max_full_file_bytes,
                     self.max_write_bytes,
                     params.dry_run.unwrap_or(false),
-                    cancel.clone(),
+                    mutation_context,
                 )
                 .await
             }
@@ -531,16 +561,16 @@ impl FilesTool {
                     &execution_workspace,
                     &params.destination.unwrap_or_default(),
                 )?;
-                file_mutations::copy(&path, &dest, cancel.clone()).await
+                file_mutations::copy(&path, &dest, mutation_context).await
             }
             FilesOperation::Move => {
                 let dest = resolve_workspace_path(
                     &execution_workspace,
                     &params.destination.unwrap_or_default(),
                 )?;
-                file_mutations::move_file(&path, &dest, cancel.clone()).await
+                file_mutations::move_file(&path, &dest, mutation_context).await
             }
-            FilesOperation::Delete => file_mutations::delete(&path, cancel.clone()).await,
+            FilesOperation::Delete => file_mutations::delete(&path, mutation_context).await,
             FilesOperation::List => {
                 file_mutations::list(&path, self.max_list_entries, cancel.clone()).await
             }

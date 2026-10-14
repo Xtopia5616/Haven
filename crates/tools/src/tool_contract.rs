@@ -1449,6 +1449,22 @@ pub trait Tool: Send + Sync {
         }
         self.execute(input, cancel).await
     }
+
+    /// Execute with opaque, proof-derived capabilities that must not be
+    /// reconstructed from renderer or model input. Adapters that do not need
+    /// these capabilities can keep the default target-bound behavior.
+    async fn execute_with_authorization_context(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<&str>,
+        context: &ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        let _ = context;
+        self.execute_with_authorization_target(input, cancel, target_binding)
+            .await
+    }
+
     /// Retry policy is an operation property, not a safety-risk property.
     /// The default is conservative because an unknown operation may have
     /// performed an external side effect before returning an error.
@@ -1651,6 +1667,24 @@ pub trait Tool: Send + Sync {
         timeout_secs: u64,
         target_binding: Option<&str>,
     ) -> anyhow::Result<ToolResult> {
+        self.execute_with_authorization_context_timeout(
+            input,
+            cancel,
+            timeout_secs,
+            target_binding,
+            &ToolExecutionContext::default(),
+        )
+        .await
+    }
+
+    async fn execute_with_authorization_context_timeout(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        timeout_secs: u64,
+        target_binding: Option<&str>,
+        context: &ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             return Ok(ToolResult::cancelled(format!(
                 "tool '{}' cancelled before execution",
@@ -1659,7 +1693,12 @@ pub trait Tool: Send + Sync {
         }
         let execution_cancel = cancel.child_token();
         tokio::select! {
-            result = self.execute_with_authorization_target(input, execution_cancel.clone(), target_binding) => result,
+            result = self.execute_with_authorization_context(
+                input,
+                execution_cancel.clone(),
+                target_binding,
+                context,
+            ) => result,
             _ = cancel.cancelled() => {
                 execution_cancel.cancel();
                 Ok(ToolResult::cancelled(format!("tool '{}' cancelled", self.name())))
@@ -1679,6 +1718,13 @@ pub trait Tool: Send + Sync {
             }
         }
     }
+}
+
+/// Trusted runtime context attached to one proof-verified tool attempt.
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct ToolExecutionContext {
+    pub(crate) file_write_policy: Option<crate::security::FileWritePolicy>,
 }
 
 /// Object-safe provider adapter for one typed operation group. It performs

@@ -236,6 +236,28 @@ impl Tool for FilesTool {
     /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let params = crate::tool_contract::parse_tool_input::<FilesParams>(&self.name(), input)?;
-        self.run(params, cancel).await
+        #[cfg(test)]
+        {
+            self.run(params, cancel).await
+        }
+        #[cfg(not(test))]
+        {
+            self.run_with_file_write_policy(params, cancel, None).await
+        }
+    }
+
+    async fn execute_with_authorization_context(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<&str>,
+        context: &crate::ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        if target_binding.is_some() {
+            anyhow::bail!("files tool cannot enforce an external authorization target");
+        }
+        let params = crate::tool_contract::parse_tool_input::<FilesParams>(&self.name(), input)?;
+        self.run_with_file_write_policy(params, cancel, context.file_write_policy.as_ref())
+            .await
     }
 }

@@ -203,10 +203,10 @@ pub(crate) use shell_runtime::{build_shell_command_silent, collect_byte_cap, wri
 pub use skill_runner::SkillRunner;
 pub use tool_contract::{
     AskSignal, NotificationSignal, OperationPolicy, StructuredToolError, Tool,
-    ToolCancellationPolicy, ToolConcurrency, ToolErrorMetadata, ToolExecutionMode, ToolHandle,
-    ToolLlmUsage, ToolOperationMetadata, ToolRegistration, ToolResult, ToolSignals,
-    TypedToolAdapter, TypedToolOperation, extract_ask_signal, extract_notify_signal,
-    is_silent_tool_call, parse_tool_input,
+    ToolCancellationPolicy, ToolConcurrency, ToolErrorMetadata, ToolExecutionContext,
+    ToolExecutionMode, ToolHandle, ToolLlmUsage, ToolOperationMetadata, ToolRegistration,
+    ToolResult, ToolSignals, TypedToolAdapter, TypedToolOperation, extract_ask_signal,
+    extract_notify_signal, is_silent_tool_call, parse_tool_input,
 };
 pub(crate) use tool_contract::{
     ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,

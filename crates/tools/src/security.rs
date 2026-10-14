@@ -9,6 +9,7 @@ use haven_common::types::{
     CapabilityScope, NetworkPolicy, PermissionEffect, PermissionMode, PermissionScope, RiskLevel,
     SandboxMode,
 };
+use haven_platform::filesystem::DirectoryCapability;
 use haven_platform::filesystem::{
     is_link_or_reparse_point, open_for_metadata, open_read_only, same_file_identity,
 };
@@ -567,6 +568,84 @@ pub(crate) struct FileReadPolicy {
     allowed_roots: Vec<Vec<PathBuf>>,
 }
 
+/// Per-attempt filesystem authority derived from the same policy revision as
+/// an execution proof. Bounded path groups represent intersections: a path
+/// must be below one held directory in every group.
+#[derive(Clone, Default)]
+pub(crate) struct FileWritePolicy {
+    root_constraints: Vec<Vec<DirectoryCapability>>,
+    ambient: bool,
+}
+
+impl FileWritePolicy {
+    #[cfg(test)]
+    pub(crate) fn ambient_for_test() -> Self {
+        Self {
+            root_constraints: Vec::new(),
+            ambient: true,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_roots(roots: &[PathBuf]) -> Self {
+        Self {
+            root_constraints: vec![open_directory_roots(roots)],
+            ambient: false,
+        }
+    }
+
+    pub(crate) fn resolve(&self, path: &Path) -> io::Result<(DirectoryCapability, PathBuf)> {
+        if !path.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "file mutation path is not absolute",
+            ));
+        }
+        let resolved = resolve_path_without_reparse(path).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "file mutation path changed or contains a reparse point",
+            )
+        })?;
+
+        let mut selected = Vec::new();
+        for candidates in &self.root_constraints {
+            let capability = candidates
+                .iter()
+                .filter(|candidate| candidate.relative_path(&resolved).is_some())
+                .max_by_key(|candidate| candidate.root().components().count())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "file mutation path has no directory capability",
+                    )
+                })?;
+            selected.push(capability.clone());
+        }
+
+        if let Some(capability) = selected
+            .into_iter()
+            .max_by_key(|candidate| candidate.root().components().count())
+        {
+            let relative = capability.relative_path(&resolved).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "file mutation path is outside its directory capability",
+                )
+            })?;
+            return Ok((capability, relative));
+        }
+
+        if self.ambient {
+            return DirectoryCapability::open_ambient_for_path(&resolved);
+        }
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "file mutation has no authorized directory capability",
+        ))
+    }
+}
+
 impl FileReadPolicy {
     pub(crate) fn open_read(&self, path: &Path) -> io::Result<File> {
         let opened = open_read_only(path)?;
@@ -744,6 +823,56 @@ impl AuthorizationEngine {
             .map(|setting| setting.allowed_paths.iter().map(PathBuf::from).collect())
             .collect();
         FileReadPolicy { allowed_roots }
+    }
+
+    pub(crate) async fn file_write_policy(
+        &self,
+        request: &AuthorizationRequest,
+        proof: &AuthorizationExecutionProof,
+    ) -> Result<FileWritePolicy, String> {
+        self.verify_execution_proof(request, proof).await?;
+        let cfg = self.config.read().await;
+        if cfg.policy_revision != proof.binding.policy_revision {
+            return Err("filesystem policy changed before directory capability capture".into());
+        }
+
+        let mut root_constraints = Vec::new();
+        let ambient = match cfg.sandbox_mode {
+            SandboxMode::ReadOnly => {
+                return Err("read-only sandbox does not grant file mutation access".into());
+            }
+            SandboxMode::WorkspaceWrite if cfg.writable_roots.is_empty() => {
+                let roots = cfg
+                    .execution_workspace
+                    .directory()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                root_constraints.push(roots);
+                false
+            }
+            SandboxMode::WorkspaceWrite => {
+                root_constraints.push(open_directory_roots(&cfg.writable_roots));
+                false
+            }
+            SandboxMode::FullAccess => true,
+        };
+
+        for setting in tool_setting_names(&request.tool_name)
+            .filter_map(|name| cfg.tool_settings.get(name))
+            .filter(|setting| !setting.allowed_paths.is_empty())
+        {
+            let roots = setting
+                .allowed_paths
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            root_constraints.push(open_directory_roots(&roots));
+        }
+
+        Ok(FileWritePolicy {
+            root_constraints,
+            ambient,
+        })
     }
 
     /// Evaluate one typed authorization request. The operation policy and
@@ -1570,6 +1699,13 @@ fn path_is_allowed(path: &Path, allowed: &[PathBuf]) -> bool {
     resolved_path_is_allowed(&canon, allowed)
 }
 
+fn open_directory_roots(paths: &[PathBuf]) -> Vec<DirectoryCapability> {
+    paths
+        .iter()
+        .filter_map(|path| DirectoryCapability::open(path).ok())
+        .collect()
+}
+
 fn resolved_path_is_allowed(canon: &Path, allowed: &[PathBuf]) -> bool {
     for base in allowed {
         if !base.is_absolute() || is_unc_or_device_path(base) {
@@ -1838,6 +1974,36 @@ mod tests {
                 .await
                 .is_err(),
             "an authorization proof cannot be redirected to a replacement target"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_write_policy_rejects_a_stale_execution_proof() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let input = json!({"path": "notes.txt", "content": "safe"});
+        let mut policy = fixture_policy("files.write", &input, RiskLevel::Safe);
+        policy.effect = OperationEffect::WorkspaceWrite;
+        policy.confirmation = ConfirmationRequirement::None;
+        let request = AuthorizationRequest::new(None, "files.write", input, policy);
+        let check = engine.authorize_for_execution(&request).await;
+        let proof = check
+            .execution_proof
+            .expect("safe test operation should receive an execution proof");
+
+        engine
+            .file_write_policy(&request, &proof)
+            .await
+            .expect("current proofs can capture directory authority");
+
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        assert!(
+            engine.file_write_policy(&request, &proof).await.is_err(),
+            "filesystem authority must not be captured from a stale proof"
         );
     }
 

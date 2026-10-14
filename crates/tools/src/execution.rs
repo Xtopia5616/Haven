@@ -459,6 +459,7 @@ impl AuthorizedExecutor<'_> {
             };
 
             let mut authorization_target_binding = None;
+            let mut file_write_policy = None;
             if let Some(proof) = authorization_proof.as_ref() {
                 let request = match execution_surface {
                     ExecutionSurface::Model => {
@@ -495,6 +496,22 @@ impl AuthorizedExecutor<'_> {
                         ToolErrorClass::Permission,
                     ));
                 }
+                if request.tool_name.starts_with("files.")
+                    && matches!(
+                        request.policy.effect,
+                        crate::OperationEffect::WorkspaceWrite
+                    )
+                {
+                    file_write_policy = Some(
+                        self.tools
+                            .coordinator
+                            .core
+                            .authorization
+                            .file_write_policy(&request, proof)
+                            .await
+                            .map_err(anyhow::Error::msg)?,
+                    );
+                }
                 authorization_target_binding = request.target_binding;
             }
 
@@ -520,11 +537,12 @@ impl AuthorizedExecutor<'_> {
                     .await
             } else {
                 attempt_tool
-                    .execute_with_authorization_target_timeout(
+                    .execute_with_authorization_context_timeout(
                         exec_input.clone(),
                         cancel.clone(),
                         timeout_secs,
                         authorization_target_binding.as_deref(),
+                        &crate::ToolExecutionContext { file_write_policy },
                     )
                     .await
             };

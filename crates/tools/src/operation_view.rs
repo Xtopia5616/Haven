@@ -497,6 +497,31 @@ impl Tool for OperationViewTool {
             .await
     }
 
+    async fn execute_with_authorization_context(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<&str>,
+        context: &crate::ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        let mut validation_input = input.clone();
+        crate::tool_contract::strip_private_tool_fields(&mut validation_input);
+        if let Err(error) = self.validate_input(&validation_input) {
+            return Err(anyhow::Error::new(StructuredToolError::new(
+                error.to_string(),
+                ToolErrorMetadata::validation(),
+            )));
+        }
+        self.handler
+            .execute_with_authorization_context(
+                self.routed_input(&input),
+                cancel,
+                target_binding,
+                context,
+            )
+            .await
+    }
+
     fn input_schema(&self) -> Value {
         self.spec.schema.clone()
     }
