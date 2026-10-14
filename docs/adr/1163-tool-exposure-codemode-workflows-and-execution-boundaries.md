@@ -30,7 +30,7 @@ Pi 将 MCP 工具暴露细分为 `direct`、`deferred`、`codemode`、`hidden`�
 
 - `direct` 与 `deferred` 走现有 ReAct/provider-native tool-call 路径（Legacy）。`codemode` 暴露要求用户在 MCP server/tool 设置中明确选择该值。两种调用面按 capability 混用；一次会话可使用原生工具和 CodeMode，但同一 capability 不会因为 CodeMode 存在而自动提高暴露等级。
 - CodeMode 只接受受限脚本输入，不提供宿主文件系统、进程、环境变量、网络 socket、动态模块加载或时钟/timer API。脚本只能通过 typed tool bridge 调用当前策略允许的 capability。
-- 每个子调用重新经过 Tools 的标准执行与授权边界，并继承 cancellation、确认、sandbox/network 检查、并发策略和单次结果限制；CodeMode executor 不能拿到可绕开这些检查的裸 adapter 或 manager。
+- 每个子调用重新经过 Tools 的标准执行与授权边界，并继承 cancellation、sandbox/network 检查、并发策略和单次结果限制；CodeMode executor 不能拿到可绕开这些检查的裸 adapter 或 manager。需要交互确认的子调用不能借用外层脚本的批准；在当前确认协议无法持久化 QuickJS continuation 的阶段，该子调用在 handler 前拒绝并返回说明，用户可改由 Legacy 单工具调用触发现有确认流程。脚本可显式捕获该拒绝，但被拒绝的子调用不会执行。
 - 限制脚本字节数、工具描述总量、执行期限、最大子调用数、并行度、单次输入/结果、累积 observation 字节数和最终返回大小。预算耗尽时停止新调用并收束已完成结果；调用已产生的外部副作用不回滚。确认必须针对具体子调用发起，不能由批准外层脚本推导出对子调用的 blanket grant。
 - 每个脚本执行使用独立 run-local 状态；跨脚本状态只有经显式、有界的 workflow/workspace 存储契约后才能持久化。不要把 QuickJS heap、ReAct scratch 或 MCP server session 当持久权威。
 
@@ -84,7 +84,7 @@ MCP 外部调用的 `AuthorizationRequest` 现另带 opaque target binding：由
 
 `haven-tools` 已加入独立的 QuickJS evaluator：每次执行使用新 Runtime/Context，不启用模块 loader，隐藏进程、文件、网络、时钟和动态代码入口，并移除函数原型链上的动态构造器。model 脚本只有冻结的 tool description 与一个 typed subcall bridge；evaluator 本身不持有 MCP manager、adapter 或授权证明。进程硬上限为脚本 64 KiB、工具描述 128 KiB、最多 64 个工具、16 次串行子调用、单次输入 16 KiB、单次结果 16 KiB、累计结果 64 KiB、最终结果 32 KiB、QuickJS 内存 8 MiB、栈 256 KiB、运行 30 秒；调用方只能降低上限。QuickJS 运行于受限的 blocking worker，超时/取消会打断解释器并唤醒等待子调用；这些限制是进程内解释器边界，不等同于 Windows Job Object 或操作系统级 sandbox。
 
-该 evaluator 当前只完成了引擎和资源预算切片：Windows MSVC 本机构建、allowlist、原型链绕过、元数据/输入/结果上限、调用数、取消、超时和内存限制测试均通过。UI 仍不允许启用 CodeMode，新配置不能选择它，Legacy 目录/加载/执行入口仍 fail closed。下一切片需把 typed bridge 接入 Agent/Tools 的标准授权、逐子调用确认和结果治理，并完成用户可见的 per-server Legacy/CodeMode 切换；在这条垂直链和额外运行时审计完成前不能开放切换。Workflow、MCP resources/prompts 和 ExecutionWorkspace 仍按实施顺序等待各自垂直切片。现有数据库的 `session_events`、tool-call identity、ToolRun completion/outbox 和 X12 投影契约保持权威。
+该 evaluator 当前已完成引擎和资源预算切片；Agent 另有一个受 allowlist 限制的 proof-carrying child port：每个子调用都重新请求当前 authorization decision，自动放行时取新 proof 并经 `ToolExecutionPort` 执行；未列入 allowlist、被阻止或需要确认的操作不会到达 handler。Confirmation-required 子调用明确失败并提示改用 Legacy 单工具调用，不在运行中的脚本内发起不可恢复的 pause。Windows MSVC 本机构建、allowlist、原型链绕过、元数据/输入/结果上限、调用数、取消、超时、内存限制和 Agent proof/确认拒绝测试均通过。UI 仍不允许启用 CodeMode，新配置不能选择它，Legacy 目录/加载/执行入口仍 fail closed。下一切片接入合成 CodeMode 工具和按 server 暴露的 allowlist，完成用户可见的 per-server Legacy/CodeMode 切换与端到端调用验证；在此之前继续保持 CodeMode 全链 fail closed。Workflow、MCP resources/prompts 和 ExecutionWorkspace 仍按实施顺序等待各自垂直切片。现有数据库的 `session_events`、tool-call identity、ToolRun completion/outbox 和 X12 投影契约保持权威。
 
 ## 验收要求
 

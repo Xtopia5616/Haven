@@ -2342,6 +2342,114 @@ mod scheduled_authorization_tests {
     }
 
     #[tokio::test]
+    async fn codemode_subcalls_execute_with_a_fresh_auto_approved_proof() {
+        let (supervisor, tools, _database, _directory) = test_supervisor();
+        let session_id = "ses-12121212121212121212121212121212";
+        let tool_name = "scheduled.safe";
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let executed_by_tool = executed.clone();
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::Safe,
+                    on_execute: Some(Arc::new(move || {
+                        executed_by_tool.store(true, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                    result: None,
+                }),
+            )
+            .await;
+
+        let port = supervisor.codemode_subcall_port(session_id, [tool_name.to_owned()]);
+        let result = port
+            .call(
+                tool_name,
+                json!({"operation": "read"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output, json!({"ok": true}));
+        assert!(executed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn codemode_confirmation_required_child_fails_before_side_effect() {
+        let (supervisor, tools, _database, _directory) = test_supervisor();
+        let session_id = "ses-34343434343434343434343434343434";
+        let tool_name = "scheduled.critical";
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let executed_by_tool = executed.clone();
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::Critical,
+                    on_execute: Some(Arc::new(move || {
+                        executed_by_tool.store(true, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                    result: None,
+                }),
+            )
+            .await;
+
+        let port = supervisor.codemode_subcall_port(session_id, [tool_name.to_owned()]);
+        let error = port
+            .call(
+                tool_name,
+                json!({"operation": "write"}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("nested confirmation must not inherit the outer script approval");
+
+        assert!(error.contains("requires its own user confirmation"));
+        assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn codemode_subcall_port_rejects_names_outside_its_run_allowlist() {
+        let (supervisor, tools, _database, _directory) = test_supervisor();
+        let session_id = "ses-56565656565656565656565656565656";
+        let tool_name = "scheduled.safe";
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let executed_by_tool = executed.clone();
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::Safe,
+                    on_execute: Some(Arc::new(move || {
+                        executed_by_tool.store(true, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                    result: None,
+                }),
+            )
+            .await;
+
+        let port = supervisor.codemode_subcall_port(session_id, std::iter::empty());
+        let error = port
+            .call(tool_name, json!({}), CancellationToken::new())
+            .await
+            .expect_err("unlisted tool must not reach authorization or execution");
+
+        assert!(error.contains("allowlist"));
+        assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
     async fn session_grant_is_durable_before_scheduled_confirmation_wakes_tool() {
         let (supervisor, tools, database, _directory) = test_supervisor();
         let session = supervisor

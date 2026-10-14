@@ -485,6 +485,9 @@ pub struct SessionSupervisor {
 }
 
 mod actor;
+// The next slice connects this port to the synthetic CodeMode model tool.
+#[allow(dead_code)]
+mod codemode;
 mod dispatcher;
 mod queues;
 mod run_engine;
@@ -507,6 +510,23 @@ pub(crate) use queues::PendingInteractionGates;
 pub(crate) use run_engine::SessionRunEngine;
 
 impl SessionSupervisor {
+    /// Bind a CodeMode invocation to this session's authorization and execution
+    /// owners. The supplied names come from the run's resolved CodeMode-only
+    /// catalog; this port never exposes a tool registry or raw adapter.
+    #[allow(dead_code)] // Kept private until the CodeMode tool surface is wired.
+    pub(crate) fn codemode_subcall_port(
+        &self,
+        session_id: &str,
+        allowed_tool_names: impl IntoIterator<Item = String>,
+    ) -> Arc<dyn haven_tools::CodeModeSubcallPort> {
+        Arc::new(codemode::AuthorizedCodeModeSubcallPort::new(
+            session_id,
+            allowed_tool_names,
+            Arc::clone(&self.authorization),
+            Arc::clone(&self.execution),
+        ))
+    }
+
     pub fn new(store: SessionStore, ports: SessionToolPorts, max_concurrent: usize) -> Self {
         let SessionToolPorts {
             execution,
