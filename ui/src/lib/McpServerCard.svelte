@@ -63,9 +63,9 @@
 
 	function exposureLabel() {
 		return {
-			direct: '直出工具',
-			deferred: '按需加载',
-			codemode: 'CodeMode（当前不可调用）',
+			direct: 'Legacy 直出',
+			deferred: 'Legacy 按需加载',
+			codemode: 'CodeMode 脚本',
 			hidden: '全部隐藏',
 		}[server.exposure.default];
 	}

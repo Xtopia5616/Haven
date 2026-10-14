@@ -2035,6 +2035,70 @@ mod scheduled_authorization_tests {
         result: Option<ToolResult>,
     }
 
+    struct CodeModeInvocationTestTool {
+        definitions: Vec<haven_tools::CodeModeToolDefinition>,
+    }
+
+    #[async_trait::async_trait]
+    impl haven_tools::Tool for CodeModeInvocationTestTool {
+        fn name(&self) -> String {
+            haven_tools::CODEMODE_RUN_TOOL_NAME.to_owned()
+        }
+
+        fn description(&self) -> String {
+            "test-only bounded CodeMode invocation".into()
+        }
+
+        fn risk_level(&self, _input: &Value) -> RiskLevel {
+            RiskLevel::Safe
+        }
+
+        fn codemode_tool_definitions(&self) -> Option<Vec<haven_tools::CodeModeToolDefinition>> {
+            Some(self.definitions.clone())
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {"script": {"type": "string"}},
+                "required": ["script"],
+                "additionalProperties": false
+            })
+        }
+
+        async fn execute(
+            &self,
+            _input: Value,
+            _cancel: CancellationToken,
+        ) -> anyhow::Result<ToolResult> {
+            anyhow::bail!("CodeMode test tool requires its subcall port")
+        }
+
+        async fn execute_with_codemode_subcalls(
+            &self,
+            input: Value,
+            cancel: CancellationToken,
+            target_binding: Option<&str>,
+            subcalls: Arc<dyn haven_tools::CodeModeSubcallPort>,
+        ) -> anyhow::Result<ToolResult> {
+            if target_binding.is_some() {
+                anyhow::bail!("CodeMode test invocation cannot have an external target")
+            }
+            let script = input
+                .get("script")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("CodeMode test input requires a script"))?;
+            let execution = haven_tools::CodeModeEvaluator::default()
+                .execute(script, self.definitions.clone(), subcalls, cancel)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            Ok(ToolResult::from_output(
+                json!({"output": execution.output, "call_count": execution.call_count}),
+                false,
+            ))
+        }
+    }
+
     #[async_trait::async_trait]
     impl haven_tools::Tool for PolicyTestTool {
         fn name(&self) -> String {
@@ -2404,6 +2468,62 @@ mod scheduled_authorization_tests {
 
         assert!(result.success);
         assert_eq!(result.output, json!({"ok": true}));
+        assert!(executed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn gated_codemode_invocation_routes_child_through_agent_and_tools_authorization() {
+        let (supervisor, tools, _database, _directory) = test_supervisor();
+        let session_id = "ses-78787878787878787878787878787878";
+        let child_name = "scheduled.safe";
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let executed_by_tool = executed.clone();
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(PolicyTestTool {
+                    name: child_name.into(),
+                    risk_level: RiskLevel::Safe,
+                    on_execute: Some(Arc::new(move || {
+                        executed_by_tool.store(true, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                    result: None,
+                }),
+            )
+            .await;
+        let definitions = vec![haven_tools::CodeModeToolDefinition {
+            name: child_name.into(),
+            description: "read the scheduled test value".into(),
+            input_schema: json!({"type": "object"}),
+        }];
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(CodeModeInvocationTestTool { definitions }),
+            )
+            .await;
+
+        let execution = supervisor
+            .execute_gated(
+                Some(session_id),
+                haven_tools::CODEMODE_RUN_TOOL_NAME,
+                json!({
+                    "script": "const value = await tools.call('scheduled.safe', {operation: 'read'}); return value.output;"
+                }),
+                CancellationToken::new(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(execution.result.success, "{:?}", execution.result.error);
+        assert_eq!(execution.result.output["output"]["ok"], true);
+        assert_eq!(execution.result.output["call_count"], 1);
         assert!(executed.load(std::sync::atomic::Ordering::SeqCst));
     }
 

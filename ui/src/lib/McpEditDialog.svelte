@@ -52,15 +52,11 @@ import type {
 		{ value: 'http', label: 'Streamable HTTP' },
 	];
 	const EXPOSURE_OPTIONS = [
-		{ value: 'direct', label: 'Direct — send schemas with every request' },
-		{ value: 'deferred', label: 'Deferred — discover and load when needed' },
+		{ value: 'direct', label: 'Legacy · direct — send schemas with every request' },
+		{ value: 'deferred', label: 'Legacy · deferred — discover and load when needed' },
+		{ value: 'codemode', label: 'CodeMode — compose allowed tools in a bounded script' },
 		{ value: 'hidden', label: 'Hidden — unavailable to the assistant' },
 	];
-	let exposureOptions = $derived(
-		defaultExposure === 'codemode'
-			? [...EXPOSURE_OPTIONS, { value: 'codemode', label: 'CodeMode — executor not enabled yet' }]
-			: EXPOSURE_OPTIONS,
-	);
 
 	function isHttp() {
 		return transport === 'http';
@@ -114,12 +110,6 @@ import type {
 			errors.env = `Line ${badEnv + 1}: environment variable name cannot be empty`;
 		}
 
-		if (
-			defaultExposure === 'codemode' &&
-			server?.exposure.default !== 'codemode'
-		) {
-			errors.exposure = 'CodeMode can be selected after its executor is available';
-		}
 		const exposureLines = exposureOverridesText
 			.split('\n')
 			.map((line) => line.trim())
@@ -138,11 +128,7 @@ import type {
 					/[\u0000-\u001f\u007f]/u.test(pattern) ||
 					!['direct', 'deferred', 'codemode', 'hidden'].includes(mode)
 				) {
-					errors.exposure = `Line ${index + 1}: use pattern=direct, pattern=deferred, pattern=hidden, or an existing CodeMode override`;
-					break;
-				}
-				if (mode === 'codemode' && server?.exposure.tools[pattern] !== 'codemode') {
-					errors.exposure = 'CodeMode overrides can be selected after its executor is available';
+					errors.exposure = `Line ${index + 1}: use pattern=direct, pattern=deferred, pattern=codemode, or pattern=hidden`;
 					break;
 				}
 				if (patterns.has(pattern)) {
@@ -259,12 +245,12 @@ import type {
 		</MaterialField>
 		<MaterialField
 			label="Assistant exposure"
-			hint="Direct sends schemas each turn. Deferred requires tool_catalog/load_mcp. Hidden tools cannot be called."
+			hint="Legacy uses ordinary tool calls. CodeMode composes only listed tools in a bounded script; each call is authorized separately. Calls requiring confirmation must use Legacy. Hidden tools cannot be called."
 		>
 			{#snippet children()}
 				<MaterialSelect
 					value={defaultExposure}
-					options={exposureOptions}
+					options={EXPOSURE_OPTIONS}
 					onChange={withStringValue((value) => {
 						if (['direct', 'deferred', 'codemode', 'hidden'].includes(value)) {
 							defaultExposure = value as McpToolExposureMode;
@@ -276,7 +262,7 @@ import type {
 		<MaterialField
 			label="Per-tool overrides"
 			forId="mcp-exposure-overrides"
-			hint="One rule per line: exact MCP tool name or * pattern = direct, deferred, or hidden. Most specific pattern wins."
+			hint="One rule per line: exact MCP tool name or * pattern = direct, deferred, codemode, or hidden. Most specific pattern wins."
 			error={fieldErrors.exposure}
 		>
 			{#snippet children()}
