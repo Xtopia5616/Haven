@@ -1153,3 +1153,4 @@
 - [1165：定义有界声明式 Workflow 图契约](1165-bounded-declarative-workflow-validation.md)
 - [1166：Workflow 子步骤复用标准工具授权与执行网关](1166-execute-workflows-through-standard-tool-gateway.md)
 - [1167：建立后端进程级 ExecutionWorkspace](1167-process-scoped-execution-workspace.md)
+- [1168：默认 Shell 工作目录复用 ExecutionWorkspace](1168-default-shell-cwd-uses-execution-workspace.md)

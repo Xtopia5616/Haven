@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::execution_workspace::ExecutionWorkspace;
 use crate::live_output::LiveOutputHub;
 use crate::{
     BackgroundShellRequest, ToolRunService, append_windows_diagnostics, build_shell_command_silent,
@@ -24,6 +25,8 @@ pub(crate) struct ShellTool {
     /// Shell used when the model omits the `shell` argument
     /// ("cmd" | "powershell" | "pwsh" on Windows).
     pub default_shell: String,
+    /// Shared backend root used when the model omits `cwd`.
+    pub(crate) execution_workspace: ExecutionWorkspace,
 }
 
 impl Default for ShellTool {
@@ -40,6 +43,7 @@ impl Default for ShellTool {
             default_shell: "powershell".into(),
             #[cfg(not(windows))]
             default_shell: "sh".into(),
+            execution_workspace: ExecutionWorkspace::discover(),
         }
     }
 }
@@ -94,9 +98,9 @@ impl ShellTool {
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
             .or_else(|| {
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|current| haven_common::discover_workspace_root(&current))
+                self.execution_workspace
+                    .root()
+                    .map(std::path::Path::to_path_buf)
             });
         ResolvedShellContext {
             shell,
@@ -564,6 +568,24 @@ mod tests {
     #[test]
     fn test_shell_tool_description() {
         assert!(ShellTool::default().description().contains("shell command"));
+    }
+
+    #[test]
+    fn shell_default_cwd_uses_execution_workspace_and_keeps_explicit_override() {
+        let temp = tempdir().unwrap();
+        let workspace = ExecutionWorkspace::from_root(temp.path()).unwrap();
+        let workspace_root = workspace.root().unwrap().to_path_buf();
+        let tool = ShellTool {
+            execution_workspace: workspace,
+            ..ShellTool::default()
+        };
+
+        let default = tool.resolve_shell_context(None, None);
+        assert_eq!(default.working_directory, Some(workspace_root));
+
+        let explicit = temp.path().join("explicit");
+        let selected = tool.resolve_shell_context(None, explicit.to_str());
+        assert_eq!(selected.working_directory, Some(explicit));
     }
 
     #[test]

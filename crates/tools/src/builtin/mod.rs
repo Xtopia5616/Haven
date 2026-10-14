@@ -166,6 +166,7 @@ pub(crate) async fn register_builtin_tools(
                 service: tool_run_service,
             },
     } = context;
+    let execution_workspace = authorization.execution_workspace().await;
     let settings = &settings;
     let limits = &limits;
     let mut admin_operations: Option<Arc<admin::AdminOperationSet>> = None;
@@ -254,6 +255,7 @@ pub(crate) async fn register_builtin_tools(
         live_outputs,
         max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
         default_shell: default_shell.as_str().into(),
+        execution_workspace,
     }));
     let tool_runs_tool: ToolHandle = Arc::new(tool_runs::ToolRunsTool {
         tool_runs: tool_run_service.clone(),
