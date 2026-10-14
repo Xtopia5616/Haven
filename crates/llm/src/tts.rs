@@ -80,12 +80,16 @@ fn resolve_tts_config(
 }
 
 fn tts_backend_for(p: &ProviderConfig) -> Result<&'static str> {
-    use haven_common::config::is_openai_family_wire_style;
+    use haven_common::config::{is_openai_family_wire_style, provider_media_capabilities};
     let style = provider_config_wire_style(p);
     if style == "elevenlabs" || p.provider.eq_ignore_ascii_case("elevenlabs") {
-        return Ok("elevenlabs");
+        return if provider_media_capabilities(p).tts {
+            Ok("elevenlabs")
+        } else {
+            anyhow::bail!("provider '{}' does not declare a TTS endpoint", p.name)
+        };
     }
-    if is_openai_family_wire_style(style) {
+    if is_openai_family_wire_style(style) && provider_media_capabilities(p).tts {
         return Ok("openai");
     }
     anyhow::bail!(
@@ -321,7 +325,7 @@ fn media_body_error(kind: &str, status: reqwest::StatusCode, body: &str) -> anyh
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_common::config::{ProviderConfig, TtsConfig};
+    use haven_common::config::{ProviderConfig, ProviderMediaCapabilities, TtsConfig};
 
     fn resolved_tts(provider: &str, api_key: &str) -> ResolvedTtsConfig {
         ResolvedTtsConfig {
@@ -388,6 +392,10 @@ mod tests {
             provider: "openai".into(),
             base_url: "https://gateway.example/v1".into(),
             api_key: "secret".into(),
+            media_capabilities: Some(ProviderMediaCapabilities {
+                tts: true,
+                ..Default::default()
+            }),
             ..Default::default()
         }];
         let cfg = TtsConfig {
@@ -414,6 +422,10 @@ mod tests {
             provider: "openai".into(),
             base_url: "https://gateway.example/v1".into(),
             api_key: "from-provider".into(),
+            media_capabilities: Some(ProviderMediaCapabilities {
+                tts: true,
+                ..Default::default()
+            }),
             ..Default::default()
         }];
         let cfg = TtsConfig {
@@ -443,6 +455,19 @@ mod tests {
         };
         let err = resolve_tts_config(&cfg, &providers).expect_err("expected error");
         assert!(err.to_string().contains("does not support TTS"));
+    }
+
+    #[test]
+    fn tts_fails_closed_for_generic_openai_compatible_provider() {
+        let provider = ProviderConfig {
+            name: "custom".into(),
+            provider: "openai-compatible".into(),
+            api_style: Some("openai-chat".into()),
+            base_url: "https://gateway.example/v1".into(),
+            api_key: "k".into(),
+            ..Default::default()
+        };
+        assert!(tts_backend_for(&provider).is_err());
     }
 
     #[test]

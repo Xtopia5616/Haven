@@ -237,6 +237,11 @@ pub struct ProviderConfig {
     /// inferred from the vendor identity.
     #[serde(default)]
     pub api_style: Option<String>,
+    /// Optional, explicit endpoint capabilities for dedicated media routes.
+    /// When absent, known first-party providers receive conservative defaults;
+    /// generic OpenAI-compatible connections advertise no media routes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_capabilities: Option<ProviderMediaCapabilities>,
     pub base_url: String,
     /// Runtime-only API key. Settings writes stage it first and send only its
     /// reference; plaintext values received through TOML/Settings are rejected.
@@ -287,6 +292,7 @@ impl std::fmt::Debug for ProviderConfig {
             .field("name", &self.name)
             .field("provider", &self.provider)
             .field("api_style", &self.api_style)
+            .field("media_capabilities", &self.media_capabilities)
             .field(
                 "base_url",
                 &(!self.base_url.is_empty()).then_some("[CONFIGURED]"),
@@ -318,6 +324,7 @@ impl Default for ProviderConfig {
             name: String::new(),
             provider: "openai".into(),
             api_style: None,
+            media_capabilities: None,
             base_url: "https://api.openai.com/v1".into(),
             api_key: String::new(),
             api_key_ref: None,
@@ -332,6 +339,96 @@ impl Default for ProviderConfig {
             default_web_search: None,
         }
     }
+}
+
+/// Dedicated media endpoints implemented by Haven for a provider connection.
+/// OpenAI-compatible chat alone does not imply that these routes exist.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProviderMediaCapabilities {
+    pub stt: bool,
+    pub tts: bool,
+    pub image_gen: bool,
+}
+
+/// The media endpoint routes Haven can implement for a wire protocol.
+pub fn media_capabilities_supported_by_style(style: &str) -> ProviderMediaCapabilities {
+    if is_openai_family_wire_style(style) {
+        ProviderMediaCapabilities {
+            stt: true,
+            tts: true,
+            image_gen: true,
+        }
+    } else {
+        match normalize_api_style(style) {
+            "gemini" => ProviderMediaCapabilities {
+                stt: true,
+                tts: false,
+                image_gen: true,
+            },
+            "deepgram" | "assemblyai" => ProviderMediaCapabilities {
+                stt: true,
+                tts: false,
+                image_gen: false,
+            },
+            "elevenlabs" => ProviderMediaCapabilities {
+                stt: false,
+                tts: true,
+                image_gen: false,
+            },
+            _ => ProviderMediaCapabilities::default(),
+        }
+    }
+}
+
+/// Conservative defaults for legacy providers that predate explicit media
+/// capabilities. Unknown compatible endpoints fail closed.
+pub fn default_provider_media_capabilities(p: &ProviderConfig) -> ProviderMediaCapabilities {
+    let style = provider_config_wire_style(p);
+    let provider = p.provider.trim().to_ascii_lowercase();
+    let host = url::Url::parse(&p.base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .unwrap_or_default();
+
+    if style == "elevenlabs" || provider == "elevenlabs" {
+        return ProviderMediaCapabilities {
+            tts: true,
+            ..Default::default()
+        };
+    }
+    if style == "gemini" {
+        return ProviderMediaCapabilities {
+            stt: true,
+            image_gen: true,
+            ..Default::default()
+        };
+    }
+    if style == "deepgram" || style == "assemblyai" {
+        return ProviderMediaCapabilities {
+            stt: true,
+            ..Default::default()
+        };
+    }
+    if is_openai_family_wire_style(style) {
+        if provider == "groq" || host == "api.groq.com" || host.ends_with(".groq.com") {
+            return ProviderMediaCapabilities {
+                stt: true,
+                ..Default::default()
+            };
+        }
+        if host == "api.openai.com" {
+            return media_capabilities_supported_by_style(style);
+        }
+    }
+    ProviderMediaCapabilities::default()
+}
+
+/// Effective media capabilities, applying conservative defaults only when
+/// older config omitted the explicit field.
+pub fn provider_media_capabilities(p: &ProviderConfig) -> ProviderMediaCapabilities {
+    p.media_capabilities
+        .unwrap_or_else(|| default_provider_media_capabilities(p))
 }
 
 /// A capability a configured model advertises to the request router.
@@ -797,6 +894,7 @@ pub fn provider_credentials_ready(p: &ProviderConfig) -> bool {
     style == "llama.cpp"
         || p.provider.eq_ignore_ascii_case("ollama")
         || p.provider.eq_ignore_ascii_case("llama.cpp")
+        || p.provider.eq_ignore_ascii_case("lm-studio")
 }
 
 /// True when a materialized endpoint has usable credentials (same keyless
@@ -814,6 +912,7 @@ pub fn endpoint_credentials_ready(ep: &ModelEndpoint) -> bool {
     style == "llama.cpp"
         || ep.provider.eq_ignore_ascii_case("ollama")
         || ep.provider.eq_ignore_ascii_case("llama.cpp")
+        || ep.provider.eq_ignore_ascii_case("lm-studio")
 }
 
 /// Canonical wire-protocol id used for invalid-style detection. An empty style
@@ -1016,6 +1115,84 @@ mod tests {
     }
 
     #[test]
+    fn provider_media_defaults_are_conservative_and_old_config_stays_valid() {
+        let old_config: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "name": "gateway",
+            "provider": "openai",
+            "api_style": "openai-chat",
+            "base_url": "https://gateway.example/v1"
+        }))
+        .expect("legacy provider configs omit explicit media routes");
+        assert!(old_config.media_capabilities.is_none());
+        assert_eq!(
+            provider_media_capabilities(&old_config),
+            ProviderMediaCapabilities::default()
+        );
+        assert!(
+            serde_json::to_value(&old_config)
+                .unwrap()
+                .get("media_capabilities")
+                .is_none()
+        );
+
+        let openai = ProviderConfig {
+            ..Default::default()
+        };
+        assert_eq!(
+            provider_media_capabilities(&openai),
+            ProviderMediaCapabilities {
+                stt: true,
+                tts: true,
+                image_gen: true,
+            }
+        );
+
+        let groq = ProviderConfig {
+            provider: "groq".into(),
+            api_style: Some("openai-chat".into()),
+            base_url: "https://api.groq.com/openai/v1".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            provider_media_capabilities(&groq),
+            ProviderMediaCapabilities {
+                stt: true,
+                ..Default::default()
+            }
+        );
+
+        let gemini = ProviderConfig {
+            provider: "gemini".into(),
+            api_style: Some("gemini".into()),
+            base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            provider_media_capabilities(&gemini),
+            ProviderMediaCapabilities {
+                stt: true,
+                image_gen: true,
+                ..Default::default()
+            }
+        );
+
+        let opted_in_gateway = ProviderConfig {
+            media_capabilities: Some(ProviderMediaCapabilities {
+                tts: true,
+                ..Default::default()
+            }),
+            ..old_config
+        };
+        assert_eq!(
+            provider_media_capabilities(&opted_in_gateway),
+            ProviderMediaCapabilities {
+                tts: true,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
     fn provider_and_endpoint_debug_redact_connection_details() {
         let provider = ProviderConfig {
             name: "safe-provider-name".into(),
@@ -1159,6 +1336,21 @@ mod tests {
         };
         assert!(llm.is_request_configured(RequestKind::Chat));
         let ep = llm.materialize_model_config("default_model").endpoint;
+        assert!(endpoint_credentials_ready(&ep));
+
+        let lm_studio = ProviderConfig {
+            name: "lm-studio".into(),
+            provider: "lm-studio".into(),
+            api_style: Some("openai-chat".into()),
+            base_url: "http://127.0.0.1:1234/v1".into(),
+            ..Default::default()
+        };
+        assert!(provider_credentials_ready(&lm_studio));
+        let ep = ModelEndpoint {
+            provider: "lm-studio".into(),
+            api_style: Some("openai-chat".into()),
+            ..Default::default()
+        };
         assert!(endpoint_credentials_ready(&ep));
     }
 

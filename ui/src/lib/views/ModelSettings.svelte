@@ -61,10 +61,11 @@
 		onProviderDiscoveryFailure?: (providerName: string, staticCatalog: boolean) => void;
 	}
 	import {
-		API_STYLE_OPTIONS,
-		apiStylePreset,
+		PROVIDER_PRESET_OPTIONS,
+		providerPreset,
 		applyProviderPreset,
-		displayApiStyle,
+		providerMediaCapabilities,
+		resolveProviderPreset,
 		isKeylessProvider,
 		isSttOnlyStyle,
 	} from '$lib/apiStyle.ts';
@@ -212,7 +213,7 @@
 		);
 	}
 	function providerDisplayStyle(provider: ProviderDraft) {
-		return displayApiStyle(provider);
+		return resolveProviderPreset(provider);
 	}
 
 	let modelsByProvider = $state<DiscoveredModelsByProviderName>({});
@@ -259,8 +260,10 @@
 		providerDialog = {
 			idx: null,
 			form: {
+				preset: 'openai-chat',
 				name: '',
 				api_style: 'openai-chat',
+				media_capabilities: providerMediaCapabilities(providerPreset('openai-chat')),
 				base_url: 'https://api.openai.com/v1',
 				api_key: '',
 				proxy_mode: 'system',
@@ -274,8 +277,10 @@
 		providerDialog = {
 			idx,
 			form: {
+				preset: providerDisplayStyle(provider),
 				name: provider.name,
-				api_style: providerDisplayStyle(provider),
+				api_style: provider.api_style || 'openai-chat',
+				media_capabilities: providerMediaCapabilities(provider),
 				base_url: provider.base_url,
 				api_key: '',
 				proxy_mode:
@@ -317,12 +322,13 @@
 			}
 		}
 		const previous = idx !== null ? llmConfig.providers[idx] : null;
-		const preset = apiStylePreset(form.api_style);
+		const preset = providerPreset(form.preset);
 		const provider = {
 			...(previous || {}),
 			name,
 			provider: preset.provider,
-			api_style: preset.api_style,
+			api_style: form.api_style,
+			media_capabilities: { ...form.media_capabilities },
 			base_url: form.base_url.trim(),
 			api_key: form.api_key.trim() || previous?.api_key || '',
 			auth_header_name: preset.auth_header_name,
@@ -333,7 +339,7 @@
 			default_max_tokens: previous?.default_max_tokens ?? null,
 			default_temperature: previous?.default_temperature ?? null,
 			default_timeout_secs:
-				previous?.default_timeout_secs ?? (isSttOnlyStyle(preset.api_style) ? 30 : null),
+				previous?.default_timeout_secs ?? (isSttOnlyStyle(form.api_style) ? 30 : null),
 			default_timeout_streaming_secs: previous?.default_timeout_streaming_secs ?? null,
 			default_web_search: previous?.default_web_search ?? null,
 		};
@@ -407,7 +413,11 @@
 			typeof providerOrStyle === 'string'
 				? providerOrStyle
 				: providerDisplayStyle(providerOrStyle);
-		return API_STYLE_OPTIONS.find((option) => option.value === style)?.label || style || '自动';
+		return (
+			PROVIDER_PRESET_OPTIONS.find((option) => option.value === style)?.label ||
+			style ||
+			'自动'
+		);
 	}
 	function setPolicyRequestFromInput(policy: RequestPolicyDraft, value: string) {
 		const request = REQUEST_POLICY_OPTIONS.find((option) => option.value === value)?.value;

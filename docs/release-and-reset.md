@@ -57,6 +57,8 @@ Session prompt 首次上下文条数目前配置在 `[session].prompt_history_li
 
 API 密钥、OCR 密钥与 MCP 环境变量只通过安全凭据存储的 opaque reference 持久化。TOML 中的明文凭据会使配置加载失败并备份原文件；启动只从现有引用读取凭据，不再导入旧明文值。若引用在操作系统凭据存储中不存在，需要重新输入对应凭据。当前 provider `api_style` 仅接受 canonical wire protocol id；无效值和指向不存在 provider 的媒体配置会走同一备份与默认配置恢复。Deepgram 凭据只填写原始 API key，不要包含 `Token ` 或 `Deepgram ` 前缀；已保存前缀的凭据需要在模型设置中重新输入。
 
+Provider 的 `media_capabilities` 可选字段列出该连接实际提供的 STT、TTS 和图片生成 endpoint。旧配置没有该字段时，官方 OpenAI、Gemini、Groq、Deepgram、AssemblyAI、ElevenLabs 按已知 profile 推导能力，其它兼容服务默认关闭；这不影响聊天模型路由。设置页可在对应 wire style 支持范围内显式启用媒体 endpoint。该字段为可选配置，没有数据库迁移或重置要求。若需回退到不认识该字段的旧版本，先从 `config.toml` 的 Provider 表中删除 `media_capabilities`。
+
 模型工具使用点号 operation view，例如 `files.*`、`system.*`、`clipboard.*`、`input.*`、`window.*`、`media.*`、`tool_runs.*`、`schedule.*` 和 `haven.*`。启用 Skill 由 `load_skill` 按名称加载为当前 session 的 `skill__...`；内置 operation 由 `tool_catalog` 的 `action=load` 加载，MCP 由 `load_mcp` 按服务器加载。配置和未完成会话都没有旧工具名的转换保证。
 
 媒体与搜索设置保持运行时定义的值域：`[media.ocr].provider` 仅接受 `llm`、`baidu`、`azure`、`tencent`、`none`；STT 的 `provider_name=mcp` 必须引用已配置的 `[mcp_servers]` 名称；TTS/image generation 的 provider 名称可用空值或大小写不敏感的 `none` 禁用。LLM provider/model 的 `default_web_search` / `web_search` 接受 `off`、`auto`、`always` 及 `required`、`on`、`1`、`true` 别名（大小写不敏感并忽略外围空格）；`null` 或空白继续回退到 `HAVEN_WEB_SEARCH`，显式 `off` 才关闭。未知 OCR/search 值和悬空 STT MCP 引用会使整份 TOML 备份并在当前进程使用默认值；Settings 更新拒绝错误字段。修正对应配置即可保留其它设置，无需重置数据库。

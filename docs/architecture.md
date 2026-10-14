@@ -217,6 +217,7 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
 ### 2.2 `haven-llm` —— 模型与媒体能力的唯一实现方
 
 - `haven_llm` crate root 是唯一跨 crate API 路径：稳定 router/client traits、请求 DTO、registry 与媒体投影操作从根导出；`adapters`、`client`、`router`、`types` 等源码模块不直接对下游开放。provider 和协议细节继续留在 LLM 内部。provider wire-style 规范化和能力谓词由 Common 唯一拥有，App 直接从 Common 读取；adapter 相关根出口仅保留实际跨 crate 使用的 `WebSearchMode` / 搜索结果 helper，媒体 builder 内部解析器及含凭据 resolved config 不进入根 API（ADR 1058）。
+- `ProviderConfig.provider` 保存厂商身份，`api_style` 保存 wire protocol；设置页预设选择分别投影这两个字段，不能用协议值覆盖预设身份。OpenAI-compatible 只说明聊天请求格式；独立 STT、TTS、生图 endpoint 由可选 `media_capabilities` 明确声明。旧配置缺省时只为官方 OpenAI、Gemini、Groq、Deepgram、AssemblyAI、ElevenLabs 推导已知端点，其余兼容服务按无媒体端点处理。用户可为确实实现相应路由的兼容服务显式启用能力；Common 校验其与当前 adapter 支持面相容，LLM builder 再按声明分发。
 - `adapters/`：按 **`api_style`（线协议）** 分发的 provider 适配与统一 `LlmClient` +
   `with_retry`。LLM error 分类留在 `haven-llm`，attempt/backoff/stop 决策复用
   `haven-common::retry::RecoveryPolicy`（ADR 0447）。能力矩阵见 `adapters/capabilities.rs`：
@@ -240,7 +241,7 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   UI 对不支持的线协议灰显。
 - 厂商扩展（DeepSeek `thinking` / Responses `reasoning.effort`、Kimi
   `thinking.type`+`keep` 等）挂在对应 adapter + provider/base_url/model 检测上，
-  复用聊天页「思考强度」，不另开线协议。
+  复用聊天页「思考强度」，不另开线协议。Preset 必须保留具体厂商 identity，不能因它们使用 OpenAI-compatible 或 Responses wire protocol 而折叠为 `openai`。
 - `request_descriptor.rs`：crate-private `RequestDescriptor` 显式并列承载逻辑请求用途和所需
   `Capability`；用途到能力的映射复用 `RequestKind::required_capability()`。`RequestKind` 同时是
   当前逻辑请求类型和 public 配置 route key；不增加一一对应的 public `CallPurpose`。Router 将同一

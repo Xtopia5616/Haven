@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-	API_STYLE_OPTIONS,
+	PROVIDER_PRESET_OPTIONS,
 	PROVIDER_PRESETS,
-	apiStylePreset,
+	providerPreset,
 	applyProviderPreset,
-	displayApiStyle,
+	resolveProviderPreset,
 	isKeylessProvider,
 	isKnownApiStyle,
 	isSttOnlyStyle,
@@ -23,9 +23,9 @@ describe('apiStyle', () => {
 		expect(normalizeApiStyle('OpenAI-Responses')).toBe('openai-responses');
 		expect(normalizeApiStyle('deepseek-responses')).toBe('invalid');
 		expect(normalizeApiStyle('unknown')).toBe('invalid');
-		expect(displayApiStyle({ api_style: 'deepseek-responses', provider: 'deepseek' })).toBe(
-			'invalid',
-		);
+		expect(
+			resolveProviderPreset({ api_style: 'deepseek-responses', provider: 'deepseek' }),
+		).toBe('invalid');
 	});
 
 	it('marks builtin web-search styles', () => {
@@ -38,36 +38,42 @@ describe('apiStyle', () => {
 	});
 
 	it('maps deepseek responses preset to openai-responses + deepseek', () => {
-		const p = apiStylePreset('deepseek-responses');
+		const p = providerPreset('deepseek-responses');
 		expect(p.api_style).toBe('openai-responses');
 		expect(p.provider).toBe('deepseek');
 		expect(p.base_url).toContain('deepseek');
 	});
 
 	it('maps openai-compatible vendor presets', () => {
-		const moonshot = apiStylePreset('moonshot');
+		const moonshot = providerPreset('moonshot');
 		expect(moonshot.api_style).toBe('openai-chat');
 		expect(moonshot.provider).toBe('moonshot');
 		expect(moonshot.base_url).toContain('moonshot');
 
-		const openrouter = apiStylePreset('openrouter');
+		const openrouter = providerPreset('openrouter');
 		expect(openrouter.provider).toBe('openrouter');
 		expect(openrouter.base_url).toContain('openrouter');
 
-		const azure = apiStylePreset('openai-azure');
+		const azure = providerPreset('openai-azure');
 		expect(azure.provider).toBe('azure');
 		expect(azure.auth_header_name).toBe('api-key');
 		expect(azure.auth_header_prefix).toBe('');
+
+		for (const name of ['openai-compatible', 'lm-studio', 'vllm']) {
+			expect(PROVIDER_PRESET_OPTIONS.some((option) => option.value === name)).toBe(true);
+		}
+		expect(providerPreset('lm-studio').provider).toBe('lm-studio');
+		expect(providerPreset('vllm').provider).toBe('vllm');
 	});
 
 	it('displays deepseek provider as deepseek-responses or deepseek-chat', () => {
-		expect(
-			displayApiStyle({ api_style: 'openai-responses', provider: 'deepseek' }),
-		).toBe('deepseek-responses');
-		expect(displayApiStyle({ api_style: 'openai-chat', provider: 'deepseek' })).toBe(
+		expect(resolveProviderPreset({ api_style: 'openai-responses', provider: 'deepseek' })).toBe(
+			'deepseek-responses',
+		);
+		expect(resolveProviderPreset({ api_style: 'openai-chat', provider: 'deepseek' })).toBe(
 			'deepseek-chat',
 		);
-		expect(displayApiStyle({ api_style: 'openai-responses', provider: 'openai' })).toBe(
+		expect(resolveProviderPreset({ api_style: 'openai-responses', provider: 'openai' })).toBe(
 			'openai-responses',
 		);
 	});
@@ -77,24 +83,24 @@ describe('apiStyle', () => {
 		const gemini = { provider: 'gemini', api_style: null };
 		expect(providerWireStyle(anthropic)).toBe('openai-chat');
 		expect(providerWireStyle(gemini)).toBe('openai-chat');
-		expect(displayApiStyle({ provider: 'anthropic', api_style: '' })).toBe('openai-chat');
-		expect(displayApiStyle({ provider: 'gemini' })).toBe('openai-chat');
-		expect(displayApiStyle({ provider: 'llama.cpp', api_style: '' })).toBe('openai-chat');
+		expect(resolveProviderPreset({ provider: 'anthropic', api_style: '' })).toBe('openai-chat');
+		expect(resolveProviderPreset({ provider: 'gemini' })).toBe('openai-chat');
+		expect(resolveProviderPreset({ provider: 'llama.cpp', api_style: '' })).toBe('openai-chat');
 	});
 
 	it('displays vendor presets by provider hint or host', () => {
-		expect(displayApiStyle({ api_style: 'openai-chat', provider: 'moonshot' })).toBe(
+		expect(resolveProviderPreset({ api_style: 'openai-chat', provider: 'moonshot' })).toBe(
 			'moonshot',
 		);
 		expect(
-			displayApiStyle({
+			resolveProviderPreset({
 				api_style: 'openai-chat',
 				provider: 'openai',
 				base_url: 'https://openrouter.ai/api/v1',
 			}),
 		).toBe('openrouter');
 		expect(
-			displayApiStyle({
+			resolveProviderPreset({
 				api_style: 'openai-chat',
 				provider: 'azure',
 				base_url: 'https://myres.openai.azure.com/openai',
@@ -102,7 +108,7 @@ describe('apiStyle', () => {
 		).toBe('openai-azure');
 		// Substring host must not remap (exact/suffix only).
 		expect(
-			displayApiStyle({
+			resolveProviderPreset({
 				api_style: 'openai-chat',
 				provider: 'openai',
 				base_url: 'https://fakeopenrouter.ai.example/v1',
@@ -111,10 +117,10 @@ describe('apiStyle', () => {
 	});
 
 	it('exposes grouped preset options', () => {
-		expect(API_STYLE_OPTIONS.length).toBe(PROVIDER_PRESETS.length);
-		expect(API_STYLE_OPTIONS.some((o) => o.group === '国内常用')).toBe(true);
-		expect(API_STYLE_OPTIONS.some((o) => o.value === 'dashscope')).toBe(true);
-		expect(API_STYLE_OPTIONS.some((o) => o.value === 'ollama')).toBe(true);
+		expect(PROVIDER_PRESET_OPTIONS.length).toBe(PROVIDER_PRESETS.length);
+		expect(PROVIDER_PRESET_OPTIONS.some((o) => o.group === '国内服务')).toBe(true);
+		expect(PROVIDER_PRESET_OPTIONS.some((o) => o.value === 'dashscope')).toBe(true);
+		expect(PROVIDER_PRESET_OPTIONS.some((o) => o.value === 'ollama')).toBe(true);
 	});
 
 	it('detects stt-only styles', () => {
@@ -127,8 +133,8 @@ describe('apiStyle', () => {
 		expect(normalizeApiStyle('elevenlabs')).toBe('elevenlabs');
 		expect(isKnownApiStyle('elevenlabs')).toBe(true);
 		expect(isTtsOnlyStyle('elevenlabs')).toBe(true);
-		expect(apiStylePreset('elevenlabs').api_style).toBe('elevenlabs');
-		expect(apiStylePreset('elevenlabs').provider).toBe('elevenlabs');
+		expect(providerPreset('elevenlabs').api_style).toBe('elevenlabs');
+		expect(providerPreset('elevenlabs').provider).toBe('elevenlabs');
 	});
 
 	it('mirrors media capability allowlists', () => {
@@ -139,34 +145,56 @@ describe('apiStyle', () => {
 		const gemini = { api_style: 'gemini', provider: 'google' };
 		expect(mediaCapabilityBackend(gemini, 'image_gen')).toBe('gemini');
 		expect(mediaCapabilityBackend(gemini, 'tts')).toBe('');
-		const openai = { api_style: 'openai-chat', provider: 'openai' };
+		const openai = {
+			api_style: 'openai-chat',
+			provider: 'openai',
+			base_url: 'https://api.openai.com/v1',
+		};
 		expect(mediaCapabilityBackend(openai, 'tts')).toBe('openai');
 		expect(sttCapabilityBackend(openai)).toBe('openai');
+		const generic = {
+			api_style: 'openai-chat',
+			provider: 'openai-compatible',
+			base_url: 'https://gateway.example/v1',
+		};
+		expect(mediaCapabilityBackend(generic, 'tts')).toBe('');
+		expect(sttCapabilityBackend(generic)).toBe('');
+		expect(
+			mediaCapabilityBackend(
+				{ ...generic, media_capabilities: { stt: false, tts: true, image_gen: false } },
+				'tts',
+			),
+		).toBe('openai');
 	});
 
 	it('detects keyless local providers', () => {
-		expect(isKeylessProvider({ api_style: 'llama.cpp', provider: 'llama.cpp' })).toBe(
-			true,
-		);
-		expect(isKeylessProvider({ api_style: 'openai-chat', provider: 'ollama' })).toBe(
-			true,
-		);
-		expect(isKeylessProvider({ api_style: 'openai-chat', provider: 'openai' })).toBe(
-			false,
-		);
+		expect(isKeylessProvider({ api_style: 'llama.cpp', provider: 'llama.cpp' })).toBe(true);
+		expect(isKeylessProvider({ api_style: 'openai-chat', provider: 'ollama' })).toBe(true);
+		expect(isKeylessProvider({ api_style: 'openai-chat', provider: 'openai' })).toBe(false);
+		expect(isKeylessProvider({ api_style: 'openai-chat', provider: 'lm-studio' })).toBe(true);
+		expect(isKeylessProvider({ api_style: 'openai-chat', provider: 'vllm' })).toBe(false);
 	});
 
 	it('fills empty or previous-default URL when switching preset, keeps custom URL and key', () => {
-		const empty = { api_style: 'openai-chat', base_url: '', api_key: 'sk-keep' };
+		const empty = {
+			preset: 'openai-chat',
+			api_style: 'openai-chat',
+			base_url: '',
+			api_key: 'sk-keep',
+			media_capabilities: { stt: true, tts: true, image_gen: true },
+		};
 		applyProviderPreset(empty, 'deepseek-chat');
+		expect(empty.preset).toBe('deepseek-chat');
 		expect(empty.api_style).toBe('openai-chat');
 		expect(empty.base_url).toBe('https://api.deepseek.com');
 		expect(empty.api_key).toBe('sk-keep');
 
 		const fromDefault = {
+			preset: 'openai-chat',
 			api_style: 'openai-chat',
 			base_url: 'https://api.openai.com/v1/',
 			api_key: 'sk-keep',
+			media_capabilities: { stt: true, tts: true, image_gen: true },
 		};
 		applyProviderPreset(fromDefault, 'moonshot');
 		expect(fromDefault.api_style).toBe('openai-chat');
@@ -174,14 +202,42 @@ describe('apiStyle', () => {
 		expect(fromDefault.api_key).toBe('sk-keep');
 
 		const custom = {
+			preset: 'openai-chat',
 			api_style: 'openai-chat',
 			base_url: 'https://gateway.example/v1',
 			api_key: 'sk-keep',
+			media_capabilities: { stt: false, tts: false, image_gen: false },
 		};
 		applyProviderPreset(custom, 'deepseek-responses');
+		expect(custom.preset).toBe('deepseek-responses');
 		expect(custom.api_style).toBe('openai-responses');
 		expect(custom.base_url).toBe('https://gateway.example/v1');
 		expect(custom.api_key).toBe('sk-keep');
+		expect(custom.media_capabilities).toEqual({ stt: false, tts: false, image_gen: false });
+	});
+
+	it('preserves provider identity and auth settings selected through presets', () => {
+		const deepseek = {
+			preset: 'openai-chat',
+			api_style: 'openai-chat',
+			base_url: 'https://api.openai.com/v1',
+			api_key: '',
+			media_capabilities: { stt: true, tts: true, image_gen: true },
+		};
+		applyProviderPreset(deepseek, 'deepseek-chat');
+		expect(providerPreset(deepseek.preset).provider).toBe('deepseek');
+		expect(deepseek.api_style).toBe('openai-chat');
+
+		const azure = {
+			preset: 'openai-chat',
+			api_style: 'openai-chat',
+			base_url: 'https://api.openai.com/v1',
+			media_capabilities: { stt: true, tts: true, image_gen: true },
+		};
+		applyProviderPreset(azure, 'openai-azure');
+		const selected = providerPreset(azure.preset);
+		expect(selected.provider).toBe('azure');
+		expect(selected.auth_header_name).toBe('api-key');
 	});
 
 	it('rejects unknown styles', () => {

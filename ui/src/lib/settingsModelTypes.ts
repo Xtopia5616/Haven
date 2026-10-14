@@ -7,8 +7,12 @@ import type {
 	ProviderConfigInput,
 	RequestPolicyInput,
 } from './contracts/generatedCommands.ts';
+import type { ProviderMediaCapabilitySettings } from './apiStyleCapabilities.ts';
 
-export type ModelDraft = Omit<ModelConfigInput, 'id' | 'provider_name' | 'model' | 'capabilities'> & {
+export type ModelDraft = Omit<
+	ModelConfigInput,
+	'id' | 'provider_name' | 'model' | 'capabilities'
+> & {
 	id: string;
 	providerName: string;
 	model: string;
@@ -42,8 +46,10 @@ export type ProviderDraft = ProviderConfigInput & {
 
 /** UI-only provider editor state; `proxy_mode` is projected into persisted proxy fields on save. */
 export interface ProviderDialogForm {
+	preset: string;
 	name: string;
 	api_style: string;
+	media_capabilities: ProviderMediaCapabilitySettings;
 	base_url: string;
 	api_key: string;
 	proxy_mode: 'system' | 'direct' | 'custom';

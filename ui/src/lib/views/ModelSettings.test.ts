@@ -90,6 +90,29 @@ describe('ModelSettings provider surface', () => {
 		expect(screen.queryByText('secret-value')).toBeNull();
 	});
 
+	it('keeps a vendor preset identity separate from its OpenAI-compatible wire style', async () => {
+		const config = { providers: [], models: [], request_policies: [] };
+		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
+
+		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
+		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
+			target: { value: 'deepseek-main' },
+		});
+		await fireEvent.input(screen.getByPlaceholderText('sk-...'), {
+			target: { value: 'deepseek-key' },
+		});
+		await fireEvent.click(document.getElementById('prov-api-style')!);
+		await fireEvent.click(screen.getByRole('option', { name: 'DeepSeek Chat' }));
+		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+		expect(config.providers[0]).toMatchObject({
+			provider: 'deepseek',
+			api_style: 'openai-chat',
+			base_url: 'https://api.deepseek.com',
+			media_capabilities: { stt: false, tts: false, image_gen: false },
+		});
+	});
+
 	it('saves a provider with environment proxies bypassed for direct routing', async () => {
 		const config = { providers: [], models: [], request_policies: [] };
 		renderSettings({ ...props(config.providers, config.models), llmConfig: config });

@@ -128,11 +128,17 @@ fn stt_from_provider(cfg: &SttConfig, p: &ProviderConfig) -> Result<ResolvedSttC
 }
 
 fn stt_backend_for(p: &ProviderConfig) -> Result<&'static str> {
-    use haven_common::config::is_openai_family_wire_style;
+    use haven_common::config::{is_openai_family_wire_style, provider_media_capabilities};
     let style = provider_config_wire_style(p);
     if style == "elevenlabs" || p.provider.eq_ignore_ascii_case("elevenlabs") {
         anyhow::bail!(
             "provider '{}' is TTS-only (ElevenLabs); use OpenAI-compatible, Gemini, Deepgram, or AssemblyAI for STT",
+            p.name
+        );
+    }
+    if !provider_media_capabilities(p).stt {
+        anyhow::bail!(
+            "provider '{}' does not declare an STT endpoint; enable STT for this provider only if its service implements the configured route",
             p.name
         );
     }
@@ -711,6 +717,15 @@ mod tests {
             let providers = vec![ProviderConfig {
                 name: provider.into(),
                 provider: provider.into(),
+                api_style: Some(
+                    match provider {
+                        "gemini" => "gemini",
+                        "deepgram" => "deepgram",
+                        "assemblyai" => "assemblyai",
+                        _ => "openai-chat",
+                    }
+                    .into(),
+                ),
                 api_key: "test-key".into(),
                 ..Default::default()
             }];
@@ -738,6 +753,20 @@ mod tests {
     }
 
     #[test]
+    fn stt_fails_closed_for_generic_openai_compatible_provider() {
+        let provider = ProviderConfig {
+            name: "custom".into(),
+            provider: "openai-compatible".into(),
+            api_style: Some("openai-chat".into()),
+            base_url: "https://gateway.example/v1".into(),
+            api_key: "k".into(),
+            ..Default::default()
+        };
+        let err = stt_backend_for(&provider).unwrap_err();
+        assert!(err.to_string().contains("does not declare an STT endpoint"));
+    }
+
+    #[test]
     fn resolve_stt_named_provider_reuses_credentials() {
         use haven_common::config::ProviderConfig;
         let providers = vec![ProviderConfig {
@@ -745,6 +774,10 @@ mod tests {
             provider: "openai".into(),
             base_url: "https://gateway.example/v1".into(),
             api_key: "from-provider".into(),
+            media_capabilities: Some(haven_common::config::ProviderMediaCapabilities {
+                stt: true,
+                ..Default::default()
+            }),
             ..Default::default()
         }];
         let cfg = SttConfig {
@@ -767,6 +800,10 @@ mod tests {
             provider: "openai".into(),
             base_url: "https://gateway.example/v1".into(),
             api_key: "from-provider".into(),
+            media_capabilities: Some(haven_common::config::ProviderMediaCapabilities {
+                stt: true,
+                ..Default::default()
+            }),
             ..Default::default()
         }];
         let cfg = SttConfig {

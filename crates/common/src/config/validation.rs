@@ -106,6 +106,23 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         {
             anyhow::bail!("llm.providers.api_style must use a supported API style");
         }
+        if let Some(capabilities) = provider.media_capabilities {
+            let supported = super::media_capabilities_supported_by_style(
+                provider
+                    .api_style
+                    .as_deref()
+                    .filter(|style| !style.trim().is_empty())
+                    .unwrap_or("openai-chat"),
+            );
+            if (capabilities.stt && !supported.stt)
+                || (capabilities.tts && !supported.tts)
+                || (capabilities.image_gen && !supported.image_gen)
+            {
+                anyhow::bail!(
+                    "llm.providers.media_capabilities cannot enable endpoints unsupported by api_style"
+                );
+            }
+        }
         validate_web_search_mode(
             "llm.providers.default_web_search",
             provider.default_web_search.as_deref(),
@@ -1645,6 +1662,24 @@ mod tests {
         config.llm.providers[0].api_style = None;
         config.media.tts.provider_name = "missing".into();
         assert!(validate_app_config(&config).is_err());
+        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+
+        let mut config = AppConfig::default();
+        config.llm.providers.push(ProviderConfig {
+            name: "chat-only".into(),
+            api_style: Some("anthropic".into()),
+            media_capabilities: Some(crate::config::ProviderMediaCapabilities {
+                tts: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("media_capabilities")
+        );
         assert!(validate_settings_contract(&Settings::from(&config)).is_err());
     }
 

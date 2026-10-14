@@ -2,11 +2,13 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import { withStringValue } from '$lib/typedCallbacks.ts';
 	import {
-		API_STYLE_OPTIONS,
-		apiStylePreset,
+		PROVIDER_PRESET_OPTIONS,
+		providerPreset,
+		mediaCapabilitiesSupportedByStyle,
 		isSttOnlyStyle,
 		isTtsOnlyStyle,
 	} from '$lib/apiStyle.ts';
@@ -33,6 +35,7 @@
 
 {#if dialog.form}
 	{@const form = dialog.form}
+	{@const mediaSupport = mediaCapabilitiesSupportedByStyle(form.api_style)}
 	<MaterialDialog
 		open={true}
 		title={dialog.idx === null ? '添加 Provider' : '编辑 Provider'}
@@ -54,13 +57,13 @@
 					<span class="field-label">Provider 预设</span>
 					<MaterialSelect
 						id="prov-api-style"
-						value={form.api_style}
-						options={API_STYLE_OPTIONS}
+						value={form.preset}
+						options={PROVIDER_PRESET_OPTIONS}
 						onChange={withStringValue(onApplyApiStylePreset)}
 					/>
 				</div>
-				{#if apiStylePreset(form.api_style)}
-					{@const preset = apiStylePreset(form.api_style)}
+				{#if providerPreset(form.preset)}
+					{@const preset = providerPreset(form.preset)}
 					<p class="model-hint">
 						线协议 <code>{preset.api_style}</code>{#if preset.hint}
 							— {preset.hint}{/if}
@@ -81,12 +84,12 @@
 						{/if}
 					</p>
 				{/if}
-				{#if isSttOnlyStyle(apiStylePreset(form.api_style).api_style)}
+				{#if isSttOnlyStyle(providerPreset(form.preset).api_style)}
 					<p class="model-hint">
 						该协议仅支持语音转写。请将其分配给 Audio Model，并在「媒体」页语音卡片把 STT
 						Provider 设为「音频模型」。
 					</p>
-				{:else if isTtsOnlyStyle(apiStylePreset(form.api_style).api_style)}
+				{:else if isTtsOnlyStyle(providerPreset(form.preset).api_style)}
 					<p class="model-hint">
 						该协议仅支持语音合成。在「媒体」页语音卡片把 TTS Provider 设为此项，并填写
 						Voice ID。
@@ -102,6 +105,39 @@
 						autocomplete="off"
 					/>
 				</div>
+				<fieldset class="media-capability-fieldset">
+					<legend class="field-label">媒体端点</legend>
+					<p class="model-hint">
+						聊天协议兼容不代表服务提供这些独立端点。只为服务端确实实现的接口启用。
+					</p>
+					<div class="media-capability-row">
+						<span>语音转写（STT）</span>
+						<MaterialSwitch
+							checked={form.media_capabilities.stt}
+							disabled={!mediaSupport.stt}
+							ariaLabel="启用语音转写端点"
+							onChange={(checked) => (form.media_capabilities.stt = checked)}
+						/>
+					</div>
+					<div class="media-capability-row">
+						<span>语音合成（TTS）</span>
+						<MaterialSwitch
+							checked={form.media_capabilities.tts}
+							disabled={!mediaSupport.tts}
+							ariaLabel="启用语音合成端点"
+							onChange={(checked) => (form.media_capabilities.tts = checked)}
+						/>
+					</div>
+					<div class="media-capability-row">
+						<span>图片生成</span>
+						<MaterialSwitch
+							checked={form.media_capabilities.image_gen}
+							disabled={!mediaSupport.image_gen}
+							ariaLabel="启用图片生成端点"
+							onChange={(checked) => (form.media_capabilities.image_gen = checked)}
+						/>
+					</div>
+				</fieldset>
 				<div class="model-field">
 					<span class="field-label">API Key</span>
 					<ApiKeyField
@@ -124,7 +160,8 @@
 							{ value: 'custom', label: '指定代理' },
 						]}
 						onChange={withStringValue(
-							(value) => (form.proxy_mode = value as ProviderDialogForm['proxy_mode']),
+							(value) =>
+								(form.proxy_mode = value as ProviderDialogForm['proxy_mode']),
 						)}
 					/>
 				</div>
@@ -192,6 +229,23 @@
 	}
 	.model-field .md-input {
 		width: 100%;
+	}
+	.media-capability-fieldset {
+		min-width: 0;
+		margin: 0;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+	}
+	.media-capability-fieldset legend {
+		padding: 0 var(--md-sys-space-xs);
+	}
+	.media-capability-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		min-height: var(--md-comp-button-touch-height);
+		font-size: var(--md-sys-typescale-body-medium-size);
 	}
 	.field-label {
 		font-size: var(--md-sys-typescale-label-small-size);

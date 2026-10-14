@@ -79,7 +79,7 @@ fn resolve_image_gen_config(
 }
 
 fn image_gen_backend_for(p: &ProviderConfig) -> Result<&'static str> {
-    use haven_common::config::is_openai_family_wire_style;
+    use haven_common::config::{is_openai_family_wire_style, provider_media_capabilities};
     let style = provider_config_wire_style(p);
     if style == "elevenlabs" || p.provider.eq_ignore_ascii_case("elevenlabs") {
         anyhow::bail!(
@@ -88,10 +88,12 @@ fn image_gen_backend_for(p: &ProviderConfig) -> Result<&'static str> {
         );
     }
     match style {
-        "gemini" => Ok("gemini"),
-        _ if is_openai_family_wire_style(style) => Ok("openai"),
+        "gemini" if provider_media_capabilities(p).image_gen => Ok("gemini"),
+        _ if is_openai_family_wire_style(style) && provider_media_capabilities(p).image_gen => {
+            Ok("openai")
+        }
         other => anyhow::bail!(
-            "provider '{}' (api_style={other}) does not support image generation; use OpenAI-compatible or Gemini",
+            "provider '{}' (api_style={other}) does not declare an image-generation endpoint; enable it only if its service implements the configured route",
             p.name
         ),
     }
@@ -462,7 +464,7 @@ impl ImageGenClient for GeminiImageGenClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_common::config::{ImageGenConfig, ProviderConfig};
+    use haven_common::config::{ImageGenConfig, ProviderConfig, ProviderMediaCapabilities};
 
     fn resolved_image_gen(provider: &str) -> ResolvedImageGenConfig {
         ResolvedImageGenConfig {
@@ -503,6 +505,19 @@ mod tests {
     }
 
     #[test]
+    fn imagegen_fails_closed_for_generic_openai_compatible_provider() {
+        let provider = ProviderConfig {
+            name: "custom".into(),
+            provider: "openai-compatible".into(),
+            api_style: Some("openai-chat".into()),
+            base_url: "https://gateway.example/v1".into(),
+            api_key: "k".into(),
+            ..Default::default()
+        };
+        assert!(image_gen_backend_for(&provider).is_err());
+    }
+
+    #[test]
     fn imagegen_dispatch_known_providers() {
         for provider in ["openai", "gemini"] {
             let cfg = ImageGenConfig {
@@ -512,6 +527,19 @@ mod tests {
             let providers = vec![ProviderConfig {
                 name: provider.into(),
                 provider: provider.into(),
+                api_style: Some(
+                    if provider == "gemini" {
+                        "gemini"
+                    } else {
+                        "openai-chat"
+                    }
+                    .into(),
+                ),
+                base_url: if provider == "gemini" {
+                    "https://generativelanguage.googleapis.com/v1beta".into()
+                } else {
+                    "https://api.openai.com/v1".into()
+                },
                 api_key: "k".into(),
                 ..Default::default()
             }];
@@ -529,6 +557,10 @@ mod tests {
             provider: "openai".into(),
             base_url: "https://gateway.example/v1".into(),
             api_key: "secret".into(),
+            media_capabilities: Some(ProviderMediaCapabilities {
+                image_gen: true,
+                ..Default::default()
+            }),
             ..Default::default()
         }];
         let cfg = ImageGenConfig {
