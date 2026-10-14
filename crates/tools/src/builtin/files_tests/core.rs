@@ -49,7 +49,8 @@ use super::*;
     fn relative_file_paths_use_workspace_root_when_available() {
         let workspace = crate::execution_workspace::ExecutionWorkspace::discover();
         let root = workspace.root().expect("test checkout has a workspace root");
-        let resolved = resolve_workspace_path(&workspace, "docs/architecture.md").unwrap();
+        let snapshot = workspace.snapshot();
+        let resolved = resolve_workspace_path(&snapshot, "docs/architecture.md").unwrap();
         assert_eq!(Path::new(&resolved), root.join("docs/architecture.md"));
     }
 
@@ -58,7 +59,8 @@ use super::*;
         let root = TempDir::new().unwrap();
         let workspace = crate::execution_workspace::ExecutionWorkspace::from_root(root.path())
             .expect("temporary directory is a valid execution root");
-        let resolved = resolve_workspace_path(&workspace, "nested/notes.md").unwrap();
+        let snapshot = workspace.snapshot();
+        let resolved = resolve_workspace_path(&snapshot, "nested/notes.md").unwrap();
         let canonical_root = workspace.root().unwrap();
         assert_eq!(Path::new(&resolved), canonical_root.join("nested/notes.md"));
     }
@@ -66,7 +68,8 @@ use super::*;
     #[test]
     fn relative_file_paths_fail_when_the_execution_workspace_is_unavailable() {
         let workspace = crate::execution_workspace::ExecutionWorkspace::unavailable();
-        assert!(resolve_workspace_path(&workspace, "nested/notes.md").is_err());
+        let snapshot = workspace.snapshot();
+        assert!(resolve_workspace_path(&snapshot, "nested/notes.md").is_err());
     }
 
     #[test]

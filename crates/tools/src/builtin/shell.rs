@@ -89,6 +89,7 @@ impl ShellTool {
         &self,
         shell_arg: Option<&str>,
         cwd_arg: Option<&str>,
+        execution_workspace: Option<&crate::ExecutionWorkspaceSnapshot>,
     ) -> ResolvedShellContext {
         let shell = shell_arg
             .filter(|s| !s.is_empty())
@@ -98,9 +99,9 @@ impl ShellTool {
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
             .or_else(|| {
-                self.execution_workspace
-                    .root()
-                    .map(std::path::Path::to_path_buf)
+                execution_workspace
+                    .and_then(|workspace| workspace.root.clone())
+                    .or_else(|| self.execution_workspace.root().map(PathBuf::from))
             });
         ResolvedShellContext {
             shell,
@@ -115,13 +116,25 @@ impl ShellTool {
         params: ShellParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        self.run_with_workspace(params, cancel, None).await
+    }
+
+    async fn run_with_workspace(
+        &self,
+        params: ShellParams,
+        cancel: CancellationToken,
+        execution_workspace: Option<&crate::ExecutionWorkspaceSnapshot>,
+    ) -> anyhow::Result<ToolResult> {
         let cmd = params.command;
         if cmd.is_empty() {
             anyhow::bail!("command is required");
         }
         let silent = params.silent.unwrap_or(false);
-        let shell_context =
-            self.resolve_shell_context(params.shell.as_deref(), params.cwd.as_deref());
+        let shell_context = self.resolve_shell_context(
+            params.shell.as_deref(),
+            params.cwd.as_deref(),
+            execution_workspace,
+        );
         validate_shell_command(&shell_context.shell, &cmd)?;
         let max_chars = self.max_output_chars;
 
@@ -397,6 +410,25 @@ impl Tool for ShellTool {
         self.run(params, cancel).await
     }
 
+    async fn execute_with_authorization_context(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<&str>,
+        context: &crate::ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        if target_binding.is_some() {
+            anyhow::bail!("shell tool cannot enforce an external authorization target");
+        }
+        let params = crate::tool_contract::parse_tool_input::<ShellParams>(&self.name(), input)?;
+        let workspace = context
+            .execution_workspace
+            .as_ref()
+            .map(crate::execution_workspace::ExecutionWorkspace::snapshot);
+        self.run_with_workspace(params, cancel, workspace.as_ref())
+            .await
+    }
+
     /// Declare the detached-run binding so the executor attaches the ToolRun
     /// to this session without name-matching "shell".
     fn registrations(&self, output: &Value) -> Vec<crate::tool_contract::ToolRegistration> {
@@ -580,11 +612,21 @@ mod tests {
             ..ShellTool::default()
         };
 
-        let default = tool.resolve_shell_context(None, None);
+        let default = tool.resolve_shell_context(None, None, None);
         assert_eq!(default.working_directory, Some(workspace_root));
 
+        let replacement = tempdir().unwrap();
+        let replacement_workspace = ExecutionWorkspace::from_root(replacement.path()).unwrap();
+        let replacement_snapshot = replacement_workspace.snapshot();
+        let switched = tool.resolve_shell_context(None, None, Some(&replacement_snapshot));
+        assert_eq!(
+            switched.working_directory,
+            replacement_snapshot.root.clone()
+        );
+
         let explicit = temp.path().join("explicit");
-        let selected = tool.resolve_shell_context(None, explicit.to_str());
+        let selected =
+            tool.resolve_shell_context(None, explicit.to_str(), Some(&replacement_snapshot));
         assert_eq!(selected.working_directory, Some(explicit));
     }
 

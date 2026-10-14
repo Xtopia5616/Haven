@@ -3,6 +3,7 @@ use crate::ToolConcurrency;
 use crate::execution_workspace::{ExecutionWorkspace, ExecutionWorkspaceSnapshot};
 use crate::{
     ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationPolicy,
+    ToolExecutionContext,
 };
 use haven_common::config::{SecurityConfig, StoredPermission, ToolConfig};
 use haven_common::types::{
@@ -723,6 +724,29 @@ impl AuthorizationEngine {
         self.config.read().await.execution_workspace.snapshot()
     }
 
+    pub(crate) async fn switch_execution_workspace(
+        &self,
+        root: &Path,
+    ) -> Result<ExecutionWorkspaceSnapshot, String> {
+        let candidate = ExecutionWorkspace::open_root(root, 1)
+            .map_err(|_| "workspace root is not an available local directory".to_string())?;
+        let mut cfg = self.config.write().await;
+        if cfg.execution_workspace.same_root(&candidate) {
+            return Ok(cfg.execution_workspace.snapshot());
+        }
+        if cfg.policy_revision == u64::MAX {
+            return Err("execution policy revision is exhausted".to_string());
+        }
+        let generation = cfg
+            .execution_workspace
+            .generation()
+            .checked_add(1)
+            .ok_or_else(|| "workspace generation is exhausted".to_string())?;
+        cfg.execution_workspace = candidate.with_generation(generation);
+        bump_policy_revision(&mut cfg);
+        Ok(cfg.execution_workspace.snapshot())
+    }
+
     /// Replace the policy and permanent rules atomically. Clears the
     /// process-local session map; the Agent restores grants whose owning
     /// persisted sessions still exist after a live security apply.
@@ -825,53 +849,64 @@ impl AuthorizationEngine {
         FileReadPolicy { allowed_roots }
     }
 
-    pub(crate) async fn file_write_policy(
+    pub(crate) async fn execution_context_for_proof(
         &self,
         request: &AuthorizationRequest,
         proof: &AuthorizationExecutionProof,
-    ) -> Result<FileWritePolicy, String> {
+    ) -> Result<ToolExecutionContext, String> {
         self.verify_execution_proof(request, proof).await?;
         let cfg = self.config.read().await;
         if cfg.policy_revision != proof.binding.policy_revision {
-            return Err("filesystem policy changed before directory capability capture".into());
+            return Err("execution policy changed before capability capture".into());
         }
 
-        let mut root_constraints = Vec::new();
-        let ambient = match cfg.sandbox_mode {
-            SandboxMode::ReadOnly => {
-                return Err("read-only sandbox does not grant file mutation access".into());
-            }
-            SandboxMode::WorkspaceWrite if cfg.writable_roots.is_empty() => {
-                let roots = cfg
-                    .execution_workspace
-                    .directory()
-                    .into_iter()
+        let file_write_policy = if request.tool_name.starts_with("files.")
+            && matches!(request.policy.effect, OperationEffect::WorkspaceWrite)
+        {
+            let mut root_constraints = Vec::new();
+            let ambient = match cfg.sandbox_mode {
+                SandboxMode::ReadOnly => {
+                    return Err("read-only sandbox does not grant file mutation access".into());
+                }
+                SandboxMode::WorkspaceWrite if cfg.writable_roots.is_empty() => {
+                    let roots = cfg
+                        .execution_workspace
+                        .directory()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    root_constraints.push(roots);
+                    false
+                }
+                SandboxMode::WorkspaceWrite => {
+                    root_constraints.push(open_directory_roots(&cfg.writable_roots));
+                    false
+                }
+                SandboxMode::FullAccess => true,
+            };
+
+            for setting in tool_setting_names(&request.tool_name)
+                .filter_map(|name| cfg.tool_settings.get(name))
+                .filter(|setting| !setting.allowed_paths.is_empty())
+            {
+                let roots = setting
+                    .allowed_paths
+                    .iter()
+                    .map(PathBuf::from)
                     .collect::<Vec<_>>();
-                root_constraints.push(roots);
-                false
+                root_constraints.push(open_directory_roots(&roots));
             }
-            SandboxMode::WorkspaceWrite => {
-                root_constraints.push(open_directory_roots(&cfg.writable_roots));
-                false
-            }
-            SandboxMode::FullAccess => true,
+
+            Some(FileWritePolicy {
+                root_constraints,
+                ambient,
+            })
+        } else {
+            None
         };
 
-        for setting in tool_setting_names(&request.tool_name)
-            .filter_map(|name| cfg.tool_settings.get(name))
-            .filter(|setting| !setting.allowed_paths.is_empty())
-        {
-            let roots = setting
-                .allowed_paths
-                .iter()
-                .map(PathBuf::from)
-                .collect::<Vec<_>>();
-            root_constraints.push(open_directory_roots(&roots));
-        }
-
-        Ok(FileWritePolicy {
-            root_constraints,
-            ambient,
+        Ok(ToolExecutionContext {
+            execution_workspace: Some(cfg.execution_workspace.clone()),
+            file_write_policy,
         })
     }
 
@@ -1978,7 +2013,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_write_policy_rejects_a_stale_execution_proof() {
+    async fn execution_context_rejects_a_stale_execution_proof() {
         let engine = AuthorizationEngine::new();
         engine
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
@@ -1993,18 +2028,86 @@ mod tests {
             .execution_proof
             .expect("safe test operation should receive an execution proof");
 
-        engine
-            .file_write_policy(&request, &proof)
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
             .await
-            .expect("current proofs can capture directory authority");
+            .expect("current proofs can capture execution authority");
+        assert!(context.file_write_policy.is_some());
+        assert!(context.execution_workspace.is_some());
 
         engine
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
         assert!(
-            engine.file_write_policy(&request, &proof).await.is_err(),
-            "filesystem authority must not be captured from a stale proof"
+            engine
+                .execution_context_for_proof(&request, &proof)
+                .await
+                .is_err(),
+            "execution authority must not be captured from a stale proof"
         );
+    }
+
+    #[tokio::test]
+    async fn workspace_switch_advances_generation_and_invalidates_old_proofs() {
+        let first_root = tempfile::tempdir().unwrap();
+        let next_root = tempfile::tempdir().unwrap();
+        let workspace = ExecutionWorkspace::from_root(first_root.path()).unwrap();
+        let engine = AuthorizationEngine::new_with_workspace(workspace);
+        engine
+            .set_boundaries(
+                SandboxMode::WorkspaceWrite,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
+            .await;
+        let input = json!({});
+        let request = AuthorizationRequest::new(
+            None,
+            "ask",
+            input.clone(),
+            fixture_policy("ask", &input, RiskLevel::Safe),
+        );
+        let proof = engine
+            .authorize_for_execution(&request)
+            .await
+            .execution_proof
+            .expect("safe test operation should receive an execution proof");
+        let before = engine.execution_workspace_snapshot().await;
+        let same = engine
+            .switch_execution_workspace(first_root.path())
+            .await
+            .expect("selecting the current root is idempotent");
+        assert_eq!(same, before);
+        assert!(
+            engine
+                .execution_context_for_proof(&request, &proof)
+                .await
+                .is_ok(),
+            "idempotently selecting the same root does not invalidate current proofs"
+        );
+
+        let after = engine
+            .switch_execution_workspace(next_root.path())
+            .await
+            .expect("a valid local directory can become the execution workspace");
+        assert_eq!(after.generation, before.generation + 1);
+        assert_eq!(after.root.as_deref(), Some(next_root.path()));
+        assert!(
+            engine
+                .execution_context_for_proof(&request, &proof)
+                .await
+                .is_err(),
+            "switching the workspace invalidates outstanding execution proofs"
+        );
+
+        let invalid_root = next_root.path().join("missing");
+        assert!(
+            engine
+                .switch_execution_workspace(&invalid_root)
+                .await
+                .is_err()
+        );
+        assert_eq!(engine.execution_workspace_snapshot().await, after);
     }
 
     #[tokio::test]

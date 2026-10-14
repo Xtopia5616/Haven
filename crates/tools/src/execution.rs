@@ -459,7 +459,7 @@ impl AuthorizedExecutor<'_> {
             };
 
             let mut authorization_target_binding = None;
-            let mut file_write_policy = None;
+            let mut authorization_context = crate::ToolExecutionContext::default();
             if let Some(proof) = authorization_proof.as_ref() {
                 let request = match execution_surface {
                     ExecutionSurface::Model => {
@@ -482,36 +482,23 @@ impl AuthorizedExecutor<'_> {
                     }
                 }
                 .map_err(anyhow::Error::msg)?;
-                if let Err(reason) = self
+                authorization_context = match self
                     .tools
                     .coordinator
                     .core
                     .authorization
-                    .verify_execution_proof(&request, proof)
+                    .execution_context_for_proof(&request, proof)
                     .await
                 {
-                    return Ok(ToolResult::failed_with_class(
-                        Value::Null,
-                        format!("operation authorization is no longer valid: {reason}"),
-                        ToolErrorClass::Permission,
-                    ));
-                }
-                if request.tool_name.starts_with("files.")
-                    && matches!(
-                        request.policy.effect,
-                        crate::OperationEffect::WorkspaceWrite
-                    )
-                {
-                    file_write_policy = Some(
-                        self.tools
-                            .coordinator
-                            .core
-                            .authorization
-                            .file_write_policy(&request, proof)
-                            .await
-                            .map_err(anyhow::Error::msg)?,
-                    );
-                }
+                    Ok(context) => context,
+                    Err(reason) => {
+                        return Ok(ToolResult::failed_with_class(
+                            Value::Null,
+                            format!("operation authorization is no longer valid: {reason}"),
+                            ToolErrorClass::Permission,
+                        ));
+                    }
+                };
                 authorization_target_binding = request.target_binding;
             }
 
@@ -542,7 +529,7 @@ impl AuthorizedExecutor<'_> {
                         cancel.clone(),
                         timeout_secs,
                         authorization_target_binding.as_deref(),
-                        &crate::ToolExecutionContext { file_write_policy },
+                        &authorization_context,
                     )
                     .await
             };

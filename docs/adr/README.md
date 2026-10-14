@@ -1155,3 +1155,4 @@
 - [1167：建立后端进程级 ExecutionWorkspace](1167-process-scoped-execution-workspace.md)
 - [1168：默认 Shell 工作目录复用 ExecutionWorkspace](1168-default-shell-cwd-uses-execution-workspace.md)
 - [1169：将文件变更锚定到授权目录句柄](1169-anchor-file-mutations-to-authorized-directories.md)
+- [1170：按代次切换执行工作区](1170-version-execution-workspace-switches.md)

@@ -242,7 +242,8 @@ impl Tool for FilesTool {
         }
         #[cfg(not(test))]
         {
-            self.run_with_file_write_policy(params, cancel, None).await
+            self.run_with_execution_context(params, cancel, &crate::ToolExecutionContext::default())
+                .await
         }
     }
 
@@ -257,7 +258,7 @@ impl Tool for FilesTool {
             anyhow::bail!("files tool cannot enforce an external authorization target");
         }
         let params = crate::tool_contract::parse_tool_input::<FilesParams>(&self.name(), input)?;
-        self.run_with_file_write_policy(params, cancel, context.file_write_policy.as_ref())
+        self.run_with_execution_context(params, cancel, context)
             .await
     }
 }

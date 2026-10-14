@@ -24,39 +24,60 @@ impl ExecutionWorkspace {
         let discovered_root = std::env::current_dir()
             .ok()
             .and_then(|current| haven_common::discover_workspace_root(&current))
-            .and_then(|root| canonical_workspace_root(&root).ok());
-        let directory = discovered_root
-            .as_deref()
-            .and_then(|root| haven_platform::filesystem::DirectoryCapability::open(root).ok());
-        let root = directory
-            .as_ref()
-            .map(|directory| directory.root().to_path_buf());
+            .and_then(|root| Self::open_root(&root, 1).ok());
+        let workspace = discovered_root.unwrap_or_else(Self::unavailable);
 
-        if root.is_none() {
+        if workspace.root.is_none() {
             tracing::warn!(
                 "execution workspace could not be resolved; workspace-relative file access is unavailable"
             );
         }
 
-        Self {
-            root,
-            directory,
-            generation: 1,
-        }
+        workspace
     }
 
     #[cfg(test)]
     pub(crate) fn from_root(root: &Path) -> anyhow::Result<Self> {
+        Self::open_root(root, 1)
+    }
+
+    pub(crate) fn open_root(root: &Path, generation: u64) -> anyhow::Result<Self> {
         let root = canonical_workspace_root(root)?;
         let directory = haven_platform::filesystem::DirectoryCapability::open(&root)?;
         Ok(Self {
             root: Some(directory.root().to_path_buf()),
             directory: Some(directory),
-            generation: 1,
+            generation,
         })
     }
 
-    #[cfg(test)]
+    pub(crate) fn with_generation(mut self, generation: u64) -> Self {
+        self.generation = generation;
+        self
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn same_root(&self, other: &Self) -> bool {
+        match (&self.root, &other.root) {
+            (Some(left), Some(right)) => {
+                #[cfg(windows)]
+                {
+                    left.to_string_lossy()
+                        .eq_ignore_ascii_case(&right.to_string_lossy())
+                }
+                #[cfg(not(windows))]
+                {
+                    left == right
+                }
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
     pub(crate) fn unavailable() -> Self {
         Self {
             root: None,

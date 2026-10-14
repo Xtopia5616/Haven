@@ -8,7 +8,7 @@ use haven_mcp::{McpManager, McpPrompt, McpPromptList, McpResourceList, McpResour
 use haven_skills::Skill;
 use haven_skills::SkillRegistry;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
 /// Capability for resolving and running a named Skill inside the Tools owner.
@@ -963,6 +963,21 @@ impl ToolsFacade {
             .authorization
             .execution_workspace_snapshot()
             .await
+    }
+
+    /// Replace the active backend execution workspace after validating and
+    /// opening its local directory. A successful change increments the
+    /// workspace generation and invalidates outstanding execution proofs.
+    pub async fn switch_execution_workspace(
+        &self,
+        root: &Path,
+    ) -> anyhow::Result<ExecutionWorkspaceSnapshot> {
+        self.coordinator
+            .core
+            .authorization
+            .switch_execution_workspace(root)
+            .await
+            .map_err(anyhow::Error::msg)
     }
 
     /// Construct the single capability view used by facade reads and builtin

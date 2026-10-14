@@ -99,6 +99,7 @@ async fn proof_derived_directory_policy_confines_file_writes() {
     tokio::fs::create_dir(&outside).await.unwrap();
     let policy = FileWritePolicy::for_test_roots(std::slice::from_ref(&allowed));
     let context = ToolExecutionContext {
+        execution_workspace: None,
         file_write_policy: Some(policy),
     };
     let tool = FilesTool::default();

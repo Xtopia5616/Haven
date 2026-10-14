@@ -279,16 +279,19 @@ impl FilesTool {
         params: FilesParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        let policy = crate::security::FileWritePolicy::ambient_for_test();
-        self.run_with_file_write_policy(params, cancel, Some(&policy))
+        let context = crate::ToolExecutionContext {
+            execution_workspace: Some(self.authorization.execution_workspace().await),
+            file_write_policy: Some(crate::security::FileWritePolicy::ambient_for_test()),
+        };
+        self.run_with_execution_context(params, cancel, &context)
             .await
     }
 
-    pub(super) async fn run_with_file_write_policy(
+    pub(super) async fn run_with_execution_context(
         &self,
         params: FilesParams,
         cancel: CancellationToken,
-        write_policy: Option<&crate::security::FileWritePolicy>,
+        context: &crate::ToolExecutionContext,
     ) -> anyhow::Result<ToolResult> {
         let op = params.operation.unwrap_or(FilesOperation::Read);
         let mutates_files = matches!(
@@ -301,14 +304,17 @@ impl FilesTool {
                 | FilesOperation::Move
                 | FilesOperation::Delete
         );
-        if mutates_files && write_policy.is_none() {
+        if mutates_files && context.file_write_policy.is_none() {
             anyhow::bail!("file mutation requires proof-derived directory authority");
         }
         let mutation_context = file_mutations::MutationContext {
             cancel: &cancel,
-            write_policy,
+            write_policy: context.file_write_policy.as_ref(),
         };
-        let execution_workspace = self.authorization.execution_workspace().await;
+        let execution_workspace = match &context.execution_workspace {
+            Some(workspace) => workspace.snapshot(),
+            None => self.authorization.execution_workspace_snapshot().await,
+        };
         let search_root = params
             .root
             .as_deref()
@@ -524,7 +530,7 @@ impl FilesTool {
                     self.max_write_bytes,
                     params.dry_run.unwrap_or(false),
                     cancel.clone(),
-                    write_policy,
+                    context.file_write_policy.as_ref(),
                 )
                 .await
             }

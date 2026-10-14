@@ -1724,6 +1724,7 @@ pub trait Tool: Send + Sync {
 #[doc(hidden)]
 #[derive(Clone, Default)]
 pub struct ToolExecutionContext {
+    pub(crate) execution_workspace: Option<crate::execution_workspace::ExecutionWorkspace>,
     pub(crate) file_write_policy: Option<crate::security::FileWritePolicy>,
 }
 

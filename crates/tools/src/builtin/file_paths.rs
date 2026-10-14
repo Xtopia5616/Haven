@@ -6,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::file_classification::{FileClassificationKind, classify_file_by_extension};
 use super::{FilesOperation, MAX_INSPECT_HASH_BYTES};
-use crate::execution_workspace::ExecutionWorkspace;
+use crate::execution_workspace::ExecutionWorkspaceSnapshot;
 use crate::{ManagedAsset, ToolResult};
 
 pub(super) fn sha256_bytes(bytes: &[u8]) -> String {
@@ -227,7 +227,7 @@ pub(super) fn sanitize_path(path: &str) -> anyhow::Result<String> {
 /// authorization gateway. Explicit absolute paths are preserved for the live
 /// sandbox policy to accept or reject.
 pub(super) fn resolve_workspace_path(
-    workspace: &ExecutionWorkspace,
+    workspace: &ExecutionWorkspaceSnapshot,
     path: &str,
 ) -> anyhow::Result<String> {
     let sanitized = sanitize_path(path)?;
@@ -239,7 +239,9 @@ pub(super) fn resolve_workspace_path(
         return Ok(sanitized);
     }
     let resolved = workspace
-        .resolve_relative(path)
+        .root
+        .as_ref()
+        .map(|root| root.join(path))
         .ok_or_else(|| anyhow::anyhow!("execution workspace is unavailable for relative paths"))?;
     Ok(resolved.to_string_lossy().into_owned())
 }
