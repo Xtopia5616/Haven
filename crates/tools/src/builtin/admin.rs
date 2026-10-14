@@ -176,6 +176,8 @@ pub enum McpOperationArgs {
         name: String,
         transport: McpServerTransport,
         #[serde(default)]
+        exposure: haven_common::config::McpExposureConfig,
+        #[serde(default)]
         command: Option<String>,
         #[serde(default)]
         url: Option<String>,
@@ -192,6 +194,8 @@ pub enum McpOperationArgs {
     },
     McpUpdate {
         name: String,
+        #[serde(default)]
+        exposure: Option<haven_common::config::McpExposureConfig>,
         #[serde(default)]
         transport: Option<McpServerTransport>,
         #[serde(default)]
@@ -342,6 +346,7 @@ pub enum ConfigOperationArgs {
 pub struct McpAddFields {
     pub name: String,
     pub transport: McpServerTransport,
+    pub exposure: haven_common::config::McpExposureConfig,
     pub command: Option<String>,
     pub url: Option<String>,
     pub args: Vec<String>,
@@ -354,6 +359,7 @@ pub struct McpAddFields {
 #[derive(Debug, Clone)]
 pub struct McpUpdateFields {
     pub name: String,
+    pub exposure: Option<haven_common::config::McpExposureConfig>,
     pub transport: Option<McpServerTransport>,
     pub command: Option<String>,
     pub url: Option<String>,
@@ -1202,6 +1208,7 @@ impl TypedToolOperation for McpAdminOperation {
             McpOperationArgs::McpAdd {
                 name,
                 transport,
+                exposure,
                 command,
                 url,
                 args,
@@ -1214,6 +1221,7 @@ impl TypedToolOperation for McpAdminOperation {
                 .mcp_add(&McpAddFields {
                     name,
                     transport,
+                    exposure,
                     command,
                     url,
                     args,
@@ -1227,6 +1235,7 @@ impl TypedToolOperation for McpAdminOperation {
                 .map_err(side_effect_service_error),
             McpOperationArgs::McpUpdate {
                 name,
+                exposure,
                 transport,
                 command,
                 url,
@@ -1238,6 +1247,7 @@ impl TypedToolOperation for McpAdminOperation {
                 .services
                 .mcp_update(&McpUpdateFields {
                     name,
+                    exposure,
                     transport,
                     command,
                     url,
@@ -2030,6 +2040,7 @@ mod tests {
         reconcile.to_connect_new.push(McpServerConfig {
             name: "new-server".into(),
             transport: McpServerTransport::Stdio,
+            exposure: Default::default(),
             command: "private-command".into(),
             args: vec!["private-arg".into()],
             env: vec!["TOKEN=private-value".into()],
@@ -2041,6 +2052,7 @@ mod tests {
         reconcile.to_connect_changed.push(McpServerConfig {
             name: "changed-server".into(),
             transport: McpServerTransport::Stdio,
+            exposure: Default::default(),
             command: "private-command".into(),
             args: vec![],
             env: vec![],
@@ -2414,6 +2426,7 @@ mod tests {
             .upsert_fixture(McpServerConfig {
                 name: "private-server".into(),
                 transport: McpServerTransport::Stdio,
+                exposure: Default::default(),
                 command: "hidden-command".into(),
                 args: vec!["PRIVATE_ARG_MARKER".into()],
                 env: vec!["TOKEN=PRIVATE_ENV_MARKER".into()],
@@ -2686,6 +2699,7 @@ mod tests {
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "duplicate-server".into(),
                     transport: McpServerTransport::Stdio,
+                    exposure: Default::default(),
                     command: Some("server-one".into()),
                     url: None,
                     args: vec!["PRIVATE_ARG_MARKER".into()],
@@ -2712,6 +2726,7 @@ mod tests {
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "duplicate-server".into(),
                     transport: McpServerTransport::Stdio,
+                    exposure: Default::default(),
                     command: Some("server-two".into()),
                     url: None,
                     args: vec!["DUPLICATE_PRIVATE_ARG".into()],
@@ -2775,6 +2790,7 @@ mod tests {
             .execute(
                 AdminRequest::Mcp(McpOperationArgs::McpUpdate {
                     name: "duplicate-server".into(),
+                    exposure: None,
                     transport: None,
                     command: None,
                     url: None,
@@ -2852,6 +2868,7 @@ mod tests {
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "partial-server".into(),
                     transport: McpServerTransport::Stdio,
+                    exposure: Default::default(),
                     command: Some(missing_command.clone()),
                     url: None,
                     args: vec!["PARTIAL_PRIVATE_ARG".into()],
@@ -2968,6 +2985,7 @@ mod tests {
         let server = McpServerConfig {
             name: "broken-server".into(),
             transport: McpServerTransport::Stdio,
+            exposure: Default::default(),
             command: command.clone(),
             args: vec!["PRIVATE_MCP_ARG_MARKER".into()],
             env: vec!["TOKEN=PRIVATE_MCP_ENV_MARKER".into()],
@@ -3237,6 +3255,7 @@ mod tests {
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "demo".into(),
                     transport: McpServerTransport::Stdio,
+                    exposure: Default::default(),
                     command: Some("demo-mcp".into()),
                     url: None,
                     args: Vec::new(),
@@ -3318,6 +3337,7 @@ mod tests {
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "disabled-server".into(),
                     transport: McpServerTransport::Stdio,
+                    exposure: Default::default(),
                     command: Some("not-started".into()),
                     url: None,
                     args: Vec::new(),

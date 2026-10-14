@@ -773,6 +773,7 @@ mod tests {
     fn mcp_connection_admin_failures_use_external_error_logging() {
         let update = AdminRequest::Mcp(McpOperationArgs::McpUpdate {
             name: "server".into(),
+            exposure: None,
             transport: None,
             command: None,
             url: None,

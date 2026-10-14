@@ -31,6 +31,7 @@ function makeMcpServerSnapshot(overrides: Record<string, unknown> = {}) {
 		cwd: null,
 		url: '',
 		enabled: true,
+		exposure: { default: 'deferred', tools: {} },
 		status: 'Disconnected',
 		tools: [
 			{
@@ -103,6 +104,7 @@ describe('ToolsView command boundary', () => {
 				cwd: null,
 				url: '',
 				enabled: true,
+				exposure: { default: 'deferred', tools: {} },
 				status: { Offline: { error: 'server unavailable' } },
 				tools: [
 					{
@@ -172,6 +174,8 @@ describe('ToolsView command boundary', () => {
 		['working directory', { cwd: 1 }],
 		['URL', { url: false }],
 		['enabled state', { enabled: 'true' }],
+		['exposure mode', { exposure: { default: 'future', tools: {} } }],
+		['exposure overrides', { exposure: { default: 'deferred', tools: { '': 'hidden' } } }],
 		['tool schema', { tools: [{ name: 'tool', description: 'Tool', input_schema: null }] }],
 		['last error', { last_error: 1 }],
 		['diagnostic', { diagnostic: false }],

@@ -943,6 +943,7 @@ impl AdminServices {
         let config = McpServerConfig {
             name: fields.name.clone(),
             transport: fields.transport.clone(),
+            exposure: fields.exposure.clone(),
             command: command.unwrap_or_default(),
             args: fields.args.clone(),
             env: fields.env.clone(),
@@ -1032,6 +1033,9 @@ impl AdminServices {
         }
         if let Some(enabled) = fields.enabled {
             updated.enabled = enabled;
+        }
+        if let Some(exposure) = &fields.exposure {
+            updated.exposure = exposure.clone();
         }
         self.apply_mcp_config_update(&existing, &updated, true)
             .await

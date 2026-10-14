@@ -219,6 +219,7 @@ fn mcp_server_snapshot_roundtrip() {
         cwd: None,
         url: "http://localhost:3001/mcp".into(),
         enabled: true,
+        exposure: Default::default(),
         status: McpClientStatus::Connected,
         tools: vec![],
         last_error: None,

@@ -76,7 +76,9 @@ Pi 将 MCP 工具暴露细分为 `direct`、`deferred`、`codemode`、`hidden`�
 
 ## 影响与迁移
 
-本 ADR 只确定目标架构，不直接改配置或数据库。第一阶段保留未显式配置 exposure 的 server 默认 `deferred`；具体配置字段落地时更新配置/IPC schema 与设置 UI。执行模式变化不需要数据库迁移，除非后续 workflow 另行决定持久化；若新增持久 schema，单独 ADR 明确 schema 版本与数据库重置范围。现有数据库的 `session_events`、tool-call identity、ToolRun completion/outbox 和 X12 投影契约保持权威。
+第一条垂直切片已落地：`McpServerConfig.exposure` 管理 server 默认模式和 per-tool pattern；Common resolver 同时驱动 Direct provider surface、Deferred 目录/加载、Hidden 目录过滤和后端 stale-call 拒绝。配置经 IPC 暴露到 MCP 设置 UI，旧配置缺少该字段时采用 `deferred`，不涉及数据库 schema。模式切换不触发 MCP 重连，只刷新工具目录。
+
+CodeMode 的 enum 和 pattern resolver 已有契约，但执行器尚未开放。当前 UI 不允许新选 CodeMode（只在已有配置中保留并允许改回），Legacy 的目录、加载和执行入口对 CodeMode fail closed。必须先完成 §5.8 的嵌套授权与 sandbox 审计，再实现 evaluator、预算和按 server 切换。workflow、MCP resources/prompts 和 ExecutionWorkspace 仍按实施顺序等待各自垂直切片。现有数据库的 `session_events`、tool-call identity、ToolRun completion/outbox 和 X12 投影契约保持权威。
 
 ## 验收要求
 

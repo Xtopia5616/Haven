@@ -28,6 +28,8 @@ pub const MAX_CLIPBOARD_ENTRY_OUTPUT_CHARS: usize = 100_000;
 pub const MAX_TOOL_TIMEOUT_SECS: u64 = 3_600;
 pub const MAX_TOOL_RETRIES: u32 = 10;
 pub const MAX_TOOL_RETRY_BACKOFF_SECS: u64 = 60;
+pub const MAX_MCP_TOOL_EXPOSURE_OVERRIDES: usize = 256;
+pub const MAX_MCP_TOOL_EXPOSURE_PATTERN_CHARS: usize = 256;
 /// A zero background ToolRun limit intentionally disables background launches.
 pub const MAX_RUNNING_BACKGROUND_TOOL_RUNS: usize = 64;
 /// Maximum number of entries returned by one files.list operation.
@@ -731,6 +733,32 @@ impl Default for NotificationConfig {
 // Aggregated application config
 // ---------------------------------------------------------------------------
 
+/// MCP capability visibility defaults and per-tool overrides for one server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpExposureConfig {
+    /// Exposure used when no exact or wildcard tool override matches.
+    pub default: crate::mcp::McpToolExposure,
+    /// Exact raw MCP tool names or `*` patterns mapped to their exposure.
+    #[serde(default)]
+    pub tools: std::collections::BTreeMap<String, crate::mcp::McpToolExposure>,
+}
+
+impl Default for McpExposureConfig {
+    fn default() -> Self {
+        Self {
+            default: crate::mcp::McpToolExposure::Deferred,
+            tools: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl McpExposureConfig {
+    pub fn for_tool(&self, tool_name: &str) -> crate::mcp::McpToolExposure {
+        crate::mcp::resolve_mcp_tool_exposure(self.default, &self.tools, tool_name)
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct McpServerConfig {
@@ -753,6 +781,8 @@ pub struct McpServerConfig {
     /// Endpoint URL for HTTP transports (e.g. `http://localhost:3001/mcp`).
     pub url: String,
     pub enabled: bool,
+    /// Model-facing MCP capability exposure. Defaults to deferred loading.
+    pub exposure: McpExposureConfig,
 }
 
 impl std::fmt::Debug for McpServerConfig {
@@ -771,6 +801,7 @@ impl std::fmt::Debug for McpServerConfig {
             .field("cwd", &self.cwd.as_ref().map(|_| "[CONFIGURED]"))
             .field("url", &(!self.url.is_empty()).then_some("[CONFIGURED]"))
             .field("enabled", &self.enabled)
+            .field("exposure", &self.exposure)
             .finish()
     }
 }
@@ -787,6 +818,7 @@ impl Default for McpServerConfig {
             cwd: None,
             url: String::new(),
             enabled: true,
+            exposure: McpExposureConfig::default(),
         }
     }
 }
@@ -811,6 +843,28 @@ pub(super) fn validate_mcp_server_names(servers: &[McpServerConfig]) -> anyhow::
         }
         if !names.insert(server.name.as_str()) {
             anyhow::bail!("MCP server names must be unique");
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_mcp_server_exposure(servers: &[McpServerConfig]) -> anyhow::Result<()> {
+    for server in servers {
+        if server.exposure.tools.len() > MAX_MCP_TOOL_EXPOSURE_OVERRIDES {
+            anyhow::bail!(
+                "MCP server exposure may contain at most {MAX_MCP_TOOL_EXPOSURE_OVERRIDES} tool overrides"
+            );
+        }
+        for pattern in server.exposure.tools.keys() {
+            let char_count = pattern.chars().count();
+            if char_count == 0
+                || char_count > MAX_MCP_TOOL_EXPOSURE_PATTERN_CHARS
+                || pattern.chars().any(char::is_control)
+            {
+                anyhow::bail!(
+                    "MCP tool exposure patterns must contain 1-{MAX_MCP_TOOL_EXPOSURE_PATTERN_CHARS} non-control characters"
+                );
+            }
         }
     }
     Ok(())

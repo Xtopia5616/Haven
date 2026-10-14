@@ -13,6 +13,8 @@ mod document;
 mod execution;
 mod facade;
 mod live_output;
+#[cfg(test)]
+mod mcp_exposure_tests;
 mod mcp_llm_adapter;
 mod mcp_server_config;
 mod operation_view;

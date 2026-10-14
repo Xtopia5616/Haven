@@ -182,8 +182,8 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 | 状态 | 切片 | 完成条件 |
 | --- | --- | --- |
-| **Active** | 配置/IPC/UI 与 MCP runtime 接入 exposure | server 默认值和 per-tool overrides 由同一配置 owner 管理；`direct` / `deferred` / `hidden` 共用确定性 resolver 决定 prompt、目录、加载和执行可达性；hidden/disabled stale call 在后端拒绝；设置 UI 使用闭合枚举。 |
-| **Next** | 授权与 sandbox 对嵌套 capability 的安全审计和必要收敛 | 每个子调用能复用 Tools 唯一 owner；确认、target、策略 revision、撤销、sandbox/network 和失败行为有负向/竞态测试；未完成前不启用 CodeMode。 |
+| **Complete** | 配置/IPC/UI 与 MCP runtime 接入 exposure | server 默认值与 per-tool overrides 由同一配置 owner 管理；`direct` / `deferred` / `hidden` 共用确定性 resolver 控制原生 surface、目录、加载和执行可达性；策略更新不重连 server；Hidden/CodeMode stale call 由后端拒绝。CodeMode 在 UI 中只可从已有配置改回，不对新配置开放。 |
+| **Active** | 授权与 sandbox 对嵌套 capability 的安全审计和必要收敛 | 每个子调用能复用 Tools 唯一 owner；确认、target、策略 revision、撤销、sandbox/network 和失败行为有负向/竞态测试；审计完成前不开放 CodeMode executor。 |
 | Deferred | CodeMode 与 Legacy 调用面的 per-server 切换 | sandbox evaluator 无宿主能力；脚本、调用数、并发、时间和结果均有硬上限；每个子调用经过标准授权/安全网关；部分副作用和取消语义可恢复/观察。 |
 | Deferred | MCP resources/read 与 user-selected prompts | 按 MCP 2026-07-28 能力协商；实现有界、带来源和 auth context 的读取；未实现的交互/任务能力 fail closed。 |
 | Deferred | 声明式 Workflow | DAG/参数映射验证、无任意表达式/动态路由；每步单独授权；仅有跨 turn 生命周期时接入 ToolRun，不再建平行 job owner。 |

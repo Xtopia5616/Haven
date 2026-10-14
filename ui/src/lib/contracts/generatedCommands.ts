@@ -200,8 +200,10 @@ export interface McpDiscoveryConfigInput { health_interval_secs?: number; reconn
 export interface McpDiscoveryConfig { health_interval_secs: number; reconnect_initial_ms: number; reconnect_max_ms: number; reconnect_max_retries: number }
 export interface McpEnvironmentCredentialRefInput { name: string; credential_ref?: string | null; has_value?: boolean }
 export interface McpEnvironmentCredentialRef { name: string; credential_ref?: string; has_value: boolean }
-export interface McpServerConfigInput { name?: string; transport?: McpServerTransportInput; command?: string; args?: string[]; env?: string[]; env_refs?: McpEnvironmentCredentialRefInput[]; cwd?: string | null; url?: string; enabled?: boolean }
-export interface McpServerConfig { name: string; transport: McpServerTransport; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean }
+export interface McpExposureConfigInput { default?: McpToolExposureInput; tools?: Record<string, McpToolExposureInput> }
+export interface McpExposureConfig { default: McpToolExposure; tools: Record<string, McpToolExposure> }
+export interface McpServerConfigInput { name?: string; transport?: McpServerTransportInput; command?: string; args?: string[]; env?: string[]; env_refs?: McpEnvironmentCredentialRefInput[]; cwd?: string | null; url?: string; enabled?: boolean; exposure?: McpExposureConfigInput }
+export interface McpServerConfig { name: string; transport: McpServerTransport; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean; exposure: McpExposureConfig }
 export interface MemoryConfigInput { fact_inference_enabled?: boolean }
 export interface MemoryConfig { fact_inference_enabled: boolean }
 export interface NotificationConfigInput { session_created?: NotifyChannelsInput; session_completed?: NotifyChannelsInput; session_paused?: NotifyChannelsInput; session_resumed?: NotifyChannelsInput; session_error?: NotifyChannelsInput; permission_requested?: NotifyChannelsInput; tool_run_completed?: NotifyChannelsInput }
@@ -232,6 +234,10 @@ export const MCP_SERVER_TRANSPORT_INPUT_VALUES = ['stdio', 'http'] as const;
 export type McpServerTransportInput = (typeof MCP_SERVER_TRANSPORT_INPUT_VALUES)[number];
 export const MCP_SERVER_TRANSPORT_VALUES = ['stdio', 'http'] as const;
 export type McpServerTransport = (typeof MCP_SERVER_TRANSPORT_VALUES)[number];
+export const MCP_TOOL_EXPOSURE_INPUT_VALUES = ['direct', 'deferred', 'codemode', 'hidden'] as const;
+export type McpToolExposureInput = (typeof MCP_TOOL_EXPOSURE_INPUT_VALUES)[number];
+export const MCP_TOOL_EXPOSURE_VALUES = ['direct', 'deferred', 'codemode', 'hidden'] as const;
+export type McpToolExposure = (typeof MCP_TOOL_EXPOSURE_VALUES)[number];
 export interface MediaAsset { asset_id: string; content_hash: string; media_type: string; size_bytes: number; filename?: string; source: MediaAssetSource; lifecycle: MediaAssetLifecycle; expires_at?: string }
 export const MEDIA_ASSET_LIFECYCLE_VALUES = ['request', 'session', 'managed', 'external'] as const;
 export type MediaAssetLifecycle = (typeof MEDIA_ASSET_LIFECYCLE_VALUES)[number];
@@ -367,7 +373,7 @@ export type LlmConnectionStatus = (typeof LLM_CONNECTION_STATUS_VALUES)[number];
 export const WEB_SEARCH_PHASE_VALUES = ['in_progress', 'searching', 'completed'] as const;
 export type WebSearchPhase = (typeof WEB_SEARCH_PHASE_VALUES)[number];
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };
-export interface McpServerSnapshot { name: string; transport: McpServerTransport; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
+export interface McpServerSnapshot { name: string; transport: McpServerTransport; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; exposure: McpExposureConfig; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
 export const MEMORY_ENTITY_KIND_INPUT_VALUES = ['fact', 'episode'] as const;
 export type MemoryEntityKindInput = (typeof MEMORY_ENTITY_KIND_INPUT_VALUES)[number];
@@ -4098,6 +4104,22 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 					'enabled': {
 						optional: false,
 						shape: { kind: 'boolean' },
+					},
+					'exposure': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'default': {
+									optional: false,
+									shape: { kind: 'enum', values: MCP_TOOL_EXPOSURE_VALUES },
+								},
+								'tools': {
+									optional: false,
+									shape: { kind: 'record', values: { kind: 'enum', values: MCP_TOOL_EXPOSURE_VALUES } },
+								}
+							}
+						},
 					}
 				}
 			} },
@@ -4737,6 +4759,22 @@ export const LIST_MCP_SERVERS_RESPONSE_SHAPE = { kind: 'array', items: {
 		'enabled': {
 			optional: false,
 			shape: { kind: 'boolean' },
+		},
+		'exposure': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'default': {
+						optional: false,
+						shape: { kind: 'enum', values: MCP_TOOL_EXPOSURE_VALUES },
+					},
+					'tools': {
+						optional: false,
+						shape: { kind: 'record', values: { kind: 'enum', values: MCP_TOOL_EXPOSURE_VALUES } },
+					}
+				}
+			},
 		},
 		'status': {
 			optional: false,
@@ -7556,6 +7594,22 @@ export const SETTINGS_RESPONSE_SHAPE = {
 					'enabled': {
 						optional: false,
 						shape: { kind: 'boolean' },
+					},
+					'exposure': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'default': {
+									optional: false,
+									shape: { kind: 'enum', values: MCP_TOOL_EXPOSURE_VALUES },
+								},
+								'tools': {
+									optional: false,
+									shape: { kind: 'record', values: { kind: 'enum', values: MCP_TOOL_EXPOSURE_VALUES } },
+								}
+							}
+						},
 					}
 				}
 			} },

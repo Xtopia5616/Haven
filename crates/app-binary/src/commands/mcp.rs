@@ -45,6 +45,7 @@ pub async fn list_mcp_servers(
                 cwd: config.cwd.clone(),
                 url: config.url.clone(),
                 enabled: config.enabled,
+                exposure: config.exposure.clone(),
                 status: McpClientStatus::Disconnected,
                 tools: vec![],
                 last_error: None,
@@ -54,6 +55,7 @@ pub async fn list_mcp_servers(
                 last_seen_at: None,
             });
         entry.enabled = config.enabled;
+        entry.exposure = config.exposure;
     }
 
     let mut result: Vec<_> = snapshots.into_values().collect();
@@ -236,6 +238,7 @@ pub async fn add_mcp_server(
         haven_tools::AdminRequest::Mcp(haven_tools::McpOperationArgs::McpAdd {
             name: config.name.clone(),
             transport: config.transport.clone(),
+            exposure: config.exposure.clone(),
             command: Some(config.command.clone()),
             url: Some(config.url.clone()),
             args: config.args.clone(),
@@ -293,6 +296,7 @@ pub async fn update_mcp_server(
         "update_mcp_server",
         haven_tools::AdminRequest::Mcp(haven_tools::McpOperationArgs::McpUpdate {
             name: name.clone(),
+            exposure: Some(config.exposure.clone()),
             transport: Some(config.transport.clone()),
             command: Some(config.command.clone()),
             url: Some(config.url.clone()),
@@ -403,6 +407,7 @@ mod tests {
             cwd: None,
             url: String::new(),
             enabled: true,
+            exposure: Default::default(),
             status: McpClientStatus::Disconnected,
             tools: vec![],
             last_error: None,

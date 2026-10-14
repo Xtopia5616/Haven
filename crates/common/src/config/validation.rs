@@ -91,6 +91,7 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         );
     }
     super::validate_mcp_server_names(&config.mcp_servers)?;
+    super::validate_mcp_server_exposure(&config.mcp_servers)?;
     validate_mcp_discovery(&config.mcp_discovery)?;
     if config.context_limits.input_ring_buffer_secs > MAX_INPUT_RING_BUFFER_SECS {
         anyhow::bail!(
@@ -901,6 +902,50 @@ mod tests {
 
         assert!(validate_app_config_numbers(&config).is_ok());
         assert!(validate_settings_numbers(&Settings::from(&config)).is_ok());
+    }
+
+    #[test]
+    fn mcp_exposure_overrides_are_bounded_and_reject_control_patterns() {
+        let mut config = AppConfig::default();
+        let mut server = McpServerConfig {
+            name: "calendar".into(),
+            ..Default::default()
+        };
+        server
+            .exposure
+            .tools
+            .insert("calendar_*".into(), crate::mcp::McpToolExposure::Direct);
+        server
+            .exposure
+            .tools
+            .insert("private_*".into(), crate::mcp::McpToolExposure::Hidden);
+        config.mcp_servers.push(server.clone());
+        assert!(validate_app_config(&config).is_ok());
+
+        config.mcp_servers[0]
+            .exposure
+            .tools
+            .insert("bad\npattern".into(), crate::mcp::McpToolExposure::Hidden);
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("non-control characters")
+        );
+
+        config.mcp_servers[0].exposure.tools.clear();
+        for index in 0..=super::super::MAX_MCP_TOOL_EXPOSURE_OVERRIDES {
+            config.mcp_servers[0].exposure.tools.insert(
+                format!("tool_{index}"),
+                crate::mcp::McpToolExposure::Deferred,
+            );
+        }
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("at most")
+        );
     }
 
     #[test]

@@ -416,6 +416,7 @@ impl McpClient {
             cwd: self.cwd.clone(),
             url: self.url.clone(),
             enabled: self.enabled(),
+            exposure: haven_common::config::McpExposureConfig::default(),
             status: self.status.lock().await.clone(),
             tools: self.all_cached_tools().await,
             last_error: self.last_error.lock().await.clone(),

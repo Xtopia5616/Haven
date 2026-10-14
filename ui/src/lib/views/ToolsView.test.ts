@@ -83,6 +83,7 @@ function mcpServer(name: string, status: string) {
 		cwd: null,
 		url: '',
 		enabled: true,
+		exposure: { default: 'deferred', tools: {} },
 		status,
 		tools: [],
 		last_error: null,

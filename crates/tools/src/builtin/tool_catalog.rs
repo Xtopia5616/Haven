@@ -3,6 +3,7 @@ use crate::adapters::McpToolAdapter;
 use crate::mcp_server_config::McpServerConfigSource;
 use crate::registry::{DeferredToolCatalog, SessionToolOverlay};
 use crate::{Tool, ToolHandle, ToolRegistry, ToolResult};
+use haven_common::mcp::McpToolExposure;
 use haven_common::tools::{ToolCatalogGroup, ToolDef, ToolSource};
 use haven_common::types::RiskLevel;
 use haven_mcp::{McpManager, McpToolInfo};
@@ -447,13 +448,19 @@ impl ToolCatalogTool {
             if let Some(server) = self.describe_mcp_server(name).await? {
                 return Ok(ToolResult::ok(server));
             }
-            if let Some((server_name, tool)) = self.describe_mcp_tool(name).await? {
-                let loaded = self
-                    .session_tool_overlay
-                    .get(session_id, name)
-                    .await
-                    .is_some();
-                return Ok(ToolResult::ok(mcp_tool_detail(&server_name, &tool, loaded)));
+            if let Some((server_name, tool, exposure)) = self.describe_mcp_tool(name).await? {
+                let loaded = exposure == McpToolExposure::Direct
+                    || self
+                        .session_tool_overlay
+                        .get(session_id, name)
+                        .await
+                        .is_some();
+                return Ok(ToolResult::ok(mcp_tool_detail(
+                    &server_name,
+                    &tool,
+                    loaded,
+                    exposure,
+                )));
             }
         }
 
@@ -508,11 +515,20 @@ impl ToolCatalogTool {
         if source.accepts(CatalogSource::Mcp) {
             let configs = self.mcp_server_config_source.list().await?;
             for config in configs.iter().filter(|config| config.enabled) {
-                let infos = self
+                let discovered = self
                     .mcp_manager
                     .cached_tools(&config.name)
                     .await
                     .unwrap_or_default();
+                let infos: Vec<_> = discovered
+                    .into_iter()
+                    .filter(|info| {
+                        matches!(
+                            config.exposure.for_tool(&info.name),
+                            McpToolExposure::Direct | McpToolExposure::Deferred
+                        )
+                    })
+                    .collect();
                 let connected = self.mcp_manager.has_client(&config.name).await;
                 let names = infos
                     .iter()
@@ -520,13 +536,15 @@ impl ToolCatalogTool {
                     .collect::<Vec<_>>();
                 items.push(mcp_server_item(&config.name, &names, connected));
                 for info in infos {
+                    let direct = config.exposure.for_tool(&info.name) == McpToolExposure::Direct;
                     let qualified = McpToolAdapter::qualified_name_of(&config.name, &info.name);
                     if seen.insert(qualified.clone()) {
-                        let loaded = self
-                            .session_tool_overlay
-                            .get(session_id, &qualified)
-                            .await
-                            .is_some();
+                        let loaded = direct
+                            || self
+                                .session_tool_overlay
+                                .get(session_id, &qualified)
+                                .await
+                                .is_some();
                         items.push(mcp_tool_item(&config.name, &info, loaded));
                     }
                 }
@@ -669,7 +687,16 @@ impl ToolCatalogTool {
             return Ok(None);
         };
         let names = match self.mcp_manager.cached_tools(&config.name).await {
-            Some(tools) => tools.into_iter().map(|info| info.name).collect::<Vec<_>>(),
+            Some(tools) => tools
+                .into_iter()
+                .filter(|info| {
+                    matches!(
+                        config.exposure.for_tool(&info.name),
+                        McpToolExposure::Direct | McpToolExposure::Deferred
+                    )
+                })
+                .map(|info| info.name)
+                .collect::<Vec<_>>(),
             None => Vec::new(),
         };
         Ok(Some(serde_json::json!({
@@ -684,15 +711,25 @@ impl ToolCatalogTool {
         })))
     }
 
-    async fn describe_mcp_tool(&self, name: &str) -> anyhow::Result<Option<(String, McpToolInfo)>> {
+    async fn describe_mcp_tool(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<Option<(String, McpToolInfo, McpToolExposure)>> {
         let configs = self.mcp_server_config_source.list().await?;
         for config in configs.iter().filter(|config| config.enabled) {
             let Some(tools) = self.mcp_manager.cached_tools(&config.name).await else {
                 continue;
             };
             for info in tools {
+                if !matches!(
+                    config.exposure.for_tool(&info.name),
+                    McpToolExposure::Direct | McpToolExposure::Deferred
+                ) {
+                    continue;
+                }
                 if McpToolAdapter::qualified_name_of(&config.name, &info.name) == name {
-                    return Ok(Some((config.name.clone(), info)));
+                    let exposure = config.exposure.for_tool(&info.name);
+                    return Ok(Some((config.name.clone(), info, exposure)));
                 }
             }
         }
@@ -1005,11 +1042,16 @@ fn mcp_tool_item(server_name: &str, info: &McpToolInfo, loaded: bool) -> Catalog
     }
 }
 
-fn mcp_tool_detail(server_name: &str, info: &McpToolInfo, loaded: bool) -> Value {
+fn mcp_tool_detail(
+    server_name: &str,
+    info: &McpToolInfo,
+    loaded: bool,
+    exposure: McpToolExposure,
+) -> Value {
     // The server name is recovered from the qualified lookup before this
     // helper is called by the caller, so the detail is intentionally limited
     // to the MCP tool payload and the common activation hint is added there.
-    serde_json::json!({
+    let mut detail = serde_json::json!({
         "status": "ok",
         "action": "describe",
         "kind": "tool",
@@ -1021,11 +1063,15 @@ fn mcp_tool_detail(server_name: &str, info: &McpToolInfo, loaded: bool) -> Value
         "risk_level": RiskLevel::High,
         "input_schema": crate::adapters::sanitize_external_schema(&info.input_schema),
         "loaded": loaded,
-        "load": {
+        "exposure": exposure.as_str(),
+    });
+    if exposure == McpToolExposure::Deferred {
+        detail["load"] = serde_json::json!({
             "tool": "load_mcp",
             "arguments": { "server_name": server_name, "tool_names": [info.name] }
-        },
-    })
+        });
+    }
+    detail
 }
 
 fn family_for_def(def: &ToolDef, source: CatalogSource) -> String {

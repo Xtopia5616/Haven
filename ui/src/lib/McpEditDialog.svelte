@@ -7,7 +7,11 @@
 	import { withStringValue } from '$lib/typedCallbacks.ts';
 	import type { McpServerTransportInput } from '$lib/contracts/generatedCommands.ts';
 	import type { McpServerConfigInput } from '$lib/contracts/tools.ts';
-	import type { McpServerSnapshotView } from '$lib/contracts/mcp.ts';
+import type {
+	McpExposureConfigView,
+	McpServerSnapshotView,
+	McpToolExposureMode,
+} from '$lib/contracts/mcp.ts';
 
 	interface EditorConfig extends McpServerConfigInput {
 		name: string;
@@ -18,6 +22,7 @@
 		env: string[];
 		url: string;
 		enabled: boolean;
+	exposure: McpExposureConfigView;
 	}
 
 	interface Props {
@@ -37,13 +42,25 @@
 	let argsText = $state('');
 	let envText = $state('');
 	let url = $state('');
-	let fieldErrors = $state({ name: '', command: '', url: '', env: '' });
+	let defaultExposure = $state<McpToolExposureMode>('deferred');
+	let exposureOverridesText = $state('');
+	let fieldErrors = $state({ name: '', command: '', url: '', env: '', exposure: '' });
 	let saving = $state(false);
 
 	const TRANSPORT_OPTIONS = [
 		{ value: 'stdio', label: 'Stdio (local process)' },
 		{ value: 'http', label: 'Streamable HTTP' },
 	];
+	const EXPOSURE_OPTIONS = [
+		{ value: 'direct', label: 'Direct — send schemas with every request' },
+		{ value: 'deferred', label: 'Deferred — discover and load when needed' },
+		{ value: 'hidden', label: 'Hidden — unavailable to the assistant' },
+	];
+	let exposureOptions = $derived(
+		defaultExposure === 'codemode'
+			? [...EXPOSURE_OPTIONS, { value: 'codemode', label: 'CodeMode — executor not enabled yet' }]
+			: EXPOSURE_OPTIONS,
+	);
 
 	function isHttp() {
 		return transport === 'http';
@@ -57,11 +74,15 @@
 		argsText = (server?.args || []).join('\n');
 		envText = (server?.env || []).join('\n');
 		url = server?.url || '';
-		fieldErrors = { name: '', command: '', url: '', env: '' };
+		defaultExposure = server?.exposure.default || 'deferred';
+		exposureOverridesText = Object.entries(server?.exposure.tools || {})
+			.map(([pattern, mode]) => `${pattern}=${mode}`)
+			.join('\n');
+		fieldErrors = { name: '', command: '', url: '', env: '', exposure: '' };
 	});
 
 	function validate() {
-		const errors = { name: '', command: '', url: '', env: '' };
+		const errors = { name: '', command: '', url: '', env: '', exposure: '' };
 		const trimmedName = name.trim();
 		if (!trimmedName) {
 			errors.name = 'Name is required';
@@ -93,13 +114,68 @@
 			errors.env = `Line ${badEnv + 1}: environment variable name cannot be empty`;
 		}
 
+		if (
+			defaultExposure === 'codemode' &&
+			server?.exposure.default !== 'codemode'
+		) {
+			errors.exposure = 'CodeMode can be selected after its executor is available';
+		}
+		const exposureLines = exposureOverridesText
+			.split('\n')
+			.map((line) => line.trim())
+			.filter(Boolean);
+		if (exposureLines.length > 256) {
+			errors.exposure = 'At most 256 per-tool overrides are allowed';
+		} else {
+			const patterns = new Set<string>();
+			for (const [index, line] of exposureLines.entries()) {
+				const separator = line.lastIndexOf('=');
+				const pattern = line.slice(0, separator).trim();
+				const mode = line.slice(separator + 1).trim();
+				if (
+					separator < 1 ||
+					pattern.length > 256 ||
+					/[\u0000-\u001f\u007f]/u.test(pattern) ||
+					!['direct', 'deferred', 'codemode', 'hidden'].includes(mode)
+				) {
+					errors.exposure = `Line ${index + 1}: use pattern=direct, pattern=deferred, pattern=hidden, or an existing CodeMode override`;
+					break;
+				}
+				if (mode === 'codemode' && server?.exposure.tools[pattern] !== 'codemode') {
+					errors.exposure = 'CodeMode overrides can be selected after its executor is available';
+					break;
+				}
+				if (patterns.has(pattern)) {
+					errors.exposure = `Line ${index + 1}: duplicate tool pattern`;
+					break;
+				}
+				patterns.add(pattern);
+			}
+		}
+
 		return errors;
+	}
+
+	function parseExposureOverrides(): Record<string, McpToolExposureMode> {
+		return Object.fromEntries(
+			exposureOverridesText
+				.split('\n')
+				.map((line) => line.trim())
+				.filter(Boolean)
+				.map((line) => {
+					const separator = line.lastIndexOf('=');
+					return [
+						line.slice(0, separator).trim(),
+						line.slice(separator + 1).trim() as McpToolExposureMode,
+					];
+				}),
+		);
 	}
 
 	async function handleSave() {
 		const errors = validate();
 		fieldErrors = errors;
-		if (errors.name || errors.command || errors.url || errors.env) return;
+		if (errors.name || errors.command || errors.url || errors.env || errors.exposure) return;
 		saving = true;
 		const config = {
 			name: name.trim(),
@@ -115,6 +191,7 @@
 				.map((l) => l.trim())
 				.filter(Boolean),
 			url: url.trim(),
+			exposure: { default: defaultExposure, tools: parseExposureOverrides() },
 			// No enable toggle in the dialog: new servers are added enabled,
 			// edits keep the current state — enable/disable happens from the
 			// server list (pill button) after the server is added.
@@ -178,6 +255,39 @@
 						transport = v === 'http' ? 'http' : 'stdio';
 					})}
 				/>
+			{/snippet}
+		</MaterialField>
+		<MaterialField
+			label="Assistant exposure"
+			hint="Direct sends schemas each turn. Deferred requires tool_catalog/load_mcp. Hidden tools cannot be called."
+		>
+			{#snippet children()}
+				<MaterialSelect
+					value={defaultExposure}
+					options={exposureOptions}
+					onChange={withStringValue((value) => {
+						if (['direct', 'deferred', 'codemode', 'hidden'].includes(value)) {
+							defaultExposure = value as McpToolExposureMode;
+						}
+					})}
+				/>
+			{/snippet}
+		</MaterialField>
+		<MaterialField
+			label="Per-tool overrides"
+			forId="mcp-exposure-overrides"
+			hint="One rule per line: exact MCP tool name or * pattern = direct, deferred, or hidden. Most specific pattern wins."
+			error={fieldErrors.exposure}
+		>
+			{#snippet children()}
+				<textarea
+					id="mcp-exposure-overrides"
+					class="md-textarea md-textarea--code"
+					bind:value={exposureOverridesText}
+					rows="4"
+					placeholder="calendar_delete=hidden&#10;calendar_*=direct"
+					class:input-error={fieldErrors.exposure}
+				></textarea>
 			{/snippet}
 		</MaterialField>
 

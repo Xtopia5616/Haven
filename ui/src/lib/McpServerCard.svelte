@@ -61,6 +61,15 @@
 		return 'neutral';
 	}
 
+	function exposureLabel() {
+		return {
+			direct: '直出工具',
+			deferred: '按需加载',
+			codemode: 'CodeMode（当前不可调用）',
+			hidden: '全部隐藏',
+		}[server.exposure.default];
+	}
+
 	let contextMenuItems: ContextMenuItem[] = $derived.by(() => {
 		const items: ContextMenuItem[] = [];
 		items.push(
@@ -124,6 +133,10 @@
 				tone={server.enabled ? 'success' : 'neutral'}
 				className="enabled-badge"
 			/>
+			<StatusBadge label={`默认：${exposureLabel()}`} tone="neutral" />
+			{#if Object.keys(server.exposure.tools).length > 0}
+				<span class="tool-count">{Object.keys(server.exposure.tools).length} 条覆盖</span>
+			{/if}
 			<StatusBadge label={statusLabel(server.status)} tone={statusTone()} />
 			{#if server.lastSeenAt}
 				<span class="last-seen"

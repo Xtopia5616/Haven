@@ -12,8 +12,11 @@ import {
 } from './valueGuards.ts';
 import {
 	MCP_SERVER_TRANSPORT_VALUES,
+	MCP_TOOL_EXPOSURE_VALUES,
+	type McpExposureConfig as GeneratedMcpExposureConfig,
 	type McpRefreshResult as GeneratedMcpRefreshResult,
 	type McpServerSnapshot as GeneratedMcpServerSnapshot,
+	type McpToolExposure as GeneratedMcpToolExposure,
 	type McpToolInfo as GeneratedMcpToolInfo,
 } from './generatedCommands.ts';
 
@@ -22,6 +25,9 @@ export interface McpToolInfoView {
 	description: string;
 	inputSchema: Record<string, unknown>;
 }
+
+export type McpToolExposureMode = GeneratedMcpToolExposure;
+export type McpExposureConfigView = GeneratedMcpExposureConfig;
 
 /** Renderer-facing camelCase projection of the generated Rust snapshot DTO. */
 export interface McpServerSnapshotView {
@@ -33,6 +39,7 @@ export interface McpServerSnapshotView {
 	cwd: string | null;
 	url: string;
 	enabled: boolean;
+	exposure: McpExposureConfigView;
 	status: GeneratedMcpServerSnapshot['status'];
 	tools: McpToolInfoView[];
 	lastError: string | null;
@@ -53,10 +60,30 @@ interface ValidatedMcpToolInfo extends GeneratedMcpToolInfo {
 
 interface ValidatedMcpServerSnapshot extends Omit<GeneratedMcpServerSnapshot, 'tools'> {
 	tools: ValidatedMcpToolInfo[];
+	exposure: McpExposureConfigView;
 }
 
 function isNullableString(value: unknown): value is string | null {
 	return value === null || isString(value);
+}
+
+function isMcpExposureMode(value: unknown): value is McpToolExposureMode {
+	return isOneOf(value, MCP_TOOL_EXPOSURE_VALUES);
+}
+
+function isMcpExposureConfig(value: unknown): value is McpExposureConfigView {
+	if (!isRecord(value) || !isMcpExposureMode(value.default) || !isRecord(value.tools)) return false;
+	const entries = Object.entries(value.tools);
+	return (
+		entries.length <= 256 &&
+		entries.every(
+			([pattern, exposure]) =>
+				pattern.length > 0 &&
+				pattern.length <= 256 &&
+				![...pattern].some((character) => /[\u0000-\u001f\u007f]/u.test(character)) &&
+				isMcpExposureMode(exposure),
+		)
+	);
 }
 
 function isMcpToolInfo(value: unknown): value is ValidatedMcpToolInfo {
@@ -81,6 +108,7 @@ function isMcpServerSnapshot(value: unknown): value is ValidatedMcpServerSnapsho
 		isNullableString(value.cwd) &&
 		isString(value.url) &&
 		isBoolean(value.enabled) &&
+		isMcpExposureConfig(value.exposure) &&
 		isMcpClientStatus(value.status) &&
 		Array.isArray(value.tools) &&
 		value.tools.every(isMcpToolInfo) &&
@@ -101,6 +129,7 @@ function toMcpServerSnapshotView(snapshot: ValidatedMcpServerSnapshot): McpServe
 		cwd: snapshot.cwd,
 		url: snapshot.url,
 		enabled: snapshot.enabled,
+		exposure: snapshot.exposure,
 		status: snapshot.status,
 		tools: snapshot.tools.map((tool) => ({
 			name: tool.name,

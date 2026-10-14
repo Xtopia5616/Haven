@@ -11,6 +11,8 @@ use crate::adapters::McpToolAdapter;
 use crate::mcp_server_config::McpServerConfigSource;
 use crate::registry::SessionToolOverlay;
 use crate::{Tool, ToolHandle, ToolRegistry, ToolResult};
+use haven_common::config::McpExposureConfig;
+use haven_common::mcp::McpToolExposure;
 use haven_mcp::McpManager;
 
 pub struct LoadMcpTool {
@@ -90,13 +92,25 @@ impl LoadMcpTool {
             self.mcp_manager.connect_server(&config).await?;
         }
 
-        let all_tools = self
+        let discovered_tools = self
             .mcp_manager
             .wait_for_tools(&server_name, Duration::from_secs(3))
             .await
             .ok_or_else(|| {
                 anyhow::anyhow!("MCP server '{}' not available after connect", server_name)
             })?;
+
+        // `load_mcp` is the Legacy/deferred activation route. Direct tools
+        // already enter through native definitions; CodeMode and Hidden must
+        // never be made callable through this surface.
+        let all_tools = deferred_tools_for_exposure(discovered_tools, &config.exposure);
+        if all_tools.is_empty() {
+            return Ok(ToolResult::ok(serde_json::json!({
+                "status": "no_deferred_tools",
+                "server_name": server_name,
+                "reason": "This server has no tools available through deferred loading.",
+            })));
+        }
 
         // Same wait as resume registration so budget and schemas see the
         // populated tools/list, not an empty in-flight cache.
@@ -347,6 +361,16 @@ fn catalog_entries(tools: &[haven_mcp::McpToolInfo]) -> Vec<Value> {
                 "description": crate::adapters::sanitize_external_text(&t.description, 160),
             })
         })
+        .collect()
+}
+
+fn deferred_tools_for_exposure(
+    tools: Vec<haven_mcp::McpToolInfo>,
+    exposure: &McpExposureConfig,
+) -> Vec<haven_mcp::McpToolInfo> {
+    tools
+        .into_iter()
+        .filter(|info| exposure.for_tool(&info.name) == McpToolExposure::Deferred)
         .collect()
 }
 
@@ -668,5 +692,35 @@ mod tests {
         let desc = entries[0]["description"].as_str().unwrap();
         assert!(desc.ends_with("..."));
         assert!(desc.chars().count() <= 160);
+    }
+
+    #[test]
+    fn legacy_loader_only_lists_deferred_tools() {
+        let exposure = McpExposureConfig {
+            default: McpToolExposure::Hidden,
+            tools: std::collections::BTreeMap::from([
+                ("read_*".into(), McpToolExposure::Direct),
+                ("read_private".into(), McpToolExposure::Hidden),
+                ("batch_*".into(), McpToolExposure::Deferred),
+                ("code_*".into(), McpToolExposure::CodeMode),
+            ]),
+        };
+        let available = vec![
+            fake_info("read_public", "Direct"),
+            fake_info("read_private", "Hidden exact override"),
+            fake_info("batch_update", "Deferred"),
+            fake_info("code_run", "CodeMode"),
+            fake_info("unknown", "Hidden by default"),
+        ];
+
+        let visible = deferred_tools_for_exposure(available, &exposure);
+
+        assert_eq!(
+            visible
+                .iter()
+                .map(|info| info.name.as_str())
+                .collect::<Vec<_>>(),
+            ["batch_update"]
+        );
     }
 }

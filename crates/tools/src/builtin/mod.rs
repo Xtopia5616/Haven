@@ -1509,6 +1509,7 @@ mod tests {
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "server-a".into(),
                     transport: McpServerTransport::Http,
+                    exposure: Default::default(),
                     command: None,
                     url: Some("https://example.invalid/mcp".into()),
                     args: Vec::new(),
@@ -1529,6 +1530,7 @@ mod tests {
                 }),
                 AdminRequest::Mcp(McpOperationArgs::McpUpdate {
                     name: "server-a".into(),
+                    exposure: None,
                     transport: Some(McpServerTransport::Http),
                     command: None,
                     url: Some("https://example.invalid/mcp".into()),

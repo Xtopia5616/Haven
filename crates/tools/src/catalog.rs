@@ -1,5 +1,7 @@
 use super::*;
 use crate::adapters::McpToolAdapter;
+use haven_common::mcp::McpToolExposure;
+use haven_mcp::McpToolInfo;
 
 /// Stable summary of an enabled MCP server for the model-facing prompt.
 /// Full tool schemas are loaded separately and remain dynamic JSON.
@@ -22,6 +24,35 @@ impl McpServerIndexEntry {
             tool_names,
         }
     }
+}
+
+fn refreshed_mcp_adapters(
+    server_name: &str,
+    manager: &haven_mcp::McpManager,
+    active_tools: Vec<(String, String, ToolHandle)>,
+    available: &[McpToolInfo],
+) -> (Vec<ToolHandle>, Vec<String>) {
+    let available: HashMap<_, _> = available
+        .iter()
+        .map(|info| (info.name.as_str(), info))
+        .collect();
+    let mut replacements = Vec::new();
+    let mut removals = Vec::new();
+    for (qualified_name, operation, current) in active_tools {
+        let Some(info) = available.get(operation.as_str()) else {
+            removals.push(qualified_name);
+            continue;
+        };
+        let refreshed = Arc::new(McpToolAdapter::new(
+            manager.clone(),
+            server_name,
+            (**info).clone(),
+        )) as ToolHandle;
+        if current.tool_manifest() != refreshed.tool_manifest() {
+            replacements.push(refreshed);
+        }
+    }
+    (replacements, removals)
 }
 
 impl ToolsFacade {
@@ -217,12 +248,28 @@ impl ToolsFacade {
             .wait_for_tools(server_name, Duration::from_secs(3))
             .await
             .unwrap_or_default();
+        let Some(config) = self
+            .coordinator
+            .builtins
+            .mcp_server_config_source
+            .get(server_name)
+            .await
+            .ok()
+            .flatten()
+            .filter(|config| config.enabled)
+        else {
+            return false;
+        };
+        let deferred_tools: Vec<_> = all_tools
+            .into_iter()
+            .filter(|info| config.exposure.for_tool(&info.name) == McpToolExposure::Deferred)
+            .collect();
         let tools = match tool_names {
-            None => all_tools,
+            None => deferred_tools,
             Some(names) => {
                 let want: std::collections::HashSet<&str> =
                     names.iter().map(|s| s.as_str()).collect();
-                all_tools
+                deferred_tools
                     .into_iter()
                     .filter(|info| want.contains(info.name.as_str()))
                     .collect::<Vec<_>>()
@@ -280,16 +327,44 @@ impl ToolsFacade {
         session_id: Option<&str>,
         name: &str,
     ) -> Option<ToolHandle> {
-        if let Some(tid) = session_id
-            && let Some(tool) = self
+        if let Some(tid) = session_id {
+            if let Some(tool) = self
                 .coordinator
                 .core
                 .operations
                 .session_tool_overlay
                 .get(tid, name)
                 .await
-        {
-            return Some(tool);
+            {
+                if let Some((server_name, tool_name)) = tool.mcp_tool_identity() {
+                    let config = self
+                        .coordinator
+                        .builtins
+                        .mcp_server_config_source
+                        .get(server_name)
+                        .await
+                        .ok()
+                        .flatten()?;
+                    if !config.enabled
+                        || !matches!(
+                            config.exposure.for_tool(tool_name),
+                            McpToolExposure::Direct | McpToolExposure::Deferred
+                        )
+                    {
+                        return None;
+                    }
+                }
+                return Some(tool);
+            }
+
+            let snapshot = self.tool_catalog_snapshot(tid).await;
+            let advertised = snapshot
+                .provider_definitions()
+                .iter()
+                .any(|definition| definition.name == name);
+            if advertised {
+                return snapshot.get(name).cloned();
+            }
         }
         self.coordinator.core.operations.installed.get(name).await
     }
@@ -455,11 +530,131 @@ impl ToolsFacade {
 }
 
 impl OperationCatalog<'_> {
+    /// Build ephemeral adapters for tools configured for native provider
+    /// exposure. They are session scoped because MCP credentials and active
+    /// server state remain owned by the manager, while the exposure policy is
+    /// read from the authoritative config on every catalog snapshot.
+    async fn direct_mcp_tools_for_session(&self) -> Vec<ToolHandle> {
+        let configs = match self
+            .facade
+            .coordinator
+            .builtins
+            .mcp_server_config_source
+            .list()
+            .await
+        {
+            Ok(configs) => configs,
+            Err(error) => {
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to read MCP exposure config while building direct tool surface"
+                );
+                return Vec::new();
+            }
+        };
+        let manager = &self.facade.coordinator.builtins.mcp_manager;
+        let platform = self.facade.coordinator.runtime.platform().await;
+        let settings = &platform.tool_settings;
+        let mut tools = Vec::new();
+        for config in configs.into_iter().filter(|config| config.enabled) {
+            let Some(available) = manager.cached_tools(&config.name).await else {
+                continue;
+            };
+            for info in available {
+                if config.exposure.for_tool(&info.name) != McpToolExposure::Direct {
+                    continue;
+                }
+                let name = McpToolAdapter::qualified_name_of(&config.name, &info.name);
+                if !tool_config_enabled(settings, &name) {
+                    continue;
+                }
+                tools.push(
+                    Arc::new(McpToolAdapter::new(manager.clone(), &config.name, info))
+                        as ToolHandle,
+                );
+            }
+        }
+        tools.sort_by_key(|tool| tool.name());
+        tools
+    }
+
+    /// Refresh only the MCP adapters already active in this session. A live
+    /// tools/list response can update or remove selected tools, but never
+    /// activates newly discovered names without an explicit `load_mcp` call.
+    async fn synchronize_loaded_mcp_tools(&self, session_id: &str) {
+        let overlay = &self.facade.coordinator.core.operations.session_tool_overlay;
+        let active = overlay.list(session_id).await;
+        let mut by_server: HashMap<String, Vec<(String, String, ToolHandle)>> = HashMap::new();
+        for tool in active {
+            let Some((server_name, operation)) = tool.mcp_tool_identity() else {
+                continue;
+            };
+            by_server.entry(server_name.to_string()).or_default().push((
+                tool.name(),
+                operation.to_string(),
+                tool,
+            ));
+        }
+
+        if by_server.is_empty() {
+            return;
+        }
+
+        let manager = &self.facade.coordinator.builtins.mcp_manager;
+        let mut replacements = Vec::new();
+        let mut removals = Vec::new();
+        let configs = self
+            .facade
+            .coordinator
+            .builtins
+            .mcp_server_config_source
+            .list()
+            .await
+            .unwrap_or_default();
+        let configs: HashMap<_, _> = configs
+            .into_iter()
+            .map(|config| (config.name.clone(), config))
+            .collect();
+        for (server_name, active_tools) in by_server {
+            let Some(config) = configs.get(&server_name).filter(|config| config.enabled) else {
+                removals.extend(active_tools.into_iter().map(|(name, _, _)| name));
+                continue;
+            };
+            let (eligible, ineligible): (Vec<_>, Vec<_>) =
+                active_tools.into_iter().partition(|(_, operation, _)| {
+                    config.exposure.for_tool(operation) == McpToolExposure::Deferred
+                });
+            removals.extend(ineligible.into_iter().map(|(name, _, _)| name));
+            if eligible.is_empty() {
+                continue;
+            }
+            if !manager.has_client(&server_name).await {
+                removals.extend(eligible.into_iter().map(|(name, _, _)| name));
+                continue;
+            }
+            let Some(available) = manager.cached_tools(&server_name).await else {
+                // Keep the last known tools if the live list cannot be read.
+                // `cached_tools` logs the refresh failure and the next catalog
+                // snapshot will retry from the manager's cache.
+                continue;
+            };
+            let (server_replacements, server_removals) =
+                refreshed_mcp_adapters(&server_name, manager, eligible, &available);
+            replacements.extend(server_replacements);
+            removals.extend(server_removals);
+        }
+        overlay
+            .reconcile_mcp_tools(session_id, replacements, &removals)
+            .await;
+    }
+
     /// Capture the complete lookup surface used by one ReAct tool batch.
     pub async fn tool_catalog_snapshot(&self, session_id: &str) -> ToolCatalogSnapshot {
         let mut snapshot = None;
         for _ in 0..2 {
             let before = self.facade.catalog_version_for_session(session_id).await;
+            self.synchronize_loaded_mcp_tools(session_id).await;
+            let after_sync = self.facade.catalog_version_for_session(session_id).await;
             let global = self
                 .facade
                 .coordinator
@@ -476,15 +671,20 @@ impl OperationCatalog<'_> {
                 .session_tool_overlay
                 .list(session_id)
                 .await;
+            let direct = self.direct_mcp_tools_for_session().await;
             let after = self.facade.catalog_version_for_session(session_id).await;
 
-            let mut tools = HashMap::with_capacity(global.len() + session.len());
+            let mut tools = HashMap::with_capacity(global.len() + session.len() + direct.len());
             let global_defs = global.iter().map(|tool| tool.tool_def()).collect();
-            let session_defs = session.iter().map(|tool| tool.tool_def()).collect();
+            let mut session_defs: Vec<_> = session.iter().map(|tool| tool.tool_def()).collect();
+            session_defs.extend(direct.iter().map(|tool| tool.tool_def()));
             for tool in global {
                 tools.insert(tool.name(), tool);
             }
             for tool in session {
+                tools.insert(tool.name(), tool);
+            }
+            for tool in direct {
                 tools.insert(tool.name(), tool);
             }
             let max = self
@@ -499,7 +699,7 @@ impl OperationCatalog<'_> {
             let provider_definitions =
                 select_tool_definitions_for_budget(global_defs, session_defs, max).selected_tools;
             snapshot = Some((after, tools, provider_definitions));
-            if before == after {
+            if before == after_sync && after_sync == after {
                 break;
             }
         }
@@ -527,7 +727,7 @@ impl OperationCatalog<'_> {
             .list_tool_definitions()
             .await;
         let global_len = global_defs.len();
-        let session_defs = self
+        let mut session_defs = self
             .facade
             .coordinator
             .core
@@ -535,6 +735,8 @@ impl OperationCatalog<'_> {
             .session_tool_overlay
             .list_tool_definitions(session_id)
             .await;
+        let direct = self.direct_mcp_tools_for_session().await;
+        session_defs.extend(direct.iter().map(|tool| tool.tool_def()));
         let total = global_len + session_defs.len();
         let selection = select_tool_definitions_for_budget(global_defs, session_defs, max);
         if !selection.omitted.is_empty() {

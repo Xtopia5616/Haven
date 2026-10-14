@@ -83,6 +83,7 @@ describe('settings command contracts', () => {
 			cwd: null,
 			url: '',
 			enabled: false,
+			exposure: { default: 'deferred', tools: {} },
 		});
 		const payloadWithFutureField = { ...payload, future_settings_field: true };
 
@@ -116,6 +117,7 @@ describe('settings command contracts', () => {
 			cwd: null,
 			url: '',
 			enabled: false,
+			exposure: { default: 'deferred', tools: {} },
 		});
 
 		for (const invalid of [badProvider, badOcr, badMcp]) {
@@ -183,6 +185,7 @@ describe('settings command contracts', () => {
 			cwd: null,
 			url: '',
 			enabled: false,
+			exposure: { default: 'deferred', tools: {} },
 		});
 		mcpStt.media.stt.mcp_server = 'transcriber';
 		expect(parseSettingsPayload(mcpStt)).toBe(mcpStt);

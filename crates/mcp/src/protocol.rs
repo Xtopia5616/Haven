@@ -1,3 +1,4 @@
+use haven_common::config::McpExposureConfig;
 use haven_common::mcp::McpServerTransport;
 use serde_json::Value;
 use std::error::Error;
@@ -620,6 +621,8 @@ pub struct McpServerSnapshot {
     pub cwd: Option<String>,
     pub url: String,
     pub enabled: bool,
+    /// Haven-side model exposure policy for this configured server.
+    pub exposure: McpExposureConfig,
     pub status: McpClientStatus,
     pub tools: Vec<McpToolInfo>,
     pub last_error: Option<String>,
