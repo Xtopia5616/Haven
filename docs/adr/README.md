@@ -1148,3 +1148,4 @@
 - [1157：从用户消息派生独立会话](1157-derive-session-from-user-message.md)
 - [1158：在 provider 请求前有界重查 steering](1158-recheck-steering-before-provider-request.md)
 - [1159：支持无状态 MCP 协议并保留旧版回退](1159-support-stateless-mcp-with-legacy-fallback.md)
+- [1163：统一工具暴露、CodeMode 与受限工作流的执行边界](1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)

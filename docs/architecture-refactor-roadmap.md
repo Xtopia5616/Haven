@@ -1,7 +1,7 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；2026-10-13 §5.7 全项目概念与实现规范审计范围已完成，Rust 生产源码 271/271、UI/App/IPC/文档组合清单 320/320 已核对或分类，未核对项 0（见[覆盖记录](architecture-audit-coverage-2026-10-13.md)）。ADR 1031–1140 覆盖此前持续收敛的 IPC runtime shape/API owner、持久与进程内身份、配置与资源边界、日志脱敏、生命周期、Memory/replay 及工具 renderer 等事项；本轮 ADR 1141–1150 收敛工具结果稳定身份、Skills DTO/目录读取边界、partial checkpoint 原子提升、Memory/Compaction 语义、VAD/process tree 生命周期、LLM health、MCP catalog/SSE、特殊用途网络地址及外部错误脱敏。ADR 1151–1154 补充已验证句柄快照读取、长期事实 keyset 分页和原生启动面/WebView2 恢复。审计没有发现值得合并/拆分的架构候选；保留已记录的 Skills 同用户并发改写边界，以及独立 Windows 发布验收 Open Gate。桌面 `list_facts` 分页和 Memory 加载更多已完成；Windows 发布验收见 §5.1。
-> 更新日期：2026-10-13
+> 状态：阶段 0–8 已完成；2026-10-13 §5.7 全项目概念与实现规范审计范围已完成，Rust 生产源码 271/271、UI/App/IPC/文档组合清单 320/320 已核对或分类，未核对项 0（见[覆盖记录](architecture-audit-coverage-2026-10-13.md)）。新的 Agent capability surface 与执行边界重构已立项，当前 Active/Next 顺序见 §5.8。ADR 1031–1140 覆盖此前持续收敛的 IPC runtime shape/API owner、持久与进程内身份、配置与资源边界、日志脱敏、生命周期、Memory/replay 及工具 renderer 等事项；本轮 ADR 1141–1150 收敛工具结果稳定身份、Skills DTO/目录读取边界、partial checkpoint 原子提升、Memory/Compaction 语义、VAD/process tree 生命周期、LLM health、MCP catalog/SSE、特殊用途网络地址及外部错误脱敏。ADR 1151–1154 补充已验证句柄快照读取、长期事实 keyset 分页和原生启动面/WebView2 恢复。既有审计没有发现值得合并/拆分的架构候选；保留已记录的 Skills 同用户并发改写边界，以及独立 Windows 发布验收 Open Gate。桌面 `list_facts` 分页和 Memory 加载更多已完成；Windows 发布验收见 §5.1。
+> 更新日期：2026-10-15
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
 本文件只记录当前阶段、仍未完成的工作和验收条件。历史实现切片与决定见对应 ADR；提交历史用于追踪实现过程。
@@ -175,6 +175,22 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 每轮按“源码与调用点搜索 → 核对权威 owner 和边界语义 → 修正规范文档 → 实现最小一致性切片 → 运行适用门禁 → 记录 ADR 与当前状态”推进；一次只实现一个逻辑切片。跨 Rust/UI/IPC 或持久化边界的变更按项目要求运行完整门禁。审计结论须包含具体文件/符号、正反例和保留例外，不能仅以全库搜索无结果作为覆盖证明。
 
 本节完成时，每个主要生产概念和跨层字段都有唯一规范词、唯一权威 owner 和可定位校验；剩余例外、provider 外部 ID、动态数据边界和历史兼容行为均明确登记；规范文档不再用已退役术语描述当前实现。新发现继续按 §5.5 证据准入，不以文件数量或重命名比例作为完成标准。
+
+### 5.8 Agent capability surface 与执行边界（Active）
+
+目标契约见 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。这是按安全优先级分步实施的功能/架构重构；不要把下列 Next 项提前并入当前切片。
+
+| 状态 | 切片 | 完成条件 |
+| --- | --- | --- |
+| **Active** | MCP `direct` / `deferred` / `hidden` server exposure、单 tool override 与统一可达性 resolver | 一个 resolver 决定 prompt、目录、加载和执行可达性；精确名称/pattern 冲突顺序确定；hidden/disabled stale call 在后端拒绝；设置 IPC/UI 和配置校验共用闭合枚举。 |
+| **Next** | 授权与 sandbox 对嵌套 capability 的安全审计和必要收敛 | 每个子调用能复用 Tools 唯一 owner；确认、target、策略 revision、撤销、sandbox/network 和失败行为有负向/竞态测试；未完成前不启用 CodeMode。 |
+| Deferred | CodeMode 与 Legacy 调用面的 per-server 切换 | sandbox evaluator 无宿主能力；脚本、调用数、并发、时间和结果均有硬上限；每个子调用经过标准授权/安全网关；部分副作用和取消语义可恢复/观察。 |
+| Deferred | MCP resources/read 与 user-selected prompts | 按 MCP 2026-07-28 能力协商；实现有界、带来源和 auth context 的读取；未实现的交互/任务能力 fail closed。 |
+| Deferred | 声明式 Workflow | DAG/参数映射验证、无任意表达式/动态路由；每步单独授权；仅有跨 turn 生命周期时接入 ToolRun，不再建平行 job owner。 |
+| Deferred | ExecutionWorkspace 与 sandbox 权限范围收敛 | 明确区分 UI workspace 与执行根；文件句柄/path、进程树、网络目标和取消均由后端验证；Windows 边界另做真实系统验收。 |
+
+实施仍遵守“证据与契约 → 单条垂直调用链 → 负向/恢复验证 → 适用门禁 → 独立提交”的顺序。每完成一行，只把下一行提升为 Active，并在该提交中更新本节。
+
 ## 6. 更新规则
 
 - 阶段/候选状态在一个逻辑切片独立提交且适用验收完成后更新；受限或未执行的验证要明确写出。发布 Gate 只在当前构建与安装环境的实际验收记录齐全后关闭。
