@@ -714,10 +714,10 @@ impl ReActEngine {
             None,
             PauseReason::Ask,
         );
-        self.apply_committed_batch(&ctx, state, effects).await?;
-        Ok(ToolBatchOutcome::Done(LoopExit::Paused {
-            reason: PauseReason::Ask,
-        }))
+        Ok(self
+            .apply_committed_batch(&ctx, state, effects)
+            .await?
+            .into())
     }
 }
 

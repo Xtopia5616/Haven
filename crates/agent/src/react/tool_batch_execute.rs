@@ -756,10 +756,10 @@ impl ReActEngine {
                 None,
                 PauseReason::Confirm,
             );
-            self.apply_committed_batch(&step_ctx, state, pause).await?;
-            return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
-                reason: PauseReason::Confirm,
-            }));
+            return Ok(self
+                .apply_committed_batch(&step_ctx, state, pause)
+                .await?
+                .into());
         }
 
         // The agent asked the human a question: pause so the user can

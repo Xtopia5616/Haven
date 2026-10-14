@@ -543,12 +543,6 @@ impl ReActEngine {
                     None,
                     PauseReason::Ask,
                 );
-                effects = EffectBatch::with_effects(
-                    super::effects::TurnControl::Done(LoopExit::Paused {
-                        reason: PauseReason::Ask,
-                    }),
-                    effects.into_effects(),
-                );
                 return Ok(effects);
             }
             let text = thought.unwrap_or_else(|| "No action decided.".into());
@@ -589,14 +583,14 @@ impl ReActEngine {
             return end;
         }
 
-        effects.push(crate::react::effects::TurnEffect::ExecuteToolBatch {
+        effects.execute_tool_batch(
             tool_calls,
             thought,
             response,
             catalog,
             cancel,
             allow_tool_retry,
-        });
+        );
         Ok(effects)
     }
 }

@@ -8,7 +8,7 @@
 
 use serde_json::Value;
 
-use super::effects::{EffectBatch, TurnControl, TurnEffect};
+use super::effects::EffectBatch;
 use super::identity::StreamBlockIdentity;
 use super::transcript::TranscriptEvent;
 use super::*;
@@ -89,23 +89,7 @@ impl ReActEngine {
         // final → injects. Only local queues are drained here; the inbox was
         // claimed once by the turn-start assembly. A successful inject
         // suppresses the pause below and continues the run.
-        effects.push(TurnEffect::InjectTurnEnd {
-            step_number: ctx.step_number,
-        });
-
-        effects.pause(
-            ctx.step_number + 1,
-            SessionStatus::Paused,
-            None,
-            Some(ctx.step_number),
-            PauseReason::TurnEnd,
-        );
-        effects = EffectBatch::with_effects(
-            TurnControl::Done(LoopExit::Paused {
-                reason: PauseReason::TurnEnd,
-            }),
-            effects.into_effects(),
-        );
+        effects.turn_end(ctx.step_number);
         Ok(effects)
     }
 }

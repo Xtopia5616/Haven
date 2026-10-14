@@ -1,9 +1,9 @@
 //! Turn effects produced by the ReAct coordinator.
 //!
 //! `TurnEngine` decides what should happen at a turn boundary; it does not
-//! own the durable transcript or the session lifecycle writer.  Effects are
-//! intentionally data-shaped so the run driver has one place where durable
-//! projection and live UI publication are applied in order.
+//! own the durable transcript or the session lifecycle writer. A plan keeps
+//! ordered projection effects separate from the directive that resolves the
+//! turn after those effects have been applied.
 
 use super::event_boundary::PauseTurnInput;
 use super::tool_batch::ToolBatchOutcome;
@@ -24,21 +24,26 @@ pub(super) enum TurnEffect {
     /// Persist the branch marker after a search-only round. The marker is a
     /// durable effect because it must be ordered after the transcript event.
     SaveBranchPoint { step_number: u32 },
-    /// Run the tool batch after its assistant ToolCall effect has committed.
-    /// Tool execution is still an external runtime activity, but the turn
-    /// coordinator no longer owns its transcript/UI application boundary.
-    ExecuteToolBatch {
-        tool_calls: Vec<ToolCall>,
-        thought: Option<String>,
-        response: LlmResponse,
-        catalog: Arc<ToolCatalogSnapshot>,
-        cancel: CancellationToken,
-        allow_tool_retry: bool,
-    },
     /// Publish a live event after all preceding durable effects commit.
     Emit(AgentEvent),
+}
+
+/// The action that resolves a turn after its ordered projection effects.
+///
+/// These are plans, not results: applying one produces a [`TurnControl`],
+/// which is the single result consumed by the run loop. Keeping conditional
+/// turn-end behavior here prevents it from silently overriding another
+/// control result halfway through an effects list.
+pub(super) enum TurnDirective {
+    Continue,
+    Exit(LoopExit),
+    /// Verify the durable event boundary, then finish the run. Boundary
+    /// failure replaces the requested exit with an error exit.
+    ExitAtBoundary {
+        exit: LoopExit,
+    },
     /// Complete a turn at a durable event boundary and publish its lifecycle
-    /// transition.  `pause_turn` remains the single implementation of the
+    /// transition. `pause_turn` remains the single implementation of the
     /// branch/check/status/hook ordering contract.
     Pause {
         boundary_step: u32,
@@ -47,63 +52,95 @@ pub(super) enum TurnEffect {
         branch_point_step: Option<u32>,
         reason: PauseReason,
     },
-    /// Drain process-local context after the final transcript effect.
-    /// Injected input keeps the run alive and suppresses every later effect,
-    /// including the turn-end pause.
-    InjectTurnEnd { step_number: u32 },
-    /// Publish a session error only after preceding durable effects commit.
-    /// `hard` returns from the run driver so the existing fail-closed path
-    /// can still verify the event boundary; a soft failure is a normal
-    /// `LoopExit::Error`.
-    FailSession { message: String, hard: bool },
-    /// Verify the durable event boundary, then finish the run. Boundary
-    /// failure replaces the requested exit with an error exit.
-    ExitAtBoundary { exit: LoopExit },
+    /// Drain process-local context after all projection effects. Injected
+    /// input records a branch point and continues; no input pauses the turn.
+    TurnEnd {
+        step_number: u32,
+    },
+    /// Publish a session error after all projection effects. `hard` returns
+    /// an error so the run driver keeps its fail-closed boundary check; a soft
+    /// failure resolves to `LoopExit::Error`.
+    FailSession {
+        message: String,
+        hard: bool,
+    },
+    /// Run the tool batch after its assistant ToolCall effect has committed.
+    /// Tool execution is runtime work; its outcome decides whether the run
+    /// continues or exits.
+    ExecuteToolBatch {
+        tool_calls: Vec<ToolCall>,
+        thought: Option<String>,
+        response: Box<LlmResponse>,
+        catalog: Arc<ToolCatalogSnapshot>,
+        cancel: CancellationToken,
+        allow_tool_retry: bool,
+    },
 }
 
-/// The result of one model turn. The batch is applied by the run driver, not
-/// by the code which decides the turn outcome.
+/// One planned turn: ordered effects followed by exactly one resolution
+/// directive. Effects are applied one at a time. If an effect fails, later
+/// effects and the directive are skipped; earlier successful commits remain
+/// effective and are not rolled back.
 pub(super) struct EffectBatch {
     effects: Vec<TurnEffect>,
-    control: TurnControl,
+    directive: TurnDirective,
 }
 
+/// Control returned after applying a turn plan and consumed by the run loop.
 pub(super) enum TurnControl {
     Continue,
     Done(LoopExit),
+}
+
+impl From<TurnControl> for ToolBatchOutcome {
+    fn from(control: TurnControl) -> Self {
+        match control {
+            TurnControl::Continue => Self::Continue,
+            TurnControl::Done(exit) => Self::Done(exit),
+        }
+    }
+}
+
+impl From<ToolBatchOutcome> for TurnControl {
+    fn from(outcome: ToolBatchOutcome) -> Self {
+        match outcome {
+            ToolBatchOutcome::Continue => Self::Continue,
+            ToolBatchOutcome::Done(exit) => Self::Done(exit),
+        }
+    }
 }
 
 impl EffectBatch {
     pub(super) fn continue_batch() -> Self {
         Self {
             effects: Vec::new(),
-            control: TurnControl::Continue,
+            directive: TurnDirective::Continue,
         }
     }
 
     pub(super) fn done(exit: LoopExit) -> Self {
         Self {
             effects: Vec::new(),
-            control: TurnControl::Done(exit),
+            directive: TurnDirective::Exit(exit),
         }
-    }
-
-    pub(super) fn with_effects(control: TurnControl, effects: Vec<TurnEffect>) -> Self {
-        Self { effects, control }
     }
 
     pub(super) fn push(&mut self, effect: TurnEffect) {
         self.effects.push(effect);
     }
 
+    #[cfg(test)]
     pub(super) fn into_effects(self) -> Vec<TurnEffect> {
         self.effects
     }
 
-    pub(super) fn prepend(&mut self, prefix: Self) {
-        let mut effects = prefix.effects;
-        effects.append(&mut self.effects);
-        self.effects = effects;
+    pub(super) fn prepend(&mut self, mut prefix: Self) {
+        assert!(
+            matches!(&prefix.directive, TurnDirective::Continue),
+            "a prefixed turn plan cannot carry its own resolution directive"
+        );
+        prefix.effects.append(&mut self.effects);
+        self.effects = prefix.effects;
     }
 
     pub(super) fn transcript(&mut self, event: TranscriptEvent) {
@@ -118,7 +155,7 @@ impl EffectBatch {
         branch_point_step: Option<u32>,
         reason: PauseReason,
     ) {
-        self.push(TurnEffect::Pause {
+        self.set_directive(TurnDirective::Pause {
             boundary_step,
             status,
             waiting_reason,
@@ -127,28 +164,53 @@ impl EffectBatch {
         });
     }
 
+    pub(super) fn turn_end(&mut self, step_number: u32) {
+        self.set_directive(TurnDirective::TurnEnd { step_number });
+    }
+
     /// Finish this batch at a lifecycle boundary after the effects already
     /// queued. The run driver performs the durable check.
     pub(super) fn with_exit(mut self, exit: LoopExit) -> Self {
-        self.effects
-            .push(TurnEffect::ExitAtBoundary { exit: exit.clone() });
-        self.control = TurnControl::Done(exit);
+        self.set_directive(TurnDirective::ExitAtBoundary { exit });
         self
     }
 
     /// Record a session error after effects already queued. `hard` makes
     /// application return `Err` so the run driver keeps its fail-closed
-    /// boundary check; otherwise the batch completes with `LoopExit::Error`.
+    /// boundary check; otherwise the plan resolves to `LoopExit::Error`.
     pub(super) fn fail_session(mut self, message: impl Into<String>, hard: bool) -> Self {
-        let message = message.into();
-        self.effects.push(TurnEffect::FailSession {
-            message: message.clone(),
+        self.set_directive(TurnDirective::FailSession {
+            message: message.into(),
             hard,
         });
-        if !hard {
-            self.control = TurnControl::Done(LoopExit::Error(message));
-        }
         self
+    }
+
+    pub(super) fn execute_tool_batch(
+        &mut self,
+        tool_calls: Vec<ToolCall>,
+        thought: Option<String>,
+        response: LlmResponse,
+        catalog: Arc<ToolCatalogSnapshot>,
+        cancel: CancellationToken,
+        allow_tool_retry: bool,
+    ) {
+        self.set_directive(TurnDirective::ExecuteToolBatch {
+            tool_calls,
+            thought,
+            response: Box::new(response),
+            catalog,
+            cancel,
+            allow_tool_retry,
+        });
+    }
+
+    fn set_directive(&mut self, directive: TurnDirective) {
+        assert!(
+            matches!(&self.directive, TurnDirective::Continue),
+            "turn plan already has a resolution directive"
+        );
+        self.directive = directive;
     }
 
     pub(super) async fn apply(
@@ -158,80 +220,77 @@ impl EffectBatch {
         state: &mut ReActState,
         tool_retry_budget: &mut ToolRetryBudget,
     ) -> anyhow::Result<TurnControl> {
-        let mut control = self.control;
+        self.apply_with_tool_budget(engine, ctx, state, Some(tool_retry_budget))
+            .await
+    }
+
+    async fn apply_with_tool_budget(
+        self,
+        engine: &ReActEngine,
+        ctx: &StepCtx,
+        state: &mut ReActState,
+        tool_retry_budget: Option<&mut ToolRetryBudget>,
+    ) -> anyhow::Result<TurnControl> {
+        // Each operation commits before the next starts. An error stops the
+        // sequence but does not undo completed transcript/lifecycle writes.
         for effect in self.effects {
-            control = match effect {
-                TurnEffect::ExecuteToolBatch {
-                    tool_calls,
-                    thought,
-                    response,
-                    catalog,
-                    cancel,
-                    allow_tool_retry,
-                } => {
-                    let outcome = engine
-                        .execute_tool_batch(
-                            &ctx.session_id,
-                            state,
-                            ctx.step_number,
-                            &ctx.emitter,
-                            ctx.run_id,
-                            &tool_calls,
-                            &thought,
-                            &response,
-                            catalog,
-                            &cancel,
-                            allow_tool_retry,
-                            tool_retry_budget,
-                        )
-                        .await?;
-                    match outcome {
-                        ToolBatchOutcome::Continue => TurnControl::Continue,
-                        ToolBatchOutcome::Done(exit) => TurnControl::Done(exit),
-                    }
-                }
-                effect => match apply_projection_effect(engine, ctx, state, effect, control).await?
-                {
-                    ProjectionProgress::Continue(control) => control,
-                    ProjectionProgress::Stop(control) => return Ok(control),
-                },
-            };
+            apply_projection_effect(engine, ctx, state, effect).await?;
         }
-        Ok(control)
+
+        match self.directive {
+            TurnDirective::ExecuteToolBatch {
+                tool_calls,
+                thought,
+                response,
+                catalog,
+                cancel,
+                allow_tool_retry,
+            } => {
+                let tool_retry_budget = tool_retry_budget.ok_or_else(|| {
+                    anyhow::anyhow!("committed effect batch cannot execute tools")
+                })?;
+                let outcome = engine
+                    .execute_tool_batch(
+                        &ctx.session_id,
+                        state,
+                        ctx.step_number,
+                        &ctx.emitter,
+                        ctx.run_id,
+                        &tool_calls,
+                        &thought,
+                        &response,
+                        catalog,
+                        &cancel,
+                        allow_tool_retry,
+                        tool_retry_budget,
+                    )
+                    .await?;
+                Ok(outcome.into())
+            }
+            directive => apply_committed_directive(engine, ctx, state, directive).await,
+        }
     }
 }
 
-/// Projection commits must not re-enter [`EffectBatch::apply`]. Tool execution
-/// calls back into this applier, and sharing one async function makes the
-/// state machine recursive (`E0733`).
-enum ProjectionProgress {
-    Continue(TurnControl),
-    Stop(TurnControl),
-}
-
-async fn apply_projection_effect(
+/// Apply a non-recursive terminal directive. Keeping tool execution outside
+/// this function lets its outcome commit projection batches without creating
+/// a recursive async future.
+async fn apply_committed_directive(
     engine: &ReActEngine,
     ctx: &StepCtx,
     state: &mut ReActState,
-    effect: TurnEffect,
-    control: TurnControl,
-) -> anyhow::Result<ProjectionProgress> {
-    match effect {
-        TurnEffect::ExecuteToolBatch { .. } => {
-            anyhow::bail!("committed effect batch cannot execute another tool batch");
+    directive: TurnDirective,
+) -> anyhow::Result<TurnControl> {
+    match directive {
+        TurnDirective::Continue => Ok(TurnControl::Continue),
+        TurnDirective::Exit(exit) => Ok(TurnControl::Done(exit)),
+        TurnDirective::ExitAtBoundary { exit } => {
+            let exit = engine
+                .exit_at_boundary(&ctx.session_id, state, ctx.step_number, exit)
+                .await;
+            Ok(TurnControl::Done(exit))
         }
-        TurnEffect::Transcript(event) => {
-            engine.apply_transcript(ctx, event, state).await?;
-        }
-        TurnEffect::SaveBranchPoint { step_number } => {
-            engine
-                .save_branch_point(&ctx.session_id, state, step_number)
-                .await?;
-        }
-        TurnEffect::Emit(event) => {
-            ctx.emitter.emit(event).await;
-        }
-        TurnEffect::Pause {
+        TurnDirective::Pause {
             boundary_step,
             status,
             waiting_reason,
@@ -251,16 +310,33 @@ async fn apply_projection_effect(
                     reason,
                 })
                 .await?;
+            Ok(TurnControl::Done(LoopExit::Paused { reason }))
         }
-        TurnEffect::InjectTurnEnd { step_number } => {
+        TurnDirective::TurnEnd { step_number } => {
             if engine.inject_turn_end_context(ctx, state).await? {
                 engine
                     .save_branch_point(&ctx.session_id, state, step_number)
                     .await?;
-                return Ok(ProjectionProgress::Stop(TurnControl::Continue));
+                return Ok(TurnControl::Continue);
             }
+            engine
+                .pause_turn(PauseTurnInput {
+                    session_id: &ctx.session_id,
+                    state,
+                    boundary_step: step_number + 1,
+                    emitter: &ctx.emitter,
+                    status: SessionStatus::Paused,
+                    waiting_reason: None,
+                    branch_point_step: Some(step_number),
+                    run_id: ctx.run_id,
+                    reason: PauseReason::TurnEnd,
+                })
+                .await?;
+            Ok(TurnControl::Done(LoopExit::Paused {
+                reason: PauseReason::TurnEnd,
+            }))
         }
-        TurnEffect::FailSession { message, hard } => {
+        TurnDirective::FailSession { message, hard } => {
             engine
                 .emit_error(&ctx.emitter, &ctx.session_id, &message)
                 .await;
@@ -275,22 +351,37 @@ async fn apply_projection_effect(
             if hard {
                 return Err(anyhow::anyhow!(message));
             }
-            return Ok(ProjectionProgress::Stop(TurnControl::Done(
-                LoopExit::Error(message),
-            )));
+            Ok(TurnControl::Done(LoopExit::Error(message)))
         }
-        TurnEffect::ExitAtBoundary { exit } => {
-            let exit = engine
-                .exit_at_boundary(&ctx.session_id, state, ctx.step_number, exit)
-                .await;
-            return Ok(ProjectionProgress::Stop(TurnControl::Done(exit)));
+        TurnDirective::ExecuteToolBatch { .. } => {
+            anyhow::bail!("committed effect batch cannot execute tools")
         }
     }
-    Ok(ProjectionProgress::Continue(control))
+}
+
+/// A committed projection effect never re-enters [`EffectBatch::apply`]. Tool
+/// execution invokes the non-recursive committed-batch applier, which shares
+/// this one-effect function.
+async fn apply_projection_effect(
+    engine: &ReActEngine,
+    ctx: &StepCtx,
+    state: &mut ReActState,
+    effect: TurnEffect,
+) -> anyhow::Result<()> {
+    match effect {
+        TurnEffect::Transcript(event) => engine.apply_transcript(ctx, event, state).await?,
+        TurnEffect::SaveBranchPoint { step_number } => {
+            engine
+                .save_branch_point(&ctx.session_id, state, step_number)
+                .await?;
+        }
+        TurnEffect::Emit(event) => ctx.emitter.emit(event).await,
+    }
+    Ok(())
 }
 
 impl ReActEngine {
-    /// Apply the ordered effect boundary for one completed turn.
+    /// Apply the ordered projection effects, then resolve the turn directive.
     pub(super) async fn apply_effect_batch(
         &self,
         ctx: &StepCtx,
@@ -301,23 +392,19 @@ impl ReActEngine {
         batch.apply(self, ctx, state, tool_retry_budget).await
     }
 
-    /// Apply transcript, projection and lifecycle effects that are not another
-    /// tool batch. This path is deliberately not [`EffectBatch::apply`]: tool
-    /// execution commits observations while the outer batch is still running.
+    /// Apply projection effects for tool results and lifecycle transitions.
+    /// This path has no tool budget, so it cannot recursively execute a tool
+    /// batch while one is already being committed.
     pub(super) async fn apply_committed_batch(
         &self,
         ctx: &StepCtx,
         state: &mut ReActState,
         batch: EffectBatch,
     ) -> anyhow::Result<TurnControl> {
-        let mut control = batch.control;
         for effect in batch.effects {
-            control = match apply_projection_effect(self, ctx, state, effect, control).await? {
-                ProjectionProgress::Continue(control) => control,
-                ProjectionProgress::Stop(control) => return Ok(control),
-            };
+            apply_projection_effect(self, ctx, state, effect).await?;
         }
-        Ok(control)
+        apply_committed_directive(self, ctx, state, batch.directive).await
     }
 }
 
@@ -326,14 +413,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_batches_keep_explicit_control_flow() {
+    fn empty_batches_have_one_explicit_directive() {
         assert!(matches!(
-            EffectBatch::continue_batch().control,
-            TurnControl::Continue
+            EffectBatch::continue_batch().directive,
+            TurnDirective::Continue
         ));
         assert!(matches!(
-            EffectBatch::done(LoopExit::Cancelled).control,
-            TurnControl::Done(LoopExit::Cancelled)
+            EffectBatch::done(LoopExit::Cancelled).directive,
+            TurnDirective::Exit(LoopExit::Cancelled)
         ));
     }
 
@@ -349,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn prepend_keeps_transcript_before_turn_end_control() {
+    fn prepend_keeps_prefix_effects_before_end_directive() {
         let mut prefix = EffectBatch::continue_batch();
         prefix.transcript(TranscriptEvent::Thought {
             text: "thought".into(),
@@ -365,34 +452,28 @@ mod tests {
             tool_call_cards: Vec::new(),
             persist_text_id: None,
         });
-        end.push(TurnEffect::InjectTurnEnd { step_number: 1 });
-        end.pause(
+        end.turn_end(1);
+        end.prepend(prefix);
+
+        assert!(matches!(end.effects[0], TurnEffect::Transcript(_)));
+        assert!(matches!(end.effects[1], TurnEffect::Transcript(_)));
+        assert!(matches!(
+            end.directive,
+            TurnDirective::TurnEnd { step_number: 1 }
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "turn plan already has a resolution directive")]
+    fn turn_plan_cannot_replace_its_resolution_directive() {
+        let mut batch = EffectBatch::continue_batch();
+        batch.turn_end(1);
+        batch.pause(
             2,
             SessionStatus::Paused,
             None,
             Some(1),
             PauseReason::TurnEnd,
         );
-        end = EffectBatch::with_effects(
-            TurnControl::Done(LoopExit::Paused {
-                reason: super::super::PauseReason::TurnEnd,
-            }),
-            end.into_effects(),
-        );
-        end.prepend(prefix);
-
-        assert!(matches!(end.effects[0], TurnEffect::Transcript(_)));
-        assert!(matches!(end.effects[1], TurnEffect::Transcript(_)));
-        assert!(matches!(
-            end.effects[2],
-            TurnEffect::InjectTurnEnd { step_number: 1 }
-        ));
-        assert!(matches!(end.effects[3], TurnEffect::Pause { .. }));
-        assert!(matches!(
-            end.control,
-            TurnControl::Done(LoopExit::Paused {
-                reason: super::super::PauseReason::TurnEnd,
-            })
-        ));
     }
 }
