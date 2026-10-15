@@ -860,6 +860,66 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn runner_cancellation_terminates_descendant_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_file = temp.path().join("skill-descendant.pid");
+        let mut descendant =
+            crate::process_test_support::DescendantProcessMarker::new(pid_file.clone());
+        let script = format!(
+            "from pathlib import Path\nimport subprocess, sys, time\nchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\nPath({}).write_text(str(child.pid), encoding='ascii')\ntime.sleep(60)\nprint('{{}}')\n",
+            python_path_literal(&pid_file)
+        );
+        let skill = scripted_skill(temp.path(), &script).await;
+        let config = SkillsExecConfig {
+            timeout_secs: 60,
+            venv_root: temp.path().join("venvs"),
+            work_dir: temp.path().join("work"),
+            ..Default::default()
+        };
+        let venv = VenvManager::new(config.venv_root.clone());
+        let mut runner = SkillRunner::new(venv, config);
+        runner.script_snapshot_root = temp.path().join("script-snapshots");
+        runner
+            .venv
+            .ensure(skill.name(), skill.root())
+            .await
+            .unwrap();
+
+        let runner = std::sync::Arc::new(runner);
+        let cancel = CancellationToken::new();
+        let execution_cancel = cancel.clone();
+        let execution_runner = std::sync::Arc::clone(&runner);
+        let execution = tokio::spawn(async move {
+            execution_runner
+                .execute(&skill, &serde_json::json!({}), execution_cancel)
+                .await
+        });
+        let marker_ready = tokio::time::timeout(Duration::from_secs(20), async {
+            while !pid_file.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(10), execution)
+            .await
+            .expect("Skill cancellation must complete")
+            .expect("Skill task must not panic")
+            .expect("Skill runner must report cancellation as a result");
+
+        assert!(marker_ready, "Skill child must start its descendant");
+        let pid = descendant
+            .pid()
+            .expect("Skill child must write the descendant PID");
+        assert_eq!(result.outcome, crate::ToolExecutionOutcome::Cancelled);
+        descendant
+            .wait_for_exit(pid, Duration::from_secs(5))
+            .expect("Skill cancellation must close the Job Object");
+    }
+
     #[tokio::test]
     async fn runner_drains_both_pipes_and_rejects_bounded_output_overflow() {
         let temp = tempfile::tempdir().unwrap();

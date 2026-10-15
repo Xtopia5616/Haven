@@ -771,66 +771,9 @@ mod tests {
     #[tokio::test]
     async fn cancelling_shell_terminates_its_descendant_processes() {
         use std::{
-            fs,
             path::Path,
             time::{Duration, Instant},
         };
-        use windows_sys::Win32::{
-            Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, WAIT_OBJECT_0},
-            System::Threading::{
-                OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
-                WaitForSingleObject,
-            },
-        };
-
-        struct DescendantCleanup(std::path::PathBuf);
-
-        impl Drop for DescendantCleanup {
-            fn drop(&mut self) {
-                let Ok(pid) = fs::read_to_string(&self.0)
-                    .map(|value| value.trim().parse::<u32>())
-                    .and_then(|value| value.map_err(std::io::Error::other))
-                else {
-                    return;
-                };
-                // SAFETY: this test-created descendant PID is opened with the
-                // exact rights used below, and the owned process handle closes
-                // after best-effort cleanup.
-                let process =
-                    unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
-                if process.is_null() {
-                    return;
-                }
-                unsafe {
-                    let _ = TerminateProcess(process, 1);
-                    let _ = WaitForSingleObject(process, 5_000);
-                    CloseHandle(process);
-                }
-            }
-        }
-
-        fn descendant_exited(pid: u32) -> Result<(), String> {
-            // SAFETY: `pid` was written by the test's child process; this
-            // handle is only used for synchronization and is closed below.
-            let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
-            if process.is_null() {
-                let error = unsafe { GetLastError() };
-                return if error == ERROR_INVALID_PARAMETER {
-                    Ok(())
-                } else {
-                    Err(format!("OpenProcess failed for descendant {pid}: {error}"))
-                };
-            }
-            let wait = unsafe { WaitForSingleObject(process, 5_000) };
-            unsafe { CloseHandle(process) };
-            if wait == WAIT_OBJECT_0 {
-                Ok(())
-            } else {
-                Err(format!(
-                    "descendant process {pid} survived shell cancellation"
-                ))
-            }
-        }
 
         fn powershell_literal(path: &Path) -> String {
             path.to_string_lossy().replace('\'', "''")
@@ -838,7 +781,8 @@ mod tests {
 
         let temp = tempdir().expect("create isolated process marker directory");
         let pid_file = temp.path().join("shell-descendant.pid");
-        let _cleanup = DescendantCleanup(pid_file.clone());
+        let mut descendant =
+            crate::process_test_support::DescendantProcessMarker::new(pid_file.clone());
         let marker = powershell_literal(&pid_file);
         let command = format!(
             "$child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 60' -PassThru; [System.IO.File]::WriteAllText('{marker}', [string]$child.Id); Start-Sleep -Seconds 60"
@@ -858,11 +802,9 @@ mod tests {
         while !pid_file.exists() && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        let pid = fs::read_to_string(&pid_file)
-            .expect("Shell child must start a descendant before cancellation")
-            .trim()
-            .parse::<u32>()
-            .expect("descendant PID must be numeric");
+        let pid = descendant
+            .pid()
+            .expect("Shell child must start a descendant before cancellation");
 
         cancel.cancel();
         let result = tokio::time::timeout(Duration::from_secs(10), run)
@@ -871,7 +813,9 @@ mod tests {
             .expect("Shell task must not panic")
             .expect("Shell adapter must report cancellation as a result");
         assert_eq!(result.outcome, ToolExecutionOutcome::Cancelled);
-        descendant_exited(pid).expect("Shell cancellation must close the Job Object");
+        descendant
+            .wait_for_exit(pid, Duration::from_secs(5))
+            .expect("Shell cancellation must close the Job Object");
     }
 
     #[tokio::test]

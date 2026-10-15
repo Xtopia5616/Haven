@@ -1170,3 +1170,4 @@
 - [1182：限制 MCP stdio 的继承环境变量](1182-restrict-mcp-stdio-inherited-environment.md)
 - [1183：增加 MCP Model-only 暴露策略](1183-add-mcp-model-only-exposure.md)
 - [1184：验证 Shell 取消时的进程树回收](1184-verify-shell-process-containment.md)
+- [1185：验证 Skill 取消时的进程树回收](1185-verify-skill-process-containment.md)

@@ -23,6 +23,8 @@ mod mcp_server_config;
 mod operation_view;
 mod output;
 mod process;
+#[cfg(all(test, windows))]
+mod process_test_support;
 mod prompts;
 pub(crate) mod registry;
 mod runtime_capabilities;
