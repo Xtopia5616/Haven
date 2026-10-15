@@ -681,8 +681,12 @@ mod tests {
     use std::io::Read;
     use std::time::Duration;
 
+    static APPCONTAINER_REVIEW_TEST_LOCK: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::const_new(());
+
     #[tokio::test]
     async fn owner_accounts_active_and_pending_storage_and_expires_reviews() {
+        let _process_fixture = APPCONTAINER_REVIEW_TEST_LOCK.lock().await;
         let (review, sandbox_root) = create_review().await;
         let charge = review.retained_storage_upper_bound_bytes();
         let session_id = new_id("ses");
@@ -751,6 +755,7 @@ mod tests {
 
     #[tokio::test]
     async fn reservation_drop_and_discard_release_capacity() {
+        let _process_fixture = APPCONTAINER_REVIEW_TEST_LOCK.lock().await;
         let owner = SandboxOutputReviewOwner::with_limits(1, 10, Duration::from_secs(60));
         let first_session = new_id("ses");
         let first_step = new_id("step");
@@ -826,6 +831,7 @@ mod tests {
 
     #[tokio::test]
     async fn promotion_uses_owner_index_and_rejects_stale_workspace_before_copy() {
+        let _process_fixture = APPCONTAINER_REVIEW_TEST_LOCK.lock().await;
         let (review, _) = create_review_with_stamps(1, 0).await;
         let charge = review.retained_storage_upper_bound_bytes();
         let session_id = new_id("ses");
@@ -919,6 +925,7 @@ mod tests {
 
     #[tokio::test]
     async fn facade_requires_matching_proof_and_holds_files_authority_for_promotion() {
+        let _process_fixture = APPCONTAINER_REVIEW_TEST_LOCK.lock().await;
         use haven_common::types::{NetworkPolicy, SandboxMode};
 
         let facade = crate::ToolsFacade::new();
