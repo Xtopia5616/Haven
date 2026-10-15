@@ -20,6 +20,7 @@
 		toolName?: string;
 		sessionId?: string;
 		allowSessionScope?: boolean;
+		onceOnly?: boolean;
 		sessionTitle?: string;
 		riskLevel?: RiskLevel;
 		summary?: string;
@@ -44,6 +45,7 @@
 		toolName,
 		sessionId,
 		allowSessionScope = Boolean(sessionId),
+		onceOnly = false,
 		sessionTitle,
 		riskLevel,
 		summary,
@@ -64,7 +66,7 @@
 	let normalizedRisk = $derived(String(riskLevel || 'medium').toLowerCase());
 	let riskLabel = $derived(RISK_LABELS[normalizedRisk] || '中风险');
 	let timeoutPercent = $derived(
-		Math.min(100, Math.max(0, (remaining * 1000 / countdownDurationMs) * 100)),
+		Math.min(100, Math.max(0, ((remaining * 1000) / countdownDurationMs) * 100)),
 	);
 
 	function buildTargetOptions(
@@ -126,9 +128,10 @@
 			};
 		}
 		const created = Date.parse(createdAt);
-		countdownDurationMs = Number.isFinite(created) && deadline > created
-			? deadline - created
-			: Math.max(1, deadline - Date.now());
+		countdownDurationMs =
+			Number.isFinite(created) && deadline > created
+				? deadline - created
+				: Math.max(1, deadline - Date.now());
 		let id: ReturnType<typeof setInterval> | undefined;
 		const tickCountdown = () => {
 			remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
@@ -196,7 +199,7 @@
 </script>
 
 <MaterialDialog
-open={open && Boolean(requestId)}
+	open={open && Boolean(requestId)}
 	onClose={dismiss}
 	dialogClass="permission-confirmation-dialog"
 	overlayClass="permission-confirmation-overlay"
@@ -284,8 +287,12 @@ open={open && Boolean(requestId)}
 	{#snippet footer()}
 		<footer class="dialog-footer">
 			<div class="action-heading">
-				<span>选择允许范围和期限</span>
-				<span class="action-hint">范围越大、期限越长，后续询问越少</span>
+				<span>{onceOnly ? '仅对此次文件晋升授权' : '选择允许范围和期限'}</span>
+				<span class="action-hint">
+					{onceOnly
+						? '此授权不会保存为会话规则或永久规则'
+						: '范围越大、期限越长，后续询问越少'}
+				</span>
 			</div>
 			{#if pendingPersistentTarget}
 				<div class="always-warning" role="alert">
@@ -314,7 +321,7 @@ open={open && Boolean(requestId)}
 						label="本次允许"
 						onclick={() => decide('allow', 'once', 'operation')}
 					/>
-					{#if allowSessionScope}
+					{#if allowSessionScope && !onceOnly}
 						<MaterialButton
 							variant="tonal"
 							className="btn-session"
@@ -322,79 +329,88 @@ open={open && Boolean(requestId)}
 							onclick={() => decide('allow', 'session', 'operation')}
 						/>
 					{/if}
-					<div class="more-allow">
-						<MaterialButton
-							variant="text"
-							className="more-allow-trigger"
-							label="更多允许"
-							ariaExpanded={showAllowMenu}
-							ariaHaspopup="menu"
-							onclick={() => (showAllowMenu = !showAllowMenu)}
-						/>
-						{#if showAllowMenu}
-							<div class="allow-menu" role="menu">
-								{#if allowSessionScope}
-									<div class="menu-section-label">本会话</div>
-									{#each targetOptions.slice(1) as option (option.target)}
+					{#if !onceOnly}<div class="more-allow">
+							<MaterialButton
+								variant="text"
+								className="more-allow-trigger"
+								label="更多允许"
+								ariaExpanded={showAllowMenu}
+								ariaHaspopup="menu"
+								onclick={() => (showAllowMenu = !showAllowMenu)}
+							/>
+							{#if showAllowMenu}
+								<div class="allow-menu" role="menu">
+									{#if allowSessionScope}
+										<div class="menu-section-label">本会话</div>
+										{#each targetOptions.slice(1) as option (option.target)}
+											<MenuItem
+												label={`本会话允许${option.label}`}
+												onSelect={() =>
+													decide('allow', 'session', option.target)}
+											/>
+										{/each}
+									{/if}
+									<div class="menu-section-label">永久</div>
+									{#each targetOptions as option (option.target)}
 										<MenuItem
-										label={`本会话允许${option.label}`}
-										onSelect={() => decide('allow', 'session', option.target)}
-									/>
-									{/each}
-								{/if}
-								<div class="menu-section-label">永久</div>
-								{#each targetOptions as option (option.target)}
-									<MenuItem
-										label={`永久允许${option.label}`}
-										onSelect={() => requestPersistentAllow(option.target)}
-									/>
-								{/each}
-							</div>
-						{/if}
-					</div>
-				</div>
-				<MaterialSplitButton
-					label="拒绝"
-					variant="danger"
-					className="deny-split"
-					open={showDenyMenu}
-					onclick={() => decide('deny', 'once')}
-					onToggle={() => (showDenyMenu = !showDenyMenu)}
-					ariaLabel="更多拒绝选项"
-				>
-					{#snippet children()}
-						{#if showDenyMenu}
-							<div class="deny-menu" role="menu">
-								{#if allowSessionScope}
-									<MenuItem
-										label="本会话拒绝此操作"
-										danger
-										onSelect={() => decide('deny', 'session', 'operation')}
-									/>
-									{#each targetOptions.slice(1) as option (option.target)}
-										<MenuItem
-											label={`本会话拒绝${option.label}`}
-											danger
-											onSelect={() => decide('deny', 'session', option.target)}
+											label={`永久允许${option.label}`}
+											onSelect={() => requestPersistentAllow(option.target)}
 										/>
 									{/each}
-								{/if}
-								<MenuItem
-									label="始终拒绝此操作"
-									danger
-									onSelect={() => decide('deny', 'always', 'operation')}
-								/>
-								{#each targetOptions.slice(1) as option (option.target)}
+								</div>
+							{/if}
+						</div>{/if}
+				</div>
+				{#if onceOnly}
+					<MaterialButton
+						variant="danger"
+						className="deny-split"
+						label="拒绝"
+						onclick={() => decide('deny', 'once')}
+					/>
+				{:else}<MaterialSplitButton
+						label="拒绝"
+						variant="danger"
+						className="deny-split"
+						open={showDenyMenu}
+						onclick={() => decide('deny', 'once')}
+						onToggle={() => (showDenyMenu = !showDenyMenu)}
+						ariaLabel="更多拒绝选项"
+					>
+						{#snippet children()}
+							{#if showDenyMenu}
+								<div class="deny-menu" role="menu">
+									{#if allowSessionScope}
+										<MenuItem
+											label="本会话拒绝此操作"
+											danger
+											onSelect={() => decide('deny', 'session', 'operation')}
+										/>
+										{#each targetOptions.slice(1) as option (option.target)}
+											<MenuItem
+												label={`本会话拒绝${option.label}`}
+												danger
+												onSelect={() =>
+													decide('deny', 'session', option.target)}
+											/>
+										{/each}
+									{/if}
 									<MenuItem
-										label={`始终拒绝${option.label}`}
+										label="始终拒绝此操作"
 										danger
-										onSelect={() => decide('deny', 'always', option.target)}
+										onSelect={() => decide('deny', 'always', 'operation')}
 									/>
-								{/each}
-							</div>
-						{/if}
-					{/snippet}
-				</MaterialSplitButton>
+									{#each targetOptions.slice(1) as option (option.target)}
+										<MenuItem
+											label={`始终拒绝${option.label}`}
+											danger
+											onSelect={() => decide('deny', 'always', option.target)}
+										/>
+									{/each}
+								</div>
+							{/if}
+						{/snippet}
+					</MaterialSplitButton>{/if}
 			</div>
 		</footer>
 	{/snippet}

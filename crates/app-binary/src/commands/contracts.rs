@@ -7,7 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 86;
+pub const EXPECTED_COMMAND_COUNT: usize = 87;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -475,6 +475,11 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "reset_tool_circuits",
         boundary: CommandBoundary::Mutate,
         security: "clears local circuit state only",
+    },
+    CommandContract {
+        name: "promote_sandbox_output",
+        boundary: CommandBoundary::Execute,
+        security: "Windows only; owner-held change index; exact session request; required one-time confirmation; current Files capability and live execution proof",
     },
 ];
 

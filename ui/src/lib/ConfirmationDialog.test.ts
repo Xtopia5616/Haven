@@ -143,6 +143,36 @@ describe('ConfirmationDialog', () => {
 		expect(screen.queryByRole('menuitem', { name: '本会话拒绝此操作' })).toBeNull();
 	});
 
+	it('restricts sandbox output promotion to one-time allow or deny', async () => {
+		const onConfirm = vi.fn();
+		render(ConfirmationDialog as any, {
+			...deadlineProps(),
+			requestId: 'conf-b7a65e97699c7c548225828bfc5e17f9',
+			toolName: 'files.promote_sandbox_output',
+			sessionId: 'ses-f598facda111677e0871bdc09d391332',
+			onceOnly: true,
+			allowSessionScope: true,
+			permissionKey: 'files.promote_sandbox_output',
+			onConfirm,
+		});
+
+		expect(screen.getByText('仅对此次文件晋升授权')).toBeTruthy();
+		expect(screen.getByText('此授权不会保存为会话规则或永久规则')).toBeTruthy();
+		expect(screen.getByRole('button', { name: '本次允许' })).toBeTruthy();
+		expect(screen.queryByRole('button', { name: '本会话允许此操作' })).toBeNull();
+		expect(screen.queryByRole('button', { name: '更多允许' })).toBeNull();
+		expect(screen.queryByRole('button', { name: '更多拒绝选项' })).toBeNull();
+
+		await fireEvent.click(screen.getByRole('button', { name: '拒绝' }));
+		expect(onConfirm).toHaveBeenCalledWith({
+			requestId: 'conf-b7a65e97699c7c548225828bfc5e17f9',
+			approved: false,
+			effect: 'deny',
+			scope: 'once',
+			target: 'operation',
+		});
+	});
+
 	it('keeps a rejected pre-execution confirmation submission retryable', async () => {
 		const onConfirm = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 		render(ConfirmationDialog as any, {

@@ -1408,8 +1408,10 @@
 			open={activeConfirmOpen}
 			requestId={activeConfirmRequest?.requestId || null}
 			toolName={activeConfirmRequest?.toolName || ''}
+			onceOnly={activeConfirmRequest?.toolName === 'files.promote_sandbox_output'}
 			sessionId={activeConfirmRequest?.sessionId}
-			allowSessionScope={Boolean(activeConfirmRequest?.sessionId)}
+			allowSessionScope={Boolean(activeConfirmRequest?.sessionId) &&
+				activeConfirmRequest?.toolName !== 'files.promote_sandbox_output'}
 			sessionTitle={activeConfirmSessionTitle}
 			riskLevel={activeConfirmRequest?.riskLevel || 'medium'}
 			summary={activeConfirmRequest?.summary || '此操作需要你的许可。'}

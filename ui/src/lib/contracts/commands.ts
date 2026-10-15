@@ -283,6 +283,11 @@ export const TAURI_COMMAND_CONTRACTS = {
 		security: 'tool definition projection; schemas are dynamic extension data',
 	},
 	reset_tool_circuits: { boundary: 'mutate', security: 'clears local circuit state only' },
+	promote_sandbox_output: {
+		boundary: 'execute',
+		security:
+			'Windows only; owner-held change index; exact session request; required one-time confirmation; current Files capability and live execution proof',
+	},
 } as const satisfies Record<TauriCommandName, CommandContract>;
 
 export const TAURI_COMMAND_NAMES = Object.keys(TAURI_COMMAND_CONTRACTS) as TauriCommandName[];

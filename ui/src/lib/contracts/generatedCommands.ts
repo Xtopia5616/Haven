@@ -5613,6 +5613,7 @@ export const PROCESS_TRANSCRIPT_RESPONSE_SHAPE = { kind: 'union', anyOf: [
 		}
 	}
 ] } as const;
+export const PROMOTE_SANDBOX_OUTPUT_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const READ_LOG_TAIL_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -8544,6 +8545,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	open_skills_dir: OPEN_SKILLS_DIR_RESPONSE_SHAPE,
 	pick_execution_workspace_directory: PICK_EXECUTION_WORKSPACE_DIRECTORY_RESPONSE_SHAPE,
 	process_transcript: PROCESS_TRANSCRIPT_RESPONSE_SHAPE,
+	promote_sandbox_output: PROMOTE_SANDBOX_OUTPUT_RESPONSE_SHAPE,
 	read_log_tail: READ_LOG_TAIL_RESPONSE_SHAPE,
 	read_mcp_resource: READ_MCP_RESOURCE_RESPONSE_SHAPE,
 	recall_memory: RECALL_MEMORY_RESPONSE_SHAPE,
@@ -8676,6 +8678,7 @@ export interface TauriCommandMap {
 	open_skills_dir: { request: undefined; response: void };
 	pick_execution_workspace_directory: { request: undefined; response: string | null };
 	process_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingId?: string | null; deliveryMode?: InputDeliveryModeInput | null }; response: ProcessResult };
+	promote_sandbox_output: { request: { sessionId: string; sourceStepId: string; changeIndex: number; destination: string }; response: void };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
 	read_mcp_resource: { request: { name: string; targetBinding: string; uri: string; forceRefresh: boolean }; response: McpResourceRead };
 	recall_memory: { request: { query: string; kind?: MemoryEntityKindInput | null; limit?: number | null }; response: MemoryRecallItem[] };

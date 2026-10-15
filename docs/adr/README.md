@@ -1192,3 +1192,4 @@
 - [1204：为 sandbox review 提供保守存储计量](1204-bound-output-review-storage-accounting.md)
 - [1205：为 Tools 增加有界 sandbox review owner](1205-bound-tools-sandbox-review-owner.md)
 - [1206：以执行 proof 约束 sandbox 输出晋升](1206-proof-bound-sandbox-output-promotion.md)
+- [1207：通过 Tauri 续接一次性 sandbox 输出晋升确认](1207-tauri-once-only-sandbox-promotion.md)

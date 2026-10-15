@@ -246,7 +246,7 @@ $ownedCommands = @{
     'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'count_session_history', 'count_session_history_search', 'get_session_for_resume', 'get_latest_session_for_resume', 'process_transcript', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'fork_session_from_message', 'end_session', 'interrupt_session', 'continue_session')
     'modelDiscoveryCommands.ts' = @('discover_models')
     'diagnosticsCommands.ts' = @('get_log_info', 'read_log_tail', 'check_shell_available', 'get_api_key_status', 'get_performance_metrics')
-    'settingsCommands.ts' = @('get_settings', 'discard_staged_credentials', 'list_session_permissions', 'is_autostart_enabled', 'run_memory_maintenance', 'revoke_permission', 'revoke_session_permission', 'reset_permissions', 'reset_session_permissions', 'set_hotkey_capture_active', 'stage_provider_credential', 'stage_ocr_credential', 'update_settings', 'enable_autostart', 'disable_autostart')
+    'settingsCommands.ts' = @('get_settings', 'pick_execution_workspace_directory', 'discard_staged_credentials', 'list_session_permissions', 'is_autostart_enabled', 'run_memory_maintenance', 'revoke_permission', 'revoke_session_permission', 'reset_permissions', 'reset_session_permissions', 'set_hotkey_capture_active', 'stage_provider_credential', 'stage_ocr_credential', 'update_settings', 'enable_autostart', 'disable_autostart')
     'chatModelCommands.ts' = @('switch_model', 'set_reasoning_effort', 'set_web_search')
 }
 $reviewedNonUiCommands = @{
@@ -254,6 +254,7 @@ $reviewedNonUiCommands = @{
     export_session_history = 'No renderer export flow exists; session history is currently consumed through typed read and search commands.'
     get_recording_state = 'Recording state is driven by recording lifecycle events and the app bootstrap snapshot.'
     list_permissions = 'Global permissions are loaded by the authorization owner outside the renderer command surface.'
+    promote_sandbox_output = 'The reviewed-output UI is being connected separately; the command is not called until that user-selected workflow is available.'
     search_session_history = 'Superseded by the filtered and paginated session history commands; no renderer caller remains.'
     search_session_history_paginated = 'No renderer caller exists; current history search uses the filtered command and explicit count query.'
 }

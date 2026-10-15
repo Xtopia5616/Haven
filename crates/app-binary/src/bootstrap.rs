@@ -725,6 +725,7 @@ pub(crate) fn run() {
             commands::skills::execute_skill,
             commands::tools::list_builtin_tool_manifests,
             commands::tools::reset_tool_circuits,
+            commands::tools::promote_sandbox_output,
             commands::memory::list_facts,
             commands::memory::add_fact,
             commands::memory::delete_fact,

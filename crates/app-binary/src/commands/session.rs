@@ -599,6 +599,8 @@ async fn arbitrate_app_confirmation(
     {
         return Ok(AppConfirmationResolution::Stale);
     }
+    validate_app_confirmation_decision(&pending.action, perm_scope, perm_target)
+        .map_err(|error| log_err("resolve_confirmation", error))?;
     if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
         return Err(log_err(
             "resolve_confirmation",
@@ -622,6 +624,22 @@ async fn arbitrate_app_confirmation(
         .remove(request_id)
         .expect("accepted app confirmation remains registered");
     Ok(AppConfirmationResolution::Resolved(pending))
+}
+
+fn validate_app_confirmation_decision(
+    action: &UiConfirmationAction,
+    scope: haven_common::types::PermissionScope,
+    target: haven_common::types::PermissionTarget,
+) -> Result<(), &'static str> {
+    if matches!(action, UiConfirmationAction::SandboxOutputPromotion) {
+        if scope != haven_common::types::PermissionScope::Once {
+            return Err("sandbox output promotion only accepts a one-time decision");
+        }
+        if target != haven_common::types::PermissionTarget::Operation {
+            return Err("sandbox output promotion only accepts an operation-scoped decision");
+        }
+    }
+    Ok(())
 }
 
 async fn accept_ui_confirmation(
@@ -728,6 +746,36 @@ async fn execute_ui_confirmation_action(
             .await?;
             crate::commands::finalize_confirmed_admin_ui_operation(state, app, request, &result)
                 .await?;
+        }
+        UiConfirmationAction::SandboxOutputPromotion => {
+            let proof = state
+                .runtime
+                .services
+                .authorization
+                .confirm_for_execution(&pending.authorization_request, &pending.receipt)
+                .await
+                .map_err(|error| log_err("resolve_ui_confirmation sandbox promotion", error))?;
+            #[cfg(windows)]
+            {
+                state
+                    .runtime
+                    .tools
+                    .promote_reviewed_sandbox_output(
+                        &pending.authorization_request,
+                        &proof,
+                        tokio_util::sync::CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(|error| log_err("resolve_ui_confirmation sandbox promotion", error))?;
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = proof;
+                return Err(log_err(
+                    "resolve_ui_confirmation sandbox promotion",
+                    "sandbox output promotion is available only on Windows",
+                ));
+            }
         }
     }
     Ok(())
@@ -1040,7 +1088,7 @@ mod tests {
         InteractionStatus, SessionOrigin, SessionRecordDto, SessionResumeMessageDto,
         accept_ui_confirmation, arbitrate_app_confirmation, end_session_display_title,
         latest_session_for_resume_from_store, resume_response_for_session,
-        resume_session_from_store, session_lineage_from_store,
+        resume_session_from_store, session_lineage_from_store, validate_app_confirmation_decision,
     };
     use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
     use crate::commands::{RuntimeSessionDto, RuntimeSessionListResponse};
@@ -1048,6 +1096,42 @@ mod tests {
     use haven_common::lifecycle::SessionStatus;
     use haven_common::types::{PermissionEffect, PermissionScope, PermissionTarget, RiskLevel};
     use haven_tools::ConfirmationReceipt;
+
+    #[test]
+    fn sandbox_promotion_confirmation_is_once_and_operation_scoped() {
+        let action = UiConfirmationAction::SandboxOutputPromotion;
+        assert!(
+            validate_app_confirmation_decision(
+                &action,
+                PermissionScope::Once,
+                PermissionTarget::Operation,
+            )
+            .is_ok()
+        );
+        for scope in [PermissionScope::Session, PermissionScope::Always] {
+            assert!(
+                validate_app_confirmation_decision(&action, scope, PermissionTarget::Operation,)
+                    .is_err()
+            );
+        }
+        for target in [PermissionTarget::Group, PermissionTarget::Tool] {
+            assert!(
+                validate_app_confirmation_decision(&action, PermissionScope::Once, target,)
+                    .is_err()
+            );
+        }
+        assert!(
+            validate_app_confirmation_decision(
+                &UiConfirmationAction::Skill {
+                    name: "test".into(),
+                    params: serde_json::Value::Null,
+                },
+                PermissionScope::Always,
+                PermissionTarget::Tool,
+            )
+            .is_ok()
+        );
+    }
 
     async fn test_state_and_ui_confirmation(
         expires_at: u64,

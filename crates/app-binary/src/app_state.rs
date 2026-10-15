@@ -63,6 +63,9 @@ pub(crate) enum UiConfirmationAction {
     Admin {
         request: Box<haven_tools::AdminRequest>,
     },
+    /// A reviewed sandbox file selected for a one-time destination write.
+    /// The exact operation input and receipt stay in `UiConfirmationPending`.
+    SandboxOutputPromotion,
 }
 
 pub(crate) struct UiConfirmationPending {

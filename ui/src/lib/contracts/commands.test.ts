@@ -3,8 +3,8 @@ import { TAURI_COMMAND_CONTRACTS, TAURI_COMMAND_NAMES, type CommandBoundary } fr
 
 describe('Tauri command boundary directory', () => {
 	it('matches the reviewed command count without duplicating generated shapes', () => {
-		expect(TAURI_COMMAND_NAMES).toHaveLength(86);
-		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(86);
+		expect(TAURI_COMMAND_NAMES).toHaveLength(87);
+		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(87);
 		expect(TAURI_COMMAND_NAMES).toEqual(Object.keys(TAURI_COMMAND_CONTRACTS));
 		expect(TAURI_COMMAND_CONTRACTS.pick_execution_workspace_directory.boundary).toBe('read');
 		expect(TAURI_COMMAND_CONTRACTS.pick_execution_workspace_directory.security).toContain(
@@ -30,6 +30,7 @@ describe('Tauri command boundary directory', () => {
 				'read_mcp_resource',
 				'list_mcp_prompts',
 				'get_mcp_prompt',
+				'promote_sandbox_output',
 			]),
 		);
 		expect(TAURI_COMMAND_CONTRACTS.execute_skill.security).toContain('AuthorizationEngine');

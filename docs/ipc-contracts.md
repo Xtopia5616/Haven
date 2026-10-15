@@ -76,6 +76,7 @@
 | `get_session_for_resume` | read | 会话范围投影；嵌套 usage 的 `call_kind` 是 generated `LlmCallKind` |
 | `get_latest_session_for_resume` | read | 只取最近持久化会话；与指定会话恢复共用同一 typed response |
 | `get_settings` | read | 响应遮蔽凭据和 MCP 环境变量 |
+| `pick_execution_workspace_directory` | read | 用户通过系统目录选择器选择本地目录，只验证候选且不授予文件访问 |
 | `stage_provider_credential` | mutate | provider 密钥只写入安全凭据存储，返回不透明引用 |
 | `stage_ocr_credential` | mutate | OCR 密钥只写入安全凭据存储，返回不透明引用 |
 | `discard_staged_credentials` | mutate | 删除未由 Settings 保存提交的暂存凭据 |
@@ -100,6 +101,7 @@
 | `execute_skill` | execute | 限定 skill 名并经过 AuthorizationEngine |
 | `list_builtin_tool_manifests` | read | 返回 built-in tools 的启用/禁用 manifest；ToolPolicy 固定策略类别使用生成的 enum，`permission_key` 保持动态；不包含 Skill/MCP 清单 |
 | `reset_tool_circuits` | mutate | 只清本地 circuit 状态 |
+| `promote_sandbox_output` | execute | Windows only；source 通过 session/step/change index 从 review owner 查找；目标经 Files workspace policy 校验；授权只接受 Once/Operation 并由 receipt 签发执行 proof；目标已存在时拒绝覆盖 |
 
 `list_facts` / `add_fact` 返回 App-owned `MemoryFactResponse`，以 `fact_id` 表示事实身份；其中 `source_ref` 使用
 `MemoryFactSourceRef`。事实的 `source` 使用 generated `MemoryFactSource`；App mapper 严格解析
