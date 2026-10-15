@@ -192,7 +192,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 实施仍遵守“证据与契约 → 单条垂直调用链 → 负向/恢复验证 → 适用门禁 → 独立提交”的顺序。每完成一行，只把下一行提升为 Active，并在该提交中更新本节。
 
-当前 Active 已增加 `DirectoryCapability::copy_tree_to`，提供有界 capability 目录树快照复制（条目/深度/单文件/总字节上限、取消与链接拒绝，ADR 1196）；它目前是平台原语，没有生产 `SandboxWorkspace` 消费者。`ExecutionWorkspace` 代次快照、sandbox 私有目录创建/回收、进程授权接线和逐路径结果 manifest 晋升仍是未完成项。
+当前 Active 已增加 `DirectoryCapability::copy_tree_to` 和 Windows `AppContainerWorkspace` owner：前者提供有界 capability 目录树快照复制，后者为独立临时目录设置 package SID DACL 与继承式 Low label，并绑定 workspace generation/policy revision（ADR 1196–1197）。真实 AppContainer 探针使用该 owner 验证容器只写副本且被拒绝外部文件和 loopback；生产 Shell/Skill/MCP launcher 尚未接线。运行中策略重检、进程 owner/lifecycle、崩溃遗留 scratch 回收和逐路径结果 manifest 晋升仍是未完成项。
 
 ## 6. 更新规则
 

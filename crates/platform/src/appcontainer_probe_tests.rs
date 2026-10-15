@@ -7,25 +7,12 @@ use std::net::{TcpListener, TcpStream};
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{
-    CloseHandle, LocalFree, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
-};
-use windows_sys::Win32::Security::Authorization::{
-    EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT,
-    SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
-};
-use windows_sys::Win32::Security::Isolation::{
-    CreateAppContainerProfile, DeleteAppContainerProfile,
-};
-use windows_sys::Win32::Security::{
-    ACL_REVISION, AddMandatoryAce, CONTAINER_INHERIT_ACE, CreateWellKnownSid,
-    DACL_SECURITY_INFORMATION, FreeSid, InitializeAcl, LABEL_SECURITY_INFORMATION,
-    OBJECT_INHERIT_ACE, SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, WinLowLabelSid,
-};
-use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
-use windows_sys::Win32::System::SystemServices::SYSTEM_MANDATORY_LABEL_NO_WRITE_UP;
+use crate::filesystem::{DirectoryCapability, DirectoryTreeCopyLimits};
+use crate::windows_sandbox::AppContainerWorkspace;
+use windows_sys::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::System::Threading::PROCESS_CREATION_FLAGS;
 use windows_sys::Win32::System::Threading::TerminateProcess;
 use windows_sys::Win32::System::Threading::{
@@ -41,21 +28,17 @@ const APP_CONTAINER_TEST_TIMEOUT: Duration = Duration::from_secs(25);
 
 #[test]
 fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capability() {
-    let workspace = tempfile::tempdir().expect("create isolated workspace");
-    let outside_file = workspace
-        .path()
-        .parent()
-        .expect("temp workspace has a parent")
-        .join(format!(
-            "haven-appcontainer-outside-{}.txt",
-            unique_suffix()
-        ));
-    assert!(
-        !outside_file.exists(),
-        "unique outside fixture must not already exist"
-    );
+    let fixture = tempfile::tempdir().expect("create AppContainer test fixture");
+    let source_path = fixture.path().join("source");
+    std::fs::create_dir(&source_path).expect("create snapshot source");
+    let source_executable = source_path.join("appcontainer-probe.exe");
+    std::fs::copy(
+        std::env::current_exe().expect("current test executable"),
+        &source_executable,
+    )
+    .expect("copy test executable into snapshot source");
+    let outside_file = fixture.path().join("outside-sentinel.txt");
     std::fs::write(&outside_file, "outside-sentinel").expect("create outside sentinel");
-    let _outside_cleanup = RemoveFileOnDrop(outside_file.clone());
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local-only network probe");
     listener
@@ -70,32 +53,32 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
     drop(baseline_connection);
     let network_probe_port = probe_address.port();
 
-    let profile = AppContainerProfile::create(&format!(
-        "haven-test-{}-{}",
-        std::process::id(),
-        unique_suffix()
-    ))
-    .expect("create unique AppContainer profile");
-    let dacl_lease = grant_appcontainer_workspace_access(workspace.path(), profile.sid())
-        .expect("grant the test AppContainer SID access to only the workspace");
-    let integrity_lease = apply_low_integrity_label(workspace.path())
-        .expect("allow low-integrity AppContainer writes within the workspace");
+    let source = DirectoryCapability::open(&source_path).expect("open snapshot source capability");
+    let limits = DirectoryTreeCopyLimits::new(16, 4, 512 * 1024 * 1024, 1024 * 1024 * 1024)
+        .expect("valid bounded snapshot limits");
+    let workspace = AppContainerWorkspace::create(&source, 7, 11, limits, || false)
+        .expect("create a policy-bound low-integrity AppContainer workspace");
+    assert_eq!(workspace.execution_workspace_generation(), 7);
+    assert_eq!(workspace.policy_revision(), 11);
+    assert_eq!(workspace.snapshot_summary().file_count, 1);
 
     let containment = ProcessContainment::new().expect("create process-tree Job Object");
     let mut process = spawn_appcontainer_child_probe(
         &containment,
-        profile.sid(),
-        workspace.path(),
+        workspace.app_container_sid(),
+        workspace.root(),
         &outside_file,
         network_probe_port,
     )
-    .expect("spawn a suspended AppContainer PowerShell process");
+    .expect("spawn a suspended AppContainer probe process");
 
     let exit_code = wait_for_process(&mut process, APP_CONTAINER_TEST_TIMEOUT)
         .expect("wait for the AppContainer probe");
-    let result_path = workspace.path().join("appcontainer-result.txt");
+    let sandbox_root = workspace.root().to_path_buf();
+    let result_path = workspace.root().join("appcontainer-result.txt");
     let result = std::fs::read_to_string(&result_path).unwrap_or_default();
-    let inside_path = workspace.path().join("inside-workspace.txt");
+    let inside_path = workspace.root().join("inside-workspace.txt");
+    let inside_file_was_written = inside_path.is_file();
     let outside_content = std::fs::read_to_string(&outside_file).expect("read outside sentinel");
     let accepted_network_connection = match listener.accept() {
         Ok((_stream, _address)) => true,
@@ -105,24 +88,23 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
 
     drop(process);
     drop(containment);
-    dacl_lease
-        .restore()
-        .expect("restore the test directory's original DACL");
-    integrity_lease
-        .restore()
-        .expect("restore the test directory's original integrity label");
-    profile
-        .remove()
-        .expect("delete the temporary AppContainer profile");
+    workspace
+        .cleanup()
+        .expect("remove the workspace and unique AppContainer profile");
+    assert!(!sandbox_root.exists(), "sandbox workspace was removed");
+    assert_eq!(source.entries(2).unwrap().len(), 1);
+    assert!(
+        !source_path.join("inside-workspace.txt").exists(),
+        "AppContainer writes did not reach the canonical source"
+    );
 
     assert_eq!(
-        exit_code,
-        0,
+        exit_code, 0,
         "AppContainer probe process failed; result={result:?}, inside_file={}",
-        inside_path.is_file()
+        inside_file_was_written
     );
     assert!(
-        inside_path.is_file(),
+        inside_file_was_written,
         "container could not write its granted workspace"
     );
     assert_eq!(outside_content, "outside-sentinel");
@@ -338,368 +320,6 @@ fn wait_for_process(process: &mut ProcessInformationGuard, timeout: Duration) ->
     }
 }
 
-fn grant_appcontainer_workspace_access(
-    path: &Path,
-    app_container_sid: windows_sys::Win32::Security::PSID,
-) -> io::Result<DirectoryDaclLease> {
-    use windows_sys::Win32::Security::ACL;
-
-    let path = wide_null(path.as_os_str());
-    let mut original_dacl: *mut ACL = null_mut();
-    let mut security_descriptor = null_mut();
-    // SAFETY: `path` is nul-terminated and the outputs point to writable
-    // storage. Windows allocates the descriptor, released by LocalFree.
-    let status = unsafe {
-        GetNamedSecurityInfoW(
-            path.as_ptr(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            null_mut(),
-            null_mut(),
-            &mut original_dacl,
-            null_mut(),
-            &mut security_descriptor,
-        )
-    };
-    if status != 0 {
-        return Err(io::Error::from_raw_os_error(status as i32));
-    }
-    if security_descriptor.is_null() || original_dacl.is_null() {
-        // A null or absent DACL would grant overly broad access. Do not run an
-        // AppContainer test against a directory whose ACL cannot be restored.
-        if !security_descriptor.is_null() {
-            // SAFETY: GetNamedSecurityInfoW returned this owned descriptor.
-            unsafe { LocalFree(security_descriptor) };
-        }
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "refusing AppContainer test with an absent or null workspace DACL",
-        ));
-    }
-
-    let mut lease = DirectoryDaclLease {
-        path,
-        original_dacl,
-        security_descriptor,
-        changed: false,
-    };
-    let trustee = TRUSTEE_W {
-        pMultipleTrustee: null_mut(),
-        MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
-        TrusteeForm: TRUSTEE_IS_SID,
-        TrusteeType: TRUSTEE_IS_USER,
-        ptstrName: app_container_sid.cast(),
-    };
-    let access = EXPLICIT_ACCESS_W {
-        grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-        grfAccessMode: GRANT_ACCESS,
-        grfInheritance: OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
-        Trustee: trustee,
-    };
-    let mut updated_dacl = null_mut();
-    // SAFETY: the trustee SID and original ACL remain valid for the call.
-    let acl_status = unsafe { SetEntriesInAclW(1, &access, original_dacl, &mut updated_dacl) };
-    if acl_status != 0 {
-        return Err(io::Error::from_raw_os_error(acl_status as i32));
-    }
-    // SAFETY: path and updated ACL are valid; Windows copies the ACL into the
-    // directory security descriptor before the temporary ACL is freed.
-    let set_status = unsafe {
-        SetNamedSecurityInfoW(
-            lease.path.as_ptr(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            null_mut(),
-            null_mut(),
-            updated_dacl,
-            null_mut(),
-        )
-    };
-    // SAFETY: SetEntriesInAclW allocated the returned ACL with LocalAlloc.
-    unsafe { LocalFree(updated_dacl.cast()) };
-    if set_status != 0 {
-        return Err(io::Error::from_raw_os_error(set_status as i32));
-    }
-    lease.changed = true;
-    Ok(lease)
-}
-
-fn apply_low_integrity_label(path: &Path) -> io::Result<IntegrityLabelLease> {
-    use windows_sys::Win32::Security::{ACL, PSECURITY_DESCRIPTOR};
-
-    let path = wide_null(path.as_os_str());
-    let mut original_sacl: *mut ACL = null_mut();
-    let mut security_descriptor: PSECURITY_DESCRIPTOR = null_mut();
-    // LABEL_SECURITY_INFORMATION reads only the mandatory label and does not
-    // require the audit-SACL privilege. The descriptor owns `original_sacl`.
-    let status = unsafe {
-        GetNamedSecurityInfoW(
-            path.as_ptr(),
-            SE_FILE_OBJECT,
-            LABEL_SECURITY_INFORMATION,
-            null_mut(),
-            null_mut(),
-            null_mut(),
-            &mut original_sacl,
-            &mut security_descriptor,
-        )
-    };
-    if status != 0 {
-        return Err(io::Error::from_raw_os_error(status as i32));
-    }
-
-    let mut lease = IntegrityLabelLease {
-        path,
-        original_sacl,
-        security_descriptor,
-        changed: false,
-    };
-    let mut low_label_sid = [0u8; SECURITY_MAX_SID_SIZE as usize];
-    let mut low_label_sid_size = low_label_sid.len() as u32;
-    // SAFETY: the fixed SID buffer is large enough for a well-known SID and
-    // the returned byte count is writable.
-    if unsafe {
-        CreateWellKnownSid(
-            WinLowLabelSid,
-            null_mut(),
-            low_label_sid.as_mut_ptr().cast(),
-            &mut low_label_sid_size,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-
-    let mut label_acl_storage = vec![0u64; 128];
-    let label_acl = label_acl_storage.as_mut_ptr().cast::<ACL>();
-    // SAFETY: the aligned storage is larger than the ACL header plus low-label
-    // ACE, and remains alive through SetNamedSecurityInfoW.
-    if unsafe {
-        InitializeAcl(
-            label_acl,
-            (label_acl_storage.len() * std::mem::size_of::<u64>()) as u32,
-            ACL_REVISION,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: the ACL is initialized and the low-label SID buffer remains
-    // valid. Inheriting the label ensures files created in this workspace
-    // receive a compatible low-integrity label.
-    if unsafe {
-        AddMandatoryAce(
-            label_acl,
-            ACL_REVISION,
-            OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
-            SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
-            low_label_sid.as_mut_ptr().cast(),
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: this changes only the mandatory label. The workspace is a
-    // test-owned temp directory; the guard restores its prior label on every
-    // return path.
-    let status = unsafe {
-        SetNamedSecurityInfoW(
-            lease.path.as_ptr(),
-            SE_FILE_OBJECT,
-            LABEL_SECURITY_INFORMATION,
-            null_mut(),
-            null_mut(),
-            null_mut(),
-            label_acl,
-        )
-    };
-    if status != 0 {
-        return Err(io::Error::from_raw_os_error(status as i32));
-    }
-    lease.changed = true;
-    Ok(lease)
-}
-
-struct AppContainerProfile {
-    name: Vec<u16>,
-    sid: windows_sys::Win32::Security::PSID,
-    active: bool,
-}
-
-impl AppContainerProfile {
-    fn create(name: &str) -> io::Result<Self> {
-        let mut name = name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-        let display_name = wide_null(OsStr::new("Haven AppContainer probe"));
-        let description = wide_null(OsStr::new("Temporary integration test profile"));
-        let mut sid = null_mut();
-        // SAFETY: inputs are nul-terminated and the output SID pointer is
-        // writable. The profile is deleted by the returned guard.
-        let result = unsafe {
-            CreateAppContainerProfile(
-                name.as_mut_ptr(),
-                display_name.as_ptr(),
-                description.as_ptr(),
-                null(),
-                0,
-                &mut sid,
-            )
-        };
-        if result < 0 {
-            if !sid.is_null() {
-                // SAFETY: CreateAppContainerProfile allocated this SID.
-                unsafe { FreeSid(sid) };
-            }
-            return Err(io::Error::from_raw_os_error(result));
-        }
-        if sid.is_null() {
-            return Err(io::Error::other(
-                "CreateAppContainerProfile succeeded without returning a SID",
-            ));
-        }
-        Ok(Self {
-            name,
-            sid,
-            active: true,
-        })
-    }
-
-    fn sid(&self) -> windows_sys::Win32::Security::PSID {
-        self.sid
-    }
-
-    fn remove(mut self) -> io::Result<()> {
-        let result = self.delete_profile();
-        // The SID came from CreateAppContainerProfile and must be released by
-        // FreeSid even when profile deletion reports an error.
-        if !self.sid.is_null() {
-            // SAFETY: this is the owned AppContainer SID returned at creation.
-            unsafe { FreeSid(self.sid) };
-            self.sid = null_mut();
-        }
-        result
-    }
-
-    fn delete_profile(&mut self) -> io::Result<()> {
-        if !self.active {
-            return Ok(());
-        }
-        // SAFETY: the profile name is a valid NUL-terminated UTF-16 string.
-        let result = unsafe { DeleteAppContainerProfile(self.name.as_ptr()) };
-        if result < 0 {
-            return Err(io::Error::from_raw_os_error(result));
-        }
-        self.active = false;
-        Ok(())
-    }
-}
-
-impl Drop for AppContainerProfile {
-    fn drop(&mut self) {
-        let _ = self.delete_profile();
-        if !self.sid.is_null() {
-            // SAFETY: this is the owned AppContainer SID returned at creation.
-            unsafe { FreeSid(self.sid) };
-        }
-    }
-}
-
-struct DirectoryDaclLease {
-    path: Vec<u16>,
-    original_dacl: *mut windows_sys::Win32::Security::ACL,
-    security_descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
-    changed: bool,
-}
-
-impl DirectoryDaclLease {
-    fn restore(mut self) -> io::Result<()> {
-        self.restore_inner()
-    }
-
-    fn restore_inner(&mut self) -> io::Result<()> {
-        if self.changed {
-            // SAFETY: the saved descriptor remains allocated and owns the
-            // original ACL until this guard drops.
-            let status = unsafe {
-                SetNamedSecurityInfoW(
-                    self.path.as_ptr(),
-                    SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION,
-                    null_mut(),
-                    null_mut(),
-                    self.original_dacl,
-                    null_mut(),
-                )
-            };
-            if status != 0 {
-                return Err(io::Error::from_raw_os_error(status as i32));
-            }
-            self.changed = false;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for DirectoryDaclLease {
-    fn drop(&mut self) {
-        let _ = self.restore_inner();
-        if !self.security_descriptor.is_null() {
-            // SAFETY: GetNamedSecurityInfoW allocated this descriptor.
-            unsafe { LocalFree(self.security_descriptor) };
-            self.security_descriptor = null_mut();
-        }
-    }
-}
-
-struct IntegrityLabelLease {
-    path: Vec<u16>,
-    original_sacl: *mut windows_sys::Win32::Security::ACL,
-    security_descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
-    changed: bool,
-}
-
-impl IntegrityLabelLease {
-    fn restore(mut self) -> io::Result<()> {
-        self.restore_inner()
-    }
-
-    fn restore_inner(&mut self) -> io::Result<()> {
-        if self.changed {
-            // SAFETY: the original label pointer remains owned by the saved
-            // security descriptor until this guard drops.
-            let status = unsafe {
-                SetNamedSecurityInfoW(
-                    self.path.as_ptr(),
-                    SE_FILE_OBJECT,
-                    LABEL_SECURITY_INFORMATION,
-                    null_mut(),
-                    null_mut(),
-                    null_mut(),
-                    self.original_sacl,
-                )
-            };
-            if status != 0 {
-                return Err(io::Error::from_raw_os_error(status as i32));
-            }
-            self.changed = false;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for IntegrityLabelLease {
-    fn drop(&mut self) {
-        let _ = self.restore_inner();
-        if !self.security_descriptor.is_null() {
-            // SAFETY: GetNamedSecurityInfoW allocated this descriptor.
-            unsafe { LocalFree(self.security_descriptor) };
-            self.security_descriptor = null_mut();
-        }
-    }
-}
-
 struct AttributeListGuard(LPPROC_THREAD_ATTRIBUTE_LIST);
 
 impl Drop for AttributeListGuard {
@@ -735,19 +355,4 @@ impl Drop for ProcessInformationGuard {
             unsafe { CloseHandle(self.0.hProcess) };
         }
     }
-}
-
-struct RemoveFileOnDrop(PathBuf);
-
-impl Drop for RemoveFileOnDrop {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-fn unique_suffix() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is after Unix epoch")
-        .as_nanos()
 }
