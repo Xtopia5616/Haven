@@ -256,6 +256,8 @@ pub(crate) async fn register_builtin_tools(
         max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
         default_shell: default_shell.as_str().into(),
         execution_workspace,
+        #[cfg(test)]
+        test_output_log_root: None,
     }));
     let tool_runs_tool: ToolHandle = Arc::new(tool_runs::ToolRunsTool {
         tool_runs: tool_run_service.clone(),

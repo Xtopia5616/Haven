@@ -1,7 +1,20 @@
+use std::borrow::Cow;
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime};
+
 /// Windows `CREATE_NO_WINDOW` process creation flag. The contained-spawn owner
 /// combines it with the suspended-process flag before spawning.
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+const SHELL_OUTPUT_LOG_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const SHELL_OUTPUT_LOG_MAX_COUNT: usize = 128;
+const SHELL_OUTPUT_LOG_MAX_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+const SHELL_OUTPUT_LOG_MAX_FILE_BYTES: usize = 1024 * 1024;
+const SHELL_OUTPUT_LOG_TRUNCATION_MARKER: &str = "[earlier shell output truncated]\n";
+
+static SHELL_OUTPUT_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Build the platform command used to run `command` in the requested
 /// interpreter (cmd or powershell), with stdout/stderr piped. The process
@@ -212,6 +225,201 @@ pub(crate) fn remove_orphaned_tool_run_output_logs(
     remove_orphaned_tool_run_output_logs_at(&directory, retained_tool_run_ids)
 }
 
+/// Reconcile foreground Shell failure logs with their ephemeral seven-day
+/// retention policy and hard directory budgets. These logs have no durable
+/// ToolRun row that can own their lifetime.
+#[cfg(not(test))]
+pub(crate) fn cleanup_shell_output_logs_after_restart() {
+    let lock = SHELL_OUTPUT_LOG_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let directory = output_log_dir("shell-logs");
+    match cleanup_shell_output_logs_at(&directory, SystemTime::now(), None) {
+        Ok(0) => {}
+        Ok(removed) => tracing::debug!(
+            removed,
+            "removed expired or over-budget foreground Shell output logs"
+        ),
+        Err(error) => tracing::warn!(
+            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "failed to clean foreground Shell output logs"
+        ),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn write_shell_output_log_for_test(
+    directory: &Path,
+    file_stem: &str,
+    text: &str,
+) -> std::path::PathBuf {
+    write_shell_output_log(directory, file_stem, text)
+}
+
+fn cleanup_shell_output_logs_at(
+    directory: &Path,
+    now: SystemTime,
+    incoming_bytes: Option<usize>,
+) -> std::io::Result<usize> {
+    use haven_platform::filesystem::{DirectoryCapability, is_link_or_reparse_point};
+
+    let capability = match DirectoryCapability::open(directory) {
+        Ok(capability) => capability,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let entries = std::fs::read_dir(capability.root())?;
+    let mut logs = Vec::new();
+    let mut staging = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name_text) = name.to_str() else {
+            continue;
+        };
+        let is_log = is_managed_shell_output_log_name(name_text);
+        let is_staging = is_atomic_staging_name(name_text);
+        if !is_log && !is_staging {
+            continue;
+        }
+        let metadata = match std::fs::symlink_metadata(entry.path()) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !metadata.is_file() || is_link_or_reparse_point(&metadata) {
+            continue;
+        }
+        let modified = metadata.modified()?;
+        let record = ShellOutputLogEntry {
+            name,
+            modified,
+            bytes: metadata.len(),
+        };
+        if is_log {
+            logs.push(record);
+        } else {
+            staging.push(record);
+        }
+    }
+
+    let mut removed = 0;
+    for entry in staging {
+        remove_shell_log_entry(&capability, &entry.name)?;
+        removed += 1;
+    }
+
+    let mut retained = Vec::with_capacity(logs.len());
+    for entry in logs {
+        if now.duration_since(entry.modified).unwrap_or_default() > SHELL_OUTPUT_LOG_RETENTION {
+            remove_shell_log_entry(&capability, &entry.name)?;
+            removed += 1;
+        } else {
+            retained.push(entry);
+        }
+    }
+    retained.sort_by(|left, right| {
+        left.modified
+            .cmp(&right.modified)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    let mut total_bytes = retained
+        .iter()
+        .fold(0u64, |total, entry| total.saturating_add(entry.bytes));
+    let incoming_count = if incoming_bytes.is_some() { 1 } else { 0 };
+    let incoming_bytes = incoming_bytes.map_or(0, |bytes| bytes as u64);
+    while retained.len() + incoming_count > SHELL_OUTPUT_LOG_MAX_COUNT
+        || total_bytes.saturating_add(incoming_bytes) > SHELL_OUTPUT_LOG_MAX_TOTAL_BYTES
+    {
+        if retained.is_empty() {
+            break;
+        }
+        let oldest = retained.remove(0);
+        total_bytes = total_bytes.saturating_sub(oldest.bytes);
+        remove_shell_log_entry(&capability, &oldest.name)?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+struct ShellOutputLogEntry {
+    name: std::ffi::OsString,
+    modified: SystemTime,
+    bytes: u64,
+}
+
+fn remove_shell_log_entry(
+    capability: &haven_platform::filesystem::DirectoryCapability,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<()> {
+    match capability.remove_file(Path::new(name)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_shell_output_log_name(name: &str) -> bool {
+    shell_output_log_nonce(name).is_some_and(|nonce| {
+        nonce.len() == 32
+            && nonce
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+fn is_managed_shell_output_log_name(name: &str) -> bool {
+    is_shell_output_log_name(name)
+        || shell_output_log_nonce(name).is_some_and(|nonce| {
+            !nonce.is_empty() && nonce.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn shell_output_log_nonce(name: &str) -> Option<&str> {
+    name.strip_suffix(".log")?.strip_prefix("shell-")
+}
+
+fn is_atomic_staging_name(name: &str) -> bool {
+    let Some(nonce) = name
+        .strip_prefix(".file-")
+        .and_then(|name| name.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    nonce.len() == 32
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn bounded_shell_output_log(text: &str) -> Cow<'_, str> {
+    if text.len() <= SHELL_OUTPUT_LOG_MAX_FILE_BYTES {
+        return Cow::Borrowed(text);
+    }
+    let tail_budget = SHELL_OUTPUT_LOG_MAX_FILE_BYTES - SHELL_OUTPUT_LOG_TRUNCATION_MARKER.len();
+    let mut tail_start = text.len() - tail_budget;
+    while !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let mut bounded = String::with_capacity(SHELL_OUTPUT_LOG_MAX_FILE_BYTES);
+    bounded.push_str(SHELL_OUTPUT_LOG_TRUNCATION_MARKER);
+    bounded.push_str(&text[tail_start..]);
+    Cow::Owned(bounded)
+}
+
+fn write_shell_output_log_at(directory: &Path, file_name: &str, text: &str) -> std::io::Result<()> {
+    if !is_shell_output_log_name(file_name) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "foreground Shell output log name is not canonical",
+        ));
+    }
+    let capability = haven_platform::filesystem::DirectoryCapability::open(directory)?;
+    capability.atomic_replace(Path::new(file_name), text.as_bytes())
+}
+
 fn remove_tool_run_output_log_at(
     directory: &std::path::Path,
     tool_run_id: &str,
@@ -276,12 +484,15 @@ fn remove_orphaned_tool_run_output_logs_at(
     Ok(removed)
 }
 
-/// Write a command's full (sanitized) output to a log file so a condensed
+/// Write a command's captured output to a log file so a condensed
 /// failure summary never hides the root cause (e.g. an npm install failure
 /// whose real error sits mid-log). Returns the log file path.
 pub(crate) fn write_output_log(kind: &str, file_stem: &str, text: &str) -> std::path::PathBuf {
     let dir = output_log_dir(kind);
     let path = dir.join(format!("{file_stem}.log"));
+    if kind == "shell-logs" {
+        return write_shell_output_log(&dir, file_stem, text);
+    }
     if let Err(e) = std::fs::create_dir_all(&dir) {
         tracing::warn!(
             output_log_stem = %file_stem,
@@ -295,6 +506,46 @@ pub(crate) fn write_output_log(kind: &str, file_stem: &str, text: &str) -> std::
             output_log_stem = %file_stem,
             error = %haven_common::error::sanitize_error_text(&e.to_string()),
             "failed to write output log"
+        );
+    }
+    path
+}
+
+fn write_shell_output_log(directory: &Path, file_stem: &str, text: &str) -> std::path::PathBuf {
+    let file_name = format!("{file_stem}.log");
+    let path = directory.join(&file_name);
+    if !is_shell_output_log_name(&file_name) {
+        tracing::warn!(output_log_stem = %file_stem, "rejected non-canonical foreground Shell output-log name");
+        return path;
+    }
+    if let Err(error) = std::fs::create_dir_all(directory) {
+        tracing::warn!(
+            output_log_stem = %file_stem,
+            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "failed to create foreground Shell output-log dir"
+        );
+        return path;
+    }
+    let lock = SHELL_OUTPUT_LOG_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let bounded = bounded_shell_output_log(text);
+    if let Err(error) =
+        cleanup_shell_output_logs_at(directory, SystemTime::now(), Some(bounded.len()))
+    {
+        tracing::warn!(
+            output_log_stem = %file_stem,
+            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "failed to enforce foreground Shell output-log budget"
+        );
+        return path;
+    }
+    if let Err(error) = write_shell_output_log_at(directory, &file_name, &bounded) {
+        tracing::warn!(
+            output_log_stem = %file_stem,
+            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "failed to write foreground Shell output log"
         );
     }
     path

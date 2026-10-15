@@ -37,6 +37,8 @@ use haven_memory::{ToolRunCompletionOutboxRow, ToolRunStore};
 
 use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
 use crate::process::read_stream_text_capped;
+#[cfg(not(test))]
+use crate::shell_runtime::cleanup_shell_output_logs_after_restart;
 use crate::shell_runtime::{
     build_shell_command, collect_byte_cap, remove_orphaned_tool_run_output_logs,
     remove_tool_run_output_log, write_output_log,
@@ -777,6 +779,8 @@ impl ToolRunService {
     /// Called once from the agent layer startup. Returns the number of rows
     /// marked. Idempotent.
     pub async fn restore_after_restart(&self) -> usize {
+        #[cfg(not(test))]
+        cleanup_shell_output_logs_after_restart();
         let Some(store) = self.tool_run_store.read().await.clone() else {
             return 0;
         };

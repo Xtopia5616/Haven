@@ -28,6 +28,91 @@ fn tool_run_log_cleanup_removes_only_orphaned_canonical_logs() {
     assert!(!remove_tool_run_output_log_at(root.path(), "toolrun-../notes").unwrap());
 }
 
+#[test]
+fn shell_log_cleanup_expires_only_owned_logs_and_old_atomic_staging() {
+    let root = tempfile::tempdir().unwrap();
+    let log_name = "shell-11111111111111111111111111111111.log";
+    let staging_name = ".file-22222222222222222222222222222222.tmp";
+    let unrelated_name = "notes.log";
+    let invalid_shell_name = "shell-not-a-uuid.log";
+    let legacy_name = "shell-1728000000.log";
+    for name in [
+        log_name,
+        staging_name,
+        unrelated_name,
+        invalid_shell_name,
+        legacy_name,
+    ] {
+        std::fs::write(root.path().join(name), "contents").unwrap();
+    }
+
+    let now = std::time::SystemTime::now() + SHELL_OUTPUT_LOG_RETENTION + Duration::from_secs(1);
+    assert_eq!(
+        cleanup_shell_output_logs_at(root.path(), now, None).unwrap(),
+        3
+    );
+    assert!(!root.path().join(log_name).exists());
+    assert!(!root.path().join(staging_name).exists());
+    assert!(!root.path().join(legacy_name).exists());
+    assert!(root.path().join(unrelated_name).exists());
+    assert!(root.path().join(invalid_shell_name).exists());
+}
+
+#[test]
+fn shell_log_budget_evicts_oldest_logs_and_reserves_new_entry() {
+    let root = tempfile::tempdir().unwrap();
+    for index in 0..=SHELL_OUTPUT_LOG_MAX_COUNT {
+        let name = format!("shell-{index:032x}.log");
+        std::fs::write(root.path().join(name), "x").unwrap();
+    }
+
+    assert_eq!(
+        cleanup_shell_output_logs_at(root.path(), std::time::SystemTime::now(), Some(1)).unwrap(),
+        2
+    );
+    let retained_count = std::fs::read_dir(root.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| is_shell_output_log_name(&entry.file_name().to_string_lossy()))
+        .count();
+    assert_eq!(retained_count, SHELL_OUTPUT_LOG_MAX_COUNT - 1);
+}
+
+#[test]
+fn shell_log_byte_budget_evicts_existing_logs_before_a_new_write() {
+    let root = tempfile::tempdir().unwrap();
+    let name = "shell-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log";
+    let file = std::fs::File::create(root.path().join(name)).unwrap();
+    file.set_len(SHELL_OUTPUT_LOG_MAX_TOTAL_BYTES).unwrap();
+
+    assert_eq!(
+        cleanup_shell_output_logs_at(root.path(), std::time::SystemTime::now(), Some(1)).unwrap(),
+        1
+    );
+    assert!(!root.path().join(name).exists());
+}
+
+#[test]
+fn shell_output_logs_are_atomically_written_and_name_scoped() {
+    let root = tempfile::tempdir().unwrap();
+    let name = "shell-0123456789abcdef0123456789abcdef.log";
+    write_shell_output_log_at(root.path(), name, "complete output").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.path().join(name)).unwrap(),
+        "complete output"
+    );
+    assert!(write_shell_output_log_at(root.path(), "../../outside.log", "bad").is_err());
+}
+
+#[test]
+fn bounded_shell_output_keeps_a_utf8_safe_tail() {
+    let text = "界".repeat(SHELL_OUTPUT_LOG_MAX_FILE_BYTES);
+    let bounded = bounded_shell_output_log(&text);
+    assert!(bounded.len() <= SHELL_OUTPUT_LOG_MAX_FILE_BYTES);
+    assert!(bounded.starts_with(SHELL_OUTPUT_LOG_TRUNCATION_MARKER));
+    assert!(bounded.is_char_boundary(bounded.len()));
+}
+
 // ── encode_utf16le_base64 ────────────────────────────────────────────
 
 #[cfg(windows)]

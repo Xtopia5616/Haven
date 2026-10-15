@@ -198,7 +198,11 @@ pub use security::{
 };
 #[cfg(windows)]
 pub(crate) use shell_runtime::CREATE_NO_WINDOW;
-pub(crate) use shell_runtime::{build_shell_command_silent, collect_byte_cap, write_output_log};
+#[cfg(not(test))]
+pub(crate) use shell_runtime::write_output_log;
+#[cfg(test)]
+pub(crate) use shell_runtime::write_shell_output_log_for_test;
+pub(crate) use shell_runtime::{build_shell_command_silent, collect_byte_cap};
 #[cfg(feature = "test-support")]
 pub use skill_runner::SkillRunner;
 pub use tool_contract::{

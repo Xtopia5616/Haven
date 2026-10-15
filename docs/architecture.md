@@ -566,6 +566,7 @@ admission cleanup 曾移除 Running row，导致 Agent terminal callback 找不�
 terminal scheduled entry，并通过 completion、cancel、no-consumer recovery 和 restart 回归固定边界。Waiting/Running
 entry 保持原路径；durable Waiting schedule 仍在启动时恢复，遗留 durable Running row 仍标为 failed 且不重放。
 `ToolRunService::restore` 通过 `ToolRunRestoreSummary` 显式报告逾期 scheduled run 数与重启后标记失败的 running row 数。
+后台 ToolRun 全量输出日志位于 `tool-run-logs/<toolrun-id>.log`，由 durable ToolRun 引用、历史删除和启动孤儿对账管理（ADR 1172）。前台 Shell 失败日志没有对应 ToolRun row，使用 `shell-<uuid32>.log` 并按 7 天、128 个文件、32 MiB 总量和 1 MiB 单文件上限回收；超限保留 UTF-8 安全尾部。启动与写入前的清理只识别受控普通文件名，原子写入使用 `DirectoryCapability`；两类日志的生命周期不混用（ADR 1174）。
 ToolRun 输出 tail 的长度策略由 `ToolRunService` 持有的 crate-private `ToolRunOutputPort` 唯一配置；
 foreground shell card 与 background ToolRun 共用该 policy 生成有字符上限的 `ToolRunOutputTail`，
 consumer 仅拿不可 `Debug`/`Serialize` 的 `ToolRunTailSnapshot`。`agent:tool_output` 仍用

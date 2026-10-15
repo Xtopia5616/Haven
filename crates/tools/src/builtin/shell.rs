@@ -8,10 +8,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::execution_workspace::ExecutionWorkspace;
 use crate::live_output::LiveOutputHub;
+#[cfg(not(test))]
+use crate::write_output_log;
+#[cfg(test)]
+use crate::write_shell_output_log_for_test;
 use crate::{
     BackgroundShellRequest, ToolRunService, append_windows_diagnostics, build_shell_command_silent,
     collect_byte_cap, is_progress_clixml, read_stream_text_capped, sanitize_shell_output,
-    summarize_error, write_output_log,
+    summarize_error,
 };
 use crate::{Tool, ToolExecutionMode, ToolExecutionOutcome, ToolResult};
 
@@ -27,6 +31,9 @@ pub(crate) struct ShellTool {
     pub default_shell: String,
     /// Shared backend root used when the model omits `cwd`.
     pub(crate) execution_workspace: ExecutionWorkspace,
+    /// Isolated output-log root for shell tests.
+    #[cfg(test)]
+    pub(crate) test_output_log_root: Option<PathBuf>,
 }
 
 impl Default for ShellTool {
@@ -44,6 +51,8 @@ impl Default for ShellTool {
             #[cfg(not(windows))]
             default_shell: "sh".into(),
             execution_workspace: ExecutionWorkspace::discover(),
+            #[cfg(test)]
+            test_output_log_root: None,
         }
     }
 }
@@ -310,17 +319,14 @@ impl ShellTool {
             let code_str = exit_code
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "unknown".into());
-            let log_path = write_output_log(
-                "shell-logs",
-                &format!(
-                    "shell-{}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0)
-                ),
-                &raw_combined,
+            let file_stem = format!("shell-{}", uuid::Uuid::new_v4().simple());
+            #[cfg(test)]
+            let log_path = self.test_output_log_root.as_ref().map_or_else(
+                || PathBuf::from(format!("test-shell-logs/{file_stem}.log")),
+                |root| write_shell_output_log_for_test(root, &file_stem, &raw_combined),
             );
+            #[cfg(not(test))]
+            let log_path = write_output_log("shell-logs", &file_stem, &raw_combined);
             let log_path = log_path.to_string_lossy().into_owned();
             err_text = append_windows_diagnostics(&shell_context.shell, &cmd, &err_text);
             err_text = format!("{}\n[full output: {}]", err_text.trim_end(), log_path);
@@ -862,7 +868,12 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn test_shell_nonzero_exit_reports_failure() {
-        let result = ShellTool::default()
+        let log_root = tempdir().unwrap();
+        let tool = ShellTool {
+            test_output_log_root: Some(log_root.path().join("shell-logs")),
+            ..ShellTool::default()
+        };
+        let result = tool
             .execute(
                 json!({"command": "exit 42", "shell": "cmd"}),
                 CancellationToken::new(),
@@ -879,7 +890,12 @@ mod tests {
         // A failing command with no stderr must not produce an empty error:
         // the result text flows straight into the model's observation, and an
         // empty string looks like the tool never returned anything.
-        let result = ShellTool::default()
+        let log_root = tempdir().unwrap();
+        let tool = ShellTool {
+            test_output_log_root: Some(log_root.path().join("shell-logs")),
+            ..ShellTool::default()
+        };
+        let result = tool
             .execute(
                 json!({"command": "echo out && exit 42", "shell": "cmd"}),
                 CancellationToken::new(),
