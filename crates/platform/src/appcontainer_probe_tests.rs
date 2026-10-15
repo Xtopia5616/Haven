@@ -9,8 +9,7 @@ use std::time::Duration;
 
 use crate::appcontainer_process::AppContainerCommand;
 use crate::filesystem::{
-    DirectoryCapability, DirectoryTreeChange, DirectoryTreeChangeKind, DirectoryTreeCopyLimits,
-    DirectoryTreeDiffLimits, DirectoryTreeEntryKind,
+    DirectoryCapability, DirectoryTreeChangeKind, DirectoryTreeCopyLimits, DirectoryTreeDiffLimits,
 };
 use crate::process_environment::filter_shell_environment;
 use crate::windows_sandbox::AppContainerWorkspace;
@@ -69,6 +68,7 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
         ])
         .envs(filter_shell_environment(std::env::vars_os()))
         .env("HAVEN_PROBE_EXPLICIT", "visible");
+    let sandbox_root = workspace.root().to_path_buf();
     let mut process = command
         .spawn(workspace)
         .expect("spawn through the production AppContainer process owner");
@@ -84,53 +84,46 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
         io::ErrorKind::PermissionDenied,
         "output cannot be inspected while a process may still mutate it"
     );
-    let pre_reap_change = DirectoryTreeChange {
-        relative_path: PathBuf::from("inside-workspace.txt"),
-        change: DirectoryTreeChangeKind::Created,
-        before_kind: None,
-        after_kind: Some(DirectoryTreeEntryKind::File),
-        before_bytes: None,
-        after_bytes: Some(9),
-        before_sha256: None,
-        after_sha256: Some([0; 32]),
+    let review_limits =
+        DirectoryTreeDiffLimits::new(limits, 32, 16 * 1024 * 1024, 32 * 1024 * 1024)
+            .expect("valid bounded output manifest limits");
+    let Err(error) = process.take_output_review(review_limits, || false) else {
+        panic!("sandbox output must not be retained while the tree is running");
     };
-    let promotion_path = fixture.path().join("promoted");
-    std::fs::create_dir(&promotion_path).expect("create promotion destination");
-    let promotion_destination =
-        DirectoryCapability::open(&promotion_path).expect("open authorized promotion destination");
     assert_eq!(
-        process
-            .promote_output_file_to(
-                &pre_reap_change,
-                7,
-                11,
-                &promotion_destination,
-                Path::new("too-early.txt"),
-                || false,
-            )
-            .unwrap_err()
-            .kind(),
+        error.kind(),
         io::ErrorKind::PermissionDenied,
-        "sandbox output cannot be promoted while the process tree may still write"
+        "sandbox output review cannot start while the process tree may still write"
     );
-    let sandbox_root = process.workspace().root().to_path_buf();
     let exit_status = process
         .wait_timeout(APP_CONTAINER_TEST_TIMEOUT)
         .expect("wait for the AppContainer process")
         .expect("AppContainer probe exits before deadline");
-    let output_manifest = process
-        .output_manifest(
-            DirectoryTreeDiffLimits::new(limits, 32, 16 * 1024 * 1024, 32 * 1024 * 1024)
-                .expect("valid bounded output manifest limits"),
-            || false,
-        )
-        .expect("scan completed output after the AppContainer process tree exits");
-    let created_change = output_manifest
+    let mut stdout = String::new();
+    process
+        .take_stdout()
+        .expect("AppContainer stdout is piped")
+        .read_to_string(&mut stdout)
+        .expect("read AppContainer stdout through the explicit handle list");
+    let review = process
+        .take_output_review(review_limits, || false)
+        .expect("retain and scan output after the AppContainer process tree exits");
+    drop(process);
+    assert!(
+        sandbox_root.exists(),
+        "the review owner keeps sandbox output alive after dropping the process handle"
+    );
+    let created_change = review
+        .manifest()
         .changes
         .iter()
         .find(|change| change.relative_path == Path::new("inside-workspace.txt"))
         .expect("probe output manifest includes its created file");
-    let promoted = process
+    let promotion_path = fixture.path().join("promoted");
+    std::fs::create_dir(&promotion_path).expect("create promotion destination");
+    let promotion_destination =
+        DirectoryCapability::open(&promotion_path).expect("open authorized promotion destination");
+    let promoted = review
         .promote_output_file_to(
             created_change,
             7,
@@ -146,7 +139,7 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
         b"inside-ok"
     );
     assert_eq!(
-        process
+        review
             .promote_output_file_to(
                 created_change,
                 7,
@@ -161,7 +154,7 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
         "promotion never overwrites a file that appeared after review"
     );
     assert_eq!(
-        process
+        review
             .promote_output_file_to(
                 created_change,
                 8,
@@ -175,12 +168,16 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
         io::ErrorKind::PermissionDenied,
         "promotion rejects a stale execution workspace generation"
     );
-    let mut stdout = String::new();
-    process
-        .take_stdout()
-        .expect("AppContainer stdout is piped")
-        .read_to_string(&mut stdout)
-        .expect("read AppContainer stdout through the explicit handle list");
+    for path in ["inside-workspace.txt", "appcontainer-result.txt"] {
+        assert!(
+            review.manifest().changes.iter().any(|change| {
+                change.relative_path.as_path() == Path::new(path)
+                    && change.change == DirectoryTreeChangeKind::Created
+                    && change.after_sha256.is_some()
+            }),
+            "bounded output manifest must identify the sandbox-created file {path}"
+        );
+    }
     let result_path = sandbox_root.join("appcontainer-result.txt");
     let result = std::fs::read_to_string(&result_path).unwrap_or_default();
     let inside_file_was_written = sandbox_root.join("inside-workspace.txt").is_file();
@@ -190,7 +187,7 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => false,
         Err(error) => panic!("local network probe failed: {error}"),
     };
-    drop(process);
+    review.cleanup().expect("discard retained sandbox review");
 
     assert!(
         !sandbox_root.exists(),
@@ -210,16 +207,6 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
         inside_file_was_written,
         "container could not write its granted workspace"
     );
-    for path in ["inside-workspace.txt", "appcontainer-result.txt"] {
-        assert!(
-            output_manifest.changes.iter().any(|change| {
-                change.relative_path.as_path() == Path::new(path)
-                    && change.change == DirectoryTreeChangeKind::Created
-                    && change.after_sha256.is_some()
-            }),
-            "bounded output manifest must identify the sandbox-created file {path}"
-        );
-    }
     assert_eq!(outside_content, "outside-sentinel");
     assert_eq!(
         result.trim(),

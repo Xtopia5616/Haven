@@ -237,6 +237,61 @@ pub struct AppContainerChild {
     tree_reaped: bool,
 }
 
+/// Owns one reaped sandbox workspace while a caller presents its bounded
+/// output manifest for review. Dropping or cleaning up this owner removes the
+/// private output and baseline directories.
+pub struct AppContainerOutputReview {
+    workspace: AppContainerWorkspace,
+    manifest: DirectoryTreeOutputManifest,
+}
+
+impl AppContainerOutputReview {
+    pub fn manifest(&self) -> &DirectoryTreeOutputManifest {
+        &self.manifest
+    }
+
+    /// Promote one manifest-created regular output file to a missing
+    /// destination below an already-authorized directory capability. This
+    /// does not authorize the destination: callers must hold the live policy
+    /// lease and supply the workspace/policy stamps bound to this review.
+    pub fn promote_output_file_to(
+        &self,
+        change: &DirectoryTreeChange,
+        expected_execution_workspace_generation: u64,
+        expected_policy_revision: u64,
+        destination: &crate::filesystem::DirectoryCapability,
+        destination_relative: &Path,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> io::Result<DirectoryTreeFileCopySummary> {
+        if self.workspace.execution_workspace_generation()
+            != expected_execution_workspace_generation
+            || self.workspace.policy_revision() != expected_policy_revision
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "sandbox output is bound to a stale execution workspace or policy revision",
+            ));
+        }
+        if !self.manifest.changes.iter().any(|entry| entry == change) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "sandbox output change is not part of this reviewed manifest",
+            ));
+        }
+        self.workspace.directory().copy_reviewed_created_file_to(
+            change,
+            destination,
+            destination_relative,
+            is_cancelled,
+        )
+    }
+
+    /// Explicitly discard this review's sandbox output and private baseline.
+    pub fn cleanup(self) -> io::Result<()> {
+        self.workspace.cleanup()
+    }
+}
+
 impl AppContainerChild {
     pub fn id(&self) -> u32 {
         // SAFETY: the process handle remains valid for this owner's lifetime.
@@ -263,12 +318,6 @@ impl AppContainerChild {
         self.stderr.take()
     }
 
-    pub(crate) fn workspace(&self) -> &AppContainerWorkspace {
-        self.workspace
-            .as_ref()
-            .expect("a live AppContainer child retains its workspace")
-    }
-
     /// Return a bounded output manifest only after the root process has exited
     /// and the complete Job Object tree has been reaped.
     pub fn output_manifest(
@@ -282,43 +331,40 @@ impl AppContainerChild {
                 "sandbox output is unavailable until the process tree exits",
             ));
         }
-        self.workspace().output_manifest(limits, is_cancelled)
+        self.workspace
+            .as_ref()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "sandbox output ownership has been transferred to a review",
+                )
+            })?
+            .output_manifest(limits, is_cancelled)
     }
 
-    /// Promote one reviewed, newly created regular output file to a missing
-    /// destination below an already-authorized directory capability. This
-    /// does not authorize the destination: callers must hold the live policy
-    /// lease and supply the workspace/policy stamps bound to this child.
-    pub fn promote_output_file_to(
-        &self,
-        change: &DirectoryTreeChange,
-        expected_execution_workspace_generation: u64,
-        expected_policy_revision: u64,
-        destination: &crate::filesystem::DirectoryCapability,
-        destination_relative: &Path,
+    /// Transfer a reaped private workspace into a review owner. The child
+    /// handle can then be dropped while the output remains private and alive
+    /// until the caller explicitly cleans up or drops the review.
+    pub fn take_output_review(
+        &mut self,
+        limits: DirectoryTreeDiffLimits,
         is_cancelled: impl FnMut() -> bool,
-    ) -> io::Result<DirectoryTreeFileCopySummary> {
+    ) -> io::Result<AppContainerOutputReview> {
         if !self.tree_reaped {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "sandbox output cannot be promoted until the process tree exits",
+                "sandbox output cannot be retained until the process tree exits",
             ));
         }
-        let workspace = self.workspace();
-        if workspace.execution_workspace_generation() != expected_execution_workspace_generation
-            || workspace.policy_revision() != expected_policy_revision
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "sandbox output is bound to a stale execution workspace or policy revision",
-            ));
-        }
-        workspace.directory().copy_reviewed_created_file_to(
-            change,
-            destination,
-            destination_relative,
-            is_cancelled,
-        )
+        let manifest = self.output_manifest(limits, is_cancelled)?;
+        let workspace = self
+            .workspace
+            .take()
+            .expect("a live AppContainer child retains its workspace");
+        Ok(AppContainerOutputReview {
+            workspace,
+            manifest,
+        })
     }
 
     /// Wait up to `timeout` for the root process. Once it exits, stop any
