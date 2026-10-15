@@ -68,6 +68,10 @@ impl ToolRuntimeCoordinator {
         } = wiring;
         self.runtime.bind_messaging_runtime(messaging_runtime)?;
         self.runtime.bind_memory_recall(memory_recall)?;
+        self.builtins
+            .mcp_manager
+            .watch_stdio_policy_changes(self.core.authorization.subscribe_policy_changes())
+            .await;
         self.builtins.mcp_manager.set_limits(&context_limits).await;
         self.builtins
             .skill_registry
@@ -90,6 +94,18 @@ impl ToolRuntimeCoordinator {
         self.builtins
             .mcp_manager
             .set_network_policy(security.network_policy)
+            .await;
+        self.builtins
+            .mcp_manager
+            .set_stdio_process_start_authorization(
+                self.core
+                    .authorization
+                    .capture_mcp_stdio_process_start_authorization()
+                    .await
+                    .map(|authorization| {
+                        authorization as Arc<dyn haven_mcp::McpStdioProcessStartAuthorization>
+                    }),
+            )
             .await;
         self.core
             .authorization
@@ -135,6 +151,18 @@ impl ToolRuntimeCoordinator {
         self.builtins
             .mcp_manager
             .set_network_policy(security.network_policy)
+            .await;
+        self.builtins
+            .mcp_manager
+            .set_stdio_process_start_authorization(
+                self.core
+                    .authorization
+                    .capture_mcp_stdio_process_start_authorization()
+                    .await
+                    .map(|authorization| {
+                        authorization as Arc<dyn haven_mcp::McpStdioProcessStartAuthorization>
+                    }),
+            )
             .await;
         self.runtime
             .update_platform(|current| {

@@ -94,6 +94,34 @@ async fn non_open_network_policies_reject_stdio_before_spawning_the_command() {
     }
 }
 
+#[tokio::test]
+async fn stdio_process_start_without_a_tools_authorization_snapshot_fails_closed() {
+    let marker = ProbeMarker::new();
+    let executable = std::env::current_exe().expect("current test executable");
+    let config = McpServerConfig {
+        name: "stdio-missing-process-authorization".into(),
+        transport: haven_common::mcp::McpServerTransport::Stdio,
+        command: executable.to_string_lossy().into_owned(),
+        args: vec![
+            "--exact".into(),
+            "tests::stdio_network_policy_tests::stdio_spawn_probe_child".into(),
+            "--nocapture".into(),
+        ],
+        env: vec![format!("{STDIO_PROBE_MARKER}={}", marker.path().display())],
+        ..Default::default()
+    };
+    let client = crate::client::McpClient::new_managed(&config, 1024, 1024, None);
+    client.set_network_policy(NetworkPolicy::Open).await;
+
+    let result = tokio::time::timeout(Duration::from_secs(3), client.connect()).await;
+
+    assert!(matches!(result, Ok(Err(_))));
+    assert!(
+        !marker.path().exists(),
+        "an MCP stdio child must not spawn without a Tools-owned authorization snapshot"
+    );
+}
+
 #[test]
 fn stdio_spawn_probe_child() {
     let Ok(path) = std::env::var(STDIO_PROBE_MARKER) else {

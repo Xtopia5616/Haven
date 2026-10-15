@@ -142,6 +142,9 @@ pub struct McpClient {
     /// the manager overwrites it from SecurityConfig before a configured
     /// connection is started.
     pub(crate) network_policy: Arc<RwLock<NetworkPolicy>>,
+    /// Immutable policy snapshot used by every stdio spawn and reconnect for
+    /// this manager-owned client generation.
+    stdio_process_authorization: Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>,
 }
 
 pub(crate) struct RateLimiter {
@@ -300,11 +303,50 @@ fn windows_spawn_hint(_command: &str, _e: &std::io::Error) -> String {
     String::new()
 }
 
+#[cfg(any(test, feature = "test-support"))]
+struct TestMcpStdioProcessStartAuthorization;
+
+#[cfg(any(test, feature = "test-support"))]
+impl crate::McpStdioProcessStartAuthorization for TestMcpStdioProcessStartAuthorization {
+    fn acquire_process_start_permit(&self) -> crate::McpStdioProcessStartPermitFuture<'_> {
+        Box::pin(async { Ok(Box::new(()) as Box<dyn crate::McpStdioProcessStartPermit>) })
+    }
+}
+
 impl McpClient {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         config: &haven_common::config::McpServerConfig,
         max_binary_base64_bytes: usize,
         max_sse_buffer: usize,
+    ) -> Self {
+        Self::new_inner(
+            config,
+            max_binary_base64_bytes,
+            max_sse_buffer,
+            Some(Arc::new(TestMcpStdioProcessStartAuthorization)),
+        )
+    }
+
+    pub(crate) fn new_managed(
+        config: &haven_common::config::McpServerConfig,
+        max_binary_base64_bytes: usize,
+        max_sse_buffer: usize,
+        stdio_process_authorization: Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>,
+    ) -> Self {
+        Self::new_inner(
+            config,
+            max_binary_base64_bytes,
+            max_sse_buffer,
+            stdio_process_authorization,
+        )
+    }
+
+    fn new_inner(
+        config: &haven_common::config::McpServerConfig,
+        max_binary_base64_bytes: usize,
+        max_sse_buffer: usize,
+        stdio_process_authorization: Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>,
     ) -> Self {
         Self {
             name: config.name.clone(),
@@ -341,6 +383,7 @@ impl McpClient {
             max_binary_base64_bytes,
             max_sse_buffer,
             network_policy: Arc::new(RwLock::new(NetworkPolicy::Ask)),
+            stdio_process_authorization,
         }
     }
 
@@ -531,18 +574,34 @@ impl McpClient {
                     self.name
                 )
             })?;
-        let mut child =
-            spawn_mcp_child(&self.name, &self.command, &self.args, &build, &containment).map_err(
-                |e| {
-                    let hint = windows_spawn_hint(&self.command, &e);
-                    anyhow::anyhow!(
-                        "failed to spawn MCP server '{}': {}{}",
-                        self.name,
-                        haven_common::error::sanitize_error_text(&e.to_string()),
-                        hint
-                    )
-                },
-            )?;
+        let authorization = self.stdio_process_authorization.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "MCP stdio server '{}' has no process-start authorization",
+                self.name
+            )
+        })?;
+        let spawn_permit = authorization
+            .acquire_process_start_permit()
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "MCP stdio server '{}' process start was denied: {}",
+                    self.name,
+                    haven_common::error::sanitize_error_text(&error.to_string())
+                )
+            })?;
+        let child_result =
+            spawn_mcp_child(&self.name, &self.command, &self.args, &build, &containment);
+        drop(spawn_permit);
+        let mut child = child_result.map_err(|e| {
+            let hint = windows_spawn_hint(&self.command, &e);
+            anyhow::anyhow!(
+                "failed to spawn MCP server '{}': {}{}",
+                self.name,
+                haven_common::error::sanitize_error_text(&e.to_string()),
+                hint
+            )
+        })?;
 
         let stdin = child
             .stdin

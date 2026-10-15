@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, Semaphore, oneshot};
+use tokio::sync::{Mutex, RwLock, Semaphore, oneshot};
 use tokio_util::sync::CancellationToken;
 
 const NOTIFICATION_LISTENER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -172,6 +172,12 @@ pub struct McpManager {
     discovery_config: Arc<tokio::sync::RwLock<haven_common::config::McpDiscoveryConfig>>,
     limits: Arc<tokio::sync::RwLock<haven_common::config::ContextLimitsConfig>>,
     network_policy: Arc<tokio::sync::RwLock<haven_common::types::NetworkPolicy>>,
+    /// Authorization snapshot assigned to newly created client generations.
+    /// Existing stdio clients retain the snapshot they were created with.
+    stdio_process_authorization:
+        Arc<RwLock<Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>>>,
+    /// Owner for the policy-revocation subscription installed by Tools.
+    stdio_policy_watcher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Changes whenever the configured server set or a server's tools/list
     /// cache changes. Consumers use this as a cheap catalog invalidation
     /// clock; it is not a durable protocol version.
@@ -197,6 +203,8 @@ impl Clone for McpManager {
             discovery_config: self.discovery_config.clone(),
             limits: self.limits.clone(),
             network_policy: self.network_policy.clone(),
+            stdio_process_authorization: self.stdio_process_authorization.clone(),
+            stdio_policy_watcher: self.stdio_policy_watcher.clone(),
             catalog_version: self.catalog_version.clone(),
         }
     }
@@ -233,6 +241,8 @@ impl McpManager {
                 haven_common::config::ContextLimitsConfig::default(),
             )),
             network_policy: Arc::new(tokio::sync::RwLock::new(network_policy)),
+            stdio_process_authorization: Arc::new(RwLock::new(None)),
+            stdio_policy_watcher: Arc::new(Mutex::new(None)),
             catalog_version: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -315,10 +325,12 @@ impl McpManager {
             anyhow::bail!("MCP connection blocked by network policy");
         }
 
-        let client = Arc::new(McpClient::new(
+        let stdio_process_authorization = self.stdio_process_authorization.read().await.clone();
+        let client = Arc::new(McpClient::new_managed(
             config,
             limits.mcp_max_binary_base64_bytes,
             limits.mcp_max_sse_buffer_bytes,
+            stdio_process_authorization,
         ));
         client.set_network_policy(network_policy).await;
 
@@ -713,6 +725,56 @@ impl McpManager {
             for (name, client) in clients {
                 self.remove_client_generation(&name, Some(&client)).await;
             }
+        }
+    }
+
+    /// Set the authorization snapshot used for future stdio client
+    /// generations. Existing generations keep their original snapshot and are
+    /// disconnected when the bound policy signal changes.
+    pub async fn set_stdio_process_start_authorization(
+        &self,
+        authorization: Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>,
+    ) {
+        *self.stdio_process_authorization.write().await = authorization;
+    }
+
+    /// Subscribe to the authorization owner's policy signal. Each change
+    /// removes all live stdio generations; their health monitors cannot
+    /// reconnect because their captured spawn authorization is stale.
+    pub async fn watch_stdio_policy_changes(
+        &self,
+        mut changes: tokio::sync::watch::Receiver<Arc<()>>,
+    ) {
+        let previous = self.stdio_policy_watcher.lock().await.take();
+        if let Some(previous) = previous {
+            previous.abort();
+            let _ = previous.await;
+        }
+        let manager = self.clone();
+        let task = tokio::spawn(async move {
+            while changes.changed().await.is_ok() {
+                manager.disconnect_stdio_clients().await;
+            }
+        });
+        *self.stdio_policy_watcher.lock().await = Some(task);
+    }
+
+    async fn disconnect_stdio_clients(&self) {
+        let clients = self
+            .clients
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, client)| {
+                matches!(
+                    client.transport,
+                    haven_common::mcp::McpServerTransport::Stdio
+                )
+            })
+            .map(|(name, client)| (name.clone(), client.clone()))
+            .collect::<Vec<_>>();
+        for (name, client) in clients {
+            self.remove_client_generation(&name, Some(&client)).await;
         }
     }
 
@@ -1215,6 +1277,11 @@ impl McpManager {
 
     /// Shut down all clients and cancel their monitor sessions.
     pub async fn shutdown_all(&self) {
+        let policy_watcher = self.stdio_policy_watcher.lock().await.take();
+        if let Some(policy_watcher) = policy_watcher {
+            policy_watcher.abort();
+            let _ = policy_watcher.await;
+        }
         {
             let _lifecycle = self.connection_lifecycle.lock().await;
             self.shutting_down.store(true, Ordering::SeqCst);
@@ -2387,6 +2454,38 @@ mod manager_lifecycle_tests {
             .expect("the admitted config attempt should finish")
             .expect("config loading task should not panic");
         assert!(manager.has_client("queued-config").await);
+        manager.shutdown_all().await;
+    }
+
+    #[tokio::test]
+    async fn policy_change_removes_stdio_clients_but_keeps_http_clients() {
+        let manager = McpManager::new();
+        let stdio_config = McpServerConfig {
+            name: "revoked-stdio".into(),
+            transport: McpServerTransport::Stdio,
+            command: "unused-test-command".into(),
+            ..McpServerConfig::default()
+        };
+        let http_config = unreachable_http_server("retained-http");
+        manager
+            .add_client(Arc::new(McpClient::new(&stdio_config, 1024, 1024)))
+            .await;
+        manager
+            .add_client(Arc::new(McpClient::new(&http_config, 1024, 1024)))
+            .await;
+
+        let (signal, receiver) = tokio::sync::watch::channel(Arc::new(()));
+        manager.watch_stdio_policy_changes(receiver).await;
+        signal.send_replace(Arc::new(()));
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while manager.has_client("revoked-stdio").await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("policy change must drain stale stdio clients");
+        assert!(manager.has_client("retained-http").await);
         manager.shutdown_all().await;
     }
 }

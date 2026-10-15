@@ -599,6 +599,17 @@ pub(crate) struct ExecutionPolicyAuthorization {
     policy_signal: Arc<()>,
 }
 
+/// Current policy snapshot for a manager-owned MCP stdio client generation.
+/// Unlike a tool proof it is not permission to call a tool; it only permits a
+/// child process to start while opaque network access remains explicitly open.
+#[derive(Clone)]
+pub(crate) struct McpStdioProcessStartAuthorization {
+    authorization: Arc<AuthorizationEngine>,
+    policy_revision: u64,
+    execution_workspace_generation: u64,
+    policy_signal: Arc<()>,
+}
+
 pub(crate) struct ExecutionPolicyPermit {
     _config: tokio::sync::OwnedRwLockReadGuard<SafetyConfig>,
 }
@@ -669,6 +680,36 @@ impl ExecutionPolicyAuthorization {
             policy_signal,
         };
         (proof, authorization)
+    }
+}
+
+impl McpStdioProcessStartAuthorization {
+    async fn acquire(&self) -> Result<ExecutionPolicyPermit, String> {
+        let config = Arc::clone(&self.authorization.config).read_owned().await;
+        if config.policy_revision != self.policy_revision
+            || !Arc::ptr_eq(
+                &self.authorization.policy_changes.borrow().clone(),
+                &self.policy_signal,
+            )
+        {
+            return Err("execution policy changed before the MCP process start".into());
+        }
+        if config.execution_workspace.generation() != self.execution_workspace_generation {
+            return Err("execution workspace changed before the MCP process start".into());
+        }
+        if config.network_policy != NetworkPolicy::Open {
+            return Err("MCP stdio requires the network policy to be Open".into());
+        }
+        Ok(ExecutionPolicyPermit { _config: config })
+    }
+}
+
+impl haven_mcp::McpStdioProcessStartAuthorization for McpStdioProcessStartAuthorization {
+    fn acquire_process_start_permit(&self) -> haven_mcp::McpStdioProcessStartPermitFuture<'_> {
+        Box::pin(async move {
+            let permit = self.acquire().await.map_err(execution_policy_denied)?;
+            Ok(Box::new(permit) as Box<dyn haven_mcp::McpStdioProcessStartPermit>)
+        })
     }
 }
 
@@ -842,6 +883,25 @@ impl AuthorizationEngine {
     fn bump_policy_revision(&self, cfg: &mut SafetyConfig) {
         bump_policy_revision(cfg);
         self.policy_changes.send_replace(Arc::new(()));
+    }
+
+    pub(crate) fn subscribe_policy_changes(&self) -> tokio::sync::watch::Receiver<Arc<()>> {
+        self.policy_changes.subscribe()
+    }
+
+    pub(crate) async fn capture_mcp_stdio_process_start_authorization(
+        self: &Arc<Self>,
+    ) -> Option<Arc<McpStdioProcessStartAuthorization>> {
+        let config = self.config.read().await;
+        if config.network_policy != NetworkPolicy::Open {
+            return None;
+        }
+        Some(Arc::new(McpStdioProcessStartAuthorization {
+            authorization: Arc::clone(self),
+            policy_revision: config.policy_revision,
+            execution_workspace_generation: config.execution_workspace.generation(),
+            policy_signal: self.policy_changes.borrow().clone(),
+        }))
     }
 
     pub(crate) async fn execution_workspace(&self) -> ExecutionWorkspace {
@@ -2321,6 +2381,39 @@ mod tests {
             .await
             .expect("running authorization should observe policy revocation")
             .expect("policy watcher should not panic");
+    }
+
+    #[tokio::test]
+    async fn mcp_stdio_process_authorization_is_open_only_and_stale_after_policy_change() {
+        let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let authorization = engine
+            .capture_mcp_stdio_process_start_authorization()
+            .await
+            .expect("explicitly open network policy permits an MCP stdio snapshot");
+        let permit = authorization
+            .acquire()
+            .await
+            .expect("the current open policy permits process creation");
+        drop(permit);
+
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .await;
+
+        assert!(
+            authorization.acquire().await.is_err(),
+            "a captured stdio start authorization must be rejected after policy revision changes"
+        );
+        assert!(
+            engine
+                .capture_mcp_stdio_process_start_authorization()
+                .await
+                .is_none(),
+            "non-open opaque-network policy must not produce a stdio start authorization"
+        );
     }
 
     #[tokio::test]
