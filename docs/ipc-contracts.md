@@ -101,6 +101,9 @@
 | `execute_skill` | execute | 限定 skill 名并经过 AuthorizationEngine |
 | `list_builtin_tool_manifests` | read | 返回 built-in tools 的启用/禁用 manifest；ToolPolicy 固定策略类别使用生成的 enum，`permission_key` 保持动态；不包含 Skill/MCP 清单 |
 | `reset_tool_circuits` | mutate | 只清本地 circuit 状态 |
+| `get_sandbox_output_review` | read | 只接受会话内已完成的 Shell step；返回不含内容与绝对源路径的有界变更清单 |
+| `discard_sandbox_output_review` | mutate | 只丢弃该会话、该 Shell step 持有的短期审阅数据 |
+| `pick_sandbox_output_destination` | read | 原生保存位置选择；只返回用户选中的候选，不授予文件访问 |
 | `promote_sandbox_output` | execute | Windows only；source 通过 session/step/change index 从 review owner 查找；目标经 Files workspace policy 校验；授权只接受 Once/Operation 并由 receipt 签发执行 proof；目标已存在时拒绝覆盖 |
 
 `list_facts` / `add_fact` 返回 App-owned `MemoryFactResponse`，以 `fact_id` 表示事实身份；其中 `source_ref` 使用

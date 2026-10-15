@@ -83,6 +83,8 @@ pub(crate) struct AppServices {
     pub(crate) skills: Arc<dyn SkillCatalogPort>,
     pub(crate) skill_execution: Arc<dyn SkillExecutionPort>,
     pub(crate) authorization: Arc<dyn AuthorizationPort>,
+    #[cfg(windows)]
+    pub(crate) sandbox_output_reviews: Arc<dyn haven_tools::SandboxOutputReviewPort>,
     pub(crate) tool_runs: Arc<dyn AppToolRunPort>,
     pub(crate) live_output: Arc<dyn AppLiveOutputPort>,
     pub(crate) managed_assets: Arc<dyn ManagedAssetLifecyclePort>,
@@ -103,6 +105,8 @@ impl ApplicationRuntime {
             skills: tool_services.skills,
             skill_execution: tool_services.skill_execution,
             authorization: tool_services.authorization,
+            #[cfg(windows)]
+            sandbox_output_reviews: tool_services.sandbox_output_reviews,
             tool_runs,
             live_output,
             managed_assets: tool_services.managed_assets,

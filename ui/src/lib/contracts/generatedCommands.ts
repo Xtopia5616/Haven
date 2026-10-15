@@ -82,6 +82,10 @@ export const MEMORY_FACT_SOURCE_VALUES = ['user', 'inferred'] as const;
 export type MemoryFactSource = (typeof MEMORY_FACT_SOURCE_VALUES)[number];
 export interface MemoryFactSourceRef { message_id: string; snippet: string }
 export interface MemoryRecallItem { entity_id: string; text: string; score: number; model: string }
+export interface SandboxOutputReviewChangeDto { changeIndex: number; relativePath: string; change: SandboxOutputReviewChangeKindDto; beforeBytes: number | null; afterBytes: number | null; beforeSha256: string | null; afterSha256: string | null; promoted: boolean }
+export const SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES = ['created', 'modified', 'deleted', 'type_changed'] as const;
+export type SandboxOutputReviewChangeKindDto = (typeof SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES)[number];
+export interface SandboxOutputReviewManifestDto { sessionId: string; sourceStepId: string; expiresAtUnixMs: number; storageChargeBytes: number; changes: SandboxOutputReviewChangeDto[] }
 export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
 export const FRONTEND_FAILURE_KIND_INPUT_VALUES = ['operation_failure', 'unhandled_ui_error', 'unhandled_rejection'] as const;
 export type FrontendFailureKindInput = (typeof FRONTEND_FAILURE_KIND_INPUT_VALUES)[number];
@@ -1186,6 +1190,7 @@ export const DELETE_FACT_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DELETE_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DELETE_TOOL_RUN_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const DISABLE_AUTOSTART_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const DISCARD_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const DISCARD_STAGED_CREDENTIALS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DISCOVER_MODELS_RESPONSE_SHAPE = { kind: 'array', items: {
 	kind: 'object',
@@ -2458,6 +2463,67 @@ export const GET_RECORDING_STATE_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const GET_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE = { kind: 'nullable', inner: {
+	kind: 'object',
+	fields: {
+		'sessionId': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'sourceStepId': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'expiresAtUnixMs': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'storageChargeBytes': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'changes': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'changeIndex': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'relativePath': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'change': {
+						optional: false,
+						shape: { kind: 'enum', values: SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES },
+					},
+					'beforeBytes': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					},
+					'afterBytes': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					},
+					'beforeSha256': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'afterSha256': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'promoted': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					}
+				}
+			} },
+		}
+	}
+} } as const;
 export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -5569,6 +5635,7 @@ export const NOTIFICATION_SHOW_EVENT_PAYLOAD_SHAPE = {
 export const OPEN_EXTERNAL_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const OPEN_SKILLS_DIR_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const PICK_EXECUTION_WORKSPACE_DIRECTORY_RESPONSE_SHAPE = { kind: 'nullable', inner: { kind: 'string' } } as const;
+export const PICK_SANDBOX_OUTPUT_DESTINATION_RESPONSE_SHAPE = { kind: 'nullable', inner: { kind: 'string' } } as const;
 export const PROCESS_TRANSCRIPT_RESPONSE_SHAPE = { kind: 'union', anyOf: [
 	{
 		kind: 'object',
@@ -8509,6 +8576,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	delete_session: DELETE_SESSION_RESPONSE_SHAPE,
 	delete_tool_run: DELETE_TOOL_RUN_RESPONSE_SHAPE,
 	disable_autostart: DISABLE_AUTOSTART_RESPONSE_SHAPE,
+	discard_sandbox_output_review: DISCARD_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE,
 	discard_staged_credentials: DISCARD_STAGED_CREDENTIALS_RESPONSE_SHAPE,
 	discover_models: DISCOVER_MODELS_RESPONSE_SHAPE,
 	enable_autostart: ENABLE_AUTOSTART_RESPONSE_SHAPE,
@@ -8523,6 +8591,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	get_mcp_prompt: GET_MCP_PROMPT_RESPONSE_SHAPE,
 	get_performance_metrics: GET_PERFORMANCE_METRICS_RESPONSE_SHAPE,
 	get_recording_state: GET_RECORDING_STATE_RESPONSE_SHAPE,
+	get_sandbox_output_review: GET_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE,
 	get_session_for_resume: GET_SESSION_FOR_RESUME_RESPONSE_SHAPE,
 	get_session_lineage: GET_SESSION_LINEAGE_RESPONSE_SHAPE,
 	get_settings: GET_SETTINGS_RESPONSE_SHAPE,
@@ -8544,6 +8613,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	open_external: OPEN_EXTERNAL_RESPONSE_SHAPE,
 	open_skills_dir: OPEN_SKILLS_DIR_RESPONSE_SHAPE,
 	pick_execution_workspace_directory: PICK_EXECUTION_WORKSPACE_DIRECTORY_RESPONSE_SHAPE,
+	pick_sandbox_output_destination: PICK_SANDBOX_OUTPUT_DESTINATION_RESPONSE_SHAPE,
 	process_transcript: PROCESS_TRANSCRIPT_RESPONSE_SHAPE,
 	promote_sandbox_output: PROMOTE_SANDBOX_OUTPUT_RESPONSE_SHAPE,
 	read_log_tail: READ_LOG_TAIL_RESPONSE_SHAPE,
@@ -8642,6 +8712,7 @@ export interface TauriCommandMap {
 	delete_session: { request: { sessionId: string }; response: void };
 	delete_tool_run: { request: { toolRunId: string }; response: boolean };
 	disable_autostart: { request: undefined; response: void };
+	discard_sandbox_output_review: { request: { sessionId: string; sourceStepId: string }; response: boolean };
 	discard_staged_credentials: { request: undefined; response: void };
 	discover_models: { request: { baseUrl: string; apiKey: string; providerName?: string | null; requestKind?: RequestKindInput | null; authHeaderName?: string | null; authHeaderPrefix?: string | null; skipAuth?: boolean | null; proxyUrl?: string | null; noProxy?: string | null }; response: ModelInfo[] };
 	enable_autostart: { request: undefined; response: void };
@@ -8656,6 +8727,7 @@ export interface TauriCommandMap {
 	get_mcp_prompt: { request: { name: string; targetBinding: string; promptName: string; arguments: Record<string, string> }; response: McpPrompt };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };
 	get_recording_state: { request: undefined; response: RecordingStatus };
+	get_sandbox_output_review: { request: { sessionId: string; sourceStepId: string }; response: SandboxOutputReviewManifestDto | null };
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
 	get_session_lineage: { request: { sessionId: string }; response: SessionLineageResponse };
 	get_settings: { request: undefined; response: Settings };
@@ -8677,6 +8749,7 @@ export interface TauriCommandMap {
 	open_external: { request: { target: string }; response: void };
 	open_skills_dir: { request: undefined; response: void };
 	pick_execution_workspace_directory: { request: undefined; response: string | null };
+	pick_sandbox_output_destination: { request: { suggestedName: string }; response: string | null };
 	process_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingId?: string | null; deliveryMode?: InputDeliveryModeInput | null }; response: ProcessResult };
 	promote_sandbox_output: { request: { sessionId: string; sourceStepId: string; changeIndex: number; destination: string }; response: void };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };

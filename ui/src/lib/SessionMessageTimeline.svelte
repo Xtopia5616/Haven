@@ -20,6 +20,7 @@
 	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 
 	interface Props {
+		sessionId?: string | null;
 		messages?: SessionMessage[];
 		sessionToolRuns?: ToolRunPayload[];
 		hotkeyBinding?: string;
@@ -41,6 +42,7 @@
 	}
 
 	let {
+		sessionId = null,
 		messages = [],
 		sessionToolRuns = [],
 		hotkeyBinding = 'Ctrl+Shift+Space',
@@ -89,6 +91,7 @@
 					{awaitingBackgroundToolRunId}
 					{awaitingBackgroundCount}
 					{mediaPlans}
+					{sessionId}
 					{onContextMenu}
 					{onAskSelectionChange}
 					{getAskSelection}
@@ -114,6 +117,7 @@
 					msg.type === 'tool' &&
 					(msg.showFallbackIntent ?? !hasToolPreambleBefore(messages, item.index))}
 				<ChatBubble
+					sessionId={sessionId ?? undefined}
 					role={msg.role ?? 'assistant'}
 					content={msg.content ?? ''}
 					type={msg.type}

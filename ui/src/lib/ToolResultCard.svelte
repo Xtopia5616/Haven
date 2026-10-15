@@ -29,6 +29,7 @@
 	import type { ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 	import type { ToolResultPresentationOutcome } from '$lib/streaming.ts';
+	import ToolShellResult from '$lib/ToolShellResult.svelte';
 
 	type TerminalToolRunStatus = Extract<ToolRunStatus, 'completed' | 'failed' | 'cancelled'>;
 
@@ -39,6 +40,7 @@
 	}
 
 	interface Props {
+		sessionId?: string;
 		type?: 'tool' | 'ask';
 		embedded?: boolean;
 		toolName?: string;
@@ -69,6 +71,7 @@
 	}
 
 	let {
+		sessionId,
 		type = 'tool',
 		embedded = false,
 		toolName = '',
@@ -575,6 +578,15 @@
 						<p class="tool-result-message">结果已在会话消息中显示</p>
 					{:else if toolCallPreview}
 						<p class="tool-result-message">模型仍在生成参数，工具尚未执行</p>
+					{:else if kind === 'shell'}
+						<ToolShellResult
+							{data}
+							{shellText}
+							{liveStreaming}
+							sessionId={sessionId ?? null}
+							sourceStepId={messageId}
+							failed={failedWithoutOutput}
+						/>
 					{:else if failedWithoutOutput}
 						<p class="tool-result-message tool-result-message--error">
 							{emptyOutputLabel}

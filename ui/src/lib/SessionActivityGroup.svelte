@@ -20,6 +20,7 @@
 	import type { SessionMessage } from '$lib/sessionReducer.ts';
 
 	interface Props {
+		sessionId?: string | null;
 		entries?: SessionTimelineActivityItem['entries'];
 		streaming?: boolean;
 		toolCount?: number;
@@ -38,6 +39,7 @@
 	}
 
 	let {
+		sessionId = null,
 		entries = [],
 		streaming = false,
 		toolCount = 0,
@@ -168,6 +170,7 @@
 					msg.type === 'tool' &&
 					(msg.showFallbackIntent ?? !hasToolPreambleBefore(allMessages, entry.index))}
 				<ChatBubble
+					sessionId={sessionId ?? undefined}
 					role={msg.role ?? 'assistant'}
 					content={String(msg.content || '')}
 					type={msg.type || null}

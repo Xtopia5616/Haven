@@ -3,13 +3,16 @@ import { TAURI_COMMAND_CONTRACTS, TAURI_COMMAND_NAMES, type CommandBoundary } fr
 
 describe('Tauri command boundary directory', () => {
 	it('matches the reviewed command count without duplicating generated shapes', () => {
-		expect(TAURI_COMMAND_NAMES).toHaveLength(87);
-		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(87);
+		expect(TAURI_COMMAND_NAMES).toHaveLength(90);
+		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(90);
 		expect(TAURI_COMMAND_NAMES).toEqual(Object.keys(TAURI_COMMAND_CONTRACTS));
 		expect(TAURI_COMMAND_CONTRACTS.pick_execution_workspace_directory.boundary).toBe('read');
 		expect(TAURI_COMMAND_CONTRACTS.pick_execution_workspace_directory.security).toContain(
 			'grants no file access',
 		);
+		expect(TAURI_COMMAND_CONTRACTS.get_sandbox_output_review.boundary).toBe('read');
+		expect(TAURI_COMMAND_CONTRACTS.discard_sandbox_output_review.boundary).toBe('mutate');
+		expect(TAURI_COMMAND_CONTRACTS.pick_sandbox_output_destination.boundary).toBe('read');
 		for (const contract of Object.values(TAURI_COMMAND_CONTRACTS)) {
 			expect(Object.keys(contract).sort()).toEqual(['boundary', 'security']);
 			expect(contract.security.trim().length).toBeGreaterThan(0);

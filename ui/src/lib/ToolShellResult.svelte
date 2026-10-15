@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SandboxOutputReviewPanel from './SandboxOutputReviewPanel.svelte';
 	import type { ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type { ToolExecutionMode } from './toolResultPresentation.ts';
 
@@ -12,9 +13,26 @@
 		};
 		shellText?: string;
 		liveStreaming?: boolean;
+		sessionId?: string | null;
+		sourceStepId?: string | null;
+		failed?: boolean;
 	}
 
-	let { data = {}, shellText = '', liveStreaming = false }: Props = $props();
+	let {
+		data = {},
+		shellText = '',
+		liveStreaming = false,
+		sessionId = null,
+		sourceStepId = null,
+		failed = false,
+	}: Props = $props();
+	let showReview = $derived(
+		!!sessionId &&
+			!!sourceStepId &&
+			data.execution_mode !== 'background' &&
+			data.status !== 'running' &&
+			!liveStreaming,
+	);
 </script>
 
 {#if data.truncated}
@@ -43,8 +61,13 @@
 	<pre class="tool-result-preview" class:streaming={liveStreaming}>{shellText}</pre>
 {:else if liveStreaming}
 	<p class="tool-result-message">等待输出…</p>
+{:else if failed}
+	<p class="tool-result-message tool-result-message--error">调用失败</p>
 {:else}
 	<p class="tool-result-message">（无输出）</p>
+{/if}
+{#if showReview && sessionId && sourceStepId}
+	<SandboxOutputReviewPanel {sessionId} {sourceStepId} />
 {/if}
 
 <style>

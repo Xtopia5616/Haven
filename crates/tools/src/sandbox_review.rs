@@ -46,6 +46,7 @@ pub struct SandboxOutputPromotionResult {
 /// User-review metadata for one completed sandbox run. File content and
 /// absolute paths remain private to the Tools owner.
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SandboxOutputReviewManifest {
     pub session_id: String,
     pub source_step_id: String,
@@ -56,6 +57,7 @@ pub struct SandboxOutputReviewManifest {
 
 /// One path-level change in the bounded AppContainer output manifest.
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SandboxOutputReviewChange {
     /// Stable index into this immutable manifest; promotion APIs use the
     /// index instead of trusting a renderer-supplied source path.
@@ -68,6 +70,8 @@ pub struct SandboxOutputReviewChange {
     pub after_bytes: Option<u64>,
     pub before_sha256: Option<String>,
     pub after_sha256: Option<String>,
+    /// True after this exact manifest entry has been copied to a destination.
+    pub promoted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -131,6 +135,7 @@ struct PendingReview {
     review: Arc<Mutex<AppContainerOutputReview>>,
     expires_at: Instant,
     storage_charge_bytes: u64,
+    promoted_changes: HashSet<u32>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -149,6 +154,8 @@ struct Reservation {
 struct PromotionStateGuard {
     owner: Arc<ReviewOwnerInner>,
     key: ReviewKey,
+    change_index: u32,
+    promoted: bool,
 }
 
 impl Default for SandboxOutputReviewOwner {
@@ -255,8 +262,16 @@ impl SandboxOutputReviewOwner {
                 .get(&key)
                 .map(|pending| Arc::clone(&pending.review))
             {
-                state.promoting.insert(key.clone());
-                Ok(review)
+                if state
+                    .pending
+                    .get(&key)
+                    .is_some_and(|pending| pending.promoted_changes.contains(&change_index))
+                {
+                    Err("sandbox output review entry has already been promoted".to_string())
+                } else {
+                    state.promoting.insert(key.clone());
+                    Ok(review)
+                }
             } else {
                 Err("sandbox output review is unavailable or expired".to_string())
             };
@@ -269,9 +284,11 @@ impl SandboxOutputReviewOwner {
         let finalize_key = key.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let _promotion = PromotionStateGuard {
+            let mut promotion = PromotionStateGuard {
                 owner: inner,
                 key: finalize_key,
+                change_index,
+                promoted: false,
             };
             (|| {
                 if cancel.is_cancelled() {
@@ -290,7 +307,7 @@ impl SandboxOutputReviewOwner {
                 {
                     return Err("only newly created regular files can be promoted".into());
                 }
-                review
+                let summary = review
                     .promote_output_file_to(
                         change,
                         target.execution_workspace_generation,
@@ -299,7 +316,9 @@ impl SandboxOutputReviewOwner {
                         &target.relative_path,
                         || cancel.is_cancelled(),
                     )
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                promotion.promoted = true;
+                Ok(summary)
             })()
         })
         .await
@@ -352,7 +371,7 @@ impl SandboxOutputReviewPort for SandboxOutputReviewOwner {
         source_step_id: &str,
     ) -> Result<Option<SandboxOutputReviewManifest>, String> {
         let key = Self::key(session_id, source_step_id)?;
-        let (review, charge, expires_at, expired) = {
+        let (review, charge, expires_at, promoted_changes, expired) = {
             let mut state = self
                 .inner
                 .state
@@ -368,11 +387,14 @@ impl SandboxOutputReviewPort for SandboxOutputReviewOwner {
                 pending.map(|entry| Arc::clone(&entry.review)),
                 pending.map(|entry| entry.storage_charge_bytes),
                 pending.map(|entry| entry.expires_at),
+                pending.map(|entry| entry.promoted_changes.clone()),
                 expired,
             )
         };
         drop_expired(expired).await;
-        let (Some(review), Some(charge), Some(expires_at)) = (review, charge, expires_at) else {
+        let (Some(review), Some(charge), Some(expires_at), Some(promoted_changes)) =
+            (review, charge, expires_at, promoted_changes)
+        else {
             return Ok(None);
         };
         let review = review
@@ -383,6 +405,7 @@ impl SandboxOutputReviewPort for SandboxOutputReviewOwner {
             review.manifest(),
             charge,
             expires_at,
+            &promoted_changes,
         )))
     }
 
@@ -484,9 +507,12 @@ impl ReviewOwnerState {
     }
 }
 
-fn finish_promotion(inner: &ReviewOwnerInner, key: &ReviewKey) {
+fn finish_promotion(inner: &ReviewOwnerInner, key: &ReviewKey, change_index: u32, promoted: bool) {
     let expired = match inner.state.lock() {
         Ok(mut state) => {
+            if promoted && let Some(pending) = state.pending.get_mut(key) {
+                pending.promoted_changes.insert(change_index);
+            }
             state.promoting.remove(key);
             let expired = state
                 .pending
@@ -529,7 +555,7 @@ impl Reservation {
 
 impl Drop for PromotionStateGuard {
     fn drop(&mut self) {
-        finish_promotion(&self.owner, &self.key);
+        finish_promotion(&self.owner, &self.key, self.change_index, self.promoted);
     }
 }
 
@@ -562,6 +588,7 @@ impl SandboxOutputReviewReservation for Reservation {
                             review: Arc::clone(&review),
                             expires_at,
                             storage_charge_bytes,
+                            promoted_changes: HashSet::new(),
                         },
                     );
                 }),
@@ -591,6 +618,7 @@ fn manifest_snapshot(
     manifest: &DirectoryTreeOutputManifest,
     storage_charge_bytes: u64,
     expires_at: Instant,
+    promoted_changes: &HashSet<u32>,
 ) -> SandboxOutputReviewManifest {
     let remaining = expires_at.saturating_duration_since(Instant::now());
     let expiry_system_time = SystemTime::now()
@@ -625,6 +653,7 @@ fn manifest_snapshot(
                 after_bytes: change.after_bytes,
                 before_sha256: change.before_sha256.map(hex_digest),
                 after_sha256: change.after_sha256.map(hex_digest),
+                promoted: promoted_changes.contains(&u32::try_from(index).unwrap_or(u32::MAX)),
             })
             .collect(),
     }
@@ -856,6 +885,31 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(destination.path().join("promoted.txt")).unwrap(),
             "bounded-review"
+        );
+        let reviewed = owner
+            .manifest(&session_id, &source_step_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(reviewed.changes[0].promoted);
+        assert!(
+            owner
+                .promote_created_file(
+                    &session_id,
+                    &source_step_id,
+                    0,
+                    SandboxOutputPromotionTarget {
+                        execution_workspace_generation: 1,
+                        policy_revision: 0,
+                        directory: DirectoryCapability::open(destination.path()).unwrap(),
+                        relative_path: std::path::PathBuf::from("duplicate.txt"),
+                    },
+                    authorization.acquire().await.unwrap(),
+                    tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+                .is_err(),
+            "a manifest file cannot be promoted twice"
         );
         assert!(
             owner.discard(&session_id, &source_step_id).await.unwrap(),

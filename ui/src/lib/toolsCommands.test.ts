@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	addMcpServer,
+	discardSandboxOutputReview,
 	executeSkill,
 	listBuiltinToolManifests,
 	listMcpPrompts,
@@ -72,6 +73,21 @@ function makeSkillInfo(overrides: Record<string, unknown> = {}) {
 describe('ToolsView command boundary', () => {
 	beforeEach(() => {
 		invoke.mockReset();
+	});
+
+	it('validates the sandbox review discard response as a boolean', async () => {
+		const request = {
+			sessionId: 'ses-00000000000000000000000000000001',
+			sourceStepId: 'step-00000000000000000000000000000002',
+		};
+		invoke.mockResolvedValueOnce(true);
+		expect(await discardSandboxOutputReview(request)).toBe(true);
+		expect(invoke).toHaveBeenCalledWith('discard_sandbox_output_review', request);
+
+		invoke.mockResolvedValueOnce('true');
+		await expect(discardSandboxOutputReview(request)).rejects.toThrow(
+			'Invalid discard_sandbox_output_review boolean response',
+		);
 	});
 
 	it('maps MCP snapshots to camelCase views while preserving dynamic schemas', async () => {

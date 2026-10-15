@@ -1303,6 +1303,7 @@
 				use:dragScroll={{ axis: 'y', preserveTextSelection: true }}
 			>
 				<SessionTimeline
+					sessionId={activeSessionId}
 					{messages}
 					{sessionToolRuns}
 					mediaPlans={activeSessionId ? mediaPlansBySession[activeSessionId] || [] : []}

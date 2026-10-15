@@ -7,7 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 87;
+pub const EXPECTED_COMMAND_COUNT: usize = 90;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -481,7 +481,98 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         boundary: CommandBoundary::Execute,
         security: "Windows only; owner-held change index; exact session request; required one-time confirmation; current Files capability and live execution proof",
     },
+    CommandContract {
+        name: "get_sandbox_output_review",
+        boundary: CommandBoundary::Read,
+        security: "canonical session/step pair; only completed Shell steps; bounded owner manifest without file content or absolute source paths",
+    },
+    CommandContract {
+        name: "discard_sandbox_output_review",
+        boundary: CommandBoundary::Mutate,
+        security: "canonical session/step pair; only the owning Shell review can be discarded",
+    },
+    CommandContract {
+        name: "pick_sandbox_output_destination",
+        boundary: CommandBoundary::Read,
+        security: "native save picker; returns a user-selected candidate only and grants no filesystem access",
+    },
 ];
+
+/// Renderer-safe projection of one ephemeral sandbox review. The source tree,
+/// private workspace, and file contents remain owned by Tools.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxOutputReviewManifestDto {
+    pub session_id: String,
+    pub source_step_id: String,
+    pub expires_at_unix_ms: u64,
+    pub storage_charge_bytes: u64,
+    pub changes: Vec<SandboxOutputReviewChangeDto>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxOutputReviewChangeDto {
+    pub change_index: u32,
+    pub relative_path: String,
+    pub change: SandboxOutputReviewChangeKindDto,
+    pub before_bytes: Option<u64>,
+    pub after_bytes: Option<u64>,
+    pub before_sha256: Option<String>,
+    pub after_sha256: Option<String>,
+    pub promoted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxOutputReviewChangeKindDto {
+    Created,
+    Modified,
+    Deleted,
+    TypeChanged,
+}
+
+#[cfg(windows)]
+impl From<haven_tools::SandboxOutputReviewManifest> for SandboxOutputReviewManifestDto {
+    fn from(manifest: haven_tools::SandboxOutputReviewManifest) -> Self {
+        Self {
+            session_id: manifest.session_id,
+            source_step_id: manifest.source_step_id,
+            expires_at_unix_ms: manifest.expires_at_unix_ms,
+            storage_charge_bytes: manifest.storage_charge_bytes,
+            changes: manifest.changes.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl From<haven_tools::SandboxOutputReviewChange> for SandboxOutputReviewChangeDto {
+    fn from(change: haven_tools::SandboxOutputReviewChange) -> Self {
+        Self {
+            change_index: change.change_index,
+            relative_path: change.relative_path,
+            change: match change.change {
+                haven_tools::SandboxOutputReviewChangeKind::Created => {
+                    SandboxOutputReviewChangeKindDto::Created
+                }
+                haven_tools::SandboxOutputReviewChangeKind::Modified => {
+                    SandboxOutputReviewChangeKindDto::Modified
+                }
+                haven_tools::SandboxOutputReviewChangeKind::Deleted => {
+                    SandboxOutputReviewChangeKindDto::Deleted
+                }
+                haven_tools::SandboxOutputReviewChangeKind::TypeChanged => {
+                    SandboxOutputReviewChangeKindDto::TypeChanged
+                }
+            },
+            before_bytes: change.before_bytes,
+            after_bytes: change.after_bytes,
+            before_sha256: change.before_sha256,
+            after_sha256: change.after_sha256,
+            promoted: change.promoted,
+        }
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SkillExecutionResponse {
@@ -671,6 +762,10 @@ mod tests {
         assert!(names.contains(&"list_session_permissions"));
         assert!(names.contains(&"revoke_session_permission"));
         assert!(names.contains(&"reset_session_permissions"));
+        assert!(names.contains(&"get_sandbox_output_review"));
+        assert!(names.contains(&"discard_sandbox_output_review"));
+        assert!(names.contains(&"pick_sandbox_output_destination"));
+        assert!(names.contains(&"promote_sandbox_output"));
     }
 
     #[test]
@@ -682,6 +777,37 @@ mod tests {
         })
         .unwrap();
         assert_eq!(skill["error"], "blocked");
+    }
+
+    #[test]
+    fn sandbox_review_dto_uses_camel_case_and_exposes_only_bounded_metadata() {
+        let manifest = SandboxOutputReviewManifestDto {
+            session_id: "ses-00000000000000000000000000000002".into(),
+            source_step_id: "step-00000000000000000000000000000001".into(),
+            expires_at_unix_ms: 1_800_000_000_000,
+            storage_charge_bytes: 128,
+            changes: vec![SandboxOutputReviewChangeDto {
+                change_index: 0,
+                relative_path: "reports/result.txt".into(),
+                change: SandboxOutputReviewChangeKindDto::Created,
+                before_bytes: None,
+                after_bytes: Some(12),
+                before_sha256: None,
+                after_sha256: Some("a".repeat(64)),
+                promoted: false,
+            }],
+        };
+        let value = serde_json::to_value(manifest).unwrap();
+        assert_eq!(
+            value["sourceStepId"],
+            "step-00000000000000000000000000000001"
+        );
+        assert_eq!(value["changes"][0]["changeIndex"], 0);
+        assert_eq!(value["changes"][0]["relativePath"], "reports/result.txt");
+        assert_eq!(value["changes"][0]["afterBytes"], 12);
+        assert_eq!(value["changes"][0]["promoted"], false);
+        assert!(value.get("absolute_path").is_none());
+        assert!(value.get("contents").is_none());
     }
 
     #[test]

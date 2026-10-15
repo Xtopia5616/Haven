@@ -288,6 +288,19 @@ export const TAURI_COMMAND_CONTRACTS = {
 		security:
 			'Windows only; owner-held change index; exact session request; required one-time confirmation; current Files capability and live execution proof',
 	},
+	get_sandbox_output_review: {
+		boundary: 'read',
+		security:
+			'canonical session/step pair; terminal Shell step only; bounded metadata without file contents or absolute source paths',
+	},
+	discard_sandbox_output_review: {
+		boundary: 'mutate',
+		security: 'canonical session/step pair; discards only the matching owner-held review',
+	},
+	pick_sandbox_output_destination: {
+		boundary: 'read',
+		security: 'native save picker; returns a user-selected candidate and grants no filesystem access',
+	},
 } as const satisfies Record<TauriCommandName, CommandContract>;
 
 export const TAURI_COMMAND_NAMES = Object.keys(TAURI_COMMAND_CONTRACTS) as TauriCommandName[];

@@ -14,8 +14,11 @@ import type {
 	McpResourceReadView,
 } from './contracts/mcpFeatures.ts';
 import { parseSkillExecutionResponse, parseSkillInfoList } from './contracts/skills.ts';
+import { parseBooleanResponse } from './contracts/boolean.ts';
 import type { SkillInfoView } from './contracts/skills.ts';
 import { parseBuiltinToolManifestList } from './contracts/tools.ts';
+import { parseSandboxOutputReview } from './contracts/sandboxReview.ts';
+import type { SandboxOutputReviewManifestDto } from './contracts/generatedCommands.ts';
 import type {
 	ReconnectMcpServerRequest,
 	RemoveMcpServerRequest,
@@ -88,6 +91,41 @@ export function listSkills(): Promise<SkillInfoView[]> {
 /** Clear local tool circuit state. */
 export function resetToolCircuits(): Promise<void> {
 	return invoke('reset_tool_circuits');
+}
+
+/** Read the bounded review projection for one exact Shell step. */
+export function getSandboxOutputReview(request: {
+	sessionId: string;
+	sourceStepId: string;
+}): Promise<SandboxOutputReviewManifestDto | null> {
+	return invoke('get_sandbox_output_review', request).then((value: unknown) =>
+		parseSandboxOutputReview(value),
+	);
+}
+
+/** Explicitly discard the private output and baseline for one Shell step. */
+export function discardSandboxOutputReview(request: {
+	sessionId: string;
+	sourceStepId: string;
+}): Promise<boolean> {
+	return invoke('discard_sandbox_output_review', request).then((value: unknown) =>
+		parseBooleanResponse(value, 'discard_sandbox_output_review'),
+	);
+}
+
+/** Open the native save dialog and return only its user-selected candidate path. */
+export function pickSandboxOutputDestination(suggestedName: string): Promise<string | null> {
+	return invoke('pick_sandbox_output_destination', { suggestedName });
+}
+
+/** Queue an exact, operation-scoped one-time authorization for one manifest entry. */
+export function promoteSandboxOutput(request: {
+	sessionId: string;
+	sourceStepId: string;
+	changeIndex: number;
+	destination: string;
+}): Promise<void> {
+	return invoke('promote_sandbox_output', request);
 }
 
 /** Reconcile live clients against the persisted MCP server configuration. */
