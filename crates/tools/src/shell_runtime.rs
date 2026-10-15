@@ -93,16 +93,26 @@ pub(crate) fn build_shell_command_silent(shell: &str, command: &str) -> std::pro
     // commands in the app's own working directory. Callers may override with
     // `.current_dir(...)` before spawning.
     std_cmd.current_dir(haven_common::config::default_runtime_temp_root());
+    configure_shell_environment(&mut std_cmd, std::env::vars_os(), proxy_env_vars());
+    std_cmd
+}
+
+fn configure_shell_environment(
+    command: &mut std::process::Command,
+    inherited_environment: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    detected_proxy_variables: impl IntoIterator<Item = (String, String)>,
+) {
+    command
+        .env_clear()
+        .envs(haven_platform::process_environment::filter_shell_environment(inherited_environment));
     // Route git/npm/curl through a locally detected proxy so network-heavy
     // commands (clone/install) don't stall on ECONNRESET when the user runs a
-    // local proxy (e.g. 127.0.0.1:10808). The probe is cached; env vars the
-    // user already configured take precedence and are never overridden.
-    for (key, val) in proxy_env_vars() {
-        if std::env::var_os(&key).is_none() {
-            std_cmd.env(key, val);
-        }
+    // local proxy (e.g. 127.0.0.1:10808). The probe is cached; explicitly
+    // configured proxy variables remain in the filtered environment and take
+    // precedence.
+    for (key, val) in detected_proxy_variables {
+        command.env(key, val);
     }
-    std_cmd
 }
 
 /// Base64-encode a string as UTF-16LE for PowerShell's `-EncodedCommand`.

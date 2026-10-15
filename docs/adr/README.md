@@ -1173,3 +1173,4 @@
 - [1185：验证 Skill 取消时的进程树回收](1185-verify-skill-process-containment.md)
 - [1186：验证后台 Shell 关闭时的进程树回收](1186-verify-background-shell-process-containment.md)
 - [1187：验证 MCP stdio 断开时的进程树回收](1187-verify-mcp-stdio-process-containment.md)
+- [1188：过滤 Shell 子进程继承环境](1188-filter-shell-child-environment.md)

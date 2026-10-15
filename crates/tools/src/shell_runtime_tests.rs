@@ -113,6 +113,56 @@ fn bounded_shell_output_keeps_a_utf8_safe_tail() {
     assert!(bounded.is_char_boundary(bounded.len()));
 }
 
+#[test]
+fn shell_child_receives_only_the_filtered_interactive_environment() {
+    const PROBE: &str = "HAVEN_SHELL_ENVIRONMENT_PROBE";
+    let mut command =
+        std::process::Command::new(std::env::current_exe().expect("current test executable"));
+    command.args([
+        "--exact",
+        "shell_runtime::tests::shell_environment_probe_child",
+        "--nocapture",
+    ]);
+    configure_shell_environment(
+        &mut command,
+        [
+            ("PATH".into(), "C:/runtime".into()),
+            ("SYSTEMROOT".into(), "C:/Windows".into()),
+            ("TEMP".into(), "C:/Temp".into()),
+            ("TMP".into(), "C:/Temp".into()),
+            ("USERPROFILE".into(), "C:/Users/Alice".into()),
+            ("HTTPS_PROXY".into(), "http://proxy.invalid".into()),
+            ("OPENAI_API_KEY".into(), "must-not-leak".into()),
+            ("PYTHONPATH".into(), "untrusted-import-root".into()),
+        ]
+        .into_iter(),
+        [],
+    );
+    command.env(PROBE, "1");
+
+    let output = command.output().expect("spawn shell environment probe");
+    assert!(
+        output.status.success(),
+        "child environment probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn shell_environment_probe_child() {
+    if std::env::var_os("HAVEN_SHELL_ENVIRONMENT_PROBE").is_none() {
+        return;
+    }
+    assert_eq!(std::env::var("PATH").unwrap(), "C:/runtime");
+    assert_eq!(std::env::var("USERPROFILE").unwrap(), "C:/Users/Alice");
+    assert_eq!(
+        std::env::var("HTTPS_PROXY").unwrap(),
+        "http://proxy.invalid"
+    );
+    assert!(std::env::var_os("OPENAI_API_KEY").is_none());
+    assert!(std::env::var_os("PYTHONPATH").is_none());
+}
+
 // ── encode_utf16le_base64 ────────────────────────────────────────────
 
 #[cfg(windows)]
