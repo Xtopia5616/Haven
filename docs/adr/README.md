@@ -1201,3 +1201,4 @@
 - [1211：策略撤销时终止运行中的 Shell 进程树](1211-revoke-running-shells-on-policy-change.md)
 - [1212：策略撤销时终止运行中的 Skill 进程树](1212-revoke-running-skills-on-policy-change.md)
 - [1213：策略撤销时终止 MCP stdio 进程](1213-revoke-mcp-stdio-on-policy-change.md)
+- [1214：通过固定目录 capability 创建 Skill 文件树](1214-pin-skill-creation-writes.md)

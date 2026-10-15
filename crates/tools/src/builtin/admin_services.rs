@@ -13,11 +13,12 @@ use haven_common::config::{
 };
 use haven_common::mcp::McpServerTransport;
 use haven_mcp::{MCP_MAX_PARALLEL_CONNECTIONS, McpClientStatus, McpManager};
+use haven_platform::filesystem::DirectoryCapability;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -96,6 +97,66 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 "###;
+
+fn write_skill_files(
+    root: &DirectoryCapability,
+    name: &str,
+    markdown: &str,
+    script: &str,
+) -> Result<()> {
+    let skill_dir = Path::new(name);
+    let scripts_dir = skill_dir.join("scripts");
+    root.create_dir(&scripts_dir)?;
+    root.atomic_replace(&scripts_dir.join("main.py"), script.as_bytes())?;
+    // Publish the manifest last so a concurrent registry scan cannot load an
+    // incomplete skill while its script is being written.
+    root.atomic_replace(&skill_dir.join("SKILL.md"), markdown.as_bytes())?;
+    Ok(())
+}
+
+fn create_skill_tree(
+    root: &DirectoryCapability,
+    name: &str,
+    markdown: &str,
+    script: &str,
+) -> Result<()> {
+    let skill_dir = Path::new(name);
+    if let Err(error) = root.create_dir(skill_dir) {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            anyhow::bail!("skill '{name}' already exists");
+        }
+        return Err(error.into());
+    }
+
+    if let Err(error) = write_skill_files(root, name, markdown, script) {
+        if let Err(cleanup_error) = root.remove_dir_all(skill_dir) {
+            tracing::warn!(
+                error = %haven_common::error::sanitize_error_text(&cleanup_error.to_string()),
+                "partial skill tree cleanup failed"
+            );
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn create_skill_tree_async(
+    root: DirectoryCapability,
+    name: String,
+    markdown: String,
+    script: String,
+) -> Result<()> {
+    tokio::task::spawn_blocking(move || create_skill_tree(&root, &name, &markdown, &script))
+        .await
+        .map_err(|_| anyhow::anyhow!("skill filesystem worker failed"))?
+}
+
+async fn remove_skill_tree_async(root: DirectoryCapability, name: String) -> Result<()> {
+    tokio::task::spawn_blocking(move || root.remove_dir_all(Path::new(&name)))
+        .await
+        .map_err(|_| anyhow::anyhow!("skill cleanup worker failed"))??;
+    Ok(())
+}
 
 pub(crate) enum NativeMcpServiceError {
     Preflight(String),
@@ -804,12 +865,12 @@ impl AdminServices {
             anyhow::bail!("script too large (max {} bytes)", self.max_script_bytes);
         }
 
-        let root = self.skill_registry.resolved_root().await;
-        let skill_dir = root.join(name);
-        if skill_dir.exists() {
-            anyhow::bail!("skill '{name}' already exists");
-        }
-        tokio::fs::create_dir_all(&skill_dir).await?;
+        let snapshot = config_service.snapshot()?;
+        let previous_allowlist = self.skill_registry.enabled_skill_allowlist().await;
+        let root_path = self.skill_registry.resolved_root().await;
+        tokio::fs::create_dir_all(&root_path).await?;
+        let root_directory = DirectoryCapability::open(&root_path)?;
+        let skill_dir = root_directory.root().join(name);
         let description_yaml = serde_json::to_string(description)?;
         let language_yaml = serde_json::to_string(language)?;
         let mut markdown = format!(
@@ -819,24 +880,62 @@ impl AdminServices {
             markdown.push_str(&format!("  version: {}\n", serde_json::to_string(version)?));
         }
         markdown.push_str(&format!("---\n\n# {name}\n\n{instructions}\n"));
-        tokio::fs::write(skill_dir.join("SKILL.md"), markdown).await?;
-
-        let scripts = skill_dir.join("scripts");
-        tokio::fs::create_dir_all(&scripts).await?;
-        tokio::fs::write(scripts.join("main.py"), script).await?;
+        create_skill_tree_async(
+            root_directory.clone(),
+            name.to_string(),
+            markdown,
+            script.to_string(),
+        )
+        .await?;
         let has_script = true;
 
-        self.skill_registry.refresh_from_disk().await?;
-        self.skill_registry.set_enabled(name, true).await?;
+        if let Err(error) = self.skill_registry.refresh_from_disk().await {
+            if let Err(cleanup_error) =
+                remove_skill_tree_async(root_directory.clone(), name.to_string()).await
+            {
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&cleanup_error.to_string()),
+                    "skill creation rollback failed"
+                );
+            }
+            return Err(error);
+        }
+        if let Err(error) = self.skill_registry.set_enabled(name, true).await {
+            if let Err(cleanup_error) =
+                remove_skill_tree_async(root_directory.clone(), name.to_string()).await
+            {
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&cleanup_error.to_string()),
+                    "skill creation rollback failed"
+                );
+            }
+            if let Err(refresh_error) = self.skill_registry.refresh_from_disk().await {
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&refresh_error.to_string()),
+                    "skill catalog refresh failed while rolling back"
+                );
+            }
+            return Err(error);
+        }
         let enabled_skill_allowlist = self.skill_registry.enabled_skill_allowlist().await;
-        let snapshot = config_service.snapshot()?;
         let mut skills = snapshot.config.skills;
         skills.enabled = enabled_skill_allowlist;
         if let Err(error) = config_service.apply_patch(ConfigPatch::Skills {
             config: skills,
             exec: snapshot.config.skills_exec,
         }) {
-            if let Err(rollback) = tokio::fs::remove_dir_all(&skill_dir).await {
+            let was_enabled = previous_allowlist
+                .as_ref()
+                .is_none_or(|allowlist| allowlist.iter().any(|enabled| enabled == name));
+            if let Err(restore_error) = self.skill_registry.set_enabled(name, was_enabled).await {
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&restore_error.to_string()),
+                    "skill enabled-state rollback failed"
+                );
+            }
+            if let Err(rollback) =
+                remove_skill_tree_async(root_directory.clone(), name.to_string()).await
+            {
                 tracing::warn!(
                     error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
                     "skill creation rollback failed"
@@ -1405,6 +1504,39 @@ pub(crate) fn sanitize_diagnostic(text: &str) -> String {
 mod tests {
     use super::*;
     use tokio::sync::Barrier;
+
+    #[test]
+    fn skill_writer_replaces_a_hard_link_without_mutating_its_other_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = DirectoryCapability::open(temp.path()).unwrap();
+        root.create_dir(Path::new("new-skill")).unwrap();
+        root.create_dir(Path::new("outside")).unwrap();
+        root.atomic_replace(Path::new("outside/marker.txt"), b"outside marker")
+            .unwrap();
+        std::fs::hard_link(
+            temp.path().join("outside/marker.txt"),
+            temp.path().join("new-skill/SKILL.md"),
+        )
+        .unwrap();
+
+        write_skill_files(
+            &root,
+            "new-skill",
+            "---\nname: new-skill\ndescription: test\n---\n",
+            "print('skill')\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(temp.path().join("outside/marker.txt")).unwrap(),
+            b"outside marker",
+            "writing the new skill must replace its directory entry, not mutate a linked file"
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("new-skill/SKILL.md")).unwrap(),
+            b"---\nname: new-skill\ndescription: test\n---\n"
+        );
+    }
 
     #[tokio::test]
     async fn diagnostic_model_checks_run_concurrently_and_keep_unconfigured_routes() {
