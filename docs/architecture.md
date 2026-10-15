@@ -55,7 +55,7 @@ haven-skills ──► haven-common, haven-platform
 `haven-platform` 只依赖 common 中稳定的 `CredentialStore` 端口与 credential reference validator，
 不依赖 Tools、MCP 或 Tauri。Windows adapter 用 Credential Manager 保存密钥；其他平台对带凭据配置
 明确失败，不退回明文或进程内持久化。该 crate 还拥有 MCP stdio、Shell、Skill script/venv bootstrap 和后台 ToolRun
-子进程共用的 `ProcessContainment`：Windows 使用 kill-on-close Job Object，并要求以 suspended
+子进程共用的 `ProcessContainment`。Skill 脚本和 venv/pip 准备命令各自清空继承环境后只重建所需白名单，减少环境变量泄露；这不能限制子进程读取用户文件或访问系统资源。Windows 使用 kill-on-close Job Object，并要求以 suspended
 状态创建进程、先分配 Job 再恢复唯一初始线程；其他平台保持原有 no-op 行为。平台 crate 拥有该
 操作系统顺序和 FFI，adapter 仍拥有命令配置、管道、取消、等待与工具生命周期（ADR 0513、0515）。
 `haven-platform::filesystem::is_link_or_reparse_point` 统一检查单个 metadata 是否为 symlink 或 Windows

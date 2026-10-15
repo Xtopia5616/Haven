@@ -12,6 +12,41 @@ use haven_platform::process_containment::ProcessContainment;
 const REQUIREMENTS_FINGERPRINT_FILE: &str = ".haven-requirements-fingerprint";
 const MAX_SETUP_STREAM_BYTES: usize = 1024 * 1024;
 const MAX_REQUIREMENTS_BYTES: usize = 1024 * 1024;
+const SKILL_SETUP_ENV_ALLOWLIST: &[&str] = &["PATH", "SYSTEMROOT", "TEMP", "TMP"];
+
+fn is_skill_setup_env_allowed(key: &std::ffi::OsStr) -> bool {
+    let Some(key) = key.to_str() else {
+        return false;
+    };
+
+    SKILL_SETUP_ENV_ALLOWLIST.iter().any(|allowed| {
+        #[cfg(windows)]
+        {
+            key.eq_ignore_ascii_case(allowed)
+        }
+        #[cfg(not(windows))]
+        {
+            key == *allowed
+        }
+    }) || cfg!(windows)
+        && (key.eq_ignore_ascii_case("COMSPEC") || key.eq_ignore_ascii_case("PATHEXT"))
+}
+
+fn filtered_skill_setup_environment(
+    environment: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    environment
+        .filter(|(key, _)| is_skill_setup_env_allowed(key))
+        .collect()
+}
+
+fn configure_skill_setup_environment(command: &mut Command) {
+    command
+        .env_clear()
+        .envs(filtered_skill_setup_environment(std::env::vars_os()))
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1");
+}
 
 fn venv_creation_command(venv: &Path) -> Command {
     let mut command = Command::new("python");
@@ -20,6 +55,7 @@ fn venv_creation_command(venv: &Path) -> Command {
         .arg("venv")
         .arg(venv)
         .current_dir(haven_common::config::default_runtime_temp_root());
+    configure_skill_setup_environment(&mut command);
     command
 }
 
@@ -32,6 +68,7 @@ fn pip_install_command(python: &Path, requirements_path: &Path) -> Command {
         .arg("-r")
         .arg(requirements_path)
         .current_dir(haven_common::config::default_runtime_temp_root());
+    configure_skill_setup_environment(&mut command);
     command
 }
 
@@ -455,6 +492,7 @@ mod tests {
             create.as_std().get_current_dir(),
             Some(runtime_temp_root.as_path())
         );
+        assert_setup_environment_is_restricted(&create);
 
         let python = PathBuf::from("skill-venvs/example/Scripts/python.exe");
         let requirements = PathBuf::from("skills/example/requirements.txt");
@@ -478,6 +516,95 @@ mod tests {
             install.as_std().get_current_dir(),
             Some(runtime_temp_root.as_path())
         );
+        assert_setup_environment_is_restricted(&install);
+    }
+
+    fn assert_setup_environment_is_restricted(command: &Command) {
+        let configured = command
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| Some((key.to_str()?, value?)))
+            .collect::<Vec<_>>();
+        for (key, _) in &configured {
+            assert!(
+                is_skill_setup_env_allowed(std::ffi::OsStr::new(key))
+                    || matches!(*key, "PYTHONIOENCODING" | "PYTHONUTF8"),
+                "unexpected inherited setup environment variable: {key}"
+            );
+        }
+        assert!(
+            configured
+                .iter()
+                .any(|(key, value)| { *key == "PYTHONIOENCODING" && *value == "utf-8" })
+        );
+        assert!(
+            configured
+                .iter()
+                .any(|(key, value)| *key == "PYTHONUTF8" && *value == "1")
+        );
+    }
+
+    #[test]
+    fn setup_environment_filter_excludes_credentials_and_runtime_overrides() {
+        let environment = [
+            ("PATH", "C:/Python"),
+            ("SYSTEMROOT", "C:/Windows"),
+            ("TEMP", "C:/Temp"),
+            ("TMP", "C:/Temp"),
+            ("COMSPEC", "C:/Windows/System32/cmd.exe"),
+            ("PATHEXT", ".COM;.EXE;.BAT;.CMD"),
+            ("PYTHONPATH", "C:/untrusted"),
+            ("PYTHONHOME", "C:/untrusted"),
+            (
+                "PIP_INDEX_URL",
+                "https://user:secret@example.invalid/simple",
+            ),
+            ("HTTPS_PROXY", "https://user:secret@example.invalid"),
+            ("GITHUB_TOKEN", "secret"),
+            ("AWS_SECRET_ACCESS_KEY", "secret"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.into()));
+
+        let filtered = filtered_skill_setup_environment(environment);
+        let keys = filtered
+            .iter()
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(keys.contains(&"PATH".to_string()));
+        assert!(keys.contains(&"SYSTEMROOT".to_string()));
+        assert!(keys.contains(&"TEMP".to_string()));
+        assert!(keys.contains(&"TMP".to_string()));
+        assert_eq!(keys.contains(&"COMSPEC".to_string()), cfg!(windows));
+        assert_eq!(keys.contains(&"PATHEXT".to_string()), cfg!(windows));
+        assert!(!keys.iter().any(|key| {
+            matches!(
+                key.as_str(),
+                "PYTHONPATH"
+                    | "PYTHONHOME"
+                    | "PIP_INDEX_URL"
+                    | "HTTPS_PROXY"
+                    | "GITHUB_TOKEN"
+                    | "AWS_SECRET_ACCESS_KEY"
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn setup_process_does_not_inherit_explicit_secret_environment() {
+        let mut command = contained_test_command("secrets-cleared");
+        command.env("GITHUB_TOKEN", "test-secret");
+        configure_skill_setup_environment(&mut command);
+        // Test-only child selectors are applied after the same sanitizer used by
+        // production setup commands; the injected secret must stay removed.
+        command.env(CONTAINED_CHILD_MODE, "secrets-cleared");
+
+        let output = run_contained_output(command, "example-skill", "test command failed")
+            .await
+            .unwrap();
+
+        assert!(output.status.success());
     }
 
     #[tokio::test]
@@ -791,6 +918,10 @@ mod tests {
                     println!("{chunk}");
                     eprintln!("{chunk}");
                 }
+            }
+            Ok("secrets-cleared") => {
+                assert!(std::env::var_os("GITHUB_TOKEN").is_none());
+                assert!(std::env::var_os("PYTHONPATH").is_none());
             }
             #[cfg(windows)]
             Ok("tree") => {
