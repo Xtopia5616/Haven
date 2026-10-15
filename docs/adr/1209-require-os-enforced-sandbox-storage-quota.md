@@ -25,19 +25,22 @@ ADR 1195–1208 建立了 `ExecutionWorkspace`、私有 `AppContainerWorkspace`�
 - **退出后扫描并删除超限输出：拒绝。** 它限制扫描和保留，不限制执行期间写入。
 - **用可用磁盘空间检查代替配额：拒绝。** 检查与写入不是原子操作，不能阻止单进程或并发进程耗尽卷空间。
 - **启用 NTFS per-user hard quota：暂不采用。** NTFS quota 按文件所有者 SID 聚合到卷，并依赖卷启用 enforcement；Haven 不能为一个短命 AppContainer review 安全地假定用户卷配置，也不能修改全局用户额度。若后续候选能证明独立 SID 计费、受支持的无提升配置和并发语义，可单独复审。
+- **把 AppContainer 临时目录直接交给 Windows Containers/HCS：尚未采用，作为可选后端评估。** Windows Containers 文档公开了 `StorageSandboxSize`，能给 container scratch 配置 OS 存储上限；但它属于 Windows Container storage layer，并非当前 AppContainer、Job Object 或普通 TempDir 的能力。Microsoft 列出的 Windows 客户端容器宿主要求是 Pro/Enterprise（或 Windows Server），因此不能作为所有 Haven Windows 安装的默认前提。若采用，必须定义独立的容器启动/回收 owner、宿主能力探测和明确的产品支持矩阵，缺少任一条件时继续 fail closed。
+- **通过提权 broker 安装和管理配额：未选择。** 这可以扩展 OS 资源控制的可用范围，但会新增管理员安装、长期特权服务及其 IPC 身份验证/更新面；只有产品明确接受该部署模型后才能立项。
 - **在普通用户进程中 attach VHD/VHDX：拒绝。** `AttachVirtualDisk` 文档要求 `SE_MANAGE_VOLUME_PRIVILEGE`；产品不得为临时 Shell workspace 提升权限。
 - **采用 experimental `Experimental_CreateProcessInSandbox`：暂不采用。** 当前 Microsoft 文档标注 API 为 experimental；列出的 sandbox specification 没有 storage quota 字段，而且 API 要求 `inheritHandles=FALSE`，与现有经过白名单约束的 stdio pipe launcher 不兼容。
 - **持续轮询目录用量并在超限后 kill Job：拒绝作为硬配额。** 轮询存在写入竞态；超限文件可能在检测前占满卷。
 
 ## 影响与迁移
 
-本 ADR 不改配置、Tauri IPC、数据库或当前执行行为，无需重置。Shell 在 `WorkspaceWrite` 的已有 fail-closed 状态保持不变；review UI 保留，直到有生产调用方可以安全地产生 review。下一步先评估无需管理员权限、能在进程树生命周期内强制单实例容量的 Windows storage backend，再以一个真实 Windows 负向测试证明超额写入被宿主 OS 拒绝。
+本 ADR 不改配置、Tauri IPC、数据库或当前执行行为，无需重置。Shell 在 `WorkspaceWrite` 的已有 fail-closed 状态保持不变；review UI 保留，直到有生产调用方可以安全地产生 review。当前技术候选是可选 Windows Containers/HCS 后端，但它要求 Haven 明确是否接受额外系统组件与受限的宿主版本范围。选定后仍须以真实 Windows 负向测试证明超额写入被宿主 OS 拒绝，再接通产品 Shell。
 
 ## 验证
 
 - `security::tests::opaque_processes_follow_the_selected_network_boundary` 验证 Shell 在 `WorkspaceWrite` 下仍被阻止，在 `FullAccess` 下仍经过确认。
 - Windows backend 的验收必须让 sandbox 写满已配置上限，确认下一次写入失败、宿主机卷仍可用、Job 树结束后临时存储被回收；仅检查 manifest 或临时目录大小不算配额验证。
 - 审阅 [NTFS disk quota limits](https://learn.microsoft.com/en-us/windows/win32/fileio/disk-quota-limits)、[AttachVirtualDisk](https://learn.microsoft.com/en-us/windows/win32/api/virtdisk/nf-virtdisk-attachvirtualdisk) 和 [Create Process in Sandbox](https://learn.microsoft.com/en-us/windows/win32/secauthz/createprocessinsandbox)。
+- 对照 [Windows container storage controls](https://learn.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/resource-controls)、[container storage limits](https://learn.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/container-storage) 与 [Windows container host requirements](https://learn.microsoft.com/en-us/virtualization/windowscontainers/deploy-containers/system-requirements)；确认 HCS `StorageSandboxSize` 是 container storage 能力，Windows 客户端宿主要求为 Pro/Enterprise，不能默认用于所有 Haven Windows edition。
 
 ## 回滚
 
