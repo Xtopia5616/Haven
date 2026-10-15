@@ -250,6 +250,22 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
         }
     }
 
+    async fn authorization_request_for_workflow_subcall(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> Result<AuthorizationRequest, String> {
+        if tool_name.starts_with("mcp__") {
+            self.tools
+                .resolve_workflow_subcall_authorization_request(session_id, tool_name, input)
+                .await
+        } else {
+            self.authorization_request(session_id, tool_name, input)
+                .await
+        }
+    }
+
     async fn authorization_request_from_catalog(
         &self,
         catalog: &ToolCatalogSnapshot,
@@ -562,6 +578,30 @@ impl ToolExecutionPort for ToolsFacadeAgentAdapter {
                 )
                 .await
         }
+    }
+
+    async fn execute_workflow_subcall(
+        &self,
+        context: ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        let proof = context
+            .authorization_proof
+            .ok_or_else(|| anyhow::anyhow!("Workflow child is missing an authorization proof"))?;
+        if !context.tool_name.starts_with("mcp__") {
+            anyhow::bail!("Workflow children must be MCP capabilities")
+        }
+        self.tools
+            .execute_authorized_workflow_subcall_with_step(
+                haven_tools::AuthorizedWorkflowSubcallExecution {
+                    session_id: context.session_id,
+                    tool_name: context.tool_name,
+                    input: context.input,
+                    cancel: context.cancel,
+                    step_id: context.step_id,
+                    proof,
+                },
+            )
+            .await
     }
 
     async fn registrations(

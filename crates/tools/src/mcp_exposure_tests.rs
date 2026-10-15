@@ -118,7 +118,11 @@ async fn stale_session_mcp_calls_follow_current_exposure_policy() {
         name: "calendar".into(),
         ..Default::default()
     };
-    for exposure in [McpToolExposure::Direct, McpToolExposure::Deferred] {
+    for exposure in [
+        McpToolExposure::Direct,
+        McpToolExposure::ModelOnly,
+        McpToolExposure::Deferred,
+    ] {
         config.exposure.default = exposure;
         facade.upsert_mcp_server_config(config.clone()).await;
         assert!(
@@ -183,6 +187,53 @@ async fn direct_mcp_tools_are_advertised_and_hidden_tools_are_not_executable() {
             .get_tool_for_session(Some(session_id), &name)
             .await
             .is_some()
+    );
+
+    let mut model_only = config.clone();
+    model_only.exposure.default = McpToolExposure::ModelOnly;
+    facade.upsert_mcp_server_config(model_only).await;
+    let snapshot = facade.tool_catalog_snapshot(session_id).await;
+    assert!(
+        snapshot
+            .provider_definitions()
+            .iter()
+            .any(|def| def.name == name),
+        "ModelOnly tools remain available as top-level model calls"
+    );
+    assert!(
+        facade
+            .get_tool_for_session(Some(session_id), &name)
+            .await
+            .is_some()
+    );
+    assert!(
+        snapshot.get(WORKFLOW_RUN_TOOL_NAME).is_none(),
+        "ModelOnly tools do not enter the nested Workflow allowlist"
+    );
+    assert!(
+        facade
+            .get_workflow_subcall_tool_for_session(Some(session_id), &name)
+            .await
+            .is_none(),
+        "a stale Workflow plan is checked against live exposure"
+    );
+    assert!(
+        facade
+            .resolve_workflow_subcall_authorization_request(
+                Some(session_id),
+                &name,
+                &serde_json::json!({})
+            )
+            .await
+            .is_err(),
+        "ModelOnly is rejected before a nested Workflow authorization is issued"
+    );
+    assert!(
+        facade
+            .resolve_authorization_request(Some(session_id), &name, &serde_json::json!({}))
+            .await
+            .is_ok(),
+        "the ordinary model-facing authorization path remains available"
     );
 
     let mut hidden = config;

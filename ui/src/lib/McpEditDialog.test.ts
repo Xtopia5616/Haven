@@ -38,4 +38,30 @@ describe('McpEditDialog CodeMode exposure', () => {
 			}),
 		);
 	});
+
+	it('persists Model-only exposure as a top-level-only policy', async () => {
+		const onSave = vi.fn(async (_config: McpServerConfigInput) => {});
+		const { container } = render(McpEditDialog, { onClose: vi.fn(), onSave });
+		await fireEvent.input(screen.getByRole('textbox', { name: 'Name' }), {
+			target: { value: 'calendar' },
+		});
+		await fireEvent.input(screen.getByRole('textbox', { name: 'Command' }), {
+			target: { value: 'calendar-server' },
+		});
+
+		const selects = container.querySelectorAll<HTMLButtonElement>('[aria-haspopup="listbox"]');
+		await fireEvent.click(selects[1]!);
+		await fireEvent.click(
+			screen.getByRole('option', {
+				name: 'Model-only — direct model calls only; no nested Workflow or CodeMode',
+			}),
+		);
+		await fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+		expect(onSave).toHaveBeenCalledWith(
+			expect.objectContaining({
+				exposure: { default: 'model_only', tools: {} },
+			}),
+		);
+	});
 });

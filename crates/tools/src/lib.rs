@@ -156,7 +156,7 @@ pub use codemode::{
 pub use codemode_tool::CODEMODE_RUN_TOOL_NAME;
 pub use execution::{
     AuthorizedCodeModeSubcallExecution, AuthorizedCodeModeToolExecution,
-    AuthorizedWorkflowToolExecution,
+    AuthorizedWorkflowSubcallExecution, AuthorizedWorkflowToolExecution,
 };
 pub use execution_workspace::ExecutionWorkspaceSnapshot;
 pub use facade::{

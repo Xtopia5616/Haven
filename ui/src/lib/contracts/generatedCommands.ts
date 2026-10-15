@@ -234,9 +234,9 @@ export const MCP_SERVER_TRANSPORT_INPUT_VALUES = ['stdio', 'http'] as const;
 export type McpServerTransportInput = (typeof MCP_SERVER_TRANSPORT_INPUT_VALUES)[number];
 export const MCP_SERVER_TRANSPORT_VALUES = ['stdio', 'http'] as const;
 export type McpServerTransport = (typeof MCP_SERVER_TRANSPORT_VALUES)[number];
-export const MCP_TOOL_EXPOSURE_INPUT_VALUES = ['direct', 'deferred', 'codemode', 'hidden'] as const;
+export const MCP_TOOL_EXPOSURE_INPUT_VALUES = ['direct', 'model_only', 'deferred', 'codemode', 'hidden'] as const;
 export type McpToolExposureInput = (typeof MCP_TOOL_EXPOSURE_INPUT_VALUES)[number];
-export const MCP_TOOL_EXPOSURE_VALUES = ['direct', 'deferred', 'codemode', 'hidden'] as const;
+export const MCP_TOOL_EXPOSURE_VALUES = ['direct', 'model_only', 'deferred', 'codemode', 'hidden'] as const;
 export type McpToolExposure = (typeof MCP_TOOL_EXPOSURE_VALUES)[number];
 export interface MediaAsset { asset_id: string; content_hash: string; media_type: string; size_bytes: number; filename?: string; source: MediaAssetSource; lifecycle: MediaAssetLifecycle; expires_at?: string }
 export const MEDIA_ASSET_LIFECYCLE_VALUES = ['request', 'session', 'managed', 'external'] as const;

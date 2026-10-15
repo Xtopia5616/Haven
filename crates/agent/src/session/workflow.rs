@@ -66,7 +66,7 @@ impl WorkflowSubcallPort for AuthorizedWorkflowSubcallPort {
 
         let request = self
             .authorization
-            .authorization_request(Some(&self.session_id), capability, &input)
+            .authorization_request_for_workflow_subcall(Some(&self.session_id), capability, &input)
             .await?;
         let authorization = self.authorization.authorize_for_execution(&request).await;
         let proof = match authorization.decision {
@@ -85,7 +85,7 @@ impl WorkflowSubcallPort for AuthorizedWorkflowSubcallPort {
 
         let result = self
             .execution
-            .execute(ToolExecutionContext {
+            .execute_workflow_subcall(ToolExecutionContext {
                 session_id: Some(self.session_id.clone()),
                 tool_name: capability.to_owned(),
                 input,

@@ -449,7 +449,7 @@ impl ToolCatalogTool {
                 return Ok(ToolResult::ok(server));
             }
             if let Some((server_name, tool, exposure)) = self.describe_mcp_tool(name).await? {
-                let loaded = exposure == McpToolExposure::Direct
+                let loaded = exposure.is_provider_native()
                     || self
                         .session_tool_overlay
                         .get(session_id, name)
@@ -522,12 +522,7 @@ impl ToolCatalogTool {
                     .unwrap_or_default();
                 let infos: Vec<_> = discovered
                     .into_iter()
-                    .filter(|info| {
-                        matches!(
-                            config.exposure.for_tool(&info.name),
-                            McpToolExposure::Direct | McpToolExposure::Deferred
-                        )
-                    })
+                    .filter(|info| config.exposure.for_tool(&info.name).is_catalog_visible())
                     .collect();
                 let connected = self.mcp_manager.has_client(&config.name).await;
                 let names = infos
@@ -536,7 +531,7 @@ impl ToolCatalogTool {
                     .collect::<Vec<_>>();
                 items.push(mcp_server_item(&config.name, &names, connected));
                 for info in infos {
-                    let direct = config.exposure.for_tool(&info.name) == McpToolExposure::Direct;
+                    let direct = config.exposure.for_tool(&info.name).is_provider_native();
                     let qualified = McpToolAdapter::qualified_name_of(&config.name, &info.name);
                     if seen.insert(qualified.clone()) {
                         let loaded = direct
@@ -689,12 +684,7 @@ impl ToolCatalogTool {
         let names = match self.mcp_manager.cached_tools(&config.name).await {
             Some(tools) => tools
                 .into_iter()
-                .filter(|info| {
-                    matches!(
-                        config.exposure.for_tool(&info.name),
-                        McpToolExposure::Direct | McpToolExposure::Deferred
-                    )
-                })
+                .filter(|info| config.exposure.for_tool(&info.name).is_catalog_visible())
                 .map(|info| info.name)
                 .collect::<Vec<_>>(),
             None => Vec::new(),
@@ -721,10 +711,7 @@ impl ToolCatalogTool {
                 continue;
             };
             for info in tools {
-                if !matches!(
-                    config.exposure.for_tool(&info.name),
-                    McpToolExposure::Direct | McpToolExposure::Deferred
-                ) {
+                if !config.exposure.for_tool(&info.name).is_catalog_visible() {
                     continue;
                 }
                 if McpToolAdapter::qualified_name_of(&config.name, &info.name) == name {

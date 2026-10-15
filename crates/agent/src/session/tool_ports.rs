@@ -67,6 +67,14 @@ pub trait ToolExecutionPort: Send + Sync {
         anyhow::bail!("CodeMode child execution is unavailable on this execution port")
     }
 
+    /// Execute one child through the Legacy-only Workflow exposure boundary.
+    async fn execute_workflow_subcall(
+        &self,
+        _context: ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        anyhow::bail!("Workflow child execution is unavailable on this execution port")
+    }
+
     async fn registrations(
         &self,
         session_id: &str,
@@ -105,6 +113,16 @@ pub trait ToolAuthorizationPort: Send + Sync {
     ) -> Result<AuthorizationRequest, String> {
         self.authorization_request(session_id, tool_name, input)
             .await
+    }
+
+    /// Resolve a child only through the current Legacy Workflow exposure.
+    async fn authorization_request_for_workflow_subcall(
+        &self,
+        _session_id: Option<&str>,
+        _tool_name: &str,
+        _input: &Value,
+    ) -> Result<AuthorizationRequest, String> {
+        Err("Workflow-specific child authorization is unavailable".into())
     }
 
     async fn authorization_request_from_catalog(
@@ -348,6 +366,27 @@ impl ToolExecutionPort for ToolsFacadeToolExecutionAdapter {
         }
     }
 
+    async fn execute_workflow_subcall(
+        &self,
+        context: ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        let proof = context
+            .authorization_proof
+            .ok_or_else(|| anyhow::anyhow!("Workflow child is missing an authorization proof"))?;
+        // This adapter is test-only and executes registered fixture tools,
+        // which do not carry a live MCP server exposure identity.
+        self.tools
+            .execute_authorized_tool_with_step(
+                context.session_id.as_deref(),
+                &context.tool_name,
+                context.input,
+                context.cancel,
+                context.step_id.as_deref(),
+                proof,
+            )
+            .await
+    }
+
     async fn registrations(
         &self,
         session_id: &str,
@@ -414,6 +453,32 @@ impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
         if tool_name.starts_with("mcp__") {
             self.tools
                 .resolve_codemode_subcall_authorization_request(session_id, tool_name, input)
+                .await
+        } else {
+            self.authorization_request(session_id, tool_name, input)
+                .await
+        }
+    }
+
+    async fn authorization_request_for_workflow_subcall(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> Result<AuthorizationRequest, String> {
+        if tool_name.starts_with("mcp__") {
+            let is_live_mcp_adapter = self
+                .tools
+                .get_tool_for_session(session_id, tool_name)
+                .await
+                .is_some_and(|tool| tool.mcp_tool_identity().is_some());
+            if is_live_mcp_adapter {
+                return self
+                    .tools
+                    .resolve_workflow_subcall_authorization_request(session_id, tool_name, input)
+                    .await;
+            }
+            self.authorization_request(session_id, tool_name, input)
                 .await
         } else {
             self.authorization_request(session_id, tool_name, input)

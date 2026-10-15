@@ -65,6 +65,7 @@
 	function exposureLabel() {
 		return {
 			direct: 'Legacy 直出',
+			model_only: '仅模型直调',
 			deferred: 'Legacy 按需加载',
 			codemode: 'CodeMode 脚本',
 			hidden: '全部隐藏',
