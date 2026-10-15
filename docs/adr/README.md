@@ -1190,3 +1190,4 @@
 - [1202：逐文件晋升已审阅的 sandbox 新文件](1202-promote-reviewed-sandbox-files.md)
 - [1203：由独立 owner 保留 sandbox 输出供后续审阅](1203-retain-sandbox-output-for-review.md)
 - [1204：为 sandbox review 提供保守存储计量](1204-bound-output-review-storage-accounting.md)
+- [1205：为 Tools 增加有界 sandbox review owner](1205-bound-tools-sandbox-review-owner.md)

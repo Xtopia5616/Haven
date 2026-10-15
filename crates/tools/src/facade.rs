@@ -486,6 +486,8 @@ pub struct ToolServices {
     pub skills: Arc<dyn SkillCatalogPort>,
     pub skill_execution: Arc<dyn SkillExecutionPort>,
     pub authorization: Arc<dyn AuthorizationPort>,
+    #[cfg(windows)]
+    pub sandbox_output_reviews: Arc<dyn SandboxOutputReviewPort>,
     pub managed_assets: Arc<dyn ManagedAssetLifecyclePort>,
     pub tool_run_agent: Arc<dyn ToolRunAgentCapability>,
     pub tool_run_management: Arc<dyn ToolRunManagementCapability>,
@@ -516,6 +518,8 @@ impl ToolServices {
                 runner: Arc::clone(&skill_runner),
             }),
             authorization,
+            #[cfg(windows)]
+            sandbox_output_reviews: Arc::new(coordinator.runtime.sandbox_output_reviews.clone()),
             managed_assets: Arc::new(coordinator.runtime.managed_assets.clone()),
             tool_run_agent: crate::tool_run_capabilities::agent_port(Arc::clone(&tool_run_service)),
             tool_run_management: crate::tool_run_capabilities::management_port(Arc::clone(

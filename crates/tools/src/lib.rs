@@ -28,6 +28,8 @@ mod process_test_support;
 mod prompts;
 pub(crate) mod registry;
 mod runtime_capabilities;
+#[cfg(windows)]
+mod sandbox_review;
 pub(crate) mod security;
 mod shell_runtime;
 mod simulate;
@@ -191,6 +193,13 @@ pub use output::{
 pub(crate) use process::read_stream_text_capped;
 pub(crate) use registry::ToolRegistry;
 pub use registry::{ToolCatalogSnapshot, ToolCatalogVersion};
+#[cfg(windows)]
+pub(crate) use sandbox_review::SandboxOutputReviewOwner;
+#[cfg(windows)]
+pub use sandbox_review::{
+    SandboxOutputReviewChange, SandboxOutputReviewChangeKind, SandboxOutputReviewManifest,
+    SandboxOutputReviewPort, SandboxOutputReviewReservation,
+};
 #[cfg(test)]
 pub(crate) use security::AuthorizationEngine;
 pub use security::{
