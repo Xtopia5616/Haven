@@ -58,6 +58,7 @@ haven-skills ──► haven-common, haven-platform
 子进程共用的 `ProcessContainment`。Skill 脚本和 venv/pip 准备命令各自清空继承环境后只重建所需白名单，减少环境变量泄露；这不能限制子进程读取用户文件或访问系统资源。Windows 使用 kill-on-close Job Object，并要求以 suspended
 状态创建进程、先分配 Job 再恢复唯一初始线程；其他平台保持原有 no-op 行为。平台 crate 拥有该
 操作系统顺序和 FFI，adapter 仍拥有命令配置、管道、取消、等待与工具生命周期（ADR 0513、0515）。
+Skill 依赖安装禁用 pip 用户缓存，避免在 Haven 管理目录之外留下无容量 owner 的重复包缓存（ADR 1176）。
 `haven-platform::filesystem::is_link_or_reparse_point` 统一检查单个 metadata 是否为 symlink 或 Windows
 reparse point；`open_read_only` 在 Windows 禁止新写入/删除句柄，`same_file_identity` 比较已打开句柄的文件身份，
 供调用方关闭路径解析与后续读取之间的竞态；这些 helper 不解析路径或制定允许根目录。`haven-common::path` 统一提供纯 lexical path equality 与

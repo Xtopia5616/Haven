@@ -1161,3 +1161,4 @@
 - [1173：统一 managed upload 根路径](1173-centralize-managed-upload-root.md)
 - [1174：限制前台 Shell 失败日志的生命周期](1174-bound-foreground-shell-output-logs.md)
 - [1175：净化 Skill venv 准备子进程环境](1175-sanitize-skill-setup-environment.md)
+- [1176：禁用无 owner 的 Skill pip 用户缓存](1176-disable-unowned-skill-pip-cache.md)

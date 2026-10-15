@@ -65,6 +65,7 @@ fn pip_install_command(python: &Path, requirements_path: &Path) -> Command {
         .arg("-m")
         .arg("pip")
         .arg("install")
+        .arg("--no-cache-dir")
         .arg("-r")
         .arg(requirements_path)
         .current_dir(haven_common::config::default_runtime_temp_root());
@@ -508,6 +509,7 @@ mod tests {
                 "-m",
                 "pip",
                 "install",
+                "--no-cache-dir",
                 "-r",
                 requirements.to_string_lossy().as_ref()
             ]
