@@ -573,7 +573,9 @@ mod tests {
         parse_mcp_refresh_failed_names, redact_mcp_admin_confirmation_input, validate_command_id,
     };
     use haven_common::tools::NetworkAccess;
-    use haven_common::types::{CapabilityScope, PermissionEffect, PermissionScope, RiskLevel};
+    use haven_common::types::{
+        CapabilityScope, NetworkPolicy, PermissionEffect, PermissionScope, RiskLevel, SandboxMode,
+    };
     use haven_tools::{
         AdminRequest, AuthorizationDecision, AuthorizationReasonCode, ConfirmationReceipt,
         McpOperationArgs, McpRefreshAction, McpRefreshPlan, OperationPolicy, ToolResult,
@@ -627,6 +629,9 @@ mod tests {
         assert_eq!(request.session_id, None);
 
         let authorization = ToolsFacade::new().share_services().authorization;
+        authorization
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .await;
         authorization
             .grant(
                 Some("ui"),

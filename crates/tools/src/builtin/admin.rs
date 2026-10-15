@@ -2164,6 +2164,21 @@ mod tests {
             let engine = crate::AuthorizationEngine::new();
             assert!(matches!(
                 engine.authorize(&authorization_request).await,
+                crate::AuthorizationDecision::Blocked {
+                    reason_code: crate::AuthorizationReasonCode::SandboxBoundary,
+                    ..
+                }
+            ));
+
+            engine
+                .set_boundaries(
+                    haven_common::types::SandboxMode::FullAccess,
+                    Vec::new(),
+                    haven_common::types::NetworkPolicy::Ask,
+                )
+                .await;
+            assert!(matches!(
+                engine.authorize(&authorization_request).await,
                 crate::AuthorizationDecision::RequiresConfirmation { .. }
             ));
 

@@ -974,9 +974,14 @@ impl AuthorizationEngine {
                 reason_code: AuthorizationReasonCode::DisabledOperation,
             });
         }
-        if let Some(reason) =
-            network_policy_block(cfg.network_policy, cfg.sandbox_mode, tool_name, policy)
+        if let Some(reason) = workspace_opaque_capability_block(cfg.sandbox_mode, tool_name, policy)
         {
+            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
+                reason,
+                reason_code: AuthorizationReasonCode::SandboxBoundary,
+            });
+        }
+        if let Some(reason) = network_policy_block(cfg.network_policy, tool_name, policy) {
             return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason,
                 reason_code: AuthorizationReasonCode::NetworkPolicy,
@@ -1134,9 +1139,11 @@ impl AuthorizationEngine {
         if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, key) {
             return Err(reason);
         }
-        if let Some(reason) =
-            network_policy_block(cfg.network_policy, cfg.sandbox_mode, tool_name, policy)
+        if let Some(reason) = workspace_opaque_capability_block(cfg.sandbox_mode, tool_name, policy)
         {
+            return Err(reason);
+        }
+        if let Some(reason) = network_policy_block(cfg.network_policy, tool_name, policy) {
             return Err(reason);
         }
         let mut effective_policy = policy.clone();
@@ -1226,12 +1233,12 @@ impl AuthorizationEngine {
         if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, key) {
             return Err(reason);
         }
-        if let Some(reason) = network_policy_block(
-            cfg.network_policy,
-            cfg.sandbox_mode,
-            tool_name,
-            &request.policy,
-        ) {
+        if let Some(reason) =
+            workspace_opaque_capability_block(cfg.sandbox_mode, tool_name, &request.policy)
+        {
+            return Err(reason);
+        }
+        if let Some(reason) = network_policy_block(cfg.network_policy, tool_name, &request.policy) {
             return Err(reason);
         }
         if let Some(reason) = path_sandbox_block(
@@ -1562,7 +1569,6 @@ fn is_auto_edit_safe(key: &CapabilityScope, policy: &OperationPolicy) -> bool {
 
 fn network_policy_block(
     network_policy: NetworkPolicy,
-    sandbox_mode: SandboxMode,
     tool_name: &str,
     operation: &OperationPolicy,
 ) -> Option<String> {
@@ -1572,31 +1578,32 @@ fn network_policy_block(
         (NetworkPolicy::Deny, _) => {
             Some(format!("network access is disabled for tool '{tool_name}'"))
         }
-        // Ask is the explicit user-consent path for opaque adapters such as
-        // Skills and MCP tools. Their external/sensitive operation contract
-        // still forces a confirmation below; Ask must not turn that request
-        // into an unconditional policy denial.
+        // After the sandbox gate above, Ask is the explicit user-consent path
+        // for opaque adapters such as Skills and MCP tools. Their operation
+        // contract still forces confirmation; Ask cannot override WorkspaceWrite.
         (NetworkPolicy::Ask, NetworkAccess::Opaque) => None,
         // Restricted is the technical network boundary: Haven must be able to
         // inspect and validate the destination before an opaque adapter runs.
         (NetworkPolicy::Restricted, NetworkAccess::Opaque) => Some(format!(
             "restricted network policy cannot authorize opaque network access from '{tool_name}'"
         )),
-        _ => {
-            // WorkspaceWrite cannot safely constrain an arbitrary child
-            // process to writable_roots. Keep this check adjacent to network
-            // handling so an opaque process cannot become a policy hole.
-            if matches!(sandbox_mode, SandboxMode::WorkspaceWrite)
-                && matches!(access, NetworkAccess::Opaque)
-            {
-                Some(format!(
-                    "workspace-write sandbox cannot safely constrain opaque process '{tool_name}'"
-                ))
-            } else {
-                None
-            }
-        }
+        _ => None,
     }
+}
+
+fn workspace_opaque_capability_block(
+    sandbox_mode: SandboxMode,
+    tool_name: &str,
+    operation: &OperationPolicy,
+) -> Option<String> {
+    // WorkspaceWrite only constrains Tools-owned filesystem operations. An
+    // opaque adapter may execute an unconstrained process or remote action,
+    // so confirmation cannot make it workspace-bounded.
+    (matches!(sandbox_mode, SandboxMode::WorkspaceWrite)
+        && matches!(operation.network_access, NetworkAccess::Opaque))
+    .then(|| {
+        format!("workspace-write sandbox cannot safely constrain opaque capability '{tool_name}'")
+    })
 }
 
 fn match_grant(
@@ -2608,14 +2615,33 @@ mod tests {
                 &opaque_policy,
             )
             .await,
-            ConfirmationResult::RequiresConfirmation { .. }
+            ConfirmationResult::Blocked {
+                reason_code: AuthorizationReasonCode::SandboxBoundary,
+                ..
+            }
         ));
 
         let skill_policy = fixture_policy("skill__remote", &json!({}), RiskLevel::High);
         assert!(matches!(
             authorize(&gateway, None, "skill__remote", &json!({}), &skill_policy,).await,
-            ConfirmationResult::RequiresConfirmation { .. }
+            ConfirmationResult::Blocked {
+                reason_code: AuthorizationReasonCode::SandboxBoundary,
+                ..
+            }
         ));
+
+        gateway
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .await;
+        for (tool_name, policy) in [
+            ("mcp::remote::search", opaque_policy),
+            ("skill__remote", skill_policy),
+        ] {
+            assert!(matches!(
+                authorize(&gateway, None, tool_name, &json!({}), &policy).await,
+                ConfirmationResult::RequiresConfirmation { .. }
+            ));
+        }
     }
 
     #[tokio::test]
@@ -2673,7 +2699,7 @@ mod tests {
             .await;
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
-            ConfirmationResult::RequiresConfirmation { .. }
+            ConfirmationResult::Blocked { .. }
         ));
         gateway
             .set_boundaries(
@@ -2685,6 +2711,13 @@ mod tests {
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
             ConfirmationResult::Blocked { .. }
+        ));
+        gateway
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .await;
+        assert!(matches!(
+            authorize(&gateway, None, "shell", &json!({}), &policy).await,
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
         gateway
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)

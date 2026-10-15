@@ -2050,7 +2050,7 @@ impl SessionSupervisor {
 #[cfg(test)]
 mod scheduled_authorization_tests {
     use super::*;
-    use haven_common::types::PermissionMode;
+    use haven_common::types::{NetworkPolicy, PermissionMode, SandboxMode};
     use haven_memory::Database;
     use haven_tools::{AuthorizationDecision, AuthorizationReasonCode};
     use serde_json::json;
@@ -2281,6 +2281,13 @@ mod scheduled_authorization_tests {
             1,
         ));
         (supervisor, tools, database, directory)
+    }
+
+    async fn allow_opaque_capabilities_for_test(supervisor: &SessionSupervisor) {
+        supervisor
+            .authorization
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .await;
     }
 
     #[tokio::test]
@@ -2729,6 +2736,7 @@ mod scheduled_authorization_tests {
     #[tokio::test]
     async fn workflow_subcalls_execute_with_a_fresh_auto_approved_proof() {
         let (supervisor, tools, _database, _directory) = test_supervisor();
+        allow_opaque_capabilities_for_test(&supervisor).await;
         let session_id = "ses-76767676767676767676767676767676";
         let tool_name = "mcp__notes__read";
         let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2779,6 +2787,7 @@ mod scheduled_authorization_tests {
     #[tokio::test]
     async fn gated_workflow_routes_each_node_through_agent_and_tools_authorization() {
         let (supervisor, tools, _database, _directory) = test_supervisor();
+        allow_opaque_capabilities_for_test(&supervisor).await;
         let session_id = "ses-78797979797979797979797979797979";
         let child_name = "mcp__notes__read";
         let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2857,6 +2866,7 @@ mod scheduled_authorization_tests {
     #[tokio::test]
     async fn workflow_confirmation_required_child_fails_before_side_effect() {
         let (supervisor, tools, _database, _directory) = test_supervisor();
+        allow_opaque_capabilities_for_test(&supervisor).await;
         let session_id = "ses-34353535353535353535353535353535";
         let tool_name = "mcp__notes__write";
         let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
