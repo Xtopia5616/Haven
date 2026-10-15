@@ -204,6 +204,8 @@ impl ShellTool {
         #[cfg(not(windows))]
         let windows_creation_flags = 0;
         containment.prepare_command(child_cmd.as_std_mut(), windows_creation_flags);
+        let execution_authorization =
+            execution_context.and_then(crate::ToolExecutionContext::clone_execution_authorization);
         let spawn_permit = match execution_context {
             Some(context) => context
                 .acquire_execution_policy_permit()
@@ -215,7 +217,6 @@ impl ShellTool {
             let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
             child_cmd.kill_on_drop(true).spawn()
         };
-        drop(spawn_permit);
         let mut child = child_spawn_result?;
         let pid = child
             .id()
@@ -228,12 +229,14 @@ impl ShellTool {
         #[cfg(not(windows))]
         let attach_result = containment.attach_and_resume(pid, ());
         if let Err(error) = attach_result {
+            drop(spawn_permit);
             let _ = child.kill().await;
             return Err(anyhow::anyhow!(
                 "failed to attach shell child to process containment: {}",
                 haven_common::error::sanitize_error_text(&error.to_string())
             ));
         }
+        drop(spawn_permit);
 
         if cancel.is_cancelled() {
             // kill_on_drop ensures the child is terminated when `child` drops,
@@ -281,6 +284,13 @@ impl ShellTool {
             let status = child.wait().await?;
             anyhow::Ok((stdout, stderr, status))
         };
+        let policy_revoked = async {
+            match execution_authorization {
+                Some(authorization) => authorization.wait_for_policy_revocation().await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(policy_revoked);
         let (stdout, stderr, status) = tokio::select! {
             result = command_result => result?,
             _ = cancel.cancelled() => {
@@ -289,6 +299,13 @@ impl ShellTool {
                     flag.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
                 return Ok(ToolResult::cancelled("shell command cancelled"));
+            }
+            _ = &mut policy_revoked => {
+                let _ = child.kill().await;
+                if let Some(flag) = &running {
+                    flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+                return Ok(ToolResult::cancelled("execution policy changed; shell command cancelled"));
             }
         };
 
@@ -832,6 +849,73 @@ mod tests {
         descendant
             .wait_for_exit(pid, Duration::from_secs(5))
             .expect("Shell cancellation must close the Job Object");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn policy_revocation_terminates_shell_descendants() {
+        use std::{
+            path::Path,
+            time::{Duration, Instant},
+        };
+
+        fn powershell_literal(path: &Path) -> String {
+            path.to_string_lossy().replace('\'', "''")
+        }
+
+        let temp = tempdir().expect("create isolated process marker directory");
+        let pid_file = temp.path().join("revoked-shell-descendant.pid");
+        let mut descendant =
+            crate::process_test_support::DescendantProcessMarker::new(pid_file.clone());
+        let marker = powershell_literal(&pid_file);
+        let command = format!(
+            "$child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 60' -PassThru; [System.IO.File]::WriteAllText('{marker}', [string]$child.Id); Start-Sleep -Seconds 60"
+        );
+
+        let (execution_authorization, authorization) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_engine();
+        let context = crate::ToolExecutionContext {
+            execution_workspace: None,
+            file_write_policy: None,
+            execution_authorization: Some(execution_authorization),
+        };
+        let run = tokio::spawn(async move {
+            ShellTool::default()
+                .run_with_execution_context(
+                    ShellParams {
+                        command,
+                        shell: Some("powershell".into()),
+                        silent: Some(true),
+                        execution_mode: ToolExecutionMode::Foreground,
+                        cwd: None,
+                        step_id: None,
+                        session_id: None,
+                    },
+                    CancellationToken::new(),
+                    Some(&context),
+                )
+                .await
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !pid_file.exists() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let pid = descendant
+            .pid()
+            .expect("Shell child must start a descendant before revocation");
+
+        authorization
+            .set_permission_mode(haven_common::types::PermissionMode::Plan)
+            .await;
+        let result = tokio::time::timeout(Duration::from_secs(10), run)
+            .await
+            .expect("policy revocation must stop the Shell call")
+            .expect("Shell task must not panic")
+            .expect("Shell adapter must return a cancellation result");
+        assert_eq!(result.outcome, ToolExecutionOutcome::Cancelled);
+        descendant
+            .wait_for_exit(pid, Duration::from_secs(5))
+            .expect("policy revocation must close the Job Object");
     }
 
     #[tokio::test]

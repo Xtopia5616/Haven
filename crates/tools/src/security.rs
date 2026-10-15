@@ -583,6 +583,7 @@ struct SafetyConfig {
 /// perimeter.
 pub struct AuthorizationEngine {
     config: Arc<RwLock<SafetyConfig>>,
+    policy_changes: tokio::sync::watch::Sender<Arc<()>>,
 }
 
 /// Short-lived side-effect capability derived from one proof-verified tool
@@ -595,6 +596,7 @@ pub(crate) struct ExecutionPolicyAuthorization {
     policy_revision: u64,
     execution_workspace_generation: u64,
     expires_at: u64,
+    policy_signal: Arc<()>,
 }
 
 pub(crate) struct ExecutionPolicyPermit {
@@ -634,14 +636,39 @@ impl ExecutionPolicyAuthorization {
         Ok(ExecutionPolicyPermit { _config: config })
     }
 
+    /// Wait until any policy mutation invalidates this authorization. Grants
+    /// intentionally do not publish a change because they cannot revoke an
+    /// already-running operation.
+    pub(crate) async fn wait_for_policy_revocation(&self) {
+        let mut changes = self.authorization.policy_changes.subscribe();
+        loop {
+            let current = changes.borrow_and_update().clone();
+            if !Arc::ptr_eq(&current, &self.policy_signal) {
+                return;
+            }
+            if changes.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test() -> Self {
-        Self {
-            authorization: Arc::new(AuthorizationEngine::new()),
+        Self::for_test_with_engine().0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_engine() -> (Self, Arc<AuthorizationEngine>) {
+        let authorization = Arc::new(AuthorizationEngine::new());
+        let policy_signal = authorization.policy_changes.borrow().clone();
+        let proof = Self {
+            authorization: Arc::clone(&authorization),
             policy_revision: 0,
             execution_workspace_generation: 1,
             expires_at: execution_proof_expiry(),
-        }
+            policy_signal,
+        };
+        (proof, authorization)
     }
 }
 
@@ -784,6 +811,7 @@ impl AuthorizationEngine {
     }
 
     fn new_with_workspace(execution_workspace: ExecutionWorkspace) -> Self {
+        let (policy_changes, _policy_change_receiver) = tokio::sync::watch::channel(Arc::new(()));
         Self {
             config: Arc::new(RwLock::new(SafetyConfig {
                 permission_mode: PermissionMode::Default,
@@ -796,7 +824,13 @@ impl AuthorizationEngine {
                 session_grants: HashMap::new(),
                 tool_settings: HashMap::new(),
             })),
+            policy_changes,
         }
+    }
+
+    fn bump_policy_revision(&self, cfg: &mut SafetyConfig) {
+        bump_policy_revision(cfg);
+        self.policy_changes.send_replace(Arc::new(()));
     }
 
     pub(crate) async fn execution_workspace(&self) -> ExecutionWorkspace {
@@ -826,7 +860,7 @@ impl AuthorizationEngine {
             .checked_add(1)
             .ok_or_else(|| "workspace generation is exhausted".to_string())?;
         cfg.execution_workspace = candidate.with_generation(generation);
-        bump_policy_revision(&mut cfg);
+        self.bump_policy_revision(&mut cfg);
         Ok(cfg.execution_workspace.snapshot())
     }
 
@@ -888,7 +922,7 @@ impl AuthorizationEngine {
             }
         }
         cfg.session_grants.clear();
-        bump_policy_revision(&mut cfg);
+        self.bump_policy_revision(&mut cfg);
         if let Some(error) = workspace_error {
             tracing::warn!(
                 error,
@@ -904,7 +938,7 @@ impl AuthorizationEngine {
         let mut cfg = self.config.write().await;
         cfg.permission_mode = mode;
         cfg.session_grants.clear();
-        bump_policy_revision(&mut cfg);
+        self.bump_policy_revision(&mut cfg);
     }
 
     /// Update the technical boundaries without touching permanent grants.
@@ -921,14 +955,14 @@ impl AuthorizationEngine {
         cfg.writable_roots = writable_roots;
         cfg.network_policy = network_policy;
         cfg.session_grants.clear();
-        bump_policy_revision(&mut cfg);
+        self.bump_policy_revision(&mut cfg);
     }
 
     /// Refresh the live tool_settings mirror used by path/op/risk overrides.
     pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
         let mut cfg = self.config.write().await;
         cfg.tool_settings = settings;
-        bump_policy_revision(&mut cfg);
+        self.bump_policy_revision(&mut cfg);
     }
 
     /// Return a compact, non-sensitive policy summary for the model context.
@@ -1037,6 +1071,7 @@ impl AuthorizationEngine {
                 policy_revision: proof.binding.policy_revision,
                 execution_workspace_generation: cfg.execution_workspace.generation(),
                 expires_at: proof.binding.expires_at,
+                policy_signal: self.policy_changes.borrow().clone(),
             }),
         })
     }
@@ -1427,7 +1462,7 @@ impl AuthorizationEngine {
         let mut cfg = self.config.write().await;
         let removed_permanent = cfg.permanent.remove(&capability).is_some();
         if removed_permanent {
-            bump_policy_revision(&mut cfg);
+            self.bump_policy_revision(&mut cfg);
         }
         removed_permanent
     }
@@ -1451,7 +1486,7 @@ impl AuthorizationEngine {
             cfg.session_grants.remove(session_id);
         }
         if removed {
-            bump_policy_revision(&mut cfg);
+            self.bump_policy_revision(&mut cfg);
         }
         removed
     }
@@ -1463,7 +1498,7 @@ impl AuthorizationEngine {
         let removed = cfg.permanent.len();
         cfg.permanent.clear();
         if removed > 0 {
-            bump_policy_revision(&mut cfg);
+            self.bump_policy_revision(&mut cfg);
         }
         removed
     }
@@ -1473,7 +1508,7 @@ impl AuthorizationEngine {
     pub async fn clear_session_trust(&self, session_id: &str) {
         let mut cfg = self.config.write().await;
         if cfg.session_grants.remove(session_id).is_some() {
-            bump_policy_revision(&mut cfg);
+            self.bump_policy_revision(&mut cfg);
         }
     }
 
@@ -1483,7 +1518,7 @@ impl AuthorizationEngine {
         let mut cfg = self.config.write().await;
         if !cfg.session_grants.is_empty() {
             cfg.session_grants.clear();
-            bump_policy_revision(&mut cfg);
+            self.bump_policy_revision(&mut cfg);
         }
     }
 }
@@ -2244,6 +2279,37 @@ mod tests {
             context.acquire_execution_policy_permit().await.is_err(),
             "the captured execution context is stale after the update"
         );
+    }
+
+    #[tokio::test]
+    async fn policy_revision_change_notifies_running_execution_authorization() {
+        let (authorization, engine) = ExecutionPolicyAuthorization::for_test_with_engine();
+        let mut waiter = tokio::spawn(async move {
+            authorization.wait_for_policy_revocation().await;
+        });
+
+        engine
+            .grant(
+                None,
+                capability_scope!("shell"),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+            )
+            .await;
+        assert_eq!(engine.config.read().await.policy_revision, 0);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut waiter)
+                .await
+                .is_err(),
+            "a grant must not revoke already-authorized work"
+        );
+
+        engine.set_permission_mode(PermissionMode::Plan).await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("running authorization should observe policy revocation")
+            .expect("policy watcher should not panic");
     }
 
     #[tokio::test]

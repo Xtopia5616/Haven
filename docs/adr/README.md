@@ -1196,3 +1196,4 @@
 - [1208：在 UI 中审阅并逐项晋升 sandbox 输出](1208-review-sandbox-output-in-ui.md)
 - [1209：将 OS 强制的 sandbox 存储配额设为 Shell 接线门槛](1209-require-os-enforced-sandbox-storage-quota.md)
 - [1210：回收崩溃遗留的 AppContainer scratch](1210-reclaim-crashed-appcontainer-scratch.md)
+- [1211：策略撤销时终止运行中的 Shell 进程树](1211-revoke-running-shells-on-policy-change.md)

@@ -4730,6 +4730,57 @@ async fn test_shutdown_terminates_background_shell_descendants() {
         .expect("ToolRun shutdown must close the Job Object");
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn test_policy_revocation_terminates_background_shell_descendants() {
+    let temp = tempfile::tempdir().unwrap();
+    let pid_file = temp.path().join("revoked-background-shell-descendant.pid");
+    let mut descendant =
+        crate::process_test_support::DescendantProcessMarker::new(pid_file.clone());
+    let marker = pid_file.to_string_lossy().replace('\'', "''");
+    let command = format!(
+        "$child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 60' -PassThru; [System.IO.File]::WriteAllText('{marker}', [string]$child.Id); Start-Sleep -Seconds 60"
+    );
+    let (execution_authorization, authorization) =
+        crate::security::ExecutionPolicyAuthorization::for_test_with_engine();
+    let service = Arc::new(ToolRunService::new());
+    let admission_cancel = tokio_util::sync::CancellationToken::new();
+    let tool_run_id = service
+        .spawn_shell_for_session_with_source_and_cancel(
+            super::BackgroundShellRequest {
+                command: &command,
+                shell: "powershell",
+                max_chars: 1024,
+                cwd: Some(temp.path().to_path_buf()),
+                session_id: None,
+                source_step_id: None,
+                execution_authorization: Some(execution_authorization),
+            },
+            &admission_cancel,
+        )
+        .await
+        .unwrap();
+
+    let marker_ready = tokio::time::timeout(Duration::from_secs(20), async {
+        while !pid_file.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .is_ok();
+    assert!(marker_ready, "background Shell must start its descendant");
+    let descendant_pid = descendant.pid().expect("descendant PID should be numeric");
+
+    authorization
+        .set_permission_mode(haven_common::types::PermissionMode::Plan)
+        .await;
+    let terminal = wait_terminal(&service, &tool_run_id, 10).await;
+    assert_eq!(terminal["status"], "cancelled");
+    descendant
+        .wait_for_exit(descendant_pid, Duration::from_secs(5))
+        .expect("policy revocation must close the background Job Object");
+}
+
 #[tokio::test]
 async fn test_concurrent_shutdown_calls_wait_for_the_same_task_drain() {
     let service = Arc::new(ToolRunService::new());

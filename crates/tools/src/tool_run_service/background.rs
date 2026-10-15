@@ -235,10 +235,10 @@ impl ToolRunService {
             let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
             child_cmd.kill_on_drop(true).spawn()
         };
-        drop(execution_permit);
         let mut child = match child_spawn_result {
             Ok(c) => c,
             Err(e) => {
+                drop(execution_permit);
                 // Spawn failed: remove the entry so the ToolRun is not left
                 // dangling as "running".
                 self.rollback_background_registration(&tool_run_id).await;
@@ -246,6 +246,7 @@ impl ToolRunService {
             }
         };
         let Some(pid) = child.id() else {
+            drop(execution_permit);
             self.rollback_background_registration(&tool_run_id).await;
             return Err(anyhow::anyhow!(
                 "background shell child did not expose a process id"
@@ -259,6 +260,7 @@ impl ToolRunService {
         #[cfg(not(windows))]
         let attach_result = containment.attach_and_resume(pid, ());
         if let Err(error) = attach_result {
+            drop(execution_permit);
             let _ = child.kill().await;
             self.rollback_background_registration(&tool_run_id).await;
             return Err(anyhow::anyhow!(
@@ -266,6 +268,7 @@ impl ToolRunService {
                 haven_common::error::sanitize_error_text(&error.to_string())
             ));
         }
+        drop(execution_permit);
 
         let me = self.clone();
         let runner_tool_run_id = tool_run_id.clone();
@@ -325,11 +328,19 @@ impl ToolRunService {
                     let success = matches!(status, Ok(s) if s.success());
                     (combined, success, exit_code, truncated)
                 };
+                let policy_revoked = async {
+                    match execution_authorization {
+                        Some(authorization) => authorization.wait_for_policy_revocation().await,
+                        None => std::future::pending::<()>().await,
+                    }
+                };
+                tokio::pin!(policy_revoked);
                 let completion = {
                     tokio::pin!(run);
                     tokio::select! {
                         _ = kill_rx => None,
                         _ = shutdown_token.cancelled() => None,
+                        _ = &mut policy_revoked => None,
                         result = &mut run => Some(result),
                     }
                 };
