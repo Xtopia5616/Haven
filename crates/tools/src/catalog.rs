@@ -1010,3 +1010,324 @@ impl OperationCatalog<'_> {
         defs
     }
 }
+
+#[cfg(test)]
+mod mcp_refresh_tests {
+    use super::*;
+    use crate::{McpManager, McpToolInfo};
+    use haven_common::config::McpServerConfig;
+    use haven_common::mcp::McpServerTransport;
+    use haven_common::types::NetworkPolicy;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio_util::sync::CancellationToken;
+
+    fn info(name: &str, description: &str, input_schema: Value) -> McpToolInfo {
+        McpToolInfo {
+            name: name.into(),
+            description: description.into(),
+            input_schema,
+        }
+    }
+
+    fn active_tool(manager: &McpManager, info: McpToolInfo) -> ToolHandle {
+        Arc::new(McpToolAdapter::new(manager.clone(), "calendar", info))
+    }
+
+    async fn serve_catalog_request(
+        stream: TcpStream,
+        catalog: Arc<tokio::sync::RwLock<Vec<Value>>>,
+    ) {
+        let (read_half, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut line = String::new();
+        if reader.read_line(&mut line).await.unwrap_or_default() == 0 {
+            return;
+        }
+        let mut content_length = 0usize;
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).await.unwrap_or_default() == 0 || line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                content_length = value.trim().parse().unwrap_or_default();
+            }
+        }
+        let mut body = vec![0; content_length];
+        if reader.read_exact(&mut body).await.is_err() {
+            return;
+        }
+        let Ok(request) = serde_json::from_slice::<Value>(&body) else {
+            return;
+        };
+        let result = match request["method"].as_str() {
+            Some("server/discover") => serde_json::json!({
+                "resultType": "complete",
+                "supportedVersions": ["2026-07-28"],
+                "capabilities": {"tools": {"listChanged": false}},
+                "_meta": {
+                    "io.modelcontextprotocol/serverInfo": {
+                        "name": "catalog-test-server",
+                        "version": "1"
+                    }
+                }
+            }),
+            Some("tools/list") => serde_json::json!({
+                "tools": catalog.read().await.clone(),
+                "ttlMs": 60_000,
+                "cacheScope": "private"
+            }),
+            _ => serde_json::json!({}),
+        };
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": result
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response.len(),
+            response
+        );
+        let _ = writer.write_all(response.as_bytes()).await;
+    }
+
+    async fn serve_catalog(
+        listener: TcpListener,
+        catalog: Arc<tokio::sync::RwLock<Vec<Value>>>,
+        cancellation: CancellationToken,
+    ) {
+        loop {
+            tokio::select! {
+                _ = cancellation.cancelled() => return,
+                accepted = listener.accept() => {
+                    let Ok((stream, _)) = accepted else { return; };
+                    tokio::spawn(serve_catalog_request(stream, catalog.clone()));
+                }
+            }
+        }
+    }
+
+    fn wire_tool(name: &str, description: &str, input_schema: Value) -> Value {
+        serde_json::json!({
+            "name": name,
+            "description": description,
+            "inputSchema": input_schema
+        })
+    }
+
+    fn provider_definition<'a>(snapshot: &'a ToolCatalogSnapshot, name: &str) -> &'a ToolDef {
+        snapshot
+            .provider_definitions()
+            .iter()
+            .find(|definition| definition.name == name)
+            .expect("active MCP tool should be advertised to the provider")
+    }
+
+    #[test]
+    fn refresh_updates_only_active_tools_and_drops_deleted_tools() {
+        let manager = McpManager::new();
+        let old_schema = serde_json::json!({
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"]
+        });
+        let old = active_tool(
+            &manager,
+            info("create_event", "Create an event", old_schema),
+        );
+        let selected_name = old.name();
+        let active = vec![(selected_name.clone(), "create_event".to_string(), old)];
+        let updated_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "starts_at": {"type": "string"}
+            },
+            "required": ["title", "starts_at"]
+        });
+        let available = vec![
+            info(
+                "create_event",
+                "Create an event at a time",
+                updated_schema.clone(),
+            ),
+            info(
+                "delete_calendar",
+                "Delete a calendar",
+                serde_json::json!({"type": "object"}),
+            ),
+        ];
+
+        let (replacements, removals) =
+            refreshed_mcp_adapters("calendar", &manager, active, &available);
+
+        assert!(removals.is_empty());
+        assert_eq!(replacements.len(), 1);
+        assert_eq!(replacements[0].name(), selected_name);
+        let definition = replacements[0].tool_def();
+        assert_eq!(definition.description, "Create an event at a time");
+        assert_eq!(definition.input_schema, updated_schema);
+        assert!(
+            replacements.iter().all(|tool| tool.name()
+                != McpToolAdapter::qualified_name_of("calendar", "delete_calendar")),
+            "new server tools remain dormant until explicitly loaded"
+        );
+
+        let active = vec![(
+            McpToolAdapter::qualified_name_of("calendar", "create_event"),
+            "create_event".to_string(),
+            active_tool(
+                &manager,
+                info(
+                    "create_event",
+                    "Create an event at a time",
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "starts_at": {"type": "string"}
+                        },
+                        "required": ["title", "starts_at"]
+                    }),
+                ),
+            ),
+        )];
+        let (replacements, removals) =
+            refreshed_mcp_adapters("calendar", &manager, active, &available[1..]);
+        assert!(replacements.is_empty());
+        assert_eq!(
+            removals,
+            vec![McpToolAdapter::qualified_name_of(
+                "calendar",
+                "create_event"
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_catalog_snapshot_reconciles_refreshed_mcp_lists() {
+        let facade = ToolsFacade::new();
+        let manager = facade.coordinator.builtins.mcp_manager.clone();
+        manager.set_network_policy(NetworkPolicy::Open).await;
+
+        let initial_schema = serde_json::json!({
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"]
+        });
+        let catalog = Arc::new(tokio::sync::RwLock::new(vec![wire_tool(
+            "create_event",
+            "Create an event",
+            initial_schema,
+        )]));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let cancellation = CancellationToken::new();
+        let server = tokio::spawn(serve_catalog(
+            listener,
+            catalog.clone(),
+            cancellation.clone(),
+        ));
+        facade
+            .upsert_mcp_server_config(McpServerConfig {
+                name: "calendar".into(),
+                ..Default::default()
+            })
+            .await;
+        manager
+            .connect_server(&McpServerConfig {
+                name: "calendar".into(),
+                transport: McpServerTransport::Http,
+                url: format!("http://{address}/mcp"),
+                ..Default::default()
+            })
+            .await
+            .expect("loopback MCP server should connect");
+
+        let session_id = "ses-65dd7c6b35b99687a424c2fd8bdb08a9";
+        let loaded = manager
+            .cached_tools("calendar")
+            .await
+            .expect("initial discovery should publish tools");
+        let active_name = McpToolAdapter::qualified_name_of("calendar", "create_event");
+        facade
+            .coordinator
+            .core
+            .operations
+            .session_tool_overlay
+            .register(session_id, active_tool(&manager, loaded[0].clone()))
+            .await;
+        let initial_snapshot = facade.tool_catalog_snapshot(session_id).await;
+        assert_eq!(
+            provider_definition(&initial_snapshot, &active_name).description,
+            "Create an event"
+        );
+        let updated_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "starts_at": {"type": "string"}
+            },
+            "required": ["title", "starts_at"]
+        });
+        *catalog.write().await = vec![
+            wire_tool(
+                "create_event",
+                "Create an event at a time",
+                updated_schema.clone(),
+            ),
+            wire_tool(
+                "delete_calendar",
+                "Delete a calendar",
+                serde_json::json!({"type": "object"}),
+            ),
+        ];
+        manager.refresh_all_tools().await;
+        let refreshed_snapshot = facade.tool_catalog_snapshot(session_id).await;
+        let refreshed_definition = provider_definition(&refreshed_snapshot, &active_name);
+        assert_eq!(
+            refreshed_definition.description,
+            "Create an event at a time"
+        );
+        assert_eq!(refreshed_definition.input_schema, updated_schema);
+        assert!(
+            refreshed_snapshot
+                .provider_definitions()
+                .iter()
+                .all(|definition| definition.name
+                    != McpToolAdapter::qualified_name_of("calendar", "delete_calendar")),
+            "new MCP tools remain inactive until load_mcp selects them"
+        );
+        let repeated_snapshot = facade.tool_catalog_snapshot(session_id).await;
+        assert_eq!(
+            repeated_snapshot.catalog_version(),
+            refreshed_snapshot.catalog_version(),
+            "an unchanged manager list must not churn the session catalog version"
+        );
+
+        *catalog.write().await = vec![wire_tool(
+            "delete_calendar",
+            "Delete a calendar",
+            serde_json::json!({"type": "object"}),
+        )];
+        manager.refresh_all_tools().await;
+        let deleted_snapshot = facade.tool_catalog_snapshot(session_id).await;
+        assert!(deleted_snapshot.get(&active_name).is_none());
+        assert!(
+            deleted_snapshot
+                .provider_definitions()
+                .iter()
+                .all(|definition| definition.name != active_name),
+            "a server-deleted MCP tool must be removed from the provider surface"
+        );
+
+        manager.shutdown_all().await;
+        cancellation.cancel();
+        server.await.unwrap();
+    }
+}

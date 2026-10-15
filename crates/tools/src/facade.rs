@@ -779,12 +779,15 @@ impl ToolsFacade {
         &self,
         session_id: &str,
     ) -> crate::ToolCatalogVersion {
-        self.coordinator
+        let mut version = self
+            .coordinator
             .core
             .operations
             .session_tool_overlay
             .catalog_version_for_session(session_id)
-            .await
+            .await;
+        version.mcp_catalog_version = self.coordinator.builtins.mcp_manager.catalog_version();
+        version
     }
 
     /// Capture the complete lookup surface used by one ReAct tool batch.

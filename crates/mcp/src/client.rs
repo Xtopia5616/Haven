@@ -474,9 +474,14 @@ impl McpClient {
             if !force {
                 return Ok((Some(snapshot.tools.clone()), false));
             }
-        } else if cache.is_none() && !force {
+        } else if cache.is_none()
+            && !force
+            && !matches!(&*self.status.lock().await, McpClientStatus::Connected)
+        {
             // A connection may still be in progress. Do not issue tools/list
-            // until its protocol mode and transport are installed.
+            // until its protocol mode and transport are installed. Once a
+            // client is connected, however, a missing cache can mean that a
+            // notification-driven refresh failed; retry on the next read.
             return Ok((None, false));
         }
 
@@ -1993,6 +1998,102 @@ mod modern_tool_list_tests {
             .await;
         server.await.unwrap();
     }
+
+    #[tokio::test]
+    async fn connected_client_retries_tools_list_after_notification_refresh_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "tools/list");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "tools": [{"name": "malformed"}],
+                    "ttlMs": 60_000,
+                    "cacheScope": "private"
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "tools/list");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "tools": [{
+                        "name": "recovered",
+                        "description": "Recovered after a failed notification refresh",
+                        "inputSchema": {"type": "object"}
+                    }],
+                    "ttlMs": 60_000,
+                    "cacheScope": "private"
+                }),
+            )
+            .await;
+        });
+
+        let config = haven_common::config::McpServerConfig {
+            name: "catalog-refresh-retry".into(),
+            transport: McpServerTransport::Http,
+            url: format!("http://{address}/mcp"),
+            ..Default::default()
+        };
+        let client = McpClient::new(&config, 1024, 1024);
+        *client.protocol_mode.lock().await = McpProtocolMode::modern(MODERN_PROTOCOL_VERSION);
+        *client.status.lock().await = McpClientStatus::Connected;
+        *client.tools_cache.lock().await = Some(McpToolListSnapshot {
+            tools: vec![McpToolInfo {
+                name: "stale".into(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }],
+            expires_at: Some(Instant::now() + Duration::from_secs(60)),
+            _cache_scope: McpToolCacheScope::Private,
+        });
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let cancel = client.cancel_token.lock().await.clone();
+        let shared = Arc::new(HttpShared {
+            http: reqwest::Client::new(),
+            url: config.url,
+            headers: Vec::new(),
+            mcp_session_id: Arc::new(Mutex::new(String::new())),
+            cancel,
+        });
+        *client.inner.lock().await = Some(McpClientInner::Http(HttpInner {
+            shared,
+            notification_tx,
+            max_sse_buffer: 1024,
+            tools_list_changed: client.tools_list_changed.clone(),
+        }));
+
+        client.refresh_tool_list_after_notification(|_| {}).await;
+        assert!(
+            client.tools_cache.lock().await.is_none(),
+            "a failed notification refresh clears the stale cache"
+        );
+
+        let (tools, refreshed) = client
+            .ensure_tool_cache_fresh()
+            .await
+            .expect("a connected client should retry the missing tools/list cache");
+        assert!(refreshed);
+        assert_eq!(
+            tools
+                .expect("successful retry should publish a cache")
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["recovered"]
+        );
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn resource_and_user_selected_prompt_calls_are_bounded_and_cached() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

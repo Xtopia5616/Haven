@@ -621,6 +621,7 @@ impl ReActEngine {
             session_id,
             catalog_global_version = catalog_version.global_catalog_version,
             catalog_session_version = catalog_version.session_overlay_version,
+            catalog_mcp_version = catalog_version.mcp_catalog_version,
             provider_tool_count = prepared.definitions.len(),
             tool_schema_token_estimate = prepared.token_estimate,
             "ReAct::prepare_tool_definitions: rebuilt provider tool surface"

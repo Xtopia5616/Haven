@@ -159,15 +159,18 @@ pub(crate) struct SessionToolOverlay {
     global_version: Arc<AtomicU64>,
 }
 
-/// Version identity of one session's complete tool catalog view.
+/// Version identity of one session's complete tool catalog view, including
+/// the independently refreshed MCP manager catalog.
 ///
 /// The global catalog clock changes when installed tools change; the session
 /// overlay clock changes only when that session's progressively loaded tools
-/// change.
+/// change. The MCP clock captures tools/list refreshes before activated
+/// adapters have been reconciled into the overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ToolCatalogVersion {
     pub global_catalog_version: u64,
     pub session_overlay_version: u64,
+    pub mcp_catalog_version: u64,
 }
 
 /// Counts used to explain whether a proposed session catalog fits the
@@ -216,6 +219,7 @@ impl SessionToolOverlay {
         ToolCatalogVersion {
             global_catalog_version: self.global_version(),
             session_overlay_version: session,
+            mcp_catalog_version: 0,
         }
     }
 
@@ -254,9 +258,8 @@ impl SessionToolOverlay {
 
     #[cfg(any(test, feature = "test-support"))]
     pub async fn register(&self, session_id: &str, tool: ToolHandle) {
-        self.registrations
-            .write()
-            .await
+        let mut registrations = self.registrations.write().await;
+        registrations
             .entry(session_id.to_string())
             .or_default()
             .insert(tool.name(), tool);
@@ -293,21 +296,66 @@ impl SessionToolOverlay {
         }
 
         let mut loaded = Vec::with_capacity(net_new);
+        let mut catalog_changed = false;
         for tool in tools {
             let name = tool.name();
-            if entry.insert(name.clone(), tool).is_none() {
-                loaded.push(name);
+            match entry.get(&name) {
+                Some(existing) if existing.tool_manifest() == tool.tool_manifest() => {}
+                Some(_) => catalog_changed = true,
+                None => {
+                    loaded.push(name.clone());
+                    catalog_changed = true;
+                }
             }
+            entry.insert(name, tool);
         }
-        drop(registrations);
-        if !loaded.is_empty() {
+        if catalog_changed {
+            // Publish the version while the registration write lock is held.
+            // A snapshot that captured the prior version cannot observe the
+            // changed tools before the new version becomes visible.
             self.bump_session_version(session_id).await;
         }
         Ok(loaded)
     }
 
+    /// Replace or remove MCP adapters after reading a server's refreshed
+    /// tools/list result. Only model-visible contract changes advance the
+    /// session clock, so identical repeated loads remain cache hits.
+    pub(crate) async fn reconcile_mcp_tools(
+        &self,
+        session_id: &str,
+        replacements: Vec<ToolHandle>,
+        removals: &[String],
+    ) {
+        let mut registrations = self.registrations.write().await;
+        let Some(entry) = registrations.get_mut(session_id) else {
+            return;
+        };
+
+        let mut catalog_changed = false;
+        for name in removals {
+            if entry.remove(name).is_some() {
+                catalog_changed = true;
+            }
+        }
+        for tool in replacements {
+            let name = tool.name();
+            let changed = entry
+                .get(&name)
+                .is_none_or(|existing| existing.tool_manifest() != tool.tool_manifest());
+            if changed {
+                entry.insert(name, tool);
+                catalog_changed = true;
+            }
+        }
+        if catalog_changed {
+            self.bump_session_version(session_id).await;
+        }
+    }
+
     pub async fn unregister(&self, session_id: &str) {
-        self.registrations.write().await.remove(session_id);
+        let mut registrations = self.registrations.write().await;
+        registrations.remove(session_id);
         self.bump_session_version(session_id).await;
     }
 
@@ -453,6 +501,120 @@ impl RegistryProbe {
             .name_index
             .get(name)
             .cloned()
+    }
+}
+
+#[cfg(test)]
+mod session_overlay_tests {
+    use super::*;
+    use crate::{McpManager, McpToolAdapter, McpToolInfo};
+
+    const SESSION_ID: &str = "ses-65dd7c6b35b99687a424c2fd8bdb08a9";
+
+    fn mcp_adapter(manager: &McpManager, description: &str, input_schema: Value) -> ToolHandle {
+        Arc::new(McpToolAdapter::new(
+            manager.clone(),
+            "calendar",
+            McpToolInfo {
+                name: "create_event".into(),
+                description: description.into(),
+                input_schema,
+            },
+        ))
+    }
+
+    #[tokio::test]
+    async fn repeated_mcp_loads_only_bump_overlay_when_contract_changes() {
+        let overlay = SessionToolOverlay::new();
+        let manager = McpManager::new();
+        let initial_schema = serde_json::json!({
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"]
+        });
+        let initial = mcp_adapter(&manager, "Create an event", initial_schema.clone());
+        let tool_name = initial.name();
+
+        assert_eq!(
+            overlay
+                .register_many_if_within_budget(SESSION_ID, 0, 10, vec![initial])
+                .await
+                .unwrap(),
+            vec![tool_name.clone()]
+        );
+        let first_version = overlay
+            .catalog_version_for_session(SESSION_ID)
+            .await
+            .session_overlay_version;
+
+        assert!(
+            overlay
+                .register_many_if_within_budget(
+                    SESSION_ID,
+                    0,
+                    10,
+                    vec![mcp_adapter(&manager, "Create an event", initial_schema)],
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            overlay
+                .catalog_version_for_session(SESSION_ID)
+                .await
+                .session_overlay_version,
+            first_version,
+            "an identical repeated load should keep prepared model definitions reusable"
+        );
+
+        let updated_schema = serde_json::json!({
+            "type": "object",
+            "properties": {"title": {"type": "string"}, "starts_at": {"type": "string"}},
+            "required": ["title", "starts_at"]
+        });
+        assert!(
+            overlay
+                .register_many_if_within_budget(
+                    SESSION_ID,
+                    0,
+                    10,
+                    vec![mcp_adapter(
+                        &manager,
+                        "Create an event at a time",
+                        updated_schema.clone()
+                    )],
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            overlay
+                .catalog_version_for_session(SESSION_ID)
+                .await
+                .session_overlay_version,
+            first_version + 1,
+            "replacing an existing adapter with a changed schema must invalidate the catalog"
+        );
+        let active = overlay.list(SESSION_ID).await;
+        assert_eq!(active.len(), 1);
+        let definition = active[0].tool_def();
+        assert_eq!(definition.description, "Create an event at a time");
+        assert_eq!(definition.input_schema, updated_schema);
+
+        overlay
+            .reconcile_mcp_tools(SESSION_ID, Vec::new(), &[tool_name])
+            .await;
+        assert!(overlay.list(SESSION_ID).await.is_empty());
+        assert_eq!(
+            overlay
+                .catalog_version_for_session(SESSION_ID)
+                .await
+                .session_overlay_version,
+            first_version + 2,
+            "removing a server-deleted adapter must invalidate the catalog"
+        );
     }
 }
 

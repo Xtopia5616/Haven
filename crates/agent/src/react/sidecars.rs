@@ -79,9 +79,10 @@ pub(crate) struct PreparedToolDefinitions {
     pub(crate) token_estimate: u32,
 }
 
-/// Per-session tool-definition cache keyed by the global catalog and the
-/// session-local registration overlay version. Values share one schema vec
-/// across steps, and the schema token estimate is computed only on a miss.
+/// Per-session tool-definition cache keyed by the global catalog, MCP manager
+/// generation, and the session-local registration overlay version. Values
+/// share one schema vec across steps, and the schema token estimate is
+/// computed only on a miss.
 /// It is bounded so short-lived sessions cannot grow this sidecar indefinitely.
 struct ToolDefCacheEntry {
     catalog_version: ToolCatalogVersion,
@@ -235,6 +236,7 @@ mod tests {
         let initial_version = ToolCatalogVersion {
             global_catalog_version: 0,
             session_overlay_version: 0,
+            mcp_catalog_version: 0,
         };
         let prepared = || PreparedToolDefinitions {
             definitions: Arc::new(Vec::new()),
@@ -280,6 +282,7 @@ mod tests {
         let version = ToolCatalogVersion {
             global_catalog_version: 4,
             session_overlay_version: 9,
+            mcp_catalog_version: 12,
         };
         cache.insert(
             "ses-65dd7c6b35b99687a424c2fd8bdb08a9",
@@ -302,6 +305,7 @@ mod tests {
                     ToolCatalogVersion {
                         global_catalog_version: 5,
                         session_overlay_version: 9,
+                        mcp_catalog_version: 12,
                     },
                 )
                 .is_none()
@@ -313,9 +317,23 @@ mod tests {
                     ToolCatalogVersion {
                         global_catalog_version: 4,
                         session_overlay_version: 10,
+                        mcp_catalog_version: 12,
                     },
                 )
                 .is_none()
+        );
+        assert!(
+            cache
+                .get_if_catalog_version(
+                    "ses-65dd7c6b35b99687a424c2fd8bdb08a9",
+                    ToolCatalogVersion {
+                        global_catalog_version: 4,
+                        session_overlay_version: 9,
+                        mcp_catalog_version: 13,
+                    },
+                )
+                .is_none(),
+            "an MCP generation change must rebuild model tool definitions"
         );
     }
 }

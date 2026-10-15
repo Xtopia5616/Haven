@@ -296,6 +296,10 @@ impl Tool for McpToolAdapter {
         self.qualified_name()
     }
 
+    fn mcp_tool_identity(&self) -> Option<(&str, &str)> {
+        Some((&self.server_name, &self.info.name))
+    }
+
     fn description(&self) -> String {
         sanitize_external_description(&self.info.description)
     }
