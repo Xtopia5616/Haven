@@ -50,6 +50,7 @@ _haven_run_skill_snapshot()
 async fn stage_skill_script(
     source: std::fs::File,
     skill_name: &str,
+    temp_root: &std::path::Path,
 ) -> anyhow::Result<tempfile::TempPath> {
     let metadata = source
         .metadata()
@@ -63,14 +64,13 @@ async fn stage_skill_script(
         );
     }
 
-    let temp_root = haven_common::config::default_runtime_temp_root();
-    tokio::fs::create_dir_all(&temp_root).await.map_err(|_| {
+    tokio::fs::create_dir_all(temp_root).await.map_err(|_| {
         anyhow::anyhow!("failed to prepare script snapshot for skill '{skill_name}'")
     })?;
     let (destination, snapshot_path) = tempfile::Builder::new()
         .prefix("haven-skill-script-")
         .suffix(".py")
-        .tempfile_in(&temp_root)
+        .tempfile_in(temp_root)
         .map_err(|_| anyhow::anyhow!("failed to prepare script snapshot for skill '{skill_name}'"))?
         .into_parts();
     let mut source = tokio::fs::File::from_std(source);
@@ -118,13 +118,23 @@ struct SkillProcessOutput {
 pub struct SkillRunner {
     venv: VenvManager,
     config: SkillsExecConfig,
+    script_snapshot_root: std::path::PathBuf,
 }
 
 impl SkillRunner {
     pub fn new(venv: VenvManager, mut config: SkillsExecConfig) -> Self {
         config.timeout_secs = config.timeout_secs.clamp(1, MAX_SKILLS_EXEC_TIMEOUT_SECS);
         config.max_output_lines = config.max_output_lines.min(MAX_SKILLS_EXEC_OUTPUT_LINES);
-        Self { venv, config }
+        Self {
+            venv,
+            config,
+            #[cfg(not(test))]
+            script_snapshot_root: haven_common::config::default_runtime_temp_root(),
+            // Tests must set an isolated root before execution; an empty path
+            // fails closed instead of touching the process Temp directory.
+            #[cfg(test)]
+            script_snapshot_root: std::path::PathBuf::new(),
+        }
     }
 
     /// The subprocess wall-clock timeout. Tool adapters use this to set an
@@ -170,7 +180,11 @@ impl SkillRunner {
                     format!("skill '{}' timed out after {}s", skill.name(), self.config.timeout_secs),
                 ));
             }
-            result = stage_skill_script(entry_file, skill.name()) => result?,
+            result = stage_skill_script(
+                entry_file,
+                skill.name(),
+                &self.script_snapshot_root,
+            ) => result?,
         };
 
         let python = tokio::select! {
@@ -441,7 +455,8 @@ mod tests {
             ..Default::default()
         };
         let venv = VenvManager::new(config.venv_root.clone());
-        let runner = SkillRunner::new(venv, config);
+        let mut runner = SkillRunner::new(venv, config);
+        runner.script_snapshot_root = temp.path().join("script-snapshots");
         let cancel = CancellationToken::new();
 
         let result = runner
@@ -451,6 +466,12 @@ mod tests {
             result.unwrap().outcome,
             crate::ToolExecutionOutcome::TimedOutUnknown
         ));
+        assert!(
+            std::fs::read_dir(&runner.script_snapshot_root)
+                .unwrap()
+                .next()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -475,7 +496,8 @@ mod tests {
             ..Default::default()
         };
         let venv = VenvManager::new(config.venv_root.clone());
-        let runner = SkillRunner::new(venv, config);
+        let mut runner = SkillRunner::new(venv, config);
+        runner.script_snapshot_root = temp.path().join("script-snapshots");
 
         let result = tokio::time::timeout(
             Duration::from_secs(20),
@@ -493,5 +515,11 @@ mod tests {
         assert!(result.error.unwrap().contains("output exceeded its limit"));
         assert_eq!(result.output["truncated"], true);
         assert!(result.truncated);
+        assert!(
+            std::fs::read_dir(&runner.script_snapshot_root)
+                .unwrap()
+                .next()
+                .is_none()
+        );
     }
 }
