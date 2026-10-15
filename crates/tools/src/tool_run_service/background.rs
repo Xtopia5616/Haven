@@ -219,7 +219,11 @@ impl ToolRunService {
         #[cfg(not(windows))]
         let windows_creation_flags = 0;
         containment.prepare_command(child_cmd.as_std_mut(), windows_creation_flags);
-        let mut child = match child_cmd.kill_on_drop(true).spawn() {
+        let child_spawn_result = {
+            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+            child_cmd.kill_on_drop(true).spawn()
+        };
+        let mut child = match child_spawn_result {
             Ok(c) => c,
             Err(e) => {
                 // Spawn failed: remove the entry so the ToolRun is not left

@@ -128,6 +128,7 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<(), Stri
     }
     #[cfg(target_os = "windows")]
     {
+        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
         std::process::Command::new("explorer")
             .arg(root.as_os_str())
             .spawn()
@@ -135,6 +136,7 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<(), Stri
     }
     #[cfg(target_os = "macos")]
     {
+        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
         std::process::Command::new("open")
             .arg(&root)
             .spawn()
@@ -142,6 +144,7 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<(), Stri
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
         std::process::Command::new("xdg-open")
             .arg(&root)
             .spawn()

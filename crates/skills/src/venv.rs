@@ -72,9 +72,11 @@ async fn run_contained_output(
     let containment = ProcessContainment::new()
         .map_err(|_| anyhow::anyhow!("failed to contain setup process for skill '{skill_name}'"))?;
     containment.prepare_command(command.as_std_mut(), 0);
-    let mut child = command
-        .kill_on_drop(true)
-        .spawn()
+    let child_spawn_result = {
+        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+        command.kill_on_drop(true).spawn()
+    };
+    let mut child = child_spawn_result
         .map_err(|_| anyhow::anyhow!("{spawn_error_context} for skill '{skill_name}'"))?;
     let pid = child.id().ok_or_else(|| {
         anyhow::anyhow!("setup process for skill '{skill_name}' has no process id")
@@ -919,19 +921,23 @@ mod tests {
                 let marker_path: PathBuf = std::env::var_os(DESCENDANT_MARKER)
                     .expect("descendant marker path")
                     .into();
-                let mut child = std::process::Command::new(
+                let mut command = std::process::Command::new(
                     std::env::current_exe().expect("test executable path"),
-                )
-                .args([
-                    "--exact",
-                    "venv::tests::contained_descendant_test_child",
-                    "--nocapture",
-                ])
-                .env(DESCENDANT_MARKER, &marker_path)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
+                );
+                command
+                    .args([
+                        "--exact",
+                        "venv::tests::contained_descendant_test_child",
+                        "--nocapture",
+                    ])
+                    .env(DESCENDANT_MARKER, &marker_path)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                let mut child = {
+                    let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+                    command.spawn()
+                }
                 .expect("spawn contained descendant");
                 std::fs::write(ready_path, child.id().to_string())
                     .expect("record contained descendant pid");

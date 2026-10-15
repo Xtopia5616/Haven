@@ -7,8 +7,26 @@
 //! is deliberately not presented as an AppContainer.
 
 use std::io;
+use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
+#[cfg(windows)]
+use std::time::Instant;
 
 const DEFAULT_ACTIVE_PROCESS_LIMIT: u32 = 256;
+
+static PROCESS_SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+/// Serialize Haven-managed process creation.
+///
+/// Windows requires a short inheritable-handle window when passing explicit
+/// stdio handles to `CreateProcessW`. Every Haven process adapter must hold
+/// this guard around the actual `spawn` or `CreateProcessW` call, so an
+/// unrelated Haven child cannot inherit another adapter's temporary handles.
+pub fn process_spawn_lock() -> MutexGuard<'static, ()> {
+    PROCESS_SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
@@ -137,6 +155,64 @@ impl ProcessContainment {
         #[cfg(not(windows))]
         {
             let _ = (pid, process_handle);
+            Ok(())
+        }
+    }
+
+    /// Terminate every process in the owned Job Object and wait until Windows
+    /// reports that the tree is empty. This is used before deleting a private
+    /// execution workspace that descendants may still have open as their cwd.
+    pub fn terminate_and_wait(&self, timeout: Duration) -> io::Result<()> {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::JobObjects::{
+                JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation,
+                QueryInformationJobObject, TerminateJobObject,
+            };
+
+            let started = Instant::now();
+            let mut termination_requested = false;
+            loop {
+                let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+                // SAFETY: `accounting` is writable and matches the selected
+                // Job Object information class. The Job remains owned by self.
+                let queried = unsafe {
+                    QueryInformationJobObject(
+                        self.job,
+                        JobObjectBasicAccountingInformation,
+                        (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                        std::mem::size_of_val(&accounting) as u32,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if queried == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if accounting.ActiveProcesses == 0 {
+                    return Ok(());
+                }
+                // SAFETY: the Job handle is private to this owner. Termination
+                // is intentionally tree-wide so no descendant can outlive the
+                // workspace that granted it access.
+                if !termination_requested {
+                    // SAFETY: the Job handle is private to this owner.
+                    if unsafe { TerminateJobObject(self.job, 1) } == 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    termination_requested = true;
+                }
+                if started.elapsed() >= timeout {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "contained process tree did not exit before its deadline",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = timeout;
             Ok(())
         }
     }
@@ -322,6 +398,11 @@ mod tests {
     const PROCESS_LIMIT_MARKER: &str = "HAVEN_CONTAINMENT_PROCESS_LIMIT_MARKER";
     const PROCESS_LIMIT_STOP_FILE: &str = "HAVEN_CONTAINMENT_PROCESS_LIMIT_STOP_FILE";
 
+    fn spawn_command(mut command: Command) -> std::io::Result<std::process::Child> {
+        let _spawn_guard = process_spawn_lock();
+        command.spawn()
+    }
+
     #[test]
     fn job_contains_child_and_descendant_from_first_instruction() {
         let pid_file = std::env::temp_dir().join(format!(
@@ -348,7 +429,7 @@ mod tests {
 
         let containment = ProcessContainment::new().expect("create Job Object");
         containment.prepare_command(&mut command, 0);
-        let mut child = command.spawn().expect("spawn suspended test child");
+        let mut child = spawn_command(command).expect("spawn suspended test child");
         let child_pid = child.id();
 
         // Give the test harness time to enter the helper if the creation-time
@@ -432,7 +513,7 @@ mod tests {
 
         let containment = ProcessContainment::new().expect("create Job Object");
         containment.prepare_command(&mut command, 0);
-        let mut child = command.spawn().expect("spawn suspended test child");
+        let mut child = spawn_command(command).expect("spawn suspended test child");
         let child_pid = child.id();
         let pre_attach_deadline = Instant::now() + Duration::from_secs(1);
         while !pid_file.exists() && Instant::now() < pre_attach_deadline {
@@ -484,7 +565,7 @@ mod tests {
 
         let containment = ProcessContainment::new().expect("create Job Object");
         containment.prepare_command(&mut command, 0);
-        let mut child = command.spawn().expect("spawn suspended test child");
+        let mut child = spawn_command(command).expect("spawn suspended test child");
         let child_pid = child.id();
         let pre_attach_deadline = Instant::now() + Duration::from_secs(1);
         while !pid_file.exists() && Instant::now() < pre_attach_deadline {
@@ -542,7 +623,7 @@ mod tests {
         let containment = ProcessContainment::new_with_active_process_limit(1)
             .expect("create single-process Job Object");
         containment.prepare_command(&mut command, 0);
-        let mut child = command.spawn().expect("spawn suspended test child");
+        let mut child = spawn_command(command).expect("spawn suspended test child");
         containment
             .attach_and_resume(child.id(), child.as_raw_handle())
             .expect("attach and resume child under process limit");
@@ -587,7 +668,7 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
-        match command.spawn() {
+        match spawn_command(command) {
             Ok(mut descendant) => {
                 fs::write(&marker, b"spawned").expect("write descendant spawn result");
                 let _ = descendant.wait();
@@ -648,7 +729,8 @@ mod tests {
             return;
         };
         let exe = std::env::current_exe().expect("test executable path");
-        let mut descendant = Command::new(exe)
+        let mut command = Command::new(exe);
+        command
             .args([
                 "--exact",
                 "process_containment::tests::long_lived_descendant_helper",
@@ -656,9 +738,8 @@ mod tests {
             ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn long-lived descendant");
+            .stderr(Stdio::null());
+        let mut descendant = spawn_command(command).expect("spawn long-lived descendant");
         fs::write(pid_file, descendant.id().to_string()).expect("write descendant pid");
         let _ = descendant.wait();
     }

@@ -1183,3 +1183,4 @@
 - [1195：分离项目执行工作区与 OS sandbox 工作区](1195-separate-execution-and-sandbox-workspaces.md)
 - [1196：增加有界目录 capability 快照复制原语](1196-bounded-capability-directory-snapshots.md)
 - [1197：创建绑定执行快照的私有 AppContainer 工作区](1197-provision-private-appcontainer-workspaces.md)
+- [1198：通过显式句柄白名单启动 AppContainer 进程](1198-create-appcontainer-process-with-bounded-handles.md)

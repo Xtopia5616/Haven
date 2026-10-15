@@ -761,9 +761,13 @@ mod tests {
             quote_path(link),
             quote_path(target)
         );
-        let output = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &command])
-            .output()?;
+        let mut process_command = std::process::Command::new("powershell.exe");
+        process_command.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
+        let child = {
+            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+            process_command.spawn()?
+        };
+        let output = child.wait_with_output()?;
         if output.status.success() {
             Ok(())
         } else {

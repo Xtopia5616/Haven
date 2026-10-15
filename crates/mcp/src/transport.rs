@@ -1314,12 +1314,15 @@ mod tests {
             command.args(["-c", "cat >/dev/null"]);
             command
         };
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut child = {
+            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+            command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        };
         let mut stdin = child.stdin.take().unwrap();
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -1349,12 +1352,15 @@ mod tests {
             command.args(["-c", "sleep 5"]);
             command
         };
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut child = {
+            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+            command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        };
         let mut writer = child.stdin.take().unwrap();
         // A real child that never reads stdin lets the OS pipe fill, so this
         // exercises the actual ChildStdin write path rather than a synthetic

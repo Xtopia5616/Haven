@@ -33,15 +33,21 @@ impl Drop for ProbeMarker {
 async fn non_open_network_policies_reject_stdio_before_spawning_the_command() {
     let probe = ProbeMarker::new();
     let executable = std::env::current_exe().expect("current test executable");
-    let probe_output = std::process::Command::new(&executable)
+    let mut probe_command = std::process::Command::new(&executable);
+    probe_command
         .args([
             "--exact",
             "tests::stdio_network_policy_tests::stdio_spawn_probe_child",
             "--nocapture",
         ])
-        .env(STDIO_PROBE_MARKER, probe.path())
-        .output()
-        .expect("start spawn-probe test child");
+        .env(STDIO_PROBE_MARKER, probe.path());
+    let probe_child = {
+        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+        probe_command.spawn().expect("start spawn-probe test child")
+    };
+    let probe_output = probe_child
+        .wait_with_output()
+        .expect("collect spawn-probe test child");
     assert!(
         probe_output.status.success(),
         "spawn-probe child failed: {}",

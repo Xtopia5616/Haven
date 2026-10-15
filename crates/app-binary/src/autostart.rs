@@ -29,10 +29,14 @@ fn build_tr_arg(exe: &Path) -> String {
 
 #[cfg(target_os = "windows")]
 fn run_schtasks(args: &[&str]) -> Result<std::process::Output, String> {
-    std::process::Command::new("schtasks")
-        .args(args)
-        .output()
-        .map_err(|e| format!("schtasks 执行失败: {e}"))
+    let child = {
+        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+        std::process::Command::new("schtasks").args(args).spawn()
+    }
+    .map_err(|error| format!("schtasks 执行失败: {error}"))?;
+    child
+        .wait_with_output()
+        .map_err(|error| format!("schtasks 执行失败: {error}"))
 }
 
 #[cfg(target_os = "windows")]

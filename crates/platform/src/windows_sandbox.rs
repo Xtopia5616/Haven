@@ -123,7 +123,6 @@ impl AppContainerWorkspace {
         self.cleanup_inner()
     }
 
-    #[cfg(test)]
     pub(crate) fn app_container_sid(&self) -> windows_sys::Win32::Security::PSID {
         self.profile
             .as_ref()

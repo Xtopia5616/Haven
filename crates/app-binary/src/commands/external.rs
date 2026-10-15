@@ -141,14 +141,19 @@ fn open_url(url: &str) -> std::io::Result<()> {
     }
     #[cfg(target_os = "macos")]
     {
-        Command::new("open").arg(url).spawn()?;
+        spawn_detached(Command::new("open").arg(url))?;
         Ok(())
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        Command::new("xdg-open").arg(url).spawn()?;
+        spawn_detached(Command::new("xdg-open").arg(url))?;
         Ok(())
     }
+}
+
+fn spawn_detached(command: &mut Command) -> std::io::Result<()> {
+    let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+    command.spawn().map(|_| ())
 }
 
 #[cfg(target_os = "windows")]
@@ -192,17 +197,18 @@ fn open_path(path: &Path) -> std::io::Result<()> {
         if path.is_file() {
             // Two separate args: Explorer wants `/select,` then the path, so
             // spaces inside the path stay intact.
-            Command::new("explorer")
-                .arg("/select,")
-                .arg(path.as_os_str())
-                .spawn()?;
+            spawn_detached(
+                Command::new("explorer")
+                    .arg("/select,")
+                    .arg(path.as_os_str()),
+            )?;
         } else if path.is_dir() {
-            Command::new("explorer").arg(path.as_os_str()).spawn()?;
+            spawn_detached(Command::new("explorer").arg(path.as_os_str()))?;
         } else if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             // Path does not exist yet — open the nearest existing ancestor, or
             // the parent even if missing so Explorer can show an error.
             if parent.exists() {
-                Command::new("explorer").arg(parent.as_os_str()).spawn()?;
+                spawn_detached(Command::new("explorer").arg(parent.as_os_str()))?;
             } else {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -222,9 +228,7 @@ fn open_path(path: &Path) -> std::io::Result<()> {
         // Always reveal with `-R`. Plain `open` on a `.app` bundle (directory)
         // would launch the application — Ctrl+open must never execute code.
         if path.exists() {
-            Command::new("open")
-                .args(["-R", path.as_os_str()])
-                .spawn()?;
+            spawn_detached(Command::new("open").args(["-R", path.as_os_str()]))?;
         } else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -245,7 +249,7 @@ fn open_path(path: &Path) -> std::io::Result<()> {
                 "path not found",
             ));
         };
-        Command::new("xdg-open").arg(target).spawn()?;
+        spawn_detached(Command::new("xdg-open").arg(target))?;
         Ok(())
     }
 }

@@ -210,6 +210,7 @@ fn spawn_mcp_child(
     let spawn = |program: &str, args: &[String]| {
         let mut cmd = build(program, args);
         containment.prepare_command(cmd.as_std_mut(), 0);
+        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
         cmd.spawn()
     };
     match spawn(command, args) {
@@ -1553,7 +1554,13 @@ mod stdio_environment_tests {
         );
         command.env(CHILD_PROBE_MARKER, "1");
 
-        let output = command.output().expect("spawn isolated test child");
+        let child = {
+            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+            command.spawn().expect("spawn isolated test child")
+        };
+        let output = child
+            .wait_with_output()
+            .expect("collect isolated test child");
         assert!(
             output.status.success(),
             "child environment probe failed: {}",

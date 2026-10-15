@@ -521,7 +521,11 @@ impl SkillRunner {
             )
         })?;
         containment.prepare_command(cmd.as_std_mut(), 0);
-        let mut child = cmd.kill_on_drop(true).spawn().map_err(|e| {
+        let child_spawn_result = {
+            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+            cmd.kill_on_drop(true).spawn()
+        };
+        let mut child = child_spawn_result.map_err(|e| {
             anyhow::anyhow!(
                 "failed to spawn skill '{}': {}",
                 pid_label,
@@ -1268,7 +1272,8 @@ mod tests {
         let ready_path = temp.path().join("child-ready");
         let capability = DirectoryCapability::open(&root).unwrap();
 
-        let mut child = Command::new(std::env::current_exe().unwrap())
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
             .args([
                 "--exact",
                 "skill_runner::tests::skill_scratch_lock_child_process_helper",
@@ -1277,9 +1282,12 @@ mod tests {
             .env(LOCK_PATH_ENV, &lock_path)
             .env(READY_PATH_ENV, &ready_path)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::null());
+        let mut child = {
+            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+            command.spawn()
+        }
+        .unwrap();
         let ready_deadline = std::time::Instant::now() + Duration::from_secs(10);
         while !ready_path.exists() && std::time::Instant::now() < ready_deadline {
             std::thread::sleep(Duration::from_millis(5));

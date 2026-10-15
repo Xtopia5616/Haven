@@ -904,10 +904,18 @@ pub struct ShellAvailability {
 /// True when `name` resolves to an executable on PATH.
 fn shell_on_path(name: &str) -> bool {
     #[cfg(windows)]
-    let probe = std::process::Command::new("where.exe").arg(name).output();
+    let probe = command_output(std::process::Command::new("where.exe").arg(name));
     #[cfg(not(windows))]
-    let probe = std::process::Command::new("which").arg(name).output();
+    let probe = command_output(std::process::Command::new("which").arg(name));
     probe.map(|o| o.status.success()).unwrap_or(false)
+}
+
+fn command_output(command: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+    let child = {
+        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+        command.spawn()?
+    };
+    child.wait_with_output()
 }
 
 #[tauri::command]

@@ -1,5 +1,7 @@
 //! Low-level operating system support shared by process-owning adapters.
 
+#[cfg(windows)]
+pub mod appcontainer_process;
 pub mod credentials;
 pub mod filesystem;
 pub mod process_containment;

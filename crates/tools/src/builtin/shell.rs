@@ -196,7 +196,11 @@ impl ShellTool {
         #[cfg(not(windows))]
         let windows_creation_flags = 0;
         containment.prepare_command(child_cmd.as_std_mut(), windows_creation_flags);
-        let mut child = child_cmd.kill_on_drop(true).spawn()?;
+        let child = {
+            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+            child_cmd.kill_on_drop(true).spawn()?
+        };
+        let mut child = child;
         let pid = child
             .id()
             .ok_or_else(|| anyhow::anyhow!("shell child did not expose a process id"))?;
@@ -864,12 +868,14 @@ mod tests {
     #[tokio::test]
     async fn test_shell_pwsh_echo() {
         // PowerShell 7 (pwsh) is not preinstalled on Windows; skip when absent.
-        if std::process::Command::new("pwsh")
-            .args(["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"])
-            .output()
-            .map(|o| !o.status.success())
-            .unwrap_or(true)
-        {
+        let mut version_probe = std::process::Command::new("pwsh");
+        version_probe.args(["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"]);
+        let version_probe = {
+            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+            version_probe.spawn()
+        }
+        .and_then(std::process::Child::wait_with_output);
+        if version_probe.map(|o| !o.status.success()).unwrap_or(true) {
             eprintln!("pwsh not installed; skipping pwsh echo test");
             return;
         }

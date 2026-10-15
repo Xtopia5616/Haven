@@ -140,7 +140,7 @@ fn shell_child_receives_only_the_filtered_interactive_environment() {
     );
     command.env(PROBE, "1");
 
-    let output = command.output().expect("spawn shell environment probe");
+    let output = command_output(&mut command).expect("spawn shell environment probe");
     assert!(
         output.status.success(),
         "child environment probe failed: {}",
@@ -170,7 +170,7 @@ fn filtered_shell_environment_supports_common_windows_commands() {
 
     let mut cmd = build_shell_command_silent("cmd", "echo haven-cmd-compat");
     cmd.current_dir(work_dir.path());
-    let output = cmd.output().expect("run cmd with filtered environment");
+    let output = command_output(&mut cmd).expect("run cmd with filtered environment");
     assert!(
         output.status.success(),
         "cmd failed with filtered environment: {}",
@@ -197,9 +197,7 @@ Remove-Item -LiteralPath $file -Force
 "#;
     let mut powershell = build_shell_command_silent("powershell", script);
     powershell.current_dir(work_dir.path());
-    let output = powershell
-        .output()
-        .expect("run PowerShell with filtered environment");
+    let output = command_output(&mut powershell).expect("run PowerShell with filtered environment");
     assert!(
         output.status.success(),
         "PowerShell failed with filtered environment (exit {:?}): {}",
@@ -211,6 +209,14 @@ Remove-Item -LiteralPath $file -Force
         !work_dir.path().join("shell-compatibility.txt").exists(),
         "PowerShell compatibility probe should clean its temporary file"
     );
+}
+
+fn command_output(command: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+    let child = {
+        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+        command.spawn()?
+    };
+    child.wait_with_output()
 }
 
 // ── encode_utf16le_base64 ────────────────────────────────────────────
