@@ -1089,20 +1089,18 @@ mod tests {
                 )
                 .await
         });
-        let marker_ready = tokio::time::timeout(Duration::from_secs(20), async {
+        let descendant_pid = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                if pid_file.exists() {
-                    break true;
+                if let Ok(pid) = descendant.pid()
+                    && pid > 0
+                {
+                    break Some(pid);
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
-        .unwrap_or(false);
-        assert!(marker_ready, "Skill child must start its descendant");
-        let pid = descendant
-            .pid()
-            .expect("Skill child must write the descendant PID");
+        .unwrap_or(None);
 
         authorization
             .set_permission_mode(haven_common::types::PermissionMode::Plan)
@@ -1113,6 +1111,7 @@ mod tests {
             .expect("Skill task must not panic")
             .expect("Skill runner must report cancellation as a result");
 
+        let pid = descendant_pid.expect("Skill child must write the descendant PID");
         assert_eq!(result.outcome, crate::ToolExecutionOutcome::Cancelled);
         descendant
             .wait_for_exit(pid, Duration::from_secs(5))
