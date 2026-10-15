@@ -108,6 +108,22 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
     let review = process
         .take_output_review(review_limits, || false)
         .expect("retain and scan output after the AppContainer process tree exits");
+    let changed_file_bytes = review
+        .manifest()
+        .changes
+        .iter()
+        .filter_map(|change| change.after_bytes)
+        .fold(0_u64, u64::saturating_add);
+    let expected_retained_bytes = std::fs::metadata(&source_executable)
+        .expect("read initial snapshot file size")
+        .len()
+        .saturating_mul(2)
+        .saturating_add(changed_file_bytes);
+    assert_eq!(
+        review.retained_storage_upper_bound_bytes(),
+        expected_retained_bytes,
+        "review storage charge includes the initial snapshot, immutable baseline, and changed output files"
+    );
     drop(process);
     assert!(
         sandbox_root.exists(),

@@ -250,6 +250,26 @@ impl AppContainerOutputReview {
         &self.manifest
     }
 
+    /// Conservative upper bound for the private file contents retained by
+    /// this review: the initial snapshot, its immutable baseline, and the
+    /// post-run bytes for every changed regular file. It intentionally
+    /// overcounts modified files because their old bytes are included in the
+    /// initial snapshot. Callers can use this value to reserve aggregate
+    /// review storage before retaining the owner.
+    pub fn retained_storage_upper_bound_bytes(&self) -> u64 {
+        let changed_file_bytes = self
+            .manifest
+            .changes
+            .iter()
+            .filter_map(|change| change.after_bytes)
+            .fold(0_u64, u64::saturating_add);
+        self.workspace
+            .snapshot_summary()
+            .byte_count
+            .saturating_mul(2)
+            .saturating_add(changed_file_bytes)
+    }
+
     /// Promote one manifest-created regular output file to a missing
     /// destination below an already-authorized directory capability. This
     /// does not authorize the destination: callers must hold the live policy
