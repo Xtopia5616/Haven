@@ -1194,3 +1194,4 @@
 - [1206：以执行 proof 约束 sandbox 输出晋升](1206-proof-bound-sandbox-output-promotion.md)
 - [1207：通过 Tauri 续接一次性 sandbox 输出晋升确认](1207-tauri-once-only-sandbox-promotion.md)
 - [1208：在 UI 中审阅并逐项晋升 sandbox 输出](1208-review-sandbox-output-in-ui.md)
+- [1209：将 OS 强制的 sandbox 存储配额设为 Shell 接线门槛](1209-require-os-enforced-sandbox-storage-quota.md)
