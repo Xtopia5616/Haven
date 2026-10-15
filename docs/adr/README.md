@@ -1180,3 +1180,4 @@
 - [1192：验证过滤式环境下的 Windows Shell 兼容性](1192-verify-filtered-windows-shell-compatibility.md)
 - [1193：明确网络策略只约束 Haven 工具授权入口](1193-clarify-network-policy-scope.md)
 - [1194：验证 Windows AppContainer 文件与网络边界](1194-verify-windows-appcontainer-boundaries.md)
+- [1195：分离项目执行工作区与 OS sandbox 工作区](1195-separate-execution-and-sandbox-workspaces.md)
