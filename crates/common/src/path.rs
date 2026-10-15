@@ -1,5 +1,23 @@
 use std::path::Path;
 
+/// Return whether a path is absolute and local on the current platform.
+/// Windows UNC and device paths are excluded because Haven's directory
+/// capabilities and file dialogs accept only local filesystem roots.
+pub fn is_absolute_local_path(path: &Path) -> bool {
+    if !path.is_absolute() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        let value = path.to_string_lossy();
+        !value.starts_with("\\\\") && !value.starts_with("//")
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 /// Return whether `candidate` is lexically equal to or beneath `root`.
 ///
 /// This comparison does not access the filesystem, resolve symbolic links, or

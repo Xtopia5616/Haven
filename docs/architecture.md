@@ -60,6 +60,7 @@ haven-skills ──► haven-common, haven-platform
 操作系统顺序和 FFI，adapter 仍拥有命令配置、管道、取消、等待与工具生命周期（ADR 0513、0515）。
 Skill 依赖安装禁用 pip 用户缓存，避免在 Haven 管理目录之外留下无容量 owner 的重复包缓存（ADR 1176）。
 Skill 脚本快照位于独立 Temp 子目录，`TempPath` 负责正常回收；runner 初始化时用目录 capability 清除超过最长脚本期限的 Haven 快照（ADR 1177）。每个 composition-owned `SkillRunner` 最多并发执行 4 个 Skill，克隆共享同一执行槽；槽位覆盖快照、venv 准备、子进程和输出捕获，并将排队时间计入调用期限。由此每个 runner 同时持有的脚本快照最多 64 MiB、管道原始保留缓冲最多 64 MiB；不限制 Skill 子进程自身内存或 work directory 内容，也不构成 OS filesystem sandbox（ADR 1178）。
+`SkillsExecConfig.work_dir` 是绝对本地 scratch 父目录；每次 Skill 调用持有独立 `TempDir` cwd，正常结束时尝试删除，Windows 句柄释放延迟时通过父目录 capability 有限重试，配置根经 `DirectoryCapability` 检查 reparse point（ADR 1179）。相对 cwd 输出不会跨调用或 Skill 共享；进程强制退出或残留后代持有目录时可能留下 scratch 子目录，目前没有启动时递归回收。cwd 仅拥有临时文件生命周期，不是 OS 文件系统权限边界。
 `haven-platform::filesystem::is_link_or_reparse_point` 统一检查单个 metadata 是否为 symlink 或 Windows
 reparse point；`open_read_only` 在 Windows 禁止新写入/删除句柄，`same_file_identity` 比较已打开句柄的文件身份，
 供调用方关闭路径解析与后续读取之间的竞态；这些 helper 不解析路径或制定允许根目录。`haven-common::path` 统一提供纯 lexical path equality 与

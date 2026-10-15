@@ -345,6 +345,15 @@ impl DirectoryCapability {
         self.directory.remove_dir(relative)
     }
 
+    /// Recursively remove a directory through this held root handle. The
+    /// target path must stay relative to the capability; cap-std removes
+    /// nested entries without following symlinks or reparse points.
+    pub fn remove_dir_all(&self, relative: &Path) -> io::Result<()> {
+        let relative = validate_relative_path(relative)?;
+        reject_relative_reparse_components(&self.directory, &relative, true)?;
+        self.directory.remove_dir_all(relative)
+    }
+
     pub fn remove_file_or_empty_dir(&self, relative: &Path) -> io::Result<&'static str> {
         let relative = validate_relative_path(relative)?;
         reject_relative_reparse_components(&self.directory, &relative, true)?;
@@ -625,6 +634,17 @@ mod directory_capability_tests {
     use super::DirectoryCapability;
     use std::path::Path;
 
+    fn symlink_directory(target: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(target, link)
+        }
+    }
+
     #[test]
     fn atomic_replace_creates_parents_beneath_the_open_directory_handle() {
         let temp = tempfile::tempdir().unwrap();
@@ -657,6 +677,27 @@ mod directory_capability_tests {
             .atomic_replace(Path::new("notes.md"), b"new content")
             .unwrap();
         assert_eq!(std::fs::read(target).unwrap(), b"new content");
+    }
+
+    #[test]
+    fn recursive_capability_cleanup_does_not_follow_nested_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("scratch-root");
+        let scratch = root.join("owned-run");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("keep.txt"), b"outside").unwrap();
+        if symlink_directory(&outside, &scratch.join("link")).is_err() {
+            // Windows CI may not grant symlink privileges to the test process.
+            return;
+        }
+        let capability = DirectoryCapability::open(&root).unwrap();
+
+        capability.remove_dir_all(Path::new("owned-run")).unwrap();
+
+        assert!(!scratch.exists());
+        assert_eq!(std::fs::read(outside.join("keep.txt")).unwrap(), b"outside");
     }
 
     #[test]

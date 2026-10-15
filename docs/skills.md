@@ -29,6 +29,8 @@ Describe the skill behavior here.
 
 Skill 根目录最多扫描 1024 个条目；超限时刷新失败并保留上一次完整列表。可选 `requirements.txt` 最大为 1 MiB，必须解析到 Skill 根目录内的普通文件；指纹与 pip 安装使用同一份有界文件快照，requirements 超限或越界时不会启动 pip。入口脚本最大为 16 MiB；执行前从已校验句柄复制到临时快照，保留原脚本路径与同目录模块导入行为；入口脚本超限或越界时不会启动 Skill 脚本。
 
+每次 Skill 调用在 `skills_exec.work_dir` 配置的绝对本地目录下获得独立临时工作目录。相对路径文件不会在不同调用间共享，正常完成、失败、超时或取消后都会尝试清理；Windows 句柄释放有短暂延迟时会有限重试。Haven 被强制结束或残留子进程仍持有目录时可能遗留临时目录。目录仅用于临时文件组织，不会限制脚本访问工作目录以外的文件或网络；当前安全策略仍要求 `FullAccess + Open` 才能运行这类 opaque 子进程。脚本应通过约定的 JSON stdout 返回结构化结果；cwd 中生成的文件在调用结束时删除。
+
 ## `skill_create` 默认 Python 脚手架
 
 创建 skill 时可以省略 `script`，Haven 会生成 `scripts/main.py` 入门模板。模板通过 `sys.stdin.buffer.read()` 读取输入，并用 `utf-8-sig` 解码后解析 JSON object；`run(params)` 应返回结构化字典，推荐把机器可用结果放在 `hashes`、`detected` 等字段，把人读说明放在 `report`。

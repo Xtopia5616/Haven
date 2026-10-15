@@ -40,7 +40,7 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         .security
         .execution_root
         .as_ref()
-        .is_some_and(|root| !root.is_absolute())
+        .is_some_and(|root| !crate::path::is_absolute_local_path(root))
     {
         anyhow::bail!("security.execution_root must be an absolute local directory path");
     }
@@ -545,6 +545,9 @@ fn validate_resource_limits(
 }
 
 fn validate_skills_exec(config: &super::SkillsExecConfig) -> Result<()> {
+    if !crate::path::is_absolute_local_path(&config.work_dir) {
+        anyhow::bail!("skills_exec.work_dir must be an absolute local directory path");
+    }
     if config.timeout_secs == 0 || config.timeout_secs > super::MAX_SKILLS_EXEC_TIMEOUT_SECS {
         anyhow::bail!(
             "skills_exec.timeout_secs must be within 1..={} seconds",
@@ -920,6 +923,28 @@ mod tests {
         let error = validate_app_config(&config).unwrap_err();
         assert!(error.to_string().contains("security.execution_root"));
         assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+    }
+
+    #[test]
+    fn configured_skill_work_directory_must_be_absolute_and_local() {
+        let mut config = AppConfig::default();
+        config.skills_exec.work_dir = std::path::PathBuf::from("relative/skills-work");
+
+        let error = validate_app_config(&config).unwrap_err();
+        assert!(error.to_string().contains("skills_exec.work_dir"));
+        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn configured_skill_work_directory_rejects_unc_and_device_paths() {
+        for path in [r"\\server\share\skills", r"\\?\C:\skills"] {
+            let mut config = AppConfig::default();
+            config.skills_exec.work_dir = std::path::PathBuf::from(path);
+
+            let error = validate_app_config(&config).unwrap_err();
+            assert!(error.to_string().contains("skills_exec.work_dir"));
+        }
     }
 
     #[test]

@@ -22,6 +22,9 @@ use tokio_util::sync::CancellationToken;
 const MAX_SKILL_STREAM_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SKILL_SCRIPT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CONCURRENT_SKILL_EXECUTIONS: usize = 4;
+const SKILL_WORK_DIRECTORY_PREFIX: &str = "haven-skill-run-";
+const SKILL_WORK_DIRECTORY_CLEANUP_ATTEMPTS: usize = 8;
+const SKILL_WORK_DIRECTORY_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(25);
 #[cfg(not(test))]
 const SKILL_SCRIPT_SNAPSHOT_DIRECTORY: &str = "skill-script-snapshots";
 const SKILL_SCRIPT_SNAPSHOT_MAX_AGE: Duration =
@@ -109,6 +112,76 @@ async fn stage_skill_script(
         .map_err(|_| anyhow::anyhow!("failed to stage entry script for skill '{skill_name}'"))?;
     drop(destination);
     Ok(snapshot_path)
+}
+
+async fn create_skill_work_directory(
+    configured_root: &std::path::Path,
+) -> anyhow::Result<SkillWorkDirectory> {
+    if !haven_common::path::is_absolute_local_path(configured_root) {
+        anyhow::bail!("Skill scratch root must be an absolute local directory");
+    }
+    tokio::fs::create_dir_all(configured_root)
+        .await
+        .map_err(|_| anyhow::anyhow!("failed to prepare Skill scratch root"))?;
+    let root = haven_platform::filesystem::DirectoryCapability::open(configured_root)
+        .map_err(|_| anyhow::anyhow!("Skill scratch root must be a local non-reparse directory"))?;
+    let temporary = tempfile::Builder::new()
+        .prefix(SKILL_WORK_DIRECTORY_PREFIX)
+        .tempdir_in(root.root())
+        .map_err(|_| anyhow::anyhow!("failed to create per-execution Skill scratch directory"))?;
+    Ok(SkillWorkDirectory {
+        root,
+        temporary: Some(temporary),
+    })
+}
+
+struct SkillWorkDirectory {
+    root: haven_platform::filesystem::DirectoryCapability,
+    temporary: Option<tempfile::TempDir>,
+}
+
+impl SkillWorkDirectory {
+    fn path(&self) -> &std::path::Path {
+        self.temporary
+            .as_ref()
+            .expect("skill work directory is present until drop")
+            .path()
+    }
+}
+
+impl Drop for SkillWorkDirectory {
+    fn drop(&mut self) {
+        let Some(temporary) = self.temporary.take() else {
+            return;
+        };
+        let path = temporary.path().to_path_buf();
+        let Some(relative) = self.root.relative_path(&path) else {
+            tracing::warn!("Skill scratch directory escaped its configured root");
+            return;
+        };
+        drop(temporary);
+
+        for attempt in 0..SKILL_WORK_DIRECTORY_CLEANUP_ATTEMPTS {
+            match self.root.remove_dir_all(&relative) {
+                Ok(()) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(_error) if attempt + 1 < SKILL_WORK_DIRECTORY_CLEANUP_ATTEMPTS => {
+                    std::thread::sleep(SKILL_WORK_DIRECTORY_CLEANUP_RETRY_DELAY);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %sanitize_error_text(&error.to_string()),
+                        "failed to remove Skill scratch directory"
+                    );
+                }
+            }
+        }
+    }
+}
+
+async fn terminate_skill_child(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
+    let _ = child.wait().await;
 }
 
 #[cfg(not(test))]
@@ -302,8 +375,10 @@ impl SkillRunner {
             result = self.venv.ensure(skill.name(), skill.root()) => result?,
         };
 
-        let work_dir = &self.config.work_dir;
-        tokio::fs::create_dir_all(work_dir).await?;
+        // Skill scripts share only the configured scratch parent. Each attempt
+        // gets a private cwd that is removed on every normal return path.
+        // This organizes relative outputs; it is not an OS filesystem sandbox.
+        let work_dir = create_skill_work_directory(&self.config.work_dir).await?;
 
         let input_json = serde_json::to_string(params)?;
         let pid_label = skill.name().to_string();
@@ -316,7 +391,7 @@ impl SkillRunner {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .current_dir(work_dir)
+            .current_dir(work_dir.path())
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env(
@@ -359,7 +434,7 @@ impl SkillRunner {
         #[cfg(not(windows))]
         let attach_result = containment.attach_and_resume(pid, ());
         if let Err(error) = attach_result {
-            let _ = child.kill().await;
+            terminate_skill_child(&mut child).await;
             anyhow::bail!(
                 "failed to attach skill '{}' to process containment: {}",
                 pid_label,
@@ -437,14 +512,16 @@ impl SkillRunner {
                 })
             } => result?,
             _ = cancel.cancelled() => {
-                // Dropping the child and its containment guard terminates the
-                // process tree; no detached pipe reader survives this return.
+                // Wait for the script process to exit before dropping its
+                // current directory, which may still be held by the process.
+                terminate_skill_child(&mut child).await;
                 return Ok(ToolResult::cancelled(format!(
                     "skill '{}' cancelled",
                     pid_label
                 )));
             }
             _ = tokio::time::sleep_until(deadline) => {
+                terminate_skill_child(&mut child).await;
                 return Ok(ToolResult::timed_out(
                     crate::ToolExecutionOutcome::TimedOutUnknown,
                     format!("skill '{}' timed out after {}s", pid_label, self.config.timeout_secs),
@@ -548,6 +625,21 @@ mod tests {
         .await
     }
 
+    fn python_path_literal(path: &Path) -> String {
+        serde_json::to_string(&path.to_string_lossy()).unwrap()
+    }
+
+    fn symlink_directory(target: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(target, link)
+        }
+    }
+
     fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
         #[cfg(unix)]
         {
@@ -573,6 +665,11 @@ mod tests {
         let venv = VenvManager::new(config.venv_root.clone());
         let mut runner = SkillRunner::new(venv, config);
         runner.script_snapshot_root = temp.path().join("script-snapshots");
+        runner
+            .venv
+            .ensure(skill.name(), skill.root())
+            .await
+            .unwrap();
         let cancel = CancellationToken::new();
 
         let result = runner
@@ -582,6 +679,74 @@ mod tests {
             result.unwrap().outcome,
             crate::ToolExecutionOutcome::TimedOutUnknown
         ));
+        assert!(
+            std::fs::read_dir(&runner.config.work_dir)
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        assert!(
+            std::fs::read_dir(&runner.script_snapshot_root)
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn runner_cancellation_waits_for_process_exit_before_removing_work_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let started = temp.path().join("script-started");
+        let script = format!(
+            "from pathlib import Path\nimport time\nPath({}).write_text('started')\ntime.sleep(30)\nprint('{{}}')\n",
+            python_path_literal(&started)
+        );
+        let skill = scripted_skill(temp.path(), &script).await;
+        let config = SkillsExecConfig {
+            timeout_secs: 10,
+            venv_root: temp.path().join("venvs"),
+            work_dir: temp.path().join("work"),
+            ..Default::default()
+        };
+        let venv = VenvManager::new(config.venv_root.clone());
+        let mut runner = SkillRunner::new(venv, config);
+        runner.script_snapshot_root = temp.path().join("script-snapshots");
+        runner
+            .venv
+            .ensure(skill.name(), skill.root())
+            .await
+            .unwrap();
+
+        let runner = std::sync::Arc::new(runner);
+        let cancel = CancellationToken::new();
+        let execution_cancel = cancel.clone();
+        let execution_runner = std::sync::Arc::clone(&runner);
+        let execution = tokio::spawn(async move {
+            execution_runner
+                .execute(&skill, &serde_json::json!({}), execution_cancel)
+                .await
+        });
+        let script_started = tokio::time::timeout(Duration::from_secs(10), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok();
+        cancel.cancel();
+        let result = execution.await.unwrap().unwrap();
+
+        assert!(
+            script_started,
+            "the subprocess should reach its start marker"
+        );
+        assert_eq!(result.outcome, crate::ToolExecutionOutcome::Cancelled);
+        assert!(
+            std::fs::read_dir(&runner.config.work_dir)
+                .unwrap()
+                .next()
+                .is_none()
+        );
         assert!(
             std::fs::read_dir(&runner.script_snapshot_root)
                 .unwrap()
@@ -632,6 +797,12 @@ mod tests {
         assert_eq!(result.output["truncated"], true);
         assert!(result.truncated);
         assert!(
+            std::fs::read_dir(&runner.config.work_dir)
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        assert!(
             std::fs::read_dir(&runner.script_snapshot_root)
                 .unwrap()
                 .next()
@@ -643,13 +814,15 @@ mod tests {
     async fn runner_bounds_concurrent_skill_processes_and_snapshot_capacity() {
         let temp = tempfile::tempdir().unwrap();
         let work_dir = temp.path().join("work");
-        std::fs::create_dir_all(&work_dir).unwrap();
-        let release = work_dir.join("release");
+        let markers = temp.path().join("markers");
+        std::fs::create_dir_all(&markers).unwrap();
+        let marker_root_literal = python_path_literal(&markers);
+        let release = markers.join("release");
         let mut skills = Vec::new();
         for index in 0..(MAX_CONCURRENT_SKILL_EXECUTIONS + 1) {
             let name = format!("capacity-skill-{index}");
             let script = format!(
-                "from pathlib import Path\nimport time\nmarker = Path('skill-{index}.active')\nmarker.write_text('started', encoding='utf-8')\nrelease = Path('release')\ndeadline = time.monotonic() + 20\nwhile not release.exists() and time.monotonic() < deadline:\n    time.sleep(0.01)\nmarker.unlink(missing_ok=True)\nif not release.exists():\n    raise SystemExit(2)\nprint('{{}}')\n"
+                "from pathlib import Path\nimport time\nroot = Path({marker_root_literal})\nmarker = root / 'skill-{index}.active'\nmarker.write_text('started', encoding='utf-8')\nrelease = root / 'release'\ndeadline = time.monotonic() + 20\nwhile not release.exists() and time.monotonic() < deadline:\n    time.sleep(0.01)\nmarker.unlink(missing_ok=True)\nif not release.exists():\n    raise SystemExit(2)\nprint('{{}}')\n"
             );
             let skill = scripted_skill_named(temp.path(), &name, &script).await;
             skills.push(skill);
@@ -685,7 +858,7 @@ mod tests {
 
         let observed_capacity = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                let started = std::fs::read_dir(&work_dir)
+                let started = std::fs::read_dir(&markers)
                     .unwrap()
                     .filter_map(Result::ok)
                     .filter(|entry| entry.file_name().to_string_lossy().ends_with(".active"))
@@ -699,7 +872,7 @@ mod tests {
         .await
         .ok();
         tokio::time::sleep(Duration::from_millis(150)).await;
-        let stable_capacity = std::fs::read_dir(&work_dir)
+        let stable_capacity = std::fs::read_dir(&markers)
             .unwrap()
             .filter_map(Result::ok)
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".active"))
@@ -719,6 +892,72 @@ mod tests {
         );
         assert_eq!(stable_capacity, MAX_CONCURRENT_SKILL_EXECUTIONS);
         assert_eq!(successful, MAX_CONCURRENT_SKILL_EXECUTIONS + 1);
+        assert!(std::fs::read_dir(&work_dir).unwrap().next().is_none());
+        assert!(
+            std::fs::read_dir(&runner.script_snapshot_root)
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn runner_removes_per_invocation_work_files_after_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill = scripted_skill(
+            temp.path(),
+            "from pathlib import Path\nPath('artifact.txt').write_text('temporary')\nprint('{}')\n",
+        )
+        .await;
+        let work_dir = temp.path().join("work");
+        let config = SkillsExecConfig {
+            venv_root: temp.path().join("venvs"),
+            work_dir: work_dir.clone(),
+            ..Default::default()
+        };
+        let venv = VenvManager::new(config.venv_root.clone());
+        let mut runner = SkillRunner::new(venv, config);
+        runner.script_snapshot_root = temp.path().join("script-snapshots");
+
+        let result = runner
+            .execute(&skill, &serde_json::json!({}), CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(std::fs::read_dir(work_dir).unwrap().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn runner_rejects_a_reparse_work_root_before_starting_a_script() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill = scripted_skill(
+            temp.path(),
+            "from pathlib import Path\nPath('started').write_text('yes')\nprint('{}')\n",
+        )
+        .await;
+        let target = temp.path().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let work_dir = temp.path().join("work-link");
+        if symlink_directory(&target, &work_dir).is_err() {
+            // Windows CI may not grant symlink privileges to the test process.
+            return;
+        }
+        let config = SkillsExecConfig {
+            venv_root: temp.path().join("venvs"),
+            work_dir,
+            ..Default::default()
+        };
+        let venv = VenvManager::new(config.venv_root.clone());
+        let mut runner = SkillRunner::new(venv, config);
+        runner.script_snapshot_root = temp.path().join("script-snapshots");
+
+        let result = runner
+            .execute(&skill, &serde_json::json!({}), CancellationToken::new())
+            .await;
+
+        assert!(result.is_err());
+        assert!(!target.join("started").exists());
         assert!(
             std::fs::read_dir(&runner.script_snapshot_root)
                 .unwrap()

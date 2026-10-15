@@ -479,9 +479,9 @@ pub struct SkillsConfig {
 pub struct SkillsExecConfig {
     /// Root directory for per-skill virtual environments.
     pub venv_root: PathBuf,
-    /// Working directory for script execution (isolated from skill source).
-    /// Defaults to a subfolder of the Haven runtime Temp root (see
-    /// [`default_runtime_temp_root`]).
+    /// Absolute local parent directory for per-invocation Skill scratch.
+    /// Each execution receives a private temporary child that is removed when
+    /// the process attempt ends. Defaults below the Haven runtime Temp root.
     pub work_dir: PathBuf,
     /// Maximum wall-clock seconds before a script is killed.
     pub timeout_secs: u64,

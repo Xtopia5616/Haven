@@ -25,7 +25,7 @@ schema v44 为会话来源增加 `fork` 与 `fork_source_message_id`，支持从
 
 录音时长与静音停止范围由 Common 配置校验和 Settings UI 共同执行：`[media.audio].max_duration_secs` 为 10–300 秒，`silence_timeout_ms` 为 500–10,000 毫秒。`sample_rate`、`channels`、`bits_per_sample` 已移除，因为采集输入格式由设备运行时选择，转写 WAV 固定为 16 kHz、单声道、16-bit PCM。旧 `config.toml` 若含这三个键会被拒绝并备份；删除这些行即可保留其余设置。无需删除数据库。
 
-技能脚本执行配置已移除不生效的 `[skills_exec].cpu_time_secs` 与 `max_memory_mb`。旧 `config.toml` 若含任一键会因未知字段被拒绝并备份，当前进程使用默认配置；删除这两行即可保留其余设置。无需删除数据库。
+技能脚本执行配置已移除不生效的 `[skills_exec].cpu_time_secs` 与 `max_memory_mb`。旧 `config.toml` 若含任一键会因未知字段被拒绝并备份，当前进程使用默认配置；删除这两行即可保留其余设置。`[skills_exec].work_dir` 现必须是绝对本地路径；若旧值为相对路径，需将它改为绝对路径或仅重建 `config.toml`。无需删除数据库。
 
 并发范围由 Common 配置校验和 Settings UI 共同执行：`[session].max_concurrent` 为 1–10，`[llm].max_concurrent_requests` 为 1–16，`[context_limits].max_running_background_tool_runs` 为 0–64。后台任务上限设为 0 会禁用新的后台任务。超出范围的 TOML 会备份整份配置并在当前进程使用默认值；Settings 更新会拒绝该值。需要保留其它配置时，先把数值改到范围内；无需删除数据库。
 
