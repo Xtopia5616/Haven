@@ -127,6 +127,28 @@ describe('SettingsSecurity', () => {
 		expect(security.network_policy).toBe('ask');
 	});
 
+	it.each([
+		{ networkPolicy: 'deny', explanation: /这不是 Windows 防火墙规则/ },
+		{ networkPolicy: 'ask', explanation: /子进程仍按当前 Windows 用户权限联网/ },
+		{
+			networkPolicy: 'restricted',
+			explanation: /无法按目的地检查的 MCP、技能和命令子进程会被拒绝/,
+		},
+		{
+			networkPolicy: 'open',
+			explanation: /获准启动的子进程按当前 Windows 用户权限联网/,
+		},
+	] as const)(
+		'explains $networkPolicy as a Haven policy rather than an OS firewall rule',
+		({ networkPolicy, explanation }) => {
+			const security = createSecurity();
+			security.network_policy = networkPolicy;
+			render(SettingsSecurity, { security });
+
+			expect(screen.getByText(explanation)).toBeTruthy();
+		},
+	);
+
 	it('describes Ask behavior across workspace and full-access modes', () => {
 		const security = createSecurity();
 		security.network_policy = 'ask';
