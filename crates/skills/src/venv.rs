@@ -13,6 +13,31 @@ const REQUIREMENTS_FINGERPRINT_FILE: &str = ".haven-requirements-fingerprint";
 const MAX_SETUP_STREAM_BYTES: usize = 1024 * 1024;
 const MAX_REQUIREMENTS_BYTES: usize = 1024 * 1024;
 
+/// Opaque short-lived permit held while a Skill setup child is created and
+/// attached to process containment.
+pub trait ProcessStartPermit: Send {}
+
+impl<T: Send> ProcessStartPermit for T {}
+
+/// Owner-provided authorization for each OS process started by Skill setup.
+/// The future returns an opaque RAII permit that is released after the child
+/// is attached and resumed, not when the child exits.
+pub trait ProcessStartAuthorization: Send + Sync {
+    fn acquire_process_start_permit(
+        &self,
+    ) -> impl Future<Output = anyhow::Result<Box<dyn ProcessStartPermit>>> + Send;
+}
+
+#[cfg(test)]
+struct UnrestrictedProcessStartAuthorization;
+
+#[cfg(test)]
+impl ProcessStartAuthorization for UnrestrictedProcessStartAuthorization {
+    async fn acquire_process_start_permit(&self) -> anyhow::Result<Box<dyn ProcessStartPermit>> {
+        Ok(Box::new(()))
+    }
+}
+
 #[cfg(test)]
 fn is_skill_setup_env_allowed(key: &std::ffi::OsStr) -> bool {
     haven_platform::process_environment::is_runtime_baseline_variable(key)
@@ -59,10 +84,26 @@ fn pip_install_command(python: &Path, requirements_path: &Path) -> Command {
 
 /// Spawn and collect a Python setup command while keeping its full process tree
 /// inside the platform containment boundary for the entire wait.
+#[cfg(test)]
 async fn run_contained_output(
+    command: Command,
+    skill_name: &str,
+    spawn_error_context: &str,
+) -> anyhow::Result<Output> {
+    run_contained_output_with_authorization(
+        command,
+        skill_name,
+        spawn_error_context,
+        &UnrestrictedProcessStartAuthorization,
+    )
+    .await
+}
+
+async fn run_contained_output_with_authorization<A: ProcessStartAuthorization + ?Sized>(
     mut command: Command,
     skill_name: &str,
     spawn_error_context: &str,
+    authorization: &A,
 ) -> anyhow::Result<Output> {
     command
         .stdin(Stdio::null())
@@ -72,6 +113,7 @@ async fn run_contained_output(
     let containment = ProcessContainment::new()
         .map_err(|_| anyhow::anyhow!("failed to contain setup process for skill '{skill_name}'"))?;
     containment.prepare_command(command.as_std_mut(), 0);
+    let spawn_permit = authorization.acquire_process_start_permit().await?;
     let child_spawn_result = {
         let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
         command.kill_on_drop(true).spawn()
@@ -92,8 +134,10 @@ async fn run_contained_output(
 
     if attach_result.is_err() {
         let _ = child.kill().await;
+        drop(spawn_permit);
         anyhow::bail!("failed to attach setup process for skill '{skill_name}' to containment");
     }
+    drop(spawn_permit);
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -320,9 +364,14 @@ impl VenvManager {
         Ok(())
     }
 
-    /// Ensure the venv exists for `skill_name`, optionally installing
-    /// dependencies from `requirements.txt`. Idempotent.
-    pub async fn ensure(&self, skill_name: &str, skill_root: &Path) -> anyhow::Result<PathBuf> {
+    /// Ensure the venv while asking the execution owner for a short permit
+    /// before every contained setup process.
+    pub async fn ensure<A: ProcessStartAuthorization + ?Sized>(
+        &self,
+        skill_name: &str,
+        skill_root: &Path,
+        authorization: &A,
+    ) -> anyhow::Result<PathBuf> {
         crate::validate_skill_name(skill_name)?;
         let venv = self.venv_dir(skill_name);
         let python = self.python_path(skill_name);
@@ -332,10 +381,11 @@ impl VenvManager {
             tokio::fs::create_dir_all(&venv)
                 .await
                 .map_err(|_| anyhow::anyhow!("failed to prepare venv for skill '{skill_name}'"))?;
-            let output = run_contained_output(
+            let output = run_contained_output_with_authorization(
                 venv_creation_command(&venv),
                 skill_name,
                 "failed to create venv",
+                authorization,
             )
             .await?;
             if !output.status.success() {
@@ -353,10 +403,11 @@ impl VenvManager {
                 &content,
                 |req_path| async move {
                     tracing::info!("installing requirements for skill");
-                    let output = run_contained_output(
+                    let output = run_contained_output_with_authorization(
                         pip_install_command(&python_for_install, &req_path),
                         skill_name,
                         "pip install failed",
+                        authorization,
                     )
                     .await?;
                     if !output.status.success() {
@@ -456,7 +507,12 @@ mod tests {
         let manager = VenvManager::new(venv_root.clone());
 
         for name in ["bad/name", "CON"] {
-            assert!(manager.ensure(name, temp.path()).await.is_err());
+            assert!(
+                manager
+                    .ensure(name, temp.path(), &UnrestrictedProcessStartAuthorization)
+                    .await
+                    .is_err()
+            );
         }
         assert!(!venv_root.exists());
     }
@@ -907,6 +963,7 @@ mod tests {
                     eprintln!("{chunk}");
                 }
             }
+            Ok("wait") => tokio::time::sleep(std::time::Duration::from_secs(30)).await,
             Ok("secrets-cleared") => {
                 assert!(std::env::var_os("GITHUB_TOKEN").is_none());
                 assert!(std::env::var_os("PYTHONPATH").is_none());
@@ -945,6 +1002,73 @@ mod tests {
             }
             _ => {}
         }
+    }
+
+    struct RejectSpawnAuthorization;
+
+    impl ProcessStartAuthorization for RejectSpawnAuthorization {
+        async fn acquire_process_start_permit(
+            &self,
+        ) -> anyhow::Result<Box<dyn ProcessStartPermit>> {
+            anyhow::bail!("policy denied setup process")
+        }
+    }
+
+    struct NotifyingPermit(Arc<tokio::sync::Notify>);
+
+    impl Drop for NotifyingPermit {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+
+    struct NotifyingSpawnAuthorization(Arc<tokio::sync::Notify>);
+
+    impl ProcessStartAuthorization for NotifyingSpawnAuthorization {
+        async fn acquire_process_start_permit(
+            &self,
+        ) -> anyhow::Result<Box<dyn ProcessStartPermit>> {
+            Ok(Box::new(NotifyingPermit(Arc::clone(&self.0))))
+        }
+    }
+
+    #[tokio::test]
+    async fn setup_process_start_rejection_prevents_child_creation() {
+        let error = run_contained_output_with_authorization(
+            contained_test_command("success"),
+            "example-skill",
+            "test command failed",
+            &RejectSpawnAuthorization,
+        )
+        .await
+        .expect_err("a denied start must not execute the child");
+
+        assert!(error.to_string().contains("policy denied setup process"));
+    }
+
+    #[tokio::test]
+    async fn setup_process_permit_ends_after_child_containment_attach() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let authorization = NotifyingSpawnAuthorization(Arc::clone(&notify));
+        let task = tokio::spawn(async move {
+            run_contained_output_with_authorization(
+                contained_test_command("wait"),
+                "example-skill",
+                "test command failed",
+                &authorization,
+            )
+            .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), notify.notified())
+            .await
+            .expect("spawn permit should be released after process containment attach");
+        assert!(
+            !task.is_finished(),
+            "the setup child remains running after its short spawn permit is released"
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
     }
 
     #[cfg(windows)]

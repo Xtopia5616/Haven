@@ -672,6 +672,17 @@ impl ExecutionPolicyAuthorization {
     }
 }
 
+impl haven_skills::ProcessStartAuthorization for ExecutionPolicyAuthorization {
+    async fn acquire_process_start_permit(
+        &self,
+    ) -> anyhow::Result<Box<dyn haven_skills::ProcessStartPermit>> {
+        let permit = ExecutionPolicyAuthorization::acquire(self)
+            .await
+            .map_err(execution_policy_denied)?;
+        Ok(Box::new(permit))
+    }
+}
+
 /// Captured path roots for one read operation. Each opened file is checked
 /// against these roots by identity before the caller consumes the handle.
 #[derive(Clone, Default)]

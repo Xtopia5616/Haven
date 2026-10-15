@@ -184,14 +184,16 @@ pub async fn execute_skill(
     let policy = OperationPolicy::external(capability, RiskLevel::High);
     let authorization_request =
         app_command_authorization_request(&tool_key, params.clone(), policy);
-    match state
+    let authorization_check = state
         .runtime
         .services
         .authorization
-        .authorize(&authorization_request)
-        .await
-    {
-        AuthorizationDecision::AutoApproved => {}
+        .authorize_for_execution(&authorization_request)
+        .await;
+    let proof = match authorization_check.decision {
+        AuthorizationDecision::AutoApproved => authorization_check
+            .execution_proof
+            .ok_or_else(|| log_err("execute_skill", "authorization proof is unavailable"))?,
         AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
             return Err(queue_ui_confirmation(
                 &state,
@@ -208,14 +210,14 @@ pub async fn execute_skill(
                 format!("skill execution blocked by security policy ({reason})"),
             ));
         }
-    }
+    };
 
     let cancel = tokio_util::sync::CancellationToken::new();
     let result = state
         .runtime
         .services
         .skill_execution
-        .execute_skill(&name, &params, cancel)
+        .execute_skill(&name, &params, &authorization_request, &proof, cancel)
         .await
         .map_err(|e| log_err("execute_skill", e))?;
 

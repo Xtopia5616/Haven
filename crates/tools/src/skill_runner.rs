@@ -384,6 +384,18 @@ pub struct SkillRunner {
     execution_slots: std::sync::Arc<Semaphore>,
 }
 
+#[cfg(test)]
+struct TestUnrestrictedProcessStartAuthorization;
+
+#[cfg(test)]
+impl haven_skills::ProcessStartAuthorization for TestUnrestrictedProcessStartAuthorization {
+    async fn acquire_process_start_permit(
+        &self,
+    ) -> anyhow::Result<Box<dyn haven_skills::ProcessStartPermit>> {
+        Ok(Box::new(()))
+    }
+}
+
 impl SkillRunner {
     pub fn new(venv: VenvManager, mut config: SkillsExecConfig) -> Self {
         config.timeout_secs = config.timeout_secs.clamp(1, MAX_SKILLS_EXEC_TIMEOUT_SECS);
@@ -409,17 +421,54 @@ impl SkillRunner {
     }
 
     /// Execute a skill's script with the given parameters.
+    #[cfg(test)]
     pub async fn execute(
         &self,
         skill: &Skill,
         params: &Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        self.execute_inner(skill, params, cancel, None).await
+    }
+
+    pub(crate) async fn execute_with_authorization(
+        &self,
+        skill: &Skill,
+        params: &Value,
+        cancel: CancellationToken,
+        execution_authorization: crate::security::ExecutionPolicyAuthorization,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_inner(skill, params, cancel, Some(execution_authorization))
+            .await
+    }
+
+    async fn execute_inner(
+        &self,
+        skill: &Skill,
+        params: &Value,
+        cancel: CancellationToken,
+        execution_authorization: Option<crate::security::ExecutionPolicyAuthorization>,
+    ) -> anyhow::Result<ToolResult> {
+        #[cfg(not(test))]
+        if execution_authorization.is_none() {
+            anyhow::bail!("Skill execution requires an authorization proof");
+        }
+
         let deadline = Instant::now() + Duration::from_secs(self.config.timeout_secs);
+        let policy_revoked = async {
+            match execution_authorization.as_ref() {
+                Some(authorization) => authorization.wait_for_policy_revocation().await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(policy_revoked);
         let _execution_permit = tokio::select! {
             biased;
             _ = cancel.cancelled() => {
                 return Ok(ToolResult::cancelled(format!("skill '{}' cancelled", skill.name())));
+            }
+            _ = &mut policy_revoked => {
+                return Ok(ToolResult::cancelled(format!("skill '{}' cancelled because execution policy changed", skill.name())));
             }
             _ = tokio::time::sleep_until(deadline) => {
                 return Ok(ToolResult::timed_out(
@@ -453,6 +502,9 @@ impl SkillRunner {
             _ = cancel.cancelled() => {
                 return Ok(ToolResult::cancelled(format!("skill '{}' cancelled", skill.name())));
             }
+            _ = &mut policy_revoked => {
+                return Ok(ToolResult::cancelled(format!("skill '{}' cancelled because execution policy changed", skill.name())));
+            }
             _ = tokio::time::sleep_until(deadline) => {
                 return Ok(ToolResult::timed_out(
                     crate::ToolExecutionOutcome::TimedOutUnknown,
@@ -471,13 +523,39 @@ impl SkillRunner {
             _ = cancel.cancelled() => {
                 return Ok(ToolResult::cancelled(format!("skill '{}' cancelled", skill.name())));
             }
+            _ = &mut policy_revoked => {
+                return Ok(ToolResult::cancelled(format!("skill '{}' cancelled because execution policy changed", skill.name())));
+            }
             _ = tokio::time::sleep_until(deadline) => {
                 return Ok(ToolResult::timed_out(
                     crate::ToolExecutionOutcome::TimedOutUnknown,
                     format!("skill '{}' timed out after {}s", skill.name(), self.config.timeout_secs),
                 ));
             }
-            result = self.venv.ensure(skill.name(), skill.root()) => result?,
+            result = async {
+                match execution_authorization.as_ref() {
+                    Some(authorization) => self
+                        .venv
+                        .ensure(skill.name(), skill.root(), authorization)
+                        .await,
+                    None => {
+                        #[cfg(test)]
+                        {
+                            self.venv
+                                .ensure(
+                                    skill.name(),
+                                    skill.root(),
+                                    &TestUnrestrictedProcessStartAuthorization,
+                                )
+                                .await
+                        }
+                        #[cfg(not(test))]
+                        {
+                            anyhow::bail!("Skill setup requires an execution authorization")
+                        }
+                    }
+                }
+            } => result?,
         };
 
         // Skill scripts share only the configured scratch parent. Each attempt
@@ -521,6 +599,21 @@ impl SkillRunner {
             )
         })?;
         containment.prepare_command(cmd.as_std_mut(), 0);
+        let spawn_permit = match execution_authorization.as_ref() {
+            Some(authorization) => {
+                let permit = tokio::select! {
+                    biased;
+                    _ = &mut policy_revoked => {
+                        return Ok(ToolResult::cancelled(format!("skill '{}' cancelled because execution policy changed", skill.name())));
+                    }
+                    result = authorization.acquire() => {
+                        result.map_err(crate::security::execution_policy_denied)?
+                    }
+                };
+                Some(permit)
+            }
+            None => None,
+        };
         let child_spawn_result = {
             let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
             cmd.kill_on_drop(true).spawn()
@@ -544,12 +637,14 @@ impl SkillRunner {
         let attach_result = containment.attach_and_resume(pid, ());
         if let Err(error) = attach_result {
             terminate_skill_child(&mut child).await;
+            drop(spawn_permit);
             anyhow::bail!(
                 "failed to attach skill '{}' to process containment: {}",
                 pid_label,
                 sanitize_error_text(&error.to_string())
             );
         }
+        drop(spawn_permit);
 
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
@@ -626,6 +721,13 @@ impl SkillRunner {
                 terminate_skill_child(&mut child).await;
                 return Ok(ToolResult::cancelled(format!(
                     "skill '{}' cancelled",
+                    pid_label
+                )));
+            }
+            _ = &mut policy_revoked => {
+                terminate_skill_child(&mut child).await;
+                return Ok(ToolResult::cancelled(format!(
+                    "skill '{}' cancelled because execution policy changed",
                     pid_label
                 )));
             }
@@ -776,7 +878,11 @@ mod tests {
         runner.script_snapshot_root = temp.path().join("script-snapshots");
         runner
             .venv
-            .ensure(skill.name(), skill.root())
+            .ensure(
+                skill.name(),
+                skill.root(),
+                &TestUnrestrictedProcessStartAuthorization,
+            )
             .await
             .unwrap();
         let cancel = CancellationToken::new();
@@ -822,7 +928,11 @@ mod tests {
         runner.script_snapshot_root = temp.path().join("script-snapshots");
         runner
             .venv
-            .ensure(skill.name(), skill.root())
+            .ensure(
+                skill.name(),
+                skill.root(),
+                &TestUnrestrictedProcessStartAuthorization,
+            )
             .await
             .unwrap();
 
@@ -887,7 +997,11 @@ mod tests {
         runner.script_snapshot_root = temp.path().join("script-snapshots");
         runner
             .venv
-            .ensure(skill.name(), skill.root())
+            .ensure(
+                skill.name(),
+                skill.root(),
+                &TestUnrestrictedProcessStartAuthorization,
+            )
             .await
             .unwrap();
 
@@ -930,6 +1044,81 @@ mod tests {
             .expect("Skill cancellation must close the Job Object");
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn runner_policy_revocation_terminates_descendant_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_file = temp.path().join("revoked-skill-descendant.pid");
+        let mut descendant =
+            crate::process_test_support::DescendantProcessMarker::new(pid_file.clone());
+        let script = format!(
+            "from pathlib import Path\nimport subprocess, sys, time\nchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\nPath({}).write_text(str(child.pid), encoding='ascii')\ntime.sleep(60)\nprint('{{}}')\n",
+            python_path_literal(&pid_file)
+        );
+        let skill = scripted_skill(temp.path(), &script).await;
+        let config = SkillsExecConfig {
+            timeout_secs: 60,
+            venv_root: temp.path().join("venvs"),
+            work_dir: temp.path().join("work"),
+            ..Default::default()
+        };
+        let venv = VenvManager::new(config.venv_root.clone());
+        let mut runner = SkillRunner::new(venv, config);
+        runner.script_snapshot_root = temp.path().join("script-snapshots");
+        runner
+            .venv
+            .ensure(
+                skill.name(),
+                skill.root(),
+                &TestUnrestrictedProcessStartAuthorization,
+            )
+            .await
+            .unwrap();
+
+        let runner = std::sync::Arc::new(runner);
+        let (execution_authorization, authorization) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_engine();
+        let execution_runner = std::sync::Arc::clone(&runner);
+        let execution = tokio::spawn(async move {
+            execution_runner
+                .execute_with_authorization(
+                    &skill,
+                    &serde_json::json!({}),
+                    CancellationToken::new(),
+                    execution_authorization,
+                )
+                .await
+        });
+        let marker_ready = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if pid_file.exists() {
+                    break true;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(marker_ready, "Skill child must start its descendant");
+        let pid = descendant
+            .pid()
+            .expect("Skill child must write the descendant PID");
+
+        authorization
+            .set_permission_mode(haven_common::types::PermissionMode::Plan)
+            .await;
+        let result = tokio::time::timeout(Duration::from_secs(10), execution)
+            .await
+            .expect("policy revocation must stop the Skill call")
+            .expect("Skill task must not panic")
+            .expect("Skill runner must report cancellation as a result");
+
+        assert_eq!(result.outcome, crate::ToolExecutionOutcome::Cancelled);
+        descendant
+            .wait_for_exit(pid, Duration::from_secs(5))
+            .expect("policy revocation must close the Skill Job Object");
+    }
+
     #[tokio::test]
     async fn runner_drains_both_pipes_and_rejects_bounded_output_overflow() {
         let temp = tempfile::tempdir().unwrap();
@@ -958,7 +1147,11 @@ mod tests {
         runner.script_snapshot_root = temp.path().join("script-snapshots");
         runner
             .venv
-            .ensure(skill.name(), skill.root())
+            .ensure(
+                skill.name(),
+                skill.root(),
+                &TestUnrestrictedProcessStartAuthorization,
+            )
             .await
             .unwrap();
 
@@ -1022,7 +1215,11 @@ mod tests {
         for skill in &skills {
             runner
                 .venv
-                .ensure(skill.name(), skill.root())
+                .ensure(
+                    skill.name(),
+                    skill.root(),
+                    &TestUnrestrictedProcessStartAuthorization,
+                )
                 .await
                 .unwrap();
         }

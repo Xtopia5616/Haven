@@ -18,6 +18,8 @@ pub trait SkillExecutionPort: Send + Sync {
         &self,
         skill_name: &str,
         params: &Value,
+        request: &crate::AuthorizationRequest,
+        proof: &crate::AuthorizationExecutionProof,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult>;
 }
@@ -445,6 +447,7 @@ impl ToolCatalogTestSupportPort for SharedToolCatalogTestSupportPort {
 struct SharedSkillExecutionPort {
     registry: SkillRegistry,
     runner: Arc<RwLock<SkillRunner>>,
+    authorization: Arc<crate::security::AuthorizationEngine>,
 }
 
 #[async_trait::async_trait]
@@ -453,13 +456,40 @@ impl SkillExecutionPort for SharedSkillExecutionPort {
         &self,
         skill_name: &str,
         params: &Value,
+        request: &crate::AuthorizationRequest,
+        proof: &crate::AuthorizationExecutionProof,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        let tool_name = crate::skill_tool_name(skill_name);
+        let capability = haven_common::types::CapabilityScope::try_new(&tool_name)
+            .map_err(anyhow::Error::msg)?;
+        let expected_policy =
+            crate::OperationPolicy::external(capability, haven_common::types::RiskLevel::High);
+        if request.session_id.is_some()
+            || request.tool_name != tool_name
+            || request.input != *params
+            || request.target_binding.is_some()
+            || request.policy != expected_policy
+        {
+            anyhow::bail!("Skill execution proof does not match the requested Skill and input");
+        }
+        self.authorization
+            .verify_execution_proof(request, proof)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let context = self
+            .authorization
+            .execution_context_for_proof(request, proof)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let execution_authorization = context
+            .clone_execution_authorization()
+            .ok_or_else(|| anyhow::anyhow!("Skill execution authorization is unavailable"))?;
         let skill = self.registry.get_executable_skill(skill_name).await?;
         self.runner
             .read()
             .await
-            .execute(&skill, params, cancel)
+            .execute_with_authorization(&skill, params, cancel, execution_authorization)
             .await
     }
 }
@@ -516,6 +546,7 @@ impl ToolServices {
             skill_execution: Arc::new(SharedSkillExecutionPort {
                 registry: coordinator.builtins.skill_registry.clone(),
                 runner: Arc::clone(&skill_runner),
+                authorization: Arc::clone(&coordinator.core.authorization),
             }),
             authorization,
             #[cfg(windows)]
@@ -1190,6 +1221,54 @@ mod capability_tests {
         Capability, ModelEndpoint, RequestKind, RequestPolicy, RoutedModel, RouterConfig,
     };
 
+    async fn skill_execution_proof(
+        tools: &ToolsFacade,
+        skill_name: &str,
+        params: &Value,
+    ) -> (
+        crate::AuthorizationRequest,
+        crate::AuthorizationExecutionProof,
+    ) {
+        let authorization = &tools.coordinator.core.authorization;
+        authorization
+            .set_boundaries(
+                haven_common::types::SandboxMode::FullAccess,
+                Vec::new(),
+                haven_common::types::NetworkPolicy::Open,
+            )
+            .await;
+        authorization
+            .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
+            .await;
+        let tool_name = crate::skill_tool_name(skill_name);
+        let capability = haven_common::types::CapabilityScope::try_new(&tool_name).unwrap();
+        authorization
+            .grant(
+                None,
+                capability.clone(),
+                haven_common::types::PermissionEffect::Allow,
+                haven_common::types::PermissionScope::Always,
+            )
+            .await;
+        let request = crate::AuthorizationRequest::new(
+            None,
+            tool_name,
+            params.clone(),
+            crate::OperationPolicy::external(capability, haven_common::types::RiskLevel::High),
+        );
+        let check = authorization.authorize_for_execution(&request).await;
+        assert!(matches!(
+            check.decision,
+            crate::AuthorizationDecision::AutoApproved
+        ));
+        (
+            request,
+            check
+                .execution_proof
+                .expect("auto-approved Skill has an execution proof"),
+        )
+    }
+
     struct AvailableStt;
 
     #[cfg(windows)]
@@ -1464,11 +1543,15 @@ mod capability_tests {
     async fn skill_execution_resolves_skills_inside_tools() {
         let tools = ToolsFacade::new();
         let services = tools.share_services();
+        let params = serde_json::json!({});
+        let (request, proof) = skill_execution_proof(&tools, "missing-skill", &params).await;
         let error = services
             .skill_execution
             .execute_skill(
                 "missing-skill",
-                &serde_json::json!({}),
+                &params,
+                &request,
+                &proof,
                 CancellationToken::new(),
             )
             .await
@@ -1497,9 +1580,11 @@ mod capability_tests {
             .await
             .unwrap();
 
+        let params = serde_json::json!({});
+        let (request, proof) = skill_execution_proof(&tools, "demo", &params).await;
         let error = services
             .skill_execution
-            .execute_skill("demo", &serde_json::json!({}), CancellationToken::new())
+            .execute_skill("demo", &params, &request, &proof, CancellationToken::new())
             .await
             .expect_err("disabled skills must not reach the runner");
 

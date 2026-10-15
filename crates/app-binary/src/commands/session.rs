@@ -729,11 +729,24 @@ async fn execute_ui_confirmation_action(
 ) -> Result<(), String> {
     match &pending.action {
         UiConfirmationAction::Skill { name, params } => {
+            let proof = state
+                .runtime
+                .services
+                .authorization
+                .confirm_for_execution(&pending.authorization_request, &pending.receipt)
+                .await
+                .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;
             state
                 .runtime
                 .services
                 .skill_execution
-                .execute_skill(name, params, tokio_util::sync::CancellationToken::new())
+                .execute_skill(
+                    name,
+                    params,
+                    &pending.authorization_request,
+                    &proof,
+                    tokio_util::sync::CancellationToken::new(),
+                )
                 .await
                 .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;
         }

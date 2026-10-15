@@ -397,6 +397,33 @@ impl SkillToolAdapter {
     fn qualified_name(&self) -> String {
         skill_tool_name(self.skill.name())
     }
+
+    async fn execute_with_authorization(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        execution_authorization: crate::security::ExecutionPolicyAuthorization,
+    ) -> anyhow::Result<ToolResult> {
+        #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
+        if self.panic_on_execute {
+            panic!("simulated Skill adapter panic");
+        }
+        let params = input.get("params").ok_or_else(|| {
+            anyhow::Error::new(StructuredToolError::new(
+                "skill parameters are required",
+                ToolErrorMetadata::validation(),
+            ))
+        })?;
+        self.runner
+            .execute_with_authorization(&self.skill, params, cancel, execution_authorization)
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(StructuredToolError::new(
+                    error.to_string(),
+                    ToolErrorMetadata::other(),
+                ))
+            })
+    }
 }
 
 /// Return the canonical qualified tool name for an executable skill.
@@ -441,26 +468,31 @@ impl Tool for SkillToolAdapter {
         self.runner.timeout_secs().saturating_add(5).max(30)
     }
 
-    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
-        if self.panic_on_execute {
-            panic!("simulated Skill adapter panic");
+    async fn execute(
+        &self,
+        _input: Value,
+        _cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        anyhow::bail!("Skill execution requires an authorization context")
+    }
+
+    async fn execute_with_authorization_context(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<&str>,
+        context: &crate::ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        if target_binding.is_some() {
+            anyhow::bail!("skill tool cannot enforce an external authorization target");
         }
-        let params = input.get("params").ok_or_else(|| {
-            anyhow::Error::new(StructuredToolError::new(
-                "skill parameters are required",
-                ToolErrorMetadata::validation(),
-            ))
+        let execution_authorization = context.clone_execution_authorization().ok_or_else(|| {
+            crate::security::execution_policy_denied(
+                "Skill execution requires an authorization proof".into(),
+            )
         })?;
-        self.runner
-            .execute(&self.skill, params, cancel)
+        self.execute_with_authorization(input, cancel, execution_authorization)
             .await
-            .map_err(|error| {
-                anyhow::Error::new(StructuredToolError::new(
-                    error.to_string(),
-                    ToolErrorMetadata::other(),
-                ))
-            })
     }
 }
 
@@ -555,6 +587,65 @@ mod tests {
                 .and_then(|p| p.get("params"))
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn skill_adapter_forwards_proof_bound_policy_revocation() {
+        let root = tempfile::tempdir().unwrap();
+        let skill = Arc::new(
+            crate::test_support::discover_skill_fixture(root.path(), "demo", "desc", None).await,
+        );
+        let config = SkillsExecConfig {
+            venv_root: root.path().join("venvs"),
+            work_dir: root.path().join("work"),
+            ..Default::default()
+        };
+        let runner = SkillRunner::new(VenvManager::new(config.venv_root.clone()), config);
+        let adapter = SkillToolAdapter::new(skill, runner);
+        let (execution_authorization, authorization) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_engine();
+        authorization
+            .set_permission_mode(haven_common::types::PermissionMode::Plan)
+            .await;
+        let context = crate::ToolExecutionContext {
+            execution_workspace: None,
+            file_write_policy: None,
+            execution_authorization: Some(execution_authorization),
+        };
+
+        let result = adapter
+            .execute_with_authorization_context(
+                serde_json::json!({"params": {}}),
+                CancellationToken::new(),
+                None,
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.outcome, crate::ToolExecutionOutcome::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn skill_adapter_rejects_execution_without_authorization_context() {
+        let root = tempfile::tempdir().unwrap();
+        let skill = Arc::new(
+            crate::test_support::discover_skill_fixture(root.path(), "demo", "desc", None).await,
+        );
+        let config = SkillsExecConfig {
+            venv_root: root.path().join("venvs"),
+            work_dir: root.path().join("work"),
+            ..Default::default()
+        };
+        let runner = SkillRunner::new(VenvManager::new(config.venv_root.clone()), config);
+        let adapter = SkillToolAdapter::new(skill, runner);
+
+        let error = adapter
+            .execute(serde_json::json!({"params": {}}), CancellationToken::new())
+            .await
+            .expect_err("Skills must not start outside the proof-bound Tools path");
+
+        assert!(error.to_string().contains("authorization context"));
     }
 
     #[test]
