@@ -159,3 +159,97 @@ async fn dropping_stdio_transport_terminates_its_process_tree() {
         "dropping StdioInner must close the Job Object and terminate its descendant"
     );
 }
+
+#[tokio::test]
+async fn stdio_policy_revocation_terminates_a_live_process_tree() {
+    let temp = TestDirectory::new();
+    let parent_lock = temp.path().join("mcp-policy-parent.lock");
+    let descendant_lock = temp.path().join("mcp-policy-descendant.lock");
+    let stop_file = temp.path().join("stop-policy-test-processes");
+    let child_script = format!(
+        "$hold = [System.IO.File]::Open('{}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); while (-not (Test-Path '{}')) {{ Start-Sleep -Milliseconds 50 }}; $hold.Dispose()",
+        powershell_literal(&descendant_lock),
+        powershell_literal(&stop_file),
+    );
+    let child_encoded = encode_powershell(&child_script);
+    let parent_script = format!(
+        "$hold = [System.IO.File]::Open('{}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); $child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile -NonInteractive -EncodedCommand {child_encoded}' -PassThru; while (-not (Test-Path '{}')) {{ Start-Sleep -Milliseconds 50 }}; while ($line = [Console]::In.ReadLine()) {{ $request = $line | ConvertFrom-Json; if ($null -eq $request.id) {{ continue }}; if ($request.method -eq 'server/discover') {{ $result = @{{ resultType = 'complete'; supportedVersions = @('2026-07-28'); capabilities = @{{ tools = @{{}} }}; _meta = @{{ 'io.modelcontextprotocol/serverInfo' = @{{ name = 'policy-revocation-test'; version = '1' }} }} }} }} elseif ($request.method -eq 'tools/list') {{ $result = @{{ tools = @(); ttlMs = 60000; cacheScope = 'private' }} }} else {{ $result = @{{}} }}; $response = @{{ jsonrpc = '2.0'; id = $request.id; result = $result }} | ConvertTo-Json -Depth 12 -Compress; [Console]::Out.WriteLine($response) }}; $hold.Dispose()",
+        powershell_literal(&parent_lock),
+        powershell_literal(&descendant_lock),
+    );
+    let config = haven_common::config::McpServerConfig {
+        name: "stdio-policy-revocation-test".into(),
+        transport: McpServerTransport::Stdio,
+        command: "powershell.exe".into(),
+        args: vec![
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-EncodedCommand".into(),
+            encode_powershell(&parent_script),
+        ],
+        cwd: Some(temp.path().to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let client = std::sync::Arc::new(McpClient::new(&config, 1024, 1024));
+    client
+        .set_network_policy(haven_common::types::NetworkPolicy::Open)
+        .await;
+    let manager = crate::McpManager::new();
+    manager.add_client(client.clone()).await;
+    client
+        .connect()
+        .await
+        .expect("connect live MCP stdio server");
+
+    let locks_ready = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if exclusive_file_is_locked(&parent_lock)?
+                && exclusive_file_is_locked(&descendant_lock)?
+            {
+                return Ok::<_, io::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .is_ok_and(|result| result.is_ok());
+
+    let (signal, receiver) = tokio::sync::watch::channel(std::sync::Arc::new(()));
+    manager.watch_stdio_policy_changes(receiver).await;
+    signal.send_replace(std::sync::Arc::new(()));
+    let removed = tokio::time::timeout(Duration::from_secs(5), async {
+        while manager.has_client("stdio-policy-revocation-test").await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
+    let parent_released = wait_for_lock_state(&parent_lock, false, Duration::from_secs(5))
+        .await
+        .expect("inspect parent process lock after policy revocation");
+    let descendant_released = wait_for_lock_state(&descendant_lock, false, Duration::from_secs(5))
+        .await
+        .expect("inspect descendant process lock after policy revocation");
+
+    if !(locks_ready && removed && parent_released && descendant_released) {
+        fs::write(&stop_file, b"stop").expect("release test processes after assertion failure");
+        manager.shutdown_all().await;
+        let _ = wait_for_lock_state(&parent_lock, false, Duration::from_secs(5)).await;
+        let _ = wait_for_lock_state(&descendant_lock, false, Duration::from_secs(5)).await;
+    }
+
+    assert!(
+        locks_ready,
+        "live MCP server and descendant must acquire their locks"
+    );
+    assert!(removed, "policy change must remove the live stdio client");
+    assert!(
+        parent_released,
+        "policy revocation must terminate the direct MCP server process"
+    );
+    assert!(
+        descendant_released,
+        "policy revocation must terminate the MCP process descendants"
+    );
+    manager.shutdown_all().await;
+}

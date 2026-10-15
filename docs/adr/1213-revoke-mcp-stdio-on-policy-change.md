@@ -36,7 +36,9 @@ MCP stdio 是本地外部进程，Haven 无法从协议流量证明其实际网�
 - Tools 回归验证只允许 `Open` 捕获快照，旧快照在 policy revision 改变后不能取得 spawn permit。
 - MCP manager 回归验证 policy signal 会移除 stdio client 并保留 HTTP client。
 - 既有 Windows MCP stdio process-tree 测试验证 transport 清理会终止 server 与后代进程。
+- Windows 集成回归 `stdio_policy_revocation_terminates_a_live_process_tree` 通过真实 MCP stdio server 和持锁后代进程验证：policy signal 移除 live generation 后，server 与整棵后代树都被终止。
 - 本切片运行 MCP/Tools 相关测试、workspace locked tests/clippy、格式检查和 ADR 索引检查；依赖 Windows OS 进程树的最终验收仍以 Windows CI 为准。
+- 集成回归补充后，MCP crate 的 99 项测试、该 crate 的 Clippy 和 workspace 格式检查通过。
 
 ## 回滚
 
