@@ -1158,3 +1158,4 @@
 - [1170：按代次切换执行工作区](1170-version-execution-workspace-switches.md)
 - [1171：在安全设置中持久化 ExecutionWorkspace](1171-persist-execution-workspace-in-security-settings.md)
 - [1172：让 ToolRun 全量输出日志跟随历史记录清理](1172-delete-tool-run-output-logs-with-history.md)
+- [1173：统一 managed upload 根路径](1173-centralize-managed-upload-root.md)

@@ -10,11 +10,10 @@ pub(crate) struct ManagedMediaCleanupCounts {
     pub(crate) removed_generated_media_files: usize,
 }
 
-/// Root folder for user-uploaded files. Lives under the agent's default Temp
-/// working directory so the file tool can read uploads with the same access
-/// the agent already has for its own scripts.
+/// Shared root for managed user-uploaded attachment batches. Session and asset
+/// references, not the runtime Temp directory, own upload retention.
 fn uploads_root() -> std::path::PathBuf {
-    haven_common::config::default_runtime_temp_root().join("uploads")
+    haven_common::config::default_uploads_root()
 }
 
 /// Replace characters that are illegal in Windows file names (and path

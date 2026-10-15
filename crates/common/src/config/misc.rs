@@ -501,17 +501,22 @@ impl Default for SkillsExecConfig {
     }
 }
 
+fn runtime_temp_root_path() -> PathBuf {
+    std::env::temp_dir().join("haven")
+}
+
 /// Root for Haven's runtime temporary files and default tool working directory.
 /// This is a dedicated subfolder of the system Temp directory, so tools do not
-/// run in the app's own working directory. It also contains shared scratch
-/// areas such as uploads and tool output logs; Skills script execution uses
-/// its separate configurable `SkillsExecConfig::work_dir` below this root by
+/// run in the app's own working directory. It contains artifacts with distinct
+/// lifecycles; managed uploads, ToolRun logs, and short-lived staging files must
+/// use their own path and cleanup owners. Skills script execution uses its
+/// separate configurable `SkillsExecConfig::work_dir` below this root by
 /// default. Callers can choose a different working directory before spawning.
 ///
 /// The directory is created on first use so spawned commands never fail with
 /// "current directory does not exist".
 pub fn default_runtime_temp_root() -> PathBuf {
-    let dir = std::env::temp_dir().join("haven");
+    let dir = runtime_temp_root_path();
     if let Err(error) = std::fs::create_dir_all(&dir) {
         tracing::warn!(
             error = %crate::error::sanitize_error_text(&error.to_string()),
@@ -521,11 +526,34 @@ pub fn default_runtime_temp_root() -> PathBuf {
     dir
 }
 
+/// Root for user-uploaded attachment batches. The returned path is shared by
+/// App, Memory, and Tools; callers create it only when their owned operation
+/// needs to write. Upload files follow session/asset retention, not Temp-file
+/// scratch lifetime.
+pub fn default_uploads_root() -> PathBuf {
+    runtime_temp_root_path().join("uploads")
+}
+
 /// Dedicated root for generated media. Generated artifacts have a shorter,
 /// independent lifecycle than user-uploaded files and must never share the
 /// upload batch namespace.
 pub fn default_generated_media_root() -> PathBuf {
     ConfigLoader::data_dir().join("media").join("generated")
+}
+
+#[cfg(test)]
+mod runtime_path_tests {
+    use super::{default_uploads_root, runtime_temp_root_path};
+
+    #[test]
+    fn uploads_root_is_the_managed_subdirectory_of_runtime_temp() {
+        let runtime_root = runtime_temp_root_path();
+        assert_eq!(default_uploads_root(), runtime_root.join("uploads"));
+        assert_eq!(
+            default_uploads_root().parent(),
+            Some(runtime_root.as_path())
+        );
+    }
 }
 
 /// Fallback lifetime for generated media when an attachment's persisted

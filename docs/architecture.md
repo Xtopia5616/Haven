@@ -63,7 +63,7 @@ reparse point；`open_read_only` 在 Windows 禁止新写入/删除句柄，`sam
 供调用方关闭路径解析与后续读取之间的竞态；这些 helper 不解析路径或制定允许根目录。`haven-common::path` 统一提供纯 lexical path equality 与
 equal-or-child 比较，不访问文件系统或 canonicalize 路径（ADR 0863）。App 上传/清理、Tools 资产登记和
 Tools 安全沙箱与 Memory 历史附件预览读取分别保留各自的路径遍历、canonicalization、根目录策略及 fail-closed 处理。
-Memory 只会从受信的 `default_runtime_temp_root()/uploads` 与 `default_generated_media_root()` 根目录重新读取预览 bytes；
+Memory 只会从受信的 `default_uploads_root()` 与 `default_generated_media_root()` 根目录重新读取预览 bytes；
 它不创建、不登记或清理这些资产（ADR 0197、0403、0858、0863）。
 
 `haven-common::usage` 是跨层用量值的唯一契约 owner：`CacheAccounting`、`LlmCallKind` 与
@@ -705,7 +705,8 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   recording ID；voice 命令不会接管没有 app-owned ID 的工具采集。transcript 附件落盘委托给
   `commands/managed_media.rs`，不在录音命令内维护文件清理规则。
 - `commands/managed_media.rs`：拥有 App transcript 上传的额度、staging、原子提交、文件名/路径校验，
-  以及 uploads/generated-media 两根目录和 staging 的清理。一个 App 内部写锁串行化上传与清理；
+  以及 `default_uploads_root()` / `default_generated_media_root()` 两根目录和 staging 的清理。Common 统一提供 uploads 根路径，
+  App、Memory 与 Tools 不再分别拼接 Temp 子目录。一个 App 内部写锁串行化上传与清理；
   两根媒体目录由 App 的清理 worker 按 `SessionStore` durable refs 对账，并通过 `ManagedAssetLifecyclePort` 读取/修剪 Tools owner 的 lease 与 detached TTL；具体注册表留在 Tools 内部。
   generated-media 清理在 lease/TTL 快照前获取 registry 独占 gate 并持有到 unlink 完成；Tools
   producer 从目标文件创建前持 registry 共享 permit 到 asset 登记完成；`FilesTool` 的 canonical rich path
