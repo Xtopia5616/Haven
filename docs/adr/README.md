@@ -1171,3 +1171,4 @@
 - [1183：增加 MCP Model-only 暴露策略](1183-add-mcp-model-only-exposure.md)
 - [1184：验证 Shell 取消时的进程树回收](1184-verify-shell-process-containment.md)
 - [1185：验证 Skill 取消时的进程树回收](1185-verify-skill-process-containment.md)
+- [1186：验证后台 Shell 关闭时的进程树回收](1186-verify-background-shell-process-containment.md)

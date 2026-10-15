@@ -4683,6 +4683,52 @@ async fn test_shutdown_cancels_and_joins_background_runner_before_returning() {
     );
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn test_shutdown_terminates_background_shell_descendants() {
+    let temp = tempfile::tempdir().unwrap();
+    let pid_file = temp.path().join("background-shell-descendant.pid");
+    let mut descendant =
+        crate::process_test_support::DescendantProcessMarker::new(pid_file.clone());
+    let marker = pid_file.to_string_lossy().replace('\'', "''");
+    let command = format!(
+        "$child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 60' -PassThru; [System.IO.File]::WriteAllText('{marker}', [string]$child.Id); Start-Sleep -Seconds 60"
+    );
+    let service = Arc::new(ToolRunService::new());
+    let tool_run_id = service
+        .spawn_shell(
+            &command,
+            "powershell",
+            1024,
+            Some(temp.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+
+    let marker_ready = tokio::time::timeout(Duration::from_secs(20), async {
+        while !pid_file.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .is_ok();
+    let descendant_pid = marker_ready.then(|| descendant.pid()).transpose();
+    service.shutdown().await;
+
+    assert!(marker_ready, "background Shell must start its descendant");
+    assert!(service.task_tracker.is_empty());
+    assert_eq!(
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
+        "cancelled"
+    );
+    let descendant_pid = descendant_pid
+        .expect("descendant PID marker should be readable")
+        .expect("descendant PID should be numeric");
+    descendant
+        .wait_for_exit(descendant_pid, Duration::from_secs(5))
+        .expect("ToolRun shutdown must close the Job Object");
+}
+
 #[tokio::test]
 async fn test_concurrent_shutdown_calls_wait_for_the_same_task_drain() {
     let service = Arc::new(ToolRunService::new());
