@@ -4,11 +4,13 @@
 
 use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::appcontainer_process::AppContainerCommand;
-use crate::filesystem::{DirectoryCapability, DirectoryTreeCopyLimits};
+use crate::filesystem::{
+    DirectoryCapability, DirectoryTreeChangeKind, DirectoryTreeCopyLimits, DirectoryTreeDiffLimits,
+};
 use crate::process_environment::filter_shell_environment;
 use crate::windows_sandbox::AppContainerWorkspace;
 
@@ -51,6 +53,7 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
     assert_eq!(workspace.snapshot_summary().file_count, 1);
 
     let probe_executable = workspace.root().join("appcontainer-probe.exe");
+    let baseline_root = workspace.baseline_root_for_test().to_path_buf();
     let command = AppContainerCommand::new(&probe_executable)
         .args([
             "--exact",
@@ -60,6 +63,7 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
             "--probe-child",
             outside_file.to_string_lossy().as_ref(),
             workspace.root().to_string_lossy().as_ref(),
+            baseline_root.to_string_lossy().as_ref(),
             &network_probe_port.to_string(),
         ])
         .envs(filter_shell_environment(std::env::vars_os()))
@@ -67,11 +71,30 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
     let mut process = command
         .spawn(workspace)
         .expect("spawn through the production AppContainer process owner");
+    assert_eq!(
+        process
+            .output_manifest(
+                DirectoryTreeDiffLimits::new(limits, 32, 16 * 1024 * 1024, 32 * 1024 * 1024)
+                    .expect("valid bounded output manifest limits"),
+                || false,
+            )
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::PermissionDenied,
+        "output cannot be inspected while a process may still mutate it"
+    );
     let sandbox_root = process.workspace().root().to_path_buf();
     let exit_status = process
         .wait_timeout(APP_CONTAINER_TEST_TIMEOUT)
         .expect("wait for the AppContainer process")
         .expect("AppContainer probe exits before deadline");
+    let output_manifest = process
+        .output_manifest(
+            DirectoryTreeDiffLimits::new(limits, 32, 16 * 1024 * 1024, 32 * 1024 * 1024)
+                .expect("valid bounded output manifest limits"),
+            || false,
+        )
+        .expect("scan completed output after the AppContainer process tree exits");
     let mut stdout = String::new();
     process
         .take_stdout()
@@ -107,10 +130,20 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
         inside_file_was_written,
         "container could not write its granted workspace"
     );
+    for path in ["inside-workspace.txt", "appcontainer-result.txt"] {
+        assert!(
+            output_manifest.changes.iter().any(|change| {
+                change.relative_path.as_path() == Path::new(path)
+                    && change.change == DirectoryTreeChangeKind::Created
+                    && change.after_sha256.is_some()
+            }),
+            "bounded output manifest must identify the sandbox-created file {path}"
+        );
+    }
     assert_eq!(outside_content, "outside-sentinel");
     assert_eq!(
         result.trim(),
-        "read_denied=true;write_denied=true;network_denied=true"
+        "read_denied=true;write_denied=true;baseline_denied=true;network_denied=true"
     );
     assert!(
         stdout.contains("ambient_secret_filtered=true;explicit_env=true"),
@@ -130,7 +163,8 @@ fn appcontainer_child_probe() {
     };
     let outside_file = PathBuf::from(&args[probe_index + 1]);
     let workspace = PathBuf::from(&args[probe_index + 2]);
-    let network_probe_port = args[probe_index + 3]
+    let baseline = PathBuf::from(&args[probe_index + 3]);
+    let network_probe_port = args[probe_index + 4]
         .parse::<u16>()
         .expect("probe port is numeric");
 
@@ -138,6 +172,7 @@ fn appcontainer_child_probe() {
         .expect("AppContainer writes its explicitly granted workspace");
     let read_denied = std::fs::read(&outside_file).is_err();
     let write_denied = std::fs::write(&outside_file, "unexpected").is_err();
+    let baseline_denied = std::fs::read(baseline.join("appcontainer-probe.exe")).is_err();
     let network_denied = TcpStream::connect_timeout(
         &format!("127.0.0.1:{network_probe_port}")
             .parse()
@@ -146,7 +181,7 @@ fn appcontainer_child_probe() {
     )
     .is_err();
     let result = format!(
-        "read_denied={read_denied};write_denied={write_denied};network_denied={network_denied}"
+        "read_denied={read_denied};write_denied={write_denied};baseline_denied={baseline_denied};network_denied={network_denied}"
     );
     std::fs::write(workspace.join("appcontainer-result.txt"), &result)
         .expect("AppContainer writes the probe result to its granted workspace");

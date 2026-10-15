@@ -4,7 +4,10 @@
 //! AppContainer identity. It does not launch or contain a process; callers
 //! must keep the owner alive until every process using the identity has exited.
 
-use crate::filesystem::{DirectoryCapability, DirectoryTreeCopyLimits, DirectoryTreeCopySummary};
+use crate::filesystem::{
+    DirectoryCapability, DirectoryTreeCopyLimits, DirectoryTreeCopySummary,
+    DirectoryTreeDiffLimits, DirectoryTreeOutputManifest,
+};
 use std::io;
 use std::path::Path;
 use tempfile::TempDir;
@@ -36,6 +39,8 @@ use windows_sys::Win32::System::SystemServices::SYSTEM_MANDATORY_LABEL_NO_WRITE_
 pub struct AppContainerWorkspace {
     directory: Option<DirectoryCapability>,
     temp_dir: Option<TempDir>,
+    baseline_directory: Option<DirectoryCapability>,
+    baseline_temp_dir: Option<TempDir>,
     profile: Option<AppContainerProfile>,
     execution_workspace_generation: u64,
     policy_revision: u64,
@@ -80,11 +85,31 @@ impl AppContainerWorkspace {
         security_lease.grant_package_sid(profile.sid())?;
         security_lease.apply_low_integrity_label()?;
         let snapshot = source.copy_tree_to(&directory, limits, &mut is_cancelled)?;
+        let baseline_temp_dir = tempfile::Builder::new()
+            .prefix("haven-sandbox-baseline-")
+            .tempdir()
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    "could not create a private sandbox input baseline",
+                )
+            })?;
+        let baseline_directory = DirectoryCapability::open(baseline_temp_dir.path())?;
+        let baseline_summary =
+            directory.copy_tree_to(&baseline_directory, limits, &mut is_cancelled)?;
+        if baseline_summary != snapshot {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sandbox input baseline did not match the initial workspace snapshot",
+            ));
+        }
         security_lease.commit();
 
         Ok(Self {
             directory: Some(directory),
             temp_dir: Some(temp_dir),
+            baseline_directory: Some(baseline_directory),
+            baseline_temp_dir: Some(baseline_temp_dir),
             profile: Some(profile),
             execution_workspace_generation,
             policy_revision,
@@ -117,6 +142,33 @@ impl AppContainerWorkspace {
         self.snapshot
     }
 
+    /// Build a bounded manifest for file and directory changes without
+    /// promoting any sandbox output into the canonical execution workspace.
+    /// Call only after every process using this workspace has exited.
+    pub(crate) fn output_manifest(
+        &self,
+        limits: DirectoryTreeDiffLimits,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> io::Result<DirectoryTreeOutputManifest> {
+        let output = self
+            .directory
+            .as_ref()
+            .expect("live AppContainer workspace retains its output directory");
+        let baseline = self
+            .baseline_directory
+            .as_ref()
+            .expect("live AppContainer workspace retains its input baseline");
+        output.output_manifest(baseline, limits, is_cancelled)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn baseline_root_for_test(&self) -> &Path {
+        self.baseline_directory
+            .as_ref()
+            .expect("live AppContainer workspace retains its input baseline")
+            .root()
+    }
+
     /// Explicitly discard the temporary tree and delete its unique profile.
     /// Call only after all AppContainer processes have exited.
     pub fn cleanup(mut self) -> io::Result<()> {
@@ -132,6 +184,7 @@ impl AppContainerWorkspace {
 
     fn cleanup_inner(&mut self) -> io::Result<()> {
         self.directory.take();
+        self.baseline_directory.take();
         let mut cleanup_error = None;
         if let Some(temp_dir) = self.temp_dir.take()
             && let Err(error) = temp_dir.close()
@@ -139,6 +192,15 @@ impl AppContainerWorkspace {
             cleanup_error = Some(io::Error::new(
                 error.kind(),
                 "could not remove the private AppContainer workspace",
+            ));
+        }
+        if let Some(temp_dir) = self.baseline_temp_dir.take()
+            && let Err(error) = temp_dir.close()
+            && cleanup_error.is_none()
+        {
+            cleanup_error = Some(io::Error::new(
+                error.kind(),
+                "could not remove the private sandbox input baseline",
             ));
         }
         if let Some(profile) = self.profile.take()

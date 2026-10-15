@@ -25,6 +25,22 @@ pub struct DirectoryTreeCopyLimits {
 }
 
 impl DirectoryTreeCopyLimits {
+    pub(super) fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    pub(super) fn max_depth(&self) -> usize {
+        self.max_depth
+    }
+
+    pub(super) fn max_file_bytes(&self) -> u64 {
+        self.max_file_bytes
+    }
+
+    pub(super) fn max_total_bytes(&self) -> u64 {
+        self.max_total_bytes
+    }
+
     pub fn new(
         max_entries: usize,
         max_depth: usize,
@@ -290,7 +306,7 @@ fn reject_non_empty_destination(destination: &DirectoryCapability) -> io::Result
     Ok(())
 }
 
-fn reject_overlapping_roots(
+pub(super) fn reject_overlapping_roots(
     source: &DirectoryCapability,
     destination: &DirectoryCapability,
 ) -> io::Result<()> {
@@ -322,23 +338,23 @@ fn path_is_within_or_equal(path: &Path, root: &Path) -> bool {
     true
 }
 
-fn is_single_normal_component(name: &std::ffi::OsStr) -> bool {
+pub(super) fn is_single_normal_component(name: &std::ffi::OsStr) -> bool {
     let mut components = Path::new(name).components();
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
 
-fn cancelled() -> io::Error {
+pub(super) fn cancelled() -> io::Error {
     io::Error::new(
         io::ErrorKind::Interrupted,
         "directory snapshot was cancelled",
     )
 }
 
-fn invalid_data(message: &'static str) -> io::Error {
+pub(super) fn invalid_data(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn invalid_input(message: &'static str) -> io::Error {
+pub(super) fn invalid_input(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 

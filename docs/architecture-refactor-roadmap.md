@@ -192,7 +192,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 实施仍遵守“证据与契约 → 单条垂直调用链 → 负向/恢复验证 → 适用门禁 → 独立提交”的顺序。每完成一行，只把下一行提升为 Active，并在该提交中更新本节。
 
-当前 Active 已增加 `DirectoryCapability::copy_tree_to`、Windows `AppContainerWorkspace` owner 和平台级 `AppContainerCommand` launcher：前者提供有界 capability 目录树快照复制，workspace owner 为独立临时目录设置 package SID DACL 与继承式 Low label 并绑定 workspace generation/policy revision；launcher 以空 optional-capability 列表创建低权限进程、只传三条显式标准流句柄，在恢复初始线程前先接入 Job Object，并在删除 workspace 前等待进程树归零（ADR 1196–1198）。真实 AppContainer 探针已走这条启动路径。前台与后台 Shell 在 OS spawn 临界区内持有由原 proof 派生的实时 policy read permit；策略更新若先完成则拒绝启动，若 spawn 已进入则等创建返回后再应用（ADR 1199）。Shell、Skill、MCP 的产品执行尚未切换到 AppContainer；运行中策略变化不会由该 permit 终止已启动的进程。下一步把 launcher 接入前台 Shell，并在有界 sandbox 输出 manifest 与授权晋升契约明确前保持 fail closed；崩溃遗留 scratch 回收和运行中进程撤销协调仍开放。
+当前 Active 已增加 `DirectoryCapability::copy_tree_to`、Windows `AppContainerWorkspace` owner 和平台级 `AppContainerCommand` launcher：前者提供有界 capability 目录树快照复制，workspace owner 为独立临时目录设置 package SID DACL 与继承式 Low label 并绑定 workspace generation/policy revision；launcher 以空 optional-capability 列表创建低权限进程、只传三条显式标准流句柄，在恢复初始线程前先接入 Job Object，并在删除 workspace 前等待进程树归零（ADR 1196–1198）。真实 AppContainer 探针已走这条启动路径。前台与后台 Shell 在 OS spawn 临界区内持有由原 proof 派生的实时 policy read permit；策略更新若先完成则拒绝启动，若 spawn 已进入则等创建返回后再应用（ADR 1199）。`AppContainerWorkspace` 现在保留不可由容器读取的初始基线，`DirectoryCapability::output_manifest` 有界生成按路径增删改与 SHA-256 摘要；Windows probe 验证输出能被列出且 baseline 不可读（ADR 1200）。该 manifest 尚不写回 `ExecutionWorkspace`；下一步建立需用户审阅、逐路径重新授权且策略/工作区代次实时有效的晋升链，再接前台 Shell。Shell、Skill、MCP 的产品执行尚未切换到 AppContainer；运行中策略变化不会由 spawn permit 终止已启动进程。崩溃遗留 scratch 回收和运行中进程撤销协调仍开放。
 
 ## 6. 更新规则
 

@@ -1,7 +1,12 @@
 //! Shared low-level filesystem metadata checks.
 
 mod tree_copy;
+mod tree_diff;
 pub use tree_copy::{DirectoryTreeCopyLimits, DirectoryTreeCopySummary};
+pub use tree_diff::{
+    DirectoryTreeChange, DirectoryTreeChangeKind, DirectoryTreeDiffLimits, DirectoryTreeEntryKind,
+    DirectoryTreeOutputManifest,
+};
 
 use std::ffi::OsString;
 use std::fs::{File, Metadata, OpenOptions};

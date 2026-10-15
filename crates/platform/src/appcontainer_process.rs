@@ -1,6 +1,7 @@
 //! Suspended Windows AppContainer process creation with an explicit stdio
 //! handle list and an owner that keeps its workspace alive through tree exit.
 
+use crate::filesystem::{DirectoryTreeDiffLimits, DirectoryTreeOutputManifest};
 use crate::process_containment::{ProcessContainment, process_spawn_lock};
 use crate::windows_sandbox::AppContainerWorkspace;
 use std::collections::BTreeMap;
@@ -263,6 +264,22 @@ impl AppContainerChild {
         self.workspace
             .as_ref()
             .expect("a live AppContainer child retains its workspace")
+    }
+
+    /// Return a bounded output manifest only after the root process has exited
+    /// and the complete Job Object tree has been reaped.
+    pub fn output_manifest(
+        &self,
+        limits: DirectoryTreeDiffLimits,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> io::Result<DirectoryTreeOutputManifest> {
+        if !self.tree_reaped {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "sandbox output is unavailable until the process tree exits",
+            ));
+        }
+        self.workspace().output_manifest(limits, is_cancelled)
     }
 
     /// Wait up to `timeout` for the root process. Once it exits, stop any
