@@ -23,6 +23,11 @@ const MAX_SKILL_STREAM_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SKILL_SCRIPT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CONCURRENT_SKILL_EXECUTIONS: usize = 4;
 const SKILL_WORK_DIRECTORY_PREFIX: &str = "haven-skill-run-";
+const SKILL_WORK_DIRECTORY_OWNER_LOCK: &str = ".haven-owner.lock";
+const SKILL_WORK_DIRECTORY_MAX_ENTRIES: usize = 4096;
+const SKILL_WORK_DIRECTORY_MAX_CLEANUPS_PER_PASS: usize = 16;
+const SKILL_WORK_DIRECTORY_STALE_AGE: Duration =
+    Duration::from_secs(MAX_SKILLS_EXEC_TIMEOUT_SECS + 60);
 const SKILL_WORK_DIRECTORY_CLEANUP_ATTEMPTS: usize = 8;
 const SKILL_WORK_DIRECTORY_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(25);
 #[cfg(not(test))]
@@ -120,24 +125,59 @@ async fn create_skill_work_directory(
     if !haven_common::path::is_absolute_local_path(configured_root) {
         anyhow::bail!("Skill scratch root must be an absolute local directory");
     }
-    tokio::fs::create_dir_all(configured_root)
-        .await
-        .map_err(|_| anyhow::anyhow!("failed to prepare Skill scratch root"))?;
-    let root = haven_platform::filesystem::DirectoryCapability::open(configured_root)
-        .map_err(|_| anyhow::anyhow!("Skill scratch root must be a local non-reparse directory"))?;
+    let root = match haven_platform::filesystem::DirectoryCapability::open(configured_root) {
+        Ok(root) => root,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tokio::fs::create_dir_all(configured_root)
+                .await
+                .map_err(|_| anyhow::anyhow!("failed to prepare Skill scratch root"))?;
+            haven_platform::filesystem::DirectoryCapability::open(configured_root).map_err(
+                |_| anyhow::anyhow!("Skill scratch root must be a local non-reparse directory"),
+            )?
+        }
+        Err(_) => {
+            anyhow::bail!("Skill scratch root must be a local non-reparse directory");
+        }
+    };
+    match cleanup_stale_skill_work_directories(&root, SystemTime::now()) {
+        Ok(removed) if removed > 0 => {
+            tracing::debug!(removed, "removed stale Skill scratch directories");
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            anyhow::bail!("Skill scratch root exceeds its safe inspection limit");
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %sanitize_error_text(&error.to_string()),
+                "could not inspect stale Skill scratch directories"
+            );
+        }
+    }
     let temporary = tempfile::Builder::new()
         .prefix(SKILL_WORK_DIRECTORY_PREFIX)
         .tempdir_in(root.root())
         .map_err(|_| anyhow::anyhow!("failed to create per-execution Skill scratch directory"))?;
+    let owner_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(temporary.path().join(SKILL_WORK_DIRECTORY_OWNER_LOCK))
+        .map_err(|_| anyhow::anyhow!("failed to claim per-execution Skill scratch directory"))?;
+    owner_lock
+        .try_lock()
+        .map_err(|_| anyhow::anyhow!("failed to lock per-execution Skill scratch directory"))?;
     Ok(SkillWorkDirectory {
         root,
         temporary: Some(temporary),
+        owner_lock: Some(owner_lock),
     })
 }
 
 struct SkillWorkDirectory {
     root: haven_platform::filesystem::DirectoryCapability,
     temporary: Option<tempfile::TempDir>,
+    owner_lock: Option<std::fs::File>,
 }
 
 impl SkillWorkDirectory {
@@ -151,6 +191,8 @@ impl SkillWorkDirectory {
 
 impl Drop for SkillWorkDirectory {
     fn drop(&mut self) {
+        // Release the inter-process owner marker before removing its directory.
+        self.owner_lock.take();
         let Some(temporary) = self.temporary.take() else {
             return;
         };
@@ -177,6 +219,69 @@ impl Drop for SkillWorkDirectory {
             }
         }
     }
+}
+
+fn cleanup_stale_skill_work_directories(
+    root: &haven_platform::filesystem::DirectoryCapability,
+    now: SystemTime,
+) -> std::io::Result<usize> {
+    use haven_platform::filesystem::DirectoryEntryKind;
+    use std::path::Path;
+
+    let entries = root.entries(SKILL_WORK_DIRECTORY_MAX_ENTRIES)?;
+    let mut removed = 0;
+    for entry in entries {
+        let Some(name) = entry.name.to_str() else {
+            continue;
+        };
+        let suffix = name.strip_prefix(SKILL_WORK_DIRECTORY_PREFIX);
+        if !suffix.is_some_and(|suffix| {
+            (6..=32).contains(&suffix.len())
+                && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        }) || entry.kind != DirectoryEntryKind::Directory
+        {
+            continue;
+        }
+
+        let relative = Path::new(name);
+        let lock_path = relative.join(SKILL_WORK_DIRECTORY_OWNER_LOCK);
+        let mut stale_lock = None;
+        let modified = match root.open_read_write(&lock_path) {
+            Ok(lock) => {
+                let modified = lock.metadata()?.modified()?;
+                if lock.try_lock().is_err() {
+                    // A live Skill attempt still owns this directory.
+                    continue;
+                }
+                stale_lock = Some(lock);
+                modified
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Reclaim pre-lock leftovers and directories whose process
+                // crashed after creation but before publishing the lock.
+                let Some(modified) = entry.modified else {
+                    continue;
+                };
+                modified
+            }
+            Err(_) => continue,
+        };
+        if now.duration_since(modified).unwrap_or_default() < SKILL_WORK_DIRECTORY_STALE_AGE {
+            continue;
+        }
+        match root.remove_dir_all(relative) {
+            Ok(()) => {
+                removed += 1;
+                if removed >= SKILL_WORK_DIRECTORY_MAX_CLEANUPS_PER_PASS {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        drop(stale_lock);
+    }
+    Ok(removed)
 }
 
 async fn terminate_skill_child(child: &mut tokio::process::Child) {
@@ -964,6 +1069,189 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn scratch_root_checks_existing_reparse_ancestors_before_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let link = temp.path().join("link");
+        std::fs::create_dir(&target).unwrap();
+        if symlink_directory(&target, &link).is_err() {
+            // Windows CI may not grant symlink privileges to the test process.
+            return;
+        }
+
+        let result = create_skill_work_directory(&link.join("new-root")).await;
+
+        assert!(result.is_err());
+        assert!(!target.join("new-root").exists());
+    }
+
+    #[tokio::test]
+    async fn oversized_scratch_root_fails_closed_before_creating_a_run_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("scratch");
+        std::fs::create_dir(&root).unwrap();
+        for index in 0..=SKILL_WORK_DIRECTORY_MAX_ENTRIES {
+            std::fs::write(root.join(format!("entry-{index}")), []).unwrap();
+        }
+
+        let result = create_skill_work_directory(&root).await;
+
+        assert!(result.is_err());
+        assert!(
+            std::fs::read_dir(&root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(SKILL_WORK_DIRECTORY_PREFIX))
+        );
+    }
+
+    #[test]
+    fn stale_skill_scratch_cleanup_preserves_live_fresh_and_unowned_paths() {
+        use haven_platform::filesystem::DirectoryCapability;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("scratch");
+        let stale = root.join("haven-skill-run-Abc123");
+        let live = root.join("haven-skill-run-Def456");
+        let fresh = root.join("haven-skill-run-Ghi789");
+        let malformed = root.join("haven-skill-run-short");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::create_dir(&live).unwrap();
+        std::fs::create_dir(&fresh).unwrap();
+        std::fs::create_dir(&malformed).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("keep.txt"), b"outside").unwrap();
+
+        let now = SystemTime::now();
+        let stale_time = now - SKILL_WORK_DIRECTORY_STALE_AGE - Duration::from_secs(1);
+        let stale_lock_path = stale.join(SKILL_WORK_DIRECTORY_OWNER_LOCK);
+        let stale_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(stale_lock_path)
+            .unwrap();
+        stale_lock.set_modified(stale_time).unwrap();
+        drop(stale_lock);
+
+        let live_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(live.join(SKILL_WORK_DIRECTORY_OWNER_LOCK))
+            .unwrap();
+        live_lock.try_lock().unwrap();
+        live_lock.set_modified(stale_time).unwrap();
+
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(fresh.join(SKILL_WORK_DIRECTORY_OWNER_LOCK))
+            .unwrap();
+        std::fs::write(malformed.join(SKILL_WORK_DIRECTORY_OWNER_LOCK), b"unowned").unwrap();
+        let link = root.join("haven-skill-run-Jkl012");
+        let linked = symlink_directory(&outside, &link).is_ok();
+
+        let capability = DirectoryCapability::open(&root).unwrap();
+        let removed = cleanup_stale_skill_work_directories(&capability, now).unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(!stale.exists());
+        assert!(live.exists());
+        assert!(fresh.exists());
+        assert!(malformed.exists());
+        if linked {
+            assert!(link.exists());
+        }
+        assert_eq!(std::fs::read(outside.join("keep.txt")).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn stale_skill_scratch_cleanup_respects_locks_across_process_exit() {
+        use haven_platform::filesystem::DirectoryCapability;
+        use std::process::{Command, Stdio};
+
+        const LOCK_PATH_ENV: &str = "HAVEN_TEST_SKILL_SCRATCH_LOCK_PATH";
+        const READY_PATH_ENV: &str = "HAVEN_TEST_SKILL_SCRATCH_READY_PATH";
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("scratch");
+        let stale = root.join("haven-skill-run-Abc123");
+        std::fs::create_dir_all(&stale).unwrap();
+        let lock_path = stale.join(SKILL_WORK_DIRECTORY_OWNER_LOCK);
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .unwrap();
+        lock.set_modified(
+            SystemTime::now() - SKILL_WORK_DIRECTORY_STALE_AGE - Duration::from_secs(1),
+        )
+        .unwrap();
+        drop(lock);
+        let ready_path = temp.path().join("child-ready");
+        let capability = DirectoryCapability::open(&root).unwrap();
+
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "skill_runner::tests::skill_scratch_lock_child_process_helper",
+                "--nocapture",
+            ])
+            .env(LOCK_PATH_ENV, &lock_path)
+            .env(READY_PATH_ENV, &ready_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let ready_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !ready_path.exists() && std::time::Instant::now() < ready_deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            ready_path.exists(),
+            "child process did not acquire its lock"
+        );
+        assert_eq!(
+            cleanup_stale_skill_work_directories(&capability, SystemTime::now()).unwrap(),
+            0,
+            "a different process still owns the scratch directory"
+        );
+        assert!(child.wait().unwrap().success());
+        assert_eq!(
+            cleanup_stale_skill_work_directories(&capability, SystemTime::now()).unwrap(),
+            1,
+            "the directory becomes reclaimable after its owner exits"
+        );
+    }
+
+    #[test]
+    fn skill_scratch_lock_child_process_helper() {
+        const LOCK_PATH_ENV: &str = "HAVEN_TEST_SKILL_SCRATCH_LOCK_PATH";
+        const READY_PATH_ENV: &str = "HAVEN_TEST_SKILL_SCRATCH_READY_PATH";
+        let (Some(lock_path), Some(ready_path)) = (
+            std::env::var_os(LOCK_PATH_ENV),
+            std::env::var_os(READY_PATH_ENV),
+        ) else {
+            return;
+        };
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .unwrap();
+        lock.try_lock().unwrap();
+        std::fs::write(ready_path, b"locked").unwrap();
+        std::thread::sleep(Duration::from_millis(250));
     }
 
     #[test]

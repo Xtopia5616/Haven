@@ -1,10 +1,27 @@
 //! Shared low-level filesystem metadata checks.
 
+use std::ffi::OsString;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectoryEntryKind {
+    Directory,
+    File,
+    ReparsePoint,
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectoryEntryInfo {
+    pub name: OsString,
+    pub kind: DirectoryEntryKind,
+    pub modified: Option<SystemTime>,
+}
 
 /// A directory capability opened once from a trusted policy root.
 ///
@@ -157,6 +174,51 @@ impl DirectoryCapability {
         self.directory
             .open(&relative)
             .map(cap_std::fs::File::into_std)
+    }
+
+    pub fn open_read_write(&self, relative: &Path) -> io::Result<File> {
+        let relative = validate_relative_path(relative)?;
+        reject_relative_reparse_components(&self.directory, &relative, true)?;
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.read(true).write(true);
+        self.directory
+            .open_with(&relative, &options)
+            .map(cap_std::fs::File::into_std)
+    }
+
+    /// Read a bounded snapshot of direct children using the held directory
+    /// handle. An oversized directory fails closed instead of allocating an
+    /// unbounded list.
+    pub fn entries(&self, maximum: usize) -> io::Result<Vec<DirectoryEntryInfo>> {
+        let mut result = Vec::new();
+        for entry in self.directory.entries()? {
+            let entry = entry?;
+            if result.len() >= maximum {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory entry count exceeds its inspection limit",
+                ));
+            }
+            let metadata = entry.metadata()?;
+            let kind = if is_cap_link_or_reparse_point(&metadata) {
+                DirectoryEntryKind::ReparsePoint
+            } else if metadata.is_dir() {
+                DirectoryEntryKind::Directory
+            } else if metadata.is_file() {
+                DirectoryEntryKind::File
+            } else {
+                DirectoryEntryKind::Other
+            };
+            result.push(DirectoryEntryInfo {
+                name: entry.file_name(),
+                kind,
+                modified: metadata
+                    .modified()
+                    .ok()
+                    .map(cap_std::time::SystemTime::into_std),
+            });
+        }
+        Ok(result)
     }
 
     /// Atomically replace a file under this directory handle. Missing parent
@@ -631,7 +693,7 @@ fn normalize_windows_extended_path(path: PathBuf) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod directory_capability_tests {
-    use super::DirectoryCapability;
+    use super::{DirectoryCapability, DirectoryEntryKind};
     use std::path::Path;
 
     fn symlink_directory(target: &Path, link: &Path) -> std::io::Result<()> {
@@ -698,6 +760,29 @@ mod directory_capability_tests {
 
         assert!(!scratch.exists());
         assert_eq!(std::fs::read(outside.join("keep.txt")).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn capability_directory_listing_is_bounded_and_reports_entry_kinds() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("note.txt"), b"note").unwrap();
+        std::fs::create_dir(temp.path().join("folder")).unwrap();
+        let capability = DirectoryCapability::open(temp.path()).unwrap();
+
+        let entries = capability.entries(2).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries.iter().any(|entry| {
+                entry.name == "note.txt" && entry.kind == DirectoryEntryKind::File
+            })
+        );
+        assert!(entries.iter().any(|entry| {
+            entry.name == "folder" && entry.kind == DirectoryEntryKind::Directory
+        }));
+        assert_eq!(
+            capability.entries(1).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
     }
 
     #[test]
