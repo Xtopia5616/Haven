@@ -10,7 +10,7 @@ use super::{
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 const DIFF_BUFFER_BYTES: usize = 64 * 1024;
@@ -93,6 +93,13 @@ pub struct DirectoryTreeOutputManifest {
     pub changes: Vec<DirectoryTreeChange>,
     pub compared_entry_count: usize,
     pub changed_bytes: u64,
+}
+
+/// Summary of one verified sandbox file atomically created at a destination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirectoryTreeFileCopySummary {
+    pub bytes: u64,
+    pub sha256: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,6 +223,97 @@ impl DirectoryCapability {
             });
         }
         Ok(manifest)
+    }
+
+    /// Copy one manifest-created regular file to a new destination after
+    /// rechecking its exact size and digest while streaming. The destination
+    /// must not exist and its parent must already exist. This is a bounded
+    /// storage primitive; callers still own user review and authorization.
+    pub(crate) fn copy_reviewed_created_file_to(
+        &self,
+        change: &DirectoryTreeChange,
+        destination_root: &DirectoryCapability,
+        destination: &Path,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> io::Result<DirectoryTreeFileCopySummary> {
+        if change.change != DirectoryTreeChangeKind::Created
+            || change.before_kind.is_some()
+            || change.before_bytes.is_some()
+            || change.before_sha256.is_some()
+            || change.after_kind != Some(DirectoryTreeEntryKind::File)
+        {
+            return Err(invalid_input(
+                "sandbox promotion accepts only newly created regular files",
+            ));
+        }
+        let expected_bytes = change
+            .after_bytes
+            .ok_or_else(|| invalid_data("created file manifest is missing its byte count"))?;
+        let expected_sha256 = change
+            .after_sha256
+            .ok_or_else(|| invalid_data("created file manifest is missing its digest"))?;
+        if expected_bytes > MAX_TREE_DIFF_CHANGED_FILE_BYTES {
+            return Err(invalid_data(
+                "sandbox promotion exceeds the single-file size limit",
+            ));
+        }
+        reject_overlapping_roots(self, destination_root)?;
+
+        let mut source = self.open_read(&change.relative_path)?;
+        let before = source.metadata()?;
+        if !before.is_file() || before.len() != expected_bytes {
+            return Err(invalid_data(
+                "sandbox output no longer matches its reviewed file size",
+            ));
+        }
+        let before_modified = before.modified().ok();
+        let mut bytes = 0_u64;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0_u8; DIFF_BUFFER_BYTES];
+        destination_root.atomic_create_with_existing_parent(destination, |target| {
+            loop {
+                if is_cancelled() {
+                    return Err(cancelled());
+                }
+                let read = source.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                bytes = bytes
+                    .checked_add(read as u64)
+                    .ok_or_else(|| invalid_data("sandbox output file size overflowed"))?;
+                if bytes > expected_bytes || bytes > MAX_TREE_DIFF_CHANGED_FILE_BYTES {
+                    return Err(invalid_data(
+                        "sandbox output grew beyond its reviewed file size",
+                    ));
+                }
+                hasher.update(&buffer[..read]);
+                target.write_all(&buffer[..read])?;
+            }
+            if is_cancelled() {
+                return Err(cancelled());
+            }
+            let after = source.metadata()?;
+            let modified_during_copy = before_modified
+                .zip(after.modified().ok())
+                .is_some_and(|(before, after)| before != after);
+            let sha256: [u8; 32] = hasher.clone().finalize().into();
+            if bytes != expected_bytes
+                || bytes != after.len()
+                || modified_during_copy
+                || sha256 != expected_sha256
+            {
+                return Err(invalid_data(
+                    "sandbox output changed after its manifest was reviewed",
+                ));
+            }
+            Ok(())
+        })?;
+
+        Ok(DirectoryTreeFileCopySummary {
+            bytes,
+            sha256: hasher.finalize().into(),
+        })
     }
 }
 
@@ -411,6 +509,7 @@ mod tests {
     use crate::filesystem::tree_copy::DirectoryTreeCopyLimits;
     use std::collections::BTreeMap;
     use std::io;
+    use std::path::Path;
 
     fn limits(
         entries: usize,
@@ -632,5 +731,175 @@ mod tests {
             std::fs::read(outside_path.join("keep")).unwrap(),
             b"outside"
         );
+    }
+
+    #[test]
+    fn reviewed_created_file_is_copied_only_to_a_new_existing_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let baseline_path = temp.path().join("baseline");
+        let output_path = temp.path().join("output");
+        let destination_path = temp.path().join("destination");
+        std::fs::create_dir(&baseline_path).unwrap();
+        std::fs::create_dir(&output_path).unwrap();
+        std::fs::create_dir(&destination_path).unwrap();
+        let baseline = DirectoryCapability::open(&baseline_path).unwrap();
+        let output = DirectoryCapability::open(&output_path).unwrap();
+        let destination = DirectoryCapability::open(&destination_path).unwrap();
+        baseline
+            .copy_tree_to(&output, limits(8, 2, 128, 256), || false)
+            .unwrap();
+        std::fs::write(output_path.join("new.txt"), b"reviewed bytes").unwrap();
+        let change = output
+            .output_manifest(
+                &baseline,
+                diff_limits(limits(8, 2, 128, 256), 8, 128, 256),
+                || false,
+            )
+            .unwrap()
+            .changes
+            .into_iter()
+            .find(|change| change.relative_path == Path::new("new.txt"))
+            .unwrap();
+
+        let copied = output
+            .copy_reviewed_created_file_to(&change, &destination, Path::new("new.txt"), || false)
+            .unwrap();
+        assert_eq!(copied.bytes, b"reviewed bytes".len() as u64);
+        assert_eq!(
+            std::fs::read(destination_path.join("new.txt")).unwrap(),
+            b"reviewed bytes"
+        );
+
+        assert_eq!(
+            output
+                .copy_reviewed_created_file_to(&change, &destination, Path::new("new.txt"), || {
+                    false
+                },)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            std::fs::read(destination_path.join("new.txt")).unwrap(),
+            b"reviewed bytes"
+        );
+
+        assert!(
+            output
+                .copy_reviewed_created_file_to(
+                    &change,
+                    &destination,
+                    Path::new("missing/child.txt"),
+                    || false
+                )
+                .is_err()
+        );
+        assert!(!destination_path.join("missing").exists());
+    }
+
+    #[test]
+    fn reviewed_created_file_copy_rejects_stale_source_and_cancellation() {
+        let temp = tempfile::tempdir().unwrap();
+        let baseline_path = temp.path().join("baseline");
+        let output_path = temp.path().join("output");
+        let destination_path = temp.path().join("destination");
+        std::fs::create_dir(&baseline_path).unwrap();
+        std::fs::create_dir(&output_path).unwrap();
+        std::fs::create_dir(&destination_path).unwrap();
+        let baseline = DirectoryCapability::open(&baseline_path).unwrap();
+        let output = DirectoryCapability::open(&output_path).unwrap();
+        let destination = DirectoryCapability::open(&destination_path).unwrap();
+        std::fs::write(output_path.join("new.txt"), b"reviewed bytes").unwrap();
+        let change = output
+            .output_manifest(
+                &baseline,
+                diff_limits(limits(8, 2, 128, 256), 8, 128, 256),
+                || false,
+            )
+            .unwrap()
+            .changes
+            .into_iter()
+            .find(|change| change.relative_path == Path::new("new.txt"))
+            .unwrap();
+
+        std::fs::write(output_path.join("new.txt"), b"different bytes").unwrap();
+        assert!(
+            output
+                .copy_reviewed_created_file_to(
+                    &change,
+                    &destination,
+                    Path::new("stale.txt"),
+                    || false
+                )
+                .is_err()
+        );
+        assert!(!destination_path.join("stale.txt").exists());
+
+        let change = output
+            .output_manifest(
+                &baseline,
+                diff_limits(limits(8, 2, 128, 256), 8, 128, 256),
+                || false,
+            )
+            .unwrap()
+            .changes
+            .into_iter()
+            .find(|change| change.relative_path == Path::new("new.txt"))
+            .unwrap();
+        assert_eq!(
+            output
+                .copy_reviewed_created_file_to(
+                    &change,
+                    &destination,
+                    Path::new("cancelled.txt"),
+                    || true,
+                )
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert!(!destination_path.join("cancelled.txt").exists());
+    }
+
+    #[test]
+    fn reviewed_file_copy_rejects_non_created_manifest_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let baseline_path = temp.path().join("baseline");
+        let output_path = temp.path().join("output");
+        let destination_path = temp.path().join("destination");
+        std::fs::create_dir(&baseline_path).unwrap();
+        std::fs::create_dir(&output_path).unwrap();
+        std::fs::create_dir(&destination_path).unwrap();
+        std::fs::write(baseline_path.join("modified.txt"), b"before").unwrap();
+        let baseline = DirectoryCapability::open(&baseline_path).unwrap();
+        let output = DirectoryCapability::open(&output_path).unwrap();
+        let destination = DirectoryCapability::open(&destination_path).unwrap();
+        baseline
+            .copy_tree_to(&output, limits(8, 2, 128, 256), || false)
+            .unwrap();
+        std::fs::write(output_path.join("modified.txt"), b"after").unwrap();
+        let modified = output
+            .output_manifest(
+                &baseline,
+                diff_limits(limits(8, 2, 128, 256), 8, 128, 256),
+                || false,
+            )
+            .unwrap()
+            .changes
+            .into_iter()
+            .find(|change| change.relative_path == Path::new("modified.txt"))
+            .unwrap();
+        assert_eq!(modified.change, DirectoryTreeChangeKind::Modified);
+        assert!(
+            output
+                .copy_reviewed_created_file_to(
+                    &modified,
+                    &destination,
+                    Path::new("modified.txt"),
+                    || false
+                )
+                .is_err()
+        );
+        assert!(!destination_path.join("modified.txt").exists());
     }
 }

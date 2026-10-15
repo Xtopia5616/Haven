@@ -124,7 +124,7 @@ impl AppContainerWorkspace {
             .root()
     }
 
-    pub fn directory(&self) -> &DirectoryCapability {
+    pub(crate) fn directory(&self) -> &DirectoryCapability {
         self.directory
             .as_ref()
             .expect("live AppContainer workspace retains its directory capability")

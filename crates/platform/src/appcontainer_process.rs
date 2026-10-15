@@ -1,7 +1,10 @@
 //! Suspended Windows AppContainer process creation with an explicit stdio
 //! handle list and an owner that keeps its workspace alive through tree exit.
 
-use crate::filesystem::{DirectoryTreeDiffLimits, DirectoryTreeOutputManifest};
+use crate::filesystem::{
+    DirectoryTreeChange, DirectoryTreeDiffLimits, DirectoryTreeFileCopySummary,
+    DirectoryTreeOutputManifest,
+};
 use crate::process_containment::{ProcessContainment, process_spawn_lock};
 use crate::windows_sandbox::AppContainerWorkspace;
 use std::collections::BTreeMap;
@@ -260,7 +263,7 @@ impl AppContainerChild {
         self.stderr.take()
     }
 
-    pub fn workspace(&self) -> &AppContainerWorkspace {
+    pub(crate) fn workspace(&self) -> &AppContainerWorkspace {
         self.workspace
             .as_ref()
             .expect("a live AppContainer child retains its workspace")
@@ -280,6 +283,42 @@ impl AppContainerChild {
             ));
         }
         self.workspace().output_manifest(limits, is_cancelled)
+    }
+
+    /// Promote one reviewed, newly created regular output file to a missing
+    /// destination below an already-authorized directory capability. This
+    /// does not authorize the destination: callers must hold the live policy
+    /// lease and supply the workspace/policy stamps bound to this child.
+    pub fn promote_output_file_to(
+        &self,
+        change: &DirectoryTreeChange,
+        expected_execution_workspace_generation: u64,
+        expected_policy_revision: u64,
+        destination: &crate::filesystem::DirectoryCapability,
+        destination_relative: &Path,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> io::Result<DirectoryTreeFileCopySummary> {
+        if !self.tree_reaped {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "sandbox output cannot be promoted until the process tree exits",
+            ));
+        }
+        let workspace = self.workspace();
+        if workspace.execution_workspace_generation() != expected_execution_workspace_generation
+            || workspace.policy_revision() != expected_policy_revision
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "sandbox output is bound to a stale execution workspace or policy revision",
+            ));
+        }
+        workspace.directory().copy_reviewed_created_file_to(
+            change,
+            destination,
+            destination_relative,
+            is_cancelled,
+        )
     }
 
     /// Wait up to `timeout` for the root process. Once it exits, stop any

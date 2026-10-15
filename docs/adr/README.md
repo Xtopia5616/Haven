@@ -1187,3 +1187,4 @@
 - [1199：在子进程启动点重检实时授权策略](1199-revalidate-live-policy-at-process-spawn.md)
 - [1200：为 sandbox 输出建立私有基线与有界变更清单](1200-bounded-sandbox-output-manifests.md)
 - [1201：在文件副作用期间固定实时授权策略](1201-linearize-filesystem-mutations-with-live-policy.md)
+- [1202：逐文件晋升已审阅的 sandbox 新文件](1202-promote-reviewed-sandbox-files.md)

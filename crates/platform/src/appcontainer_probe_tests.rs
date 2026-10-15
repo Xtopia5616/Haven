@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use crate::appcontainer_process::AppContainerCommand;
 use crate::filesystem::{
-    DirectoryCapability, DirectoryTreeChangeKind, DirectoryTreeCopyLimits, DirectoryTreeDiffLimits,
+    DirectoryCapability, DirectoryTreeChange, DirectoryTreeChangeKind, DirectoryTreeCopyLimits,
+    DirectoryTreeDiffLimits, DirectoryTreeEntryKind,
 };
 use crate::process_environment::filter_shell_environment;
 use crate::windows_sandbox::AppContainerWorkspace;
@@ -83,6 +84,35 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
         io::ErrorKind::PermissionDenied,
         "output cannot be inspected while a process may still mutate it"
     );
+    let pre_reap_change = DirectoryTreeChange {
+        relative_path: PathBuf::from("inside-workspace.txt"),
+        change: DirectoryTreeChangeKind::Created,
+        before_kind: None,
+        after_kind: Some(DirectoryTreeEntryKind::File),
+        before_bytes: None,
+        after_bytes: Some(9),
+        before_sha256: None,
+        after_sha256: Some([0; 32]),
+    };
+    let promotion_path = fixture.path().join("promoted");
+    std::fs::create_dir(&promotion_path).expect("create promotion destination");
+    let promotion_destination =
+        DirectoryCapability::open(&promotion_path).expect("open authorized promotion destination");
+    assert_eq!(
+        process
+            .promote_output_file_to(
+                &pre_reap_change,
+                7,
+                11,
+                &promotion_destination,
+                Path::new("too-early.txt"),
+                || false,
+            )
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::PermissionDenied,
+        "sandbox output cannot be promoted while the process tree may still write"
+    );
     let sandbox_root = process.workspace().root().to_path_buf();
     let exit_status = process
         .wait_timeout(APP_CONTAINER_TEST_TIMEOUT)
@@ -95,6 +125,56 @@ fn appcontainer_process_is_limited_to_granted_workspace_and_has_no_network_capab
             || false,
         )
         .expect("scan completed output after the AppContainer process tree exits");
+    let created_change = output_manifest
+        .changes
+        .iter()
+        .find(|change| change.relative_path == Path::new("inside-workspace.txt"))
+        .expect("probe output manifest includes its created file");
+    let promoted = process
+        .promote_output_file_to(
+            created_change,
+            7,
+            11,
+            &promotion_destination,
+            Path::new("inside-workspace.txt"),
+            || false,
+        )
+        .expect("promote the reviewed file after the process tree exits");
+    assert_eq!(promoted.bytes, b"inside-ok".len() as u64);
+    assert_eq!(
+        std::fs::read(promotion_path.join("inside-workspace.txt")).unwrap(),
+        b"inside-ok"
+    );
+    assert_eq!(
+        process
+            .promote_output_file_to(
+                created_change,
+                7,
+                11,
+                &promotion_destination,
+                Path::new("inside-workspace.txt"),
+                || false,
+            )
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::AlreadyExists,
+        "promotion never overwrites a file that appeared after review"
+    );
+    assert_eq!(
+        process
+            .promote_output_file_to(
+                created_change,
+                8,
+                11,
+                &promotion_destination,
+                Path::new("stale-generation.txt"),
+                || false,
+            )
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::PermissionDenied,
+        "promotion rejects a stale execution workspace generation"
+    );
     let mut stdout = String::new();
     process
         .take_stdout()

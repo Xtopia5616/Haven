@@ -5,7 +5,7 @@ mod tree_diff;
 pub use tree_copy::{DirectoryTreeCopyLimits, DirectoryTreeCopySummary};
 pub use tree_diff::{
     DirectoryTreeChange, DirectoryTreeChangeKind, DirectoryTreeDiffLimits, DirectoryTreeEntryKind,
-    DirectoryTreeOutputManifest,
+    DirectoryTreeFileCopySummary, DirectoryTreeOutputManifest,
 };
 
 use std::ffi::OsString;
@@ -241,10 +241,32 @@ impl DirectoryCapability {
         relative: &Path,
         write_contents: impl FnOnce(&mut cap_std::fs::File) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.atomic_write_with(relative, true, true, write_contents)
+    }
+
+    /// Atomically create a new file below an already existing parent. Existing
+    /// destinations are rejected, including a destination created after the
+    /// initial check. This is used when promoting reviewed sandbox output so a
+    /// concurrent edit is never overwritten.
+    pub(crate) fn atomic_create_with_existing_parent(
+        &self,
+        relative: &Path,
+        write_contents: impl FnOnce(&mut cap_std::fs::File) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.atomic_write_with(relative, false, false, write_contents)
+    }
+
+    fn atomic_write_with(
+        &self,
+        relative: &Path,
+        create_parents: bool,
+        replace_existing: bool,
+        write_contents: impl FnOnce(&mut cap_std::fs::File) -> io::Result<()>,
+    ) -> io::Result<()> {
         let relative = validate_relative_path(relative)?;
         let parent_path = relative_parent(&relative);
         reject_relative_reparse_components(&self.directory, parent_path, false)?;
-        if parent_path != Path::new(".") {
+        if create_parents && parent_path != Path::new(".") {
             self.directory.create_dir_all(parent_path)?;
         }
         let parent = if parent_path == Path::new(".") {
@@ -267,10 +289,19 @@ impl DirectoryCapability {
         let filename = relative
             .file_name()
             .ok_or_else(|| permission_denied("file path must include a filename"))?;
-        if let Ok(metadata) = parent.symlink_metadata(filename)
-            && (is_cap_link_or_reparse_point(&metadata) || !metadata.is_file())
-        {
-            return Err(permission_denied("destination is not a regular file"));
+        match parent.symlink_metadata(filename) {
+            Ok(metadata) if is_cap_link_or_reparse_point(&metadata) || !metadata.is_file() => {
+                return Err(permission_denied("destination is not a regular file"));
+            }
+            Ok(_) if !replace_existing => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "destination already exists",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
 
         let temporary = format!(".{}.tmp", haven_common::types::new_id("file"));
@@ -313,19 +344,33 @@ impl DirectoryCapability {
             #[cfg(windows)]
             {
                 let file = file.into_std();
-                rename_file_by_handle(&file, &self.root, parent_path, &parent, filename).map_err(
-                    |error| {
-                        io::Error::new(
-                            error.kind(),
-                            format!("could not commit the staged file replacement: {error}"),
-                        )
-                    },
+                rename_file_by_handle(
+                    &file,
+                    &self.root,
+                    parent_path,
+                    &parent,
+                    filename,
+                    replace_existing,
                 )
+                .map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("could not commit the staged file replacement: {error}"),
+                    )
+                })
             }
             #[cfg(not(windows))]
             {
                 drop(file);
-                parent.rename(&temporary, &parent, filename)
+                if replace_existing {
+                    parent.rename(&temporary, &parent, filename)
+                } else {
+                    // A same-directory hard link gives create-if-absent
+                    // semantics on platforms where rename replaces its target.
+                    parent.hard_link(&temporary, &parent, filename)?;
+                    let _ = parent.remove_file(&temporary);
+                    Ok(())
+                }
             }
         })();
         if result.is_err() {
@@ -485,6 +530,7 @@ fn rename_file_by_handle(
     parent_path: &Path,
     capability_parent: &cap_std::fs::Dir,
     destination_name: &std::ffi::OsStr,
+    replace_existing: bool,
 ) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::OpenOptionsExt;
@@ -552,7 +598,7 @@ fn rename_file_by_handle(
     // handle-relative entry point after comparing and pinning the parent.
     let status = unsafe {
         (*info).Anonymous = FILE_RENAME_INFO_0 {
-            ReplaceIfExists: true,
+            ReplaceIfExists: replace_existing,
         };
         (*info).RootDirectory = root_directory;
         (*info).FileNameLength = name_bytes;
