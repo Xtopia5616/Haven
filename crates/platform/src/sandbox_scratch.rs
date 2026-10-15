@@ -11,6 +11,7 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+use windows_sys::Win32::Foundation::{ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION};
 
 const SANDBOX_SCRATCH_ROOT: &str = "appcontainer-workspaces";
 const WORKSPACE_PREFIX: &str = "haven-appcontainer-workspace-";
@@ -20,6 +21,8 @@ const OWNER_SUFFIX: &str = ".lock";
 const MAX_ENTRIES_PER_SCAN: usize = 4096;
 const MAX_OWNER_BYTES: usize = 1024;
 const MAX_CLEANUPS_PER_PASS: usize = 8;
+const DIRECTORY_DELETE_RETRIES: u8 = 20;
+const DIRECTORY_DELETE_RETRY_DELAY: Duration = Duration::from_millis(25);
 const STALE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Owns both scratch trees and the inter-process marker protecting them.
@@ -377,11 +380,26 @@ fn remove_owned_directory(root: &DirectoryCapability, name: &str) -> io::Result<
     if !is_owned_name(name, WORKSPACE_PREFIX) && !is_owned_name(name, BASELINE_PREFIX) {
         return Err(invalid_data("sandbox scratch directory name is invalid"));
     }
-    match root.remove_dir_all(relative) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+    let mut retries = 0;
+    loop {
+        match root.remove_dir_all(relative) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error)
+                if retries < DIRECTORY_DELETE_RETRIES && is_transient_delete_lock(&error) =>
+            {
+                retries += 1;
+                std::thread::sleep(DIRECTORY_DELETE_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
     }
+}
+
+fn is_transient_delete_lock(error: &io::Error) -> bool {
+    error.raw_os_error().is_some_and(|code| {
+        code == ERROR_SHARING_VIOLATION as i32 || code == ERROR_LOCK_VIOLATION as i32
+    })
 }
 
 fn delete_profile(profile_name: &str) -> io::Result<()> {
