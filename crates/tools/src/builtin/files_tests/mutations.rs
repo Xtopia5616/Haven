@@ -101,6 +101,7 @@ async fn proof_derived_directory_policy_confines_file_writes() {
     let context = ToolExecutionContext {
         execution_workspace: None,
         file_write_policy: Some(policy),
+        execution_spawn_authorization: None,
     };
     let tool = FilesTool::default();
 

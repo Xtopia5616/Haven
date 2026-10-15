@@ -3,7 +3,8 @@ use crate::ToolConcurrency;
 use crate::execution_workspace::{ExecutionWorkspace, ExecutionWorkspaceSnapshot};
 use crate::{
     ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationPolicy,
-    ToolExecutionContext,
+    StructuredToolError, ToolErrorClass, ToolErrorMetadata, ToolExecutionContext,
+    ToolExecutionOutcome, ToolRetryability,
 };
 use haven_common::config::{SecurityConfig, StoredPermission, ToolConfig};
 use haven_common::types::{
@@ -21,6 +22,7 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Expected operation/risk rows used by the local-tool security regression
@@ -562,6 +564,49 @@ pub struct AuthorizationEngine {
     config: RwLock<SafetyConfig>,
 }
 
+/// Short-lived process-start capability derived from one proof-verified tool
+/// attempt. Acquiring it holds a read lock on the live policy through the
+/// synchronous OS process creation call, so a policy/workspace update either
+/// wins before spawn and rejects it or takes effect immediately after spawn.
+#[derive(Clone)]
+pub(crate) struct ExecutionSpawnAuthorization {
+    authorization: Arc<AuthorizationEngine>,
+    policy_revision: u64,
+    execution_workspace_generation: u64,
+    expires_at: u64,
+}
+
+pub(crate) struct ExecutionSpawnPermit<'a> {
+    _config: tokio::sync::RwLockReadGuard<'a, SafetyConfig>,
+}
+
+pub(crate) fn execution_spawn_denied(reason: String) -> anyhow::Error {
+    anyhow::Error::new(StructuredToolError::new(
+        reason,
+        ToolErrorMetadata {
+            class: ToolErrorClass::Permission,
+            outcome: ToolExecutionOutcome::Failed,
+            retryability: ToolRetryability::NotRetryable,
+        },
+    ))
+}
+
+impl ExecutionSpawnAuthorization {
+    pub(crate) async fn acquire(&self) -> Result<ExecutionSpawnPermit<'_>, String> {
+        if confirmation_now() >= self.expires_at {
+            return Err("execution proof expired before process creation".into());
+        }
+        let config = self.authorization.config.read().await;
+        if config.policy_revision != self.policy_revision {
+            return Err("execution policy changed before process creation".into());
+        }
+        if config.execution_workspace.generation() != self.execution_workspace_generation {
+            return Err("execution workspace changed before process creation".into());
+        }
+        Ok(ExecutionSpawnPermit { _config: config })
+    }
+}
+
 /// Captured path roots for one read operation. Each opened file is checked
 /// against these roots by identity before the caller consumes the handle.
 #[derive(Clone, Default)]
@@ -892,7 +937,7 @@ impl AuthorizationEngine {
     }
 
     pub(crate) async fn execution_context_for_proof(
-        &self,
+        self: &Arc<Self>,
         request: &AuthorizationRequest,
         proof: &AuthorizationExecutionProof,
     ) -> Result<ToolExecutionContext, String> {
@@ -949,6 +994,12 @@ impl AuthorizationEngine {
         Ok(ToolExecutionContext {
             execution_workspace: Some(cfg.execution_workspace.clone()),
             file_write_policy,
+            execution_spawn_authorization: Some(ExecutionSpawnAuthorization {
+                authorization: Arc::clone(self),
+                policy_revision: proof.binding.policy_revision,
+                execution_workspace_generation: cfg.execution_workspace.generation(),
+                expires_at: proof.binding.expires_at,
+            }),
         })
     }
 
@@ -2063,7 +2114,7 @@ mod tests {
 
     #[tokio::test]
     async fn execution_context_rejects_a_stale_execution_proof() {
-        let engine = AuthorizationEngine::new();
+        let engine = Arc::new(AuthorizationEngine::new());
         engine
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
@@ -2083,6 +2134,13 @@ mod tests {
             .expect("current proofs can capture execution authority");
         assert!(context.file_write_policy.is_some());
         assert!(context.execution_workspace.is_some());
+        assert!(
+            context
+                .acquire_execution_spawn_permit()
+                .await
+                .expect("the current policy grants process creation")
+                .is_some()
+        );
 
         engine
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
@@ -2094,6 +2152,60 @@ mod tests {
                 .is_err(),
             "execution authority must not be captured from a stale proof"
         );
+        let reason = context
+            .acquire_execution_spawn_permit()
+            .await
+            .err()
+            .expect("a captured context cannot start a process after policy changes");
+        let error = execution_spawn_denied(reason);
+        let metadata = error
+            .downcast_ref::<StructuredToolError>()
+            .expect("a stale spawn is reported as a structured permission failure")
+            .metadata();
+        assert_eq!(metadata.class, ToolErrorClass::Permission);
+        assert_eq!(metadata.retryability, ToolRetryability::NotRetryable);
+    }
+
+    #[tokio::test]
+    async fn process_spawn_permit_serializes_live_policy_updates() {
+        let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let input = json!({"value": "spawn"});
+        let request = AuthorizationRequest::new(
+            None,
+            "ask",
+            input.clone(),
+            fixture_policy("ask", &input, RiskLevel::Safe),
+        );
+        let proof = engine
+            .authorize_for_execution(&request)
+            .await
+            .execution_proof
+            .expect("safe ask request receives an execution proof");
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .expect("current proof captures process-start authorization");
+        let spawn_permit = context
+            .acquire_execution_spawn_permit()
+            .await
+            .expect("policy is live")
+            .expect("proof-bound execution context owns a process-start permit");
+
+        assert!(
+            engine.config.try_write().is_err(),
+            "policy changes cannot acquire the owner write lock during process creation"
+        );
+        drop(spawn_permit);
+        engine
+            .set_boundaries(SandboxMode::ReadOnly, Vec::new(), NetworkPolicy::Deny)
+            .await;
+        assert!(
+            context.acquire_execution_spawn_permit().await.is_err(),
+            "the captured execution context is stale after the update"
+        );
     }
 
     #[tokio::test]
@@ -2101,7 +2213,7 @@ mod tests {
         let first_root = tempfile::tempdir().unwrap();
         let next_root = tempfile::tempdir().unwrap();
         let workspace = ExecutionWorkspace::from_root(first_root.path()).unwrap();
-        let engine = AuthorizationEngine::new_with_workspace(workspace);
+        let engine = Arc::new(AuthorizationEngine::new_with_workspace(workspace));
         engine
             .set_boundaries(
                 SandboxMode::WorkspaceWrite,
@@ -2121,6 +2233,10 @@ mod tests {
             .await
             .execution_proof
             .expect("safe test operation should receive an execution proof");
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .expect("current proof captures its workspace generation");
         let before = engine.execution_workspace_snapshot().await;
         let same = engine
             .switch_execution_workspace(first_root.path())
@@ -2147,6 +2263,10 @@ mod tests {
                 .await
                 .is_err(),
             "switching the workspace invalidates outstanding execution proofs"
+        );
+        assert!(
+            context.acquire_execution_spawn_permit().await.is_err(),
+            "a process-start context cannot cross workspace generations"
         );
 
         let invalid_root = next_root.path().join("missing");

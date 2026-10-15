@@ -282,6 +282,7 @@ impl FilesTool {
         let context = crate::ToolExecutionContext {
             execution_workspace: Some(self.authorization.execution_workspace().await),
             file_write_policy: Some(crate::security::FileWritePolicy::ambient_for_test()),
+            execution_spawn_authorization: None,
         };
         self.run_with_execution_context(params, cancel, &context)
             .await

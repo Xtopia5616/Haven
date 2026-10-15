@@ -901,7 +901,13 @@ mod tests {
                 .await
         });
         let marker_ready = tokio::time::timeout(Duration::from_secs(20), async {
-            while !pid_file.exists() {
+            loop {
+                if tokio::fs::read_to_string(&pid_file)
+                    .await
+                    .is_ok_and(|pid| !pid.trim().is_empty())
+                {
+                    break;
+                }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })

@@ -125,24 +125,30 @@ impl ShellTool {
         params: ShellParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        self.run_with_workspace(params, cancel, None).await
+        self.run_with_execution_context(params, cancel, None).await
     }
 
-    async fn run_with_workspace(
+    async fn run_with_execution_context(
         &self,
         params: ShellParams,
         cancel: CancellationToken,
-        execution_workspace: Option<&crate::ExecutionWorkspaceSnapshot>,
+        execution_context: Option<&crate::ToolExecutionContext>,
     ) -> anyhow::Result<ToolResult> {
         let cmd = params.command;
         if cmd.is_empty() {
             anyhow::bail!("command is required");
         }
         let silent = params.silent.unwrap_or(false);
+        let workspace_snapshot = execution_context.and_then(|context| {
+            context
+                .execution_workspace
+                .as_ref()
+                .map(crate::execution_workspace::ExecutionWorkspace::snapshot)
+        });
         let shell_context = self.resolve_shell_context(
             params.shell.as_deref(),
             params.cwd.as_deref(),
-            execution_workspace,
+            workspace_snapshot.as_ref(),
         );
         validate_shell_command(&shell_context.shell, &cmd)?;
         let max_chars = self.max_output_chars;
@@ -166,6 +172,9 @@ impl ShellTool {
                         cwd: shell_context.working_directory,
                         session_id: params.session_id.as_deref(),
                         source_step_id,
+                        spawn_authorization: execution_context.and_then(
+                            crate::ToolExecutionContext::clone_execution_spawn_authorization,
+                        ),
                     },
                     &cancel,
                 )
@@ -196,11 +205,19 @@ impl ShellTool {
         #[cfg(not(windows))]
         let windows_creation_flags = 0;
         containment.prepare_command(child_cmd.as_std_mut(), windows_creation_flags);
-        let child = {
-            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
-            child_cmd.kill_on_drop(true).spawn()?
+        let spawn_permit = match execution_context {
+            Some(context) => context
+                .acquire_execution_spawn_permit()
+                .await
+                .map_err(crate::security::execution_spawn_denied)?,
+            None => None,
         };
-        let mut child = child;
+        let child_spawn_result = {
+            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+            child_cmd.kill_on_drop(true).spawn()
+        };
+        drop(spawn_permit);
+        let mut child = child_spawn_result?;
         let pid = child
             .id()
             .ok_or_else(|| anyhow::anyhow!("shell child did not expose a process id"))?;
@@ -431,11 +448,7 @@ impl Tool for ShellTool {
             anyhow::bail!("shell tool cannot enforce an external authorization target");
         }
         let params = crate::tool_contract::parse_tool_input::<ShellParams>(&self.name(), input)?;
-        let workspace = context
-            .execution_workspace
-            .as_ref()
-            .map(crate::execution_workspace::ExecutionWorkspace::snapshot);
-        self.run_with_workspace(params, cancel, workspace.as_ref())
+        self.run_with_execution_context(params, cancel, Some(context))
             .await
     }
 
