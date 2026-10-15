@@ -198,7 +198,9 @@ ADR 1212 已将同一 proof-bound 撤销生命周期接入 Skill 脚本、venv �
 
 Skill 创建现通过固定 Skills 根 `DirectoryCapability` 创建目录树，并以原子替换写入脚本和最后发布 `SKILL.md`；失败清理由同一 capability 执行，避免路径跟随和部分目录进入注册表（ADR 1214）。
 
-详见 [ADR 1212](adr/1212-revoke-running-skills-on-policy-change.md)、[ADR 1213](adr/1213-revoke-mcp-stdio-on-policy-change.md) 与 [ADR 1214](adr/1214-pin-skill-creation-writes.md)。
+ADR 1215 根据 Windows Container 官方宿主要求、`StorageSandboxSize` 能力边界和客户端容器许可进一步限定 HCS 候选：它不作为 Haven 常规 Windows 客户端生产执行的默认配额后端；OS 强制存储配额 Gate 仍开放，`WorkspaceWrite` 子进程继续 fail closed。
+
+详见 [ADR 1212](adr/1212-revoke-running-skills-on-policy-change.md)、[ADR 1213](adr/1213-revoke-mcp-stdio-on-policy-change.md)、[ADR 1214](adr/1214-pin-skill-creation-writes.md) 与 [ADR 1215](adr/1215-limit-windows-container-quota-backend-scope.md)。
 
 ## 6. 更新规则
 
