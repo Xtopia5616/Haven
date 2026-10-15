@@ -8,7 +8,9 @@ use haven_common::error::sanitize_error_text;
 use haven_platform::process_containment::ProcessContainment;
 use haven_skills::{Skill, VenvManager};
 use serde_json::Value;
-use std::time::Duration;
+#[cfg(not(test))]
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -18,6 +20,10 @@ use tokio_util::sync::CancellationToken;
 /// pipe merely because its result is too large for Haven to keep.
 const MAX_SKILL_STREAM_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SKILL_SCRIPT_BYTES: u64 = 16 * 1024 * 1024;
+#[cfg(not(test))]
+const SKILL_SCRIPT_SNAPSHOT_DIRECTORY: &str = "skill-script-snapshots";
+const SKILL_SCRIPT_SNAPSHOT_MAX_AGE: Duration =
+    Duration::from_secs(MAX_SKILLS_EXEC_TIMEOUT_SECS + 60);
 
 const SKILL_SCRIPT_LAUNCHER: &str = r#"
 def _haven_run_skill_snapshot():
@@ -103,6 +109,82 @@ async fn stage_skill_script(
     Ok(snapshot_path)
 }
 
+#[cfg(not(test))]
+fn default_skill_script_snapshot_root() -> PathBuf {
+    let runtime_temp_root = haven_common::config::default_runtime_temp_root();
+    let snapshot_root = runtime_temp_root.join(SKILL_SCRIPT_SNAPSHOT_DIRECTORY);
+    for directory in [&runtime_temp_root, &snapshot_root] {
+        match cleanup_stale_skill_script_snapshots_at(
+            directory,
+            SystemTime::now(),
+            SKILL_SCRIPT_SNAPSHOT_MAX_AGE,
+        ) {
+            Ok(0) => {}
+            Ok(removed) => tracing::debug!(removed, "removed expired Skill script snapshots"),
+            Err(error) => tracing::warn!(
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to clean expired Skill script snapshots"
+            ),
+        }
+    }
+    snapshot_root
+}
+
+fn cleanup_stale_skill_script_snapshots_at(
+    directory: &std::path::Path,
+    now: SystemTime,
+    max_age: Duration,
+) -> std::io::Result<usize> {
+    use haven_platform::filesystem::{DirectoryCapability, is_link_or_reparse_point};
+
+    let capability = match DirectoryCapability::open(directory) {
+        Ok(capability) => capability,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let mut removed = 0;
+    for entry in std::fs::read_dir(capability.root())? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name_text) = name.to_str() else {
+            continue;
+        };
+        if !is_skill_script_snapshot_name(name_text) {
+            continue;
+        }
+        let metadata = match std::fs::symlink_metadata(entry.path()) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !metadata.is_file() || is_link_or_reparse_point(&metadata) {
+            continue;
+        }
+        let stale = now
+            .duration_since(metadata.modified()?)
+            .is_ok_and(|age| age > max_age);
+        if !stale {
+            continue;
+        }
+        match capability.remove_file(std::path::Path::new(&name)) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(removed)
+}
+
+fn is_skill_script_snapshot_name(name: &str) -> bool {
+    let Some(nonce) = name
+        .strip_prefix("haven-skill-script-")
+        .and_then(|name| name.strip_suffix(".py"))
+    else {
+        return false;
+    };
+    (6..=32).contains(&nonce.len()) && nonce.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
 struct SkillProcessOutput {
     exit_status: std::process::ExitStatus,
     stdout: CappedStreamRead,
@@ -129,7 +211,7 @@ impl SkillRunner {
             venv,
             config,
             #[cfg(not(test))]
-            script_snapshot_root: haven_common::config::default_runtime_temp_root(),
+            script_snapshot_root: default_skill_script_snapshot_root(),
             // Tests must set an isolated root before execution; an empty path
             // fails closed instead of touching the process Temp directory.
             #[cfg(test)]
@@ -443,6 +525,17 @@ mod tests {
         .await
     }
 
+    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(target, link)
+        }
+    }
+
     #[tokio::test]
     async fn runner_total_deadline_returns_timed_out() {
         let temp = tempfile::tempdir().unwrap();
@@ -521,5 +614,71 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn stale_snapshot_cleanup_only_removes_owned_regular_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let stale = temp.path().join("haven-skill-script-Abc123.py");
+        let malformed = temp.path().join("haven-skill-script-short.py");
+        let unrelated = temp.path().join("notes.py");
+        let directory = temp.path().join("haven-skill-script-Dir123.py");
+        std::fs::write(&stale, b"old snapshot").unwrap();
+        std::fs::write(&malformed, b"not a generated name").unwrap();
+        std::fs::write(&unrelated, b"unrelated").unwrap();
+        std::fs::create_dir(&directory).unwrap();
+
+        let removed = cleanup_stale_skill_script_snapshots_at(
+            temp.path(),
+            SystemTime::now() + Duration::from_secs(1),
+            Duration::ZERO,
+        )
+        .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(!stale.exists());
+        assert!(malformed.exists());
+        assert!(unrelated.exists());
+        assert!(directory.exists());
+    }
+
+    #[test]
+    fn snapshot_cleanup_keeps_files_within_the_maximum_execution_age() {
+        let temp = tempfile::tempdir().unwrap();
+        let current = temp.path().join("haven-skill-script-abc123.py");
+        std::fs::write(&current, b"active snapshot").unwrap();
+
+        let removed = cleanup_stale_skill_script_snapshots_at(
+            temp.path(),
+            SystemTime::now(),
+            SKILL_SCRIPT_SNAPSHOT_MAX_AGE,
+        )
+        .unwrap();
+
+        assert_eq!(removed, 0);
+        assert!(current.exists());
+    }
+
+    #[test]
+    fn stale_snapshot_cleanup_never_follows_or_removes_a_symlink_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("outside.py");
+        let link = temp.path().join("haven-skill-script-Link123.py");
+        std::fs::write(&target, b"outside").unwrap();
+        if symlink_file(&target, &link).is_err() {
+            // Windows CI may not grant symlink privileges to the test process.
+            return;
+        }
+
+        let removed = cleanup_stale_skill_script_snapshots_at(
+            temp.path(),
+            SystemTime::now() + Duration::from_secs(1),
+            Duration::ZERO,
+        )
+        .unwrap();
+
+        assert_eq!(removed, 0);
+        assert!(link.exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"outside");
     }
 }
