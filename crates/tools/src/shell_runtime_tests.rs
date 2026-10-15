@@ -163,6 +163,56 @@ fn shell_environment_probe_child() {
     assert!(std::env::var_os("PYTHONPATH").is_none());
 }
 
+#[cfg(windows)]
+#[test]
+fn filtered_shell_environment_supports_common_windows_commands() {
+    let work_dir = tempfile::tempdir().expect("create isolated shell work directory");
+
+    let mut cmd = build_shell_command_silent("cmd", "echo haven-cmd-compat");
+    cmd.current_dir(work_dir.path());
+    let output = cmd.output().expect("run cmd with filtered environment");
+    assert!(
+        output.status.success(),
+        "cmd failed with filtered environment: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("haven-cmd-compat"));
+
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { exit 31 }
+if ([string]::IsNullOrWhiteSpace($env:TEMP) -or -not (Test-Path -LiteralPath $env:TEMP -PathType Container)) { exit 32 }
+if ([string]::IsNullOrWhiteSpace($env:TMP) -or -not (Test-Path -LiteralPath $env:TMP -PathType Container)) { exit 33 }
+if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { exit 34 }
+foreach ($name in @('cmd.exe', 'where.exe', 'whoami.exe')) {
+    if (-not (Get-Command $name -ErrorAction SilentlyContinue)) { exit 35 }
+}
+& $env:ComSpec /d /c 'echo haven-cmd-child-compat' | Out-Null
+if ($LASTEXITCODE -ne 0) { exit 36 }
+$file = Join-Path (Get-Location) 'shell-compatibility.txt'
+Set-Content -LiteralPath $file -Value 'haven-temp-workdir-compat'
+if ((Get-Content -LiteralPath $file -Raw).Trim() -ne 'haven-temp-workdir-compat') { exit 37 }
+Remove-Item -LiteralPath $file -Force
+[Console]::Out.Write('haven-powershell-compat')
+"#;
+    let mut powershell = build_shell_command_silent("powershell", script);
+    powershell.current_dir(work_dir.path());
+    let output = powershell
+        .output()
+        .expect("run PowerShell with filtered environment");
+    assert!(
+        output.status.success(),
+        "PowerShell failed with filtered environment (exit {:?}): {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("haven-powershell-compat"));
+    assert!(
+        !work_dir.path().join("shell-compatibility.txt").exists(),
+        "PowerShell compatibility probe should clean its temporary file"
+    );
+}
+
 // ── encode_utf16le_base64 ────────────────────────────────────────────
 
 #[cfg(windows)]

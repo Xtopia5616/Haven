@@ -1177,3 +1177,4 @@
 - [1189：验证 MCP stdio 网络策略先于进程启动](1189-verify-mcp-stdio-network-policy-before-spawn.md)
 - [1190：明确 SandboxMode 的授权范围](1190-clarify-sandbox-authorization-scope.md)
 - [1191：限制受管进程树的活动进程数](1191-limit-contained-process-tree-size.md)
+- [1192：验证过滤式环境下的 Windows Shell 兼容性](1192-verify-filtered-windows-shell-compatibility.md)
