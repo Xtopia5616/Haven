@@ -875,7 +875,9 @@ mod tests {
         )
         .await;
         let config = SkillsExecConfig {
-            timeout_secs: 15,
+            // The fixture writes large payloads to both Windows pipes; leave
+            // headroom for loaded workspace test runs after venv prewarming.
+            timeout_secs: 45,
             max_output_lines: 5000,
             venv_root: temp.path().join("venvs"),
             work_dir: temp.path().join("work"),
@@ -884,9 +886,14 @@ mod tests {
         let venv = VenvManager::new(config.venv_root.clone());
         let mut runner = SkillRunner::new(venv, config);
         runner.script_snapshot_root = temp.path().join("script-snapshots");
+        runner
+            .venv
+            .ensure(skill.name(), skill.root())
+            .await
+            .unwrap();
 
         let result = tokio::time::timeout(
-            Duration::from_secs(20),
+            Duration::from_secs(55),
             runner.execute(
                 &skill,
                 &serde_json::json!({"input": "ok"}),
