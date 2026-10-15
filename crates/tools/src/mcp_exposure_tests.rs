@@ -4,7 +4,7 @@ use crate::{
 };
 use haven_common::config::{McpExposureConfig, McpServerConfig, ToolConfig};
 use haven_common::mcp::{McpServerTransport, McpToolExposure};
-use haven_common::types::NetworkPolicy;
+use haven_common::types::{NetworkPolicy, PermissionEffect, PermissionScope, SandboxMode};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -189,6 +189,37 @@ async fn direct_mcp_tools_are_advertised_and_hidden_tools_are_not_executable() {
             .is_some()
     );
 
+    let authorization = facade.share_services().authorization;
+    authorization
+        .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+        .await;
+    let workflow_request = facade
+        .resolve_workflow_subcall_authorization_request(
+            Some(session_id),
+            &name,
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("Direct MCP exposure is eligible for a Workflow child request");
+    authorization
+        .grant(
+            Some(session_id),
+            workflow_request.policy.capability.clone(),
+            PermissionEffect::Allow,
+            PermissionScope::Session,
+        )
+        .await;
+    let workflow_check = authorization
+        .authorize_for_execution(&workflow_request)
+        .await;
+    assert!(matches!(
+        workflow_check.decision,
+        crate::AuthorizationDecision::AutoApproved
+    ));
+    let workflow_proof = workflow_check
+        .execution_proof
+        .expect("the Workflow child must carry its independent proof");
+
     let mut model_only = config.clone();
     model_only.exposure.default = McpToolExposure::ModelOnly;
     facade.upsert_mcp_server_config(model_only).await;
@@ -216,6 +247,20 @@ async fn direct_mcp_tools_are_advertised_and_hidden_tools_are_not_executable() {
             .await
             .is_none(),
         "a stale Workflow plan is checked against live exposure"
+    );
+    let stale_plan = facade
+        .execute_authorized_workflow_subcall_with_step(crate::AuthorizedWorkflowSubcallExecution {
+            session_id: Some(session_id.to_owned()),
+            tool_name: name.clone(),
+            input: serde_json::json!({}),
+            cancel: CancellationToken::new(),
+            step_id: None,
+            proof: workflow_proof,
+        })
+        .await;
+    assert!(
+        stale_plan.is_err(),
+        "a proof issued for Direct exposure cannot execute after switching to ModelOnly"
     );
     assert!(
         facade
