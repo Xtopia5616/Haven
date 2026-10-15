@@ -21,6 +21,9 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+#[cfg(all(test, windows))]
+mod stdio_process_tree_tests;
+
 const MAX_TOOL_LIST_PAGES: usize = 100;
 const MAX_TOOLS_PER_SERVER: usize = 10_000;
 const MAX_TOOL_LIST_CURSOR_BYTES: usize = 4096;
