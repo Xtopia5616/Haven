@@ -13,6 +13,9 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[path = "tests/stdio_network_policy_tests.rs"]
+mod stdio_network_policy_tests;
+
 #[test]
 fn jsonrpc_request_basic() {
     let req = jsonrpc_request(1, "initialize", None);
