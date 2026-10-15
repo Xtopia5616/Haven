@@ -196,6 +196,8 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 ADR 1212 已将同一 proof-bound 撤销生命周期接入 Skill 脚本、venv 创建和 pip 安装，并为每个 setup 子进程增加启动 permit；App 直接 Skill 命令现把 proof 交回 Tools owner。Skill 无授权 adapter 入口与 venv 无授权启动入口 fail closed。前述“Skill 尚未接入”描述 ADR 1211 的历史状态；MCP stdio 已按 ADR 1213 接入同一全局撤销 signal 与 spawn permit；旧 client generation 会被回收且不能自动重启，Windows 集成回归验证撤权会释放 live server 与后代进程。该接线不构成 Skill 或 MCP server 的 AppContainer 文件/网络隔离。
 
+MCP stdio 进程撤销现只订阅 process-boundary revision：sandbox、writable roots、network 或 execution workspace 更新仍会 drain 旧 generation；permission mode、普通 trust revoke 与 tool settings 更新不会断开 server，每次 MCP tool call 仍经实时 exposure 与授权检查（ADR 1216）。
+
 Skill 创建现通过固定 Skills 根 `DirectoryCapability` 创建目录树，并以原子替换写入脚本和最后发布 `SKILL.md`；失败清理由同一 capability 执行，避免路径跟随和部分目录进入注册表（ADR 1214）。
 
 ADR 1215 根据 Windows Container 官方宿主要求、`StorageSandboxSize` 能力边界和客户端容器许可进一步限定 HCS 候选：它不作为 Haven 常规 Windows 客户端生产执行的默认配额后端；OS 强制存储配额 Gate 仍开放，`WorkspaceWrite` 子进程继续 fail closed。

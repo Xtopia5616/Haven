@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现。MCP stdio client generation 绑定 Tools 当前策略快照；全局策略变更会断开旧 stdio client，旧快照也不能启动自动重连子进程。
+已实现。MCP stdio client generation 绑定 Tools 当前 process-boundary 快照。原全局撤销范围现由 [ADR 1216](1216-scope-mcp-stdio-process-revocation.md) 收窄：sandbox、writable roots、network 或 execution workspace 变化会断开旧 stdio client；无关的权限模式、trust 和工具设置变化不会断开。
 
 ## 背景
 

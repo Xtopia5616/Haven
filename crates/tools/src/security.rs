@@ -565,6 +565,9 @@ struct SafetyConfig {
     /// invalidate outstanding receipts; the grant attached to the decision
     /// that created a receipt is intentionally applied after final execution.
     policy_revision: u64,
+    /// Boundary revision for manager-owned opaque MCP stdio processes.
+    /// Permission and trust changes do not affect an already-running server.
+    process_boundary_revision: u64,
     /// Permanent (Always) grants from `SecurityConfig.permissions`.
     permanent: HashMap<CapabilityScope, PermissionEffect>,
     /// Session-scoped grants keyed by session id.
@@ -584,6 +587,7 @@ struct SafetyConfig {
 pub struct AuthorizationEngine {
     config: Arc<RwLock<SafetyConfig>>,
     policy_changes: tokio::sync::watch::Sender<Arc<()>>,
+    process_boundary_changes: tokio::sync::watch::Sender<Arc<()>>,
 }
 
 /// Short-lived side-effect capability derived from one proof-verified tool
@@ -599,15 +603,16 @@ pub(crate) struct ExecutionPolicyAuthorization {
     policy_signal: Arc<()>,
 }
 
-/// Current policy snapshot for a manager-owned MCP stdio client generation.
-/// Unlike a tool proof it is not permission to call a tool; it only permits a
-/// child process to start while opaque network access remains explicitly open.
+/// Current process-boundary snapshot for a manager-owned MCP stdio client
+/// generation. Unlike a tool proof it is not permission to call a tool; it
+/// only permits a child process to start while opaque network access remains
+/// explicitly open.
 #[derive(Clone)]
 pub(crate) struct McpStdioProcessStartAuthorization {
     authorization: Arc<AuthorizationEngine>,
-    policy_revision: u64,
+    process_boundary_revision: u64,
     execution_workspace_generation: u64,
-    policy_signal: Arc<()>,
+    process_boundary_signal: Arc<()>,
 }
 
 pub(crate) struct ExecutionPolicyPermit {
@@ -686,13 +691,13 @@ impl ExecutionPolicyAuthorization {
 impl McpStdioProcessStartAuthorization {
     async fn acquire(&self) -> Result<ExecutionPolicyPermit, String> {
         let config = Arc::clone(&self.authorization.config).read_owned().await;
-        if config.policy_revision != self.policy_revision
+        if config.process_boundary_revision != self.process_boundary_revision
             || !Arc::ptr_eq(
-                &self.authorization.policy_changes.borrow().clone(),
-                &self.policy_signal,
+                &self.authorization.process_boundary_changes.borrow().clone(),
+                &self.process_boundary_signal,
             )
         {
-            return Err("execution policy changed before the MCP process start".into());
+            return Err("MCP process boundaries changed before process start".into());
         }
         if config.execution_workspace.generation() != self.execution_workspace_generation {
             return Err("execution workspace changed before the MCP process start".into());
@@ -864,6 +869,8 @@ impl AuthorizationEngine {
 
     fn new_with_workspace(execution_workspace: ExecutionWorkspace) -> Self {
         let (policy_changes, _policy_change_receiver) = tokio::sync::watch::channel(Arc::new(()));
+        let (process_boundary_changes, _process_boundary_change_receiver) =
+            tokio::sync::watch::channel(Arc::new(()));
         Self {
             config: Arc::new(RwLock::new(SafetyConfig {
                 permission_mode: PermissionMode::Default,
@@ -872,11 +879,13 @@ impl AuthorizationEngine {
                 execution_workspace,
                 network_policy: NetworkPolicy::Ask,
                 policy_revision: 0,
+                process_boundary_revision: 0,
                 permanent: HashMap::new(),
                 session_grants: HashMap::new(),
                 tool_settings: HashMap::new(),
             })),
             policy_changes,
+            process_boundary_changes,
         }
     }
 
@@ -885,8 +894,16 @@ impl AuthorizationEngine {
         self.policy_changes.send_replace(Arc::new(()));
     }
 
-    pub(crate) fn subscribe_policy_changes(&self) -> tokio::sync::watch::Receiver<Arc<()>> {
-        self.policy_changes.subscribe()
+    fn bump_process_boundary_revision(&self, cfg: &mut SafetyConfig) {
+        cfg.process_boundary_revision = cfg.process_boundary_revision.saturating_add(1);
+        self.process_boundary_changes.send_replace(Arc::new(()));
+    }
+
+    /// Observe only the boundary changes that require manager-owned opaque
+    /// MCP processes to stop; ordinary permission and trust changes are
+    /// handled by fresh authorization of each MCP tool call.
+    pub(crate) fn subscribe_stdio_process_changes(&self) -> tokio::sync::watch::Receiver<Arc<()>> {
+        self.process_boundary_changes.subscribe()
     }
 
     pub(crate) async fn capture_mcp_stdio_process_start_authorization(
@@ -898,9 +915,9 @@ impl AuthorizationEngine {
         }
         Some(Arc::new(McpStdioProcessStartAuthorization {
             authorization: Arc::clone(self),
-            policy_revision: config.policy_revision,
+            process_boundary_revision: config.process_boundary_revision,
             execution_workspace_generation: config.execution_workspace.generation(),
-            policy_signal: self.policy_changes.borrow().clone(),
+            process_boundary_signal: self.process_boundary_changes.borrow().clone(),
         }))
     }
 
@@ -931,6 +948,7 @@ impl AuthorizationEngine {
             .checked_add(1)
             .ok_or_else(|| "workspace generation is exhausted".to_string())?;
         cfg.execution_workspace = candidate.with_generation(generation);
+        self.bump_process_boundary_revision(&mut cfg);
         self.bump_policy_revision(&mut cfg);
         Ok(cfg.execution_workspace.snapshot())
     }
@@ -973,10 +991,19 @@ impl AuthorizationEngine {
                 }
             }
         };
+        let writable_roots = security
+            .writable_roots
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let process_boundaries_changed = cfg.sandbox_mode != security.sandbox_mode
+            || cfg.writable_roots != writable_roots
+            || cfg.network_policy != security.network_policy
+            || cfg.execution_workspace.generation() != workspace.generation();
         cfg.execution_workspace = workspace;
         cfg.permission_mode = security.permission_mode;
         cfg.sandbox_mode = security.sandbox_mode;
-        cfg.writable_roots = security.writable_roots.iter().map(PathBuf::from).collect();
+        cfg.writable_roots = writable_roots;
         cfg.network_policy = security.network_policy;
         cfg.permanent.clear();
         for p in &security.permissions {
@@ -993,6 +1020,9 @@ impl AuthorizationEngine {
             }
         }
         cfg.session_grants.clear();
+        if process_boundaries_changed {
+            self.bump_process_boundary_revision(&mut cfg);
+        }
         self.bump_policy_revision(&mut cfg);
         if let Some(error) = workspace_error {
             tracing::warn!(
@@ -1022,10 +1052,16 @@ impl AuthorizationEngine {
         network_policy: NetworkPolicy,
     ) {
         let mut cfg = self.config.write().await;
+        let process_boundaries_changed = cfg.sandbox_mode != sandbox_mode
+            || cfg.writable_roots != writable_roots
+            || cfg.network_policy != network_policy;
         cfg.sandbox_mode = sandbox_mode;
         cfg.writable_roots = writable_roots;
         cfg.network_policy = network_policy;
         cfg.session_grants.clear();
+        if process_boundaries_changed {
+            self.bump_process_boundary_revision(&mut cfg);
+        }
         self.bump_policy_revision(&mut cfg);
     }
 
@@ -2413,6 +2449,100 @@ mod tests {
                 .await
                 .is_none(),
             "non-open opaque-network policy must not produce a stdio start authorization"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_stdio_authorization_survives_unrelated_permission_changes() {
+        let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let authorization = engine
+            .capture_mcp_stdio_process_start_authorization()
+            .await
+            .expect("open network policy permits an MCP stdio snapshot");
+        let mut process_changes = engine.subscribe_stdio_process_changes();
+
+        engine.set_permission_mode(PermissionMode::Plan).await;
+        assert!(
+            authorization.acquire().await.is_ok(),
+            "permission mode changes affect tool calls, not the lifetime of an already-open stdio server"
+        );
+
+        engine.set_tool_settings(HashMap::new()).await;
+        assert!(
+            authorization.acquire().await.is_ok(),
+            "tool settings changes must not revoke an unrelated server process"
+        );
+
+        let capability = CapabilityScope::try_new("shell").unwrap();
+        engine
+            .grant(
+                Some("session-one"),
+                capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Session,
+            )
+            .await;
+        assert!(
+            engine
+                .revoke_session_grant("session-one", &capability)
+                .await
+        );
+        assert!(
+            authorization.acquire().await.is_ok(),
+            "revoking a session-scoped shell grant must not disconnect MCP servers"
+        );
+
+        let security = SecurityConfig {
+            permission_mode: PermissionMode::Autonomous,
+            sandbox_mode: SandboxMode::FullAccess,
+            network_policy: NetworkPolicy::Open,
+            ..SecurityConfig::default()
+        };
+        engine.apply_security(&security).await.unwrap();
+        assert!(
+            authorization.acquire().await.is_ok(),
+            "applying unrelated security settings without changing process boundaries must preserve the server generation"
+        );
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                process_changes.changed()
+            )
+            .await
+            .is_err(),
+            "unrelated authorization changes must not notify the MCP process owner"
+        );
+
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), process_changes.changed())
+            .await
+            .expect("network boundary changes must notify the MCP process owner")
+            .expect("MCP process boundary signal remains available");
+        assert!(
+            authorization.acquire().await.is_err(),
+            "a network boundary change must still invalidate the captured server authorization"
+        );
+
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let workspace_authorization = engine
+            .capture_mcp_stdio_process_start_authorization()
+            .await
+            .expect("open policy permits a fresh MCP server generation");
+        let next_workspace = tempfile::tempdir().unwrap();
+        engine
+            .switch_execution_workspace(next_workspace.path())
+            .await
+            .unwrap();
+        assert!(
+            workspace_authorization.acquire().await.is_err(),
+            "workspace changes must continue to revoke captured MCP server generations"
         );
     }
 
