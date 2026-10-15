@@ -3,3 +3,4 @@
 pub mod credentials;
 pub mod filesystem;
 pub mod process_containment;
+pub mod process_environment;

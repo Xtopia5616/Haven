@@ -12,32 +12,16 @@ use haven_platform::process_containment::ProcessContainment;
 const REQUIREMENTS_FINGERPRINT_FILE: &str = ".haven-requirements-fingerprint";
 const MAX_SETUP_STREAM_BYTES: usize = 1024 * 1024;
 const MAX_REQUIREMENTS_BYTES: usize = 1024 * 1024;
-const SKILL_SETUP_ENV_ALLOWLIST: &[&str] = &["PATH", "SYSTEMROOT", "TEMP", "TMP"];
 
+#[cfg(test)]
 fn is_skill_setup_env_allowed(key: &std::ffi::OsStr) -> bool {
-    let Some(key) = key.to_str() else {
-        return false;
-    };
-
-    SKILL_SETUP_ENV_ALLOWLIST.iter().any(|allowed| {
-        #[cfg(windows)]
-        {
-            key.eq_ignore_ascii_case(allowed)
-        }
-        #[cfg(not(windows))]
-        {
-            key == *allowed
-        }
-    }) || cfg!(windows)
-        && (key.eq_ignore_ascii_case("COMSPEC") || key.eq_ignore_ascii_case("PATHEXT"))
+    haven_platform::process_environment::is_runtime_baseline_variable(key)
 }
 
 fn filtered_skill_setup_environment(
     environment: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
 ) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
-    environment
-        .filter(|(key, _)| is_skill_setup_env_allowed(key))
-        .collect()
+    haven_platform::process_environment::filter_runtime_baseline_environment(environment)
 }
 
 fn configure_skill_setup_environment(command: &mut Command) {

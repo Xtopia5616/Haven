@@ -26,6 +26,29 @@ const MAX_TOOLS_PER_SERVER: usize = 10_000;
 const MAX_TOOL_LIST_CURSOR_BYTES: usize = 4096;
 const MAX_TOOL_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// Give stdio servers only the minimal launcher environment and this profile's
+/// explicit runtime variables. Environment entries may opt into GUI launchers
+/// by overriding the safe `MCP_AUTOLAUNCH=0` default.
+fn configure_stdio_server_environment(
+    command: &mut std::process::Command,
+    inherited_environment: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    configured_environment: &[String],
+) {
+    command
+        .env_clear()
+        .envs(
+            haven_platform::process_environment::filter_runtime_baseline_environment(
+                inherited_environment,
+            ),
+        )
+        .env("MCP_AUTOLAUNCH", "0");
+    for entry in configured_environment {
+        if let Some((key, value)) = entry.split_once('=') {
+            command.env(key, value);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum McpToolCacheScope {
     Public,
@@ -490,17 +513,9 @@ impl McpClient {
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
             cmd.kill_on_drop(true);
-            // MCP launchers that can open companion GUI applications must
-            // require an explicit opt-in. Per-server environment entries
-            // below may override this default with `MCP_AUTOLAUNCH=1`.
-            cmd.env("MCP_AUTOLAUNCH", "0");
+            configure_stdio_server_environment(cmd.as_std_mut(), std::env::vars_os(), &self.env);
             if let Some(cwd) = &self.cwd {
                 cmd.current_dir(cwd);
-            }
-            for e in &self.env {
-                if let Some((key, val)) = e.split_once('=') {
-                    cmd.env(key, val);
-                }
             }
             cmd
         };
@@ -1503,6 +1518,57 @@ fn validate_unique_tool_names(tools: &[McpToolInfo]) -> anyhow::Result<()> {
         anyhow::bail!("invalid tools/list: tool names must be non-empty and unique");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod stdio_environment_tests {
+    use super::*;
+
+    const CHILD_PROBE_MARKER: &str = "HAVEN_MCP_ENVIRONMENT_PROBE";
+    const AMBIENT_SECRET: &str = "HAVEN_MCP_TEST_AMBIENT_SECRET";
+
+    #[test]
+    fn stdio_server_receives_only_runtime_baseline_and_profile_values() {
+        let mut command =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"));
+        command.args([
+            "--exact",
+            "client::stdio_environment_tests::child_environment_probe",
+            "--nocapture",
+        ]);
+        let inherited = std::env::vars_os().chain([
+            (AMBIENT_SECRET.into(), "must-not-leak".into()),
+            ("PYTHONPATH".into(), "untrusted-import-root".into()),
+        ]);
+        configure_stdio_server_environment(
+            &mut command,
+            inherited,
+            &[
+                "MCP_AUTOLAUNCH=1".into(),
+                "MCP_PROFILE_VALUE=explicit".into(),
+            ],
+        );
+        command.env(CHILD_PROBE_MARKER, "1");
+
+        let output = command.output().expect("spawn isolated test child");
+        assert!(
+            output.status.success(),
+            "child environment probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn child_environment_probe() {
+        if std::env::var_os(CHILD_PROBE_MARKER).is_none() {
+            return;
+        }
+        assert!(std::env::var_os(AMBIENT_SECRET).is_none());
+        assert!(std::env::var_os("PYTHONPATH").is_none());
+        assert_eq!(std::env::var("MCP_AUTOLAUNCH").unwrap(), "1");
+        assert_eq!(std::env::var("MCP_PROFILE_VALUE").unwrap(), "explicit");
+        assert!(std::env::var_os("PATH").is_some());
+    }
 }
 
 #[cfg(test)]

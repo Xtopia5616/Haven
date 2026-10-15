@@ -1167,3 +1167,4 @@
 - [1179：按 Skill 调用隔离并回收工作目录](1179-isolate-skill-invocation-scratch.md)
 - [1180：有界回收崩溃遗留的 Skill scratch](1180-reclaim-stale-skill-scratch.md)
 - [1181：在 WorkspaceWrite 下拒绝 opaque capability](1181-block-opaque-capabilities-in-workspace-write.md)
+- [1182：限制 MCP stdio 的继承环境变量](1182-restrict-mcp-stdio-inherited-environment.md)
