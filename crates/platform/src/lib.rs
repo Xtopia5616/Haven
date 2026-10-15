@@ -4,3 +4,7 @@ pub mod credentials;
 pub mod filesystem;
 pub mod process_containment;
 pub mod process_environment;
+
+#[cfg(all(test, windows))]
+#[path = "appcontainer_probe_tests.rs"]
+mod appcontainer_probe_tests;

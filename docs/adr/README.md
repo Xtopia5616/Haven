@@ -1179,3 +1179,4 @@
 - [1191：限制受管进程树的活动进程数](1191-limit-contained-process-tree-size.md)
 - [1192：验证过滤式环境下的 Windows Shell 兼容性](1192-verify-filtered-windows-shell-compatibility.md)
 - [1193：明确网络策略只约束 Haven 工具授权入口](1193-clarify-network-policy-scope.md)
+- [1194：验证 Windows AppContainer 文件与网络边界](1194-verify-windows-appcontainer-boundaries.md)
