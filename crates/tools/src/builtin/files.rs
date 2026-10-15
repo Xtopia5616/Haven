@@ -282,7 +282,7 @@ impl FilesTool {
         let context = crate::ToolExecutionContext {
             execution_workspace: Some(self.authorization.execution_workspace().await),
             file_write_policy: Some(crate::security::FileWritePolicy::ambient_for_test()),
-            execution_spawn_authorization: None,
+            execution_authorization: Some(crate::security::ExecutionPolicyAuthorization::for_test()),
         };
         self.run_with_execution_context(params, cancel, &context)
             .await
@@ -308,6 +308,21 @@ impl FilesTool {
         if mutates_files && context.file_write_policy.is_none() {
             anyhow::bail!("file mutation requires proof-derived directory authority");
         }
+        let _mutation_permit = if mutates_files {
+            Some(
+                context
+                    .acquire_execution_policy_permit()
+                    .await
+                    .map_err(crate::security::execution_policy_denied)?
+                    .ok_or_else(|| {
+                        crate::security::execution_policy_denied(
+                            "file mutation requires a live proof-derived policy permit".into(),
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
         let mutation_context = file_mutations::MutationContext {
             cancel: &cancel,
             write_policy: context.file_write_policy.as_ref(),

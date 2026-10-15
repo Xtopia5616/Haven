@@ -172,9 +172,8 @@ impl ShellTool {
                         cwd: shell_context.working_directory,
                         session_id: params.session_id.as_deref(),
                         source_step_id,
-                        spawn_authorization: execution_context.and_then(
-                            crate::ToolExecutionContext::clone_execution_spawn_authorization,
-                        ),
+                        execution_authorization: execution_context
+                            .and_then(crate::ToolExecutionContext::clone_execution_authorization),
                     },
                     &cancel,
                 )
@@ -207,9 +206,9 @@ impl ShellTool {
         containment.prepare_command(child_cmd.as_std_mut(), windows_creation_flags);
         let spawn_permit = match execution_context {
             Some(context) => context
-                .acquire_execution_spawn_permit()
+                .acquire_execution_policy_permit()
                 .await
-                .map_err(crate::security::execution_spawn_denied)?,
+                .map_err(crate::security::execution_policy_denied)?,
             None => None,
         };
         let child_spawn_result = {

@@ -7,7 +7,7 @@ pub(crate) struct BackgroundShellRequest<'a> {
     pub(crate) cwd: Option<std::path::PathBuf>,
     pub(crate) session_id: Option<&'a str>,
     pub(crate) source_step_id: Option<&'a str>,
-    pub(crate) spawn_authorization: Option<crate::security::ExecutionSpawnAuthorization>,
+    pub(crate) execution_authorization: Option<crate::security::ExecutionPolicyAuthorization>,
 }
 
 impl ToolRunService {
@@ -62,7 +62,7 @@ impl ToolRunService {
             cwd,
             session_id,
             source_step_id,
-            spawn_authorization: None,
+            execution_authorization: None,
         };
         let cancel = CancellationToken::new();
         self.spawn_shell_for_session_with_source_and_cancel(request, &cancel)
@@ -86,7 +86,7 @@ impl ToolRunService {
             cwd,
             session_id,
             source_step_id,
-            spawn_authorization,
+            execution_authorization,
         } = request;
         if self.shutting_down.load(Ordering::Acquire) {
             anyhow::bail!("ToolRun service is shutting down");
@@ -221,12 +221,12 @@ impl ToolRunService {
         #[cfg(not(windows))]
         let windows_creation_flags = 0;
         containment.prepare_command(child_cmd.as_std_mut(), windows_creation_flags);
-        let spawn_permit = match spawn_authorization.as_ref() {
+        let execution_permit = match execution_authorization.as_ref() {
             Some(authorization) => match authorization.acquire().await {
                 Ok(permit) => Some(permit),
                 Err(error) => {
                     self.rollback_background_registration(&tool_run_id).await;
-                    return Err(crate::security::execution_spawn_denied(error));
+                    return Err(crate::security::execution_policy_denied(error));
                 }
             },
             None => None,
@@ -235,7 +235,7 @@ impl ToolRunService {
             let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
             child_cmd.kill_on_drop(true).spawn()
         };
-        drop(spawn_permit);
+        drop(execution_permit);
         let mut child = match child_spawn_result {
             Ok(c) => c,
             Err(e) => {

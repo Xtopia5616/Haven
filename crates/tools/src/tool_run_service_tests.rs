@@ -860,7 +860,7 @@ async fn cancelled_background_admission_waiting_on_cleanup_gate_is_not_published
                     cwd: None,
                     session_id: Some("ses-25c77666e61c3a1f45188a11a91e7485"),
                     source_step_id: None,
-                    spawn_authorization: None,
+                    execution_authorization: None,
                 },
                 &spawn_cancel,
             )

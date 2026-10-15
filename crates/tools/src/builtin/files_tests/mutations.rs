@@ -101,7 +101,7 @@ async fn proof_derived_directory_policy_confines_file_writes() {
     let context = ToolExecutionContext {
         execution_workspace: None,
         file_write_policy: Some(policy),
-        execution_spawn_authorization: None,
+        execution_authorization: Some(crate::security::ExecutionPolicyAuthorization::for_test()),
     };
     let tool = FilesTool::default();
 
@@ -140,6 +140,106 @@ async fn proof_derived_directory_policy_confines_file_writes() {
         .await;
     assert!(denied_result.is_err());
     assert!(!denied_file.exists());
+}
+
+#[tokio::test]
+async fn file_mutation_rejects_a_policy_change_after_proof_capture() {
+    use crate::security::AuthorizationEngine;
+    use crate::{
+        AuthorizationDecision, AuthorizationRequest, ConfirmationRequirement, DataSensitivity,
+        NetworkAccess, OperationEffect, OperationIdempotency, OperationPolicy, ToolConcurrency,
+        ToolOperationScope,
+    };
+    use haven_common::types::{
+        CapabilityScope, NetworkPolicy, PermissionMode, SandboxMode,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("must-not-write.txt");
+    let input = json!({
+        "operation": "write",
+        "path": file.to_string_lossy(),
+        "content": "stale authorization must not write"
+    });
+    let policy = OperationPolicy {
+        risk_level: RiskLevel::Low,
+        capability: CapabilityScope::try_new("files.write").unwrap(),
+        confirmation: ConfirmationRequirement::None,
+        idempotency: OperationIdempotency::NonIdempotent,
+        scope: ToolOperationScope::Session,
+        concurrency: ToolConcurrency::Exclusive,
+        effect: OperationEffect::WorkspaceWrite,
+        data_sensitivity: DataSensitivity::UserData,
+        network_access: NetworkAccess::None,
+    };
+    let request = AuthorizationRequest::new(
+        Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        "files.write",
+        input.clone(),
+        policy,
+    );
+    let engine = Arc::new(AuthorizationEngine::new());
+    engine
+        .set_boundaries(
+            SandboxMode::WorkspaceWrite,
+            vec![tmp.path().to_path_buf()],
+            NetworkPolicy::Open,
+        )
+        .await;
+    engine.set_permission_mode(PermissionMode::Autonomous).await;
+    let check = engine.authorize_for_execution(&request).await;
+    assert!(matches!(
+        check.decision,
+        AuthorizationDecision::AutoApproved
+    ));
+    let proof = check.execution_proof.unwrap();
+    let context = engine
+        .execution_context_for_proof(&request, &proof)
+        .await
+        .unwrap();
+
+    engine
+        .set_boundaries(SandboxMode::ReadOnly, Vec::new(), NetworkPolicy::Deny)
+        .await;
+
+    let error = FilesTool::default()
+        .run_with_execution_context(
+            serde_json::from_value(input).unwrap(),
+            CancellationToken::new(),
+            &context,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("execution policy changed"));
+    assert!(!file.exists());
+}
+
+#[tokio::test]
+async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_policy() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("must-not-write.txt");
+    let context = ToolExecutionContext {
+        execution_workspace: None,
+        file_write_policy: Some(FileWritePolicy::default()),
+        execution_authorization: None,
+    };
+
+    let error = FilesTool::default()
+        .run_with_execution_context(
+            serde_json::from_value(json!({
+                "operation": "write",
+                "path": file.to_string_lossy(),
+                "content": "missing policy permit"
+            }))
+            .unwrap(),
+            CancellationToken::new(),
+            &context,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("live proof-derived policy permit"));
+    assert!(!file.exists());
 }
 
     #[tokio::test]

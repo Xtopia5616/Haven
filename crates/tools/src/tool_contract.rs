@@ -1726,23 +1726,23 @@ pub trait Tool: Send + Sync {
 pub struct ToolExecutionContext {
     pub(crate) execution_workspace: Option<crate::execution_workspace::ExecutionWorkspace>,
     pub(crate) file_write_policy: Option<crate::security::FileWritePolicy>,
-    pub(crate) execution_spawn_authorization: Option<crate::security::ExecutionSpawnAuthorization>,
+    pub(crate) execution_authorization: Option<crate::security::ExecutionPolicyAuthorization>,
 }
 
 impl ToolExecutionContext {
-    pub(crate) async fn acquire_execution_spawn_permit(
+    pub(crate) async fn acquire_execution_policy_permit(
         &self,
-    ) -> Result<Option<crate::security::ExecutionSpawnPermit<'_>>, String> {
-        match &self.execution_spawn_authorization {
+    ) -> Result<Option<crate::security::ExecutionPolicyPermit<'_>>, String> {
+        match &self.execution_authorization {
             Some(authorization) => authorization.acquire().await.map(Some),
             None => Ok(None),
         }
     }
 
-    pub(crate) fn clone_execution_spawn_authorization(
+    pub(crate) fn clone_execution_authorization(
         &self,
-    ) -> Option<crate::security::ExecutionSpawnAuthorization> {
-        self.execution_spawn_authorization.clone()
+    ) -> Option<crate::security::ExecutionPolicyAuthorization> {
+        self.execution_authorization.clone()
     }
 }
 

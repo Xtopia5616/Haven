@@ -564,23 +564,23 @@ pub struct AuthorizationEngine {
     config: RwLock<SafetyConfig>,
 }
 
-/// Short-lived process-start capability derived from one proof-verified tool
+/// Short-lived side-effect capability derived from one proof-verified tool
 /// attempt. Acquiring it holds a read lock on the live policy through the
-/// synchronous OS process creation call, so a policy/workspace update either
-/// wins before spawn and rejects it or takes effect immediately after spawn.
+/// protected operation, so a policy/workspace update either wins first and
+/// rejects the stale proof or takes effect after the operation completes.
 #[derive(Clone)]
-pub(crate) struct ExecutionSpawnAuthorization {
+pub(crate) struct ExecutionPolicyAuthorization {
     authorization: Arc<AuthorizationEngine>,
     policy_revision: u64,
     execution_workspace_generation: u64,
     expires_at: u64,
 }
 
-pub(crate) struct ExecutionSpawnPermit<'a> {
+pub(crate) struct ExecutionPolicyPermit<'a> {
     _config: tokio::sync::RwLockReadGuard<'a, SafetyConfig>,
 }
 
-pub(crate) fn execution_spawn_denied(reason: String) -> anyhow::Error {
+pub(crate) fn execution_policy_denied(reason: String) -> anyhow::Error {
     anyhow::Error::new(StructuredToolError::new(
         reason,
         ToolErrorMetadata {
@@ -591,19 +591,32 @@ pub(crate) fn execution_spawn_denied(reason: String) -> anyhow::Error {
     ))
 }
 
-impl ExecutionSpawnAuthorization {
-    pub(crate) async fn acquire(&self) -> Result<ExecutionSpawnPermit<'_>, String> {
+impl ExecutionPolicyAuthorization {
+    pub(crate) async fn acquire(&self) -> Result<ExecutionPolicyPermit<'_>, String> {
         if confirmation_now() >= self.expires_at {
-            return Err("execution proof expired before process creation".into());
+            return Err("execution proof expired before the side effect".into());
         }
         let config = self.authorization.config.read().await;
+        if confirmation_now() >= self.expires_at {
+            return Err("execution proof expired before the side effect".into());
+        }
         if config.policy_revision != self.policy_revision {
-            return Err("execution policy changed before process creation".into());
+            return Err("execution policy changed before the side effect".into());
         }
         if config.execution_workspace.generation() != self.execution_workspace_generation {
-            return Err("execution workspace changed before process creation".into());
+            return Err("execution workspace changed before the side effect".into());
         }
-        Ok(ExecutionSpawnPermit { _config: config })
+        Ok(ExecutionPolicyPermit { _config: config })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            authorization: Arc::new(AuthorizationEngine::new()),
+            policy_revision: 0,
+            execution_workspace_generation: 1,
+            expires_at: execution_proof_expiry(),
+        }
     }
 }
 
@@ -994,7 +1007,7 @@ impl AuthorizationEngine {
         Ok(ToolExecutionContext {
             execution_workspace: Some(cfg.execution_workspace.clone()),
             file_write_policy,
-            execution_spawn_authorization: Some(ExecutionSpawnAuthorization {
+            execution_authorization: Some(ExecutionPolicyAuthorization {
                 authorization: Arc::clone(self),
                 policy_revision: proof.binding.policy_revision,
                 execution_workspace_generation: cfg.execution_workspace.generation(),
@@ -2136,7 +2149,7 @@ mod tests {
         assert!(context.execution_workspace.is_some());
         assert!(
             context
-                .acquire_execution_spawn_permit()
+                .acquire_execution_policy_permit()
                 .await
                 .expect("the current policy grants process creation")
                 .is_some()
@@ -2153,11 +2166,11 @@ mod tests {
             "execution authority must not be captured from a stale proof"
         );
         let reason = context
-            .acquire_execution_spawn_permit()
+            .acquire_execution_policy_permit()
             .await
             .err()
             .expect("a captured context cannot start a process after policy changes");
-        let error = execution_spawn_denied(reason);
+        let error = execution_policy_denied(reason);
         let metadata = error
             .downcast_ref::<StructuredToolError>()
             .expect("a stale spawn is reported as a structured permission failure")
@@ -2189,7 +2202,7 @@ mod tests {
             .await
             .expect("current proof captures process-start authorization");
         let spawn_permit = context
-            .acquire_execution_spawn_permit()
+            .acquire_execution_policy_permit()
             .await
             .expect("policy is live")
             .expect("proof-bound execution context owns a process-start permit");
@@ -2203,7 +2216,7 @@ mod tests {
             .set_boundaries(SandboxMode::ReadOnly, Vec::new(), NetworkPolicy::Deny)
             .await;
         assert!(
-            context.acquire_execution_spawn_permit().await.is_err(),
+            context.acquire_execution_policy_permit().await.is_err(),
             "the captured execution context is stale after the update"
         );
     }
@@ -2265,7 +2278,7 @@ mod tests {
             "switching the workspace invalidates outstanding execution proofs"
         );
         assert!(
-            context.acquire_execution_spawn_permit().await.is_err(),
+            context.acquire_execution_policy_permit().await.is_err(),
             "a process-start context cannot cross workspace generations"
         );
 
