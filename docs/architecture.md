@@ -59,7 +59,7 @@ haven-skills ──► haven-common, haven-platform
 状态创建进程、先分配 Job 再恢复唯一初始线程；其他平台保持原有 no-op 行为。平台 crate 拥有该
 操作系统顺序和 FFI，adapter 仍拥有命令配置、管道、取消、等待与工具生命周期（ADR 0513、0515）。
 Skill 依赖安装禁用 pip 用户缓存，避免在 Haven 管理目录之外留下无容量 owner 的重复包缓存（ADR 1176）。
-Skill 脚本快照位于独立 Temp 子目录，`TempPath` 负责正常回收；runner 初始化时用目录 capability 清除超过最长脚本期限的 Haven 快照（ADR 1177）。每个 composition-owned `SkillRunner` 最多并发执行 4 个 Skill，克隆共享同一执行槽；槽位覆盖快照、venv 准备、子进程和输出捕获，并将排队时间计入调用期限。由此每个 runner 同时持有的脚本快照最多 64 MiB、管道原始保留缓冲最多 64 MiB；不限制 Skill 子进程自身内存或 work directory 内容，也不构成 OS filesystem sandbox（ADR 1178）。
+Skill 脚本快照位于独立 Temp 子目录，`TempPath` 负责正常回收；runner 初始化时用目录 capability 清除超过最长脚本期限的 Haven 快照（ADR 1177）。每个 composition-owned `SkillRunner` 最多并发执行 4 个 Skill，克隆共享同一执行槽；槽位覆盖快照、venv 准备、子进程和输出捕获，并将排队时间计入调用期限。由此每个 runner 同时持有的脚本快照最多 64 MiB、管道原始保留缓冲最多 64 MiB。每棵由 `ProcessContainment` 管理的 Windows 子进程树最多有 256 个活动进程，并在 Job 关闭时整体回收（ADR 1191）；这不限制进程内存或 work directory 内容，也不构成 OS filesystem sandbox。
 `SkillsExecConfig.work_dir` 是绝对本地 scratch 父目录；每次 Skill 调用持有独立 `TempDir` cwd，正常结束时尝试删除，Windows 句柄释放延迟时通过父目录 capability 有限重试，配置根经 `DirectoryCapability` 检查 reparse point（ADR 1179）。每次新调用会通过 capability 有界检查至多 4096 个直接子项，最多回收 16 个超过最大 Skill 执行期限加 60 秒的 Haven 命名目录；owner 文件的跨进程锁保护仍活动的调用，重解析点、过新、无法确认和超过扫描上限的项目都会保留（ADR 1180）。崩溃残留在后续 Skill 调用时机会性回收，不在 UI 启动时全盘扫描；相对 cwd 输出不会跨调用或 Skill 共享。cwd 仅拥有临时文件生命周期，不是 OS 文件系统权限边界。
 `haven-platform::filesystem::is_link_or_reparse_point` 统一检查单个 metadata 是否为 symlink 或 Windows
 reparse point；`open_read_only` 在 Windows 禁止新写入/删除句柄，`same_file_identity` 比较已打开句柄的文件身份，

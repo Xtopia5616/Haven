@@ -1,12 +1,14 @@
 //! OS process containment shared by every child-process adapter.
 //!
-//! On Windows this uses a Job Object with kill-on-close. Children are created
-//! suspended, assigned to the Job, and only then resumed so their descendants
-//! inherit containment. Filesystem and network authorization still belongs to
-//! the operation gateway; a Job Object is deliberately not presented as an
-//! AppContainer.
+//! On Windows this uses a Job Object with kill-on-close and a bounded active
+//! process count. Children are created suspended, assigned to the Job, and
+//! only then resumed so their descendants inherit containment. Filesystem and
+//! network authorization still belongs to the operation gateway; a Job Object
+//! is deliberately not presented as an AppContainer.
 
 use std::io;
+
+const DEFAULT_ACTIVE_PROCESS_LIMIT: u32 = 256;
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
@@ -34,13 +36,24 @@ unsafe impl Sync for ProcessContainment {}
 impl ProcessContainment {
     /// Create a containment boundary before spawning the child.
     pub fn new() -> io::Result<Self> {
+        Self::new_with_active_process_limit(DEFAULT_ACTIVE_PROCESS_LIMIT)
+    }
+
+    fn new_with_active_process_limit(active_process_limit: u32) -> io::Result<Self> {
+        if active_process_limit == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "active process limit must be greater than zero",
+            ));
+        }
+
         #[cfg(windows)]
         {
             use std::ptr::null;
             use windows_sys::Win32::System::JobObjects::{
-                CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-                SetInformationJobObject,
+                CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JobObjectExtendedLimitInformation, SetInformationJobObject,
             };
 
             // SAFETY: null attributes/name request an unnamed private Job
@@ -50,7 +63,9 @@ impl ProcessContainment {
                 return Err(io::Error::last_os_error());
             }
             let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            limits.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+            limits.BasicLimitInformation.ActiveProcessLimit = active_process_limit;
             // SAFETY: `limits` is the documented structure for the selected
             // information class and remains alive for the call.
             let ok = unsafe {
@@ -72,6 +87,7 @@ impl ProcessContainment {
         }
         #[cfg(not(windows))]
         {
+            let _ = active_process_limit;
             Ok(Self {})
         }
     }
@@ -303,6 +319,8 @@ mod tests {
     };
 
     const DESCENDANT_PID_FILE: &str = "HAVEN_CONTAINMENT_DESCENDANT_PID_FILE";
+    const PROCESS_LIMIT_MARKER: &str = "HAVEN_CONTAINMENT_PROCESS_LIMIT_MARKER";
+    const PROCESS_LIMIT_STOP_FILE: &str = "HAVEN_CONTAINMENT_PROCESS_LIMIT_STOP_FILE";
 
     #[test]
     fn job_contains_child_and_descendant_from_first_instruction() {
@@ -493,6 +511,135 @@ mod tests {
             "failed thread discovery must not let the child execute"
         );
         drop(containment);
+    }
+
+    #[test]
+    fn job_active_process_limit_blocks_new_descendants() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_nanos();
+        let marker = std::env::temp_dir().join(format!(
+            "haven-containment-process-limit-{}-{stamp}.marker",
+            std::process::id()
+        ));
+        let stop_file = marker.with_extension("stop");
+        let _cleanup = ProcessLimitCleanup::new(marker.clone(), stop_file.clone());
+        let test_exe = std::env::current_exe().expect("test executable path");
+        let mut command = Command::new(test_exe);
+        command
+            .args([
+                "--exact",
+                "process_containment::tests::process_limit_child",
+                "--nocapture",
+            ])
+            .env(PROCESS_LIMIT_MARKER, &marker)
+            .env(PROCESS_LIMIT_STOP_FILE, &stop_file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let containment = ProcessContainment::new_with_active_process_limit(1)
+            .expect("create single-process Job Object");
+        containment.prepare_command(&mut command, 0);
+        let mut child = command.spawn().expect("spawn suspended test child");
+        containment
+            .attach_and_resume(child.id(), child.as_raw_handle())
+            .expect("attach and resume child under process limit");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !marker.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        let child_result = fs::read_to_string(&marker).ok();
+        drop(containment);
+        fs::write(&stop_file, b"stop").expect("release a descendant if the limit failed");
+        let child_status = wait_for_child(&mut child, Duration::from_secs(5));
+
+        assert_eq!(
+            child_result.as_deref().map(str::trim),
+            Some("blocked"),
+            "a Job at its active process limit must reject another descendant"
+        );
+        assert!(
+            child_status.is_ok(),
+            "the limited child must exit after the Job closes: {child_status:?}"
+        );
+    }
+
+    #[test]
+    fn process_limit_child() {
+        let (Ok(marker), Ok(_stop_file)) = (
+            std::env::var(PROCESS_LIMIT_MARKER),
+            std::env::var(PROCESS_LIMIT_STOP_FILE),
+        ) else {
+            return;
+        };
+        let test_exe = std::env::current_exe().expect("test executable path");
+        let mut command = Command::new(test_exe);
+        command
+            .args([
+                "--exact",
+                "process_containment::tests::process_limit_descendant_helper",
+                "--nocapture",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        match command.spawn() {
+            Ok(mut descendant) => {
+                fs::write(&marker, b"spawned").expect("write descendant spawn result");
+                let _ = descendant.wait();
+            }
+            Err(_) => fs::write(&marker, b"blocked").expect("write blocked spawn result"),
+        }
+    }
+
+    #[test]
+    fn process_limit_descendant_helper() {
+        let Ok(stop_file) = std::env::var(PROCESS_LIMIT_STOP_FILE) else {
+            return;
+        };
+        while !Path::new(&stop_file).exists() {
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn wait_for_child(
+        child: &mut std::process::Child,
+        timeout: Duration,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            if Instant::now() >= deadline {
+                child.kill()?;
+                return child.wait();
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    struct ProcessLimitCleanup {
+        marker: PathBuf,
+        stop_file: PathBuf,
+    }
+
+    impl ProcessLimitCleanup {
+        fn new(marker: PathBuf, stop_file: PathBuf) -> Self {
+            Self { marker, stop_file }
+        }
+    }
+
+    impl Drop for ProcessLimitCleanup {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.stop_file, b"stop");
+            let _ = fs::remove_file(&self.marker);
+            let _ = fs::remove_file(&self.stop_file);
+        }
     }
 
     #[test]

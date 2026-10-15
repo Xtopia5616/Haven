@@ -1176,3 +1176,4 @@
 - [1188：过滤 Shell 子进程继承环境](1188-filter-shell-child-environment.md)
 - [1189：验证 MCP stdio 网络策略先于进程启动](1189-verify-mcp-stdio-network-policy-before-spawn.md)
 - [1190：明确 SandboxMode 的授权范围](1190-clarify-sandbox-authorization-scope.md)
+- [1191：限制受管进程树的活动进程数](1191-limit-contained-process-tree-size.md)

@@ -146,6 +146,7 @@ describe('SettingsSecurity', () => {
 		expect(
 			screen.getByText(/子进程以当前 Windows 用户权限访问该用户可访问的文件/),
 		).toBeTruthy();
+		expect(screen.getByText(/每棵受管进程树限制为最多 256 个活动进程/)).toBeTruthy();
 	});
 
 	it('describes file access modes as Haven authorization rather than an OS sandbox', () => {
