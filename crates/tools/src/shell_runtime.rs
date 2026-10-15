@@ -182,6 +182,100 @@ fn output_log_dir(kind: &str) -> std::path::PathBuf {
     haven_common::config::default_runtime_temp_root().join(kind)
 }
 
+/// Remove the full-output log owned by one deleted ToolRun. Never trust the
+/// persisted `log_path`: the canonical ToolRun identity determines the only
+/// leaf that this cleanup may remove.
+pub(crate) fn remove_tool_run_output_log(tool_run_id: &str) {
+    if !haven_common::types::is_canonical_id(tool_run_id, "toolrun") {
+        tracing::warn!("skipping ToolRun log cleanup for a non-canonical id");
+        return;
+    }
+
+    let directory = output_log_dir("tool-run-logs");
+    match remove_tool_run_output_log_at(&directory, tool_run_id) {
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            tool_run_id,
+            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "failed to remove deleted ToolRun output log"
+        ),
+    }
+}
+
+/// Remove orphaned generated ToolRun logs after durable history is loaded.
+/// The open directory capability anchors deletion even if the path is later
+/// replaced; unrecognized filenames are left untouched.
+pub(crate) fn remove_orphaned_tool_run_output_logs(
+    retained_tool_run_ids: &std::collections::HashSet<String>,
+) -> std::io::Result<usize> {
+    let directory = output_log_dir("tool-run-logs");
+    remove_orphaned_tool_run_output_logs_at(&directory, retained_tool_run_ids)
+}
+
+fn remove_tool_run_output_log_at(
+    directory: &std::path::Path,
+    tool_run_id: &str,
+) -> std::io::Result<bool> {
+    if !haven_common::types::is_canonical_id(tool_run_id, "toolrun") {
+        return Ok(false);
+    }
+
+    let capability = match haven_platform::filesystem::DirectoryCapability::open(directory) {
+        Ok(capability) => capability,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    match capability.remove_file(std::path::Path::new(&format!("{tool_run_id}.log"))) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn remove_orphaned_tool_run_output_logs_at(
+    directory: &std::path::Path,
+    retained_tool_run_ids: &std::collections::HashSet<String>,
+) -> std::io::Result<usize> {
+    let capability = match haven_platform::filesystem::DirectoryCapability::open(directory) {
+        Ok(capability) => capability,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let root = capability.root().to_path_buf();
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("log") {
+            continue;
+        }
+        let Some(tool_run_id) = path.file_stem().and_then(std::ffi::OsStr::to_str) else {
+            continue;
+        };
+        if !haven_common::types::is_canonical_id(tool_run_id, "toolrun")
+            || retained_tool_run_ids.contains(tool_run_id)
+        {
+            continue;
+        }
+
+        match capability.remove_file(std::path::Path::new(&format!("{tool_run_id}.log"))) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(removed)
+}
+
 /// Write a command's full (sanitized) output to a log file so a condensed
 /// failure summary never hides the root cause (e.g. an npm install failure
 /// whose real error sits mid-log). Returns the log file path.

@@ -297,6 +297,19 @@ impl ToolRunStore {
             .await
     }
 
+    /// Return ToolRun IDs whose durable rows still reference full-output logs.
+    pub async fn list_tool_run_output_log_ids(&self) -> anyhow::Result<Vec<String>> {
+        self.db
+            .run_blocking(|db| {
+                let ids = db.list_tool_run_output_log_ids()?;
+                for tool_run_id in &ids {
+                    validate_id(tool_run_id, "toolrun", "tool_run_id")?;
+                }
+                Ok(ids)
+            })
+            .await
+    }
+
     /// Read one persisted ToolRun of either kind.
     pub async fn get_tool_run(&self, tool_run_id: String) -> anyhow::Result<Option<ToolRunRow>> {
         validate_id(&tool_run_id, "toolrun", "tool_run_id")?;

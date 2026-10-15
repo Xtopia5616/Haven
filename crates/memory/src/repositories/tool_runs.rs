@@ -728,6 +728,16 @@ impl Database {
         Ok(out)
     }
 
+    /// Return the canonical identities whose persisted ToolRun rows still
+    /// reference generated full-output log files.
+    pub(crate) fn list_tool_run_output_log_ids(&self) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT id FROM tool_runs WHERE log_path IS NOT NULL ORDER BY id")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// One persisted ToolRun by `tool_run_id` (either kind).
     pub fn get_tool_run(&self, tool_run_id: &str) -> anyhow::Result<Option<ToolRunRow>> {
         let conn = self.conn();
@@ -1926,5 +1936,31 @@ mod tests {
         assert!(db.get_tool_run(&pending_completion_id).unwrap().is_some());
         assert!(db.get_tool_run(&cancelled_id).unwrap().is_none());
         assert!(db.get_tool_run(&completed_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn output_log_id_query_returns_only_rows_with_a_persisted_log_reference() {
+        let db = test_db();
+        let with_log = new_id("toolrun");
+        let without_log = new_id("toolrun");
+        let now = "2026-10-06T00:00:00Z";
+        for id in [&with_log, &without_log] {
+            db.save_tool_run(id, None, "echo result", now).unwrap();
+        }
+        assert!(
+            db.finish_tool_run(
+                &with_log,
+                ToolRunStatus::Failed,
+                None,
+                Some("failure"),
+                Some("failure"),
+                Some("C:/Temp/tool-run-logs/result.log"),
+                None,
+                now,
+            )
+            .unwrap()
+        );
+
+        assert_eq!(db.list_tool_run_output_log_ids().unwrap(), vec![with_log]);
     }
 }

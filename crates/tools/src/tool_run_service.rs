@@ -37,7 +37,10 @@ use haven_memory::{ToolRunCompletionOutboxRow, ToolRunStore};
 
 use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
 use crate::process::read_stream_text_capped;
-use crate::shell_runtime::{build_shell_command, collect_byte_cap, write_output_log};
+use crate::shell_runtime::{
+    build_shell_command, collect_byte_cap, remove_orphaned_tool_run_output_logs,
+    remove_tool_run_output_log, write_output_log,
+};
 
 mod background;
 mod scheduled;
@@ -777,6 +780,26 @@ impl ToolRunService {
         let Some(store) = self.tool_run_store.read().await.clone() else {
             return 0;
         };
+        match store.list_tool_run_output_log_ids().await {
+            Ok(ids) => {
+                let retained = ids.into_iter().collect::<HashSet<_>>();
+                match remove_orphaned_tool_run_output_logs(&retained) {
+                    Ok(0) => {}
+                    Ok(removed) => tracing::debug!(
+                        removed,
+                        "removed orphaned ToolRun output logs after restart"
+                    ),
+                    Err(error) => tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "restore_after_restart: failed to clean orphaned ToolRun output logs"
+                    ),
+                }
+            }
+            Err(error) => tracing::warn!(
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "restore_after_restart: failed to load ToolRun output log references"
+            ),
+        }
         store
             .mark_interrupted_tool_runs()
             .await
@@ -1353,6 +1376,7 @@ impl ToolRunService {
             }
         }
         self.tool_runs.write().await.remove(tool_run_id);
+        remove_tool_run_output_log(tool_run_id);
         Ok(true)
     }
 
@@ -1392,6 +1416,10 @@ impl ToolRunService {
             let mut tool_runs = self.tool_runs.write().await;
             for id in &deleted_ids {
                 tool_runs.remove(id);
+            }
+            drop(tool_runs);
+            for id in &deleted_ids {
+                remove_tool_run_output_log(id);
             }
         }
         Ok(deleted_ids.len() as u64)

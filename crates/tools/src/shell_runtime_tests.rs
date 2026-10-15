@@ -1,5 +1,33 @@
 use super::*;
 
+#[test]
+fn tool_run_log_cleanup_removes_only_orphaned_canonical_logs() {
+    let root = tempfile::tempdir().unwrap();
+    let retained_id = "toolrun-11111111111111111111111111111111";
+    let orphan_id = "toolrun-22222222222222222222222222222222";
+    let deleted_id = "toolrun-33333333333333333333333333333333";
+    let retained_path = root.path().join(format!("{retained_id}.log"));
+    let orphan_path = root.path().join(format!("{orphan_id}.log"));
+    let deleted_path = root.path().join(format!("{deleted_id}.log"));
+    let unrelated_path = root.path().join("notes.log");
+    std::fs::write(&retained_path, "still referenced").unwrap();
+    std::fs::write(&orphan_path, "orphaned output").unwrap();
+    std::fs::write(&deleted_path, "deleted history").unwrap();
+    std::fs::write(&unrelated_path, "not a ToolRun log").unwrap();
+
+    assert!(remove_tool_run_output_log_at(root.path(), deleted_id).unwrap());
+    assert!(!deleted_path.exists());
+    let retained = std::collections::HashSet::from([retained_id.to_string()]);
+    assert_eq!(
+        remove_orphaned_tool_run_output_logs_at(root.path(), &retained).unwrap(),
+        1
+    );
+    assert!(retained_path.exists());
+    assert!(!orphan_path.exists());
+    assert!(unrelated_path.exists());
+    assert!(!remove_tool_run_output_log_at(root.path(), "toolrun-../notes").unwrap());
+}
+
 // ── encode_utf16le_base64 ────────────────────────────────────────────
 
 #[cfg(windows)]
