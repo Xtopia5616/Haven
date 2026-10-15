@@ -144,7 +144,19 @@ describe('SettingsSecurity', () => {
 		render(SettingsSecurity, { security });
 
 		expect(
-			screen.getByText(/子进程以当前 Windows 用户权限访问文件；联网仍由网络策略控制/),
+			screen.getByText(/子进程以当前 Windows 用户权限访问该用户可访问的文件/),
+		).toBeTruthy();
+	});
+
+	it('describes file access modes as Haven authorization rather than an OS sandbox', () => {
+		render(SettingsSecurity, { security: createSecurity() });
+
+		expect(screen.getByText('文件访问模式')).toBeTruthy();
+		expect(
+			screen.getByText(/不会为允许启动的子进程建立独立的 Windows 文件或网络沙箱/),
+		).toBeTruthy();
+		expect(
+			screen.getByText(/因此会拒绝启动这些子进程/),
 		).toBeTruthy();
 	});
 

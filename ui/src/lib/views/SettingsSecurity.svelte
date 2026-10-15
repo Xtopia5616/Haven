@@ -83,18 +83,18 @@
 	const SANDBOX_MODES = [
 		{
 			value: 'read_only',
-			label: '只读沙箱',
-			detail: '禁止所有文件修改，适合只查看和分析内容。',
+			label: '只读模式',
+			detail: 'Haven 在授权网关中拒绝写入和外部副作用操作；这不会为其它进程创建 Windows 文件沙箱。',
 		},
 		{
 			value: 'workspace_write',
 			label: '工作区可写',
-			detail: '允许受控地修改工作区文件；无法由 Haven 限定文件范围的命令、MCP 与技能子进程会被拦截。',
+			detail: '只允许受约束的文件能力修改工作区；Haven 无法把命令、MCP 与技能子进程的文件访问限制到该根，因此会拒绝启动这些子进程。',
 		},
 		{
 			value: 'full_access',
-			label: '完全访问',
-			detail: '子进程以当前 Windows 用户权限访问文件；联网仍由网络策略控制，操作也受确认策略与关键操作底线约束。',
+			label: '完整用户权限',
+			detail: '允许时，子进程以当前 Windows 用户权限访问该用户可访问的文件；执行工作区只决定默认工作目录，联网仍按单独的网络策略处理。',
 		},
 	] as const;
 
@@ -320,12 +320,12 @@
 		<div class="subsection-heading">
 			<div>
 				<h3>安全边界</h3>
-				<p>这些边界比默认策略更底层，会直接限制文件和网络能力。</p>
+				<p>这些策略由 Haven 授权网关执行；它们不会为允许启动的子进程建立独立的 Windows 文件或网络沙箱。</p>
 			</div>
 		</div>
 		<div class="boundary-grid">
 			<div class="boundary-card">
-				<SettingsField label="文件沙箱" id="security-sandbox">
+				<SettingsField label="文件访问模式" id="security-sandbox">
 					<MaterialSelect
 						id="security-sandbox"
 						value={security.sandbox_mode || 'workspace_write'}

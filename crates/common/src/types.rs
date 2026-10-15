@@ -207,23 +207,28 @@ pub enum PermissionMode {
     Autonomous,
 }
 
-/// Technical file-system boundary applied by the authorization gateway.
+/// File and side-effect authorization mode applied by Haven's authorization
+/// gateway. This does not create a Windows OS file-system or network sandbox;
+/// an allowed child process retains the current user's OS permissions.
 ///
-/// `WorkspaceWrite` is a policy boundary for path-bearing builtin tools. Opaque
-/// child processes cannot be technically constrained by Windows Job Objects;
-/// they may run only through the explicit confirmation path of
-/// `NetworkPolicy::Ask` (or the `FullAccess` escape hatch), while `Deny` and
-/// `Restricted` remain hard boundaries for opaque network access.
+/// `WorkspaceWrite` scopes Haven-managed path-bearing operations to configured
+/// roots and rejects opaque child processes because Job Objects do not
+/// constrain their file-system or network access. `FullAccess` removes that
+/// Haven-managed path scope; it does not elevate the process beyond the current
+/// user's Windows permissions. Network access remains controlled separately by
+/// [`NetworkPolicy`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxMode {
-    /// No write operation is allowed through the authorization gateway.
+    /// Mutating and external-effect operations are rejected by the
+    /// authorization gateway.
     ReadOnly,
     /// Writes are allowed only where the configured tool/workspace roots
     /// permit them.
     #[default]
     WorkspaceWrite,
-    /// Explicit escape hatch for trusted local operation.
+    /// No Haven-managed path scope; operations still use the current user's OS
+    /// permissions and remain subject to confirmation and network policy.
     FullAccess,
 }
 

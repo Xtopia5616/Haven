@@ -1175,3 +1175,4 @@
 - [1187：验证 MCP stdio 断开时的进程树回收](1187-verify-mcp-stdio-process-containment.md)
 - [1188：过滤 Shell 子进程继承环境](1188-filter-shell-child-environment.md)
 - [1189：验证 MCP stdio 网络策略先于进程启动](1189-verify-mcp-stdio-network-policy-before-spawn.md)
+- [1190：明确 SandboxMode 的授权范围](1190-clarify-sandbox-authorization-scope.md)
