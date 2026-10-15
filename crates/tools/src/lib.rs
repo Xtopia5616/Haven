@@ -197,8 +197,8 @@ pub use registry::{ToolCatalogSnapshot, ToolCatalogVersion};
 pub(crate) use sandbox_review::SandboxOutputReviewOwner;
 #[cfg(windows)]
 pub use sandbox_review::{
-    SandboxOutputReviewChange, SandboxOutputReviewChangeKind, SandboxOutputReviewManifest,
-    SandboxOutputReviewPort, SandboxOutputReviewReservation,
+    SandboxOutputPromotionResult, SandboxOutputReviewChange, SandboxOutputReviewChangeKind,
+    SandboxOutputReviewManifest, SandboxOutputReviewPort, SandboxOutputReviewReservation,
 };
 #[cfg(test)]
 pub(crate) use security::AuthorizationEngine;

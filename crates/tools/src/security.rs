@@ -561,7 +561,7 @@ struct SafetyConfig {
 /// trust. The API describes authorization rather than a vague security
 /// perimeter.
 pub struct AuthorizationEngine {
-    config: RwLock<SafetyConfig>,
+    config: Arc<RwLock<SafetyConfig>>,
 }
 
 /// Short-lived side-effect capability derived from one proof-verified tool
@@ -576,8 +576,8 @@ pub(crate) struct ExecutionPolicyAuthorization {
     expires_at: u64,
 }
 
-pub(crate) struct ExecutionPolicyPermit<'a> {
-    _config: tokio::sync::RwLockReadGuard<'a, SafetyConfig>,
+pub(crate) struct ExecutionPolicyPermit {
+    _config: tokio::sync::OwnedRwLockReadGuard<SafetyConfig>,
 }
 
 pub(crate) fn execution_policy_denied(reason: String) -> anyhow::Error {
@@ -592,11 +592,15 @@ pub(crate) fn execution_policy_denied(reason: String) -> anyhow::Error {
 }
 
 impl ExecutionPolicyAuthorization {
-    pub(crate) async fn acquire(&self) -> Result<ExecutionPolicyPermit<'_>, String> {
+    pub(crate) fn policy_stamp(&self) -> (u64, u64) {
+        (self.policy_revision, self.execution_workspace_generation)
+    }
+
+    pub(crate) async fn acquire(&self) -> Result<ExecutionPolicyPermit, String> {
         if confirmation_now() >= self.expires_at {
             return Err("execution proof expired before the side effect".into());
         }
-        let config = self.authorization.config.read().await;
+        let config = Arc::clone(&self.authorization.config).read_owned().await;
         if confirmation_now() >= self.expires_at {
             return Err("execution proof expired before the side effect".into());
         }
@@ -760,7 +764,7 @@ impl AuthorizationEngine {
 
     fn new_with_workspace(execution_workspace: ExecutionWorkspace) -> Self {
         Self {
-            config: RwLock::new(SafetyConfig {
+            config: Arc::new(RwLock::new(SafetyConfig {
                 permission_mode: PermissionMode::Default,
                 sandbox_mode: SandboxMode::WorkspaceWrite,
                 writable_roots: Vec::new(),
@@ -770,7 +774,7 @@ impl AuthorizationEngine {
                 permanent: HashMap::new(),
                 session_grants: HashMap::new(),
                 tool_settings: HashMap::new(),
-            }),
+            })),
         }
     }
 
@@ -2219,6 +2223,49 @@ mod tests {
             context.acquire_execution_policy_permit().await.is_err(),
             "the captured execution context is stale after the update"
         );
+    }
+
+    #[tokio::test]
+    async fn side_effect_permit_outlives_cancelled_caller_until_worker_finishes() {
+        let authorization = ExecutionPolicyAuthorization::for_test();
+        let engine = Arc::clone(&authorization.authorization);
+        let permit = authorization.acquire().await.unwrap();
+        let (worker_started_tx, worker_started_rx) = tokio::sync::oneshot::channel();
+        let (release_worker_tx, release_worker_rx) = tokio::sync::oneshot::channel();
+        let caller = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                let _ = worker_started_tx.send(());
+                let _ = release_worker_rx.blocking_recv();
+            })
+            .await
+            .unwrap();
+        });
+        worker_started_rx
+            .await
+            .expect("blocking side effect worker started with the owned permit");
+        caller.abort();
+
+        let (update_started_tx, update_started_rx) = tokio::sync::oneshot::channel();
+        let update = tokio::spawn(async move {
+            let _ = update_started_tx.send(());
+            engine.set_permission_mode(PermissionMode::Autonomous).await;
+        });
+        update_started_rx
+            .await
+            .expect("policy update attempted to acquire the owner write lock");
+        tokio::task::yield_now().await;
+        assert!(
+            !update.is_finished(),
+            "cancelling the awaiting task must not release policy while blocking work continues"
+        );
+
+        release_worker_tx
+            .send(())
+            .expect("release the bounded side effect worker");
+        update
+            .await
+            .expect("the policy update completes after the worker releases its permit");
     }
 
     #[tokio::test]

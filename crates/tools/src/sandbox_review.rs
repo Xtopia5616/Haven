@@ -7,8 +7,11 @@
 use async_trait::async_trait;
 use haven_common::types::is_canonical_id;
 use haven_platform::appcontainer_process::AppContainerOutputReview;
-use haven_platform::filesystem::{DirectoryTreeChangeKind, DirectoryTreeOutputManifest};
-use std::collections::HashMap;
+use haven_platform::filesystem::{
+    DirectoryCapability, DirectoryTreeChangeKind, DirectoryTreeEntryKind,
+    DirectoryTreeFileCopySummary, DirectoryTreeOutputManifest,
+};
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -17,6 +20,28 @@ const MAX_PENDING_REVIEW_COUNT: usize = 8;
 const MAX_PENDING_REVIEW_BYTES: u64 = 512 * 1024 * 1024;
 const PENDING_REVIEW_TTL: Duration = Duration::from_secs(15 * 60);
 const PENDING_REVIEW_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+pub(crate) const SANDBOX_OUTPUT_PROMOTION_TOOL_NAME: &str = "files.promote_sandbox_output";
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SandboxOutputPromotionInput {
+    pub source_step_id: String,
+    pub change_index: u32,
+    pub destination: String,
+}
+
+pub(crate) struct SandboxOutputPromotionTarget {
+    pub execution_workspace_generation: u64,
+    pub policy_revision: u64,
+    pub directory: DirectoryCapability,
+    pub relative_path: std::path::PathBuf,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SandboxOutputPromotionResult {
+    pub bytes: u64,
+    pub sha256: String,
+}
 
 /// User-review metadata for one completed sandbox run. File content and
 /// absolute paths remain private to the Tools owner.
@@ -98,6 +123,7 @@ struct ReviewOwnerInner {
 struct ReviewOwnerState {
     reserved: HashMap<ReviewKey, u64>,
     pending: HashMap<ReviewKey, PendingReview>,
+    promoting: HashSet<ReviewKey>,
     charged_bytes: u64,
 }
 
@@ -118,6 +144,11 @@ struct Reservation {
     key: ReviewKey,
     reserved_bytes: u64,
     active: bool,
+}
+
+struct PromotionStateGuard {
+    owner: Arc<ReviewOwnerInner>,
+    key: ReviewKey,
 }
 
 impl Default for SandboxOutputReviewOwner {
@@ -199,6 +230,86 @@ impl SandboxOutputReviewOwner {
             source_step_id: source_step_id.to_owned(),
         })
     }
+
+    pub(crate) async fn promote_created_file(
+        &self,
+        session_id: &str,
+        source_step_id: &str,
+        change_index: u32,
+        target: SandboxOutputPromotionTarget,
+        permit: crate::security::ExecutionPolicyPermit,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<DirectoryTreeFileCopySummary, String> {
+        let key = Self::key(session_id, source_step_id)?;
+        let (selection, expired) = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .map_err(|_| "sandbox review owner is unavailable".to_string())?;
+            let expired = state.remove_expired(Instant::now());
+            let selection = if state.promoting.contains(&key) {
+                Err("sandbox output review already has a promotion in progress".to_string())
+            } else if let Some(review) = state
+                .pending
+                .get(&key)
+                .map(|pending| Arc::clone(&pending.review))
+            {
+                state.promoting.insert(key.clone());
+                Ok(review)
+            } else {
+                Err("sandbox output review is unavailable or expired".to_string())
+            };
+            (selection, expired)
+        };
+        drop_expired(expired).await;
+        let review = selection?;
+
+        let inner = Arc::clone(&self.inner);
+        let finalize_key = key.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let _promotion = PromotionStateGuard {
+                owner: inner,
+                key: finalize_key,
+            };
+            (|| {
+                if cancel.is_cancelled() {
+                    return Err("sandbox output promotion was cancelled".to_string());
+                }
+                let review = review
+                    .lock()
+                    .map_err(|_| "sandbox output review is unavailable".to_string())?;
+                let change = review
+                    .manifest()
+                    .changes
+                    .get(change_index as usize)
+                    .ok_or_else(|| "sandbox output selection is no longer available".to_string())?;
+                if change.change != DirectoryTreeChangeKind::Created
+                    || change.after_kind != Some(DirectoryTreeEntryKind::File)
+                {
+                    return Err("only newly created regular files can be promoted".into());
+                }
+                review
+                    .promote_output_file_to(
+                        change,
+                        target.execution_workspace_generation,
+                        target.policy_revision,
+                        &target.directory,
+                        &target.relative_path,
+                        || cancel.is_cancelled(),
+                    )
+                    .map_err(|error| error.to_string())
+            })()
+        })
+        .await
+        .map_err(|error| {
+            format!(
+                "sandbox output promotion worker failed: {}",
+                haven_common::error::sanitize_error_text(&error.to_string())
+            )
+        })?
+    }
 }
 
 #[async_trait]
@@ -247,8 +358,12 @@ impl SandboxOutputReviewPort for SandboxOutputReviewOwner {
                 .state
                 .lock()
                 .map_err(|_| "sandbox review owner is unavailable".to_string())?;
-            let expired = state.remove_expired(Instant::now());
-            let pending = state.pending.get(&key);
+            let now = Instant::now();
+            let expired = state.remove_expired(now);
+            let pending = state
+                .pending
+                .get(&key)
+                .filter(|entry| entry.expires_at > now);
             (
                 pending.map(|entry| Arc::clone(&entry.review)),
                 pending.map(|entry| entry.storage_charge_bytes),
@@ -273,17 +388,25 @@ impl SandboxOutputReviewPort for SandboxOutputReviewOwner {
 
     async fn discard(&self, session_id: &str, source_step_id: &str) -> Result<bool, String> {
         let key = Self::key(session_id, source_step_id)?;
-        let (discarded, expired) = {
+        let (discarded, expired, result) = {
             let mut state = self
                 .inner
                 .state
                 .lock()
                 .map_err(|_| "sandbox review owner is unavailable".to_string())?;
             let expired = state.remove_expired(Instant::now());
-            let discarded = state.remove_pending(&key);
-            (discarded, expired)
+            let (discarded, result) = if state.promoting.contains(&key) {
+                (
+                    None,
+                    Err("sandbox output review promotion is in progress".to_string()),
+                )
+            } else {
+                (state.remove_pending(&key), Ok(()))
+            };
+            (discarded, expired, result)
         };
         drop_expired(expired).await;
+        result?;
         if let Some(discarded) = discarded {
             drop_expired(vec![discarded]).await;
             Ok(true)
@@ -352,13 +475,37 @@ impl ReviewOwnerState {
         let keys = self
             .pending
             .iter()
-            .filter(|(_, entry)| entry.expires_at <= now)
+            .filter(|(key, entry)| entry.expires_at <= now && !self.promoting.contains(*key))
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
         keys.iter()
             .filter_map(|key| self.remove_pending(key))
             .collect()
     }
+}
+
+fn finish_promotion(inner: &ReviewOwnerInner, key: &ReviewKey) {
+    let expired = match inner.state.lock() {
+        Ok(mut state) => {
+            state.promoting.remove(key);
+            let expired = state
+                .pending
+                .get(key)
+                .is_some_and(|entry| entry.expires_at <= Instant::now());
+            if expired {
+                state.remove_pending(key)
+            } else {
+                None
+            }
+        }
+        Err(_) => {
+            tracing::error!(
+                "sandbox review owner lock is poisoned; promotion state could not be released"
+            );
+            None
+        }
+    };
+    drop(expired);
 }
 
 impl Reservation {
@@ -377,6 +524,12 @@ impl Reservation {
         if let Some(bytes) = state.reserved.remove(&self.key) {
             state.charged_bytes -= bytes;
         }
+    }
+}
+
+impl Drop for PromotionStateGuard {
+    fn drop(&mut self) {
+        finish_promotion(&self.owner, &self.key);
     }
 }
 
@@ -505,7 +658,7 @@ mod tests {
         let charge = review.retained_storage_upper_bound_bytes();
         let session_id = new_id("ses");
         let source_step_id = new_id("step");
-        let owner = SandboxOutputReviewOwner::with_limits(1, charge, Duration::from_millis(30));
+        let owner = SandboxOutputReviewOwner::with_limits(1, charge, Duration::from_millis(100));
 
         let reservation = owner
             .reserve(&session_id, &source_step_id, charge)
@@ -536,7 +689,7 @@ mod tests {
         );
         assert!(sandbox_root.exists());
 
-        tokio::time::sleep(Duration::from_millis(40)).await;
+        tokio::time::sleep(Duration::from_millis(120)).await;
         owner.sweep_expired().await;
         assert!(
             owner
@@ -546,9 +699,24 @@ mod tests {
                 .is_none(),
             "expired reviews are no longer visible"
         );
+        let workspace_remains = sandbox_root.exists();
+        let manual_cleanup_error = if workspace_remains {
+            std::fs::remove_dir_all(&sandbox_root).err()
+        } else {
+            None
+        };
         assert!(
-            !sandbox_root.exists(),
-            "expiry drops the RAII workspace owner"
+            !workspace_remains,
+            "expiry drops the RAII workspace owner at {} (contents: {:?}; manual cleanup: {:?})",
+            sandbox_root.display(),
+            std::fs::read_dir(&sandbox_root)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name())
+                .collect::<Vec<_>>(),
+            manual_cleanup_error
         );
     }
 
@@ -627,7 +795,171 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn promotion_uses_owner_index_and_rejects_stale_workspace_before_copy() {
+        let (review, _) = create_review_with_stamps(1, 0).await;
+        let charge = review.retained_storage_upper_bound_bytes();
+        let session_id = new_id("ses");
+        let source_step_id = new_id("step");
+        let owner = SandboxOutputReviewOwner::with_limits(1, charge, Duration::from_secs(60));
+        owner
+            .reserve(&session_id, &source_step_id, charge)
+            .await
+            .unwrap()
+            .retain(review)
+            .unwrap();
+
+        let destination = tempfile::tempdir().unwrap();
+        let capability = DirectoryCapability::open(destination.path()).unwrap();
+        let stale_authorization = crate::security::ExecutionPolicyAuthorization::for_test();
+        let stale_permit = stale_authorization.acquire().await.unwrap();
+        assert!(
+            owner
+                .promote_created_file(
+                    &session_id,
+                    &source_step_id,
+                    0,
+                    SandboxOutputPromotionTarget {
+                        execution_workspace_generation: 2,
+                        policy_revision: 0,
+                        directory: capability.clone(),
+                        relative_path: std::path::PathBuf::from("promoted.txt"),
+                    },
+                    stale_permit,
+                    tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+                .is_err(),
+            "a stale workspace generation cannot create a destination"
+        );
+        assert!(!destination.path().join("promoted.txt").exists());
+
+        let authorization = crate::security::ExecutionPolicyAuthorization::for_test();
+        let permit = authorization.acquire().await.unwrap();
+        let summary = owner
+            .promote_created_file(
+                &session_id,
+                &source_step_id,
+                0,
+                SandboxOutputPromotionTarget {
+                    execution_workspace_generation: 1,
+                    policy_revision: 0,
+                    directory: capability,
+                    relative_path: std::path::PathBuf::from("promoted.txt"),
+                },
+                permit,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect("the owner resolves the selected created file by manifest index");
+        assert_eq!(summary.bytes, 14);
+        assert_eq!(
+            std::fs::read_to_string(destination.path().join("promoted.txt")).unwrap(),
+            "bounded-review"
+        );
+        assert!(
+            owner.discard(&session_id, &source_step_id).await.unwrap(),
+            "a completed promotion releases the per-review operation guard"
+        );
+    }
+
+    #[tokio::test]
+    async fn facade_requires_matching_proof_and_holds_files_authority_for_promotion() {
+        use haven_common::types::{NetworkPolicy, SandboxMode};
+
+        let facade = crate::ToolsFacade::new();
+        let authorization = Arc::clone(&facade.coordinator.core.authorization);
+        authorization
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .await;
+
+        let destination = tempfile::tempdir().unwrap();
+        let destination_path = destination.path().join("proof-bound.txt");
+        let session_id = new_id("ses");
+        let source_step_id = new_id("step");
+        let request = facade
+            .sandbox_output_promotion_authorization_request(
+                &session_id,
+                &source_step_id,
+                0,
+                &destination_path,
+            )
+            .unwrap();
+        let check = authorization.authorize_for_execution(&request).await;
+        let receipt = match check.decision {
+            crate::AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
+            decision => panic!("required promotion confirmation was not requested: {decision:?}"),
+        };
+        let proof = authorization
+            .confirm_for_execution(&request, &receipt)
+            .await
+            .unwrap();
+        let context = authorization
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .unwrap();
+        let (policy_revision, workspace_generation) = context
+            .execution_authorization
+            .as_ref()
+            .unwrap()
+            .policy_stamp();
+        drop(context);
+
+        let (review, _) = create_review_with_stamps(workspace_generation, policy_revision).await;
+        let charge = review.retained_storage_upper_bound_bytes();
+        facade
+            .coordinator
+            .runtime
+            .sandbox_output_reviews
+            .reserve(&session_id, &source_step_id, charge)
+            .await
+            .unwrap()
+            .retain(review)
+            .unwrap();
+
+        let mut tampered = request.clone();
+        tampered.input["destination"] = serde_json::json!(
+            destination
+                .path()
+                .join("redirected.txt")
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert!(
+            facade
+                .promote_reviewed_sandbox_output(
+                    &tampered,
+                    &proof,
+                    tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+                .is_err()
+        );
+        assert!(!destination.path().join("redirected.txt").exists());
+
+        let result = facade
+            .promote_reviewed_sandbox_output(
+                &request,
+                &proof,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect("the exact confirmed request promotes through the live Files policy");
+        assert_eq!(result.bytes, 14);
+        assert_eq!(
+            std::fs::read_to_string(destination_path).unwrap(),
+            "bounded-review"
+        );
+    }
+
     async fn create_review() -> (AppContainerOutputReview, std::path::PathBuf) {
+        create_review_with_stamps(7, 11).await
+    }
+
+    async fn create_review_with_stamps(
+        execution_workspace_generation: u64,
+        policy_revision: u64,
+    ) -> (AppContainerOutputReview, std::path::PathBuf) {
         let fixture = tempfile::tempdir().expect("create isolated review fixture");
         let source_root = fixture.path().join("source");
         std::fs::create_dir(&source_root).expect("create snapshot source");
@@ -639,8 +971,8 @@ mod tests {
             DirectoryTreeCopyLimits::new(16, 4, 512 * 1024 * 1024, 1024 * 1024 * 1024).unwrap();
         let workspace = haven_platform::windows_sandbox::AppContainerWorkspace::create(
             &source,
-            7,
-            11,
+            execution_workspace_generation,
+            policy_revision,
             copy_limits,
             || false,
         )

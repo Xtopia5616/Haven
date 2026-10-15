@@ -230,8 +230,13 @@ pub(crate) fn operation_attributes(
         OperationEffect::ExternalEffect
     };
     let effect = match name {
-        "files.write" | "files.edit" | "files.patch" | "files.create_dir" | "files.copy"
-        | "files.move" => OperationEffect::WorkspaceWrite,
+        "files.write"
+        | "files.edit"
+        | "files.patch"
+        | "files.create_dir"
+        | "files.copy"
+        | "files.move"
+        | "files.promote_sandbox_output" => OperationEffect::WorkspaceWrite,
         _ => effect,
     };
     let data = match name {
@@ -1732,7 +1737,7 @@ pub struct ToolExecutionContext {
 impl ToolExecutionContext {
     pub(crate) async fn acquire_execution_policy_permit(
         &self,
-    ) -> Result<Option<crate::security::ExecutionPolicyPermit<'_>>, String> {
+    ) -> Result<Option<crate::security::ExecutionPolicyPermit>, String> {
         match &self.execution_authorization {
             Some(authorization) => authorization.acquire().await.map(Some),
             None => Ok(None),
