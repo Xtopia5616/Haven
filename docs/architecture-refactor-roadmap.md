@@ -192,6 +192,8 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 实施仍遵守“证据与契约 → 单条垂直调用链 → 负向/恢复验证 → 适用门禁 → 独立提交”的顺序。每完成一行，只把下一行提升为 Active，并在该提交中更新本节。
 
+当前 Active 已增加 `DirectoryCapability::copy_tree_to`，提供有界 capability 目录树快照复制（条目/深度/单文件/总字节上限、取消与链接拒绝，ADR 1196）；它目前是平台原语，没有生产 `SandboxWorkspace` 消费者。`ExecutionWorkspace` 代次快照、sandbox 私有目录创建/回收、进程授权接线和逐路径结果 manifest 晋升仍是未完成项。
+
 ## 6. 更新规则
 
 - 阶段/候选状态在一个逻辑切片独立提交且适用验收完成后更新；受限或未执行的验证要明确写出。发布 Gate 只在当前构建与安装环境的实际验收记录齐全后关闭。

@@ -1181,3 +1181,4 @@
 - [1193：明确网络策略只约束 Haven 工具授权入口](1193-clarify-network-policy-scope.md)
 - [1194：验证 Windows AppContainer 文件与网络边界](1194-verify-windows-appcontainer-boundaries.md)
 - [1195：分离项目执行工作区与 OS sandbox 工作区](1195-separate-execution-and-sandbox-workspaces.md)
+- [1196：增加有界目录 capability 快照复制原语](1196-bounded-capability-directory-snapshots.md)
