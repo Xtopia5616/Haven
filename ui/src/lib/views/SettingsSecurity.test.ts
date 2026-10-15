@@ -118,13 +118,34 @@ describe('SettingsSecurity', () => {
 		expect(security.permission_mode).toBe('autonomous');
 	});
 
-	it('offers confirmation as the network default', async () => {
+	it('lets users choose Ask from the network policy menu', async () => {
 		const security = createSecurity();
 		render(SettingsSecurity, { security });
 
 		await fireEvent.click(screen.getByRole('button', { name: '网络策略' }));
 		await fireEvent.click(screen.getByRole('option', { name: '请求确认' }));
 		expect(security.network_policy).toBe('ask');
+	});
+
+	it('describes Ask behavior across workspace and full-access modes', () => {
+		const security = createSecurity();
+		security.network_policy = 'ask';
+		render(SettingsSecurity, { security });
+
+		expect(security.network_policy).toBe('ask');
+		expect(
+			screen.getByText(/工作区可写模式会拦截无法验证目的地的 MCP、技能和命令子进程/),
+		).toBeTruthy();
+	});
+
+	it('explains the user-level file access and independent network policy', () => {
+		const security = createSecurity();
+		security.sandbox_mode = 'full_access';
+		render(SettingsSecurity, { security });
+
+		expect(
+			screen.getByText(/子进程以当前 Windows 用户权限访问文件；联网仍由网络策略控制/),
+		).toBeTruthy();
 	});
 
 	it('shows the disk and live security policy state after a partial apply failure', () => {
