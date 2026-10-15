@@ -764,11 +764,14 @@ impl AdminServices {
                 .ok_or_else(|| anyhow::anyhow!("configuration administration is unavailable"))?,
         );
         haven_skills::validate_skill_name(name)?;
-        if description.is_empty() {
+        if description.trim().is_empty() {
             anyhow::bail!("description is required");
         }
+        if description.chars().count() > 1_024 {
+            anyhow::bail!("description too long (max 1024 characters)");
+        }
         if instructions.is_empty() {
-            anyhow::bail!("instructions are required (the '## Instructions' body)");
+            anyhow::bail!("instructions are required (the Markdown body)");
         }
         if instructions.len() > self.max_instructions_bytes {
             anyhow::bail!(
@@ -807,15 +810,15 @@ impl AdminServices {
             anyhow::bail!("skill '{name}' already exists");
         }
         tokio::fs::create_dir_all(&skill_dir).await?;
-        let desc_line = description.replace(['\n', '\r'], " ");
-        let mut markdown =
-            format!("# Skill: {name}\n\n## Metadata\n- name: {name}\n- description: {desc_line}\n");
+        let description_yaml = serde_json::to_string(description)?;
+        let language_yaml = serde_json::to_string(language)?;
+        let mut markdown = format!(
+            "---\nname: {name}\ndescription: {description_yaml}\nmetadata:\n  haven.language: {language_yaml}\n"
+        );
         if let Some(version) = &version {
-            markdown.push_str(&format!("- version: {version}\n"));
+            markdown.push_str(&format!("  version: {}\n", serde_json::to_string(version)?));
         }
-        markdown.push_str(&format!(
-            "- language: {language}\n\n## Instructions\n{instructions}\n"
-        ));
+        markdown.push_str(&format!("---\n\n# {name}\n\n{instructions}\n"));
         tokio::fs::write(skill_dir.join("SKILL.md"), markdown).await?;
 
         let scripts = skill_dir.join("scripts");

@@ -67,6 +67,32 @@ struct SkillManifest {
     instructions: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillFrontmatter {
+    name: String,
+    description: String,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    license: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    compatibility: Option<String>,
+    #[serde(
+        default,
+        rename = "allowed-tools",
+        deserialize_with = "deserialize_optional_string"
+    )]
+    allowed_tools: Option<String>,
+    #[serde(default)]
+    metadata: BTreeMap<String, String>,
+}
+
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+
 /// A discovered Skill on disk.
 #[derive(Clone)]
 pub struct Skill {
@@ -237,18 +263,20 @@ impl SkillInfo {
 // SKILL.md parser
 // ---------------------------------------------------------------------------
 
-/// Validate a Skill name before it is used as a tool identity or filesystem
-/// component. The ASCII-only alphabet is portable across Windows and Unix,
-/// while the length bound keeps generated tool names predictable.
+/// Validate a Skill name against the Agent Skills naming rules before it is
+/// used as a tool identity or filesystem component.
 pub fn validate_skill_name(name: &str) -> anyhow::Result<()> {
     let valid = !name.is_empty()
-        && name.len() <= 128
-        && name.chars().all(|character| {
-            character.is_ascii_alphanumeric() || character == '-' || character == '_'
-        });
+        && name.len() <= 64
+        && name.bytes().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == b'-'
+        })
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && !name.contains("--");
     if !valid {
         anyhow::bail!(
-            "invalid skill name '{}': use 1-128 ASCII letters, digits, '-' or '_'",
+            "invalid skill name '{}': use 1-64 lowercase ASCII letters, digits, and single hyphens",
             name
         );
     }
@@ -330,45 +358,18 @@ fn skip_case_insensitive_directory_collisions(
         .collect()
 }
 
-/// Parse a `SKILL.md` document into structured metadata.
+/// Parse an Agent Skills `SKILL.md` document into Haven's runtime metadata.
+/// The YAML frontmatter must be followed by Markdown instructions. Haven keeps
+/// its Python runner metadata in the standard `metadata` extension map.
 ///
-/// Expected layout:
-///
-/// ```markdown
-/// # Skill: <name>
-///
-/// ## Metadata
-/// - name: <name>
-/// - description: <desc>
-/// - version: 1.0.0
-/// - language: python
-///
-/// ## Instructions
-/// ...natural language...
-/// ```
-///
-/// The H1 line is parsed for `<name>` and the `name:` metadata field (if
-/// present) takes precedence —this lets a directory's `SKILL.md` carry a name
-/// differing from its folder name without surprising the registry.
-///
-/// **Safety:** The parser enforces a maximum line count and a maximum UTF-8
-/// byte length per line (from `context_limits`) to prevent unbounded memory
-/// accumulation from crafted/oversized input.
+/// **Safety:** The caller reads the file under a byte cap; this parser also
+/// enforces maximum line count and UTF-8 bytes per line from `context_limits`.
 fn parse_skill_md(
     input: &str,
     max_parse_lines: usize,
     max_line_bytes: usize,
 ) -> anyhow::Result<SkillManifest> {
     let input = input.strip_prefix('\u{FEFF}').unwrap_or(input);
-
-    let mut name: Option<String> = None;
-    let mut description = String::new();
-    let mut version: Option<String> = None;
-    let mut language = Language::Python;
-
-    let mut current_section: Option<String> = None;
-    let mut metadata_lines: Vec<(usize, String)> = Vec::new();
-    let mut instruction_lines: Vec<String> = Vec::new();
 
     for (i, line) in input.lines().enumerate() {
         if i >= max_parse_lines {
@@ -380,79 +381,75 @@ fn parse_skill_md(
                 i + 1
             );
         }
-        let trimmed = line.trim_end();
-        if trimmed.is_empty() {
-            // Preserve blank lines inside instruction section for readability.
-            if matches!(current_section.as_deref(), Some("instructions")) {
-                instruction_lines.push(String::new());
-            }
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("# ") {
-            if let Some(n) = rest.strip_prefix("Skill:") {
-                name = Some(n.trim().to_string());
-            }
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("## ") {
-            current_section = Some(rest.trim().to_lowercase());
-            continue;
-        }
-        match current_section.as_deref() {
-            Some("metadata") => metadata_lines.push((i + 1, trimmed.to_string())),
-            Some("instructions") => instruction_lines.push(trimmed.to_string()),
-            _ => {}
-        }
     }
 
-    for (line_number, ml) in &metadata_lines {
-        let entry = ml.trim_start();
-        let Some(line) = entry.strip_prefix("- ") else {
-            anyhow::bail!(
-                "invalid SKILL.md metadata entry on line {line_number}: expected '- key: value'"
-            );
-        };
-        let (key, val) = match line.split_once(':') {
-            Some(pair) => pair,
-            None => anyhow::bail!(
-                "invalid SKILL.md metadata entry on line {line_number}: expected '- key: value'"
-            ),
-        };
-        let key = key.trim().to_lowercase();
-        if key.is_empty() {
-            anyhow::bail!(
-                "invalid SKILL.md metadata entry on line {line_number}: metadata key is empty"
-            );
-        }
-        let val = val.trim().to_string();
-        match key.as_str() {
-            "name" => name = Some(val),
-            "description" => description = val,
-            "version" => version = Some(val),
-            "language" => language = Language::parse(&val),
-            _ => anyhow::bail!("unknown SKILL.md metadata field: {key}"),
-        }
+    let mut lines = input.split_inclusive('\n');
+    let opening_line = lines
+        .next()
+        .context("SKILL.md must start with YAML frontmatter")?;
+    if strip_line_ending(opening_line) != "---" {
+        anyhow::bail!("SKILL.md must start with YAML frontmatter");
     }
 
-    // Trim trailing blank lines from instructions.
-    while instruction_lines
-        .last()
-        .map(|s| s.is_empty())
-        .unwrap_or(false)
+    let yaml_start = opening_line.len();
+    let mut offset = yaml_start;
+    let mut yaml_end = None;
+    let mut body_start = None;
+    for line in lines {
+        let line_start = offset;
+        offset += line.len();
+        if strip_line_ending(line) == "---" {
+            yaml_end = Some(line_start);
+            body_start = Some(offset);
+            break;
+        }
+    }
+    let yaml_end = yaml_end.context("SKILL.md frontmatter is missing its closing '---'")?;
+    let body_start = body_start.context("SKILL.md frontmatter is missing its closing '---'")?;
+    let frontmatter: SkillFrontmatter = serde_saphyr::from_str(&input[yaml_start..yaml_end])
+        .map_err(|_| anyhow::anyhow!("invalid SKILL.md YAML frontmatter"))?;
+
+    validate_skill_name(&frontmatter.name)?;
+    if frontmatter.description.trim().is_empty() {
+        anyhow::bail!("SKILL.md description must not be empty");
+    }
+    if frontmatter.description.chars().count() > 1_024 {
+        anyhow::bail!("SKILL.md description exceeds 1024 characters");
+    }
+    if frontmatter
+        .compatibility
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty() || value.chars().count() > 500)
     {
-        instruction_lines.pop();
+        anyhow::bail!("SKILL.md compatibility must contain 1-500 characters");
     }
-    let instructions = instruction_lines.join("\n").trim().to_string();
 
-    let name = name.context("SKILL.md missing '# Skill: <name>' header or 'name' metadata")?;
-    validate_skill_name(&name)?;
+    // These standard fields are accepted, but they do not grant permissions
+    // or alter Haven's tool authorization policy.
+    let _ = (frontmatter.license, frontmatter.allowed_tools);
+    let version = frontmatter
+        .metadata
+        .get("version")
+        .filter(|value| !value.is_empty())
+        .cloned();
+    let language = frontmatter
+        .metadata
+        .get("haven.language")
+        .map(|value| Language::parse(value))
+        .unwrap_or(Language::Python);
+    let instructions = input[body_start..].trim().to_string();
     Ok(SkillManifest {
-        name,
-        description,
+        name: frontmatter.name,
+        description: frontmatter.description.trim().to_string(),
         version,
         language,
         instructions,
     })
+}
+
+fn strip_line_ending(line: &str) -> &str {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    line.strip_suffix('\r').unwrap_or(line)
 }
 
 // ---------------------------------------------------------------------------
@@ -592,6 +589,16 @@ fn scan_skill_directory(
         let max_line_bytes = limits.skills_max_line_bytes;
         match parse_skill_md(&content, max_parse_lines, max_line_bytes) {
             Ok(manifest) => {
+                if manifest.name != directory_name {
+                    diagnostics.push(SkillCatalogEntry {
+                        info: SkillInfo::invalid_manifest(
+                            directory_name,
+                            "Invalid SKILL.md: name must match the skill directory name".into(),
+                        ),
+                        root: p_canon,
+                    });
+                    continue;
+                }
                 let enabled = enabled_skill_allowlist
                     .map(|allowlist| allowlist.contains(&manifest.name))
                     .unwrap_or(true);
@@ -1014,7 +1021,7 @@ mod tests {
 
     #[test]
     fn parse_full_skill_md() {
-        let md = "# Skill: file-organizer\n\n## Metadata\n- name: file-organizer\n- description: org files\n- version: 1.0.0\n- language: python\n\n## Instructions\nDo the thing.\n";
+        let md = "---\nname: \"file-organizer\"\ndescription: \"org files\"\nmetadata:\n  version: \"1.0.0\"\n  haven.language: \"python\"\n---\n\nDo the thing.\n";
         let m = parse_skill_md(md, 5000, 4096).unwrap();
         assert_eq!(m.name, "file-organizer");
         assert_eq!(m.description, "org files");
@@ -1025,12 +1032,23 @@ mod tests {
 
     #[test]
     fn validate_skill_name_enforces_portable_names_and_reserved_devices() {
-        let max_length = "x".repeat(128);
-        for valid in ["a", "file-organizer_2", max_length.as_str()] {
+        let max_length = "x".repeat(64);
+        for valid in ["a", "file-organizer-2", max_length.as_str()] {
             validate_skill_name(valid).unwrap();
         }
-        let overlong = "x".repeat(129);
-        for invalid in ["", overlong.as_str(), "bad name", "../skill", "技能"] {
+        let overlong = "x".repeat(65);
+        for invalid in [
+            "",
+            overlong.as_str(),
+            "bad name",
+            "../skill",
+            "技能",
+            "Uppercase",
+            "file_name",
+            "-leading",
+            "trailing-",
+            "double--hyphen",
+        ] {
             assert!(
                 validate_skill_name(invalid).is_err(),
                 "accepted {invalid:?}"
@@ -1054,7 +1072,9 @@ mod tests {
     #[test]
     fn parse_rejects_invalid_and_reserved_skill_names() {
         for name in ["bad name", "../skill", "CON", "lpt9"] {
-            let markdown = format!("# Skill: {name}\n## Instructions\nDo it.\n");
+            let markdown = format!(
+                "---\nname: \"{name}\"\ndescription: \"A short description.\"\n---\n\nDo it.\n"
+            );
             assert!(
                 parse_skill_md(&markdown, 5000, 4096).is_err(),
                 "accepted {name:?}"
@@ -1064,20 +1084,20 @@ mod tests {
 
     #[test]
     fn parse_missing_name_errors() {
-        let md = "## Metadata\n- description: x\n";
+        let md = "---\ndescription: \"x\"\n---\n\n";
         assert!(parse_skill_md(md, 5000, 4096).is_err());
     }
 
     #[test]
-    fn parse_h1_provides_name_when_metadata_omitted() {
-        let md = "# Skill: fallback-named\n\n## Instructions\nonly instructions\n";
+    fn parse_standard_frontmatter_without_optional_metadata() {
+        let md = "---\nname: \"fallback-named\"\ndescription: \"A short description.\"\n---\n\nonly instructions\n";
         let m = parse_skill_md(md, 5000, 4096).unwrap();
         assert_eq!(m.name, "fallback-named");
     }
 
     #[test]
     fn parse_unsupported_language_preserved() {
-        let md = "# Skill: x\n## Metadata\n- language: bash\n## Instructions\ni\n";
+        let md = "---\nname: \"x\"\ndescription: \"Unsupported language fixture.\"\nmetadata:\n  haven.language: \"bash\"\n---\n\ni\n";
         let m = parse_skill_md(md, 5000, 4096).unwrap();
         assert_eq!(m.language, Language::Unsupported("bash".to_string()));
         assert_eq!(m.language.as_str(), "bash");
@@ -1085,32 +1105,31 @@ mod tests {
 
     #[test]
     fn parse_strips_bom() {
-        let md = "\u{FEFF}# Skill: bom\n## Metadata\n- description: d\n## Instructions\ni\n";
+        let md = "﻿---\nname: \"bom\"\ndescription: \"d\"\n---\n\ni\n";
         let m = parse_skill_md(md, 5000, 4096).unwrap();
         assert_eq!(m.name, "bom");
     }
 
     #[test]
     fn parse_rejects_unknown_metadata_fields() {
-        let md = "# Skill: x\n## Metadata\n- allowed_tools: [a, b]\n- description: d\n## Instructions\ni\n";
+        let md = "---\nname: \"x\"\ndescription: \"d\"\nnot-standard: \"value\"\n---\n\ni\n";
         assert!(parse_skill_md(md, 5000, 4096).is_err());
     }
 
     #[test]
     fn parse_rejects_ascii_line_over_byte_limit() {
         let long_line = "a".repeat(4096 + 1);
-        let md =
-            format!("# Skill: x\n## Metadata\n- description: {long_line}\n## Instructions\ni\n");
+        let md = format!("---\nname: \"x\"\ndescription: \"{long_line}\"\n---\n\ni\n");
         let error = parse_skill_md(&md, 5000, 4096).unwrap_err();
         assert!(error.to_string().contains("UTF-8 bytes"));
     }
 
     #[test]
     fn parse_rejects_multibyte_line_over_byte_limit_by_utf8_size() {
-        let long_line = format!("- description: {}", "界".repeat(1_366));
+        let long_line = format!("description: {}", "界".repeat(1_366));
         assert!(long_line.chars().count() < 4_096);
         assert!(long_line.len() > 4_096);
-        let md = format!("# Skill: x\n## Metadata\n{long_line}\n## Instructions\ni\n");
+        let md = format!("---\nname: \"x\"\n{long_line}\n---\n\ni\n");
 
         let error = parse_skill_md(&md, 5_000, 4_096).unwrap_err();
         assert!(error.to_string().contains("UTF-8 bytes"));
@@ -1127,13 +1146,13 @@ mod tests {
         write_skill(
             &dir,
             "good-a",
-            "# Skill: good-a\n## Metadata\n- description: a\n## Instructions\ni\n",
+            "---\nname: \"good-a\"\ndescription: \"a\"\n---\n\ni\n",
             true,
         );
         write_skill(
             &dir,
             "good-b",
-            "# Skill: good-b\n## Metadata\n- description: b\n## Instructions\ni\n",
+            "---\nname: \"good-b\"\ndescription: \"b\"\n---\n\ni\n",
             false,
         );
         // invalid SKILL.md missing name
@@ -1141,7 +1160,7 @@ mod tests {
         std::fs::create_dir_all(&bad).unwrap();
         std::fs::write(
             bad.join("SKILL.md"),
-            "## Metadata\n- description: no name\n",
+            "---\ndescription: \"no name\"\n---\n\n",
         )
         .unwrap();
         // not-a-dir SKILL.md-less
@@ -1174,7 +1193,7 @@ mod tests {
         let upper_dir = write_skill(
             &dir,
             "Echo",
-            "# Skill: upper-name\n## Metadata\n- name: Echo\n- description: upper\n## Instructions\ni\n",
+            "---\nname: \"Echo\"\ndescription: \"upper\"\n---\n\ni\n",
             false,
         );
         let lower_dir = dir.join("echo");
@@ -1188,25 +1207,25 @@ mod tests {
         }
         std::fs::write(
             lower_dir.join("SKILL.md"),
-            "# Skill: lower-name\n## Metadata\n- name: echo\n- description: lower\n## Instructions\ni\n",
+            "---\nname: \"echo\"\ndescription: \"lower\"\n---\n\ni\n",
         )
         .unwrap();
         write_skill(
             &dir,
             "separate-one",
-            "# Skill: shared\n## Metadata\n- name: shared\n- description: one\n## Instructions\ni\n",
+            "---\nname: \"shared\"\ndescription: \"one\"\n---\n\ni\n",
             false,
         );
         write_skill(
             &dir,
             "separate-two",
-            "# Skill: SHARED\n## Metadata\n- name: SHARED\n- description: two\n## Instructions\ni\n",
+            "---\nname: \"SHARED\"\ndescription: \"two\"\n---\n\ni\n",
             false,
         );
         write_skill(
             &dir,
             "unique",
-            "# Skill: unique\n## Metadata\n- name: unique\n- description: unique\n## Instructions\ni\n",
+            "---\nname: \"unique\"\ndescription: \"unique\"\n---\n\ni\n",
             false,
         );
 
@@ -1260,13 +1279,13 @@ mod tests {
         write_skill(
             &dir,
             "one",
-            "# Skill: one\n## Metadata\n- description: o\n## Instructions\ni\n",
+            "---\nname: \"one\"\ndescription: \"o\"\n---\n\ni\n",
             false,
         );
         write_skill(
             &dir,
             "two",
-            "# Skill: two\n## Metadata\n- description: t\n## Instructions\ni\n",
+            "---\nname: \"two\"\ndescription: \"t\"\n---\n\ni\n",
             false,
         );
         let skills =
@@ -1284,7 +1303,7 @@ mod tests {
         write_skill(
             &dir,
             "instruction-only",
-            "# Skill: instruction-only\n\n## Metadata\n- description: no executable entry point\n\n## Instructions\nDo the task.\n",
+            "---\nname: \"instruction-only\"\ndescription: \"no executable entry point\"\n---\n\nDo the task.\n",
             false,
         );
 
@@ -1318,7 +1337,7 @@ mod tests {
         write_skill(
             &root,
             "stable",
-            "# Skill: stable\n## Metadata\n- description: stable\n## Instructions\nKeep this skill.\n",
+            "---\nname: \"stable\"\ndescription: \"stable\"\n---\n\nKeep this skill.\n",
             false,
         );
         let invalid_root = root.join("not-a-directory");
@@ -1356,7 +1375,7 @@ mod tests {
         write_skill(
             &root,
             "stable",
-            "# Skill: stable\n## Metadata\n- description: stable\n## Instructions\nKeep this skill.\n",
+            "---\nname: \"stable\"\ndescription: \"stable\"\n---\n\nKeep this skill.\n",
             false,
         );
 
@@ -1392,7 +1411,7 @@ mod tests {
         write_skill(
             &dir,
             "a",
-            "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
+            "---\nname: \"a\"\ndescription: \"a\"\n---\n\ni\n",
             false,
         );
         let skills = scan_parsed_skill_entries(&dir, None, &Default::default()).unwrap();
@@ -1407,7 +1426,7 @@ mod tests {
         write_skill(
             &dir,
             "a",
-            "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
+            "---\nname: \"a\"\ndescription: \"a\"\n---\n\ni\n",
             false,
         );
         let skills =
@@ -1423,14 +1442,14 @@ mod tests {
         write_skill(
             &dir,
             "small",
-            "# Skill: small\n## Metadata\n- description: ok\n## Instructions\ni\n",
+            "---\nname: \"small\"\ndescription: \"ok\"\n---\n\ni\n",
             false,
         );
         // Create a SKILL.md larger than the cap
         let big = dir.join("big");
         std::fs::create_dir_all(&big).unwrap();
         let big_content = format!(
-            "# Skill: big\n## Metadata\n- description: {}\n## Instructions\ni\n",
+            "---\nname: \"big\"\ndescription: \"{}\"\n---\n\ni\n",
             "x".repeat(256 * 1024)
         );
         std::fs::write(big.join("SKILL.md"), &big_content).unwrap();
@@ -1442,15 +1461,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registry_listing_keeps_valid_names_unique_across_invalid_diagnostics() {
+    async fn registry_lists_invalid_manifests_without_shadowing_valid_skills() {
         let root = tmp_dir();
         let valid = write_skill(
             &root,
-            "valid-folder",
-            "# Skill: valid-folder\n## Metadata\n- name: duplicate\n- description: valid\n## Instructions\nrun\n",
+            "duplicate",
+            "---\nname: \"duplicate\"\ndescription: \"valid\"\n---\n\nrun\n",
             false,
         );
-        let invalid = root.join("duplicate");
+        let invalid = root.join("broken-skill");
         std::fs::create_dir_all(&invalid).unwrap();
         std::fs::write(invalid.join("SKILL.md"), "not a valid skill manifest\n").unwrap();
 
@@ -1458,12 +1477,31 @@ mod tests {
         registry.set_config(Some(root.clone()), None).await.unwrap();
 
         let listed = registry.list_skill_infos().await;
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].name, "duplicate");
-        assert_eq!(listed[0].description, "valid");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(
+            listed
+                .iter()
+                .filter(|skill| skill.name == "duplicate")
+                .count(),
+            1
+        );
+        assert!(listed.iter().any(|skill| skill.name == "broken-skill"));
+        assert!(listed.iter().any(|skill| {
+            skill.name == "duplicate"
+                && skill.description == "valid"
+                && skill.manifest_error.is_none()
+        }));
         let catalog = registry.list_skill_catalog_entries().await;
-        assert_eq!(catalog.len(), 1);
-        assert_eq!(catalog[0].root, valid.canonicalize().unwrap());
+        assert_eq!(catalog.len(), 2);
+        let valid_entry = catalog
+            .iter()
+            .find(|entry| entry.info.name == "duplicate")
+            .expect("valid skill remains in the diagnostic catalog");
+        assert_eq!(valid_entry.root, valid.canonicalize().unwrap());
+        assert!(valid_entry.info.manifest_error.is_none());
+        assert!(catalog.iter().any(|entry| {
+            entry.info.name == "broken-skill" && entry.info.manifest_error.is_some()
+        }));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1479,7 +1517,7 @@ mod tests {
         let outside_manifest = outside.join("SKILL.md");
         std::fs::write(
             &outside_manifest,
-            "# Skill: external-manifest\n## Metadata\n- description: outside\n",
+            "---\nname: \"external-manifest\"\ndescription: \"outside\"\n---\n\n",
         )
         .unwrap();
         if symlink_file(&outside_manifest, &skill_dir.join("SKILL.md")).is_err() {
@@ -1498,7 +1536,7 @@ mod tests {
         let skill_dir = write_skill(
             &root,
             "linked-script",
-            "# Skill: linked-script\n## Metadata\n- description: linked\n",
+            "---\nname: \"linked-script\"\ndescription: \"linked\"\n---\n\n",
             false,
         );
         let outside_script = temp.path().join("outside.py");
@@ -1535,7 +1573,7 @@ mod tests {
         write_skill(
             &dir,
             "a",
-            "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
+            "---\nname: \"a\"\ndescription: \"a\"\n---\n\ni\n",
             false,
         );
         assert!(registry.refresh_if_changed().await.unwrap());
@@ -1545,7 +1583,7 @@ mod tests {
         write_skill(
             &dir,
             "a",
-            "# Skill: a\n## Metadata\n- description: a much longer description\n## Instructions\ni\n",
+            "---\nname: \"a\"\ndescription: \"a much longer description\"\n---\n\ni\n",
             false,
         );
         assert!(registry.refresh_if_changed().await.unwrap());
@@ -1556,7 +1594,7 @@ mod tests {
         write_skill(
             &dir,
             "b",
-            "# Skill: b\n## Metadata\n- description: b\n## Instructions\ni\n",
+            "---\nname: \"b\"\ndescription: \"b\"\n---\n\ni\n",
             false,
         );
         assert!(registry.refresh_if_changed().await.unwrap());
@@ -1578,7 +1616,7 @@ mod tests {
         write_skill(
             &dir,
             "alpha",
-            "# Skill: alpha\n## Metadata\n- description: a\n- version: 2.0\n- language: python\n## Instructions\ni\n",
+            "---\nname: \"alpha\"\ndescription: \"a\"\nmetadata:\n  version: \"2.0\"\n  haven.language: \"python\"\n---\n\ni\n",
             true,
         );
 
@@ -1624,7 +1662,7 @@ mod tests {
         write_skill(
             &dir,
             "a",
-            "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
+            "---\nname: \"a\"\ndescription: \"a\"\n---\n\ni\n",
             false,
         );
         let registry = SkillRegistry::new();
@@ -1643,13 +1681,13 @@ mod tests {
         write_skill(
             &dir,
             "a",
-            "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
+            "---\nname: \"a\"\ndescription: \"a\"\n---\n\ni\n",
             true,
         );
         write_skill(
             &dir,
             "b",
-            "# Skill: b\n## Metadata\n- description: b\n## Instructions\ni\n",
+            "---\nname: \"b\"\ndescription: \"b\"\n---\n\ni\n",
             true,
         );
         let registry = SkillRegistry::new();
@@ -1689,9 +1727,7 @@ mod tests {
             write_skill(
                 &dir,
                 name,
-                &format!(
-                    "# Skill: {name}\n## Metadata\n- description: {name}\n## Instructions\ni\n"
-                ),
+                &format!("---\nname: \"{name}\"\ndescription: \"{name}\"\n---\n\ni\n"),
                 false,
             );
         }

@@ -195,7 +195,7 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
     std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
     std::fs::write(
         skill_dir.join("SKILL.md"),
-        "# Skill: echo\n## Metadata\n- description: echo skill\n## Instructions\ndo echo\n",
+        "---\nname: \"echo\"\ndescription: \"echo skill\"\n---\n\ndo echo\n",
     )
     .unwrap();
     std::fs::write(skill_dir.join("scripts").join("main.py"), "print('{}')\n").unwrap();

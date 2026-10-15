@@ -686,7 +686,7 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
         skill_dir.join("SKILL.md"),
-        "# Skill: panic-skill\n\n## Metadata\n- description: panics for adapter-boundary testing\n- language: python\n\n## Instructions\nTest fixture.\n",
+        "---\nname: \"panic-skill\"\ndescription: \"panics for adapter-boundary testing\"\nmetadata:\n  haven.language: \"python\"\n---\n\nTest fixture.\n",
     )
     .unwrap();
     let tool_services = tools.share_services();

@@ -1994,7 +1994,7 @@ mod tests {
         std::fs::create_dir_all(skills_root.path().join("first-skill").join("scripts")).unwrap();
         std::fs::write(
             skills_root.path().join("first-skill").join("SKILL.md"),
-            "# Skill: first-skill\n\n## Metadata\n- description: first\n\n## Instructions\nrun first\n",
+            "---\nname: first-skill\ndescription: first\n---\n\nrun first\n",
         )
         .unwrap();
         std::fs::write(
@@ -2026,7 +2026,7 @@ mod tests {
         std::fs::create_dir_all(skills_root.path().join("second-skill").join("scripts")).unwrap();
         std::fs::write(
             skills_root.path().join("second-skill").join("SKILL.md"),
-            "# Skill: second-skill\n\n## Metadata\n- description: second\n\n## Instructions\nrun second\n",
+            "---\nname: second-skill\ndescription: second\n---\n\nrun second\n",
         )
         .unwrap();
         std::fs::write(

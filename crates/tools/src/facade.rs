@@ -1570,7 +1570,7 @@ mod capability_tests {
         std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            "# Skill: demo\n\n## Metadata\n- description: test\n- language: python\n\n## Instructions\nRun the test skill.\n",
+            "---\nname: \"demo\"\ndescription: \"test\"\nmetadata:\n  haven.language: \"python\"\n---\n\nRun the test skill.\n",
         )
         .unwrap();
         std::fs::write(skill_dir.join("scripts/main.py"), "print('{}')\n").unwrap();

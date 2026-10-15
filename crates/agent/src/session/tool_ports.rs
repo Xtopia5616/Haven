@@ -1107,7 +1107,7 @@ mod tests {
         fs::create_dir_all(skill_dir.join("scripts")).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
-            "# Skill: echo\n## Metadata\n- description: echo skill\n## Instructions\ndo echo\n",
+            "---\nname: \"echo\"\ndescription: \"echo skill\"\n---\n\ndo echo\n",
         )
         .unwrap();
         fs::write(skill_dir.join("scripts").join("main.py"), "print('{}')\n").unwrap();

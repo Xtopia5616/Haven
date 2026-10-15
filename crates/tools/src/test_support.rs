@@ -11,7 +11,7 @@ pub(crate) async fn discover_skill_fixture(
     let skill_root = skills_root.join(name);
     std::fs::create_dir_all(&skill_root).expect("create skill fixture directory");
     let manifest = format!(
-        "# Skill: {name}\n\n## Metadata\n- description: {description}\n- language: python\n\n## Instructions\nRun the skill.\n"
+        "---\nname: \"{name}\"\ndescription: \"{description}\"\nmetadata:\n  haven.language: \"python\"\n---\n\nRun the skill.\n"
     );
     std::fs::write(skill_root.join("SKILL.md"), manifest).expect("write skill fixture manifest");
     if let Some(script) = script {

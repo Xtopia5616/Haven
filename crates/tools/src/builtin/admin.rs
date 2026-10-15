@@ -881,7 +881,7 @@ impl TypedToolOperation for SkillsAdminOperation {
             ),
             branch(
                 "skill_create",
-                serde_json::json!({"name": {"type": "string", "minLength": 1}, "description": {"type": "string", "minLength": 1}, "instructions": {"type": "string", "minLength": 1}, "language": {"type": "string", "enum": ["python"]}, "version": {"type": "string"}, "script": {"type": "string", "minLength": 1, "description": "Optional Python script; omitted values use Haven's JSON-safe starter template."}}),
+                serde_json::json!({"name": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"}, "description": {"type": "string", "minLength": 1, "maxLength": 1024}, "instructions": {"type": "string", "minLength": 1}, "language": {"type": "string", "enum": ["python"]}, "version": {"type": "string"}, "script": {"type": "string", "minLength": 1, "description": "Optional Python script; omitted values use Haven's JSON-safe starter template."}}),
                 &["operation", "name", "description", "instructions"],
             ),
         ])
@@ -2422,7 +2422,7 @@ mod tests {
         std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            "# Skill: sample\n\n## Metadata\n- name: sample\n- description: safe description\n\n## Instructions\nPrivate instructions are not part of this output.\n",
+            "---\nname: \"sample\"\ndescription: \"safe description\"\n---\n\nPrivate instructions are not part of this output.\n",
         )
         .unwrap();
         std::fs::write(skill_dir.join("scripts").join("main.py"), "print('{}')\n").unwrap();
@@ -2626,7 +2626,7 @@ mod tests {
         std::fs::create_dir_all(skills_root.join("demo")).unwrap();
         std::fs::write(
             skills_root.join("demo").join("SKILL.md"),
-            "# Skill: demo\n\n## Metadata\n- name: demo\n- description: demo skill\n\n## Instructions\nDo the demo.\n",
+            "---\nname: \"demo\"\ndescription: \"demo skill\"\n---\n\nDo the demo.\n",
         )
         .unwrap();
         surfaces
@@ -3295,7 +3295,7 @@ mod tests {
         std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            "# Skill: demo\n\n## Metadata\n- description: demo\n\n## Instructions\nrun demo\n",
+            "---\nname: \"demo\"\ndescription: \"demo\"\n---\n\nrun demo\n",
         )
         .unwrap();
         std::fs::write(skill_dir.join("scripts").join("main.py"), "print('{}')\n").unwrap();
