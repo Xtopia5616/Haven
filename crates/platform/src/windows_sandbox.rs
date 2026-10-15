@@ -8,9 +8,9 @@ use crate::filesystem::{
     DirectoryCapability, DirectoryTreeCopyLimits, DirectoryTreeCopySummary,
     DirectoryTreeDiffLimits, DirectoryTreeOutputManifest,
 };
+use crate::sandbox_scratch::SandboxScratchLease;
 use std::io;
 use std::path::Path;
-use tempfile::TempDir;
 use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT,
@@ -38,9 +38,8 @@ use windows_sys::Win32::System::SystemServices::SYSTEM_MANDATORY_LABEL_NO_WRITE_
 /// revalidate the stamps immediately before process creation.
 pub struct AppContainerWorkspace {
     directory: Option<DirectoryCapability>,
-    temp_dir: Option<TempDir>,
     baseline_directory: Option<DirectoryCapability>,
-    baseline_temp_dir: Option<TempDir>,
+    scratch: Option<SandboxScratchLease>,
     profile: Option<AppContainerProfile>,
     execution_workspace_generation: u64,
     policy_revision: u64,
@@ -49,7 +48,8 @@ pub struct AppContainerWorkspace {
 
 impl AppContainerWorkspace {
     /// Create a unique AppContainer profile and a bounded, low-integrity copy
-    /// of `source` in the user's temporary directory.
+    /// of `source` in Haven's dedicated runtime-temp sandbox root. The root
+    /// uses inter-process owner markers to recover crashed workspaces later.
     ///
     /// The source must not be modified concurrently when callers require a
     /// point-in-time snapshot. Cancellation or failure discards the temporary
@@ -66,17 +66,24 @@ impl AppContainerWorkspace {
         if is_cancelled() {
             return Err(cancelled());
         }
-        let temp_dir = tempfile::Builder::new()
-            .prefix("haven-appcontainer-workspace-")
-            .tempdir()
-            .map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    "could not create a private AppContainer workspace",
-                )
-            })?;
-        let directory = DirectoryCapability::open(temp_dir.path())?;
-        let profile = AppContainerProfile::create()?;
+        let profile_name = AppContainerProfile::new_name();
+        let mut scratch = SandboxScratchLease::create(&profile_name).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                "could not create a private AppContainer scratch owner",
+            )
+        })?;
+        let directory = DirectoryCapability::open(scratch.workspace_path())?;
+        let baseline_directory = DirectoryCapability::open(scratch.baseline_path())?;
+        let profile = AppContainerProfile::create(&profile_name)?;
+        if let Err(error) = scratch.record_profile_created() {
+            let profile_removed = profile.remove().is_ok();
+            let directories_removed = scratch.remove_directories().is_ok();
+            if profile_removed && directories_removed {
+                let _ = scratch.remove_owner_marker();
+            }
+            return Err(error);
+        }
         if is_cancelled() {
             return Err(cancelled());
         }
@@ -85,16 +92,6 @@ impl AppContainerWorkspace {
         security_lease.grant_package_sid(profile.sid())?;
         security_lease.apply_low_integrity_label()?;
         let snapshot = source.copy_tree_to(&directory, limits, &mut is_cancelled)?;
-        let baseline_temp_dir = tempfile::Builder::new()
-            .prefix("haven-sandbox-baseline-")
-            .tempdir()
-            .map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    "could not create a private sandbox input baseline",
-                )
-            })?;
-        let baseline_directory = DirectoryCapability::open(baseline_temp_dir.path())?;
         let baseline_summary =
             directory.copy_tree_to(&baseline_directory, limits, &mut is_cancelled)?;
         if baseline_summary != snapshot {
@@ -107,9 +104,8 @@ impl AppContainerWorkspace {
 
         Ok(Self {
             directory: Some(directory),
-            temp_dir: Some(temp_dir),
             baseline_directory: Some(baseline_directory),
-            baseline_temp_dir: Some(baseline_temp_dir),
+            scratch: Some(scratch),
             profile: Some(profile),
             execution_workspace_generation,
             policy_revision,
@@ -186,31 +182,38 @@ impl AppContainerWorkspace {
         self.directory.take();
         self.baseline_directory.take();
         let mut cleanup_error = None;
-        if let Some(temp_dir) = self.temp_dir.take()
-            && let Err(error) = temp_dir.close()
-        {
-            cleanup_error = Some(io::Error::new(
-                error.kind(),
-                "could not remove the private AppContainer workspace",
-            ));
-        }
-        if let Some(temp_dir) = self.baseline_temp_dir.take()
-            && let Err(error) = temp_dir.close()
-            && cleanup_error.is_none()
-        {
-            cleanup_error = Some(io::Error::new(
-                error.kind(),
-                "could not remove the private sandbox input baseline",
-            ));
-        }
-        if let Some(profile) = self.profile.take()
-            && let Err(error) = profile.remove()
-            && cleanup_error.is_none()
-        {
-            cleanup_error = Some(io::Error::new(
-                error.kind(),
-                "could not remove the private AppContainer profile",
-            ));
+        if let Some(mut scratch) = self.scratch.take() {
+            let directories = scratch.remove_directories();
+            if let Err(error) = &directories {
+                cleanup_error = Some(io::Error::new(
+                    error.kind(),
+                    "could not remove private AppContainer scratch directories",
+                ));
+            }
+
+            let profile = self
+                .profile
+                .take()
+                .map_or(Ok(()), AppContainerProfile::remove);
+            if let Err(error) = &profile
+                && cleanup_error.is_none()
+            {
+                cleanup_error = Some(io::Error::new(
+                    error.kind(),
+                    "could not remove the private AppContainer profile",
+                ));
+            }
+
+            if directories.is_ok()
+                && profile.is_ok()
+                && let Err(error) = scratch.remove_owner_marker()
+                && cleanup_error.is_none()
+            {
+                cleanup_error = Some(io::Error::new(
+                    error.kind(),
+                    "could not remove the AppContainer scratch owner marker",
+                ));
+            }
         }
         cleanup_error.map_or(Ok(()), Err)
     }
@@ -234,10 +237,13 @@ struct AppContainerProfile {
 unsafe impl Send for AppContainerProfile {}
 
 impl AppContainerProfile {
-    fn create() -> io::Result<Self> {
+    fn new_name() -> String {
         let profile_id = haven_common::types::new_id("file");
-        let profile_name = format!("HavenSandbox-{profile_id}");
-        let name = wide_null(&profile_name);
+        format!("HavenSandbox-{profile_id}")
+    }
+
+    fn create(profile_name: &str) -> io::Result<Self> {
+        let name = wide_null(profile_name);
         let display_name = wide_null("Haven sandbox workspace");
         let description = wide_null("Short-lived isolated execution workspace");
         let mut sid = std::ptr::null_mut();

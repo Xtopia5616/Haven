@@ -194,6 +194,30 @@ impl DirectoryCapability {
             .map(cap_std::fs::File::into_std)
     }
 
+    /// Create and return a new read/write file relative to this held directory
+    /// handle. Existing files, including reparse points at the final path, are
+    /// rejected atomically.
+    pub fn create_new_file(&self, relative: &Path) -> io::Result<File> {
+        let relative = validate_relative_path(relative)?;
+        let parent_path = relative_parent(&relative);
+        reject_relative_reparse_components(&self.directory, parent_path, false)?;
+        let parent = if parent_path == Path::new(".") {
+            self.directory.try_clone()?
+        } else {
+            self.directory.open_dir(parent_path)?
+        };
+        reject_relative_reparse_components(&self.directory, parent_path, false)?;
+
+        let filename = relative
+            .file_name()
+            .ok_or_else(|| permission_denied("file path must include a filename"))?;
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        parent
+            .open_with(filename, &options)
+            .map(cap_std::fs::File::into_std)
+    }
+
     /// Read a bounded snapshot of direct children using the held directory
     /// handle. An oversized directory fails closed instead of allocating an
     /// unbounded list.
@@ -383,6 +407,24 @@ impl DirectoryCapability {
         let relative = validate_relative_path(relative)?;
         reject_relative_reparse_components(&self.directory, &relative, false)?;
         self.directory.create_dir_all(relative)
+    }
+
+    /// Atomically create one new directory beneath this held directory
+    /// capability. Existing entries and reparse-point parents are rejected.
+    pub fn create_dir(&self, relative: &Path) -> io::Result<()> {
+        let relative = validate_relative_path(relative)?;
+        let parent_path = relative_parent(&relative);
+        reject_relative_reparse_components(&self.directory, parent_path, false)?;
+        let parent = if parent_path == Path::new(".") {
+            self.directory.try_clone()?
+        } else {
+            self.directory.open_dir(parent_path)?
+        };
+        reject_relative_reparse_components(&self.directory, parent_path, false)?;
+        let name = relative
+            .file_name()
+            .ok_or_else(|| permission_denied("directory path must include a name"))?;
+        parent.create_dir(name)
     }
 
     pub fn copy_file_to(
@@ -855,6 +897,26 @@ mod directory_capability_tests {
                 .is_err()
         );
         assert!(!temp.path().join("outside.txt").exists());
+    }
+
+    #[test]
+    fn capability_creates_new_directories_and_files_without_replacing_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let capability = DirectoryCapability::open(temp.path()).unwrap();
+
+        capability.create_dir(Path::new("attempt")).unwrap();
+        assert!(capability.create_dir(Path::new("attempt")).is_err());
+        assert!(capability.create_dir(Path::new("../outside")).is_err());
+        let mut file = capability
+            .create_new_file(Path::new("attempt/owner.lock"))
+            .unwrap();
+        std::io::Write::write_all(&mut file, b"owner").unwrap();
+        assert!(
+            capability
+                .create_new_file(Path::new("attempt/owner.lock"))
+                .is_err()
+        );
+        assert!(!temp.path().join("outside").exists());
     }
 
     #[cfg(unix)]
