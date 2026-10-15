@@ -20,7 +20,8 @@ function createSecurity(): SecurityConfigInput & {
 describe('SettingsSecurity', () => {
 	it('edits the execution workspace independently from writable roots', async () => {
 		const security = createSecurity();
-		render(SettingsSecurity, { security });
+		const onPickExecutionRoot = vi.fn(async () => 'C:\\Projects\\selected');
+		render(SettingsSecurity, { security, onPickExecutionRoot });
 
 		await fireEvent.input(screen.getByLabelText('执行工作区目录'), {
 			target: { value: 'C:\\Projects\\demo' },
@@ -29,6 +30,22 @@ describe('SettingsSecurity', () => {
 		expect(security.execution_root).toBe('C:\\Projects\\demo');
 		expect(security.writable_roots).toEqual([]);
 		expect(screen.getByText(/不会限制 Shell、技能或 MCP 子进程/)).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('button', { name: '选择目录' }));
+		expect(onPickExecutionRoot).toHaveBeenCalledOnce();
+		expect(security.execution_root).toBe('C:\\Projects\\selected');
+	});
+
+	it('keeps the execution workspace draft when the native picker is cancelled', async () => {
+		const security = createSecurity();
+		security.execution_root = 'C:\\Projects\\existing';
+		const onPickExecutionRoot = vi.fn(async () => null);
+		render(SettingsSecurity, { security, onPickExecutionRoot });
+
+		await fireEvent.click(screen.getByRole('button', { name: '选择目录' }));
+
+		expect(onPickExecutionRoot).toHaveBeenCalledOnce();
+		expect(security.execution_root).toBe('C:\\Projects\\existing');
 	});
 
 	it('uses a readable rule description and confirms clearing all rules in-app', async () => {

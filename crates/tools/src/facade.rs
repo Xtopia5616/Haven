@@ -967,10 +967,13 @@ impl ToolsFacade {
 
     /// Validate a configured execution root without changing the active
     /// workspace. Settings commands use this before committing the config.
-    pub fn validate_execution_workspace(&self, root: &Path) -> Result<(), String> {
-        crate::execution_workspace::ExecutionWorkspace::open_root(root, 1)
-            .map(|_| ())
-            .map_err(|_| "workspace root is not an available local directory".to_string())
+    pub fn validate_execution_workspace(&self, root: &Path) -> Result<PathBuf, String> {
+        let workspace = crate::execution_workspace::ExecutionWorkspace::open_root(root, 1)
+            .map_err(|_| "workspace root is not an available local directory".to_string())?;
+        workspace
+            .root()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "workspace root is not an available local directory".to_string())
     }
 
     /// Replace the active backend execution workspace after validating and
@@ -1073,6 +1076,25 @@ mod capability_tests {
             }],
             ..Default::default()
         }))
+    }
+
+    #[test]
+    fn execution_workspace_validation_returns_the_normalized_local_root() {
+        let selected = tempfile::tempdir().unwrap();
+        let tools = ToolsFacade::new();
+
+        let normalized = tools.validate_execution_workspace(selected.path()).unwrap();
+        let expected =
+            crate::execution_workspace::ExecutionWorkspace::open_root(selected.path(), 1).unwrap();
+        assert_eq!(
+            normalized.as_path(),
+            expected.root().expect("opened workspace has a root")
+        );
+        assert!(
+            tools
+                .validate_execution_workspace(&selected.path().join("missing"))
+                .is_err()
+        );
     }
 
     #[tokio::test]

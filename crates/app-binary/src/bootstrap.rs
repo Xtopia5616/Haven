@@ -171,6 +171,7 @@ pub(crate) fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // 自启触发的重复实例不弹出窗口：保持后台驻留，等待快捷键唤起。
             if args.iter().any(|a| a == autostart::AUTOSTART_ARG) {
@@ -729,6 +730,7 @@ pub(crate) fn run() {
             commands::memory::delete_fact,
             commands::memory::clear_facts,
             commands::settings::get_settings,
+            commands::settings::pick_execution_workspace_directory,
             commands::settings::stage_provider_credential,
             commands::settings::stage_ocr_credential,
             commands::settings::discard_staged_credentials,

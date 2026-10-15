@@ -6,6 +6,7 @@ import {
 	isAutostartEnabled,
 	listSessionPermissions,
 	loadSettings,
+	pickExecutionWorkspaceDirectory,
 	resetPermissions,
 	resetSessionPermissions,
 	revokePermission,
@@ -148,6 +149,15 @@ describe('Settings commands', () => {
 			['enable_autostart'],
 			['disable_autostart'],
 		]);
+	});
+
+	it('returns the native execution workspace choice or cancellation', async () => {
+		invokeMock.mockResolvedValueOnce('C:\\Projects\\selected' as never);
+		await expect(pickExecutionWorkspaceDirectory()).resolves.toBe('C:\\Projects\\selected');
+		expect(invokeMock).toHaveBeenCalledWith('pick_execution_workspace_directory');
+
+		invokeMock.mockResolvedValueOnce(null as never);
+		await expect(pickExecutionWorkspaceDirectory()).resolves.toBeNull();
 	});
 
 	it('propagates a rejected Settings operation unchanged', async () => {

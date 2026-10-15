@@ -7,7 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 85;
+pub const EXPECTED_COMMAND_COUNT: usize = 86;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -348,6 +348,11 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "get_settings",
         boundary: CommandBoundary::Read,
         security: "config response redacts credentials and MCP environment values",
+    },
+    CommandContract {
+        name: "pick_execution_workspace_directory",
+        boundary: CommandBoundary::Read,
+        security: "user-selected local directory candidate only; validates but grants no file access",
     },
     CommandContract {
         name: "stage_provider_credential",

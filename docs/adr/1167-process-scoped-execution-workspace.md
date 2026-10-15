@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳并实施；Files 目录句柄锚定见 [ADR 1169](1169-anchor-file-mutations-to-authorized-directories.md)，按代次切换 workspace 见 [ADR 1170](1170-version-execution-workspace-switches.md)，配置持久化见 [ADR 1171](1171-persist-execution-workspace-in-security-settings.md)。原生目录选择器、scratch 生命周期和进程级文件隔离仍在路线图 Active。
+已采纳并实施；Files 目录句柄锚定见 [ADR 1169](1169-anchor-file-mutations-to-authorized-directories.md)，按代次切换 workspace 见 [ADR 1170](1170-version-execution-workspace-switches.md)，配置持久化与受限原生目录选择器见 [ADR 1171](1171-persist-execution-workspace-in-security-settings.md)。scratch 生命周期和进程级文件隔离仍在路线图 Active。
 
 ## 背景
 

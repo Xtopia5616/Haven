@@ -16,6 +16,11 @@ export function loadSettings(): Promise<SettingsPayload | null> {
 	return invoke('get_settings').then(parseSettingsPayload);
 }
 
+/** Open the native folder picker for an execution workspace candidate. */
+export function pickExecutionWorkspaceDirectory(): Promise<string | null> {
+	return invoke('pick_execution_workspace_directory');
+}
+
 /** Drop staged credentials that were not included in a successful Settings save. */
 export function discardStagedCredentials(): Promise<void> {
 	return invoke('discard_staged_credentials');

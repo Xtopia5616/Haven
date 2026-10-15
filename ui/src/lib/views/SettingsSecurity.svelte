@@ -20,6 +20,7 @@
 		onRevokeSessionPermission?: (grant: SessionPermissionGrant) => boolean | Promise<boolean>;
 		onResetPermissions?: () => boolean | Promise<boolean>;
 		onResetSessionPermissions?: () => boolean | Promise<boolean>;
+		onPickExecutionRoot?: () => Promise<string | null>;
 	}
 
 	/**
@@ -37,7 +38,20 @@
 		onRevokeSessionPermission = async () => true,
 		onResetPermissions = async () => true,
 		onResetSessionPermissions = async () => true,
+		onPickExecutionRoot = async () => null,
 	}: Props = $props();
+	let pickingExecutionRoot = $state(false);
+
+	async function pickExecutionRoot() {
+		if (pickingExecutionRoot) return;
+		pickingExecutionRoot = true;
+		try {
+			const selected = await onPickExecutionRoot();
+			if (selected !== null) security.execution_root = selected;
+		} finally {
+			pickingExecutionRoot = false;
+		}
+	}
 
 	const PERMISSION_MODES = [
 		{
@@ -363,15 +377,25 @@
 				description="填写已存在的本地绝对路径；应用设置后，新调用使用新目录。"
 				stacked
 			>
-				<textarea
-					id="security-execution-root"
-					class="md-textarea md-textarea--code security-roots"
-					rows="1"
-					value={security.execution_root || ''}
-					placeholder="留空使用启动时发现的仓库根"
-					oninput={(event) => {
-						security.execution_root = inputElementValue(event).trim() || null;
-					}}></textarea>
+				<div class="execution-workspace-input">
+					<textarea
+						id="security-execution-root"
+						class="md-textarea md-textarea--code security-roots"
+						rows="1"
+						value={security.execution_root || ''}
+						placeholder="留空使用启动时发现的仓库根"
+						oninput={(event) => {
+							security.execution_root = inputElementValue(event).trim() || null;
+						}}></textarea>
+					<MaterialButton
+						variant="outlined"
+						disabled={pickingExecutionRoot}
+						ariaBusy={pickingExecutionRoot}
+						onclick={pickExecutionRoot}
+					>
+						{pickingExecutionRoot ? '正在选择…' : '选择目录'}
+					</MaterialButton>
+				</div>
 			</SettingsField>
 		</div>
 
@@ -724,6 +748,15 @@
 	}
 	.security-roots {
 		margin-top: var(--md-sys-space-sm);
+	}
+	.execution-workspace-input {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--md-sys-space-sm);
+	}
+	.execution-workspace-input textarea {
+		flex: 1 1 auto;
+		min-width: 0;
 	}
 	.rules-section {
 		padding-top: var(--md-sys-space-xl);

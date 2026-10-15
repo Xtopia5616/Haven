@@ -83,6 +83,54 @@ pub async fn get_settings(app: tauri::AppHandle) -> Result<haven_common::config:
         .map_err(|e| log_err("get_settings", e))
 }
 
+/// Let the user choose a candidate execution root. The selected path is
+/// validated by Tools and returned to the Settings draft; this command does
+/// not persist it or grant renderer file access.
+#[tauri::command]
+pub async fn pick_execution_workspace_directory(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .pick_folder(move |selection| {
+            let _ = sender.send(selection);
+        });
+
+    let Some(selection) = receiver.await.map_err(|_| {
+        log_err(
+            "pick_execution_workspace_directory",
+            "directory picker closed",
+        )
+    })?
+    else {
+        return Ok(None);
+    };
+    let selected_path = selection.into_path().map_err(|_| {
+        log_err(
+            "pick_execution_workspace_directory",
+            "invalid local directory",
+        )
+    })?;
+    let normalized_path = state
+        .runtime
+        .tools
+        .validate_execution_workspace(&selected_path)
+        .map_err(|error| log_err("pick_execution_workspace_directory", error))?;
+    let path = normalized_path.to_str().ok_or_else(|| {
+        log_err(
+            "pick_execution_workspace_directory",
+            "invalid local directory",
+        )
+    })?;
+    Ok(Some(path.to_string()))
+}
+
 /// Write a replacement provider key to secure storage first. The returned
 /// value is an opaque `cred-*` reference; secret values never enter the
 /// Settings update payload.

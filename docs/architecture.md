@@ -651,7 +651,7 @@ Windows 子进程通过 Job Object 回收进程树；受限网络只允许经过
 目的地，禁止跨源重定向。`ask` 与 `restricted` 共用可验证目的地边界，但默认将网络操作交给确认流程，
 不会因为默认配置而静默拒绝普通公网请求。
 
-当前 `ExecutionWorkspaceSnapshot` 携带后端根和进程内 generation；安全设置提供可编辑的执行根路径，并通过完整 Settings IPC 持久化。空值使用启动发现；保存前验证本地目录，启动时若已失效则记录错误并 fail closed。新 attempt 捕获工作区快照；已开始的 attempt 保留其旧 generation 并可完成已授权副作用。`writable_roots` 为空时，`workspace_write` 对带路径的内建写操作默认限制到此根；显式 roots 覆盖这一默认根集合。Files 变更已由授权 proof/policy revision 绑定的目录句柄锚定（ADR 1169），但该策略仍不是 OS 级隔离。原生目录选择器、scratch 生命周期与 Shell/Skill/MCP 子进程的本机文件访问边界仍按独立切片收敛（ADR 1167/1171）。
+当前 `ExecutionWorkspaceSnapshot` 携带后端根和进程内 generation；安全设置提供可编辑路径和受限的原生目录选择器，并通过完整 Settings IPC 持久化。选择器只返回经 Tools 验证的本地目录候选，不授予 renderer 文件访问；空值使用启动发现，保存前再次验证，启动时若持久化根已失效则记录错误并 fail closed。新 attempt 捕获工作区快照；已开始的 attempt 保留其旧 generation 并可完成已授权副作用。`writable_roots` 为空时，`workspace_write` 对带路径的内建写操作默认限制到此根；显式 roots 覆盖这一默认根集合。Files 变更已由授权 proof/policy revision 绑定的目录句柄锚定（ADR 1169），但该策略仍不是 OS 级隔离。scratch 生命周期与 Shell/Skill/MCP 子进程的本机文件访问边界仍按独立切片收敛（ADR 1167/1171）。
 
 确认 UI：拒绝 / 仅本次 / 本对话允许此操作 / 更多允许选项；更多选项按“本对话或永久”与“当前操作、功能组、工具”组合展示，永久授权和扩大范围需要二次确认。没有持久会话 owner 的界面直调与定时确认不提供 session scope；后端也会拒绝 renderer 伪造的 session 决定。拒绝菜单同样支持操作、功能组、工具层级。后端只接受当前 capability 的合法父级，不能由 renderer 发明任意权限键。永久授权写入 `config.toml`；会话授权写入 `session_authorization_grants`，由 `SessionStore` 读取并恢复，且通过 `session_id` 外键随会话删除和历史保留清理。普通会话结束只清进程内 map，授权在重新载入会话时恢复；普通 Security 配置 apply 清进程内 map 后也从数据库恢复。永久规则与会话授权可分别查看、撤销和重置；会话逐项撤销按 session+capability 匹配，永久操作不删除会话 grant。回滚 transcript 不改变授权。安全设置子视图按会话列出 allow/deny、capability、target，并显示每类 reset 的准确影响数量。确认收据绑定规范化输入 hash、权限 key、策略 revision、风险和过期时间，执行前再次验证；原始 shell、网络、文件和扩展参数不进入 renderer。普通全量设置保存不拥有权限规则，避免 stale form 清空授权。授权结果另带稳定 `AuthorizationReasonCode`，调用方不得解析错误文案。
 

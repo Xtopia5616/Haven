@@ -5568,6 +5568,7 @@ export const NOTIFICATION_SHOW_EVENT_PAYLOAD_SHAPE = {
 } as const;
 export const OPEN_EXTERNAL_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const OPEN_SKILLS_DIR_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const PICK_EXECUTION_WORKSPACE_DIRECTORY_RESPONSE_SHAPE = { kind: 'nullable', inner: { kind: 'string' } } as const;
 export const PROCESS_TRANSCRIPT_RESPONSE_SHAPE = { kind: 'union', anyOf: [
 	{
 		kind: 'object',
@@ -8541,6 +8542,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	log_frontend_error: LOG_FRONTEND_ERROR_RESPONSE_SHAPE,
 	open_external: OPEN_EXTERNAL_RESPONSE_SHAPE,
 	open_skills_dir: OPEN_SKILLS_DIR_RESPONSE_SHAPE,
+	pick_execution_workspace_directory: PICK_EXECUTION_WORKSPACE_DIRECTORY_RESPONSE_SHAPE,
 	process_transcript: PROCESS_TRANSCRIPT_RESPONSE_SHAPE,
 	read_log_tail: READ_LOG_TAIL_RESPONSE_SHAPE,
 	read_mcp_resource: READ_MCP_RESOURCE_RESPONSE_SHAPE,
@@ -8672,6 +8674,7 @@ export interface TauriCommandMap {
 	log_frontend_error: { request: { failureKind: FrontendFailureKindInput }; response: void };
 	open_external: { request: { target: string }; response: void };
 	open_skills_dir: { request: undefined; response: void };
+	pick_execution_workspace_directory: { request: undefined; response: string | null };
 	process_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingId?: string | null; deliveryMode?: InputDeliveryModeInput | null }; response: ProcessResult };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
 	read_mcp_resource: { request: { name: string; targetBinding: string; uri: string; forceRefresh: boolean }; response: McpResourceRead };

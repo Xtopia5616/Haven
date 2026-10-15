@@ -37,6 +37,7 @@
 		isAutostartEnabled,
 		listSessionPermissions,
 		loadSettings,
+		pickExecutionWorkspaceDirectory as pickExecutionWorkspaceDirectoryCommand,
 		resetPermissions as resetPermissionsCommand,
 		resetSessionPermissions as resetSessionPermissionsCommand,
 		revokePermission as revokePermissionCommand,
@@ -991,6 +992,18 @@
 			memoryMaintenance.running = false;
 		}
 	}
+	async function pickExecutionWorkspace(): Promise<string | null> {
+		try {
+			return await pickExecutionWorkspaceDirectoryCommand();
+		} catch (error) {
+			reportError(error, {
+				context: 'SettingsView',
+				message: '选择执行工作区失败',
+				log: false,
+			});
+			return null;
+		}
+	}
 	async function refreshApiKeyStatus() {
 		const { providers, ...flags } = await readApiKeyStatus();
 		keyConfigured = { ...keyConfigured, ...flags };
@@ -1429,6 +1442,7 @@
 										onRevokeSessionPermission={revokeSessionPermission}
 										onResetPermissions={resetPermissions}
 										onResetSessionPermissions={resetSessionPermissions}
+										onPickExecutionRoot={pickExecutionWorkspace}
 									/>
 								</div>
 							{/if}

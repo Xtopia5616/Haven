@@ -211,6 +211,11 @@ export const TAURI_COMMAND_CONTRACTS = {
 		boundary: 'read',
 		security: 'config response redacts credentials and MCP environment values',
 	},
+	pick_execution_workspace_directory: {
+		boundary: 'read',
+		security:
+			'user-selected local directory candidate only; validates but grants no file access',
+	},
 	stage_provider_credential: {
 		boundary: 'mutate',
 		security: 'writes provider secret to secure storage and returns only an opaque reference',
