@@ -12,6 +12,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Semaphore;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -20,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 /// pipe merely because its result is too large for Haven to keep.
 const MAX_SKILL_STREAM_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SKILL_SCRIPT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_CONCURRENT_SKILL_EXECUTIONS: usize = 4;
 #[cfg(not(test))]
 const SKILL_SCRIPT_SNAPSHOT_DIRECTORY: &str = "skill-script-snapshots";
 const SKILL_SCRIPT_SNAPSHOT_MAX_AGE: Duration =
@@ -201,6 +203,7 @@ pub struct SkillRunner {
     venv: VenvManager,
     config: SkillsExecConfig,
     script_snapshot_root: std::path::PathBuf,
+    execution_slots: std::sync::Arc<Semaphore>,
 }
 
 impl SkillRunner {
@@ -216,6 +219,7 @@ impl SkillRunner {
             // fails closed instead of touching the process Temp directory.
             #[cfg(test)]
             script_snapshot_root: std::path::PathBuf::new(),
+            execution_slots: std::sync::Arc::new(Semaphore::new(MAX_CONCURRENT_SKILL_EXECUTIONS)),
         }
     }
 
@@ -234,6 +238,21 @@ impl SkillRunner {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let deadline = Instant::now() + Duration::from_secs(self.config.timeout_secs);
+        let _execution_permit = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                return Ok(ToolResult::cancelled(format!("skill '{}' cancelled", skill.name())));
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                return Ok(ToolResult::timed_out(
+                    crate::ToolExecutionOutcome::TimedOutUnknown,
+                    format!("skill '{}' timed out after {}s", skill.name(), self.config.timeout_secs),
+                ));
+            }
+            permit = std::sync::Arc::clone(&self.execution_slots).acquire_owned() => {
+                permit.map_err(|_| anyhow::anyhow!("skill execution capacity is unavailable"))?
+            }
+        };
         let (entry, entry_file) = skill.open_entry_script().ok_or_else(|| {
             anyhow::anyhow!(
                 "skill '{}' has no entry script; expected scripts/main.py or scripts/{}.py",
@@ -516,9 +535,13 @@ mod tests {
     use std::path::Path;
 
     async fn scripted_skill(skills_root: &Path, script: &str) -> Skill {
+        scripted_skill_named(skills_root, "test-skill", script).await
+    }
+
+    async fn scripted_skill_named(skills_root: &Path, name: &str, script: &str) -> Skill {
         crate::test_support::discover_skill_fixture(
             skills_root,
-            "test-skill",
+            name,
             "Temporary runner test",
             Some(script),
         )
@@ -608,6 +631,94 @@ mod tests {
         assert!(result.error.unwrap().contains("output exceeded its limit"));
         assert_eq!(result.output["truncated"], true);
         assert!(result.truncated);
+        assert!(
+            std::fs::read_dir(&runner.script_snapshot_root)
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn runner_bounds_concurrent_skill_processes_and_snapshot_capacity() {
+        let temp = tempfile::tempdir().unwrap();
+        let work_dir = temp.path().join("work");
+        std::fs::create_dir_all(&work_dir).unwrap();
+        let release = work_dir.join("release");
+        let mut skills = Vec::new();
+        for index in 0..(MAX_CONCURRENT_SKILL_EXECUTIONS + 1) {
+            let name = format!("capacity-skill-{index}");
+            let script = format!(
+                "from pathlib import Path\nimport time\nmarker = Path('skill-{index}.active')\nmarker.write_text('started', encoding='utf-8')\nrelease = Path('release')\ndeadline = time.monotonic() + 20\nwhile not release.exists() and time.monotonic() < deadline:\n    time.sleep(0.01)\nmarker.unlink(missing_ok=True)\nif not release.exists():\n    raise SystemExit(2)\nprint('{{}}')\n"
+            );
+            let skill = scripted_skill_named(temp.path(), &name, &script).await;
+            skills.push(skill);
+        }
+
+        let config = SkillsExecConfig {
+            timeout_secs: 30,
+            venv_root: temp.path().join("venvs"),
+            work_dir: work_dir.clone(),
+            ..Default::default()
+        };
+        let venv = VenvManager::new(config.venv_root.clone());
+        let mut runner = SkillRunner::new(venv, config);
+        runner.script_snapshot_root = temp.path().join("script-snapshots");
+        for skill in &skills {
+            runner
+                .venv
+                .ensure(skill.name(), skill.root())
+                .await
+                .unwrap();
+        }
+
+        let runner = std::sync::Arc::new(runner);
+        let mut executions = tokio::task::JoinSet::new();
+        for skill in skills {
+            let runner = std::sync::Arc::clone(&runner);
+            executions.spawn(async move {
+                runner
+                    .execute(&skill, &serde_json::json!({}), CancellationToken::new())
+                    .await
+            });
+        }
+
+        let observed_capacity = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let started = std::fs::read_dir(&work_dir)
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_name().to_string_lossy().ends_with(".active"))
+                    .count();
+                if started >= MAX_CONCURRENT_SKILL_EXECUTIONS {
+                    break started;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .ok();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let stable_capacity = std::fs::read_dir(&work_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".active"))
+            .count();
+        std::fs::write(&release, b"release").unwrap();
+
+        let mut successful = 0;
+        while let Some(result) = executions.join_next().await {
+            let result = result.unwrap().unwrap();
+            successful += usize::from(result.success);
+        }
+
+        assert_eq!(
+            observed_capacity,
+            Some(MAX_CONCURRENT_SKILL_EXECUTIONS),
+            "runner should fill its bounded execution capacity"
+        );
+        assert_eq!(stable_capacity, MAX_CONCURRENT_SKILL_EXECUTIONS);
+        assert_eq!(successful, MAX_CONCURRENT_SKILL_EXECUTIONS + 1);
         assert!(
             std::fs::read_dir(&runner.script_snapshot_root)
                 .unwrap()
