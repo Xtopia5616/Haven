@@ -102,6 +102,11 @@ pub(crate) struct MediaDeps {
 pub(crate) struct ToolRunDeps {
     pub(crate) live_outputs: Arc<crate::live_output::LiveOutputHub>,
     pub(crate) service: Arc<ToolRunService>,
+    #[cfg(windows)]
+    pub(crate) sandbox_output_reviews: crate::SandboxOutputReviewOwner,
+    #[cfg(windows)]
+    pub(crate) windows_container_execution:
+        Arc<dyn haven_platform::windows_container::execution::WindowsContainerExecutionPort>,
 }
 
 /// Complete dependency object for constructing the builtin catalog. Keeping
@@ -164,6 +169,10 @@ pub(crate) async fn register_builtin_tools(
             ToolRunDeps {
                 live_outputs,
                 service: tool_run_service,
+                #[cfg(windows)]
+                sandbox_output_reviews,
+                #[cfg(windows)]
+                windows_container_execution,
             },
     } = context;
     let execution_workspace = authorization.execution_workspace().await;
@@ -256,6 +265,10 @@ pub(crate) async fn register_builtin_tools(
         max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
         default_shell: default_shell.as_str().into(),
         execution_workspace,
+        #[cfg(windows)]
+        sandbox_output_reviews,
+        #[cfg(windows)]
+        windows_container_execution,
         #[cfg(test)]
         test_output_log_root: None,
     }));

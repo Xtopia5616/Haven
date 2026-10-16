@@ -15,7 +15,7 @@ use crate::windows_container::execution::{
     WindowsContainerOutputStream, WindowsContainerShell,
 };
 use crate::windows_container::hcs_guest_execution::{
-    HcsGuestExecutionFailureKind, execute_guest, native_api,
+    HcsGuestExecutionFailureKind, execute_guest_with_start, native_api,
 };
 use std::cell::Cell;
 use std::io;
@@ -251,7 +251,17 @@ fn run_hcs_attempt(
             || connection.peer_disconnected()
             || output_write_failed.get()
     };
-    let guest_result = execute_guest(&api, &config, request, &mut is_cancelled, output_sink);
+    let mut before_shell_start = || request_shell_start(connection, request_id, deadline);
+    let mut shell_started = || notify_shell_started(connection, request_id, deadline);
+    let guest_result = execute_guest_with_start(
+        &api,
+        &config,
+        request,
+        &mut before_shell_start,
+        &mut shell_started,
+        &mut is_cancelled,
+        output_sink,
+    );
 
     let outcome = match guest_result {
         Ok(outcome) => outcome,
@@ -331,6 +341,53 @@ fn run_hcs_attempt(
     }
 
     Ok((outcome.exit_code, outcome.output, output))
+}
+
+fn request_shell_start(
+    connection: &BrokerPipeConnection<'_>,
+    request_id: [u8; 16],
+    deadline: Instant,
+) -> Result<(), HcsGuestExecutionFailureKind> {
+    let request = BrokerControlMessage::ExecutionStartRequested { request_id };
+    connection
+        .write_frame_until(
+            &BrokerFrame::control(&request).map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?,
+            deadline,
+        )
+        .map_err(|error| start_boundary_failure(error.kind()))?;
+    let response = connection
+        .read_frame_until(deadline)
+        .map_err(|error| start_boundary_failure(error.kind()))?
+        .decode_control()
+        .map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?;
+    match response {
+        BrokerControlMessage::ExecutionStartAuthorized {
+            request_id: response_id,
+        } if response_id == request_id => Ok(()),
+        _ => Err(HcsGuestExecutionFailureKind::Cancelled),
+    }
+}
+
+fn notify_shell_started(
+    connection: &BrokerPipeConnection<'_>,
+    request_id: [u8; 16],
+    deadline: Instant,
+) -> Result<(), HcsGuestExecutionFailureKind> {
+    let frame = BrokerFrame::control(&BrokerControlMessage::ExecutionStarted { request_id })
+        .map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?;
+    connection
+        .write_frame_until(&frame, deadline)
+        .map_err(|error| start_boundary_failure(error.kind()))
+}
+
+fn start_boundary_failure(kind: io::ErrorKind) -> HcsGuestExecutionFailureKind {
+    match kind {
+        io::ErrorKind::TimedOut => HcsGuestExecutionFailureKind::TimedOut,
+        io::ErrorKind::InvalidData | io::ErrorKind::InvalidInput => {
+            HcsGuestExecutionFailureKind::HcsFailed
+        }
+        _ => HcsGuestExecutionFailureKind::Cancelled,
+    }
 }
 
 fn platform_request(

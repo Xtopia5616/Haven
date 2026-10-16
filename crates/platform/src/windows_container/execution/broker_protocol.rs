@@ -19,7 +19,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 3;
+pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 4;
 pub(crate) const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
 const MAX_BINARY_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_WIRE_PATH_BYTES: usize = 32 * 1024;
@@ -169,6 +169,15 @@ pub(crate) enum BrokerControlMessage {
         entry_count: u32,
         total_bytes: u64,
     },
+    ExecutionStartRequested {
+        request_id: [u8; 16],
+    },
+    ExecutionStartAuthorized {
+        request_id: [u8; 16],
+    },
+    ExecutionStarted {
+        request_id: [u8; 16],
+    },
     Cancel {
         request_id: [u8; 16],
     },
@@ -253,6 +262,9 @@ impl BrokerControlMessage {
                 "workspace snapshot exceeds its transfer limits",
             )),
             Self::WorkspaceSnapshotRequested { request_id }
+            | Self::ExecutionStartRequested { request_id }
+            | Self::ExecutionStartAuthorized { request_id }
+            | Self::ExecutionStarted { request_id }
             | Self::Cancel { request_id }
             | Self::ExecutionComplete { request_id, .. }
             | Self::ExecutionAcknowledged { request_id }
@@ -261,6 +273,9 @@ impl BrokerControlMessage {
                 Err(invalid_data("broker request ID is invalid"))
             }
             Self::WorkspaceSnapshotRequested { .. }
+            | Self::ExecutionStartRequested { .. }
+            | Self::ExecutionStartAuthorized { .. }
+            | Self::ExecutionStarted { .. }
             | Self::Cancel { .. }
             | Self::ExecutionComplete { .. }
             | Self::ExecutionAcknowledged { .. } => Ok(()),
@@ -823,6 +838,36 @@ mod tests {
     }
 
     #[test]
+    fn shell_start_handshake_requires_nonzero_request_ids() {
+        for message in [
+            BrokerControlMessage::ExecutionStartRequested {
+                request_id: [0; 16],
+            },
+            BrokerControlMessage::ExecutionStartAuthorized {
+                request_id: [0; 16],
+            },
+            BrokerControlMessage::ExecutionStarted {
+                request_id: [0; 16],
+            },
+        ] {
+            assert!(BrokerFrame::control(&message).is_err());
+        }
+        for message in [
+            BrokerControlMessage::ExecutionStartRequested {
+                request_id: [4; 16],
+            },
+            BrokerControlMessage::ExecutionStartAuthorized {
+                request_id: [4; 16],
+            },
+            BrokerControlMessage::ExecutionStarted {
+                request_id: [4; 16],
+            },
+        ] {
+            assert!(BrokerFrame::control(&message).is_ok());
+        }
+    }
+
+    #[test]
     fn wire_paths_reject_win32_aliases_and_unsupported_characters() {
         for path in [
             "CON",
@@ -855,8 +900,8 @@ mod tests {
             BROKER_PROTOCOL_VERSION
         );
         assert!(negotiate_version(2, 2).is_err());
-        assert!(negotiate_version(4, 5).is_err());
+        assert!(negotiate_version(5, 6).is_err());
         assert!(negotiate_version(0, 1).is_err());
-        assert!(negotiate_version(4, 3).is_err());
+        assert!(negotiate_version(5, 4).is_err());
     }
 }

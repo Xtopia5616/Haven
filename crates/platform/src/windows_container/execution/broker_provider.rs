@@ -27,8 +27,10 @@ impl WindowsContainerExecutionPort for BrokerExecutionProvider {
         &self,
         request: &WindowsContainerExecutionRequest,
         workspace: &WindowsContainerWorkspaceInput,
+        before_shell_start: &mut dyn FnMut() -> io::Result<()>,
+        shell_started: &mut dyn FnMut(),
         is_cancelled: &mut (dyn FnMut() -> bool + Send),
-        output: WindowsContainerOutputSink<'_>,
+        on_output: &mut (dyn FnMut(super::WindowsContainerOutputStream, &[u8]) + Send),
     ) -> io::Result<WindowsContainerExecutionResult> {
         if is_cancelled() {
             return Err(io::Error::new(
@@ -48,8 +50,16 @@ impl WindowsContainerExecutionPort for BrokerExecutionProvider {
             let mut client =
                 BrokerPipeClient::connect(&policy, cancellation).map_err(map_connection_error)?;
             let request_id = uuid::Uuid::new_v4().into_bytes();
+            let output = WindowsContainerOutputSink::new(request, on_output);
             match client
-                .execute_with_workspace(request, request_id, workspace, output)
+                .execute_with_workspace(
+                    request,
+                    request_id,
+                    workspace,
+                    before_shell_start,
+                    shell_started,
+                    output,
+                )
                 .map_err(map_connection_error)?
             {
                 BrokerPipeExecutionResponse::Failed(code) => Err(map_broker_failure(code)),

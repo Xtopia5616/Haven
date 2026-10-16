@@ -100,6 +100,9 @@ pub(crate) struct ToolRuntime {
     pub(crate) managed_assets: ManagedAssetRegistry,
     #[cfg(windows)]
     pub(crate) sandbox_output_reviews: crate::SandboxOutputReviewOwner,
+    #[cfg(windows)]
+    pub(crate) windows_container_execution:
+        Arc<dyn haven_platform::windows_container::execution::WindowsContainerExecutionPort>,
     platform: RwLock<Arc<PlatformRuntime>>,
     pub(crate) tool_run_service: Arc<ToolRunService>,
     pub(crate) live_outputs: Arc<LiveOutputHub>,
@@ -121,6 +124,9 @@ impl ToolRuntime {
             managed_assets: ManagedAssetRegistry::default(),
             #[cfg(windows)]
             sandbox_output_reviews: crate::SandboxOutputReviewOwner::new(),
+            #[cfg(windows)]
+            windows_container_execution:
+                haven_platform::windows_container::execution::new_brokered_execution_port(),
             platform: RwLock::new(Arc::new(PlatformRuntime::default())),
             tool_run_service,
             live_outputs,

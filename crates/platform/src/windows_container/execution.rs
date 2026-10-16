@@ -384,8 +384,10 @@ pub trait WindowsContainerExecutionPort: private::Sealed + Send + Sync {
         &self,
         request: &WindowsContainerExecutionRequest,
         workspace: &WindowsContainerWorkspaceInput,
+        before_shell_start: &mut dyn FnMut() -> io::Result<()>,
+        shell_started: &mut dyn FnMut(),
         is_cancelled: &mut (dyn FnMut() -> bool + Send),
-        output: WindowsContainerOutputSink<'_>,
+        on_output: &mut (dyn FnMut(WindowsContainerOutputStream, &[u8]) + Send),
     ) -> io::Result<WindowsContainerExecutionResult>;
 }
 
@@ -446,12 +448,16 @@ mod tests {
             &self,
             request: &WindowsContainerExecutionRequest,
             _workspace: &WindowsContainerWorkspaceInput,
+            before_shell_start: &mut dyn FnMut() -> io::Result<()>,
+            shell_started: &mut dyn FnMut(),
             is_cancelled: &mut (dyn FnMut() -> bool + Send),
-            mut output: WindowsContainerOutputSink<'_>,
+            on_output: &mut (dyn FnMut(WindowsContainerOutputStream, &[u8]) + Send),
         ) -> io::Result<WindowsContainerExecutionResult> {
             if is_cancelled() {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
             }
+            before_shell_start()?;
+            shell_started();
             *self
                 .recorded
                 .lock()
@@ -463,6 +469,7 @@ mod tests {
                 policy_revision: request.policy_revision,
                 storage_quota_bytes: request.limits.storage_quota_bytes,
             });
+            let mut output = WindowsContainerOutputSink::new(request, on_output);
             output.write_chunk(
                 WindowsContainerOutputStream::Stdout,
                 b"mock output exceeds cap",
@@ -552,10 +559,18 @@ mod tests {
                 .unwrap()
                 .push((stream, bytes.to_vec()));
         };
-        let sink = WindowsContainerOutputSink::new(&request, &mut on_output);
         let mut cancelled = || false;
+        let mut before_shell_start = || Ok(());
+        let mut shell_started = || {};
         let result = port
-            .execute(&request, &workspace, &mut cancelled, sink)
+            .execute(
+                &request,
+                &workspace,
+                &mut before_shell_start,
+                &mut shell_started,
+                &mut cancelled,
+                &mut on_output,
+            )
             .unwrap();
 
         assert_eq!(
@@ -652,10 +667,17 @@ mod tests {
         .unwrap();
         let port = MockExecutionPort::default();
         let mut cancelled = || true;
+        let mut before_shell_start = || Ok(());
+        let mut shell_started = || {};
         let mut on_output = |_: WindowsContainerOutputStream, _: &[u8]| {};
-        let sink = WindowsContainerOutputSink::new(&request, &mut on_output);
-
-        let error = match port.execute(&request, &workspace, &mut cancelled, sink) {
+        let error = match port.execute(
+            &request,
+            &workspace,
+            &mut before_shell_start,
+            &mut shell_started,
+            &mut cancelled,
+            &mut on_output,
+        ) {
             Ok(_) => panic!("cancelled execution unexpectedly succeeded"),
             Err(error) => error,
         };

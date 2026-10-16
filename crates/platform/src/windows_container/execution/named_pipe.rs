@@ -58,7 +58,7 @@ use windows_sys::Win32::System::Threading::{
     CreateEventW, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
 };
 
-const BROKER_PIPE_NAME: &str = r"\\.\pipe\Haven.ContainerBroker.v3";
+const BROKER_PIPE_NAME: &str = r"\\.\pipe\Haven.ContainerBroker.v4";
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const MAX_HANDSHAKE_BODY_BYTES: usize = 1_024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -498,9 +498,19 @@ impl BrokerPipeClient {
         request: &super::WindowsContainerExecutionRequest,
         request_id: [u8; 16],
         workspace: &super::WindowsContainerWorkspaceInput,
+        before_shell_start: &mut dyn FnMut() -> io::Result<()>,
+        shell_started: &mut dyn FnMut(),
         output: super::WindowsContainerOutputSink<'_>,
     ) -> io::Result<client_exchange::BrokerPipeExecutionResponse> {
-        client_exchange::execute_with_workspace(self, request, request_id, workspace, output)
+        client_exchange::execute_with_workspace(
+            self,
+            request,
+            request_id,
+            workspace,
+            before_shell_start,
+            shell_started,
+            output,
+        )
     }
 
     pub(crate) fn read_frame(&mut self, timeout: Duration) -> io::Result<BrokerFrame> {
@@ -1039,8 +1049,17 @@ mod tests {
         let mut client = BrokerPipeClient::connect_for_test(&name).unwrap();
         let mut on_output = |_: super::super::WindowsContainerOutputStream, _: &[u8]| {};
         let output_sink = super::super::WindowsContainerOutputSink::new(&request, &mut on_output);
+        let mut before_shell_start = || Ok(());
+        let mut shell_started = || {};
         let response = client
-            .execute_with_workspace(&request, request_id, &workspace, output_sink)
+            .execute_with_workspace(
+                &request,
+                request_id,
+                &workspace,
+                &mut before_shell_start,
+                &mut shell_started,
+                output_sink,
+            )
             .unwrap();
 
         assert!(matches!(
@@ -1134,8 +1153,22 @@ mod tests {
         let mut client = BrokerPipeClient::connect_for_test(&name).unwrap();
         let mut on_output = |_: super::super::WindowsContainerOutputStream, _: &[u8]| {};
         let output_sink = super::super::WindowsContainerOutputSink::new(&request, &mut on_output);
+        let mut start_requests = 0;
+        let mut start_confirmations = 0;
+        let mut before_shell_start = || {
+            start_requests += 1;
+            Ok(())
+        };
+        let mut shell_started = || start_confirmations += 1;
         let response = client
-            .execute_with_workspace(&request, [13; 16], &workspace, output_sink)
+            .execute_with_workspace(
+                &request,
+                [13; 16],
+                &workspace,
+                &mut before_shell_start,
+                &mut shell_started,
+                output_sink,
+            )
             .unwrap();
 
         assert!(matches!(
@@ -1144,6 +1177,8 @@ mod tests {
                 BrokerFailureCode::QuotaUnattested
             )
         ));
+        assert_eq!(start_requests, 0);
+        assert_eq!(start_confirmations, 0);
         server.join().unwrap().unwrap();
     }
 
@@ -1198,6 +1233,27 @@ mod tests {
             let output = crate::filesystem::DirectoryCapability::open(output_temp.path())?;
             snapshot.copy_tree_to(&output, limits.workspace_copy(), || false)?;
             std::fs::write(output_temp.path().join("result.txt"), b"result")?;
+
+            connection.write_frame(
+                &BrokerFrame::control(&BrokerControlMessage::ExecutionStartRequested {
+                    request_id,
+                })?,
+                Duration::from_secs(5),
+            )?;
+            if !matches!(
+                connection
+                    .read_frame(Duration::from_secs(5))?
+                    .decode_control()?,
+                BrokerControlMessage::ExecutionStartAuthorized {
+                    request_id: authorized_id
+                } if authorized_id == request_id
+            ) {
+                return Err(invalid_data("test client did not authorize Shell start"));
+            }
+            connection.write_frame(
+                &BrokerFrame::control(&BrokerControlMessage::ExecutionStarted { request_id })?,
+                Duration::from_secs(5),
+            )?;
 
             connection.write_frame(
                 &BrokerFrame::new(BrokerFrameKind::StdoutChunk, b"hello".to_vec())?,
@@ -1269,12 +1325,28 @@ mod tests {
             streamed_output.extend_from_slice(bytes);
         };
         let output_sink = super::super::WindowsContainerOutputSink::new(&request, &mut on_output);
-        let response = client.execute_with_workspace(&request, request_id, &workspace, output_sink);
+        let mut start_authorizations = 0;
+        let mut start_confirmations = 0;
+        let mut before_shell_start = || {
+            start_authorizations += 1;
+            Ok(())
+        };
+        let mut shell_started = || start_confirmations += 1;
+        let response = client.execute_with_workspace(
+            &request,
+            request_id,
+            &workspace,
+            &mut before_shell_start,
+            &mut shell_started,
+            output_sink,
+        );
         let server_result = server.join().unwrap();
         assert!(
             server_result.is_ok(),
             "server exchange failed: {server_result:?}"
         );
+        assert_eq!(start_authorizations, 1);
+        assert_eq!(start_confirmations, 1);
         let response = response.unwrap();
 
         let client_exchange::BrokerPipeExecutionResponse::Completed {

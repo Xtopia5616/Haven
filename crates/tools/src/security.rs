@@ -623,6 +623,12 @@ pub(crate) struct ExecutionPolicyPermit {
     _config: tokio::sync::OwnedRwLockReadGuard<SafetyConfig>,
 }
 
+impl ExecutionPolicyPermit {
+    pub(crate) fn sandbox_mode(&self) -> SandboxMode {
+        self._config.sandbox_mode
+    }
+}
+
 pub(crate) fn execution_policy_denied(reason: String) -> anyhow::Error {
     anyhow::Error::new(StructuredToolError::new(
         reason,
@@ -691,6 +697,20 @@ impl ExecutionPolicyAuthorization {
     #[cfg(test)]
     pub(crate) fn for_test_with_engine() -> (Self, Arc<AuthorizationEngine>) {
         let authorization = Arc::new(AuthorizationEngine::new());
+        let proof = Self::for_test_with_engine_and_tool(Arc::clone(&authorization), "shell");
+        (proof, authorization)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_engine_and_sandbox_mode(
+        sandbox_mode: SandboxMode,
+    ) -> (Self, Arc<AuthorizationEngine>) {
+        let authorization = Arc::new(AuthorizationEngine::new());
+        authorization
+            .config
+            .try_write()
+            .expect("test authorization config must be idle")
+            .sandbox_mode = sandbox_mode;
         let proof = Self::for_test_with_engine_and_tool(Arc::clone(&authorization), "shell");
         (proof, authorization)
     }
@@ -1947,9 +1967,9 @@ fn network_policy_block(
         (NetworkPolicy::Deny, _) => {
             Some(format!("network access is disabled for tool '{tool_name}'"))
         }
-        // After the sandbox gate above, Ask is the explicit user-consent path
-        // for opaque adapters such as Skills and MCP tools. Their operation
-        // contract still forces confirmation; Ask cannot override WorkspaceWrite.
+        // Ask is the explicit user-consent path for opaque adapters such as
+        // Skills and MCP tools. WorkspaceWrite eligibility is evaluated by
+        // the separate sandbox gate; network consent never overrides it.
         (NetworkPolicy::Ask, NetworkAccess::Opaque) => None,
         // Restricted is the technical network boundary: Haven must be able to
         // inspect and validate the destination before an opaque adapter runs.
@@ -1965,10 +1985,12 @@ fn workspace_opaque_capability_block(
     tool_name: &str,
     operation: &OperationPolicy,
 ) -> Option<String> {
-    // WorkspaceWrite only constrains Tools-owned filesystem operations. An
-    // opaque adapter may execute an unconstrained process or remote action,
-    // so confirmation cannot make it workspace-bounded.
+    // Only Windows Shell has a quota-gated HCS backend that snapshots the
+    // execution workspace and keeps all guest writes in a private review.
+    // Skills, MCP and other opaque capabilities remain blocked here.
+    let has_bounded_windows_shell = cfg!(windows) && tool_name == "shell";
     (matches!(sandbox_mode, SandboxMode::WorkspaceWrite)
+        && !has_bounded_windows_shell
         && matches!(operation.network_access, NetworkAccess::Opaque))
     .then(|| {
         format!("workspace-write sandbox cannot safely constrain opaque capability '{tool_name}'")
@@ -3624,16 +3646,38 @@ mod tests {
             RiskLevel::High,
             NetworkAccess::Opaque,
         );
+        let skill_policy = OperationPolicy::native(
+            "skills.run",
+            capability_scope!("skills"),
+            RiskLevel::High,
+            NetworkAccess::Opaque,
+        );
+        #[cfg(not(windows))]
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
+            ConfirmationResult::Blocked { .. }
+        ));
+        #[cfg(windows)]
+        assert!(matches!(
+            authorize(&gateway, None, "shell", &json!({}), &policy).await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+        assert!(matches!(
+            authorize(&gateway, None, "skills.run", &json!({}), &skill_policy).await,
             ConfirmationResult::Blocked { .. }
         ));
         gateway
             .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Ask)
             .await;
+        #[cfg(not(windows))]
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
             ConfirmationResult::Blocked { .. }
+        ));
+        #[cfg(windows)]
+        assert!(matches!(
+            authorize(&gateway, None, "shell", &json!({}), &policy).await,
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
         gateway
             .set_boundaries(

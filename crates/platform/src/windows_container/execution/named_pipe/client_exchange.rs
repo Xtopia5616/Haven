@@ -92,6 +92,8 @@ pub(super) fn execute_with_workspace(
     request: &WindowsContainerExecutionRequest,
     request_id: [u8; 16],
     workspace: &WindowsContainerWorkspaceInput,
+    before_shell_start: &mut dyn FnMut() -> io::Result<()>,
+    shell_started: &mut dyn FnMut(),
     mut output_sink: WindowsContainerOutputSink<'_>,
 ) -> io::Result<BrokerPipeExecutionResponse> {
     let wire_request = BrokerExecutionRequest::from_execution_request(request, request_id)?;
@@ -144,23 +146,30 @@ pub(super) fn execute_with_workspace(
 
     let mut received_stdout_bytes = 0usize;
     let mut received_stderr_bytes = 0usize;
+    let mut start_requested = false;
+    let mut start_confirmed = false;
     let first_output_frame = loop {
         let frame = client.read_frame_until(deadline)?;
         match frame.kind() {
-            BrokerFrameKind::StdoutChunk => receive_stream_chunk(
+            BrokerFrameKind::StdoutChunk if start_confirmed => receive_stream_chunk(
                 &mut output_sink,
                 WindowsContainerOutputStream::Stdout,
                 frame.payload(),
                 &mut received_stdout_bytes,
                 request.limits().max_stdout_bytes(),
             )?,
-            BrokerFrameKind::StderrChunk => receive_stream_chunk(
+            BrokerFrameKind::StderrChunk if start_confirmed => receive_stream_chunk(
                 &mut output_sink,
                 WindowsContainerOutputStream::Stderr,
                 frame.payload(),
                 &mut received_stderr_bytes,
                 request.limits().max_stderr_bytes(),
             )?,
+            BrokerFrameKind::StdoutChunk | BrokerFrameKind::StderrChunk => {
+                return Err(invalid_data(
+                    "broker output preceded Shell start confirmation",
+                ));
+            }
             BrokerFrameKind::Control => match frame.decode_control()? {
                 BrokerControlMessage::Failure {
                     request_id: Some(response_id),
@@ -169,8 +178,26 @@ pub(super) fn execute_with_workspace(
                     acknowledge_response(client, request_id, deadline)?;
                     return Ok(BrokerPipeExecutionResponse::Failed(code));
                 }
+                BrokerControlMessage::ExecutionStartRequested {
+                    request_id: response_id,
+                } if response_id == request_id && !start_requested && !start_confirmed => {
+                    before_shell_start()?;
+                    let authorized = BrokerControlMessage::ExecutionStartAuthorized { request_id };
+                    client.write_frame_until(&BrokerFrame::control(&authorized)?, deadline)?;
+                    start_requested = true;
+                }
+                BrokerControlMessage::ExecutionStarted {
+                    request_id: response_id,
+                } if response_id == request_id && start_requested && !start_confirmed => {
+                    start_confirmed = true;
+                    shell_started();
+                }
                 BrokerControlMessage::OutputEntry { .. }
-                | BrokerControlMessage::OutputSnapshotComplete { .. } => break frame,
+                | BrokerControlMessage::OutputSnapshotComplete { .. }
+                    if start_confirmed =>
+                {
+                    break frame;
+                }
                 _ => return Err(invalid_data("broker output stream started unexpectedly")),
             },
             _ => return Err(invalid_data("broker output stream started unexpectedly")),

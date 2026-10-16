@@ -44,10 +44,36 @@ pub(super) struct HcsGuestExecutionOutcome {
 /// drain both output pipes, and explicitly stop the system before returning.
 /// This function does not create scratch storage or make quota claims; the
 /// caller must hold the formatted quota-bound layer owner for the full call.
+#[cfg(test)]
 pub(super) fn execute_guest(
     api: &dyn HcsApi,
     config: &super::WindowsContainerSandboxConfig,
     request: &WindowsContainerExecutionRequest,
+    mut is_cancelled: impl FnMut() -> bool,
+    output: WindowsContainerOutputSink<'_>,
+) -> Result<HcsGuestExecutionOutcome, HcsGuestExecutionFailure> {
+    let mut before_shell_start = || Ok(());
+    let mut shell_started = || Ok(());
+    execute_guest_with_start(
+        api,
+        config,
+        request,
+        &mut before_shell_start,
+        &mut shell_started,
+        &mut is_cancelled,
+        output,
+    )
+}
+
+/// Run a guest while letting the broker authorize the Shell process creation
+/// boundary. The permit is acquired only after the workspace seed completes
+/// and released as soon as HCS confirms that the Shell process exists.
+pub(super) fn execute_guest_with_start(
+    api: &dyn HcsApi,
+    config: &super::WindowsContainerSandboxConfig,
+    request: &WindowsContainerExecutionRequest,
+    before_shell_start: &mut dyn FnMut() -> Result<(), HcsGuestExecutionFailureKind>,
+    shell_started: &mut dyn FnMut() -> Result<(), HcsGuestExecutionFailureKind>,
     mut is_cancelled: impl FnMut() -> bool,
     output: WindowsContainerOutputSink<'_>,
 ) -> Result<HcsGuestExecutionOutcome, HcsGuestExecutionFailure> {
@@ -77,6 +103,7 @@ pub(super) fn execute_guest(
             deadline,
             &mut is_cancelled,
             &mut discard_output,
+            None,
         )?;
         if seed_status.exit_code != 0 {
             return Err(HcsGuestExecutionFailureKind::WorkspaceSeedFailed);
@@ -92,6 +119,7 @@ pub(super) fn execute_guest(
             deadline,
             &mut is_cancelled,
             &mut output,
+            Some((before_shell_start, shell_started)),
         )?;
         Ok((command_status.exit_code, output.finish()))
     })();
@@ -109,17 +137,31 @@ pub(super) fn execute_guest(
     }
 }
 
+type GuestProcessStartCallback<'a> =
+    &'a mut dyn FnMut() -> Result<(), HcsGuestExecutionFailureKind>;
+
 fn run_guest_process(
     system: &HcsComputeSystemOwner<'_>,
     parameters: &HcsGuestProcessParameters,
     deadline: Instant,
     is_cancelled: &mut impl FnMut() -> bool,
     output: &mut dyn HcsOutputChunkSink,
+    mut start_callbacks: Option<(GuestProcessStartCallback<'_>, GuestProcessStartCallback<'_>)>,
 ) -> Result<super::hcs_process_runtime::GuestProcessExitStatus, HcsGuestExecutionFailureKind> {
+    check_cancellation(is_cancelled, deadline)?;
+    if let Some((before_start, _)) = start_callbacks.as_mut() {
+        before_start()?;
+    }
     check_cancellation(is_cancelled, deadline)?;
     let mut process = system
         .create_guest_process(parameters, operation_timeout(deadline)?)
         .map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?;
+    if let Some((_, started)) = start_callbacks
+        && let Err(kind) = started()
+    {
+        let _ = process.terminate();
+        return Err(kind);
+    }
     let mut reader = HcsGuestProcessOutputReader::from_process(&mut process)
         .map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?;
 
@@ -457,6 +499,37 @@ mod tests {
                 .writable_layer_path()
                 .ends_with("layer")
         );
+    }
+
+    #[test]
+    fn shell_start_permit_brackets_only_hcs_shell_process_creation() {
+        let (_root, config) = config();
+        let request = request();
+        let api = MockHcsApi::new([0, 0]);
+        let mut on_output = |_: WindowsContainerOutputStream, _: &[u8]| {};
+        let sink = WindowsContainerOutputSink::new(&request, &mut on_output);
+        let mut before_shell_start = || {
+            assert_eq!(api.process_count(), 1, "workspace seed must finish first");
+            Ok(())
+        };
+        let mut shell_started = || {
+            assert_eq!(
+                api.process_count(),
+                2,
+                "HCS must create Shell before release"
+            );
+            Ok(())
+        };
+        execute_guest_with_start(
+            &api,
+            &config,
+            &request,
+            &mut before_shell_start,
+            &mut shell_started,
+            || false,
+            sink,
+        )
+        .unwrap();
     }
 
     #[test]
