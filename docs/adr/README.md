@@ -1209,3 +1209,4 @@
 - [1219：评估 Windows 原生 sandbox 存储配额候选](1219-evaluate-native-windows-storage-quota-candidates.md)
 - [1220：采用可选 brokered Windows Container sandbox 后端](1220-optional-brokered-windows-container-sandbox.md)
 - [1221：构造封闭的 HCS 容器配置](1221-build-closed-hcs-container-config.md)
+- [1222：将 sandbox 输出 review 抽象为后端中立 owner](1222-generalize-sandbox-output-review.md)

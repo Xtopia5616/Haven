@@ -1,11 +1,9 @@
 //! Suspended Windows AppContainer process creation with an explicit stdio
 //! handle list and an owner that keeps its workspace alive through tree exit.
 
-use crate::filesystem::{
-    DirectoryTreeChange, DirectoryTreeDiffLimits, DirectoryTreeFileCopySummary,
-    DirectoryTreeOutputManifest,
-};
+use crate::filesystem::{DirectoryTreeDiffLimits, DirectoryTreeOutputManifest};
 use crate::process_containment::{ProcessContainment, process_spawn_lock};
+use crate::sandbox_output::SandboxOutputReview;
 use crate::windows_sandbox::AppContainerWorkspace;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -237,81 +235,6 @@ pub struct AppContainerChild {
     tree_reaped: bool,
 }
 
-/// Owns one reaped sandbox workspace while a caller presents its bounded
-/// output manifest for review. Dropping or cleaning up this owner removes the
-/// private output and baseline directories.
-pub struct AppContainerOutputReview {
-    workspace: AppContainerWorkspace,
-    manifest: DirectoryTreeOutputManifest,
-}
-
-impl AppContainerOutputReview {
-    pub fn manifest(&self) -> &DirectoryTreeOutputManifest {
-        &self.manifest
-    }
-
-    /// Conservative upper bound for the private file contents retained by
-    /// this review: the initial snapshot, its immutable baseline, and the
-    /// post-run bytes for every changed regular file. It intentionally
-    /// overcounts modified files because their old bytes are included in the
-    /// initial snapshot. Callers can use this value to reserve aggregate
-    /// review storage before retaining the owner.
-    pub fn retained_storage_upper_bound_bytes(&self) -> u64 {
-        let changed_file_bytes = self
-            .manifest
-            .changes
-            .iter()
-            .filter_map(|change| change.after_bytes)
-            .fold(0_u64, u64::saturating_add);
-        self.workspace
-            .snapshot_summary()
-            .byte_count
-            .saturating_mul(2)
-            .saturating_add(changed_file_bytes)
-    }
-
-    /// Promote one manifest-created regular output file to a missing
-    /// destination below an already-authorized directory capability. This
-    /// does not authorize the destination: callers must hold the live policy
-    /// lease and supply the workspace/policy stamps bound to this review.
-    pub fn promote_output_file_to(
-        &self,
-        change: &DirectoryTreeChange,
-        expected_execution_workspace_generation: u64,
-        expected_policy_revision: u64,
-        destination: &crate::filesystem::DirectoryCapability,
-        destination_relative: &Path,
-        is_cancelled: impl FnMut() -> bool,
-    ) -> io::Result<DirectoryTreeFileCopySummary> {
-        if self.workspace.execution_workspace_generation()
-            != expected_execution_workspace_generation
-            || self.workspace.policy_revision() != expected_policy_revision
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "sandbox output is bound to a stale execution workspace or policy revision",
-            ));
-        }
-        if !self.manifest.changes.iter().any(|entry| entry == change) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "sandbox output change is not part of this reviewed manifest",
-            ));
-        }
-        self.workspace.directory().copy_reviewed_created_file_to(
-            change,
-            destination,
-            destination_relative,
-            is_cancelled,
-        )
-    }
-
-    /// Explicitly discard this review's sandbox output and private baseline.
-    pub fn cleanup(self) -> io::Result<()> {
-        self.workspace.cleanup()
-    }
-}
-
 impl AppContainerChild {
     pub fn id(&self) -> u32 {
         // SAFETY: the process handle remains valid for this owner's lifetime.
@@ -369,7 +292,7 @@ impl AppContainerChild {
         &mut self,
         limits: DirectoryTreeDiffLimits,
         is_cancelled: impl FnMut() -> bool,
-    ) -> io::Result<AppContainerOutputReview> {
+    ) -> io::Result<SandboxOutputReview> {
         if !self.tree_reaped {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -381,10 +304,7 @@ impl AppContainerChild {
             .workspace
             .take()
             .expect("a live AppContainer child retains its workspace");
-        Ok(AppContainerOutputReview {
-            workspace,
-            manifest,
-        })
+        Ok(SandboxOutputReview::new(Box::new(workspace), manifest))
     }
 
     /// Wait up to `timeout` for the root process. Once it exits, stop any

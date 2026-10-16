@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use haven_common::types::is_canonical_id;
-use haven_platform::appcontainer_process::AppContainerOutputReview;
+use haven_platform::SandboxOutputReview;
 use haven_platform::filesystem::{
     DirectoryCapability, DirectoryTreeChangeKind, DirectoryTreeEntryKind,
     DirectoryTreeFileCopySummary, DirectoryTreeOutputManifest,
@@ -107,7 +107,7 @@ pub trait SandboxOutputReviewPort: Send + Sync {
 /// One active Shell attempt's storage reservation. If the run fails or is
 /// cancelled, dropping this value releases its count and byte charge.
 pub trait SandboxOutputReviewReservation: Send {
-    fn retain(self: Box<Self>, review: AppContainerOutputReview) -> Result<(), String>;
+    fn retain(self: Box<Self>, review: SandboxOutputReview) -> Result<(), String>;
 }
 
 #[derive(Clone)]
@@ -132,7 +132,7 @@ struct ReviewOwnerState {
 }
 
 struct PendingReview {
-    review: Arc<Mutex<AppContainerOutputReview>>,
+    review: Arc<Mutex<SandboxOutputReview>>,
     expires_at: Instant,
     storage_charge_bytes: u64,
     promoted_changes: HashSet<u32>,
@@ -566,7 +566,7 @@ impl Drop for Reservation {
 }
 
 impl SandboxOutputReviewReservation for Reservation {
-    fn retain(mut self: Box<Self>, review: AppContainerOutputReview) -> Result<(), String> {
+    fn retain(mut self: Box<Self>, review: SandboxOutputReview) -> Result<(), String> {
         let storage_charge_bytes = review.retained_storage_upper_bound_bytes();
         let expires_at = Instant::now()
             + self
@@ -1013,14 +1013,14 @@ mod tests {
         );
     }
 
-    async fn create_review() -> (AppContainerOutputReview, std::path::PathBuf) {
+    async fn create_review() -> (SandboxOutputReview, std::path::PathBuf) {
         create_review_with_stamps(7, 11).await
     }
 
     async fn create_review_with_stamps(
         execution_workspace_generation: u64,
         policy_revision: u64,
-    ) -> (AppContainerOutputReview, std::path::PathBuf) {
+    ) -> (SandboxOutputReview, std::path::PathBuf) {
         let fixture = tempfile::tempdir().expect("create isolated review fixture");
         let source_root = fixture.path().join("source");
         std::fs::create_dir(&source_root).expect("create snapshot source");

@@ -8,6 +8,7 @@ use crate::filesystem::{
     DirectoryCapability, DirectoryTreeCopyLimits, DirectoryTreeCopySummary,
     DirectoryTreeDiffLimits, DirectoryTreeOutputManifest,
 };
+use crate::sandbox_output::SandboxOutputWorkspaceOwner;
 use crate::sandbox_scratch::SandboxScratchLease;
 use std::io;
 use std::path::Path;
@@ -167,7 +168,7 @@ impl AppContainerWorkspace {
 
     /// Explicitly discard the temporary tree and delete its unique profile.
     /// Call only after all AppContainer processes have exited.
-    pub fn cleanup(mut self) -> io::Result<()> {
+    pub(crate) fn cleanup(mut self) -> io::Result<()> {
         self.cleanup_inner()
     }
 
@@ -216,6 +217,39 @@ impl AppContainerWorkspace {
             }
         }
         cleanup_error.map_or(Ok(()), Err)
+    }
+}
+
+impl SandboxOutputWorkspaceOwner for AppContainerWorkspace {
+    fn execution_workspace_generation(&self) -> u64 {
+        self.execution_workspace_generation
+    }
+
+    fn policy_revision(&self) -> u64 {
+        self.policy_revision
+    }
+
+    fn initial_snapshot_byte_count(&self) -> u64 {
+        self.snapshot.byte_count
+    }
+
+    fn promote_created_file(
+        &self,
+        change: &crate::filesystem::DirectoryTreeChange,
+        destination: &DirectoryCapability,
+        destination_relative: &Path,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> io::Result<crate::filesystem::DirectoryTreeFileCopySummary> {
+        self.directory().copy_reviewed_created_file_to(
+            change,
+            destination,
+            destination_relative,
+            is_cancelled,
+        )
+    }
+
+    fn cleanup(self: Box<Self>) -> io::Result<()> {
+        (*self).cleanup()
     }
 }
 
