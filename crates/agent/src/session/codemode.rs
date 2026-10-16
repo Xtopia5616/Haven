@@ -58,6 +58,7 @@ impl CodeModeSubcallPort for AuthorizedCodeModeSubcallPort {
         if cancel.is_cancelled() {
             return Err("CodeMode child call was cancelled".into());
         }
+        let step_id = haven_common::types::new_id("step");
 
         let request = self
             .authorization
@@ -83,7 +84,7 @@ impl CodeModeSubcallPort for AuthorizedCodeModeSubcallPort {
             tool_name: tool_name.to_owned(),
             input,
             cancel,
-            step_id: None,
+            step_id: Some(step_id),
             authorization_proof: Some(proof),
         };
         let result = self

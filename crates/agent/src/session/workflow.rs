@@ -63,6 +63,7 @@ impl WorkflowSubcallPort for AuthorizedWorkflowSubcallPort {
         if cancel.is_cancelled() {
             return Err("Workflow child call was cancelled".into());
         }
+        let step_id = haven_common::types::new_id("step");
 
         let request = self
             .authorization
@@ -90,7 +91,7 @@ impl WorkflowSubcallPort for AuthorizedWorkflowSubcallPort {
                 tool_name: capability.to_owned(),
                 input,
                 cancel,
-                step_id: None,
+                step_id: Some(step_id),
                 authorization_proof: Some(proof),
             })
             .await

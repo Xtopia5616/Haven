@@ -2072,6 +2072,50 @@ mod scheduled_authorization_tests {
         definitions: Vec<haven_tools::WorkflowCapabilityDefinition>,
     }
 
+    struct ChildStepCaptureTool {
+        name: String,
+        captured: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl haven_tools::Tool for ChildStepCaptureTool {
+        fn name(&self) -> String {
+            self.name.clone()
+        }
+
+        fn description(&self) -> String {
+            "test-only child step identity capture".into()
+        }
+
+        fn risk_level(&self, _input: &Value) -> RiskLevel {
+            RiskLevel::Safe
+        }
+
+        fn supports_live_output(&self) -> bool {
+            true
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object", "additionalProperties": true})
+        }
+
+        async fn execute(
+            &self,
+            input: Value,
+            _cancel: CancellationToken,
+        ) -> anyhow::Result<ToolResult> {
+            let step_id = input
+                .get("_step_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("child call did not receive a step identity"))?;
+            self.captured
+                .lock()
+                .expect("child identity capture mutex poisoned")
+                .push(step_id.to_owned());
+            Ok(ToolResult::from_output(json!({"ok": true}), false))
+        }
+    }
+
     #[async_trait::async_trait]
     impl haven_tools::Tool for CodeModeInvocationTestTool {
         fn name(&self) -> String {
@@ -2608,6 +2652,41 @@ mod scheduled_authorization_tests {
     }
 
     #[tokio::test]
+    async fn codemode_child_calls_receive_unique_canonical_step_ids() {
+        let (supervisor, tools, _database, _directory) = test_supervisor();
+        let session_id = "ses-41414141414141414141414141414141";
+        let tool_name = "scheduled.step_capture";
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(ChildStepCaptureTool {
+                    name: tool_name.into(),
+                    captured: captured.clone(),
+                }),
+            )
+            .await;
+
+        let port = supervisor.codemode_subcall_port(session_id, [tool_name.to_owned()]);
+        for _ in 0..2 {
+            port.call(tool_name, json!({}), CancellationToken::new())
+                .await
+                .expect("CodeMode child call should execute");
+        }
+
+        let step_ids = captured.lock().unwrap().clone();
+        assert_eq!(step_ids.len(), 2);
+        assert!(
+            step_ids
+                .iter()
+                .all(|step_id| haven_common::types::is_canonical_id(step_id, "step"))
+        );
+        assert_ne!(step_ids[0], step_ids[1]);
+    }
+
+    #[tokio::test]
     async fn gated_codemode_invocation_routes_child_through_agent_and_tools_authorization() {
         let (supervisor, tools, _database, _directory) = test_supervisor();
         let session_id = "ses-78787878787878787878787878787878";
@@ -2782,6 +2861,57 @@ mod scheduled_authorization_tests {
         assert_eq!(result.result.output, json!({"ok": true}));
         assert!(result.observation.contains("ok"));
         assert!(executed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn workflow_child_calls_receive_unique_canonical_step_ids() {
+        let (supervisor, tools, _database, _directory) = test_supervisor();
+        allow_opaque_capabilities_for_test(&supervisor).await;
+        let session_id = "ses-42424242424242424242424242424242";
+        let tool_name = "mcp__notes__capture";
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(ChildStepCaptureTool {
+                    name: tool_name.into(),
+                    captured: captured.clone(),
+                }),
+            )
+            .await;
+
+        let request = supervisor
+            .authorization
+            .authorization_request(Some(session_id), tool_name, &json!({}))
+            .await
+            .unwrap();
+        supervisor
+            .authorization
+            .grant(
+                Some(session_id),
+                request.policy.capability,
+                haven_common::types::PermissionEffect::Allow,
+                haven_common::types::PermissionScope::Session,
+            )
+            .await;
+
+        let port = supervisor.workflow_subcall_port(session_id, [tool_name.to_owned()]);
+        for _ in 0..2 {
+            port.call(tool_name, json!({}), CancellationToken::new())
+                .await
+                .expect("Workflow child call should execute");
+        }
+
+        let step_ids = captured.lock().unwrap().clone();
+        assert_eq!(step_ids.len(), 2);
+        assert!(
+            step_ids
+                .iter()
+                .all(|step_id| haven_common::types::is_canonical_id(step_id, "step"))
+        );
+        assert_ne!(step_ids[0], step_ids[1]);
     }
 
     #[tokio::test]
