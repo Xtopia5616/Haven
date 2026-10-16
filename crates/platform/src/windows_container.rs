@@ -4,9 +4,10 @@
 //! execution port. It does not create a container, install services, or
 //! authorize a tool call. Callers must supply image layers from the broker's
 //! trusted local image catalog. The HCS schema is intentionally closed: the
-//! only allowed host mapping is an explicitly attached, read-only private
-//! workspace input; network endpoints, credentials, devices, arbitrary mounts,
-//! or caller-selected isolation mode cannot be serialized.
+//! only allowed host mappings are explicitly attached, read-only private
+//! workspace and optional Skill inputs; network endpoints, credentials,
+//! devices, arbitrary mounts, or caller-selected isolation mode cannot be
+//! serialized.
 
 pub mod execution;
 #[cfg(windows)]
@@ -35,6 +36,7 @@ use std::path::{Path, PathBuf};
 
 const HCS_OWNER: &str = "HavenContainerBroker";
 const WORKSPACE_INPUT_CONTAINER_PATH: &str = r"C:\Haven\workspace-input";
+const SKILL_INPUT_CONTAINER_PATH: &str = r"C:\Haven\skill-input";
 
 /// One trusted, read-only parent layer from the broker's local image catalog.
 #[derive(Debug, Clone)]
@@ -90,6 +92,7 @@ pub(crate) struct WindowsContainerSandboxConfig {
     layers: Vec<WindowsContainerLayer>,
     writable_layer_folder: Option<PathBuf>,
     workspace_input: Option<DirectoryCapability>,
+    skill_input: Option<DirectoryCapability>,
 }
 
 impl WindowsContainerSandboxConfig {
@@ -119,6 +122,7 @@ impl WindowsContainerSandboxConfig {
             layers,
             writable_layer_folder: None,
             workspace_input: None,
+            skill_input: None,
         })
     }
 
@@ -178,6 +182,22 @@ impl WindowsContainerSandboxConfig {
         Ok(self)
     }
 
+    /// Attach the separate brokered Skill and parameter tree as a second
+    /// read-only mapping. It never shares the workspace snapshot capability.
+    pub(crate) fn with_read_only_skill_input(
+        mut self,
+        staging: DirectoryCapability,
+    ) -> io::Result<Self> {
+        if self.skill_input.is_some() {
+            return Err(invalid_config(
+                "container configuration already has a Skill input",
+            ));
+        }
+        validate_local_absolute_path(staging.root(), "Skill staging path")?;
+        self.skill_input = Some(staging);
+        Ok(self)
+    }
+
     /// Serialize the broker's fixed HCS v1 container document.
     pub fn to_hcs_json(&self) -> io::Result<String> {
         let writable_layer_folder = self.writable_layer_folder.as_ref().ok_or_else(|| {
@@ -200,24 +220,22 @@ impl WindowsContainerSandboxConfig {
                     })
                 })
                 .collect::<io::Result<Vec<_>>>()?;
-        let mapped_directories =
-            self.workspace_input
-                .as_ref()
-                .map(|staging| {
-                    let host_path = staging.root().to_str().ok_or_else(|| {
-                        invalid_config("workspace staging path is not valid Unicode")
-                    })?;
-                    validate_local_absolute_path(staging.root(), "workspace staging path")?;
-                    Ok::<_, io::Error>(vec![HcsMappedDirectory {
-                        host_path: host_path.to_owned(),
-                        container_path: WORKSPACE_INPUT_CONTAINER_PATH,
-                        read_only: true,
-                        bandwidth_maximum: 0,
-                        iops_maximum: 0,
-                        create_in_utility_vm: false,
-                    }])
-                })
-                .transpose()?;
+        let mut mapped_directories = Vec::new();
+        if let Some(staging) = &self.workspace_input {
+            mapped_directories.push(mapped_directory(
+                staging,
+                WORKSPACE_INPUT_CONTAINER_PATH,
+                "workspace staging path",
+            )?);
+        }
+        if let Some(staging) = &self.skill_input {
+            mapped_directories.push(mapped_directory(
+                staging,
+                SKILL_INPUT_CONTAINER_PATH,
+                "Skill staging path",
+            )?);
+        }
+        let mapped_directories = (!mapped_directories.is_empty()).then_some(mapped_directories);
         let document = HcsV1ContainerConfig {
             system_type: "Container",
             name: &self.name,
@@ -278,6 +296,26 @@ struct HcsMappedDirectory {
     iops_maximum: u64,
     #[serde(rename = "CreateInUtilityVM")]
     create_in_utility_vm: bool,
+}
+
+fn mapped_directory(
+    staging: &DirectoryCapability,
+    container_path: &'static str,
+    description: &str,
+) -> io::Result<HcsMappedDirectory> {
+    let host_path = staging
+        .root()
+        .to_str()
+        .ok_or_else(|| invalid_config(&format!("{description} is not valid Unicode")))?;
+    validate_local_absolute_path(staging.root(), description)?;
+    Ok(HcsMappedDirectory {
+        host_path: host_path.to_owned(),
+        container_path,
+        read_only: true,
+        bandwidth_maximum: 0,
+        iops_maximum: 0,
+        create_in_utility_vm: false,
+    })
 }
 
 fn validate_local_absolute_path(path: &Path, description: &str) -> io::Result<()> {
@@ -360,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn hcs_config_allows_only_one_fixed_read_only_workspace_input_mapping() {
+    fn hcs_config_allows_only_the_fixed_read_only_workspace_input_mapping() {
         let temp = tempfile::tempdir().expect("staging directory is created");
         let staging = DirectoryCapability::open(temp.path()).expect("staging is pinned");
         let expected_host_path = staging.root().to_str().unwrap().to_owned();
@@ -409,6 +447,36 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn hcs_skill_input_is_a_separate_read_only_mapping_from_workspace() {
+        let workspace_temp = tempfile::tempdir().expect("workspace staging directory is created");
+        let skill_temp = tempfile::tempdir().expect("Skill staging directory is created");
+        let workspace = DirectoryCapability::open(workspace_temp.path()).unwrap();
+        let skill = DirectoryCapability::open(skill_temp.path()).unwrap();
+        let config = WindowsContainerSandboxConfig::new(
+            "HavenSandbox-0123456789abcdef0123456789abcdef",
+            1024 * 1024 * 1024,
+            vec![test_layer()],
+        )
+        .unwrap()
+        .with_test_writable_layer_folder(PathBuf::from(r"C:\Haven\runtime\attempt\layer"))
+        .unwrap()
+        .with_read_only_workspace_input(workspace.clone())
+        .unwrap()
+        .with_read_only_skill_input(skill.clone())
+        .unwrap();
+        let value: Value = serde_json::from_str(&config.to_hcs_json().unwrap()).unwrap();
+        let mappings = value["MappedDirectories"].as_array().unwrap();
+        assert_eq!(mappings.len(), 2);
+        assert_eq!(mappings[0]["HostPath"], workspace.root().to_str().unwrap());
+        assert_eq!(mappings[0]["ContainerPath"], WORKSPACE_INPUT_CONTAINER_PATH);
+        assert_eq!(mappings[1]["HostPath"], skill.root().to_str().unwrap());
+        assert_eq!(mappings[1]["ContainerPath"], SKILL_INPUT_CONTAINER_PATH);
+        assert!(mappings.iter().all(|mapping| mapping["ReadOnly"] == true));
+        assert_ne!(mappings[0]["HostPath"], mappings[1]["HostPath"]);
+        assert!(config.with_read_only_skill_input(skill).is_err());
     }
 
     #[test]

@@ -6,6 +6,7 @@
 
 use super::execution::{
     WindowsContainerCapturedOutput, WindowsContainerExecutionRequest, WindowsContainerOutputSink,
+    WindowsContainerSkillExecutionRequest,
 };
 use super::hcs_process::HcsGuestProcessParameters;
 use super::hcs_process_output::{HcsGuestProcessOutputReader, HcsOutputChunkSink};
@@ -38,6 +39,11 @@ pub(super) struct HcsGuestExecutionOutcome {
     pub(super) stopped_system: HcsStoppedComputeSystem,
     pub(super) exit_code: u32,
     pub(super) output: WindowsContainerCapturedOutput,
+}
+
+struct GuestProcessStartCallbacks<'a> {
+    before_process_start: &'a mut dyn FnMut() -> Result<(), HcsGuestExecutionFailureKind>,
+    process_started: &'a mut dyn FnMut() -> Result<(), HcsGuestExecutionFailureKind>,
 }
 
 /// Start one fixed compute system, seed its writable workspace, run one shell,
@@ -74,11 +80,57 @@ pub(super) fn execute_guest_with_start(
     request: &WindowsContainerExecutionRequest,
     before_shell_start: &mut dyn FnMut() -> Result<(), HcsGuestExecutionFailureKind>,
     shell_started: &mut dyn FnMut() -> Result<(), HcsGuestExecutionFailureKind>,
+    is_cancelled: impl FnMut() -> bool,
+    output: WindowsContainerOutputSink<'_>,
+) -> Result<HcsGuestExecutionOutcome, HcsGuestExecutionFailure> {
+    execute_guest_with_parameters(
+        api,
+        config,
+        request.limits().timeout(),
+        || HcsGuestProcessParameters::from_request(request),
+        GuestProcessStartCallbacks {
+            before_process_start: before_shell_start,
+            process_started: shell_started,
+        },
+        is_cancelled,
+        output,
+    )
+}
+
+pub(super) fn execute_skill_guest_with_start(
+    api: &dyn HcsApi,
+    config: &super::WindowsContainerSandboxConfig,
+    request: &WindowsContainerSkillExecutionRequest,
+    before_skill_start: &mut dyn FnMut() -> Result<(), HcsGuestExecutionFailureKind>,
+    skill_started: &mut dyn FnMut() -> Result<(), HcsGuestExecutionFailureKind>,
+    is_cancelled: impl FnMut() -> bool,
+    output: WindowsContainerOutputSink<'_>,
+) -> Result<HcsGuestExecutionOutcome, HcsGuestExecutionFailure> {
+    execute_guest_with_parameters(
+        api,
+        config,
+        request.limits().timeout(),
+        || HcsGuestProcessParameters::from_skill_contract(request.contract()),
+        GuestProcessStartCallbacks {
+            before_process_start: before_skill_start,
+            process_started: skill_started,
+        },
+        is_cancelled,
+        output,
+    )
+}
+
+fn execute_guest_with_parameters(
+    api: &dyn HcsApi,
+    config: &super::WindowsContainerSandboxConfig,
+    timeout: Duration,
+    build_process_parameters: impl FnOnce() -> io::Result<HcsGuestProcessParameters>,
+    start_callbacks: GuestProcessStartCallbacks<'_>,
     mut is_cancelled: impl FnMut() -> bool,
     output: WindowsContainerOutputSink<'_>,
 ) -> Result<HcsGuestExecutionOutcome, HcsGuestExecutionFailure> {
     let deadline = Instant::now()
-        .checked_add(request.limits().timeout())
+        .checked_add(timeout)
         .ok_or_else(|| failure(HcsGuestExecutionFailureKind::TimedOut, true))?;
     if is_cancelled() {
         return Err(failure(HcsGuestExecutionFailureKind::Cancelled, true));
@@ -110,8 +162,8 @@ pub(super) fn execute_guest_with_start(
         }
 
         check_cancellation(&mut is_cancelled, deadline)?;
-        let command_parameters = HcsGuestProcessParameters::from_request(request)
-            .map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?;
+        let command_parameters =
+            build_process_parameters().map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?;
         let mut output = output;
         let command_status = run_guest_process(
             &system,
@@ -119,7 +171,10 @@ pub(super) fn execute_guest_with_start(
             deadline,
             &mut is_cancelled,
             &mut output,
-            Some((before_shell_start, shell_started)),
+            Some((
+                start_callbacks.before_process_start,
+                start_callbacks.process_started,
+            )),
         )?;
         Ok((command_status.exit_code, output.finish()))
     })();

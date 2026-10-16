@@ -1,8 +1,8 @@
 //! Broker-side owner for one received HCS execution attempt.
 
 use super::broker_protocol::{
-    BrokerControlMessage, BrokerExecutionRequest, BrokerFailureCode, BrokerFrame, BrokerFrameKind,
-    BrokerShell,
+    BrokerControlMessage, BrokerExecutionRequest, BrokerExecutionTarget, BrokerFailureCode,
+    BrokerFrame, BrokerFrameKind, BrokerShell,
 };
 use super::broker_workspace::BrokerWorkspaceAttempt;
 use super::hcs_export_worker::export_stopped_workspace_output;
@@ -12,14 +12,15 @@ use super::quota_attestation::QuotaRuntimeAttestation;
 use crate::filesystem::DirectoryCapability;
 use crate::windows_container::execution::{
     WindowsContainerExecutionLimits, WindowsContainerExecutionRequest, WindowsContainerOutputSink,
-    WindowsContainerOutputStream, WindowsContainerShell,
+    WindowsContainerOutputStream, WindowsContainerShell, WindowsContainerSkillExecutionContract,
+    WindowsContainerSkillExecutionRequest,
 };
 use crate::windows_container::hcs_guest_execution::{
-    HcsGuestExecutionFailureKind, execute_guest_with_start,
+    HcsGuestExecutionFailureKind, execute_guest_with_start, execute_skill_guest_with_start,
 };
 use std::cell::Cell;
-use std::io;
-use std::path::PathBuf;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const MAX_EXPORT_TRANSPORT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -29,15 +30,41 @@ enum AttemptFailure {
     Quarantined(BrokerFailureCode),
 }
 
+pub(super) struct ReceivedExecution {
+    pub(super) wire_request: BrokerExecutionRequest,
+    pub(super) limits: WindowsContainerExecutionLimits,
+    pub(super) initial_snapshot_bytes: u64,
+    pub(super) skill_input: Option<DirectoryCapability>,
+    pub(super) deadline: Instant,
+}
+
+enum BrokerPlatformRequest {
+    Shell(WindowsContainerExecutionRequest),
+    Skill(WindowsContainerSkillExecutionRequest),
+}
+
+impl BrokerPlatformRequest {
+    fn limits(&self) -> &WindowsContainerExecutionLimits {
+        match self {
+            Self::Shell(request) => request.limits(),
+            Self::Skill(request) => request.limits(),
+        }
+    }
+}
+
 pub(super) fn serve_received_execution(
     connection: &BrokerPipeConnection<'_>,
     attempt: &mut BrokerWorkspaceAttempt,
     attestation: &QuotaRuntimeAttestation,
-    wire_request: BrokerExecutionRequest,
-    limits: WindowsContainerExecutionLimits,
-    initial_snapshot_bytes: u64,
-    deadline: Instant,
+    received: ReceivedExecution,
 ) -> io::Result<()> {
+    let ReceivedExecution {
+        wire_request,
+        limits,
+        initial_snapshot_bytes,
+        skill_input,
+        deadline,
+    } = received;
     let request_id = wire_request.request_id;
     if initial_snapshot_bytes > limits.storage_quota_bytes()
         || initial_snapshot_bytes > limits.output_diff().scan().max_total_bytes()
@@ -51,7 +78,7 @@ pub(super) fn serve_received_execution(
         );
     }
 
-    let request = match platform_request(wire_request, limits, deadline) {
+    let request = match platform_request(wire_request, limits, skill_input.as_ref(), deadline) {
         Ok(request) => request,
         Err(error) if error.kind() == io::ErrorKind::TimedOut => {
             return fail_and_cleanup(
@@ -79,6 +106,7 @@ pub(super) fn serve_received_execution(
         attestation,
         request_id,
         &request,
+        skill_input.as_ref(),
         deadline,
     ) {
         Ok(result) => result,
@@ -141,7 +169,8 @@ fn run_hcs_attempt(
     attempt: &mut BrokerWorkspaceAttempt,
     attestation: &QuotaRuntimeAttestation,
     request_id: [u8; 16],
-    request: &WindowsContainerExecutionRequest,
+    request: &BrokerPlatformRequest,
+    skill_input: Option<&DirectoryCapability>,
     deadline: Instant,
 ) -> Result<
     (
@@ -206,7 +235,10 @@ fn run_hcs_attempt(
     config = match config
         .with_bounded_writable_layer(&scratch)
         .and_then(|config| config.with_read_only_workspace_input(attempt.staging()?.clone()))
-    {
+        .and_then(|config| match skill_input {
+            Some(skill_input) => config.with_read_only_skill_input(skill_input.clone()),
+            None => Ok(config),
+        }) {
         Ok(config) => config,
         Err(_) => {
             return Err(quiescent_failure(
@@ -233,24 +265,35 @@ fn run_hcs_attempt(
             output_write_failed.set(true);
         }
     };
-    let output_sink = WindowsContainerOutputSink::new(request, &mut on_output);
+    let output_sink = WindowsContainerOutputSink::new_with_limits(request.limits(), &mut on_output);
     let mut is_cancelled = || {
         Instant::now() >= deadline
             || cancellation.is_cancelled()
             || connection.peer_disconnected()
             || output_write_failed.get()
     };
-    let mut before_shell_start = || request_shell_start(connection, request_id, deadline);
-    let mut shell_started = || notify_shell_started(connection, request_id, deadline);
-    let guest_result = execute_guest_with_start(
-        attestation.api(),
-        &config,
-        request,
-        &mut before_shell_start,
-        &mut shell_started,
-        &mut is_cancelled,
-        output_sink,
-    );
+    let mut before_process_start = || request_shell_start(connection, request_id, deadline);
+    let mut process_started = || notify_shell_started(connection, request_id, deadline);
+    let guest_result = match request {
+        BrokerPlatformRequest::Shell(request) => execute_guest_with_start(
+            attestation.api(),
+            &config,
+            request,
+            &mut before_process_start,
+            &mut process_started,
+            &mut is_cancelled,
+            output_sink,
+        ),
+        BrokerPlatformRequest::Skill(request) => execute_skill_guest_with_start(
+            attestation.api(),
+            &config,
+            request,
+            &mut before_process_start,
+            &mut process_started,
+            &mut is_cancelled,
+            output_sink,
+        ),
+    };
 
     let outcome = match guest_result {
         Ok(outcome) => outcome,
@@ -382,8 +425,9 @@ fn start_boundary_failure(kind: io::ErrorKind) -> HcsGuestExecutionFailureKind {
 fn platform_request(
     request: BrokerExecutionRequest,
     limits: WindowsContainerExecutionLimits,
+    skill_input: Option<&DirectoryCapability>,
     deadline: Instant,
-) -> io::Result<WindowsContainerExecutionRequest> {
+) -> io::Result<BrokerPlatformRequest> {
     let remaining_timeout = deadline
         .checked_duration_since(Instant::now())
         .filter(|remaining| !remaining.is_zero())
@@ -396,17 +440,46 @@ fn platform_request(
         limits.workspace_copy(),
         limits.output_diff(),
     )?;
-    WindowsContainerExecutionRequest::new(
-        match request.shell {
-            BrokerShell::Cmd => WindowsContainerShell::Cmd,
-            BrokerShell::PowerShell => WindowsContainerShell::PowerShell,
-        },
-        request.command,
-        PathBuf::from(request.working_directory.replace('/', "\\")),
-        request.execution_workspace_generation,
-        request.policy_revision,
-        limits,
-    )
+    let generation = request.execution_workspace_generation;
+    let policy_revision = request.policy_revision;
+    match request.target {
+        BrokerExecutionTarget::Shell {
+            shell,
+            command,
+            working_directory,
+        } => Ok(BrokerPlatformRequest::Shell(
+            WindowsContainerExecutionRequest::new(
+                match shell {
+                    BrokerShell::Cmd => WindowsContainerShell::Cmd,
+                    BrokerShell::PowerShell => WindowsContainerShell::PowerShell,
+                },
+                command,
+                PathBuf::from(working_directory.replace('/', "\\")),
+                generation,
+                policy_revision,
+                limits,
+            )?,
+        )),
+        BrokerExecutionTarget::Skill { entry_script, .. } => {
+            let skill_input = skill_input.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "Skill input is missing")
+            })?;
+            let mut parameters = Vec::new();
+            skill_input
+                .open_read(Path::new("parameters.json"))?
+                .take(super::MAX_SKILL_PARAMETER_BYTES as u64)
+                .read_to_end(&mut parameters)?;
+            let contract = WindowsContainerSkillExecutionContract::new(entry_script, parameters)?;
+            Ok(BrokerPlatformRequest::Skill(
+                WindowsContainerSkillExecutionRequest::new(
+                    contract,
+                    generation,
+                    policy_revision,
+                    limits,
+                )?,
+            ))
+        }
+    }
 }
 
 fn hcs_system_name(request_id: [u8; 16]) -> String {

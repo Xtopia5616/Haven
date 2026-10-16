@@ -3,7 +3,9 @@
 //! This builder does not start a guest process. Before quota attestation, the
 //! broker may use only the fixed storage probe; caller commands remain gated.
 
-use super::execution::{WindowsContainerExecutionRequest, WindowsContainerShell};
+use super::execution::{
+    WindowsContainerExecutionRequest, WindowsContainerShell, WindowsContainerSkillExecutionContract,
+};
 use base64::Engine as _;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -12,12 +14,24 @@ use std::path::{Component, Path};
 
 const GUEST_WORKSPACE_INPUT_ROOT: &str = r"C:\Haven\workspace-input";
 const GUEST_WORKSPACE_ROOT: &str = r"C:\Haven\workspace-output";
+const GUEST_SKILL_BUNDLE_ROOT: &str = r"C:\Haven\skill-input\bundle";
+const GUEST_SKILL_PARAMETERS_PATH: &str = r"C:\Haven\skill-input\parameters.json";
 const CMD_APPLICATION: &str = r"C:\Windows\System32\cmd.exe";
 const POWERSHELL_APPLICATION: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
 const ROBOCOPY_APPLICATION: &str = r"C:\Windows\System32\robocopy.exe";
 const SKILL_PYTHON_APPLICATION: &str = r"C:\Haven\Python\python.exe";
 const FIXED_PATH: &str = r"C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem";
 const MAX_GUEST_COMMAND_LINE_UNITS: usize = 32_766;
+const SKILL_PYTHON_LAUNCHER: &str = r#"import io,pathlib,sys
+source_path,parameters_path=sys.argv[1:3]
+sys.argv=[source_path]
+source=pathlib.Path(source_path)
+sys.path.insert(0,str(source.parent))
+sys.stdin=io.TextIOWrapper(io.BytesIO(pathlib.Path(parameters_path).read_bytes()),encoding='utf-8')
+namespace=sys.modules['__main__'].__dict__
+namespace.update({'__file__':source_path,'__package__':None,'__cached__':None,'__spec__':None,'__loader__':None})
+code=compile(source.read_bytes(),source_path,'exec')
+exec(code,namespace,namespace)"#;
 
 const WORKSPACE_SEED_SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'; $source = '{input_root}'; $destination = '{output_root}'; if (Test-Path -LiteralPath $destination) { exit 90 }; & '{robocopy_application}' $source $destination /E /COPY:DAT /DCOPY:DAT /R:0 /W:0 /XJ /NFL /NDL /NJH /NJS /NP /NC /NS; if ($LASTEXITCODE -ge 8) { exit 8 }; exit 0"#;
 const STORAGE_QUOTA_PROBE_SCRIPT: &str = r#"
@@ -145,6 +159,43 @@ impl HcsGuestProcessParameters {
                 application_name,
                 command_line,
                 working_directory,
+                environment: fixed_environment(),
+                restricted_token: true,
+                emulate_console: false,
+                create_std_in_pipe: false,
+                create_std_out_pipe: true,
+                create_std_err_pipe: true,
+                use_existing_login: false,
+            },
+        })
+    }
+
+    pub(super) fn from_skill_contract(
+        contract: &WindowsContainerSkillExecutionContract,
+    ) -> io::Result<Self> {
+        let entry_script = contract.entry_script().replace('/', "\\");
+        let guest_entry = format!("{GUEST_SKILL_BUNDLE_ROOT}\\{entry_script}");
+        let launcher = format!(
+            "exec(__import__('base64').b64decode('{}'))",
+            base64::engine::general_purpose::STANDARD.encode(SKILL_PYTHON_LAUNCHER.as_bytes())
+        );
+        let command_line = windows_command_line(
+            SKILL_PYTHON_APPLICATION,
+            &[
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                &launcher,
+                &guest_entry,
+                GUEST_SKILL_PARAMETERS_PATH,
+            ],
+        )?;
+        Ok(Self {
+            document: ProcessParametersDocument {
+                application_name: SKILL_PYTHON_APPLICATION,
+                command_line,
+                working_directory: GUEST_WORKSPACE_ROOT.to_owned(),
                 environment: fixed_environment(),
                 restricted_token: true,
                 emulate_console: false,
@@ -363,6 +414,37 @@ mod tests {
             .to_json()
             .expect("process parameters serialize");
         serde_json::from_str(&json).expect("serialized parameters are valid JSON")
+    }
+
+    #[test]
+    fn skill_parameters_use_pinned_python_and_keep_parameters_out_of_the_command_line() {
+        let contract = WindowsContainerSkillExecutionContract::new(
+            "scripts/main.py",
+            br#"{"secret":"never-on-command-line"}"#.to_vec(),
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(
+            &HcsGuestProcessParameters::from_skill_contract(&contract)
+                .unwrap()
+                .to_json()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["ApplicationName"], SKILL_PYTHON_APPLICATION);
+        assert_eq!(value["WorkingDirectory"], GUEST_WORKSPACE_ROOT);
+        assert_eq!(value["RestrictedToken"], true);
+        assert_eq!(value["CreateStdInPipe"], false);
+        assert_eq!(value["CreateStdOutPipe"], true);
+        assert_eq!(value["CreateStdErrPipe"], true);
+        let command_line = value["CommandLine"].as_str().unwrap();
+        assert!(command_line.contains("-I"));
+        assert!(command_line.contains("-S"));
+        assert!(command_line.contains("-B"));
+        assert!(command_line.contains(r"C:\Haven\skill-input\bundle\scripts\main.py"));
+        assert!(command_line.contains(GUEST_SKILL_PARAMETERS_PATH));
+        assert!(!command_line.contains("never-on-command-line"));
+        assert!(SKILL_PYTHON_LAUNCHER.contains("sys.stdin=io.TextIOWrapper"));
+        assert!(SKILL_PYTHON_LAUNCHER.contains("exec(code,namespace,namespace)"));
     }
 
     #[test]

@@ -4,9 +4,10 @@ use super::named_pipe::{
     BrokerClientPolicy, BrokerPipeCancellation, BrokerPipeClient, BrokerPipeExecutionResponse,
 };
 use super::{
-    WindowsContainerExecutionPort, WindowsContainerExecutionRequest,
-    WindowsContainerExecutionResult, WindowsContainerOutputSink, WindowsContainerWorkspaceInput,
-    private,
+    WindowsContainerExecutionCallbacks, WindowsContainerExecutionPort,
+    WindowsContainerExecutionRequest, WindowsContainerExecutionResult, WindowsContainerOutputSink,
+    WindowsContainerProcessStartCallbacks, WindowsContainerSkillBundleInput,
+    WindowsContainerSkillExecutionRequest, WindowsContainerWorkspaceInput, private,
 };
 use crate::windows_container::execution::broker_protocol::BrokerFailureCode;
 use std::io;
@@ -27,11 +28,14 @@ impl WindowsContainerExecutionPort for BrokerExecutionProvider {
         &self,
         request: &WindowsContainerExecutionRequest,
         workspace: &WindowsContainerWorkspaceInput,
-        before_shell_start: &mut dyn FnMut() -> io::Result<()>,
-        shell_started: &mut dyn FnMut(),
-        is_cancelled: &mut (dyn FnMut() -> bool + Send),
-        on_output: &mut (dyn FnMut(super::WindowsContainerOutputStream, &[u8]) + Send),
+        callbacks: &mut WindowsContainerExecutionCallbacks<'_>,
     ) -> io::Result<WindowsContainerExecutionResult> {
+        let WindowsContainerExecutionCallbacks {
+            before_process_start,
+            process_started,
+            is_cancelled,
+            on_output,
+        } = callbacks;
         if is_cancelled() {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -51,13 +55,73 @@ impl WindowsContainerExecutionPort for BrokerExecutionProvider {
                 BrokerPipeClient::connect(&policy, cancellation).map_err(map_connection_error)?;
             let request_id = uuid::Uuid::new_v4().into_bytes();
             let output = WindowsContainerOutputSink::new(request, on_output);
+            let mut start_callbacks =
+                WindowsContainerProcessStartCallbacks::new(before_process_start, process_started);
             match client
                 .execute_with_workspace(
                     request,
                     request_id,
                     workspace,
-                    before_shell_start,
-                    shell_started,
+                    &mut start_callbacks,
+                    output,
+                )
+                .map_err(map_connection_error)?
+            {
+                BrokerPipeExecutionResponse::Failed(code) => Err(map_broker_failure(code)),
+                BrokerPipeExecutionResponse::Completed {
+                    exit_code,
+                    captured_output,
+                    output_review,
+                } => Ok(WindowsContainerExecutionResult::new(
+                    exit_code,
+                    captured_output,
+                    output_review,
+                )),
+            }
+        })
+    }
+
+    fn execute_skill(
+        &self,
+        request: &WindowsContainerSkillExecutionRequest,
+        workspace: &WindowsContainerWorkspaceInput,
+        skill_bundle: &WindowsContainerSkillBundleInput,
+        callbacks: &mut WindowsContainerExecutionCallbacks<'_>,
+    ) -> io::Result<WindowsContainerExecutionResult> {
+        let WindowsContainerExecutionCallbacks {
+            before_process_start,
+            process_started,
+            is_cancelled,
+            on_output,
+        } = callbacks;
+        if is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "container Skill execution was cancelled",
+            ));
+        }
+        let _execution_slot = acquire_execution_slot()?;
+        let cancellation = BrokerPipeCancellation::new()?;
+        with_cancellation_watcher(is_cancelled, cancellation.clone(), || {
+            let policy = BrokerClientPolicy::for_current_process().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "broker client identity is invalid",
+                )
+            })?;
+            let mut client =
+                BrokerPipeClient::connect(&policy, cancellation).map_err(map_connection_error)?;
+            let request_id = uuid::Uuid::new_v4().into_bytes();
+            let output = WindowsContainerOutputSink::new_with_limits(request.limits(), on_output);
+            let mut start_callbacks =
+                WindowsContainerProcessStartCallbacks::new(before_process_start, process_started);
+            match client
+                .execute_with_skill(
+                    request,
+                    request_id,
+                    workspace,
+                    skill_bundle,
+                    &mut start_callbacks,
                     output,
                 )
                 .map_err(map_connection_error)?
@@ -167,6 +231,10 @@ fn map_broker_failure(code: BrokerFailureCode) -> io::Error {
         BrokerFailureCode::QuotaUnattested => (
             io::ErrorKind::PermissionDenied,
             "container storage quota is not verified",
+        ),
+        BrokerFailureCode::SkillRuntimeUnattested => (
+            io::ErrorKind::PermissionDenied,
+            "container Skill Python runtime is not verified",
         ),
         BrokerFailureCode::StagingFailed => {
             (io::ErrorKind::Other, "container workspace staging failed")

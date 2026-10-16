@@ -9,22 +9,26 @@
 use super::{
     MAX_COMMAND_BYTES, MAX_EXECUTION_TIMEOUT, MAX_STDIO_BYTES_PER_STREAM, MAX_STORAGE_QUOTA_BYTES,
     WindowsContainerExecutionLimits, WindowsContainerExecutionRequest, WindowsContainerShell,
+    WindowsContainerSkillExecutionContract, WindowsContainerSkillExecutionRequest,
     validate_relative_working_directory,
 };
 use crate::filesystem::{DirectoryTreeCopyLimits, DirectoryTreeDiffLimits};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::io::Read;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 6;
+pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 7;
 pub(crate) const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
 const MAX_BINARY_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_WIRE_PATH_BYTES: usize = 32 * 1024;
 const MAX_WORKSPACE_ENTRIES: u32 = 100_000;
 const MAX_WORKSPACE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_SKILL_BUNDLE_ENTRIES: u32 = 1_024;
+const MAX_SKILL_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_OUTPUT_ENTRIES: u32 = 4_096;
 const MAX_OUTPUT_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -38,6 +42,8 @@ pub(crate) enum BrokerFrameKind {
     StdoutChunk = 3,
     StderrChunk = 4,
     OutputFileChunk = 5,
+    SkillBundleChunk = 6,
+    SkillParameterChunk = 7,
 }
 
 impl TryFrom<u8> for BrokerFrameKind {
@@ -50,6 +56,8 @@ impl TryFrom<u8> for BrokerFrameKind {
             3 => Ok(Self::StdoutChunk),
             4 => Ok(Self::StderrChunk),
             5 => Ok(Self::OutputFileChunk),
+            6 => Ok(Self::SkillBundleChunk),
+            7 => Ok(Self::SkillParameterChunk),
             _ => Err(invalid_data("broker frame kind is unsupported")),
         }
     }
@@ -133,7 +141,9 @@ fn validate_payload_size(kind: BrokerFrameKind, payload_length: usize) -> io::Re
         BrokerFrameKind::WorkspaceChunk
         | BrokerFrameKind::StdoutChunk
         | BrokerFrameKind::StderrChunk
-        | BrokerFrameKind::OutputFileChunk => MAX_BINARY_CHUNK_BYTES,
+        | BrokerFrameKind::OutputFileChunk
+        | BrokerFrameKind::SkillBundleChunk
+        | BrokerFrameKind::SkillParameterChunk => MAX_BINARY_CHUNK_BYTES,
     };
     if payload_length > maximum {
         return Err(invalid_data("broker frame payload exceeds its limit"));
@@ -172,6 +182,19 @@ pub(crate) enum BrokerControlMessage {
         sha256: Option<[u8; 32]>,
     },
     WorkspaceSnapshotComplete {
+        entry_count: u32,
+        total_bytes: u64,
+    },
+    SkillBundleSnapshotRequested {
+        request_id: [u8; 16],
+    },
+    SkillBundleEntry {
+        relative_path: String,
+        kind: BrokerWorkspaceEntryKind,
+        byte_length: u64,
+        sha256: Option<[u8; 32]>,
+    },
+    SkillBundleSnapshotComplete {
         entry_count: u32,
         total_bytes: u64,
     },
@@ -261,6 +284,27 @@ impl BrokerControlMessage {
                     _ => Err(invalid_data("workspace entry metadata is inconsistent")),
                 }
             }
+            Self::SkillBundleEntry {
+                relative_path,
+                kind,
+                byte_length,
+                sha256,
+            } => {
+                validate_wire_relative_path(relative_path)?;
+                match kind {
+                    BrokerWorkspaceEntryKind::Directory
+                        if *byte_length == 0 && sha256.is_none() =>
+                    {
+                        Ok(())
+                    }
+                    BrokerWorkspaceEntryKind::File
+                        if sha256.is_some() && *byte_length <= MAX_SKILL_BUNDLE_BYTES =>
+                    {
+                        Ok(())
+                    }
+                    _ => Err(invalid_data("Skill bundle entry metadata is inconsistent")),
+                }
+            }
             Self::WorkspaceSnapshotComplete {
                 entry_count,
                 total_bytes,
@@ -270,7 +314,19 @@ impl BrokerControlMessage {
             Self::WorkspaceSnapshotComplete { .. } => Err(invalid_data(
                 "workspace snapshot exceeds its transfer limits",
             )),
+            Self::SkillBundleSnapshotComplete {
+                entry_count,
+                total_bytes,
+            } if *entry_count <= MAX_SKILL_BUNDLE_ENTRIES
+                && *total_bytes <= MAX_SKILL_BUNDLE_BYTES =>
+            {
+                Ok(())
+            }
+            Self::SkillBundleSnapshotComplete { .. } => Err(invalid_data(
+                "Skill bundle snapshot exceeds its transfer limits",
+            )),
             Self::WorkspaceSnapshotRequested { request_id }
+            | Self::SkillBundleSnapshotRequested { request_id }
             | Self::ExecutionStartRequested { request_id }
             | Self::ExecutionStartAuthorized { request_id }
             | Self::ExecutionStarted { request_id }
@@ -282,6 +338,7 @@ impl BrokerControlMessage {
                 Err(invalid_data("broker request ID is invalid"))
             }
             Self::WorkspaceSnapshotRequested { .. }
+            | Self::SkillBundleSnapshotRequested { .. }
             | Self::ExecutionStartRequested { .. }
             | Self::ExecutionStartAuthorized { .. }
             | Self::ExecutionStarted { .. }
@@ -447,6 +504,7 @@ pub(crate) enum BrokerFailureCode {
     Cancelled,
     TimedOut,
     QuotaUnattested,
+    SkillRuntimeUnattested,
     StagingFailed,
     HcsFailed,
     CleanupFailed,
@@ -483,9 +541,7 @@ pub(crate) struct BrokerExecutionGateStatus {
 #[serde(deny_unknown_fields)]
 pub(crate) struct BrokerExecutionRequest {
     pub(crate) request_id: [u8; 16],
-    pub(crate) shell: BrokerShell,
-    pub(crate) command: String,
-    pub(crate) working_directory: String,
+    pub(crate) target: BrokerExecutionTarget,
     pub(crate) execution_workspace_generation: u64,
     pub(crate) policy_revision: u64,
     pub(crate) storage_quota_bytes: u64,
@@ -494,6 +550,22 @@ pub(crate) struct BrokerExecutionRequest {
     pub(crate) max_stderr_bytes: u32,
     pub(crate) workspace_copy: BrokerTreeLimits,
     pub(crate) output_diff: BrokerDiffLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum BrokerExecutionTarget {
+    Shell {
+        shell: BrokerShell,
+        command: String,
+        working_directory: String,
+    },
+    Skill {
+        entry_script: String,
+        bundle_copy: BrokerTreeLimits,
+        parameter_bytes: u32,
+        parameter_sha256: [u8; 32],
+    },
 }
 
 impl BrokerExecutionRequest {
@@ -517,12 +589,14 @@ impl BrokerExecutionRequest {
         let output_diff = BrokerDiffLimits::from_limits(limits.output_diff);
         let wire = Self {
             request_id,
-            shell: match request.shell {
-                WindowsContainerShell::Cmd => BrokerShell::Cmd,
-                WindowsContainerShell::PowerShell => BrokerShell::PowerShell,
+            target: BrokerExecutionTarget::Shell {
+                shell: match request.shell {
+                    WindowsContainerShell::Cmd => BrokerShell::Cmd,
+                    WindowsContainerShell::PowerShell => BrokerShell::PowerShell,
+                },
+                command: request.command.clone(),
+                working_directory,
             },
-            command: request.command.clone(),
-            working_directory,
             execution_workspace_generation: request.execution_workspace_generation,
             policy_revision: request.policy_revision,
             storage_quota_bytes: limits.storage_quota_bytes,
@@ -539,14 +613,41 @@ impl BrokerExecutionRequest {
         Ok(wire)
     }
 
+    pub(crate) fn from_skill_request(
+        request: &WindowsContainerSkillExecutionRequest,
+        request_id: [u8; 16],
+    ) -> io::Result<Self> {
+        let limits = request.limits();
+        let parameters = request.contract().parameters_json();
+        let wire = Self {
+            request_id,
+            target: BrokerExecutionTarget::Skill {
+                entry_script: request.contract().entry_script().to_owned(),
+                bundle_copy: BrokerTreeLimits::from_limits(request.bundle_copy_limits()),
+                parameter_bytes: u32::try_from(parameters.len())
+                    .map_err(|_| invalid_request("Skill parameters exceed the wire range"))?,
+                parameter_sha256: Sha256::digest(parameters).into(),
+            },
+            execution_workspace_generation: request.execution_workspace_generation(),
+            policy_revision: request.policy_revision(),
+            storage_quota_bytes: limits.storage_quota_bytes,
+            timeout_millis: u64::try_from(limits.timeout.as_millis())
+                .map_err(|_| invalid_request("execution timeout is outside the wire range"))?,
+            max_stdout_bytes: u32::try_from(limits.max_stdout_bytes)
+                .map_err(|_| invalid_request("stdout limit is outside the wire range"))?,
+            max_stderr_bytes: u32::try_from(limits.max_stderr_bytes)
+                .map_err(|_| invalid_request("stderr limit is outside the wire range"))?,
+            workspace_copy: BrokerTreeLimits::from_limits(limits.workspace_copy),
+            output_diff: BrokerDiffLimits::from_limits(limits.output_diff),
+        };
+        wire.validate()?;
+        Ok(wire)
+    }
+
     /// Revalidate untrusted bytes and rebuild the platform limits on the
     /// service side before any staging or HCS call.
     pub(crate) fn validate(&self) -> io::Result<WindowsContainerExecutionLimits> {
         if self.request_id.iter().all(|byte| *byte == 0)
-            || self.command.trim().is_empty()
-            || self.command.len() > MAX_COMMAND_BYTES
-            || self.command.chars().any(|character| character == '\0')
-            || self.working_directory.len() > MAX_WIRE_PATH_BYTES
             || self.execution_workspace_generation == 0
             || self.policy_revision == 0
             || self.storage_quota_bytes == 0
@@ -562,11 +663,55 @@ impl BrokerExecutionRequest {
                 "broker execution request is outside its limits",
             ));
         }
-        if !self.working_directory.is_empty() {
-            validate_wire_relative_path(&self.working_directory)
-                .map_err(|_| invalid_request("workspace-relative cwd is invalid"))?;
+        match &self.target {
+            BrokerExecutionTarget::Shell {
+                command,
+                working_directory,
+                ..
+            } => {
+                if command.trim().is_empty()
+                    || command.len() > MAX_COMMAND_BYTES
+                    || command.chars().any(|character| character == '\0')
+                    || working_directory.len() > MAX_WIRE_PATH_BYTES
+                {
+                    return Err(invalid_request("broker Shell request is invalid"));
+                }
+                if !working_directory.is_empty() {
+                    validate_wire_relative_path(working_directory)
+                        .map_err(|_| invalid_request("workspace-relative cwd is invalid"))?;
+                }
+                validate_relative_working_directory(&PathBuf::from(working_directory))?;
+            }
+            BrokerExecutionTarget::Skill {
+                entry_script,
+                bundle_copy,
+                parameter_bytes,
+                ..
+            } => {
+                WindowsContainerSkillExecutionContract::new(entry_script.clone(), b"{}".to_vec())?;
+                if !(2..=super::MAX_SKILL_PARAMETER_BYTES as u32).contains(parameter_bytes) {
+                    return Err(invalid_request(
+                        "Skill parameter length is outside its limit",
+                    ));
+                }
+                let bundle_copy = bundle_copy.to_platform_limits()?;
+                let fixed_bundle = DirectoryTreeCopyLimits::new(
+                    1_024,
+                    16,
+                    16 * 1024 * 1024,
+                    MAX_SKILL_BUNDLE_BYTES,
+                )?;
+                if bundle_copy.max_entries() != fixed_bundle.max_entries()
+                    || bundle_copy.max_depth() != fixed_bundle.max_depth()
+                    || bundle_copy.max_file_bytes() != fixed_bundle.max_file_bytes()
+                    || bundle_copy.max_total_bytes() != fixed_bundle.max_total_bytes()
+                {
+                    return Err(invalid_request(
+                        "Skill bundle limits are not the fixed profile",
+                    ));
+                }
+            }
         }
-        validate_relative_working_directory(&PathBuf::from(&self.working_directory))?;
         let workspace_copy = self.workspace_copy.to_platform_limits()?;
         let output_diff = self.output_diff.to_platform_limits()?;
         WindowsContainerExecutionLimits::new(
@@ -606,7 +751,7 @@ impl BrokerTreeLimits {
         }
     }
 
-    fn to_platform_limits(self) -> io::Result<DirectoryTreeCopyLimits> {
+    pub(crate) fn to_platform_limits(self) -> io::Result<DirectoryTreeCopyLimits> {
         DirectoryTreeCopyLimits::new(
             self.max_entries as usize,
             self.max_depth as usize,
@@ -694,6 +839,26 @@ mod tests {
             limits,
         )
         .unwrap()
+    }
+
+    fn test_skill_request() -> WindowsContainerSkillExecutionRequest {
+        let copy = DirectoryTreeCopyLimits::new(32, 8, 64 * 1024, 512 * 1024).unwrap();
+        let diff = DirectoryTreeDiffLimits::new(copy, 32, 64 * 1024, 512 * 1024).unwrap();
+        let limits = WindowsContainerExecutionLimits::new(
+            1024 * 1024,
+            Duration::from_secs(30),
+            16 * 1024,
+            16 * 1024,
+            copy,
+            diff,
+        )
+        .unwrap();
+        let contract = WindowsContainerSkillExecutionContract::new(
+            "scripts/main.py",
+            br#"{"private":"parameter"}"#.to_vec(),
+        )
+        .unwrap();
+        WindowsContainerSkillExecutionRequest::new(contract, 7, 11, limits).unwrap()
     }
 
     #[test]
@@ -804,7 +969,10 @@ mod tests {
         let wire = BrokerExecutionRequest::from_execution_request(&request, [9; 16]).unwrap();
         let rebuilt = wire.validate().unwrap();
         assert_eq!(rebuilt.storage_quota_bytes(), 1024 * 1024);
-        assert_eq!(wire.working_directory, "src");
+        assert!(matches!(
+            &wire.target,
+            BrokerExecutionTarget::Shell { working_directory, .. } if working_directory == "src"
+        ));
 
         let json = serde_json::to_string(&wire).unwrap();
         assert!(!json.contains("D:\\Workspace"));
@@ -812,7 +980,12 @@ mod tests {
         assert!(!json.contains("proof"));
 
         let mut invalid = wire;
-        invalid.working_directory = r"C:\outside".into();
+        if let BrokerExecutionTarget::Shell {
+            working_directory, ..
+        } = &mut invalid.target
+        {
+            *working_directory = r"C:\outside".into();
+        }
         assert_eq!(
             invalid.validate().unwrap_err().kind(),
             io::ErrorKind::InvalidInput
@@ -842,17 +1015,76 @@ mod tests {
         )
         .unwrap();
         let wire = BrokerExecutionRequest::from_execution_request(&request, [9; 16]).unwrap();
-        assert_eq!(wire.working_directory, "src/nested");
+        assert!(matches!(
+            &wire.target,
+            BrokerExecutionTarget::Shell { working_directory, .. } if working_directory == "src/nested"
+        ));
 
         for path in ["../outside", "src//nested", "src/COM1.txt", "src/bad?.txt"] {
             let mut invalid = wire.clone();
-            invalid.working_directory = path.into();
+            if let BrokerExecutionTarget::Shell {
+                working_directory, ..
+            } = &mut invalid.target
+            {
+                *working_directory = path.into();
+            }
             assert_eq!(
                 invalid.validate().unwrap_err().kind(),
                 io::ErrorKind::InvalidInput,
                 "path should have failed validation: {path}"
             );
         }
+    }
+
+    #[test]
+    fn skill_request_wire_transmits_only_bounded_metadata_for_parameter_data() {
+        let request = test_skill_request();
+        let wire = BrokerExecutionRequest::from_skill_request(&request, [9; 16]).unwrap();
+        assert!(wire.validate().is_ok());
+        let encoded = serde_json::to_string(&wire).unwrap();
+        assert!(!encoded.contains("private"));
+        assert!(!encoded.contains("python.exe"));
+        match &wire.target {
+            BrokerExecutionTarget::Skill {
+                entry_script,
+                bundle_copy,
+                parameter_bytes,
+                parameter_sha256,
+            } => {
+                let expected_digest: [u8; 32] =
+                    Sha256::digest(request.contract().parameters_json()).into();
+                assert_eq!(entry_script, "scripts/main.py");
+                assert_eq!(bundle_copy.max_entries, 1_024);
+                assert_eq!(
+                    *parameter_bytes as usize,
+                    request.contract().parameters_json().len()
+                );
+                assert_eq!(*parameter_sha256, expected_digest);
+            }
+            BrokerExecutionTarget::Shell { .. } => panic!("expected Skill target"),
+        }
+
+        let mut invalid = wire.clone();
+        if let BrokerExecutionTarget::Skill { bundle_copy, .. } = &mut invalid.target {
+            bundle_copy.max_total_bytes += 1;
+        }
+        assert_eq!(
+            invalid.validate().unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let mut invalid = wire;
+        if let BrokerExecutionTarget::Skill {
+            parameter_bytes, ..
+        } = &mut invalid.target
+        {
+            *parameter_bytes =
+                crate::windows_container::execution::MAX_SKILL_PARAMETER_BYTES as u32 + 1;
+        }
+        assert_eq!(
+            invalid.validate().unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 
     #[test]

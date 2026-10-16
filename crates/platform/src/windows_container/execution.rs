@@ -118,9 +118,59 @@ pub struct WindowsContainerOutputSink<'a> {
     on_output: &'a mut dyn FnMut(WindowsContainerOutputStream, &[u8]),
 }
 
+/// Per-attempt callbacks for the process-start authorization boundary,
+/// cancellation watcher, and bounded live output path.
+pub struct WindowsContainerExecutionCallbacks<'a> {
+    pub(crate) before_process_start: &'a mut dyn FnMut() -> io::Result<()>,
+    pub(crate) process_started: &'a mut dyn FnMut(),
+    pub(crate) is_cancelled: &'a mut (dyn FnMut() -> bool + Send),
+    pub(crate) on_output: &'a mut (dyn FnMut(WindowsContainerOutputStream, &[u8]) + Send),
+}
+
+/// Callbacks around the narrow process creation boundary.
+pub struct WindowsContainerProcessStartCallbacks<'a> {
+    pub(crate) before_process_start: &'a mut dyn FnMut() -> io::Result<()>,
+    pub(crate) process_started: &'a mut dyn FnMut(),
+}
+
+impl<'a> WindowsContainerProcessStartCallbacks<'a> {
+    pub fn new(
+        before_process_start: &'a mut dyn FnMut() -> io::Result<()>,
+        process_started: &'a mut dyn FnMut(),
+    ) -> Self {
+        Self {
+            before_process_start,
+            process_started,
+        }
+    }
+}
+
+impl<'a> WindowsContainerExecutionCallbacks<'a> {
+    pub fn new(
+        before_process_start: &'a mut dyn FnMut() -> io::Result<()>,
+        process_started: &'a mut dyn FnMut(),
+        is_cancelled: &'a mut (dyn FnMut() -> bool + Send),
+        on_output: &'a mut (dyn FnMut(WindowsContainerOutputStream, &[u8]) + Send),
+    ) -> Self {
+        Self {
+            before_process_start,
+            process_started,
+            is_cancelled,
+            on_output,
+        }
+    }
+}
+
 impl<'a> WindowsContainerOutputSink<'a> {
     pub fn new(
         request: &WindowsContainerExecutionRequest,
+        on_output: &'a mut dyn FnMut(WindowsContainerOutputStream, &[u8]),
+    ) -> Self {
+        Self::new_with_limits(request.limits(), on_output)
+    }
+
+    pub fn new_with_limits(
+        limits: &WindowsContainerExecutionLimits,
         on_output: &'a mut dyn FnMut(WindowsContainerOutputStream, &[u8]),
     ) -> Self {
         Self {
@@ -130,8 +180,8 @@ impl<'a> WindowsContainerOutputSink<'a> {
                 stdout_truncated: false,
                 stderr_truncated: false,
             },
-            max_stdout_bytes: request.limits.max_stdout_bytes,
-            max_stderr_bytes: request.limits.max_stderr_bytes,
+            max_stdout_bytes: limits.max_stdout_bytes,
+            max_stderr_bytes: limits.max_stderr_bytes,
             on_output,
         }
     }
@@ -267,6 +317,58 @@ pub struct WindowsContainerExecutionRequest {
     limits: WindowsContainerExecutionLimits,
 }
 
+/// One authorized, fixed-profile Python Skill attempt. Its input bundle and
+/// parameters are transferred separately from the project workspace.
+pub struct WindowsContainerSkillExecutionRequest {
+    contract: WindowsContainerSkillExecutionContract,
+    execution_workspace_generation: u64,
+    policy_revision: u64,
+    limits: WindowsContainerExecutionLimits,
+}
+
+impl WindowsContainerSkillExecutionRequest {
+    pub fn new(
+        contract: WindowsContainerSkillExecutionContract,
+        execution_workspace_generation: u64,
+        policy_revision: u64,
+        limits: WindowsContainerExecutionLimits,
+    ) -> io::Result<Self> {
+        if execution_workspace_generation == 0 || policy_revision == 0 {
+            return Err(invalid_request(
+                "Skill execution requires workspace and policy stamps",
+            ));
+        }
+        Ok(Self {
+            contract,
+            execution_workspace_generation,
+            policy_revision,
+            limits,
+        })
+    }
+
+    pub fn contract(&self) -> &WindowsContainerSkillExecutionContract {
+        &self.contract
+    }
+
+    pub fn execution_workspace_generation(&self) -> u64 {
+        self.execution_workspace_generation
+    }
+
+    pub fn policy_revision(&self) -> u64 {
+        self.policy_revision
+    }
+
+    pub fn limits(&self) -> &WindowsContainerExecutionLimits {
+        &self.limits
+    }
+
+    /// Skills use a broker-fixed bundle budget. Callers cannot widen it.
+    pub fn bundle_copy_limits(&self) -> DirectoryTreeCopyLimits {
+        DirectoryTreeCopyLimits::new(1_024, 16, 16 * 1024 * 1024, 64 * 1024 * 1024)
+            .expect("fixed Skill bundle limits are valid")
+    }
+}
+
 impl WindowsContainerExecutionRequest {
     pub fn new(
         shell: WindowsContainerShell,
@@ -398,10 +500,15 @@ pub trait WindowsContainerExecutionPort: private::Sealed + Send + Sync {
         &self,
         request: &WindowsContainerExecutionRequest,
         workspace: &WindowsContainerWorkspaceInput,
-        before_shell_start: &mut dyn FnMut() -> io::Result<()>,
-        shell_started: &mut dyn FnMut(),
-        is_cancelled: &mut (dyn FnMut() -> bool + Send),
-        on_output: &mut (dyn FnMut(WindowsContainerOutputStream, &[u8]) + Send),
+        callbacks: &mut WindowsContainerExecutionCallbacks<'_>,
+    ) -> io::Result<WindowsContainerExecutionResult>;
+
+    fn execute_skill(
+        &self,
+        request: &WindowsContainerSkillExecutionRequest,
+        workspace: &WindowsContainerWorkspaceInput,
+        skill_bundle: &WindowsContainerSkillBundleInput,
+        callbacks: &mut WindowsContainerExecutionCallbacks<'_>,
     ) -> io::Result<WindowsContainerExecutionResult>;
 }
 
@@ -462,16 +569,13 @@ mod tests {
             &self,
             request: &WindowsContainerExecutionRequest,
             _workspace: &WindowsContainerWorkspaceInput,
-            before_shell_start: &mut dyn FnMut() -> io::Result<()>,
-            shell_started: &mut dyn FnMut(),
-            is_cancelled: &mut (dyn FnMut() -> bool + Send),
-            on_output: &mut (dyn FnMut(WindowsContainerOutputStream, &[u8]) + Send),
+            callbacks: &mut WindowsContainerExecutionCallbacks<'_>,
         ) -> io::Result<WindowsContainerExecutionResult> {
-            if is_cancelled() {
+            if (callbacks.is_cancelled)() {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
             }
-            before_shell_start()?;
-            shell_started();
+            (callbacks.before_process_start)()?;
+            (callbacks.process_started)();
             *self
                 .recorded
                 .lock()
@@ -483,7 +587,7 @@ mod tests {
                 policy_revision: request.policy_revision,
                 storage_quota_bytes: request.limits.storage_quota_bytes,
             });
-            let mut output = WindowsContainerOutputSink::new(request, on_output);
+            let mut output = WindowsContainerOutputSink::new(request, callbacks.on_output);
             output.write_chunk(
                 WindowsContainerOutputStream::Stdout,
                 b"mock output exceeds cap",
@@ -493,6 +597,19 @@ mod tests {
                 0,
                 output.finish(),
                 SandboxOutputReview::new(Box::new(MockReviewWorkspace), Default::default()),
+            ))
+        }
+
+        fn execute_skill(
+            &self,
+            _request: &WindowsContainerSkillExecutionRequest,
+            _workspace: &WindowsContainerWorkspaceInput,
+            _skill_bundle: &WindowsContainerSkillBundleInput,
+            _callbacks: &mut WindowsContainerExecutionCallbacks<'_>,
+        ) -> io::Result<WindowsContainerExecutionResult> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "mock Skill execution is not configured",
             ))
         }
     }
@@ -576,16 +693,13 @@ mod tests {
         let mut cancelled = || false;
         let mut before_shell_start = || Ok(());
         let mut shell_started = || {};
-        let result = port
-            .execute(
-                &request,
-                &workspace,
-                &mut before_shell_start,
-                &mut shell_started,
-                &mut cancelled,
-                &mut on_output,
-            )
-            .unwrap();
+        let mut callbacks = WindowsContainerExecutionCallbacks::new(
+            &mut before_shell_start,
+            &mut shell_started,
+            &mut cancelled,
+            &mut on_output,
+        );
+        let result = port.execute(&request, &workspace, &mut callbacks).unwrap();
 
         assert_eq!(
             *port.recorded.lock().unwrap(),
@@ -684,14 +798,13 @@ mod tests {
         let mut before_shell_start = || Ok(());
         let mut shell_started = || {};
         let mut on_output = |_: WindowsContainerOutputStream, _: &[u8]| {};
-        let error = match port.execute(
-            &request,
-            &workspace,
+        let mut callbacks = WindowsContainerExecutionCallbacks::new(
             &mut before_shell_start,
             &mut shell_started,
             &mut cancelled,
             &mut on_output,
-        ) {
+        );
+        let error = match port.execute(&request, &workspace, &mut callbacks) {
             Ok(_) => panic!("cancelled execution unexpectedly succeeded"),
             Err(error) => error,
         };

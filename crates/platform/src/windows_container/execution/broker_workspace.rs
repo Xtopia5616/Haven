@@ -255,6 +255,14 @@ impl BrokerWorkspaceAttempt {
             .ok_or_else(|| invalid_data("broker workspace attempt is already cleaned"))
     }
 
+    /// Create a distinct, empty host-side root for read-only Skill code and
+    /// parameters. It is never merged into the project workspace snapshot.
+    pub(crate) fn create_skill_input(&self) -> io::Result<DirectoryCapability> {
+        let attempt_root = self.attempt_root()?;
+        attempt_root.create_dir(Path::new("skill-input"))?;
+        DirectoryCapability::open(&attempt_root.root().join("skill-input"))
+    }
+
     pub(crate) fn cleanup(&mut self) -> io::Result<()> {
         if self.cleaned {
             return Ok(());

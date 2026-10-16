@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳；平台 typed contract 已实现，HCS broker 执行接线仍待后续切片。`WorkspaceWrite` 中的 Skill execution 继续 fail closed。
+已采纳；固定 contract、bundle/参数传输与 HCS guest launcher 已由平台接通（ADR 1267）。Tools 实时授权 adapter 尚未接入，`WorkspaceWrite` 中的 Skill execution 继续 fail closed；真实 HCS 验收仍开放。
 
 ## 背景
 
@@ -15,7 +15,7 @@ ADR 1264 将 `load_skill` 激活与 `skill__*` Python 执行分开。HCS 现有�
 - guest 网络 capability 固定关闭。参数作为 JSON object 数据传递，最大 64 KiB；entry script 必须是 bundle 内规范相对 `.py` 路径。参数不能拼入命令行，也不能携带宿主绝对路径。
 - Skill bundle 作为独立只读 `DirectoryCapability` 输入，经文件数、深度、单文件和总大小限制复制到 broker 私有 staging；broker IPC 不得携带宿主路径。Skill 对项目文件的访问只能发生在独立 ExecutionWorkspace snapshot 中；所有 guest 文件变化使用现有 `SandboxOutputReview` manifest、预算和晋升授权。
 - 每次执行沿用现有授权、策略 revision、HCS attempt quota、deadline、取消及有界输出规则。bundle 或参数验证失败、profile 未 attested、网络/依赖边界未实现时，必须在 attempt 开始前拒绝。
-- `haven-platform` 新增仅表达上述固定 profile 的 `WindowsContainerSkillExecutionContract` 与隐藏根路径的 `WindowsContainerSkillBundleInput`。本 ADR 当前完成请求验证和文件输入 capability；它不代表 broker 已支持 Python，也不改变工具授权。接入 guest launcher、参数数据传输和 runtime attestation 前，`WorkspaceWrite` 仍拒绝 Skill adapter。
+- `haven-platform` 提供仅表达上述固定 profile 的 `WindowsContainerSkillExecutionContract` 与隐藏根路径的 `WindowsContainerSkillBundleInput`。ADR 1267 已接通 broker 输入传输、runtime gate、只读 guest 映射、固定 launcher 和 workspace 输出 review；这不代表 Tools 已接入 Skill，也不改变授权结果。实时授权/撤销 adapter 落地前，`WorkspaceWrite` 仍拒绝 Skill adapter。
 
 ## 替代方案
 
@@ -32,4 +32,4 @@ ADR 1264 将 `load_skill` 激活与 `skill__*` Python 执行分开。HCS 现有�
 
 - 平台单元测试覆盖固定 profile、参数对象与 64 KiB 上限、entry path traversal/宿主路径/Windows 保留名拒绝以及 Debug 参数脱敏。
 - `cargo fmt --all -- --check`、`cargo test --locked -p haven-platform`、`cargo clippy --locked -p haven-platform -- -D warnings`、ADR 索引与 crate 依赖检查按本切片执行。
-- 本切片不运行真实 HCS、Python guest 或超额写入验收；Windows broker 接线与 image runtime attestation 仍是后续实现和发布 Gate。
+- 本切片未运行真实 HCS、Python guest 或超额写入验收；Tools 实时授权接线与 Windows broker 部署验收仍是后续工作和发布 Gate。

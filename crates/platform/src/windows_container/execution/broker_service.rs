@@ -5,10 +5,10 @@
 //! required-privilege set, and accepts no user-selected service configuration.
 
 use super::BROKER_SERVICE_NAME;
-use super::broker_workspace::BrokerWorkspaceScratchRoot;
+use super::broker_workspace::{BrokerWorkspaceAttempt, BrokerWorkspaceScratchRoot};
 use super::image_catalog::BrokerContainerImageCatalog;
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, Write};
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -40,8 +40,8 @@ use windows_sys::Win32::System::Threading::{ResetEvent, SetEvent, WaitForSingleO
 use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath};
 
 use super::broker_protocol::{
-    BrokerControlMessage, BrokerExecutionGateStatus, BrokerFailureCode, BrokerFrame,
-    BrokerQuotaGateStatus, BrokerSkillPythonRuntimeStatus,
+    BrokerControlMessage, BrokerExecutionGateStatus, BrokerExecutionTarget, BrokerFailureCode,
+    BrokerFrame, BrokerQuotaGateStatus, BrokerSkillPythonRuntimeStatus,
 };
 use super::named_pipe::{
     BrokerClientPolicy, BrokerPeerPolicy, BrokerPipeCancellation, BrokerPipeClient,
@@ -614,6 +614,15 @@ fn serve_authenticated_connection(
             Ok(attestation) => attestation,
             Err(code) => return write_broker_failure(connection, Some(request_id), code),
         };
+    if matches!(&request.target, BrokerExecutionTarget::Skill { .. })
+        && !attestation.skill_python_runtime_attested()
+    {
+        return write_broker_failure(
+            connection,
+            Some(request_id),
+            BrokerFailureCode::SkillRuntimeUnattested,
+        );
+    }
 
     let mut attempt = match workspace_root.create_attempt() {
         Ok(attempt) => attempt,
@@ -628,6 +637,21 @@ fn serve_authenticated_connection(
     let deadline = Instant::now()
         .checked_add(limits.timeout())
         .ok_or_else(|| invalid_data("broker execution deadline is invalid"))?;
+    let skill_input = match receive_skill_input(connection, &attempt, &request, deadline) {
+        Ok(input) => input,
+        Err(code) => {
+            let cleanup_succeeded = attempt.cleanup().is_ok();
+            return write_broker_failure(
+                connection,
+                Some(request_id),
+                if cleanup_succeeded {
+                    code
+                } else {
+                    BrokerFailureCode::CleanupFailed
+                },
+            );
+        }
+    };
     let ready = BrokerControlMessage::WorkspaceSnapshotRequested { request_id };
     connection.write_frame_until(&BrokerFrame::control(&ready)?, deadline)?;
 
@@ -662,11 +686,98 @@ fn serve_authenticated_connection(
         connection,
         &mut attempt,
         attestation,
-        request,
-        limits,
-        summary.byte_count,
-        deadline,
+        super::broker_execution::ReceivedExecution {
+            wire_request: request,
+            limits,
+            initial_snapshot_bytes: summary.byte_count,
+            skill_input,
+            deadline,
+        },
     )
+}
+
+fn receive_skill_input(
+    connection: &super::named_pipe::BrokerPipeConnection<'_>,
+    attempt: &BrokerWorkspaceAttempt,
+    request: &super::broker_protocol::BrokerExecutionRequest,
+    deadline: Instant,
+) -> Result<Option<crate::filesystem::DirectoryCapability>, BrokerFailureCode> {
+    let BrokerExecutionTarget::Skill {
+        entry_script,
+        bundle_copy,
+        parameter_bytes,
+        parameter_sha256,
+    } = &request.target
+    else {
+        return Ok(None);
+    };
+    let cancellation = connection.cancellation();
+    let skill_input = attempt
+        .create_skill_input()
+        .map_err(|_| BrokerFailureCode::StagingFailed)?;
+    skill_input
+        .create_dir(Path::new("bundle"))
+        .map_err(|_| BrokerFailureCode::StagingFailed)?;
+    let bundle = crate::filesystem::DirectoryCapability::open(&skill_input.root().join("bundle"))
+        .map_err(|_| BrokerFailureCode::StagingFailed)?;
+    let request_bundle = BrokerControlMessage::SkillBundleSnapshotRequested {
+        request_id: request.request_id,
+    };
+    connection
+        .write_frame_until(
+            &BrokerFrame::control(&request_bundle)
+                .map_err(|_| BrokerFailureCode::InvalidRequest)?,
+            deadline,
+        )
+        .map_err(|_| BrokerFailureCode::StagingFailed)?;
+    let bundle_limits = bundle_copy
+        .to_platform_limits()
+        .map_err(|_| BrokerFailureCode::InvalidRequest)?;
+    let (bundle, _) = super::workspace_transfer::receive_skill_bundle_snapshot(
+        bundle,
+        bundle_limits,
+        || connection.read_frame_until(deadline),
+        || cancellation.is_cancelled() || connection.peer_disconnected(),
+    )
+    .map_err(|error| match error.kind() {
+        io::ErrorKind::Interrupted => BrokerFailureCode::Cancelled,
+        io::ErrorKind::TimedOut => BrokerFailureCode::TimedOut,
+        io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied => {
+            BrokerFailureCode::InvalidRequest
+        }
+        _ => BrokerFailureCode::StagingFailed,
+    })?;
+    match bundle.open_read(Path::new("requirements.txt")) {
+        Ok(_) => return Err(BrokerFailureCode::InvalidRequest),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err(BrokerFailureCode::InvalidRequest),
+    }
+    bundle
+        .open_read(Path::new(entry_script))
+        .map_err(|_| BrokerFailureCode::InvalidRequest)?;
+
+    let parameters = super::workspace_transfer::receive_skill_parameters(
+        *parameter_bytes as usize,
+        *parameter_sha256,
+        || connection.read_frame_until(deadline),
+        || cancellation.is_cancelled() || connection.peer_disconnected(),
+    )
+    .map_err(|error| match error.kind() {
+        io::ErrorKind::Interrupted => BrokerFailureCode::Cancelled,
+        io::ErrorKind::TimedOut => BrokerFailureCode::TimedOut,
+        io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied => {
+            BrokerFailureCode::InvalidRequest
+        }
+        _ => BrokerFailureCode::StagingFailed,
+    })?;
+    let mut parameters_file = skill_input
+        .create_new_file(Path::new("parameters.json"))
+        .map_err(|_| BrokerFailureCode::StagingFailed)?;
+    parameters_file
+        .write_all(&parameters)
+        .and_then(|()| parameters_file.sync_all())
+        .map_err(|_| BrokerFailureCode::StagingFailed)?;
+    Ok(Some(skill_input))
 }
 
 /// Keep the quota gate ahead of staging allocation and workspace bytes. Only

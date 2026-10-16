@@ -520,8 +520,7 @@ impl BrokerPipeClient {
         request: &super::WindowsContainerExecutionRequest,
         request_id: [u8; 16],
         workspace: &super::WindowsContainerWorkspaceInput,
-        before_shell_start: &mut dyn FnMut() -> io::Result<()>,
-        shell_started: &mut dyn FnMut(),
+        start_callbacks: &mut super::WindowsContainerProcessStartCallbacks<'_>,
         output: super::WindowsContainerOutputSink<'_>,
     ) -> io::Result<client_exchange::BrokerPipeExecutionResponse> {
         client_exchange::execute_with_workspace(
@@ -529,8 +528,27 @@ impl BrokerPipeClient {
             request,
             request_id,
             workspace,
-            before_shell_start,
-            shell_started,
+            start_callbacks,
+            output,
+        )
+    }
+
+    pub(crate) fn execute_with_skill(
+        &mut self,
+        request: &super::WindowsContainerSkillExecutionRequest,
+        request_id: [u8; 16],
+        workspace: &super::WindowsContainerWorkspaceInput,
+        skill_bundle: &super::WindowsContainerSkillBundleInput,
+        start_callbacks: &mut super::WindowsContainerProcessStartCallbacks<'_>,
+        output: super::WindowsContainerOutputSink<'_>,
+    ) -> io::Result<client_exchange::BrokerPipeExecutionResponse> {
+        client_exchange::execute_with_skill(
+            self,
+            request,
+            request_id,
+            workspace,
+            skill_bundle,
+            start_callbacks,
             output,
         )
     }
@@ -1133,13 +1151,16 @@ mod tests {
         let output_sink = super::super::WindowsContainerOutputSink::new(&request, &mut on_output);
         let mut before_shell_start = || Ok(());
         let mut shell_started = || {};
+        let mut start_callbacks = super::super::WindowsContainerProcessStartCallbacks::new(
+            &mut before_shell_start,
+            &mut shell_started,
+        );
         let response = client
             .execute_with_workspace(
                 &request,
                 request_id,
                 &workspace,
-                &mut before_shell_start,
-                &mut shell_started,
+                &mut start_callbacks,
                 output_sink,
             )
             .unwrap();
@@ -1242,13 +1263,16 @@ mod tests {
             Ok(())
         };
         let mut shell_started = || start_confirmations += 1;
+        let mut start_callbacks = super::super::WindowsContainerProcessStartCallbacks::new(
+            &mut before_shell_start,
+            &mut shell_started,
+        );
         let response = client
             .execute_with_workspace(
                 &request,
                 [13; 16],
                 &workspace,
-                &mut before_shell_start,
-                &mut shell_started,
+                &mut start_callbacks,
                 output_sink,
             )
             .unwrap();
@@ -1414,12 +1438,15 @@ mod tests {
             Ok(())
         };
         let mut shell_started = || start_confirmations += 1;
+        let mut start_callbacks = super::super::WindowsContainerProcessStartCallbacks::new(
+            &mut before_shell_start,
+            &mut shell_started,
+        );
         let response = client.execute_with_workspace(
             &request,
             request_id,
             &workspace,
-            &mut before_shell_start,
-            &mut shell_started,
+            &mut start_callbacks,
             output_sink,
         );
         let server_result = server.join().unwrap();

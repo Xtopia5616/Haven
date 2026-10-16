@@ -4,10 +4,14 @@ use super::super::broker_protocol::{
     BrokerControlMessage, BrokerExecutionRequest, BrokerFailureCode, BrokerFrame, BrokerFrameKind,
 };
 use super::super::output_transfer::receive_output_snapshot;
-use super::super::workspace_transfer::send_workspace_snapshot;
+use super::super::workspace_transfer::{
+    send_skill_bundle_snapshot, send_skill_parameters, send_workspace_snapshot,
+};
 use super::super::{
-    WindowsContainerCapturedOutput, WindowsContainerExecutionRequest, WindowsContainerOutputSink,
-    WindowsContainerOutputStream, WindowsContainerWorkspaceInput,
+    WindowsContainerCapturedOutput, WindowsContainerExecutionLimits,
+    WindowsContainerExecutionRequest, WindowsContainerOutputSink, WindowsContainerOutputStream,
+    WindowsContainerProcessStartCallbacks, WindowsContainerSkillBundleInput,
+    WindowsContainerSkillExecutionRequest, WindowsContainerWorkspaceInput,
 };
 use super::{BrokerPipeClient, deadline_after, invalid_data};
 use crate::filesystem::DirectoryCapability;
@@ -92,54 +96,177 @@ pub(super) fn execute_with_workspace(
     request: &WindowsContainerExecutionRequest,
     request_id: [u8; 16],
     workspace: &WindowsContainerWorkspaceInput,
-    before_shell_start: &mut dyn FnMut() -> io::Result<()>,
-    shell_started: &mut dyn FnMut(),
-    mut output_sink: WindowsContainerOutputSink<'_>,
+    start_callbacks: &mut WindowsContainerProcessStartCallbacks<'_>,
+    output_sink: WindowsContainerOutputSink<'_>,
 ) -> io::Result<BrokerPipeExecutionResponse> {
     let wire_request = BrokerExecutionRequest::from_execution_request(request, request_id)?;
-    let deadline = deadline_after(request.limits().timeout())?;
+    execute_with_inputs(
+        client,
+        BrokerClientExecutionPlan {
+            wire_request: &wire_request,
+            limits: request.limits(),
+            execution_workspace_generation: request.execution_workspace_generation(),
+            policy_revision: request.policy_revision(),
+            skill_input: None,
+        },
+        workspace,
+        start_callbacks,
+        output_sink,
+    )
+}
+
+pub(super) fn execute_with_skill(
+    client: &mut BrokerPipeClient,
+    request: &WindowsContainerSkillExecutionRequest,
+    request_id: [u8; 16],
+    workspace: &WindowsContainerWorkspaceInput,
+    skill_bundle: &WindowsContainerSkillBundleInput,
+    start_callbacks: &mut WindowsContainerProcessStartCallbacks<'_>,
+    output_sink: WindowsContainerOutputSink<'_>,
+) -> io::Result<BrokerPipeExecutionResponse> {
+    let wire_request = BrokerExecutionRequest::from_skill_request(request, request_id)?;
+    execute_with_inputs(
+        client,
+        BrokerClientExecutionPlan {
+            wire_request: &wire_request,
+            limits: request.limits(),
+            execution_workspace_generation: request.execution_workspace_generation(),
+            policy_revision: request.policy_revision(),
+            skill_input: Some((skill_bundle, request)),
+        },
+        workspace,
+        start_callbacks,
+        output_sink,
+    )
+}
+
+struct BrokerClientExecutionPlan<'a> {
+    wire_request: &'a BrokerExecutionRequest,
+    limits: &'a WindowsContainerExecutionLimits,
+    execution_workspace_generation: u64,
+    policy_revision: u64,
+    skill_input: Option<(
+        &'a WindowsContainerSkillBundleInput,
+        &'a WindowsContainerSkillExecutionRequest,
+    )>,
+}
+
+fn execute_with_inputs(
+    client: &mut BrokerPipeClient,
+    plan: BrokerClientExecutionPlan<'_>,
+    workspace: &WindowsContainerWorkspaceInput,
+    start_callbacks: &mut WindowsContainerProcessStartCallbacks<'_>,
+    mut output_sink: WindowsContainerOutputSink<'_>,
+) -> io::Result<BrokerPipeExecutionResponse> {
+    let BrokerClientExecutionPlan {
+        wire_request,
+        limits,
+        execution_workspace_generation,
+        policy_revision,
+        skill_input,
+    } = plan;
+    let request_id = wire_request.request_id;
+    let deadline = deadline_after(limits.timeout())?;
     client.write_frame_until(
         &BrokerFrame::control(&BrokerControlMessage::Execute {
-            request: wire_request,
+            request: wire_request.clone(),
         })?,
         deadline,
     )?;
-
-    let ready = client.read_frame_until(deadline)?.decode_control()?;
-    match ready {
-        BrokerControlMessage::Failure {
-            request_id: Some(response_id),
-            code,
-        } if response_id == request_id => {
-            acknowledge_response(client, request_id, deadline)?;
-            return Ok(BrokerPipeExecutionResponse::Failed(code));
-        }
-        BrokerControlMessage::WorkspaceSnapshotRequested {
-            request_id: response_id,
-        } if response_id == request_id => {}
-        _ => return Err(invalid_data("broker response does not match the request")),
-    }
 
     // Keep the exact bounded snapshot sent to the broker as the diff baseline.
     // This prevents concurrent workspace changes from making the returned
     // output review refer to a different tree than the one the guest received.
     let storage = tempfile::tempdir()?;
     let root = DirectoryCapability::open(storage.path())?;
+    let cancellation = client.cancellation.clone();
+    if let Some((skill_bundle, skill_request)) = skill_input {
+        match client.read_frame_until(deadline)?.decode_control()? {
+            BrokerControlMessage::Failure {
+                request_id: Some(response_id),
+                code,
+            } if response_id == request_id => {
+                acknowledge_response(client, request_id, deadline)?;
+                return Ok(BrokerPipeExecutionResponse::Failed(code));
+            }
+            BrokerControlMessage::SkillBundleSnapshotRequested {
+                request_id: response_id,
+            } if response_id == request_id => {}
+            _ => return Err(invalid_data("broker did not request the Skill bundle")),
+        }
+        root.create_dir(Path::new("skill-bundle"))?;
+        let bundle_path = storage.path().join("skill-bundle");
+        let bundle_snapshot = DirectoryCapability::open(&bundle_path)?;
+        skill_bundle.copy_snapshot_to(
+            &bundle_snapshot,
+            skill_request.bundle_copy_limits(),
+            || cancellation.is_cancelled(),
+        )?;
+        send_skill_bundle_snapshot(
+            &bundle_snapshot,
+            skill_request.bundle_copy_limits(),
+            |frame| client.write_frame_until(&frame, deadline),
+            || cancellation.is_cancelled(),
+        )?;
+        send_skill_parameters(
+            skill_request.contract().parameters_json(),
+            |frame| client.write_frame_until(&frame, deadline),
+            || cancellation.is_cancelled(),
+        )?;
+        drop(bundle_snapshot);
+        root.remove_dir_all(Path::new("skill-bundle"))?;
+    } else {
+        match client.read_frame_until(deadline)?.decode_control()? {
+            BrokerControlMessage::Failure {
+                request_id: Some(response_id),
+                code,
+            } if response_id == request_id => {
+                acknowledge_response(client, request_id, deadline)?;
+                return Ok(BrokerPipeExecutionResponse::Failed(code));
+            }
+            BrokerControlMessage::WorkspaceSnapshotRequested {
+                request_id: response_id,
+            } if response_id == request_id => {}
+            _ => {
+                return Err(invalid_data(
+                    "broker did not request the workspace snapshot",
+                ));
+            }
+        }
+    }
+    if skill_input.is_some() {
+        match client.read_frame_until(deadline)?.decode_control()? {
+            BrokerControlMessage::Failure {
+                request_id: Some(response_id),
+                code,
+            } if response_id == request_id => {
+                acknowledge_response(client, request_id, deadline)?;
+                return Ok(BrokerPipeExecutionResponse::Failed(code));
+            }
+            BrokerControlMessage::WorkspaceSnapshotRequested {
+                request_id: response_id,
+            } if response_id == request_id => {}
+            _ => {
+                return Err(invalid_data(
+                    "broker did not request the workspace snapshot",
+                ));
+            }
+        }
+    }
+
     root.create_dir(Path::new("baseline"))?;
     root.create_dir(Path::new("output"))?;
     root.create_dir(Path::new("file-staging"))?;
     let baseline = DirectoryCapability::open(&storage.path().join("baseline"))?;
     let output_directory = DirectoryCapability::open(&storage.path().join("output"))?;
     let file_staging = DirectoryCapability::open(&storage.path().join("file-staging"))?;
-    let cancellation = client.cancellation.clone();
-    let input_summary =
-        workspace.copy_snapshot_to(&baseline, request.limits().workspace_copy(), || {
-            cancellation.is_cancelled()
-        })?;
+    let input_summary = workspace.copy_snapshot_to(&baseline, limits.workspace_copy(), || {
+        cancellation.is_cancelled()
+    })?;
 
     send_workspace_snapshot(
         &baseline,
-        request.limits().workspace_copy(),
+        limits.workspace_copy(),
         |frame| client.write_frame_until(&frame, deadline),
         || cancellation.is_cancelled(),
     )?;
@@ -156,14 +283,14 @@ pub(super) fn execute_with_workspace(
                 WindowsContainerOutputStream::Stdout,
                 frame.payload(),
                 &mut received_stdout_bytes,
-                request.limits().max_stdout_bytes(),
+                limits.max_stdout_bytes(),
             )?,
             BrokerFrameKind::StderrChunk if start_confirmed => receive_stream_chunk(
                 &mut output_sink,
                 WindowsContainerOutputStream::Stderr,
                 frame.payload(),
                 &mut received_stderr_bytes,
-                request.limits().max_stderr_bytes(),
+                limits.max_stderr_bytes(),
             )?,
             BrokerFrameKind::StdoutChunk | BrokerFrameKind::StderrChunk => {
                 return Err(invalid_data(
@@ -181,7 +308,7 @@ pub(super) fn execute_with_workspace(
                 BrokerControlMessage::ExecutionStartRequested {
                     request_id: response_id,
                 } if response_id == request_id && !start_requested && !start_confirmed => {
-                    before_shell_start()?;
+                    (start_callbacks.before_process_start)()?;
                     let authorized = BrokerControlMessage::ExecutionStartAuthorized { request_id };
                     client.write_frame_until(&BrokerFrame::control(&authorized)?, deadline)?;
                     start_requested = true;
@@ -190,7 +317,7 @@ pub(super) fn execute_with_workspace(
                     request_id: response_id,
                 } if response_id == request_id && start_requested && !start_confirmed => {
                     start_confirmed = true;
-                    shell_started();
+                    (start_callbacks.process_started)();
                 }
                 BrokerControlMessage::OutputEntry { .. }
                 | BrokerControlMessage::OutputSnapshotComplete { .. }
@@ -209,7 +336,7 @@ pub(super) fn execute_with_workspace(
         &baseline,
         output_directory,
         file_staging,
-        request.limits().output_diff(),
+        limits.output_diff(),
         || loop {
             let frame = match pending_frame.take() {
                 Some(frame) => frame,
@@ -221,14 +348,14 @@ pub(super) fn execute_with_workspace(
                     WindowsContainerOutputStream::Stdout,
                     frame.payload(),
                     &mut received_stdout_bytes,
-                    request.limits().max_stdout_bytes(),
+                    limits.max_stdout_bytes(),
                 )?,
                 BrokerFrameKind::StderrChunk => receive_stream_chunk(
                     &mut output_sink,
                     WindowsContainerOutputStream::Stderr,
                     frame.payload(),
                     &mut received_stderr_bytes,
-                    request.limits().max_stderr_bytes(),
+                    limits.max_stderr_bytes(),
                 )?,
                 _ => return Ok(frame),
             }
@@ -254,14 +381,14 @@ pub(super) fn execute_with_workspace(
                 WindowsContainerOutputStream::Stdout,
                 frame.payload(),
                 &mut received_stdout_bytes,
-                request.limits().max_stdout_bytes(),
+                limits.max_stdout_bytes(),
             )?,
             BrokerFrameKind::StderrChunk => receive_stream_chunk(
                 &mut output_sink,
                 WindowsContainerOutputStream::Stderr,
                 frame.payload(),
                 &mut received_stderr_bytes,
-                request.limits().max_stderr_bytes(),
+                limits.max_stderr_bytes(),
             )?,
             BrokerFrameKind::Control => {
                 let message = frame.decode_control()?;
@@ -289,8 +416,8 @@ pub(super) fn execute_with_workspace(
     };
 
     let mut captured_output = output_sink.finish();
-    if (terminal.1 && captured_output.stdout.len() != request.limits().max_stdout_bytes())
-        || (terminal.2 && captured_output.stderr.len() != request.limits().max_stderr_bytes())
+    if (terminal.1 && captured_output.stdout.len() != limits.max_stdout_bytes())
+        || (terminal.2 && captured_output.stderr.len() != limits.max_stderr_bytes())
     {
         return Err(invalid_data(
             "broker output truncation status does not match its stream limit",
@@ -304,8 +431,8 @@ pub(super) fn execute_with_workspace(
         Box::new(BrokerClientReviewWorkspace::new(
             storage,
             received.output,
-            request.execution_workspace_generation(),
-            request.policy_revision(),
+            execution_workspace_generation,
+            policy_revision,
             received.initial_snapshot_bytes,
         )),
         received.manifest,

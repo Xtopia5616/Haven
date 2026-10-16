@@ -16,6 +16,136 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 const WORKSPACE_CHUNK_BYTES: usize = 32 * 1024;
+const SKILL_PARAMETER_CHUNK_BYTES: usize = 32 * 1024;
+
+pub(crate) fn send_skill_parameters(
+    parameters: &[u8],
+    mut send_frame: impl FnMut(BrokerFrame) -> io::Result<()>,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> io::Result<()> {
+    if parameters.is_empty()
+        || parameters.len() > super::MAX_SKILL_PARAMETER_BYTES
+        || !serde_json::from_slice::<serde_json::Value>(parameters)
+            .is_ok_and(|value| value.is_object())
+    {
+        return Err(invalid_data("Skill parameters are outside their contract"));
+    }
+    for chunk in parameters.chunks(SKILL_PARAMETER_CHUNK_BYTES) {
+        if is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Skill parameter transfer was cancelled",
+            ));
+        }
+        send_frame(BrokerFrame::new(
+            BrokerFrameKind::SkillParameterChunk,
+            chunk.to_vec(),
+        )?)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn receive_skill_parameters(
+    expected_bytes: usize,
+    expected_sha256: [u8; 32],
+    mut read_frame: impl FnMut() -> io::Result<BrokerFrame>,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> io::Result<Vec<u8>> {
+    if expected_bytes == 0 || expected_bytes > super::MAX_SKILL_PARAMETER_BYTES {
+        return Err(invalid_data("Skill parameter length is outside its limit"));
+    }
+    let mut parameters = Vec::with_capacity(expected_bytes);
+    while parameters.len() < expected_bytes {
+        if is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Skill parameter receive was cancelled",
+            ));
+        }
+        let frame = read_frame()?;
+        if frame.kind() != BrokerFrameKind::SkillParameterChunk || frame.payload().is_empty() {
+            return Err(invalid_data(
+                "unexpected frame during Skill parameter receive",
+            ));
+        }
+        if parameters.len().saturating_add(frame.payload().len()) > expected_bytes {
+            return Err(invalid_data("Skill parameter stream contains excess bytes"));
+        }
+        parameters.extend_from_slice(frame.payload());
+    }
+    let digest: [u8; 32] = Sha256::digest(&parameters).into();
+    if digest != expected_sha256
+        || !serde_json::from_slice::<serde_json::Value>(&parameters)
+            .is_ok_and(|value| value.is_object())
+    {
+        return Err(invalid_data("Skill parameter payload failed validation"));
+    }
+    Ok(parameters)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotPurpose {
+    Workspace,
+    SkillBundle,
+}
+
+impl SnapshotPurpose {
+    fn entry(
+        self,
+        relative_path: String,
+        kind: BrokerWorkspaceEntryKind,
+        byte_length: u64,
+        sha256: Option<[u8; 32]>,
+    ) -> BrokerControlMessage {
+        match self {
+            Self::Workspace => BrokerControlMessage::WorkspaceEntry {
+                relative_path,
+                kind,
+                byte_length,
+                sha256,
+            },
+            Self::SkillBundle => BrokerControlMessage::SkillBundleEntry {
+                relative_path,
+                kind,
+                byte_length,
+                sha256,
+            },
+        }
+    }
+
+    fn complete(self, entry_count: u32, total_bytes: u64) -> BrokerControlMessage {
+        match self {
+            Self::Workspace => BrokerControlMessage::WorkspaceSnapshotComplete {
+                entry_count,
+                total_bytes,
+            },
+            Self::SkillBundle => BrokerControlMessage::SkillBundleSnapshotComplete {
+                entry_count,
+                total_bytes,
+            },
+        }
+    }
+
+    fn is_complete(self, message: &BrokerControlMessage) -> bool {
+        matches!(
+            (self, message),
+            (
+                Self::Workspace,
+                BrokerControlMessage::WorkspaceSnapshotComplete { .. }
+            ) | (
+                Self::SkillBundle,
+                BrokerControlMessage::SkillBundleSnapshotComplete { .. }
+            )
+        )
+    }
+
+    fn chunk_kind(self) -> BrokerFrameKind {
+        match self {
+            Self::Workspace => BrokerFrameKind::WorkspaceChunk,
+            Self::SkillBundle => BrokerFrameKind::SkillBundleChunk,
+        }
+    }
+}
 
 /// Send one bounded snapshot as ordered entry controls and file chunks.
 ///
@@ -27,22 +157,56 @@ const WORKSPACE_CHUNK_BYTES: usize = 32 * 1024;
 pub(crate) fn send_workspace_snapshot(
     snapshot: &DirectoryCapability,
     limits: DirectoryTreeCopyLimits,
+    send_frame: impl FnMut(BrokerFrame) -> io::Result<()>,
+    is_cancelled: impl FnMut() -> bool,
+) -> io::Result<DirectoryTreeCopySummary> {
+    send_snapshot(
+        snapshot,
+        limits,
+        SnapshotPurpose::Workspace,
+        send_frame,
+        is_cancelled,
+    )
+}
+
+pub(crate) fn send_skill_bundle_snapshot(
+    snapshot: &DirectoryCapability,
+    limits: DirectoryTreeCopyLimits,
+    send_frame: impl FnMut(BrokerFrame) -> io::Result<()>,
+    is_cancelled: impl FnMut() -> bool,
+) -> io::Result<DirectoryTreeCopySummary> {
+    send_snapshot(
+        snapshot,
+        limits,
+        SnapshotPurpose::SkillBundle,
+        send_frame,
+        is_cancelled,
+    )
+}
+
+fn send_snapshot(
+    snapshot: &DirectoryCapability,
+    limits: DirectoryTreeCopyLimits,
+    purpose: SnapshotPurpose,
     mut send_frame: impl FnMut(BrokerFrame) -> io::Result<()>,
     mut is_cancelled: impl FnMut() -> bool,
 ) -> io::Result<DirectoryTreeCopySummary> {
     let mut state = SenderState {
         snapshot,
         limits,
+        purpose,
         summary: DirectoryTreeCopySummary::default(),
         send_frame: &mut send_frame,
         is_cancelled: &mut is_cancelled,
     };
     state.send_directory(Path::new(""), 0)?;
-    state.send_control(BrokerControlMessage::WorkspaceSnapshotComplete {
-        entry_count: u32::try_from(state.summary.entry_count)
-            .map_err(|_| invalid_data("workspace entry count exceeds the wire range"))?,
-        total_bytes: state.summary.byte_count,
-    })?;
+    state.send_control(
+        purpose.complete(
+            u32::try_from(state.summary.entry_count)
+                .map_err(|_| invalid_data("snapshot entry count exceeds the wire range"))?,
+            state.summary.byte_count,
+        ),
+    )?;
     Ok(state.summary)
 }
 
@@ -52,10 +216,41 @@ pub(crate) fn send_workspace_snapshot(
 pub(crate) fn receive_workspace_snapshot(
     staging: DirectoryCapability,
     limits: DirectoryTreeCopyLimits,
+    read_frame: impl FnMut() -> io::Result<BrokerFrame>,
+    is_cancelled: impl FnMut() -> bool,
+) -> io::Result<(DirectoryCapability, DirectoryTreeCopySummary)> {
+    receive_snapshot(
+        staging,
+        limits,
+        SnapshotPurpose::Workspace,
+        read_frame,
+        is_cancelled,
+    )
+}
+
+pub(crate) fn receive_skill_bundle_snapshot(
+    staging: DirectoryCapability,
+    limits: DirectoryTreeCopyLimits,
+    read_frame: impl FnMut() -> io::Result<BrokerFrame>,
+    is_cancelled: impl FnMut() -> bool,
+) -> io::Result<(DirectoryCapability, DirectoryTreeCopySummary)> {
+    receive_snapshot(
+        staging,
+        limits,
+        SnapshotPurpose::SkillBundle,
+        read_frame,
+        is_cancelled,
+    )
+}
+
+fn receive_snapshot(
+    staging: DirectoryCapability,
+    limits: DirectoryTreeCopyLimits,
+    purpose: SnapshotPurpose,
     mut read_frame: impl FnMut() -> io::Result<BrokerFrame>,
     mut is_cancelled: impl FnMut() -> bool,
 ) -> io::Result<(DirectoryCapability, DirectoryTreeCopySummary)> {
-    let mut receiver = WorkspaceSnapshotReceiver::new(staging, limits)?;
+    let mut receiver = WorkspaceSnapshotReceiver::new_for(staging, limits, purpose)?;
     loop {
         if is_cancelled() {
             return Err(io::Error::new(
@@ -66,10 +261,7 @@ pub(crate) fn receive_workspace_snapshot(
         let frame = read_frame()?;
         if frame.kind() == BrokerFrameKind::Control {
             let message = frame.decode_control()?;
-            let completed = matches!(
-                &message,
-                BrokerControlMessage::WorkspaceSnapshotComplete { .. }
-            );
+            let completed = purpose.is_complete(&message);
             receiver.accept_control(message)?;
             if completed {
                 return receiver.finish();
@@ -83,6 +275,7 @@ pub(crate) fn receive_workspace_snapshot(
 struct SenderState<'a, SendFrame, IsCancelled> {
     snapshot: &'a DirectoryCapability,
     limits: DirectoryTreeCopyLimits,
+    purpose: SnapshotPurpose,
     summary: DirectoryTreeCopySummary,
     send_frame: &'a mut SendFrame,
     is_cancelled: &'a mut IsCancelled,
@@ -130,12 +323,12 @@ where
                         .directory_count
                         .checked_add(1)
                         .ok_or_else(|| invalid_data("workspace directory count overflowed"))?;
-                    self.send_control(BrokerControlMessage::WorkspaceEntry {
-                        relative_path: wire_path,
-                        kind: BrokerWorkspaceEntryKind::Directory,
-                        byte_length: 0,
-                        sha256: None,
-                    })?;
+                    self.send_control(self.purpose.entry(
+                        wire_path,
+                        BrokerWorkspaceEntryKind::Directory,
+                        0,
+                        None,
+                    ))?;
                     self.send_directory(&relative_path, child_depth)?;
                 }
                 DirectoryEntryKind::File => {
@@ -190,12 +383,12 @@ where
         self.summary.byte_count = next_total;
         let expected_sha256: [u8; 32] = hash.finalize().into();
 
-        self.send_control(BrokerControlMessage::WorkspaceEntry {
-            relative_path: wire_path,
-            kind: BrokerWorkspaceEntryKind::File,
+        self.send_control(self.purpose.entry(
+            wire_path,
+            BrokerWorkspaceEntryKind::File,
             byte_length,
-            sha256: Some(expected_sha256),
-        })?;
+            Some(expected_sha256),
+        ))?;
 
         file.seek(SeekFrom::Start(0))?;
         let mut sent_hash = Sha256::new();
@@ -213,8 +406,7 @@ where
                 return Err(invalid_data("workspace file changed during transfer"));
             }
             sent_hash.update(&buffer[..count]);
-            let frame =
-                BrokerFrame::new(BrokerFrameKind::WorkspaceChunk, buffer[..count].to_vec())?;
+            let frame = BrokerFrame::new(self.purpose.chunk_kind(), buffer[..count].to_vec())?;
             (self.send_frame)(frame)?;
         }
         let sent_sha256: [u8; 32] = sent_hash.finalize().into();
@@ -264,6 +456,7 @@ pub(crate) struct WorkspaceSnapshotReceiver {
     summary: DirectoryTreeCopySummary,
     current_file: Option<PendingFile>,
     complete: bool,
+    purpose: SnapshotPurpose,
 }
 
 struct PendingFile {
@@ -276,9 +469,18 @@ struct PendingFile {
 }
 
 impl WorkspaceSnapshotReceiver {
+    #[cfg(test)]
     pub(crate) fn new(
         root: DirectoryCapability,
         limits: DirectoryTreeCopyLimits,
+    ) -> io::Result<Self> {
+        Self::new_for(root, limits, SnapshotPurpose::Workspace)
+    }
+
+    fn new_for(
+        root: DirectoryCapability,
+        limits: DirectoryTreeCopyLimits,
+        purpose: SnapshotPurpose,
     ) -> io::Result<Self> {
         if !root.entries(1)?.is_empty() {
             return Err(io::Error::new(
@@ -292,13 +494,14 @@ impl WorkspaceSnapshotReceiver {
             summary: DirectoryTreeCopySummary::default(),
             current_file: None,
             complete: false,
+            purpose,
         })
     }
 
     pub(crate) fn accept_control(&mut self, message: BrokerControlMessage) -> io::Result<()> {
         if self.complete || self.current_file.is_some() {
             return Err(invalid_data(
-                "unexpected control frame in workspace transfer",
+                "unexpected control frame in snapshot transfer",
             ));
         }
         BrokerFrame::control(&message)?;
@@ -308,85 +511,121 @@ impl WorkspaceSnapshotReceiver {
                 kind,
                 byte_length,
                 sha256,
-            } => {
-                self.add_entry()?;
-                let relative_path = PathBuf::from(relative_path);
-                let depth = relative_path.components().count();
-                match kind {
-                    BrokerWorkspaceEntryKind::Directory => {
-                        if depth > self.limits.max_depth() {
-                            return Err(invalid_data(
-                                "workspace exceeds its directory depth limit",
-                            ));
-                        }
-                        self.root.create_dir(&relative_path)?;
-                        self.summary.directory_count =
-                            self.summary.directory_count.checked_add(1).ok_or_else(|| {
-                                invalid_data("workspace directory count overflowed")
-                            })?;
-                    }
-                    BrokerWorkspaceEntryKind::File => {
-                        if depth.saturating_sub(1) > self.limits.max_depth() {
-                            return Err(invalid_data(
-                                "workspace file exceeds its directory depth limit",
-                            ));
-                        }
-                        if byte_length > self.limits.max_file_bytes() {
-                            return Err(invalid_data("workspace file exceeds its size limit"));
-                        }
-                        let next_total = self
-                            .summary
-                            .byte_count
-                            .checked_add(byte_length)
-                            .ok_or_else(|| invalid_data("workspace byte count overflowed"))?;
-                        if next_total > self.limits.max_total_bytes() {
-                            return Err(invalid_data("workspace exceeds its byte limit"));
-                        }
-                        let expected_sha256 = sha256
-                            .ok_or_else(|| invalid_data("workspace file digest is missing"))?;
-                        let file = self.root.create_new_file(&relative_path)?;
-                        self.summary.file_count = self
-                            .summary
-                            .file_count
-                            .checked_add(1)
-                            .ok_or_else(|| invalid_data("workspace file count overflowed"))?;
-                        self.summary.byte_count = next_total;
-                        self.current_file = Some(PendingFile {
-                            relative_path,
-                            file,
-                            expected_bytes: byte_length,
-                            received_bytes: 0,
-                            expected_sha256,
-                            hash: Sha256::new(),
-                        });
-                        if byte_length == 0 {
-                            self.finish_current_file()?;
-                        }
-                    }
-                }
+            } if self.purpose == SnapshotPurpose::Workspace => {
+                self.accept_entry(relative_path, kind, byte_length, sha256)
+            }
+            BrokerControlMessage::SkillBundleEntry {
+                relative_path,
+                kind,
+                byte_length,
+                sha256,
+            } if self.purpose == SnapshotPurpose::SkillBundle => {
+                self.accept_entry(relative_path, kind, byte_length, sha256)
             }
             BrokerControlMessage::WorkspaceSnapshotComplete {
                 entry_count,
                 total_bytes,
-            } if entry_count as usize == self.summary.entry_count
+            } if self.purpose == SnapshotPurpose::Workspace
+                && entry_count as usize == self.summary.entry_count
                 && total_bytes == self.summary.byte_count =>
             {
                 self.complete = true;
+                Ok(())
             }
-            BrokerControlMessage::WorkspaceSnapshotComplete { .. } => {
-                return Err(invalid_data(
+            BrokerControlMessage::WorkspaceSnapshotComplete { .. }
+                if self.purpose == SnapshotPurpose::Workspace =>
+            {
+                Err(invalid_data(
                     "workspace snapshot summary does not match entries",
-                ));
+                ))
             }
-            _ => return Err(invalid_data("unexpected message during workspace transfer")),
+            BrokerControlMessage::SkillBundleSnapshotComplete {
+                entry_count,
+                total_bytes,
+            } if self.purpose == SnapshotPurpose::SkillBundle
+                && entry_count as usize == self.summary.entry_count
+                && total_bytes == self.summary.byte_count =>
+            {
+                self.complete = true;
+                Ok(())
+            }
+            BrokerControlMessage::SkillBundleSnapshotComplete { .. }
+                if self.purpose == SnapshotPurpose::SkillBundle =>
+            {
+                Err(invalid_data(
+                    "Skill bundle snapshot summary does not match entries",
+                ))
+            }
+            _ => Err(invalid_data("unexpected message during snapshot transfer")),
+        }
+    }
+
+    fn accept_entry(
+        &mut self,
+        relative_path: String,
+        kind: BrokerWorkspaceEntryKind,
+        byte_length: u64,
+        sha256: Option<[u8; 32]>,
+    ) -> io::Result<()> {
+        self.add_entry()?;
+        let relative_path = PathBuf::from(relative_path);
+        let depth = relative_path.components().count();
+        match kind {
+            BrokerWorkspaceEntryKind::Directory => {
+                if depth > self.limits.max_depth() {
+                    return Err(invalid_data("snapshot exceeds its directory depth limit"));
+                }
+                self.root.create_dir(&relative_path)?;
+                self.summary.directory_count = self
+                    .summary
+                    .directory_count
+                    .checked_add(1)
+                    .ok_or_else(|| invalid_data("snapshot directory count overflowed"))?;
+            }
+            BrokerWorkspaceEntryKind::File => {
+                if depth.saturating_sub(1) > self.limits.max_depth() {
+                    return Err(invalid_data(
+                        "snapshot file exceeds its directory depth limit",
+                    ));
+                }
+                if byte_length > self.limits.max_file_bytes() {
+                    return Err(invalid_data("snapshot file exceeds its size limit"));
+                }
+                let next_total = self
+                    .summary
+                    .byte_count
+                    .checked_add(byte_length)
+                    .ok_or_else(|| invalid_data("snapshot byte count overflowed"))?;
+                if next_total > self.limits.max_total_bytes() {
+                    return Err(invalid_data("snapshot exceeds its byte limit"));
+                }
+                let expected_sha256 =
+                    sha256.ok_or_else(|| invalid_data("snapshot file digest is missing"))?;
+                let file = self.root.create_new_file(&relative_path)?;
+                self.summary.file_count = self
+                    .summary
+                    .file_count
+                    .checked_add(1)
+                    .ok_or_else(|| invalid_data("snapshot file count overflowed"))?;
+                self.summary.byte_count = next_total;
+                self.current_file = Some(PendingFile {
+                    relative_path,
+                    file,
+                    expected_bytes: byte_length,
+                    received_bytes: 0,
+                    expected_sha256,
+                    hash: Sha256::new(),
+                });
+                if byte_length == 0 {
+                    self.finish_current_file()?;
+                }
+            }
         }
         Ok(())
     }
 
     pub(crate) fn accept_chunk(&mut self, frame: &BrokerFrame) -> io::Result<()> {
-        if self.complete
-            || frame.kind() != BrokerFrameKind::WorkspaceChunk
-            || frame.payload().is_empty()
+        if self.complete || frame.kind() != self.purpose.chunk_kind() || frame.payload().is_empty()
         {
             return Err(invalid_data("unexpected workspace chunk"));
         }
@@ -539,6 +778,103 @@ mod tests {
             std::fs::read(received_root.root().join("large.bin")).unwrap(),
             large_file
         );
+    }
+
+    #[test]
+    fn skill_bundle_uses_a_separate_bounded_frame_channel() {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::create_dir(source.path().join("scripts")).unwrap();
+        std::fs::write(source.path().join("scripts/main.py"), b"print(input())").unwrap();
+        let source = DirectoryCapability::open(source.path()).unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let destination = DirectoryCapability::open(destination.path()).unwrap();
+        let mut frames = Vec::new();
+        let sent = send_skill_bundle_snapshot(
+            &source,
+            limits(),
+            |frame| {
+                frames.push(frame);
+                Ok(())
+            },
+            || false,
+        )
+        .unwrap();
+        assert!(
+            frames
+                .iter()
+                .any(|frame| { frame.kind() == BrokerFrameKind::SkillBundleChunk })
+        );
+        assert!(
+            frames
+                .iter()
+                .all(|frame| { frame.kind() != BrokerFrameKind::WorkspaceChunk })
+        );
+        let mut incoming = frames.into_iter();
+        let (received_root, received) = receive_skill_bundle_snapshot(
+            destination,
+            limits(),
+            || {
+                incoming.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "missing Skill frame")
+                })
+            },
+            || false,
+        )
+        .unwrap();
+        assert_eq!(sent, received);
+        assert_eq!(
+            std::fs::read(received_root.root().join("scripts/main.py")).unwrap(),
+            b"print(input())"
+        );
+    }
+
+    #[test]
+    fn skill_parameters_are_length_digest_and_json_checked_as_data_frames() {
+        let parameters = br#"{"message":"private"}"#;
+        let mut frames = Vec::new();
+        send_skill_parameters(
+            parameters,
+            |frame| {
+                frames.push(frame);
+                Ok(())
+            },
+            || false,
+        )
+        .unwrap();
+        assert!(
+            frames
+                .iter()
+                .all(|frame| { frame.kind() == BrokerFrameKind::SkillParameterChunk })
+        );
+        let mut incoming = frames.into_iter();
+        let digest: [u8; 32] = Sha256::digest(parameters).into();
+        let received = receive_skill_parameters(
+            parameters.len(),
+            digest,
+            || {
+                incoming.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "missing parameter frame")
+                })
+            },
+            || false,
+        )
+        .unwrap();
+        assert_eq!(received, parameters);
+
+        let wrong_digest = [0; 32];
+        let error = receive_skill_parameters(
+            parameters.len(),
+            wrong_digest,
+            || {
+                Ok(
+                    BrokerFrame::new(BrokerFrameKind::SkillParameterChunk, parameters.to_vec())
+                        .unwrap(),
+                )
+            },
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

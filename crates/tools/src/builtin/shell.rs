@@ -291,14 +291,14 @@ impl ShellTool {
                     tail.append_bytes(bytes);
                 }
             };
-            port.execute(
-                &request,
-                &workspace,
+            let mut callbacks =
+                haven_platform::windows_container::execution::WindowsContainerExecutionCallbacks::new(
                 &mut before_shell_start,
                 &mut shell_started,
                 &mut is_cancelled,
                 &mut on_output,
-            )
+            );
+            port.execute(&request, &workspace, &mut callbacks)
         });
 
         let revoke_authorization = authorization.clone();
