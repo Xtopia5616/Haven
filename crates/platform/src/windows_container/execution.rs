@@ -15,27 +15,9 @@ use std::time::Duration;
 
 const BROKER_SERVICE_NAME: &str = "HavenContainerBroker";
 
-#[expect(
-    dead_code,
-    reason = "broker output consumption is completed with the HCS provider"
-)]
 pub(crate) mod broker_protocol;
 pub(crate) mod broker_workspace;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "catalog layers feed the HCS provider after quota attestation"
-    )
-)]
 pub(crate) mod image_catalog;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the broker output sender and HCS provider are wired in a later execution slice"
-    )
-)]
 pub(crate) mod output_transfer;
 pub(crate) mod workspace_transfer;
 
@@ -47,10 +29,9 @@ pub(crate) mod workspace_transfer;
 pub(crate) mod named_pipe;
 
 #[cfg(windows)]
-#[expect(
-    dead_code,
-    reason = "the isolated HCS export worker is connected to provider flow in the next slice"
-)]
+mod broker_execution;
+
+#[cfg(windows)]
 pub(crate) mod hcs_export_worker;
 
 #[cfg(windows)]

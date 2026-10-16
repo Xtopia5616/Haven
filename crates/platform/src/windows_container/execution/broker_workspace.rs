@@ -295,13 +295,6 @@ impl BrokerWorkspaceAttempt {
 
     /// Clear the active marker only after all HCS callers have returned, the
     /// compute system is stopped, and any transport VHD has been detached.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the broker provider calls this after safe HCS cleanup is wired"
-        )
-    )]
     pub(crate) fn mark_hcs_operation_quiescent(&mut self) -> io::Result<()> {
         let owner_lock = self
             .owner_lock

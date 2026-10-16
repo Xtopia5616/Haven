@@ -267,13 +267,6 @@ impl DirectoryCapability {
 
     /// List one directory beneath this pinned root without following any
     /// reparse point in the relative path.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the broker workspace snapshot sender consumes this capability operation"
-        )
-    )]
     pub(crate) fn entries_at(
         &self,
         relative: &Path,

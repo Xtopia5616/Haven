@@ -373,7 +373,7 @@ fn run_service_main() -> io::Result<()> {
     let workspace_root = BrokerWorkspaceScratchRoot::open(&program_files)?;
     // Keep the catalog and all layer directory capabilities pinned for the
     // broker lifetime. An absent or malformed image catalog prevents startup.
-    let _image_catalog = BrokerContainerImageCatalog::open(&program_files)?;
+    let image_catalog = BrokerContainerImageCatalog::open(&program_files)?;
 
     let cancellation = BrokerPipeCancellation::new()?;
     let service_name = wide_null(BROKER_SERVICE_NAME);
@@ -405,7 +405,7 @@ fn run_service_main() -> io::Result<()> {
         return Err(error);
     }
 
-    let result = run_service_listener_loop(&cancellation, &workspace_root);
+    let result = run_service_listener_loop(&cancellation, &workspace_root, &image_catalog);
 
     {
         let _guard = lock_service_control();
@@ -425,6 +425,7 @@ fn run_service_main() -> io::Result<()> {
 fn run_service_listener_loop(
     cancellation: &BrokerPipeCancellation,
     workspace_root: &BrokerWorkspaceScratchRoot,
+    image_catalog: &BrokerContainerImageCatalog,
 ) -> io::Result<()> {
     loop {
         match consume_control_signal(cancellation)? {
@@ -456,7 +457,7 @@ fn run_service_listener_loop(
         loop {
             let outcome = match listener.accept(cancellation) {
                 Ok(mut connection) => {
-                    serve_authenticated_connection(&mut connection, workspace_root)
+                    serve_authenticated_connection(&mut connection, workspace_root, image_catalog)
                 }
                 Err(error) => Err(error),
             };
@@ -486,6 +487,7 @@ fn run_service_listener_loop(
 fn serve_authenticated_connection(
     connection: &mut super::named_pipe::BrokerPipeConnection<'_>,
     workspace_root: &BrokerWorkspaceScratchRoot,
+    image_catalog: &BrokerContainerImageCatalog,
 ) -> io::Result<()> {
     let request_message = connection
         .read_frame(Duration::from_secs(5))?
@@ -535,7 +537,7 @@ fn serve_authenticated_connection(
         || connection.read_frame_until(deadline),
         || cancellation.is_cancelled(),
     );
-    let (snapshot, _summary) = match transfer {
+    let (snapshot, summary) = match transfer {
         Ok(snapshot) => snapshot,
         Err(error) => {
             let cleanup_succeeded = attempt.cleanup().is_ok();
@@ -555,13 +557,15 @@ fn serve_authenticated_connection(
         }
     };
     drop(snapshot);
-    let cleanup_succeeded = attempt.cleanup().is_ok();
-    let code = if cleanup_succeeded {
-        BrokerFailureCode::BackendUnavailable
-    } else {
-        BrokerFailureCode::CleanupFailed
-    };
-    write_broker_failure(connection, Some(request_id), code)
+    super::broker_execution::serve_received_execution(
+        connection,
+        &mut attempt,
+        image_catalog,
+        request,
+        limits,
+        summary.byte_count,
+        deadline,
+    )
 }
 
 /// Quota enforcement has no runtime attestation yet. Keep this single gate
@@ -577,7 +581,22 @@ fn write_broker_failure(
     code: BrokerFailureCode,
 ) -> io::Result<()> {
     let response = BrokerControlMessage::Failure { request_id, code };
-    connection.write_frame(&BrokerFrame::control(&response)?, Duration::from_secs(5))
+    connection.write_frame(&BrokerFrame::control(&response)?, Duration::from_secs(5))?;
+    if let Some(request_id) = request_id {
+        match connection
+            .read_frame(Duration::from_secs(5))?
+            .decode_control()?
+        {
+            BrokerControlMessage::ExecutionAcknowledged {
+                request_id: acknowledged_id,
+            } if acknowledged_id == request_id => Ok(()),
+            _ => Err(invalid_data(
+                "broker failure acknowledgement does not match the request",
+            )),
+        }
+    } else {
+        Ok(())
+    }
 }
 
 fn is_peer_pipe_error(error: &io::Error) -> bool {

@@ -65,13 +65,6 @@ impl BrokerContainerImageCatalog {
         Self::load(root)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the broker HCS provider consumes the fixed image after quota attestation"
-        )
-    )]
     pub(crate) fn sandbox_config(
         &self,
         name: impl Into<String>,

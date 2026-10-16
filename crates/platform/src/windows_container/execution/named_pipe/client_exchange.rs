@@ -109,6 +109,7 @@ pub(super) fn execute_with_workspace(
             request_id: Some(response_id),
             code,
         } if response_id == request_id => {
+            acknowledge_response(client, request_id, deadline)?;
             return Ok(BrokerPipeExecutionResponse::Failed(code));
         }
         BrokerControlMessage::WorkspaceSnapshotRequested {
@@ -165,6 +166,7 @@ pub(super) fn execute_with_workspace(
                     request_id: Some(response_id),
                     code,
                 } if response_id == request_id => {
+                    acknowledge_response(client, request_id, deadline)?;
                     return Ok(BrokerPipeExecutionResponse::Failed(code));
                 }
                 BrokerControlMessage::OutputEntry { .. }
@@ -241,6 +243,7 @@ pub(super) fn execute_with_workspace(
                         request_id: Some(response_id),
                         code,
                     } if response_id == request_id => {
+                        acknowledge_response(client, request_id, deadline)?;
                         return Ok(BrokerPipeExecutionResponse::Failed(code));
                     }
                     BrokerControlMessage::ExecutionComplete {
@@ -266,6 +269,7 @@ pub(super) fn execute_with_workspace(
             "broker output truncation status does not match its stream limit",
         ));
     }
+    acknowledge_response(client, request_id, deadline)?;
     captured_output.stdout_truncated = terminal.1;
     captured_output.stderr_truncated = terminal.2;
 
@@ -284,6 +288,15 @@ pub(super) fn execute_with_workspace(
         captured_output,
         output_review,
     })
+}
+
+fn acknowledge_response(
+    client: &mut BrokerPipeClient,
+    request_id: [u8; 16],
+    deadline: std::time::Instant,
+) -> io::Result<()> {
+    let frame = BrokerFrame::control(&BrokerControlMessage::ExecutionAcknowledged { request_id })?;
+    client.write_frame_until(&frame, deadline)
 }
 
 fn receive_stream_chunk(

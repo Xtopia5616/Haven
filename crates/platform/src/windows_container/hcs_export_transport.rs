@@ -106,10 +106,6 @@ fn invalid_transport_data(message: &str) -> io::Error {
 /// layer export. The VHDX stays attached with permanent lifetime until
 /// explicit cleanup; uncertain HCS outcomes must call `preserve_for_recovery`
 /// and keep the containing broker attempt quarantined.
-#[expect(
-    dead_code,
-    reason = "the bounded transport is connected after HCS runtime acceptance"
-)]
 pub(crate) struct BoundedHcsExportTransport {
     scratch: Option<BoundedScratchVhd>,
     attached: Option<AttachedVhd>,
@@ -118,10 +114,6 @@ pub(crate) struct BoundedHcsExportTransport {
     cleaned: bool,
 }
 
-#[expect(
-    dead_code,
-    reason = "the bounded transport is connected after HCS runtime acceptance"
-)]
 impl BoundedHcsExportTransport {
     /// Create, HCS-format, attach, and protect one transport volume. The
     /// active owner marker is written before any privileged storage operation
@@ -264,20 +256,12 @@ impl Drop for BoundedHcsExportTransport {
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "the bounded transport is connected after HCS runtime acceptance"
-)]
 struct AttachedVhd {
     disk: OwnedVhdHandle,
     attached: bool,
     detach_on_drop: bool,
 }
 
-#[expect(
-    dead_code,
-    reason = "the bounded transport is connected after HCS runtime acceptance"
-)]
 impl AttachedVhd {
     fn attach(path: &Path) -> io::Result<Self> {
         use windows_sys::Win32::Storage::Vhd::{
@@ -447,10 +431,6 @@ fn get_layer_vhd_mount_path(handle: HANDLE) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-#[expect(
-    dead_code,
-    reason = "the bounded transport is connected after HCS runtime acceptance"
-)]
 fn secure_export_directory(path: &Path) -> io::Result<()> {
     let service_sid = crate::windows_container::execution::named_pipe::broker_service_sid_string()?;
     let sddl = format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{service_sid})");
@@ -524,10 +504,6 @@ impl Drop for OwnedLocalWideString {
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "the bounded transport is connected after HCS runtime acceptance"
-)]
 struct OwnedSecurityDescriptor(*mut core::ffi::c_void);
 
 impl Drop for OwnedSecurityDescriptor {

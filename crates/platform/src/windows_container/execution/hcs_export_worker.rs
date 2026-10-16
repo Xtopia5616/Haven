@@ -65,10 +65,6 @@ impl HcsExportWorkerFailure {
 /// decode the reserved workspace subtree into private output staging, then
 /// detach the transport and clear the active marker. The caller still owns
 /// the attempt and must discard it if any later output review or transfer fails.
-#[expect(
-    dead_code,
-    reason = "connected to the broker execution provider in the following slice"
-)]
 pub(super) fn export_stopped_workspace_output(
     attempt: &mut BrokerWorkspaceAttempt,
     stopped_system: &HcsStoppedComputeSystem,
@@ -199,10 +195,6 @@ fn finish_transport(
 /// Run one validated export plan in a fixed helper process. The closure is
 /// polled while the native call is running and should include caller
 /// disconnect and SCM cancellation state.
-#[expect(
-    dead_code,
-    reason = "wired into broker execution after this worker slice"
-)]
 pub(super) fn export_stopped_layer(
     attempt: &mut BrokerWorkspaceAttempt,
     plan: &HcsLayerExportPlan,

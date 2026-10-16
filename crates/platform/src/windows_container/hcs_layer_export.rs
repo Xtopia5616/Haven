@@ -108,10 +108,6 @@ impl HcsLayerExportPlan {
         Ok(bytes)
     }
 
-    #[expect(
-        dead_code,
-        reason = "the bounded transport plan is connected after HCS runtime acceptance"
-    )]
     pub(super) fn new(
         stopped_system: &HcsStoppedComputeSystem,
         config: &WindowsContainerSandboxConfig,
@@ -593,6 +589,7 @@ fn normalize_path(path: &Path) -> PathBuf {
     PathBuf::from(path.to_string_lossy().to_lowercase())
 }
 
+#[cfg(test)]
 fn check_cancelled(is_cancelled: &mut impl FnMut() -> bool) -> io::Result<()> {
     if is_cancelled() {
         return Err(io::Error::new(

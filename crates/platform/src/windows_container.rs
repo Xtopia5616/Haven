@@ -12,66 +12,20 @@ pub mod execution;
 #[cfg(windows)]
 mod hcs_export_transport;
 #[cfg(windows)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the broker service consumes this guest runner after quota attestation"
-    )
-)]
 mod hcs_guest_execution;
 #[cfg(windows)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "synchronous HCS layer export awaits isolated broker worker wiring"
-    )
-)]
 mod hcs_layer_export;
 #[cfg(windows)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the bounded legacy HCS transport extractor awaits native layer-reader wiring"
-    )
-)]
 mod hcs_layer_output;
 #[cfg(windows)]
-#[expect(
-    dead_code,
-    reason = "guest process creation stays private until quota and output-layer handling are wired"
-)]
 mod hcs_process;
 #[cfg(windows)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "bounded guest output polling is consumed when the HCS provider is wired"
-    )
-)]
 mod hcs_process_output;
 #[cfg(windows)]
-#[expect(
-    dead_code,
-    reason = "guest process handles stay private until writable-layer and bounded stream wiring are complete"
-)]
 mod hcs_process_runtime;
 #[cfg(windows)]
-#[expect(
-    dead_code,
-    reason = "the broker keeps HCS execution unavailable until quota attestation and provider wiring are complete"
-)]
 mod hcs_runtime;
-#[cfg(not(test))]
-#[expect(
-    dead_code,
-    reason = "HCS scratch quota runtime gate has not passed, so no production provider may consume this prototype yet"
-)]
-pub(crate) mod scratch_vhd;
-#[cfg(test)]
+#[cfg(windows)]
 pub(crate) mod scratch_vhd;
 
 use crate::filesystem::DirectoryCapability;
@@ -171,13 +125,6 @@ impl WindowsContainerSandboxConfig {
     /// Bind the per-attempt writable layer after the broker formatter has
     /// verified it. The caller must keep the layer owner alive until HCS has
     /// stopped using this path.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the broker provider will consume this binding after output extraction is implemented"
-        )
-    )]
     pub(crate) fn with_bounded_writable_layer(
         mut self,
         layer: &scratch_vhd::BoundedScratchVhd,
@@ -217,13 +164,6 @@ impl WindowsContainerSandboxConfig {
     /// HCS document owner, pinning the directory identity while HCS consumes
     /// its path. The caller cannot choose a guest destination or writable
     /// mapping through this API.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the broker HCS provider is implemented in a later execution-workspace slice"
-        )
-    )]
     pub(crate) fn with_read_only_workspace_input(
         mut self,
         staging: DirectoryCapability,

@@ -76,6 +76,7 @@ impl<'a> HcsGuestProcessOwner<'a> {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn process_id(&self) -> u32 {
         self.process_id
     }

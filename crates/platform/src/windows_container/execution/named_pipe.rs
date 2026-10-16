@@ -50,13 +50,13 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, WaitNamedPipeW,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe, WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
 };
 
-const BROKER_PIPE_NAME: &str = r"\\.\pipe\Haven.ContainerBroker.v1";
+const BROKER_PIPE_NAME: &str = r"\\.\pipe\Haven.ContainerBroker.v3";
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const MAX_HANDSHAKE_BODY_BYTES: usize = 1_024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -357,15 +357,15 @@ impl BrokerPipeConnection<'_> {
         self.cancellation.clone()
     }
 
-    pub(crate) fn read_frame(&mut self, timeout: Duration) -> io::Result<BrokerFrame> {
+    pub(crate) fn read_frame(&self, timeout: Duration) -> io::Result<BrokerFrame> {
         read_pipe_frame(self.listener.handle, timeout, self.cancellation)
     }
 
-    pub(crate) fn read_frame_until(&mut self, deadline: Instant) -> io::Result<BrokerFrame> {
+    pub(crate) fn read_frame_until(&self, deadline: Instant) -> io::Result<BrokerFrame> {
         read_pipe_frame_until(self.listener.handle, deadline, self.cancellation)
     }
 
-    pub(crate) fn write_frame(&mut self, frame: &BrokerFrame, timeout: Duration) -> io::Result<()> {
+    pub(crate) fn write_frame(&self, frame: &BrokerFrame, timeout: Duration) -> io::Result<()> {
         frame.write_to(&mut PipeBorrow {
             handle: self.listener.handle,
             cancellation: self.cancellation,
@@ -374,7 +374,7 @@ impl BrokerPipeConnection<'_> {
     }
 
     pub(crate) fn write_frame_until(
-        &mut self,
+        &self,
         frame: &BrokerFrame,
         deadline: Instant,
     ) -> io::Result<()> {
@@ -383,6 +383,22 @@ impl BrokerPipeConnection<'_> {
             cancellation: self.cancellation,
             deadline,
         })
+    }
+
+    /// Treat any failed kernel probe as a disconnected peer so a running
+    /// guest is stopped when its requesting client disappears.
+    pub(crate) fn peer_disconnected(&self) -> bool {
+        let mut available_bytes = 0;
+        unsafe {
+            PeekNamedPipe(
+                self.listener.handle,
+                null_mut(),
+                0,
+                null_mut(),
+                &mut available_bytes,
+                null_mut(),
+            ) == 0
+        }
     }
 }
 
@@ -942,7 +958,7 @@ mod tests {
             let mut listener = BrokerPipeListener::create(&server_name, policy)?;
             let cancellation = BrokerPipeCancellation::new()?;
             ready_sender.send(()).unwrap();
-            let mut connection = listener.accept(&cancellation)?;
+            let connection = listener.accept(&cancellation)?;
             let request = match connection
                 .read_frame(Duration::from_secs(5))?
                 .decode_control()?
@@ -976,6 +992,16 @@ mod tests {
                 })?,
                 Duration::from_secs(5),
             )?;
+            if !matches!(
+                connection
+                    .read_frame(Duration::from_secs(5))?
+                    .decode_control()?,
+                BrokerControlMessage::ExecutionAcknowledged {
+                    request_id: acknowledged_id
+                } if acknowledged_id == request_id
+            ) {
+                return Err(invalid_data("test client did not acknowledge failure"));
+            }
             Ok((summary.byte_count, bytes))
         });
         ready_receiver.recv().unwrap();
@@ -1025,6 +1051,101 @@ mod tests {
     }
 
     #[test]
+    fn request_scoped_quota_failure_is_acknowledged_before_workspace_transfer() {
+        let current = current_process_identity().unwrap();
+        let policy = BrokerPeerPolicy::new(
+            current.user_sid.clone(),
+            current.logon_sid,
+            current.session_id,
+            current.user_sid,
+        )
+        .unwrap();
+        let name = format!(
+            r"\\.\pipe\Haven.ContainerBroker.Test.{}.{}",
+            unsafe { GetCurrentProcessId() },
+            NEXT_TEST_PIPE.fetch_add(1, Ordering::Relaxed)
+        );
+        let server_name = name.clone();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || -> io::Result<()> {
+            let mut listener = BrokerPipeListener::create(&server_name, policy)?;
+            let cancellation = BrokerPipeCancellation::new()?;
+            ready_sender.send(()).unwrap();
+            let connection = listener.accept(&cancellation)?;
+            let request = match connection
+                .read_frame(Duration::from_secs(5))?
+                .decode_control()?
+            {
+                BrokerControlMessage::Execute { request } => request,
+                _ => return Err(invalid_data("test client sent an invalid request")),
+            };
+            connection.write_frame(
+                &BrokerFrame::control(&BrokerControlMessage::Failure {
+                    request_id: Some(request.request_id),
+                    code: BrokerFailureCode::QuotaUnattested,
+                })?,
+                Duration::from_secs(5),
+            )?;
+            match connection
+                .read_frame(Duration::from_secs(5))?
+                .decode_control()?
+            {
+                BrokerControlMessage::ExecutionAcknowledged { request_id }
+                    if request_id == request.request_id =>
+                {
+                    Ok(())
+                }
+                _ => Err(invalid_data(
+                    "test client did not acknowledge the quota failure",
+                )),
+            }
+        });
+        ready_receiver.recv().unwrap();
+
+        let workspace_temp = tempfile::tempdir().unwrap();
+        std::fs::write(workspace_temp.path().join("payload.txt"), b"payload").unwrap();
+        let workspace = super::super::WindowsContainerWorkspaceInput::new(
+            crate::filesystem::DirectoryCapability::open(workspace_temp.path()).unwrap(),
+        );
+        let copy_limits =
+            crate::filesystem::DirectoryTreeCopyLimits::new(16, 8, 4096, 8192).unwrap();
+        let diff_limits =
+            crate::filesystem::DirectoryTreeDiffLimits::new(copy_limits, 16, 4096, 8192).unwrap();
+        let execution_limits = super::super::WindowsContainerExecutionLimits::new(
+            1024 * 1024,
+            Duration::from_secs(10),
+            8192,
+            8192,
+            copy_limits,
+            diff_limits,
+        )
+        .unwrap();
+        let request = super::super::WindowsContainerExecutionRequest::new(
+            super::super::WindowsContainerShell::PowerShell,
+            "Write-Output 'hello'",
+            "",
+            7,
+            11,
+            execution_limits,
+        )
+        .unwrap();
+        let mut client = BrokerPipeClient::connect_for_test(&name).unwrap();
+        let mut on_output = |_: super::super::WindowsContainerOutputStream, _: &[u8]| {};
+        let output_sink = super::super::WindowsContainerOutputSink::new(&request, &mut on_output);
+        let response = client
+            .execute_with_workspace(&request, [13; 16], &workspace, output_sink)
+            .unwrap();
+
+        assert!(matches!(
+            response,
+            client_exchange::BrokerPipeExecutionResponse::Failed(
+                BrokerFailureCode::QuotaUnattested
+            )
+        ));
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
     fn broker_client_reconstructs_output_and_returns_a_bound_review_owner() {
         let current = current_process_identity().unwrap();
         let policy = BrokerPeerPolicy::new(
@@ -1045,7 +1166,7 @@ mod tests {
             let mut listener = BrokerPipeListener::create(&server_name, policy)?;
             let cancellation = BrokerPipeCancellation::new()?;
             ready_sender.send(()).unwrap();
-            let mut connection = listener.accept(&cancellation)?;
+            let connection = listener.accept(&cancellation)?;
             let request = match connection
                 .read_frame(Duration::from_secs(5))?
                 .decode_control()?
@@ -1097,6 +1218,16 @@ mod tests {
                 })?,
                 Duration::from_secs(5),
             )?;
+            if !matches!(
+                connection
+                    .read_frame(Duration::from_secs(5))?
+                    .decode_control()?,
+                BrokerControlMessage::ExecutionAcknowledged {
+                    request_id: acknowledged_id
+                } if acknowledged_id == request_id
+            ) {
+                return Err(invalid_data("test client did not acknowledge completion"));
+            }
             Ok(())
         });
         ready_receiver.recv().unwrap();
@@ -1136,10 +1267,13 @@ mod tests {
             streamed_output.extend_from_slice(bytes);
         };
         let output_sink = super::super::WindowsContainerOutputSink::new(&request, &mut on_output);
-        let response = client
-            .execute_with_workspace(&request, request_id, &workspace, output_sink)
-            .unwrap();
+        let response = client.execute_with_workspace(&request, request_id, &workspace, output_sink);
         let server_result = server.join().unwrap();
+        assert!(
+            server_result.is_ok(),
+            "server exchange failed: {server_result:?}"
+        );
+        let response = response.unwrap();
 
         let client_exchange::BrokerPipeExecutionResponse::Completed {
             exit_code,
@@ -1149,7 +1283,6 @@ mod tests {
         else {
             panic!("the broker completed the requested output review")
         };
-        assert!(server_result.is_ok());
         assert_eq!(exit_code, 0);
         assert_eq!(captured_output.stdout(), b"hello");
         assert_eq!(streamed_output, b"hello");
@@ -1196,7 +1329,7 @@ mod tests {
             ready_sender.send(()).unwrap();
             let result = listener
                 .accept(&cancellation)
-                .and_then(|mut connection| connection.read_frame(Duration::from_millis(30)))
+                .and_then(|connection| connection.read_frame(Duration::from_millis(30)))
                 .map(|_| ())
                 .map_err(|error| error.kind());
             result_sender.send(result).unwrap();
@@ -1299,6 +1432,50 @@ mod tests {
     }
 
     #[test]
+    fn broker_connection_detects_client_disconnect_without_pipe_reads() {
+        let current = current_process_identity().unwrap();
+        let policy = BrokerPeerPolicy::new(
+            current.user_sid.clone(),
+            current.logon_sid,
+            current.session_id,
+            current.user_sid,
+        )
+        .unwrap();
+        let name = format!(
+            r"\\.\pipe\Haven.ContainerBroker.Test.{}.{}",
+            unsafe { GetCurrentProcessId() },
+            NEXT_TEST_PIPE.fetch_add(1, Ordering::Relaxed)
+        );
+        let server_name = name.clone();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (disconnect_sender, disconnect_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut listener = BrokerPipeListener::create(&server_name, policy).unwrap();
+            let cancellation = BrokerPipeCancellation::new().unwrap();
+            ready_sender.send(()).unwrap();
+            let connection = listener.accept(&cancellation).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if connection.peer_disconnected() {
+                    disconnect_sender.send(true).unwrap();
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    disconnect_sender.send(false).unwrap();
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        ready_receiver.recv().unwrap();
+        let client = BrokerPipeClient::connect_for_test(&name).unwrap();
+        drop(client);
+
+        assert!(disconnect_receiver.recv().unwrap());
+        server.join().unwrap();
+    }
+
+    #[test]
     fn named_pipe_write_times_out_when_the_client_stops_reading() {
         let current = current_process_identity().unwrap();
         let policy = BrokerPeerPolicy::new(
@@ -1322,7 +1499,7 @@ mod tests {
             ready_sender.send(()).unwrap();
             let result = listener
                 .accept(&cancellation)
-                .and_then(|mut connection| {
+                .and_then(|connection| {
                     let frame = BrokerFrame::new(BrokerFrameKind::StdoutChunk, vec![0; 64 * 1024])?;
                     connection.write_frame(&frame, Duration::from_millis(50))
                 })

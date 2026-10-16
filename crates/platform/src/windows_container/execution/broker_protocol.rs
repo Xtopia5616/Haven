@@ -13,11 +13,13 @@ use super::{
 };
 use crate::filesystem::{DirectoryTreeCopyLimits, DirectoryTreeDiffLimits};
 use serde::{Deserialize, Serialize};
-use std::io::{self, Read, Write};
+#[cfg(test)]
+use std::io::Read;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 2;
+pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 3;
 pub(crate) const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
 const MAX_BINARY_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_WIRE_PATH_BYTES: usize = 32 * 1024;
@@ -107,6 +109,7 @@ impl BrokerFrame {
     }
 
     /// Read one frame while validating its declared size before allocation.
+    #[cfg(test)]
     pub(crate) fn read_from(reader: &mut impl Read) -> io::Result<Self> {
         let mut length_bytes = [0_u8; 4];
         reader.read_exact(&mut length_bytes)?;
@@ -191,6 +194,9 @@ pub(crate) enum BrokerControlMessage {
         stdout_truncated: bool,
         stderr_truncated: bool,
     },
+    ExecutionAcknowledged {
+        request_id: [u8; 16],
+    },
     Failure {
         request_id: Option<[u8; 16]>,
         code: BrokerFailureCode,
@@ -249,13 +255,15 @@ impl BrokerControlMessage {
             Self::WorkspaceSnapshotRequested { request_id }
             | Self::Cancel { request_id }
             | Self::ExecutionComplete { request_id, .. }
+            | Self::ExecutionAcknowledged { request_id }
                 if request_id.iter().all(|byte| *byte == 0) =>
             {
                 Err(invalid_data("broker request ID is invalid"))
             }
             Self::WorkspaceSnapshotRequested { .. }
             | Self::Cancel { .. }
-            | Self::ExecutionComplete { .. } => Ok(()),
+            | Self::ExecutionComplete { .. }
+            | Self::ExecutionAcknowledged { .. } => Ok(()),
             Self::OutputEntry {
                 relative_path,
                 change,
@@ -846,9 +854,9 @@ mod tests {
             negotiate_version(BROKER_PROTOCOL_VERSION, BROKER_PROTOCOL_VERSION).unwrap(),
             BROKER_PROTOCOL_VERSION
         );
-        assert!(negotiate_version(1, 1).is_err());
-        assert!(negotiate_version(3, 4).is_err());
+        assert!(negotiate_version(2, 2).is_err());
+        assert!(negotiate_version(4, 5).is_err());
         assert!(negotiate_version(0, 1).is_err());
-        assert!(negotiate_version(3, 2).is_err());
+        assert!(negotiate_version(4, 3).is_err());
     }
 }
