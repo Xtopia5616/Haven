@@ -1265,3 +1265,4 @@
 - [1275：证明受管 MCP entrypoint 摘要](1275-attest-managed-mcp-entrypoint-digests.md)
 - [1276：将 MCP stdio 配置绑定到受管 package](1276-bind-mcp-stdio-config-to-managed-package.md)
 - [1277：有界关闭 MCP stdio 进程代次](1277-bound-mcp-stdio-generation-shutdown.md)
+- [1278：为 HCS guest stdin 实现有界写入](1278-bound-hcs-guest-stdin-writes.md)

@@ -21,6 +21,9 @@ mod hcs_layer_output;
 #[cfg(windows)]
 mod hcs_process;
 #[cfg(windows)]
+#[allow(dead_code)] // The broker's dedicated MCP session channel is the next integration slice.
+mod hcs_process_input;
+#[cfg(windows)]
 mod hcs_process_output;
 #[cfg(windows)]
 mod hcs_process_runtime;

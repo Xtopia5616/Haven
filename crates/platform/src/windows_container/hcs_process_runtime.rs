@@ -136,9 +136,8 @@ impl<'a> HcsGuestProcessOwner<'a> {
         self.stderr.take()
     }
 
-    /// Transfer the optional stdin endpoint to the future bounded MCP stream
-    /// adapter. The returned handle remains the only owner of this HCS handle.
-    #[allow(dead_code)] // Consumed when the brokered MCP stream adapter is wired.
+    /// Transfer the optional stdin endpoint to the bounded MCP stream adapter.
+    #[allow(dead_code)] // Used when the dedicated broker MCP session is wired.
     pub(super) fn take_stdin(&mut self) -> Option<OwnedGuestHandle<'a>> {
         self.stdin.take()
     }
@@ -175,6 +174,23 @@ impl<'a> OwnedGuestHandle<'a> {
 
     pub(super) fn raw(&self) -> Option<RawGuestHandle> {
         self.handle
+    }
+
+    /// Transfer this Win32 pipe handle into a `File`, which then owns its
+    /// `CloseHandle` lifetime independently of the HCS API object.
+    #[allow(dead_code)] // Used when the dedicated broker MCP session is wired.
+    pub(super) fn into_file(mut self) -> io::Result<std::fs::File> {
+        use std::os::windows::io::FromRawHandle;
+
+        let handle = self.handle.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "HCS guest handle has already been transferred",
+            )
+        })?;
+        // SAFETY: HCS returns a Win32 pipe HANDLE. Ownership is removed from
+        // this wrapper immediately before constructing the owning File.
+        Ok(unsafe { std::fs::File::from_raw_handle(handle) })
     }
 }
 
@@ -256,11 +272,12 @@ mod tests {
         WindowsContainerExecutionLimits, WindowsContainerExecutionRequest,
         WindowsContainerOutputSink, WindowsContainerOutputStream, WindowsContainerShell,
     };
+    use crate::windows_container::hcs_process_input::HcsGuestProcessInputWriter;
     use crate::windows_container::hcs_process_output::HcsGuestProcessOutputReader;
     use crate::windows_container::{WindowsContainerLayer, WindowsContainerSandboxConfig};
     use std::collections::VecDeque;
     use std::fs::File;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::os::windows::io::FromRawHandle;
     use std::sync::Mutex;
 
@@ -270,6 +287,7 @@ mod tests {
         fail_first_termination: Mutex<bool>,
         process_output_handles: Mutex<Option<(RawGuestHandle, RawGuestHandle)>>,
         real_output_handles: bool,
+        real_guest_handles: bool,
     }
 
     impl MockHcsApi {
@@ -280,6 +298,7 @@ mod tests {
                 fail_first_termination: Mutex::new(false),
                 process_output_handles: Mutex::new(None),
                 real_output_handles: false,
+                real_guest_handles: false,
             }
         }
 
@@ -294,6 +313,18 @@ mod tests {
                 fail_first_termination: Mutex::new(false),
                 process_output_handles: Mutex::new(Some((stdout, stderr))),
                 real_output_handles: true,
+                real_guest_handles: false,
+            }
+        }
+
+        fn with_real_guest_handles() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                statuses: Mutex::new(VecDeque::new()),
+                fail_first_termination: Mutex::new(false),
+                process_output_handles: Mutex::new(None),
+                real_output_handles: false,
+                real_guest_handles: true,
             }
         }
 
@@ -392,7 +423,7 @@ mod tests {
         }
 
         fn close_guest_handle(&self, handle: RawGuestHandle) {
-            if self.real_output_handles {
+            if self.real_output_handles || self.real_guest_handles {
                 assert_ne!(
                     unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) },
                     0
@@ -477,6 +508,43 @@ mod tests {
         );
         let writer = unsafe { File::from_raw_handle(write) };
         (read, writer)
+    }
+
+    fn create_pipe_handles() -> (RawGuestHandle, RawGuestHandle) {
+        let mut read = std::ptr::null_mut();
+        let mut write = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::System::Pipes::CreatePipe(
+                    &mut read,
+                    &mut write,
+                    std::ptr::null(),
+                    0,
+                )
+            },
+            0
+        );
+        (read, write)
+    }
+
+    fn process_with_stdin<'a>(
+        api: &'a MockHcsApi,
+        stdin: RawGuestHandle,
+        stdout: RawGuestHandle,
+        stderr: RawGuestHandle,
+    ) -> HcsGuestProcessOwner<'a> {
+        HcsGuestProcessOwner::from_process_information(
+            api,
+            HcsProcessInformation {
+                process: 2_usize as RawGuestProcess,
+                process_id: 42,
+                stdin,
+                stdout,
+                stderr,
+            },
+            true,
+        )
+        .expect("all test guest handles are valid")
     }
 
     fn owner<'a>(api: &'a MockHcsApi) -> HcsGuestProcessOwner<'a> {
@@ -611,6 +679,105 @@ mod tests {
 
         drop(stdin);
         assert_eq!(api.calls.lock().unwrap().last(), Some(&"close_stdin"));
+    }
+
+    #[test]
+    fn stdin_writer_drains_accepted_chunks_then_closes_the_pipe_for_eof() {
+        let (stdin_read, stdin_write) = create_pipe_handles();
+        let (stdout_read, stdout_write) = create_pipe_handles();
+        let (stderr_read, stderr_write) = create_pipe_handles();
+        let stdin_reader = unsafe { File::from_raw_handle(stdin_read) };
+        let stdout_writer = unsafe { File::from_raw_handle(stdout_write) };
+        let stderr_writer = unsafe { File::from_raw_handle(stderr_write) };
+        let api = MockHcsApi::with_real_guest_handles();
+        let mut process = process_with_stdin(&api, stdin_write, stdout_read, stderr_read);
+        {
+            let mut writer = HcsGuestProcessInputWriter::new(&mut process)
+                .expect("HCS stdin handle transfers to its bounded writer");
+            assert!(
+                writer
+                    .poll_process_exit(Duration::from_millis(1))
+                    .expect("process status remains available during stdin writes")
+                    .is_none()
+            );
+            writer
+                .try_write_chunk(b"first-")
+                .expect("small input is queued");
+            writer
+                .try_write_chunk(b"second")
+                .expect("a second small chunk is queued");
+            writer.close_input();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                match writer.poll() {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(error) => panic!("stdin drain failed: {error}"),
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(
+                writer.try_write_chunk(b"late").unwrap_err().kind(),
+                io::ErrorKind::BrokenPipe
+            );
+        }
+
+        let mut received = Vec::new();
+        let mut stdin_reader = stdin_reader;
+        stdin_reader
+            .read_to_end(&mut received)
+            .expect("closed HCS stdin pipe reaches EOF");
+        assert_eq!(received, b"first-second");
+        drop(process);
+        drop(stdout_writer);
+        drop(stderr_writer);
+    }
+
+    #[test]
+    fn stdin_writer_applies_backpressure_and_cancels_a_blocked_pipe_write() {
+        let (stdin_read, stdin_write) = create_pipe_handles();
+        let (stdout_read, stdout_write) = create_pipe_handles();
+        let (stderr_read, stderr_write) = create_pipe_handles();
+        let _stdin_reader = unsafe { File::from_raw_handle(stdin_read) };
+        let stdout_writer = unsafe { File::from_raw_handle(stdout_write) };
+        let stderr_writer = unsafe { File::from_raw_handle(stderr_write) };
+        let api = MockHcsApi::with_real_guest_handles();
+        let mut process = process_with_stdin(&api, stdin_write, stdout_read, stderr_read);
+        let mut writer = HcsGuestProcessInputWriter::new(&mut process)
+            .expect("HCS stdin handle transfers to its bounded writer");
+        let chunk = vec![b'x'; 16 * 1024];
+        assert_eq!(
+            writer
+                .try_write_chunk(&vec![b'y'; 16 * 1024 + 1])
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let mut accepted = 0;
+        let mut observed_backpressure = false;
+        for _ in 0..8 {
+            match writer.try_write_chunk(&chunk) {
+                Ok(()) => accepted += 1,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    observed_backpressure = true;
+                    break;
+                }
+                Err(error) => panic!("unexpected HCS stdin write error: {error}"),
+            }
+        }
+        assert!(observed_backpressure);
+        assert!(accepted <= 4, "at most 64 KiB can be retained");
+
+        let started = std::time::Instant::now();
+        writer
+            .abort()
+            .expect("cancel stops the blocked synchronous write");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        drop(writer);
+        drop(process);
+        drop(stdout_writer);
+        drop(stderr_writer);
     }
 
     #[test]
