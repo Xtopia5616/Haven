@@ -8,6 +8,7 @@ use super::WindowsContainerSandboxConfig;
 use std::ffi::OsStr;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{FreeLibrary, HMODULE, LocalFree};
@@ -76,6 +77,26 @@ pub(super) struct HcsComputeSystemOwner<'a> {
     api: &'a dyn HcsApi,
     system: Option<RawComputeSystem>,
     started: bool,
+    writable_layer_path: PathBuf,
+}
+
+/// Proof that HCS successfully terminated the compute system bound to this
+/// writable layer. Drop cleanup alone cannot mint this proof.
+pub(super) struct HcsStoppedComputeSystem {
+    writable_layer_path: PathBuf,
+}
+
+impl HcsStoppedComputeSystem {
+    pub(super) fn writable_layer_path(&self) -> &Path {
+        &self.writable_layer_path
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_permit(writable_layer_path: PathBuf) -> Self {
+        Self {
+            writable_layer_path,
+        }
+    }
 }
 
 impl<'a> HcsComputeSystemOwner<'a> {
@@ -85,6 +106,16 @@ impl<'a> HcsComputeSystemOwner<'a> {
         operation_timeout: Duration,
     ) -> io::Result<Self> {
         validate_operation_timeout(operation_timeout)?;
+        let writable_layer_path = config
+            .writable_layer_folder
+            .as_ref()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "HCS compute system requires a configured writable layer",
+                )
+            })?
+            .to_path_buf();
         let configuration = config.to_hcs_json()?;
         let system =
             api.create_compute_system(config.hcs_system_id(), &configuration, operation_timeout)?;
@@ -98,6 +129,7 @@ impl<'a> HcsComputeSystemOwner<'a> {
             api,
             system: Some(system),
             started: false,
+            writable_layer_path,
         })
     }
 
@@ -148,15 +180,19 @@ impl<'a> HcsComputeSystemOwner<'a> {
 
     /// Terminate once and release the handle only after HCS confirms success.
     /// A failure leaves the owner intact so callers can retry before drop.
-    pub(super) fn terminate(&mut self) -> io::Result<()> {
+    pub(super) fn terminate(&mut self) -> io::Result<HcsStoppedComputeSystem> {
         let Some(system) = self.system else {
-            return Ok(());
+            return Ok(HcsStoppedComputeSystem {
+                writable_layer_path: self.writable_layer_path.clone(),
+            });
         };
         self.api.terminate_compute_system(system)?;
         self.api.close_compute_system(system);
         self.system = None;
         self.started = false;
-        Ok(())
+        Ok(HcsStoppedComputeSystem {
+            writable_layer_path: self.writable_layer_path.clone(),
+        })
     }
 }
 
@@ -754,7 +790,12 @@ mod tests {
         owner
             .start(Duration::from_secs(30))
             .expect("created system starts once");
-        owner.terminate().expect("system terminates");
+        let stopped = owner.terminate().expect("system terminates");
+        assert_eq!(
+            stopped.writable_layer_path(),
+            Path::new(r"C:\Haven\runtime\attempt\layer")
+        );
+        drop(stopped);
         drop(owner);
 
         assert_eq!(

@@ -14,6 +14,15 @@ pub mod execution;
     not(test),
     expect(
         dead_code,
+        reason = "synchronous HCS layer export awaits isolated broker worker wiring"
+    )
+)]
+mod hcs_layer_export;
+#[cfg(windows)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
         reason = "the bounded legacy HCS transport extractor awaits native layer-reader wiring"
     )
 )]
