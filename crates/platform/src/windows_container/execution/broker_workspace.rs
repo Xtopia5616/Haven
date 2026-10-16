@@ -63,29 +63,7 @@ impl BrokerWorkspaceScratchRoot {
         DirectoryCapability::open(&haven_directory)?;
         let runtime_directory = haven_directory.join(RUNTIME_DIRECTORY_NAME);
         let sid = broker_service_sid_string()?;
-        let descriptor = RuntimeDirectoryDescriptor::new(&sid)?;
-        let wide_path = wide_null_path(&runtime_directory)?;
-        let attributes = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: descriptor.as_ptr(),
-            bInheritHandle: 0,
-        };
-        if unsafe { CreateDirectoryW(wide_path.as_ptr(), &attributes) } == 0 {
-            let error = unsafe { GetLastError() };
-            if error != ERROR_ALREADY_EXISTS {
-                return Err(io::Error::from_raw_os_error(error as i32));
-            }
-            let metadata = std::fs::symlink_metadata(&runtime_directory)?;
-            if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-            {
-                return Err(permission_denied(
-                    "broker runtime path is not a regular directory",
-                ));
-            }
-        }
-        descriptor.apply(&runtime_directory)?;
-        DirectoryCapability::open(&runtime_directory)?;
-        Ok(())
+        install_protected_directory(&runtime_directory, &sid, BrokerServiceDirectoryAccess::Full)
     }
 
     /// Open the installed runtime root under the broker's restricted token.
@@ -224,6 +202,44 @@ impl BrokerWorkspaceScratchRoot {
         drop(owner_lock);
         Ok(true)
     }
+}
+
+/// Create or re-secure a broker-owned directory with a protected DACL.
+/// `service_read_only` grants the restricted service SID read/execute only;
+/// SYSTEM and Administrators retain full control for recovery and provisioning.
+pub(super) fn install_protected_directory(
+    path: &Path,
+    service_sid: &str,
+    service_access: BrokerServiceDirectoryAccess,
+) -> io::Result<()> {
+    let descriptor = RuntimeDirectoryDescriptor::new(service_sid, service_access)?;
+    let wide_path = wide_null_path(path)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.as_ptr(),
+        bInheritHandle: 0,
+    };
+    if unsafe { CreateDirectoryW(wide_path.as_ptr(), &attributes) } == 0 {
+        let error = unsafe { GetLastError() };
+        if error != ERROR_ALREADY_EXISTS {
+            return Err(io::Error::from_raw_os_error(error as i32));
+        }
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(permission_denied(
+                "broker-owned path is not a regular directory",
+            ));
+        }
+    }
+    descriptor.apply(path)?;
+    DirectoryCapability::open(path)?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum BrokerServiceDirectoryAccess {
+    Full,
+    ReadOnly,
 }
 
 impl BrokerWorkspaceAttempt {
@@ -401,11 +417,16 @@ fn wide_null_path(path: &Path) -> io::Result<Vec<u16>> {
 struct RuntimeDirectoryDescriptor(*mut core::ffi::c_void);
 
 impl RuntimeDirectoryDescriptor {
-    fn new(service_sid: &str) -> io::Result<Self> {
+    fn new(service_sid: &str, service_access: BrokerServiceDirectoryAccess) -> io::Result<Self> {
         if service_sid.is_empty() || service_sid.chars().any(char::is_control) {
             return Err(invalid_input("broker service SID string is invalid"));
         }
-        let sddl = format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{service_sid})");
+        let service_rights = match service_access {
+            BrokerServiceDirectoryAccess::Full => "FA",
+            BrokerServiceDirectoryAccess::ReadOnly => "GRGX",
+        };
+        let sddl =
+            format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;{service_rights};;;{service_sid})");
         let wide_sddl: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
         let mut descriptor = std::ptr::null_mut();
         if unsafe {
@@ -481,6 +502,16 @@ fn permission_denied(message: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readonly_service_directory_dacl_is_valid() {
+        let descriptor = RuntimeDirectoryDescriptor::new(
+            "S-1-5-80-1-2-3-4-5",
+            BrokerServiceDirectoryAccess::ReadOnly,
+        )
+        .unwrap();
+        assert!(!descriptor.as_ptr().is_null());
+    }
 
     fn root() -> (tempfile::TempDir, BrokerWorkspaceScratchRoot) {
         let temp = tempfile::tempdir().unwrap();

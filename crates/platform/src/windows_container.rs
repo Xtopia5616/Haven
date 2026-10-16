@@ -74,22 +74,41 @@ const HCS_OWNER: &str = "HavenContainerBroker";
 const WORKSPACE_INPUT_CONTAINER_PATH: &str = r"C:\Haven\workspace-input";
 
 /// One trusted, read-only parent layer from the broker's local image catalog.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowsContainerLayer {
+#[derive(Debug, Clone)]
+pub(crate) struct WindowsContainerLayer {
     id: String,
     path: PathBuf,
+    _directory: Option<DirectoryCapability>,
 }
 
 impl WindowsContainerLayer {
-    /// Construct a layer descriptor from broker-owned image metadata.
-    pub fn new(id: impl Into<String>, path: impl Into<PathBuf>) -> io::Result<Self> {
+    /// Test-only constructor for synthetic HCS documents and native mocks.
+    #[cfg(test)]
+    pub(crate) fn new(id: impl Into<String>, path: impl Into<PathBuf>) -> io::Result<Self> {
         let id = id.into();
         let path = path.into();
-        if id.is_empty() || id.chars().any(char::is_control) {
+        if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
             return Err(invalid_config("container layer ID is invalid"));
         }
         validate_local_absolute_path(&path, "container layer path")?;
-        Ok(Self { id, path })
+        Ok(Self {
+            id,
+            path,
+            _directory: None,
+        })
+    }
+
+    fn from_trusted_catalog(id: String, directory: DirectoryCapability) -> io::Result<Self> {
+        if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
+            return Err(invalid_config("container layer ID is invalid"));
+        }
+        let path = directory.root().to_path_buf();
+        validate_local_absolute_path(&path, "container layer path")?;
+        Ok(Self {
+            id,
+            path,
+            _directory: Some(directory),
+        })
     }
 }
 
@@ -102,7 +121,7 @@ impl WindowsContainerLayer {
 /// enforces the VHDX capacity; runtime over-quota Windows verification remains
 /// mandatory before this backend is connected to production tool execution.
 #[derive(Debug, Clone)]
-pub struct WindowsContainerSandboxConfig {
+pub(crate) struct WindowsContainerSandboxConfig {
     name: String,
     storage_sandbox_size_bytes: u64,
     layers: Vec<WindowsContainerLayer>,
@@ -111,7 +130,7 @@ pub struct WindowsContainerSandboxConfig {
 }
 
 impl WindowsContainerSandboxConfig {
-    pub fn new(
+    pub(crate) fn new(
         name: impl Into<String>,
         storage_sandbox_size_bytes: u64,
         layers: Vec<WindowsContainerLayer>,

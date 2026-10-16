@@ -6,6 +6,7 @@
 
 use super::BROKER_SERVICE_NAME;
 use super::broker_workspace::BrokerWorkspaceScratchRoot;
+use super::image_catalog::BrokerContainerImageCatalog;
 use std::ffi::OsString;
 use std::io;
 use std::os::windows::ffi::OsStringExt;
@@ -122,7 +123,8 @@ pub fn install() -> io::Result<()> {
     let service = OwnedServiceHandle(service);
 
     let setup = configure_service_identity(service.0)
-        .and_then(|()| BrokerWorkspaceScratchRoot::install(&program_files));
+        .and_then(|()| BrokerWorkspaceScratchRoot::install(&program_files))
+        .and_then(|()| BrokerContainerImageCatalog::install(&program_files));
     if let Err(error) = setup {
         unsafe { DeleteService(service.0) };
         return Err(error);
@@ -369,6 +371,9 @@ fn run_service_main() -> io::Result<()> {
     let program_files = program_files_directory()?;
     validate_install_image(&std::env::current_exe()?, &program_files)?;
     let workspace_root = BrokerWorkspaceScratchRoot::open(&program_files)?;
+    // Keep the catalog and all layer directory capabilities pinned for the
+    // broker lifetime. An absent or malformed image catalog prevents startup.
+    let _image_catalog = BrokerContainerImageCatalog::open(&program_files)?;
 
     let cancellation = BrokerPipeCancellation::new()?;
     let service_name = wide_null(BROKER_SERVICE_NAME);

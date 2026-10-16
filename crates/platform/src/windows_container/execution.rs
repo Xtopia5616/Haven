@@ -25,6 +25,14 @@ pub(crate) mod broker_workspace;
     not(test),
     expect(
         dead_code,
+        reason = "catalog layers feed the HCS provider after quota attestation"
+    )
+)]
+pub(crate) mod image_catalog;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
         reason = "the broker output sender and HCS provider are wired in a later execution slice"
     )
 )]
