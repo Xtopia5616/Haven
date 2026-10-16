@@ -154,6 +154,7 @@ pub(super) fn execute_quota_probe(
     api: &dyn HcsApi,
     config: &super::WindowsContainerSandboxConfig,
     storage_quota_bytes: u64,
+    skill_python_runtime: Option<&super::execution::image_catalog::SkillPythonRuntimeProfile>,
     timeout: Duration,
     mut is_cancelled: impl FnMut() -> bool,
 ) -> Result<HcsQuotaProbeOutcome, HcsGuestExecutionFailure> {
@@ -171,8 +172,9 @@ pub(super) fn execute_quota_probe(
             .start(operation_timeout(deadline)?)
             .map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?;
 
-        let parameters = HcsGuestProcessParameters::quota_probe(storage_quota_bytes)
-            .map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?;
+        let parameters =
+            HcsGuestProcessParameters::quota_probe(storage_quota_bytes, skill_python_runtime)
+                .map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?;
         let mut output = BoundedQuotaProbeOutput::default();
         let status = run_guest_process(
             &system,
@@ -620,8 +622,9 @@ mod tests {
             "quota probe has no user workspace mapping"
         );
         let api = MockHcsApi::new([0]);
-        let outcome = execute_quota_probe(&api, &config, quota, Duration::from_secs(2), || false)
-            .expect("mock HCS completes and stops the fixed quota probe");
+        let outcome =
+            execute_quota_probe(&api, &config, quota, None, Duration::from_secs(2), || false)
+                .expect("mock HCS completes and stops the fixed quota probe");
 
         assert_eq!(outcome.exit_code, 0);
         assert_eq!(
@@ -656,9 +659,10 @@ mod tests {
         let quota = crate::windows_container::execution::WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
         let (_root, config) = config_with_quota_and_workspace(quota, false);
         let api = MockHcsApi::new([]);
-        let failure = execute_quota_probe(&api, &config, quota, Duration::from_secs(2), || true)
-            .err()
-            .expect("a cancelled startup probe is rejected before HCS creation");
+        let failure =
+            execute_quota_probe(&api, &config, quota, None, Duration::from_secs(2), || true)
+                .err()
+                .expect("a cancelled startup probe is rejected before HCS creation");
 
         assert_eq!(failure.kind, HcsGuestExecutionFailureKind::Cancelled);
         assert!(failure.cleanup_safe);

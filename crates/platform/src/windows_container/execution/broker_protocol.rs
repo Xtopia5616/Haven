@@ -19,7 +19,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 5;
+pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 6;
 pub(crate) const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
 const MAX_BINARY_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_WIRE_PATH_BYTES: usize = 32 * 1024;
@@ -452,13 +452,29 @@ pub(crate) enum BrokerFailureCode {
     CleanupFailed,
 }
 
-/// Whether the service's startup quota probe currently allows execution
-/// requests to reach workspace staging.
+/// Whether the service's startup quota probe allows Shell requests to stage a
+/// workspace snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum BrokerExecutionGateStatus {
-    QuotaAttested,
-    QuotaUnattested,
+pub(crate) enum BrokerQuotaGateStatus {
+    Attested,
+    Unattested,
+}
+
+/// Whether the optional pinned Python profile is configured and verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BrokerSkillPythonRuntimeStatus {
+    NotConfigured,
+    Attested,
+    Unattested,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BrokerExecutionGateStatus {
+    pub(crate) quota: BrokerQuotaGateStatus,
+    pub(crate) skill_python_runtime: BrokerSkillPythonRuntimeStatus,
 }
 
 /// Attempt data sent across the broker boundary. It has no host root, tool
@@ -710,8 +726,22 @@ mod tests {
     #[test]
     fn execution_gate_status_messages_round_trip_with_fixed_states() {
         for status in [
-            BrokerExecutionGateStatus::QuotaAttested,
-            BrokerExecutionGateStatus::QuotaUnattested,
+            BrokerExecutionGateStatus {
+                quota: BrokerQuotaGateStatus::Attested,
+                skill_python_runtime: BrokerSkillPythonRuntimeStatus::NotConfigured,
+            },
+            BrokerExecutionGateStatus {
+                quota: BrokerQuotaGateStatus::Attested,
+                skill_python_runtime: BrokerSkillPythonRuntimeStatus::Attested,
+            },
+            BrokerExecutionGateStatus {
+                quota: BrokerQuotaGateStatus::Attested,
+                skill_python_runtime: BrokerSkillPythonRuntimeStatus::Unattested,
+            },
+            BrokerExecutionGateStatus {
+                quota: BrokerQuotaGateStatus::Unattested,
+                skill_python_runtime: BrokerSkillPythonRuntimeStatus::Unattested,
+            },
         ] {
             let frame = BrokerFrame::control(&BrokerControlMessage::ExecutionGateStatus { status })
                 .unwrap();
@@ -937,7 +967,9 @@ mod tests {
             BROKER_PROTOCOL_VERSION
         );
         assert!(negotiate_version(2, 2).is_err());
-        assert!(negotiate_version(6, 7).is_err());
+        assert!(
+            negotiate_version(BROKER_PROTOCOL_VERSION + 1, BROKER_PROTOCOL_VERSION + 2).is_err()
+        );
         assert!(negotiate_version(0, 1).is_err());
         assert!(negotiate_version(6, 5).is_err());
     }

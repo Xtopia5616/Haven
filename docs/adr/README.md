@@ -1253,3 +1253,4 @@
 - [1263：在授权前绑定 Deferred MCP 配置与 transport](1263-bind-deferred-mcp-transport-before-authorization.md)
 - [1264：区分 Skill 激活与宿主进程执行边界](1264-separate-skill-activation-from-host-execution.md)
 - [1265：定义 brokered Skill 执行契约](1265-define-brokered-skill-execution-contract.md)
+- [1266：在容器镜像目录中固定 Skill Python runtime](1266-pin-python-runtime-in-container-catalog.md)

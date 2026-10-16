@@ -41,6 +41,7 @@ use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath}
 
 use super::broker_protocol::{
     BrokerControlMessage, BrokerExecutionGateStatus, BrokerFailureCode, BrokerFrame,
+    BrokerQuotaGateStatus, BrokerSkillPythonRuntimeStatus,
 };
 use super::named_pipe::{
     BrokerClientPolicy, BrokerPeerPolicy, BrokerPipeCancellation, BrokerPipeClient,
@@ -224,15 +225,35 @@ pub fn print_status() -> io::Result<()> {
     println!("Service: {state:?}");
     match state {
         BrokerServiceState::Running => match query_execution_gate_status() {
-            Ok(BrokerExecutionGateStatus::QuotaAttested) => {
-                println!("Execution gate: open (runtime quota attested)");
+            Ok(status) => {
+                match status.quota {
+                    BrokerQuotaGateStatus::Attested => {
+                        println!("Shell gate: open (runtime quota attested)");
+                    }
+                    BrokerQuotaGateStatus::Unattested => {
+                        println!("Shell gate: closed (runtime quota unattested)");
+                    }
+                }
+                match status.skill_python_runtime {
+                    BrokerSkillPythonRuntimeStatus::NotConfigured => {
+                        println!("Skill Python runtime: not configured");
+                    }
+                    BrokerSkillPythonRuntimeStatus::Attested => {
+                        println!("Skill Python runtime: attested");
+                    }
+                    BrokerSkillPythonRuntimeStatus::Unattested => {
+                        println!("Skill Python runtime: unattested");
+                    }
+                }
             }
-            Ok(BrokerExecutionGateStatus::QuotaUnattested) => {
-                println!("Execution gate: closed (runtime quota unattested)");
+            Err(_) => {
+                println!("Execution gate: unknown (authenticated status query failed)");
             }
-            Err(_) => println!("Execution gate: unknown (authenticated status query failed)"),
         },
-        _ => println!("Execution gate: closed (service is not running)"),
+        _ => {
+            println!("Shell gate: closed (service is not running)");
+            println!("Skill Python runtime: unavailable (service is not running)");
+        }
     }
     Ok(())
 }
@@ -664,10 +685,36 @@ fn quota_runtime_attestation(
 fn execution_gate_status(
     attestation: Option<&QuotaRuntimeAttestation>,
 ) -> BrokerExecutionGateStatus {
-    if attestation.is_some() {
-        BrokerExecutionGateStatus::QuotaAttested
-    } else {
-        BrokerExecutionGateStatus::QuotaUnattested
+    let Some(attestation) = attestation else {
+        return execution_gate_status_from_evidence(false, false, false);
+    };
+    execution_gate_status_from_evidence(
+        true,
+        attestation.image_catalog().skill_python_runtime().is_some(),
+        attestation.skill_python_runtime_attested(),
+    )
+}
+
+fn execution_gate_status_from_evidence(
+    quota_attested: bool,
+    skill_runtime_configured: bool,
+    skill_runtime_attested: bool,
+) -> BrokerExecutionGateStatus {
+    BrokerExecutionGateStatus {
+        quota: if quota_attested {
+            BrokerQuotaGateStatus::Attested
+        } else {
+            BrokerQuotaGateStatus::Unattested
+        },
+        skill_python_runtime: if !quota_attested {
+            BrokerSkillPythonRuntimeStatus::Unattested
+        } else if !skill_runtime_configured {
+            BrokerSkillPythonRuntimeStatus::NotConfigured
+        } else if skill_runtime_attested {
+            BrokerSkillPythonRuntimeStatus::Attested
+        } else {
+            BrokerSkillPythonRuntimeStatus::Unattested
+        },
     }
 }
 
@@ -953,7 +1000,35 @@ mod tests {
         );
         assert_eq!(
             execution_gate_status(None),
-            BrokerExecutionGateStatus::QuotaUnattested
+            BrokerExecutionGateStatus {
+                quota: BrokerQuotaGateStatus::Unattested,
+                skill_python_runtime: BrokerSkillPythonRuntimeStatus::Unattested,
+            }
+        );
+    }
+
+    #[test]
+    fn skill_python_gate_is_independent_from_quota_and_configuration() {
+        assert_eq!(
+            execution_gate_status_from_evidence(true, false, false),
+            BrokerExecutionGateStatus {
+                quota: BrokerQuotaGateStatus::Attested,
+                skill_python_runtime: BrokerSkillPythonRuntimeStatus::NotConfigured,
+            }
+        );
+        assert_eq!(
+            execution_gate_status_from_evidence(true, true, false),
+            BrokerExecutionGateStatus {
+                quota: BrokerQuotaGateStatus::Attested,
+                skill_python_runtime: BrokerSkillPythonRuntimeStatus::Unattested,
+            }
+        );
+        assert_eq!(
+            execution_gate_status_from_evidence(true, true, true),
+            BrokerExecutionGateStatus {
+                quota: BrokerQuotaGateStatus::Attested,
+                skill_python_runtime: BrokerSkillPythonRuntimeStatus::Attested,
+            }
         );
     }
 

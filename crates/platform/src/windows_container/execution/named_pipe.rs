@@ -30,6 +30,8 @@ use super::broker_protocol::{
     BROKER_PROTOCOL_VERSION, BrokerControlMessage, BrokerExecutionGateStatus, BrokerFrame,
     BrokerFrameKind, MAX_CONTROL_PAYLOAD_BYTES, negotiate_version,
 };
+#[cfg(test)]
+use super::broker_protocol::{BrokerQuotaGateStatus, BrokerSkillPythonRuntimeStatus};
 use peer_security::{
     ActiveSessionIdentity, PipeSecurityDescriptor, current_broker_service_sid,
     current_process_identity, impersonate_and_read_peer, query_unique_active_session,
@@ -1001,7 +1003,10 @@ mod tests {
             }
             connection.write_frame(
                 &BrokerFrame::control(&BrokerControlMessage::ExecutionGateStatus {
-                    status: BrokerExecutionGateStatus::QuotaUnattested,
+                    status: BrokerExecutionGateStatus {
+                        quota: BrokerQuotaGateStatus::Unattested,
+                        skill_python_runtime: BrokerSkillPythonRuntimeStatus::Unattested,
+                    },
                 })?,
                 Duration::from_secs(5),
             )?;
@@ -1018,7 +1023,10 @@ mod tests {
         let mut client = BrokerPipeClient::connect_for_test(&name).unwrap();
         assert_eq!(
             client.execution_gate_status().unwrap(),
-            BrokerExecutionGateStatus::QuotaUnattested
+            BrokerExecutionGateStatus {
+                quota: BrokerQuotaGateStatus::Unattested,
+                skill_python_runtime: BrokerSkillPythonRuntimeStatus::Unattested,
+            }
         );
         server.join().unwrap().unwrap();
     }
