@@ -12,6 +12,12 @@ pub mod execution;
 #[cfg(windows)]
 #[expect(
     dead_code,
+    reason = "guest process creation stays private until quota and output-layer handling are wired"
+)]
+mod hcs_process;
+#[cfg(windows)]
+#[expect(
+    dead_code,
     reason = "the broker keeps HCS execution unavailable until quota attestation and provider wiring are complete"
 )]
 mod hcs_runtime;

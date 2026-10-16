@@ -1229,3 +1229,4 @@
 - [1239：由 broker 持有私有 workspace 暂存区](1239-own-broker-workspace-scratch.md)
 - [1240：将 workspace 快照接入 broker named-pipe](1240-connect-broker-workspace-transfer.md)
 - [1241：由 broker owner 管理 HCS compute-system 生命周期](1241-own-hcs-compute-system-lifecycle.md)
+- [1242：从 typed Shell request 构造闭合 HCS guest process 参数](1242-build-closed-hcs-process-parameters.md)
