@@ -1234,3 +1234,4 @@
 - [1244：限制 HCS guest stdout/stderr 的轮询读取](1244-bound-hcs-guest-output-polling.md)
 - [1245：通过有界差异流重建 broker 执行输出树](1245-reconstruct-broker-output-from-bounded-diff-stream.md)
 - [1246：将经验证的 attempt scratch 绑定到 HCS writable layer folder](1246-bind-bounded-scratch-to-hcs-layer-folder.md)
+- [1247：在容器 writable layer 中建立 guest workspace 副本](1247-seed-a-writable-guest-workspace.md)

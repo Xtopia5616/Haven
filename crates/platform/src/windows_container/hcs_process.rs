@@ -11,11 +11,15 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Component, Path};
 
-const GUEST_WORKSPACE_ROOT: &str = r"C:\Haven\workspace-input";
+const GUEST_WORKSPACE_INPUT_ROOT: &str = r"C:\Haven\workspace-input";
+const GUEST_WORKSPACE_ROOT: &str = r"C:\Haven\workspace-output";
 const CMD_APPLICATION: &str = r"C:\Windows\System32\cmd.exe";
 const POWERSHELL_APPLICATION: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+const ROBOCOPY_APPLICATION: &str = r"C:\Windows\System32\robocopy.exe";
 const FIXED_PATH: &str = r"C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem";
 const MAX_GUEST_COMMAND_LINE_UNITS: usize = 32_766;
+
+const WORKSPACE_SEED_SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'; $source = '{input_root}'; $destination = '{output_root}'; if (Test-Path -LiteralPath $destination) { exit 90 }; & '{robocopy_application}' $source $destination /E /COPY:DAT /DCOPY:DAT /R:0 /W:0 /XJ /NFL /NDL /NJH /NJS /NP /NC /NS; if ($LASTEXITCODE -ge 8) { exit 8 }; exit 0"#;
 
 /// Broker-owned process parameters. Every executable, environment key, pipe
 /// option, and guest path is fixed or derived from the validated request.
@@ -24,6 +28,30 @@ pub(super) struct HcsGuestProcessParameters {
 }
 
 impl HcsGuestProcessParameters {
+    /// Copy the immutable input snapshot into the container's writable C:
+    /// layer before executing user code. The process is fixed and never
+    /// incorporates user command text.
+    pub(super) fn workspace_seed() -> io::Result<Self> {
+        let script = WORKSPACE_SEED_SCRIPT
+            .replace("{input_root}", GUEST_WORKSPACE_INPUT_ROOT)
+            .replace("{output_root}", GUEST_WORKSPACE_ROOT)
+            .replace("{robocopy_application}", ROBOCOPY_APPLICATION);
+        Ok(Self {
+            document: ProcessParametersDocument {
+                application_name: POWERSHELL_APPLICATION,
+                command_line: powershell_command_line(&script)?,
+                working_directory: r"C:\Windows\Temp".to_owned(),
+                environment: fixed_environment(),
+                restricted_token: true,
+                emulate_console: false,
+                create_std_in_pipe: false,
+                create_std_out_pipe: true,
+                create_std_err_pipe: true,
+                use_existing_login: false,
+            },
+        })
+    }
+
     pub(super) fn from_request(request: &WindowsContainerExecutionRequest) -> io::Result<Self> {
         let (application_name, command_line) = match request.shell() {
             WindowsContainerShell::Cmd => (
@@ -252,7 +280,7 @@ mod tests {
         assert_eq!(value["ApplicationName"], CMD_APPLICATION);
         assert_eq!(
             value["WorkingDirectory"],
-            r"C:\Haven\workspace-input\src\app"
+            r"C:\Haven\workspace-output\src\app"
         );
         assert_eq!(value["RestrictedToken"], true);
         assert_eq!(value["CreateStdInPipe"], false);
@@ -291,6 +319,47 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(String::from_utf16(&units).unwrap(), command);
         assert_eq!(value["WorkingDirectory"], GUEST_WORKSPACE_ROOT);
+    }
+
+    #[test]
+    fn workspace_seed_uses_fixed_paths_and_rejects_existing_destination() {
+        let value: Value = serde_json::from_str(
+            &HcsGuestProcessParameters::workspace_seed()
+                .expect("fixed seed parameters are valid")
+                .to_json()
+                .expect("seed parameters serialize"),
+        )
+        .expect("seed parameters are valid JSON");
+        assert_eq!(value["ApplicationName"], POWERSHELL_APPLICATION);
+        assert_eq!(value["WorkingDirectory"], r"C:\Windows\Temp");
+        assert_eq!(value["RestrictedToken"], true);
+        assert_eq!(value["CreateStdInPipe"], false);
+        assert_eq!(value["CreateStdOutPipe"], true);
+        let command_line = value["CommandLine"].as_str().unwrap();
+        assert!(command_line.contains("-EncodedCommand"));
+        assert!(!command_line.contains("workspace-input"));
+        assert!(!command_line.contains("workspace-output"));
+
+        let encoded = command_line
+            .split("-EncodedCommand\" \"")
+            .nth(1)
+            .and_then(|value| value.strip_suffix('\"'))
+            .expect("seed script is encoded as one command argument");
+        let utf16le = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("base64 seed script is valid");
+        let units = utf16le
+            .chunks_exact(2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect::<Vec<_>>();
+        let script = String::from_utf16(&units).expect("seed script is UTF-16");
+        assert!(script.contains("Test-Path -LiteralPath $destination"));
+        assert!(script.contains(ROBOCOPY_APPLICATION));
+        assert!(script.contains("/COPY:DAT"));
+        assert!(script.contains("/XJ"));
+        assert!(script.contains("$LASTEXITCODE -ge 8"));
+        assert_eq!(GUEST_WORKSPACE_INPUT_ROOT, r"C:\Haven\workspace-input");
+        assert_eq!(GUEST_WORKSPACE_ROOT, r"C:\Haven\workspace-output");
     }
 
     #[test]
