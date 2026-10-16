@@ -17,30 +17,16 @@ const BROKER_SERVICE_NAME: &str = "HavenContainerBroker";
 
 #[expect(
     dead_code,
-    reason = "the bounded wire contract is implemented before the named-pipe client and service"
+    reason = "broker output consumption is completed with the HCS provider"
 )]
 pub(crate) mod broker_protocol;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "broker-owned workspace scratch is prepared before workspace transfer wiring"
-    )
-)]
 pub(crate) mod broker_workspace;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "broker workspace snapshot framing is implemented before provider connection"
-    )
-)]
 pub(crate) mod workspace_transfer;
 
 #[cfg(windows)]
 #[expect(
     dead_code,
-    reason = "the named-pipe transport is implemented before the broker service lifecycle"
+    reason = "the authenticated broker exchange is implemented before Tools/HCS provider wiring"
 )]
 pub(crate) mod named_pipe;
 

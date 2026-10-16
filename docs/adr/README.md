@@ -1227,3 +1227,4 @@
 - [1237：为 HCS 容器增加固定只读 workspace 输入映射](1237-add-fixed-read-only-hcs-workspace-input.md)
 - [1238：为 broker 实现有界 workspace 文件传输](1238-add-bounded-broker-workspace-transfer.md)
 - [1239：由 broker 持有私有 workspace 暂存区](1239-own-broker-workspace-scratch.md)
+- [1240：将 workspace 快照接入 broker named-pipe](1240-connect-broker-workspace-transfer.md)

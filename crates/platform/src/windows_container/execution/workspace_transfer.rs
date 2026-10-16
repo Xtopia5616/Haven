@@ -46,6 +46,40 @@ pub(crate) fn send_workspace_snapshot(
     Ok(state.summary)
 }
 
+/// Read a workspace snapshot from a framed transport into the attempt's empty
+/// staging capability. The caller owns and must discard the attempt after any
+/// read, validation, write, or cancellation error.
+pub(crate) fn receive_workspace_snapshot(
+    staging: DirectoryCapability,
+    limits: DirectoryTreeCopyLimits,
+    mut read_frame: impl FnMut() -> io::Result<BrokerFrame>,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> io::Result<(DirectoryCapability, DirectoryTreeCopySummary)> {
+    let mut receiver = WorkspaceSnapshotReceiver::new(staging, limits)?;
+    loop {
+        if is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "workspace snapshot receive was cancelled",
+            ));
+        }
+        let frame = read_frame()?;
+        if frame.kind() == BrokerFrameKind::Control {
+            let message = frame.decode_control()?;
+            let completed = matches!(
+                &message,
+                BrokerControlMessage::WorkspaceSnapshotComplete { .. }
+            );
+            receiver.accept_control(message)?;
+            if completed {
+                return receiver.finish();
+            }
+        } else {
+            receiver.accept_chunk(&frame)?;
+        }
+    }
+}
+
 struct SenderState<'a, SendFrame, IsCancelled> {
     snapshot: &'a DirectoryCapability,
     limits: DirectoryTreeCopyLimits,
@@ -622,5 +656,68 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert_eq!(sent_frames, 0);
+    }
+
+    #[test]
+    fn transport_receiver_reads_until_a_valid_snapshot_completion() {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("payload.bin"), b"payload").unwrap();
+        let source = DirectoryCapability::open(source.path()).unwrap();
+        let mut frames = Vec::new();
+        let sent = send_workspace_snapshot(
+            &source,
+            limits(),
+            |frame| {
+                frames.push(frame);
+                Ok(())
+            },
+            || false,
+        )
+        .unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let staging = DirectoryCapability::open(destination.path()).unwrap();
+        let mut frames = frames.into_iter();
+
+        let (received_root, received) = receive_workspace_snapshot(
+            staging,
+            limits(),
+            || {
+                frames.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "snapshot frames ended")
+                })
+            },
+            || false,
+        )
+        .unwrap();
+
+        assert_eq!(sent, received);
+        assert_eq!(
+            std::fs::read(received_root.root().join("payload.bin")).unwrap(),
+            b"payload"
+        );
+        assert!(frames.next().is_none());
+    }
+
+    #[test]
+    fn transport_receiver_cancels_before_reading_the_next_frame() {
+        let destination = tempfile::tempdir().unwrap();
+        let staging = DirectoryCapability::open(destination.path()).unwrap();
+        let mut read_calls = 0;
+        let error = receive_workspace_snapshot(
+            staging,
+            limits(),
+            || {
+                read_calls += 1;
+                Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "receiver should have cancelled first",
+                ))
+            },
+            || true,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(read_calls, 0);
     }
 }

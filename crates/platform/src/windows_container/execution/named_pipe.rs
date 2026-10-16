@@ -13,9 +13,11 @@ pub(crate) fn broker_service_sid_string() -> io::Result<String> {
     peer_security::broker_service_sid_string()
 }
 
+#[cfg(test)]
+use super::broker_protocol::BrokerFailureCode;
 use super::broker_protocol::{
-    BROKER_PROTOCOL_VERSION, BrokerControlMessage, BrokerFrame, BrokerFrameKind,
-    MAX_CONTROL_PAYLOAD_BYTES, negotiate_version,
+    BROKER_PROTOCOL_VERSION, BrokerControlMessage, BrokerExecutionRequest, BrokerFrame,
+    BrokerFrameKind, MAX_CONTROL_PAYLOAD_BYTES, negotiate_version,
 };
 use peer_security::{
     ActiveSessionIdentity, PipeSecurityDescriptor, current_broker_service_sid,
@@ -209,6 +211,10 @@ impl BrokerPipeCancellation {
         Ok(())
     }
 
+    pub(crate) fn is_cancelled(&self) -> bool {
+        (unsafe { WaitForSingleObject(self.handle.0, 0) }) != WAIT_TIMEOUT
+    }
+
     pub(crate) fn raw_handle(&self) -> HANDLE {
         self.handle.0
     }
@@ -338,8 +344,16 @@ impl BrokerPipeConnection<'_> {
         &self.peer
     }
 
+    pub(crate) fn cancellation(&self) -> BrokerPipeCancellation {
+        self.cancellation.clone()
+    }
+
     pub(crate) fn read_frame(&mut self, timeout: Duration) -> io::Result<BrokerFrame> {
         read_pipe_frame(self.listener.handle, timeout, self.cancellation)
+    }
+
+    pub(crate) fn read_frame_until(&mut self, deadline: Instant) -> io::Result<BrokerFrame> {
+        read_pipe_frame_until(self.listener.handle, deadline, self.cancellation)
     }
 
     pub(crate) fn write_frame(&mut self, frame: &BrokerFrame, timeout: Duration) -> io::Result<()> {
@@ -347,6 +361,18 @@ impl BrokerPipeConnection<'_> {
             handle: self.listener.handle,
             cancellation: self.cancellation,
             deadline: deadline_after(timeout)?,
+        })
+    }
+
+    pub(crate) fn write_frame_until(
+        &mut self,
+        frame: &BrokerFrame,
+        deadline: Instant,
+    ) -> io::Result<()> {
+        frame.write_to(&mut PipeBorrow {
+            handle: self.listener.handle,
+            cancellation: self.cancellation,
+            deadline,
         })
     }
 }
@@ -433,8 +459,71 @@ impl BrokerPipeClient {
 }
 
 impl BrokerPipeClient {
+    /// Send one execution request and its bounded workspace snapshot over a
+    /// fresh authenticated connection. The connection is consumed so a
+    /// partially sent workspace can never be reused for another request.
+    pub(crate) fn execute_with_workspace(
+        mut self,
+        request: &super::WindowsContainerExecutionRequest,
+        request_id: [u8; 16],
+        workspace: &super::WindowsContainerWorkspaceInput,
+    ) -> io::Result<BrokerControlMessage> {
+        let wire_request = BrokerExecutionRequest::from_execution_request(request, request_id)?;
+        let deadline = deadline_after(request.limits.timeout)?;
+        self.write_frame_until(
+            &BrokerFrame::control(&BrokerControlMessage::Execute {
+                request: wire_request,
+            })?,
+            deadline,
+        )?;
+
+        let response = self.read_frame_until(deadline)?.decode_control()?;
+        match &response {
+            BrokerControlMessage::Failure {
+                request_id: Some(response_id),
+                ..
+            } if *response_id == request_id => return Ok(response),
+            BrokerControlMessage::WorkspaceSnapshotRequested {
+                request_id: response_id,
+            } if *response_id == request_id => {}
+            _ => return Err(invalid_data("broker response does not match the request")),
+        }
+
+        let cancellation = self.cancellation.clone();
+        super::workspace_transfer::send_workspace_snapshot(
+            &workspace.source,
+            request.limits.workspace_copy,
+            |frame| self.write_frame_until(&frame, deadline),
+            || cancellation.is_cancelled(),
+        )?;
+
+        let response = self.read_frame_until(deadline)?.decode_control()?;
+        let matching_terminal = match &response {
+            BrokerControlMessage::Failure {
+                request_id: Some(response_id),
+                ..
+            }
+            | BrokerControlMessage::ExecutionComplete {
+                request_id: response_id,
+                ..
+            } => *response_id == request_id,
+            _ => false,
+        };
+        if matching_terminal {
+            Ok(response)
+        } else {
+            Err(invalid_data(
+                "broker terminal response does not match the request",
+            ))
+        }
+    }
+
     pub(crate) fn read_frame(&mut self, timeout: Duration) -> io::Result<BrokerFrame> {
         read_pipe_frame(self.handle, timeout, &self.cancellation)
+    }
+
+    pub(crate) fn read_frame_until(&mut self, deadline: Instant) -> io::Result<BrokerFrame> {
+        read_pipe_frame_until(self.handle, deadline, &self.cancellation)
     }
 
     pub(crate) fn write_frame(&mut self, frame: &BrokerFrame, timeout: Duration) -> io::Result<()> {
@@ -442,6 +531,18 @@ impl BrokerPipeClient {
             handle: self.handle,
             cancellation: &self.cancellation,
             deadline: deadline_after(timeout)?,
+        })
+    }
+
+    pub(crate) fn write_frame_until(
+        &mut self,
+        frame: &BrokerFrame,
+        deadline: Instant,
+    ) -> io::Result<()> {
+        frame.write_to(&mut PipeBorrow {
+            handle: self.handle,
+            cancellation: &self.cancellation,
+            deadline,
         })
     }
 
@@ -551,7 +652,14 @@ fn read_pipe_frame(
     timeout: Duration,
     cancellation: &BrokerPipeCancellation,
 ) -> io::Result<BrokerFrame> {
-    let deadline = deadline_after(timeout)?;
+    read_pipe_frame_until(handle, deadline_after(timeout)?, cancellation)
+}
+
+fn read_pipe_frame_until(
+    handle: HANDLE,
+    deadline: Instant,
+    cancellation: &BrokerPipeCancellation,
+) -> io::Result<BrokerFrame> {
     let mut length_bytes = [0_u8; 4];
     read_exact_pipe_until(handle, &mut length_bytes, deadline, cancellation)?;
     let body_length = u32::from_le_bytes(length_bytes) as usize;
@@ -847,6 +955,108 @@ mod tests {
     #[test]
     fn named_pipe_rejects_peer_with_wrong_user_after_bounded_hello() {
         run_pipe_handshake_test(true);
+    }
+
+    #[test]
+    fn broker_client_and_receiver_exchange_a_bounded_workspace_snapshot() {
+        let current = current_process_identity().unwrap();
+        let policy = BrokerPeerPolicy::new(
+            current.user_sid.clone(),
+            current.logon_sid,
+            current.session_id,
+            current.user_sid,
+        )
+        .unwrap();
+        let name = format!(
+            r"\\.\pipe\Haven.ContainerBroker.Test.{}.{}",
+            unsafe { GetCurrentProcessId() },
+            NEXT_TEST_PIPE.fetch_add(1, Ordering::Relaxed)
+        );
+        let server_name = name.clone();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || -> io::Result<(u64, Vec<u8>)> {
+            let mut listener = BrokerPipeListener::create(&server_name, policy)?;
+            let cancellation = BrokerPipeCancellation::new()?;
+            ready_sender.send(()).unwrap();
+            let mut connection = listener.accept(&cancellation)?;
+            let request = match connection
+                .read_frame(Duration::from_secs(5))?
+                .decode_control()?
+            {
+                BrokerControlMessage::Execute { request } => request,
+                _ => return Err(invalid_data("test client sent an invalid request")),
+            };
+            let request_id = request.request_id;
+            connection.write_frame(
+                &BrokerFrame::control(&BrokerControlMessage::WorkspaceSnapshotRequested {
+                    request_id,
+                })?,
+                Duration::from_secs(5),
+            )?;
+
+            let staging_temp = tempfile::tempdir()?;
+            let staging = crate::filesystem::DirectoryCapability::open(staging_temp.path())?;
+            let copy_limits = request.validate()?.workspace_copy();
+            let cancellation = connection.cancellation();
+            let (snapshot, summary) = super::super::workspace_transfer::receive_workspace_snapshot(
+                staging,
+                copy_limits,
+                || connection.read_frame(Duration::from_secs(5)),
+                || cancellation.is_cancelled(),
+            )?;
+            let bytes = std::fs::read(snapshot.root().join("payload.txt"))?;
+            connection.write_frame(
+                &BrokerFrame::control(&BrokerControlMessage::Failure {
+                    request_id: Some(request_id),
+                    code: BrokerFailureCode::BackendUnavailable,
+                })?,
+                Duration::from_secs(5),
+            )?;
+            Ok((summary.byte_count, bytes))
+        });
+        ready_receiver.recv().unwrap();
+
+        let workspace_temp = tempfile::tempdir().unwrap();
+        std::fs::write(workspace_temp.path().join("payload.txt"), b"payload").unwrap();
+        let workspace = super::super::WindowsContainerWorkspaceInput::new(
+            crate::filesystem::DirectoryCapability::open(workspace_temp.path()).unwrap(),
+        );
+        let copy_limits =
+            crate::filesystem::DirectoryTreeCopyLimits::new(16, 8, 4096, 8192).unwrap();
+        let diff_limits =
+            crate::filesystem::DirectoryTreeDiffLimits::new(copy_limits, 16, 4096, 8192).unwrap();
+        let execution_limits = super::super::WindowsContainerExecutionLimits::new(
+            1024 * 1024,
+            Duration::from_secs(10),
+            8192,
+            8192,
+            copy_limits,
+            diff_limits,
+        )
+        .unwrap();
+        let request = super::super::WindowsContainerExecutionRequest::new(
+            super::super::WindowsContainerShell::PowerShell,
+            "Write-Output 'hello'",
+            "",
+            7,
+            11,
+            execution_limits,
+        )
+        .unwrap();
+        let request_id = [9; 16];
+        let client = BrokerPipeClient::connect_for_test(&name).unwrap();
+        let response = client
+            .execute_with_workspace(&request, request_id, &workspace)
+            .unwrap();
+
+        assert_eq!(
+            response,
+            BrokerControlMessage::Failure {
+                request_id: Some(request_id),
+                code: BrokerFailureCode::BackendUnavailable,
+            }
+        );
+        assert_eq!(server.join().unwrap().unwrap(), (7, b"payload".to_vec()));
     }
 
     #[test]

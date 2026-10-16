@@ -413,7 +413,7 @@ fn run_service_main() -> io::Result<()> {
 
 fn run_service_listener_loop(
     cancellation: &BrokerPipeCancellation,
-    _workspace_root: &BrokerWorkspaceScratchRoot,
+    workspace_root: &BrokerWorkspaceScratchRoot,
 ) -> io::Result<()> {
     loop {
         match consume_control_signal(cancellation)? {
@@ -444,7 +444,9 @@ fn run_service_listener_loop(
 
         loop {
             let outcome = match listener.accept(cancellation) {
-                Ok(mut connection) => serve_authenticated_connection(&mut connection),
+                Ok(mut connection) => {
+                    serve_authenticated_connection(&mut connection, workspace_root)
+                }
                 Err(error) => Err(error),
             };
             match outcome {
@@ -472,20 +474,98 @@ fn run_service_listener_loop(
 
 fn serve_authenticated_connection(
     connection: &mut super::named_pipe::BrokerPipeConnection<'_>,
+    workspace_root: &BrokerWorkspaceScratchRoot,
 ) -> io::Result<()> {
-    let response = match connection
+    let request_message = connection
         .read_frame(Duration::from_secs(5))?
-        .decode_control()
-    {
-        Ok(BrokerControlMessage::Execute { request }) => BrokerControlMessage::Failure {
-            request_id: Some(request.request_id),
-            code: BrokerFailureCode::QuotaUnattested,
-        },
-        Ok(_) | Err(_) => BrokerControlMessage::Failure {
-            request_id: None,
-            code: BrokerFailureCode::InvalidRequest,
-        },
+        .decode_control();
+    let request = match request_message {
+        Ok(BrokerControlMessage::Execute { request }) => request,
+        _ => {
+            return write_broker_failure(connection, None, BrokerFailureCode::InvalidRequest);
+        }
     };
+
+    let request_id = request.request_id;
+    let limits = match request.validate() {
+        Ok(limits) => limits,
+        Err(_) => {
+            return write_broker_failure(
+                connection,
+                Some(request_id),
+                BrokerFailureCode::InvalidRequest,
+            );
+        }
+    };
+    if let Err(code) = quota_runtime_attestation() {
+        return write_broker_failure(connection, Some(request_id), code);
+    }
+
+    let mut attempt = match workspace_root.create_attempt() {
+        Ok(attempt) => attempt,
+        Err(_) => {
+            return write_broker_failure(
+                connection,
+                Some(request_id),
+                BrokerFailureCode::StagingFailed,
+            );
+        }
+    };
+    let deadline = Instant::now()
+        .checked_add(limits.timeout())
+        .ok_or_else(|| invalid_data("broker execution deadline is invalid"))?;
+    let ready = BrokerControlMessage::WorkspaceSnapshotRequested { request_id };
+    connection.write_frame_until(&BrokerFrame::control(&ready)?, deadline)?;
+
+    let cancellation = connection.cancellation();
+    let transfer = super::workspace_transfer::receive_workspace_snapshot(
+        attempt.staging()?.clone(),
+        limits.workspace_copy(),
+        || connection.read_frame_until(deadline),
+        || cancellation.is_cancelled(),
+    );
+    let (snapshot, _summary) = match transfer {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let cleanup_succeeded = attempt.cleanup().is_ok();
+            let code = if !cleanup_succeeded {
+                BrokerFailureCode::CleanupFailed
+            } else {
+                match error.kind() {
+                    io::ErrorKind::Interrupted => BrokerFailureCode::Cancelled,
+                    io::ErrorKind::TimedOut => BrokerFailureCode::TimedOut,
+                    io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied => {
+                        BrokerFailureCode::InvalidRequest
+                    }
+                    _ => BrokerFailureCode::StagingFailed,
+                }
+            };
+            return write_broker_failure(connection, Some(request_id), code);
+        }
+    };
+    drop(snapshot);
+    let cleanup_succeeded = attempt.cleanup().is_ok();
+    let code = if cleanup_succeeded {
+        BrokerFailureCode::BackendUnavailable
+    } else {
+        BrokerFailureCode::CleanupFailed
+    };
+    write_broker_failure(connection, Some(request_id), code)
+}
+
+/// Quota enforcement has no runtime attestation yet. Keep this single gate
+/// ahead of staging allocation and workspace bytes until the HCS provider can
+/// prove the requested limit is enforced by the guest storage device.
+fn quota_runtime_attestation() -> Result<(), BrokerFailureCode> {
+    Err(BrokerFailureCode::QuotaUnattested)
+}
+
+fn write_broker_failure(
+    connection: &mut super::named_pipe::BrokerPipeConnection<'_>,
+    request_id: Option<[u8; 16]>,
+    code: BrokerFailureCode,
+) -> io::Result<()> {
+    let response = BrokerControlMessage::Failure { request_id, code };
     connection.write_frame(&BrokerFrame::control(&response)?, Duration::from_secs(5))
 }
 
@@ -733,6 +813,14 @@ fn permission_denied(message: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quota_attestation_gate_fails_closed_until_runtime_proof_exists() {
+        assert_eq!(
+            quota_runtime_attestation().unwrap_err(),
+            BrokerFailureCode::QuotaUnattested
+        );
+    }
 
     #[test]
     fn install_image_must_be_the_fixed_binary_under_haven_program_files() {

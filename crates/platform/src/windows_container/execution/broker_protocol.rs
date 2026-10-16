@@ -17,7 +17,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 1;
+pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 2;
 pub(crate) const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
 const MAX_BINARY_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_WIRE_PATH_BYTES: usize = 32 * 1024;
@@ -153,6 +153,9 @@ pub(crate) enum BrokerControlMessage {
     Execute {
         request: BrokerExecutionRequest,
     },
+    WorkspaceSnapshotRequested {
+        request_id: [u8; 16],
+    },
     WorkspaceEntry {
         relative_path: String,
         kind: BrokerWorkspaceEntryKind,
@@ -243,12 +246,16 @@ impl BrokerControlMessage {
             Self::WorkspaceSnapshotComplete { .. } => Err(invalid_data(
                 "workspace snapshot exceeds its transfer limits",
             )),
-            Self::Cancel { request_id } | Self::ExecutionComplete { request_id, .. }
+            Self::WorkspaceSnapshotRequested { request_id }
+            | Self::Cancel { request_id }
+            | Self::ExecutionComplete { request_id, .. }
                 if request_id.iter().all(|byte| *byte == 0) =>
             {
                 Err(invalid_data("broker request ID is invalid"))
             }
-            Self::Cancel { .. } | Self::ExecutionComplete { .. } => Ok(()),
+            Self::WorkspaceSnapshotRequested { .. }
+            | Self::Cancel { .. }
+            | Self::ExecutionComplete { .. } => Ok(()),
             Self::OutputEntry {
                 relative_path,
                 change,
@@ -794,6 +801,20 @@ mod tests {
     }
 
     #[test]
+    fn workspace_snapshot_request_requires_a_nonzero_matching_request_id() {
+        let request = BrokerControlMessage::WorkspaceSnapshotRequested {
+            request_id: [7; 16],
+        };
+        assert!(BrokerFrame::control(&request).is_ok());
+        assert!(
+            BrokerFrame::control(&BrokerControlMessage::WorkspaceSnapshotRequested {
+                request_id: [0; 16],
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
     fn wire_paths_reject_win32_aliases_and_unsupported_characters() {
         for path in [
             "CON",
@@ -825,7 +846,8 @@ mod tests {
             negotiate_version(BROKER_PROTOCOL_VERSION, BROKER_PROTOCOL_VERSION).unwrap(),
             BROKER_PROTOCOL_VERSION
         );
-        assert!(negotiate_version(2, 3).is_err());
+        assert!(negotiate_version(1, 1).is_err());
+        assert!(negotiate_version(3, 4).is_err());
         assert!(negotiate_version(0, 1).is_err());
         assert!(negotiate_version(3, 2).is_err());
     }
