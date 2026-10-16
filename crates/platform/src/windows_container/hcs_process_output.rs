@@ -18,6 +18,16 @@ use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 const OUTPUT_READ_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_BYTES_PER_STREAM_PER_POLL: usize = 64 * 1024;
 
+pub(super) trait HcsOutputChunkSink {
+    fn write_chunk(&mut self, stream: WindowsContainerOutputStream, bytes: &[u8]);
+}
+
+impl HcsOutputChunkSink for WindowsContainerOutputSink<'_> {
+    fn write_chunk(&mut self, stream: WindowsContainerOutputStream, bytes: &[u8]) {
+        WindowsContainerOutputSink::write_chunk(self, stream, bytes);
+    }
+}
+
 /// Bytes consumed during one bounded poll and the current pipe state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct HcsOutputDrainProgress {
@@ -65,7 +75,7 @@ impl<'a> HcsGuestProcessOutputReader<'a> {
     /// No other thread may read from or duplicate these handles while polling.
     pub(super) fn drain_available(
         &mut self,
-        sink: &mut WindowsContainerOutputSink<'_>,
+        sink: &mut dyn HcsOutputChunkSink,
     ) -> io::Result<HcsOutputDrainProgress> {
         let (stdout_bytes_read, stdout_closed) =
             drain_pipe(&mut self.stdout, WindowsContainerOutputStream::Stdout, sink)?;
@@ -83,7 +93,7 @@ impl<'a> HcsGuestProcessOutputReader<'a> {
 fn drain_pipe(
     handle: &mut Option<OwnedGuestHandle<'_>>,
     stream: WindowsContainerOutputStream,
-    sink: &mut WindowsContainerOutputSink<'_>,
+    sink: &mut dyn HcsOutputChunkSink,
 ) -> io::Result<(usize, bool)> {
     let Some(owned) = handle.as_ref() else {
         return Ok((0, true));

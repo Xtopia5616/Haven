@@ -1242,3 +1242,4 @@
 - [1252：在隔离 helper 中验证有界 HCS export transport](1252-verify-bounded-hcs-export-transport.md)
 - [1253：编排有界 HCS workspace 输出导出](1253-orchestrate-bounded-hcs-workspace-export.md)
 - [1254：增加受保护的 HCS 本地镜像目录](1254-add-protected-hcs-image-catalog.md)
+- [1255：监督 HCS guest workspace seed 与 Shell 生命周期](1255-supervise-hcs-guest-shell-lifecycle.md)

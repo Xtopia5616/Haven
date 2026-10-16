@@ -221,7 +221,7 @@ pub(super) fn validate_operation_timeout(timeout: Duration) -> io::Result<u32> {
     })
 }
 
-struct NativeHcsApi {
+pub(super) struct NativeHcsApi {
     _module: OwnedModule,
     create_operation:
         unsafe extern "system" fn(*const std::ffi::c_void, OperationCompletion) -> RawOperation,
@@ -273,7 +273,7 @@ const MAX_HCS_RESULT_UTF16_UNITS: usize = 32 * 1024;
 const INVALID_GUEST_HANDLE: RawGuestHandle = usize::MAX as RawGuestHandle;
 
 impl NativeHcsApi {
-    fn load() -> io::Result<Self> {
+    pub(super) fn load() -> io::Result<Self> {
         let library_name = wide_null(OsStr::new("computecore.dll"))?;
         let module = unsafe {
             LoadLibraryExW(

@@ -182,6 +182,8 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 HCS 执行边界已有固定的管理员本地镜像目录：服务启动时严格校验 `%ProgramFiles%\Haven\ContainerImages\catalog.json`，并 pinned manifest 所列 layer 目录；broker service SID 对镜像目录只有读/执行权，执行请求不能选镜像或宿主路径（ADR 1254）。管理员需自行部署符合许可的 Windows 容器镜像；quota gate 仍 fail closed，尚未接入 HCS guest lifecycle/provider。
 
+平台内部新增 HCS guest runner：先执行固定 workspace seed，再执行单个受限 Shell；双 pipe 有界 drain、request deadline/cancel 与 HCS 显式停止统一在一个 owner 流程中，只有停止成功才产出 writable-layer proof（ADR 1255）。runner 尚未接入 service/provider；quota gate 保持关闭。
+
 | 状态 | 切片 | 完成条件 |
 | --- | --- | --- |
 | **Complete** | 配置/IPC/UI 与 MCP runtime 接入 exposure | server 默认值与 per-tool overrides 由同一配置 owner 管理；`direct` / `model_only` / `deferred` / `codemode` / `hidden` 共用确定性 resolver 控制原生 surface、目录、加载和执行可达性；策略更新不重连 server；Hidden/CodeMode stale call 由后端拒绝。UI 可设置 server 默认值与 per-tool overrides。`model_only` 只加入 provider-native surface，不允许作为 Workflow/CodeMode 嵌套 capability（ADR 1183）。 |

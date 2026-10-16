@@ -16,6 +16,15 @@ mod hcs_export_transport;
     not(test),
     expect(
         dead_code,
+        reason = "the broker service consumes this guest runner after quota attestation"
+    )
+)]
+mod hcs_guest_execution;
+#[cfg(windows)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
         reason = "synchronous HCS layer export awaits isolated broker worker wiring"
     )
 )]
