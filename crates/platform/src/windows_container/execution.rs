@@ -21,6 +21,14 @@ const BROKER_SERVICE_NAME: &str = "HavenContainerBroker";
 )]
 pub(crate) mod broker_protocol;
 pub(crate) mod broker_workspace;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the broker output sender and HCS provider are wired in a later execution slice"
+    )
+)]
+pub(crate) mod output_transfer;
 pub(crate) mod workspace_transfer;
 
 #[cfg(windows)]
