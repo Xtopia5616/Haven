@@ -22,8 +22,9 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 /// Expected operation/risk rows used by the local-tool security regression
 /// matrix. The registry-driven test below verifies that this contract covers
@@ -586,8 +587,9 @@ struct SafetyConfig {
 /// perimeter.
 pub struct AuthorizationEngine {
     config: Arc<RwLock<SafetyConfig>>,
-    policy_changes: tokio::sync::watch::Sender<Arc<()>>,
+    process_revocations: tokio::sync::watch::Sender<Arc<()>>,
     process_boundary_changes: tokio::sync::watch::Sender<Arc<()>>,
+    tool_processes: Mutex<HashMap<String, Vec<Weak<CancellationToken>>>>,
 }
 
 /// Short-lived side-effect capability derived from one proof-verified tool
@@ -600,7 +602,8 @@ pub(crate) struct ExecutionPolicyAuthorization {
     policy_revision: u64,
     execution_workspace_generation: u64,
     expires_at: u64,
-    policy_signal: Arc<()>,
+    process_revocation_signal: Arc<()>,
+    tool_settings_cancellation: Arc<CancellationToken>,
 }
 
 /// Current process-boundary snapshot for a manager-owned MCP stdio client
@@ -652,18 +655,25 @@ impl ExecutionPolicyAuthorization {
         Ok(ExecutionPolicyPermit { _config: config })
     }
 
-    /// Wait until any policy mutation invalidates this authorization. Grants
-    /// intentionally do not publish a change because they cannot revoke an
-    /// already-running operation.
+    /// Wait until a global policy mutation or this tool's settings revoke the
+    /// running process. Grants do not revoke already-running work.
     pub(crate) async fn wait_for_policy_revocation(&self) {
-        let mut changes = self.authorization.policy_changes.subscribe();
+        let mut changes = self.authorization.process_revocations.subscribe();
         loop {
-            let current = changes.borrow_and_update().clone();
-            if !Arc::ptr_eq(&current, &self.policy_signal) {
+            if self.tool_settings_cancellation.is_cancelled() {
                 return;
             }
-            if changes.changed().await.is_err() {
+            let current = changes.borrow_and_update().clone();
+            if !Arc::ptr_eq(&current, &self.process_revocation_signal) {
                 return;
+            }
+            tokio::select! {
+                _ = self.tool_settings_cancellation.cancelled() => return,
+                changed = changes.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
             }
         }
     }
@@ -676,15 +686,26 @@ impl ExecutionPolicyAuthorization {
     #[cfg(test)]
     pub(crate) fn for_test_with_engine() -> (Self, Arc<AuthorizationEngine>) {
         let authorization = Arc::new(AuthorizationEngine::new());
-        let policy_signal = authorization.policy_changes.borrow().clone();
-        let proof = Self {
-            authorization: Arc::clone(&authorization),
+        let proof = Self::for_test_with_engine_and_tool(Arc::clone(&authorization), "shell");
+        (proof, authorization)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_engine_and_tool(
+        authorization: Arc<AuthorizationEngine>,
+        tool_name: &str,
+    ) -> Self {
+        let process_revocation_signal = authorization.process_revocations.borrow().clone();
+        let tool_settings_cancellation =
+            authorization.register_tool_settings_cancellation(tool_name);
+        Self {
+            authorization,
             policy_revision: 0,
             execution_workspace_generation: 1,
             expires_at: execution_proof_expiry(),
-            policy_signal,
-        };
-        (proof, authorization)
+            process_revocation_signal,
+            tool_settings_cancellation,
+        }
     }
 }
 
@@ -868,7 +889,8 @@ impl AuthorizationEngine {
     }
 
     fn new_with_workspace(execution_workspace: ExecutionWorkspace) -> Self {
-        let (policy_changes, _policy_change_receiver) = tokio::sync::watch::channel(Arc::new(()));
+        let (process_revocations, _process_revocation_receiver) =
+            tokio::sync::watch::channel(Arc::new(()));
         let (process_boundary_changes, _process_boundary_change_receiver) =
             tokio::sync::watch::channel(Arc::new(()));
         Self {
@@ -884,14 +906,15 @@ impl AuthorizationEngine {
                 session_grants: HashMap::new(),
                 tool_settings: HashMap::new(),
             })),
-            policy_changes,
+            process_revocations,
             process_boundary_changes,
+            tool_processes: Mutex::new(HashMap::new()),
         }
     }
 
     fn bump_policy_revision(&self, cfg: &mut SafetyConfig) {
         bump_policy_revision(cfg);
-        self.policy_changes.send_replace(Arc::new(()));
+        self.process_revocations.send_replace(Arc::new(()));
     }
 
     fn bump_process_boundary_revision(&self, cfg: &mut SafetyConfig) {
@@ -904,6 +927,46 @@ impl AuthorizationEngine {
     /// handled by fresh authorization of each MCP tool call.
     pub(crate) fn subscribe_stdio_process_changes(&self) -> tokio::sync::watch::Receiver<Arc<()>> {
         self.process_boundary_changes.subscribe()
+    }
+
+    fn register_tool_settings_cancellation(&self, tool_name: &str) -> Arc<CancellationToken> {
+        let cancellation = Arc::new(CancellationToken::new());
+        let mut tool_processes = self
+            .tool_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        tool_processes.retain(|_, processes| {
+            processes.retain(|process| process.strong_count() > 0);
+            !processes.is_empty()
+        });
+        for name in tool_setting_names(tool_name) {
+            let processes = tool_processes.entry(name.to_string()).or_default();
+            processes.push(Arc::downgrade(&cancellation));
+        }
+        cancellation
+    }
+
+    fn cancel_tool_settings_processes(&self, changed_tool_names: &HashSet<String>) {
+        if changed_tool_names.is_empty() {
+            return;
+        }
+        let mut tool_processes = self
+            .tool_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for name in changed_tool_names {
+            let Some(processes) = tool_processes.get_mut(name) else {
+                continue;
+            };
+            processes.retain(|process| {
+                let Some(process) = process.upgrade() else {
+                    return false;
+                };
+                process.cancel();
+                true
+            });
+        }
+        tool_processes.retain(|_, processes| !processes.is_empty());
     }
 
     pub(crate) async fn capture_mcp_stdio_process_start_authorization(
@@ -1068,8 +1131,16 @@ impl AuthorizationEngine {
     /// Refresh the live tool_settings mirror used by path/op/risk overrides.
     pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
         let mut cfg = self.config.write().await;
+        let changed_tool_names = cfg
+            .tool_settings
+            .keys()
+            .chain(settings.keys())
+            .filter(|name| cfg.tool_settings.get(*name) != settings.get(*name))
+            .cloned()
+            .collect::<HashSet<_>>();
         cfg.tool_settings = settings;
-        self.bump_policy_revision(&mut cfg);
+        bump_policy_revision(&mut cfg);
+        self.cancel_tool_settings_processes(&changed_tool_names);
     }
 
     /// Return a compact, non-sensitive policy summary for the model context.
@@ -1169,6 +1240,8 @@ impl AuthorizationEngine {
         } else {
             None
         };
+        let tool_settings_cancellation =
+            self.register_tool_settings_cancellation(&request.tool_name);
 
         Ok(ToolExecutionContext {
             execution_workspace: Some(cfg.execution_workspace.clone()),
@@ -1178,7 +1251,8 @@ impl AuthorizationEngine {
                 policy_revision: proof.binding.policy_revision,
                 execution_workspace_generation: cfg.execution_workspace.generation(),
                 expires_at: proof.binding.expires_at,
-                policy_signal: self.policy_changes.borrow().clone(),
+                process_revocation_signal: self.process_revocations.borrow().clone(),
+                tool_settings_cancellation,
             }),
         })
     }
@@ -2417,6 +2491,135 @@ mod tests {
             .await
             .expect("running authorization should observe policy revocation")
             .expect("policy watcher should not panic");
+    }
+
+    #[tokio::test]
+    async fn tool_settings_update_does_not_publish_global_process_revocation() {
+        let engine = Arc::new(AuthorizationEngine::new());
+        let mut process_revocations = engine.process_revocations.subscribe();
+        let before_revision = engine.config.read().await.policy_revision;
+        let unrelated_authorization = ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
+            Arc::clone(&engine),
+            "unrelated",
+        );
+        let mut settings = HashMap::new();
+        settings.insert(
+            "shell".into(),
+            ToolConfig {
+                enabled: false,
+                ..ToolConfig::default()
+            },
+        );
+
+        engine.set_tool_settings(settings).await;
+
+        assert_eq!(
+            engine.config.read().await.policy_revision,
+            before_revision + 1,
+            "new execution proofs must still observe the updated tool setting"
+        );
+        assert!(
+            unrelated_authorization.acquire().await.is_err(),
+            "the policy revision must reject stale proofs even when their process is not revoked"
+        );
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                process_revocations.changed()
+            )
+            .await
+            .is_err(),
+            "tool-scoped updates must not publish a global process revocation"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_settings_update_revokes_only_affected_tool_processes() {
+        let engine = Arc::new(AuthorizationEngine::new());
+        let shell_config = ToolConfig::default();
+        let skill_config = ToolConfig::default();
+        engine
+            .set_tool_settings(HashMap::from([
+                ("shell".into(), shell_config.clone()),
+                ("skill".into(), skill_config.clone()),
+            ]))
+            .await;
+
+        let shell_authorization = ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
+            Arc::clone(&engine),
+            "shell",
+        );
+        let skill_authorization = ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
+            Arc::clone(&engine),
+            "skill.demo",
+        );
+        let mut shell_waiter = tokio::spawn(async move {
+            shell_authorization.wait_for_policy_revocation().await;
+        });
+        let mut skill_waiter = tokio::spawn(async move {
+            skill_authorization.wait_for_policy_revocation().await;
+        });
+
+        let changed_shell = ToolConfig {
+            enabled: false,
+            ..shell_config.clone()
+        };
+        engine
+            .set_tool_settings(HashMap::from([
+                ("shell".into(), changed_shell.clone()),
+                ("skill".into(), skill_config.clone()),
+            ]))
+            .await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), &mut shell_waiter)
+            .await
+            .expect("the affected shell process should be revoked")
+            .expect("shell authorization watcher should not panic");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut skill_waiter)
+                .await
+                .is_err(),
+            "a skill process must keep running after an unrelated shell setting change"
+        );
+
+        let changed_skill = ToolConfig {
+            enabled: false,
+            ..skill_config
+        };
+        engine
+            .set_tool_settings(HashMap::from([
+                ("shell".into(), changed_shell),
+                ("skill".into(), changed_skill),
+            ]))
+            .await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), skill_waiter)
+            .await
+            .expect("the affected skill process should be revoked through its root setting")
+            .expect("skill authorization watcher should not panic");
+    }
+
+    #[test]
+    fn tool_settings_cancellation_registry_prunes_expired_tool_names() {
+        let engine = Arc::new(AuthorizationEngine::new());
+        let expired = ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
+            Arc::clone(&engine),
+            "retired.tool",
+        );
+        drop(expired);
+
+        let _active = ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
+            Arc::clone(&engine),
+            "current.tool",
+        );
+
+        let processes = engine
+            .tool_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            !processes.contains_key("retired.tool") && !processes.contains_key("retired"),
+            "inactive tool aliases should not accumulate in the registry"
+        );
     }
 
     #[tokio::test]

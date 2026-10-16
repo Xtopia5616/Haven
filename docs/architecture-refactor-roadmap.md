@@ -198,11 +198,13 @@ ADR 1212 已将同一 proof-bound 撤销生命周期接入 Skill 脚本、venv �
 
 MCP stdio 进程撤销现只订阅 process-boundary revision：sandbox、writable roots、network 或 execution workspace 更新仍会 drain 旧 generation；permission mode、普通 trust revoke 与 tool settings 更新不会断开 server，每次 MCP tool call 仍经实时 exposure 与授权检查（ADR 1216）。
 
+Shell 与 Skill 的进程撤销现分离 proof freshness 与进程生命周期：任何 tool settings 更新都会推进全局授权 revision、拒绝旧 proof，但只终止配置实际变化所影响的工具进程；权限模式、trust 与执行边界更新仍全局撤销，具体 Skill 绑定根设置键（ADR 1217）。
+
 Skill 创建现通过固定 Skills 根 `DirectoryCapability` 创建目录树，并以原子替换写入脚本和最后发布 `SKILL.md`；失败清理由同一 capability 执行，避免路径跟随和部分目录进入注册表（ADR 1214）。
 
 ADR 1215 根据 Windows Container 官方宿主要求、`StorageSandboxSize` 能力边界和客户端容器许可进一步限定 HCS 候选：它不作为 Haven 常规 Windows 客户端生产执行的默认配额后端；OS 强制存储配额 Gate 仍开放，`WorkspaceWrite` 子进程继续 fail closed。
 
-详见 [ADR 1212](adr/1212-revoke-running-skills-on-policy-change.md)、[ADR 1213](adr/1213-revoke-mcp-stdio-on-policy-change.md)、[ADR 1214](adr/1214-pin-skill-creation-writes.md) 与 [ADR 1215](adr/1215-limit-windows-container-quota-backend-scope.md)。
+详见 [ADR 1212](adr/1212-revoke-running-skills-on-policy-change.md)、[ADR 1213](adr/1213-revoke-mcp-stdio-on-policy-change.md)、[ADR 1214](adr/1214-pin-skill-creation-writes.md)、[ADR 1215](adr/1215-limit-windows-container-quota-backend-scope.md) 与 [ADR 1217](adr/1217-scope-process-revocation-to-changed-tool-settings.md)。
 
 ## 6. 更新规则
 

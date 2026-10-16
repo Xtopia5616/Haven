@@ -2,22 +2,22 @@
 
 ## 状态
 
-已实现。授权 proof 绑定策略变更信号；前台 Shell 与后台 Shell ToolRun 在策略撤销后终止其受管进程树。
+已实现，撤销范围由 [ADR 1217](1217-scope-process-revocation-to-changed-tool-settings.md) 细化：全局安全策略撤销仍终止前台 Shell 与后台 Shell ToolRun；`tool_settings` 变化只终止受影响工具的进程。
 
 ## 背景
 
-[ADR 1199](1199-revalidate-live-policy-at-process-spawn.md) 为进程创建提供实时策略读 permit，保证策略更新与 OS spawn 有明确顺序，但它只覆盖启动线性化点。进程开始运行后，切换 permission mode、sandbox/network boundary、execution workspace、tool settings，或撤销/清除信任会递增全局 `policy_revision` 并使新的调用 proof 失效；已运行 Shell 此前不会收到撤销信号。
+[ADR 1199](1199-revalidate-live-policy-at-process-spawn.md) 为进程创建提供实时策略读 permit，保证策略更新与 OS spawn 有明确顺序，但它只覆盖启动线性化点。进程开始运行后，切换 permission mode、sandbox/network boundary、execution workspace、tool settings，或撤销/清除信任会递增全局 `policy_revision` 并使新的调用 proof 失效；已运行 Shell 此前不会收到撤销信号。原实现把 `tool_settings` 也合并到全局进程撤销；ADR 1217 已将它改为按变更工具定向撤销。
 
 进程启动是持续副作用。用户收紧边界后让旧 Shell 继续运行，会使当前授权设置与真实进程能力脱节。另一方面，长期持有 policy read lock 会阻塞设置更新，因此运行期撤销不能通过锁住整段命令执行实现。
 
 ## 决定
 
-- `AuthorizationEngine` 是策略变更信号的唯一 owner。每个会递增 `policy_revision` 的修改都发布新的进程内 signal token；proof 派生的 `ExecutionPolicyAuthorization` 在持有配置读锁时捕获当前 token，避免授权快照与 signal 脱节。
-- 权限 grant 不发布撤销 signal：授予权限不会撤销当前已授权的工作。配置/边界变更、workspace 切换、trust 清理和显式 revoke 继续递增全局 revision，并使旧 proof 及运行中的授权 Shell 失效。
+- `AuthorizationEngine` 是策略 revision 和进程撤销信号的唯一 owner。proof 派生的 `ExecutionPolicyAuthorization` 在持有配置读锁时捕获当前进程撤销 token，避免授权快照与 signal 脱节。
+- 权限 grant 不发布撤销 signal：授予权限不会撤销当前已授权的工作。全局配置/边界变更、workspace 切换、trust 清理和显式 revoke 继续递增全局 revision，并使旧 proof 及运行中的授权 Shell 失效。`tool_settings` 仍递增 proof revision 以拒绝旧 proof，但进程撤销按受影响工具定向处理，细节见 ADR 1217。
 - 前台与后台 Shell 持有短期 policy read permit，直到 child 已接入进程 containment 且 Windows 初始线程已恢复。之后立即释放 permit，不让长时间命令阻塞设置更新。
-- 两类 Shell 在进程运行期间监听捕获的 token。授权 owner 发布新 token 后，Shell 终止主进程并关闭 Job Object；前台调用返回 `Cancelled`，后台 ToolRun 进入 `cancelled`。用户取消与应用关闭继续走原有进程树回收路径。
+- 两类 Shell 在进程运行期间监听捕获的全局撤销 token 或其工具设置 token。撤销后 Shell 终止主进程并关闭 Job Object；前台调用返回 `Cancelled`，后台 ToolRun 进入 `cancelled`。用户取消与应用关闭继续走原有进程树回收路径。
 - signal 使用独立 token 身份而不是仅比较 `u64` revision，因此即使 revision 达到饱和值，之后的策略变更仍可通知已运行进程。
-- 撤销是保守的全局行为：任何会推进全局 revision 的变更都会终止所有 proof 绑定的前台/后台 Shell，即使变更只针对一个 session。后续如需减少无关终止，应先把授权版本拆分为明确的全局边界与 session/capability 撤销域，并保持每个进程绑定可证明的授权快照。
+- 对全局策略和 trust 撤销，行为仍是保守的全局撤销：相关变更会终止所有 proof 绑定的前台/后台 Shell，即使变更只针对一个 session。工具设置的撤销域已由 ADR 1217 收窄到设置实际影响的工具；这不改变权限模式、执行 workspace、sandbox/network 边界和 trust 撤销的全局行为。
 - 本 ADR 只接通 Shell 与其后台 ToolRun。Skill、MCP stdio 及其他子进程 owner 仍需各自把进程 lifecycle 连接到相同授权撤销 owner；不能把本次 Shell 行为描述为全体子进程均已支持撤销。
 
 ## 替代方案
@@ -29,7 +29,7 @@
 
 ## 影响与迁移
 
-新增仅存在进程内的 watch signal 和 proof 捕获 token，不增加配置、IPC、数据库或持久字段，无需重置或兼容迁移。策略收紧后运行中的 Shell 会更早停止，其结果按既有 cancellation 契约表示；后台 ToolRun 为 `cancelled`。本行为可能中断与变更无关的其他会话 Shell，这是全局 revision 当前语义的有意保守结果。
+新增仅存在进程内的撤销 signal 和工具 token，不增加配置、IPC、数据库或持久字段，无需重置或兼容迁移。全局策略收紧会终止所有绑定的 Shell；工具设置变化只终止依赖受影响设置的 Shell。其结果按既有 cancellation 契约表示；后台 ToolRun 为 `cancelled`。
 
 ## 验证
 
