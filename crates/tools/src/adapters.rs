@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use haven_common::mcp::McpServerTransport;
 use haven_common::tools::{
     ToolAvailability, ToolCatalogGroup, ToolPresentation, ToolPrompt, ToolRootPresentation,
     ToolSource,
@@ -70,6 +71,7 @@ fn mcp_operation_spec(
     server_name: &str,
     operation: &str,
     schema: Value,
+    transport: &McpServerTransport,
 ) -> OperationSpec {
     OperationSpec {
         name: name.to_string().into(),
@@ -79,7 +81,11 @@ fn mcp_operation_spec(
         policy: OperationPolicy::external(
             CapabilityScope::try_new(name).expect("provider-safe MCP tool name is a valid scope"),
             RiskLevel::High,
-        ),
+        )
+        .with_execution_boundary(match transport {
+            McpServerTransport::Stdio => crate::ExecutionBoundary::HostProcess,
+            McpServerTransport::Http => crate::ExecutionBoundary::InProcess,
+        }),
         policy_rule: None,
         catalog_group: ToolCatalogGroup::Mcp,
         presentation: ToolPresentation {
@@ -173,12 +179,28 @@ pub struct McpToolAdapter {
 
 impl McpToolAdapter {
     pub fn new(manager: McpManager, server_name: &str, info: McpToolInfo) -> Self {
+        Self::new_with_transport(manager, server_name, info, McpServerTransport::Stdio)
+    }
+
+    pub(crate) fn new_with_transport(
+        manager: McpManager,
+        server_name: &str,
+        info: McpToolInfo,
+        transport: McpServerTransport,
+    ) -> Self {
         let server_name = server_name.to_string();
         let name = Self::qualified_name_of(&server_name, &info.name);
         let description = sanitize_external_description(&info.description);
         let operation = info.name.clone();
         let schema = sanitize_external_schema(&info.input_schema);
-        let spec = mcp_operation_spec(&name, &description, &server_name, &operation, schema);
+        let spec = mcp_operation_spec(
+            &name,
+            &description,
+            &server_name,
+            &operation,
+            schema,
+            &transport,
+        );
         Self {
             manager,
             info,
@@ -573,6 +595,35 @@ mod tests {
         assert_eq!(manifest.identity.operation.as_deref(), Some("greet"));
         assert_eq!(manifest.identity.stable_name, "mcp__agent__greet");
         assert_eq!(manifest.presentation.renderer, "mcp");
+    }
+
+    #[test]
+    fn mcp_execution_boundary_tracks_configured_transport() {
+        let info = McpToolInfo {
+            name: "greet".into(),
+            description: "Greets the user".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        };
+        let manager = McpManager::new();
+        let stdio = McpToolAdapter::new_with_transport(
+            manager.clone(),
+            "server",
+            info.clone(),
+            McpServerTransport::Stdio,
+        );
+        let http =
+            McpToolAdapter::new_with_transport(manager, "server", info, McpServerTransport::Http);
+
+        assert_eq!(
+            stdio.operation_policy(&Value::Null).execution_boundary,
+            crate::ExecutionBoundary::HostProcess
+        );
+        let http_policy = http.operation_policy(&Value::Null);
+        assert_eq!(
+            http_policy.execution_boundary,
+            crate::ExecutionBoundary::InProcess
+        );
+        assert_eq!(http_policy.network_access, crate::NetworkAccess::Opaque);
     }
 
     #[tokio::test]

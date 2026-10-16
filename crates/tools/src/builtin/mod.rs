@@ -494,6 +494,7 @@ fn operation_spec(
         effect: attributes.effect,
         data_sensitivity: attributes.data_sensitivity,
         network_access: attributes.network_access,
+        execution_boundary: attributes.execution_boundary,
     };
     OperationSpec {
         name: name.into(),
@@ -559,6 +560,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 effect: crate::OperationEffect::ReadOnly,
                 data_sensitivity: crate::DataSensitivity::UserData,
                 network_access: crate::NetworkAccess::None,
+                execution_boundary: crate::ExecutionBoundary::InProcess,
             },
             policy_rule: None,
             catalog_group: ToolCatalogGroup::System,
@@ -594,6 +596,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 effect: crate::OperationEffect::ReadOnly,
                 data_sensitivity: crate::DataSensitivity::UserData,
                 network_access: crate::NetworkAccess::None,
+                execution_boundary: crate::ExecutionBoundary::InProcess,
             },
             policy_rule: None,
             catalog_group: ToolCatalogGroup::System,
@@ -629,6 +632,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 effect: crate::OperationEffect::ReadOnly,
                 data_sensitivity: crate::DataSensitivity::UserData,
                 network_access: crate::NetworkAccess::Public,
+                execution_boundary: crate::ExecutionBoundary::InProcess,
             },
             policy_rule: None,
             catalog_group: ToolCatalogGroup::System,
@@ -664,6 +668,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 effect: crate::OperationEffect::ReadOnly,
                 data_sensitivity: crate::DataSensitivity::UserData,
                 network_access: crate::NetworkAccess::None,
+                execution_boundary: crate::ExecutionBoundary::InProcess,
             },
             policy_rule: Some(OperationPolicyRule::ContentSearchMedium),
             catalog_group: ToolCatalogGroup::System,
@@ -699,6 +704,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 effect: crate::OperationEffect::ReadOnly,
                 data_sensitivity: crate::DataSensitivity::None,
                 network_access: crate::NetworkAccess::None,
+                execution_boundary: crate::ExecutionBoundary::InProcess,
             },
             policy_rule: None,
             catalog_group: ToolCatalogGroup::System,
@@ -1428,6 +1434,7 @@ mod tests {
                 effect: attributes.effect,
                 data_sensitivity: attributes.data_sensitivity,
                 network_access: attributes.network_access,
+                execution_boundary: attributes.execution_boundary,
             };
             crate::AuthorizationRequest::new(None, name, json!({}), policy)
         };
@@ -1474,6 +1481,7 @@ mod tests {
                 effect: attributes.effect,
                 data_sensitivity: attributes.data_sensitivity,
                 network_access: attributes.network_access,
+                execution_boundary: attributes.execution_boundary,
             },
         );
         let engine = crate::security::AuthorizationEngine::new();
@@ -1614,6 +1622,7 @@ mod tests {
                     effect: attributes.effect,
                     data_sensitivity: attributes.data_sensitivity,
                     network_access: attributes.network_access,
+                    execution_boundary: attributes.execution_boundary,
                 },
             );
 

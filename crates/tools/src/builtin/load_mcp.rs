@@ -167,6 +167,7 @@ impl LoadMcpTool {
                 &session_id,
                 &server_name,
                 self.mcp_manager.as_ref().clone(),
+                config.transport.clone(),
                 selected_tools,
             )
             .await?
@@ -242,6 +243,7 @@ impl LoadMcpTool {
         session_id: &str,
         server_name: &str,
         manager: McpManager,
+        transport: haven_common::mcp::McpServerTransport,
         tools: Vec<haven_mcp::McpToolInfo>,
     ) -> anyhow::Result<ActivateOutcome> {
         let global_count = self.registry.list().await.len();
@@ -250,7 +252,12 @@ impl LoadMcpTool {
         for info in tools {
             let tool_name = info.name.clone();
             let description = crate::adapters::sanitize_external_description(&info.description);
-            let adapter = McpToolAdapter::new(manager.clone(), server_name, info);
+            let adapter = McpToolAdapter::new_with_transport(
+                manager.clone(),
+                server_name,
+                info,
+                transport.clone(),
+            );
             // The next provider request receives the full schema through
             // `tools[]`; returning it here would duplicate the schema inside
             // the conversation transcript and inflate every later request.

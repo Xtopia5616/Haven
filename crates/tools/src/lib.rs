@@ -224,9 +224,9 @@ pub use tool_contract::{
     extract_notify_signal, is_silent_tool_call, parse_tool_input,
 };
 pub(crate) use tool_contract::{
-    ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,
-    ToolDef, ToolErrorClass, ToolExecutionOutcome, ToolManifest, ToolOperationScope,
-    ToolRetryability, ToolSource,
+    ConfirmationRequirement, DataSensitivity, ExecutionBoundary, NetworkAccess, OperationEffect,
+    OperationIdempotency, ToolDef, ToolErrorClass, ToolExecutionOutcome, ToolManifest,
+    ToolOperationScope, ToolRetryability, ToolSource,
 };
 pub use tool_run_events::{
     ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunLifecycleState, ToolRunLifecycleUpdate,

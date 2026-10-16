@@ -171,6 +171,7 @@ async fn file_mutation_rejects_a_policy_change_after_proof_capture() {
         effect: OperationEffect::WorkspaceWrite,
         data_sensitivity: DataSensitivity::UserData,
         network_access: NetworkAccess::None,
+        execution_boundary: crate::ExecutionBoundary::InProcess,
     };
     let request = AuthorizationRequest::new(
         Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),

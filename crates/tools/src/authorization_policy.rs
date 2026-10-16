@@ -173,6 +173,7 @@ fn unknown_operation_policy(tool_name: &str) -> Result<OperationPolicy, String> 
         effect: OperationEffect::ExternalEffect,
         data_sensitivity: DataSensitivity::None,
         network_access: NetworkAccess::None,
+        execution_boundary: crate::ExecutionBoundary::HostProcess,
     })
 }
 

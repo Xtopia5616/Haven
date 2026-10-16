@@ -717,7 +717,7 @@ impl Tool for ShellTool {
     }
 
     fn operation_spec(&self) -> Option<crate::operation_view::OperationSpec> {
-        Some(crate::operation_view::root_tool_spec(
+        let mut spec = crate::operation_view::root_tool_spec(
             "shell",
             crate::prompts::SHELL_DESCRIPTION,
             self.input_schema(),
@@ -727,7 +727,13 @@ impl Tool for ShellTool {
             crate::ToolConcurrency::Exclusive,
             ToolCatalogGroup::System,
             None,
-        ))
+        );
+        spec.policy.execution_boundary = if cfg!(windows) {
+            crate::ExecutionBoundary::WorkspaceIsolated
+        } else {
+            crate::ExecutionBoundary::HostProcess
+        };
+        Some(spec)
     }
 
     fn timeout_outcome(&self) -> ToolExecutionOutcome {
@@ -992,6 +998,28 @@ mod tests {
     #[test]
     fn test_shell_tool_name() {
         assert_eq!(ShellTool::default().name(), "shell");
+    }
+
+    #[test]
+    fn workspace_isolation_is_declared_by_the_shell_owner_not_its_name() {
+        let policy = ShellTool::default().operation_policy(&json!({}));
+        #[cfg(windows)]
+        assert_eq!(
+            policy.execution_boundary,
+            crate::ExecutionBoundary::WorkspaceIsolated
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            policy.execution_boundary,
+            crate::ExecutionBoundary::HostProcess
+        );
+
+        assert_eq!(
+            crate::tool_contract::operation_attributes("shell", crate::ToolConcurrency::Exclusive,)
+                .execution_boundary,
+            crate::ExecutionBoundary::HostProcess,
+            "a tool name alone must not receive the Windows workspace-isolation exemption"
+        );
     }
 
     #[test]

@@ -116,13 +116,27 @@ impl std::fmt::Display for StructuredToolError {
 
 impl std::error::Error for StructuredToolError {}
 
-/// Static effect, disclosure, and network classification shared by tool
-/// contracts and the operation-view catalog.
+/// Static effect, disclosure, network, and process-boundary classification
+/// shared by tool contracts and the operation-view catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OperationAttributes {
     pub effect: OperationEffect,
     pub data_sensitivity: DataSensitivity,
     pub network_access: NetworkAccess,
+    pub execution_boundary: ExecutionBoundary,
+}
+
+/// Local process boundary required by one operation.
+///
+/// Network access is classified separately: a remote MCP call uses Haven's
+/// in-process HTTP transport, while a stdio MCP server or Skill executes a
+/// local child process. `WorkspaceIsolated` is reserved for operations
+/// whose backend enforces the execution-workspace boundary at the OS level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExecutionBoundary {
+    InProcess,
+    HostProcess,
+    WorkspaceIsolated,
 }
 
 /// Single runtime policy returned by every tool implementation. The manifest
@@ -139,6 +153,7 @@ pub struct OperationPolicy {
     pub effect: OperationEffect,
     pub data_sensitivity: DataSensitivity,
     pub network_access: NetworkAccess,
+    pub(crate) execution_boundary: ExecutionBoundary,
 }
 
 /// Confirmation derived from risk and whether the effect is read-only.
@@ -177,7 +192,15 @@ impl OperationPolicy {
             effect: OperationEffect::ExternalEffect,
             data_sensitivity: DataSensitivity::Sensitive,
             network_access: NetworkAccess::Opaque,
+            execution_boundary: ExecutionBoundary::HostProcess,
         }
+    }
+
+    /// Mark an external adapter that uses only Haven's in-process transport.
+    /// Its network permission remains governed by `network_access`.
+    pub(crate) fn with_execution_boundary(mut self, boundary: ExecutionBoundary) -> Self {
+        self.execution_boundary = boundary;
+        self
     }
 
     /// Build a contract for a native/UI entry point that does not have a
@@ -200,6 +223,7 @@ impl OperationPolicy {
             effect: attributes.effect,
             data_sensitivity: attributes.data_sensitivity,
             network_access,
+            execution_boundary: attributes.execution_boundary,
         }
     }
 
@@ -268,10 +292,23 @@ pub(crate) fn operation_attributes(
         }
         _ => NetworkAccess::None,
     };
+    let execution_boundary = match name {
+        "shell" | "load_mcp" | "load_skill" => ExecutionBoundary::HostProcess,
+        name if name.starts_with("mcp__")
+            || name.starts_with("mcp::")
+            || name.starts_with("skill__")
+            || name.starts_with("skill::")
+            || name.starts_with("haven.mcp.") =>
+        {
+            ExecutionBoundary::HostProcess
+        }
+        _ => ExecutionBoundary::InProcess,
+    };
     OperationAttributes {
         effect,
         data_sensitivity: data,
         network_access: network,
+        execution_boundary,
     }
 }
 
@@ -320,6 +357,7 @@ pub(crate) fn synthesize_operation_policy(
         effect: attributes.effect,
         data_sensitivity: attributes.data_sensitivity,
         network_access: attributes.network_access,
+        execution_boundary: attributes.execution_boundary,
     }
 }
 
@@ -341,6 +379,7 @@ pub(crate) fn restrictive_catalog_policy() -> OperationPolicy {
         effect: OperationEffect::ExternalEffect,
         data_sensitivity: DataSensitivity::Sensitive,
         network_access: NetworkAccess::Opaque,
+        execution_boundary: ExecutionBoundary::HostProcess,
     }
 }
 

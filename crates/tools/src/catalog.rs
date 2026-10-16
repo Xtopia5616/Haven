@@ -29,6 +29,7 @@ impl McpServerIndexEntry {
 fn refreshed_mcp_adapters(
     server_name: &str,
     manager: &haven_mcp::McpManager,
+    transport: &haven_common::mcp::McpServerTransport,
     active_tools: Vec<(String, String, ToolHandle)>,
     available: &[McpToolInfo],
 ) -> (Vec<ToolHandle>, Vec<String>) {
@@ -43,10 +44,11 @@ fn refreshed_mcp_adapters(
             removals.push(qualified_name);
             continue;
         };
-        let refreshed = Arc::new(McpToolAdapter::new(
+        let refreshed = Arc::new(McpToolAdapter::new_with_transport(
             manager.clone(),
             server_name,
             (**info).clone(),
+            transport.clone(),
         )) as ToolHandle;
         if current.tool_manifest() != refreshed.tool_manifest() {
             replacements.push(refreshed);
@@ -294,10 +296,11 @@ impl ToolsFacade {
         let adapters = tools
             .into_iter()
             .map(|info| {
-                Arc::new(McpToolAdapter::new(
+                Arc::new(McpToolAdapter::new_with_transport(
                     self.coordinator.builtins.mcp_manager.clone(),
                     server_name,
                     info,
+                    config.transport.clone(),
                 )) as ToolHandle
             })
             .collect();
@@ -429,10 +432,12 @@ impl ToolsFacade {
                 }
                 let qualified_name = McpToolAdapter::qualified_name_of(&config.name, &info.name);
                 if qualified_name == name && tool_config_enabled(settings, &qualified_name) {
-                    return Some(
-                        Arc::new(McpToolAdapter::new(manager.clone(), &config.name, info))
-                            as ToolHandle,
-                    );
+                    return Some(Arc::new(McpToolAdapter::new_with_transport(
+                        manager.clone(),
+                        &config.name,
+                        info,
+                        config.transport.clone(),
+                    )) as ToolHandle);
                 }
             }
         }
@@ -638,10 +643,12 @@ impl OperationCatalog<'_> {
                 if !tool_config_enabled(settings, &name) {
                     continue;
                 }
-                tools.push(
-                    Arc::new(McpToolAdapter::new(manager.clone(), &config.name, info))
-                        as ToolHandle,
-                );
+                tools.push(Arc::new(McpToolAdapter::new_with_transport(
+                    manager.clone(),
+                    &config.name,
+                    info,
+                    config.transport.clone(),
+                )) as ToolHandle);
             }
         }
         tools.sort_by_key(|tool| tool.name());
@@ -799,8 +806,13 @@ impl OperationCatalog<'_> {
                 // snapshot will retry from the manager's cache.
                 continue;
             };
-            let (server_replacements, server_removals) =
-                refreshed_mcp_adapters(&server_name, manager, eligible, &available);
+            let (server_replacements, server_removals) = refreshed_mcp_adapters(
+                &server_name,
+                manager,
+                &config.transport,
+                eligible,
+                &available,
+            );
             replacements.extend(server_replacements);
             removals.extend(server_removals);
         }
@@ -1163,8 +1175,13 @@ mod mcp_refresh_tests {
             ),
         ];
 
-        let (replacements, removals) =
-            refreshed_mcp_adapters("calendar", &manager, active, &available);
+        let (replacements, removals) = refreshed_mcp_adapters(
+            "calendar",
+            &manager,
+            &haven_common::mcp::McpServerTransport::Stdio,
+            active,
+            &available,
+        );
 
         assert!(removals.is_empty());
         assert_eq!(replacements.len(), 1);
@@ -1197,8 +1214,13 @@ mod mcp_refresh_tests {
                 ),
             ),
         )];
-        let (replacements, removals) =
-            refreshed_mcp_adapters("calendar", &manager, active, &available[1..]);
+        let (replacements, removals) = refreshed_mcp_adapters(
+            "calendar",
+            &manager,
+            &haven_common::mcp::McpServerTransport::Stdio,
+            active,
+            &available[1..],
+        );
         assert!(replacements.is_empty());
         assert_eq!(
             removals,

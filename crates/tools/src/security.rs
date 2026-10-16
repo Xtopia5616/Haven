@@ -609,8 +609,8 @@ pub(crate) struct ExecutionPolicyAuthorization {
 
 /// Current process-boundary snapshot for a manager-owned MCP stdio client
 /// generation. Unlike a tool proof it is not permission to call a tool; it
-/// only permits a child process to start while opaque network access remains
-/// explicitly open.
+/// only permits a child process to start while sandbox mode is FullAccess
+/// and opaque network access remains explicitly open.
 #[derive(Clone)]
 pub(crate) struct McpStdioProcessStartAuthorization {
     authorization: Arc<AuthorizationEngine>,
@@ -759,6 +759,9 @@ impl McpStdioProcessStartAuthorization {
         }
         if config.execution_workspace.generation() != self.execution_workspace_generation {
             return Err("execution workspace changed before the MCP process start".into());
+        }
+        if matches!(config.sandbox_mode, SandboxMode::WorkspaceWrite) {
+            return Err("MCP stdio is blocked by the workspace-write sandbox".into());
         }
         if config.network_policy != NetworkPolicy::Open {
             return Err("MCP stdio requires the network policy to be Open".into());
@@ -1048,7 +1051,9 @@ impl AuthorizationEngine {
         self: &Arc<Self>,
     ) -> Option<Arc<McpStdioProcessStartAuthorization>> {
         let config = self.config.read().await;
-        if config.network_policy != NetworkPolicy::Open {
+        if matches!(config.sandbox_mode, SandboxMode::WorkspaceWrite)
+            || config.network_policy != NetworkPolicy::Open
+        {
             return None;
         }
         Some(Arc::new(McpStdioProcessStartAuthorization {
@@ -1357,8 +1362,7 @@ impl AuthorizationEngine {
                 reason_code: AuthorizationReasonCode::DisabledOperation,
             });
         }
-        if let Some(reason) = workspace_opaque_capability_block(cfg.sandbox_mode, tool_name, policy)
-        {
+        if let Some(reason) = workspace_host_process_block(cfg.sandbox_mode, tool_name, policy) {
             return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason,
                 reason_code: AuthorizationReasonCode::SandboxBoundary,
@@ -1522,8 +1526,7 @@ impl AuthorizationEngine {
         if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, key) {
             return Err(reason);
         }
-        if let Some(reason) = workspace_opaque_capability_block(cfg.sandbox_mode, tool_name, policy)
-        {
+        if let Some(reason) = workspace_host_process_block(cfg.sandbox_mode, tool_name, policy) {
             return Err(reason);
         }
         if let Some(reason) = network_policy_block(cfg.network_policy, tool_name, policy) {
@@ -1617,7 +1620,7 @@ impl AuthorizationEngine {
             return Err(reason);
         }
         if let Some(reason) =
-            workspace_opaque_capability_block(cfg.sandbox_mode, tool_name, &request.policy)
+            workspace_host_process_block(cfg.sandbox_mode, tool_name, &request.policy)
         {
             return Err(reason);
         }
@@ -1967,9 +1970,9 @@ fn network_policy_block(
         (NetworkPolicy::Deny, _) => {
             Some(format!("network access is disabled for tool '{tool_name}'"))
         }
-        // Ask is the explicit user-consent path for opaque adapters such as
-        // Skills and MCP tools. WorkspaceWrite eligibility is evaluated by
-        // the separate sandbox gate; network consent never overrides it.
+        // Ask is the explicit user-consent path for opaque network adapters.
+        // The local process boundary is evaluated separately, so network
+        // consent cannot make an unbounded child process safe for WorkspaceWrite.
         (NetworkPolicy::Ask, NetworkAccess::Opaque) => None,
         // Restricted is the technical network boundary: Haven must be able to
         // inspect and validate the destination before an opaque adapter runs.
@@ -1980,21 +1983,21 @@ fn network_policy_block(
     }
 }
 
-fn workspace_opaque_capability_block(
+fn workspace_host_process_block(
     sandbox_mode: SandboxMode,
     tool_name: &str,
     operation: &OperationPolicy,
 ) -> Option<String> {
-    // Only Windows Shell has a quota-gated HCS backend that snapshots the
-    // execution workspace and keeps all guest writes in a private review.
-    // Skills, MCP and other opaque capabilities remain blocked here.
-    let has_bounded_windows_shell = cfg!(windows) && tool_name == "shell";
+    // WorkspaceWrite protects the host filesystem from local child
+    // processes. In-process network adapters remain subject to the separate
+    // network policy, while an isolated process is allowed only when its
+    // backend supplies the OS-enforced execution-workspace boundary.
     (matches!(sandbox_mode, SandboxMode::WorkspaceWrite)
-        && !has_bounded_windows_shell
-        && matches!(operation.network_access, NetworkAccess::Opaque))
-    .then(|| {
-        format!("workspace-write sandbox cannot safely constrain opaque capability '{tool_name}'")
-    })
+        && matches!(
+            operation.execution_boundary,
+            crate::ExecutionBoundary::HostProcess
+        ))
+    .then(|| format!("workspace-write sandbox cannot safely constrain host process '{tool_name}'"))
 }
 
 fn match_grant(
@@ -2323,6 +2326,22 @@ mod tests {
             }
             _ => NetworkAccess::None,
         };
+        let execution_boundary = if tool_name == "shell" {
+            if cfg!(windows) {
+                crate::ExecutionBoundary::WorkspaceIsolated
+            } else {
+                crate::ExecutionBoundary::HostProcess
+            }
+        } else if tool_name.starts_with("mcp::")
+            || tool_name.starts_with("mcp__")
+            || tool_name.starts_with("skill::")
+            || tool_name.starts_with("skill__")
+            || tool_name.starts_with("haven.mcp.")
+        {
+            crate::ExecutionBoundary::HostProcess
+        } else {
+            crate::ExecutionBoundary::InProcess
+        };
         OperationPolicy {
             risk_level,
             capability: CapabilityScope::try_new(capability_key).unwrap(),
@@ -2339,6 +2358,7 @@ mod tests {
             effect: OperationEffect::ExternalEffect,
             data_sensitivity: DataSensitivity::None,
             network_access,
+            execution_boundary,
         }
     }
 
@@ -2858,7 +2878,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_stdio_process_authorization_is_open_only_and_stale_after_policy_change() {
+    async fn mcp_stdio_process_authorization_requires_full_access_and_open_network() {
         let engine = Arc::new(AuthorizationEngine::new());
         engine
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
@@ -2887,6 +2907,28 @@ mod tests {
                 .await
                 .is_none(),
             "non-open opaque-network policy must not produce a stdio start authorization"
+        );
+
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let authorization = engine
+            .capture_mcp_stdio_process_start_authorization()
+            .await
+            .expect("FullAccess and Open permit a fresh stdio generation");
+        engine
+            .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
+            .await;
+        assert!(
+            authorization.acquire().await.is_err(),
+            "changing to WorkspaceWrite must revoke an existing stdio start permit"
+        );
+        assert!(
+            engine
+                .capture_mcp_stdio_process_start_authorization()
+                .await
+                .is_none(),
+            "WorkspaceWrite must not authorize a new stdio process even with Open network"
         );
     }
 
@@ -3449,6 +3491,7 @@ mod tests {
             effect: OperationEffect::ReadOnly,
             data_sensitivity: DataSensitivity::UserData,
             network_access: NetworkAccess::None,
+            execution_boundary: crate::ExecutionBoundary::InProcess,
         };
         assert!(matches!(
             authorize(&gateway, None, "files.read", &json!({}), &read_policy).await,
@@ -3466,6 +3509,7 @@ mod tests {
             effect: OperationEffect::WorkspaceWrite,
             data_sensitivity: DataSensitivity::None,
             network_access: NetworkAccess::None,
+            execution_boundary: crate::ExecutionBoundary::InProcess,
         };
         assert!(matches!(
             authorize(&gateway, None, "files.write", &json!({}), &write_policy).await,
@@ -3492,6 +3536,7 @@ mod tests {
             effect: OperationEffect::WorkspaceWrite,
             data_sensitivity: DataSensitivity::None,
             network_access: NetworkAccess::None,
+            execution_boundary: crate::ExecutionBoundary::InProcess,
         };
         gateway
             .grant(
@@ -3521,6 +3566,7 @@ mod tests {
             effect: OperationEffect::ReadOnly,
             data_sensitivity: DataSensitivity::Sensitive,
             network_access: NetworkAccess::None,
+            execution_boundary: crate::ExecutionBoundary::InProcess,
         };
         assert!(matches!(
             authorize(
@@ -3626,6 +3672,11 @@ mod tests {
                 } else {
                     NetworkAccess::None
                 },
+                execution_boundary: crate::tool_contract::operation_attributes(
+                    tool_name,
+                    ToolConcurrency::Exclusive,
+                )
+                .execution_boundary,
             };
             assert!(matches!(
                 authorize(&gateway, None, tool_name, &json!({}), &policy).await,
@@ -3635,7 +3686,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opaque_processes_follow_the_selected_network_boundary() {
+    async fn workspace_write_separates_process_and_network_boundaries() {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         gateway
             .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
@@ -3646,12 +3697,13 @@ mod tests {
             RiskLevel::High,
             NetworkAccess::Opaque,
         );
-        let skill_policy = OperationPolicy::native(
-            "skills.run",
-            capability_scope!("skills"),
-            RiskLevel::High,
-            NetworkAccess::Opaque,
-        );
+        #[cfg(windows)]
+        let policy = policy.with_execution_boundary(crate::ExecutionBoundary::WorkspaceIsolated);
+        let skill_policy =
+            OperationPolicy::external(capability_scope!("skill__echo"), RiskLevel::High);
+        let http_mcp_policy =
+            OperationPolicy::external(capability_scope!("mcp__remote__search"), RiskLevel::High)
+                .with_execution_boundary(crate::ExecutionBoundary::InProcess);
         #[cfg(not(windows))]
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
@@ -3663,8 +3715,19 @@ mod tests {
             ConfirmationResult::RequiresConfirmation { .. }
         ));
         assert!(matches!(
-            authorize(&gateway, None, "skills.run", &json!({}), &skill_policy).await,
+            authorize(&gateway, None, "skill__echo", &json!({}), &skill_policy).await,
             ConfirmationResult::Blocked { .. }
+        ));
+        assert!(matches!(
+            authorize(
+                &gateway,
+                None,
+                "mcp__remote__search",
+                &json!({}),
+                &http_mcp_policy
+            )
+            .await,
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
         gateway
             .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Ask)
@@ -3686,6 +3749,17 @@ mod tests {
                 NetworkPolicy::Restricted,
             )
             .await;
+        assert!(matches!(
+            authorize(
+                &gateway,
+                None,
+                "mcp__remote__search",
+                &json!({}),
+                &http_mcp_policy
+            )
+            .await,
+            ConfirmationResult::Blocked { .. }
+        ));
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
             ConfirmationResult::Blocked { .. }
@@ -3800,6 +3874,7 @@ mod tests {
             effect: OperationEffect::WorkspaceWrite,
             data_sensitivity: DataSensitivity::None,
             network_access: NetworkAccess::None,
+            execution_boundary: crate::ExecutionBoundary::InProcess,
         };
         let outside = std::env::temp_dir().join("haven-permission-outside.txt");
         assert!(matches!(
@@ -4028,6 +4103,40 @@ mod tests {
         assert!(
             gateway
                 .verify_receipt(&wrong_request, &receipt)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn execution_proof_is_bound_to_the_execution_boundary() {
+        let gateway = AuthorizationEngine::new();
+        let request = AuthorizationRequest::new(
+            None,
+            "files.read",
+            json!({}),
+            fixture_policy("files.read", &json!({}), RiskLevel::Safe),
+        );
+        let mut check = gateway.authorize_for_execution(&request).await;
+        let proof = check
+            .execution_proof
+            .take()
+            .expect("safe operation should receive an execution proof");
+        gateway
+            .verify_execution_proof(&request, &proof)
+            .await
+            .expect("matching execution boundary should validate");
+
+        let changed_boundary = AuthorizationRequest {
+            policy: OperationPolicy {
+                execution_boundary: crate::ExecutionBoundary::HostProcess,
+                ..request.policy.clone()
+            },
+            ..request.clone()
+        };
+        assert!(
+            gateway
+                .verify_execution_proof(&changed_boundary, &proof)
                 .await
                 .is_err()
         );
