@@ -1206,3 +1206,5 @@
 - [1216：收窄 MCP stdio 进程的撤销范围](1216-scope-mcp-stdio-process-revocation.md)
 - [1217：按受影响工具收窄进程设置撤销](1217-scope-process-revocation-to-changed-tool-settings.md)
 - [1218：按 session 收窄 trust 撤销的进程范围](1218-scope-process-revocation-to-session-trust.md)
+- [1219：评估 Windows 原生 sandbox 存储配额候选](1219-evaluate-native-windows-storage-quota-candidates.md)
+- [1220：采用可选 brokered Windows Container sandbox 后端](1220-optional-brokered-windows-container-sandbox.md)

@@ -202,9 +202,11 @@ Shell 与 Skill 的进程撤销现分离 proof freshness 与进程生命周期�
 
 Skill 创建现通过固定 Skills 根 `DirectoryCapability` 创建目录树，并以原子替换写入脚本和最后发布 `SKILL.md`；失败清理由同一 capability 执行，避免路径跟随和部分目录进入注册表（ADR 1214）。
 
-ADR 1215 根据 Windows Container 官方宿主要求、`StorageSandboxSize` 能力边界和客户端容器许可进一步限定 HCS 候选：它不作为 Haven 常规 Windows 客户端生产执行的默认配额后端；OS 强制存储配额 Gate 仍开放，`WorkspaceWrite` 子进程继续 fail closed。
+ADR 1215 曾将 HCS 限定为常规客户端生产执行之外的候选；ADR 1220 根据用户明确选择，将目标调整为显式安装的可选 Windows Container/HCS broker。Windows 10/11 Pro/Enterprise 仅限符合 Microsoft 当前条款的开发/测试配置；其它生产部署必须逐项核对宿主与镜像许可。没有 broker、支持矩阵不匹配、Hyper-V isolation 或运行期配额无法证明时，`WorkspaceWrite` 仍 fail closed。
 
-详见 [ADR 1212](adr/1212-revoke-running-skills-on-policy-change.md)、[ADR 1213](adr/1213-revoke-mcp-stdio-on-policy-change.md)、[ADR 1214](adr/1214-pin-skill-creation-writes.md)、[ADR 1215](adr/1215-limit-windows-container-quota-backend-scope.md)、[ADR 1217](adr/1217-scope-process-revocation-to-changed-tool-settings.md) 与 [ADR 1218](adr/1218-scope-process-revocation-to-session-trust.md)。
+Windows 11 `Experimental_CreateProcessInSandbox` 没有每执行存储容量字段；NTFS 配额是默认关闭的管理员卷级 enforcement，VHD attach 要求 `SE_MANAGE_VOLUME_PRIVILEGE`，均不替代选定的 HCS scratch 配额后端（ADR 1219、1220）。后续按 typed sandbox port、配额原型、broker IPC、workspace staging、输出 review、撤销/回收、网络边界与逐工具接线分片实施。HCS backend 的落地不单独放开网络隔离 Gate，也不允许写入 host path 映射。
+
+详见 [ADR 1212](adr/1212-revoke-running-skills-on-policy-change.md)、[ADR 1213](adr/1213-revoke-mcp-stdio-on-policy-change.md)、[ADR 1214](adr/1214-pin-skill-creation-writes.md)、[ADR 1215](adr/1215-limit-windows-container-quota-backend-scope.md)、[ADR 1217](adr/1217-scope-process-revocation-to-changed-tool-settings.md)、[ADR 1218](adr/1218-scope-process-revocation-to-session-trust.md)、[ADR 1219](adr/1219-evaluate-native-windows-storage-quota-candidates.md) 与 [ADR 1220](adr/1220-optional-brokered-windows-container-sandbox.md)。
 
 ## 6. 更新规则
 
