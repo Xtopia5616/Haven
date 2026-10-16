@@ -137,8 +137,106 @@ pub(super) fn execute_guest_with_start(
     }
 }
 
+/// Result of the broker's fixed startup storage probe. A successful result
+/// always carries a confirmed HCS stop before its writable layer is inspected.
+pub(super) struct HcsQuotaProbeOutcome {
+    pub(super) stopped_system: HcsStoppedComputeSystem,
+    pub(super) exit_code: u32,
+    pub(super) stdout: Vec<u8>,
+    pub(super) stderr: Vec<u8>,
+    pub(super) stdout_truncated: bool,
+    pub(super) stderr_truncated: bool,
+}
+
+/// Run one fixed probe process without exposing the workspace or accepting a
+/// model-supplied command. This deliberately does not run the workspace seed.
+pub(super) fn execute_quota_probe(
+    api: &dyn HcsApi,
+    config: &super::WindowsContainerSandboxConfig,
+    storage_quota_bytes: u64,
+    timeout: Duration,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<HcsQuotaProbeOutcome, HcsGuestExecutionFailure> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| failure(HcsGuestExecutionFailureKind::TimedOut, true))?;
+    check_cancellation(&mut is_cancelled, deadline).map_err(|kind| failure(kind, true))?;
+    let create_timeout = operation_timeout(deadline).map_err(|kind| failure(kind, true))?;
+    let mut system = HcsComputeSystemOwner::create(api, config, create_timeout)
+        .map_err(|_| failure(HcsGuestExecutionFailureKind::HcsFailed, false))?;
+
+    let execution = (|| {
+        check_cancellation(&mut is_cancelled, deadline)?;
+        system
+            .start(operation_timeout(deadline)?)
+            .map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?;
+
+        let parameters = HcsGuestProcessParameters::quota_probe(storage_quota_bytes)
+            .map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?;
+        let mut output = BoundedQuotaProbeOutput::default();
+        let status = run_guest_process(
+            &system,
+            &parameters,
+            deadline,
+            &mut is_cancelled,
+            &mut output,
+            None,
+        )?;
+        Ok((status.exit_code, output))
+    })();
+
+    match execution {
+        Ok((exit_code, output)) => match system.terminate() {
+            Ok(stopped_system) => Ok(HcsQuotaProbeOutcome {
+                stopped_system,
+                exit_code,
+                stdout: output.stdout,
+                stderr: output.stderr,
+                stdout_truncated: output.stdout_truncated,
+                stderr_truncated: output.stderr_truncated,
+            }),
+            Err(_) => Err(failure(HcsGuestExecutionFailureKind::HcsFailed, false)),
+        },
+        Err(kind) => Err(stop_after_failure(&mut system, kind)),
+    }
+}
+
 type GuestProcessStartCallback<'a> =
     &'a mut dyn FnMut() -> Result<(), HcsGuestExecutionFailureKind>;
+
+const MAX_QUOTA_PROBE_OUTPUT_BYTES: usize = 256;
+
+#[derive(Default)]
+struct BoundedQuotaProbeOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+}
+
+impl HcsOutputChunkSink for BoundedQuotaProbeOutput {
+    fn write_chunk(
+        &mut self,
+        stream: super::execution::WindowsContainerOutputStream,
+        bytes: &[u8],
+    ) {
+        let (output, truncated) = match stream {
+            super::execution::WindowsContainerOutputStream::Stdout => {
+                (&mut self.stdout, &mut self.stdout_truncated)
+            }
+            super::execution::WindowsContainerOutputStream::Stderr => {
+                (&mut self.stderr, &mut self.stderr_truncated)
+            }
+        };
+        let retained = bytes
+            .len()
+            .min(MAX_QUOTA_PROBE_OUTPUT_BYTES.saturating_sub(output.len()));
+        output.extend_from_slice(&bytes[..retained]);
+        if retained < bytes.len() {
+            *truncated = true;
+        }
+    }
+}
 
 fn run_guest_process(
     system: &HcsComputeSystemOwner<'_>,
@@ -409,15 +507,24 @@ mod tests {
     }
 
     fn config() -> (tempfile::TempDir, WindowsContainerSandboxConfig) {
+        config_with_quota_and_workspace(1024, true)
+    }
+
+    fn config_with_quota_and_workspace(
+        quota: u64,
+        include_workspace_input: bool,
+    ) -> (tempfile::TempDir, WindowsContainerSandboxConfig) {
         let root = tempfile::tempdir().unwrap();
         let workspace = DirectoryCapability::open(root.path()).unwrap();
         let layer = WindowsContainerLayer::new("base-id", r"C:\Haven\image\base").unwrap();
-        let config = WindowsContainerSandboxConfig::new("HavenSandbox-test", 1024, vec![layer])
-            .unwrap()
-            .with_test_writable_layer_folder(PathBuf::from(r"C:\Haven\scratch\layer"))
-            .unwrap()
-            .with_read_only_workspace_input(workspace)
-            .unwrap();
+        let mut config =
+            WindowsContainerSandboxConfig::new("HavenSandbox-test", quota, vec![layer])
+                .unwrap()
+                .with_test_writable_layer_folder(PathBuf::from(r"C:\Haven\scratch\layer"))
+                .unwrap();
+        if include_workspace_input {
+            config = config.with_read_only_workspace_input(workspace).unwrap();
+        }
         (root, config)
     }
 
@@ -499,6 +606,63 @@ mod tests {
                 .writable_layer_path()
                 .ends_with("layer")
         );
+    }
+
+    #[test]
+    fn quota_probe_runs_one_fixed_guest_process_without_workspace_mapping() {
+        let quota = crate::windows_container::execution::WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
+        let (_root, config) = config_with_quota_and_workspace(quota, false);
+        assert!(
+            !config
+                .to_hcs_json()
+                .expect("probe HCS config serializes")
+                .contains("MappedDirectories"),
+            "quota probe has no user workspace mapping"
+        );
+        let api = MockHcsApi::new([0]);
+        let outcome = execute_quota_probe(&api, &config, quota, Duration::from_secs(2), || false)
+            .expect("mock HCS completes and stops the fixed quota probe");
+
+        assert_eq!(outcome.exit_code, 0);
+        assert_eq!(
+            api.process_count(),
+            1,
+            "the probe does not run workspace seed"
+        );
+        assert!(
+            outcome
+                .stopped_system
+                .writable_layer_path()
+                .ends_with("layer")
+        );
+        assert_eq!(
+            *api.calls.lock().unwrap(),
+            [
+                "create_system",
+                "start_system",
+                "create_process",
+                "wait_process",
+                "close_pipe",
+                "close_pipe",
+                "close_process",
+                "terminate_system",
+                "close_system",
+            ]
+        );
+    }
+
+    #[test]
+    fn cancelled_quota_probe_does_not_create_a_compute_system() {
+        let quota = crate::windows_container::execution::WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
+        let (_root, config) = config_with_quota_and_workspace(quota, false);
+        let api = MockHcsApi::new([]);
+        let failure = execute_quota_probe(&api, &config, quota, Duration::from_secs(2), || true)
+            .err()
+            .expect("a cancelled startup probe is rejected before HCS creation");
+
+        assert_eq!(failure.kind, HcsGuestExecutionFailureKind::Cancelled);
+        assert!(failure.cleanup_safe);
+        assert!(api.calls.lock().unwrap().is_empty());
     }
 
     #[test]

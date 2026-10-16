@@ -6,16 +6,16 @@ use super::broker_protocol::{
 };
 use super::broker_workspace::BrokerWorkspaceAttempt;
 use super::hcs_export_worker::export_stopped_workspace_output;
-use super::image_catalog::BrokerContainerImageCatalog;
 use super::named_pipe::BrokerPipeConnection;
 use super::output_transfer::send_output_snapshot;
+use super::quota_attestation::QuotaRuntimeAttestation;
 use crate::filesystem::DirectoryCapability;
 use crate::windows_container::execution::{
     WindowsContainerExecutionLimits, WindowsContainerExecutionRequest, WindowsContainerOutputSink,
     WindowsContainerOutputStream, WindowsContainerShell,
 };
 use crate::windows_container::hcs_guest_execution::{
-    HcsGuestExecutionFailureKind, execute_guest_with_start, native_api,
+    HcsGuestExecutionFailureKind, execute_guest_with_start,
 };
 use std::cell::Cell;
 use std::io;
@@ -32,7 +32,7 @@ enum AttemptFailure {
 pub(super) fn serve_received_execution(
     connection: &BrokerPipeConnection<'_>,
     attempt: &mut BrokerWorkspaceAttempt,
-    image_catalog: &BrokerContainerImageCatalog,
+    attestation: &QuotaRuntimeAttestation,
     wire_request: BrokerExecutionRequest,
     limits: WindowsContainerExecutionLimits,
     initial_snapshot_bytes: u64,
@@ -76,7 +76,7 @@ pub(super) fn serve_received_execution(
     let (exit_code, captured_output, output) = match run_hcs_attempt(
         connection,
         attempt,
-        image_catalog,
+        attestation,
         request_id,
         &request,
         deadline,
@@ -139,7 +139,7 @@ pub(super) fn serve_received_execution(
 fn run_hcs_attempt(
     connection: &BrokerPipeConnection<'_>,
     attempt: &mut BrokerWorkspaceAttempt,
-    image_catalog: &BrokerContainerImageCatalog,
+    attestation: &QuotaRuntimeAttestation,
     request_id: [u8; 16],
     request: &WindowsContainerExecutionRequest,
     deadline: Instant,
@@ -190,7 +190,7 @@ fn run_hcs_attempt(
         ));
     }
 
-    let mut config = match image_catalog.sandbox_config(
+    let mut config = match attestation.image_catalog().sandbox_config(
         hcs_system_name(request_id),
         request.limits().storage_quota_bytes(),
     ) {
@@ -213,17 +213,6 @@ fn run_hcs_attempt(
                 attempt,
                 Some(&mut scratch),
                 BrokerFailureCode::StagingFailed,
-            ));
-        }
-    };
-
-    let api = match native_api() {
-        Ok(api) => api,
-        Err(_) => {
-            return Err(quiescent_failure(
-                attempt,
-                Some(&mut scratch),
-                BrokerFailureCode::BackendUnavailable,
             ));
         }
     };
@@ -254,7 +243,7 @@ fn run_hcs_attempt(
     let mut before_shell_start = || request_shell_start(connection, request_id, deadline);
     let mut shell_started = || notify_shell_started(connection, request_id, deadline);
     let guest_result = execute_guest_with_start(
-        &api,
+        attestation.api(),
         &config,
         request,
         &mut before_shell_start,

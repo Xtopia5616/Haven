@@ -2,8 +2,8 @@
 //!
 //! This primitive proves and retains the VHDX maximum size only. It does not
 //! prove that HCS mounts the disk as the guest's writable layer or enforces a
-//! guest write limit; that still requires the HCS runtime probe before any
-//! production execution is connected.
+//! guest write limit; callers must require the separate broker runtime
+//! attestation before accepting execution requests.
 
 use crate::filesystem::DirectoryCapability;
 use std::ffi::OsStr;
@@ -184,6 +184,41 @@ impl BoundedScratchVhd {
     /// Return the verified maximum virtual capacity of the VHDX.
     pub(crate) fn maximum_size_bytes(&self) -> u64 {
         self.maximum_size_bytes
+    }
+
+    /// Reopen the stopped VHDX through the Windows virtual-disk API and
+    /// verify its maximum virtual size still matches the original quota.
+    pub(crate) fn verify_maximum_size(&self) -> io::Result<()> {
+        if !self.formatted {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unformatted scratch VHDX cannot attest its storage ceiling",
+            ));
+        }
+        let handle = open_vhd_for_info(&self.path())?;
+        let actual_capacity = query_virtual_size(handle.raw())?;
+        if actual_capacity != self.maximum_size_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "scratch VHDX maximum size changed after guest execution",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Read the physical VHDX length using the pinned parent directory. This
+    /// provides evidence that the guest probe grew this exact bounded layer.
+    pub(crate) fn physical_size_bytes(&self) -> io::Result<u64> {
+        let relative_path = Path::new(&self.layer_name).join(WRITABLE_VHDX_NAME);
+        let file = self.parent_root.open_read(&relative_path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "scratch VHDX file is unavailable or empty",
+            ));
+        }
+        Ok(metadata.len())
     }
 }
 

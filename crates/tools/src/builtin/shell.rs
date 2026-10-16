@@ -146,14 +146,14 @@ impl ShellTool {
     ) -> anyhow::Result<ToolResult> {
         use crate::SandboxOutputReviewPort;
         use haven_platform::windows_container::execution::{
-            WindowsContainerExecutionLimits, WindowsContainerExecutionRequest,
-            WindowsContainerOutputStream, WindowsContainerShell, WindowsContainerWorkspaceInput,
+            WORKSPACE_WRITE_STORAGE_QUOTA_BYTES, WindowsContainerExecutionLimits,
+            WindowsContainerExecutionRequest, WindowsContainerOutputStream, WindowsContainerShell,
+            WindowsContainerWorkspaceInput,
         };
         use std::io;
         use std::time::Duration;
 
         const REVIEW_CHARGE_BYTES: u64 = 384 * 1024 * 1024;
-        const STORAGE_QUOTA_BYTES: u64 = 512 * 1024 * 1024;
         const WORKSPACE_BYTES: u64 = 128 * 1024 * 1024;
         const WORKSPACE_FILE_BYTES: u64 = 64 * 1024 * 1024;
         const MAX_CAPTURE_BYTES: usize = 64 * 1024 * 1024;
@@ -196,7 +196,7 @@ impl ShellTool {
         )?;
         let output_bytes = collect_byte_cap(max_chars).clamp(8 * 1024, MAX_CAPTURE_BYTES);
         let limits = WindowsContainerExecutionLimits::new(
-            STORAGE_QUOTA_BYTES,
+            WORKSPACE_WRITE_STORAGE_QUOTA_BYTES,
             Duration::from_secs(300),
             output_bytes,
             output_bytes,

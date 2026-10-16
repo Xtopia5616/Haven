@@ -41,9 +41,12 @@ use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath}
 
 use super::broker_protocol::{BrokerControlMessage, BrokerFailureCode, BrokerFrame};
 use super::named_pipe::{BrokerPeerPolicy, BrokerPipeCancellation, BrokerPipeListener};
+use super::quota_attestation::QuotaRuntimeAttestation;
 
 const SERVICE_ACCOUNT: &str = r"NT AUTHORITY\LocalSystem";
 const SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(15);
+const SERVICE_START_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const SERVICE_START_WAIT_HINT_MS: u32 = 300_000;
 const SERVICE_SID_TYPE_RESTRICTED: u32 = 3;
 const SERVICE_DELETE_ACCESS: u32 = 0x0001_0000;
 const SERVICE_START_NAME: &str = "Haven Container Broker";
@@ -149,7 +152,7 @@ pub fn start() -> io::Result<()> {
             return Err(io::Error::from_raw_os_error(error as i32));
         }
     }
-    wait_for_state(service.0, SERVICE_RUNNING, SERVICE_STOP_TIMEOUT)?;
+    wait_for_state(service.0, SERVICE_RUNNING, SERVICE_START_TIMEOUT)?;
     Ok(())
 }
 
@@ -389,14 +392,12 @@ fn run_service_main() -> io::Result<()> {
         SERVICE_STATUS_HANDLE_VALUE.store(status_handle as isize, Ordering::SeqCst);
         SERVICE_CANCELLATION_EVENT.store(cancellation.raw_handle() as isize, Ordering::SeqCst);
         SERVICE_CONTROL_SIGNAL.store(CONTROL_SIGNAL_NONE, Ordering::SeqCst);
-        report_status(status_handle, SERVICE_START_PENDING, 0, 5_000).and_then(|()| {
-            report_status(
-                status_handle,
-                SERVICE_RUNNING,
-                SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_SESSIONCHANGE,
-                0,
-            )
-        })
+        report_status(
+            status_handle,
+            SERVICE_START_PENDING,
+            SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN,
+            SERVICE_START_WAIT_HINT_MS,
+        )
     };
     if let Err(error) = start_result {
         let _guard = lock_service_control();
@@ -405,7 +406,24 @@ fn run_service_main() -> io::Result<()> {
         return Err(error);
     }
 
-    let result = run_service_listener_loop(&cancellation, &workspace_root, &image_catalog);
+    // The fixed, non-user-controlled probe runs before the service accepts
+    // execution. A failed probe leaves the authenticated protocol available
+    // but every Execute request remains quota_unattested.
+    let quota_attestation =
+        QuotaRuntimeAttestation::probe(&workspace_root, &image_catalog, &cancellation).ok();
+    match report_running_unless_stopping(status_handle) {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        Err(error) => {
+            let _guard = lock_service_control();
+            report_service_failure_locked(status_handle, &error);
+            clear_service_control_state();
+            return Err(error);
+        }
+    }
+
+    let result =
+        run_service_listener_loop(&cancellation, &workspace_root, quota_attestation.as_ref());
 
     {
         let _guard = lock_service_control();
@@ -422,10 +440,29 @@ fn run_service_main() -> io::Result<()> {
     Ok(())
 }
 
+/// Serialize the startup-to-running transition with SCM stop controls so a
+/// stop arriving as the quota probe completes cannot be overwritten.
+fn report_running_unless_stopping(status_handle: SERVICE_STATUS_HANDLE) -> io::Result<bool> {
+    let _guard = lock_service_control();
+    if SERVICE_CONTROL_SIGNAL.load(Ordering::SeqCst) == CONTROL_SIGNAL_STOP {
+        let result = report_status(status_handle, SERVICE_STOPPED, 0, 0);
+        clear_service_control_state();
+        result?;
+        return Ok(false);
+    }
+    report_status(
+        status_handle,
+        SERVICE_RUNNING,
+        SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_SESSIONCHANGE,
+        0,
+    )?;
+    Ok(true)
+}
+
 fn run_service_listener_loop(
     cancellation: &BrokerPipeCancellation,
     workspace_root: &BrokerWorkspaceScratchRoot,
-    image_catalog: &BrokerContainerImageCatalog,
+    quota_attestation: Option<&QuotaRuntimeAttestation>,
 ) -> io::Result<()> {
     loop {
         match consume_control_signal(cancellation)? {
@@ -456,9 +493,11 @@ fn run_service_listener_loop(
 
         loop {
             let outcome = match listener.accept(cancellation) {
-                Ok(mut connection) => {
-                    serve_authenticated_connection(&mut connection, workspace_root, image_catalog)
-                }
+                Ok(mut connection) => serve_authenticated_connection(
+                    &mut connection,
+                    workspace_root,
+                    quota_attestation,
+                ),
                 Err(error) => Err(error),
             };
             match outcome {
@@ -487,7 +526,7 @@ fn run_service_listener_loop(
 fn serve_authenticated_connection(
     connection: &mut super::named_pipe::BrokerPipeConnection<'_>,
     workspace_root: &BrokerWorkspaceScratchRoot,
-    image_catalog: &BrokerContainerImageCatalog,
+    quota_attestation: Option<&QuotaRuntimeAttestation>,
 ) -> io::Result<()> {
     let request_message = connection
         .read_frame(Duration::from_secs(5))?
@@ -510,9 +549,11 @@ fn serve_authenticated_connection(
             );
         }
     };
-    if let Err(code) = quota_runtime_attestation() {
-        return write_broker_failure(connection, Some(request_id), code);
-    }
+    let attestation =
+        match quota_runtime_attestation(quota_attestation, limits.storage_quota_bytes()) {
+            Ok(attestation) => attestation,
+            Err(code) => return write_broker_failure(connection, Some(request_id), code),
+        };
 
     let mut attempt = match workspace_root.create_attempt() {
         Ok(attempt) => attempt,
@@ -560,7 +601,7 @@ fn serve_authenticated_connection(
     super::broker_execution::serve_received_execution(
         connection,
         &mut attempt,
-        image_catalog,
+        attestation,
         request,
         limits,
         summary.byte_count,
@@ -568,11 +609,17 @@ fn serve_authenticated_connection(
     )
 }
 
-/// Quota enforcement has no runtime attestation yet. Keep this single gate
-/// ahead of staging allocation and workspace bytes until the HCS provider can
-/// prove the requested limit is enforced by the guest storage device.
-fn quota_runtime_attestation() -> Result<(), BrokerFailureCode> {
-    Err(BrokerFailureCode::QuotaUnattested)
+/// Keep the quota gate ahead of staging allocation and workspace bytes. Only
+/// the broker's private runtime proof can authorize its exact measured value.
+fn quota_runtime_attestation(
+    attestation: Option<&QuotaRuntimeAttestation>,
+    requested_quota_bytes: u64,
+) -> Result<&QuotaRuntimeAttestation, BrokerFailureCode> {
+    let attestation = attestation.ok_or(BrokerFailureCode::QuotaUnattested)?;
+    if !attestation.accepts_quota(requested_quota_bytes) {
+        return Err(BrokerFailureCode::QuotaUnattested);
+    }
+    Ok(attestation)
 }
 
 fn write_broker_failure(
@@ -659,6 +706,11 @@ unsafe extern "system" fn service_control_handler(
                 (
                     SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_SESSIONCHANGE,
                     0,
+                )
+            } else if state == SERVICE_START_PENDING {
+                (
+                    SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN,
+                    SERVICE_START_WAIT_HINT_MS,
                 )
             } else if state == SERVICE_STOP_PENDING {
                 (0, 10_000)
@@ -845,10 +897,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quota_attestation_gate_fails_closed_until_runtime_proof_exists() {
+    fn quota_attestation_gate_fails_closed_without_runtime_proof() {
         assert_eq!(
-            quota_runtime_attestation().unwrap_err(),
-            BrokerFailureCode::QuotaUnattested
+            quota_runtime_attestation(None, 512 * 1024 * 1024).err(),
+            Some(BrokerFailureCode::QuotaUnattested)
         );
     }
 

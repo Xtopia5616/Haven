@@ -1,8 +1,7 @@
 //! Closed HCS `ProcessParameters` construction for broker-owned guest shells.
 //!
-//! This builder does not start a guest process. Until a writable output layer
-//! is mounted and quota enforcement is attested, the broker must not execute
-//! caller commands in a compute system.
+//! This builder does not start a guest process. Before quota attestation, the
+//! broker may use only the fixed storage probe; caller commands remain gated.
 
 use super::execution::{WindowsContainerExecutionRequest, WindowsContainerShell};
 use base64::Engine as _;
@@ -20,6 +19,46 @@ const FIXED_PATH: &str = r"C:\Windows\System32;C:\Windows;C:\Windows\System32\Wb
 const MAX_GUEST_COMMAND_LINE_UNITS: usize = 32_766;
 
 const WORKSPACE_SEED_SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'; $source = '{input_root}'; $destination = '{output_root}'; if (Test-Path -LiteralPath $destination) { exit 90 }; & '{robocopy_application}' $source $destination /E /COPY:DAT /DCOPY:DAT /R:0 /W:0 /XJ /NFL /NDL /NJH /NJS /NP /NC /NS; if ($LASTEXITCODE -ge 8) { exit 8 }; exit 0"#;
+const STORAGE_QUOTA_PROBE_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$quota = {quota_bytes}
+$maximum_write = $quota + 1048576L
+$written = 0L
+$stream = $null
+$random = $null
+try {
+    $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $buffer = [byte[]]::new(1048576)
+    $stream = [System.IO.FileStream]::new(
+        'C:\Windows\Temp\haven-storage-quota-probe.bin',
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None,
+        1048576,
+        [System.IO.FileOptions]::SequentialScan
+    )
+    while ($written -lt $maximum_write) {
+        $random.GetBytes($buffer)
+        $stream.Write($buffer, 0, $buffer.Length)
+        $stream.Flush($true)
+        $written += [long]$buffer.Length
+    }
+    [Console]::Error.WriteLine('storage quota was not enforced')
+    exit 91
+} catch [System.IO.IOException] {
+    $native_code = $_.Exception.HResult -band 0xffff
+    if (($native_code -ne 39) -and ($native_code -ne 112)) {
+        [Console]::Error.WriteLine('storage probe failed for an unexpected I/O reason')
+        exit 92
+    }
+    [Console]::Out.WriteLine(('HAVEN_STORAGE_QUOTA_ATTESTED_V1:{0}' -f $written))
+    exit 0
+} finally {
+    if ($null -ne $stream) { $stream.Dispose() }
+    if ($null -ne $random) { $random.Dispose() }
+}
+"#;
 
 /// Broker-owned process parameters. Every executable, environment key, pipe
 /// option, and guest path is fixed or derived from the validated request.
@@ -36,6 +75,31 @@ impl HcsGuestProcessParameters {
             .replace("{input_root}", GUEST_WORKSPACE_INPUT_ROOT)
             .replace("{output_root}", GUEST_WORKSPACE_ROOT)
             .replace("{robocopy_application}", ROBOCOPY_APPLICATION);
+        Ok(Self {
+            document: ProcessParametersDocument {
+                application_name: POWERSHELL_APPLICATION,
+                command_line: powershell_command_line(&script)?,
+                working_directory: r"C:\Windows\Temp".to_owned(),
+                environment: fixed_environment(),
+                restricted_token: true,
+                emulate_console: false,
+                create_std_in_pipe: false,
+                create_std_out_pipe: true,
+                create_std_err_pipe: true,
+                use_existing_login: false,
+            },
+        })
+    }
+
+    /// Build the broker's fixed, non-user-controlled disk-quota probe.
+    pub(super) fn quota_probe(storage_quota_bytes: u64) -> io::Result<Self> {
+        if storage_quota_bytes != super::execution::WORKSPACE_WRITE_STORAGE_QUOTA_BYTES {
+            return Err(invalid_process_parameters(
+                "storage quota probe only supports the fixed WorkspaceWrite ceiling",
+            ));
+        }
+        let script =
+            STORAGE_QUOTA_PROBE_SCRIPT.replace("{quota_bytes}", &storage_quota_bytes.to_string());
         Ok(Self {
             document: ProcessParametersDocument {
                 application_name: POWERSHELL_APPLICATION,
@@ -360,6 +424,45 @@ mod tests {
         assert!(script.contains("$LASTEXITCODE -ge 8"));
         assert_eq!(GUEST_WORKSPACE_INPUT_ROOT, r"C:\Haven\workspace-input");
         assert_eq!(GUEST_WORKSPACE_ROOT, r"C:\Haven\workspace-output");
+    }
+
+    #[test]
+    fn quota_probe_is_fixed_bounded_and_only_accepts_the_workspace_write_ceiling() {
+        let quota = super::super::execution::WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
+        let value: Value = serde_json::from_str(
+            &HcsGuestProcessParameters::quota_probe(quota)
+                .expect("the fixed quota builds probe parameters")
+                .to_json()
+                .expect("probe parameters serialize"),
+        )
+        .expect("probe parameters are valid JSON");
+        assert_eq!(value["ApplicationName"], POWERSHELL_APPLICATION);
+        assert_eq!(value["WorkingDirectory"], r"C:\Windows\Temp");
+        assert_eq!(value["RestrictedToken"], true);
+        let command_line = value["CommandLine"].as_str().unwrap();
+        assert!(!command_line.contains("HAVEN_STORAGE_QUOTA_ATTESTED_V1"));
+        let encoded = command_line
+            .split("-EncodedCommand\" \"")
+            .nth(1)
+            .and_then(|value| value.strip_suffix('\"'))
+            .expect("probe script is encoded as one command argument");
+        let utf16le = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("base64 probe script is valid");
+        let units = utf16le
+            .chunks_exact(2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect::<Vec<_>>();
+        let script = String::from_utf16(&units).unwrap();
+        assert!(script.contains(&format!("$quota = {quota}\n")));
+        assert!(script.contains("$maximum_write = $quota + 1048576L"));
+        assert!(script.contains("RandomNumberGenerator]::Create()"));
+        assert!(script.contains(r"C:\Windows\Temp\haven-storage-quota-probe.bin"));
+        assert!(script.contains("$native_code -ne 39") && script.contains("$native_code -ne 112"));
+        assert!(
+            HcsGuestProcessParameters::quota_probe(quota + 512).is_err(),
+            "the attestation probe cannot be sized by a caller"
+        );
     }
 
     #[test]

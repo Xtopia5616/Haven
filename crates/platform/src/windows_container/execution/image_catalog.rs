@@ -23,6 +23,7 @@ const MAX_LAYER_DIRECTORY_NAME: usize = 64;
 
 /// One fixed, trusted image catalog loaded from the broker installation root.
 /// The layer directories stay pinned while this value is alive.
+#[derive(Clone)]
 pub(crate) struct BrokerContainerImageCatalog {
     layers: Vec<WindowsContainerLayer>,
 }

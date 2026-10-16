@@ -30,8 +30,12 @@ mod broker_execution;
 #[cfg(windows)]
 mod broker_provider;
 
+#[cfg(windows)]
+mod quota_attestation;
+
 /// Build Haven's authenticated local broker provider for Windows Shell work.
-/// The service still rejects execution until its storage quota is attested.
+/// The service attests its fixed quota during startup and rejects execution
+/// when the target runtime cannot prove that limit.
 #[cfg(windows)]
 pub fn new_brokered_execution_port() -> std::sync::Arc<dyn WindowsContainerExecutionPort> {
     std::sync::Arc::new(broker_provider::BrokerExecutionProvider)
@@ -45,6 +49,9 @@ pub mod broker_service;
 
 const MAX_COMMAND_BYTES: usize = 256 * 1024;
 const MAX_STORAGE_QUOTA_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// Fixed scratch ceiling used by the Windows `WorkspaceWrite` Shell path.
+/// The broker attests this exact value before accepting execution requests.
+pub const WORKSPACE_WRITE_STORAGE_QUOTA_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_STDIO_BYTES_PER_STREAM: usize = 64 * 1024 * 1024;
 const MAX_EXECUTION_TIMEOUT: Duration =
     Duration::from_secs(haven_common::config::MAX_TOOL_TIMEOUT_SECS);

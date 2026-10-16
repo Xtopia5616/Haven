@@ -1247,3 +1247,4 @@
 - [1257：将 HCS 执行链接入 broker service](1257-connect-hcs-execution-to-broker-service.md)
 - [1258：实现 Windows broker execution provider](1258-implement-windows-broker-execution-provider.md)
 - [1259：将 WorkspaceWrite Shell 接入 HCS broker](1259-wire-workspace-write-shell-to-hcs-broker.md)
+- [1260：在 broker 启动时证明 HCS guest storage quota](1260-attest-hcs-storage-quota-at-service-start.md)
