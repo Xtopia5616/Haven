@@ -1215,3 +1215,4 @@
 - [1225：在容器执行端口处限制输出](1225-bound-container-output-at-the-port.md)
 - [1226：要求 HCS scratch VHD 自身具有硬容量上限](1226-require-bounded-hcs-scratch-vhd.md)
 - [1227：按 attempt 配额创建有最大容量的 scratch VHDX](1227-create-capacity-bounded-scratch-vhdx.md)
+- [1228：在具备 HCS 存储权限的 broker 中格式化 scratch layer](1228-keep-hcs-layer-formatting-in-privileged-broker.md)
