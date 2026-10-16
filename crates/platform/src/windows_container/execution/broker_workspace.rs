@@ -1,11 +1,10 @@
-//! Service-private scratch ownership for broker workspace snapshots.
+//! Service-private ownership for broker execution attempts.
 //!
 //! The root lives below the protected Haven installation directory and its
 //! DACL grants access only to SYSTEM, Administrators, and the restricted
-//! broker service SID. A single attempt may occupy the root at a time, which
-//! bounds retained workspace payload bytes to one request's existing 4 GiB
-//! transfer ceiling. Failed cleanup keeps an owner marker for recovery; an
-//! explicitly uncertain HCS export is quarantined from automatic recovery.
+//! broker service SID. One attempt at a time owns the workspace input,
+//! capacity-bounded HCS transport, output staging, and recovery marker. Failed
+//! cleanup keeps the owner marker; uncertain HCS work is never auto-reclaimed.
 
 use crate::filesystem::{DirectoryCapability, DirectoryEntryKind};
 use std::fs::File;
@@ -32,6 +31,7 @@ const OWNER_SUFFIX: &str = ".lock";
 const MAX_ROOT_ENTRIES: usize = 4_096;
 const MAX_CLEANUPS_PER_PASS: usize = 8;
 const STALE_ATTEMPT_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+const ACTIVE_HCS_ATTEMPT_MARKER: &[u8] = b"hcs-export-active:v1";
 const UNCERTAIN_ATTEMPT_MARKER: &[u8] = b"hcs-export-uncertain:v1";
 
 /// Pins and cleans the single service-private staging root.
@@ -39,11 +39,12 @@ pub(crate) struct BrokerWorkspaceScratchRoot {
     root: DirectoryCapability,
 }
 
-/// Owns one private input snapshot and its crash-recovery lock record.
+/// Owns one private workspace attempt and its crash-recovery lock record.
 pub(crate) struct BrokerWorkspaceAttempt {
     root: DirectoryCapability,
-    workspace_name: String,
+    attempt_name: String,
     owner_name: String,
+    attempt_root: Option<DirectoryCapability>,
     workspace: Option<DirectoryCapability>,
     owner_lock: Option<File>,
     cleaned: bool,
@@ -102,7 +103,7 @@ impl BrokerWorkspaceScratchRoot {
             let Some(owner_name) = entry.name.to_str() else {
                 continue;
             };
-            let Some(workspace_name) = workspace_for_owner_name(owner_name) else {
+            let Some(attempt_name) = attempt_for_owner_name(owner_name) else {
                 continue;
             };
             let Some(modified) = entry.modified else {
@@ -114,16 +115,15 @@ impl BrokerWorkspaceScratchRoot {
             if age < STALE_ATTEMPT_AGE {
                 continue;
             }
-            if self.cleanup_stale_owner(owner_name, &workspace_name)? {
+            if self.cleanup_stale_owner(owner_name, &attempt_name)? {
                 cleaned += 1;
             }
         }
         Ok(cleaned)
     }
 
-    /// Create a new attempt only when the service root is empty. This makes
-    /// active and crash-left workspaces mutually exclusive and caps retained
-    /// workspace bytes to the per-request transfer ceiling.
+    /// Create a new attempt only when the service root is empty. Input,
+    /// transport, and output staging share this one private attempt directory.
     pub(crate) fn create_attempt(&self) -> io::Result<BrokerWorkspaceAttempt> {
         self.cleanup_stale(SystemTime::now())?;
         if !self.root.entries(MAX_ROOT_ENTRIES)?.is_empty() {
@@ -133,8 +133,8 @@ impl BrokerWorkspaceScratchRoot {
             ));
         }
 
-        let workspace_name = haven_common::types::new_id("file");
-        let owner_name = owner_file_name(&workspace_name);
+        let attempt_name = haven_common::types::new_id("file");
+        let owner_name = owner_file_name(&attempt_name);
         let owner_lock = self.root.create_new_file(Path::new(&owner_name))?;
         if let Err(error) = owner_lock.try_lock() {
             drop(owner_lock);
@@ -146,16 +146,38 @@ impl BrokerWorkspaceScratchRoot {
             let _ = self.root.remove_file(Path::new(&owner_name));
             return Err(error);
         }
-        if let Err(error) = self.root.create_dir(Path::new(&workspace_name)) {
+        if let Err(error) = self.root.create_dir(Path::new(&attempt_name)) {
             drop(owner_lock);
             let _ = self.root.remove_file(Path::new(&owner_name));
             return Err(error);
         }
-        let workspace_path = self.root.root().join(&workspace_name);
+        let attempt_path = self.root.root().join(&attempt_name);
+        let attempt_root = match DirectoryCapability::open(&attempt_path) {
+            Ok(attempt_root) => attempt_root,
+            Err(error) => {
+                let removed = remove_attempt_directory(&self.root, &attempt_name).is_ok();
+                if removed {
+                    drop(owner_lock);
+                    let _ = self.root.remove_file(Path::new(&owner_name));
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = attempt_root.create_dir(Path::new("workspace-input")) {
+            drop(attempt_root);
+            let removed = remove_attempt_directory(&self.root, &attempt_name).is_ok();
+            if removed {
+                drop(owner_lock);
+                let _ = self.root.remove_file(Path::new(&owner_name));
+            }
+            return Err(error);
+        }
+        let workspace_path = attempt_root.root().join("workspace-input");
         let workspace = match DirectoryCapability::open(&workspace_path) {
             Ok(workspace) => workspace,
             Err(error) => {
-                let removed = remove_workspace_directory(&self.root, &workspace_name).is_ok();
+                drop(attempt_root);
+                let removed = remove_attempt_directory(&self.root, &attempt_name).is_ok();
                 if removed {
                     drop(owner_lock);
                     let _ = self.root.remove_file(Path::new(&owner_name));
@@ -166,15 +188,16 @@ impl BrokerWorkspaceScratchRoot {
 
         Ok(BrokerWorkspaceAttempt {
             root: self.root.clone(),
-            workspace_name,
+            attempt_name,
             owner_name,
+            attempt_root: Some(attempt_root),
             workspace: Some(workspace),
             owner_lock: Some(owner_lock),
             cleaned: false,
         })
     }
 
-    fn cleanup_stale_owner(&self, owner_name: &str, expected_workspace: &str) -> io::Result<bool> {
+    fn cleanup_stale_owner(&self, owner_name: &str, expected_attempt: &str) -> io::Result<bool> {
         let mut owner_lock = self.root.open_read_write(Path::new(owner_name))?;
         if owner_lock.try_lock().is_err() {
             return Ok(false);
@@ -187,11 +210,11 @@ impl BrokerWorkspaceScratchRoot {
             // eligible for stale cleanup.
             return Ok(false);
         }
-        // The marker name carries a strict canonical workspace ID and is
+        // The marker name carries a strict canonical attempt ID and is
         // created and synced before that random path. The root is
         // service-private, so it remains authoritative if the process stops
         // between marker creation and mkdir.
-        remove_workspace_directory(&self.root, expected_workspace)?;
+        remove_attempt_directory(&self.root, expected_attempt)?;
         self.root.remove_file(Path::new(owner_name))?;
         drop(owner_lock);
         Ok(true)
@@ -199,6 +222,12 @@ impl BrokerWorkspaceScratchRoot {
 }
 
 impl BrokerWorkspaceAttempt {
+    pub(crate) fn attempt_root(&self) -> io::Result<&DirectoryCapability> {
+        self.attempt_root
+            .as_ref()
+            .ok_or_else(|| invalid_data("broker workspace attempt is already cleaned"))
+    }
+
     pub(crate) fn staging(&self) -> io::Result<&DirectoryCapability> {
         self.workspace
             .as_ref()
@@ -209,8 +238,15 @@ impl BrokerWorkspaceAttempt {
         if self.cleaned {
             return Ok(());
         }
+        if self.owner_marker_is_nonempty() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "HCS attempt must be quiescent or quarantined before cleanup",
+            ));
+        }
         self.workspace.take();
-        remove_workspace_directory(&self.root, &self.workspace_name)?;
+        self.attempt_root.take();
+        remove_attempt_directory(&self.root, &self.attempt_name)?;
         self.root.remove_file(Path::new(&self.owner_name))?;
         self.owner_lock.take();
         self.cleaned = true;
@@ -221,25 +257,68 @@ impl BrokerWorkspaceAttempt {
     /// The non-empty owner marker prevents both new attempts and automatic
     /// stale cleanup; an operator must resolve the HCS state before removal.
     pub(crate) fn preserve_for_recovery(&mut self) -> io::Result<()> {
-        let marker_result = (|| {
-            let owner_lock = self
-                .owner_lock
-                .as_mut()
-                .ok_or_else(|| invalid_data("broker attempt has no owner marker to quarantine"))?;
-            owner_lock.set_len(0)?;
-            owner_lock.seek(SeekFrom::Start(0))?;
-            owner_lock.write_all(UNCERTAIN_ATTEMPT_MARKER)?;
-            owner_lock.sync_all()
-        })();
+        let marker_result = self.write_owner_marker(UNCERTAIN_ATTEMPT_MARKER);
         self.workspace.take();
+        self.attempt_root.take();
         self.owner_lock.take();
         self.cleaned = true;
         marker_result
     }
 
+    /// Persist an active HCS marker before attaching a transport disk or
+    /// starting native HCS work. A process crash then cannot make the stale
+    /// sweeper reclaim storage whose OS owner is uncertain.
+    pub(crate) fn mark_hcs_operation_active(&mut self) -> io::Result<()> {
+        self.write_owner_marker(ACTIVE_HCS_ATTEMPT_MARKER)
+    }
+
+    /// Clear the active marker only after all HCS callers have returned, the
+    /// compute system is stopped, and any transport VHD has been detached.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the broker provider calls this after safe HCS cleanup is wired"
+        )
+    )]
+    pub(crate) fn mark_hcs_operation_quiescent(&mut self) -> io::Result<()> {
+        let owner_lock = self
+            .owner_lock
+            .as_mut()
+            .ok_or_else(|| invalid_data("broker attempt has no owner marker"))?;
+        owner_lock.seek(SeekFrom::Start(0))?;
+        let mut marker = Vec::new();
+        (&mut *owner_lock).take(64).read_to_end(&mut marker)?;
+        if marker.is_empty() {
+            return Ok(());
+        }
+        if marker != ACTIVE_HCS_ATTEMPT_MARKER {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "uncertain HCS attempt cannot be marked quiescent automatically",
+            ));
+        }
+        owner_lock.set_len(0)?;
+        owner_lock.sync_all()
+    }
+
+    fn write_owner_marker(&mut self, marker: &[u8]) -> io::Result<()> {
+        let owner_lock = self
+            .owner_lock
+            .as_mut()
+            .ok_or_else(|| invalid_data("broker attempt has no owner marker"))?;
+        // Never truncate a durable active marker before writing its stronger
+        // recovery state. A failed/short disk write must not turn an uncertain
+        // attempt back into the empty marker eligible for stale cleanup.
+        owner_lock.seek(SeekFrom::Start(0))?;
+        owner_lock.write_all(marker)?;
+        owner_lock.sync_all()
+    }
+
     #[cfg(test)]
     fn abandon_for_test(mut self) {
         self.workspace.take();
+        self.attempt_root.take();
         self.owner_lock.take();
         self.cleaned = true;
     }
@@ -247,22 +326,48 @@ impl BrokerWorkspaceAttempt {
 
 impl Drop for BrokerWorkspaceAttempt {
     fn drop(&mut self) {
+        if !self.cleaned && self.owner_marker_is_nonempty() {
+            // HCS may still own a mounted volume or be writing the export
+            // transport. A non-empty marker opts this attempt out of Drop
+            // cleanup just as it opts it out of stale recovery.
+            self.workspace.take();
+            self.attempt_root.take();
+            self.owner_lock.take();
+            self.cleaned = true;
+            return;
+        }
         let _ = self.cleanup();
     }
 }
 
-fn owner_file_name(workspace_name: &str) -> String {
-    format!("{OWNER_PREFIX}{workspace_name}{OWNER_SUFFIX}")
+impl BrokerWorkspaceAttempt {
+    fn owner_marker_is_nonempty(&mut self) -> bool {
+        let Some(owner_lock) = self.owner_lock.as_mut() else {
+            return true;
+        };
+        if owner_lock.seek(SeekFrom::Start(0)).is_err() {
+            return true;
+        }
+        let mut marker = [0_u8; 1];
+        match owner_lock.read(&mut marker) {
+            Ok(length) => length != 0,
+            Err(_) => true,
+        }
+    }
 }
 
-fn workspace_for_owner_name(owner_name: &str) -> Option<String> {
-    let workspace_name = owner_name
+fn owner_file_name(attempt_name: &str) -> String {
+    format!("{OWNER_PREFIX}{attempt_name}{OWNER_SUFFIX}")
+}
+
+fn attempt_for_owner_name(owner_name: &str) -> Option<String> {
+    let attempt_name = owner_name
         .strip_prefix(OWNER_PREFIX)?
         .strip_suffix(OWNER_SUFFIX)?;
-    haven_common::types::is_canonical_id(workspace_name, "file").then(|| workspace_name.to_owned())
+    haven_common::types::is_canonical_id(attempt_name, "file").then(|| attempt_name.to_owned())
 }
 
-fn remove_workspace_directory(root: &DirectoryCapability, name: &str) -> io::Result<()> {
+fn remove_attempt_directory(root: &DirectoryCapability, name: &str) -> io::Result<()> {
     match root.remove_dir_all(Path::new(name)) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -384,6 +489,15 @@ mod tests {
     fn attempt_cleanup_removes_only_its_workspace_and_owner_record() {
         let (_temp, root) = root();
         let mut attempt = root.create_attempt().unwrap();
+        let attempt_root = attempt.attempt_root().unwrap();
+        assert_eq!(
+            attempt.staging().unwrap().root().parent(),
+            Some(attempt_root.root())
+        );
+        assert_eq!(
+            attempt.staging().unwrap().root().file_name(),
+            Some(std::ffi::OsStr::new("workspace-input"))
+        );
         attempt
             .staging()
             .unwrap()
@@ -414,7 +528,7 @@ mod tests {
     fn preserved_attempt_blocks_new_work_and_is_never_auto_reclaimed() {
         let (_temp, root) = root();
         let mut attempt = root.create_attempt().unwrap();
-        let workspace_name = attempt.workspace_name.clone();
+        let attempt_name = attempt.attempt_name.clone();
         attempt.preserve_for_recovery().unwrap();
         drop(attempt);
 
@@ -424,21 +538,67 @@ mod tests {
         );
         let stale_time = SystemTime::now() + STALE_ATTEMPT_AGE + Duration::from_secs(1);
         assert_eq!(root.cleanup_stale(stale_time).unwrap(), 0);
-        assert!(root.root.root().join(workspace_name).exists());
+        assert!(root.root.root().join(attempt_name).exists());
         assert_eq!(root.root.entries(MAX_ROOT_ENTRIES).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn active_hcs_marker_prevents_crash_left_attempt_reclamation() {
+        let (_temp, root) = root();
+        let mut attempt = root.create_attempt().unwrap();
+        let attempt_name = attempt.attempt_name.clone();
+        let owner_name = attempt.owner_name.clone();
+        attempt.mark_hcs_operation_active().unwrap();
+        attempt.abandon_for_test();
+
+        let now = SystemTime::now() + STALE_ATTEMPT_AGE + Duration::from_secs(1);
+        assert_eq!(root.cleanup_stale(now).unwrap(), 0);
+        assert!(root.root.root().join(attempt_name).exists());
+        assert_eq!(
+            std::fs::read(root.root.root().join(owner_name)).unwrap(),
+            ACTIVE_HCS_ATTEMPT_MARKER
+        );
+    }
+
+    #[test]
+    fn dropping_an_active_hcs_attempt_retains_its_staging() {
+        let (_temp, root) = root();
+        let mut attempt = root.create_attempt().unwrap();
+        let attempt_name = attempt.attempt_name.clone();
+        attempt.mark_hcs_operation_active().unwrap();
+        drop(attempt);
+
+        assert_eq!(root.root.entries(MAX_ROOT_ENTRIES).unwrap().len(), 2);
+        assert!(root.root.root().join(attempt_name).exists());
+    }
+
+    #[test]
+    fn active_hcs_attempt_requires_quiescence_before_explicit_cleanup() {
+        let (_temp, root) = root();
+        let mut attempt = root.create_attempt().unwrap();
+        attempt.mark_hcs_operation_active().unwrap();
+
+        assert_eq!(
+            attempt.cleanup().unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(attempt.attempt_root().unwrap().root().exists());
+        attempt.mark_hcs_operation_quiescent().unwrap();
+        attempt.cleanup().unwrap();
+        assert!(root.root.entries(MAX_ROOT_ENTRIES).unwrap().is_empty());
     }
 
     #[test]
     fn stale_unlocked_attempt_is_reclaimed_from_its_strict_owner_record() {
         let (_temp, root) = root();
         let attempt = root.create_attempt().unwrap();
-        let workspace_name = attempt.workspace_name.clone();
+        let attempt_name = attempt.attempt_name.clone();
         attempt.abandon_for_test();
 
         let now = SystemTime::now() + STALE_ATTEMPT_AGE + Duration::from_secs(1);
         assert_eq!(root.cleanup_stale(now).unwrap(), 1);
         assert!(root.root.entries(MAX_ROOT_ENTRIES).unwrap().is_empty());
-        assert!(!root.root.root().join(workspace_name).exists());
+        assert!(!root.root.root().join(attempt_name).exists());
     }
 
     #[test]

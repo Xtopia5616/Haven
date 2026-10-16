@@ -1238,3 +1238,4 @@
 - [1248：有界解码 HCS writable-layer workspace 输出](1248-decode-bounded-hcs-layer-workspace-output.md)
 - [1249：导出已停止的 HCS writable layer](1249-export-stopped-hcs-writable-layer.md)
 - [1250：隔离同步 HCS writable-layer 导出](1250-isolate-synchronous-hcs-export-worker.md)
+- [1251：为 HCS writable-layer 导出准备有界 transport 卷](1251-bound-hcs-export-transport-volume.md)

@@ -10,6 +10,12 @@
 
 pub mod execution;
 #[cfg(windows)]
+#[expect(
+    dead_code,
+    reason = "bounded transport is prepared before HCS export/provider integration"
+)]
+mod hcs_export_transport;
+#[cfg(windows)]
 #[cfg_attr(
     not(test),
     expect(

@@ -38,6 +38,7 @@ pub(crate) struct BoundedScratchVhd {
     layer_path: PathBuf,
     maximum_size_bytes: u64,
     formatted: bool,
+    retained_for_recovery: bool,
     cleaned: bool,
 }
 
@@ -114,6 +115,7 @@ impl BoundedScratchVhd {
             layer_path,
             maximum_size_bytes,
             formatted: false,
+            retained_for_recovery: false,
             cleaned: false,
         })
     }
@@ -157,6 +159,12 @@ impl BoundedScratchVhd {
         Ok(())
     }
 
+    /// Prevent Drop from deleting a VHDX whose mounted consumer is uncertain.
+    /// The broker attempt owner must also keep its non-empty recovery marker.
+    pub(crate) fn preserve_for_recovery(&mut self) {
+        self.retained_for_recovery = true;
+    }
+
     /// Return the host path passed to Windows when creating the VHDX.
     pub(crate) fn path(&self) -> PathBuf {
         self.layer_path.join(WRITABLE_VHDX_NAME)
@@ -184,7 +192,7 @@ impl Drop for BoundedScratchVhd {
         // During normal execution callers drop this only after HCS stopped.
         // If Windows still has the VHD open, retain the layer. A provider that
         // needs crash recovery must wrap this primitive in a durable lease.
-        if !self.cleaned {
+        if !self.cleaned && !self.retained_for_recovery {
             let _ = self.parent_root.remove_dir_all(Path::new(&self.layer_name));
         }
     }
@@ -291,10 +299,10 @@ fn wide_null(value: &OsStr) -> io::Result<Vec<u16>> {
     Ok(wide)
 }
 
-struct OwnedVhdHandle(HANDLE);
+pub(super) struct OwnedVhdHandle(HANDLE);
 
 impl OwnedVhdHandle {
-    fn new(handle: HANDLE) -> io::Result<Self> {
+    pub(super) fn new(handle: HANDLE) -> io::Result<Self> {
         if handle.is_null() || handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -304,7 +312,7 @@ impl OwnedVhdHandle {
         Ok(Self(handle))
     }
 
-    fn raw(&self) -> HANDLE {
+    pub(super) fn raw(&self) -> HANDLE {
         self.0
     }
 }
@@ -394,6 +402,22 @@ mod tests {
         assert!(!path.exists());
         drop(scratch);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn retained_vhdx_survives_owner_drop_until_recovery_cleanup() {
+        let directory = tempfile::tempdir().expect("temporary scratch root can be created");
+        let root = DirectoryCapability::open(directory.path())
+            .expect("temporary scratch root can be pinned");
+        let mut scratch = BoundedScratchVhd::create(root, 16 * 1024 * 1024)
+            .expect("Windows can create a bounded VHDX");
+        let retained_directory = scratch.layer_path.clone();
+        scratch.preserve_for_recovery();
+        drop(scratch);
+
+        assert!(retained_directory.join(WRITABLE_VHDX_NAME).is_file());
+        std::fs::remove_dir_all(retained_directory)
+            .expect("test removes the retained VHDX after simulating recovery");
     }
 
     #[test]
