@@ -1,8 +1,8 @@
 //! Private, bounded ownership of one HCS compute-system handle.
 //!
-//! This lifecycle owner is not wired into the broker request path. The broker
-//! quota attestation remains closed until a supported host proves the guest
-//! storage ceiling, so this code only prepares handle lifecycle semantics.
+//! The broker guest runner uses this owner to create, start and stop HCS
+//! systems. Production requests remain unavailable until a supported host
+//! proves that the configured guest storage ceiling is enforced at runtime.
 
 use super::WindowsContainerSandboxConfig;
 use std::ffi::OsStr;

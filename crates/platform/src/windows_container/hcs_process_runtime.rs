@@ -1,9 +1,8 @@
 //! Bounded ownership of one HCS guest process and its standard-output pipes.
 //!
-//! This owner is intentionally not wired into the broker service. It models
-//! process and handle cleanup while writable-layer quota and output review are
-//! still unresolved; production execution stays unavailable until quota
-//! attestation passes.
+//! The broker guest runner uses this owner for process and handle cleanup.
+//! Production requests stay unavailable until writable-layer quota enforcement
+//! is attested on a supported host.
 
 use super::hcs_process::HcsGuestProcessParameters;
 use super::hcs_runtime::{
