@@ -165,6 +165,7 @@ pub struct McpManager {
     connection_tasks: Arc<StdMutex<HashMap<u64, tokio::task::JoinHandle<()>>>>,
     next_connection_generation: Arc<AtomicU64>,
     shutting_down: Arc<AtomicBool>,
+    one_shot_invocations_cancel: CancellationToken,
     #[cfg(test)]
     panic_next_connection: Arc<AtomicBool>,
     connection_slots: Arc<Semaphore>,
@@ -198,6 +199,7 @@ impl Clone for McpManager {
             connection_tasks: self.connection_tasks.clone(),
             next_connection_generation: self.next_connection_generation.clone(),
             shutting_down: self.shutting_down.clone(),
+            one_shot_invocations_cancel: self.one_shot_invocations_cancel.clone(),
             #[cfg(test)]
             panic_next_connection: self.panic_next_connection.clone(),
             connection_slots: self.connection_slots.clone(),
@@ -233,6 +235,7 @@ impl McpManager {
             connection_tasks: Arc::new(StdMutex::new(HashMap::new())),
             next_connection_generation: Arc::new(AtomicU64::new(1)),
             shutting_down: Arc::new(AtomicBool::new(false)),
+            one_shot_invocations_cancel: CancellationToken::new(),
             #[cfg(test)]
             panic_next_connection: Arc::new(AtomicBool::new(false)),
             connection_slots: Arc::new(Semaphore::new(crate::MCP_MAX_PARALLEL_CONNECTIONS)),
@@ -1320,6 +1323,7 @@ impl McpManager {
         {
             let _lifecycle = self.connection_lifecycle.lock().await;
             self.shutting_down.store(true, Ordering::SeqCst);
+            self.one_shot_invocations_cancel.cancel();
             for attempt in self
                 .active_connections
                 .lock()
@@ -1512,6 +1516,72 @@ impl McpManager {
             .await?;
         self.call_tool_on_client(client, tool_name, input, cancel)
             .await
+    }
+
+    /// Execute one managed-package tool call in a fresh MCP client generation.
+    /// The selected manager generation supplies the pinned package/config
+    /// identity; each invocation performs protocol discovery and is stopped
+    /// before its result is returned.
+    pub async fn call_tool_once_at_target_binding(
+        &self,
+        client_name: &str,
+        expected_binding: &str,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpCallOutput> {
+        if self.shutting_down.load(Ordering::SeqCst)
+            || self.one_shot_invocations_cancel.is_cancelled()
+        {
+            anyhow::bail!("MCP manager is shutting down");
+        }
+        let client = self
+            .client_at_target_binding(client_name, expected_binding)
+            .await?;
+        if !matches!(
+            &client.transport,
+            haven_common::mcp::McpServerTransport::Stdio
+        ) || !matches!(
+            &client.stdio_execution,
+            haven_common::config::McpStdioExecution::ManagedPackage { .. }
+        ) {
+            anyhow::bail!("one-shot MCP calls require a managed stdio package");
+        }
+
+        let _slot = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => anyhow::bail!("MCP invocation was cancelled before admission"),
+            _ = self.one_shot_invocations_cancel.cancelled() => anyhow::bail!("MCP manager is shutting down"),
+            permit = self.connection_slots.clone().acquire_owned() => {
+                permit.map_err(|error| anyhow::anyhow!("MCP invocation admission closed: {error}"))?
+            }
+        };
+        if self.shutting_down.load(Ordering::SeqCst) {
+            anyhow::bail!("MCP manager is shutting down");
+        }
+        let current = self
+            .client_at_target_binding(client_name, expected_binding)
+            .await?;
+        if !Arc::ptr_eq(&client, &current) {
+            return Err(anyhow::Error::new(McpTargetChanged));
+        }
+
+        let invocation_cancel = CancellationToken::new();
+        let cancel_from_call = cancel.clone();
+        let cancel_from_manager = self.one_shot_invocations_cancel.clone();
+        let cancel_invocation = invocation_cancel.clone();
+        let cancellation_watcher = tokio::spawn(async move {
+            tokio::select! {
+                _ = cancel_from_call.cancelled() => cancel_invocation.cancel(),
+                _ = cancel_from_manager.cancelled() => cancel_invocation.cancel(),
+            }
+        });
+        let result = client
+            .call_tool_in_fresh_managed_generation(tool_name, input, invocation_cancel)
+            .await;
+        cancellation_watcher.abort();
+        let _ = cancellation_watcher.await;
+        result
     }
 
     /// List the current resource catalog through the selected live connection.

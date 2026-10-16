@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受。Tools MCP adapter 的 proof-bound 执行入口已实现：执行前重验授权，`WorkspaceWrite` stdio 要求规范 session/step 身份和可用 workspace，策略撤销会取消 MCP 调用。Agent 的 CodeMode/Workflow bridge 现为每次 child invocation 生成独立 canonical `step-*` 并传入 Tools；nested review UI 关联、broker per-call workspace snapshot、一次性 guest 和 output review 尚未实现，当前 MCP broker 仍只提供长驻 stdio generation。真实 HCS、quota 超额写入和目标机验收继续作为发布 Gate，按用户要求本轮不执行。
+已接受。Tools MCP adapter 的 proof-bound 执行入口已实现：执行前重验授权，`WorkspaceWrite` stdio 要求规范 session/step 身份和可用 workspace，策略撤销会取消 MCP 调用。Agent 的 CodeMode/Workflow bridge 现为每次 child invocation 生成独立 canonical `step-*` 并传入 Tools；`WorkspaceWrite` 下受管 stdio 调用现使用新 MCP client generation 完成协议发现和恰好一次 `tools/call`，只有 broker/进程停止确认成功后才返回结果。nested review UI 关联、per-call workspace snapshot/挂载、output diff 与 review owner 尚未实现，当前固定 package profile 不访问项目 workspace。真实 HCS、quota 超额写入和目标机验收继续作为发布 Gate，按用户要求本轮不执行。
 
 ## 背景
 
@@ -12,7 +12,7 @@ Tools 已在 proof-verified `ToolExecutionContext` 中保存可信 `session_id`�
 
 ## 决定
 
-- **项目文件型 ManagedPackage 调用按 MCP tool step 创建一次性 guest。** 调用顺序为新 generation 启动、MCP initialize、执行恰好一次 `tools/call`、关闭 stdio、取得 HCS system stop proof、验证 storage quota、接收 bounded output diff，最后销毁 guest。下一次工具调用从新的 snapshot 和空 guest 层开始。不得在长驻 generation 中原地更新 workspace，也不得复用前一次调用的 writable layer。
+- **项目文件型 ManagedPackage 调用按 MCP tool step 创建一次性 guest。** 当前 `WorkspaceWrite` 已实现新 MCP client generation、协议发现、恰好一次 `tools/call` 和停止确认；后续接入调用前 workspace snapshot、guest 内受限挂载、quota/stop proof、bounded output diff 与 review owner。下一次工具调用必须从新的 snapshot 和空 guest 层开始。不得在长驻 generation 中原地更新 workspace，也不得复用前一次调用的 writable layer。
 - **MCP adapter 只从 proof-verified Tools 上下文取得 session、step 和 workspace capability。** session/step ID 必须用统一 `is_canonical_id` 验证；模型参数、MCP 参数、配置字符串或 renderer 不能提供这些身份。MCP crate 接收不含绝对路径的 typed workspace capability，不负责授权，也不能获得任意宿主路径。
 - **CodeMode/Workflow 的每个嵌套 MCP 调用需要自己的 canonical child step ID。** Agent bridge 为每次调用生成独立 `step-*` 并与 authorization proof 一同传入 Tools execution boundary；不得复用父 tool step 或 Workflow 中模型可见的 step label。该身份尚未连到 nested review UI；项目文件输入/输出仍需 per-call snapshot 与 review owner 到位后才可启用。
 - **沿用现有授权与输出 owner。** 工具授权、MCP target binding、实时 sandbox/policy revision 和 process-start permit 都须在副作用前验证；policy permit 覆盖整次调用和 guest 收束。workspace 输入、输出文件数/字节数/深度、stdio 和单次执行时间均受硬上限约束。只在 HCS stop proof、quota 与输出 diff 验证全部成功后，才把 `SandboxOutputReview` 交给 Tools owner，并以 `(session_id, step_id)` 保留；结果不得自动写回 workspace。
@@ -49,4 +49,6 @@ Tools 已在 proof-verified `ToolExecutionContext` 中保存可信 `session_id`�
 - `cargo clippy --locked -p haven-tools -- -D warnings`
 - `cargo test --locked -p haven-agent`（671 passed、1 ignored；2 manual performance tests ignored）
 - `cargo clippy --locked -p haven-agent -- -D warnings`
+- `cargo clippy --workspace --locked -- -D warnings`
+- `cargo test --workspace --locked`
 - 真实 HCS、quota 超额写入与目标机验收按用户要求暂缓，仍是发布 Gate。

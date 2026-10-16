@@ -196,6 +196,365 @@ mod stdio_launcher_tests {
         drop(stdio);
         assert!(!launcher.alive.load(Ordering::Acquire));
     }
+
+    #[derive(Default)]
+    struct OneShotStats {
+        launch_count: std::sync::atomic::AtomicUsize,
+        call_count: std::sync::atomic::AtomicUsize,
+        generations: StdMutex<Vec<Vec<String>>>,
+    }
+
+    struct OneShotLauncher {
+        stats: Arc<OneShotStats>,
+    }
+
+    struct OneShotProcess {
+        stdin: Option<McpStdioWriter>,
+        stdout: Option<McpStdioReader>,
+        cancellation: CancellationToken,
+        server: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+    }
+
+    impl McpStdioProcess for OneShotProcess {
+        fn take_stdin(&mut self) -> std::io::Result<McpStdioWriter> {
+            self.stdin
+                .take()
+                .ok_or_else(|| std::io::Error::other("stdin already taken"))
+        }
+
+        fn take_stdout(&mut self) -> std::io::Result<McpStdioReader> {
+            self.stdout
+                .take()
+                .ok_or_else(|| std::io::Error::other("stdout already taken"))
+        }
+
+        fn take_stderr(&mut self) -> std::io::Result<Option<McpStdioReader>> {
+            Ok(None)
+        }
+
+        fn is_alive(&mut self) -> std::io::Result<bool> {
+            Ok(self.server.is_some())
+        }
+
+        fn start_kill(&mut self) -> std::io::Result<()> {
+            self.cancellation.cancel();
+            Ok(())
+        }
+
+        fn wait(&mut self) -> BoxFuture<'_, std::io::Result<()>> {
+            Box::pin(async move {
+                let result = match self.server.as_mut() {
+                    Some(server) => server.await,
+                    None => return Ok(()),
+                };
+                self.server.take();
+                result.map_err(|error| std::io::Error::other(error.to_string()))?
+            })
+        }
+    }
+
+    impl Drop for OneShotProcess {
+        fn drop(&mut self) {
+            self.cancellation.cancel();
+        }
+    }
+
+    impl McpStdioProcessLauncher for OneShotLauncher {
+        fn launch<'a>(
+            &'a self,
+            spec: &'a McpStdioLaunchSpec,
+            permit: Box<dyn crate::McpStdioProcessStartPermit>,
+        ) -> BoxFuture<'a, anyhow::Result<Box<dyn McpStdioProcess>>> {
+            Box::pin(async move {
+                if !matches!(
+                    spec.stdio_execution(),
+                    McpStdioExecution::ManagedPackage { .. }
+                ) {
+                    anyhow::bail!("one-shot test expects a managed package");
+                }
+                let generation = self.stats.launch_count.fetch_add(1, Ordering::SeqCst);
+                self.stats.generations.lock().unwrap().push(Vec::new());
+                let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+                let (stdout, stdin) = tokio::io::split(client_stream);
+                let cancellation = CancellationToken::new();
+                let server_cancel = cancellation.clone();
+                let stats = self.stats.clone();
+                let server = tokio::spawn(async move {
+                    let result = async {
+                        let (server_read, mut server_write) = tokio::io::split(server_stream);
+                        let mut reader = BufReader::new(server_read);
+                        loop {
+                            let mut line = String::new();
+                            let count = tokio::select! {
+                                _ = server_cancel.cancelled() => break,
+                                count = reader.read_line(&mut line) => count?,
+                            };
+                            if count == 0 {
+                                break;
+                            }
+                            let request: Value =
+                                serde_json::from_str(&line).map_err(std::io::Error::other)?;
+                            let Some(id) = request.get("id").cloned() else {
+                                continue;
+                            };
+                            let method = request
+                                .get("method")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned();
+                            stats.generations.lock().unwrap()[generation].push(method.clone());
+                            let result = match method.as_str() {
+                                "server/discover" => serde_json::json!({
+                                    "resultType": "complete",
+                                    "supportedVersions": [MODERN_PROTOCOL_VERSION],
+                                    "capabilities": {"tools": {}},
+                                    "_meta": {
+                                        "io.modelcontextprotocol/serverInfo": {
+                                            "name": "one-shot-test",
+                                            "version": "1"
+                                        }
+                                    }
+                                }),
+                                "tools/list" => serde_json::json!({
+                                    "tools": [{
+                                        "name": "read_once",
+                                        "description": "test one-shot call",
+                                        "inputSchema": {"type": "object"}
+                                    }],
+                                    "ttlMs": 60000,
+                                    "cacheScope": "private"
+                                }),
+                                "tools/call" => {
+                                    stats.call_count.fetch_add(1, Ordering::SeqCst);
+                                    serde_json::json!({
+                                        "content": [{"type": "text", "text": "called"}]
+                                    })
+                                }
+                                _ => serde_json::json!({}),
+                            };
+                            let response = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": result
+                            });
+                            server_write
+                                .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+                                .await?;
+                            server_write.write_all(b"\n").await?;
+                        }
+                        Ok(())
+                    }
+                    .await;
+                    result
+                });
+                drop(permit);
+                Ok(Box::new(OneShotProcess {
+                    stdin: Some(Box::new(stdin)),
+                    stdout: Some(Box::new(stdout)),
+                    cancellation,
+                    server: Some(server),
+                }) as Box<dyn McpStdioProcess>)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_one_shot_calls_use_a_fresh_protocol_generation_and_confirm_stop() {
+        let stats = Arc::new(OneShotStats::default());
+        let launcher = Arc::new(OneShotLauncher {
+            stats: stats.clone(),
+        });
+        let config = haven_common::config::McpServerConfig {
+            name: "one-shot-test".into(),
+            transport: McpServerTransport::Stdio,
+            stdio_execution: McpStdioExecution::ManagedPackage {
+                package_id: "one-shot-test".into(),
+            },
+            ..Default::default()
+        };
+        let template = McpClient::new_managed_with_launcher(
+            &config,
+            1024,
+            1024,
+            Some(Arc::new(TestMcpStdioProcessStartAuthorization)),
+            launcher,
+        );
+        template.set_network_policy(NetworkPolicy::Open).await;
+
+        for _ in 0..2 {
+            let output = template
+                .call_tool_in_fresh_managed_generation(
+                    "read_once",
+                    serde_json::json!({}),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert!(output.success);
+            assert_eq!(output.output["text"], "called");
+        }
+
+        assert_eq!(stats.launch_count.load(Ordering::SeqCst), 2);
+        assert_eq!(stats.call_count.load(Ordering::SeqCst), 2);
+        let generations = stats.generations.lock().unwrap();
+        assert_eq!(generations.len(), 2);
+        for methods in generations.iter() {
+            assert_eq!(methods, &["server/discover", "tools/list", "tools/call"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn manager_one_shot_call_uses_the_authorized_managed_package_binding() {
+        let stats = Arc::new(OneShotStats::default());
+        let launcher = Arc::new(OneShotLauncher {
+            stats: stats.clone(),
+        });
+        let manager = crate::McpManager::new();
+        manager.set_network_policy(NetworkPolicy::Open).await;
+        manager
+            .set_stdio_process_start_authorization(Some(Arc::new(
+                TestMcpStdioProcessStartAuthorization,
+            )))
+            .await;
+        manager.set_stdio_process_launcher(launcher).await;
+        let config = haven_common::config::McpServerConfig {
+            name: "one-shot-manager".into(),
+            transport: McpServerTransport::Stdio,
+            stdio_execution: McpStdioExecution::ManagedPackage {
+                package_id: "one-shot-manager".into(),
+            },
+            ..Default::default()
+        };
+        manager.connect_server(&config).await.unwrap();
+        let binding = manager
+            .client_target_binding_for_transport(&config.name, &config.transport)
+            .await
+            .unwrap();
+        let stale = manager
+            .call_tool_once_at_target_binding(
+                &config.name,
+                "stale-target-binding",
+                "read_once",
+                serde_json::json!({}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("a stale target binding must not launch a guest");
+        assert!(stale.downcast_ref::<crate::McpTargetChanged>().is_some());
+        assert_eq!(stats.launch_count.load(Ordering::SeqCst), 1);
+        let stale_cancel = CancellationToken::new();
+        stale_cancel.cancel();
+        let cancelled = manager
+            .call_tool_once_at_target_binding(
+                &config.name,
+                &binding,
+                "read_once",
+                serde_json::json!({}),
+                stale_cancel,
+            )
+            .await
+            .expect_err("cancelled calls must not launch a one-shot guest");
+        assert!(cancelled.to_string().contains("cancelled before admission"));
+        assert_eq!(stats.launch_count.load(Ordering::SeqCst), 1);
+
+        let output = manager
+            .call_tool_once_at_target_binding(
+                &config.name,
+                &binding,
+                "read_once",
+                serde_json::json!({}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(output.success);
+        assert_eq!(output.output["text"], "called");
+
+        let generations = stats.generations.lock().unwrap();
+        assert_eq!(stats.launch_count.load(Ordering::SeqCst), 2);
+        assert_eq!(stats.call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(generations.len(), 2);
+        assert_eq!(generations[0], ["server/discover", "tools/list"]);
+        assert_eq!(
+            generations[1],
+            ["server/discover", "tools/list", "tools/call"]
+        );
+        drop(generations);
+        manager.shutdown_all().await;
+    }
+
+    struct FailingWaitProcess {
+        stdin: Option<McpStdioWriter>,
+        stdout: Option<McpStdioReader>,
+        kill_requested: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl McpStdioProcess for FailingWaitProcess {
+        fn take_stdin(&mut self) -> std::io::Result<McpStdioWriter> {
+            self.stdin
+                .take()
+                .ok_or_else(|| std::io::Error::other("stdin already taken"))
+        }
+
+        fn take_stdout(&mut self) -> std::io::Result<McpStdioReader> {
+            self.stdout
+                .take()
+                .ok_or_else(|| std::io::Error::other("stdout already taken"))
+        }
+
+        fn take_stderr(&mut self) -> std::io::Result<Option<McpStdioReader>> {
+            Ok(None)
+        }
+
+        fn is_alive(&mut self) -> std::io::Result<bool> {
+            Ok(true)
+        }
+
+        fn start_kill(&mut self) -> std::io::Result<()> {
+            self.kill_requested.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn wait(&mut self) -> BoxFuture<'_, std::io::Result<()>> {
+            Box::pin(async { Err(std::io::Error::other("simulated stop proof failure")) })
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_reports_unconfirmed_stop_and_retains_the_process_owner() {
+        let config = haven_common::config::McpServerConfig {
+            name: "stop-proof-test".into(),
+            ..Default::default()
+        };
+        let client = McpClient::new(&config, 1024, 1024);
+        let (client_stream, _server_stream) = tokio::io::duplex(1024);
+        let (stdout, stdin) = tokio::io::split(client_stream);
+        let kill_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let process = Box::new(FailingWaitProcess {
+            stdin: Some(Box::new(stdin)),
+            stdout: Some(Box::new(stdout)),
+            kill_requested: kill_requested.clone(),
+        });
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let stdio = StdioInner::new(
+            process,
+            notification_tx,
+            Arc::new(ToolsListChangedSignal::new()),
+            CancellationToken::new(),
+        )
+        .unwrap();
+        *client.inner.lock().await = Some(McpClientInner::Stdio(Box::new(stdio)));
+
+        let error = client
+            .shutdown()
+            .await
+            .expect_err("shutdown must report when the process stop cannot be proven");
+
+        assert!(error.to_string().contains("stop could not be confirmed"));
+        assert!(kill_requested.load(Ordering::SeqCst));
+        assert!(client.inner.lock().await.is_some());
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -981,6 +1340,23 @@ impl McpClient {
     /// Select a protocol mode and discover tools. On failure, record whether
     /// the peer was unreachable or incompatible with the supported protocols.
     pub async fn connect(&self) -> anyhow::Result<()> {
+        self.connect_with_cancellation(None).await
+    }
+
+    pub(crate) async fn connect_with_cancellation(
+        &self,
+        external_cancel: Option<CancellationToken>,
+    ) -> anyhow::Result<()> {
+        *self.cancel_token.lock().await = CancellationToken::new();
+        let connection_cancel = self.cancel_token.lock().await.clone();
+        let cancellation_watcher = external_cancel.map(|external_cancel| {
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = external_cancel.cancelled() => connection_cancel.cancel(),
+                    _ = connection_cancel.cancelled() => {},
+                }
+            })
+        });
         let network_policy = *self.network_policy.read().await;
         if matches!(self.transport, McpServerTransport::Stdio)
             && !matches!(network_policy, NetworkPolicy::Open)
@@ -992,6 +1368,10 @@ impl McpClient {
             *self.status.lock().await = McpClientStatus::Offline {
                 error: error.to_string(),
             };
+            if let Some(watcher) = cancellation_watcher {
+                watcher.abort();
+                let _ = watcher.await;
+            }
             return Err(error);
         }
         *self.status.lock().await = McpClientStatus::Connecting;
@@ -1001,6 +1381,10 @@ impl McpClient {
         // were never confirmed on the current session.
         *self.tools_cache.lock().await = None;
         let result = self.connect_inner().await;
+        if let Some(watcher) = cancellation_watcher {
+            watcher.abort();
+            let _ = watcher.await;
+        }
         if let Err(e) = &result {
             if let Err(shutdown_error) = self.shutdown_inner(false).await {
                 tracing::warn!(
@@ -1022,12 +1406,6 @@ impl McpClient {
     async fn connect_inner(&self) -> anyhow::Result<()> {
         let (notification_tx, new_rx) = tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
         *self.notification_rx.lock().await = Some(new_rx);
-
-        // Refresh the cancel token: `shutdown()` (called before every
-        // reconnect) cancels it, and reusing the cancelled token would make
-        // the new transport's requests (and notification stream) abort
-        // immediately after a reconnect.
-        *self.cancel_token.lock().await = CancellationToken::new();
         *self.protocol_mode.lock().await = McpProtocolMode::Uninitialized;
 
         let mut http_shared: Option<Arc<HttpShared>> = None;
@@ -1270,6 +1648,84 @@ impl McpClient {
         Ok(())
     }
 
+    pub(crate) async fn call_tool_in_fresh_managed_generation(
+        &self,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpCallOutput> {
+        let invocation = Arc::new(self.fresh_managed_call_client()?);
+        invocation
+            .set_network_policy(*self.network_policy.read().await)
+            .await;
+
+        if let Err(connect_error) = invocation
+            .connect_with_cancellation(Some(cancel.child_token()))
+            .await
+        {
+            let stop_result = invocation.shutdown().await;
+            return match stop_result {
+                Ok(()) => Err(connect_error),
+                Err(stop_error) => Err(anyhow::anyhow!(
+                    "MCP invocation setup failed and its managed guest stop was not confirmed (connect: {}; stop: {})",
+                    haven_common::error::sanitize_error_text(&connect_error.to_string()),
+                    haven_common::error::sanitize_error_text(&stop_error.to_string())
+                )),
+            };
+        }
+        let call_result = invocation
+            .call_tool(tool_name, input, cancel.child_token())
+            .await;
+        let stop_result = invocation.shutdown().await;
+
+        match (call_result, stop_result) {
+            (Ok(output), Ok(())) => Ok(output),
+            (Ok(_), Err(stop_error)) => Err(anyhow::anyhow!(
+                "MCP call completed but its managed guest stop was not confirmed: {}",
+                haven_common::error::sanitize_error_text(&stop_error.to_string())
+            )),
+            (Err(call_error), Ok(())) => Err(call_error),
+            (Err(call_error), Err(stop_error)) => Err(anyhow::anyhow!(
+                "MCP call failed and its managed guest stop was not confirmed (call: {}; stop: {})",
+                haven_common::error::sanitize_error_text(&call_error.to_string()),
+                haven_common::error::sanitize_error_text(&stop_error.to_string())
+            )),
+        }
+    }
+
+    fn fresh_managed_call_client(&self) -> anyhow::Result<Self> {
+        if !matches!(self.transport, McpServerTransport::Stdio)
+            || !matches!(
+                self.stdio_execution,
+                McpStdioExecution::ManagedPackage { .. }
+            )
+        {
+            anyhow::bail!("one-shot MCP calls require a managed stdio package");
+        }
+
+        let config = haven_common::config::McpServerConfig {
+            name: self.name.clone(),
+            transport: self.transport.clone(),
+            stdio_execution: self.stdio_execution.clone(),
+            command: self.command.clone(),
+            args: self.args.clone(),
+            env: self.env.clone(),
+            cwd: self.cwd.clone(),
+            url: self.url.clone(),
+            enabled: self.enabled(),
+            ..Default::default()
+        };
+        let mut client = Self::new_managed_with_launcher(
+            &config,
+            self.max_binary_base64_bytes,
+            self.max_sse_buffer,
+            self.stdio_process_authorization.clone(),
+            self.stdio_process_launcher.clone(),
+        );
+        client.rate_limiter = self.rate_limiter.clone();
+        Ok(client)
+    }
+
     pub async fn shutdown(&self) -> anyhow::Result<()> {
         self.shutdown_inner(true).await
     }
@@ -1305,6 +1761,7 @@ impl McpClient {
         }
 
         let mut guard = self.inner.lock().await;
+        let mut stop_failure = None;
         if matches!(guard.as_ref(), Some(McpClientInner::Stdio(_))) {
             if protocol_mode.is_legacy() {
                 let id = self.next_id.fetch_add(1, Ordering::SeqCst);
@@ -1344,18 +1801,37 @@ impl McpClient {
                     }
                     match stdio.bounded_kill_wait().await {
                         Ok(true) => {}
-                        Ok(false) => tracing::warn!(
-                            server = %self.name,
-                            "MCP stdio process did not exit within the bounded termination wait"
-                        ),
-                        Err(error) => tracing::warn!(
-                            server = %self.name,
-                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                            "MCP stdio process wait failed after termination"
-                        ),
+                        Ok(false) => {
+                            tracing::warn!(
+                                server = %self.name,
+                                "MCP stdio process did not exit within the bounded termination wait"
+                            );
+                            stop_failure = Some(
+                                "MCP stdio process did not stop within the bounded termination wait"
+                                    .to_owned(),
+                            );
+                        }
+                        Err(error) => {
+                            let safe_error =
+                                haven_common::error::sanitize_error_text(&error.to_string());
+                            tracing::warn!(
+                                server = %self.name,
+                                error = %safe_error,
+                                "MCP stdio process wait failed after termination"
+                            );
+                            stop_failure = Some(format!(
+                                "MCP stdio process stop could not be confirmed: {safe_error}"
+                            ));
+                        }
                     }
                 }
             }
+        }
+        if let Some(error) = stop_failure {
+            *self.status.lock().await = McpClientStatus::Offline {
+                error: error.clone(),
+            };
+            return Err(anyhow::anyhow!(error));
         }
         *guard = None;
         *self.protocol_mode.lock().await = McpProtocolMode::Uninitialized;

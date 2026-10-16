@@ -287,6 +287,7 @@ impl McpToolAdapter {
         input: Value,
         cancel: CancellationToken,
         target_binding: Option<String>,
+        one_shot_managed_call: bool,
     ) -> anyhow::Result<ToolResult> {
         #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
         if self.panic_on_execute {
@@ -314,16 +315,27 @@ impl McpToolAdapter {
                 permission_error_metadata(),
             )));
         }
-        let result = self
-            .manager
-            .call_tool_at_target_binding(
-                &self.server_name,
-                &target_binding,
-                &self.info.name,
-                input,
-                cancel,
-            )
-            .await;
+        let result = if one_shot_managed_call {
+            self.manager
+                .call_tool_once_at_target_binding(
+                    &self.server_name,
+                    &target_binding,
+                    &self.info.name,
+                    input,
+                    cancel,
+                )
+                .await
+        } else {
+            self.manager
+                .call_tool_at_target_binding(
+                    &self.server_name,
+                    &target_binding,
+                    &self.info.name,
+                    input,
+                    cancel,
+                )
+                .await
+        };
         let out = result.map_err(|error| {
             let metadata = if error
                 .downcast_ref::<haven_mcp::McpTargetChanged>()
@@ -397,7 +409,7 @@ impl Tool for McpToolAdapter {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        self.execute_target_bound(input, cancel, None).await
+        self.execute_target_bound(input, cancel, None, false).await
     }
 
     async fn execute_with_authorization_target(
@@ -440,9 +452,10 @@ impl Tool for McpToolAdapter {
         let sandbox_mode = permit.sandbox_mode();
         drop(permit);
 
-        if sandbox_mode == haven_common::types::SandboxMode::WorkspaceWrite
-            && self.transport == McpServerTransport::Stdio
-        {
+        let one_shot_managed_call = sandbox_mode
+            == haven_common::types::SandboxMode::WorkspaceWrite
+            && self.transport == McpServerTransport::Stdio;
+        if one_shot_managed_call {
             let session_id = context.call_session_id.as_deref().ok_or_else(|| {
                 crate::security::execution_policy_denied(
                     "workspace-write MCP stdio requires a canonical session id".into(),
@@ -485,7 +498,12 @@ impl Tool for McpToolAdapter {
             revoke_cancel.cancel();
         });
         let result = self
-            .execute_target_bound(input, call_cancel, Some(target_binding.to_owned()))
+            .execute_target_bound(
+                input,
+                call_cancel,
+                Some(target_binding.to_owned()),
+                one_shot_managed_call,
+            )
             .await;
         revocation.abort();
         let _ = revocation.await;
