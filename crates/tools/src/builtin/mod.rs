@@ -266,9 +266,9 @@ pub(crate) async fn register_builtin_tools(
         default_shell: default_shell.as_str().into(),
         execution_workspace,
         #[cfg(windows)]
-        sandbox_output_reviews,
+        sandbox_output_reviews: sandbox_output_reviews.clone(),
         #[cfg(windows)]
-        windows_container_execution,
+        windows_container_execution: windows_container_execution.clone(),
         #[cfg(test)]
         test_output_log_root: None,
     }));
@@ -334,10 +334,17 @@ pub(crate) async fn register_builtin_tools(
         .into_iter()
         .filter(|skill| skill.enabled() && skill.has_script())
     {
-        tools.push(Arc::new(crate::adapters::SkillToolAdapter::new(
-            Arc::new(skill),
-            skill_runner.clone(),
-        )));
+        let mut adapter =
+            crate::adapters::SkillToolAdapter::new(Arc::new(skill), skill_runner.clone())
+                .with_authorization_engine(authorization.clone());
+        #[cfg(windows)]
+        {
+            adapter = adapter.with_windows_container_runtime(
+                windows_container_execution.clone(),
+                sandbox_output_reviews.clone(),
+            );
+        }
+        tools.push(Arc::new(adapter));
     }
     // Keep the control-plane surface stable even when no optional Skill or
     // MCP provider is configured. The loader returns a precise unavailable

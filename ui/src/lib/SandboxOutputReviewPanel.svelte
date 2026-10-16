@@ -135,7 +135,7 @@
 </script>
 
 {#if loading || manifest || errorMessage || statusMessage}
-	<section class="sandbox-review" aria-label="Sandbox 输出审阅" data-testid="sandbox-output-review">
+	<section class="sandbox-review" aria-label="隔离执行输出审阅" data-testid="sandbox-output-review">
 		{#if manifest}
 			<header>
 				<div>
@@ -188,7 +188,7 @@
 				/>
 			</footer>
 		{:else if loading}
-			<p class="message">正在检查此 Shell 步骤是否有待审阅输出…</p>
+			<p class="message">正在检查此工具步骤是否有待审阅输出…</p>
 		{/if}
 		{#if statusMessage}<p class="message" role="status">{statusMessage}</p>{/if}
 		{#if errorMessage}<p class="message error" role="alert">{errorMessage}</p>{/if}

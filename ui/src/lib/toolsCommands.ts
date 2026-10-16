@@ -93,7 +93,7 @@ export function resetToolCircuits(): Promise<void> {
 	return invoke('reset_tool_circuits');
 }
 
-/** Read the bounded review projection for one exact Shell step. */
+/** Read the bounded review projection for one exact Shell or Skill step. */
 export function getSandboxOutputReview(request: {
 	sessionId: string;
 	sourceStepId: string;
@@ -103,7 +103,7 @@ export function getSandboxOutputReview(request: {
 	);
 }
 
-/** Explicitly discard the private output and baseline for one Shell step. */
+/** Explicitly discard the private output and baseline for one Shell or Skill step. */
 export function discardSandboxOutputReview(request: {
 	sessionId: string;
 	sourceStepId: string;

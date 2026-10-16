@@ -30,6 +30,7 @@
 	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 	import type { ToolResultPresentationOutcome } from '$lib/streaming.ts';
 	import ToolShellResult from '$lib/ToolShellResult.svelte';
+	import ToolSkillResult from '$lib/ToolSkillResult.svelte';
 
 	type TerminalToolRunStatus = Extract<ToolRunStatus, 'completed' | 'failed' | 'cancelled'>;
 
@@ -582,6 +583,16 @@
 						<ToolShellResult
 							{data}
 							{shellText}
+							{liveStreaming}
+							sessionId={sessionId ?? null}
+							sourceStepId={messageId}
+							failed={failedWithoutOutput}
+						/>
+					{:else if toolName.startsWith('skill__') || toolName.startsWith('skill::')}
+						<ToolSkillResult
+							{data}
+							{rawText}
+							{kind}
 							{liveStreaming}
 							sessionId={sessionId ?? null}
 							sourceStepId={messageId}

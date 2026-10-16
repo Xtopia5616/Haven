@@ -6,14 +6,11 @@ use haven_common::tools::{
 };
 use haven_common::types::{CapabilityScope, RiskLevel};
 use serde_json::Value;
-use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::operation_view::{OperationIdentity, OperationSpec};
-use crate::skill_runner::SkillRunner;
 use crate::{OperationPolicy, StructuredToolError, Tool, ToolErrorMetadata, ToolResult};
 use haven_mcp::{McpManager, McpToolInfo};
-use haven_skills::Skill;
 
 /// External capability metadata is data, not an instruction channel. Keep
 /// descriptions short and single-line before they reach either a prompt or a
@@ -166,6 +163,24 @@ fn skill_operation_spec(name: &str, description: &str, schema: Value) -> Operati
             availability: ToolAvailability::default(),
         }),
     }
+}
+
+fn skill_execution_policy_for_sandbox(
+    mut policy: OperationPolicy,
+    sandbox_mode: haven_common::types::SandboxMode,
+) -> OperationPolicy {
+    match sandbox_mode {
+        haven_common::types::SandboxMode::WorkspaceWrite => {
+            policy.execution_boundary = crate::ExecutionBoundary::WorkspaceIsolated;
+            policy.network_access = crate::NetworkAccess::None;
+        }
+        haven_common::types::SandboxMode::FullAccess
+        | haven_common::types::SandboxMode::ReadOnly => {
+            policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
+            policy.network_access = crate::NetworkAccess::Opaque;
+        }
+    }
+    policy
 }
 
 pub struct McpToolAdapter {
@@ -407,146 +422,8 @@ impl Tool for McpToolAdapter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SkillToolAdapter — wraps a Skill as a dyn Tool
-// ---------------------------------------------------------------------------
-
-pub struct SkillToolAdapter {
-    skill: Arc<Skill>,
-    runner: SkillRunner,
-    spec: OperationSpec,
-    #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
-    panic_on_execute: bool,
-}
-
-impl SkillToolAdapter {
-    pub fn new(skill: Arc<Skill>, runner: SkillRunner) -> Self {
-        let name = skill_tool_name(skill.name());
-        let description = sanitize_external_description(skill.description());
-        let spec = skill_operation_spec(&name, &description, skill_input_schema());
-        Self {
-            skill,
-            runner,
-            spec,
-            #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
-            panic_on_execute: false,
-        }
-    }
-
-    /// Construct a real Skill adapter that panics when executed. This is only
-    /// available in debug builds for the agent's extension-boundary tests.
-    #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
-    #[doc(hidden)]
-    pub fn new_panicking_for_test(skill: Arc<Skill>, runner: SkillRunner) -> Self {
-        let mut adapter = Self::new(skill, runner);
-        adapter.panic_on_execute = true;
-        adapter
-    }
-
-    /// Canonical qualified tool name (`skill::<name>`) after LLM name
-    /// sanitization. The same deterministic name is used for catalog
-    /// registration and execution lookup.
-    fn qualified_name(&self) -> String {
-        skill_tool_name(self.skill.name())
-    }
-
-    async fn execute_with_authorization(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-        execution_authorization: crate::security::ExecutionPolicyAuthorization,
-    ) -> anyhow::Result<ToolResult> {
-        #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
-        if self.panic_on_execute {
-            panic!("simulated Skill adapter panic");
-        }
-        let params = input.get("params").ok_or_else(|| {
-            anyhow::Error::new(StructuredToolError::new(
-                "skill parameters are required",
-                ToolErrorMetadata::validation(),
-            ))
-        })?;
-        self.runner
-            .execute_with_authorization(&self.skill, params, cancel, execution_authorization)
-            .await
-            .map_err(|error| {
-                anyhow::Error::new(StructuredToolError::new(
-                    error.to_string(),
-                    ToolErrorMetadata::other(),
-                ))
-            })
-    }
-}
-
-/// Return the canonical qualified tool name for an executable skill.
-///
-/// App authorization and Tools registration must use the same key so UI
-/// preview permissions apply to the skill tool invocation.
-pub fn skill_tool_name(skill_name: &str) -> String {
-    crate::llm_tool_name(&format!("skill::{}", skill_name))
-}
-
-#[async_trait]
-impl Tool for SkillToolAdapter {
-    fn name(&self) -> String {
-        self.qualified_name()
-    }
-
-    fn description(&self) -> String {
-        sanitize_external_description(self.skill.description())
-    }
-
-    fn catalog_group(&self) -> ToolCatalogGroup {
-        ToolCatalogGroup::Skills
-    }
-
-    fn represented_source(&self) -> ToolSource {
-        ToolSource::Skill
-    }
-
-    fn operation_spec(&self) -> Option<OperationSpec> {
-        Some(self.spec.clone())
-    }
-
-    fn risk_level(&self, input: &Value) -> RiskLevel {
-        self.spec.policy_for(input).risk_level
-    }
-
-    fn input_schema(&self) -> Value {
-        skill_input_schema()
-    }
-
-    fn default_timeout_secs(&self) -> u64 {
-        self.runner.timeout_secs().saturating_add(5).max(30)
-    }
-
-    async fn execute(
-        &self,
-        _input: Value,
-        _cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        anyhow::bail!("Skill execution requires an authorization context")
-    }
-
-    async fn execute_with_authorization_context(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-        target_binding: Option<&str>,
-        context: &crate::ToolExecutionContext,
-    ) -> anyhow::Result<ToolResult> {
-        if target_binding.is_some() {
-            anyhow::bail!("skill tool cannot enforce an external authorization target");
-        }
-        let execution_authorization = context.clone_execution_authorization().ok_or_else(|| {
-            crate::security::execution_policy_denied(
-                "Skill execution requires an authorization proof".into(),
-            )
-        })?;
-        self.execute_with_authorization(input, cancel, execution_authorization)
-            .await
-    }
-}
+mod skill_adapter;
+pub use skill_adapter::{SkillToolAdapter, skill_tool_name};
 
 #[cfg(test)]
 mod tests {
@@ -555,6 +432,7 @@ mod tests {
     use haven_common::config::SkillsExecConfig;
     use haven_mcp::McpManager;
     use haven_skills::VenvManager;
+    use std::sync::Arc;
 
     /// A test MCP tool adapter backed by a mock client.
     fn mcp_adapter(schema: serde_json::Value) -> McpToolAdapter {
@@ -604,6 +482,60 @@ mod tests {
         assert_eq!(adapter.name(), "skill__echo");
         assert_eq!(adapter.description(), "Echoes input");
         assert_eq!(adapter.risk_level(&Value::Null), RiskLevel::High);
+    }
+
+    #[test]
+    fn skill_boundary_and_network_contract_follow_sandbox_mode() {
+        let base = OperationPolicy::external(
+            CapabilityScope::try_new("skill__echo").unwrap(),
+            RiskLevel::High,
+        );
+        let workspace_write = skill_execution_policy_for_sandbox(
+            base.clone(),
+            haven_common::types::SandboxMode::WorkspaceWrite,
+        );
+        assert_eq!(
+            workspace_write.execution_boundary,
+            crate::ExecutionBoundary::WorkspaceIsolated
+        );
+        assert_eq!(workspace_write.network_access, crate::NetworkAccess::None);
+        assert_eq!(
+            workspace_write.effect,
+            crate::OperationEffect::ExternalEffect
+        );
+
+        let full_access =
+            skill_execution_policy_for_sandbox(base, haven_common::types::SandboxMode::FullAccess);
+        assert_eq!(
+            full_access.execution_boundary,
+            crate::ExecutionBoundary::HostProcess
+        );
+        assert_eq!(full_access.network_access, crate::NetworkAccess::Opaque);
+    }
+
+    #[tokio::test]
+    async fn skill_workspace_write_authorization_fails_closed_without_review_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        let skill = Arc::new(
+            crate::test_support::discover_skill_fixture(root.path(), "echo", "Echo", None).await,
+        );
+        let config = SkillsExecConfig::default();
+        let runner = SkillRunner::new(VenvManager::new(config.venv_root.clone()), config);
+        let authorization = Arc::new(crate::security::AuthorizationEngine::new());
+        authorization
+            .set_boundaries(
+                haven_common::types::SandboxMode::WorkspaceWrite,
+                Vec::new(),
+                haven_common::types::NetworkPolicy::Open,
+            )
+            .await;
+        let adapter = SkillToolAdapter::new(skill, runner).with_authorization_engine(authorization);
+
+        let error = adapter
+            .authorization_contract(&serde_json::json!({ "params": {} }))
+            .await
+            .unwrap_err();
+        assert!(error.contains("Windows container"));
     }
 
     #[tokio::test]
@@ -692,6 +624,7 @@ mod tests {
             execution_workspace: None,
             file_write_policy: None,
             execution_authorization: Some(execution_authorization),
+            ..Default::default()
         };
 
         let result = adapter

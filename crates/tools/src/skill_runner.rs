@@ -420,6 +420,10 @@ impl SkillRunner {
         self.config.timeout_secs
     }
 
+    pub(crate) fn max_output_lines(&self) -> usize {
+        self.config.max_output_lines
+    }
+
     /// Execute a skill's script with the given parameters.
     #[cfg(test)]
     pub async fn execute(

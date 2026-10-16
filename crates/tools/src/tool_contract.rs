@@ -1797,6 +1797,8 @@ pub struct ToolExecutionContext {
     pub(crate) execution_workspace: Option<crate::execution_workspace::ExecutionWorkspace>,
     pub(crate) file_write_policy: Option<crate::security::FileWritePolicy>,
     pub(crate) execution_authorization: Option<crate::security::ExecutionPolicyAuthorization>,
+    pub(crate) call_session_id: Option<String>,
+    pub(crate) call_step_id: Option<String>,
 }
 
 impl ToolExecutionContext {
@@ -1813,6 +1815,16 @@ impl ToolExecutionContext {
         &self,
     ) -> Option<crate::security::ExecutionPolicyAuthorization> {
         self.execution_authorization.clone()
+    }
+
+    pub(crate) fn with_call_identity(
+        mut self,
+        session_id: Option<&str>,
+        step_id: Option<&str>,
+    ) -> Self {
+        self.call_session_id = session_id.map(str::to_owned);
+        self.call_step_id = step_id.map(str::to_owned);
+        self
     }
 }
 

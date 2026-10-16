@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳并实现平台侧 broker 链路。实时授权 adapter 尚未接入；`WorkspaceWrite` 的 Skill 工具仍 fail closed。真实 HCS 与超额写入验收保持为独立发布 Gate。
+已采纳并实现平台侧 broker 链路；Tools 实时授权 adapter 与输出 review 的后续接线见 ADR 1268。真实 HCS 与超额写入验收保持为独立发布 Gate。
 
 ## 背景
 

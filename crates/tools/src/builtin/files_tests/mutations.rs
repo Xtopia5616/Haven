@@ -102,6 +102,7 @@ async fn proof_derived_directory_policy_confines_file_writes() {
         execution_workspace: None,
         file_write_policy: Some(policy),
         execution_authorization: Some(crate::security::ExecutionPolicyAuthorization::for_test()),
+        ..Default::default()
     };
     let tool = FilesTool::default();
 
@@ -223,6 +224,7 @@ async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_polic
         execution_workspace: None,
         file_write_policy: Some(FileWritePolicy::default()),
         execution_authorization: None,
+        ..Default::default()
     };
 
     let error = FilesTool::default()

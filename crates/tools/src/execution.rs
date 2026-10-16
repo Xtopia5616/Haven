@@ -572,6 +572,8 @@ impl AuthorizedExecutor<'_> {
                         ));
                     }
                 };
+                authorization_context =
+                    authorization_context.with_call_identity(session_id, step_id);
                 authorization_target_binding = request.target_binding;
             }
 

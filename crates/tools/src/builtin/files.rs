@@ -283,6 +283,7 @@ impl FilesTool {
             execution_workspace: Some(self.authorization.execution_workspace().await),
             file_write_policy: Some(crate::security::FileWritePolicy::ambient_for_test()),
             execution_authorization: Some(crate::security::ExecutionPolicyAuthorization::for_test()),
+            ..Default::default()
         };
         self.run_with_execution_context(params, cancel, &context)
             .await

@@ -43,7 +43,7 @@ pub async fn reset_tool_circuits(state: State<'_, Arc<AppState>>) -> Result<(), 
 }
 
 /// Read only the bounded review summary owned by Tools for this terminal Shell
-/// step. Source paths and contents never cross this command boundary.
+/// or isolated Skill step. Source paths and contents never cross this command boundary.
 #[tauri::command]
 pub async fn get_sandbox_output_review(
     state: State<'_, Arc<AppState>>,
@@ -51,7 +51,7 @@ pub async fn get_sandbox_output_review(
     source_step_id: String,
 ) -> Result<Option<crate::commands::contracts::SandboxOutputReviewManifestDto>, String> {
     validate_sandbox_review_identity(&session_id, &source_step_id)?;
-    validate_sandbox_review_shell_step(&state, &session_id, &source_step_id).await?;
+    validate_sandbox_review_step(&state, &session_id, &source_step_id).await?;
 
     #[cfg(windows)]
     {
@@ -71,7 +71,7 @@ pub async fn get_sandbox_output_review(
     }
 }
 
-/// Drop the private output and baseline for one reviewed Shell step.
+/// Drop the private output and baseline for one reviewed Shell or Skill step.
 #[tauri::command]
 pub async fn discard_sandbox_output_review(
     state: State<'_, Arc<AppState>>,
@@ -79,7 +79,7 @@ pub async fn discard_sandbox_output_review(
     source_step_id: String,
 ) -> Result<bool, String> {
     validate_sandbox_review_identity(&session_id, &source_step_id)?;
-    validate_sandbox_review_shell_step(&state, &session_id, &source_step_id).await?;
+    validate_sandbox_review_step(&state, &session_id, &source_step_id).await?;
 
     #[cfg(windows)]
     {
@@ -160,7 +160,7 @@ fn validate_sandbox_review_identity(session_id: &str, source_step_id: &str) -> R
         .map_err(|error| crate::commands::log_err("sandbox_output_review", error))
 }
 
-async fn validate_sandbox_review_shell_step(
+async fn validate_sandbox_review_step(
     state: &AppState,
     session_id: &str,
     source_step_id: &str,
@@ -174,7 +174,7 @@ async fn validate_sandbox_review_shell_step(
     if projection
         .steps
         .iter()
-        .any(|step| is_sandbox_review_shell_step(step, source_step_id))
+        .any(|step| is_sandbox_review_step(step, source_step_id))
     {
         Ok(())
     } else {
@@ -185,8 +185,12 @@ async fn validate_sandbox_review_shell_step(
     }
 }
 
-fn is_sandbox_review_shell_step(step: &haven_memory::SessionStep, source_step_id: &str) -> bool {
-    step.step_id == source_step_id && step.tool_name.as_deref() == Some("shell")
+fn is_sandbox_review_step(step: &haven_memory::SessionStep, source_step_id: &str) -> bool {
+    step.step_id == source_step_id
+        && step
+            .tool_name
+            .as_deref()
+            .is_some_and(|tool_name| tool_name == "shell" || tool_name.starts_with("skill__"))
 }
 
 /// Queue a one-time confirmation before promoting one created file from a
@@ -205,7 +209,7 @@ pub async fn promote_sandbox_output(
         .map_err(|error| crate::commands::log_err("promote_sandbox_output", error))?;
     crate::commands::validate_command_id(&source_step_id, "source_step_id", "step")
         .map_err(|error| crate::commands::log_err("promote_sandbox_output", error))?;
-    validate_sandbox_review_shell_step(&state, &session_id, &source_step_id).await?;
+    validate_sandbox_review_step(&state, &session_id, &source_step_id).await?;
 
     #[cfg(windows)]
     {
@@ -258,7 +262,7 @@ pub async fn promote_sandbox_output(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_sandbox_review_shell_step, validate_sandbox_review_identity};
+    use super::{is_sandbox_review_step, validate_sandbox_review_identity};
     use haven_common::lifecycle::SessionStepStatus;
     use haven_memory::SessionStep;
 
@@ -284,14 +288,22 @@ mod tests {
     }
 
     #[test]
-    fn review_source_must_be_the_exact_shell_step() {
+    fn review_source_must_be_the_exact_shell_or_skill_step() {
         let step = shell_step("shell");
-        assert!(is_sandbox_review_shell_step(&step, &step.step_id));
-        assert!(!is_sandbox_review_shell_step(
+        assert!(is_sandbox_review_step(&step, &step.step_id));
+        assert!(!is_sandbox_review_step(
             &step,
             "step-00000000000000000000000000000003"
         ));
-        assert!(!is_sandbox_review_shell_step(
+        assert!(is_sandbox_review_step(
+            &shell_step("skill__weather"),
+            &step.step_id
+        ));
+        assert!(!is_sandbox_review_step(
+            &shell_step("skill::weather"),
+            &step.step_id
+        ));
+        assert!(!is_sandbox_review_step(
             &shell_step("files.write"),
             &step.step_id
         ));

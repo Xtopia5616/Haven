@@ -1292,6 +1292,7 @@ mod tests {
             execution_workspace: None,
             file_write_policy: None,
             execution_authorization: Some(execution_authorization),
+            ..Default::default()
         };
         let run = tokio::spawn(async move {
             ShellTool::default()
@@ -1346,6 +1347,7 @@ mod tests {
             execution_workspace: None,
             file_write_policy: None,
             execution_authorization: Some(execution_authorization),
+            ..Default::default()
         };
         let result = ShellTool::default()
             .execute_with_authorization_context_timeout(

@@ -1255,3 +1255,4 @@
 - [1265：定义 brokered Skill 执行契约](1265-define-brokered-skill-execution-contract.md)
 - [1266：在容器镜像目录中固定 Skill Python runtime](1266-pin-python-runtime-in-container-catalog.md)
 - [1267：将 Skill 输入与 Python launcher 接入 HCS broker](1267-connect-brokered-skill-inputs-and-launcher.md)
+- [1268：将 Skill adapter 接入实时授权与输出审阅](1268-wire-brokered-skills-to-live-authorization.md)

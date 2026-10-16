@@ -601,6 +601,7 @@ pub(crate) struct ExecutionPolicyAuthorization {
     authorization: Arc<AuthorizationEngine>,
     policy_revision: u64,
     execution_workspace_generation: u64,
+    execution_boundary: crate::ExecutionBoundary,
     expires_at: u64,
     process_revocation_signal: Arc<()>,
     tool_settings_cancellation: Arc<CancellationToken>,
@@ -643,6 +644,10 @@ pub(crate) fn execution_policy_denied(reason: String) -> anyhow::Error {
 impl ExecutionPolicyAuthorization {
     pub(crate) fn policy_stamp(&self) -> (u64, u64) {
         (self.policy_revision, self.execution_workspace_generation)
+    }
+
+    pub(crate) fn execution_boundary(&self) -> crate::ExecutionBoundary {
+        self.execution_boundary
     }
 
     pub(crate) async fn acquire(&self) -> Result<ExecutionPolicyPermit, String> {
@@ -738,6 +743,7 @@ impl ExecutionPolicyAuthorization {
             authorization,
             policy_revision: 0,
             execution_workspace_generation: 1,
+            execution_boundary: crate::ExecutionBoundary::HostProcess,
             expires_at: execution_proof_expiry(),
             process_revocation_signal,
             tool_settings_cancellation,
@@ -1068,6 +1074,10 @@ impl AuthorizationEngine {
         self.config.read().await.execution_workspace.clone()
     }
 
+    pub(crate) async fn sandbox_mode(&self) -> SandboxMode {
+        self.config.read().await.sandbox_mode
+    }
+
     pub async fn execution_workspace_snapshot(&self) -> ExecutionWorkspaceSnapshot {
         self.config.read().await.execution_workspace.snapshot()
     }
@@ -1332,11 +1342,14 @@ impl AuthorizationEngine {
                 authorization: Arc::clone(self),
                 policy_revision: proof.binding.policy_revision,
                 execution_workspace_generation: cfg.execution_workspace.generation(),
+                execution_boundary: request.policy.execution_boundary,
                 expires_at: proof.binding.expires_at,
                 process_revocation_signal: self.process_revocations.borrow().clone(),
                 tool_settings_cancellation,
                 session_trust_cancellation,
             }),
+            call_session_id: None,
+            call_step_id: None,
         })
     }
 
