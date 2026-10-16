@@ -178,6 +178,35 @@ impl<'a> HcsComputeSystemOwner<'a> {
         )
     }
 
+    /// Create a process whose owner is stored beside this system owner in a
+    /// supervised MCP session. The session owner must drop/stop the process
+    /// before it terminates this compute system.
+    pub(super) fn create_session_guest_process(
+        &self,
+        parameters: &super::hcs_process::HcsGuestProcessParameters,
+        operation_timeout: Duration,
+    ) -> io::Result<super::hcs_process_runtime::HcsGuestProcessOwner<'a>> {
+        validate_operation_timeout(operation_timeout)?;
+        if !self.started {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "HCS compute system must be started before creating a guest process",
+            ));
+        }
+        let system = self.system.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "HCS compute system has already been terminated",
+            )
+        })?;
+        super::hcs_process_runtime::HcsGuestProcessOwner::create(
+            self.api,
+            system,
+            parameters,
+            operation_timeout,
+        )
+    }
+
     /// Terminate once and release the handle only after HCS confirms success.
     /// A failure leaves the owner intact so callers can retry before drop.
     pub(super) fn terminate(&mut self) -> io::Result<HcsStoppedComputeSystem> {

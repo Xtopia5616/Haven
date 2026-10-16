@@ -1270,3 +1270,4 @@
 - [1280：将 MCP generation 绑定到独立认证管道](1280-bind-mcp-session-to-authenticated-pipe.md)
 - [1281：让 MCP stdin writer 拥有 guest process 生命周期](1281-own-mcp-stdin-writer-process-lifecycle.md)
 - [1282：组合有界 HCS guest stdio session owner](1282-compose-bounded-hcs-stdio-session-owner.md)
+- [1283：拥有 brokered MCP HCS generation 生命周期](1283-own-brokered-mcp-hcs-generation.md)
