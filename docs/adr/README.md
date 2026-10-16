@@ -1222,3 +1222,4 @@
 - [1232：认证 broker named-pipe 两端并按 logon SID 限制访问](1232-authenticate-broker-named-pipe-peers.md)
 - [1233：将容器 broker 安装为独立受限 Windows 服务](1233-isolate-the-container-broker-service.md)
 - [1234：从 WTS 活跃会话派生 broker peer policy](1234-derive-broker-peer-policy-from-wts.md)
+- [1235：为 broker named-pipe I/O 设置取消与 deadline](1235-bound-cancellable-broker-pipe-io.md)

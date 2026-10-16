@@ -21,27 +21,31 @@ use peer_security::{
 use std::io::{self, Read, Write};
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
-    INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError,
+    HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile,
-    SECURITY_IMPERSONATION, SECURITY_SQOS_PRESENT, WriteFile,
+    CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
+    PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IMPERSONATION, SECURITY_SQOS_PRESENT, WriteFile,
 };
-use windows_sys::Win32::System::IO::OVERLAPPED;
+use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe, WaitNamedPipeW,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, WaitNamedPipeW,
+};
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
 };
 
 const BROKER_PIPE_NAME: &str = r"\\.\pipe\Haven.ContainerBroker.v1";
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const MAX_HANDSHAKE_BODY_BYTES: usize = 1_024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-const HANDSHAKE_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const MAX_PIPE_IO_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// OS identity expected on the local client side of the broker pipe.
 ///
@@ -164,6 +168,48 @@ pub(crate) struct BrokerPeerIdentity {
     logon_sid: Vec<u8>,
 }
 
+/// Event-backed cancellation shared with the SCM control handler.
+#[derive(Clone)]
+pub(crate) struct BrokerPipeCancellation {
+    handle: Arc<SharedEventHandle>,
+}
+
+struct SharedEventHandle(HANDLE);
+
+// The handle names a kernel event that may be set and waited from any thread.
+// Arc keeps it open until all concurrent cancellation users have finished.
+unsafe impl Send for SharedEventHandle {}
+unsafe impl Sync for SharedEventHandle {}
+
+impl Drop for SharedEventHandle {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+impl BrokerPipeCancellation {
+    pub(crate) fn new() -> io::Result<Self> {
+        let handle = unsafe { CreateEventW(null::<SECURITY_ATTRIBUTES>(), 1, 0, null()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            handle: Arc::new(SharedEventHandle(handle)),
+        })
+    }
+
+    pub(crate) fn cancel(&self) -> io::Result<()> {
+        if unsafe { SetEvent(self.handle.0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn raw_handle(&self) -> HANDLE {
+        self.handle.0
+    }
+}
+
 impl BrokerPeerIdentity {
     pub(crate) fn process_id(&self) -> u32 {
         self.process_id
@@ -198,7 +244,7 @@ impl BrokerPipeListener {
         let handle = unsafe {
             CreateNamedPipeW(
                 name.as_ptr(),
-                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                 1,
                 PIPE_BUFFER_BYTES,
@@ -215,20 +261,25 @@ impl BrokerPipeListener {
 
     /// Wait for a client, require its Hello, authenticate its impersonation
     /// token and only then acknowledge the protocol session.
-    pub(crate) fn accept(&mut self) -> io::Result<BrokerPipeConnection<'_>> {
-        let connected = unsafe { ConnectNamedPipe(self.handle, null_mut()) };
-        if connected == 0 {
-            let error = unsafe { GetLastError() };
-            if error != ERROR_PIPE_CONNECTED {
-                return Err(io::Error::from_raw_os_error(error as i32));
-            }
+    pub(crate) fn accept<'a>(
+        &'a mut self,
+        cancellation: &'a BrokerPipeCancellation,
+    ) -> io::Result<BrokerPipeConnection<'a>> {
+        if let Err(error) = connect_named_pipe_until(
+            self.handle,
+            cancellation,
+            Instant::now() + HANDSHAKE_TIMEOUT,
+        ) {
+            unsafe { DisconnectNamedPipe(self.handle) };
+            return Err(error);
         }
 
-        let result = self.authenticate_and_acknowledge();
+        let result = self.authenticate_and_acknowledge(cancellation);
         match result {
             Ok(peer) => Ok(BrokerPipeConnection {
                 listener: self,
                 peer,
+                cancellation,
             }),
             Err(error) => {
                 unsafe { DisconnectNamedPipe(self.handle) };
@@ -237,8 +288,11 @@ impl BrokerPipeListener {
         }
     }
 
-    fn authenticate_and_acknowledge(&mut self) -> io::Result<BrokerPeerIdentity> {
-        let hello = read_bounded_hello(self.handle)?;
+    fn authenticate_and_acknowledge(
+        &mut self,
+        cancellation: &BrokerPipeCancellation,
+    ) -> io::Result<BrokerPeerIdentity> {
+        let hello = read_bounded_hello(self.handle, cancellation)?;
         let (minimum_version, maximum_version) = match hello {
             BrokerControlMessage::Hello {
                 minimum_version,
@@ -250,8 +304,13 @@ impl BrokerPipeListener {
 
         let peer = impersonate_and_read_peer(self.handle)?;
         self.policy.authorize(&peer)?;
-        BrokerFrame::control(&BrokerControlMessage::HelloAccepted { selected_version })?
-            .write_to(&mut PipeBorrow(self.handle))?;
+        let acknowledgement =
+            BrokerFrame::control(&BrokerControlMessage::HelloAccepted { selected_version })?;
+        acknowledgement.write_to(&mut PipeBorrow {
+            handle: self.handle,
+            cancellation,
+            deadline: Instant::now() + HANDSHAKE_TIMEOUT,
+        })?;
         Ok(peer)
     }
 }
@@ -267,6 +326,7 @@ impl Drop for BrokerPipeListener {
 pub(crate) struct BrokerPipeConnection<'a> {
     listener: &'a mut BrokerPipeListener,
     peer: BrokerPeerIdentity,
+    cancellation: &'a BrokerPipeCancellation,
 }
 
 impl BrokerPipeConnection<'_> {
@@ -275,11 +335,15 @@ impl BrokerPipeConnection<'_> {
     }
 
     pub(crate) fn read_frame(&mut self, timeout: Duration) -> io::Result<BrokerFrame> {
-        read_pipe_frame(self.listener.handle, timeout)
+        read_pipe_frame(self.listener.handle, timeout, self.cancellation)
     }
 
-    pub(crate) fn write_frame(&mut self, frame: &BrokerFrame) -> io::Result<()> {
-        frame.write_to(&mut PipeBorrow(self.listener.handle))
+    pub(crate) fn write_frame(&mut self, frame: &BrokerFrame, timeout: Duration) -> io::Result<()> {
+        frame.write_to(&mut PipeBorrow {
+            handle: self.listener.handle,
+            cancellation: self.cancellation,
+            deadline: deadline_after(timeout)?,
+        })
     }
 }
 
@@ -292,20 +356,30 @@ impl Drop for BrokerPipeConnection<'_> {
 /// Client stream authenticated against the installed SCM service process.
 pub(crate) struct BrokerPipeClient {
     handle: HANDLE,
+    cancellation: BrokerPipeCancellation,
 }
 
 impl BrokerPipeClient {
-    pub(crate) fn connect(policy: &BrokerClientPolicy) -> io::Result<Self> {
+    pub(crate) fn connect(
+        policy: &BrokerClientPolicy,
+        cancellation: BrokerPipeCancellation,
+    ) -> io::Result<Self> {
         let current = current_process_identity()?;
         policy.authorize(&current)?;
         let handle = connect_client_pipe(BROKER_PIPE_NAME)?;
-        let mut client = Self { handle };
+        let mut client = Self {
+            handle,
+            cancellation,
+        };
         verify_pipe_server(handle)?;
 
-        client.write_frame(&BrokerFrame::control(&BrokerControlMessage::Hello {
-            minimum_version: BROKER_PROTOCOL_VERSION,
-            maximum_version: BROKER_PROTOCOL_VERSION,
-        })?)?;
+        client.write_frame(
+            &BrokerFrame::control(&BrokerControlMessage::Hello {
+                minimum_version: BROKER_PROTOCOL_VERSION,
+                maximum_version: BROKER_PROTOCOL_VERSION,
+            })?,
+            HANDSHAKE_TIMEOUT,
+        )?;
         match client.read_frame(HANDSHAKE_TIMEOUT)?.decode_control()? {
             BrokerControlMessage::HelloAccepted { selected_version }
                 if selected_version == BROKER_PROTOCOL_VERSION =>
@@ -320,12 +394,27 @@ impl BrokerPipeClient {
 
     #[cfg(test)]
     fn connect_for_test(name: &str) -> io::Result<Self> {
+        let cancellation = BrokerPipeCancellation::new()?;
+        Self::connect_for_test_with_cancellation(name, cancellation)
+    }
+
+    #[cfg(test)]
+    fn connect_for_test_with_cancellation(
+        name: &str,
+        cancellation: BrokerPipeCancellation,
+    ) -> io::Result<Self> {
         let handle = connect_client_pipe(name)?;
-        let mut client = Self { handle };
-        client.write_frame(&BrokerFrame::control(&BrokerControlMessage::Hello {
-            minimum_version: BROKER_PROTOCOL_VERSION,
-            maximum_version: BROKER_PROTOCOL_VERSION,
-        })?)?;
+        let mut client = Self {
+            handle,
+            cancellation,
+        };
+        client.write_frame(
+            &BrokerFrame::control(&BrokerControlMessage::Hello {
+                minimum_version: BROKER_PROTOCOL_VERSION,
+                maximum_version: BROKER_PROTOCOL_VERSION,
+            })?,
+            HANDSHAKE_TIMEOUT,
+        )?;
         match client.read_frame(HANDSHAKE_TIMEOUT)?.decode_control()? {
             BrokerControlMessage::HelloAccepted { selected_version }
                 if selected_version == BROKER_PROTOCOL_VERSION =>
@@ -341,11 +430,19 @@ impl BrokerPipeClient {
 
 impl BrokerPipeClient {
     pub(crate) fn read_frame(&mut self, timeout: Duration) -> io::Result<BrokerFrame> {
-        read_pipe_frame(self.handle, timeout)
+        read_pipe_frame(self.handle, timeout, &self.cancellation)
     }
 
-    pub(crate) fn write_frame(&mut self, frame: &BrokerFrame) -> io::Result<()> {
-        frame.write_to(&mut PipeBorrow(self.handle))
+    pub(crate) fn write_frame(&mut self, frame: &BrokerFrame, timeout: Duration) -> io::Result<()> {
+        frame.write_to(&mut PipeBorrow {
+            handle: self.handle,
+            cancellation: &self.cancellation,
+            deadline: deadline_after(timeout)?,
+        })
+    }
+
+    pub(crate) fn cancel(&self) -> io::Result<()> {
+        self.cancellation.cancel()
     }
 }
 
@@ -363,17 +460,21 @@ impl Drop for OwnedHandle {
     }
 }
 
-struct PipeBorrow(HANDLE);
+struct PipeBorrow<'a> {
+    handle: HANDLE,
+    cancellation: &'a BrokerPipeCancellation,
+    deadline: Instant,
+}
 
-impl Read for PipeBorrow {
+impl Read for PipeBorrow<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        read_pipe(self.0, buffer)
+        read_pipe_until(self.handle, buffer, self.cancellation, self.deadline)
     }
 }
 
-impl Write for PipeBorrow {
+impl Write for PipeBorrow<'_> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        write_pipe(self.0, buffer)
+        write_pipe_until(self.handle, buffer, self.cancellation, self.deadline)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -381,75 +482,80 @@ impl Write for PipeBorrow {
     }
 }
 
-fn read_pipe(handle: HANDLE, buffer: &mut [u8]) -> io::Result<usize> {
+fn read_pipe_until(
+    handle: HANDLE,
+    buffer: &mut [u8],
+    cancellation: &BrokerPipeCancellation,
+    deadline: Instant,
+) -> io::Result<usize> {
     if buffer.is_empty() {
         return Ok(0);
     }
     let requested = u32::try_from(buffer.len())
         .map_err(|_| invalid_data("named-pipe read buffer is outside its limit"))?;
-    let mut bytes_read = 0;
-    let succeeded = unsafe {
-        ReadFile(
-            handle,
-            buffer.as_mut_ptr(),
-            requested,
-            &mut bytes_read,
-            null_mut::<OVERLAPPED>(),
-        )
-    };
-    if succeeded == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(bytes_read as usize)
+    overlapped_pipe_io(
+        handle,
+        buffer.as_mut_ptr().cast(),
+        requested,
+        cancellation,
+        deadline,
+        false,
+    )
 }
 
-fn write_pipe(handle: HANDLE, buffer: &[u8]) -> io::Result<usize> {
+fn write_pipe_until(
+    handle: HANDLE,
+    buffer: &[u8],
+    cancellation: &BrokerPipeCancellation,
+    deadline: Instant,
+) -> io::Result<usize> {
     if buffer.is_empty() {
         return Ok(0);
     }
     let requested = u32::try_from(buffer.len())
         .map_err(|_| invalid_data("named-pipe write buffer is outside its limit"))?;
-    let mut bytes_written = 0;
-    let succeeded = unsafe {
-        WriteFile(
-            handle,
-            buffer.as_ptr(),
-            requested,
-            &mut bytes_written,
-            null_mut::<OVERLAPPED>(),
-        )
-    };
-    if succeeded == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(bytes_written as usize)
+    overlapped_pipe_io(
+        handle,
+        buffer.as_ptr().cast_mut().cast(),
+        requested,
+        cancellation,
+        deadline,
+        true,
+    )
 }
 
-fn read_bounded_hello(handle: HANDLE) -> io::Result<BrokerControlMessage> {
-    let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+fn read_bounded_hello(
+    handle: HANDLE,
+    cancellation: &BrokerPipeCancellation,
+) -> io::Result<BrokerControlMessage> {
+    let deadline = deadline_after(HANDSHAKE_TIMEOUT)?;
     let mut length_bytes = [0_u8; 4];
-    read_exact_pipe_until(handle, &mut length_bytes, deadline)?;
+    read_exact_pipe_until(handle, &mut length_bytes, deadline, cancellation)?;
     let body_length = u32::from_le_bytes(length_bytes) as usize;
     if !(1..=MAX_HANDSHAKE_BODY_BYTES).contains(&body_length) {
         return Err(invalid_data("broker Hello frame exceeds its limit"));
     }
     let mut body = vec![0_u8; body_length];
-    read_exact_pipe_until(handle, &mut body, deadline)?;
+    read_exact_pipe_until(handle, &mut body, deadline, cancellation)?;
     let kind = BrokerFrameKind::try_from(body[0])?;
     let frame = BrokerFrame::new(kind, body.split_off(1))?;
     frame.decode_control()
 }
 
-fn read_pipe_frame(handle: HANDLE, timeout: Duration) -> io::Result<BrokerFrame> {
-    let deadline = Instant::now() + timeout;
+fn read_pipe_frame(
+    handle: HANDLE,
+    timeout: Duration,
+    cancellation: &BrokerPipeCancellation,
+) -> io::Result<BrokerFrame> {
+    let deadline = deadline_after(timeout)?;
     let mut length_bytes = [0_u8; 4];
-    read_exact_pipe_until(handle, &mut length_bytes, deadline)?;
+    read_exact_pipe_until(handle, &mut length_bytes, deadline, cancellation)?;
     let body_length = u32::from_le_bytes(length_bytes) as usize;
     if !(1..=MAX_CONTROL_PAYLOAD_BYTES + 1).contains(&body_length) {
         return Err(invalid_data("broker frame length is outside its limit"));
     }
     let mut body = vec![0_u8; body_length];
-    read_exact_pipe_until(handle, &mut body, deadline)?;
+    read_exact_pipe_until(handle, &mut body, deadline, cancellation)?;
     let kind = BrokerFrameKind::try_from(body[0])?;
     BrokerFrame::new(kind, body.split_off(1))
 }
@@ -458,47 +564,187 @@ fn read_exact_pipe_until(
     handle: HANDLE,
     mut buffer: &mut [u8],
     deadline: Instant,
+    cancellation: &BrokerPipeCancellation,
 ) -> io::Result<()> {
     loop {
         if buffer.is_empty() {
             return Ok(());
         }
-        let mut available = 0;
-        let succeeded = unsafe {
-            PeekNamedPipe(
-                handle,
-                null_mut(),
-                0,
-                null_mut(),
-                &mut available,
-                null_mut(),
-            )
-        };
-        if succeeded == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if available != 0 {
-            let requested = (available as usize)
-                .min(buffer.len())
-                .min(PIPE_BUFFER_BYTES as usize);
-            let read = read_pipe(handle, &mut buffer[..requested])?;
-            if read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "broker pipe closed during a frame",
-                ));
-            }
-            buffer = &mut buffer[read..];
-            continue;
-        }
-        if Instant::now() >= deadline {
+        let read = read_pipe_until(handle, buffer, cancellation, deadline)?;
+        if read == 0 {
             return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "broker frame read timed out",
+                io::ErrorKind::UnexpectedEof,
+                "broker pipe closed during a frame",
             ));
         }
-        std::thread::sleep(HANDSHAKE_POLL_INTERVAL);
+        buffer = &mut buffer[read..];
     }
+}
+
+fn deadline_after(timeout: Duration) -> io::Result<Instant> {
+    if timeout > MAX_PIPE_IO_TIMEOUT {
+        return Err(invalid_input("broker pipe timeout exceeds its limit"));
+    }
+    Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| invalid_input("broker pipe timeout is invalid"))
+}
+
+fn overlapped_pipe_io(
+    handle: HANDLE,
+    buffer: *mut core::ffi::c_void,
+    requested: u32,
+    cancellation: &BrokerPipeCancellation,
+    deadline: Instant,
+    write: bool,
+) -> io::Result<usize> {
+    ensure_not_cancelled(cancellation)?;
+    if Instant::now() >= deadline {
+        return Err(timed_out("broker pipe I/O timed out"));
+    }
+    let event = unsafe { CreateEventW(null::<SECURITY_ATTRIBUTES>(), 1, 0, null()) };
+    if event.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let event = OwnedHandle(event);
+    let mut overlapped = OVERLAPPED {
+        hEvent: event.0,
+        ..OVERLAPPED::default()
+    };
+    let mut immediate_transferred = 0;
+    let started = unsafe {
+        if write {
+            WriteFile(
+                handle,
+                buffer.cast_const().cast(),
+                requested,
+                &mut immediate_transferred,
+                &mut overlapped,
+            )
+        } else {
+            ReadFile(
+                handle,
+                buffer.cast(),
+                requested,
+                &mut immediate_transferred,
+                &mut overlapped,
+            )
+        }
+    };
+    if started != 0 {
+        return Ok(immediate_transferred as usize);
+    }
+    let error = unsafe { GetLastError() };
+    if error != ERROR_IO_PENDING {
+        return Err(io::Error::from_raw_os_error(error as i32));
+    }
+    wait_for_overlapped(handle, &overlapped, event.0, cancellation, deadline)?;
+    let mut transferred = 0;
+    if unsafe { GetOverlappedResult(handle, &overlapped, &mut transferred, 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(transferred as usize)
+}
+
+fn connect_named_pipe_until(
+    handle: HANDLE,
+    cancellation: &BrokerPipeCancellation,
+    deadline: Instant,
+) -> io::Result<()> {
+    ensure_not_cancelled(cancellation)?;
+    let event = unsafe { CreateEventW(null::<SECURITY_ATTRIBUTES>(), 1, 0, null()) };
+    if event.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let event = OwnedHandle(event);
+    let mut overlapped = OVERLAPPED {
+        hEvent: event.0,
+        ..OVERLAPPED::default()
+    };
+    if unsafe { ConnectNamedPipe(handle, &mut overlapped) } != 0 {
+        return Ok(());
+    }
+    let error = unsafe { GetLastError() };
+    if error == ERROR_PIPE_CONNECTED {
+        return Ok(());
+    }
+    if error != ERROR_IO_PENDING {
+        return Err(io::Error::from_raw_os_error(error as i32));
+    }
+    wait_for_overlapped(handle, &overlapped, event.0, cancellation, deadline)?;
+    let mut transferred = 0;
+    if unsafe { GetOverlappedResult(handle, &overlapped, &mut transferred, 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn wait_for_overlapped(
+    handle: HANDLE,
+    overlapped: &OVERLAPPED,
+    event: HANDLE,
+    cancellation: &BrokerPipeCancellation,
+    deadline: Instant,
+) -> io::Result<()> {
+    let handles = [cancellation.raw_handle(), event];
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let timeout_ms = remaining.as_millis().min((u32::MAX - 1) as u128) as u32;
+    match unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, timeout_ms) } {
+        WAIT_OBJECT_0 => {
+            cancel_overlapped(handle, overlapped, event)?;
+            Err(interrupted("broker pipe I/O was cancelled"))
+        }
+        value if value == WAIT_OBJECT_0 + 1 => Ok(()),
+        WAIT_TIMEOUT => {
+            cancel_overlapped(handle, overlapped, event)?;
+            Err(timed_out("broker pipe I/O timed out"))
+        }
+        WAIT_FAILED => {
+            let error = io::Error::last_os_error();
+            cancel_overlapped(handle, overlapped, event)?;
+            Err(error)
+        }
+        _ => {
+            cancel_overlapped(handle, overlapped, event)?;
+            Err(invalid_data("broker pipe wait returned an invalid result"))
+        }
+    }
+}
+
+fn cancel_overlapped(handle: HANDLE, overlapped: &OVERLAPPED, event: HANDLE) -> io::Result<()> {
+    let cancel_error = if unsafe { CancelIoEx(handle, overlapped) } == 0 {
+        let error = unsafe { GetLastError() };
+        (error != windows_sys::Win32::Foundation::ERROR_NOT_FOUND)
+            .then(|| io::Error::from_raw_os_error(error as i32))
+    } else {
+        None
+    };
+    if unsafe { WaitForSingleObject(event, u32::MAX) } != WAIT_OBJECT_0 {
+        return Err(io::Error::last_os_error());
+    }
+    if let Some(error) = cancel_error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn ensure_not_cancelled(cancellation: &BrokerPipeCancellation) -> io::Result<()> {
+    match unsafe { WaitForSingleObject(cancellation.raw_handle(), 0) } {
+        WAIT_OBJECT_0 => Err(interrupted("broker pipe I/O was cancelled")),
+        WAIT_TIMEOUT => Ok(()),
+        WAIT_FAILED => Err(io::Error::last_os_error()),
+        _ => Err(invalid_data(
+            "broker cancellation wait returned an invalid result",
+        )),
+    }
+}
+
+fn interrupted(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, message)
+}
+
+fn timed_out(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, message)
 }
 
 fn connect_client_pipe(name: &str) -> io::Result<HANDLE> {
@@ -513,7 +759,7 @@ fn connect_client_pipe(name: &str) -> io::Result<HANDLE> {
             0,
             null(),
             OPEN_EXISTING,
-            SECURITY_SQOS_PRESENT | SECURITY_IMPERSONATION,
+            SECURITY_SQOS_PRESENT | SECURITY_IMPERSONATION | FILE_FLAG_OVERLAPPED,
             null_mut(),
         )
     };
@@ -618,27 +864,151 @@ mod tests {
         let (ready_sender, ready_receiver) = mpsc::channel();
         let (result_sender, result_receiver) = mpsc::channel();
         let server = std::thread::spawn(move || {
-            let listener = BrokerPipeListener::create(&server_name, policy).unwrap();
+            let mut listener = BrokerPipeListener::create(&server_name, policy).unwrap();
+            let cancellation = BrokerPipeCancellation::new().unwrap();
             ready_sender.send(()).unwrap();
-            let connected = unsafe { ConnectNamedPipe(listener.handle, null_mut()) };
-            if connected == 0 && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED {
-                result_sender
-                    .send(Err(io::Error::last_os_error().kind()))
-                    .unwrap();
-                return;
-            }
-            let result = read_pipe_frame(listener.handle, Duration::from_millis(30))
+            let result = listener
+                .accept(&cancellation)
+                .and_then(|mut connection| connection.read_frame(Duration::from_millis(30)))
                 .map(|_| ())
                 .map_err(|error| error.kind());
             result_sender.send(result).unwrap();
         });
         ready_receiver.recv().unwrap();
-        let client = connect_client_pipe(&name).unwrap();
+        let client = BrokerPipeClient::connect_for_test(&name).unwrap();
         assert_eq!(
             result_receiver.recv().unwrap().unwrap_err(),
             io::ErrorKind::TimedOut
         );
-        unsafe { CloseHandle(client) };
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn named_pipe_accept_is_cancelled_by_the_service_signal() {
+        let current = current_process_identity().unwrap();
+        let policy = BrokerPeerPolicy::new(
+            current.user_sid.clone(),
+            current.logon_sid,
+            current.session_id,
+            current.user_sid,
+        )
+        .unwrap();
+        let name = format!(
+            r"\\.\pipe\Haven.ContainerBroker.Test.{}.{}",
+            unsafe { GetCurrentProcessId() },
+            NEXT_TEST_PIPE.fetch_add(1, Ordering::Relaxed)
+        );
+        let server_name = name.clone();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut listener = BrokerPipeListener::create(&server_name, policy).unwrap();
+            let cancellation = BrokerPipeCancellation::new().unwrap();
+            ready_sender
+                .send(cancellation.raw_handle() as usize)
+                .unwrap();
+            let result = listener
+                .accept(&cancellation)
+                .map(|_| ())
+                .map_err(|error| error.kind());
+            result_sender.send(result).unwrap();
+        });
+        let cancellation_handle = ready_receiver.recv().unwrap() as HANDLE;
+        assert_ne!(unsafe { SetEvent(cancellation_handle) }, 0);
+        assert_eq!(
+            result_receiver.recv().unwrap().unwrap_err(),
+            io::ErrorKind::Interrupted
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn client_cancellation_interrupts_a_pending_frame_read() {
+        let current = current_process_identity().unwrap();
+        let policy = BrokerPeerPolicy::new(
+            current.user_sid.clone(),
+            current.logon_sid,
+            current.session_id,
+            current.user_sid,
+        )
+        .unwrap();
+        let name = format!(
+            r"\\.\pipe\Haven.ContainerBroker.Test.{}.{}",
+            unsafe { GetCurrentProcessId() },
+            NEXT_TEST_PIPE.fetch_add(1, Ordering::Relaxed)
+        );
+        let server_name = name.clone();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut listener = BrokerPipeListener::create(&server_name, policy).unwrap();
+            let cancellation = BrokerPipeCancellation::new().unwrap();
+            ready_sender.send(()).unwrap();
+            let connection = listener.accept(&cancellation).unwrap();
+            let _ = release_receiver.recv();
+            drop(connection);
+        });
+        ready_receiver.recv().unwrap();
+        let cancellation = BrokerPipeCancellation::new().unwrap();
+        let mut client =
+            BrokerPipeClient::connect_for_test_with_cancellation(&name, cancellation.clone())
+                .unwrap();
+        let cancel_signal = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            cancellation.cancel().unwrap();
+        });
+        assert_eq!(
+            client
+                .read_frame(Duration::from_secs(5))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        cancel_signal.join().unwrap();
+        drop(client);
+        release_sender.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn named_pipe_write_times_out_when_the_client_stops_reading() {
+        let current = current_process_identity().unwrap();
+        let policy = BrokerPeerPolicy::new(
+            current.user_sid.clone(),
+            current.logon_sid,
+            current.session_id,
+            current.user_sid,
+        )
+        .unwrap();
+        let name = format!(
+            r"\\.\pipe\Haven.ContainerBroker.Test.{}.{}",
+            unsafe { GetCurrentProcessId() },
+            NEXT_TEST_PIPE.fetch_add(1, Ordering::Relaxed)
+        );
+        let server_name = name.clone();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut listener = BrokerPipeListener::create(&server_name, policy).unwrap();
+            let cancellation = BrokerPipeCancellation::new().unwrap();
+            ready_sender.send(()).unwrap();
+            let result = listener
+                .accept(&cancellation)
+                .and_then(|mut connection| {
+                    let frame = BrokerFrame::new(BrokerFrameKind::StdoutChunk, vec![0; 64 * 1024])?;
+                    connection.write_frame(&frame, Duration::from_millis(50))
+                })
+                .map_err(|error| error.kind());
+            result_sender.send(result).unwrap();
+        });
+        ready_receiver.recv().unwrap();
+        let client = BrokerPipeClient::connect_for_test(&name).unwrap();
+        assert_eq!(
+            result_receiver.recv().unwrap().unwrap_err(),
+            io::ErrorKind::TimedOut
+        );
+        drop(client);
         server.join().unwrap();
     }
 
@@ -668,7 +1038,8 @@ mod tests {
         let server = std::thread::spawn(move || {
             let mut listener = BrokerPipeListener::create(&server_name, server_policy).unwrap();
             ready_sender.send(()).unwrap();
-            match listener.accept() {
+            let cancellation = BrokerPipeCancellation::new().unwrap();
+            match listener.accept(&cancellation) {
                 Ok(connection) => {
                     result_sender
                         .send(Ok(connection.peer().process_id()))
