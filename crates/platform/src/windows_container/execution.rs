@@ -40,25 +40,39 @@ mod broker_provider;
 #[cfg(windows)]
 mod quota_attestation;
 
-/// Opaque proof that startup verified the fixed Node runtime against the
-/// protected image catalog. Only quota attestation can mint this token.
+/// Opaque proof that startup verified both the fixed Node runtime and this
+/// exact administrator-pinned package entrypoint. Only quota attestation can
+/// mint this token.
 #[cfg(windows)]
-pub(crate) struct McpNodeRuntimeProof {
-    _private: (),
+pub(crate) struct McpNodePackageProof {
+    package: image_catalog::McpNodePackageProfile,
+}
+
+#[cfg(windows)]
+impl McpNodePackageProof {
+    pub(super) fn package(&self) -> &image_catalog::McpNodePackageProfile {
+        &self.package
+    }
 }
 
 #[cfg(windows)]
 impl quota_attestation::QuotaRuntimeAttestation {
     #[allow(dead_code)] // Consumed by the brokered MCP session launcher.
-    pub(super) fn mcp_node_runtime_proof(&self) -> Option<McpNodeRuntimeProof> {
-        self.mcp_node_runtime_attested()
-            .then_some(McpNodeRuntimeProof { _private: () })
+    pub(super) fn mcp_node_package_proof(&self, id: &str) -> Option<McpNodePackageProof> {
+        if !self.mcp_node_runtime_attested() || !self.mcp_node_package_attested(id) {
+            return None;
+        }
+        Some(McpNodePackageProof {
+            package: self.image_catalog().mcp_node_package(id)?.clone(),
+        })
     }
 }
 
 #[cfg(all(windows, test))]
-pub(crate) fn test_mcp_node_runtime_proof() -> McpNodeRuntimeProof {
-    McpNodeRuntimeProof { _private: () }
+pub(crate) fn test_mcp_node_package_proof(
+    package: image_catalog::McpNodePackageProfile,
+) -> McpNodePackageProof {
+    McpNodePackageProof { package }
 }
 
 /// Build Haven's authenticated local broker provider for Windows Shell work.

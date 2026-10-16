@@ -1262,3 +1262,4 @@
 - [1272：在镜像 catalog 中登记受管 MCP package](1272-register-managed-mcp-packages-in-image-catalog.md)
 - [1273：拥有并校验 HCS guest stdin handle](1273-own-hcs-guest-stdin-handles.md)
 - [1274：构造固定的 MCP guest process parameters](1274-build-fixed-mcp-guest-process-parameters.md)
+- [1275：证明受管 MCP entrypoint 摘要](1275-attest-managed-mcp-entrypoint-digests.md)

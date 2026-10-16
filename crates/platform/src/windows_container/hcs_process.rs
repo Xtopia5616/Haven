@@ -46,8 +46,24 @@ $stream = $null
 $random = $null
 $skill_runtime_attested = 0
 $mcp_node_runtime_attested = 0
+$mcp_package_attestations = [System.Collections.Generic.List[string]]::new()
+$mcp_package_profiles = @(
+{mcp_package_profiles}
+)
 {skill_runtime_probe}
 {mcp_node_runtime_probe}
+foreach ($package_profile in $mcp_package_profiles) {
+    $package_id, $package_entrypoint, $expected_package_hash = $package_profile.Split([char]'|')
+    $package_path = '{GUEST_MCP_PACKAGES_ROOT}' + '\' + $package_id + '\' + $package_entrypoint
+    $package_attested = 0
+    try {
+        $package_hash = (Get-FileHash -LiteralPath $package_path -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($package_hash -ceq $expected_package_hash) { $package_attested = 1 }
+    } catch {
+        $package_attested = 0
+    }
+    $mcp_package_attestations.Add(('HAVEN_MCP_PACKAGE_ATTESTED_V1:{0}:{1}' -f $package_id, $package_attested))
+}
 try {
     $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     $buffer = [byte[]]::new(1048576)
@@ -73,7 +89,8 @@ try {
         [Console]::Error.WriteLine('storage probe failed for an unexpected I/O reason')
         exit 92
     }
-    [Console]::Out.WriteLine(('HAVEN_STORAGE_QUOTA_ATTESTED_V3:{0}:{1}:{2}' -f $written, $skill_runtime_attested, $mcp_node_runtime_attested))
+    [Console]::Out.WriteLine(('HAVEN_STORAGE_QUOTA_ATTESTED_V4:{0}:{1}:{2}' -f $written, $skill_runtime_attested, $mcp_node_runtime_attested))
+    foreach ($package_attestation in $mcp_package_attestations) { [Console]::Out.WriteLine($package_attestation) }
     exit 0
 } finally {
     if ($null -ne $stream) { $stream.Dispose() }
@@ -121,6 +138,7 @@ impl HcsGuestProcessParameters {
         storage_quota_bytes: u64,
         skill_python_runtime: Option<&super::execution::image_catalog::SkillPythonRuntimeProfile>,
         mcp_node_runtime: Option<&super::execution::image_catalog::McpNodeRuntimeProfile>,
+        mcp_node_packages: &[super::execution::image_catalog::McpNodePackageProfile],
     ) -> io::Result<Self> {
         if storage_quota_bytes != super::execution::WORKSPACE_WRITE_STORAGE_QUOTA_BYTES {
             return Err(invalid_process_parameters(
@@ -137,10 +155,17 @@ impl HcsGuestProcessParameters {
                 mcp_node_runtime_probe_script(runtime.version(), runtime.executable_sha256())
             })
             .unwrap_or_default();
+        let mcp_package_profiles = mcp_node_packages
+            .iter()
+            .map(mcp_node_package_catalog_entry)
+            .collect::<Vec<_>>()
+            .join(",\n");
         let script = STORAGE_QUOTA_PROBE_SCRIPT
             .replace("{quota_bytes}", &storage_quota_bytes.to_string())
+            .replace("{GUEST_MCP_PACKAGES_ROOT}", GUEST_MCP_PACKAGES_ROOT)
             .replace("{skill_runtime_probe}", &runtime_probe)
-            .replace("{mcp_node_runtime_probe}", &mcp_node_runtime_probe);
+            .replace("{mcp_node_runtime_probe}", &mcp_node_runtime_probe)
+            .replace("{mcp_package_profiles}", &mcp_package_profiles);
         Ok(Self {
             document: ProcessParametersDocument {
                 application_name: POWERSHELL_APPLICATION,
@@ -227,14 +252,9 @@ impl HcsGuestProcessParameters {
     /// caller-selected executable/arguments.
     #[allow(dead_code)] // Consumed when the brokered MCP session owner is wired.
     pub(super) fn from_mcp_package(
-        package: &super::execution::image_catalog::McpNodePackageProfile,
-        runtime_proof: Option<&super::execution::McpNodeRuntimeProof>,
+        package_proof: &super::execution::McpNodePackageProof,
     ) -> io::Result<Self> {
-        if runtime_proof.is_none() {
-            return Err(invalid_process_parameters(
-                "MCP Node runtime is not attested",
-            ));
-        }
+        let package = package_proof.package();
         let package_root = format!("{GUEST_MCP_PACKAGES_ROOT}\\{}", package.id());
         let guest_entrypoint = format!("{package_root}\\{}", package.entrypoint());
         let command_line = windows_command_line(MCP_NODE_APPLICATION, &[&guest_entrypoint])?;
@@ -297,6 +317,17 @@ fn mcp_node_runtime_probe_script(version: &str, executable_sha256: &[u8; 32]) ->
     $mcp_node_runtime_attested = 0
 }}"#,
     )
+}
+
+fn mcp_node_package_catalog_entry(
+    package: &super::execution::image_catalog::McpNodePackageProfile,
+) -> String {
+    let digest = package
+        .entrypoint_sha256()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("'{}|{}|{}'", package.id(), package.entrypoint(), digest)
 }
 
 #[derive(Serialize)]
@@ -519,11 +550,11 @@ mod tests {
             "filesystem",
             "1.2.3",
             "server.mjs",
+            [0xab; 32],
         );
-        let runtime_proof = super::super::execution::test_mcp_node_runtime_proof();
-        let parameters =
-            HcsGuestProcessParameters::from_mcp_package(&package, Some(&runtime_proof))
-                .expect("attested fixed package builds guest parameters");
+        let package_proof = super::super::execution::test_mcp_node_package_proof(package);
+        let parameters = HcsGuestProcessParameters::from_mcp_package(&package_proof)
+            .expect("attested fixed package builds guest parameters");
         assert!(parameters.creates_stdin_pipe());
         let value: Value = serde_json::from_str(&parameters.to_json().unwrap()).unwrap();
 
@@ -544,16 +575,6 @@ mod tests {
         assert!(!command_line.contains("1.2.3"));
         assert!(!value.to_string().contains("workspace-output"));
         assert!(!value.to_string().contains("NODE_OPTIONS"));
-    }
-
-    #[test]
-    fn mcp_parameters_fail_closed_without_node_runtime_attestation() {
-        let package = super::super::execution::image_catalog::McpNodePackageProfile::test_profile(
-            "filesystem",
-            "1.2.3",
-            "server.mjs",
-        );
-        assert!(HcsGuestProcessParameters::from_mcp_package(&package, None).is_err());
     }
 
     #[test]
@@ -652,7 +673,7 @@ mod tests {
     fn quota_probe_is_fixed_bounded_and_only_accepts_the_workspace_write_ceiling() {
         let quota = super::super::execution::WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
         let value: Value = serde_json::from_str(
-            &HcsGuestProcessParameters::quota_probe(quota, None, None)
+            &HcsGuestProcessParameters::quota_probe(quota, None, None, &[])
                 .expect("the fixed quota builds probe parameters")
                 .to_json()
                 .expect("probe parameters serialize"),
@@ -662,7 +683,7 @@ mod tests {
         assert_eq!(value["WorkingDirectory"], r"C:\Windows\Temp");
         assert_eq!(value["RestrictedToken"], true);
         let command_line = value["CommandLine"].as_str().unwrap();
-        assert!(!command_line.contains("HAVEN_STORAGE_QUOTA_ATTESTED_V3"));
+        assert!(!command_line.contains("HAVEN_STORAGE_QUOTA_ATTESTED_V4"));
         let encoded = command_line
             .split("-EncodedCommand\" \"")
             .nth(1)
@@ -681,13 +702,65 @@ mod tests {
         assert!(script.contains("RandomNumberGenerator]::Create()"));
         assert!(script.contains(r"C:\Windows\Temp\haven-storage-quota-probe.bin"));
         assert!(script.contains("$native_code -ne 39") && script.contains("$native_code -ne 112"));
-        assert!(script.contains("HAVEN_STORAGE_QUOTA_ATTESTED_V3:{0}:{1}:{2}"));
+        assert!(script.contains("HAVEN_STORAGE_QUOTA_ATTESTED_V4:{0}:{1}:{2}"));
         assert!(!script.contains(SKILL_PYTHON_APPLICATION));
         assert!(!script.contains(MCP_NODE_APPLICATION));
         assert!(
-            HcsGuestProcessParameters::quota_probe(quota + 512, None, None).is_err(),
+            HcsGuestProcessParameters::quota_probe(quota + 512, None, None, &[]).is_err(),
             "the attestation probe cannot be sized by a caller"
         );
+    }
+
+    #[test]
+    fn quota_probe_checks_catalog_entrypoint_digests_with_bounded_command_size() {
+        let quota = super::super::execution::WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
+        let package = super::super::execution::image_catalog::McpNodePackageProfile::test_profile(
+            "filesystem",
+            "1.2.3",
+            "server.mjs",
+            [0xab; 32],
+        );
+        let parameters = HcsGuestProcessParameters::quota_probe(
+            quota,
+            None,
+            None,
+            std::slice::from_ref(&package),
+        )
+        .expect("a catalog package can be checked by the fixed probe");
+        let value: Value = serde_json::from_str(&parameters.to_json().unwrap()).unwrap();
+        let command_line = value["CommandLine"].as_str().unwrap();
+        assert!(command_line.encode_utf16().count() <= MAX_GUEST_COMMAND_LINE_UNITS);
+        let encoded = command_line
+            .split("-EncodedCommand\" \"")
+            .nth(1)
+            .and_then(|value| value.strip_suffix('\"'))
+            .expect("probe script is encoded as one command argument");
+        let utf16le = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("base64 probe script is valid");
+        let units = utf16le
+            .chunks_exact(2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect::<Vec<_>>();
+        let script = String::from_utf16(&units).unwrap();
+        assert!(script.contains("$package_path = 'C:\\Haven\\McpPackages'"));
+        assert!(script.contains("'filesystem|server.mjs|"));
+        assert!(script.contains("HAVEN_MCP_PACKAGE_ATTESTED_V1:{0}:{1}"));
+        assert!(script.contains(&"ab".repeat(32)));
+        assert!(!script.contains("filesystem\\1.2.3"));
+
+        let packages = (0..super::super::execution::image_catalog::MAX_MCP_NODE_PACKAGES)
+            .map(|index| {
+                super::super::execution::image_catalog::McpNodePackageProfile::test_profile(
+                    &format!("p{index}-{}", "x".repeat(60)),
+                    "1.2.3",
+                    &format!("{}.mjs", "a".repeat(124)),
+                    [0xcd; 32],
+                )
+            })
+            .collect::<Vec<_>>();
+        HcsGuestProcessParameters::quota_probe(quota, None, None, &packages)
+            .expect("the maximum catalog package set stays below the HCS command-line limit");
     }
 
     #[test]

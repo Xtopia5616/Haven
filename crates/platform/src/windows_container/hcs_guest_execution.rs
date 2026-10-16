@@ -203,14 +203,20 @@ pub(super) struct HcsQuotaProbeOutcome {
     pub(super) stderr_truncated: bool,
 }
 
+pub(super) struct QuotaProbeRuntimeProfiles<'a> {
+    pub(super) skill_python_runtime:
+        Option<&'a super::execution::image_catalog::SkillPythonRuntimeProfile>,
+    pub(super) mcp_node_runtime: Option<&'a super::execution::image_catalog::McpNodeRuntimeProfile>,
+    pub(super) mcp_node_packages: &'a [super::execution::image_catalog::McpNodePackageProfile],
+}
+
 /// Run one fixed probe process without exposing the workspace or accepting a
 /// model-supplied command. This deliberately does not run the workspace seed.
 pub(super) fn execute_quota_probe(
     api: &dyn HcsApi,
     config: &super::WindowsContainerSandboxConfig,
     storage_quota_bytes: u64,
-    skill_python_runtime: Option<&super::execution::image_catalog::SkillPythonRuntimeProfile>,
-    mcp_node_runtime: Option<&super::execution::image_catalog::McpNodeRuntimeProfile>,
+    runtime_profiles: QuotaProbeRuntimeProfiles<'_>,
     timeout: Duration,
     mut is_cancelled: impl FnMut() -> bool,
 ) -> Result<HcsQuotaProbeOutcome, HcsGuestExecutionFailure> {
@@ -230,8 +236,9 @@ pub(super) fn execute_quota_probe(
 
         let parameters = HcsGuestProcessParameters::quota_probe(
             storage_quota_bytes,
-            skill_python_runtime,
-            mcp_node_runtime,
+            runtime_profiles.skill_python_runtime,
+            runtime_profiles.mcp_node_runtime,
+            runtime_profiles.mcp_node_packages,
         )
         .map_err(|_| HcsGuestExecutionFailureKind::HcsFailed)?;
         let mut output = BoundedQuotaProbeOutput::default();
@@ -265,7 +272,7 @@ pub(super) fn execute_quota_probe(
 type GuestProcessStartCallback<'a> =
     &'a mut dyn FnMut() -> Result<(), HcsGuestExecutionFailureKind>;
 
-const MAX_QUOTA_PROBE_OUTPUT_BYTES: usize = 256;
+const MAX_QUOTA_PROBE_OUTPUT_BYTES: usize = 4096;
 
 #[derive(Default)]
 struct BoundedQuotaProbeOutput {
@@ -685,8 +692,11 @@ mod tests {
             &api,
             &config,
             quota,
-            None,
-            None,
+            QuotaProbeRuntimeProfiles {
+                skill_python_runtime: None,
+                mcp_node_runtime: None,
+                mcp_node_packages: &[],
+            },
             Duration::from_secs(2),
             || false,
         )
@@ -729,8 +739,11 @@ mod tests {
             &api,
             &config,
             quota,
-            None,
-            None,
+            QuotaProbeRuntimeProfiles {
+                skill_python_runtime: None,
+                mcp_node_runtime: None,
+                mcp_node_packages: &[],
+            },
             Duration::from_secs(2),
             || true,
         )
