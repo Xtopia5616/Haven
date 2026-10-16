@@ -7,56 +7,40 @@
 //! dedicated service SID. The first control message is a bounded protocol
 //! Hello; no execution request is read until peer authentication succeeds.
 
+mod peer_security;
+
 use super::broker_protocol::{
     BROKER_PROTOCOL_VERSION, BrokerControlMessage, BrokerFrame, BrokerFrameKind,
     MAX_CONTROL_PAYLOAD_BYTES, negotiate_version,
 };
+use peer_security::{
+    PipeSecurityDescriptor, current_process_identity, impersonate_and_read_peer,
+    validate_sid_bytes, verify_current_service_identity, verify_pipe_server,
+};
 use std::io::{self, Read, Write};
-use std::mem::{offset_of, size_of};
+use std::mem::size_of;
 use std::ptr::{null, null_mut};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE,
-    GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+    CloseHandle, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
+    INVALID_HANDLE_VALUE,
 };
-use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-};
-use windows_sys::Win32::Security::{
-    GetLengthSid, GetTokenInformation, IsValidSid, RevertToSelf, SECURITY_ATTRIBUTES,
-    SID_AND_ATTRIBUTES, TOKEN_GROUPS, TOKEN_QUERY, TOKEN_USER, TokenGroups, TokenSessionId,
-    TokenUser,
-};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile,
     SECURITY_IMPERSONATION, SECURITY_SQOS_PRESENT, WriteFile,
 };
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
-    GetNamedPipeClientSessionId, GetNamedPipeServerProcessId, GetNamedPipeServerSessionId,
-    ImpersonateNamedPipeClient, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-    PIPE_WAIT, PeekNamedPipe, WaitNamedPipeW,
-};
-use windows_sys::Win32::System::Services::{
-    CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_MANAGER_CONNECT,
-    SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_STATUS_PROCESS,
-};
-use windows_sys::Win32::System::SystemServices::SE_GROUP_LOGON_ID;
-use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentProcessId, GetCurrentThread, OpenProcessToken, OpenThreadToken,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe, WaitNamedPipeW,
 };
 
 const BROKER_PIPE_NAME: &str = r"\\.\pipe\Haven.ContainerBroker.v1";
-const BROKER_SERVICE_NAME: &str = "HavenContainerBroker";
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
-const MAX_TOKEN_INFORMATION_BYTES: u32 = 64 * 1024;
-const MAX_TOKEN_GROUPS: usize = 1_024;
-const MAX_SID_BYTES: usize = 68;
 const MAX_HANDSHAKE_BODY_BYTES: usize = 1_024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const HANDSHAKE_POLL_INTERVAL: Duration = Duration::from_millis(5);
-const SE_GROUP_LOGON_ID_MASK: u32 = SE_GROUP_LOGON_ID as u32;
 
 /// OS identity expected on the local client side of the broker pipe.
 ///
@@ -306,58 +290,11 @@ impl Drop for BrokerPipeClient {
     }
 }
 
-struct PipeSecurityDescriptor {
-    descriptor: *mut core::ffi::c_void,
-}
-
-impl PipeSecurityDescriptor {
-    fn for_policy(policy: &BrokerPeerPolicy) -> io::Result<Self> {
-        let service_sid = sid_to_string(&policy.service_sid)?;
-        let logon_sid = sid_to_string(&policy.logon_sid)?;
-        // Protected DACL: only the broker service and this logon session can
-        // open the pipe. It intentionally omits Everyone, Authenticated Users,
-        // administrators, and anonymous access.
-        let sddl = format!("D:P(A;;GA;;;{service_sid})(A;;GRGW;;;{logon_sid})");
-        let sddl = wide_null(&sddl);
-        let mut descriptor = null_mut();
-        let converted = unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                sddl.as_ptr(),
-                SDDL_REVISION_1,
-                &mut descriptor,
-                null_mut(),
-            )
-        };
-        if converted == 0 || descriptor.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Self { descriptor })
-    }
-
-    fn as_ptr(&self) -> *mut core::ffi::c_void {
-        self.descriptor
-    }
-}
-
-impl Drop for PipeSecurityDescriptor {
-    fn drop(&mut self) {
-        unsafe { LocalFree(self.descriptor) };
-    }
-}
-
 struct OwnedHandle(HANDLE);
 
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         unsafe { CloseHandle(self.0) };
-    }
-}
-
-struct OwnedServiceHandle(windows_sys::Win32::System::Services::SC_HANDLE);
-
-impl Drop for OwnedServiceHandle {
-    fn drop(&mut self) {
-        unsafe { CloseServiceHandle(self.0) };
     }
 }
 
@@ -499,246 +436,6 @@ fn read_exact_pipe_until(
     }
 }
 
-fn impersonate_and_read_peer(handle: HANDLE) -> io::Result<BrokerPeerIdentity> {
-    if unsafe { ImpersonateNamedPipeClient(handle) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let revert = RevertToSelfGuard { active: true };
-    let identity = (|| {
-        let mut token = null_mut();
-        if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let token = OwnedHandle(token);
-        let mut process_id = 0;
-        let mut pipe_session_id = 0;
-        if unsafe { GetNamedPipeClientProcessId(handle, &mut process_id) } == 0
-            || unsafe { GetNamedPipeClientSessionId(handle, &mut pipe_session_id) } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        token_identity(token.0, process_id, pipe_session_id)
-    })();
-    // Do not return to the service loop until its thread token is restored.
-    // If Windows cannot revert it, continuing could run privileged work under
-    // the client identity, so the process must fail closed.
-    revert.revert();
-    identity
-}
-
-struct RevertToSelfGuard {
-    active: bool,
-}
-
-impl RevertToSelfGuard {
-    fn revert(mut self) {
-        if unsafe { RevertToSelf() } == 0 {
-            std::process::abort();
-        }
-        self.active = false;
-    }
-}
-
-impl Drop for RevertToSelfGuard {
-    fn drop(&mut self) {
-        if self.active && unsafe { RevertToSelf() } == 0 {
-            std::process::abort();
-        }
-    }
-}
-
-fn current_process_identity() -> io::Result<BrokerPeerIdentity> {
-    let mut token = null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let token = OwnedHandle(token);
-    let process_id = unsafe { GetCurrentProcessId() };
-    let mut session_id = 0;
-    let mut returned = 0;
-    if unsafe {
-        GetTokenInformation(
-            token.0,
-            TokenSessionId,
-            (&mut session_id as *mut u32).cast(),
-            size_of::<u32>() as u32,
-            &mut returned,
-        )
-    } == 0
-        || returned != size_of::<u32>() as u32
-    {
-        return Err(io::Error::last_os_error());
-    }
-    token_identity(token.0, process_id, session_id)
-}
-
-fn token_identity(
-    token: HANDLE,
-    process_id: u32,
-    pipe_session_id: u32,
-) -> io::Result<BrokerPeerIdentity> {
-    let user_sid = token_user_sid(token)?;
-    let logon_sid = token_logon_sid(token)?;
-    let token_session_id = token_session_id(token)?;
-    if process_id == 0 || token_session_id == 0 || token_session_id != pipe_session_id {
-        return Err(permission_denied("broker peer session identity is invalid"));
-    }
-    Ok(BrokerPeerIdentity {
-        process_id,
-        session_id: token_session_id,
-        user_sid,
-        logon_sid,
-    })
-}
-
-fn token_user_sid(token: HANDLE) -> io::Result<Vec<u8>> {
-    let (buffer, byte_length) = token_information(token, TokenUser)?;
-    let user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
-    copy_sid_from_buffer(user.User.Sid, &buffer, byte_length)
-}
-
-fn token_logon_sid(token: HANDLE) -> io::Result<Vec<u8>> {
-    let (buffer, byte_length) = token_information(token, TokenGroups)?;
-    if byte_length < offset_of!(TOKEN_GROUPS, Groups) {
-        return Err(invalid_data("client token groups are malformed"));
-    }
-    let groups = unsafe { &*(buffer.as_ptr().cast::<TOKEN_GROUPS>()) };
-    let count = groups.GroupCount as usize;
-    let required = offset_of!(TOKEN_GROUPS, Groups)
-        .checked_add(
-            count
-                .checked_mul(size_of::<SID_AND_ATTRIBUTES>())
-                .ok_or_else(|| invalid_data("client token group count is outside its limit"))?,
-        )
-        .ok_or_else(|| invalid_data("client token group size overflowed"))?;
-    if count == 0 || count > MAX_TOKEN_GROUPS || required > byte_length {
-        return Err(invalid_data("client token groups are outside their limit"));
-    }
-    let first_group = std::ptr::addr_of!(groups.Groups).cast::<SID_AND_ATTRIBUTES>();
-    let entries = unsafe { std::slice::from_raw_parts(first_group, count) };
-    let mut logon_sid = None;
-    for group in entries {
-        if group.Attributes & SE_GROUP_LOGON_ID_MASK == SE_GROUP_LOGON_ID_MASK {
-            if logon_sid.is_some() {
-                return Err(invalid_data("client token has multiple logon SIDs"));
-            }
-            logon_sid = Some(copy_sid_from_buffer(group.Sid, &buffer, byte_length)?);
-        }
-    }
-    logon_sid.ok_or_else(|| permission_denied("client token has no logon SID"))
-}
-
-fn token_session_id(token: HANDLE) -> io::Result<u32> {
-    let mut session_id = 0;
-    let mut returned = 0;
-    if unsafe {
-        GetTokenInformation(
-            token,
-            TokenSessionId,
-            (&mut session_id as *mut u32).cast(),
-            size_of::<u32>() as u32,
-            &mut returned,
-        )
-    } == 0
-        || returned != size_of::<u32>() as u32
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(session_id)
-}
-
-fn token_information(token: HANDLE, class: i32) -> io::Result<(Vec<usize>, usize)> {
-    let mut required = 0;
-    let queried = unsafe { GetTokenInformation(token, class, null_mut(), 0, &mut required) };
-    if queried != 0
-        || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
-        || required == 0
-        || required > MAX_TOKEN_INFORMATION_BYTES
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let word_count = (required as usize).div_ceil(size_of::<usize>());
-    let mut buffer = vec![0_usize; word_count];
-    let mut returned = 0;
-    if unsafe {
-        GetTokenInformation(
-            token,
-            class,
-            buffer.as_mut_ptr().cast(),
-            required,
-            &mut returned,
-        )
-    } == 0
-        || returned == 0
-        || returned > required
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok((buffer, returned as usize))
-}
-
-fn copy_sid_from_buffer(
-    sid: *mut core::ffi::c_void,
-    buffer: &[usize],
-    byte_length: usize,
-) -> io::Result<Vec<u8>> {
-    let base = buffer.as_ptr() as usize;
-    let end = base
-        .checked_add(byte_length)
-        .ok_or_else(|| invalid_data("client token buffer range overflowed"))?;
-    let address = sid as usize;
-    if sid.is_null() || address < base || address >= end {
-        return Err(invalid_data("client SID is outside its token buffer"));
-    }
-    let available = end - address;
-    if available < 8 || unsafe { IsValidSid(sid) } == 0 {
-        return Err(invalid_data("client token SID is invalid"));
-    }
-    let length = unsafe { GetLengthSid(sid) } as usize;
-    if !(8..=MAX_SID_BYTES).contains(&length) || length > available {
-        return Err(invalid_data("client token SID length is invalid"));
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), length) };
-    Ok(bytes.to_vec())
-}
-
-fn validate_sid_bytes(sid: &[u8]) -> io::Result<()> {
-    if sid.len() < 8 || sid.len() > MAX_SID_BYTES || sid[0] != 1 || sid[1] > 15 {
-        return Err(invalid_input("broker peer SID is invalid"));
-    }
-    let expected_length = 8 + sid[1] as usize * size_of::<u32>();
-    if sid.len() != expected_length || unsafe { IsValidSid(sid.as_ptr().cast_mut().cast()) } == 0 {
-        return Err(invalid_input("broker peer SID is invalid"));
-    }
-    Ok(())
-}
-
-fn sid_to_string(sid: &[u8]) -> io::Result<String> {
-    validate_sid_bytes(sid)?;
-    let mut output = null_mut();
-    if unsafe { ConvertSidToStringSidW(sid.as_ptr().cast_mut().cast(), &mut output) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let _allocated = LocalString(output);
-    let mut length = 0;
-    while length < 256 && unsafe { *output.add(length) } != 0 {
-        length += 1;
-    }
-    if length == 256 {
-        return Err(invalid_data("formatted broker SID is too long"));
-    }
-    let value = unsafe { std::slice::from_raw_parts(output, length) };
-    String::from_utf16(value).map_err(|_| invalid_data("formatted broker SID is invalid"))
-}
-
-struct LocalString(*mut u16);
-
-impl Drop for LocalString {
-    fn drop(&mut self) {
-        unsafe { LocalFree(self.0.cast()) };
-    }
-}
-
 fn connect_client_pipe(name: &str) -> io::Result<HANDLE> {
     let name = wide_null(name);
     if unsafe { WaitNamedPipeW(name.as_ptr(), 5_000) } == 0 {
@@ -761,100 +458,6 @@ fn connect_client_pipe(name: &str) -> io::Result<HANDLE> {
     Ok(handle)
 }
 
-fn verify_pipe_server(handle: HANDLE) -> io::Result<()> {
-    let mut server_pid = 0;
-    let mut server_session = u32::MAX;
-    if unsafe { GetNamedPipeServerProcessId(handle, &mut server_pid) } == 0
-        || unsafe { GetNamedPipeServerSessionId(handle, &mut server_session) } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    if server_pid == 0 || server_session != 0 || scm_service_process_id()? != server_pid {
-        return Err(permission_denied(
-            "named-pipe server is not the broker service",
-        ));
-    }
-    Ok(())
-}
-
-fn verify_current_service_identity(service_sid: &[u8]) -> io::Result<()> {
-    let mut token = null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let token = OwnedHandle(token);
-    if token_session_id(token.0)? != 0 || !token_has_sid(token.0, service_sid)? {
-        return Err(permission_denied(
-            "broker listener is not running as its service identity",
-        ));
-    }
-    Ok(())
-}
-
-fn token_has_sid(token: HANDLE, sid: &[u8]) -> io::Result<bool> {
-    validate_sid_bytes(sid)?;
-    let (buffer, byte_length) = token_information(token, TokenUser)?;
-    let user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
-    if copy_sid_from_buffer(user.User.Sid, &buffer, byte_length)? == sid {
-        return Ok(true);
-    }
-    let (buffer, byte_length) = token_information(token, TokenGroups)?;
-    if byte_length < offset_of!(TOKEN_GROUPS, Groups) {
-        return Err(invalid_data("process token groups are malformed"));
-    }
-    let groups = unsafe { &*(buffer.as_ptr().cast::<TOKEN_GROUPS>()) };
-    let count = groups.GroupCount as usize;
-    let required = offset_of!(TOKEN_GROUPS, Groups)
-        .checked_add(
-            count
-                .checked_mul(size_of::<SID_AND_ATTRIBUTES>())
-                .ok_or_else(|| invalid_data("process token group count is outside its limit"))?,
-        )
-        .ok_or_else(|| invalid_data("process token group size overflowed"))?;
-    if count > MAX_TOKEN_GROUPS || required > byte_length {
-        return Err(invalid_data("process token groups are outside their limit"));
-    }
-    let first_group = std::ptr::addr_of!(groups.Groups).cast::<SID_AND_ATTRIBUTES>();
-    for group in unsafe { std::slice::from_raw_parts(first_group, count) } {
-        if copy_sid_from_buffer(group.Sid, &buffer, byte_length)? == sid {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn scm_service_process_id() -> io::Result<u32> {
-    let manager = unsafe { OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT) };
-    if manager.is_null() {
-        return Err(io::Error::last_os_error());
-    }
-    let manager = OwnedServiceHandle(manager);
-    let service_name = wide_null(BROKER_SERVICE_NAME);
-    let service = unsafe { OpenServiceW(manager.0, service_name.as_ptr(), SERVICE_QUERY_STATUS) };
-    if service.is_null() {
-        return Err(io::Error::last_os_error());
-    }
-    let service = OwnedServiceHandle(service);
-    let mut status = SERVICE_STATUS_PROCESS::default();
-    let mut returned = 0;
-    if unsafe {
-        QueryServiceStatusEx(
-            service.0,
-            SC_STATUS_PROCESS_INFO,
-            (&mut status as *mut SERVICE_STATUS_PROCESS).cast(),
-            size_of::<SERVICE_STATUS_PROCESS>() as u32,
-            &mut returned,
-        )
-    } == 0
-        || returned < size_of::<SERVICE_STATUS_PROCESS>() as u32
-        || status.dwCurrentState != SERVICE_RUNNING
-        || status.dwProcessId == 0
-    {
-        return Err(permission_denied("broker service is not running"));
-    }
-    Ok(status.dwProcessId)
-}
-
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -873,9 +476,12 @@ fn permission_denied(message: &str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use super::peer_security::{LocalString, MAX_SID_BYTES};
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::mpsc;
+    use windows_sys::Win32::Security::GetLengthSid;
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
     static NEXT_TEST_PIPE: AtomicU32 = AtomicU32::new(1);
 
