@@ -14,9 +14,12 @@ use windows_sys::Win32::Foundation::{FreeLibrary, HMODULE, LocalFree};
 use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
+use windows_sys::Win32::System::Memory::LocalSize;
 
 type RawOperation = *mut std::ffi::c_void;
-type RawComputeSystem = *mut std::ffi::c_void;
+pub(super) type RawComputeSystem = *mut std::ffi::c_void;
+pub(super) type RawGuestProcess = *mut std::ffi::c_void;
+pub(super) type RawGuestHandle = *mut std::ffi::c_void;
 type OperationCompletion = Option<unsafe extern "system" fn(RawOperation, *const std::ffi::c_void)>;
 
 const MAX_OPERATION_WAIT: Duration = Duration::from_secs(5 * 60);
@@ -24,7 +27,7 @@ const TERMINATION_WAIT: Duration = Duration::from_secs(15);
 const CANCEL_DRAIN_WAIT: Duration = Duration::from_secs(1);
 
 /// Narrow API seam used by the lifecycle owner and its unit tests.
-trait HcsApi {
+pub(super) trait HcsApi {
     fn create_compute_system(
         &self,
         id: &str,
@@ -37,18 +40,46 @@ trait HcsApi {
     fn terminate_compute_system(&self, system: RawComputeSystem) -> io::Result<()>;
 
     fn close_compute_system(&self, system: RawComputeSystem);
+
+    fn create_guest_process(
+        &self,
+        system: RawComputeSystem,
+        parameters: &str,
+        timeout: Duration,
+    ) -> io::Result<HcsProcessInformation>;
+
+    fn wait_for_guest_process_exit(
+        &self,
+        process: RawGuestProcess,
+        timeout: Duration,
+    ) -> io::Result<Option<String>>;
+
+    fn terminate_guest_process(&self, process: RawGuestProcess) -> io::Result<()>;
+
+    fn close_guest_process(&self, process: RawGuestProcess);
+
+    fn close_guest_handle(&self, handle: RawGuestHandle);
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct HcsProcessInformation {
+    pub(super) process: RawGuestProcess,
+    pub(super) process_id: u32,
+    pub(super) stdin: RawGuestHandle,
+    pub(super) stdout: RawGuestHandle,
+    pub(super) stderr: RawGuestHandle,
 }
 
 /// Owns exactly one HCS system handle; dropping it requests termination and
 /// closes the handle even if termination reports a failure.
-struct HcsComputeSystemOwner<'a> {
+pub(super) struct HcsComputeSystemOwner<'a> {
     api: &'a dyn HcsApi,
     system: Option<RawComputeSystem>,
     started: bool,
 }
 
 impl<'a> HcsComputeSystemOwner<'a> {
-    fn create(
+    pub(super) fn create(
         api: &'a dyn HcsApi,
         config: &WindowsContainerSandboxConfig,
         operation_timeout: Duration,
@@ -70,7 +101,7 @@ impl<'a> HcsComputeSystemOwner<'a> {
         })
     }
 
-    fn start(&mut self, operation_timeout: Duration) -> io::Result<()> {
+    pub(super) fn start(&mut self, operation_timeout: Duration) -> io::Result<()> {
         validate_operation_timeout(operation_timeout)?;
         if self.started {
             return Err(io::Error::new(
@@ -89,9 +120,35 @@ impl<'a> HcsComputeSystemOwner<'a> {
         Ok(())
     }
 
+    pub(super) fn create_guest_process<'b>(
+        &'b self,
+        parameters: &super::hcs_process::HcsGuestProcessParameters,
+        operation_timeout: Duration,
+    ) -> io::Result<super::hcs_process_runtime::HcsGuestProcessOwner<'b>> {
+        validate_operation_timeout(operation_timeout)?;
+        if !self.started {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "HCS compute system must be started before creating a guest process",
+            ));
+        }
+        let system = self.system.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "HCS compute system has already been terminated",
+            )
+        })?;
+        super::hcs_process_runtime::HcsGuestProcessOwner::create(
+            self.api,
+            system,
+            parameters,
+            operation_timeout,
+        )
+    }
+
     /// Terminate once and release the handle only after HCS confirms success.
     /// A failure leaves the owner intact so callers can retry before drop.
-    fn terminate(&mut self) -> io::Result<()> {
+    pub(super) fn terminate(&mut self) -> io::Result<()> {
         let Some(system) = self.system else {
             return Ok(());
         };
@@ -112,7 +169,7 @@ impl Drop for HcsComputeSystemOwner<'_> {
     }
 }
 
-fn validate_operation_timeout(timeout: Duration) -> io::Result<u32> {
+pub(super) fn validate_operation_timeout(timeout: Duration) -> io::Result<u32> {
     let millis = timeout.as_millis();
     if millis == 0 || millis > MAX_OPERATION_WAIT.as_millis() {
         return Err(io::Error::new(
@@ -147,7 +204,37 @@ struct NativeHcsApi {
     terminate_compute_system:
         unsafe extern "system" fn(RawComputeSystem, RawOperation, *const u16) -> i32,
     close_compute_system: unsafe extern "system" fn(RawComputeSystem),
+    create_process: unsafe extern "system" fn(
+        RawComputeSystem,
+        *const u16,
+        RawOperation,
+        *const std::ffi::c_void,
+        *mut RawGuestProcess,
+    ) -> i32,
+    wait_for_operation_result_and_process_info: unsafe extern "system" fn(
+        RawOperation,
+        u32,
+        *mut NativeHcsProcessInformation,
+        *mut *mut u16,
+    ) -> i32,
+    wait_for_process_exit: unsafe extern "system" fn(RawGuestProcess, u32, *mut *mut u16) -> i32,
+    terminate_process: unsafe extern "system" fn(RawGuestProcess, RawOperation, *const u16) -> i32,
+    close_process: unsafe extern "system" fn(RawGuestProcess),
 }
+
+#[repr(C)]
+#[derive(Default)]
+struct NativeHcsProcessInformation {
+    process_id: u32,
+    reserved: u32,
+    stdin: RawGuestHandle,
+    stdout: RawGuestHandle,
+    stderr: RawGuestHandle,
+}
+
+const HCS_E_OPERATION_TIMEOUT: u32 = 0x8037_0118;
+const MAX_HCS_RESULT_UTF16_UNITS: usize = 32 * 1024;
+const INVALID_GUEST_HANDLE: RawGuestHandle = usize::MAX as RawGuestHandle;
 
 impl NativeHcsApi {
     fn load() -> io::Result<Self> {
@@ -176,6 +263,14 @@ impl NativeHcsApi {
                 start_compute_system: resolve(module.0, b"HcsStartComputeSystem\0")?,
                 terminate_compute_system: resolve(module.0, b"HcsTerminateComputeSystem\0")?,
                 close_compute_system: resolve(module.0, b"HcsCloseComputeSystem\0")?,
+                create_process: resolve(module.0, b"HcsCreateProcess\0")?,
+                wait_for_operation_result_and_process_info: resolve(
+                    module.0,
+                    b"HcsWaitForOperationResultAndProcessInfo\0",
+                )?,
+                wait_for_process_exit: resolve(module.0, b"HcsWaitForProcessExit\0")?,
+                terminate_process: resolve(module.0, b"HcsTerminateProcess\0")?,
+                close_process: resolve(module.0, b"HcsCloseProcess\0")?,
                 _module: module,
             })
         }
@@ -285,6 +380,145 @@ impl HcsApi for NativeHcsApi {
     fn close_compute_system(&self, system: RawComputeSystem) {
         unsafe { (self.close_compute_system)(system) };
     }
+
+    fn create_guest_process(
+        &self,
+        system: RawComputeSystem,
+        parameters: &str,
+        timeout: Duration,
+    ) -> io::Result<HcsProcessInformation> {
+        let timeout_millis = validate_operation_timeout(timeout)?;
+        let parameters = wide_null(OsStr::new(parameters))?;
+        let operation = self.create_operation()?;
+        let mut process = null_mut();
+        let submit_result = unsafe {
+            (self.create_process)(
+                system,
+                parameters.as_ptr(),
+                operation.raw,
+                null(),
+                &mut process,
+            )
+        };
+        if submit_result < 0 {
+            if !process.is_null() {
+                self.cleanup_partial_guest_process(
+                    process,
+                    &mut NativeHcsProcessInformation::default(),
+                );
+            }
+            return Err(hresult_error(
+                "HCS guest process creation failed",
+                submit_result,
+            ));
+        }
+
+        let mut info = NativeHcsProcessInformation::default();
+        let mut result_document = null_mut();
+        let wait_result = unsafe {
+            (self.wait_for_operation_result_and_process_info)(
+                operation.raw,
+                timeout_millis,
+                &mut info,
+                &mut result_document,
+            )
+        };
+        let _result_document = OwnedLocalString(result_document);
+        if wait_result < 0 {
+            let _ = unsafe { (self.cancel_operation)(operation.raw) };
+            let _ = self.wait_for_result(
+                operation.raw,
+                u32::try_from(CANCEL_DRAIN_WAIT.as_millis()).unwrap_or(1_000),
+            );
+            self.cleanup_partial_guest_process(process, &mut info);
+            return Err(hresult_error(
+                "HCS guest process creation did not complete successfully",
+                wait_result,
+            ));
+        }
+
+        if process.is_null()
+            || info.process_id == 0
+            || !is_valid_guest_handle(info.stdout)
+            || !is_valid_guest_handle(info.stderr)
+            || (!info.stdin.is_null() && info.stdin != INVALID_GUEST_HANDLE)
+        {
+            self.cleanup_partial_guest_process(process, &mut info);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HCS returned incomplete guest process information",
+            ));
+        }
+
+        // CreateStdInPipe is disabled by the closed parameter builder. HCS may
+        // represent an absent stdin with either NULL or INVALID_HANDLE_VALUE.
+        if info.stdin == INVALID_GUEST_HANDLE {
+            info.stdin = null_mut();
+        }
+        Ok(HcsProcessInformation {
+            process,
+            process_id: info.process_id,
+            stdin: info.stdin,
+            stdout: info.stdout,
+            stderr: info.stderr,
+        })
+    }
+
+    fn wait_for_guest_process_exit(
+        &self,
+        process: RawGuestProcess,
+        timeout: Duration,
+    ) -> io::Result<Option<String>> {
+        let timeout_millis = validate_operation_timeout(timeout)?;
+        let mut result_document = null_mut();
+        let result =
+            unsafe { (self.wait_for_process_exit)(process, timeout_millis, &mut result_document) };
+        let document = OwnedLocalString(result_document);
+        if result as u32 == HCS_E_OPERATION_TIMEOUT {
+            return Ok(None);
+        }
+        if result < 0 {
+            return Err(hresult_error("HCS guest process wait failed", result));
+        }
+        let json = document.to_bounded_string()?;
+        Ok(Some(json))
+    }
+
+    fn terminate_guest_process(&self, process: RawGuestProcess) -> io::Result<()> {
+        let operation = self.create_operation()?;
+        self.submit_and_wait(&operation, TERMINATION_WAIT, |raw_operation| unsafe {
+            (self.terminate_process)(process, raw_operation, null())
+        })
+    }
+
+    fn close_guest_process(&self, process: RawGuestProcess) {
+        unsafe { (self.close_process)(process) };
+    }
+
+    fn close_guest_handle(&self, handle: RawGuestHandle) {
+        if is_valid_guest_handle(handle) {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        }
+    }
+}
+
+impl NativeHcsApi {
+    fn cleanup_partial_guest_process(
+        &self,
+        process: RawGuestProcess,
+        info: &mut NativeHcsProcessInformation,
+    ) {
+        self.close_guest_handle(info.stdin);
+        self.close_guest_handle(info.stdout);
+        self.close_guest_handle(info.stderr);
+        info.stdin = null_mut();
+        info.stdout = null_mut();
+        info.stderr = null_mut();
+        if !process.is_null() {
+            let _ = self.terminate_guest_process(process);
+            self.close_guest_process(process);
+        }
+    }
 }
 
 struct OwnedOperation<'a> {
@@ -308,12 +542,54 @@ impl Drop for OwnedModule {
 
 struct OwnedLocalString(*mut u16);
 
+impl OwnedLocalString {
+    fn to_bounded_string(&self) -> io::Result<String> {
+        if self.0.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HCS returned no guest process status document",
+            ));
+        }
+        let allocation_bytes = unsafe { LocalSize(self.0.cast()) };
+        if allocation_bytes == 0
+            || allocation_bytes > MAX_HCS_RESULT_UTF16_UNITS * std::mem::size_of::<u16>()
+            || allocation_bytes % std::mem::size_of::<u16>() != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HCS guest process status allocation is outside its bound",
+            ));
+        }
+        let mut units = Vec::new();
+        for index in 0..allocation_bytes / std::mem::size_of::<u16>() {
+            let unit = unsafe { *self.0.add(index) };
+            if unit == 0 {
+                return String::from_utf16(&units).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "HCS guest process status is not valid UTF-16",
+                    )
+                });
+            }
+            units.push(unit);
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "HCS guest process status exceeds its size bound",
+        ))
+    }
+}
+
 impl Drop for OwnedLocalString {
     fn drop(&mut self) {
         if !self.0.is_null() {
             unsafe { LocalFree(self.0.cast()) };
         }
     }
+}
+
+fn is_valid_guest_handle(handle: RawGuestHandle) -> bool {
+    !handle.is_null() && handle != INVALID_GUEST_HANDLE
 }
 
 unsafe fn resolve<T: Copy>(module: HMODULE, name: &'static [u8]) -> io::Result<T> {
@@ -419,6 +695,35 @@ mod tests {
         fn close_compute_system(&self, system: RawComputeSystem) {
             assert_eq!(system, 1_usize as RawComputeSystem);
             self.record("close");
+        }
+
+        fn create_guest_process(
+            &self,
+            _system: RawComputeSystem,
+            _parameters: &str,
+            _timeout: Duration,
+        ) -> io::Result<HcsProcessInformation> {
+            unreachable!("compute lifecycle tests do not create guest processes")
+        }
+
+        fn wait_for_guest_process_exit(
+            &self,
+            _process: RawGuestProcess,
+            _timeout: Duration,
+        ) -> io::Result<Option<String>> {
+            unreachable!("compute lifecycle tests do not wait for guest processes")
+        }
+
+        fn terminate_guest_process(&self, _process: RawGuestProcess) -> io::Result<()> {
+            unreachable!("compute lifecycle tests do not terminate guest processes")
+        }
+
+        fn close_guest_process(&self, _process: RawGuestProcess) {
+            unreachable!("compute lifecycle tests do not close guest processes")
+        }
+
+        fn close_guest_handle(&self, _handle: RawGuestHandle) {
+            unreachable!("compute lifecycle tests do not close guest handles")
         }
     }
 

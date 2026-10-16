@@ -18,6 +18,12 @@ mod hcs_process;
 #[cfg(windows)]
 #[expect(
     dead_code,
+    reason = "guest process handles stay private until writable-layer and bounded stream wiring are complete"
+)]
+mod hcs_process_runtime;
+#[cfg(windows)]
+#[expect(
+    dead_code,
     reason = "the broker keeps HCS execution unavailable until quota attestation and provider wiring are complete"
 )]
 mod hcs_runtime;
