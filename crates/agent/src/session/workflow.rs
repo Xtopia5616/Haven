@@ -6,6 +6,7 @@
 
 use crate::session::tool_ports::{
     ToolAuthorizationPort, ToolExecutionContext, ToolExecutionPort, ToolObservationPort,
+    sandbox_output_review_matches_step,
 };
 use async_trait::async_trait;
 use haven_common::types::is_canonical_id;
@@ -91,11 +92,12 @@ impl WorkflowSubcallPort for AuthorizedWorkflowSubcallPort {
                 tool_name: capability.to_owned(),
                 input,
                 cancel,
-                step_id: Some(step_id),
+                step_id: Some(step_id.clone()),
                 authorization_proof: Some(proof),
             })
             .await
             .map_err(|error| error.to_string())?;
+        let has_sandbox_output_review = sandbox_output_review_matches_step(&result, &step_id);
         let observation = self
             .observations
             .observation_text(capability, &result)
@@ -103,6 +105,7 @@ impl WorkflowSubcallPort for AuthorizedWorkflowSubcallPort {
         Ok(WorkflowSubcallResult {
             result,
             observation,
+            sandbox_output_review_step_id: has_sandbox_output_review.then_some(step_id),
         })
     }
 }

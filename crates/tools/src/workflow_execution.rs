@@ -27,6 +27,9 @@ pub struct WorkflowCapabilityDefinition {
 pub struct WorkflowSubcallResult {
     pub result: ToolResult,
     pub observation: String,
+    /// Trusted child step identity when that execution retained a sandbox
+    /// output review. Workflow's model-defined step label is not this ID.
+    pub sandbox_output_review_step_id: Option<String>,
 }
 
 /// The only execution authority passed into the Workflow evaluator.
@@ -74,6 +77,8 @@ pub(crate) struct WorkflowExecutionResult {
     pub(crate) truncated: bool,
     #[serde(skip)]
     pub(crate) error_class: Option<ToolErrorClass>,
+    #[serde(skip)]
+    pub(crate) sandbox_output_review_step_ids: Vec<String>,
 }
 
 impl WorkflowExecutionResult {
@@ -87,6 +92,7 @@ impl WorkflowExecutionResult {
             call_count: 0,
             truncated: false,
             error_class: None,
+            sandbox_output_review_step_ids: Vec::new(),
         }
     }
 
@@ -261,6 +267,15 @@ pub(crate) async fn execute_workflow(
             }
         };
 
+        if let Some(step_id) = call.sandbox_output_review_step_id
+            && haven_common::types::is_canonical_id(&step_id, "step")
+            && execution.sandbox_output_review_step_ids.len()
+                < haven_common::tools::MAX_SANDBOX_OUTPUT_REVIEW_STEP_IDS
+            && !execution.sandbox_output_review_step_ids.contains(&step_id)
+        {
+            execution.sandbox_output_review_step_ids.push(step_id);
+        }
+
         let output_size =
             serde_json::to_vec(&call.result.output).map_or(usize::MAX, |bytes| bytes.len());
         total_output_bytes = total_output_bytes.saturating_add(output_size);
@@ -344,6 +359,7 @@ mod tests {
             Ok(WorkflowSubcallResult {
                 result: ToolResult::ok(input.clone()),
                 observation: serde_json::to_string(&input).unwrap(),
+                sandbox_output_review_step_id: None,
             })
         }
     }
@@ -413,6 +429,7 @@ mod tests {
             Ok(WorkflowSubcallResult {
                 result: ToolResult::ok(input),
                 observation: "read complete".into(),
+                sandbox_output_review_step_id: None,
             })
         }
     }

@@ -307,7 +307,7 @@ export type ToolOperationScope = (typeof TOOL_OPERATION_SCOPE_VALUES)[number];
 export interface ToolPolicy { risk_level: RiskLevel; permission_key: string; confirmation: ConfirmationRequirement; idempotency: OperationIdempotency; scope: ToolOperationScope; concurrency: ToolConcurrencyMode; effect: OperationEffect; data_sensitivity: DataSensitivity; network_access: NetworkAccess }
 export interface ToolPresentation { label: string; renderer: string; icon: string; represented_source: ToolSource }
 export interface ToolPrompt { when_to_use: string; when_not_to_use: string; key_operations: string[] }
-export interface ToolResultEnvelope { outcome: ToolExecutionOutcome; error_class?: ToolErrorClass; retry_safety: OperationIdempotency; retryability: ToolRetryability; verification_hint?: string; next_action?: string; assets: string[] }
+export interface ToolResultEnvelope { outcome: ToolExecutionOutcome; error_class?: ToolErrorClass; retry_safety: OperationIdempotency; retryability: ToolRetryability; verification_hint?: string; next_action?: string; assets: string[]; sandbox_output_review_step_ids?: string[] }
 export const TOOL_RETRYABILITY_VALUES = ['retryable', 'not_retryable', 'unknown'] as const;
 export type ToolRetryability = (typeof TOOL_RETRYABILITY_VALUES)[number];
 export interface ToolRootPresentation { label: string; description: string; icon: string }
@@ -687,6 +687,10 @@ export const AGENT_OBSERVATION_EVENT_PAYLOAD_SHAPE = {
 					},
 					'assets': {
 						optional: false,
+						shape: { kind: 'array', items: { kind: 'string' } },
+					},
+					'sandbox_output_review_step_ids': {
+						optional: true,
 						shape: { kind: 'array', items: { kind: 'string' } },
 					}
 				}

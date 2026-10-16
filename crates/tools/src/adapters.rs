@@ -486,6 +486,7 @@ impl Tool for McpToolAdapter {
             && self.transport == McpServerTransport::Stdio;
         let mut workspace_input = None;
         let mut review_reservation = None;
+        let mut review_step_id = None;
         if one_shot_managed_call {
             let session_id = context.call_session_id.as_deref().ok_or_else(|| {
                 crate::security::execution_policy_denied(
@@ -497,6 +498,7 @@ impl Tool for McpToolAdapter {
                     "workspace-write MCP stdio requires a canonical tool step id".into(),
                 )
             })?;
+            review_step_id = Some(step_id.to_owned());
             if !haven_common::types::is_canonical_id(session_id, "ses")
                 || !haven_common::types::is_canonical_id(step_id, "step")
             {
@@ -557,7 +559,7 @@ impl Tool for McpToolAdapter {
             .await;
         revocation.abort();
         let _ = revocation.await;
-        let (result, output_review) = result?;
+        let (mut result, output_review) = result?;
         if one_shot_managed_call {
             let output_review = output_review.ok_or_else(|| {
                 crate::security::execution_policy_denied(
@@ -569,6 +571,9 @@ impl Tool for McpToolAdapter {
                 .ok_or_else(|| anyhow::anyhow!("MCP output review reservation is unavailable"))?
                 .retain(output_review)
                 .map_err(anyhow::Error::msg)?;
+            if let Some(step_id) = review_step_id {
+                result = result.with_sandbox_output_review_step_ids([step_id]);
+            }
         }
         Ok(result)
     }

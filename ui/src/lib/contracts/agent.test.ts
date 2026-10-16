@@ -416,6 +416,7 @@ describe('agent IPC contract', () => {
 					retryability: 'unknown',
 					next_action: 'inspect',
 					assets: ['asset-7291c1a5c920765ba4550234a6835861'],
+					sandbox_output_review_step_ids: ['step-ea869e583dff7756d1747b32ad55e798'],
 					added_wire_field: 'ignored',
 				},
 				event_sequence: 17,
@@ -433,6 +434,7 @@ describe('agent IPC contract', () => {
 			verificationHint: undefined,
 			nextAction: 'inspect',
 			assets: ['asset-7291c1a5c920765ba4550234a6835861'],
+			sandboxOutputReviewStepIds: ['step-ea869e583dff7756d1747b32ad55e798'],
 		});
 
 		for (const assets of [
@@ -463,6 +465,41 @@ describe('agent IPC contract', () => {
 							retry_safety: 'non_idempotent',
 							retryability: 'unknown',
 							assets,
+						},
+					},
+				}),
+			).toBeNull();
+		}
+
+		for (const sandbox_output_review_step_ids of [
+			['step-short'],
+			['ses-0ecf371384ab79d597760ca41f2ba21c'],
+			Array.from({ length: 65 }, (_, index) => `step-${index.toString(16).padStart(32, '0')}`),
+		]) {
+			expect(
+				mapAgentEventContract({
+					event: 'agent:observation',
+					id: 6,
+					payload: {
+						session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+						observation: 'timeout',
+						tool_name: 'codemode_run',
+						step_number: 3,
+						run_id: 2,
+						silent: false,
+						tool_call_id: 'call-1',
+						tool_index: 0,
+						ask_options: [],
+						step_id: 'step-ea869e583dff7756d1747b32ad55e798',
+						idempotency: 'unknown',
+						operation_scope: 'global',
+						renderer: 'codemode_run',
+						result: {
+							outcome: 'succeeded',
+							retry_safety: 'unknown',
+							retryability: 'unknown',
+							assets: [],
+							sandbox_output_review_step_ids,
 						},
 					},
 				}),

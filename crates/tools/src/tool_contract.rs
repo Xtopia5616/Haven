@@ -1,7 +1,7 @@
 pub(crate) use haven_common::tools::{
-    ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,
-    ToolConcurrencyMode, ToolErrorClass, ToolExecutionOutcome, ToolOperationScope,
-    ToolResultEnvelope, ToolRetryability,
+    ConfirmationRequirement, DataSensitivity, MAX_SANDBOX_OUTPUT_REVIEW_STEP_IDS, NetworkAccess,
+    OperationEffect, OperationIdempotency, ToolConcurrencyMode, ToolErrorClass,
+    ToolExecutionOutcome, ToolOperationScope, ToolResultEnvelope, ToolRetryability,
 };
 use haven_common::types::{CapabilityScope, RiskLevel, is_canonical_id, permission_key};
 use serde_json::{Map, Value};
@@ -16,6 +16,20 @@ pub(crate) fn validate_entity_id(id: &str, field_name: &str, prefix: &str) -> an
         Ok(())
     } else {
         anyhow::bail!("{field_name} must be a canonical {prefix}- prefixed id")
+    }
+}
+
+fn append_sandbox_output_review_step_ids(
+    target: &mut Vec<String>,
+    step_ids: impl IntoIterator<Item = String>,
+) {
+    for step_id in step_ids {
+        if target.len() >= MAX_SANDBOX_OUTPUT_REVIEW_STEP_IDS {
+            break;
+        }
+        if is_canonical_id(&step_id, "step") && !target.contains(&step_id) {
+            target.push(step_id);
+        }
     }
 }
 
@@ -469,6 +483,10 @@ pub struct ToolSignals {
     pub notify_title: Option<String>,
     /// The `notify` tool's toast body.
     pub notify_body: Option<String>,
+    /// Runtime-only sandbox review identities, projected into the UI result
+    /// envelope and kept out of the model-facing observation.
+    #[serde(skip)]
+    pub sandbox_output_review_step_ids: Vec<String>,
 }
 
 /// Scheduling contract for a tool call inside one assistant batch.
@@ -588,7 +606,25 @@ impl ToolResult {
             .and_then(Value::as_str)
             .map(ToString::to_string);
         collect_asset_ids(&self.output, &mut envelope.assets);
+        append_sandbox_output_review_step_ids(
+            &mut envelope.sandbox_output_review_step_ids,
+            self.signals.sandbox_output_review_step_ids.iter().cloned(),
+        );
         envelope
+    }
+
+    /// Attach canonical child step identities to the UI-only result envelope.
+    /// The tool observation and structured output returned to the model are
+    /// left unchanged.
+    pub fn with_sandbox_output_review_step_ids(
+        mut self,
+        step_ids: impl IntoIterator<Item = String>,
+    ) -> Self {
+        append_sandbox_output_review_step_ids(
+            &mut self.signals.sandbox_output_review_step_ids,
+            step_ids,
+        );
+        self
     }
 
     /// Build a successful result while keeping its truncation metadata in sync
@@ -2175,6 +2211,65 @@ pub(crate) mod tests {
                 "asset-cccccccccccccccccccccccccccccccc",
                 "asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             ]
+        );
+    }
+
+    #[test]
+    fn sandbox_review_ids_are_ui_only_canonical_and_bounded() {
+        let valid_step_id = "step-ea869e583dff7756d1747b32ad55e798".to_owned();
+        let mut result = ToolResult::ok(json!({"status": "done"}))
+            .with_sandbox_output_review_step_ids([
+                valid_step_id.clone(),
+                "step-short".to_owned(),
+                "ses-ea869e583dff7756d1747b32ad55e798".to_owned(),
+                valid_step_id.clone(),
+            ]);
+        assert_eq!(
+            result.signals.sandbox_output_review_step_ids,
+            [valid_step_id]
+        );
+        result.signals.sandbox_output_review_step_ids = vec![
+            "step-ea869e583dff7756d1747b32ad55e798".into(),
+            "step-short".into(),
+            "ses-ea869e583dff7756d1747b32ad55e798".into(),
+            "step-ea869e583dff7756d1747b32ad55e798".into(),
+        ];
+
+        let envelope = result.envelope(OperationIdempotency::Unknown);
+        assert_eq!(
+            envelope.sandbox_output_review_step_ids,
+            ["step-ea869e583dff7756d1747b32ad55e798"]
+        );
+        assert_eq!(result.output, json!({"status": "done"}));
+
+        let serialized_result = serde_json::to_value(&result).unwrap();
+        assert!(
+            serialized_result["output"]
+                .get("sandbox_output_review_step_ids")
+                .is_none()
+        );
+        assert!(
+            serialized_result["signals"]
+                .get("sandbox_output_review_step_ids")
+                .is_none()
+        );
+
+        let built_capped = ToolResult::ok(Value::Null)
+            .with_sandbox_output_review_step_ids((0..65).map(|index| format!("step-{index:032x}")));
+        assert_eq!(
+            built_capped.signals.sandbox_output_review_step_ids.len(),
+            64
+        );
+
+        let mut uncapped = ToolResult::ok(Value::Null);
+        uncapped.signals.sandbox_output_review_step_ids =
+            (0..65).map(|index| format!("step-{index:032x}")).collect();
+        assert_eq!(
+            uncapped
+                .envelope(OperationIdempotency::Unknown)
+                .sandbox_output_review_step_ids
+                .len(),
+            64
         );
     }
 

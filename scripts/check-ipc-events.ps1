@@ -164,6 +164,13 @@ if (-not [regex]::IsMatch($commonToolContracts, '(?s)pub\s+struct\s+ToolResultEn
     [regex]::IsMatch($toolContract, 'self\.output\.get\("retry_safety"\)')) {
     throw 'ToolResultEnvelope retry metadata must be Common-owned and cannot be overridden by tool output JSON'
 }
+if (-not [regex]::IsMatch($commonToolContracts, '(?s)sandbox_output_review_step_ids:\s*Vec<String>') -or
+    -not [regex]::IsMatch($commonToolContracts, 'MAX_SANDBOX_OUTPUT_REVIEW_STEP_IDS:\s*usize\s*=\s*64') -or
+    -not [regex]::IsMatch($agentContract, '(?s)sandboxOutputReviewStepIds\?:\s*string\[\]') -or
+    -not [regex]::IsMatch($agentContract, 'isCanonicalSandboxReviewStepIdArray\(value\.sandbox_output_review_step_ids\)') -or
+    -not [regex]::IsMatch($agentContract, 'value\.length\s*<=\s*64')) {
+    throw 'sandbox review identities must travel only through the bounded, validated UI result envelope'
+}
 if (-not [regex]::IsMatch($agentContract, '(?s)export interface AgentNotificationPayload\s*\{[^}]*notificationKind\?:\s*AgentNotificationKind[^}]*toolRunKind\?:\s*ToolRunKindDto[^}]*toolRunId\?:\s*string[^}]*toolRunStatus\?:\s*ToolRunCompletionStatusDto')) {
     throw 'frontend notification contract must use generated ToolRun completion source, identity, and status types'
 }

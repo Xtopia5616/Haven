@@ -245,9 +245,11 @@ impl Tool for WorkflowInvocationTool {
         };
 
         let execution = execute_workflow(&plan, subcalls, cancel).await;
+        let review_step_ids = execution.sandbox_output_review_step_ids.clone();
         let value = execution.to_value(self.limits);
         if execution.error.is_none() {
-            Ok(crate::ToolResult::from_output(value, execution.truncated))
+            Ok(crate::ToolResult::from_output(value, execution.truncated)
+                .with_sandbox_output_review_step_ids(review_step_ids))
         } else {
             Ok(crate::ToolResult::failed_with_class(
                 value,
@@ -258,7 +260,8 @@ impl Tool for WorkflowInvocationTool {
                 execution
                     .error_class
                     .unwrap_or(crate::ToolErrorClass::Other),
-            ))
+            )
+            .with_sandbox_output_review_step_ids(review_step_ids))
         }
     }
 }
@@ -266,6 +269,8 @@ impl Tool for WorkflowInvocationTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workflow_execution::{WorkflowSubcallPort, WorkflowSubcallResult};
+    use async_trait::async_trait;
     use serde_json::json;
 
     fn capability(name: &str) -> WorkflowCapabilityDefinition {
@@ -279,6 +284,67 @@ mod tests {
                 "additionalProperties": false
             }),
         }
+    }
+
+    struct ReviewSubcallPort;
+
+    #[async_trait]
+    impl WorkflowSubcallPort for ReviewSubcallPort {
+        async fn call(
+            &self,
+            _capability: &str,
+            _input: Value,
+            _cancel: CancellationToken,
+        ) -> Result<WorkflowSubcallResult, String> {
+            Ok(WorkflowSubcallResult {
+                result: crate::ToolResult::ok(json!({"status": "done"})),
+                observation: "done".into(),
+                sandbox_output_review_step_id: Some("step-ea869e583dff7756d1747b32ad55e798".into()),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_result_envelope_keeps_nested_review_ids_out_of_model_output() {
+        let tool =
+            WorkflowInvocationTool::from_definitions(vec![capability("mcp__notes__read")]).unwrap();
+        let result = tool
+            .execute_with_workflow_subcalls(
+                json!({
+                    "workflow": {
+                        "version": 1,
+                        "steps": [{
+                            "id": "read",
+                            "capability": "mcp__notes__read",
+                            "input": {}
+                        }]
+                    }
+                }),
+                CancellationToken::new(),
+                None,
+                Arc::new(ReviewSubcallPort),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(
+            result
+                .envelope(crate::OperationIdempotency::Unknown)
+                .sandbox_output_review_step_ids,
+            ["step-ea869e583dff7756d1747b32ad55e798"]
+        );
+        assert!(
+            result
+                .output
+                .get("sandbox_output_review_step_ids")
+                .is_none()
+        );
+        assert!(
+            !serde_json::to_string(&result.output)
+                .unwrap()
+                .contains("step-ea869e583dff7756d1747b32ad55e798")
+        );
     }
 
     #[test]

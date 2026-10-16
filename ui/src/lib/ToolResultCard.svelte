@@ -32,6 +32,7 @@
 	import ToolShellResult from '$lib/ToolShellResult.svelte';
 	import ToolSkillResult from '$lib/ToolSkillResult.svelte';
 	import ToolMcpResult from '$lib/ToolMcpResult.svelte';
+	import ToolNestedReviewResult from '$lib/ToolNestedReviewResult.svelte';
 
 	type TerminalToolRunStatus = Extract<ToolRunStatus, 'completed' | 'failed' | 'cancelled'>;
 
@@ -606,7 +607,17 @@
 							{kind}
 							{liveStreaming}
 							sessionId={sessionId ?? null}
-							sourceStepId={messageId}
+							sourceStepId={result?.sandboxOutputReviewStepIds?.[0] ?? messageId}
+							failed={failedWithoutOutput}
+						/>
+					{:else if toolName === 'codemode_run' || toolName === 'workflow_run'}
+						<ToolNestedReviewResult
+							{data}
+							{rawText}
+							{kind}
+							{liveStreaming}
+							sessionId={sessionId ?? null}
+							reviewStepIds={result?.sandboxOutputReviewStepIds ?? []}
 							failed={failedWithoutOutput}
 						/>
 					{:else if failedWithoutOutput}
