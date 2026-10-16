@@ -39,6 +39,89 @@ pub struct WindowsContainerWorkspaceInput {
     source: DirectoryCapability,
 }
 
+/// Bounded stdout/stderr retained after the provider drains the guest pipes.
+pub struct WindowsContainerCapturedOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+}
+
+impl WindowsContainerCapturedOutput {
+    pub fn stdout(&self) -> &[u8] {
+        &self.stdout
+    }
+
+    pub fn stderr(&self) -> &[u8] {
+        &self.stderr
+    }
+
+    pub fn stdout_truncated(&self) -> bool {
+        self.stdout_truncated
+    }
+
+    pub fn stderr_truncated(&self) -> bool {
+        self.stderr_truncated
+    }
+}
+
+/// Enforces per-stream output ceilings before retaining or publishing bytes.
+/// Providers must keep draining guest pipes after this sink truncates output.
+pub struct WindowsContainerOutputSink<'a> {
+    output: WindowsContainerCapturedOutput,
+    max_stdout_bytes: usize,
+    max_stderr_bytes: usize,
+    on_output: &'a mut dyn FnMut(WindowsContainerOutputStream, &[u8]),
+}
+
+impl<'a> WindowsContainerOutputSink<'a> {
+    pub fn new(
+        request: &WindowsContainerExecutionRequest,
+        on_output: &'a mut dyn FnMut(WindowsContainerOutputStream, &[u8]),
+    ) -> Self {
+        Self {
+            output: WindowsContainerCapturedOutput {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+            },
+            max_stdout_bytes: request.limits.max_stdout_bytes,
+            max_stderr_bytes: request.limits.max_stderr_bytes,
+            on_output,
+        }
+    }
+
+    /// Retain and publish only bytes remaining under the selected stream's
+    /// cap. Excess bytes are discarded and mark the final stream truncated.
+    pub fn write_chunk(&mut self, stream: WindowsContainerOutputStream, bytes: &[u8]) {
+        let (retained, truncated, maximum) = match stream {
+            WindowsContainerOutputStream::Stdout => (
+                &mut self.output.stdout,
+                &mut self.output.stdout_truncated,
+                self.max_stdout_bytes,
+            ),
+            WindowsContainerOutputStream::Stderr => (
+                &mut self.output.stderr,
+                &mut self.output.stderr_truncated,
+                self.max_stderr_bytes,
+            ),
+        };
+        let retained_bytes = bytes.len().min(maximum.saturating_sub(retained.len()));
+        if retained_bytes < bytes.len() {
+            *truncated = true;
+        }
+        if retained_bytes > 0 {
+            retained.extend_from_slice(&bytes[..retained_bytes]);
+            (self.on_output)(stream, &bytes[..retained_bytes]);
+        }
+    }
+
+    pub fn finish(self) -> WindowsContainerCapturedOutput {
+        self.output
+    }
+}
+
 impl WindowsContainerWorkspaceInput {
     pub fn new(source: DirectoryCapability) -> Self {
         Self { source }
@@ -210,23 +293,18 @@ pub struct WindowsContainerExecutionResult {
 }
 
 impl WindowsContainerExecutionResult {
-    /// Build a result after the provider has drained the guest process tree
-    /// and enforced the request limits while receiving output.
+    /// Build a result after the provider has drained the guest process tree.
     pub fn new(
         exit_code: u32,
-        stdout: Vec<u8>,
-        stderr: Vec<u8>,
+        output: WindowsContainerCapturedOutput,
         output_review: SandboxOutputReview,
-        request: &WindowsContainerExecutionRequest,
     ) -> Self {
-        let (stdout, stdout_truncated) = truncate_output(stdout, request.limits.max_stdout_bytes);
-        let (stderr, stderr_truncated) = truncate_output(stderr, request.limits.max_stderr_bytes);
         Self {
             exit_code,
-            stdout,
-            stderr,
-            stdout_truncated,
-            stderr_truncated,
+            stdout: output.stdout,
+            stderr: output.stderr,
+            stdout_truncated: output.stdout_truncated,
+            stderr_truncated: output.stderr_truncated,
             output_review,
         }
     }
@@ -267,17 +345,17 @@ impl WindowsContainerExecutionResult {
 /// workspace root is hidden behind `WindowsContainerWorkspaceInput`; only a
 /// bounded copy can be made into private staging. Absolute paths must never
 /// cross broker IPC. Output callbacks must never receive more than the
-/// request's per-stream limit. Implementations must count bytes before
-/// forwarding a chunk and fail the execution if the limit would be exceeded.
-/// `Err` on cancellation, timeout, staging failure, or unproven quota always
-/// fails the execution.
+/// request's per-stream limit; the provided output sink enforces this before
+/// retaining or forwarding bytes. Providers must keep draining pipes after
+/// truncation. `Err` on cancellation, timeout, staging failure, or unproven
+/// quota always fails the execution.
 pub trait WindowsContainerExecutionPort: private::Sealed + Send + Sync {
     fn execute(
         &self,
         request: &WindowsContainerExecutionRequest,
         workspace: &WindowsContainerWorkspaceInput,
         is_cancelled: &mut dyn FnMut() -> bool,
-        on_output: &mut dyn FnMut(WindowsContainerOutputStream, &[u8]),
+        output: WindowsContainerOutputSink<'_>,
     ) -> io::Result<WindowsContainerExecutionResult>;
 }
 
@@ -285,12 +363,6 @@ pub trait WindowsContainerExecutionPort: private::Sealed + Send + Sync {
 // consume the port but cannot install an arbitrary implementation.
 mod private {
     pub trait Sealed {}
-}
-
-fn truncate_output(mut output: Vec<u8>, limit: usize) -> (Vec<u8>, bool) {
-    let truncated = output.len() > limit;
-    output.truncate(limit);
-    (output, truncated)
 }
 
 fn validate_relative_working_directory(path: &Path) -> io::Result<()> {
@@ -345,7 +417,7 @@ mod tests {
             request: &WindowsContainerExecutionRequest,
             _workspace: &WindowsContainerWorkspaceInput,
             is_cancelled: &mut dyn FnMut() -> bool,
-            on_output: &mut dyn FnMut(WindowsContainerOutputStream, &[u8]),
+            mut output: WindowsContainerOutputSink<'_>,
         ) -> io::Result<WindowsContainerExecutionResult> {
             if is_cancelled() {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
@@ -361,13 +433,15 @@ mod tests {
                 policy_revision: request.policy_revision,
                 storage_quota_bytes: request.limits.storage_quota_bytes,
             });
-            on_output(WindowsContainerOutputStream::Stdout, b"mock out");
+            output.write_chunk(
+                WindowsContainerOutputStream::Stdout,
+                b"mock output exceeds cap",
+            );
+            output.write_chunk(WindowsContainerOutputStream::Stderr, b"mock error");
             Ok(WindowsContainerExecutionResult::new(
                 0,
-                b"mock output exceeds cap".to_vec(),
-                b"mock error".to_vec(),
+                output.finish(),
                 SandboxOutputReview::new(Box::new(MockReviewWorkspace), Default::default()),
-                request,
             ))
         }
     }
@@ -406,13 +480,20 @@ mod tests {
     }
 
     fn test_limits(max_stdout_bytes: usize) -> io::Result<WindowsContainerExecutionLimits> {
+        test_limits_with_output(max_stdout_bytes, 64 * 1024)
+    }
+
+    fn test_limits_with_output(
+        max_stdout_bytes: usize,
+        max_stderr_bytes: usize,
+    ) -> io::Result<WindowsContainerExecutionLimits> {
         let copy = DirectoryTreeCopyLimits::new(64, 8, 64 * 1024, 256 * 1024).unwrap();
         let diff = DirectoryTreeDiffLimits::new(copy, 64, 16 * 1024, 64 * 1024).unwrap();
         WindowsContainerExecutionLimits::new(
             1024 * 1024,
             Duration::from_secs(30),
             max_stdout_bytes,
-            64 * 1024,
+            max_stderr_bytes,
             copy,
             diff,
         )
@@ -435,15 +516,16 @@ mod tests {
         let port = MockExecutionPort::default();
         let output_events = Arc::new(Mutex::new(Vec::new()));
         let received_events = Arc::clone(&output_events);
-        let mut sink = move |stream, bytes: &[u8]| {
+        let mut on_output = move |stream, bytes: &[u8]| {
             received_events
                 .lock()
                 .unwrap()
                 .push((stream, bytes.to_vec()));
         };
+        let sink = WindowsContainerOutputSink::new(&request, &mut on_output);
         let mut cancelled = || false;
         let result = port
-            .execute(&request, &workspace, &mut cancelled, &mut sink)
+            .execute(&request, &workspace, &mut cancelled, sink)
             .unwrap();
 
         assert_eq!(
@@ -464,7 +546,10 @@ mod tests {
         assert!(!result.stderr_truncated());
         assert_eq!(
             *output_events.lock().unwrap(),
-            vec![(WindowsContainerOutputStream::Stdout, b"mock out".to_vec())]
+            vec![
+                (WindowsContainerOutputStream::Stdout, b"mock out".to_vec()),
+                (WindowsContainerOutputStream::Stderr, b"mock error".to_vec()),
+            ]
         );
         assert!(result.output_review().manifest().changes.is_empty());
     }
@@ -537,15 +622,56 @@ mod tests {
         .unwrap();
         let port = MockExecutionPort::default();
         let mut cancelled = || true;
-        let mut sink = |_: WindowsContainerOutputStream, _: &[u8]| {};
+        let mut on_output = |_: WindowsContainerOutputStream, _: &[u8]| {};
+        let sink = WindowsContainerOutputSink::new(&request, &mut on_output);
 
-        let error = match port.execute(&request, &workspace, &mut cancelled, &mut sink) {
+        let error = match port.execute(&request, &workspace, &mut cancelled, sink) {
             Ok(_) => panic!("cancelled execution unexpectedly succeeded"),
             Err(error) => error,
         };
 
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert!(port.recorded.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn output_sink_caps_retained_and_live_bytes_per_stream() {
+        let request = WindowsContainerExecutionRequest::new(
+            WindowsContainerShell::Cmd,
+            "echo hi",
+            "",
+            1,
+            1,
+            test_limits_with_output(4, 4).unwrap(),
+        )
+        .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let received_events = Arc::clone(&events);
+        let mut on_output = move |stream, bytes: &[u8]| {
+            received_events
+                .lock()
+                .unwrap()
+                .push((stream, bytes.to_vec()));
+        };
+        let mut sink = WindowsContainerOutputSink::new(&request, &mut on_output);
+
+        sink.write_chunk(WindowsContainerOutputStream::Stdout, b"abc");
+        sink.write_chunk(WindowsContainerOutputStream::Stdout, b"def");
+        sink.write_chunk(WindowsContainerOutputStream::Stderr, b"123456");
+        let captured = sink.finish();
+
+        assert_eq!(captured.stdout(), b"abcd");
+        assert!(captured.stdout_truncated());
+        assert_eq!(captured.stderr(), b"1234");
+        assert!(captured.stderr_truncated());
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                (WindowsContainerOutputStream::Stdout, b"abc".to_vec()),
+                (WindowsContainerOutputStream::Stdout, b"d".to_vec()),
+                (WindowsContainerOutputStream::Stderr, b"1234".to_vec()),
+            ]
+        );
     }
 
     #[test]

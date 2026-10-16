@@ -1212,3 +1212,4 @@
 - [1222：将 sandbox 输出 review 抽象为后端中立 owner](1222-generalize-sandbox-output-review.md)
 - [1223：定义 typed Windows Container 执行端口](1223-typed-windows-container-execution-port.md)
 - [1224：不向容器 provider 暴露 workspace 根路径](1224-hide-workspace-roots-from-container-provider.md)
+- [1225：在容器执行端口处限制输出](1225-bound-container-output-at-the-port.md)
