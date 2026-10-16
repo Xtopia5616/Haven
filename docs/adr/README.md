@@ -1205,3 +1205,4 @@
 - [1215：收窄 Windows Container 配额后端的适用范围](1215-limit-windows-container-quota-backend-scope.md)
 - [1216：收窄 MCP stdio 进程的撤销范围](1216-scope-mcp-stdio-process-revocation.md)
 - [1217：按受影响工具收窄进程设置撤销](1217-scope-process-revocation-to-changed-tool-settings.md)
+- [1218：按 session 收窄 trust 撤销的进程范围](1218-scope-process-revocation-to-session-trust.md)

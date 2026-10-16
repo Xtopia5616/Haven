@@ -582,14 +582,14 @@ struct SafetyConfig {
 ///
 /// The engine owns policy evaluation; callers never decide based on a
 /// frontend-provided `confirmed` flag. Hard safety boundaries run before
-/// grants, deny rules always win, and a policy change invalidates session
-/// trust. The API describes authorization rather than a vague security
-/// perimeter.
+/// grants and deny rules always win. Policy revisions invalidate stale proofs;
+/// process revocation follows global, tool-setting or session-trust scope.
 pub struct AuthorizationEngine {
     config: Arc<RwLock<SafetyConfig>>,
     process_revocations: tokio::sync::watch::Sender<Arc<()>>,
     process_boundary_changes: tokio::sync::watch::Sender<Arc<()>>,
     tool_processes: Mutex<HashMap<String, Vec<Weak<CancellationToken>>>>,
+    session_processes: Mutex<HashMap<String, Vec<Weak<CancellationToken>>>>,
 }
 
 /// Short-lived side-effect capability derived from one proof-verified tool
@@ -604,6 +604,7 @@ pub(crate) struct ExecutionPolicyAuthorization {
     expires_at: u64,
     process_revocation_signal: Arc<()>,
     tool_settings_cancellation: Arc<CancellationToken>,
+    session_trust_cancellation: Arc<CancellationToken>,
 }
 
 /// Current process-boundary snapshot for a manager-owned MCP stdio client
@@ -663,12 +664,16 @@ impl ExecutionPolicyAuthorization {
             if self.tool_settings_cancellation.is_cancelled() {
                 return;
             }
+            if self.session_trust_cancellation.is_cancelled() {
+                return;
+            }
             let current = changes.borrow_and_update().clone();
             if !Arc::ptr_eq(&current, &self.process_revocation_signal) {
                 return;
             }
             tokio::select! {
                 _ = self.tool_settings_cancellation.cancelled() => return,
+                _ = self.session_trust_cancellation.cancelled() => return,
                 changed = changes.changed() => {
                     if changed.is_err() {
                         return;
@@ -695,9 +700,20 @@ impl ExecutionPolicyAuthorization {
         authorization: Arc<AuthorizationEngine>,
         tool_name: &str,
     ) -> Self {
+        Self::for_test_with_engine_tool_and_session(authorization, tool_name, None)
+    }
+
+    #[cfg(test)]
+    fn for_test_with_engine_tool_and_session(
+        authorization: Arc<AuthorizationEngine>,
+        tool_name: &str,
+        session_id: Option<&str>,
+    ) -> Self {
         let process_revocation_signal = authorization.process_revocations.borrow().clone();
         let tool_settings_cancellation =
             authorization.register_tool_settings_cancellation(tool_name);
+        let session_trust_cancellation =
+            authorization.register_session_trust_cancellation(session_id);
         Self {
             authorization,
             policy_revision: 0,
@@ -705,6 +721,7 @@ impl ExecutionPolicyAuthorization {
             expires_at: execution_proof_expiry(),
             process_revocation_signal,
             tool_settings_cancellation,
+            session_trust_cancellation,
         }
     }
 }
@@ -909,11 +926,12 @@ impl AuthorizationEngine {
             process_revocations,
             process_boundary_changes,
             tool_processes: Mutex::new(HashMap::new()),
+            session_processes: Mutex::new(HashMap::new()),
         }
     }
 
-    fn bump_policy_revision(&self, cfg: &mut SafetyConfig) {
-        bump_policy_revision(cfg);
+    fn bump_global_policy_revision(&self, cfg: &mut SafetyConfig) {
+        advance_policy_revision(cfg);
         self.process_revocations.send_replace(Arc::new(()));
     }
 
@@ -946,6 +964,29 @@ impl AuthorizationEngine {
         cancellation
     }
 
+    fn register_session_trust_cancellation(
+        &self,
+        session_id: Option<&str>,
+    ) -> Arc<CancellationToken> {
+        let cancellation = Arc::new(CancellationToken::new());
+        let Some(session_id) = session_id else {
+            return cancellation;
+        };
+        let mut session_processes = self
+            .session_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        session_processes.retain(|_, processes| {
+            processes.retain(|process| process.strong_count() > 0);
+            !processes.is_empty()
+        });
+        session_processes
+            .entry(session_id.to_string())
+            .or_default()
+            .push(Arc::downgrade(&cancellation));
+        cancellation
+    }
+
     fn cancel_tool_settings_processes(&self, changed_tool_names: &HashSet<String>) {
         if changed_tool_names.is_empty() {
             return;
@@ -967,6 +1008,20 @@ impl AuthorizationEngine {
             });
         }
         tool_processes.retain(|_, processes| !processes.is_empty());
+    }
+
+    fn cancel_session_processes(&self, session_id: &str) {
+        let mut session_processes = self
+            .session_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(processes) = session_processes.remove(session_id) {
+            for process in processes {
+                if let Some(process) = process.upgrade() {
+                    process.cancel();
+                }
+            }
+        }
     }
 
     pub(crate) async fn capture_mcp_stdio_process_start_authorization(
@@ -1012,7 +1067,7 @@ impl AuthorizationEngine {
             .ok_or_else(|| "workspace generation is exhausted".to_string())?;
         cfg.execution_workspace = candidate.with_generation(generation);
         self.bump_process_boundary_revision(&mut cfg);
-        self.bump_policy_revision(&mut cfg);
+        self.bump_global_policy_revision(&mut cfg);
         Ok(cfg.execution_workspace.snapshot())
     }
 
@@ -1086,7 +1141,7 @@ impl AuthorizationEngine {
         if process_boundaries_changed {
             self.bump_process_boundary_revision(&mut cfg);
         }
-        self.bump_policy_revision(&mut cfg);
+        self.bump_global_policy_revision(&mut cfg);
         if let Some(error) = workspace_error {
             tracing::warn!(
                 error,
@@ -1102,7 +1157,7 @@ impl AuthorizationEngine {
         let mut cfg = self.config.write().await;
         cfg.permission_mode = mode;
         cfg.session_grants.clear();
-        self.bump_policy_revision(&mut cfg);
+        self.bump_global_policy_revision(&mut cfg);
     }
 
     /// Update the technical boundaries without touching permanent grants.
@@ -1125,7 +1180,7 @@ impl AuthorizationEngine {
         if process_boundaries_changed {
             self.bump_process_boundary_revision(&mut cfg);
         }
-        self.bump_policy_revision(&mut cfg);
+        self.bump_global_policy_revision(&mut cfg);
     }
 
     /// Refresh the live tool_settings mirror used by path/op/risk overrides.
@@ -1139,7 +1194,7 @@ impl AuthorizationEngine {
             .cloned()
             .collect::<HashSet<_>>();
         cfg.tool_settings = settings;
-        bump_policy_revision(&mut cfg);
+        advance_policy_revision(&mut cfg);
         self.cancel_tool_settings_processes(&changed_tool_names);
     }
 
@@ -1242,6 +1297,8 @@ impl AuthorizationEngine {
         };
         let tool_settings_cancellation =
             self.register_tool_settings_cancellation(&request.tool_name);
+        let session_trust_cancellation =
+            self.register_session_trust_cancellation(proof.binding.session_id.as_deref());
 
         Ok(ToolExecutionContext {
             execution_workspace: Some(cfg.execution_workspace.clone()),
@@ -1253,6 +1310,7 @@ impl AuthorizationEngine {
                 expires_at: proof.binding.expires_at,
                 process_revocation_signal: self.process_revocations.borrow().clone(),
                 tool_settings_cancellation,
+                session_trust_cancellation,
             }),
         })
     }
@@ -1643,7 +1701,7 @@ impl AuthorizationEngine {
         let mut cfg = self.config.write().await;
         let removed_permanent = cfg.permanent.remove(&capability).is_some();
         if removed_permanent {
-            self.bump_policy_revision(&mut cfg);
+            self.bump_global_policy_revision(&mut cfg);
         }
         removed_permanent
     }
@@ -1667,7 +1725,8 @@ impl AuthorizationEngine {
             cfg.session_grants.remove(session_id);
         }
         if removed {
-            self.bump_policy_revision(&mut cfg);
+            advance_policy_revision(&mut cfg);
+            self.cancel_session_processes(session_id);
         }
         removed
     }
@@ -1679,7 +1738,7 @@ impl AuthorizationEngine {
         let removed = cfg.permanent.len();
         cfg.permanent.clear();
         if removed > 0 {
-            self.bump_policy_revision(&mut cfg);
+            self.bump_global_policy_revision(&mut cfg);
         }
         removed
     }
@@ -1689,7 +1748,8 @@ impl AuthorizationEngine {
     pub async fn clear_session_trust(&self, session_id: &str) {
         let mut cfg = self.config.write().await;
         if cfg.session_grants.remove(session_id).is_some() {
-            self.bump_policy_revision(&mut cfg);
+            advance_policy_revision(&mut cfg);
+            self.cancel_session_processes(session_id);
         }
     }
 
@@ -1698,8 +1758,12 @@ impl AuthorizationEngine {
     pub async fn clear_all_trust(&self) {
         let mut cfg = self.config.write().await;
         if !cfg.session_grants.is_empty() {
+            let affected_sessions = cfg.session_grants.keys().cloned().collect::<Vec<_>>();
             cfg.session_grants.clear();
-            self.bump_policy_revision(&mut cfg);
+            advance_policy_revision(&mut cfg);
+            for session_id in affected_sessions {
+                self.cancel_session_processes(&session_id);
+            }
         }
     }
 }
@@ -1821,7 +1885,7 @@ fn tool_setting_names(tool_name: &str) -> impl Iterator<Item = &str> {
     std::iter::once(tool_name).chain(tool_name.split_once('.').map(|(root, _)| root))
 }
 
-fn bump_policy_revision(cfg: &mut SafetyConfig) {
+fn advance_policy_revision(cfg: &mut SafetyConfig) {
     cfg.policy_revision = cfg.policy_revision.saturating_add(1);
 }
 
@@ -2256,6 +2320,30 @@ mod tests {
         }
     }
 
+    async fn execution_authorization_for_session(
+        authorization: Arc<AuthorizationEngine>,
+        session_id: &str,
+    ) -> ExecutionPolicyAuthorization {
+        let input = json!({});
+        let request = AuthorizationRequest::new(
+            Some(session_id),
+            "ask",
+            input.clone(),
+            fixture_policy("ask", &input, RiskLevel::Safe),
+        );
+        let proof = authorization
+            .authorize_for_execution(&request)
+            .await
+            .execution_proof
+            .expect("the safe ask operation should receive an execution proof");
+        authorization
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .expect("the execution context should be derived from the proof")
+            .execution_authorization
+            .expect("the execution context should carry live authorization")
+    }
+
     async fn authorize(
         engine: &AuthorizationEngine,
         session_id: Option<&str>,
@@ -2494,6 +2582,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_trust_revocation_stops_only_processes_for_affected_sessions() {
+        let engine = Arc::new(AuthorizationEngine::new());
+        let ask_capability = capability_scope!("ask");
+        engine
+            .grant(
+                Some("session-one"),
+                ask_capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Session,
+            )
+            .await;
+        engine
+            .grant(
+                Some("session-two"),
+                ask_capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Session,
+            )
+            .await;
+        engine
+            .grant(
+                Some("session-four"),
+                ask_capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Session,
+            )
+            .await;
+
+        let session_one =
+            execution_authorization_for_session(Arc::clone(&engine), "session-one").await;
+        let session_two =
+            execution_authorization_for_session(Arc::clone(&engine), "session-two").await;
+        let session_four =
+            execution_authorization_for_session(Arc::clone(&engine), "session-four").await;
+        let no_trust_session =
+            execution_authorization_for_session(Arc::clone(&engine), "session-three").await;
+        let session_two_stale_proof = session_two.clone();
+        let mut session_one_waiter = tokio::spawn(async move {
+            session_one.wait_for_policy_revocation().await;
+        });
+        let mut session_two_waiter = tokio::spawn(async move {
+            session_two.wait_for_policy_revocation().await;
+        });
+        let mut session_four_waiter = tokio::spawn(async move {
+            session_four.wait_for_policy_revocation().await;
+        });
+        let mut no_trust_waiter = tokio::spawn(async move {
+            no_trust_session.wait_for_policy_revocation().await;
+        });
+
+        assert!(
+            engine
+                .revoke_session_grant("session-one", &ask_capability)
+                .await,
+            "the existing session grant should be removed"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(1), &mut session_one_waiter)
+            .await
+            .expect("the process owned by the revoked session should stop")
+            .expect("session-one watcher should not panic");
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                &mut session_two_waiter
+            )
+            .await
+            .is_err(),
+            "revoking one session must not stop a different session"
+        );
+        assert!(
+            session_two_stale_proof.acquire().await.is_err(),
+            "the global revision must still reject another session's old proof"
+        );
+
+        engine.clear_session_trust("session-two").await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), &mut session_two_waiter)
+            .await
+            .expect("clearing one session's trust should stop that session's process")
+            .expect("session-two watcher should not panic");
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                &mut session_four_waiter
+            )
+            .await
+            .is_err(),
+            "clearing one session must not stop another session's process"
+        );
+
+        engine.clear_all_trust().await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), &mut session_four_waiter)
+            .await
+            .expect("clear-all trust should stop processes from sessions with removed grants")
+            .expect("session-four watcher should not panic");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut no_trust_waiter)
+                .await
+                .is_err(),
+            "clear-all trust should not stop a session that had no trust grant"
+        );
+
+        engine.set_permission_mode(PermissionMode::Plan).await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), no_trust_waiter)
+            .await
+            .expect("global mode changes should still stop every proof-bound process")
+            .expect("session-three watcher should not panic");
+    }
+
+    #[tokio::test]
     async fn tool_settings_update_does_not_publish_global_process_revocation() {
         let engine = Arc::new(AuthorizationEngine::new());
         let mut process_revocations = engine.process_revocations.subscribe();
@@ -2599,17 +2796,24 @@ mod tests {
     }
 
     #[test]
-    fn tool_settings_cancellation_registry_prunes_expired_tool_names() {
+    fn execution_cancellation_registry_prunes_expired_identities() {
         let engine = Arc::new(AuthorizationEngine::new());
         let expired = ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
             Arc::clone(&engine),
             "retired.tool",
         );
         drop(expired);
+        let expired_session = ExecutionPolicyAuthorization::for_test_with_engine_tool_and_session(
+            Arc::clone(&engine),
+            "retired.session.tool",
+            Some("session-retired"),
+        );
+        drop(expired_session);
 
-        let _active = ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
+        let _active = ExecutionPolicyAuthorization::for_test_with_engine_tool_and_session(
             Arc::clone(&engine),
             "current.tool",
+            Some("session-current"),
         );
 
         let processes = engine
@@ -2619,6 +2823,15 @@ mod tests {
         assert!(
             !processes.contains_key("retired.tool") && !processes.contains_key("retired"),
             "inactive tool aliases should not accumulate in the registry"
+        );
+        drop(processes);
+        let session_processes = engine
+            .session_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            !session_processes.contains_key("session-retired"),
+            "inactive session identities should not accumulate in the registry"
         );
     }
 
