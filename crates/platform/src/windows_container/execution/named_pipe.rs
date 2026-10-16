@@ -63,6 +63,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 const BROKER_PIPE_NAME: &str = r"\\.\pipe\Haven.ContainerBroker.v4";
+const MCP_SESSION_PIPE_PREFIX: &str = r"\\.\pipe\Haven.ContainerBroker.McpSession.";
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const MAX_HANDSHAKE_BODY_BYTES: usize = 1_024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -247,6 +248,7 @@ impl BrokerPeerIdentity {
 pub(crate) struct BrokerPipeListener {
     handle: HANDLE,
     policy: BrokerPeerPolicy,
+    mcp_session_id: Option<[u8; 16]>,
 }
 
 impl BrokerPipeListener {
@@ -255,7 +257,31 @@ impl BrokerPipeListener {
         Self::create(BROKER_PIPE_NAME, policy)
     }
 
+    /// Create an authenticated single-instance pipe for one broker-minted
+    /// MCP generation. The ID is never accepted from the interactive client.
+    #[allow(dead_code)] // Consumed by the supervised broker MCP session owner.
+    pub(crate) fn new_mcp_session(
+        policy: BrokerPeerPolicy,
+        session_id: [u8; 16],
+    ) -> io::Result<Self> {
+        verify_current_service_identity(&policy.service_sid)?;
+        Self::create_mcp_session(policy, session_id)
+    }
+
     fn create(name: &str, policy: BrokerPeerPolicy) -> io::Result<Self> {
+        Self::create_with_session(name, policy, None)
+    }
+
+    fn create_mcp_session(policy: BrokerPeerPolicy, session_id: [u8; 16]) -> io::Result<Self> {
+        let name = mcp_session_pipe_name(session_id)?;
+        Self::create_with_session(&name, policy, Some(session_id))
+    }
+
+    fn create_with_session(
+        name: &str,
+        policy: BrokerPeerPolicy,
+        mcp_session_id: Option<[u8; 16]>,
+    ) -> io::Result<Self> {
         let name = wide_null(name);
         let security = PipeSecurityDescriptor::for_policy(&policy)?;
         let attributes = SECURITY_ATTRIBUTES {
@@ -278,7 +304,11 @@ impl BrokerPipeListener {
         if handle == INVALID_HANDLE_VALUE || handle.is_null() {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { handle, policy })
+        Ok(Self {
+            handle,
+            policy,
+            mcp_session_id,
+        })
     }
 
     /// Wait for a client, require its Hello, authenticate its impersonation
@@ -312,6 +342,32 @@ impl BrokerPipeListener {
                 unsafe { DisconnectNamedPipe(self.handle) };
                 Err(error)
             }
+        }
+    }
+
+    /// Accept only the attach that matches this listener's broker-minted
+    /// session ID and the control-pipe request that created it.
+    #[allow(dead_code)] // Consumed by the supervised broker MCP session owner.
+    pub(crate) fn accept_mcp_session<'a>(
+        &'a mut self,
+        cancellation: &'a BrokerPipeCancellation,
+        request_id: [u8; 16],
+        session_id: [u8; 16],
+    ) -> io::Result<BrokerPipeConnection<'a>> {
+        if request_id == [0; 16] || self.mcp_session_id != Some(session_id) {
+            return Err(invalid_input("MCP session attach identity is invalid"));
+        }
+        let connection = self.accept(cancellation)?;
+        match connection.read_frame(HANDSHAKE_TIMEOUT)?.decode_control()? {
+            BrokerControlMessage::McpSessionAttach {
+                request_id: attached_request_id,
+                session_id: attached_session_id,
+            } if attached_request_id == request_id && attached_session_id == session_id => {
+                Ok(connection)
+            }
+            _ => Err(permission_denied(
+                "MCP session attach does not match the broker-issued identity",
+            )),
         }
     }
 
@@ -451,13 +507,48 @@ impl BrokerPipeClient {
     ) -> io::Result<Self> {
         let current = current_process_identity()?;
         policy.authorize(&current)?;
-        let handle = connect_client_pipe(BROKER_PIPE_NAME)?;
+        Self::connect_named(BROKER_PIPE_NAME, cancellation, true)
+    }
+
+    /// Connect to a pipe derived from the broker-issued session ID, complete
+    /// the normal authenticated Hello, then bind the pipe to its open request.
+    #[allow(dead_code)] // Consumed by the MCP transport broker launcher.
+    pub(crate) fn connect_mcp_session(
+        policy: &BrokerClientPolicy,
+        request_id: [u8; 16],
+        session_id: [u8; 16],
+        cancellation: BrokerPipeCancellation,
+    ) -> io::Result<Self> {
+        if request_id == [0; 16] {
+            return Err(invalid_input("MCP session request ID is invalid"));
+        }
+        let current = current_process_identity()?;
+        policy.authorize(&current)?;
+        let name = mcp_session_pipe_name(session_id)?;
+        let mut client = Self::connect_named(&name, cancellation, true)?;
+        client.write_frame(
+            &BrokerFrame::control(&BrokerControlMessage::McpSessionAttach {
+                request_id,
+                session_id,
+            })?,
+            HANDSHAKE_TIMEOUT,
+        )?;
+        Ok(client)
+    }
+
+    fn connect_named(
+        name: &str,
+        cancellation: BrokerPipeCancellation,
+        verify_server: bool,
+    ) -> io::Result<Self> {
+        let handle = connect_client_pipe(name)?;
         let mut client = Self {
             handle,
             cancellation,
         };
-        verify_pipe_server(handle)?;
-
+        if verify_server {
+            verify_pipe_server(handle)?;
+        }
         client.write_frame(
             &BrokerFrame::control(&BrokerControlMessage::Hello {
                 minimum_version: BROKER_PROTOCOL_VERSION,
@@ -488,28 +579,25 @@ impl BrokerPipeClient {
         name: &str,
         cancellation: BrokerPipeCancellation,
     ) -> io::Result<Self> {
-        let handle = connect_client_pipe(name)?;
-        let mut client = Self {
-            handle,
-            cancellation,
-        };
+        Self::connect_named(name, cancellation, false)
+    }
+
+    #[cfg(test)]
+    fn connect_mcp_session_for_test(
+        pipe_session_id: [u8; 16],
+        request_id: [u8; 16],
+        attached_session_id: [u8; 16],
+    ) -> io::Result<Self> {
+        let name = mcp_session_pipe_name(pipe_session_id)?;
+        let mut client = Self::connect_named(&name, BrokerPipeCancellation::new()?, false)?;
         client.write_frame(
-            &BrokerFrame::control(&BrokerControlMessage::Hello {
-                minimum_version: BROKER_PROTOCOL_VERSION,
-                maximum_version: BROKER_PROTOCOL_VERSION,
+            &BrokerFrame::control(&BrokerControlMessage::McpSessionAttach {
+                request_id,
+                session_id: attached_session_id,
             })?,
             HANDSHAKE_TIMEOUT,
         )?;
-        match client.read_frame(HANDSHAKE_TIMEOUT)?.decode_control()? {
-            BrokerControlMessage::HelloAccepted { selected_version }
-                if selected_version == BROKER_PROTOCOL_VERSION =>
-            {
-                Ok(client)
-            }
-            _ => Err(permission_denied(
-                "test broker did not accept the protocol session",
-            )),
-        }
+        Ok(client)
     }
 }
 
@@ -918,6 +1006,19 @@ fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+fn mcp_session_pipe_name(session_id: [u8; 16]) -> io::Result<String> {
+    if session_id == [0; 16] {
+        return Err(invalid_input("MCP session ID is invalid"));
+    }
+    let mut name = String::with_capacity(MCP_SESSION_PIPE_PREFIX.len() + 32);
+    name.push_str(MCP_SESSION_PIPE_PREFIX);
+    for byte in session_id {
+        use std::fmt::Write as _;
+        write!(&mut name, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    Ok(name)
+}
+
 fn invalid_data(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -989,6 +1090,116 @@ mod tests {
     #[test]
     fn named_pipe_rejects_peer_with_wrong_user_after_bounded_hello() {
         run_pipe_handshake_test(true);
+    }
+
+    #[test]
+    fn mcp_session_pipe_name_uses_the_canonical_broker_session_id() {
+        let session_id = [0xabu8; 16];
+        assert_eq!(
+            mcp_session_pipe_name(session_id).unwrap(),
+            format!("{MCP_SESSION_PIPE_PREFIX}{}", "ab".repeat(16))
+        );
+        assert_eq!(
+            mcp_session_pipe_name([0; 16]).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn mcp_session_pipe_authenticates_and_binds_the_attach_pair() {
+        let session_id = uuid::Uuid::new_v4().into_bytes();
+        let request_id = uuid::Uuid::new_v4().into_bytes();
+        run_mcp_session_attach_test(session_id, request_id, request_id, session_id, true);
+    }
+
+    #[test]
+    fn mcp_session_pipe_rejects_a_different_open_request_id() {
+        let session_id = uuid::Uuid::new_v4().into_bytes();
+        let expected_request_id = uuid::Uuid::new_v4().into_bytes();
+        let attached_request_id = uuid::Uuid::new_v4().into_bytes();
+        run_mcp_session_attach_test(
+            session_id,
+            expected_request_id,
+            attached_request_id,
+            session_id,
+            false,
+        );
+    }
+
+    #[test]
+    fn mcp_session_pipe_rejects_a_different_session_id() {
+        let session_id = uuid::Uuid::new_v4().into_bytes();
+        let request_id = uuid::Uuid::new_v4().into_bytes();
+        let attached_session_id = uuid::Uuid::new_v4().into_bytes();
+        run_mcp_session_attach_test(
+            session_id,
+            request_id,
+            request_id,
+            attached_session_id,
+            false,
+        );
+    }
+
+    fn run_mcp_session_attach_test(
+        session_id: [u8; 16],
+        expected_request_id: [u8; 16],
+        attached_request_id: [u8; 16],
+        attached_session_id: [u8; 16],
+        expect_accept: bool,
+    ) {
+        let current = current_process_identity().unwrap();
+        let policy = BrokerPeerPolicy::new(
+            current.user_sid.clone(),
+            current.logon_sid,
+            current.session_id,
+            current.user_sid,
+        )
+        .unwrap();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (read_sender, read_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || -> io::Result<bool> {
+            let mut listener = BrokerPipeListener::create_mcp_session(policy, session_id)?;
+            let cancellation = BrokerPipeCancellation::new()?;
+            ready_sender.send(()).unwrap();
+            match listener.accept_mcp_session(&cancellation, expected_request_id, session_id) {
+                Ok(connection) => {
+                    connection.write_frame(
+                        &BrokerFrame::control(&BrokerControlMessage::McpSessionReady {
+                            request_id: expected_request_id,
+                            session_id,
+                        })?,
+                        Duration::from_secs(5),
+                    )?;
+                    read_receiver.recv().unwrap();
+                    Ok(true)
+                }
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Ok(false),
+                Err(error) => Err(error),
+            }
+        });
+        ready_receiver.recv().unwrap();
+
+        let mut client = BrokerPipeClient::connect_mcp_session_for_test(
+            session_id,
+            attached_request_id,
+            attached_session_id,
+        )
+        .unwrap();
+        if expect_accept {
+            assert!(matches!(
+                client
+                    .read_frame(Duration::from_secs(5))
+                    .unwrap()
+                    .decode_control()
+                    .unwrap(),
+                BrokerControlMessage::McpSessionReady {
+                    request_id,
+                    session_id: ready_session_id,
+                } if request_id == expected_request_id && ready_session_id == session_id
+            ));
+            read_sender.send(()).unwrap();
+        }
+        assert_eq!(server.join().unwrap().unwrap(), expect_accept);
     }
 
     #[test]
