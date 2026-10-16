@@ -11,13 +11,15 @@ use crate::transport::{
     HttpInner, HttpShared, McpClientInner, NOTIFICATION_QUEUE_CAPACITY, StdioInner,
     ToolsListChangedSignal, http_is_alive, spawn_sse_listener,
 };
+use crate::{McpStdioLaunchSpec, McpStdioProcess, McpStdioProcessLauncher};
+use futures_util::future::BoxFuture;
 use haven_common::{mcp::McpServerTransport, types::NetworkPolicy};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -49,6 +51,149 @@ fn configure_stdio_server_environment(
         if let Some((key, value)) = entry.split_once('=') {
             command.env(key, value);
         }
+    }
+}
+
+#[cfg(test)]
+mod stdio_launcher_tests {
+    use super::*;
+    use crate::{McpStdioReader, McpStdioWriter};
+    use futures_util::future::BoxFuture;
+    use std::sync::Mutex as StdMutex;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    struct StreamProcess {
+        stdin: Option<McpStdioWriter>,
+        stdout: Option<McpStdioReader>,
+        alive: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl McpStdioProcess for StreamProcess {
+        fn take_stdin(&mut self) -> std::io::Result<McpStdioWriter> {
+            self.stdin
+                .take()
+                .ok_or_else(|| std::io::Error::other("stdin already taken"))
+        }
+
+        fn take_stdout(&mut self) -> std::io::Result<McpStdioReader> {
+            self.stdout
+                .take()
+                .ok_or_else(|| std::io::Error::other("stdout already taken"))
+        }
+
+        fn take_stderr(&mut self) -> std::io::Result<Option<McpStdioReader>> {
+            Ok(None)
+        }
+
+        fn is_alive(&mut self) -> std::io::Result<bool> {
+            Ok(self.alive.load(Ordering::Acquire))
+        }
+
+        fn start_kill(&mut self) -> std::io::Result<()> {
+            self.alive.store(false, Ordering::Release);
+            Ok(())
+        }
+
+        fn wait(&mut self) -> BoxFuture<'_, std::io::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct StreamLauncher {
+        debug_spec: StdMutex<Option<String>>,
+        server_stream: StdMutex<Option<tokio::io::DuplexStream>>,
+        alive: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl McpStdioProcessLauncher for StreamLauncher {
+        fn launch<'a>(
+            &'a self,
+            spec: &'a McpStdioLaunchSpec,
+            permit: Box<dyn crate::McpStdioProcessStartPermit>,
+        ) -> BoxFuture<'a, anyhow::Result<Box<dyn McpStdioProcess>>> {
+            Box::pin(async move {
+                *self
+                    .debug_spec
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("{spec:?}"));
+                let (client_stream, server_stream) = tokio::io::duplex(4096);
+                let (stdout, stdin) = tokio::io::split(client_stream);
+                *self
+                    .server_stream
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(server_stream);
+                self.alive.store(true, Ordering::Release);
+                drop(permit);
+                Ok(Box::new(StreamProcess {
+                    stdin: Some(Box::new(stdin)),
+                    stdout: Some(Box::new(stdout)),
+                    alive: self.alive.clone(),
+                }) as Box<dyn McpStdioProcess>)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn injected_process_stream_uses_the_same_mcp_protocol_and_redacts_launch_data() {
+        let launcher = Arc::new(StreamLauncher {
+            debug_spec: StdMutex::new(None),
+            server_stream: StdMutex::new(None),
+            alive: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        let config = haven_common::config::McpServerConfig {
+            name: "stream-test".into(),
+            command: "sensitive-command".into(),
+            args: vec!["sensitive-argument".into()],
+            env: vec!["TOKEN=sensitive-secret".into()],
+            cwd: Some("C:\\private\\working".into()),
+            ..Default::default()
+        };
+        let client = McpClient::new_managed_with_launcher(
+            &config,
+            1024,
+            1024,
+            Some(Arc::new(TestMcpStdioProcessStartAuthorization)),
+            launcher.clone(),
+        );
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let stdio = client.spawn_stdio(notification_tx).await.unwrap();
+
+        let debug_spec = launcher
+            .debug_spec
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap();
+        assert!(!debug_spec.contains("sensitive-command"));
+        assert!(!debug_spec.contains("sensitive-argument"));
+        assert!(!debug_spec.contains("sensitive-secret"));
+        assert!(!debug_spec.contains("C:\\private\\working"));
+
+        let server_stream = launcher
+            .server_stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .unwrap();
+        let (server_read, mut server_write) = tokio::io::split(server_stream);
+        let server = tokio::spawn(async move {
+            let mut reader = BufReader::new(server_read);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "tools/list");
+            server_write
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n")
+                .await
+                .unwrap();
+        });
+
+        let response = stdio.request(1, "tools/list", None, false).await.unwrap();
+        assert_eq!(response["tools"], serde_json::json!([]));
+        server.await.unwrap();
+        drop(stdio);
+        assert!(!launcher.alive.load(Ordering::Acquire));
     }
 }
 
@@ -145,6 +290,8 @@ pub struct McpClient {
     /// Immutable policy snapshot used by every stdio spawn and reconnect for
     /// this manager-owned client generation.
     stdio_process_authorization: Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>,
+    stdio_launch_spec: McpStdioLaunchSpec,
+    stdio_process_launcher: Arc<dyn McpStdioProcessLauncher>,
 }
 
 pub(crate) struct RateLimiter {
@@ -303,6 +450,126 @@ fn windows_spawn_hint(_command: &str, _e: &std::io::Error) -> String {
     String::new()
 }
 
+pub(crate) fn local_stdio_process_launcher() -> Arc<dyn McpStdioProcessLauncher> {
+    Arc::new(LocalMcpStdioProcessLauncher)
+}
+
+struct LocalMcpStdioProcessLauncher;
+
+struct LocalMcpStdioProcess {
+    child: Child,
+    _containment: haven_platform::process_containment::ProcessContainment,
+    stdin: Option<ChildStdin>,
+    stdout: Option<ChildStdout>,
+    stderr: Option<ChildStderr>,
+}
+
+impl McpStdioProcess for LocalMcpStdioProcess {
+    fn take_stdin(&mut self) -> std::io::Result<crate::McpStdioWriter> {
+        self.stdin
+            .take()
+            .map(|stream| Box::new(stream) as crate::McpStdioWriter)
+            .ok_or_else(|| std::io::Error::other("MCP stdio stdin was already taken"))
+    }
+
+    fn take_stdout(&mut self) -> std::io::Result<crate::McpStdioReader> {
+        self.stdout
+            .take()
+            .map(|stream| Box::new(stream) as crate::McpStdioReader)
+            .ok_or_else(|| std::io::Error::other("MCP stdio stdout was already taken"))
+    }
+
+    fn take_stderr(&mut self) -> std::io::Result<Option<crate::McpStdioReader>> {
+        Ok(self
+            .stderr
+            .take()
+            .map(|stream| Box::new(stream) as crate::McpStdioReader))
+    }
+
+    fn is_alive(&mut self) -> std::io::Result<bool> {
+        self.child.try_wait().map(|status| status.is_none())
+    }
+
+    fn start_kill(&mut self) -> std::io::Result<()> {
+        self.child.start_kill()
+    }
+
+    fn wait(&mut self) -> BoxFuture<'_, std::io::Result<()>> {
+        Box::pin(async move { self.child.wait().await.map(|_| ()) })
+    }
+}
+
+impl McpStdioProcessLauncher for LocalMcpStdioProcessLauncher {
+    fn launch<'a>(
+        &'a self,
+        spec: &'a McpStdioLaunchSpec,
+        permit: Box<dyn crate::McpStdioProcessStartPermit>,
+    ) -> BoxFuture<'a, anyhow::Result<Box<dyn McpStdioProcess>>> {
+        Box::pin(async move {
+            // MCP servers may use relative command/cwd paths from trusted
+            // configuration; this local launcher preserves that behavior.
+            let build = |program: &str, args: &[String]| {
+                let mut command = Command::new(program);
+                command
+                    .args(args)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .kill_on_drop(true);
+                configure_stdio_server_environment(
+                    command.as_std_mut(),
+                    std::env::vars_os(),
+                    spec.environment(),
+                );
+                if let Some(working_directory) = spec.working_directory() {
+                    command.current_dir(working_directory);
+                }
+                command
+            };
+
+            let containment = haven_platform::process_containment::ProcessContainment::new()
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "failed to create process containment for MCP server '{}': {error}",
+                        spec.server_name()
+                    )
+                })?;
+            let child = spawn_mcp_child(
+                spec.server_name(),
+                spec.command(),
+                spec.args(),
+                &build,
+                &containment,
+            )
+            .map_err(|error| {
+                let hint = windows_spawn_hint(spec.command(), &error);
+                anyhow::anyhow!(
+                    "failed to spawn MCP server '{}': {}{}",
+                    spec.server_name(),
+                    haven_common::error::sanitize_error_text(&error.to_string()),
+                    hint
+                )
+            })?;
+
+            // `spawn_mcp_child` returns only after OS containment has attached
+            // and the process has resumed. An HCS launcher will return only
+            // after its broker acknowledges the analogous start boundary.
+            drop(permit);
+            let mut process = LocalMcpStdioProcess {
+                child,
+                _containment: containment,
+                stdin: None,
+                stdout: None,
+                stderr: None,
+            };
+            process.stdin = process.child.stdin.take();
+            process.stdout = process.child.stdout.take();
+            process.stderr = process.child.stderr.take();
+            Ok(Box::new(process) as Box<dyn McpStdioProcess>)
+        })
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 struct TestMcpStdioProcessStartAuthorization;
 
@@ -325,20 +592,23 @@ impl McpClient {
             max_binary_base64_bytes,
             max_sse_buffer,
             Some(Arc::new(TestMcpStdioProcessStartAuthorization)),
+            local_stdio_process_launcher(),
         )
     }
 
-    pub(crate) fn new_managed(
+    pub(crate) fn new_managed_with_launcher(
         config: &haven_common::config::McpServerConfig,
         max_binary_base64_bytes: usize,
         max_sse_buffer: usize,
         stdio_process_authorization: Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>,
+        stdio_process_launcher: Arc<dyn McpStdioProcessLauncher>,
     ) -> Self {
         Self::new_inner(
             config,
             max_binary_base64_bytes,
             max_sse_buffer,
             stdio_process_authorization,
+            stdio_process_launcher,
         )
     }
 
@@ -347,6 +617,7 @@ impl McpClient {
         max_binary_base64_bytes: usize,
         max_sse_buffer: usize,
         stdio_process_authorization: Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>,
+        stdio_process_launcher: Arc<dyn McpStdioProcessLauncher>,
     ) -> Self {
         Self {
             name: config.name.clone(),
@@ -384,6 +655,14 @@ impl McpClient {
             max_sse_buffer,
             network_policy: Arc::new(RwLock::new(NetworkPolicy::Ask)),
             stdio_process_authorization,
+            stdio_launch_spec: McpStdioLaunchSpec::new(
+                config.name.clone(),
+                config.command.clone(),
+                config.args.clone(),
+                config.env.clone(),
+                config.cwd.clone(),
+            ),
+            stdio_process_launcher,
         }
     }
 
@@ -554,31 +833,6 @@ impl McpClient {
         &self,
         notification_tx: tokio::sync::mpsc::Sender<Value>,
     ) -> anyhow::Result<StdioInner> {
-        // MCP servers are user-configured external programs: their command and
-        // args may legitimately use relative paths, so they spawn from the
-        // configured `cwd` when set, otherwise the app's working directory
-        // (not the Temp default used for agent-executed commands).
-        let build = |program: &str, args: &[String]| {
-            let mut cmd = Command::new(program);
-            cmd.args(args);
-            cmd.stdin(std::process::Stdio::piped());
-            cmd.stdout(std::process::Stdio::piped());
-            cmd.stderr(std::process::Stdio::piped());
-            cmd.kill_on_drop(true);
-            configure_stdio_server_environment(cmd.as_std_mut(), std::env::vars_os(), &self.env);
-            if let Some(cwd) = &self.cwd {
-                cmd.current_dir(cwd);
-            }
-            cmd
-        };
-
-        let containment =
-            haven_platform::process_containment::ProcessContainment::new().map_err(|error| {
-                anyhow::anyhow!(
-                    "failed to create process containment for MCP server '{}': {error}",
-                    self.name
-                )
-            })?;
         let authorization = self.stdio_process_authorization.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "MCP stdio server '{}' has no process-start authorization",
@@ -595,37 +849,24 @@ impl McpClient {
                     haven_common::error::sanitize_error_text(&error.to_string())
                 )
             })?;
-        let child_result =
-            spawn_mcp_child(&self.name, &self.command, &self.args, &build, &containment);
-        drop(spawn_permit);
-        let mut child = child_result.map_err(|e| {
-            let hint = windows_spawn_hint(&self.command, &e);
-            anyhow::anyhow!(
-                "failed to spawn MCP server '{}': {}{}",
-                self.name,
-                haven_common::error::sanitize_error_text(&e.to_string()),
-                hint
-            )
-        })?;
-
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("failed to capture stdin for '{}'", self.name))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("failed to capture stdout for '{}'", self.name))?;
+        let process = self
+            .stdio_process_launcher
+            .launch(&self.stdio_launch_spec, spawn_permit)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to start MCP stdio server '{}': {}",
+                    self.name,
+                    haven_common::error::sanitize_error_text(&error.to_string())
+                )
+            })?;
 
         Ok(StdioInner::new(
-            child,
-            containment,
-            stdin,
-            stdout,
+            process,
             notification_tx,
             self.tools_list_changed.clone(),
             self.cancel_token.lock().await.clone(),
-        ))
+        )?)
     }
 
     async fn spawn_http(
@@ -1030,12 +1271,12 @@ impl McpClient {
                 }
             }
             if let Some(McpClientInner::Stdio(s)) = guard.as_mut()
-                && s.child.start_kill().is_err()
+                && s.start_kill().await.is_err()
             {
                 tracing::debug!("MCP stdio child kill failed");
             }
             if let Some(McpClientInner::Stdio(s)) = guard.as_mut()
-                && s.child.wait().await.is_err()
+                && s.wait().await.is_err()
             {
                 tracing::debug!("MCP stdio child wait failed");
             }
@@ -1393,9 +1634,7 @@ impl McpClient {
                 let mut guard = self.inner.lock().await;
                 match guard.as_mut() {
                     Some(McpClientInner::Stdio(s)) if s.poisoned() => false,
-                    Some(McpClientInner::Stdio(s)) => {
-                        s.child.try_wait().map(|st| st.is_none()).unwrap_or(false)
-                    }
+                    Some(McpClientInner::Stdio(s)) => s.is_alive().await,
                     _ => false,
                 }
             }
@@ -1693,18 +1932,11 @@ mod stdio_poison_tests {
         let client = McpClient::new(&config, 1024, 1024);
         let (notification_tx, _notification_rx) =
             tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
-        let mut stdio = client
+        let stdio = client
             .spawn_stdio(notification_tx)
             .await
             .expect("spawn live test server");
-        assert!(
-            stdio
-                .child
-                .try_wait()
-                .expect("inspect child process")
-                .is_none(),
-            "the test child must still be alive"
-        );
+        assert!(stdio.is_alive().await, "the test child must still be alive");
         stdio.mark_reader_failed_for_test();
         *client.inner.lock().await = Some(McpClientInner::Stdio(Box::new(stdio)));
 

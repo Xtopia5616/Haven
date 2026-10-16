@@ -1257,3 +1257,4 @@
 - [1267：将 Skill 输入与 Python launcher 接入 HCS broker](1267-connect-brokered-skill-inputs-and-launcher.md)
 - [1268：将 Skill adapter 接入实时授权与输出审阅](1268-wire-brokered-skills-to-live-authorization.md)
 - [1269：定义受限 brokered MCP stdio session 契约](1269-define-brokered-mcp-stdio-session-contract.md)
+- [1270：抽取 MCP stdio 进程生命周期端口](1270-extract-mcp-stdio-process-boundary.md)

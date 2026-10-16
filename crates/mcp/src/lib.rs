@@ -4,6 +4,7 @@ mod manager;
 mod network;
 mod protocol;
 mod sse;
+mod stdio_process;
 mod transport;
 
 use std::future::Future;
@@ -37,6 +38,9 @@ pub use manager::{McpManager, McpReconcile, McpTargetChanged};
 pub use protocol::{
     MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpCallOutput, McpClientStatus, McpServerSnapshot,
     McpStatusChangeEvent, McpToolInfo,
+};
+pub use stdio_process::{
+    McpStdioLaunchSpec, McpStdioProcess, McpStdioProcessLauncher, McpStdioReader, McpStdioWriter,
 };
 
 /// Maximum number of MCP server connection attempts that may run at once

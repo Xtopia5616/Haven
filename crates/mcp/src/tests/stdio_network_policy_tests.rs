@@ -110,7 +110,13 @@ async fn stdio_process_start_without_a_tools_authorization_snapshot_fails_closed
         env: vec![format!("{STDIO_PROBE_MARKER}={}", marker.path().display())],
         ..Default::default()
     };
-    let client = crate::client::McpClient::new_managed(&config, 1024, 1024, None);
+    let client = crate::client::McpClient::new_managed_with_launcher(
+        &config,
+        1024,
+        1024,
+        None,
+        crate::client::local_stdio_process_launcher(),
+    );
     client.set_network_policy(NetworkPolicy::Open).await;
 
     let result = tokio::time::timeout(Duration::from_secs(3), client.connect()).await;

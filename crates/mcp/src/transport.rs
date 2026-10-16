@@ -1,3 +1,4 @@
+use crate::McpStdioProcess;
 use crate::protocol::{
     McpHttpStatusError, McpProtocolMode, McpRpcError, REQUEST_TIMEOUT_SECS,
     encode_mcp_header_value, jsonrpc_notification, jsonrpc_request, params_with_protocol_meta,
@@ -5,14 +6,12 @@ use crate::protocol::{
 use crate::sse::SseParser;
 use futures_util::StreamExt;
 use haven_common::bounded_bytes::BoundedBytes;
-use haven_platform::process_containment::ProcessContainment;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{Mutex as AsyncMutex, Notify, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -55,10 +54,10 @@ impl ToolsListChangedSignal {
 /// stdio transport: a spawned child process speaking JSON-RPC over its stdin
 /// and stdout pipes.
 pub(crate) struct StdioInner {
-    pub(crate) child: Child,
-    pub(crate) _containment: ProcessContainment,
+    process: AsyncMutex<Box<dyn McpStdioProcess>>,
     pub(crate) io: Arc<StdioIo>,
     reader_task: JoinHandle<()>,
+    stderr_task: Option<JoinHandle<()>>,
 }
 
 pub(crate) struct StdioIo {
@@ -74,14 +73,39 @@ pub(crate) struct StdioIo {
 
 impl StdioInner {
     pub(crate) fn new(
-        child: Child,
-        containment: ProcessContainment,
-        stdin: ChildStdin,
-        stdout: ChildStdout,
+        mut process: Box<dyn McpStdioProcess>,
         notification_tx: tokio::sync::mpsc::Sender<Value>,
         tools_list_changed: Arc<ToolsListChangedSignal>,
         cancel: CancellationToken,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
+        let streams = (|| {
+            Ok::<_, std::io::Error>((
+                process.take_stdin()?,
+                process.take_stdout()?,
+                process.take_stderr()?,
+            ))
+        })();
+        let (stdin, stdout, stderr) = match streams {
+            Ok(streams) => streams,
+            Err(error) => {
+                if let Err(kill_error) = process.start_kill() {
+                    tracing::debug!(
+                        %kill_error,
+                        "failed to stop MCP stdio process after stream setup failed"
+                    );
+                }
+                return Err(error);
+            }
+        };
+        let stderr_task = stderr.map(|mut stderr| {
+            tokio::spawn(async move {
+                // stdio servers may log arbitrarily much text to stderr. It is
+                // explicitly optional diagnostic output, so drain and discard
+                // it with constant memory to keep the protocol pipe writable.
+                let mut sink = tokio::io::sink();
+                let _ = tokio::io::copy(&mut stderr, &mut sink).await;
+            })
+        });
         let io = Arc::new(StdioIo {
             stdin: AsyncMutex::new(Box::new(stdin)),
             pending: AsyncMutex::new(HashMap::new()),
@@ -93,12 +117,12 @@ impl StdioInner {
             cancel,
         });
         let reader_task = tokio::spawn(read_stdio_messages(BufReader::new(stdout), io.clone()));
-        Self {
-            child,
-            _containment: containment,
+        Ok(Self {
+            process: AsyncMutex::new(process),
             io,
             reader_task,
-        }
+            stderr_task,
+        })
     }
 
     pub(crate) fn poisoned(&self) -> bool {
@@ -112,6 +136,19 @@ impl StdioInner {
 
     pub(crate) fn set_modern(&self, modern: bool) {
         self.io.modern.store(modern, Ordering::Release);
+    }
+
+    pub(crate) async fn is_alive(&self) -> bool {
+        self.process.lock().await.is_alive().unwrap_or(false)
+    }
+
+    pub(crate) async fn start_kill(&self) -> std::io::Result<()> {
+        self.process.lock().await.start_kill()
+    }
+
+    pub(crate) async fn wait(&self) -> std::io::Result<()> {
+        let mut process = self.process.lock().await;
+        process.wait().await
     }
 
     pub(crate) async fn request(
@@ -141,7 +178,10 @@ impl StdioInner {
 impl Drop for StdioInner {
     fn drop(&mut self) {
         self.reader_task.abort();
-        if self.child.start_kill().is_err() {
+        if let Some(stderr_task) = &self.stderr_task {
+            stderr_task.abort();
+        }
+        if self.process.get_mut().start_kill().is_err() {
             tracing::debug!("MCP stdio child cleanup failed");
         }
     }
@@ -1130,6 +1170,105 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::process::Command;
+
+    struct PipeProcess {
+        stdin: Option<crate::McpStdioWriter>,
+        stdout: Option<crate::McpStdioReader>,
+        stderr: Option<crate::McpStdioReader>,
+        alive: Arc<AtomicBool>,
+    }
+
+    impl McpStdioProcess for PipeProcess {
+        fn take_stdin(&mut self) -> std::io::Result<crate::McpStdioWriter> {
+            self.stdin
+                .take()
+                .ok_or_else(|| std::io::Error::other("stdin already taken"))
+        }
+
+        fn take_stdout(&mut self) -> std::io::Result<crate::McpStdioReader> {
+            self.stdout
+                .take()
+                .ok_or_else(|| std::io::Error::other("stdout already taken"))
+        }
+
+        fn take_stderr(&mut self) -> std::io::Result<Option<crate::McpStdioReader>> {
+            Ok(self.stderr.take())
+        }
+
+        fn is_alive(&mut self) -> std::io::Result<bool> {
+            Ok(self.alive.load(Ordering::Acquire))
+        }
+
+        fn start_kill(&mut self) -> std::io::Result<()> {
+            self.alive.store(false, Ordering::Release);
+            Ok(())
+        }
+
+        fn wait(&mut self) -> futures_util::future::BoxFuture<'_, std::io::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn stdio_inner_drains_diagnostic_stderr_with_bounded_memory() {
+        let (client_stream, _peer_stream) = tokio::io::duplex(64);
+        let (stdout, stdin) = tokio::io::split(client_stream);
+        let (stderr_reader, mut stderr_writer) = tokio::io::duplex(16);
+        let alive = Arc::new(AtomicBool::new(true));
+        let process = Box::new(PipeProcess {
+            stdin: Some(Box::new(stdin)),
+            stdout: Some(Box::new(stdout)),
+            stderr: Some(Box::new(stderr_reader)),
+            alive: alive.clone(),
+        });
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let inner = StdioInner::new(
+            process,
+            notification_tx,
+            Arc::new(ToolsListChangedSignal::new()),
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        let write = tokio::spawn(async move {
+            let chunk = [b'x'; 1024];
+            for _ in 0..1024 {
+                stderr_writer.write_all(&chunk).await.unwrap();
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), write)
+            .await
+            .expect("stderr must keep draining after the pipe buffer fills")
+            .unwrap();
+        drop(inner);
+        assert!(!alive.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn stdio_inner_stops_process_when_stream_setup_fails() {
+        let (client_stream, _peer_stream) = tokio::io::duplex(64);
+        let (_stdout, stdin) = tokio::io::split(client_stream);
+        let alive = Arc::new(AtomicBool::new(true));
+        let process = Box::new(PipeProcess {
+            stdin: Some(Box::new(stdin)),
+            stdout: None,
+            stderr: None,
+            alive: alive.clone(),
+        });
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+
+        let result = StdioInner::new(
+            process,
+            notification_tx,
+            Arc::new(ToolsListChangedSignal::new()),
+            CancellationToken::new(),
+        );
+
+        assert!(result.is_err());
+        assert!(!alive.load(Ordering::Acquire));
+    }
 
     async fn response_from_server(response: &'static str) -> reqwest::Response {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

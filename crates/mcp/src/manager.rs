@@ -176,6 +176,8 @@ pub struct McpManager {
     /// Existing stdio clients retain the snapshot they were created with.
     stdio_process_authorization:
         Arc<RwLock<Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>>>,
+    /// Launcher assigned to newly created stdio client generations.
+    stdio_process_launcher: Arc<RwLock<Arc<dyn crate::McpStdioProcessLauncher>>>,
     /// Owner for the policy-revocation subscription installed by Tools.
     stdio_policy_watcher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Changes whenever the configured server set or a server's tools/list
@@ -204,6 +206,7 @@ impl Clone for McpManager {
             limits: self.limits.clone(),
             network_policy: self.network_policy.clone(),
             stdio_process_authorization: self.stdio_process_authorization.clone(),
+            stdio_process_launcher: self.stdio_process_launcher.clone(),
             stdio_policy_watcher: self.stdio_policy_watcher.clone(),
             catalog_version: self.catalog_version.clone(),
         }
@@ -242,6 +245,9 @@ impl McpManager {
             )),
             network_policy: Arc::new(tokio::sync::RwLock::new(network_policy)),
             stdio_process_authorization: Arc::new(RwLock::new(None)),
+            stdio_process_launcher: Arc::new(RwLock::new(
+                crate::client::local_stdio_process_launcher(),
+            )),
             stdio_policy_watcher: Arc::new(Mutex::new(None)),
             catalog_version: Arc::new(AtomicU64::new(0)),
         }
@@ -326,11 +332,13 @@ impl McpManager {
         }
 
         let stdio_process_authorization = self.stdio_process_authorization.read().await.clone();
-        let client = Arc::new(McpClient::new_managed(
+        let stdio_process_launcher = self.stdio_process_launcher.read().await.clone();
+        let client = Arc::new(McpClient::new_managed_with_launcher(
             config,
             limits.mcp_max_binary_base64_bytes,
             limits.mcp_max_sse_buffer_bytes,
             stdio_process_authorization,
+            stdio_process_launcher,
         ));
         client.set_network_policy(network_policy).await;
 
@@ -736,6 +744,17 @@ impl McpManager {
         authorization: Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>,
     ) {
         *self.stdio_process_authorization.write().await = authorization;
+    }
+
+    /// Set the process owner for future stdio client generations. Changing it
+    /// disconnects live stdio clients so a reconnect cannot retain an obsolete
+    /// host/HCS execution boundary.
+    pub async fn set_stdio_process_launcher(
+        &self,
+        launcher: Arc<dyn crate::McpStdioProcessLauncher>,
+    ) {
+        *self.stdio_process_launcher.write().await = launcher;
+        self.disconnect_stdio_clients().await;
     }
 
     /// Subscribe to the authorization owner's policy signal. Each change
