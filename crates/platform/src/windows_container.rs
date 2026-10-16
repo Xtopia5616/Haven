@@ -3,9 +3,10 @@
 //! This module builds a fixed configuration document and exposes a typed
 //! execution port. It does not create a container, install services, or
 //! authorize a tool call. Callers must supply image layers from the broker's
-//! trusted local image catalog. The HCS schema is intentionally closed: no
-//! host mounts, network endpoints, credentials, devices, or caller-selected
-//! isolation mode can be serialized.
+//! trusted local image catalog. The HCS schema is intentionally closed: the
+//! only allowed host mapping is an explicitly attached, read-only private
+//! workspace input; network endpoints, credentials, devices, arbitrary mounts,
+//! or caller-selected isolation mode cannot be serialized.
 
 pub mod execution;
 #[cfg(not(test))]
@@ -17,11 +18,13 @@ pub(crate) mod scratch_vhd;
 #[cfg(test)]
 pub(crate) mod scratch_vhd;
 
+use crate::filesystem::DirectoryCapability;
 use serde::Serialize;
 use std::io;
 use std::path::{Path, PathBuf};
 
 const HCS_OWNER: &str = "HavenContainerBroker";
+const WORKSPACE_INPUT_CONTAINER_PATH: &str = r"C:\Haven\workspace-input";
 
 /// One trusted, read-only parent layer from the broker's local image catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +57,7 @@ pub struct WindowsContainerSandboxConfig {
     name: String,
     storage_sandbox_size_bytes: u64,
     layers: Vec<WindowsContainerLayer>,
+    workspace_input: Option<DirectoryCapability>,
 }
 
 impl WindowsContainerSandboxConfig {
@@ -81,7 +85,36 @@ impl WindowsContainerSandboxConfig {
             name,
             storage_sandbox_size_bytes,
             layers,
+            workspace_input: None,
         })
+    }
+
+    /// Attach the broker-owned, per-attempt workspace snapshot as the single
+    /// read-only directory mapping visible to the guest.
+    ///
+    /// The capability remains owned by this config for the lifetime of the
+    /// HCS document owner, pinning the directory identity while HCS consumes
+    /// its path. The caller cannot choose a guest destination or writable
+    /// mapping through this API.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the broker HCS provider is implemented in a later execution-workspace slice"
+        )
+    )]
+    pub(crate) fn with_read_only_workspace_input(
+        mut self,
+        staging: DirectoryCapability,
+    ) -> io::Result<Self> {
+        if self.workspace_input.is_some() {
+            return Err(invalid_config(
+                "container configuration already has a workspace input",
+            ));
+        }
+        validate_local_absolute_path(staging.root(), "workspace staging path")?;
+        self.workspace_input = Some(staging);
+        Ok(self)
     }
 
     /// Serialize the broker's fixed HCS v1 container document.
@@ -99,6 +132,24 @@ impl WindowsContainerSandboxConfig {
                     })
                 })
                 .collect::<io::Result<Vec<_>>>()?;
+        let mapped_directories =
+            self.workspace_input
+                .as_ref()
+                .map(|staging| {
+                    let host_path = staging.root().to_str().ok_or_else(|| {
+                        invalid_config("workspace staging path is not valid Unicode")
+                    })?;
+                    validate_local_absolute_path(staging.root(), "workspace staging path")?;
+                    Ok::<_, io::Error>(vec![HcsMappedDirectory {
+                        host_path: host_path.to_owned(),
+                        container_path: WORKSPACE_INPUT_CONTAINER_PATH,
+                        read_only: true,
+                        bandwidth_maximum: 0,
+                        iops_maximum: 0,
+                        create_in_utility_vm: false,
+                    }])
+                })
+                .transpose()?;
         let document = HcsV1ContainerConfig {
             system_type: "Container",
             name: &self.name,
@@ -107,6 +158,7 @@ impl WindowsContainerSandboxConfig {
             storage_sandbox_size: self.storage_sandbox_size_bytes,
             hyper_v_partition: true,
             terminate_on_last_handle_closed: true,
+            mapped_directories,
         };
         serde_json::to_string(&document)
             .map_err(|_| invalid_config("container configuration could not be serialized"))
@@ -129,6 +181,8 @@ struct HcsV1ContainerConfig<'a> {
     hyper_v_partition: bool,
     #[serde(rename = "TerminateOnLastHandleClosed")]
     terminate_on_last_handle_closed: bool,
+    #[serde(rename = "MappedDirectories", skip_serializing_if = "Option::is_none")]
+    mapped_directories: Option<Vec<HcsMappedDirectory>>,
 }
 
 #[derive(Serialize)]
@@ -137,6 +191,22 @@ struct HcsLayer {
     id: String,
     #[serde(rename = "Path")]
     path: String,
+}
+
+#[derive(Serialize)]
+struct HcsMappedDirectory {
+    #[serde(rename = "HostPath")]
+    host_path: String,
+    #[serde(rename = "ContainerPath")]
+    container_path: &'static str,
+    #[serde(rename = "ReadOnly")]
+    read_only: bool,
+    #[serde(rename = "BandwidthMaximum")]
+    bandwidth_maximum: u64,
+    #[serde(rename = "IOPSMaximum")]
+    iops_maximum: u64,
+    #[serde(rename = "CreateInUtilityVM")]
+    create_in_utility_vm: bool,
 }
 
 fn validate_local_absolute_path(path: &Path, description: &str) -> io::Result<()> {
@@ -169,7 +239,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn hcs_config_forces_hyperv_and_storage_cap_without_host_mounts_or_network() {
+    fn hcs_config_forces_hyperv_and_storage_cap_without_optional_mounts_or_network() {
         let layer = WindowsContainerLayer::new("base-layer-guid", r"C:\Haven\image\base")
             .expect("trusted local layer path is valid");
         let config = WindowsContainerSandboxConfig::new(
@@ -211,6 +281,56 @@ mod tests {
                 "SystemType",
                 "TerminateOnLastHandleClosed",
             ])
+        );
+    }
+
+    #[test]
+    fn hcs_config_allows_only_one_fixed_read_only_workspace_input_mapping() {
+        let temp = tempfile::tempdir().expect("staging directory is created");
+        let staging = DirectoryCapability::open(temp.path()).expect("staging is pinned");
+        let expected_host_path = staging.root().to_str().unwrap().to_owned();
+        let config = WindowsContainerSandboxConfig::new(
+            "HavenSandbox-0123456789abcdef0123456789abcdef",
+            1024 * 1024 * 1024,
+            vec![test_layer()],
+        )
+        .expect("valid base config")
+        .with_read_only_workspace_input(staging)
+        .expect("read-only input is accepted");
+
+        let value: Value =
+            serde_json::from_str(&config.to_hcs_json().unwrap()).expect("valid HCS JSON");
+        let mappings = value["MappedDirectories"].as_array().unwrap();
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0]["HostPath"], expected_host_path);
+        assert_eq!(mappings[0]["ContainerPath"], WORKSPACE_INPUT_CONTAINER_PATH);
+        assert_eq!(mappings[0]["ReadOnly"], true);
+        assert_eq!(mappings[0]["BandwidthMaximum"], 0);
+        assert_eq!(mappings[0]["IOPSMaximum"], 0);
+        assert_eq!(mappings[0]["CreateInUtilityVM"], false);
+        let mapping_keys: BTreeSet<_> = mappings[0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            mapping_keys,
+            BTreeSet::from([
+                "BandwidthMaximum",
+                "ContainerPath",
+                "CreateInUtilityVM",
+                "HostPath",
+                "IOPSMaximum",
+                "ReadOnly",
+            ])
+        );
+        assert!(
+            config
+                .with_read_only_workspace_input(
+                    DirectoryCapability::open(temp.path()).expect("second staging capability")
+                )
+                .is_err()
         );
     }
 
