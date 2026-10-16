@@ -8,6 +8,7 @@
 //! isolation mode can be serialized.
 
 pub mod execution;
+pub mod scratch_vhd;
 
 use serde::Serialize;
 use std::io;

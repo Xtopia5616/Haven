@@ -1214,3 +1214,4 @@
 - [1224：不向容器 provider 暴露 workspace 根路径](1224-hide-workspace-roots-from-container-provider.md)
 - [1225：在容器执行端口处限制输出](1225-bound-container-output-at-the-port.md)
 - [1226：要求 HCS scratch VHD 自身具有硬容量上限](1226-require-bounded-hcs-scratch-vhd.md)
+- [1227：按 attempt 配额创建有最大容量的 scratch VHDX](1227-create-capacity-bounded-scratch-vhdx.md)
