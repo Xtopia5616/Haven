@@ -22,7 +22,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 10;
+pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 11;
 pub(crate) const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
 const MAX_BINARY_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_MCP_SESSION_CHUNK_BYTES: usize = 16 * 1024;
@@ -213,6 +213,14 @@ pub(crate) enum BrokerControlMessage {
     WorkspaceSnapshotRequested {
         request_id: [u8; 16],
     },
+    WorkspaceSnapshotAccepted {
+        request_id: [u8; 16],
+        session_id: [u8; 16],
+    },
+    WorkspaceSnapshotCommit {
+        request_id: [u8; 16],
+        session_id: [u8; 16],
+    },
     WorkspaceEntry {
         relative_path: String,
         kind: BrokerWorkspaceEntryKind,
@@ -309,6 +317,14 @@ impl BrokerControlMessage {
             | Self::McpSessionReady {
                 request_id,
                 session_id,
+            }
+            | Self::WorkspaceSnapshotAccepted {
+                request_id,
+                session_id,
+            }
+            | Self::WorkspaceSnapshotCommit {
+                request_id,
+                session_id,
             } if request_id.iter().all(|byte| *byte == 0)
                 || session_id.iter().all(|byte| *byte == 0) =>
             {
@@ -316,7 +332,9 @@ impl BrokerControlMessage {
             }
             Self::McpSessionOpenAccepted { .. }
             | Self::McpSessionAttach { .. }
-            | Self::McpSessionReady { .. } => Ok(()),
+            | Self::McpSessionReady { .. }
+            | Self::WorkspaceSnapshotAccepted { .. }
+            | Self::WorkspaceSnapshotCommit { .. } => Ok(()),
             Self::McpSessionInputClosed { session_id }
             | Self::McpSessionStop { session_id }
             | Self::McpSessionExited { session_id, .. }
@@ -487,6 +505,7 @@ impl BrokerControlMessage {
 pub(crate) struct BrokerMcpSessionOpenRequest {
     pub(crate) request_id: [u8; 16],
     pub(crate) package_id: String,
+    pub(crate) workspace_copy: Option<BrokerTreeLimits>,
 }
 
 impl BrokerMcpSessionOpenRequest {
@@ -495,6 +514,14 @@ impl BrokerMcpSessionOpenRequest {
             || !is_valid_mcp_package_id(&self.package_id)
         {
             return Err(invalid_data("MCP session open request is invalid"));
+        }
+        if let Some(requested) = self.workspace_copy {
+            let fixed = super::mcp_workspace_copy_limits()
+                .map(BrokerTreeLimits::from_limits)
+                .map_err(|_| invalid_data("MCP workspace copy profile is unavailable"))?;
+            if requested != fixed {
+                return Err(invalid_data("MCP workspace copy profile is invalid"));
+            }
         }
         Ok(())
     }
@@ -842,7 +869,7 @@ pub(crate) struct BrokerTreeLimits {
 }
 
 impl BrokerTreeLimits {
-    fn from_limits(limits: DirectoryTreeCopyLimits) -> Self {
+    pub(crate) fn from_limits(limits: DirectoryTreeCopyLimits) -> Self {
         Self {
             max_entries: limits.max_entries() as u32,
             max_depth: limits.max_depth() as u32,
@@ -1034,6 +1061,7 @@ mod tests {
                 request: BrokerMcpSessionOpenRequest {
                     request_id,
                     package_id: "filesystem".to_owned(),
+                    workspace_copy: None,
                 },
             },
             BrokerControlMessage::McpSessionOpenAccepted {
@@ -1045,6 +1073,14 @@ mod tests {
                 session_id,
             },
             BrokerControlMessage::McpSessionReady {
+                request_id,
+                session_id,
+            },
+            BrokerControlMessage::WorkspaceSnapshotAccepted {
+                request_id,
+                session_id,
+            },
+            BrokerControlMessage::WorkspaceSnapshotCommit {
                 request_id,
                 session_id,
             },
@@ -1079,6 +1115,7 @@ mod tests {
         let request = BrokerMcpSessionOpenRequest {
             request_id: [1; 16],
             package_id: "filesystem".to_owned(),
+            workspace_copy: None,
         };
         assert!(
             BrokerFrame::control(&BrokerControlMessage::McpSessionOpen {
@@ -1091,6 +1128,7 @@ mod tests {
                 request: BrokerMcpSessionOpenRequest {
                     request_id: [1; 16],
                     package_id: package_id.to_owned(),
+                    workspace_copy: None,
                 },
             });
             assert!(frame.is_err(), "accepted unsafe package ID {package_id:?}");
@@ -1100,6 +1138,7 @@ mod tests {
                 request: BrokerMcpSessionOpenRequest {
                     request_id: [0; 16],
                     package_id: "filesystem".to_owned(),
+                    workspace_copy: None,
                 },
             })
             .is_err()
@@ -1118,6 +1157,27 @@ mod tests {
                 .decode_control()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn mcp_workspace_snapshot_limits_are_fixed_and_cannot_be_raised() {
+        let fixed =
+            BrokerTreeLimits::from_limits(super::super::mcp_workspace_copy_limits().unwrap());
+        let request = BrokerMcpSessionOpenRequest {
+            request_id: [1; 16],
+            package_id: "filesystem".to_owned(),
+            workspace_copy: Some(fixed),
+        };
+        assert!(request.validate().is_ok());
+
+        let mut raised = fixed;
+        raised.max_total_bytes += 1;
+        let request = BrokerMcpSessionOpenRequest {
+            request_id: [1; 16],
+            package_id: "filesystem".to_owned(),
+            workspace_copy: Some(raised),
+        };
+        assert!(request.validate().is_err());
     }
 
     #[test]

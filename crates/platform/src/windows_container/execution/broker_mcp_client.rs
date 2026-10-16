@@ -2,14 +2,16 @@
 
 use super::broker_protocol::{
     BrokerControlMessage, BrokerFailureCode, BrokerFrame, BrokerFrameKind,
-    BrokerMcpSessionOpenRequest,
+    BrokerMcpSessionOpenRequest, BrokerTreeLimits,
 };
 use super::named_pipe::{BrokerClientPolicy, BrokerPipeCancellation, BrokerPipeClient};
 use super::{
     WindowsContainerMcpSession, WindowsContainerMcpSessionCallbacks,
     WindowsContainerMcpSessionEvent, WindowsContainerMcpSessionPort,
-    WindowsContainerMcpSessionStopHandle, private,
+    WindowsContainerMcpSessionStopHandle, WindowsContainerWorkspaceInput,
+    mcp_workspace_copy_limits, private,
 };
+use crate::filesystem::DirectoryCapability;
 use std::io;
 use std::sync::Arc;
 use std::thread;
@@ -21,6 +23,7 @@ const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const STARTUP_READ_INTERVAL: Duration = Duration::from_millis(20);
 const STOP_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const STOP_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(60);
+const WORKSPACE_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(super) struct BrokerMcpSessionProvider;
 
@@ -30,6 +33,7 @@ impl WindowsContainerMcpSessionPort for BrokerMcpSessionProvider {
     fn open_session(
         &self,
         package_id: &str,
+        workspace_input: Option<&WindowsContainerWorkspaceInput>,
         callbacks: &mut WindowsContainerMcpSessionCallbacks<'_>,
     ) -> io::Result<Box<dyn WindowsContainerMcpSession>> {
         if (callbacks.is_cancelled)() {
@@ -50,6 +54,9 @@ impl WindowsContainerMcpSessionPort for BrokerMcpSessionProvider {
                     request: BrokerMcpSessionOpenRequest {
                         request_id,
                         package_id: package_id.to_owned(),
+                        workspace_copy: workspace_input
+                            .map(|_| mcp_workspace_copy_limits().map(BrokerTreeLimits::from_limits))
+                            .transpose()?,
                     },
                 };
                 control.write_frame(&BrokerFrame::control(&open)?, HANDSHAKE_TIMEOUT)?;
@@ -81,6 +88,7 @@ impl WindowsContainerMcpSessionPort for BrokerMcpSessionProvider {
         // after attach, disconnecting this pipe would hide the broker's
         // stop-proof event and could release the start permit too early.
         let session_cancellation = BrokerPipeCancellation::new()?;
+        let snapshot_cancellation = session_cancellation.clone();
         let mut session =
             BrokerPipeClient::connect_mcp_session_pipe(&policy, session_id, session_cancellation)?;
         if (callbacks.is_cancelled)() {
@@ -94,6 +102,79 @@ impl WindowsContainerMcpSessionPort for BrokerMcpSessionProvider {
             // never treat this path as a confirmed stop.
             let _ = stop_handle.request_stop();
             return Err(error);
+        }
+
+        if let Some(workspace_input) = workspace_input {
+            with_cancellation_watcher(
+                callbacks.is_cancelled,
+                snapshot_cancellation.clone(),
+                || {
+                    let deadline = std::time::Instant::now() + WORKSPACE_SNAPSHOT_TIMEOUT;
+                    match session.read_frame_until(deadline)?.decode_control()? {
+                        BrokerControlMessage::WorkspaceSnapshotRequested {
+                            request_id: requested_id,
+                        } if requested_id == request_id => {}
+                        _ => {
+                            return Err(invalid_data(
+                                "MCP broker did not request the workspace snapshot",
+                            ));
+                        }
+                    }
+                    let limits = mcp_workspace_copy_limits()?;
+                    let storage = tempfile::tempdir()?;
+                    let snapshot = DirectoryCapability::open(storage.path())?;
+                    workspace_input.copy_snapshot_to(&snapshot, limits, || {
+                        snapshot_cancellation.is_cancelled()
+                            || std::time::Instant::now() >= deadline
+                    })?;
+                    super::workspace_transfer::send_workspace_snapshot(
+                        &snapshot,
+                        limits,
+                        |frame| session.write_frame_until(&frame, deadline),
+                        || {
+                            snapshot_cancellation.is_cancelled()
+                                || std::time::Instant::now() >= deadline
+                        },
+                    )?;
+                    match session.read_frame_until(deadline)?.decode_control()? {
+                        BrokerControlMessage::WorkspaceSnapshotAccepted {
+                            request_id: accepted_request,
+                            session_id: accepted_session,
+                        } if accepted_request == request_id && accepted_session == session_id => {
+                            Ok(())
+                        }
+                        BrokerControlMessage::Failure {
+                            request_id: Some(failed_request),
+                            code,
+                        } if failed_request == request_id => Err(map_failure(code)),
+                        _ => Err(invalid_data(
+                            "MCP broker did not accept the workspace snapshot",
+                        )),
+                    }
+                },
+            )?;
+            if (callbacks.is_cancelled)() {
+                return Err(interrupted(
+                    "MCP broker launch was cancelled before guest start",
+                ));
+            }
+            let commit = BrokerControlMessage::WorkspaceSnapshotCommit {
+                request_id,
+                session_id,
+            };
+            if let Err(error) =
+                session.write_frame(&BrokerFrame::control(&commit)?, HANDSHAKE_TIMEOUT)
+            {
+                let mut cancellation_seen = || true;
+                let mut ignore_started = || {};
+                let _ = await_session_startup(
+                    stop_handle.as_ref(),
+                    &mut cancellation_seen,
+                    &mut ignore_started,
+                    |timeout| read_startup_event(&mut session, request_id, session_id, timeout),
+                );
+                return Err(error);
+            }
         }
 
         await_session_startup(

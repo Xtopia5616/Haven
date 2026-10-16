@@ -6,7 +6,7 @@
 
 use super::broker_protocol::{
     BrokerControlMessage, BrokerFailureCode, BrokerFrame, BrokerFrameKind,
-    BrokerMcpSessionOpenRequest,
+    BrokerMcpSessionOpenRequest, BrokerTreeLimits,
 };
 use super::broker_service::{
     McpSessionControlSignal, execution_gate_status, quota_runtime_attestation, write_broker_failure,
@@ -31,11 +31,13 @@ const SESSION_PIPE_POLL_TIMEOUT: Duration = Duration::from_millis(10);
 const PROCESS_POLL_TIMEOUT: Duration = Duration::from_millis(1);
 const FINAL_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 const FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const WORKSPACE_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(super) struct PendingMcpSession {
     request_id: [u8; 16],
     session_id: [u8; 16],
     package_proof: crate::windows_container::execution::McpNodePackageProof,
+    workspace_copy: Option<BrokerTreeLimits>,
     session_listener: BrokerPipeListener,
 }
 
@@ -91,6 +93,7 @@ pub(super) fn prepare_open(
         request_id: request.request_id,
         session_id,
         package_proof,
+        workspace_copy: request.workspace_copy,
         session_listener,
     }))
 }
@@ -107,6 +110,7 @@ pub(super) fn serve_pending(
         request_id,
         session_id,
         package_proof,
+        workspace_copy,
         mut session_listener,
     } = pending;
     let session_connection =
@@ -145,6 +149,102 @@ pub(super) fn serve_pending(
             return Ok(McpSessionDisposition::Continue);
         }
     };
+
+    if let Some(workspace_copy) = workspace_copy {
+        let limits = match workspace_copy.to_platform_limits() {
+            Ok(limits) => limits,
+            Err(_) => {
+                cleanup_quiescent_attempt(&mut attempt, None)?;
+                write_session_failure(
+                    &session_connection,
+                    request_id,
+                    BrokerFailureCode::InvalidRequest,
+                )?;
+                return Ok(McpSessionDisposition::Continue);
+            }
+        };
+        let requested = BrokerControlMessage::WorkspaceSnapshotRequested { request_id };
+        if session_connection
+            .write_frame(&BrokerFrame::control(&requested)?, FRAME_WRITE_TIMEOUT)
+            .is_err()
+        {
+            cleanup_quiescent_attempt(&mut attempt, None)?;
+            return Ok(McpSessionDisposition::Continue);
+        }
+        let session_cancellation = session_connection.cancellation();
+        let snapshot_deadline = std::time::Instant::now() + WORKSPACE_SNAPSHOT_TIMEOUT;
+        let transfer = super::workspace_transfer::receive_workspace_snapshot(
+            attempt.staging()?.clone(),
+            limits,
+            || session_connection.read_frame_until(snapshot_deadline),
+            || {
+                session_cancellation.is_cancelled()
+                    || std::time::Instant::now() >= snapshot_deadline
+            },
+        );
+        if let Err(error) = transfer {
+            let timed_out = std::time::Instant::now() >= snapshot_deadline;
+            cleanup_quiescent_attempt(&mut attempt, None)?;
+            let code = match (timed_out, error.kind()) {
+                (true, _) | (_, io::ErrorKind::TimedOut) => BrokerFailureCode::TimedOut,
+                (_, io::ErrorKind::Interrupted) => BrokerFailureCode::Cancelled,
+                (_, io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied) => {
+                    BrokerFailureCode::InvalidRequest
+                }
+                _ => BrokerFailureCode::StagingFailed,
+            };
+            let _ = write_session_failure(&session_connection, request_id, code);
+            return Ok(McpSessionDisposition::Continue);
+        }
+
+        let accepted = BrokerControlMessage::WorkspaceSnapshotAccepted {
+            request_id,
+            session_id,
+        };
+        if session_connection
+            .write_frame(&BrokerFrame::control(&accepted)?, FRAME_WRITE_TIMEOUT)
+            .is_err()
+        {
+            cleanup_quiescent_attempt(&mut attempt, None)?;
+            return Ok(McpSessionDisposition::Continue);
+        }
+        let commit = match session_connection.read_frame_until(snapshot_deadline) {
+            Ok(frame) => frame.decode_control(),
+            Err(error) => Err(error),
+        };
+        match commit {
+            Ok(BrokerControlMessage::WorkspaceSnapshotCommit {
+                request_id: commit_request,
+                session_id: commit_session,
+            }) if commit_request == request_id && commit_session == session_id => {}
+            Ok(_) => {
+                cleanup_quiescent_attempt(&mut attempt, None)?;
+                write_session_failure(
+                    &session_connection,
+                    request_id,
+                    BrokerFailureCode::InvalidRequest,
+                )?;
+                return Ok(McpSessionDisposition::Continue);
+            }
+            Err(error) => {
+                let timed_out = std::time::Instant::now() >= snapshot_deadline;
+                cleanup_quiescent_attempt(&mut attempt, None)?;
+                if peer_pipe_error(&error) {
+                    return Ok(McpSessionDisposition::Continue);
+                }
+                let code = if timed_out || error.kind() == io::ErrorKind::TimedOut {
+                    BrokerFailureCode::TimedOut
+                } else if error.kind() == io::ErrorKind::Interrupted {
+                    BrokerFailureCode::Cancelled
+                } else {
+                    BrokerFailureCode::InvalidRequest
+                };
+                let _ = write_session_failure(&session_connection, request_id, code);
+                return Ok(McpSessionDisposition::Continue);
+            }
+        }
+    }
+
     if attempt.mark_hcs_operation_active().is_err() {
         let _ = quarantine_attempt(&mut attempt, None);
         write_session_failure(
@@ -197,7 +297,10 @@ pub(super) fn serve_pending(
             WORKSPACE_WRITE_STORAGE_QUOTA_BYTES,
         )
         .and_then(|config| config.with_bounded_writable_layer(&scratch))
-    {
+        .and_then(|config| match workspace_copy {
+            Some(_) => config.with_read_only_workspace_input(attempt.staging()?.clone()),
+            None => Ok(config),
+        }) {
         Ok(config) => config,
         Err(_) => {
             cleanup_quiescent_attempt(&mut attempt, Some(&mut scratch))?;

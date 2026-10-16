@@ -121,6 +121,7 @@ fn supervisor_relays_stdio_while_answering_control_status() {
                 request: BrokerMcpSessionOpenRequest {
                     request_id: concurrent_request_id,
                     package_id: "filesystem".to_owned(),
+                    workspace_copy: None,
                 },
             })?,
             FRAME_WRITE_TIMEOUT,

@@ -288,6 +288,9 @@ impl McpToolAdapter {
         cancel: CancellationToken,
         target_binding: Option<String>,
         one_shot_managed_call: bool,
+        workspace_input: Option<
+            haven_platform::windows_container::execution::WindowsContainerWorkspaceInput,
+        >,
     ) -> anyhow::Result<ToolResult> {
         #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
         if self.panic_on_execute {
@@ -322,6 +325,7 @@ impl McpToolAdapter {
                     &target_binding,
                     &self.info.name,
                     input,
+                    workspace_input,
                     cancel,
                 )
                 .await
@@ -409,7 +413,8 @@ impl Tool for McpToolAdapter {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        self.execute_target_bound(input, cancel, None, false).await
+        self.execute_target_bound(input, cancel, None, false, None)
+            .await
     }
 
     async fn execute_with_authorization_target(
@@ -455,6 +460,7 @@ impl Tool for McpToolAdapter {
         let one_shot_managed_call = sandbox_mode
             == haven_common::types::SandboxMode::WorkspaceWrite
             && self.transport == McpServerTransport::Stdio;
+        let mut workspace_input = None;
         if one_shot_managed_call {
             let session_id = context.call_session_id.as_deref().ok_or_else(|| {
                 crate::security::execution_policy_denied(
@@ -473,16 +479,20 @@ impl Tool for McpToolAdapter {
                     "workspace-write MCP stdio requires canonical session and tool step ids".into(),
                 ));
             }
-            if context
+            let directory = context
                 .execution_workspace
                 .as_ref()
                 .and_then(crate::execution_workspace::ExecutionWorkspace::directory)
-                .is_none()
-            {
-                return Err(crate::security::execution_policy_denied(
-                    "workspace-write MCP stdio has no authorized execution workspace".into(),
-                ));
-            }
+                .ok_or_else(|| {
+                    crate::security::execution_policy_denied(
+                        "workspace-write MCP stdio has no authorized execution workspace".into(),
+                    )
+                })?;
+            workspace_input = Some(
+                haven_platform::windows_container::execution::WindowsContainerWorkspaceInput::new(
+                    directory,
+                ),
+            );
         }
 
         let Some(target_binding) = target_binding else {
@@ -503,6 +513,7 @@ impl Tool for McpToolAdapter {
                 call_cancel,
                 Some(target_binding.to_owned()),
                 one_shot_managed_call,
+                workspace_input,
             )
             .await;
         revocation.abort();

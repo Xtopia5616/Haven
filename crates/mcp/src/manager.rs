@@ -1528,6 +1528,9 @@ impl McpManager {
         expected_binding: &str,
         tool_name: &str,
         input: Value,
+        workspace_input: Option<
+            haven_platform::windows_container::execution::WindowsContainerWorkspaceInput,
+        >,
         cancel: CancellationToken,
     ) -> anyhow::Result<McpCallOutput> {
         if self.shutting_down.load(Ordering::SeqCst)
@@ -1577,7 +1580,12 @@ impl McpManager {
             }
         });
         let result = client
-            .call_tool_in_fresh_managed_generation(tool_name, input, invocation_cancel)
+            .call_tool_in_fresh_managed_generation(
+                tool_name,
+                input,
+                workspace_input,
+                invocation_cancel,
+            )
             .await;
         cancellation_watcher.abort();
         let _ = cancellation_watcher.await;

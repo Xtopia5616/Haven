@@ -108,6 +108,10 @@ const MAX_STORAGE_QUOTA_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Fixed scratch ceiling used by the Windows `WorkspaceWrite` Shell path.
 /// The broker attests this exact value before accepting execution requests.
 pub const WORKSPACE_WRITE_STORAGE_QUOTA_BYTES: u64 = 512 * 1024 * 1024;
+const MCP_WORKSPACE_MAX_ENTRIES: usize = 10_000;
+const MCP_WORKSPACE_MAX_DEPTH: usize = 32;
+const MCP_WORKSPACE_MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const MCP_WORKSPACE_MAX_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_STDIO_BYTES_PER_STREAM: usize = 64 * 1024 * 1024;
 const MAX_EXECUTION_TIMEOUT: Duration =
     Duration::from_secs(haven_common::config::MAX_TOOL_TIMEOUT_SECS);
@@ -130,6 +134,7 @@ pub enum WindowsContainerOutputStream {
 
 /// Authorized workspace input whose host root is not exposed to an execution
 /// provider. Providers can create only a bounded copy into private staging.
+#[derive(Clone)]
 pub struct WindowsContainerWorkspaceInput {
     source: DirectoryCapability,
 }
@@ -211,6 +216,7 @@ pub trait WindowsContainerMcpSessionPort: private::McpSessionSealed + Send + Syn
     fn open_session(
         &self,
         package_id: &str,
+        workspace_input: Option<&WindowsContainerWorkspaceInput>,
         callbacks: &mut WindowsContainerMcpSessionCallbacks<'_>,
     ) -> io::Result<Box<dyn WindowsContainerMcpSession>>;
 }
@@ -338,6 +344,18 @@ impl WindowsContainerWorkspaceInput {
         self.source
             .copy_tree_to(private_staging, limits, is_cancelled)
     }
+}
+
+/// Fixed copy ceiling for a project snapshot supplied to one managed MCP
+/// invocation. The broker independently enforces the same profile before
+/// staging or mounting the snapshot.
+pub fn mcp_workspace_copy_limits() -> io::Result<DirectoryTreeCopyLimits> {
+    DirectoryTreeCopyLimits::new(
+        MCP_WORKSPACE_MAX_ENTRIES,
+        MCP_WORKSPACE_MAX_DEPTH,
+        MCP_WORKSPACE_MAX_FILE_BYTES,
+        MCP_WORKSPACE_MAX_TOTAL_BYTES,
+    )
 }
 
 /// Per-attempt limits supplied by the Tools owner and independently enforced

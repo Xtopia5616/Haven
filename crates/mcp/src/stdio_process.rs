@@ -7,6 +7,7 @@
 use crate::McpStdioProcessStartPermit;
 use futures_util::future::BoxFuture;
 use haven_common::config::McpStdioExecution;
+use haven_platform::windows_container::execution::WindowsContainerWorkspaceInput;
 use std::fmt;
 use std::io;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -25,6 +26,7 @@ pub struct McpStdioLaunchSpec {
     args: Vec<String>,
     environment: Vec<String>,
     working_directory: Option<String>,
+    workspace_input: Option<WindowsContainerWorkspaceInput>,
 }
 
 impl McpStdioLaunchSpec {
@@ -43,7 +45,16 @@ impl McpStdioLaunchSpec {
             args,
             environment,
             working_directory,
+            workspace_input: None,
         }
+    }
+
+    pub(crate) fn with_workspace_input(
+        mut self,
+        workspace_input: Option<WindowsContainerWorkspaceInput>,
+    ) -> Self {
+        self.workspace_input = workspace_input;
+        self
     }
 
     pub fn server_name(&self) -> &str {
@@ -73,6 +84,10 @@ impl McpStdioLaunchSpec {
     pub fn working_directory(&self) -> Option<&str> {
         self.working_directory.as_deref()
     }
+
+    pub fn workspace_input(&self) -> Option<&WindowsContainerWorkspaceInput> {
+        self.workspace_input.as_ref()
+    }
 }
 
 impl fmt::Debug for McpStdioLaunchSpec {
@@ -87,6 +102,13 @@ impl fmt::Debug for McpStdioLaunchSpec {
             .field(
                 "working_directory",
                 &self.working_directory.as_ref().map(|_| "<configured>"),
+            )
+            .field(
+                "workspace_input",
+                &self
+                    .workspace_input
+                    .as_ref()
+                    .map(|_| "<bounded capability>"),
             )
             .finish()
     }

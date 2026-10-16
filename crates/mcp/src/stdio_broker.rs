@@ -9,7 +9,7 @@ use haven_common::config::McpStdioExecution;
 use haven_platform::windows_container::execution::{
     WindowsContainerMcpSession, WindowsContainerMcpSessionCallbacks,
     WindowsContainerMcpSessionEvent, WindowsContainerMcpSessionPort,
-    WindowsContainerMcpSessionStopHandle,
+    WindowsContainerMcpSessionStopHandle, WindowsContainerWorkspaceInput,
 };
 use std::io;
 use std::sync::Arc;
@@ -33,6 +33,7 @@ struct BrokerGenerationContext {
     cancellation: CancellationToken,
     alive: Arc<AtomicBool>,
     ready_sender: oneshot::Sender<Result<(), String>>,
+    workspace_input: Option<WindowsContainerWorkspaceInput>,
 }
 
 pub(crate) struct BrokeredMcpStdioProcessLauncher {
@@ -73,6 +74,7 @@ impl McpStdioProcessLauncher for BrokeredMcpStdioProcessLauncher {
                 cancellation: worker_cancellation,
                 alive: worker_alive,
                 ready_sender,
+                workspace_input: spec.workspace_input().cloned(),
             };
             let worker = tokio::task::spawn_blocking(move || {
                 run_broker_generation(port, package_id, permit, context)
@@ -109,6 +111,7 @@ fn run_broker_generation(
         cancellation,
         alive,
         ready_sender,
+        workspace_input,
     } = context;
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -142,7 +145,7 @@ fn run_broker_generation(
 
     // Keep the Tools-owned policy read permit until the broker confirms the
     // fixed guest process is ready. Every error path releases it on return.
-    let session = match port.open_session(&package_id, &mut callbacks) {
+    let session = match port.open_session(&package_id, workspace_input.as_ref(), &mut callbacks) {
         Ok(session) => session,
         Err(error) => {
             let safe_error = haven_common::error::sanitize_error_text(&error.to_string());

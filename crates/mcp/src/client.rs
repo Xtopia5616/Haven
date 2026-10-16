@@ -15,6 +15,7 @@ use crate::{McpStdioLaunchSpec, McpStdioProcess, McpStdioProcessLauncher};
 use futures_util::future::BoxFuture;
 use haven_common::config::McpStdioExecution;
 use haven_common::{mcp::McpServerTransport, types::NetworkPolicy};
+use haven_platform::windows_container::execution::WindowsContainerWorkspaceInput;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -104,6 +105,34 @@ mod stdio_launcher_tests {
         debug_spec: StdMutex<Option<String>>,
         server_stream: StdMutex<Option<tokio::io::DuplexStream>>,
         alive: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[test]
+    fn launch_spec_debug_redacts_workspace_capability_path() {
+        let workspace = std::env::temp_dir().join(haven_common::types::new_id("file"));
+        std::fs::create_dir(&workspace).unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        let input = WindowsContainerWorkspaceInput::new(
+            haven_platform::filesystem::DirectoryCapability::open(&workspace).unwrap(),
+        );
+        let spec = McpStdioLaunchSpec::new(
+            "managed-test".into(),
+            McpStdioExecution::ManagedPackage {
+                package_id: "managed-test".into(),
+            },
+            "ignored.exe".into(),
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .with_workspace_input(Some(input));
+
+        let debug = format!("{spec:?}");
+        assert!(debug.contains("<bounded capability>"));
+        assert!(!debug.contains(&workspace_path));
+
+        drop(spec);
+        std::fs::remove_dir(&workspace).unwrap();
     }
 
     impl McpStdioProcessLauncher for StreamLauncher {
@@ -202,6 +231,7 @@ mod stdio_launcher_tests {
         launch_count: std::sync::atomic::AtomicUsize,
         call_count: std::sync::atomic::AtomicUsize,
         generations: StdMutex<Vec<Vec<String>>>,
+        workspace_inputs: StdMutex<Vec<bool>>,
     }
 
     struct OneShotLauncher {
@@ -274,6 +304,11 @@ mod stdio_launcher_tests {
                 }
                 let generation = self.stats.launch_count.fetch_add(1, Ordering::SeqCst);
                 self.stats.generations.lock().unwrap().push(Vec::new());
+                self.stats
+                    .workspace_inputs
+                    .lock()
+                    .unwrap()
+                    .push(spec.workspace_input().is_some());
                 let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
                 let (stdout, stdin) = tokio::io::split(client_stream);
                 let cancellation = CancellationToken::new();
@@ -381,11 +416,17 @@ mod stdio_launcher_tests {
         );
         template.set_network_policy(NetworkPolicy::Open).await;
 
-        for _ in 0..2 {
+        let workspace = std::env::temp_dir().join(haven_common::types::new_id("file"));
+        std::fs::create_dir(&workspace).unwrap();
+        let workspace_input = WindowsContainerWorkspaceInput::new(
+            haven_platform::filesystem::DirectoryCapability::open(&workspace).unwrap(),
+        );
+        for workspace_input in [Some(workspace_input), None] {
             let output = template
                 .call_tool_in_fresh_managed_generation(
                     "read_once",
                     serde_json::json!({}),
+                    workspace_input,
                     CancellationToken::new(),
                 )
                 .await
@@ -396,6 +437,8 @@ mod stdio_launcher_tests {
 
         assert_eq!(stats.launch_count.load(Ordering::SeqCst), 2);
         assert_eq!(stats.call_count.load(Ordering::SeqCst), 2);
+        assert_eq!(*stats.workspace_inputs.lock().unwrap(), [true, false]);
+        std::fs::remove_dir(&workspace).unwrap();
         let generations = stats.generations.lock().unwrap();
         assert_eq!(generations.len(), 2);
         for methods in generations.iter() {
@@ -436,6 +479,7 @@ mod stdio_launcher_tests {
                 "stale-target-binding",
                 "read_once",
                 serde_json::json!({}),
+                None,
                 CancellationToken::new(),
             )
             .await
@@ -450,6 +494,7 @@ mod stdio_launcher_tests {
                 &binding,
                 "read_once",
                 serde_json::json!({}),
+                None,
                 stale_cancel,
             )
             .await
@@ -463,6 +508,7 @@ mod stdio_launcher_tests {
                 &binding,
                 "read_once",
                 serde_json::json!({}),
+                None,
                 CancellationToken::new(),
             )
             .await
@@ -1652,9 +1698,10 @@ impl McpClient {
         &self,
         tool_name: &str,
         input: Value,
+        workspace_input: Option<WindowsContainerWorkspaceInput>,
         cancel: CancellationToken,
     ) -> anyhow::Result<McpCallOutput> {
-        let invocation = Arc::new(self.fresh_managed_call_client()?);
+        let invocation = Arc::new(self.fresh_managed_call_client(workspace_input)?);
         invocation
             .set_network_policy(*self.network_policy.read().await)
             .await;
@@ -1693,7 +1740,10 @@ impl McpClient {
         }
     }
 
-    fn fresh_managed_call_client(&self) -> anyhow::Result<Self> {
+    fn fresh_managed_call_client(
+        &self,
+        workspace_input: Option<WindowsContainerWorkspaceInput>,
+    ) -> anyhow::Result<Self> {
         if !matches!(self.transport, McpServerTransport::Stdio)
             || !matches!(
                 self.stdio_execution,
@@ -1722,6 +1772,10 @@ impl McpClient {
             self.stdio_process_authorization.clone(),
             self.stdio_process_launcher.clone(),
         );
+        client.stdio_launch_spec = client
+            .stdio_launch_spec
+            .clone()
+            .with_workspace_input(workspace_input);
         client.rate_limiter = self.rate_limiter.clone();
         Ok(client)
     }

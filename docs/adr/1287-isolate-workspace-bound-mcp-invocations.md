@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受。Tools MCP adapter 的 proof-bound 执行入口已实现：执行前重验授权，`WorkspaceWrite` stdio 要求规范 session/step 身份和可用 workspace，策略撤销会取消 MCP 调用。Agent 的 CodeMode/Workflow bridge 现为每次 child invocation 生成独立 canonical `step-*` 并传入 Tools；`WorkspaceWrite` 下受管 stdio 调用现使用新 MCP client generation 完成协议发现和恰好一次 `tools/call`，只有 broker/进程停止确认成功后才返回结果。nested review UI 关联、per-call workspace snapshot/挂载、output diff 与 review owner 尚未实现，当前固定 package profile 不访问项目 workspace。真实 HCS、quota 超额写入和目标机验收继续作为发布 Gate，按用户要求本轮不执行。
+已接受，分阶段实现。Tools MCP adapter 从 proof-bound 上下文取得 workspace capability；`WorkspaceWrite` stdio 要求规范 session/step 身份，并在策略撤销时取消 MCP 调用。每次调用创建新 MCP client/broker generation，完成协议发现、恰好一次 `tools/call`，等待 guest 停止确认后才返回。MCP broker protocol v11 已增加固定限额的 workspace snapshot 请求（最多 10,000 entries、深度 32、单文件 64 MiB、总量 128 MiB、传输 60 秒）；broker 校验并接收快照，将其只读挂载到单次 ManagedPackage guest。guest 写入仍只落在本次隔离 writable layer，停止时随 attempt 清理。输出差异导出、`SandboxOutputReviewOwner` 集成和嵌套 review UI 关联尚未实现，因此当前不会把 guest 文件变更晋升回项目。真实 HCS、quota 超额写入和目标机验收继续作为发布 Gate，按用户要求不执行。
 
 ## 背景
 
@@ -12,13 +12,13 @@ Tools 已在 proof-verified `ToolExecutionContext` 中保存可信 `session_id`�
 
 ## 决定
 
-- **项目文件型 ManagedPackage 调用按 MCP tool step 创建一次性 guest。** 当前 `WorkspaceWrite` 已实现新 MCP client generation、协议发现、恰好一次 `tools/call` 和停止确认；后续接入调用前 workspace snapshot、guest 内受限挂载、quota/stop proof、bounded output diff 与 review owner。下一次工具调用必须从新的 snapshot 和空 guest 层开始。不得在长驻 generation 中原地更新 workspace，也不得复用前一次调用的 writable layer。
+- **项目文件型 ManagedPackage 调用按 MCP tool step 创建一次性 guest。** `WorkspaceWrite` 已实现新 MCP client generation、协议发现、恰好一次 `tools/call`、固定上限快照传输、guest 只读挂载和停止确认；后续接入停止后的 quota 证明、writable layer bounded output diff 与 review owner。下一次工具调用必须从新的 snapshot 和空 guest 层开始。不得在长驻 generation 中原地更新 workspace，也不得复用前一次调用的 writable layer。
 - **MCP adapter 只从 proof-verified Tools 上下文取得 session、step 和 workspace capability。** session/step ID 必须用统一 `is_canonical_id` 验证；模型参数、MCP 参数、配置字符串或 renderer 不能提供这些身份。MCP crate 接收不含绝对路径的 typed workspace capability，不负责授权，也不能获得任意宿主路径。
-- **CodeMode/Workflow 的每个嵌套 MCP 调用需要自己的 canonical child step ID。** Agent bridge 为每次调用生成独立 `step-*` 并与 authorization proof 一同传入 Tools execution boundary；不得复用父 tool step 或 Workflow 中模型可见的 step label。该身份尚未连到 nested review UI；项目文件输入/输出仍需 per-call snapshot 与 review owner 到位后才可启用。
+- **CodeMode/Workflow 的每个嵌套 MCP 调用需要自己的 canonical child step ID。** Agent bridge 为每次调用生成独立 `step-*` 并与 authorization proof 一同传入 Tools execution boundary；不得复用父 tool step 或 Workflow 中模型可见的 step label。snapshot 已按每个 child invocation 单独传输；该身份尚未连到 nested review UI，输出仍需 per-call diff 与 review owner 才能展示或晋升。
 - **沿用现有授权与输出 owner。** 工具授权、MCP target binding、实时 sandbox/policy revision 和 process-start permit 都须在副作用前验证；policy permit 覆盖整次调用和 guest 收束。workspace 输入、输出文件数/字节数/深度、stdio 和单次执行时间均受硬上限约束。只在 HCS stop proof、quota 与输出 diff 验证全部成功后，才把 `SandboxOutputReview` 交给 Tools owner，并以 `(session_id, step_id)` 保留；结果不得自动写回 workspace。
 - **失败时 fail closed。** 缺少可信 session/step、workspace capability、review owner、有效授权、broker/quota proof、停止证明或有界输出审阅时，不执行或不接受输出。guest 是否已完成外部 MCP 副作用无法确定时保留 `TimedOutUnknown`/未知结果语义；禁止自动重试非幂等调用。失败或取消不得留下可复用 guest 或半成品 review。
 - **一次性调用的服务状态必须明确。** ManagedPackage 工具调用以新的 MCP 协议 generation 执行，服务状态不能依赖进程内 session memory；需要跨调用状态的服务必须把它放在 MCP 服务自身管理的外部存储中。工具目录可以继续由已绑定配置 generation 的缓存提供，但运行时调用不能重定向到重连后的 package 配置。
-- 现有 `McpSessionOpen`/session pipe 语义不能被假装成工作区传输。实现需要新的 typed broker 操作与 bounded transfer；协议版本与 HostProcess 既有行为按实际改动同步升级。绝不传输宿主绝对路径、任意命令、用户参数或环境变量作为 package 启动指令。
+- `McpSessionOpen` 携带可选、服务端固定校验的 workspace copy profile；attach 后 broker 单独请求 bounded snapshot，客户端只传树条目和文件内容。该 wire contract 升至 broker protocol v11。HostProcess 行为不变；绝不传输宿主绝对路径、任意命令、用户参数或环境变量作为 package 启动指令。
 - **真实环境验收范围保持独立。** 本地契约测试可以验证身份、上限、拒绝路径和状态机；Windows 容器 quota proof 与 guest 超额写入仍未验证，发布前必须由受支持的 Windows Containers/HCS 环境完成。
 
 ## 替代方案
@@ -30,14 +30,14 @@ Tools 已在 proof-verified `ToolExecutionContext` 中保存可信 `session_id`�
 
 ## 影响与回滚
 
-本 ADR 不直接改变代码、配置、数据库或当前运行行为，不要求数据重置。实现完成前，项目文件依赖型 ManagedPackage 仍不可用。实现切片可分别回滚到 ADR 1286 的无 workspace broker session；任何协议版本变更都必须与 app client 和 Windows broker 成对回滚。既有 MCP config 的 `ManagedPackage { package_id }` 无需增加用户命令或宿主路径字段。
+workspace snapshot 仅限新的 `WorkspaceWrite` 单次 ManagedPackage generation，不改变数据库或 MCP 配置格式；协议 v10 broker 与 v11 client/server 不互通，升级必须成对部署。输出仍停留在 guest writable layer 并在清理时丢弃，不会写入用户项目。后续输出审阅切片可独立回滚到当前只读 snapshot 行为。既有 MCP config 的 `ManagedPackage { package_id }` 无需增加用户命令或宿主路径字段。
 
 ## 验收条件
 
-- 每次调用在新的 guest 与 workspace snapshot 中执行；同一 server 的并发调用不会共享 writable layer。
+- 每次调用在新的 guest 与 workspace snapshot 中执行；broker 与客户端分别验证 workspace 复制上限；同一 server 的并发调用不会共享 writable layer。
 - 真实调用身份来自 Tools proof context，缺失或伪造身份时不会启动 guest。
 - Direct、CodeMode 和 Workflow 的每个 MCP child invocation 都使用各自的 canonical step identity；review UI 能据此显示和提升对应输出。
-- 输入复制和输出 diff 的路径、数量、字节、深度和时间上限在应用与 broker 边界分别校验。
+- 输入复制和输出 diff 的路径、数量、字节、深度和时间上限在应用与 broker 边界分别校验；输入 snapshot 已按 fixed profile 校验，输出 diff 尚未接入。
 - guest 未停止、quota 未证明、输出传输不完整、策略撤销和用户取消均不产生可提升 review；外部副作用结果不确定时不会自动重放。
 - 成功结果产生仅绑定该 MCP tool step 的 review；Files promotion 仍要求单独的实时授权和用户选择。
 - 受支持 Windows 容器环境完成 quota probe、超额写入与清理验收后，才能关闭发布 Gate。
@@ -51,4 +51,5 @@ Tools 已在 proof-verified `ToolExecutionContext` 中保存可信 `session_id`�
 - `cargo clippy --locked -p haven-agent -- -D warnings`
 - `cargo clippy --workspace --locked -- -D warnings`
 - `cargo test --workspace --locked`
+- `cargo test --locked -p haven-mcp -p haven-platform -p haven-tools`
 - 真实 HCS、quota 超额写入与目标机验收按用户要求暂缓，仍是发布 Gate。

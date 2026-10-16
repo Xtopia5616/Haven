@@ -1200,6 +1200,7 @@ mod tests {
                     request: super::super::broker_protocol::BrokerMcpSessionOpenRequest {
                         request_id: [8; 16],
                         package_id: "filesystem".to_owned(),
+                        workspace_copy: None,
                     },
                 })?,
                 Duration::from_secs(5),
