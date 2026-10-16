@@ -11,6 +11,7 @@ fn tool_for_tests() -> LoadMcpTool {
         registry: ToolRegistry::new(),
         session_tool_overlay: SessionToolOverlay::new(),
         max_tools_per_request: 128,
+        sandbox_output_reviews: crate::SandboxOutputReviewOwner::new(),
     }
 }
 
@@ -29,6 +30,7 @@ fn tool_with_source(source: McpServerConfigSource) -> LoadMcpTool {
         registry: ToolRegistry::new(),
         session_tool_overlay: SessionToolOverlay::new(),
         max_tools_per_request: 128,
+        sandbox_output_reviews: crate::SandboxOutputReviewOwner::new(),
     }
 }
 

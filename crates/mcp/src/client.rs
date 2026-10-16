@@ -3,9 +3,9 @@ mod feature_runtime;
 use crate::features::{McpPromptList, McpResourceList, McpResourceRead, McpServerCapabilities};
 use crate::protocol::{
     LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, McpCallOutput, McpClientStatus,
-    McpProtocolMode, McpRpcError, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
-    McpToolListPage, extract_mcp_content, http_parameter_headers, should_fallback_to_legacy,
-    supported_legacy_version,
+    McpManagedCallOutput, McpProtocolMode, McpRpcError, McpServerSnapshot, McpStatusChangeEvent,
+    McpToolInfo, McpToolListPage, extract_mcp_content, http_parameter_headers,
+    should_fallback_to_legacy, supported_legacy_version,
 };
 use crate::transport::{
     HttpInner, HttpShared, McpClientInner, NOTIFICATION_QUEUE_CAPACITY, StdioInner,
@@ -431,8 +431,8 @@ mod stdio_launcher_tests {
                 )
                 .await
                 .unwrap();
-            assert!(output.success);
-            assert_eq!(output.output["text"], "called");
+            assert!(output.call_output.success);
+            assert_eq!(output.call_output.output["text"], "called");
         }
 
         assert_eq!(stats.launch_count.load(Ordering::SeqCst), 2);
@@ -513,8 +513,8 @@ mod stdio_launcher_tests {
             )
             .await
             .unwrap();
-        assert!(output.success);
-        assert_eq!(output.output["text"], "called");
+        assert!(output.call_output.success);
+        assert_eq!(output.call_output.output["text"], "called");
 
         let generations = stats.generations.lock().unwrap();
         assert_eq!(stats.launch_count.load(Ordering::SeqCst), 2);
@@ -1700,7 +1700,7 @@ impl McpClient {
         input: Value,
         workspace_input: Option<WindowsContainerWorkspaceInput>,
         cancel: CancellationToken,
-    ) -> anyhow::Result<McpCallOutput> {
+    ) -> anyhow::Result<McpManagedCallOutput> {
         let invocation = Arc::new(self.fresh_managed_call_client(workspace_input)?);
         invocation
             .set_network_policy(*self.network_policy.read().await)
@@ -1723,15 +1723,18 @@ impl McpClient {
         let call_result = invocation
             .call_tool(tool_name, input, cancel.child_token())
             .await;
-        let stop_result = invocation.shutdown().await;
+        let stop_result = invocation.shutdown_inner_with_output_review(false).await;
 
         match (call_result, stop_result) {
-            (Ok(output), Ok(())) => Ok(output),
+            (Ok(call_output), Ok(sandbox_output_review)) => Ok(McpManagedCallOutput {
+                call_output,
+                sandbox_output_review,
+            }),
             (Ok(_), Err(stop_error)) => Err(anyhow::anyhow!(
                 "MCP call completed but its managed guest stop was not confirmed: {}",
                 haven_common::error::sanitize_error_text(&stop_error.to_string())
             )),
-            (Err(call_error), Ok(())) => Err(call_error),
+            (Err(call_error), Ok(_sandbox_output_review)) => Err(call_error),
             (Err(call_error), Err(stop_error)) => Err(anyhow::anyhow!(
                 "MCP call failed and its managed guest stop was not confirmed (call: {}; stop: {})",
                 haven_common::error::sanitize_error_text(&call_error.to_string()),
@@ -1785,6 +1788,15 @@ impl McpClient {
     }
 
     async fn shutdown_inner(&self, stop_notification_listener: bool) -> anyhow::Result<()> {
+        self.shutdown_inner_with_output_review(stop_notification_listener)
+            .await
+            .map(|_| ())
+    }
+
+    async fn shutdown_inner_with_output_review(
+        &self,
+        stop_notification_listener: bool,
+    ) -> anyhow::Result<Option<haven_platform::SandboxOutputReview>> {
         let protocol_mode = self.protocol_mode.lock().await.clone();
         // Cancel the client's own token first so any in-flight `call_tool`
         // (which selects on this token) aborts and releases the `inner` lock.
@@ -1816,6 +1828,7 @@ impl McpClient {
 
         let mut guard = self.inner.lock().await;
         let mut stop_failure = None;
+        let mut output_review = None;
         if matches!(guard.as_ref(), Some(McpClientInner::Stdio(_))) {
             if protocol_mode.is_legacy() {
                 let id = self.next_id.fetch_add(1, Ordering::SeqCst);
@@ -1879,6 +1892,9 @@ impl McpClient {
                         }
                     }
                 }
+                if stop_failure.is_none() {
+                    output_review = stdio.take_output_review().await;
+                }
             }
         }
         if let Some(error) = stop_failure {
@@ -1894,7 +1910,7 @@ impl McpClient {
         self.resource_read_cache.lock().await.clear();
         *self.prompt_list_cache.lock().await = None;
         *self.status.lock().await = McpClientStatus::Disconnected;
-        Ok(())
+        Ok(output_review)
     }
 
     async fn list_tool_snapshot(&self) -> anyhow::Result<McpToolListSnapshot> {

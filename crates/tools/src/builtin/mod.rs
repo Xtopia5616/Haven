@@ -102,7 +102,6 @@ pub(crate) struct MediaDeps {
 pub(crate) struct ToolRunDeps {
     pub(crate) live_outputs: Arc<crate::live_output::LiveOutputHub>,
     pub(crate) service: Arc<ToolRunService>,
-    #[cfg(windows)]
     pub(crate) sandbox_output_reviews: crate::SandboxOutputReviewOwner,
     #[cfg(windows)]
     pub(crate) windows_container_execution:
@@ -169,7 +168,6 @@ pub(crate) async fn register_builtin_tools(
             ToolRunDeps {
                 live_outputs,
                 service: tool_run_service,
-                #[cfg(windows)]
                 sandbox_output_reviews,
                 #[cfg(windows)]
                 windows_container_execution,
@@ -362,6 +360,7 @@ pub(crate) async fn register_builtin_tools(
         registry: registry.clone(),
         session_tool_overlay,
         max_tools_per_request: max_tools,
+        sandbox_output_reviews: sandbox_output_reviews.clone(),
     }));
     if let Some(ctx) = admin_context {
         // The composition root provides this typed capability explicitly;

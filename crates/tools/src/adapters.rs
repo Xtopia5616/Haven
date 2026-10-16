@@ -9,7 +9,10 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::operation_view::{OperationIdentity, OperationSpec};
-use crate::{OperationPolicy, StructuredToolError, Tool, ToolErrorMetadata, ToolResult};
+use crate::{
+    OperationPolicy, SandboxOutputReviewPort, StructuredToolError, Tool, ToolErrorMetadata,
+    ToolResult,
+};
 use haven_mcp::{McpManager, McpToolInfo};
 
 /// External capability metadata is data, not an instruction channel. Keep
@@ -189,6 +192,7 @@ pub struct McpToolAdapter {
     server_name: String,
     transport: McpServerTransport,
     spec: OperationSpec,
+    sandbox_output_reviews: Option<crate::SandboxOutputReviewOwner>,
     #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
     panic_on_execute: bool,
 }
@@ -199,6 +203,22 @@ fn permission_error_metadata() -> ToolErrorMetadata {
         outcome: haven_common::tools::ToolExecutionOutcome::Failed,
         retryability: haven_common::tools::ToolRetryability::NotRetryable,
     }
+}
+
+fn mcp_call_error(error: anyhow::Error) -> anyhow::Error {
+    let metadata = if error
+        .downcast_ref::<haven_mcp::McpTargetChanged>()
+        .is_some()
+    {
+        ToolErrorMetadata {
+            class: haven_common::tools::ToolErrorClass::Permission,
+            outcome: haven_common::tools::ToolExecutionOutcome::Failed,
+            retryability: haven_common::tools::ToolRetryability::NotRetryable,
+        }
+    } else {
+        ToolErrorMetadata::unknown_outcome()
+    };
+    anyhow::Error::new(StructuredToolError::new(error.to_string(), metadata))
 }
 
 impl McpToolAdapter {
@@ -231,9 +251,18 @@ impl McpToolAdapter {
             server_name,
             transport,
             spec,
+            sandbox_output_reviews: None,
             #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
             panic_on_execute: false,
         }
+    }
+
+    pub(crate) fn with_sandbox_output_reviews(
+        mut self,
+        reviews: crate::SandboxOutputReviewOwner,
+    ) -> Self {
+        self.sandbox_output_reviews = Some(reviews);
+        self
     }
 
     /// Construct a real MCP adapter that panics when executed. This is only
@@ -291,7 +320,7 @@ impl McpToolAdapter {
         workspace_input: Option<
             haven_platform::windows_container::execution::WindowsContainerWorkspaceInput,
         >,
-    ) -> anyhow::Result<ToolResult> {
+    ) -> anyhow::Result<(ToolResult, Option<haven_platform::SandboxOutputReview>)> {
         #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
         if self.panic_on_execute {
             panic!("simulated MCP adapter panic");
@@ -318,8 +347,9 @@ impl McpToolAdapter {
                 permission_error_metadata(),
             )));
         }
-        let result = if one_shot_managed_call {
-            self.manager
+        let (out, output_review) = if one_shot_managed_call {
+            let managed = self
+                .manager
                 .call_tool_once_at_target_binding(
                     &self.server_name,
                     &target_binding,
@@ -329,8 +359,11 @@ impl McpToolAdapter {
                     cancel,
                 )
                 .await
+                .map_err(mcp_call_error)?;
+            (managed.call_output, managed.sandbox_output_review)
         } else {
-            self.manager
+            let out = self
+                .manager
                 .call_tool_at_target_binding(
                     &self.server_name,
                     &target_binding,
@@ -339,29 +372,19 @@ impl McpToolAdapter {
                     cancel,
                 )
                 .await
+                .map_err(mcp_call_error)?;
+            (out, None)
         };
-        let out = result.map_err(|error| {
-            let metadata = if error
-                .downcast_ref::<haven_mcp::McpTargetChanged>()
-                .is_some()
-            {
-                ToolErrorMetadata {
-                    class: haven_common::tools::ToolErrorClass::Permission,
-                    outcome: haven_common::tools::ToolExecutionOutcome::Failed,
-                    retryability: haven_common::tools::ToolRetryability::NotRetryable,
-                }
-            } else {
-                ToolErrorMetadata::unknown_outcome()
-            };
-            anyhow::Error::new(StructuredToolError::new(error.to_string(), metadata))
-        })?;
         if out.success {
-            Ok(ToolResult::from_output(out.output, false))
+            Ok((ToolResult::from_output(out.output, false), output_review))
         } else {
-            Ok(ToolResult::failed_with_metadata(
-                out.output,
-                "MCP tool returned an error",
-                ToolErrorMetadata::unknown_failure(),
+            Ok((
+                ToolResult::failed_with_metadata(
+                    out.output,
+                    "MCP tool returned an error",
+                    ToolErrorMetadata::unknown_failure(),
+                ),
+                output_review,
             ))
         }
     }
@@ -415,6 +438,7 @@ impl Tool for McpToolAdapter {
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         self.execute_target_bound(input, cancel, None, false, None)
             .await
+            .map(|(result, _)| result)
     }
 
     async fn execute_with_authorization_target(
@@ -461,6 +485,7 @@ impl Tool for McpToolAdapter {
             == haven_common::types::SandboxMode::WorkspaceWrite
             && self.transport == McpServerTransport::Stdio;
         let mut workspace_input = None;
+        let mut review_reservation = None;
         if one_shot_managed_call {
             let session_id = context.call_session_id.as_deref().ok_or_else(|| {
                 crate::security::execution_policy_denied(
@@ -488,10 +513,24 @@ impl Tool for McpToolAdapter {
                         "workspace-write MCP stdio has no authorized execution workspace".into(),
                     )
                 })?;
+            let (policy_revision, workspace_generation) = authorization.policy_stamp();
             workspace_input = Some(
                 haven_platform::windows_container::execution::WindowsContainerWorkspaceInput::new(
-                    directory,
-                ),
+                    directory.clone(),
+                )
+                .with_review_stamp(workspace_generation, policy_revision)
+                .map_err(|error| crate::security::execution_policy_denied(error.to_string()))?,
+            );
+            let reviews = self.sandbox_output_reviews.as_ref().ok_or_else(|| {
+                crate::security::execution_policy_denied(
+                    "workspace-write MCP stdio output review is unavailable".into(),
+                )
+            })?;
+            review_reservation = Some(
+                reviews
+                    .reserve(session_id, step_id, 384 * 1024 * 1024)
+                    .await
+                    .map_err(anyhow::Error::msg)?,
             );
         }
 
@@ -518,7 +557,20 @@ impl Tool for McpToolAdapter {
             .await;
         revocation.abort();
         let _ = revocation.await;
-        result
+        let (result, output_review) = result?;
+        if one_shot_managed_call {
+            let output_review = output_review.ok_or_else(|| {
+                crate::security::execution_policy_denied(
+                    "workspace-write MCP broker returned no bounded output review".into(),
+                )
+            })?;
+            review_reservation
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("MCP output review reservation is unavailable"))?
+                .retain(output_review)
+                .map_err(anyhow::Error::msg)?;
+        }
+        Ok(result)
     }
 }
 

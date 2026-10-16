@@ -98,7 +98,6 @@ impl BuiltinCatalog {
 /// replacing [`PlatformRuntime`].
 pub(crate) struct ToolRuntime {
     pub(crate) managed_assets: ManagedAssetRegistry,
-    #[cfg(windows)]
     pub(crate) sandbox_output_reviews: crate::SandboxOutputReviewOwner,
     #[cfg(windows)]
     pub(crate) windows_container_execution:
@@ -122,7 +121,6 @@ impl ToolRuntime {
         let default_context_limits = ContextLimitsConfig::default();
         Self {
             managed_assets: ManagedAssetRegistry::default(),
-            #[cfg(windows)]
             sandbox_output_reviews: crate::SandboxOutputReviewOwner::new(),
             #[cfg(windows)]
             windows_container_execution:

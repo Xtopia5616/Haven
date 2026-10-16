@@ -129,6 +129,12 @@ pub trait McpStdioProcess: Send {
     /// Wait for exit. The returned future must be cancellation-safe: callers
     /// may stop polling at a deadline and poll a fresh wait future later.
     fn wait(&mut self) -> BoxFuture<'_, io::Result<()>>;
+
+    /// Return the bounded sandbox output review produced by a completed
+    /// brokered one-shot invocation, if the process boundary provides one.
+    fn take_output_review(&mut self) -> Option<haven_platform::SandboxOutputReview> {
+        None
+    }
 }
 
 /// Creates a server process generation after receiving the opaque live start

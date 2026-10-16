@@ -34,6 +34,7 @@ struct BrokerGenerationContext {
     alive: Arc<AtomicBool>,
     ready_sender: oneshot::Sender<Result<(), String>>,
     workspace_input: Option<WindowsContainerWorkspaceInput>,
+    output_review: Arc<std::sync::Mutex<Option<haven_platform::SandboxOutputReview>>>,
 }
 
 pub(crate) struct BrokeredMcpStdioProcessLauncher {
@@ -65,6 +66,7 @@ impl McpStdioProcessLauncher for BrokeredMcpStdioProcessLauncher {
             let alive = Arc::new(AtomicBool::new(false));
             let worker_alive = alive.clone();
             let (ready_sender, ready_receiver) = oneshot::channel::<Result<(), String>>();
+            let output_review = Arc::new(std::sync::Mutex::new(None));
             let port = self.port.clone();
             let package_id = package_id.clone();
             let context = BrokerGenerationContext {
@@ -75,6 +77,7 @@ impl McpStdioProcessLauncher for BrokeredMcpStdioProcessLauncher {
                 alive: worker_alive,
                 ready_sender,
                 workspace_input: spec.workspace_input().cloned(),
+                output_review: output_review.clone(),
             };
             let worker = tokio::task::spawn_blocking(move || {
                 run_broker_generation(port, package_id, permit, context)
@@ -93,6 +96,7 @@ impl McpStdioProcessLauncher for BrokeredMcpStdioProcessLauncher {
                 cancellation,
                 alive,
                 worker: Some(worker),
+                output_review,
             }) as Box<dyn McpStdioProcess>)
         })
     }
@@ -112,6 +116,7 @@ fn run_broker_generation(
         alive,
         ready_sender,
         workspace_input,
+        output_review,
     } = context;
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -165,6 +170,7 @@ fn run_broker_generation(
         worker_stderr,
         cancellation,
         stop_handle,
+        output_review,
     ))?;
     drop(alive_guard);
     Ok(())
@@ -177,6 +183,7 @@ async fn relay_session(
     mut stderr: DuplexStream,
     cancellation: CancellationToken,
     stop_handle: Arc<dyn WindowsContainerMcpSessionStopHandle>,
+    output_review: Arc<std::sync::Mutex<Option<haven_platform::SandboxOutputReview>>>,
 ) -> io::Result<()> {
     let mut input = vec![0u8; 16 * 1024];
     let mut input_closed = false;
@@ -248,7 +255,21 @@ async fn relay_session(
                     }
                     Ok(WindowsContainerMcpSessionEvent::Stdout(_))
                     | Ok(WindowsContainerMcpSessionEvent::Stderr(_)) => {}
-                    Ok(WindowsContainerMcpSessionEvent::Exited(_)) => return Ok(()),
+                    Ok(WindowsContainerMcpSessionEvent::OutputReviewReady) => {}
+                    Ok(WindowsContainerMcpSessionEvent::Exited(_)) => {
+                        if let Some(review) = session.take_output_review() {
+                            let mut slot = output_review.lock().map_err(|_| {
+                                io::Error::other("MCP output review owner is unavailable")
+                            })?;
+                            if slot.is_some() {
+                                return Err(io::Error::other(
+                                    "MCP broker returned more than one output review",
+                                ));
+                            }
+                            *slot = Some(review);
+                        }
+                        return Ok(());
+                    }
                     Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
                     Err(error) => return Err(error),
                 }
@@ -276,6 +297,7 @@ struct BrokeredMcpStdioProcess {
     cancellation: CancellationToken,
     alive: Arc<AtomicBool>,
     worker: Option<JoinHandle<io::Result<()>>>,
+    output_review: Arc<std::sync::Mutex<Option<haven_platform::SandboxOutputReview>>>,
 }
 
 impl McpStdioProcess for BrokeredMcpStdioProcess {
@@ -319,6 +341,10 @@ impl McpStdioProcess for BrokeredMcpStdioProcess {
             self.worker.take();
             result
         })
+    }
+
+    fn take_output_review(&mut self) -> Option<haven_platform::SandboxOutputReview> {
+        self.output_review.lock().ok()?.take()
     }
 }
 
@@ -499,6 +525,7 @@ mod tests {
             worker_stderr,
             CancellationToken::new(),
             state.stop.clone(),
+            Arc::new(Mutex::new(None)),
         )
         .await
         .unwrap();
@@ -534,6 +561,7 @@ mod tests {
             worker_stderr,
             cancellation,
             state.stop.clone(),
+            Arc::new(Mutex::new(None)),
         )
         .await
         .unwrap();
@@ -558,6 +586,7 @@ mod tests {
             worker_stderr,
             cancellation,
             stop.clone(),
+            Arc::new(Mutex::new(None)),
         )
         .await
         .unwrap();

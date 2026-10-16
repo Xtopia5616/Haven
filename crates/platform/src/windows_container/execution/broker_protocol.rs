@@ -22,7 +22,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 11;
+pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 12;
 pub(crate) const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
 const MAX_BINARY_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_MCP_SESSION_CHUNK_BYTES: usize = 16 * 1024;
@@ -207,6 +207,9 @@ pub(crate) enum BrokerControlMessage {
         /// reported a natural process exit.
         exit_code: Option<u32>,
     },
+    McpSessionOutputAcknowledged {
+        session_id: [u8; 16],
+    },
     Execute {
         request: BrokerExecutionRequest,
     },
@@ -337,6 +340,7 @@ impl BrokerControlMessage {
             | Self::WorkspaceSnapshotCommit { .. } => Ok(()),
             Self::McpSessionInputClosed { session_id }
             | Self::McpSessionStop { session_id }
+            | Self::McpSessionOutputAcknowledged { session_id }
             | Self::McpSessionExited { session_id, .. }
                 if session_id.iter().all(|byte| *byte == 0) =>
             {
@@ -344,6 +348,7 @@ impl BrokerControlMessage {
             }
             Self::McpSessionInputClosed { .. }
             | Self::McpSessionStop { .. }
+            | Self::McpSessionOutputAcknowledged { .. }
             | Self::McpSessionExited { .. } => Ok(()),
             Self::Execute { request } => request
                 .validate()
@@ -1086,6 +1091,7 @@ mod tests {
             },
             BrokerControlMessage::McpSessionInputClosed { session_id },
             BrokerControlMessage::McpSessionStop { session_id },
+            BrokerControlMessage::McpSessionOutputAcknowledged { session_id },
             BrokerControlMessage::McpSessionExited {
                 session_id,
                 exit_code: Some(17),

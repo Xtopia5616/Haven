@@ -9,10 +9,12 @@ use super::{
     WindowsContainerMcpSession, WindowsContainerMcpSessionCallbacks,
     WindowsContainerMcpSessionEvent, WindowsContainerMcpSessionPort,
     WindowsContainerMcpSessionStopHandle, WindowsContainerWorkspaceInput,
-    mcp_workspace_copy_limits, private,
+    mcp_workspace_copy_limits, mcp_workspace_output_diff_limits, private,
 };
-use crate::filesystem::DirectoryCapability;
+use crate::filesystem::{DirectoryCapability, DirectoryTreeChange, DirectoryTreeFileCopySummary};
+use crate::sandbox_output::{SandboxOutputReview, SandboxOutputWorkspaceOwner};
 use std::io;
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -24,6 +26,7 @@ const STARTUP_READ_INTERVAL: Duration = Duration::from_millis(20);
 const STOP_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const STOP_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(60);
 const WORKSPACE_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60);
+const WORKSPACE_OUTPUT_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(super) struct BrokerMcpSessionProvider;
 
@@ -104,6 +107,7 @@ impl WindowsContainerMcpSessionPort for BrokerMcpSessionProvider {
             return Err(error);
         }
 
+        let mut workspace_snapshot = None;
         if let Some(workspace_input) = workspace_input {
             with_cancellation_watcher(
                 callbacks.is_cancelled,
@@ -121,14 +125,18 @@ impl WindowsContainerMcpSessionPort for BrokerMcpSessionProvider {
                         }
                     }
                     let limits = mcp_workspace_copy_limits()?;
+                    let review_stamp = workspace_input.review_stamp().ok_or_else(|| {
+                        invalid_data("MCP workspace input is missing its authorization stamp")
+                    })?;
                     let storage = tempfile::tempdir()?;
-                    let snapshot = DirectoryCapability::open(storage.path())?;
-                    workspace_input.copy_snapshot_to(&snapshot, limits, || {
+                    std::fs::create_dir(storage.path().join("baseline"))?;
+                    let baseline = DirectoryCapability::open(&storage.path().join("baseline"))?;
+                    workspace_input.copy_snapshot_to(&baseline, limits, || {
                         snapshot_cancellation.is_cancelled()
                             || std::time::Instant::now() >= deadline
                     })?;
                     super::workspace_transfer::send_workspace_snapshot(
-                        &snapshot,
+                        &baseline,
                         limits,
                         |frame| session.write_frame_until(&frame, deadline),
                         || {
@@ -150,7 +158,14 @@ impl WindowsContainerMcpSessionPort for BrokerMcpSessionProvider {
                         _ => Err(invalid_data(
                             "MCP broker did not accept the workspace snapshot",
                         )),
-                    }
+                    }?;
+                    workspace_snapshot = Some(BrokerMcpWorkspaceSnapshot {
+                        storage,
+                        baseline,
+                        execution_workspace_generation: review_stamp.0,
+                        policy_revision: review_stamp.1,
+                    });
+                    Ok(())
                 },
             )?;
             if (callbacks.is_cancelled)() {
@@ -188,6 +203,8 @@ impl WindowsContainerMcpSessionPort for BrokerMcpSessionProvider {
             client: session,
             session_id,
             stop_handle,
+            workspace_snapshot,
+            output_review: None,
         }) as Box<dyn WindowsContainerMcpSession>)
     }
 }
@@ -299,10 +316,118 @@ fn await_session_startup(
     }
 }
 
+struct BrokerMcpWorkspaceSnapshot {
+    storage: tempfile::TempDir,
+    baseline: DirectoryCapability,
+    execution_workspace_generation: u64,
+    policy_revision: u64,
+}
+
+struct BrokerMcpReviewWorkspace {
+    storage: tempfile::TempDir,
+    output: DirectoryCapability,
+    execution_workspace_generation: u64,
+    policy_revision: u64,
+    initial_snapshot_bytes: u64,
+}
+
+impl SandboxOutputWorkspaceOwner for BrokerMcpReviewWorkspace {
+    fn execution_workspace_generation(&self) -> u64 {
+        self.execution_workspace_generation
+    }
+
+    fn policy_revision(&self) -> u64 {
+        self.policy_revision
+    }
+
+    fn initial_snapshot_byte_count(&self) -> u64 {
+        self.initial_snapshot_bytes
+    }
+
+    fn promote_created_file(
+        &self,
+        change: &DirectoryTreeChange,
+        destination: &DirectoryCapability,
+        destination_relative: &Path,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> io::Result<DirectoryTreeFileCopySummary> {
+        self.output.copy_reviewed_created_file_to(
+            change,
+            destination,
+            destination_relative,
+            is_cancelled,
+        )
+    }
+
+    fn cleanup(self: Box<Self>) -> io::Result<()> {
+        let Self {
+            output, storage, ..
+        } = *self;
+        drop(output);
+        storage.close()
+    }
+}
+
 struct BrokerMcpSession {
     client: BrokerPipeClient,
     session_id: [u8; 16],
     stop_handle: Arc<BrokerMcpSessionStopHandle>,
+    workspace_snapshot: Option<BrokerMcpWorkspaceSnapshot>,
+    output_review: Option<SandboxOutputReview>,
+}
+
+impl BrokerMcpSession {
+    fn receive_output_review(&mut self, first_frame: BrokerFrame) -> io::Result<()> {
+        let snapshot = self
+            .workspace_snapshot
+            .take()
+            .ok_or_else(|| invalid_data("MCP broker sent an unrequested workspace review"))?;
+        let limits = mcp_workspace_output_diff_limits()?;
+        std::fs::create_dir(snapshot.storage.path().join("output"))?;
+        std::fs::create_dir(snapshot.storage.path().join("output-files"))?;
+        let output = DirectoryCapability::open(&snapshot.storage.path().join("output"))?;
+        let file_staging =
+            DirectoryCapability::open(&snapshot.storage.path().join("output-files"))?;
+        let deadline = std::time::Instant::now() + WORKSPACE_OUTPUT_TIMEOUT;
+        let cancellation = self.client.cancellation();
+        let mut first = Some(first_frame);
+        let received = super::output_transfer::receive_output_snapshot(
+            &snapshot.baseline,
+            output,
+            file_staging,
+            limits,
+            || {
+                if let Some(frame) = first.take() {
+                    Ok(frame)
+                } else {
+                    self.client.read_frame_until(deadline)
+                }
+            },
+            || cancellation.is_cancelled() || std::time::Instant::now() >= deadline,
+        )?;
+        let acknowledgment = BrokerControlMessage::McpSessionOutputAcknowledged {
+            session_id: self.session_id,
+        };
+        self.client
+            .write_frame_until(&BrokerFrame::control(&acknowledgment)?, deadline)?;
+        let BrokerMcpWorkspaceSnapshot {
+            storage,
+            baseline: _,
+            execution_workspace_generation,
+            policy_revision,
+        } = snapshot;
+        self.output_review = Some(SandboxOutputReview::new(
+            Box::new(BrokerMcpReviewWorkspace {
+                storage,
+                output: received.output,
+                execution_workspace_generation,
+                policy_revision,
+                initial_snapshot_bytes: received.initial_snapshot_bytes,
+            }),
+            received.manifest,
+        ));
+        Ok(())
+    }
 }
 
 impl WindowsContainerMcpSession for BrokerMcpSession {
@@ -329,6 +454,12 @@ impl WindowsContainerMcpSession for BrokerMcpSession {
                 frame.payload().to_vec(),
             )),
             BrokerFrameKind::Control => match frame.decode_control()? {
+                message @ (BrokerControlMessage::OutputEntry { .. }
+                | BrokerControlMessage::OutputSnapshotComplete { .. }) => {
+                    let first_frame = BrokerFrame::control(&message)?;
+                    self.receive_output_review(first_frame)?;
+                    Ok(WindowsContainerMcpSessionEvent::OutputReviewReady)
+                }
                 BrokerControlMessage::McpSessionExited {
                     session_id,
                     exit_code,
@@ -344,6 +475,10 @@ impl WindowsContainerMcpSession for BrokerMcpSession {
 
     fn stop_handle(&self) -> Arc<dyn WindowsContainerMcpSessionStopHandle> {
         self.stop_handle.clone()
+    }
+
+    fn take_output_review(&mut self) -> Option<SandboxOutputReview> {
+        self.output_review.take()
     }
 }
 

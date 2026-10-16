@@ -112,6 +112,7 @@ const MCP_WORKSPACE_MAX_ENTRIES: usize = 10_000;
 const MCP_WORKSPACE_MAX_DEPTH: usize = 32;
 const MCP_WORKSPACE_MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MCP_WORKSPACE_MAX_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
+const MCP_WORKSPACE_MAX_CHANGES: usize = 4_096;
 const MAX_STDIO_BYTES_PER_STREAM: usize = 64 * 1024 * 1024;
 const MAX_EXECUTION_TIMEOUT: Duration =
     Duration::from_secs(haven_common::config::MAX_TOOL_TIMEOUT_SECS);
@@ -137,6 +138,7 @@ pub enum WindowsContainerOutputStream {
 #[derive(Clone)]
 pub struct WindowsContainerWorkspaceInput {
     source: DirectoryCapability,
+    review_stamp: Option<(u64, u64)>,
 }
 
 /// Bounded stdout/stderr retained after the provider drains the guest pipes.
@@ -193,6 +195,7 @@ pub struct WindowsContainerProcessStartCallbacks<'a> {
 pub enum WindowsContainerMcpSessionEvent {
     Stdout(Vec<u8>),
     Stderr(Vec<u8>),
+    OutputReviewReady,
     Exited(Option<u32>),
 }
 
@@ -203,6 +206,9 @@ pub trait WindowsContainerMcpSession {
     fn close_stdin(&mut self) -> io::Result<()>;
     fn read_event(&mut self, timeout: Duration) -> io::Result<WindowsContainerMcpSessionEvent>;
     fn stop_handle(&self) -> std::sync::Arc<dyn WindowsContainerMcpSessionStopHandle>;
+    fn take_output_review(&mut self) -> Option<SandboxOutputReview> {
+        None
+    }
 }
 
 /// Independent stop capability so process cancellation can reach the broker
@@ -329,7 +335,30 @@ impl<'a> WindowsContainerOutputSink<'a> {
 
 impl WindowsContainerWorkspaceInput {
     pub fn new(source: DirectoryCapability) -> Self {
-        Self { source }
+        Self {
+            source,
+            review_stamp: None,
+        }
+    }
+
+    /// Bind a brokered MCP output review to the authorization that supplied
+    /// this exact workspace snapshot.
+    pub fn with_review_stamp(
+        mut self,
+        execution_workspace_generation: u64,
+        policy_revision: u64,
+    ) -> io::Result<Self> {
+        if execution_workspace_generation == 0 || policy_revision == 0 {
+            return Err(invalid_request(
+                "MCP output review requires workspace and policy stamps",
+            ));
+        }
+        self.review_stamp = Some((execution_workspace_generation, policy_revision));
+        Ok(self)
+    }
+
+    pub fn review_stamp(&self) -> Option<(u64, u64)> {
+        self.review_stamp
     }
 
     /// Copy the pinned source tree into an empty private staging capability.
@@ -353,6 +382,16 @@ pub fn mcp_workspace_copy_limits() -> io::Result<DirectoryTreeCopyLimits> {
     DirectoryTreeCopyLimits::new(
         MCP_WORKSPACE_MAX_ENTRIES,
         MCP_WORKSPACE_MAX_DEPTH,
+        MCP_WORKSPACE_MAX_FILE_BYTES,
+        MCP_WORKSPACE_MAX_TOTAL_BYTES,
+    )
+}
+
+/// Fixed changed-file budget for output reviews from managed MCP calls.
+pub fn mcp_workspace_output_diff_limits() -> io::Result<DirectoryTreeDiffLimits> {
+    DirectoryTreeDiffLimits::new(
+        mcp_workspace_copy_limits()?,
+        MCP_WORKSPACE_MAX_CHANGES,
         MCP_WORKSPACE_MAX_FILE_BYTES,
         MCP_WORKSPACE_MAX_TOTAL_BYTES,
     )

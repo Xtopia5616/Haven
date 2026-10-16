@@ -31,6 +31,7 @@
 	import type { ToolResultPresentationOutcome } from '$lib/streaming.ts';
 	import ToolShellResult from '$lib/ToolShellResult.svelte';
 	import ToolSkillResult from '$lib/ToolSkillResult.svelte';
+	import ToolMcpResult from '$lib/ToolMcpResult.svelte';
 
 	type TerminalToolRunStatus = Extract<ToolRunStatus, 'completed' | 'failed' | 'cancelled'>;
 
@@ -590,6 +591,16 @@
 						/>
 					{:else if toolName.startsWith('skill__') || toolName.startsWith('skill::')}
 						<ToolSkillResult
+							{data}
+							{rawText}
+							{kind}
+							{liveStreaming}
+							sessionId={sessionId ?? null}
+							sourceStepId={messageId}
+							failed={failedWithoutOutput}
+						/>
+					{:else if toolName.startsWith('mcp__') || toolName.startsWith('mcp::')}
+						<ToolMcpResult
 							{data}
 							{rawText}
 							{kind}

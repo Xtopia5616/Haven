@@ -12,10 +12,13 @@ use super::broker_service::{
     McpSessionControlSignal, execution_gate_status, quota_runtime_attestation, write_broker_failure,
 };
 use super::broker_workspace::{BrokerWorkspaceAttempt, BrokerWorkspaceScratchRoot};
+use super::hcs_export_worker::export_stopped_workspace_output;
 use super::named_pipe::{BrokerPipeCancellation, BrokerPipeConnection, BrokerPipeListener};
+use super::output_transfer::send_output_snapshot;
 use super::quota_attestation::QuotaRuntimeAttestation;
 use crate::windows_container::execution::WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
 use crate::windows_container::execution::WindowsContainerOutputStream;
+use crate::windows_container::execution::mcp_workspace_output_diff_limits;
 use crate::windows_container::hcs_mcp_session::HcsMcpGuestSessionOwner;
 use crate::windows_container::hcs_process_output::HcsOutputChunkSink;
 use crate::windows_container::hcs_process_output::HcsOutputDrainProgress;
@@ -32,6 +35,7 @@ const PROCESS_POLL_TIMEOUT: Duration = Duration::from_millis(1);
 const FINAL_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 const FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const WORKSPACE_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_EXPORT_TRANSPORT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 pub(super) struct PendingMcpSession {
     request_id: [u8; 16],
@@ -150,6 +154,7 @@ pub(super) fn serve_pending(
         }
     };
 
+    let mut workspace_baseline_bytes = None;
     if let Some(workspace_copy) = workspace_copy {
         let limits = match workspace_copy.to_platform_limits() {
             Ok(limits) => limits,
@@ -182,20 +187,24 @@ pub(super) fn serve_pending(
                     || std::time::Instant::now() >= snapshot_deadline
             },
         );
-        if let Err(error) = transfer {
-            let timed_out = std::time::Instant::now() >= snapshot_deadline;
-            cleanup_quiescent_attempt(&mut attempt, None)?;
-            let code = match (timed_out, error.kind()) {
-                (true, _) | (_, io::ErrorKind::TimedOut) => BrokerFailureCode::TimedOut,
-                (_, io::ErrorKind::Interrupted) => BrokerFailureCode::Cancelled,
-                (_, io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied) => {
-                    BrokerFailureCode::InvalidRequest
-                }
-                _ => BrokerFailureCode::StagingFailed,
-            };
-            let _ = write_session_failure(&session_connection, request_id, code);
-            return Ok(McpSessionDisposition::Continue);
-        }
+        let (_, workspace_summary) = match transfer {
+            Ok(transfer) => transfer,
+            Err(error) => {
+                let timed_out = std::time::Instant::now() >= snapshot_deadline;
+                cleanup_quiescent_attempt(&mut attempt, None)?;
+                let code = match (timed_out, error.kind()) {
+                    (true, _) | (_, io::ErrorKind::TimedOut) => BrokerFailureCode::TimedOut,
+                    (_, io::ErrorKind::Interrupted) => BrokerFailureCode::Cancelled,
+                    (_, io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied) => {
+                        BrokerFailureCode::InvalidRequest
+                    }
+                    _ => BrokerFailureCode::StagingFailed,
+                };
+                let _ = write_session_failure(&session_connection, request_id, code);
+                return Ok(McpSessionDisposition::Continue);
+            }
+        };
+        workspace_baseline_bytes = Some(workspace_summary.byte_count);
 
         let accepted = BrokerControlMessage::WorkspaceSnapshotAccepted {
             request_id,
@@ -398,6 +407,132 @@ pub(super) fn serve_pending(
         }
     };
     let quota_verified = scratch.verify_maximum_size().is_ok();
+    let mut end = match end {
+        Ok(end) => end,
+        Err(error) => {
+            drop(stopped);
+            cleanup_quiescent_attempt(&mut attempt, Some(&mut scratch))?;
+            return Err(error);
+        }
+    };
+    if !quota_verified {
+        end = failed_pump(BrokerFailureCode::QuotaUnattested);
+    }
+
+    if workspace_copy.is_some() && end.report_exit {
+        let Some(initial_snapshot_bytes) = workspace_baseline_bytes else {
+            drop(stopped);
+            quarantine_attempt(&mut attempt, Some(&mut scratch))?;
+            return Err(io::Error::other(
+                "MCP workspace review is missing its transferred baseline",
+            ));
+        };
+        let limits = match mcp_workspace_output_diff_limits() {
+            Ok(limits) => limits,
+            Err(_) => {
+                drop(stopped);
+                cleanup_quiescent_attempt(&mut attempt, Some(&mut scratch))?;
+                write_session_failure(
+                    &session_connection,
+                    request_id,
+                    BrokerFailureCode::InvalidRequest,
+                )?;
+                return Ok(McpSessionDisposition::Continue);
+            }
+        };
+        let output = match export_stopped_workspace_output(
+            &mut attempt,
+            &stopped,
+            &config,
+            MAX_EXPORT_TRANSPORT_BYTES,
+            limits,
+            WORKSPACE_SNAPSHOT_TIMEOUT,
+            || session_connection.peer_disconnected() || cancellation.is_cancelled(),
+        ) {
+            Ok(output) => output,
+            Err(error) if error.cleanup_safe() => {
+                drop(stopped);
+                cleanup_quiescent_attempt(&mut attempt, Some(&mut scratch))?;
+                let code = if error.kind()
+                    == super::hcs_export_worker::HcsExportWorkerFailureKind::TimedOut
+                {
+                    BrokerFailureCode::TimedOut
+                } else {
+                    BrokerFailureCode::StagingFailed
+                };
+                let _ = write_session_failure(&session_connection, request_id, code);
+                return Ok(McpSessionDisposition::Continue);
+            }
+            Err(_) => {
+                drop(stopped);
+                quarantine_attempt(&mut attempt, Some(&mut scratch))?;
+                return Err(io::Error::other(
+                    "MCP workspace output export could not be safely completed",
+                ));
+            }
+        };
+        let transfer_deadline = std::time::Instant::now() + WORKSPACE_SNAPSHOT_TIMEOUT;
+        let baseline = attempt.staging()?.clone();
+        let transfer = send_output_snapshot(
+            &output,
+            &baseline,
+            limits,
+            initial_snapshot_bytes,
+            |frame| session_connection.write_frame_until(&frame, transfer_deadline),
+            || {
+                session_connection.peer_disconnected()
+                    || cancellation.is_cancelled()
+                    || std::time::Instant::now() >= transfer_deadline
+            },
+        );
+        drop(output);
+        drop(baseline);
+        if transfer.is_err() {
+            drop(stopped);
+            cleanup_quiescent_attempt(&mut attempt, Some(&mut scratch))?;
+            let code = if std::time::Instant::now() >= transfer_deadline {
+                BrokerFailureCode::TimedOut
+            } else {
+                BrokerFailureCode::StagingFailed
+            };
+            let _ = write_session_failure(&session_connection, request_id, code);
+            return Ok(McpSessionDisposition::Continue);
+        }
+        let acknowledgement = session_connection
+            .read_frame_until(transfer_deadline)
+            .and_then(|frame| frame.decode_control());
+        match acknowledgement {
+            Ok(BrokerControlMessage::McpSessionOutputAcknowledged {
+                session_id: acknowledged_session,
+            }) if acknowledged_session == session_id => {}
+            Ok(_) => {
+                drop(stopped);
+                cleanup_quiescent_attempt(&mut attempt, Some(&mut scratch))?;
+                write_session_failure(
+                    &session_connection,
+                    request_id,
+                    BrokerFailureCode::InvalidRequest,
+                )?;
+                return Ok(McpSessionDisposition::Continue);
+            }
+            Err(error) => {
+                drop(stopped);
+                cleanup_quiescent_attempt(&mut attempt, Some(&mut scratch))?;
+                if peer_pipe_error(&error) {
+                    return Ok(McpSessionDisposition::Continue);
+                }
+                let code = if std::time::Instant::now() >= transfer_deadline
+                    || error.kind() == io::ErrorKind::TimedOut
+                {
+                    BrokerFailureCode::TimedOut
+                } else {
+                    BrokerFailureCode::InvalidRequest
+                };
+                let _ = write_session_failure(&session_connection, request_id, code);
+                return Ok(McpSessionDisposition::Continue);
+            }
+        }
+    }
     drop(stopped);
 
     match cleanup_quiescent_attempt(&mut attempt, Some(&mut scratch)) {
@@ -408,11 +543,6 @@ pub(super) fn serve_pending(
         }
     }
 
-    let end = if quota_verified {
-        end?
-    } else {
-        failed_pump(BrokerFailureCode::QuotaUnattested)
-    };
     if end.report_exit {
         let exited = BrokerControlMessage::McpSessionExited {
             session_id,

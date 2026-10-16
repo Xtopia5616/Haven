@@ -193,9 +193,7 @@ pub use output::{
 pub(crate) use process::read_stream_text_capped;
 pub(crate) use registry::ToolRegistry;
 pub use registry::{ToolCatalogSnapshot, ToolCatalogVersion};
-#[cfg(windows)]
 pub(crate) use sandbox_review::SandboxOutputReviewOwner;
-#[cfg(windows)]
 pub use sandbox_review::{
     SandboxOutputPromotionResult, SandboxOutputReviewChange, SandboxOutputReviewChangeKind,
     SandboxOutputReviewManifest, SandboxOutputReviewPort, SandboxOutputReviewReservation,

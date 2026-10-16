@@ -1,6 +1,7 @@
 use crate::client::McpClient;
 use crate::protocol::{
-    McpCallOutput, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
+    McpCallOutput, McpClientStatus, McpManagedCallOutput, McpServerSnapshot, McpStatusChangeEvent,
+    McpToolInfo,
 };
 use crate::{McpPrompt, McpPromptList, McpResourceList, McpResourceRead};
 use futures_util::FutureExt;
@@ -1532,7 +1533,7 @@ impl McpManager {
             haven_platform::windows_container::execution::WindowsContainerWorkspaceInput,
         >,
         cancel: CancellationToken,
-    ) -> anyhow::Result<McpCallOutput> {
+    ) -> anyhow::Result<McpManagedCallOutput> {
         if self.shutting_down.load(Ordering::SeqCst)
             || self.one_shot_invocations_cancel.is_cancelled()
         {

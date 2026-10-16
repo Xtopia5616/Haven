@@ -502,6 +502,10 @@ pub(crate) struct BrokerPipeClient {
 }
 
 impl BrokerPipeClient {
+    pub(super) fn cancellation(&self) -> BrokerPipeCancellation {
+        self.cancellation.clone()
+    }
+
     /// Query whether the authenticated service's startup quota gate is open.
     pub(crate) fn execution_gate_status(&mut self) -> io::Result<BrokerExecutionGateStatus> {
         self.write_frame(
