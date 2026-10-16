@@ -56,7 +56,10 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         input: &Value,
     ) -> Result<OperationPolicy, String> {
         let tool = self.tools.get_tool_for_session(session_id, tool_name).await;
-        Self::operation_policy_for(tool.as_ref(), tool_name, input)
+        match tool {
+            Some(tool) => Ok(tool.authorization_contract(input).await?.policy),
+            None => Self::operation_policy_for(None, tool_name, input),
+        }
     }
 
     async fn risk_level(
@@ -85,15 +88,17 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         input: &Value,
     ) -> Result<AuthorizationRequest, String> {
         let tool = self.tools.get_tool_for_session(session_id, tool_name).await;
-        let policy = Self::operation_policy_for(tool.as_ref(), tool_name, input)?;
-        let authorization_input = Self::authorization_input_for(tool.as_ref(), input);
-        let target_binding = match tool.as_ref() {
-            Some(tool) => tool.authorization_target_binding(input).await?,
-            None => None,
+        let contract = match tool.as_ref() {
+            Some(tool) => tool.authorization_contract(input).await?,
+            None => crate::ToolAuthorizationContract {
+                policy: unknown_operation_policy(tool_name)?,
+                target_binding: None,
+            },
         };
+        let authorization_input = Self::authorization_input_for(tool.as_ref(), input);
         Ok(
-            AuthorizationRequest::new(session_id, tool_name, authorization_input, policy)
-                .with_target_binding(target_binding),
+            AuthorizationRequest::new(session_id, tool_name, authorization_input, contract.policy)
+                .with_target_binding(contract.target_binding),
         )
     }
 
@@ -110,12 +115,11 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
             .ok_or_else(|| {
                 "MCP capability is not enabled for CodeMode in this session".to_owned()
             })?;
-        let policy = Self::operation_policy_for(Some(&tool), tool_name, input)?;
+        let contract = tool.authorization_contract(input).await?;
         let authorization_input = Self::authorization_input_for(Some(&tool), input);
-        let target_binding = tool.authorization_target_binding(input).await?;
         Ok(
-            AuthorizationRequest::new(session_id, tool_name, authorization_input, policy)
-                .with_target_binding(target_binding),
+            AuthorizationRequest::new(session_id, tool_name, authorization_input, contract.policy)
+                .with_target_binding(contract.target_binding),
         )
     }
 
@@ -132,12 +136,11 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
             .ok_or_else(|| {
                 "MCP capability is not enabled for Legacy Workflow in this session".to_owned()
             })?;
-        let policy = Self::operation_policy_for(Some(&tool), tool_name, input)?;
+        let contract = tool.authorization_contract(input).await?;
         let authorization_input = Self::authorization_input_for(Some(&tool), input);
-        let target_binding = tool.authorization_target_binding(input).await?;
         Ok(
-            AuthorizationRequest::new(session_id, tool_name, authorization_input, policy)
-                .with_target_binding(target_binding),
+            AuthorizationRequest::new(session_id, tool_name, authorization_input, contract.policy)
+                .with_target_binding(contract.target_binding),
         )
     }
 
@@ -149,14 +152,16 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
     ) -> Result<AuthorizationRequest, String> {
         let tool = catalog.get(tool_name);
         let authorization_input = Self::authorization_input_for(tool, input);
-        let policy = Self::operation_policy_for(tool, tool_name, input)?;
-        let target_binding = match tool {
-            Some(tool) => tool.authorization_target_binding(input).await?,
-            None => None,
+        let contract = match tool {
+            Some(tool) => tool.authorization_contract(input).await?,
+            None => crate::ToolAuthorizationContract {
+                policy: unknown_operation_policy(tool_name)?,
+                target_binding: None,
+            },
         };
         Ok(
-            AuthorizationRequest::new(session_id, tool_name, authorization_input, policy)
-                .with_target_binding(target_binding),
+            AuthorizationRequest::new(session_id, tool_name, authorization_input, contract.policy)
+                .with_target_binding(contract.target_binding),
         )
     }
 }

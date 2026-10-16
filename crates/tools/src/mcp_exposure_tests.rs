@@ -145,6 +145,148 @@ async fn stale_session_mcp_calls_follow_current_exposure_policy() {
 }
 
 #[tokio::test]
+async fn load_mcp_authorization_resolves_transport_from_config_before_connecting() {
+    let facade = ToolsFacade::new();
+    let authorization = facade.share_services().authorization;
+    authorization
+        .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Ask)
+        .await;
+
+    let http_config = McpServerConfig {
+        name: "deferred_remote".into(),
+        transport: McpServerTransport::Http,
+        url: "http://127.0.0.1:1/mcp".into(),
+        ..Default::default()
+    };
+    facade.upsert_mcp_server_config(http_config.clone()).await;
+    facade.rebuild_catalog().await.unwrap();
+    let input = serde_json::json!({"server_name": "deferred_remote"});
+    assert!(
+        facade
+            .get_tool_for_session(None, "load_mcp")
+            .await
+            .is_some()
+    );
+    let http_request = facade
+        .resolve_authorization_request(None, "load_mcp", &input)
+        .await
+        .expect("trusted HTTP profile should resolve before network activity");
+    assert_eq!(
+        http_request.policy.execution_boundary,
+        crate::ExecutionBoundary::InProcess
+    );
+    assert_eq!(
+        http_request.policy.network_access,
+        crate::NetworkAccess::Opaque
+    );
+    assert!(http_request.target_binding.is_some());
+    assert!(matches!(
+        authorization
+            .authorize_for_execution(&http_request)
+            .await
+            .decision,
+        crate::AuthorizationDecision::RequiresConfirmation { .. }
+    ));
+
+    facade
+        .upsert_mcp_server_config(McpServerConfig {
+            transport: McpServerTransport::Stdio,
+            command: "must-not-spawn".into(),
+            ..http_config
+        })
+        .await;
+    authorization
+        .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
+        .await;
+    let stdio_request = facade
+        .resolve_authorization_request(None, "load_mcp", &input)
+        .await
+        .expect("trusted stdio profile should resolve to its process boundary");
+    assert_eq!(
+        stdio_request.policy.execution_boundary,
+        crate::ExecutionBoundary::HostProcess
+    );
+    assert_ne!(http_request.target_binding, stdio_request.target_binding);
+    assert!(matches!(
+        authorization
+            .authorize_for_execution(&stdio_request)
+            .await
+            .decision,
+        crate::AuthorizationDecision::Blocked {
+            reason_code: crate::AuthorizationReasonCode::SandboxBoundary,
+            ..
+        }
+    ));
+    assert!(
+        !facade
+            .coordinator
+            .builtins
+            .mcp_manager
+            .has_client("deferred_remote")
+            .await,
+        "policy resolution must not connect or spawn the configured server"
+    );
+}
+
+#[tokio::test]
+async fn load_mcp_rejects_a_live_client_from_a_different_config_generation() {
+    let facade = ToolsFacade::new();
+    let manager = facade.coordinator.builtins.mcp_manager.clone();
+    manager.set_network_policy(NetworkPolicy::Open).await;
+    let catalog = Arc::new(RwLock::new(vec![serde_json::json!({
+        "name": "deferred_tool",
+        "description": "Deferred tool",
+        "inputSchema": {"type": "object"}
+    })]));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let cancellation = CancellationToken::new();
+    let server = tokio::spawn(serve_mcp_catalog(listener, catalog, cancellation.clone()));
+
+    let original = McpServerConfig {
+        name: "versioned_remote".into(),
+        transport: McpServerTransport::Http,
+        url: format!("http://{address}/mcp"),
+        ..Default::default()
+    };
+    facade.upsert_mcp_server_config(original.clone()).await;
+    facade.rebuild_catalog().await.unwrap();
+    manager.connect_server(&original).await.unwrap();
+
+    let changed = McpServerConfig {
+        url: "http://127.0.0.1:1/changed".into(),
+        ..original
+    };
+    facade.upsert_mcp_server_config(changed).await;
+    let tool = facade
+        .get_tool_for_session(None, "load_mcp")
+        .await
+        .expect("built-in deferred loader is installed");
+    let input = serde_json::json!({
+        "server_name": "versioned_remote",
+        "_session_id": "ses-65dd7c6b35b99687a424c2fd8bdb08a9"
+    });
+    let contract = tool
+        .authorization_contract(&input)
+        .await
+        .expect("updated HTTP config resolves independently from the live client");
+    let error = tool
+        .execute_with_authorization_target(
+            input,
+            CancellationToken::new(),
+            contract.target_binding.as_deref(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("different configuration"));
+    assert!(manager.has_client("versioned_remote").await);
+
+    manager.remove_client("versioned_remote").await;
+    cancellation.cancel();
+    let _ = server.await;
+}
+
+#[tokio::test]
 async fn direct_mcp_tools_are_advertised_and_hidden_tools_are_not_executable() {
     let facade = ToolsFacade::new();
     let manager = facade.coordinator.builtins.mcp_manager.clone();

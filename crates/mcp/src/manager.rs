@@ -870,6 +870,22 @@ impl McpManager {
         self.target_binding_for(&client)
     }
 
+    /// Return a target binding only when the live generation uses the
+    /// transport expected by the adapter. The check and binding refer to the
+    /// same client snapshot, so a replacement cannot change transport between
+    /// the two observations.
+    pub async fn client_target_binding_for_transport(
+        &self,
+        name: &str,
+        expected_transport: &haven_common::mcp::McpServerTransport,
+    ) -> Option<String> {
+        let client = self.client(name).await?;
+        if client.transport != *expected_transport {
+            return None;
+        }
+        self.target_binding_for(&client)
+    }
+
     fn target_binding_for(&self, client: &McpClient) -> Option<String> {
         let generation = client.manager_generation();
         (generation != 0).then(|| format!("mcp-target:{:016x}:{generation:016x}", self.manager_id))
@@ -1652,6 +1668,33 @@ mod manager_lifecycle_tests {
             .await
             .unwrap_err();
         assert!(error.downcast_ref::<McpTargetChanged>().is_some());
+    }
+
+    #[tokio::test]
+    async fn target_binding_is_unavailable_for_a_different_live_transport() {
+        let config = McpServerConfig {
+            name: "transport-bound".into(),
+            transport: McpServerTransport::Stdio,
+            command: "not-spawned-in-this-test".into(),
+            ..Default::default()
+        };
+        let manager = McpManager::new();
+        manager
+            .add_client(Arc::new(McpClient::new(&config, 1024, 1024)))
+            .await;
+
+        assert!(
+            manager
+                .client_target_binding_for_transport("transport-bound", &McpServerTransport::Stdio)
+                .await
+                .is_some()
+        );
+        assert!(
+            manager
+                .client_target_binding_for_transport("transport-bound", &McpServerTransport::Http)
+                .await
+                .is_none()
+        );
     }
 
     struct MockHttpServer {

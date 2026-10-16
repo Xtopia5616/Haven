@@ -156,6 +156,18 @@ pub struct OperationPolicy {
     pub(crate) execution_boundary: ExecutionBoundary,
 }
 
+/// One coherent authorization snapshot for a tool invocation.
+///
+/// Tools whose policy depends on mutable, trusted configuration should
+/// override [`Tool::authorization_contract`] and resolve both fields from the
+/// same snapshot. Target bindings must be opaque and contain no secrets.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct ToolAuthorizationContract {
+    pub policy: OperationPolicy,
+    pub target_binding: Option<String>,
+}
+
 /// Confirmation derived from risk and whether the effect is read-only.
 ///
 /// Critical is a hard floor. A read-only effect or Safe risk needs no
@@ -1475,6 +1487,20 @@ pub trait Tool: Send + Sync {
     async fn authorization_target_binding(&self, input: &Value) -> Result<Option<String>, String> {
         let _ = input;
         Ok(None)
+    }
+
+    /// Resolve policy and target identity together before the authorization
+    /// decision. The default preserves ordinary tools' existing contract;
+    /// configuration-dependent tools should override this so mutable policy
+    /// and target identity cannot be captured from different snapshots.
+    async fn authorization_contract(
+        &self,
+        input: &Value,
+    ) -> Result<ToolAuthorizationContract, String> {
+        Ok(ToolAuthorizationContract {
+            policy: self.try_operation_policy(input)?,
+            target_binding: self.authorization_target_binding(input).await?,
+        })
     }
 
     /// Execute against the target whose binding was authorized. The default

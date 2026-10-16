@@ -172,9 +172,18 @@ pub struct McpToolAdapter {
     manager: McpManager,
     info: McpToolInfo,
     server_name: String,
+    transport: McpServerTransport,
     spec: OperationSpec,
     #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
     panic_on_execute: bool,
+}
+
+fn permission_error_metadata() -> ToolErrorMetadata {
+    ToolErrorMetadata {
+        class: haven_common::tools::ToolErrorClass::Permission,
+        outcome: haven_common::tools::ToolExecutionOutcome::Failed,
+        retryability: haven_common::tools::ToolRetryability::NotRetryable,
+    }
 }
 
 impl McpToolAdapter {
@@ -205,6 +214,7 @@ impl McpToolAdapter {
             manager,
             info,
             server_name,
+            transport,
             spec,
             #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
             panic_on_execute: false,
@@ -267,24 +277,38 @@ impl McpToolAdapter {
         if self.panic_on_execute {
             panic!("simulated MCP adapter panic");
         }
-        let result = match target_binding {
-            Some(target_binding) => {
-                self.manager
-                    .call_tool_at_target_binding(
-                        &self.server_name,
-                        &target_binding,
-                        &self.info.name,
-                        input,
-                        cancel,
-                    )
-                    .await
-            }
-            None => {
-                self.manager
-                    .call_tool(&self.server_name, &self.info.name, input, cancel)
-                    .await
-            }
+        let Some(target_binding) = target_binding else {
+            return Err(anyhow::Error::new(StructuredToolError::new(
+                "MCP execution is missing an authorization-bound target",
+                permission_error_metadata(),
+            )));
         };
+        let Some(current_binding) = self
+            .manager
+            .client_target_binding_for_transport(&self.server_name, &self.transport)
+            .await
+        else {
+            return Err(anyhow::Error::new(StructuredToolError::new(
+                "MCP server transport changed after the adapter was registered",
+                permission_error_metadata(),
+            )));
+        };
+        if current_binding != target_binding {
+            return Err(anyhow::Error::new(StructuredToolError::new(
+                "MCP server target changed after authorization",
+                permission_error_metadata(),
+            )));
+        }
+        let result = self
+            .manager
+            .call_tool_at_target_binding(
+                &self.server_name,
+                &target_binding,
+                &self.info.name,
+                input,
+                cancel,
+            )
+            .await;
         let out = result.map_err(|error| {
             let metadata = if error
                 .downcast_ref::<haven_mcp::McpTargetChanged>()
@@ -349,9 +373,11 @@ impl Tool for McpToolAdapter {
         }
         let binding = self
             .manager
-            .client_target_binding(&self.server_name)
+            .client_target_binding_for_transport(&self.server_name, &self.transport)
             .await
-            .ok_or_else(|| "MCP server target is not connected".to_string())?;
+            .ok_or_else(|| {
+                "MCP server is not connected with the transport used by this adapter".to_string()
+            })?;
         Ok(Some(binding))
     }
 

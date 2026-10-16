@@ -26,8 +26,7 @@ pub struct LoadMcpTool {
     pub max_tools_per_request: usize,
 }
 
-/// Typed parameters for `LoadMcpTool`. Entry ① (native `run`) and entry ②
-/// (`Tool::execute` with LLM JSON) both land in `LoadMcpTool::run`.
+/// Typed parameters for `LoadMcpTool`'s authorization-bound execution path.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct LoadMcpParams {
     /// The name of the MCP server to load.
@@ -44,10 +43,39 @@ pub struct LoadMcpParams {
     pub session_id: Option<String>,
 }
 
+struct ValidatedLoadMcpParams {
+    server_name: String,
+    tool_names: Option<Vec<String>>,
+    session_id: String,
+}
+
+impl ValidatedLoadMcpParams {
+    fn new(params: LoadMcpParams) -> anyhow::Result<Self> {
+        let server_name = params.server_name;
+        if server_name.is_empty() {
+            anyhow::bail!("server_name is required");
+        }
+        let session_id = params
+            .session_id
+            .filter(|session_id| !session_id.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "session context required to load MCP server '{}'",
+                    server_name
+                )
+            })?;
+        let tool_names = normalize_tool_names(params.tool_names).map_err(anyhow::Error::msg)?;
+        Ok(Self {
+            server_name,
+            tool_names,
+            session_id,
+        })
+    }
+}
+
 impl LoadMcpTool {
-    /// Entry ①: structured native interface (internal code calls — zero
-    /// serialization overhead). Entry ② deserializes JSON and delegates here.
-    pub async fn run(
+    #[cfg(test)]
+    async fn run(
         &self,
         params: LoadMcpParams,
         cancel: CancellationToken,
@@ -55,17 +83,7 @@ impl LoadMcpTool {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
-        let server_name = params.server_name;
-        if server_name.is_empty() {
-            anyhow::bail!("server_name is required");
-        }
-        let session_id = params.session_id.filter(|s| !s.is_empty()).ok_or_else(|| {
-            anyhow::anyhow!(
-                "session context required to load MCP server '{}'",
-                server_name
-            )
-        })?;
-        let tool_names = normalize_tool_names(params.tool_names).map_err(|e| anyhow::anyhow!(e))?;
+        let request = ValidatedLoadMcpParams::new(params)?;
 
         let configs = self.mcp_server_config_source.list().await?;
         let available = configs
@@ -75,20 +93,50 @@ impl LoadMcpTool {
             .join(", ");
         let config = configs
             .into_iter()
-            .find(|config| config.name == server_name);
+            .find(|config| config.name == request.server_name);
         let config = config.ok_or_else(|| {
             anyhow::anyhow!(
                 "MCP server '{}' not found in config. Available servers: {}",
-                server_name,
+                request.server_name,
                 available
             )
         })?;
+        self.run_with_config(request, cancel, config).await
+    }
+
+    async fn run_with_config(
+        &self,
+        request: ValidatedLoadMcpParams,
+        cancel: CancellationToken,
+        config: haven_common::config::McpServerConfig,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let ValidatedLoadMcpParams {
+            server_name,
+            session_id,
+            tool_names,
+        } = request;
         if !config.enabled {
             anyhow::bail!("MCP server '{}' is disabled", server_name);
         }
 
-        // Connect if not already connected
-        if !self.mcp_manager.has_client(&server_name).await {
+        // A server name can still refer to a stale client generation while a
+        // config apply is reconciling. Never reuse a live client whose exact
+        // launch/endpoint config differs from the authorized snapshot.
+        if self.mcp_manager.has_client(&server_name).await {
+            if !self
+                .mcp_manager
+                .client_matches_config(&server_name, &config)
+                .await
+            {
+                anyhow::bail!(
+                    "MCP server '{}' has a live client from a different configuration; retry after reconciliation",
+                    server_name
+                );
+            }
+        } else {
             self.mcp_manager.connect_server(&config).await?;
         }
 
@@ -99,6 +147,17 @@ impl LoadMcpTool {
             .ok_or_else(|| {
                 anyhow::anyhow!("MCP server '{}' not available after connect", server_name)
             })?;
+
+        if !self
+            .mcp_manager
+            .client_matches_config(&server_name, &config)
+            .await
+        {
+            anyhow::bail!(
+                "MCP server '{}' configuration changed during tool discovery",
+                server_name
+            );
+        }
 
         // `load_mcp` is the Legacy/deferred activation route. Direct tools
         // already enter through native definitions; CodeMode and Hidden must
@@ -412,6 +471,36 @@ impl Tool for LoadMcpTool {
         ))
     }
 
+    async fn authorization_contract(
+        &self,
+        input: &Value,
+    ) -> Result<crate::ToolAuthorizationContract, String> {
+        let server_name = input
+            .get("server_name")
+            .and_then(Value::as_str)
+            .filter(|server_name| !server_name.is_empty())
+            .ok_or_else(|| "server_name is required".to_owned())?;
+        let snapshot = self
+            .mcp_server_config_source
+            .get_versioned(server_name)
+            .await
+            .map_err(|error| format!("cannot resolve MCP server configuration: {error}"))?
+            .ok_or_else(|| format!("MCP server '{server_name}' not found in config"))?;
+        if !snapshot.server.enabled {
+            return Err(format!("MCP server '{server_name}' is disabled"));
+        }
+
+        let mut policy = self.try_operation_policy(input)?;
+        policy.execution_boundary = match snapshot.server.transport {
+            haven_common::mcp::McpServerTransport::Http => crate::ExecutionBoundary::InProcess,
+            haven_common::mcp::McpServerTransport::Stdio => crate::ExecutionBoundary::HostProcess,
+        };
+        Ok(crate::ToolAuthorizationContract {
+            policy,
+            target_binding: Some(snapshot.authorization_target_binding()),
+        })
+    }
+
     fn input_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -435,14 +524,41 @@ impl Tool for LoadMcpTool {
         true
     }
 
-    /// Entry ②: LLM JSON entry — convert/validate into `LoadMcpParams`,
-    /// then land in the same implementation as entry ①.
+    /// The unbound Tool entry cannot authorize a server configuration and is
+    /// deliberately disabled. Callers must use the target-bound executor.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool_contract::parse_tool_input::<LoadMcpParams>(&self.name(), input)?;
-        self.run(params, cancel).await
+        let _ = (input, cancel);
+        anyhow::bail!("load_mcp requires an authorization-bound server configuration")
     }
 
-    /// Registration is performed atomically inside `run` before success is
+    /// Parse the LLM request, re-resolve its trusted server config, and require
+    /// the exact target binding that was captured before authorization.
+    async fn execute_with_authorization_target(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<&str>,
+    ) -> anyhow::Result<ToolResult> {
+        let params = crate::tool_contract::parse_tool_input::<LoadMcpParams>(&self.name(), input)?;
+        let request = ValidatedLoadMcpParams::new(params)?;
+        let snapshot = self
+            .mcp_server_config_source
+            .get_versioned(&request.server_name)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("MCP server '{}' not found in config", request.server_name)
+            })?;
+        if !snapshot.server.enabled {
+            anyhow::bail!("MCP server '{}' is disabled", request.server_name);
+        }
+        let current_binding = snapshot.authorization_target_binding();
+        if target_binding != Some(current_binding.as_str()) {
+            anyhow::bail!("MCP server configuration changed after authorization");
+        }
+        self.run_with_config(request, cancel, snapshot.server).await
+    }
+
+    /// Registration is performed atomically inside `run_with_config` before success is
     /// returned, so the executor must not re-apply `McpServer` (that would
     /// race parallel loads and re-wait the tools cache). Resume restores
     /// from history via `register_mcp_for_session` directly.
@@ -450,284 +566,6 @@ impl Tool for LoadMcpTool {
         Vec::new()
     }
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Tool;
-    use crate::ToolHandle;
-    use haven_common::config::McpServerConfig;
-
-    fn tool_for_tests() -> LoadMcpTool {
-        LoadMcpTool {
-            mcp_manager: Arc::new(McpManager::new()),
-            mcp_server_config_source: McpServerConfigSource::default(),
-            registry: ToolRegistry::new(),
-            session_tool_overlay: SessionToolOverlay::new(),
-            max_tools_per_request: 128,
-        }
-    }
-
-    fn fake_info(name: &str, desc: &str) -> haven_mcp::McpToolInfo {
-        haven_mcp::McpToolInfo {
-            name: name.into(),
-            description: desc.into(),
-            input_schema: serde_json::json!({"type": "object"}),
-        }
-    }
-
-    #[test]
-    fn test_load_mcp_name() {
-        let tool = tool_for_tests();
-        assert_eq!(tool.name(), "load_mcp");
-    }
-
-    #[test]
-    fn test_load_mcp_input_schema() {
-        let tool = tool_for_tests();
-        let schema = tool.input_schema();
-        assert!(schema["properties"]["server_name"].is_object());
-        assert!(schema["properties"]["tool_names"].is_object());
-        assert_eq!(schema["required"][0], "server_name");
-        assert!(
-            schema.get("_session_id").is_none(),
-            "private _session_id must not leak into the LLM schema"
-        );
-    }
-
-    #[test]
-    fn test_load_mcp_requires_session_id() {
-        assert!(tool_for_tests().requires_session_id());
-    }
-
-    #[test]
-    fn test_load_mcp_registrations_empty_after_inline_activate() {
-        let tool = tool_for_tests();
-        let regs = tool.registrations(&serde_json::json!({"server_name": "srv"}));
-        assert!(regs.is_empty());
-    }
-
-    #[test]
-    fn test_normalize_tool_names_omitted_is_all() {
-        assert_eq!(normalize_tool_names(None).unwrap(), None);
-    }
-
-    #[test]
-    fn test_normalize_tool_names_explicit_empty_errors() {
-        assert!(normalize_tool_names(Some(vec![])).is_err());
-        assert!(normalize_tool_names(Some(vec!["  ".into()])).is_err());
-    }
-
-    #[test]
-    fn test_normalize_tool_names_dedupes() {
-        let names =
-            normalize_tool_names(Some(vec!["a".into(), " a ".into(), "b".into(), "a".into()]))
-                .unwrap();
-        assert_eq!(names, Some(vec!["a".into(), "b".into()]));
-    }
-
-    #[test]
-    fn test_select_tools_subset_and_missing() {
-        let all = vec![
-            fake_info("alpha", "A"),
-            fake_info("beta", "B"),
-            fake_info("gamma", "C"),
-        ];
-        let selection = select_tools(&all, Some(&["beta".into(), "nope".into(), "alpha".into()]));
-        assert_eq!(
-            selection
-                .selected_tools
-                .iter()
-                .map(|t| t.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["alpha", "beta"]
-        );
-        // Selection follows server order; missing keeps request order.
-        assert_eq!(selection.missing_tool_names, vec!["nope".to_string()]);
-    }
-
-    #[test]
-    fn test_select_tools_all_when_unfiltered() {
-        let all = vec![fake_info("a", ""), fake_info("b", "")];
-        let selection = select_tools(&all, None);
-        assert_eq!(selection.selected_tools.len(), 2);
-        assert!(selection.missing_tool_names.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_load_mcp_rejects_disabled() {
-        let mcp_server_config_source = McpServerConfigSource::default();
-        mcp_server_config_source
-            .upsert_fixture(McpServerConfig {
-                name: "srv".into(),
-                enabled: false,
-                ..Default::default()
-            })
-            .await;
-        let tool = LoadMcpTool {
-            mcp_manager: Arc::new(McpManager::new()),
-            mcp_server_config_source,
-            registry: ToolRegistry::new(),
-            session_tool_overlay: SessionToolOverlay::new(),
-            max_tools_per_request: 128,
-        };
-        let result = tool
-            .execute(
-                serde_json::json!({"server_name": "srv", "_session_id": "ses-f6a1fdb2589b63c2ebaead556897b633"}),
-                CancellationToken::new(),
-            )
-            .await;
-        assert!(result.is_err(), "disabled server should be rejected");
-        assert!(result.unwrap_err().to_string().contains("disabled"));
-    }
-
-    #[tokio::test]
-    async fn test_load_mcp_rejects_unknown() {
-        let tool = tool_for_tests();
-        let result = tool
-            .execute(
-                serde_json::json!({"server_name": "nope", "_session_id": "ses-f6a1fdb2589b63c2ebaead556897b633"}),
-                CancellationToken::new(),
-            )
-            .await;
-        assert!(result.is_err(), "unknown server should be rejected");
-        assert!(result.unwrap_err().to_string().contains("not found"));
-    }
-
-    #[tokio::test]
-    async fn test_load_mcp_requires_session_context() {
-        let tool = tool_for_tests();
-        let result = tool
-            .run(
-                LoadMcpParams {
-                    server_name: "nope".into(),
-                    tool_names: None,
-                    session_id: None,
-                },
-                CancellationToken::new(),
-            )
-            .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("session context"));
-    }
-
-    #[tokio::test]
-    async fn test_activate_refuses_oversized_add() {
-        let session_tool_overlay = SessionToolOverlay::new();
-        let padding_tools = (0..5)
-            .map(|index| {
-                Arc::new(crate::tool_contract::tests::MockTool::new(&format!(
-                    "pad_{index}"
-                ))) as ToolHandle
-            })
-            .collect();
-        session_tool_overlay
-            .register_many_if_within_budget(
-                "ses-f6a1fdb2589b63c2ebaead556897b633",
-                0,
-                6,
-                padding_tools,
-            )
-            .await
-            .unwrap();
-
-        let proposed_names = vec!["new_a".into(), "new_b".into(), "new_c".into()];
-        let budget = session_tool_overlay
-            .preview_registration_budget(
-                "ses-f6a1fdb2589b63c2ebaead556897b633",
-                0,
-                6,
-                &proposed_names,
-            )
-            .await;
-        assert!(budget.exceeds_limit());
-        assert_eq!(budget.session_count, 5);
-        assert_eq!(budget.net_new, 3);
-
-        let attempt = session_tool_overlay
-            .register_many_if_within_budget(
-                "ses-f6a1fdb2589b63c2ebaead556897b633",
-                0,
-                6,
-                proposed_names
-                    .iter()
-                    .map(|name| {
-                        Arc::new(crate::tool_contract::tests::MockTool::new(name)) as ToolHandle
-                    })
-                    .collect(),
-            )
-            .await;
-        assert_eq!(attempt.unwrap_err(), budget);
-        assert_eq!(
-            session_tool_overlay
-                .list("ses-f6a1fdb2589b63c2ebaead556897b633")
-                .await
-                .len(),
-            5
-        );
-    }
-
-    #[tokio::test]
-    async fn session_overlay_registration_owns_version_updates() {
-        let session_tool_overlay = SessionToolOverlay::new();
-        let before = session_tool_overlay
-            .catalog_version_for_session("ses-f6a1fdb2589b63c2ebaead556897b633")
-            .await
-            .session_overlay_version;
-        let registered = session_tool_overlay
-            .register_many_if_within_budget(
-                "ses-f6a1fdb2589b63c2ebaead556897b633",
-                0,
-                10,
-                vec![Arc::new(crate::builtin::notify::NotifyTool) as ToolHandle],
-            )
-            .await
-            .unwrap();
-        let after = session_tool_overlay
-            .catalog_version_for_session("ses-f6a1fdb2589b63c2ebaead556897b633")
-            .await
-            .session_overlay_version;
-
-        assert_eq!(registered, vec!["notify"]);
-        assert_eq!(after, before + 1);
-    }
-
-    #[test]
-    fn test_catalog_entries_truncates_long_descriptions() {
-        let long = "x".repeat(200);
-        let entries = catalog_entries(&[fake_info("t", &long)]);
-        let desc = entries[0]["description"].as_str().unwrap();
-        assert!(desc.ends_with("..."));
-        assert!(desc.chars().count() <= 160);
-    }
-
-    #[test]
-    fn legacy_loader_only_lists_deferred_tools() {
-        let exposure = McpExposureConfig {
-            default: McpToolExposure::Hidden,
-            tools: std::collections::BTreeMap::from([
-                ("read_*".into(), McpToolExposure::Direct),
-                ("read_private".into(), McpToolExposure::Hidden),
-                ("batch_*".into(), McpToolExposure::Deferred),
-                ("code_*".into(), McpToolExposure::CodeMode),
-            ]),
-        };
-        let available = vec![
-            fake_info("read_public", "Direct"),
-            fake_info("read_private", "Hidden exact override"),
-            fake_info("batch_update", "Deferred"),
-            fake_info("code_run", "CodeMode"),
-            fake_info("unknown", "Hidden by default"),
-        ];
-
-        let visible = deferred_tools_for_exposure(available, &exposure);
-
-        assert_eq!(
-            visible
-                .iter()
-                .map(|info| info.name.as_str())
-                .collect::<Vec<_>>(),
-            ["batch_update"]
-        );
-    }
-}
+#[path = "load_mcp_tests.rs"]
+mod tests;
