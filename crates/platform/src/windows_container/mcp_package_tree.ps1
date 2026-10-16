@@ -1,3 +1,9 @@
+function Assert-HavenMcpPackageDataStreams([string]$Path) {
+    if (Get-Item -LiteralPath $Path -Stream * -ErrorAction Stop | Where-Object Stream -ne ':$DATA') {
+        throw 'Package contains an alternate data stream.'
+    }
+}
+
 function Get-HavenMcpPackageTreeDigest {
     [CmdletBinding()]
     param(
@@ -14,6 +20,7 @@ function Get-HavenMcpPackageTreeDigest {
     $maxPackageBytes = 128MB
 
     $root = [System.IO.Path]::GetFullPath($PackageRoot).TrimEnd('\') + '\'
+    Assert-HavenMcpPackageDataStreams -Path $root.TrimEnd('\')
     $rootAttributes = [System.IO.File]::GetAttributes($root)
     if (($rootAttributes -band [System.IO.FileAttributes]::Directory) -eq 0 -or
         ($rootAttributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -36,6 +43,8 @@ function Get-HavenMcpPackageTreeDigest {
             if ($entries -gt $maxEntries) {
                 throw 'Package contains too many entries.'
             }
+
+            Assert-HavenMcpPackageDataStreams -Path $path
 
             $attributes = [System.IO.File]::GetAttributes($path)
             if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -83,7 +92,15 @@ function Get-HavenMcpPackageTreeDigest {
                 $entrypointFound = $true
             }
 
-            $fileHash = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            $fileStream = $null
+            try {
+                $fileStream = [System.IO.File]::OpenRead($fullPath)
+                $fileHash = [System.BitConverter]::ToString($sha.ComputeHash($fileStream)).Replace('-', '').ToLowerInvariant()
+            } finally {
+                $sha.Dispose()
+                if ($null -ne $fileStream) { $fileStream.Dispose() }
+            }
             $records.Add([string]::Concat($relativePath, [char]0, $fileHash))
         }
     }

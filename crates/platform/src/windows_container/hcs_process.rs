@@ -771,7 +771,11 @@ mod tests {
         assert!(script.contains("'filesystem|server.mjs|"));
         assert!(script.contains("HAVEN_MCP_PACKAGE_ATTESTED_V2:{0}:{1}"));
         assert!(script.contains(&"ab".repeat(32)));
-        assert!(script.contains("Get-FileHash -LiteralPath $fullPath -Algorithm SHA256"));
+        assert!(script.contains("$sha.ComputeHash($fileStream)"));
+        assert!(script.contains("[System.IO.File]::OpenRead($fullPath)"));
+        assert!(script.contains("function Assert-HavenMcpPackageDataStreams"));
+        assert!(script.contains("Get-Item -LiteralPath $Path -Stream * -ErrorAction Stop"));
+        assert!(script.contains("Package contains an alternate data stream."));
         assert!(script.contains(
             "System.Array]::Sort($orderedRecords, [System.StringComparer]::OrdinalIgnoreCase)"
         ));
@@ -798,6 +802,74 @@ mod tests {
             .collect::<Vec<_>>();
         HcsGuestProcessParameters::quota_probe(quota, None, None, &packages)
             .expect("the maximum catalog package set stays below the HCS command-line limit");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn mcp_package_tree_digest_rejects_alternate_data_streams() {
+        use sha2::{Digest, Sha256};
+        use std::fs;
+        use std::process::Command;
+
+        let test_root = tempfile::tempdir().expect("temporary test root");
+        let package_root = test_root.path().join("package");
+        fs::create_dir(&package_root).expect("create temporary package root");
+        let entrypoint = package_root.join("server.mjs");
+        fs::write(&entrypoint, "export {};\n").expect("write package entrypoint");
+        fs::write(package_root.join("dependency.json"), "{}\n")
+            .expect("write ordinary package resource");
+
+        let mut records = [
+            ("dependency.json", b"{}\n".as_slice()),
+            ("server.mjs", b"export {};\n".as_slice()),
+        ]
+        .map(|(path, contents)| {
+            let file_hash = Sha256::digest(contents)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            (path, format!("{path}\0{file_hash}\n"))
+        });
+        records.sort_by(|left, right| {
+            left.0
+                .to_ascii_lowercase()
+                .cmp(&right.0.to_ascii_lowercase())
+        });
+        let canonical = records
+            .iter()
+            .map(|(_, record)| record.as_str())
+            .collect::<String>();
+        let expected_digest = Sha256::digest(canonical.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+
+        let quote_path = |path: &Path| path.to_string_lossy().replace('\'', "''");
+        let script_path = test_root.path().join("verify-package-tree.ps1");
+        let script = format!(
+            "{}\n$ErrorActionPreference = 'Stop'\n$package_root = '{}'\n$entrypoint = Join-Path $package_root 'server.mjs'\n$baseline = Get-HavenMcpPackageTreeDigest -PackageRoot $package_root -Entrypoint 'server.mjs'\nif ($baseline -cne '{}') {{ throw 'ordinary package digest differs from the canonical fixture digest' }}\nSet-Content -LiteralPath ($entrypoint + ':haven_probe') -Value 'stream' -NoNewline\n$rejected = $false\ntry {{ $null = Get-HavenMcpPackageTreeDigest -PackageRoot $package_root -Entrypoint 'server.mjs' }} catch {{ $rejected = $_.Exception.Message -match 'alternate data stream' }}\nif (-not $rejected) {{ throw 'alternate data stream was not rejected' }}\n",
+            include_str!("mcp_package_tree.ps1"),
+            quote_path(&package_root),
+            expected_digest
+        );
+        fs::write(&script_path, script).expect("write PowerShell package-tree test");
+
+        let output = Command::new(POWERSHELL_APPLICATION)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(&script_path)
+            .output()
+            .expect("start Windows PowerShell for package-tree regression test");
+        assert!(
+            output.status.success(),
+            "PowerShell package-tree regression failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
