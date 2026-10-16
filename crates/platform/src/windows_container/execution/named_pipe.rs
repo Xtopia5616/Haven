@@ -317,11 +317,26 @@ impl BrokerPipeListener {
         &'a mut self,
         cancellation: &'a BrokerPipeCancellation,
     ) -> io::Result<BrokerPipeConnection<'a>> {
-        if let Err(error) = connect_named_pipe_until(
-            self.handle,
-            cancellation,
-            Instant::now() + HANDSHAKE_TIMEOUT,
-        ) {
+        self.accept_with_timeout(cancellation, HANDSHAKE_TIMEOUT)
+    }
+
+    /// Poll for a client with a bounded connect wait, then perform the normal
+    /// independent Hello and peer-authentication deadlines. The service can
+    /// use this between HCS session polls to keep its control pipe responsive.
+    #[allow(dead_code)] // Used by the supervised broker MCP event loop.
+    pub(crate) fn accept_with_timeout<'a>(
+        &'a mut self,
+        cancellation: &'a BrokerPipeCancellation,
+        connect_timeout: Duration,
+    ) -> io::Result<BrokerPipeConnection<'a>> {
+        if connect_timeout.is_zero() || connect_timeout > MAX_PIPE_IO_TIMEOUT {
+            return Err(invalid_input(
+                "broker pipe accept timeout is outside its bound",
+            ));
+        }
+        if let Err(error) =
+            connect_named_pipe_until(self.handle, cancellation, deadline_after(connect_timeout)?)
+        {
             unsafe { DisconnectNamedPipe(self.handle) };
             return Err(error);
         }
@@ -421,6 +436,16 @@ impl BrokerPipeConnection<'_> {
 
     pub(crate) fn cancellation(&self) -> BrokerPipeCancellation {
         self.cancellation.clone()
+    }
+
+    /// Create an independent MCP session listener under the same interactive
+    /// logon policy as this authenticated control-pipe peer.
+    #[allow(dead_code)] // Consumed by the broker's MCP open handler.
+    pub(crate) fn new_mcp_session_listener(
+        &self,
+        session_id: [u8; 16],
+    ) -> io::Result<BrokerPipeListener> {
+        BrokerPipeListener::new_mcp_session(self.listener.policy.clone(), session_id)
     }
 
     pub(crate) fn read_frame(&self, timeout: Duration) -> io::Result<BrokerFrame> {
@@ -1090,6 +1115,65 @@ mod tests {
     #[test]
     fn named_pipe_rejects_peer_with_wrong_user_after_bounded_hello() {
         run_pipe_handshake_test(true);
+    }
+
+    #[test]
+    fn listener_accept_timeout_does_not_consume_the_next_authenticated_client() {
+        let current = current_process_identity().unwrap();
+        let policy = BrokerPeerPolicy::new(
+            current.user_sid.clone(),
+            current.logon_sid,
+            current.session_id,
+            current.user_sid,
+        )
+        .unwrap();
+        let name = format!(
+            r"\\.\pipe\Haven.ContainerBroker.Test.{}.{}",
+            unsafe { GetCurrentProcessId() },
+            NEXT_TEST_PIPE.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut listener = BrokerPipeListener::create(&name, policy).unwrap();
+        let cancellation = BrokerPipeCancellation::new().unwrap();
+        let timeout = listener
+            .accept_with_timeout(&cancellation, Duration::from_millis(5))
+            .err()
+            .unwrap();
+        assert_eq!(timeout.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            listener
+                .accept_with_timeout(&cancellation, Duration::ZERO)
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let client_name = name.clone();
+        let client = std::thread::spawn(move || -> io::Result<()> {
+            let mut client = BrokerPipeClient::connect_for_test(&client_name)?;
+            client.write_frame(
+                &BrokerFrame::control(&BrokerControlMessage::McpSessionOpen {
+                    request: super::super::broker_protocol::BrokerMcpSessionOpenRequest {
+                        request_id: [8; 16],
+                        package_id: "filesystem".to_owned(),
+                    },
+                })?,
+                Duration::from_secs(5),
+            )
+        });
+        let connection = listener
+            .accept_with_timeout(&cancellation, Duration::from_secs(5))
+            .unwrap();
+        assert!(matches!(
+            connection
+                .read_frame(Duration::from_secs(5))
+                .unwrap()
+                .decode_control()
+                .unwrap(),
+            BrokerControlMessage::McpSessionOpen { request }
+                if request.request_id == [8; 16] && request.package_id == "filesystem"
+        ));
+        client.join().unwrap().unwrap();
     }
 
     #[test]

@@ -1271,3 +1271,4 @@
 - [1281：让 MCP stdin writer 拥有 guest process 生命周期](1281-own-mcp-stdin-writer-process-lifecycle.md)
 - [1282：组合有界 HCS guest stdio session owner](1282-compose-bounded-hcs-stdio-session-owner.md)
 - [1283：拥有 brokered MCP HCS generation 生命周期](1283-own-brokered-mcp-hcs-generation.md)
+- [1284：允许 MCP session supervisor 有界轮询 broker control pipe](1284-poll-broker-control-pipe-during-mcp-session.md)
