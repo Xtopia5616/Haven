@@ -1263,3 +1263,4 @@
 - [1273：拥有并校验 HCS guest stdin handle](1273-own-hcs-guest-stdin-handles.md)
 - [1274：构造固定的 MCP guest process parameters](1274-build-fixed-mcp-guest-process-parameters.md)
 - [1275：证明受管 MCP entrypoint 摘要](1275-attest-managed-mcp-entrypoint-digests.md)
+- [1276：将 MCP stdio 配置绑定到受管 package](1276-bind-mcp-stdio-config-to-managed-package.md)

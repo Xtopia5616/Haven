@@ -1,4 +1,4 @@
-use haven_common::config::McpExposureConfig;
+use haven_common::config::{McpExposureConfig, McpStdioExecution};
 use haven_common::mcp::McpServerTransport;
 use serde_json::Value;
 use std::error::Error;
@@ -615,6 +615,7 @@ pub enum McpClientStatus {
 pub struct McpServerSnapshot {
     pub name: String,
     pub transport: McpServerTransport,
+    pub stdio_execution: McpStdioExecution,
     pub command: String,
     pub args: Vec<String>,
     pub env: Vec<String>,

@@ -13,6 +13,7 @@ use crate::transport::{
 };
 use crate::{McpStdioLaunchSpec, McpStdioProcess, McpStdioProcessLauncher};
 use futures_util::future::BoxFuture;
+use haven_common::config::McpStdioExecution;
 use haven_common::{mcp::McpServerTransport, types::NetworkPolicy};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -242,6 +243,7 @@ pub struct McpClient {
     /// pending confirmation to a different endpoint.
     manager_generation: AtomicU64,
     pub(crate) transport: McpServerTransport,
+    pub(crate) stdio_execution: McpStdioExecution,
     pub(crate) command: String,
     pub(crate) args: Vec<String>,
     pub(crate) env: Vec<String>,
@@ -506,6 +508,13 @@ impl McpStdioProcessLauncher for LocalMcpStdioProcessLauncher {
         permit: Box<dyn crate::McpStdioProcessStartPermit>,
     ) -> BoxFuture<'a, anyhow::Result<Box<dyn McpStdioProcess>>> {
         Box::pin(async move {
+            if let McpStdioExecution::ManagedPackage { package_id } = spec.stdio_execution() {
+                anyhow::bail!(
+                    "MCP server '{}' uses managed package '{}', but the brokered package launcher is unavailable",
+                    spec.server_name(),
+                    package_id
+                );
+            }
             // MCP servers may use relative command/cwd paths from trusted
             // configuration; this local launcher preserves that behavior.
             let build = |program: &str, args: &[String]| {
@@ -623,6 +632,7 @@ impl McpClient {
             name: config.name.clone(),
             manager_generation: AtomicU64::new(0),
             transport: config.transport.clone(),
+            stdio_execution: config.stdio_execution.clone(),
             command: config.command.clone(),
             args: config.args.clone(),
             env: config.env.clone(),
@@ -657,6 +667,7 @@ impl McpClient {
             stdio_process_authorization,
             stdio_launch_spec: McpStdioLaunchSpec::new(
                 config.name.clone(),
+                config.stdio_execution.clone(),
                 config.command.clone(),
                 config.args.clone(),
                 config.env.clone(),
@@ -698,6 +709,7 @@ impl McpClient {
     /// credentials or an outdated invocation).
     pub fn matches_config(&self, cfg: &haven_common::config::McpServerConfig) -> bool {
         self.transport == cfg.transport
+            && self.stdio_execution == cfg.stdio_execution
             && self.command == cfg.command
             && self.args == cfg.args
             && self.env == cfg.env
@@ -811,6 +823,7 @@ impl McpClient {
         McpServerSnapshot {
             name: self.name.clone(),
             transport: self.transport.clone(),
+            stdio_execution: self.stdio_execution.clone(),
             command: self.command.clone(),
             args: self.args.clone(),
             env: self.env.clone(),
@@ -1967,6 +1980,33 @@ mod stdio_poison_tests {
         loop {
             thread::sleep(Duration::from_secs(1));
         }
+    }
+}
+
+#[cfg(test)]
+mod managed_package_launcher_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn local_launcher_refuses_managed_package_before_host_spawn() {
+        let config = haven_common::config::McpServerConfig {
+            name: "managed-package-test".into(),
+            stdio_execution: McpStdioExecution::ManagedPackage {
+                package_id: "calendar".into(),
+            },
+            command: "host-command-must-not-run".into(),
+            ..Default::default()
+        };
+        let client = McpClient::new(&config, 1024, 1024);
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+
+        let error = match client.spawn_stdio(notification_tx).await {
+            Ok(_) => panic!("the local launcher must refuse a managed package"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("brokered package launcher is unavailable"));
+        assert!(!error.contains("host-command-must-not-run"));
     }
 }
 

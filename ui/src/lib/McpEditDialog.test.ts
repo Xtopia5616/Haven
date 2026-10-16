@@ -15,8 +15,8 @@ describe('McpEditDialog CodeMode exposure', () => {
 		});
 
 		const selects = container.querySelectorAll<HTMLButtonElement>('[aria-haspopup="listbox"]');
-		expect(selects).toHaveLength(2);
-		await fireEvent.click(selects[1]!);
+		expect(selects).toHaveLength(3);
+		await fireEvent.click(selects[2]!);
 		await fireEvent.click(
 			screen.getByRole('option', {
 				name: 'CodeMode — compose allowed tools in a bounded script',
@@ -50,7 +50,7 @@ describe('McpEditDialog CodeMode exposure', () => {
 		});
 
 		const selects = container.querySelectorAll<HTMLButtonElement>('[aria-haspopup="listbox"]');
-		await fireEvent.click(selects[1]!);
+		await fireEvent.click(selects[2]!);
 		await fireEvent.click(
 			screen.getByRole('option', {
 				name: 'Model-only — direct model calls only; no nested Workflow or CodeMode',
@@ -61,6 +61,33 @@ describe('McpEditDialog CodeMode exposure', () => {
 		expect(onSave).toHaveBeenCalledWith(
 			expect.objectContaining({
 				exposure: { default: 'model_only', tools: {} },
+			}),
+		);
+	});
+
+	it('binds a managed stdio server to a package ID without host command fields', async () => {
+		const onSave = vi.fn(async (_config: McpServerConfigInput) => {});
+		const { container } = render(McpEditDialog, { onClose: vi.fn(), onSave });
+		await fireEvent.input(screen.getByRole('textbox', { name: 'Name' }), {
+			target: { value: 'calendar' },
+		});
+		const selects = container.querySelectorAll<HTMLButtonElement>('[aria-haspopup="listbox"]');
+		await fireEvent.click(selects[1]!);
+		await fireEvent.click(
+			screen.getByRole('option', { name: 'Managed Windows container package' }),
+		);
+		await fireEvent.input(screen.getByRole('textbox', { name: 'Managed package ID' }), {
+			target: { value: 'calendar-mcp' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+		expect(onSave).toHaveBeenCalledWith(
+			expect.objectContaining({
+				stdio_execution: { mode: 'managed_package', package_id: 'calendar-mcp' },
+				command: '',
+				args: [],
+				env: [],
+				cwd: null,
 			}),
 		);
 	});

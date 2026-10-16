@@ -30,6 +30,7 @@ function makeMcpServerSnapshot(overrides: Record<string, unknown> = {}) {
 	return {
 		name: 'future-server',
 		transport: 'stdio',
+		stdio_execution: { mode: 'host_process' },
 		command: 'server.exe',
 		args: ['--quiet'],
 		env: ['TOKEN=<redacted>'],
@@ -121,6 +122,7 @@ describe('ToolsView command boundary', () => {
 			{
 				name: 'future-server',
 				transport: 'stdio',
+				stdioExecution: { mode: 'host_process' },
 				command: 'server.exe',
 				args: ['--quiet'],
 				env: ['TOKEN=<redacted>'],
@@ -164,11 +166,15 @@ describe('ToolsView command boundary', () => {
 				cacheScope: 'private',
 			});
 
-		expect(await listMcpResources({ ...target, forceRefresh: false })).toMatchObject({ resources: [] });
+		expect(await listMcpResources({ ...target, forceRefresh: false })).toMatchObject({
+			resources: [],
+		});
 		expect(
 			await readMcpResource({ ...target, uri: 'mcp://selected/doc', forceRefresh: false }),
 		).toMatchObject({ contents: [] });
-		expect(await listMcpPrompts({ ...target, forceRefresh: false })).toMatchObject({ prompts: [] });
+		expect(await listMcpPrompts({ ...target, forceRefresh: false })).toMatchObject({
+			prompts: [],
+		});
 		expect(
 			await getMcpPrompt({
 				...target,

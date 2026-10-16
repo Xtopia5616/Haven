@@ -9,7 +9,7 @@ use crate::ToolRegistry;
 use anyhow::{Error, Result};
 use haven_common::config::{
     AppConfig, ConfigLoader, ConfigPatch, ConfigVersion, LogConfig, LogLevel, McpServerConfig,
-    RequestKind, Settings,
+    McpStdioExecution, RequestKind, Settings,
 };
 use haven_common::mcp::McpServerTransport;
 use haven_mcp::{MCP_MAX_PARALLEL_CONNECTIONS, McpClientStatus, McpManager};
@@ -1034,7 +1034,10 @@ impl AdminServices {
         let command = fields.command.clone().filter(|value| !value.is_empty());
         let url = fields.url.clone().filter(|value| !value.is_empty());
         match fields.transport {
-            McpServerTransport::Stdio if command.is_none() => {
+            McpServerTransport::Stdio
+                if matches!(&fields.stdio_execution, McpStdioExecution::HostProcess)
+                    && command.is_none() =>
+            {
                 anyhow::bail!("command is required (the binary to spawn) for stdio servers")
             }
             McpServerTransport::Http if url.is_none() => {
@@ -1045,6 +1048,7 @@ impl AdminServices {
         let config = McpServerConfig {
             name: fields.name.clone(),
             transport: fields.transport.clone(),
+            stdio_execution: fields.stdio_execution.clone(),
             exposure: fields.exposure.clone(),
             command: command.unwrap_or_default(),
             args: fields.args.clone(),
@@ -1078,20 +1082,24 @@ impl AdminServices {
             .apply_patch(ConfigPatch::McpServers(servers))?;
         self.mcp_manager.invalidate_catalog();
 
-        let (connected, warning) = if config.enabled && fields.auto_connect {
-            match self.mcp_manager.connect_server(&config).await {
-                Ok(()) => (true, None),
-                Err(error) => (
-                    false,
-                    Some(format!(
-                        "config saved but connect failed: {}",
-                        sanitize_diagnostic(&error.to_string())
-                    )),
-                ),
-            }
-        } else {
-            (false, None)
-        };
+        let may_start_local_process =
+            matches!(&config.stdio_execution, McpStdioExecution::HostProcess)
+                || config.transport == McpServerTransport::Http;
+        let (connected, warning) =
+            if config.enabled && fields.auto_connect && may_start_local_process {
+                match self.mcp_manager.connect_server(&config).await {
+                    Ok(()) => (true, None),
+                    Err(error) => (
+                        false,
+                        Some(format!(
+                            "config saved but connect failed: {}",
+                            sanitize_diagnostic(&error.to_string())
+                        )),
+                    ),
+                }
+            } else {
+                (false, None)
+            };
         self.rebuild_catalog().await?;
         Ok(McpAddOutput {
             name: config.name,
@@ -1133,11 +1141,25 @@ impl AdminServices {
         if let Some(transport) = &fields.transport {
             updated.transport = transport.clone();
         }
+        if let Some(stdio_execution) = &fields.stdio_execution {
+            updated.stdio_execution = stdio_execution.clone();
+        }
         if let Some(enabled) = fields.enabled {
             updated.enabled = enabled;
         }
         if let Some(exposure) = &fields.exposure {
             updated.exposure = exposure.clone();
+        }
+        if matches!(
+            &updated.stdio_execution,
+            McpStdioExecution::ManagedPackage { .. }
+        ) {
+            updated.command.clear();
+            updated.args.clear();
+            updated.env.clear();
+            updated.env_refs.clear();
+            updated.cwd = None;
+            updated.url.clear();
         }
         self.apply_mcp_config_update(&existing, &updated, true)
             .await
@@ -1376,12 +1398,21 @@ impl AdminServices {
     ) -> Result<McpConfigUpdateOutput> {
         let name = new_config.name.clone();
         let config_changed = old_config.transport != new_config.transport
+            || old_config.stdio_execution != new_config.stdio_execution
             || old_config.command != new_config.command
             || old_config.args != new_config.args
             || old_config.env != new_config.env
             || old_config.url != new_config.url;
         let will_enable = new_config.enabled && !old_config.enabled;
-        if new_config.enabled && connect_if_enabled && (will_enable || config_changed) {
+        let managed_package = matches!(
+            &new_config.stdio_execution,
+            McpStdioExecution::ManagedPackage { .. }
+        );
+        if new_config.enabled
+            && connect_if_enabled
+            && !managed_package
+            && (will_enable || config_changed)
+        {
             self.mcp_manager.remove_client(&name).await;
             if let Err(error) = self.mcp_manager.connect_server(new_config).await {
                 if old_config.enabled && self.mcp_manager.connect_server(old_config).await.is_err()

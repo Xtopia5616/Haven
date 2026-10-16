@@ -77,6 +77,7 @@ function mcpServer(name: string, status: string) {
 	return {
 		name,
 		transport: 'stdio',
+		stdio_execution: { mode: 'host_process' },
 		command: 'server.exe',
 		args: [],
 		env: [],
@@ -443,7 +444,10 @@ describe('ToolsView toolbar actions', () => {
 			if (command === 'list_mcp_servers') return [];
 			if (command === 'list_skills') return [];
 			if (command === 'refresh_mcp_servers') {
-				throw JSON.stringify({ requires_confirmation: true, confirmation_id: 'conf-b7a65e97699c7c548225828bfc5e17f9' });
+				throw JSON.stringify({
+					requires_confirmation: true,
+					confirmation_id: 'conf-b7a65e97699c7c548225828bfc5e17f9',
+				});
 			}
 			return undefined;
 		});
@@ -467,7 +471,10 @@ describe('ToolsView toolbar actions', () => {
 			}
 			if (command === 'list_skills') return [];
 			if (command === 'reconnect_mcp_server') {
-				throw JSON.stringify({ requires_confirmation: true, confirmation_id: 'conf-b7a65e97699c7c548225828bfc5e17f9' });
+				throw JSON.stringify({
+					requires_confirmation: true,
+					confirmation_id: 'conf-b7a65e97699c7c548225828bfc5e17f9',
+				});
 			}
 			return undefined;
 		});

@@ -1,5 +1,6 @@
 /** MCP command response contracts at the Rust-to-renderer boundary. */
 import { isValidMcpServerName } from '../mcpServerName.ts';
+import { isValidMcpPackageId } from '../mcpPackageId.ts';
 import { isMcpClientStatus } from './mcpClientStatus.ts';
 import { isRecord } from './objectGuards.ts';
 import {
@@ -33,6 +34,7 @@ export type McpExposureConfigView = GeneratedMcpExposureConfig;
 export interface McpServerSnapshotView {
 	name: string;
 	transport: GeneratedMcpServerSnapshot['transport'];
+	stdioExecution: GeneratedMcpServerSnapshot['stdio_execution'];
 	command: string;
 	args: string[];
 	env: string[];
@@ -71,7 +73,9 @@ function isNullableString(value: unknown): value is string | null {
 }
 
 function isNullableMcpTargetBinding(value: unknown): value is string | null {
-	return value === null || (isString(value) && /^mcp-target:[0-9a-f]{16}:[0-9a-f]{16}$/u.test(value));
+	return (
+		value === null || (isString(value) && /^mcp-target:[0-9a-f]{16}:[0-9a-f]{16}$/u.test(value))
+	);
 }
 
 function isMcpExposureMode(value: unknown): value is McpToolExposureMode {
@@ -79,7 +83,8 @@ function isMcpExposureMode(value: unknown): value is McpToolExposureMode {
 }
 
 function isMcpExposureConfig(value: unknown): value is McpExposureConfigView {
-	if (!isRecord(value) || !isMcpExposureMode(value.default) || !isRecord(value.tools)) return false;
+	if (!isRecord(value) || !isMcpExposureMode(value.default) || !isRecord(value.tools))
+		return false;
 	const entries = Object.entries(value.tools);
 	return (
 		entries.length <= 256 &&
@@ -90,6 +95,18 @@ function isMcpExposureConfig(value: unknown): value is McpExposureConfigView {
 				![...pattern].some((character) => /[\u0000-\u001f\u007f]/u.test(character)) &&
 				isMcpExposureMode(exposure),
 		)
+	);
+}
+
+function isMcpStdioExecution(
+	value: unknown,
+): value is GeneratedMcpServerSnapshot['stdio_execution'] {
+	return (
+		isRecord(value) &&
+		((value.mode === 'host_process') ||
+			(value.mode === 'managed_package' &&
+				isString(value.package_id) &&
+				isValidMcpPackageId(value.package_id)))
 	);
 }
 
@@ -109,6 +126,7 @@ function isMcpServerSnapshot(value: unknown): value is ValidatedMcpServerSnapsho
 		isString(value.name) &&
 		isValidMcpServerName(value.name) &&
 		isOneOf(value.transport, MCP_SERVER_TRANSPORT_VALUES) &&
+		isMcpStdioExecution(value.stdio_execution) &&
 		isString(value.command) &&
 		isStringArray(value.args) &&
 		isStringArray(value.env) &&
@@ -133,6 +151,7 @@ function toMcpServerSnapshotView(snapshot: ValidatedMcpServerSnapshot): McpServe
 	return {
 		name: snapshot.name,
 		transport: snapshot.transport,
+		stdioExecution: snapshot.stdio_execution,
 		command: snapshot.command,
 		args: snapshot.args,
 		env: snapshot.env,

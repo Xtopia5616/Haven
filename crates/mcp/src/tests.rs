@@ -216,6 +216,7 @@ fn mcp_server_snapshot_roundtrip() {
     let snap = McpServerSnapshot {
         name: "test".into(),
         transport: haven_common::mcp::McpServerTransport::Http,
+        stdio_execution: Default::default(),
         command: "".into(),
         args: vec![],
         env: vec!["AUTHORIZATION=Bearer x".into()],
@@ -235,6 +236,7 @@ fn mcp_server_snapshot_roundtrip() {
     let json = serde_json::to_value(&snap).unwrap();
     assert_eq!(json["name"], "test");
     assert_eq!(json["transport"], "http");
+    assert_eq!(json["stdio_execution"]["mode"], "host_process");
     assert_eq!(json["status"], "Connected");
     assert_eq!(json["enabled"], true);
     assert_eq!(json["url"], "http://localhost:3001/mcp");

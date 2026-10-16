@@ -9,6 +9,7 @@ use super::broker_workspace::{BrokerServiceDirectoryAccess, install_protected_di
 use super::named_pipe::broker_service_sid_string;
 use crate::filesystem::{DirectoryCapability, DirectoryEntryKind};
 use crate::windows_container::WindowsContainerLayer;
+use haven_common::config::is_valid_mcp_package_id;
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::io::{self, Read};
@@ -23,7 +24,6 @@ const MAX_IMAGE_LAYERS: usize = 64;
 const MAX_LAYER_DIRECTORY_NAME: usize = 64;
 // Keep the expanded, fixed startup probe below the HCS command-line ceiling.
 pub(crate) const MAX_MCP_NODE_PACKAGES: usize = 16;
-const MAX_MCP_PACKAGE_ID_BYTES: usize = 64;
 const MAX_MCP_PACKAGE_ENTRYPOINT_BYTES: usize = 128;
 
 /// One fixed, trusted image catalog loaded from the broker installation root.
@@ -363,7 +363,7 @@ fn parse_mcp_node_runtime(runtime: CatalogMcpNodeRuntime) -> io::Result<McpNodeR
 }
 
 fn parse_mcp_node_package(package: CatalogMcpNodePackage) -> io::Result<McpNodePackageProfile> {
-    if !valid_mcp_package_id(&package.id)
+    if !is_valid_mcp_package_id(&package.id)
         || !valid_mcp_package_version(&package.version)
         || !valid_mcp_package_entrypoint(&package.entrypoint)
     {
@@ -376,15 +376,6 @@ fn parse_mcp_node_package(package: CatalogMcpNodePackage) -> io::Result<McpNodeP
         entrypoint: package.entrypoint,
         entrypoint_sha256,
     })
-}
-
-fn valid_mcp_package_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= MAX_MCP_PACKAGE_ID_BYTES
-        && id.as_bytes()[0].is_ascii_lowercase()
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn valid_mcp_package_version(version: &str) -> bool {

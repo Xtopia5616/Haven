@@ -41,6 +41,7 @@ pub async fn list_mcp_servers(
             .or_insert_with(|| McpServerSnapshot {
                 name: config.name.clone(),
                 transport: config.transport.clone(),
+                stdio_execution: config.stdio_execution.clone(),
                 command: config.command.clone(),
                 args: config.args.clone(),
                 env: config.env.clone(),
@@ -331,6 +332,7 @@ pub async fn add_mcp_server(
         haven_tools::AdminRequest::Mcp(haven_tools::McpOperationArgs::McpAdd {
             name: config.name.clone(),
             transport: config.transport.clone(),
+            stdio_execution: config.stdio_execution.clone(),
             exposure: config.exposure.clone(),
             command: Some(config.command.clone()),
             url: Some(config.url.clone()),
@@ -391,6 +393,7 @@ pub async fn update_mcp_server(
             name: name.clone(),
             exposure: Some(config.exposure.clone()),
             transport: Some(config.transport.clone()),
+            stdio_execution: Some(config.stdio_execution.clone()),
             command: Some(config.command.clone()),
             url: Some(config.url.clone()),
             args: Some(config.args.clone()),
@@ -494,6 +497,7 @@ mod tests {
         let mut snapshot = McpServerSnapshot {
             name: "demo".into(),
             transport: haven_common::mcp::McpServerTransport::Stdio,
+            stdio_execution: Default::default(),
             command: "server".into(),
             args: vec![],
             env: vec!["API_KEY=secret".into(), "NO_VALUE".into()],

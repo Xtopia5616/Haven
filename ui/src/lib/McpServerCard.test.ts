@@ -7,6 +7,7 @@ function server(tools: McpToolInfoView[]): McpServerSnapshotView {
 	return {
 		name: 'docs-server',
 		transport: 'stdio',
+		stdioExecution: { mode: 'host_process' },
 		command: 'server.exe',
 		args: [],
 		env: [],
@@ -31,7 +32,9 @@ function tool(name: string): McpToolInfoView {
 
 describe('McpServerCard', () => {
 	it('keeps schema disclosure state with the tool when the server list is reordered', async () => {
-		const { rerender } = render(McpServerCard, { server: server([tool('alpha'), tool('beta')]) });
+		const { rerender } = render(McpServerCard, {
+			server: server([tool('alpha'), tool('beta')]),
+		});
 		const cardHeader = screen.getByText('docs-server').closest('[role="button"]');
 		expect(cardHeader).toBeTruthy();
 		await fireEvent.click(cardHeader!);
@@ -46,11 +49,15 @@ describe('McpServerCard', () => {
 
 		const reorderedAlphaRow = screen.getByText('alpha').closest('.tool-item');
 		const reorderedBetaRow = screen.getByText('beta').closest('.tool-item');
-		expect(reorderedAlphaRow?.querySelector('.md-collapsible-header')?.getAttribute('aria-expanded')).toBe(
-			'true',
-		);
-		expect(reorderedBetaRow?.querySelector('.md-collapsible-header')?.getAttribute('aria-expanded')).toBe(
-			'false',
-		);
+		expect(
+			reorderedAlphaRow
+				?.querySelector('.md-collapsible-header')
+				?.getAttribute('aria-expanded'),
+		).toBe('true');
+		expect(
+			reorderedBetaRow
+				?.querySelector('.md-collapsible-header')
+				?.getAttribute('aria-expanded'),
+		).toBe('false');
 	});
 });

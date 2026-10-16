@@ -792,11 +792,40 @@ impl McpExposureConfig {
     }
 }
 
+/// Selects the authority that starts an MCP stdio server. Host processes use
+/// the configured executable fields; managed packages resolve only by their
+/// administrator-controlled package ID in the pinned Windows container
+/// catalog.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum McpStdioExecution {
+    #[default]
+    HostProcess,
+    ManagedPackage {
+        package_id: String,
+    },
+}
+
+/// Package IDs are shared with the administrator-managed HCS image catalog.
+pub const MAX_MCP_PACKAGE_ID_BYTES: usize = 64;
+
+pub fn is_valid_mcp_package_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_MCP_PACKAGE_ID_BYTES
+        && id.as_bytes()[0].is_ascii_lowercase()
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct McpServerConfig {
     pub name: String,
     pub transport: McpServerTransport,
+    /// For stdio servers, selects the process boundary and identifies a
+    /// trusted package profile when using the managed-container backend.
+    pub stdio_execution: McpStdioExecution,
     pub command: String,
     pub args: Vec<String>,
     /// Runtime-only `NAME=VALUE` entries supplied through MCP management IPC.
@@ -824,6 +853,7 @@ impl std::fmt::Debug for McpServerConfig {
             .debug_struct("McpServerConfig")
             .field("name", &self.name)
             .field("transport", &self.transport)
+            .field("stdio_execution", &self.stdio_execution)
             .field(
                 "command",
                 &(!self.command.is_empty()).then_some("[CONFIGURED]"),
@@ -844,6 +874,7 @@ impl Default for McpServerConfig {
         Self {
             name: String::new(),
             transport: McpServerTransport::Stdio,
+            stdio_execution: McpStdioExecution::default(),
             command: String::new(),
             args: Vec::new(),
             env: Vec::new(),
@@ -897,6 +928,36 @@ pub(super) fn validate_mcp_server_exposure(servers: &[McpServerConfig]) -> anyho
                 anyhow::bail!(
                     "MCP tool exposure patterns must contain 1-{MAX_MCP_TOOL_EXPOSURE_PATTERN_CHARS} non-control characters"
                 );
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_mcp_server_execution(servers: &[McpServerConfig]) -> anyhow::Result<()> {
+    for server in servers {
+        match (&server.transport, &server.stdio_execution) {
+            (_, McpStdioExecution::HostProcess) => {}
+            (McpServerTransport::Stdio, McpStdioExecution::ManagedPackage { package_id }) => {
+                if !is_valid_mcp_package_id(package_id) {
+                    anyhow::bail!(
+                        "MCP managed package IDs must use 1-64 lowercase letters, digits, or '-' and start with a lowercase letter"
+                    );
+                }
+                if !server.command.is_empty()
+                    || !server.args.is_empty()
+                    || !server.env.is_empty()
+                    || !server.env_refs.is_empty()
+                    || server.cwd.is_some()
+                    || !server.url.is_empty()
+                {
+                    anyhow::bail!(
+                        "managed MCP packages cannot configure a host command, arguments, environment, working directory, or URL"
+                    );
+                }
+            }
+            (McpServerTransport::Http, McpStdioExecution::ManagedPackage { .. }) => {
+                anyhow::bail!("managed MCP packages require stdio transport");
             }
         }
     }
@@ -1007,6 +1068,81 @@ mod mcp_server_name_tests {
 
         let duplicate = [servers[0].clone(), servers[0].clone()];
         assert!(validate_mcp_server_names(&duplicate).is_err());
+    }
+}
+
+#[cfg(test)]
+mod mcp_stdio_execution_tests {
+    use super::{
+        McpServerConfig, McpStdioExecution, is_valid_mcp_package_id, validate_mcp_server_execution,
+    };
+    use crate::mcp::McpServerTransport;
+
+    #[test]
+    fn package_id_matches_the_admin_catalog_grammar() {
+        assert!(is_valid_mcp_package_id("calendar"));
+        assert!(is_valid_mcp_package_id("a-1"));
+        assert!(is_valid_mcp_package_id(&format!("a{}", "x".repeat(63))));
+        assert!(!is_valid_mcp_package_id(""));
+        assert!(!is_valid_mcp_package_id("1calendar"));
+        assert!(!is_valid_mcp_package_id("Calendar"));
+        assert!(!is_valid_mcp_package_id("calendar_mcp"));
+        assert!(!is_valid_mcp_package_id(&format!("a{}", "x".repeat(64))));
+    }
+
+    #[test]
+    fn managed_profiles_require_a_clean_stdio_package_binding() {
+        let valid = McpServerConfig {
+            stdio_execution: McpStdioExecution::ManagedPackage {
+                package_id: "calendar".into(),
+            },
+            ..Default::default()
+        };
+        assert!(validate_mcp_server_execution(std::slice::from_ref(&valid)).is_ok());
+
+        let mut invalid = valid.clone();
+        invalid.command = "node".into();
+        assert!(validate_mcp_server_execution(&[invalid]).is_err());
+
+        let invalid_transport = McpServerConfig {
+            transport: McpServerTransport::Http,
+            stdio_execution: McpStdioExecution::ManagedPackage {
+                package_id: "calendar".into(),
+            },
+            ..Default::default()
+        };
+        assert!(validate_mcp_server_execution(&[invalid_transport]).is_err());
+
+        let invalid_id = McpServerConfig {
+            stdio_execution: McpStdioExecution::ManagedPackage {
+                package_id: "Calendar".into(),
+            },
+            ..Default::default()
+        };
+        assert!(validate_mcp_server_execution(&[invalid_id]).is_err());
+    }
+
+    #[test]
+    fn old_config_without_execution_profile_defaults_to_host_process() {
+        let mut value = serde_json::to_value(McpServerConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("stdio_execution");
+        let config: McpServerConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(config.stdio_execution, McpStdioExecution::HostProcess);
+    }
+
+    #[test]
+    fn managed_execution_profile_roundtrips_the_persisted_toml_shape() {
+        let config = McpServerConfig {
+            name: "calendar".into(),
+            stdio_execution: McpStdioExecution::ManagedPackage {
+                package_id: "calendar".into(),
+            },
+            ..Default::default()
+        };
+        let serialized = toml::to_string(&config).unwrap();
+        let restored: McpServerConfig = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(restored, config);
     }
 }
 

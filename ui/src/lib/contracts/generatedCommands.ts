@@ -206,8 +206,10 @@ export interface McpEnvironmentCredentialRefInput { name: string; credential_ref
 export interface McpEnvironmentCredentialRef { name: string; credential_ref?: string; has_value: boolean }
 export interface McpExposureConfigInput { default?: McpToolExposureInput; tools?: Record<string, McpToolExposureInput> }
 export interface McpExposureConfig { default: McpToolExposure; tools: Record<string, McpToolExposure> }
-export interface McpServerConfigInput { name?: string; transport?: McpServerTransportInput; command?: string; args?: string[]; env?: string[]; env_refs?: McpEnvironmentCredentialRefInput[]; cwd?: string | null; url?: string; enabled?: boolean; exposure?: McpExposureConfigInput }
-export interface McpServerConfig { name: string; transport: McpServerTransport; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean; exposure: McpExposureConfig }
+export interface McpServerConfigInput { name?: string; transport?: McpServerTransportInput; stdio_execution?: McpStdioExecutionInput; command?: string; args?: string[]; env?: string[]; env_refs?: McpEnvironmentCredentialRefInput[]; cwd?: string | null; url?: string; enabled?: boolean; exposure?: McpExposureConfigInput }
+export interface McpServerConfig { name: string; transport: McpServerTransport; stdio_execution: McpStdioExecution; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean; exposure: McpExposureConfig }
+export type McpStdioExecutionInput = { mode: 'host_process' } | { mode: 'managed_package'; package_id: string };
+export type McpStdioExecution = { mode: 'host_process' } | { mode: 'managed_package'; package_id: string };
 export interface MemoryConfigInput { fact_inference_enabled?: boolean }
 export interface MemoryConfig { fact_inference_enabled: boolean }
 export interface NotificationConfigInput { session_created?: NotifyChannelsInput; session_completed?: NotifyChannelsInput; session_paused?: NotifyChannelsInput; session_resumed?: NotifyChannelsInput; session_error?: NotifyChannelsInput; permission_requested?: NotifyChannelsInput; tool_run_completed?: NotifyChannelsInput }
@@ -389,7 +391,7 @@ export interface McpResourceInfo { uri: string; name: string; title?: string; de
 export interface McpResourceList { resources: McpResourceInfo[]; ttlMs: number | null; cacheScope: McpCacheScope }
 export interface McpResourceRead { contents: McpResourceContent[]; ttlMs: number | null; cacheScope: McpCacheScope }
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };
-export interface McpServerSnapshot { name: string; transport: McpServerTransport; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; target_binding: string | null; supports_resources: boolean; supports_prompts: boolean; exposure: McpExposureConfig; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
+export interface McpServerSnapshot { name: string; transport: McpServerTransport; stdio_execution: McpStdioExecution; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; target_binding: string | null; supports_resources: boolean; supports_prompts: boolean; exposure: McpExposureConfig; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
 export const MEMORY_ENTITY_KIND_INPUT_VALUES = ['fact', 'episode'] as const;
 export type MemoryEntityKindInput = (typeof MEMORY_ENTITY_KIND_INPUT_VALUES)[number];
@@ -4294,6 +4296,33 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'enum', values: MCP_SERVER_TRANSPORT_VALUES },
 					},
+					'stdio_execution': {
+						optional: false,
+						shape: { kind: 'union', anyOf: [
+							{
+								kind: 'object',
+								fields: {
+									'mode': {
+										optional: false,
+										shape: { kind: 'literal', value: 'host_process' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'mode': {
+										optional: false,
+										shape: { kind: 'literal', value: 'managed_package' },
+									},
+									'package_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							}
+						] },
+					},
 					'command': {
 						optional: false,
 						shape: { kind: 'string' },
@@ -5066,6 +5095,33 @@ export const LIST_MCP_SERVERS_RESPONSE_SHAPE = { kind: 'array', items: {
 		'transport': {
 			optional: false,
 			shape: { kind: 'enum', values: MCP_SERVER_TRANSPORT_VALUES },
+		},
+		'stdio_execution': {
+			optional: false,
+			shape: { kind: 'union', anyOf: [
+				{
+					kind: 'object',
+					fields: {
+						'mode': {
+							optional: false,
+							shape: { kind: 'literal', value: 'host_process' },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'mode': {
+							optional: false,
+							shape: { kind: 'literal', value: 'managed_package' },
+						},
+						'package_id': {
+							optional: false,
+							shape: { kind: 'string' },
+						}
+					}
+				}
+			] },
 		},
 		'command': {
 			optional: false,
@@ -7941,6 +7997,33 @@ export const SETTINGS_RESPONSE_SHAPE = {
 					'transport': {
 						optional: false,
 						shape: { kind: 'enum', values: MCP_SERVER_TRANSPORT_VALUES },
+					},
+					'stdio_execution': {
+						optional: false,
+						shape: { kind: 'union', anyOf: [
+							{
+								kind: 'object',
+								fields: {
+									'mode': {
+										optional: false,
+										shape: { kind: 'literal', value: 'host_process' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'mode': {
+										optional: false,
+										shape: { kind: 'literal', value: 'managed_package' },
+									},
+									'package_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							}
+						] },
 					},
 					'command': {
 						optional: false,

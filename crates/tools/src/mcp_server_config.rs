@@ -3,7 +3,7 @@
 //! Production reads always come from `ConfigService`; test fixtures are
 //! available only in unit tests or the explicit `test-support` feature.
 
-use haven_common::config::{ConfigService, McpServerConfig};
+use haven_common::config::{ConfigService, McpServerConfig, McpStdioExecution};
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::HashMap;
 #[cfg(any(test, feature = "test-support"))]
@@ -20,11 +20,18 @@ pub(crate) struct VersionedMcpServerConfig {
 
 impl VersionedMcpServerConfig {
     pub(crate) fn authorization_target_binding(&self) -> String {
+        let execution = match &self.server.stdio_execution {
+            McpStdioExecution::HostProcess => "host".to_string(),
+            McpStdioExecution::ManagedPackage { package_id } => {
+                format!("package:{package_id}")
+            }
+        };
         format!(
-            "mcp-config-v1:{}:{}:{}",
+            "mcp-config-v2:{}:{}:{}:{}",
             self.revision,
             self.server.name,
-            self.server.transport.as_str()
+            self.server.transport.as_str(),
+            execution
         )
     }
 }
@@ -146,5 +153,42 @@ impl McpServerConfigSource {
         if fixtures.remove(name).is_some() {
             self.test_revision.fetch_add(1, Ordering::AcqRel);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VersionedMcpServerConfig;
+    use haven_common::config::{McpServerConfig, McpStdioExecution};
+
+    #[test]
+    fn authorization_target_binding_includes_execution_profile() {
+        let host = VersionedMcpServerConfig {
+            server: McpServerConfig {
+                name: "calendar".into(),
+                ..Default::default()
+            },
+            revision: 7,
+        };
+        let managed = VersionedMcpServerConfig {
+            server: McpServerConfig {
+                name: "calendar".into(),
+                stdio_execution: McpStdioExecution::ManagedPackage {
+                    package_id: "calendar".into(),
+                },
+                ..Default::default()
+            },
+            revision: 7,
+        };
+
+        assert_ne!(
+            host.authorization_target_binding(),
+            managed.authorization_target_binding()
+        );
+        assert!(
+            managed
+                .authorization_target_binding()
+                .ends_with("package:calendar")
+        );
     }
 }

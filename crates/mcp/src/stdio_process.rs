@@ -6,6 +6,7 @@
 
 use crate::McpStdioProcessStartPermit;
 use futures_util::future::BoxFuture;
+use haven_common::config::McpStdioExecution;
 use std::fmt;
 use std::io;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -19,6 +20,7 @@ pub type McpStdioWriter = Box<dyn AsyncWrite + Send + Unpin>;
 #[derive(Clone)]
 pub struct McpStdioLaunchSpec {
     server_name: String,
+    stdio_execution: McpStdioExecution,
     command: String,
     args: Vec<String>,
     environment: Vec<String>,
@@ -28,6 +30,7 @@ pub struct McpStdioLaunchSpec {
 impl McpStdioLaunchSpec {
     pub(crate) fn new(
         server_name: String,
+        stdio_execution: McpStdioExecution,
         command: String,
         args: Vec<String>,
         environment: Vec<String>,
@@ -35,6 +38,7 @@ impl McpStdioLaunchSpec {
     ) -> Self {
         Self {
             server_name,
+            stdio_execution,
             command,
             args,
             environment,
@@ -46,9 +50,14 @@ impl McpStdioLaunchSpec {
         &self.server_name
     }
 
-    /// Configured host command. A brokered launcher must resolve this through
-    /// its trusted runtime/bundle catalog and must never forward it as a guest
-    /// executable path or shell command.
+    pub fn stdio_execution(&self) -> &McpStdioExecution {
+        &self.stdio_execution
+    }
+
+    /// Configured host command, meaningful only for `HostProcess`. A managed
+    /// package launcher must ignore this field and resolve the typed package
+    /// ID only through its pinned catalog; it must never forward a host
+    /// command or package ID as a guest executable path or shell command.
     pub fn command(&self) -> &str {
         &self.command
     }
@@ -71,6 +80,7 @@ impl fmt::Debug for McpStdioLaunchSpec {
         formatter
             .debug_struct("McpStdioLaunchSpec")
             .field("server_name", &self.server_name)
+            .field("stdio_execution", &self.stdio_execution)
             .field("command", &"<configured>")
             .field("argument_count", &self.args.len())
             .field("environment_count", &self.environment.len())
