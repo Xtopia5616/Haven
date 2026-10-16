@@ -456,6 +456,47 @@ pub(crate) fn local_stdio_process_launcher() -> Arc<dyn McpStdioProcessLauncher>
     Arc::new(LocalMcpStdioProcessLauncher)
 }
 
+pub(crate) fn default_stdio_process_launcher() -> Arc<dyn McpStdioProcessLauncher> {
+    Arc::new(ProfileAwareMcpStdioProcessLauncher {
+        local: local_stdio_process_launcher(),
+        #[cfg(windows)]
+        brokered: crate::stdio_broker::BrokeredMcpStdioProcessLauncher::new(
+            haven_platform::windows_container::execution::new_brokered_mcp_session_port(),
+        ),
+    })
+}
+
+struct ProfileAwareMcpStdioProcessLauncher {
+    local: Arc<dyn McpStdioProcessLauncher>,
+    #[cfg(windows)]
+    brokered: crate::stdio_broker::BrokeredMcpStdioProcessLauncher,
+}
+
+impl McpStdioProcessLauncher for ProfileAwareMcpStdioProcessLauncher {
+    fn launch<'a>(
+        &'a self,
+        spec: &'a McpStdioLaunchSpec,
+        permit: Box<dyn crate::McpStdioProcessStartPermit>,
+    ) -> BoxFuture<'a, anyhow::Result<Box<dyn McpStdioProcess>>> {
+        Box::pin(async move {
+            match spec.stdio_execution() {
+                McpStdioExecution::HostProcess => self.local.launch(spec, permit).await,
+                McpStdioExecution::ManagedPackage { .. } => {
+                    #[cfg(windows)]
+                    {
+                        self.brokered.launch(spec, permit).await
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        drop(permit);
+                        anyhow::bail!("managed MCP packages require the Windows container broker")
+                    }
+                }
+            }
+        })
+    }
+}
+
 struct LocalMcpStdioProcessLauncher;
 
 struct LocalMcpStdioProcess {
@@ -584,7 +625,10 @@ struct TestMcpStdioProcessStartAuthorization;
 
 #[cfg(any(test, feature = "test-support"))]
 impl crate::McpStdioProcessStartAuthorization for TestMcpStdioProcessStartAuthorization {
-    fn acquire_process_start_permit(&self) -> crate::McpStdioProcessStartPermitFuture<'_> {
+    fn acquire_process_start_permit(
+        &self,
+        _execution: McpStdioExecution,
+    ) -> crate::McpStdioProcessStartPermitFuture<'_> {
         Box::pin(async { Ok(Box::new(()) as Box<dyn crate::McpStdioProcessStartPermit>) })
     }
 }
@@ -853,7 +897,7 @@ impl McpClient {
             )
         })?;
         let spawn_permit = authorization
-            .acquire_process_start_permit()
+            .acquire_process_start_permit(self.stdio_launch_spec.stdio_execution().clone())
             .await
             .map_err(|error| {
                 anyhow::anyhow!(

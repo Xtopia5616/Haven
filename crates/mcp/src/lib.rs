@@ -4,14 +4,16 @@ mod manager;
 mod network;
 mod protocol;
 mod sse;
+#[cfg(windows)]
+mod stdio_broker;
 mod stdio_process;
 mod transport;
 
 use std::future::Future;
 use std::pin::Pin;
 
-/// Opaque short-lived permit held while an MCP stdio child is created and
-/// attached to process containment.
+/// Opaque short-lived permit held until the selected MCP stdio execution
+/// boundary confirms that the generation has started.
 pub trait McpStdioProcessStartPermit: Send {}
 
 impl<T: Send> McpStdioProcessStartPermit for T {}
@@ -19,10 +21,14 @@ impl<T: Send> McpStdioProcessStartPermit for T {}
 pub type McpStdioProcessStartPermitFuture<'a> =
     Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn McpStdioProcessStartPermit>>> + Send + 'a>>;
 
-/// Tools-owned authorization for each MCP stdio process start. Implementations
-/// must keep the returned permit alive through OS spawn and containment attach.
+/// Tools-owned authorization for each MCP stdio generation start. The typed
+/// profile lets the authority reject host processes in WorkspaceWrite while
+/// allowing only fixed managed packages through the broker.
 pub trait McpStdioProcessStartAuthorization: Send + Sync {
-    fn acquire_process_start_permit(&self) -> McpStdioProcessStartPermitFuture<'_>;
+    fn acquire_process_start_permit(
+        &self,
+        execution: haven_common::config::McpStdioExecution,
+    ) -> McpStdioProcessStartPermitFuture<'_>;
 }
 
 #[cfg(test)]

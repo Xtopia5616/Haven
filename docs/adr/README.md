@@ -1273,3 +1273,4 @@
 - [1283：拥有 brokered MCP HCS generation 生命周期](1283-own-brokered-mcp-hcs-generation.md)
 - [1284：允许 MCP session supervisor 有界轮询 broker control pipe](1284-poll-broker-control-pipe-during-mcp-session.md)
 - [1285：在 broker service 中监督 MCP generation](1285-supervise-brokered-mcp-generations.md)
+- [1286：将受管 MCP stdio generation 接入容器 broker](1286-connect-managed-mcp-to-container-broker.md)

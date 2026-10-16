@@ -531,29 +531,50 @@ impl BrokerPipeClient {
         Self::connect_named(BROKER_PIPE_NAME, cancellation, true)
     }
 
-    /// Connect to a pipe derived from the broker-issued session ID, complete
-    /// the normal authenticated Hello, then bind the pipe to its open request.
-    #[allow(dead_code)] // Consumed by the MCP transport broker launcher.
-    pub(crate) fn connect_mcp_session(
+    /// Connect to a pipe derived from the broker-issued session ID and
+    /// complete the normal authenticated Hello. The caller attaches only
+    /// after it has rechecked authorization and cancellation.
+    pub(crate) fn connect_mcp_session_pipe(
         policy: &BrokerClientPolicy,
-        request_id: [u8; 16],
         session_id: [u8; 16],
         cancellation: BrokerPipeCancellation,
     ) -> io::Result<Self> {
-        if request_id == [0; 16] {
-            return Err(invalid_input("MCP session request ID is invalid"));
-        }
         let current = current_process_identity()?;
         policy.authorize(&current)?;
         let name = mcp_session_pipe_name(session_id)?;
-        let mut client = Self::connect_named(&name, cancellation, true)?;
-        client.write_frame(
+        Self::connect_named(&name, cancellation, true)
+    }
+
+    /// Bind an authenticated session pipe to the broker-issued open request.
+    /// A successful attach may start a guest, so callers must retain the pipe
+    /// until Exited or another broker cleanup proof is received.
+    pub(crate) fn attach_mcp_session(
+        &mut self,
+        request_id: [u8; 16],
+        session_id: [u8; 16],
+    ) -> io::Result<()> {
+        if request_id == [0; 16] {
+            return Err(invalid_input("MCP session request ID is invalid"));
+        }
+        self.write_frame(
             &BrokerFrame::control(&BrokerControlMessage::McpSessionAttach {
                 request_id,
                 session_id,
             })?,
             HANDSHAKE_TIMEOUT,
-        )?;
+        )
+    }
+
+    /// Test helper preserving the complete connect-and-attach handshake.
+    #[cfg(test)]
+    fn connect_mcp_session_for_test(
+        pipe_session_id: [u8; 16],
+        request_id: [u8; 16],
+        attached_session_id: [u8; 16],
+    ) -> io::Result<Self> {
+        let name = mcp_session_pipe_name(pipe_session_id)?;
+        let mut client = Self::connect_named(&name, BrokerPipeCancellation::new()?, false)?;
+        client.attach_mcp_session(request_id, attached_session_id)?;
         Ok(client)
     }
 
@@ -601,24 +622,6 @@ impl BrokerPipeClient {
         cancellation: BrokerPipeCancellation,
     ) -> io::Result<Self> {
         Self::connect_named(name, cancellation, false)
-    }
-
-    #[cfg(test)]
-    fn connect_mcp_session_for_test(
-        pipe_session_id: [u8; 16],
-        request_id: [u8; 16],
-        attached_session_id: [u8; 16],
-    ) -> io::Result<Self> {
-        let name = mcp_session_pipe_name(pipe_session_id)?;
-        let mut client = Self::connect_named(&name, BrokerPipeCancellation::new()?, false)?;
-        client.write_frame(
-            &BrokerFrame::control(&BrokerControlMessage::McpSessionAttach {
-                request_id,
-                session_id: attached_session_id,
-            })?,
-            HANDSHAKE_TIMEOUT,
-        )?;
-        Ok(client)
     }
 }
 

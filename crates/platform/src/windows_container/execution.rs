@@ -38,6 +38,9 @@ mod broker_execution;
 mod broker_mcp_session;
 
 #[cfg(windows)]
+mod broker_mcp_client;
+
+#[cfg(windows)]
 mod broker_provider;
 
 #[cfg(windows)]
@@ -83,6 +86,15 @@ pub(crate) fn test_mcp_node_package_proof(
 #[cfg(windows)]
 pub fn new_brokered_execution_port() -> std::sync::Arc<dyn WindowsContainerExecutionPort> {
     std::sync::Arc::new(broker_provider::BrokerExecutionProvider)
+}
+
+/// Build Haven's authenticated broker port for fixed managed MCP stdio
+/// packages. The caller supplies only a catalog package ID and bounded bytes;
+/// command lines, host paths, environment and workspace data are not part of
+/// this interface.
+#[cfg(windows)]
+pub fn new_brokered_mcp_session_port() -> std::sync::Arc<dyn WindowsContainerMcpSessionPort> {
+    std::sync::Arc::new(broker_mcp_client::BrokerMcpSessionProvider)
 }
 
 #[cfg(windows)]
@@ -170,6 +182,60 @@ pub struct WindowsContainerExecutionCallbacks<'a> {
 pub struct WindowsContainerProcessStartCallbacks<'a> {
     pub(crate) before_process_start: &'a mut dyn FnMut() -> io::Result<()>,
     pub(crate) process_started: &'a mut dyn FnMut(),
+}
+
+/// Events returned by the brokered MCP generation after a bounded pipe read.
+pub enum WindowsContainerMcpSessionEvent {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    Exited(Option<u32>),
+}
+
+/// One broker-owned MCP generation. Implementations keep all pipes and
+/// session identity private, and return at most one protocol frame per read.
+pub trait WindowsContainerMcpSession {
+    fn write_stdin_chunk(&mut self, bytes: &[u8]) -> io::Result<()>;
+    fn close_stdin(&mut self) -> io::Result<()>;
+    fn read_event(&mut self, timeout: Duration) -> io::Result<WindowsContainerMcpSessionEvent>;
+    fn stop_handle(&self) -> std::sync::Arc<dyn WindowsContainerMcpSessionStopHandle>;
+}
+
+/// Independent stop capability so process cancellation can reach the broker
+/// even while the session pipe is backpressured.
+pub trait WindowsContainerMcpSessionStopHandle: Send + Sync {
+    fn request_stop(&self) -> io::Result<()>;
+}
+
+/// The immutable Windows broker boundary for fixed managed MCP sessions.
+pub trait WindowsContainerMcpSessionPort: private::McpSessionSealed + Send + Sync {
+    fn open_session(
+        &self,
+        package_id: &str,
+        callbacks: &mut WindowsContainerMcpSessionCallbacks<'_>,
+    ) -> io::Result<Box<dyn WindowsContainerMcpSession>>;
+}
+
+/// Authorization and cancellation callbacks around the broker's process
+/// start handshake. The caller keeps its permit alive until `open_session`
+/// returns after `McpSessionReady`.
+pub struct WindowsContainerMcpSessionCallbacks<'a> {
+    pub(crate) before_session_start: &'a mut dyn FnMut() -> io::Result<()>,
+    pub(crate) session_started: &'a mut dyn FnMut(),
+    pub(crate) is_cancelled: &'a mut (dyn FnMut() -> bool + Send),
+}
+
+impl<'a> WindowsContainerMcpSessionCallbacks<'a> {
+    pub fn new(
+        before_session_start: &'a mut dyn FnMut() -> io::Result<()>,
+        session_started: &'a mut dyn FnMut(),
+        is_cancelled: &'a mut (dyn FnMut() -> bool + Send),
+    ) -> Self {
+        Self {
+            before_session_start,
+            session_started,
+            is_cancelled,
+        }
+    }
 }
 
 impl<'a> WindowsContainerProcessStartCallbacks<'a> {
@@ -555,6 +621,8 @@ pub trait WindowsContainerExecutionPort: private::Sealed + Send + Sync {
 // consume the port but cannot install an arbitrary implementation.
 mod private {
     pub trait Sealed {}
+
+    pub trait McpSessionSealed {}
 }
 
 fn validate_relative_working_directory(path: &Path) -> io::Result<()> {

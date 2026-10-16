@@ -753,7 +753,10 @@ impl ExecutionPolicyAuthorization {
 }
 
 impl McpStdioProcessStartAuthorization {
-    async fn acquire(&self) -> Result<ExecutionPolicyPermit, String> {
+    async fn acquire(
+        &self,
+        execution: &haven_common::config::McpStdioExecution,
+    ) -> Result<ExecutionPolicyPermit, String> {
         let config = Arc::clone(&self.authorization.config).read_owned().await;
         if config.process_boundary_revision != self.process_boundary_revision
             || !Arc::ptr_eq(
@@ -766,8 +769,13 @@ impl McpStdioProcessStartAuthorization {
         if config.execution_workspace.generation() != self.execution_workspace_generation {
             return Err("execution workspace changed before the MCP process start".into());
         }
-        if matches!(config.sandbox_mode, SandboxMode::WorkspaceWrite) {
-            return Err("MCP stdio is blocked by the workspace-write sandbox".into());
+        if config.sandbox_mode == SandboxMode::WorkspaceWrite
+            && matches!(
+                execution,
+                haven_common::config::McpStdioExecution::HostProcess
+            )
+        {
+            return Err("host-process MCP stdio is blocked by the workspace-write sandbox".into());
         }
         if config.network_policy != NetworkPolicy::Open {
             return Err("MCP stdio requires the network policy to be Open".into());
@@ -777,9 +785,15 @@ impl McpStdioProcessStartAuthorization {
 }
 
 impl haven_mcp::McpStdioProcessStartAuthorization for McpStdioProcessStartAuthorization {
-    fn acquire_process_start_permit(&self) -> haven_mcp::McpStdioProcessStartPermitFuture<'_> {
+    fn acquire_process_start_permit(
+        &self,
+        execution: haven_common::config::McpStdioExecution,
+    ) -> haven_mcp::McpStdioProcessStartPermitFuture<'_> {
         Box::pin(async move {
-            let permit = self.acquire().await.map_err(execution_policy_denied)?;
+            let permit = self
+                .acquire(&execution)
+                .await
+                .map_err(execution_policy_denied)?;
             Ok(Box::new(permit) as Box<dyn haven_mcp::McpStdioProcessStartPermit>)
         })
     }
@@ -1057,9 +1071,7 @@ impl AuthorizationEngine {
         self: &Arc<Self>,
     ) -> Option<Arc<McpStdioProcessStartAuthorization>> {
         let config = self.config.read().await;
-        if matches!(config.sandbox_mode, SandboxMode::WorkspaceWrite)
-            || config.network_policy != NetworkPolicy::Open
-        {
+        if config.network_policy != NetworkPolicy::Open {
             return None;
         }
         Some(Arc::new(McpStdioProcessStartAuthorization {
@@ -2891,7 +2903,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_stdio_process_authorization_requires_full_access_and_open_network() {
+    async fn mcp_stdio_process_authorization_is_bound_to_execution_profile_and_network() {
+        use haven_common::config::McpStdioExecution;
+
         let engine = Arc::new(AuthorizationEngine::new());
         engine
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
@@ -2901,7 +2915,7 @@ mod tests {
             .await
             .expect("explicitly open network policy permits an MCP stdio snapshot");
         let permit = authorization
-            .acquire()
+            .acquire(&McpStdioExecution::HostProcess)
             .await
             .expect("the current open policy permits process creation");
         drop(permit);
@@ -2911,7 +2925,10 @@ mod tests {
             .await;
 
         assert!(
-            authorization.acquire().await.is_err(),
+            authorization
+                .acquire(&McpStdioExecution::HostProcess)
+                .await
+                .is_err(),
             "a captured stdio start authorization must be rejected after policy revision changes"
         );
         assert!(
@@ -2933,16 +2950,30 @@ mod tests {
             .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
             .await;
         assert!(
-            authorization.acquire().await.is_err(),
+            authorization
+                .acquire(&McpStdioExecution::HostProcess)
+                .await
+                .is_err(),
             "changing to WorkspaceWrite must revoke an existing stdio start permit"
         );
+        let workspace_authorization = engine
+            .capture_mcp_stdio_process_start_authorization()
+            .await
+            .expect("Open network permits a scoped MCP authorization snapshot");
         assert!(
-            engine
-                .capture_mcp_stdio_process_start_authorization()
+            workspace_authorization
+                .acquire(&McpStdioExecution::HostProcess)
                 .await
-                .is_none(),
-            "WorkspaceWrite must not authorize a new stdio process even with Open network"
+                .is_err(),
+            "WorkspaceWrite must reject host-process MCP stdio"
         );
+        let permit = workspace_authorization
+            .acquire(&McpStdioExecution::ManagedPackage {
+                package_id: "filesystem".into(),
+            })
+            .await
+            .expect("WorkspaceWrite may start a fixed managed package");
+        drop(permit);
     }
 
     #[tokio::test]
@@ -2959,13 +2990,19 @@ mod tests {
 
         engine.set_permission_mode(PermissionMode::Plan).await;
         assert!(
-            authorization.acquire().await.is_ok(),
+            authorization
+                .acquire(&haven_common::config::McpStdioExecution::HostProcess)
+                .await
+                .is_ok(),
             "permission mode changes affect tool calls, not the lifetime of an already-open stdio server"
         );
 
         engine.set_tool_settings(HashMap::new()).await;
         assert!(
-            authorization.acquire().await.is_ok(),
+            authorization
+                .acquire(&haven_common::config::McpStdioExecution::HostProcess)
+                .await
+                .is_ok(),
             "tool settings changes must not revoke an unrelated server process"
         );
 
@@ -2984,7 +3021,10 @@ mod tests {
                 .await
         );
         assert!(
-            authorization.acquire().await.is_ok(),
+            authorization
+                .acquire(&haven_common::config::McpStdioExecution::HostProcess)
+                .await
+                .is_ok(),
             "revoking a session-scoped shell grant must not disconnect MCP servers"
         );
 
@@ -2996,7 +3036,10 @@ mod tests {
         };
         engine.apply_security(&security).await.unwrap();
         assert!(
-            authorization.acquire().await.is_ok(),
+            authorization
+                .acquire(&haven_common::config::McpStdioExecution::HostProcess)
+                .await
+                .is_ok(),
             "applying unrelated security settings without changing process boundaries must preserve the server generation"
         );
         assert!(
@@ -3017,7 +3060,10 @@ mod tests {
             .expect("network boundary changes must notify the MCP process owner")
             .expect("MCP process boundary signal remains available");
         assert!(
-            authorization.acquire().await.is_err(),
+            authorization
+                .acquire(&haven_common::config::McpStdioExecution::HostProcess)
+                .await
+                .is_err(),
             "a network boundary change must still invalidate the captured server authorization"
         );
 
@@ -3034,7 +3080,10 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            workspace_authorization.acquire().await.is_err(),
+            workspace_authorization
+                .acquire(&haven_common::config::McpStdioExecution::HostProcess)
+                .await
+                .is_err(),
             "workspace changes must continue to revoke captured MCP server generations"
         );
     }

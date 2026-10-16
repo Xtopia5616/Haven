@@ -246,7 +246,7 @@ impl McpManager {
             network_policy: Arc::new(tokio::sync::RwLock::new(network_policy)),
             stdio_process_authorization: Arc::new(RwLock::new(None)),
             stdio_process_launcher: Arc::new(RwLock::new(
-                crate::client::local_stdio_process_launcher(),
+                crate::client::default_stdio_process_launcher(),
             )),
             stdio_policy_watcher: Arc::new(Mutex::new(None)),
             catalog_version: Arc::new(AtomicU64::new(0)),
