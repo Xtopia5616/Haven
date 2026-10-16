@@ -2392,6 +2392,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "haven-container-broker"
+version = "0.1.0"
+dependencies = [
+ "haven-platform",
+]
+
+[[package]]
 name = "haven-input"
 version = "0.1.0"
 dependencies = [

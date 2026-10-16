@@ -13,6 +13,8 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+const BROKER_SERVICE_NAME: &str = "HavenContainerBroker";
+
 #[expect(
     dead_code,
     reason = "the bounded wire contract is implemented before the named-pipe client and service"
@@ -25,6 +27,9 @@ pub(crate) mod broker_protocol;
     reason = "the named-pipe transport is implemented before the broker service lifecycle"
 )]
 pub(crate) mod named_pipe;
+
+#[cfg(windows)]
+pub mod broker_service;
 
 const MAX_COMMAND_BYTES: usize = 256 * 1024;
 const MAX_STORAGE_QUOTA_BYTES: u64 = 4 * 1024 * 1024 * 1024;

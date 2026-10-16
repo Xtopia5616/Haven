@@ -1,5 +1,6 @@
 //! Windows SID, token, ACL, and SCM identity operations for the broker pipe.
 
+use super::super::BROKER_SERVICE_NAME;
 use super::{
     BrokerPeerIdentity, BrokerPeerPolicy, OwnedHandle, invalid_data, invalid_input,
     permission_denied, wide_null,
@@ -28,7 +29,6 @@ use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, GetCurrentThread, OpenProcessToken, OpenThreadToken,
 };
 
-const BROKER_SERVICE_NAME: &str = "HavenContainerBroker";
 const MAX_TOKEN_INFORMATION_BYTES: u32 = 64 * 1024;
 const MAX_TOKEN_GROUPS: usize = 1_024;
 pub(super) const MAX_SID_BYTES: usize = 68;

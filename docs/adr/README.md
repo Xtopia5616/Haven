@@ -1220,3 +1220,4 @@
 - [1230：按 Hyper-V 容器镜像协议验证 scratch VHD](1230-verify-hyperv-scratch-image-protocol.md)
 - [1231：先实现 broker，再以运行期配额验收控制启用](1231-build-broker-before-runtime-quota-acceptance.md)
 - [1232：认证 broker named-pipe 两端并按 logon SID 限制访问](1232-authenticate-broker-named-pipe-peers.md)
+- [1233：将容器 broker 安装为独立受限 Windows 服务](1233-isolate-the-container-broker-service.md)
