@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | **Active：**§5.8 ExecutionWorkspace 与 sandbox 权限收敛；HCS quota attestation、execution gate 状态与 typed 本地进程/网络边界已实现（ADR 1260–1262）。SCM `Running` 不再被 status 命令当作 quota gate 已开放。配置版本与 transport 现已在 `load_mcp` 授权前绑定（ADR 1263）：Deferred HTTP 仍走 opaque 网络和确认策略，stdio 在 `WorkspaceWrite` 下仍于 spawn 前拒绝。`load_skill` 现按 InProcess/NetworkAccess::None 授权，但 Skill Python 执行仍是 HostProcess 并 fail closed（ADR 1264）。**Next：**定义可审查的 typed HCS Skill execution contract，覆盖固定 guest Python、Skill 文件输入、依赖闭包、参数/文件 capability、网络策略、quota、取消和输出审阅；在这些能力具备前继续拒绝 WorkspaceWrite Skill 执行。真实 HCS 超额写入和 Windows 支持矩阵仍是独立发布 Gate。§5.7 审计已完成，Rust 271/271、UI/App/IPC/文档组合清单 320/320，未核对项 0；桌面事实列表分页见 ADR 1153。 |
+| **Active / Next** | **Active：**§5.8 ExecutionWorkspace 与 sandbox 权限收敛；HCS quota attestation、execution gate 状态与 typed 本地进程/网络边界已实现（ADR 1260–1262）。SCM `Running` 不再被 status 命令当作 quota gate 已开放。配置版本与 transport 现已在 `load_mcp` 授权前绑定（ADR 1263）：Deferred HTTP 仍走 opaque 网络和确认策略，stdio 在 `WorkspaceWrite` 下仍于 spawn 前拒绝。`load_skill` 现按 InProcess/NetworkAccess::None 授权，但 Skill Python 执行仍是 HostProcess 并 fail closed（ADR 1264）。**Next：**将 ADR 1265 的固定、stdlib-only、无网络 Skill profile 接入 pinned image runtime attestation、Skill bundle 与参数有界传输、guest launcher 及输出审阅；所有链路和实时授权验证完成前继续拒绝 WorkspaceWrite Skill 执行。真实 HCS 超额写入和 Windows 支持矩阵仍是独立发布 Gate。§5.7 审计已完成，Rust 271/271、UI/App/IPC/文档组合清单 320/320，未核对项 0；桌面事实列表分页见 ADR 1153。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）

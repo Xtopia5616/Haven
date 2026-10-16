@@ -19,7 +19,14 @@ pub(crate) mod broker_protocol;
 pub(crate) mod broker_workspace;
 pub(crate) mod image_catalog;
 pub(crate) mod output_transfer;
+mod skill_contract;
 pub(crate) mod workspace_transfer;
+
+pub use skill_contract::{
+    MAX_SKILL_PARAMETER_BYTES, WindowsContainerSkillBundleInput, WindowsContainerSkillDependencies,
+    WindowsContainerSkillExecutionContract, WindowsContainerSkillFileAccess,
+    WindowsContainerSkillNetworkPolicy, WindowsContainerSkillRuntime,
+};
 
 #[cfg(windows)]
 pub(crate) mod named_pipe;

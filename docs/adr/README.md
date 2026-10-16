@@ -1252,3 +1252,4 @@
 - [1262：在 sandbox policy 中拆分本地进程与网络边界](1262-separate-process-and-network-sandbox-boundaries.md)
 - [1263：在授权前绑定 Deferred MCP 配置与 transport](1263-bind-deferred-mcp-transport-before-authorization.md)
 - [1264：区分 Skill 激活与宿主进程执行边界](1264-separate-skill-activation-from-host-execution.md)
+- [1265：定义 brokered Skill 执行契约](1265-define-brokered-skill-execution-contract.md)
