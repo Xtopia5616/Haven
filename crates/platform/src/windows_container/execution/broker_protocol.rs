@@ -13,6 +13,7 @@ use super::{
     validate_relative_working_directory,
 };
 use crate::filesystem::{DirectoryTreeCopyLimits, DirectoryTreeDiffLimits};
+use haven_common::config::is_valid_mcp_package_id;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
@@ -21,9 +22,10 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 8;
+pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 9;
 pub(crate) const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
 const MAX_BINARY_CHUNK_BYTES: usize = 64 * 1024;
+const MAX_MCP_SESSION_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_WIRE_PATH_BYTES: usize = 32 * 1024;
 const MAX_WORKSPACE_ENTRIES: u32 = 100_000;
 const MAX_WORKSPACE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -44,6 +46,9 @@ pub(crate) enum BrokerFrameKind {
     OutputFileChunk = 5,
     SkillBundleChunk = 6,
     SkillParameterChunk = 7,
+    McpStdinChunk = 8,
+    McpStdoutChunk = 9,
+    McpStderrChunk = 10,
 }
 
 impl TryFrom<u8> for BrokerFrameKind {
@@ -58,6 +63,9 @@ impl TryFrom<u8> for BrokerFrameKind {
             5 => Ok(Self::OutputFileChunk),
             6 => Ok(Self::SkillBundleChunk),
             7 => Ok(Self::SkillParameterChunk),
+            8 => Ok(Self::McpStdinChunk),
+            9 => Ok(Self::McpStdoutChunk),
+            10 => Ok(Self::McpStderrChunk),
             _ => Err(invalid_data("broker frame kind is unsupported")),
         }
     }
@@ -144,6 +152,9 @@ fn validate_payload_size(kind: BrokerFrameKind, payload_length: usize) -> io::Re
         | BrokerFrameKind::OutputFileChunk
         | BrokerFrameKind::SkillBundleChunk
         | BrokerFrameKind::SkillParameterChunk => MAX_BINARY_CHUNK_BYTES,
+        BrokerFrameKind::McpStdinChunk
+        | BrokerFrameKind::McpStdoutChunk
+        | BrokerFrameKind::McpStderrChunk => MAX_MCP_SESSION_CHUNK_BYTES,
     };
     if payload_length > maximum {
         return Err(invalid_data("broker frame payload exceeds its limit"));
@@ -169,6 +180,31 @@ pub(crate) enum BrokerControlMessage {
     },
     /// Confirms the status frame was consumed before the one-shot pipe closes.
     ExecutionGateStatusAcknowledged,
+    McpSessionOpen {
+        request: BrokerMcpSessionOpenRequest,
+    },
+    McpSessionOpenAccepted {
+        request_id: [u8; 16],
+        session_id: [u8; 16],
+    },
+    McpSessionAttach {
+        request_id: [u8; 16],
+        session_id: [u8; 16],
+    },
+    McpSessionReady {
+        request_id: [u8; 16],
+        session_id: [u8; 16],
+    },
+    McpSessionInputClosed {
+        session_id: [u8; 16],
+    },
+    McpSessionStop {
+        session_id: [u8; 16],
+    },
+    McpSessionExited {
+        session_id: [u8; 16],
+        exit_code: u32,
+    },
     Execute {
         request: BrokerExecutionRequest,
     },
@@ -259,6 +295,36 @@ impl BrokerControlMessage {
             Self::ExecutionGateStatusRequest
             | Self::ExecutionGateStatus { .. }
             | Self::ExecutionGateStatusAcknowledged => Ok(()),
+            Self::McpSessionOpen { request } => request.validate(),
+            Self::McpSessionOpenAccepted {
+                request_id,
+                session_id,
+            }
+            | Self::McpSessionAttach {
+                request_id,
+                session_id,
+            }
+            | Self::McpSessionReady {
+                request_id,
+                session_id,
+            } if request_id.iter().all(|byte| *byte == 0)
+                || session_id.iter().all(|byte| *byte == 0) =>
+            {
+                Err(invalid_data("MCP session identity is invalid"))
+            }
+            Self::McpSessionOpenAccepted { .. }
+            | Self::McpSessionAttach { .. }
+            | Self::McpSessionReady { .. } => Ok(()),
+            Self::McpSessionInputClosed { session_id }
+            | Self::McpSessionStop { session_id }
+            | Self::McpSessionExited { session_id, .. }
+                if session_id.iter().all(|byte| *byte == 0) =>
+            {
+                Err(invalid_data("MCP session ID is invalid"))
+            }
+            Self::McpSessionInputClosed { .. }
+            | Self::McpSessionStop { .. }
+            | Self::McpSessionExited { .. } => Ok(()),
             Self::Execute { request } => request
                 .validate()
                 .map(|_| ())
@@ -409,6 +475,26 @@ impl BrokerControlMessage {
             }
             Self::Failure { .. } => Ok(()),
         }
+    }
+}
+
+/// Minimal launch request for an administrator-managed MCP package. It does
+/// not carry a command, arguments, environment, cwd, or host path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BrokerMcpSessionOpenRequest {
+    pub(crate) request_id: [u8; 16],
+    pub(crate) package_id: String,
+}
+
+impl BrokerMcpSessionOpenRequest {
+    fn validate(&self) -> io::Result<()> {
+        if self.request_id.iter().all(|byte| *byte == 0)
+            || !is_valid_mcp_package_id(&self.package_id)
+        {
+            return Err(invalid_data("MCP session open request is invalid"));
+        }
+        Ok(())
     }
 }
 
@@ -933,6 +1019,97 @@ mod tests {
         assert!(BrokerFrame::control(&BrokerControlMessage::ExecutionGateStatusRequest).is_ok());
         assert!(
             BrokerFrame::control(&BrokerControlMessage::ExecutionGateStatusAcknowledged).is_ok()
+        );
+    }
+
+    #[test]
+    fn mcp_session_messages_bind_one_package_to_an_ephemeral_generation() {
+        let request_id = [0x11; 16];
+        let session_id = [0x22; 16];
+        let messages = [
+            BrokerControlMessage::McpSessionOpen {
+                request: BrokerMcpSessionOpenRequest {
+                    request_id,
+                    package_id: "filesystem".to_owned(),
+                },
+            },
+            BrokerControlMessage::McpSessionOpenAccepted {
+                request_id,
+                session_id,
+            },
+            BrokerControlMessage::McpSessionAttach {
+                request_id,
+                session_id,
+            },
+            BrokerControlMessage::McpSessionReady {
+                request_id,
+                session_id,
+            },
+            BrokerControlMessage::McpSessionInputClosed { session_id },
+            BrokerControlMessage::McpSessionStop { session_id },
+            BrokerControlMessage::McpSessionExited {
+                session_id,
+                exit_code: 17,
+            },
+        ];
+
+        for message in messages {
+            let frame = BrokerFrame::control(&message).expect("valid session message");
+            assert_eq!(frame.decode_control().unwrap(), message);
+        }
+        for kind in [
+            BrokerFrameKind::McpStdinChunk,
+            BrokerFrameKind::McpStdoutChunk,
+            BrokerFrameKind::McpStderrChunk,
+        ] {
+            assert!(BrokerFrame::new(kind, vec![0; MAX_MCP_SESSION_CHUNK_BYTES]).is_ok());
+            assert!(BrokerFrame::new(kind, vec![0; MAX_MCP_SESSION_CHUNK_BYTES + 1]).is_err());
+        }
+    }
+
+    #[test]
+    fn mcp_session_open_rejects_host_process_fields_and_invalid_identity() {
+        let request = BrokerMcpSessionOpenRequest {
+            request_id: [1; 16],
+            package_id: "filesystem".to_owned(),
+        };
+        assert!(
+            BrokerFrame::control(&BrokerControlMessage::McpSessionOpen {
+                request: request.clone(),
+            })
+            .is_ok()
+        );
+        for package_id in ["", "../server", "FileSystem", "a\\b", "-pkg", "a//b"] {
+            let frame = BrokerFrame::control(&BrokerControlMessage::McpSessionOpen {
+                request: BrokerMcpSessionOpenRequest {
+                    request_id: [1; 16],
+                    package_id: package_id.to_owned(),
+                },
+            });
+            assert!(frame.is_err(), "accepted unsafe package ID {package_id:?}");
+        }
+        assert!(
+            BrokerFrame::control(&BrokerControlMessage::McpSessionOpen {
+                request: BrokerMcpSessionOpenRequest {
+                    request_id: [0; 16],
+                    package_id: "filesystem".to_owned(),
+                },
+            })
+            .is_err()
+        );
+        assert!(
+            BrokerFrame::control(&BrokerControlMessage::McpSessionOpenAccepted {
+                request_id: [1; 16],
+                session_id: [0; 16],
+            })
+            .is_err()
+        );
+        let extra_host_field = br#"{"message":"mcp_session_open","request":{"request_id":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"package_id":"filesystem"},"command":"node.exe"}"#;
+        assert!(
+            BrokerFrame::new(BrokerFrameKind::Control, extra_host_field.to_vec())
+                .unwrap()
+                .decode_control()
+                .is_err()
         );
     }
 

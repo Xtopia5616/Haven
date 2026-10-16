@@ -1266,3 +1266,4 @@
 - [1276：将 MCP stdio 配置绑定到受管 package](1276-bind-mcp-stdio-config-to-managed-package.md)
 - [1277：有界关闭 MCP stdio 进程代次](1277-bound-mcp-stdio-generation-shutdown.md)
 - [1278：为 HCS guest stdin 实现有界写入](1278-bound-hcs-guest-stdin-writes.md)
+- [1279：定义 brokered MCP generation session wire protocol](1279-define-brokered-mcp-session-wire-protocol.md)
