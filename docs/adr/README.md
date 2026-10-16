@@ -1217,3 +1217,4 @@
 - [1227：按 attempt 配额创建有最大容量的 scratch VHDX](1227-create-capacity-bounded-scratch-vhdx.md)
 - [1228：在具备 HCS 存储权限的 broker 中格式化 scratch layer](1228-keep-hcs-layer-formatting-in-privileged-broker.md)
 - [1229：配额验收前保持 HCS scratch 原语为 crate 内部](1229-keep-hcs-scratch-spike-private-until-quota-proof.md)
+- [1230：按 Hyper-V 容器镜像协议验证 scratch VHD](1230-verify-hyperv-scratch-image-protocol.md)
