@@ -27,8 +27,8 @@ pub(crate) fn verify_current_broker_service_identity() -> io::Result<()> {
 #[cfg(test)]
 use super::broker_protocol::BrokerFailureCode;
 use super::broker_protocol::{
-    BROKER_PROTOCOL_VERSION, BrokerControlMessage, BrokerFrame, BrokerFrameKind,
-    MAX_CONTROL_PAYLOAD_BYTES, negotiate_version,
+    BROKER_PROTOCOL_VERSION, BrokerControlMessage, BrokerExecutionGateStatus, BrokerFrame,
+    BrokerFrameKind, MAX_CONTROL_PAYLOAD_BYTES, negotiate_version,
 };
 use peer_security::{
     ActiveSessionIdentity, PipeSecurityDescriptor, current_broker_service_sid,
@@ -421,6 +421,26 @@ pub(crate) struct BrokerPipeClient {
 }
 
 impl BrokerPipeClient {
+    /// Query whether the authenticated service's startup quota gate is open.
+    pub(crate) fn execution_gate_status(&mut self) -> io::Result<BrokerExecutionGateStatus> {
+        self.write_frame(
+            &BrokerFrame::control(&BrokerControlMessage::ExecutionGateStatusRequest)?,
+            HANDSHAKE_TIMEOUT,
+        )?;
+        match self.read_frame(HANDSHAKE_TIMEOUT)?.decode_control()? {
+            BrokerControlMessage::ExecutionGateStatus { status } => {
+                self.write_frame(
+                    &BrokerFrame::control(&BrokerControlMessage::ExecutionGateStatusAcknowledged)?,
+                    HANDSHAKE_TIMEOUT,
+                )?;
+                Ok(status)
+            }
+            _ => Err(invalid_data(
+                "broker did not return its execution gate status",
+            )),
+        }
+    }
+
     pub(crate) fn connect(
         policy: &BrokerClientPolicy,
         cancellation: BrokerPipeCancellation,
@@ -947,6 +967,60 @@ mod tests {
     #[test]
     fn named_pipe_rejects_peer_with_wrong_user_after_bounded_hello() {
         run_pipe_handshake_test(true);
+    }
+
+    #[test]
+    fn broker_execution_gate_status_uses_the_authenticated_protocol_connection() {
+        let current = current_process_identity().unwrap();
+        let policy = BrokerPeerPolicy::new(
+            current.user_sid.clone(),
+            current.logon_sid,
+            current.session_id,
+            current.user_sid,
+        )
+        .unwrap();
+        let name = format!(
+            r"\\.\pipe\Haven.ContainerBroker.Test.{}.{}",
+            unsafe { GetCurrentProcessId() },
+            NEXT_TEST_PIPE.fetch_add(1, Ordering::Relaxed)
+        );
+        let server_name = name.clone();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || -> io::Result<()> {
+            let mut listener = BrokerPipeListener::create(&server_name, policy)?;
+            let cancellation = BrokerPipeCancellation::new()?;
+            ready_sender.send(()).unwrap();
+            let connection = listener.accept(&cancellation)?;
+            if !matches!(
+                connection
+                    .read_frame(Duration::from_secs(5))?
+                    .decode_control()?,
+                BrokerControlMessage::ExecutionGateStatusRequest
+            ) {
+                return Err(invalid_data("test client sent an invalid status request"));
+            }
+            connection.write_frame(
+                &BrokerFrame::control(&BrokerControlMessage::ExecutionGateStatus {
+                    status: BrokerExecutionGateStatus::QuotaUnattested,
+                })?,
+                Duration::from_secs(5),
+            )?;
+            match connection
+                .read_frame(Duration::from_secs(5))?
+                .decode_control()?
+            {
+                BrokerControlMessage::ExecutionGateStatusAcknowledged => Ok(()),
+                _ => Err(invalid_data("test client did not acknowledge status")),
+            }
+        });
+        ready_receiver.recv().unwrap();
+
+        let mut client = BrokerPipeClient::connect_for_test(&name).unwrap();
+        assert_eq!(
+            client.execution_gate_status().unwrap(),
+            BrokerExecutionGateStatus::QuotaUnattested
+        );
+        server.join().unwrap().unwrap();
     }
 
     #[test]

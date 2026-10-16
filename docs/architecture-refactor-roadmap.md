@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | **Active：**§5.8 ExecutionWorkspace 与 sandbox 权限收敛；当前子切片为 HCS runtime quota attestation（ADR 1260）。**Next：**当前切片结束后再根据 §5.8 的剩余能力和验收证据提升下一项，不并行扩展 opaque capability。§5.7 审计已完成，Rust 271/271、UI/App/IPC/文档组合清单 320/320，未核对项 0；桌面事实列表分页见 ADR 1153。 |
+| **Active / Next** | **Active：**§5.8 ExecutionWorkspace 与 sandbox 权限收敛；HCS quota attestation 与经认证 pipe 查询 execution gate 状态已实现（ADR 1260、1261）。SCM `Running` 不再被 status 命令当作 quota gate 已开放。**Next：**按 §5.5 对剩余 capability-specific sandbox 边界做证据复核；Skills/MCP 与其它 opaque capability 在各自 OS 文件/网络边界和负向验收完成前继续 fail closed。§5.7 审计已完成，Rust 271/271、UI/App/IPC/文档组合清单 320/320，未核对项 0；桌面事实列表分页见 ADR 1153。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -184,7 +184,7 @@ HCS 执行边界已有固定的管理员本地镜像目录：服务启动时严�
 
 平台内部 HCS guest runner 先执行固定 workspace seed，再执行单个受限 Shell；双 pipe 有界 drain、request deadline/cancel 与 HCS 显式停止统一在一个 owner 流程中，只有停止成功才产出 writable-layer proof（ADR 1255）。独立启动 probe 使用固定 PowerShell/.NET 写入脚本，不映射用户 workspace；只有 guest 观察到磁盘满、同一 VHDX 有界增长、容量复核与宿主卷 reserve 检查全部通过时才留下 process-local proof。probe 失败仍在 attempt 分配和 workspace 读取前返回 `quota_unattested`。
 
-Broker client 保存并发送同一份有界 workspace baseline，接收受限 stdout/stderr 和输出差异流，校验后通过带 workspace generation、policy revision 的 `SandboxOutputReview` 持有结果；创建文件仍只能由现有 Tools 晋升链路处理（ADR 1256）。service 端接通 pinned image、私有 scratch、guest seed/Shell、明确停止、bounded layer export、diff sender 与 attempt 清理；不确定的 HCS/helper 生命周期会 quarantine。协议 v4 使用 request-scoped ACK 和 Shell 创建授权握手；平台提供 authenticated Windows broker execution port，scoped cancellation watcher 会打断 pipe I/O 并使服务端停止 guest，失败映射使用静态安全错误，进程级单槽限制为一个活动 attempt（ADR 1257–1259）。Windows `WorkspaceWrite` 前台 Shell 已连接 provider 并预留 review owner 容量。ADR 1260 的启动 probe 与 exact-quota gate 已实现，但本轮没有运行真实 HCS 或 guest 超额写入验收；目标 Windows build、broker token、镜像和实际 HCS 消费协议兼容性仍需环境验收。
+Broker client 保存并发送同一份有界 workspace baseline，接收受限 stdout/stderr 和输出差异流，校验后通过带 workspace generation、policy revision 的 `SandboxOutputReview` 持有结果；创建文件仍只能由现有 Tools 晋升链路处理（ADR 1256）。service 端接通 pinned image、私有 scratch、guest seed/Shell、明确停止、bounded layer export、diff sender 与 attempt 清理；不确定的 HCS/helper 生命周期会 quarantine。协议 v5 使用 request-scoped ACK、Shell 创建授权握手和一次性 execution-gate status query；平台提供 authenticated Windows broker execution port，scoped cancellation watcher 会打断 pipe I/O 并使服务端停止 guest，失败映射使用静态安全错误，进程级单槽限制为一个活动 attempt（ADR 1257–1259、1261）。Windows `WorkspaceWrite` 前台 Shell 已连接 provider 并预留 review owner 容量。ADR 1260 的启动 probe 与 exact-quota gate 已实现；broker CLI 分别显示 SCM service state 与 quota gate 状态，查询失败显示 unknown。真实 HCS、guest 超额写入、目标 Windows build、broker token、镜像与升级兼容性验收仍开放。
 
 | 状态 | 切片 | 完成条件 |
 | --- | --- | --- |

@@ -19,7 +19,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 4;
+pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 5;
 pub(crate) const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
 const MAX_BINARY_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_WIRE_PATH_BYTES: usize = 32 * 1024;
@@ -153,6 +153,12 @@ pub(crate) enum BrokerControlMessage {
     HelloAccepted {
         selected_version: u16,
     },
+    ExecutionGateStatusRequest,
+    ExecutionGateStatus {
+        status: BrokerExecutionGateStatus,
+    },
+    /// Confirms the status frame was consumed before the one-shot pipe closes.
+    ExecutionGateStatusAcknowledged,
     Execute {
         request: BrokerExecutionRequest,
     },
@@ -227,6 +233,9 @@ impl BrokerControlMessage {
             Self::HelloAccepted { .. } => Err(invalid_data(
                 "broker selected an unsupported protocol version",
             )),
+            Self::ExecutionGateStatusRequest
+            | Self::ExecutionGateStatus { .. }
+            | Self::ExecutionGateStatusAcknowledged => Ok(()),
             Self::Execute { request } => request
                 .validate()
                 .map(|_| ())
@@ -441,6 +450,15 @@ pub(crate) enum BrokerFailureCode {
     StagingFailed,
     HcsFailed,
     CleanupFailed,
+}
+
+/// Whether the service's startup quota probe currently allows execution
+/// requests to reach workspace staging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BrokerExecutionGateStatus {
+    QuotaAttested,
+    QuotaUnattested,
 }
 
 /// Attempt data sent across the broker boundary. It has no host root, tool
@@ -690,6 +708,25 @@ mod tests {
     }
 
     #[test]
+    fn execution_gate_status_messages_round_trip_with_fixed_states() {
+        for status in [
+            BrokerExecutionGateStatus::QuotaAttested,
+            BrokerExecutionGateStatus::QuotaUnattested,
+        ] {
+            let frame = BrokerFrame::control(&BrokerControlMessage::ExecutionGateStatus { status })
+                .unwrap();
+            assert_eq!(
+                frame.decode_control().unwrap(),
+                BrokerControlMessage::ExecutionGateStatus { status }
+            );
+        }
+        assert!(BrokerFrame::control(&BrokerControlMessage::ExecutionGateStatusRequest).is_ok());
+        assert!(
+            BrokerFrame::control(&BrokerControlMessage::ExecutionGateStatusAcknowledged).is_ok()
+        );
+    }
+
+    #[test]
     fn frame_reader_rejects_oversized_and_unknown_frames_before_payload_read() {
         let too_large = (MAX_CONTROL_PAYLOAD_BYTES as u32 + 2).to_le_bytes();
         let mut reader = Cursor::new(too_large);
@@ -900,8 +937,8 @@ mod tests {
             BROKER_PROTOCOL_VERSION
         );
         assert!(negotiate_version(2, 2).is_err());
-        assert!(negotiate_version(5, 6).is_err());
+        assert!(negotiate_version(6, 7).is_err());
         assert!(negotiate_version(0, 1).is_err());
-        assert!(negotiate_version(5, 4).is_err());
+        assert!(negotiate_version(6, 5).is_err());
     }
 }

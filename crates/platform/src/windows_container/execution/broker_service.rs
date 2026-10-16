@@ -39,8 +39,13 @@ use windows_sys::Win32::System::Services::{
 use windows_sys::Win32::System::Threading::{ResetEvent, SetEvent, WaitForSingleObject};
 use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath};
 
-use super::broker_protocol::{BrokerControlMessage, BrokerFailureCode, BrokerFrame};
-use super::named_pipe::{BrokerPeerPolicy, BrokerPipeCancellation, BrokerPipeListener};
+use super::broker_protocol::{
+    BrokerControlMessage, BrokerExecutionGateStatus, BrokerFailureCode, BrokerFrame,
+};
+use super::named_pipe::{
+    BrokerClientPolicy, BrokerPeerPolicy, BrokerPipeCancellation, BrokerPipeClient,
+    BrokerPipeListener,
+};
 use super::quota_attestation::QuotaRuntimeAttestation;
 
 const SERVICE_ACCOUNT: &str = r"NT AUTHORITY\LocalSystem";
@@ -215,8 +220,27 @@ pub fn state() -> io::Result<BrokerServiceState> {
 
 /// Print a compact service status for the broker's explicit CLI.
 pub fn print_status() -> io::Result<()> {
-    println!("{:#?}", state()?);
+    let state = state()?;
+    println!("Service: {state:?}");
+    match state {
+        BrokerServiceState::Running => match query_execution_gate_status() {
+            Ok(BrokerExecutionGateStatus::QuotaAttested) => {
+                println!("Execution gate: open (runtime quota attested)");
+            }
+            Ok(BrokerExecutionGateStatus::QuotaUnattested) => {
+                println!("Execution gate: closed (runtime quota unattested)");
+            }
+            Err(_) => println!("Execution gate: unknown (authenticated status query failed)"),
+        },
+        _ => println!("Execution gate: closed (service is not running)"),
+    }
     Ok(())
+}
+
+fn query_execution_gate_status() -> io::Result<BrokerExecutionGateStatus> {
+    let policy = BrokerClientPolicy::for_current_process()?;
+    let cancellation = BrokerPipeCancellation::new()?;
+    BrokerPipeClient::connect(&policy, cancellation)?.execution_gate_status()
 }
 
 /// Enter the SCM dispatcher. Only SCM may launch this mode.
@@ -532,6 +556,21 @@ fn serve_authenticated_connection(
         .read_frame(Duration::from_secs(5))?
         .decode_control();
     let request = match request_message {
+        Ok(BrokerControlMessage::ExecutionGateStatusRequest) => {
+            let response = BrokerControlMessage::ExecutionGateStatus {
+                status: execution_gate_status(quota_attestation),
+            };
+            connection.write_frame(&BrokerFrame::control(&response)?, Duration::from_secs(5))?;
+            return match connection
+                .read_frame(Duration::from_secs(5))?
+                .decode_control()?
+            {
+                BrokerControlMessage::ExecutionGateStatusAcknowledged => Ok(()),
+                _ => Err(invalid_data(
+                    "broker execution gate status was not acknowledged",
+                )),
+            };
+        }
         Ok(BrokerControlMessage::Execute { request }) => request,
         _ => {
             return write_broker_failure(connection, None, BrokerFailureCode::InvalidRequest);
@@ -620,6 +659,16 @@ fn quota_runtime_attestation(
         return Err(BrokerFailureCode::QuotaUnattested);
     }
     Ok(attestation)
+}
+
+fn execution_gate_status(
+    attestation: Option<&QuotaRuntimeAttestation>,
+) -> BrokerExecutionGateStatus {
+    if attestation.is_some() {
+        BrokerExecutionGateStatus::QuotaAttested
+    } else {
+        BrokerExecutionGateStatus::QuotaUnattested
+    }
 }
 
 fn write_broker_failure(
@@ -901,6 +950,10 @@ mod tests {
         assert_eq!(
             quota_runtime_attestation(None, 512 * 1024 * 1024).err(),
             Some(BrokerFailureCode::QuotaUnattested)
+        );
+        assert_eq!(
+            execution_gate_status(None),
+            BrokerExecutionGateStatus::QuotaUnattested
         );
     }
 

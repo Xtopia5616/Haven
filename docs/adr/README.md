@@ -1248,3 +1248,4 @@
 - [1258：实现 Windows broker execution provider](1258-implement-windows-broker-execution-provider.md)
 - [1259：将 WorkspaceWrite Shell 接入 HCS broker](1259-wire-workspace-write-shell-to-hcs-broker.md)
 - [1260：在 broker 启动时证明 HCS guest storage quota](1260-attest-hcs-storage-quota-at-service-start.md)
+- [1261：通过认证 broker pipe 报告执行 gate 状态](1261-report-broker-execution-gate-status.md)
