@@ -57,6 +57,15 @@ impl ProcessContainment {
         Self::new_with_active_process_limit(DEFAULT_ACTIVE_PROCESS_LIMIT)
     }
 
+    /// Create a boundary that permits exactly one process.
+    ///
+    /// Use this for fixed helper processes that must not create descendants.
+    /// On Windows, the Job Object rejects child creation after the helper is
+    /// resumed and kills the process on owner close.
+    pub fn new_single_process() -> io::Result<Self> {
+        Self::new_with_active_process_limit(1)
+    }
+
     fn new_with_active_process_limit(active_process_limit: u32) -> io::Result<Self> {
         if active_process_limit == 0 {
             return Err(io::Error::new(
@@ -620,8 +629,8 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
-        let containment = ProcessContainment::new_with_active_process_limit(1)
-            .expect("create single-process Job Object");
+        let containment =
+            ProcessContainment::new_single_process().expect("create single-process Job Object");
         containment.prepare_command(&mut command, 0);
         let mut child = spawn_command(command).expect("spawn suspended test child");
         containment

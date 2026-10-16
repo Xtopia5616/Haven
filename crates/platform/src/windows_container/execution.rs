@@ -39,6 +39,13 @@ pub(crate) mod workspace_transfer;
 pub(crate) mod named_pipe;
 
 #[cfg(windows)]
+#[expect(
+    dead_code,
+    reason = "the isolated HCS export worker is connected to provider flow in the next slice"
+)]
+pub(crate) mod hcs_export_worker;
+
+#[cfg(windows)]
 pub mod broker_service;
 
 const MAX_COMMAND_BYTES: usize = 256 * 1024;

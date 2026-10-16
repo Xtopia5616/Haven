@@ -4,11 +4,12 @@
 //! DACL grants access only to SYSTEM, Administrators, and the restricted
 //! broker service SID. A single attempt may occupy the root at a time, which
 //! bounds retained workspace payload bytes to one request's existing 4 GiB
-//! transfer ceiling. Failed cleanup keeps an owner marker for later recovery.
+//! transfer ceiling. Failed cleanup keeps an owner marker for recovery; an
+//! explicitly uncertain HCS export is quarantined from automatic recovery.
 
 use crate::filesystem::{DirectoryCapability, DirectoryEntryKind};
 use std::fs::File;
-use std::io;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::windows::fs::MetadataExt;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -31,6 +32,7 @@ const OWNER_SUFFIX: &str = ".lock";
 const MAX_ROOT_ENTRIES: usize = 4_096;
 const MAX_CLEANUPS_PER_PASS: usize = 8;
 const STALE_ATTEMPT_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+const UNCERTAIN_ATTEMPT_MARKER: &[u8] = b"hcs-export-uncertain:v1";
 
 /// Pins and cleans the single service-private staging root.
 pub(crate) struct BrokerWorkspaceScratchRoot {
@@ -173,8 +175,16 @@ impl BrokerWorkspaceScratchRoot {
     }
 
     fn cleanup_stale_owner(&self, owner_name: &str, expected_workspace: &str) -> io::Result<bool> {
-        let owner_lock = self.root.open_read_write(Path::new(owner_name))?;
+        let mut owner_lock = self.root.open_read_write(Path::new(owner_name))?;
         if owner_lock.try_lock().is_err() {
+            return Ok(false);
+        }
+        let mut marker = Vec::new();
+        (&mut owner_lock).take(64).read_to_end(&mut marker)?;
+        if !marker.is_empty() {
+            // Unknown or explicitly uncertain state is never automatically
+            // reclaimed. Only the original empty active-attempt marker is
+            // eligible for stale cleanup.
             return Ok(false);
         }
         // The marker name carries a strict canonical workspace ID and is
@@ -205,6 +215,26 @@ impl BrokerWorkspaceAttempt {
         self.owner_lock.take();
         self.cleaned = true;
         Ok(())
+    }
+
+    /// Quarantine an attempt when native HCS work may still use its staging.
+    /// The non-empty owner marker prevents both new attempts and automatic
+    /// stale cleanup; an operator must resolve the HCS state before removal.
+    pub(crate) fn preserve_for_recovery(&mut self) -> io::Result<()> {
+        let marker_result = (|| {
+            let owner_lock = self
+                .owner_lock
+                .as_mut()
+                .ok_or_else(|| invalid_data("broker attempt has no owner marker to quarantine"))?;
+            owner_lock.set_len(0)?;
+            owner_lock.seek(SeekFrom::Start(0))?;
+            owner_lock.write_all(UNCERTAIN_ATTEMPT_MARKER)?;
+            owner_lock.sync_all()
+        })();
+        self.workspace.take();
+        self.owner_lock.take();
+        self.cleaned = true;
+        marker_result
     }
 
     #[cfg(test)]
@@ -378,6 +408,24 @@ mod tests {
         );
         drop(attempt);
         assert!(root.root.entries(MAX_ROOT_ENTRIES).unwrap().is_empty());
+    }
+
+    #[test]
+    fn preserved_attempt_blocks_new_work_and_is_never_auto_reclaimed() {
+        let (_temp, root) = root();
+        let mut attempt = root.create_attempt().unwrap();
+        let workspace_name = attempt.workspace_name.clone();
+        attempt.preserve_for_recovery().unwrap();
+        drop(attempt);
+
+        assert_eq!(
+            root.create_attempt().err().unwrap().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        let stale_time = SystemTime::now() + STALE_ATTEMPT_AGE + Duration::from_secs(1);
+        assert_eq!(root.cleanup_stale(stale_time).unwrap(), 0);
+        assert!(root.root.root().join(workspace_name).exists());
+        assert_eq!(root.root.entries(MAX_ROOT_ENTRIES).unwrap().len(), 2);
     }
 
     #[test]

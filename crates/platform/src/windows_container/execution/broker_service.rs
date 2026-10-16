@@ -230,6 +230,12 @@ pub fn run_service_dispatcher() -> io::Result<()> {
     Ok(())
 }
 
+/// Run the private synchronous HCS export helper mode. It accepts one bounded
+/// request only after verifying the inherited broker service token.
+pub fn run_hcs_export_worker() -> io::Result<()> {
+    super::hcs_export_worker::run_worker_mode()
+}
+
 fn configure_service_identity(
     service: windows_sys::Win32::System::Services::SC_HANDLE,
 ) -> io::Result<()> {

@@ -11,6 +11,9 @@ fn main() {
         (Some(command), None) if command == "uninstall" => broker_service::uninstall(),
         (Some(command), None) if command == "status" => broker_service::print_status(),
         (Some(command), None) if command == "--service" => broker_service::run_service_dispatcher(),
+        (Some(command), None) if command == "--hcs-export-worker" => {
+            broker_service::run_hcs_export_worker()
+        }
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "usage: haven-container-broker <install|start|stop|status|uninstall>",

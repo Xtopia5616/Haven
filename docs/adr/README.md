@@ -1237,3 +1237,4 @@
 - [1247：在容器 writable layer 中建立 guest workspace 副本](1247-seed-a-writable-guest-workspace.md)
 - [1248：有界解码 HCS writable-layer workspace 输出](1248-decode-bounded-hcs-layer-workspace-output.md)
 - [1249：导出已停止的 HCS writable layer](1249-export-stopped-hcs-writable-layer.md)
+- [1250：隔离同步 HCS writable-layer 导出](1250-isolate-synchronous-hcs-export-worker.md)

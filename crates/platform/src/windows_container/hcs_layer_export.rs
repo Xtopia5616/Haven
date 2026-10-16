@@ -1,19 +1,21 @@
 //! Native HCS export for a stopped, broker-owned writable layer.
 //!
 //! `HcsExportLayer` is synchronous and has no cancellation or output-size
-//! parameter. This module therefore keeps the call private and leaves it
-//! unwired from the broker request loop until an isolated worker owns its
-//! deadline and export staging lifecycle. The result is still parsed only by
-//! `hcs_layer_output`, which accepts the known legacy `Files` transport layout.
+//! parameter. The native call runs only in a single-process broker helper with
+//! a Job Object deadline; the result is parsed by `hcs_layer_output`, which
+//! accepts the known legacy `Files` transport layout.
 
 use super::WindowsContainerSandboxConfig;
+#[cfg(test)]
 use super::hcs_layer_output::{HcsLayerOutputSummary, extract_workspace_output};
 use super::hcs_runtime::HcsStoppedComputeSystem;
-use crate::filesystem::{DirectoryCapability, DirectoryTreeDiffLimits};
-use serde::Serialize;
+use crate::filesystem::DirectoryCapability;
+#[cfg(test)]
+use crate::filesystem::DirectoryTreeDiffLimits;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::io;
+use std::io::{self, Read};
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
@@ -23,11 +25,16 @@ use windows_sys::Win32::System::LibraryLoader::{
 };
 
 const WRITABLE_VHDX_NAME: &str = "sandbox.vhdx";
+const EXPORT_WORKER_PROTOCOL_VERSION: u16 = 1;
+const MAX_EXPORT_WORKER_REQUEST_BYTES: usize = 256 * 1024;
+const MAX_EXPORT_WORKER_PATH_BYTES: usize = 32 * 1024;
+const MAX_EXPORT_WORKER_PARENT_LAYERS: usize = 64;
 
 /// Calls the export API only after the compute system has stopped and released
 /// the writable layer. HCS export itself cannot be interrupted; callers must
 /// discard the entire attempt if export or subsequent extraction fails.
-pub(super) fn export_stopped_workspace_output(
+#[cfg(test)]
+fn export_stopped_workspace_output(
     exporter: &dyn HcsLayerExporter,
     stopped_system: &HcsStoppedComputeSystem,
     config: &WindowsContainerSandboxConfig,
@@ -42,30 +49,6 @@ pub(super) fn export_stopped_workspace_output(
     exporter.export_stopped_writable_layer(&plan)?;
     check_cancelled(&mut is_cancelled)?;
     extract_workspace_output(transport, destination, limits, is_cancelled)
-}
-
-#[expect(
-    dead_code,
-    reason = "the broker worker will call native export after isolating its synchronous lifetime"
-)]
-pub(super) fn export_stopped_workspace_output_native(
-    stopped_system: &HcsStoppedComputeSystem,
-    config: &WindowsContainerSandboxConfig,
-    transport: &DirectoryCapability,
-    destination: &DirectoryCapability,
-    limits: DirectoryTreeDiffLimits,
-    is_cancelled: impl FnMut() -> bool,
-) -> io::Result<HcsLayerOutputSummary> {
-    let exporter = NativeHcsLayerExporter::load()?;
-    export_stopped_workspace_output(
-        &exporter,
-        stopped_system,
-        config,
-        transport,
-        destination,
-        limits,
-        is_cancelled,
-    )
 }
 
 /// Narrow seam for the synchronous ComputeStorage API and deterministic tests.
@@ -85,12 +68,42 @@ pub(super) struct HcsLayerExportPlan {
 }
 
 impl HcsLayerExportPlan {
-    fn new(
+    pub(super) fn encode_worker_request(&self) -> io::Result<Vec<u8>> {
+        let writable_layer_path = self
+            .writable_layer_path
+            .to_str()
+            .ok_or_else(|| invalid_data("HCS writable layer path is not valid Unicode"))?;
+        let export_folder_path = self
+            .export_folder_path
+            .to_str()
+            .ok_or_else(|| invalid_data("HCS export folder path is not valid Unicode"))?;
+        let request = HcsLayerExportWorkerRequest {
+            version: EXPORT_WORKER_PROTOCOL_VERSION,
+            writable_layer_path: writable_layer_path.to_owned(),
+            export_folder_path: export_folder_path.to_owned(),
+            layer_data_json: self.layer_data_json.clone(),
+        };
+        let bytes = serde_json::to_vec(&request)
+            .map_err(|_| invalid_data("HCS export worker request could not be serialized"))?;
+        if bytes.len() > MAX_EXPORT_WORKER_REQUEST_BYTES {
+            return Err(invalid_input(
+                "HCS export worker request exceeds its size limit",
+            ));
+        }
+        Ok(bytes)
+    }
+
+    pub(super) fn new(
         stopped_system: &HcsStoppedComputeSystem,
         config: &WindowsContainerSandboxConfig,
         transport: &DirectoryCapability,
         destination: &DirectoryCapability,
     ) -> io::Result<Self> {
+        if config.layers.is_empty() || config.layers.len() > MAX_EXPORT_WORKER_PARENT_LAYERS {
+            return Err(invalid_input(
+                "HCS parent layer count is outside the worker limit",
+            ));
+        }
         let writable_layer_path = config
             .writable_layer_folder
             .as_deref()
@@ -164,18 +177,140 @@ impl HcsLayerExportPlan {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HcsLayerExportWorkerRequest {
+    version: u16,
+    writable_layer_path: String,
+    export_folder_path: String,
+    layer_data_json: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HcsLayerData {
     #[serde(rename = "Layers")]
     layers: Vec<HcsExportLayerDescriptor>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HcsExportLayerDescriptor {
     #[serde(rename = "Id")]
     id: String,
     #[serde(rename = "Path")]
     path: String,
+}
+
+/// Read and validate one private worker request. This is intentionally
+/// separate from the native call so protocol and path failures are testable
+/// without starting HCS.
+pub(super) fn decode_worker_request(reader: &mut impl Read) -> io::Result<HcsLayerExportPlan> {
+    let mut length_bytes = [0_u8; 4];
+    reader.read_exact(&mut length_bytes)?;
+    let request_length = u32::from_le_bytes(length_bytes) as usize;
+    if request_length == 0 || request_length > MAX_EXPORT_WORKER_REQUEST_BYTES {
+        return Err(invalid_data(
+            "HCS export worker request length is outside its limit",
+        ));
+    }
+    let mut bytes = vec![0; request_length];
+    reader.read_exact(&mut bytes)?;
+    let mut trailing = [0_u8; 1];
+    if reader.read(&mut trailing)? != 0 {
+        return Err(invalid_data(
+            "HCS export worker accepts exactly one request",
+        ));
+    }
+    let request: HcsLayerExportWorkerRequest = serde_json::from_slice(&bytes)
+        .map_err(|_| invalid_data("HCS export worker request is malformed"))?;
+    HcsLayerExportPlan::from_worker_request(request)
+}
+
+/// Entry point for the private broker executable mode. The caller verifies the
+/// inherited restricted service token before accepting any request bytes.
+pub(super) fn run_native_worker(reader: &mut impl Read) -> io::Result<()> {
+    let plan = decode_worker_request(reader)?;
+    NativeHcsLayerExporter::load()?.export_stopped_writable_layer(&plan)
+}
+
+impl HcsLayerExportPlan {
+    fn from_worker_request(request: HcsLayerExportWorkerRequest) -> io::Result<Self> {
+        if request.version != EXPORT_WORKER_PROTOCOL_VERSION {
+            return Err(invalid_data(
+                "HCS export worker protocol version is unsupported",
+            ));
+        }
+        validate_worker_path(&request.writable_layer_path, "writable layer path")?;
+        validate_worker_path(&request.export_folder_path, "export folder path")?;
+        if request.layer_data_json.len() > MAX_EXPORT_WORKER_REQUEST_BYTES {
+            return Err(invalid_data("HCS parent layer data exceeds its limit"));
+        }
+
+        let writable_layer = DirectoryCapability::open(Path::new(&request.writable_layer_path))?;
+        let writable_vhdx = writable_layer.open_read(Path::new(WRITABLE_VHDX_NAME))?;
+        let writable_vhdx_metadata = writable_vhdx.metadata()?;
+        if !writable_vhdx_metadata.is_file() || writable_vhdx_metadata.len() == 0 {
+            return Err(invalid_data("HCS writable layer VHDX is invalid"));
+        }
+        let export_folder = DirectoryCapability::open(Path::new(&request.export_folder_path))?;
+        if !export_folder.entries(1)?.is_empty() {
+            return Err(invalid_input("HCS export folder must be empty"));
+        }
+
+        let layer_data: HcsLayerData = serde_json::from_str(&request.layer_data_json)
+            .map_err(|_| invalid_data("HCS parent layer data is malformed"))?;
+        if layer_data.layers.is_empty() || layer_data.layers.len() > MAX_EXPORT_WORKER_PARENT_LAYERS
+        {
+            return Err(invalid_data("HCS parent layer count is outside its limit"));
+        }
+        let mut roots = vec![
+            writable_layer.root().to_path_buf(),
+            export_folder.root().to_path_buf(),
+        ];
+        let mut seen_layer_ids = HashSet::new();
+        let mut parent_layers = Vec::with_capacity(layer_data.layers.len());
+        let mut parent_capabilities = Vec::with_capacity(layer_data.layers.len());
+        for layer in layer_data.layers {
+            if layer.id.is_empty()
+                || layer.id.len() > 256
+                || layer.id.chars().any(char::is_control)
+                || !seen_layer_ids.insert(layer.id.to_ascii_lowercase())
+            {
+                return Err(invalid_data("HCS parent layer ID is invalid or repeated"));
+            }
+            validate_worker_path(&layer.path, "parent layer path")?;
+            let parent = DirectoryCapability::open(Path::new(&layer.path))?;
+            let parent_path = parent.root().to_path_buf();
+            roots.push(parent_path.clone());
+            parent_layers.push((layer.id, parent_path));
+            parent_capabilities.push(parent);
+        }
+        ensure_disjoint_roots(&roots)?;
+
+        let writable_layer_path = writable_layer.root().to_path_buf();
+        let export_folder_path = export_folder.root().to_path_buf();
+        let layer_data_json = serialize_layer_data(&parent_layers)?;
+        let options_json = serde_json::to_string(&HcsExportOptions {
+            is_writable_layer: true,
+        })
+        .map_err(|_| invalid_data("HCS export options could not be serialized"))?;
+        Ok(Self {
+            _writable_layer: writable_layer,
+            _parent_layers: parent_capabilities,
+            writable_layer_path,
+            export_folder_path,
+            layer_data_json,
+            options_json,
+        })
+    }
+}
+
+fn validate_worker_path(path: &str, description: &str) -> io::Result<()> {
+    if path.len() > MAX_EXPORT_WORKER_PATH_BYTES {
+        return Err(invalid_data("HCS export worker path exceeds its limit"));
+    }
+    validate_local_absolute_path(Path::new(path), description)
 }
 
 #[derive(Serialize)]
@@ -434,6 +569,106 @@ mod tests {
     fn limits() -> DirectoryTreeDiffLimits {
         let scan = DirectoryTreeCopyLimits::new(128, 16, 1024, 4096).unwrap();
         DirectoryTreeDiffLimits::new(scan, 128, 1024, 4096).unwrap()
+    }
+
+    fn worker_frame(bytes: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(4 + bytes.len());
+        frame.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        frame.extend_from_slice(bytes);
+        frame
+    }
+
+    #[test]
+    fn worker_request_round_trips_only_the_validated_export_plan() {
+        let fixture = Fixture::new();
+        let (transport, destination) = fixture.capabilities();
+        let plan = HcsLayerExportPlan::new(
+            &fixture.stopped_system(),
+            &fixture.config,
+            &transport,
+            &destination,
+        )
+        .unwrap();
+        let request = plan.encode_worker_request().unwrap();
+        let mut frame = std::io::Cursor::new(worker_frame(&request));
+        let decoded = decode_worker_request(&mut frame).unwrap();
+
+        assert_eq!(decoded.writable_layer_path, plan.writable_layer_path);
+        assert_eq!(decoded.export_folder_path, plan.export_folder_path);
+        assert_eq!(decoded.layer_data_json, plan.layer_data_json);
+        assert_eq!(decoded.options_json, plan.options_json);
+    }
+
+    #[test]
+    fn worker_request_rejects_trailing_data_and_unsupported_version() {
+        let fixture = Fixture::new();
+        let (transport, destination) = fixture.capabilities();
+        let plan = HcsLayerExportPlan::new(
+            &fixture.stopped_system(),
+            &fixture.config,
+            &transport,
+            &destination,
+        )
+        .unwrap();
+        let mut frame = worker_frame(&plan.encode_worker_request().unwrap());
+        frame.push(0);
+        assert_eq!(
+            decode_worker_request(&mut std::io::Cursor::new(frame))
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        let mut request: HcsLayerExportWorkerRequest =
+            serde_json::from_slice(&plan.encode_worker_request().unwrap()).unwrap();
+        request.version += 1;
+        let bytes = serde_json::to_vec(&request).unwrap();
+        assert_eq!(
+            decode_worker_request(&mut std::io::Cursor::new(worker_frame(&bytes)))
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn worker_request_rejects_oversize_and_overlapping_layer_roots() {
+        let oversized_length = u32::try_from(MAX_EXPORT_WORKER_REQUEST_BYTES + 1)
+            .unwrap()
+            .to_le_bytes();
+        assert_eq!(
+            decode_worker_request(&mut std::io::Cursor::new(oversized_length))
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        let fixture = Fixture::new();
+        let (transport, destination) = fixture.capabilities();
+        let plan = HcsLayerExportPlan::new(
+            &fixture.stopped_system(),
+            &fixture.config,
+            &transport,
+            &destination,
+        )
+        .unwrap();
+        let mut request: HcsLayerExportWorkerRequest =
+            serde_json::from_slice(&plan.encode_worker_request().unwrap()).unwrap();
+        let mut layer_data: HcsLayerData = serde_json::from_str(&request.layer_data_json).unwrap();
+        layer_data.layers[0].path = plan.writable_layer_path.to_string_lossy().into_owned();
+        request.layer_data_json = serde_json::to_string(&layer_data).unwrap();
+        let bytes = serde_json::to_vec(&request).unwrap();
+
+        assert_eq!(
+            decode_worker_request(&mut std::io::Cursor::new(worker_frame(&bytes)))
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
     }
 
     fn write_backup_file(

@@ -13,6 +13,14 @@ pub(crate) fn broker_service_sid_string() -> io::Result<String> {
     peer_security::broker_service_sid_string()
 }
 
+/// Require the fixed service identity before entering a privileged helper
+/// mode. This intentionally checks both session 0 and the restricted service
+/// SID, so an interactive user cannot invoke the helper under their own token.
+pub(crate) fn verify_current_broker_service_identity() -> io::Result<()> {
+    let service_sid = peer_security::current_broker_service_sid()?;
+    peer_security::verify_current_service_identity(&service_sid)
+}
+
 #[cfg(test)]
 use super::broker_protocol::BrokerFailureCode;
 use super::broker_protocol::{
