@@ -5,6 +5,7 @@
 //! required-privilege set, and accepts no user-selected service configuration.
 
 use super::BROKER_SERVICE_NAME;
+use super::broker_workspace::BrokerWorkspaceScratchRoot;
 use std::ffi::OsString;
 use std::io;
 use std::os::windows::ffi::OsStringExt;
@@ -120,7 +121,8 @@ pub fn install() -> io::Result<()> {
     }
     let service = OwnedServiceHandle(service);
 
-    let setup = configure_service_identity(service.0);
+    let setup = configure_service_identity(service.0)
+        .and_then(|()| BrokerWorkspaceScratchRoot::install(&program_files));
     if let Err(error) = setup {
         unsafe { DeleteService(service.0) };
         return Err(error);
@@ -358,6 +360,10 @@ unsafe extern "system" fn service_main(_argument_count: u32, _arguments: *mut *m
 }
 
 fn run_service_main() -> io::Result<()> {
+    let program_files = program_files_directory()?;
+    validate_install_image(&std::env::current_exe()?, &program_files)?;
+    let workspace_root = BrokerWorkspaceScratchRoot::open(&program_files)?;
+
     let cancellation = BrokerPipeCancellation::new()?;
     let service_name = wide_null(BROKER_SERVICE_NAME);
     let status_handle = unsafe {
@@ -388,7 +394,7 @@ fn run_service_main() -> io::Result<()> {
         return Err(error);
     }
 
-    let result = run_service_listener_loop(&cancellation);
+    let result = run_service_listener_loop(&cancellation, &workspace_root);
 
     {
         let _guard = lock_service_control();
@@ -405,7 +411,10 @@ fn run_service_main() -> io::Result<()> {
     Ok(())
 }
 
-fn run_service_listener_loop(cancellation: &BrokerPipeCancellation) -> io::Result<()> {
+fn run_service_listener_loop(
+    cancellation: &BrokerPipeCancellation,
+    _workspace_root: &BrokerWorkspaceScratchRoot,
+) -> io::Result<()> {
     loop {
         match consume_control_signal(cancellation)? {
             CONTROL_SIGNAL_STOP => return Ok(()),

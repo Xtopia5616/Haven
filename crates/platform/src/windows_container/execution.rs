@@ -24,6 +24,14 @@ pub(crate) mod broker_protocol;
     not(test),
     expect(
         dead_code,
+        reason = "broker-owned workspace scratch is prepared before workspace transfer wiring"
+    )
+)]
+pub(crate) mod broker_workspace;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
         reason = "broker workspace snapshot framing is implemented before provider connection"
     )
 )]

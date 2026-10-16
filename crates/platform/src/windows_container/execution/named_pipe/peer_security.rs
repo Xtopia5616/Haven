@@ -337,6 +337,12 @@ pub(super) fn query_unique_active_session() -> io::Result<ActiveSessionIdentity>
 }
 
 pub(super) fn current_broker_service_sid() -> io::Result<Vec<u8>> {
+    let sid = broker_service_sid()?;
+    verify_current_service_identity(&sid)?;
+    Ok(sid)
+}
+
+pub(super) fn broker_service_sid() -> io::Result<Vec<u8>> {
     let account = wide_null(&format!(r"NT SERVICE\{BROKER_SERVICE_NAME}"));
     let mut sid_length = 0;
     let mut domain_length = 0;
@@ -378,8 +384,11 @@ pub(super) fn current_broker_service_sid() -> io::Result<Vec<u8>> {
     }
     sid.truncate(sid_length as usize);
     validate_sid_bytes(&sid)?;
-    verify_current_service_identity(&sid)?;
     Ok(sid)
+}
+
+pub(super) fn broker_service_sid_string() -> io::Result<String> {
+    sid_to_string(&broker_service_sid()?)
 }
 
 pub(super) fn verify_pipe_server(handle: HANDLE) -> io::Result<()> {

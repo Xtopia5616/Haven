@@ -9,6 +9,10 @@
 
 mod peer_security;
 
+pub(crate) fn broker_service_sid_string() -> io::Result<String> {
+    peer_security::broker_service_sid_string()
+}
+
 use super::broker_protocol::{
     BROKER_PROTOCOL_VERSION, BrokerControlMessage, BrokerFrame, BrokerFrameKind,
     MAX_CONTROL_PAYLOAD_BYTES, negotiate_version,
