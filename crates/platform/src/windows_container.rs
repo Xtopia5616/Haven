@@ -1,10 +1,13 @@
 //! Fixed HCS v1 configuration for Haven's optional Windows container backend.
 //!
-//! This module only builds a configuration document. It does not create a
-//! container, install services, or authorize a tool call. Callers must supply
-//! image layers from the broker's trusted local image catalog. The schema is
-//! intentionally closed: no host mounts, network endpoints, credentials,
-//! devices, or caller-selected isolation mode can be serialized.
+//! This module builds a fixed configuration document and exposes a typed
+//! execution port. It does not create a container, install services, or
+//! authorize a tool call. Callers must supply image layers from the broker's
+//! trusted local image catalog. The HCS schema is intentionally closed: no
+//! host mounts, network endpoints, credentials, devices, or caller-selected
+//! isolation mode can be serialized.
+
+pub mod execution;
 
 use serde::Serialize;
 use std::io;
