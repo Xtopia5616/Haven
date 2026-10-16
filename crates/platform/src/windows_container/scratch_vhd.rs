@@ -32,7 +32,7 @@ const WRITABLE_VHDX_NAME: &str = "sandbox.vhdx";
 /// Owns an unmounted, dynamically allocated VHDX whose virtual size is the
 /// selected per-attempt storage ceiling. The owner must outlive the HCS
 /// compute system that consumes the path.
-pub struct BoundedScratchVhd {
+pub(crate) struct BoundedScratchVhd {
     parent_root: DirectoryCapability,
     layer_name: String,
     layer_path: PathBuf,
@@ -44,7 +44,7 @@ pub struct BoundedScratchVhd {
 impl BoundedScratchVhd {
     /// Create a private writable-layer directory and unformatted VHDX whose
     /// maximum virtual size matches the attempt quota.
-    pub fn create(root: DirectoryCapability, maximum_size_bytes: u64) -> io::Result<Self> {
+    pub(crate) fn create(root: DirectoryCapability, maximum_size_bytes: u64) -> io::Result<Self> {
         validate_capacity(maximum_size_bytes)?;
 
         let layer_name = haven_common::types::new_id("file");
@@ -124,7 +124,7 @@ impl BoundedScratchVhd {
     /// ordinary desktop process. Call this only from the broker that owns the
     /// required OS authority. A failed call leaves the VHDX owned so it can be
     /// explicitly cleaned up or retried after privilege correction.
-    pub fn format_for_container(&mut self) -> io::Result<()> {
+    pub(crate) fn format_for_container(&mut self) -> io::Result<()> {
         if self.formatted {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -147,7 +147,7 @@ impl BoundedScratchVhd {
     /// Remove the layer through its pinned parent after its consumer has stopped.
     /// Keep the owner on error so the caller can retry before releasing any
     /// host storage reservation.
-    pub fn cleanup(&mut self) -> io::Result<()> {
+    pub(crate) fn cleanup(&mut self) -> io::Result<()> {
         if self.cleaned {
             return Ok(());
         }
@@ -158,12 +158,12 @@ impl BoundedScratchVhd {
     }
 
     /// Return the host path passed to Windows when creating the VHDX.
-    pub fn path(&self) -> PathBuf {
+    pub(crate) fn path(&self) -> PathBuf {
         self.layer_path.join(WRITABLE_VHDX_NAME)
     }
 
     /// Return the writable-layer directory after HCS formatting succeeds.
-    pub fn layer_path(&self) -> io::Result<&Path> {
+    pub(crate) fn layer_path(&self) -> io::Result<&Path> {
         if !self.formatted {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -174,7 +174,7 @@ impl BoundedScratchVhd {
     }
 
     /// Return the verified maximum virtual capacity of the VHDX.
-    pub fn maximum_size_bytes(&self) -> u64 {
+    pub(crate) fn maximum_size_bytes(&self) -> u64 {
         self.maximum_size_bytes
     }
 }

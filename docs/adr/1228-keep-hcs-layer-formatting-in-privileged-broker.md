@@ -2,7 +2,7 @@
 
 ## 状态
 
-平台 crate 已提供显式格式化端口；所需最小 OS privilege 尚未确定，HCS compute-system 与 guest quota 验收未通过。WorkspaceWrite 继续 fail closed。
+平台 crate 内部已提供显式格式化操作；所需最小 OS privilege 尚未确定，HCS compute-system 与 guest quota 验收未通过。WorkspaceWrite 继续 fail closed。
 
 ## 背景
 
@@ -12,7 +12,7 @@ ADR 1227 实现了 capability 持有的每 attempt scratch 层目录、`sandbox.
 
 ## 决定
 
-- `BoundedScratchVhd::format_for_container` 是显式、可失败的 OS 边界操作。格式化成功且重新查询确认 VHDX `VirtualSize` 未变化前，`layer_path()` 拒绝提供可传给 HCS 的 writable-layer 路径。
+- `BoundedScratchVhd::format_for_container` 是显式、可失败的 OS 边界操作。格式化成功且重新查询确认 VHDX `VirtualSize` 未变化前，`layer_path()` 拒绝提供可传给 HCS 的 writable-layer 路径。按 ADR 1229，scratch 模块为 crate-private；仅在平台 crate 中的 broker/provider 实现可以调用。
 - 普通 Haven desktop process 不执行此操作。未来 HCS broker 必须拥有准确所需的 service token privilege，并在安装/启动阶段验证 capability；权限缺失或 HCS DLL/入口不可用时保持 fail closed。
 - scratch VHD 创建仍可在普通进程中完成并受精确的虚拟最大容量约束；格式化错误时 owner 保留资源供显式 cleanup 或受控重试，不能静默释放宿主容量预留。
 - HCS 格式化、`HcsInitializeWritableLayer`/layer metadata、compute-system 启停、终止后的资源回收均由 broker lifecycle owner 管理。需在支持目标上先确认最小 privilege，再证明 guest 超额写入得到容量错误和 scratch 清理成功。
@@ -26,7 +26,7 @@ ADR 1227 实现了 capability 持有的每 attempt scratch 层目录、`sandbox.
 
 ## 影响与迁移
 
-增加一个未连接工具的 HCS 格式化端口，不增加 IPC/service installer、配置或权限 UI。普通 Haven 执行不会触发它。当前 HCS 格式化回归 probe 标记为 ignored，待具备经验证的 broker token 后运行；被忽略状态不是通过证据。
+增加一个未连接工具的内部 HCS 格式化操作，不增加 IPC/service installer、配置或权限 UI。普通 Haven 执行不会触发它。当前 HCS 格式化回归 probe 标记为 ignored，待具备经验证的 broker token 后运行；被忽略状态不是通过证据。
 
 ## 验证
 

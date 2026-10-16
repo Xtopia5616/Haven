@@ -12,7 +12,7 @@ ADR 1226 要求先把每次执行的配额落实到 scratch VHD 本身。Windows
 
 ## 决定
 
-- `haven-platform::windows_container::scratch_vhd::BoundedScratchVhd` 是首个 scratch 磁盘原语。它只接受 3 MiB–4 GiB、512 字节对齐的配额，在已打开的 `DirectoryCapability` 根下生成 `file-*` VHDX。
+- `haven-platform` 内部的 `windows_container::scratch_vhd::BoundedScratchVhd` 是首个 scratch 磁盘原语。它只接受 3 MiB–4 GiB、512 字节对齐的配额，在已打开的 `DirectoryCapability` 根下生成 `file-*` VHDX；具体模块和 owner 不对其他 crate 公开（ADR 1229）。
 - 使用 VHDX Version 2 创建参数，将 attempt 配额直接写入 `MaximumSize`；创建成功后调用 `GetVirtualDiskInformation`，并要求返回的最大虚拟容量与配额完全一致。查询错误或不匹配时关闭句柄并尝试经原 capability 删除文件，拒绝返回 owner。
 - `BoundedScratchVhd` 持有 capability 和唯一文件名；调用方应在 compute system 停止后显式调用 `cleanup()`，只有成功后才能释放宿主存储预留。`Drop` 只做 best-effort 清理。HCS provider 必须保留该 owner，直到 compute system 停止并确认磁盘可清理；当前类型不持有 compute system 生命周期，也不承担崩溃恢复 owner marker。
 - 本原语不格式化 writable layer、不生成 HCS layer metadata、不启动 compute system，不把 capacity getter 当成 HCS quota attestation；也不改变工具授权或 WorkspaceWrite 行为。

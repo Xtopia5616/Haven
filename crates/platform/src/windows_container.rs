@@ -8,7 +8,14 @@
 //! isolation mode can be serialized.
 
 pub mod execution;
-pub mod scratch_vhd;
+#[cfg(not(test))]
+#[expect(
+    dead_code,
+    reason = "HCS scratch quota runtime gate has not passed, so no production provider may consume this prototype yet"
+)]
+pub(crate) mod scratch_vhd;
+#[cfg(test)]
+pub(crate) mod scratch_vhd;
 
 use serde::Serialize;
 use std::io;
