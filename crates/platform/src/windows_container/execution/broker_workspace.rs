@@ -51,6 +51,11 @@ pub(crate) struct BrokerWorkspaceAttempt {
 }
 
 impl BrokerWorkspaceScratchRoot {
+    #[cfg(test)]
+    pub(crate) fn for_test(root: DirectoryCapability) -> Self {
+        Self { root }
+    }
+
     /// Prepare the fixed runtime directory during explicit elevated install.
     /// Its parent is the protected `%ProgramFiles%\Haven` directory.
     pub(crate) fn install(program_files: &Path) -> io::Result<()> {

@@ -6,9 +6,15 @@
 //! helper; uncertain native export outcomes quarantine the attempt.
 
 use super::broker_workspace::BrokerWorkspaceAttempt;
+use crate::filesystem::{DirectoryCapability, DirectoryTreeDiffLimits};
 use crate::process_containment::{ProcessContainment, process_spawn_lock};
+use crate::windows_container::WindowsContainerSandboxConfig;
+use crate::windows_container::hcs_export_transport::BoundedHcsExportTransport;
 use crate::windows_container::hcs_layer_export::HcsLayerExportPlan;
+use crate::windows_container::hcs_layer_output::extract_workspace_output;
+use crate::windows_container::hcs_runtime::HcsStoppedComputeSystem;
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -31,6 +37,9 @@ pub(crate) enum HcsExportWorkerFailureKind {
     TimedOut,
     Cancelled,
     ChildWaitFailed,
+    OutputDecodeFailed,
+    OutputStagingFailed,
+    TransportSetupFailed,
     RecoveryMarkerFailed,
 }
 
@@ -50,6 +59,141 @@ impl HcsExportWorkerFailure {
     pub(crate) fn cleanup_safe(&self) -> bool {
         self.cleanup_safe
     }
+}
+
+/// Export one stopped writable layer through its attempt-bounded transport,
+/// decode the reserved workspace subtree into private output staging, then
+/// detach the transport and clear the active marker. The caller still owns
+/// the attempt and must discard it if any later output review or transfer fails.
+#[expect(
+    dead_code,
+    reason = "connected to the broker execution provider in the following slice"
+)]
+pub(super) fn export_stopped_workspace_output(
+    attempt: &mut BrokerWorkspaceAttempt,
+    stopped_system: &HcsStoppedComputeSystem,
+    config: &WindowsContainerSandboxConfig,
+    transport_capacity_bytes: u64,
+    output_limits: DirectoryTreeDiffLimits,
+    timeout: Duration,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<DirectoryCapability, HcsExportWorkerFailure> {
+    if is_cancelled() {
+        return Err(failure(HcsExportWorkerFailureKind::Cancelled, true));
+    }
+    if timeout.is_zero()
+        || timeout > MAX_WORKER_TIMEOUT
+        || crate::windows_container::scratch_vhd::validate_capacity(transport_capacity_bytes)
+            .is_err()
+    {
+        return Err(failure(HcsExportWorkerFailureKind::InvalidRequest, true));
+    }
+    let output = create_output_staging(attempt)
+        .map_err(|_| failure(HcsExportWorkerFailureKind::OutputStagingFailed, true))?;
+    let mut transport = match BoundedHcsExportTransport::create(attempt, transport_capacity_bytes) {
+        Ok(transport) => transport,
+        Err(_) => {
+            return Err(if attempt.preserve_for_recovery().is_ok() {
+                failure(HcsExportWorkerFailureKind::TransportSetupFailed, false)
+            } else {
+                failure(HcsExportWorkerFailureKind::RecoveryMarkerFailed, false)
+            });
+        }
+    };
+    let plan = match HcsLayerExportPlan::new(stopped_system, config, &transport, &output) {
+        Ok(plan) => plan,
+        Err(_) => {
+            return Err(finish_quiescent_failure(
+                attempt,
+                &mut transport,
+                HcsExportWorkerFailureKind::InvalidRequest,
+            ));
+        }
+    };
+    if let Err(error) = export_stopped_layer(attempt, &plan, timeout, &mut is_cancelled) {
+        if !error.cleanup_safe() {
+            transport.preserve_for_recovery();
+            return Err(error);
+        }
+        return Err(finish_quiescent_failure(
+            attempt,
+            &mut transport,
+            error.kind(),
+        ));
+    }
+
+    let transport_directory = match transport.directory() {
+        Ok(directory) => directory,
+        Err(_) => {
+            return Err(finish_quiescent_failure(
+                attempt,
+                &mut transport,
+                HcsExportWorkerFailureKind::OutputDecodeFailed,
+            ));
+        }
+    };
+    if extract_workspace_output(
+        transport_directory,
+        &output,
+        output_limits,
+        &mut is_cancelled,
+    )
+    .is_err()
+    {
+        return Err(finish_quiescent_failure(
+            attempt,
+            &mut transport,
+            HcsExportWorkerFailureKind::OutputDecodeFailed,
+        ));
+    }
+
+    if finish_transport(attempt, &mut transport).is_err() {
+        return Err(failure(
+            HcsExportWorkerFailureKind::RecoveryMarkerFailed,
+            false,
+        ));
+    }
+    Ok(output)
+}
+
+fn create_output_staging(attempt: &BrokerWorkspaceAttempt) -> io::Result<DirectoryCapability> {
+    let attempt_root = attempt.attempt_root()?;
+    attempt_root.create_dir(Path::new("workspace-output"))?;
+    let output = DirectoryCapability::open(&attempt_root.root().join("workspace-output"))?;
+    if !output.entries(1)?.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "broker output staging directory is not empty",
+        ));
+    }
+    Ok(output)
+}
+
+fn finish_quiescent_failure(
+    attempt: &mut BrokerWorkspaceAttempt,
+    transport: &mut BoundedHcsExportTransport,
+    kind: HcsExportWorkerFailureKind,
+) -> HcsExportWorkerFailure {
+    if finish_transport(attempt, transport).is_ok() {
+        failure(kind, true)
+    } else {
+        failure(HcsExportWorkerFailureKind::RecoveryMarkerFailed, false)
+    }
+}
+
+fn finish_transport(
+    attempt: &mut BrokerWorkspaceAttempt,
+    transport: &mut BoundedHcsExportTransport,
+) -> io::Result<()> {
+    if let Err(error) = transport.cleanup() {
+        attempt.preserve_for_recovery()?;
+        return Err(error);
+    }
+    if let Err(error) = attempt.mark_hcs_operation_quiescent() {
+        attempt.preserve_for_recovery()?;
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// Run one validated export plan in a fixed helper process. The closure is
@@ -251,6 +395,15 @@ fn failure(kind: HcsExportWorkerFailureKind, cleanup_safe: bool) -> HcsExportWor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filesystem::DirectoryCapability;
+    use crate::windows_container::execution::broker_workspace::BrokerWorkspaceScratchRoot;
+
+    fn scratch_root() -> (tempfile::TempDir, BrokerWorkspaceScratchRoot) {
+        let temp = tempfile::tempdir().unwrap();
+        let root =
+            BrokerWorkspaceScratchRoot::for_test(DirectoryCapability::open(temp.path()).unwrap());
+        (temp, root)
+    }
 
     #[test]
     fn failure_cleanup_state_is_explicit() {
@@ -260,5 +413,27 @@ mod tests {
         assert_eq!(safe.kind(), HcsExportWorkerFailureKind::WorkerFailed);
         assert!(safe.cleanup_safe());
         assert!(!uncertain.cleanup_safe());
+    }
+
+    #[test]
+    fn export_output_staging_is_a_sibling_of_the_private_input() {
+        let (_temp, root) = scratch_root();
+        let mut attempt = root.create_attempt().unwrap();
+        let input = attempt.staging().unwrap().root().to_path_buf();
+
+        let output = create_output_staging(&attempt).unwrap();
+        assert_eq!(
+            output.root().file_name(),
+            Some(std::ffi::OsStr::new("workspace-output"))
+        );
+        assert_eq!(output.root().parent(), input.parent());
+        assert_ne!(output.root(), input);
+        assert_eq!(
+            create_output_staging(&attempt).err().unwrap().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+
+        drop(output);
+        attempt.cleanup().unwrap();
     }
 }

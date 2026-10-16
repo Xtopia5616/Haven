@@ -1240,3 +1240,4 @@
 - [1250：隔离同步 HCS writable-layer 导出](1250-isolate-synchronous-hcs-export-worker.md)
 - [1251：为 HCS writable-layer 导出准备有界 transport 卷](1251-bound-hcs-export-transport-volume.md)
 - [1252：在隔离 helper 中验证有界 HCS export transport](1252-verify-bounded-hcs-export-transport.md)
+- [1253：编排有界 HCS workspace 输出导出](1253-orchestrate-bounded-hcs-workspace-export.md)
