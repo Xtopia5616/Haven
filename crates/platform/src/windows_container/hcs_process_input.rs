@@ -20,10 +20,10 @@ const WORKER_START_TIMEOUT: Duration = Duration::from_secs(1);
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// One HCS stdin writer whose mutable process borrow keeps the HCS process
-/// owner alive and lets cancellation terminate the guest before joining I/O.
-pub(super) struct HcsGuestProcessInputWriter<'process, 'api> {
-    process: &'process mut HcsGuestProcessOwner<'api>,
+/// One HCS stdin writer that owns the process so its pipes and termination
+/// boundary remain alive for the full adapter lifetime.
+pub(super) struct HcsGuestProcessInputWriter<'api> {
+    process: HcsGuestProcessOwner<'api>,
     sender: Option<SyncSender<Vec<u8>>>,
     result_receiver: Receiver<io::Result<()>>,
     worker: Option<JoinHandle<()>>,
@@ -35,8 +35,8 @@ pub(super) struct HcsGuestProcessInputWriter<'process, 'api> {
     failed: bool,
 }
 
-impl<'process, 'api> HcsGuestProcessInputWriter<'process, 'api> {
-    pub(super) fn new(process: &'process mut HcsGuestProcessOwner<'api>) -> io::Result<Self> {
+impl<'api> HcsGuestProcessInputWriter<'api> {
+    pub(super) fn new(mut process: HcsGuestProcessOwner<'api>) -> io::Result<Self> {
         let stdin = process.take_stdin().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -270,7 +270,7 @@ impl<'process, 'api> HcsGuestProcessInputWriter<'process, 'api> {
     }
 }
 
-impl Drop for HcsGuestProcessInputWriter<'_, '_> {
+impl Drop for HcsGuestProcessInputWriter<'_> {
     fn drop(&mut self) {
         if !self.input_closed || self.failed {
             let _ = self.abort();

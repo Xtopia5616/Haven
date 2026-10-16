@@ -682,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn stdin_writer_drains_accepted_chunks_then_closes_the_pipe_for_eof() {
+    fn stdin_writer_owns_process_alongside_output_reader_and_drains_to_eof() {
         let (stdin_read, stdin_write) = create_pipe_handles();
         let (stdout_read, stdout_write) = create_pipe_handles();
         let (stderr_read, stderr_write) = create_pipe_handles();
@@ -691,8 +691,13 @@ mod tests {
         let stderr_writer = unsafe { File::from_raw_handle(stderr_write) };
         let api = MockHcsApi::with_real_guest_handles();
         let mut process = process_with_stdin(&api, stdin_write, stdout_read, stderr_read);
+        let output_reader =
+            super::super::hcs_process_output::HcsGuestProcessOutputReader::from_process(
+                &mut process,
+            )
+            .expect("output pipes can move to a peer adapter before process ownership transfer");
         {
-            let mut writer = HcsGuestProcessInputWriter::new(&mut process)
+            let mut writer = HcsGuestProcessInputWriter::new(process)
                 .expect("HCS stdin handle transfers to its bounded writer");
             assert!(
                 writer
@@ -729,7 +734,7 @@ mod tests {
             .read_to_end(&mut received)
             .expect("closed HCS stdin pipe reaches EOF");
         assert_eq!(received, b"first-second");
-        drop(process);
+        drop(output_reader);
         drop(stdout_writer);
         drop(stderr_writer);
     }
@@ -743,8 +748,8 @@ mod tests {
         let stdout_writer = unsafe { File::from_raw_handle(stdout_write) };
         let stderr_writer = unsafe { File::from_raw_handle(stderr_write) };
         let api = MockHcsApi::with_real_guest_handles();
-        let mut process = process_with_stdin(&api, stdin_write, stdout_read, stderr_read);
-        let mut writer = HcsGuestProcessInputWriter::new(&mut process)
+        let process = process_with_stdin(&api, stdin_write, stdout_read, stderr_read);
+        let mut writer = HcsGuestProcessInputWriter::new(process)
             .expect("HCS stdin handle transfers to its bounded writer");
         let chunk = vec![b'x'; 16 * 1024];
         assert_eq!(
@@ -774,8 +779,8 @@ mod tests {
             .abort()
             .expect("cancel stops the blocked synchronous write");
         assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(api.calls.lock().unwrap().contains(&"terminate_process"));
         drop(writer);
-        drop(process);
         drop(stdout_writer);
         drop(stderr_writer);
     }

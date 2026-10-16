@@ -1268,3 +1268,4 @@
 - [1278：为 HCS guest stdin 实现有界写入](1278-bound-hcs-guest-stdin-writes.md)
 - [1279：定义 brokered MCP generation session wire protocol](1279-define-brokered-mcp-session-wire-protocol.md)
 - [1280：将 MCP generation 绑定到独立认证管道](1280-bind-mcp-session-to-authenticated-pipe.md)
+- [1281：让 MCP stdin writer 拥有 guest process 生命周期](1281-own-mcp-stdin-writer-process-lifecycle.md)
