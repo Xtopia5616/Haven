@@ -13,6 +13,12 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+#[expect(
+    dead_code,
+    reason = "the bounded wire contract is implemented before the named-pipe client and service"
+)]
+pub(crate) mod broker_protocol;
+
 const MAX_COMMAND_BYTES: usize = 256 * 1024;
 const MAX_STORAGE_QUOTA_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_STDIO_BYTES_PER_STREAM: usize = 64 * 1024 * 1024;

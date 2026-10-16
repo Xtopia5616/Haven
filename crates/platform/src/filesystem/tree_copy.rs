@@ -25,19 +25,19 @@ pub struct DirectoryTreeCopyLimits {
 }
 
 impl DirectoryTreeCopyLimits {
-    pub(super) fn max_entries(&self) -> usize {
+    pub(crate) fn max_entries(&self) -> usize {
         self.max_entries
     }
 
-    pub(super) fn max_depth(&self) -> usize {
+    pub(crate) fn max_depth(&self) -> usize {
         self.max_depth
     }
 
-    pub(super) fn max_file_bytes(&self) -> u64 {
+    pub(crate) fn max_file_bytes(&self) -> u64 {
         self.max_file_bytes
     }
 
-    pub(super) fn max_total_bytes(&self) -> u64 {
+    pub(crate) fn max_total_bytes(&self) -> u64 {
         self.max_total_bytes
     }
 

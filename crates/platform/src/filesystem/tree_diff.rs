@@ -31,6 +31,22 @@ pub struct DirectoryTreeDiffLimits {
 }
 
 impl DirectoryTreeDiffLimits {
+    pub(crate) fn scan(&self) -> DirectoryTreeCopyLimits {
+        self.scan
+    }
+
+    pub(crate) fn max_changes(&self) -> usize {
+        self.max_changes
+    }
+
+    pub(crate) fn max_changed_file_bytes(&self) -> u64 {
+        self.max_changed_file_bytes
+    }
+
+    pub(crate) fn max_changed_total_bytes(&self) -> u64 {
+        self.max_changed_total_bytes
+    }
+
     pub fn new(
         scan: DirectoryTreeCopyLimits,
         max_changes: usize,
