@@ -279,6 +279,53 @@ impl Drop for HcsGuestProcessInputWriter<'_> {
     }
 }
 
+/// Owns one guest process's stdio adapters as a single session unit. The
+/// output handles move first, then the bounded stdin writer takes the process
+/// owner; no adapter borrows another field of this owner.
+pub(super) struct HcsGuestProcessStdioOwner<'api> {
+    input: HcsGuestProcessInputWriter<'api>,
+    output: super::hcs_process_output::HcsGuestProcessOutputReader<'api>,
+}
+
+impl<'api> HcsGuestProcessStdioOwner<'api> {
+    pub(super) fn new(mut process: HcsGuestProcessOwner<'api>) -> io::Result<Self> {
+        let output =
+            super::hcs_process_output::HcsGuestProcessOutputReader::from_process(&mut process)?;
+        let input = HcsGuestProcessInputWriter::new(process)?;
+        Ok(Self { input, output })
+    }
+
+    pub(super) fn try_write_stdin_chunk(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.input.try_write_chunk(bytes)
+    }
+
+    pub(super) fn close_stdin(&mut self) {
+        self.input.close_input();
+    }
+
+    pub(super) fn poll_stdin_writer(&mut self) -> io::Result<bool> {
+        self.input.poll()
+    }
+
+    pub(super) fn poll_process_exit(
+        &mut self,
+        timeout: Duration,
+    ) -> io::Result<Option<super::hcs_process_runtime::GuestProcessExitStatus>> {
+        self.input.poll_process_exit(timeout)
+    }
+
+    pub(super) fn drain_output(
+        &mut self,
+        sink: &mut dyn super::hcs_process_output::HcsOutputChunkSink,
+    ) -> io::Result<super::hcs_process_output::HcsOutputDrainProgress> {
+        self.output.drain_available(sink)
+    }
+
+    pub(super) fn abort(&mut self) -> io::Result<()> {
+        self.input.abort()
+    }
+}
+
 fn write_chunks(mut stdin: std::fs::File, receiver: Receiver<Vec<u8>>) -> io::Result<()> {
     while let Ok(chunk) = receiver.recv() {
         stdin.write_all(&chunk)?;
