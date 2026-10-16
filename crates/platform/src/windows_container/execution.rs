@@ -22,14 +22,20 @@ pub(crate) mod output_transfer;
 pub(crate) mod workspace_transfer;
 
 #[cfg(windows)]
-#[expect(
-    dead_code,
-    reason = "the authenticated broker exchange is implemented before Tools/HCS provider wiring"
-)]
 pub(crate) mod named_pipe;
 
 #[cfg(windows)]
 mod broker_execution;
+
+#[cfg(windows)]
+mod broker_provider;
+
+/// Build Haven's authenticated local broker provider for Windows Shell work.
+/// The service still rejects execution until its storage quota is attested.
+#[cfg(windows)]
+pub fn new_brokered_execution_port() -> std::sync::Arc<dyn WindowsContainerExecutionPort> {
+    std::sync::Arc::new(broker_provider::BrokerExecutionProvider)
+}
 
 #[cfg(windows)]
 pub(crate) mod hcs_export_worker;
@@ -378,7 +384,7 @@ pub trait WindowsContainerExecutionPort: private::Sealed + Send + Sync {
         &self,
         request: &WindowsContainerExecutionRequest,
         workspace: &WindowsContainerWorkspaceInput,
-        is_cancelled: &mut dyn FnMut() -> bool,
+        is_cancelled: &mut (dyn FnMut() -> bool + Send),
         output: WindowsContainerOutputSink<'_>,
     ) -> io::Result<WindowsContainerExecutionResult>;
 }
@@ -440,7 +446,7 @@ mod tests {
             &self,
             request: &WindowsContainerExecutionRequest,
             _workspace: &WindowsContainerWorkspaceInput,
-            is_cancelled: &mut dyn FnMut() -> bool,
+            is_cancelled: &mut (dyn FnMut() -> bool + Send),
             mut output: WindowsContainerOutputSink<'_>,
         ) -> io::Result<WindowsContainerExecutionResult> {
             if is_cancelled() {

@@ -10,6 +10,8 @@
 mod client_exchange;
 mod peer_security;
 
+pub(crate) use client_exchange::BrokerPipeExecutionResponse;
+
 pub(crate) fn broker_service_sid_string() -> io::Result<String> {
     peer_security::broker_service_sid_string()
 }
@@ -230,12 +232,9 @@ impl BrokerPipeCancellation {
 }
 
 impl BrokerPeerIdentity {
+    #[cfg(test)]
     pub(crate) fn process_id(&self) -> u32 {
         self.process_id
-    }
-
-    pub(crate) fn session_id(&self) -> u32 {
-        self.session_id
     }
 }
 
@@ -295,11 +294,16 @@ impl BrokerPipeListener {
 
         let result = self.authenticate_and_acknowledge(cancellation);
         match result {
-            Ok(peer) => Ok(BrokerPipeConnection {
-                listener: self,
-                peer,
-                cancellation,
-            }),
+            Ok(peer) => {
+                #[cfg(not(test))]
+                let _ = peer;
+                Ok(BrokerPipeConnection {
+                    listener: self,
+                    #[cfg(test)]
+                    peer,
+                    cancellation,
+                })
+            }
             Err(error) => {
                 unsafe { DisconnectNamedPipe(self.handle) };
                 Err(error)
@@ -344,11 +348,13 @@ impl Drop for BrokerPipeListener {
 /// listener can accept another request.
 pub(crate) struct BrokerPipeConnection<'a> {
     listener: &'a mut BrokerPipeListener,
+    #[cfg(test)]
     peer: BrokerPeerIdentity,
     cancellation: &'a BrokerPipeCancellation,
 }
 
 impl BrokerPipeConnection<'_> {
+    #[cfg(test)]
     pub(crate) fn peer(&self) -> &BrokerPeerIdentity {
         &self.peer
     }
@@ -523,10 +529,6 @@ impl BrokerPipeClient {
             cancellation: &self.cancellation,
             deadline,
         })
-    }
-
-    pub(crate) fn cancel(&self) -> io::Result<()> {
-        self.cancellation.cancel()
     }
 }
 
