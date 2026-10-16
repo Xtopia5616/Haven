@@ -222,8 +222,36 @@ impl DirectoryCapability {
     /// handle. An oversized directory fails closed instead of allocating an
     /// unbounded list.
     pub fn entries(&self, maximum: usize) -> io::Result<Vec<DirectoryEntryInfo>> {
+        self.entries_from(&self.directory, maximum)
+    }
+
+    /// List one directory beneath this pinned root without following any
+    /// reparse point in the relative path.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the broker workspace snapshot sender consumes this capability operation"
+        )
+    )]
+    pub(crate) fn entries_at(
+        &self,
+        relative: &Path,
+        maximum: usize,
+    ) -> io::Result<Vec<DirectoryEntryInfo>> {
+        let relative = validate_relative_path(relative)?;
+        reject_relative_reparse_components(&self.directory, &relative, true)?;
+        let directory = self.directory.open_dir(&relative)?;
+        self.entries_from(&directory, maximum)
+    }
+
+    fn entries_from(
+        &self,
+        directory: &cap_std::fs::Dir,
+        maximum: usize,
+    ) -> io::Result<Vec<DirectoryEntryInfo>> {
         let mut result = Vec::new();
-        for entry in self.directory.entries()? {
+        for entry in directory.entries()? {
             let entry = entry?;
             if result.len() >= maximum {
                 return Err(io::Error::new(

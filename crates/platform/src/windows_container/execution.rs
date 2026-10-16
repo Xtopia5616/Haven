@@ -20,6 +20,14 @@ const BROKER_SERVICE_NAME: &str = "HavenContainerBroker";
     reason = "the bounded wire contract is implemented before the named-pipe client and service"
 )]
 pub(crate) mod broker_protocol;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "broker workspace snapshot framing is implemented before provider connection"
+    )
+)]
+pub(crate) mod workspace_transfer;
 
 #[cfg(windows)]
 #[expect(

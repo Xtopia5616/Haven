@@ -1225,3 +1225,4 @@
 - [1235：为 broker named-pipe I/O 设置取消与 deadline](1235-bound-cancellable-broker-pipe-io.md)
 - [1236：将 broker 监听器生命周期接入 SCM 会话变更](1236-reconnect-broker-listener-on-session-change.md)
 - [1237：为 HCS 容器增加固定只读 workspace 输入映射](1237-add-fixed-read-only-hcs-workspace-input.md)
+- [1238：为 broker 实现有界 workspace 文件传输](1238-add-bounded-broker-workspace-transfer.md)
