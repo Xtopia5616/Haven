@@ -1231,3 +1231,4 @@
 - [1241：由 broker owner 管理 HCS compute-system 生命周期](1241-own-hcs-compute-system-lifecycle.md)
 - [1242：从 typed Shell request 构造闭合 HCS guest process 参数](1242-build-closed-hcs-process-parameters.md)
 - [1243：由 HCS process owner 管理 guest 进程与 I/O handles](1243-own-hcs-guest-process-handles.md)
+- [1244：限制 HCS guest stdout/stderr 的轮询读取](1244-bound-hcs-guest-output-polling.md)

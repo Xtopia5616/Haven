@@ -156,6 +156,10 @@ impl<'a> OwnedGuestHandle<'a> {
             handle: Some(handle),
         }
     }
+
+    pub(super) fn raw(&self) -> Option<RawGuestHandle> {
+        self.handle
+    }
 }
 
 impl Drop for OwnedGuestHandle<'_> {
@@ -233,16 +237,23 @@ mod tests {
     use super::*;
     use crate::filesystem::{DirectoryTreeCopyLimits, DirectoryTreeDiffLimits};
     use crate::windows_container::execution::{
-        WindowsContainerExecutionLimits, WindowsContainerExecutionRequest, WindowsContainerShell,
+        WindowsContainerExecutionLimits, WindowsContainerExecutionRequest,
+        WindowsContainerOutputSink, WindowsContainerOutputStream, WindowsContainerShell,
     };
+    use crate::windows_container::hcs_process_output::HcsGuestProcessOutputReader;
     use crate::windows_container::{WindowsContainerLayer, WindowsContainerSandboxConfig};
     use std::collections::VecDeque;
+    use std::fs::File;
+    use std::io::Write;
+    use std::os::windows::io::FromRawHandle;
     use std::sync::Mutex;
 
     struct MockHcsApi {
         calls: Mutex<Vec<&'static str>>,
         statuses: Mutex<VecDeque<io::Result<Option<String>>>>,
         fail_first_termination: Mutex<bool>,
+        process_output_handles: Mutex<Option<(RawGuestHandle, RawGuestHandle)>>,
+        real_output_handles: bool,
     }
 
     impl MockHcsApi {
@@ -251,6 +262,22 @@ mod tests {
                 calls: Mutex::new(Vec::new()),
                 statuses: Mutex::new(statuses.into_iter().collect()),
                 fail_first_termination: Mutex::new(false),
+                process_output_handles: Mutex::new(None),
+                real_output_handles: false,
+            }
+        }
+
+        fn with_output_handles(
+            statuses: impl IntoIterator<Item = io::Result<Option<String>>>,
+            stdout: RawGuestHandle,
+            stderr: RawGuestHandle,
+        ) -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                statuses: Mutex::new(statuses.into_iter().collect()),
+                fail_first_termination: Mutex::new(false),
+                process_output_handles: Mutex::new(Some((stdout, stderr))),
+                real_output_handles: true,
             }
         }
 
@@ -302,12 +329,18 @@ mod tests {
             assert_eq!(system, 1_usize as RawComputeSystem);
             assert!(parameters.contains("\"RestrictedToken\":true"));
             self.record("create_process");
+            let (stdout, stderr) = self
+                .process_output_handles
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or((3_usize as RawGuestHandle, 4_usize as RawGuestHandle));
             Ok(HcsProcessInformation {
                 process: 2_usize as RawGuestProcess,
                 process_id: 42,
                 stdin: std::ptr::null_mut(),
-                stdout: 3_usize as RawGuestHandle,
-                stderr: 4_usize as RawGuestHandle,
+                stdout,
+                stderr,
             })
         }
 
@@ -343,12 +376,20 @@ mod tests {
         }
 
         fn close_guest_handle(&self, handle: RawGuestHandle) {
-            assert!(matches!(handle as usize, 3 | 4));
-            self.record(if handle as usize == 3 {
-                "close_stdout"
+            if self.real_output_handles {
+                assert_ne!(
+                    unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) },
+                    0
+                );
+                self.record("close_guest_handle");
             } else {
-                "close_stderr"
-            });
+                assert!(matches!(handle as usize, 3 | 4));
+                self.record(if handle as usize == 3 {
+                    "close_stdout"
+                } else {
+                    "close_stderr"
+                });
+            }
         }
     }
 
@@ -376,6 +417,49 @@ mod tests {
         )
         .expect("typed shell request");
         HcsGuestProcessParameters::from_request(&request).expect("closed process parameters")
+    }
+
+    fn output_request() -> WindowsContainerExecutionRequest {
+        let copy = DirectoryTreeCopyLimits::new(32, 8, 1024 * 1024, 4 * 1024 * 1024)
+            .expect("bounded workspace limits");
+        let diff = DirectoryTreeDiffLimits::new(copy, 16, 1024 * 1024, 4 * 1024 * 1024)
+            .expect("bounded output limits");
+        let limits = WindowsContainerExecutionLimits::new(
+            16 * 1024 * 1024,
+            Duration::from_secs(10),
+            3,
+            2,
+            copy,
+            diff,
+        )
+        .expect("bounded execution limits");
+        WindowsContainerExecutionRequest::new(
+            WindowsContainerShell::Cmd,
+            "echo bounded",
+            "",
+            1,
+            1,
+            limits,
+        )
+        .expect("typed shell request")
+    }
+
+    fn create_pipe() -> (RawGuestHandle, File) {
+        let mut read = std::ptr::null_mut();
+        let mut write = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::System::Pipes::CreatePipe(
+                    &mut read,
+                    &mut write,
+                    std::ptr::null(),
+                    0,
+                )
+            },
+            0
+        );
+        let writer = unsafe { File::from_raw_handle(write) };
+        (read, writer)
     }
 
     fn owner<'a>(api: &'a MockHcsApi) -> HcsGuestProcessOwner<'a> {
@@ -473,6 +557,120 @@ mod tests {
         );
         drop(stdout);
         assert_eq!(api.calls.lock().unwrap().last(), Some(&"close_stdout"));
+    }
+
+    #[test]
+    fn output_poll_drains_both_streams_and_preserves_sink_caps() {
+        let (stdout_handle, mut stdout_writer) = create_pipe();
+        let (stderr_handle, mut stderr_writer) = create_pipe();
+        let api = MockHcsApi::with_output_handles([], stdout_handle, stderr_handle);
+        let mut process = owner(&api);
+        let mut reader = HcsGuestProcessOutputReader::from_process(&mut process)
+            .expect("both guest output handles transfer together");
+        let request = output_request();
+        let mut on_output = |_: WindowsContainerOutputStream, _: &[u8]| {};
+        let mut sink = WindowsContainerOutputSink::new(&request, &mut on_output);
+
+        stdout_writer
+            .write_all(b"abcdef")
+            .expect("stdout writer accepts test bytes");
+        stderr_writer
+            .write_all(b"12345")
+            .expect("stderr writer accepts test bytes");
+        let progress = reader
+            .drain_available(&mut sink)
+            .expect("available bytes drain from each owned pipe");
+        assert_eq!(progress.stdout_bytes_read, 6);
+        assert_eq!(progress.stderr_bytes_read, 5);
+        assert!(!progress.stdout_closed);
+        assert!(!progress.stderr_closed);
+        drop(stdout_writer);
+        drop(stderr_writer);
+
+        let closed = reader
+            .drain_available(&mut sink)
+            .expect("closed pipe handles are recognized");
+        assert!(closed.is_complete());
+        drop(reader);
+        drop(process);
+
+        let output = sink.finish();
+        assert_eq!(output.stdout(), b"abc");
+        assert_eq!(output.stderr(), b"12");
+        assert!(output.stdout_truncated());
+        assert!(output.stderr_truncated());
+        assert_eq!(
+            *api.calls.lock().unwrap(),
+            [
+                "create_process",
+                "close_guest_handle",
+                "close_guest_handle",
+                "terminate_process",
+                "close_process"
+            ]
+        );
+    }
+
+    #[test]
+    fn output_poll_enforces_per_stream_work_budget_while_writers_continue() {
+        let (stdout_handle, stdout_writer) = create_pipe();
+        let (stderr_handle, stderr_writer) = create_pipe();
+        let api = MockHcsApi::with_output_handles([], stdout_handle, stderr_handle);
+        let mut process = owner(&api);
+        let mut reader = HcsGuestProcessOutputReader::from_process(&mut process)
+            .expect("both guest output handles transfer together");
+        let request = output_request();
+        let mut on_output = |_: WindowsContainerOutputStream, _: &[u8]| {};
+        let mut sink = WindowsContainerOutputSink::new(&request, &mut on_output);
+        let stdout_total = 192 * 1024;
+        let stderr_total = 160 * 1024;
+        let stdout_thread = std::thread::spawn(move || {
+            let mut writer = stdout_writer;
+            writer
+                .write_all(&vec![b'o'; stdout_total])
+                .expect("stdout test pipe accepts the full bounded burst");
+        });
+        let stderr_thread = std::thread::spawn(move || {
+            let mut writer = stderr_writer;
+            writer
+                .write_all(&vec![b'e'; stderr_total])
+                .expect("stderr test pipe accepts the full bounded burst");
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut stdout_read = 0usize;
+        let mut stderr_read = 0usize;
+        loop {
+            let progress = reader
+                .drain_available(&mut sink)
+                .expect("bounded polling drains available bytes");
+            assert!(progress.stdout_bytes_read <= 64 * 1024);
+            assert!(progress.stderr_bytes_read <= 64 * 1024);
+            stdout_read += progress.stdout_bytes_read;
+            stderr_read += progress.stderr_bytes_read;
+            if progress.is_complete() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pipe drain has a deadline"
+            );
+            if progress.stdout_bytes_read == 0 && progress.stderr_bytes_read == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        stdout_thread.join().expect("stdout writer exits");
+        stderr_thread.join().expect("stderr writer exits");
+        drop(reader);
+        drop(process);
+
+        assert_eq!(stdout_read, stdout_total);
+        assert_eq!(stderr_read, stderr_total);
+        let output = sink.finish();
+        assert_eq!(output.stdout(), b"ooo");
+        assert_eq!(output.stderr(), b"ee");
+        assert!(output.stdout_truncated());
+        assert!(output.stderr_truncated());
     }
 
     #[test]

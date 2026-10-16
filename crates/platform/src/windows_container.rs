@@ -16,6 +16,15 @@ pub mod execution;
 )]
 mod hcs_process;
 #[cfg(windows)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "bounded guest output polling is consumed when the HCS provider is wired"
+    )
+)]
+mod hcs_process_output;
+#[cfg(windows)]
 #[expect(
     dead_code,
     reason = "guest process handles stay private until writable-layer and bounded stream wiring are complete"
