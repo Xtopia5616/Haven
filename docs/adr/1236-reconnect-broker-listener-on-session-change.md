@@ -22,7 +22,8 @@ ADR 1233 建立了受限、显式安装的 SCM 服务，ADR 1234 从唯一活动
 - `cargo fmt --package haven-platform -- --check` 通过。
 - `cargo check --locked -p haven-platform` 通过。
 - `cargo clippy --locked -p haven-platform -- -D warnings` 通过。
-- 本切片未运行单元测试，也未在真实 Windows SCM/WTS 环境验收 session-change 行为；未进行 HCS 镜像启动、配额证明或 guest 超额写入验收。
+- `cargo test --locked -p haven-platform`：75 项通过，1 项忽略（需要 HCS storage formatting privilege）。
+- 单元测试未覆盖真实 Windows SCM/WTS session-change 通知；未进行 HCS 镜像启动、配额证明或 guest 超额写入验收。
 
 ## 后续工作
 
