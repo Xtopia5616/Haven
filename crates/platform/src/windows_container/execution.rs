@@ -19,6 +19,13 @@ use std::time::Duration;
 )]
 pub(crate) mod broker_protocol;
 
+#[cfg(windows)]
+#[expect(
+    dead_code,
+    reason = "the named-pipe transport is implemented before the broker service lifecycle"
+)]
+pub(crate) mod named_pipe;
+
 const MAX_COMMAND_BYTES: usize = 256 * 1024;
 const MAX_STORAGE_QUOTA_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_STDIO_BYTES_PER_STREAM: usize = 64 * 1024 * 1024;

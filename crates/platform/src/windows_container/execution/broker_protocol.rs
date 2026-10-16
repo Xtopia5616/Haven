@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 1;
-const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
+pub(crate) const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
 const MAX_BINARY_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_WIRE_PATH_BYTES: usize = 32 * 1024;
 const MAX_WORKSPACE_ENTRIES: u32 = 100_000;
