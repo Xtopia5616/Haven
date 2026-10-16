@@ -7,6 +7,7 @@
 //! dedicated service SID. The first control message is a bounded protocol
 //! Hello; no execution request is read until peer authentication succeeds.
 
+mod client_exchange;
 mod peer_security;
 
 pub(crate) fn broker_service_sid_string() -> io::Result<String> {
@@ -24,8 +25,8 @@ pub(crate) fn verify_current_broker_service_identity() -> io::Result<()> {
 #[cfg(test)]
 use super::broker_protocol::BrokerFailureCode;
 use super::broker_protocol::{
-    BROKER_PROTOCOL_VERSION, BrokerControlMessage, BrokerExecutionRequest, BrokerFrame,
-    BrokerFrameKind, MAX_CONTROL_PAYLOAD_BYTES, negotiate_version,
+    BROKER_PROTOCOL_VERSION, BrokerControlMessage, BrokerFrame, BrokerFrameKind,
+    MAX_CONTROL_PAYLOAD_BYTES, negotiate_version,
 };
 use peer_security::{
     ActiveSessionIdentity, PipeSecurityDescriptor, current_broker_service_sid,
@@ -471,59 +472,13 @@ impl BrokerPipeClient {
     /// fresh authenticated connection. The connection is consumed so a
     /// partially sent workspace can never be reused for another request.
     pub(crate) fn execute_with_workspace(
-        mut self,
+        &mut self,
         request: &super::WindowsContainerExecutionRequest,
         request_id: [u8; 16],
         workspace: &super::WindowsContainerWorkspaceInput,
-    ) -> io::Result<BrokerControlMessage> {
-        let wire_request = BrokerExecutionRequest::from_execution_request(request, request_id)?;
-        let deadline = deadline_after(request.limits.timeout)?;
-        self.write_frame_until(
-            &BrokerFrame::control(&BrokerControlMessage::Execute {
-                request: wire_request,
-            })?,
-            deadline,
-        )?;
-
-        let response = self.read_frame_until(deadline)?.decode_control()?;
-        match &response {
-            BrokerControlMessage::Failure {
-                request_id: Some(response_id),
-                ..
-            } if *response_id == request_id => return Ok(response),
-            BrokerControlMessage::WorkspaceSnapshotRequested {
-                request_id: response_id,
-            } if *response_id == request_id => {}
-            _ => return Err(invalid_data("broker response does not match the request")),
-        }
-
-        let cancellation = self.cancellation.clone();
-        super::workspace_transfer::send_workspace_snapshot(
-            &workspace.source,
-            request.limits.workspace_copy,
-            |frame| self.write_frame_until(&frame, deadline),
-            || cancellation.is_cancelled(),
-        )?;
-
-        let response = self.read_frame_until(deadline)?.decode_control()?;
-        let matching_terminal = match &response {
-            BrokerControlMessage::Failure {
-                request_id: Some(response_id),
-                ..
-            }
-            | BrokerControlMessage::ExecutionComplete {
-                request_id: response_id,
-                ..
-            } => *response_id == request_id,
-            _ => false,
-        };
-        if matching_terminal {
-            Ok(response)
-        } else {
-            Err(invalid_data(
-                "broker terminal response does not match the request",
-            ))
-        }
+        output: super::WindowsContainerOutputSink<'_>,
+    ) -> io::Result<client_exchange::BrokerPipeExecutionResponse> {
+        client_exchange::execute_with_workspace(self, request, request_id, workspace, output)
     }
 
     pub(crate) fn read_frame(&mut self, timeout: Duration) -> io::Result<BrokerFrame> {
@@ -909,6 +864,7 @@ fn permission_denied(message: &str) -> io::Error {
 mod tests {
     use super::peer_security::{LocalString, MAX_SID_BYTES};
     use super::*;
+    use std::path::Path;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::mpsc;
     use windows_sys::Win32::Security::GetLengthSid;
@@ -1052,19 +1008,168 @@ mod tests {
         )
         .unwrap();
         let request_id = [9; 16];
-        let client = BrokerPipeClient::connect_for_test(&name).unwrap();
+        let mut client = BrokerPipeClient::connect_for_test(&name).unwrap();
+        let mut on_output = |_: super::super::WindowsContainerOutputStream, _: &[u8]| {};
+        let output_sink = super::super::WindowsContainerOutputSink::new(&request, &mut on_output);
         let response = client
-            .execute_with_workspace(&request, request_id, &workspace)
+            .execute_with_workspace(&request, request_id, &workspace, output_sink)
             .unwrap();
 
-        assert_eq!(
+        assert!(matches!(
             response,
-            BrokerControlMessage::Failure {
-                request_id: Some(request_id),
-                code: BrokerFailureCode::BackendUnavailable,
-            }
-        );
+            client_exchange::BrokerPipeExecutionResponse::Failed(
+                BrokerFailureCode::BackendUnavailable
+            )
+        ));
         assert_eq!(server.join().unwrap().unwrap(), (7, b"payload".to_vec()));
+    }
+
+    #[test]
+    fn broker_client_reconstructs_output_and_returns_a_bound_review_owner() {
+        let current = current_process_identity().unwrap();
+        let policy = BrokerPeerPolicy::new(
+            current.user_sid.clone(),
+            current.logon_sid,
+            current.session_id,
+            current.user_sid,
+        )
+        .unwrap();
+        let name = format!(
+            r"\\.\pipe\Haven.ContainerBroker.Test.{}.{}",
+            unsafe { GetCurrentProcessId() },
+            NEXT_TEST_PIPE.fetch_add(1, Ordering::Relaxed)
+        );
+        let server_name = name.clone();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || -> io::Result<()> {
+            let mut listener = BrokerPipeListener::create(&server_name, policy)?;
+            let cancellation = BrokerPipeCancellation::new()?;
+            ready_sender.send(()).unwrap();
+            let mut connection = listener.accept(&cancellation)?;
+            let request = match connection
+                .read_frame(Duration::from_secs(5))?
+                .decode_control()?
+            {
+                BrokerControlMessage::Execute { request } => request,
+                _ => return Err(invalid_data("test client sent an invalid request")),
+            };
+            let request_id = request.request_id;
+            connection.write_frame(
+                &BrokerFrame::control(&BrokerControlMessage::WorkspaceSnapshotRequested {
+                    request_id,
+                })?,
+                Duration::from_secs(5),
+            )?;
+
+            let staging_temp = tempfile::tempdir()?;
+            let staging = crate::filesystem::DirectoryCapability::open(staging_temp.path())?;
+            let limits = request.validate()?;
+            let cancellation = connection.cancellation();
+            let (snapshot, summary) = super::super::workspace_transfer::receive_workspace_snapshot(
+                staging,
+                limits.workspace_copy(),
+                || connection.read_frame(Duration::from_secs(5)),
+                || cancellation.is_cancelled(),
+            )?;
+            let output_temp = tempfile::tempdir()?;
+            let output = crate::filesystem::DirectoryCapability::open(output_temp.path())?;
+            snapshot.copy_tree_to(&output, limits.workspace_copy(), || false)?;
+            std::fs::write(output_temp.path().join("result.txt"), b"result")?;
+
+            connection.write_frame(
+                &BrokerFrame::new(BrokerFrameKind::StdoutChunk, b"hello".to_vec())?,
+                Duration::from_secs(5),
+            )?;
+            super::super::output_transfer::send_output_snapshot(
+                &output,
+                &snapshot,
+                limits.output_diff(),
+                summary.byte_count,
+                |frame| connection.write_frame(&frame, Duration::from_secs(5)),
+                || cancellation.is_cancelled(),
+            )?;
+            connection.write_frame(
+                &BrokerFrame::control(&BrokerControlMessage::ExecutionComplete {
+                    request_id,
+                    exit_code: 0,
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                })?,
+                Duration::from_secs(5),
+            )?;
+            Ok(())
+        });
+        ready_receiver.recv().unwrap();
+
+        let workspace_temp = tempfile::tempdir().unwrap();
+        std::fs::write(workspace_temp.path().join("payload.txt"), b"payload").unwrap();
+        let workspace = super::super::WindowsContainerWorkspaceInput::new(
+            crate::filesystem::DirectoryCapability::open(workspace_temp.path()).unwrap(),
+        );
+        let copy_limits =
+            crate::filesystem::DirectoryTreeCopyLimits::new(16, 8, 4096, 8192).unwrap();
+        let diff_limits =
+            crate::filesystem::DirectoryTreeDiffLimits::new(copy_limits, 16, 4096, 8192).unwrap();
+        let execution_limits = super::super::WindowsContainerExecutionLimits::new(
+            1024 * 1024,
+            Duration::from_secs(10),
+            8192,
+            8192,
+            copy_limits,
+            diff_limits,
+        )
+        .unwrap();
+        let request = super::super::WindowsContainerExecutionRequest::new(
+            super::super::WindowsContainerShell::PowerShell,
+            "Write-Output 'hello'",
+            "",
+            7,
+            11,
+            execution_limits,
+        )
+        .unwrap();
+        let request_id = [12; 16];
+        let mut client = BrokerPipeClient::connect_for_test(&name).unwrap();
+        let mut streamed_output = Vec::new();
+        let mut on_output = |stream, bytes: &[u8]| {
+            assert_eq!(stream, super::super::WindowsContainerOutputStream::Stdout);
+            streamed_output.extend_from_slice(bytes);
+        };
+        let output_sink = super::super::WindowsContainerOutputSink::new(&request, &mut on_output);
+        let response = client
+            .execute_with_workspace(&request, request_id, &workspace, output_sink)
+            .unwrap();
+        let server_result = server.join().unwrap();
+
+        let client_exchange::BrokerPipeExecutionResponse::Completed {
+            exit_code,
+            captured_output,
+            output_review,
+        } = response
+        else {
+            panic!("the broker completed the requested output review")
+        };
+        assert!(server_result.is_ok());
+        assert_eq!(exit_code, 0);
+        assert_eq!(captured_output.stdout(), b"hello");
+        assert_eq!(streamed_output, b"hello");
+        assert_eq!(output_review.manifest().changes.len(), 1);
+        let change = &output_review.manifest().changes[0];
+        assert_eq!(change.relative_path, Path::new("result.txt"));
+
+        let destination_temp = tempfile::tempdir().unwrap();
+        let destination =
+            crate::filesystem::DirectoryCapability::open(destination_temp.path()).unwrap();
+        output_review
+            .promote_output_file_to(change, 7, 11, &destination, Path::new("result.txt"), || {
+                false
+            })
+            .unwrap();
+        assert_eq!(
+            std::fs::read(destination_temp.path().join("result.txt")).unwrap(),
+            b"result"
+        );
+        output_review.cleanup().unwrap();
     }
 
     #[test]

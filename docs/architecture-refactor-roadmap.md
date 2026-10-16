@@ -184,6 +184,8 @@ HCS 执行边界已有固定的管理员本地镜像目录：服务启动时严�
 
 平台内部新增 HCS guest runner：先执行固定 workspace seed，再执行单个受限 Shell；双 pipe 有界 drain、request deadline/cancel 与 HCS 显式停止统一在一个 owner 流程中，只有停止成功才产出 writable-layer proof（ADR 1255）。runner 尚未接入 service/provider；quota gate 保持关闭。
 
+Broker client 现保存并发送同一份有界 workspace baseline，接收受限 stdout/stderr 和输出差异流，校验后通过带 workspace generation、policy revision 的 `SandboxOutputReview` 持有结果；创建文件仍只能由现有 Tools 晋升链路处理（ADR 1256）。service 端 HCS lifecycle/export/diff sender 仍未接线，生产执行继续被 quota gate 拒绝；当前 Active 是完成 service 侧完整执行、停止、导出与结果发送链路，真实配额验收仍留作 gate。
+
 | 状态 | 切片 | 完成条件 |
 | --- | --- | --- |
 | **Complete** | 配置/IPC/UI 与 MCP runtime 接入 exposure | server 默认值与 per-tool overrides 由同一配置 owner 管理；`direct` / `model_only` / `deferred` / `codemode` / `hidden` 共用确定性 resolver 控制原生 surface、目录、加载和执行可达性；策略更新不重连 server；Hidden/CodeMode stale call 由后端拒绝。UI 可设置 server 默认值与 per-tool overrides。`model_only` 只加入 provider-native surface，不允许作为 Workflow/CodeMode 嵌套 capability（ADR 1183）。 |
