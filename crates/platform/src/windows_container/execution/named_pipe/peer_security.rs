@@ -15,8 +15,9 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows_sys::Win32::Security::{
-    GetLengthSid, GetTokenInformation, IsValidSid, RevertToSelf, SID_AND_ATTRIBUTES, TOKEN_GROUPS,
-    TOKEN_QUERY, TOKEN_USER, TokenGroups, TokenSessionId, TokenUser,
+    GetLengthSid, GetTokenInformation, IsValidSid, LookupAccountNameW, RevertToSelf,
+    SID_AND_ATTRIBUTES, SID_NAME_USE, TOKEN_GROUPS, TOKEN_QUERY, TOKEN_USER, TokenGroups,
+    TokenSessionId, TokenUser,
 };
 use windows_sys::Win32::System::Pipes::{
     GetNamedPipeClientProcessId, GetNamedPipeClientSessionId, GetNamedPipeServerProcessId,
@@ -333,6 +334,52 @@ pub(super) struct ActiveSessionIdentity {
 
 pub(super) fn query_unique_active_session() -> io::Result<ActiveSessionIdentity> {
     wts_identity::query_unique_active_session()
+}
+
+pub(super) fn current_broker_service_sid() -> io::Result<Vec<u8>> {
+    let account = wide_null(&format!(r"NT SERVICE\{BROKER_SERVICE_NAME}"));
+    let mut sid_length = 0;
+    let mut domain_length = 0;
+    let mut account_use: SID_NAME_USE = 0;
+    if unsafe {
+        LookupAccountNameW(
+            null(),
+            account.as_ptr(),
+            null_mut(),
+            &mut sid_length,
+            null_mut(),
+            &mut domain_length,
+            &mut account_use,
+        )
+    } != 0
+        || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
+        || sid_length == 0
+        || sid_length as usize > MAX_SID_BYTES
+        || domain_length > 256
+    {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut sid = vec![0_u8; sid_length as usize];
+    let mut domain = vec![0_u16; domain_length as usize];
+    if unsafe {
+        LookupAccountNameW(
+            null(),
+            account.as_ptr(),
+            sid.as_mut_ptr().cast(),
+            &mut sid_length,
+            domain.as_mut_ptr(),
+            &mut domain_length,
+            &mut account_use,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    sid.truncate(sid_length as usize);
+    validate_sid_bytes(&sid)?;
+    verify_current_service_identity(&sid)?;
+    Ok(sid)
 }
 
 pub(super) fn verify_pipe_server(handle: HANDLE) -> io::Result<()> {

@@ -60,7 +60,8 @@ fn select_unique_active_session_id(sessions: &[WTS_SESSION_INFOW]) -> io::Result
             continue;
         }
         if active_session_id.replace(session.SessionId).is_some() {
-            return Err(permission_denied(
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
                 "multiple active interactive sessions are not supported",
             ));
         }
@@ -132,7 +133,7 @@ mod tests {
             select_unique_active_session_id(&[session(1, WTSActive), session(2, WTSActive),])
                 .unwrap_err()
                 .kind(),
-            io::ErrorKind::PermissionDenied
+            io::ErrorKind::WouldBlock
         );
     }
 }

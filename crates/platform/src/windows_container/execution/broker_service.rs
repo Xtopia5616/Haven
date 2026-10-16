@@ -12,30 +12,33 @@ use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_CALL_NOT_IMPLEMENTED, ERROR_SERVICE_ALREADY_RUNNING,
-    ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_NOT_ACTIVE, ERROR_SERVICE_SPECIFIC_ERROR,
-    ERROR_TIMEOUT, GetLastError, HANDLE, WAIT_OBJECT_0,
+    ERROR_CALL_NOT_IMPLEMENTED, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
+    ERROR_SERVICE_NOT_ACTIVE, ERROR_SERVICE_SPECIFIC_ERROR, ERROR_TIMEOUT, GetLastError, HANDLE,
 };
-use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::Services::{
     ChangeServiceConfig2W, CloseServiceHandle, ControlService, CreateServiceW, DeleteService,
     OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, RegisterServiceCtrlHandlerExW,
-    SC_MANAGER_CONNECT, SC_MANAGER_CREATE_SERVICE, SC_STATUS_PROCESS_INFO, SERVICE_ACCEPT_SHUTDOWN,
-    SERVICE_ACCEPT_STOP, SERVICE_CHANGE_CONFIG, SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO,
-    SERVICE_CONFIG_SERVICE_SID_INFO, SERVICE_CONTROL_INTERROGATE, SERVICE_CONTROL_SHUTDOWN,
-    SERVICE_CONTROL_STOP, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL, SERVICE_QUERY_STATUS,
-    SERVICE_REQUIRED_PRIVILEGES_INFOW, SERVICE_RUNNING, SERVICE_SID_INFO, SERVICE_START,
-    SERVICE_START_PENDING, SERVICE_STATUS, SERVICE_STATUS_HANDLE, SERVICE_STATUS_PROCESS,
-    SERVICE_STOP, SERVICE_STOP_PENDING, SERVICE_STOPPED, SERVICE_TABLE_ENTRYW,
-    SERVICE_WIN32_OWN_PROCESS, SetServiceStatus, StartServiceCtrlDispatcherW, StartServiceW,
+    SC_MANAGER_CONNECT, SC_MANAGER_CREATE_SERVICE, SC_STATUS_PROCESS_INFO,
+    SERVICE_ACCEPT_SESSIONCHANGE, SERVICE_ACCEPT_SHUTDOWN, SERVICE_ACCEPT_STOP,
+    SERVICE_CHANGE_CONFIG, SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO,
+    SERVICE_CONFIG_SERVICE_SID_INFO, SERVICE_CONTROL_INTERROGATE, SERVICE_CONTROL_SESSIONCHANGE,
+    SERVICE_CONTROL_SHUTDOWN, SERVICE_CONTROL_STOP, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
+    SERVICE_QUERY_STATUS, SERVICE_REQUIRED_PRIVILEGES_INFOW, SERVICE_RUNNING, SERVICE_SID_INFO,
+    SERVICE_START, SERVICE_START_PENDING, SERVICE_STATUS, SERVICE_STATUS_HANDLE,
+    SERVICE_STATUS_PROCESS, SERVICE_STOP, SERVICE_STOP_PENDING, SERVICE_STOPPED,
+    SERVICE_TABLE_ENTRYW, SERVICE_WIN32_OWN_PROCESS, SetServiceStatus, StartServiceCtrlDispatcherW,
+    StartServiceW,
 };
-use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
+use windows_sys::Win32::System::Threading::{ResetEvent, SetEvent, WaitForSingleObject};
 use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath};
+
+use super::broker_protocol::{BrokerControlMessage, BrokerFailureCode, BrokerFrame};
+use super::named_pipe::{BrokerPeerPolicy, BrokerPipeCancellation, BrokerPipeListener};
 
 const SERVICE_ACCOUNT: &str = r"NT AUTHORITY\LocalSystem";
 const SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -52,10 +55,15 @@ const REQUIRED_PRIVILEGES: &[&str] = &[
 ];
 
 static SERVICE_STATUS_HANDLE_VALUE: AtomicIsize = AtomicIsize::new(0);
-static SERVICE_STOP_EVENT: AtomicIsize = AtomicIsize::new(0);
+static SERVICE_CANCELLATION_EVENT: AtomicIsize = AtomicIsize::new(0);
+static SERVICE_CONTROL_SIGNAL: AtomicU32 = AtomicU32::new(CONTROL_SIGNAL_NONE);
 static SERVICE_CURRENT_STATE: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(SERVICE_STOPPED);
 static SERVICE_CONTROL_LOCK: Mutex<()> = Mutex::new(());
+
+const CONTROL_SIGNAL_NONE: u32 = 0;
+const CONTROL_SIGNAL_STOP: u32 = 1;
+const CONTROL_SIGNAL_SESSION_CHANGE: u32 = 2;
 
 /// Observable SCM state for the optional broker service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,51 +358,168 @@ unsafe extern "system" fn service_main(_argument_count: u32, _arguments: *mut *m
 }
 
 fn run_service_main() -> io::Result<()> {
-    let stop_event = unsafe { CreateEventW(null::<SECURITY_ATTRIBUTES>(), 1, 0, null()) };
-    if stop_event.is_null() {
-        return Err(io::Error::last_os_error());
-    }
+    let cancellation = BrokerPipeCancellation::new()?;
     let service_name = wide_null(BROKER_SERVICE_NAME);
     let status_handle = unsafe {
         RegisterServiceCtrlHandlerExW(service_name.as_ptr(), Some(service_control_handler), null())
     };
     if status_handle.is_null() {
-        unsafe { CloseHandle(stop_event) };
         return Err(io::Error::last_os_error());
     }
 
-    {
+    let start_result = {
         let _guard = lock_service_control();
         SERVICE_STATUS_HANDLE_VALUE.store(status_handle as isize, Ordering::SeqCst);
-        SERVICE_STOP_EVENT.store(stop_event as isize, Ordering::SeqCst);
-        report_status(status_handle, SERVICE_START_PENDING, 0, 5_000)?;
-        report_status(
-            status_handle,
-            SERVICE_RUNNING,
-            SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN,
-            0,
-        )?;
+        SERVICE_CANCELLATION_EVENT.store(cancellation.raw_handle() as isize, Ordering::SeqCst);
+        SERVICE_CONTROL_SIGNAL.store(CONTROL_SIGNAL_NONE, Ordering::SeqCst);
+        report_status(status_handle, SERVICE_START_PENDING, 0, 5_000).and_then(|()| {
+            report_status(
+                status_handle,
+                SERVICE_RUNNING,
+                SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_SESSIONCHANGE,
+                0,
+            )
+        })
+    };
+    if let Err(error) = start_result {
+        let _guard = lock_service_control();
+        report_service_failure_locked(status_handle, &error);
+        clear_service_control_state();
+        return Err(error);
     }
 
-    // The service lifecycle is established before its authenticated pipe
-    // listener is connected in the next broker integration slice.
-    let wait_result = unsafe { WaitForSingleObject(stop_event, u32::MAX) };
-    let result = if wait_result == WAIT_OBJECT_0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    };
+    let result = run_service_listener_loop(&cancellation);
 
     {
         let _guard = lock_service_control();
-        SERVICE_STATUS_HANDLE_VALUE.store(0, Ordering::SeqCst);
-        SERVICE_STOP_EVENT.store(0, Ordering::SeqCst);
-        let stop_result = report_status(status_handle, SERVICE_STOPPED, 0, 0);
-        unsafe { CloseHandle(stop_event) };
-        result?;
-        stop_result?;
+        let status_result = match result {
+            Ok(()) => report_status(status_handle, SERVICE_STOPPED, 0, 0),
+            Err(ref error) => {
+                report_service_failure_locked(status_handle, error);
+                Ok(())
+            }
+        };
+        clear_service_control_state();
+        status_result?;
     }
     Ok(())
+}
+
+fn run_service_listener_loop(cancellation: &BrokerPipeCancellation) -> io::Result<()> {
+    loop {
+        match consume_control_signal(cancellation)? {
+            CONTROL_SIGNAL_STOP => return Ok(()),
+            CONTROL_SIGNAL_SESSION_CHANGE => continue,
+            CONTROL_SIGNAL_NONE => {}
+            _ => {
+                return Err(invalid_data(
+                    "broker service received an unknown control signal",
+                ));
+            }
+        }
+
+        let policy = match BrokerPeerPolicy::from_active_session() {
+            Ok(policy) => policy,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                wait_for_control_signal(cancellation)?;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let mut listener = BrokerPipeListener::new(policy)?;
+
+        loop {
+            let outcome = match listener.accept(cancellation) {
+                Ok(mut connection) => serve_authenticated_connection(&mut connection),
+                Err(error) => Err(error),
+            };
+            match outcome {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                    match consume_control_signal(cancellation)? {
+                        CONTROL_SIGNAL_STOP => return Ok(()),
+                        CONTROL_SIGNAL_SESSION_CHANGE => break,
+                        CONTROL_SIGNAL_NONE => return Err(error),
+                        _ => {
+                            return Err(invalid_data(
+                                "broker service received an unknown control signal",
+                            ));
+                        }
+                    }
+                }
+                Err(error) if is_peer_pipe_error(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        // Dropping the listener closes its old logon-scoped DACL before the
+        // next WTS snapshot is read.
+    }
+}
+
+fn serve_authenticated_connection(
+    connection: &mut super::named_pipe::BrokerPipeConnection<'_>,
+) -> io::Result<()> {
+    let response = match connection
+        .read_frame(Duration::from_secs(5))?
+        .decode_control()
+    {
+        Ok(BrokerControlMessage::Execute { request }) => BrokerControlMessage::Failure {
+            request_id: Some(request.request_id),
+            code: BrokerFailureCode::QuotaUnattested,
+        },
+        Ok(_) | Err(_) => BrokerControlMessage::Failure {
+            request_id: None,
+            code: BrokerFailureCode::InvalidRequest,
+        },
+    };
+    connection.write_frame(&BrokerFrame::control(&response)?, Duration::from_secs(5))
+}
+
+fn is_peer_pipe_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::PermissionDenied
+            | io::ErrorKind::InvalidData
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+    )
+}
+
+fn wait_for_control_signal(cancellation: &BrokerPipeCancellation) -> io::Result<()> {
+    if unsafe { WaitForSingleObject(cancellation.raw_handle(), u32::MAX) }
+        != windows_sys::Win32::Foundation::WAIT_OBJECT_0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Consume a session-change notification and reset the shared event while the
+/// handler lock is held. A concurrent stop always takes precedence.
+fn consume_control_signal(cancellation: &BrokerPipeCancellation) -> io::Result<u32> {
+    let _guard = lock_service_control();
+    let signal = SERVICE_CONTROL_SIGNAL.load(Ordering::SeqCst);
+    if signal == CONTROL_SIGNAL_SESSION_CHANGE {
+        if unsafe { ResetEvent(cancellation.raw_handle()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        SERVICE_CONTROL_SIGNAL.store(CONTROL_SIGNAL_NONE, Ordering::SeqCst);
+    }
+    Ok(signal)
+}
+
+fn clear_service_control_state() {
+    SERVICE_STATUS_HANDLE_VALUE.store(0, Ordering::SeqCst);
+    SERVICE_CANCELLATION_EVENT.store(0, Ordering::SeqCst);
+    SERVICE_CONTROL_SIGNAL.store(CONTROL_SIGNAL_NONE, Ordering::SeqCst);
 }
 
 unsafe extern "system" fn service_control_handler(
@@ -412,7 +537,10 @@ unsafe extern "system" fn service_control_handler(
             }
             let state = SERVICE_CURRENT_STATE.load(Ordering::SeqCst);
             let (accepted, wait_hint) = if state == SERVICE_RUNNING {
-                (SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN, 0)
+                (
+                    SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_SESSIONCHANGE,
+                    0,
+                )
             } else if state == SERVICE_STOP_PENDING {
                 (0, 10_000)
             } else {
@@ -424,14 +552,28 @@ unsafe extern "system" fn service_control_handler(
             }
         }
         SERVICE_CONTROL_STOP | SERVICE_CONTROL_SHUTDOWN => {
-            let stop_event = SERVICE_STOP_EVENT.load(Ordering::SeqCst) as HANDLE;
-            if status_handle.is_null() || stop_event.is_null() {
+            let cancellation_event = SERVICE_CANCELLATION_EVENT.load(Ordering::SeqCst) as HANDLE;
+            if status_handle.is_null() || cancellation_event.is_null() {
                 return ERROR_SERVICE_NOT_ACTIVE;
             }
+            SERVICE_CONTROL_SIGNAL.store(CONTROL_SIGNAL_STOP, Ordering::SeqCst);
             if report_status(status_handle, SERVICE_STOP_PENDING, 0, 10_000).is_err() {
                 return unsafe { GetLastError() };
             }
-            if unsafe { SetEvent(stop_event) } == 0 {
+            if unsafe { SetEvent(cancellation_event) } == 0 {
+                return unsafe { GetLastError() };
+            }
+            0
+        }
+        SERVICE_CONTROL_SESSIONCHANGE => {
+            let cancellation_event = SERVICE_CANCELLATION_EVENT.load(Ordering::SeqCst) as HANDLE;
+            if status_handle.is_null() || cancellation_event.is_null() {
+                return ERROR_SERVICE_NOT_ACTIVE;
+            }
+            if SERVICE_CONTROL_SIGNAL.load(Ordering::SeqCst) != CONTROL_SIGNAL_STOP {
+                SERVICE_CONTROL_SIGNAL.store(CONTROL_SIGNAL_SESSION_CHANGE, Ordering::SeqCst);
+            }
+            if unsafe { SetEvent(cancellation_event) } == 0 {
                 return unsafe { GetLastError() };
             }
             0
@@ -445,8 +587,12 @@ fn report_service_failure(error: io::Error) {
     if status_handle.is_null() {
         return;
     }
-    let code = error.raw_os_error().unwrap_or(1).unsigned_abs();
     let _guard = lock_service_control();
+    report_service_failure_locked(status_handle, &error);
+}
+
+fn report_service_failure_locked(status_handle: SERVICE_STATUS_HANDLE, error: &io::Error) {
+    let code = error.raw_os_error().unwrap_or(1).unsigned_abs();
     let status = SERVICE_STATUS {
         dwServiceType: SERVICE_WIN32_OWN_PROCESS,
         dwCurrentState: SERVICE_STOPPED,

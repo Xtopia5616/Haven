@@ -14,9 +14,9 @@ use super::broker_protocol::{
     MAX_CONTROL_PAYLOAD_BYTES, negotiate_version,
 };
 use peer_security::{
-    ActiveSessionIdentity, PipeSecurityDescriptor, current_process_identity,
-    impersonate_and_read_peer, query_unique_active_session, validate_sid_bytes,
-    verify_current_service_identity, verify_pipe_server,
+    ActiveSessionIdentity, PipeSecurityDescriptor, current_broker_service_sid,
+    current_process_identity, impersonate_and_read_peer, query_unique_active_session,
+    validate_sid_bytes, verify_current_service_identity, verify_pipe_server,
 };
 use std::io::{self, Read, Write};
 use std::mem::size_of;
@@ -62,10 +62,10 @@ pub(crate) struct BrokerPeerPolicy {
 
 impl BrokerPeerPolicy {
     /// Build the listener policy from the sole active interactive WTS session.
-    /// The service identity is supplied by the broker's fixed SCM configuration;
-    /// user and logon SIDs are never accepted from a renderer or pipe payload.
-    pub(crate) fn from_active_session(service_sid: Vec<u8>) -> io::Result<Self> {
-        validate_sid_bytes(&service_sid)?;
+    /// The service SID is resolved from the fixed `NT SERVICE` account and
+    /// checked against this process token. User identity comes only from WTS.
+    pub(crate) fn from_active_session() -> io::Result<Self> {
+        let service_sid = current_broker_service_sid()?;
         let ActiveSessionIdentity {
             session_id,
             user_sid,
