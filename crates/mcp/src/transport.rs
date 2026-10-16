@@ -19,6 +19,11 @@ use tokio_util::sync::CancellationToken;
 const MAX_STDIO_LINE_BYTES: usize = 1024 * 1024;
 const MAX_JSON_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_NOTIFY_BODY_BYTES: usize = 64 * 1024;
+const STDIO_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const STDIO_CLOSE_INPUT_TIMEOUT: Duration = Duration::from_millis(500);
+const STDIO_EXIT_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const STDIO_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const STDIO_SHUTDOWN_WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 pub(crate) const NOTIFICATION_QUEUE_CAPACITY: usize = 256;
 
 /// Coalesced signal for `tools/list_changed`. The notification itself carries
@@ -61,7 +66,7 @@ pub(crate) struct StdioInner {
 }
 
 pub(crate) struct StdioIo {
-    stdin: AsyncMutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>,
+    stdin: AsyncMutex<Option<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>,
     pending: AsyncMutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
     active_subscriptions: std::sync::Mutex<HashSet<u64>>,
     modern: AtomicBool,
@@ -107,7 +112,7 @@ impl StdioInner {
             })
         });
         let io = Arc::new(StdioIo {
-            stdin: AsyncMutex::new(Box::new(stdin)),
+            stdin: AsyncMutex::new(Some(Box::new(stdin))),
             pending: AsyncMutex::new(HashMap::new()),
             active_subscriptions: std::sync::Mutex::new(HashSet::new()),
             modern: AtomicBool::new(false),
@@ -146,9 +151,48 @@ impl StdioInner {
         self.process.lock().await.start_kill()
     }
 
-    pub(crate) async fn wait(&self) -> std::io::Result<()> {
+    /// Send the legacy MCP shutdown exchange while keeping the response
+    /// reader alive after normal requests have been cancelled.
+    pub(crate) async fn shutdown_protocol(
+        &self,
+        id: u64,
+        mode: &McpProtocolMode,
+    ) -> anyhow::Result<()> {
+        if !mode.is_legacy() {
+            return Ok(());
+        }
+        let deadline = tokio::time::Instant::now() + STDIO_SHUTDOWN_TIMEOUT;
+        let shutdown_result = self
+            .io
+            .request_for_shutdown(id, "shutdown", None, deadline)
+            .await;
+        let exit_result = self.io.notify_for_shutdown("exit", None, deadline).await;
+        shutdown_result?;
+        exit_result
+    }
+
+    /// Close stdin to deliver EOF to the server. This is bounded and drops the
+    /// writer even if its asynchronous shutdown cannot complete in time.
+    pub(crate) async fn close_stdin(&self) -> std::io::Result<()> {
+        self.io.close_stdin(STDIO_CLOSE_INPUT_TIMEOUT).await
+    }
+
+    /// Wait for process exit for a bounded interval. The process port's wait
+    /// future must be safe to cancel and poll again after this returns false.
+    pub(crate) async fn wait_for_exit(&self, timeout: Duration) -> std::io::Result<bool> {
         let mut process = self.process.lock().await;
-        process.wait().await
+        match tokio::time::timeout(timeout, process.wait()).await {
+            Ok(result) => result.map(|()| true),
+            Err(_) => Ok(false),
+        }
+    }
+
+    pub(crate) async fn bounded_exit_wait(&self) -> std::io::Result<bool> {
+        self.wait_for_exit(STDIO_EXIT_WAIT_TIMEOUT).await
+    }
+
+    pub(crate) async fn bounded_kill_wait(&self) -> std::io::Result<bool> {
+        self.wait_for_exit(STDIO_KILL_WAIT_TIMEOUT).await
     }
 
     pub(crate) async fn request(
@@ -211,6 +255,11 @@ impl StdioIo {
         line.push('\n');
         let write_result = {
             let mut stdin = self.stdin.lock().await;
+            let Some(stdin) = stdin.as_mut() else {
+                self.pending.lock().await.remove(&id);
+                self.remove_subscription(id);
+                anyhow::bail!("MCP stdio stdin has been closed");
+            };
             write_stdio_line(&mut **stdin, &line, method, &self.cancel).await
         };
         if let Err(error) = write_result {
@@ -246,11 +295,106 @@ impl StdioIo {
         response
     }
 
+    async fn request_for_shutdown(
+        &self,
+        id: u64,
+        method: &str,
+        params: Option<Value>,
+        deadline: tokio::time::Instant,
+    ) -> anyhow::Result<Value> {
+        if self.reader_failed.load(Ordering::Acquire) {
+            anyhow::bail!("MCP stdio response reader has stopped");
+        }
+        let (response_tx, response_rx) = oneshot::channel();
+        self.pending.lock().await.insert(id, response_tx);
+        let mut line = serde_json::to_string(&jsonrpc_request(id, method, params))?;
+        line.push('\n');
+
+        let write_result = async {
+            let mut stdin = tokio::time::timeout_at(deadline, self.stdin.lock())
+                .await
+                .map_err(|_| anyhow::anyhow!("MCP stdio shutdown writer lock timed out"))?;
+            let Some(stdin) = stdin.as_mut() else {
+                anyhow::bail!("MCP stdio stdin has been closed");
+            };
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            write_stdio_line_with_timeout(
+                &mut **stdin,
+                &line,
+                method,
+                &CancellationToken::new(),
+                remaining.min(STDIO_SHUTDOWN_WRITE_TIMEOUT),
+            )
+            .await
+        }
+        .await;
+        let result = match write_result {
+            Ok(()) => match tokio::time::timeout_at(deadline, response_rx).await {
+                Ok(Ok(Ok(response))) => unpack_jsonrpc(response, None),
+                Ok(Ok(Err(error))) => Err(anyhow::anyhow!("{error}")),
+                Ok(Err(_)) => Err(anyhow::anyhow!("MCP stdio response reader stopped")),
+                Err(_) => Err(anyhow::anyhow!("MCP stdio shutdown response timed out")),
+            },
+            Err(error) => Err(error),
+        };
+        self.pending.lock().await.remove(&id);
+        result
+    }
+
+    async fn notify_for_shutdown(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        deadline: tokio::time::Instant,
+    ) -> anyhow::Result<()> {
+        let mut line = serde_json::to_string(&jsonrpc_notification(method, params))?;
+        line.push('\n');
+        let mut stdin = tokio::time::timeout_at(deadline, self.stdin.lock())
+            .await
+            .map_err(|_| anyhow::anyhow!("MCP stdio shutdown writer lock timed out"))?;
+        let Some(stdin) = stdin.as_mut() else {
+            anyhow::bail!("MCP stdio stdin has been closed");
+        };
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        write_stdio_line_with_timeout(
+            &mut **stdin,
+            &line,
+            method,
+            &CancellationToken::new(),
+            remaining.min(STDIO_SHUTDOWN_WRITE_TIMEOUT),
+        )
+        .await
+    }
+
+    async fn close_stdin(&self, timeout: Duration) -> std::io::Result<()> {
+        let mut stdin = tokio::time::timeout(timeout, self.stdin.lock())
+            .await
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "MCP stdio writer lock did not close in time",
+                )
+            })?;
+        let Some(mut writer) = stdin.take() else {
+            return Ok(());
+        };
+        match tokio::time::timeout(timeout, writer.shutdown()).await {
+            Ok(result) => result,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "MCP stdio stdin did not close in time",
+            )),
+        }
+    }
+
     async fn notify(&self, method: &str, params: Option<Value>) -> anyhow::Result<()> {
         let notification = jsonrpc_notification(method, params);
         let mut line = serde_json::to_string(&notification)?;
         line.push('\n');
         let mut stdin = self.stdin.lock().await;
+        let Some(stdin) = stdin.as_mut() else {
+            anyhow::bail!("MCP stdio stdin has been closed");
+        };
         write_stdio_line(&mut **stdin, &line, method, &self.cancel).await
     }
 
@@ -262,6 +406,9 @@ impl StdioIo {
         let mut line = serde_json::to_string(&notification)?;
         line.push('\n');
         let mut stdin = self.stdin.lock().await;
+        let Some(stdin) = stdin.as_mut() else {
+            anyhow::bail!("MCP stdio stdin has been closed");
+        };
         // This is the cancellation signal for the stdio request itself, so it
         // must still be written after the connection's normal work token has
         // been cancelled. Keep the write bounded while allowing shutdown to
@@ -307,10 +454,9 @@ where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let failure = loop {
-        let line = tokio::select! {
-            _ = io.cancel.cancelled() => return,
-            result = read_line_bounded(&mut stdout) => result,
-        };
+        // Keep reading until EOF so a legacy shutdown response can still be
+        // received after the normal request token has been cancelled.
+        let line = read_line_bounded(&mut stdout).await;
         let line = match line {
             Ok(line) if !line.is_empty() => line,
             Ok(_) => break "MCP server stdout closed (process died)".to_string(),
@@ -1167,6 +1313,7 @@ pub(crate) async fn http_is_alive(shared: &Arc<HttpShared>) -> bool {
 mod tests {
     use super::*;
     use std::process::Stdio;
+    use std::sync::atomic::AtomicUsize;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::process::Command;
@@ -1176,6 +1323,7 @@ mod tests {
         stdout: Option<crate::McpStdioReader>,
         stderr: Option<crate::McpStdioReader>,
         alive: Arc<AtomicBool>,
+        kill_count: Arc<AtomicUsize>,
     }
 
     impl McpStdioProcess for PipeProcess {
@@ -1200,12 +1348,19 @@ mod tests {
         }
 
         fn start_kill(&mut self) -> std::io::Result<()> {
+            self.kill_count.fetch_add(1, Ordering::AcqRel);
             self.alive.store(false, Ordering::Release);
             Ok(())
         }
 
         fn wait(&mut self) -> futures_util::future::BoxFuture<'_, std::io::Result<()>> {
-            Box::pin(async { Ok(()) })
+            let alive = self.alive.clone();
+            Box::pin(async move {
+                while alive.load(Ordering::Acquire) {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                Ok(())
+            })
         }
     }
 
@@ -1215,11 +1370,13 @@ mod tests {
         let (stdout, stdin) = tokio::io::split(client_stream);
         let (stderr_reader, mut stderr_writer) = tokio::io::duplex(16);
         let alive = Arc::new(AtomicBool::new(true));
+        let kill_count = Arc::new(AtomicUsize::new(0));
         let process = Box::new(PipeProcess {
             stdin: Some(Box::new(stdin)),
             stdout: Some(Box::new(stdout)),
             stderr: Some(Box::new(stderr_reader)),
             alive: alive.clone(),
+            kill_count,
         });
         let (notification_tx, _notification_rx) =
             tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
@@ -1250,11 +1407,13 @@ mod tests {
         let (client_stream, _peer_stream) = tokio::io::duplex(64);
         let (_stdout, stdin) = tokio::io::split(client_stream);
         let alive = Arc::new(AtomicBool::new(true));
+        let kill_count = Arc::new(AtomicUsize::new(0));
         let process = Box::new(PipeProcess {
             stdin: Some(Box::new(stdin)),
             stdout: None,
             stderr: None,
             alive: alive.clone(),
+            kill_count,
         });
         let (notification_tx, _notification_rx) =
             tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
@@ -1268,6 +1427,104 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!alive.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn legacy_shutdown_exchange_survives_request_cancellation_and_closes_stdin() {
+        let (client_stream, peer_stream) = tokio::io::duplex(4096);
+        let (stdout, stdin) = tokio::io::split(client_stream);
+        let alive = Arc::new(AtomicBool::new(true));
+        let process = Box::new(PipeProcess {
+            stdin: Some(Box::new(stdin)),
+            stdout: Some(Box::new(stdout)),
+            stderr: None,
+            alive: alive.clone(),
+            kill_count: Arc::new(AtomicUsize::new(0)),
+        });
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let cancelled = CancellationToken::new();
+        let inner = StdioInner::new(
+            process,
+            notification_tx,
+            Arc::new(ToolsListChangedSignal::new()),
+            cancelled.clone(),
+        )
+        .unwrap();
+        cancelled.cancel();
+
+        let server = tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(peer_stream);
+            let mut reader = tokio::io::BufReader::new(reader);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let shutdown: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(shutdown["method"], "shutdown");
+            writer
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{}}\n")
+                .await
+                .unwrap();
+
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            let exit: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(exit["method"], "exit");
+
+            let mut trailing = Vec::new();
+            reader.read_to_end(&mut trailing).await.unwrap();
+            assert!(trailing.is_empty());
+        });
+
+        inner
+            .shutdown_protocol(7, &McpProtocolMode::legacy("2025-06-18"))
+            .await
+            .unwrap();
+        inner.close_stdin().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .expect("server must observe shutdown, exit, and stdin EOF")
+            .unwrap();
+        drop(inner);
+        assert!(!alive.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn process_wait_can_be_bounded_then_retried_after_kill() {
+        let (client_stream, _peer_stream) = tokio::io::duplex(64);
+        let (stdout, stdin) = tokio::io::split(client_stream);
+        let alive = Arc::new(AtomicBool::new(true));
+        let kill_count = Arc::new(AtomicUsize::new(0));
+        let process = Box::new(PipeProcess {
+            stdin: Some(Box::new(stdin)),
+            stdout: Some(Box::new(stdout)),
+            stderr: None,
+            alive: alive.clone(),
+            kill_count: kill_count.clone(),
+        });
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let inner = StdioInner::new(
+            process,
+            notification_tx,
+            Arc::new(ToolsListChangedSignal::new()),
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(
+            !inner
+                .wait_for_exit(Duration::from_millis(10))
+                .await
+                .unwrap()
+        );
+        inner.start_kill().await.unwrap();
+        assert!(
+            inner
+                .wait_for_exit(Duration::from_millis(100))
+                .await
+                .unwrap()
+        );
+        assert_eq!(kill_count.load(Ordering::Acquire), 1);
     }
 
     async fn response_from_server(response: &'static str) -> reqwest::Response {
@@ -1529,7 +1786,7 @@ mod tests {
         let tools_list_changed = Arc::new(ToolsListChangedSignal::new());
         let cancel = CancellationToken::new();
         let io = Arc::new(StdioIo {
-            stdin: AsyncMutex::new(Box::new(client_write)),
+            stdin: AsyncMutex::new(Some(Box::new(client_write))),
             pending: AsyncMutex::new(HashMap::new()),
             active_subscriptions: std::sync::Mutex::new(HashSet::new()),
             modern: AtomicBool::new(true),
@@ -1611,7 +1868,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let io = StdioIo {
-            stdin: AsyncMutex::new(Box::new(client_stream)),
+            stdin: AsyncMutex::new(Some(Box::new(client_stream))),
             pending: AsyncMutex::new(HashMap::new()),
             active_subscriptions: std::sync::Mutex::new(HashSet::new()),
             modern: AtomicBool::new(true),

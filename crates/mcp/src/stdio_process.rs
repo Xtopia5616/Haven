@@ -100,7 +100,12 @@ pub trait McpStdioProcess: Send {
     fn take_stdout(&mut self) -> io::Result<McpStdioReader>;
     fn take_stderr(&mut self) -> io::Result<Option<McpStdioReader>>;
     fn is_alive(&mut self) -> io::Result<bool>;
+    /// Request termination without waiting for process exit. Implementations
+    /// must keep this operation bounded so generation shutdown can enforce
+    /// its own wait deadline.
     fn start_kill(&mut self) -> io::Result<()>;
+    /// Wait for exit. The returned future must be cancellation-safe: callers
+    /// may stop polling at a deadline and poll a fresh wait future later.
     fn wait(&mut self) -> BoxFuture<'_, io::Result<()>>;
 }
 

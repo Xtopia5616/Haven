@@ -1264,3 +1264,4 @@
 - [1274：构造固定的 MCP guest process parameters](1274-build-fixed-mcp-guest-process-parameters.md)
 - [1275：证明受管 MCP entrypoint 摘要](1275-attest-managed-mcp-entrypoint-digests.md)
 - [1276：将 MCP stdio 配置绑定到受管 package](1276-bind-mcp-stdio-config-to-managed-package.md)
+- [1277：有界关闭 MCP stdio 进程代次](1277-bound-mcp-stdio-generation-shutdown.md)

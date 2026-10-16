@@ -1264,34 +1264,53 @@ impl McpClient {
         if matches!(guard.as_ref(), Some(McpClientInner::Stdio(_))) {
             if protocol_mode.is_legacy() {
                 let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-                if guard
-                    .as_mut()
-                    .expect("checked stdio client")
-                    .request(id, "shutdown", None, &protocol_mode, &[])
-                    .await
-                    .is_err()
+                if let Some(McpClientInner::Stdio(stdio)) = guard.as_ref()
+                    && let Err(error) = stdio.shutdown_protocol(id, &protocol_mode).await
                 {
-                    tracing::debug!("MCP stdio shutdown request failed");
-                }
-                if guard
-                    .as_mut()
-                    .expect("checked stdio client")
-                    .notify("exit", None, &protocol_mode)
-                    .await
-                    .is_err()
-                {
-                    tracing::debug!("MCP stdio exit notification failed");
+                    tracing::debug!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "MCP stdio graceful shutdown exchange failed"
+                    );
                 }
             }
-            if let Some(McpClientInner::Stdio(s)) = guard.as_mut()
-                && s.start_kill().await.is_err()
-            {
-                tracing::debug!("MCP stdio child kill failed");
-            }
-            if let Some(McpClientInner::Stdio(s)) = guard.as_mut()
-                && s.wait().await.is_err()
-            {
-                tracing::debug!("MCP stdio child wait failed");
+            if let Some(McpClientInner::Stdio(stdio)) = guard.as_mut() {
+                if let Err(error) = stdio.close_stdin().await {
+                    tracing::debug!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "MCP stdio stdin did not close cleanly"
+                    );
+                }
+
+                let exited = match stdio.bounded_exit_wait().await {
+                    Ok(exited) => exited,
+                    Err(error) => {
+                        tracing::debug!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "MCP stdio graceful process wait failed"
+                        );
+                        false
+                    }
+                };
+                if !exited {
+                    if let Err(error) = stdio.start_kill().await {
+                        tracing::debug!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "MCP stdio process termination request failed"
+                        );
+                    }
+                    match stdio.bounded_kill_wait().await {
+                        Ok(true) => {}
+                        Ok(false) => tracing::warn!(
+                            server = %self.name,
+                            "MCP stdio process did not exit within the bounded termination wait"
+                        ),
+                        Err(error) => tracing::warn!(
+                            server = %self.name,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "MCP stdio process wait failed after termination"
+                        ),
+                    }
+                }
             }
         }
         *guard = None;
