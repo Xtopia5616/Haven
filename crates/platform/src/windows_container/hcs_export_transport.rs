@@ -1,6 +1,8 @@
 //! Broker-private bounded VHDX transport volume for HCS layer export.
 
-use super::scratch_vhd::{BoundedScratchVhd, OwnedVhdHandle};
+use super::scratch_vhd::{
+    BoundedScratchVhd, OwnedVhdHandle, open_vhd_for_info, query_virtual_size, validate_capacity,
+};
 use crate::filesystem::DirectoryCapability;
 use crate::windows_container::execution::broker_workspace::BrokerWorkspaceAttempt;
 use std::ffi::OsStr;
@@ -26,16 +28,79 @@ use windows_sys::Win32::Storage::Vhd::{
 use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
-#[expect(
-    dead_code,
-    reason = "the bounded transport is connected after HCS runtime acceptance"
-)]
 const EXPORT_TRANSPORT_DIRECTORY: &str = "export";
-#[expect(
-    dead_code,
-    reason = "the bounded transport is connected after HCS runtime acceptance"
-)]
 const MAX_HCS_VOLUME_PATH_UNITS: usize = 512;
+
+/// Reopen the service-owned backing VHDX in the helper and prove that its
+/// current maximum capacity and HCS volume identity match the request before
+/// allowing HCS to write into the export directory.
+pub(super) fn open_verified_export_directory(
+    vhdx_path: &Path,
+    export_path: &Path,
+    capacity_bytes: u64,
+) -> io::Result<(DirectoryCapability, DirectoryCapability)> {
+    validate_capacity(capacity_bytes)?;
+    if vhdx_path.file_name() != Some(OsStr::new("sandbox.vhdx")) {
+        return Err(invalid_transport_data(
+            "HCS transport backing file has an unexpected name",
+        ));
+    }
+    let parent_path = vhdx_path.parent().ok_or_else(|| {
+        invalid_transport_data("HCS transport backing file has no parent directory")
+    })?;
+    let parent = DirectoryCapability::open(parent_path)?;
+    let file_name = vhdx_path
+        .file_name()
+        .ok_or_else(|| invalid_transport_data("HCS transport backing file has no name"))?;
+    let vhdx = parent.open_read(Path::new(file_name))?;
+    let metadata = vhdx.metadata()?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(invalid_transport_data(
+            "HCS transport backing file is not a regular VHDX",
+        ));
+    }
+
+    let disk = open_vhd_for_info(vhdx_path)?;
+    if query_virtual_size(disk.raw())? != capacity_bytes {
+        return Err(invalid_transport_data(
+            "HCS transport VHDX capacity does not match the requested limit",
+        ));
+    }
+    let volume_root = get_layer_vhd_mount_path(disk.raw())?;
+    if !is_export_path_for_volume(&volume_root, export_path) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "HCS export directory does not belong to the requested transport VHDX",
+        ));
+    }
+
+    let export_directory =
+        DirectoryCapability::open_hcs_volume_child(&volume_root, EXPORT_TRANSPORT_DIRECTORY)?;
+    Ok((export_directory, parent))
+}
+
+fn normalized_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+fn is_export_path_for_volume(volume_root: &Path, export_path: &Path) -> bool {
+    crate::filesystem::is_canonical_hcs_volume_root(volume_root)
+        && normalized_path(&volume_root.join(EXPORT_TRANSPORT_DIRECTORY))
+            == normalized_path(export_path)
+}
+
+pub(super) fn is_canonical_export_transport_path(export_path: &Path) -> bool {
+    export_path
+        .parent()
+        .is_some_and(|volume_root| is_export_path_for_volume(volume_root, export_path))
+}
+
+fn invalid_transport_data(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
 
 /// Owns a per-attempt, capacity-bounded HCS-formatted volume for synchronous
 /// layer export. The VHDX stays attached with permanent lifetime until
@@ -316,10 +381,6 @@ impl Drop for AttachedVhd {
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "the bounded transport is connected after HCS runtime acceptance"
-)]
 fn get_layer_vhd_mount_path(handle: HANDLE) -> io::Result<PathBuf> {
     let library_name = wide_null(OsStr::new("computestorage.dll"))?;
     // SAFETY: the System32-only load path is a terminated constant and flags
@@ -453,10 +514,6 @@ fn secure_export_directory(path: &Path) -> io::Result<()> {
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "the bounded transport is connected after HCS runtime acceptance"
-)]
 struct OwnedLocalWideString(*mut u16);
 
 impl Drop for OwnedLocalWideString {
@@ -498,4 +555,33 @@ fn wide_null(value: &OsStr) -> io::Result<Vec<u16>> {
     }
     wide.push(0);
     Ok(wide)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_export_path_for_volume;
+    use std::path::Path;
+
+    const VOLUME_ROOT: &str = r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\";
+
+    #[test]
+    fn export_path_must_be_the_direct_child_of_its_backing_volume() {
+        let volume_root = Path::new(VOLUME_ROOT);
+        assert!(is_export_path_for_volume(
+            volume_root,
+            Path::new(r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\EXPORT")
+        ));
+        assert!(!is_export_path_for_volume(
+            volume_root,
+            Path::new(r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\export\nested")
+        ));
+        assert!(!is_export_path_for_volume(
+            volume_root,
+            Path::new(r"\\?\Volume{fedcba98-7654-3210-fedc-ba9876543210}\export")
+        ));
+        assert!(!is_export_path_for_volume(
+            Path::new(r"C:\"),
+            Path::new(r"C:\export")
+        ));
+    }
 }

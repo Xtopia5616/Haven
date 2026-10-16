@@ -6,6 +6,7 @@
 //! accepts the known legacy `Files` transport layout.
 
 use super::WindowsContainerSandboxConfig;
+use super::hcs_export_transport::BoundedHcsExportTransport;
 #[cfg(test)]
 use super::hcs_layer_output::{HcsLayerOutputSummary, extract_workspace_output};
 use super::hcs_runtime::HcsStoppedComputeSystem;
@@ -25,7 +26,7 @@ use windows_sys::Win32::System::LibraryLoader::{
 };
 
 const WRITABLE_VHDX_NAME: &str = "sandbox.vhdx";
-const EXPORT_WORKER_PROTOCOL_VERSION: u16 = 1;
+const EXPORT_WORKER_PROTOCOL_VERSION: u16 = 2;
 const MAX_EXPORT_WORKER_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_EXPORT_WORKER_PATH_BYTES: usize = 32 * 1024;
 const MAX_EXPORT_WORKER_PARENT_LAYERS: usize = 64;
@@ -44,7 +45,7 @@ fn export_stopped_workspace_output(
     mut is_cancelled: impl FnMut() -> bool,
 ) -> io::Result<HcsLayerOutputSummary> {
     check_cancelled(&mut is_cancelled)?;
-    let plan = HcsLayerExportPlan::new(stopped_system, config, transport, destination)?;
+    let plan = HcsLayerExportPlan::new_for_test(stopped_system, config, transport, destination)?;
     check_cancelled(&mut is_cancelled)?;
     exporter.export_stopped_writable_layer(&plan)?;
     check_cancelled(&mut is_cancelled)?;
@@ -61,8 +62,11 @@ pub(super) trait HcsLayerExporter {
 pub(super) struct HcsLayerExportPlan {
     _writable_layer: DirectoryCapability,
     _parent_layers: Vec<DirectoryCapability>,
+    _transport_vhdx_parent: Option<DirectoryCapability>,
     writable_layer_path: PathBuf,
     export_folder_path: PathBuf,
+    transport_vhdx_path: Option<PathBuf>,
+    transport_capacity_bytes: Option<u64>,
     layer_data_json: String,
     options_json: String,
 }
@@ -77,10 +81,21 @@ impl HcsLayerExportPlan {
             .export_folder_path
             .to_str()
             .ok_or_else(|| invalid_data("HCS export folder path is not valid Unicode"))?;
+        let transport_vhdx_path = self
+            .transport_vhdx_path
+            .as_deref()
+            .map(|path| {
+                path.to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| invalid_data("HCS transport VHDX path is not valid Unicode"))
+            })
+            .transpose()?;
         let request = HcsLayerExportWorkerRequest {
             version: EXPORT_WORKER_PROTOCOL_VERSION,
             writable_layer_path: writable_layer_path.to_owned(),
             export_folder_path: export_folder_path.to_owned(),
+            transport_vhdx_path,
+            transport_capacity_bytes: self.transport_capacity_bytes,
             layer_data_json: self.layer_data_json.clone(),
         };
         let bytes = serde_json::to_vec(&request)
@@ -93,12 +108,67 @@ impl HcsLayerExportPlan {
         Ok(bytes)
     }
 
+    #[expect(
+        dead_code,
+        reason = "the bounded transport plan is connected after HCS runtime acceptance"
+    )]
     pub(super) fn new(
+        stopped_system: &HcsStoppedComputeSystem,
+        config: &WindowsContainerSandboxConfig,
+        transport: &BoundedHcsExportTransport,
+        destination: &DirectoryCapability,
+    ) -> io::Result<Self> {
+        Self::new_with_transport(
+            stopped_system,
+            config,
+            transport.directory()?,
+            Some(transport.vhdx_path()?),
+            Some(transport.maximum_size_bytes()?),
+            destination,
+        )
+    }
+
+    #[cfg(test)]
+    fn new_for_test(
         stopped_system: &HcsStoppedComputeSystem,
         config: &WindowsContainerSandboxConfig,
         transport: &DirectoryCapability,
         destination: &DirectoryCapability,
     ) -> io::Result<Self> {
+        Self::new_with_transport(stopped_system, config, transport, None, None, destination)
+    }
+
+    fn new_with_transport(
+        stopped_system: &HcsStoppedComputeSystem,
+        config: &WindowsContainerSandboxConfig,
+        transport: &DirectoryCapability,
+        transport_vhdx_path: Option<PathBuf>,
+        transport_capacity_bytes: Option<u64>,
+        destination: &DirectoryCapability,
+    ) -> io::Result<Self> {
+        if transport_vhdx_path.is_some() != transport_capacity_bytes.is_some() {
+            return Err(invalid_input(
+                "HCS transport backing path and capacity must be provided together",
+            ));
+        }
+        let transport_vhdx_parent = if let Some(vhdx_path) = &transport_vhdx_path {
+            validate_local_absolute_path(vhdx_path, "transport VHDX path")?;
+            let parent_path = vhdx_path
+                .parent()
+                .ok_or_else(|| invalid_input("HCS transport VHDX path has no parent directory"))?;
+            let parent = DirectoryCapability::open(parent_path)?;
+            let file_name = vhdx_path
+                .file_name()
+                .ok_or_else(|| invalid_input("HCS transport VHDX path has no file name"))?;
+            let vhdx = parent.open_read(Path::new(file_name))?;
+            let metadata = vhdx.metadata()?;
+            if !metadata.is_file() || metadata.len() == 0 {
+                return Err(invalid_data("HCS transport VHDX is invalid"));
+            }
+            Some(parent)
+        } else {
+            None
+        };
         if config.layers.is_empty() || config.layers.len() > MAX_EXPORT_WORKER_PARENT_LAYERS {
             return Err(invalid_input(
                 "HCS parent layer count is outside the worker limit",
@@ -145,6 +215,9 @@ impl HcsLayerExportPlan {
             transport_path.clone(),
             destination_path,
         ];
+        if let Some(transport_vhdx_parent) = &transport_vhdx_parent {
+            roots.push(transport_vhdx_parent.root().to_path_buf());
+        }
         let mut seen_layer_ids = HashSet::new();
         let mut parent_layers = Vec::with_capacity(config.layers.len());
         let mut parent_capabilities = Vec::with_capacity(config.layers.len());
@@ -169,8 +242,11 @@ impl HcsLayerExportPlan {
         Ok(Self {
             _writable_layer: writable_layer,
             _parent_layers: parent_capabilities,
+            _transport_vhdx_parent: transport_vhdx_parent,
             writable_layer_path,
             export_folder_path: transport_path,
+            transport_vhdx_path,
+            transport_capacity_bytes,
             layer_data_json,
             options_json,
         })
@@ -183,6 +259,8 @@ struct HcsLayerExportWorkerRequest {
     version: u16,
     writable_layer_path: String,
     export_folder_path: String,
+    transport_vhdx_path: Option<String>,
+    transport_capacity_bytes: Option<u64>,
     layer_data_json: String,
 }
 
@@ -242,7 +320,10 @@ impl HcsLayerExportPlan {
             ));
         }
         validate_worker_path(&request.writable_layer_path, "writable layer path")?;
+        #[cfg(test)]
         validate_worker_path(&request.export_folder_path, "export folder path")?;
+        #[cfg(not(test))]
+        validate_hcs_export_folder_path(&request.export_folder_path)?;
         if request.layer_data_json.len() > MAX_EXPORT_WORKER_REQUEST_BYTES {
             return Err(invalid_data("HCS parent layer data exceeds its limit"));
         }
@@ -253,7 +334,31 @@ impl HcsLayerExportPlan {
         if !writable_vhdx_metadata.is_file() || writable_vhdx_metadata.len() == 0 {
             return Err(invalid_data("HCS writable layer VHDX is invalid"));
         }
-        let export_folder = DirectoryCapability::open(Path::new(&request.export_folder_path))?;
+        let (export_folder, transport_vhdx_parent) = match (
+            request.transport_vhdx_path.as_deref(),
+            request.transport_capacity_bytes,
+        ) {
+            (Some(vhdx_path), Some(capacity_bytes)) => {
+                validate_worker_path(vhdx_path, "transport VHDX path")?;
+                let (export_folder, transport_vhdx_parent) =
+                    super::hcs_export_transport::open_verified_export_directory(
+                        Path::new(vhdx_path),
+                        Path::new(&request.export_folder_path),
+                        capacity_bytes,
+                    )?;
+                (export_folder, Some(transport_vhdx_parent))
+            }
+            #[cfg(test)]
+            (None, None) => (
+                DirectoryCapability::open(Path::new(&request.export_folder_path))?,
+                None,
+            ),
+            _ => {
+                return Err(invalid_data(
+                    "HCS export worker requires a bounded transport VHDX and capacity",
+                ));
+            }
+        };
         if !export_folder.entries(1)?.is_empty() {
             return Err(invalid_input("HCS export folder must be empty"));
         }
@@ -268,6 +373,9 @@ impl HcsLayerExportPlan {
             writable_layer.root().to_path_buf(),
             export_folder.root().to_path_buf(),
         ];
+        if let Some(transport_vhdx_parent) = &transport_vhdx_parent {
+            roots.push(transport_vhdx_parent.root().to_path_buf());
+        }
         let mut seen_layer_ids = HashSet::new();
         let mut parent_layers = Vec::with_capacity(layer_data.layers.len());
         let mut parent_capabilities = Vec::with_capacity(layer_data.layers.len());
@@ -298,8 +406,11 @@ impl HcsLayerExportPlan {
         Ok(Self {
             _writable_layer: writable_layer,
             _parent_layers: parent_capabilities,
+            _transport_vhdx_parent: transport_vhdx_parent,
             writable_layer_path,
             export_folder_path,
+            transport_vhdx_path: request.transport_vhdx_path.map(PathBuf::from),
+            transport_capacity_bytes: request.transport_capacity_bytes,
             layer_data_json,
             options_json,
         })
@@ -311,6 +422,30 @@ fn validate_worker_path(path: &str, description: &str) -> io::Result<()> {
         return Err(invalid_data("HCS export worker path exceeds its limit"));
     }
     validate_local_absolute_path(Path::new(path), description)
+}
+
+fn validate_hcs_export_folder_path(path: &str) -> io::Result<()> {
+    if path.len() > MAX_EXPORT_WORKER_PATH_BYTES {
+        return Err(invalid_data("HCS export worker path exceeds its limit"));
+    }
+    let path = Path::new(path);
+    if !path.is_absolute()
+        || path
+            .to_str()
+            .is_none_or(|value| value.chars().any(char::is_control))
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+        || !super::hcs_export_transport::is_canonical_export_transport_path(path)
+    {
+        return Err(invalid_data(
+            "HCS export folder must be the fixed child of a canonical volume GUID root",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -582,7 +717,7 @@ mod tests {
     fn worker_request_round_trips_only_the_validated_export_plan() {
         let fixture = Fixture::new();
         let (transport, destination) = fixture.capabilities();
-        let plan = HcsLayerExportPlan::new(
+        let plan = HcsLayerExportPlan::new_for_test(
             &fixture.stopped_system(),
             &fixture.config,
             &transport,
@@ -603,7 +738,7 @@ mod tests {
     fn worker_request_rejects_trailing_data_and_unsupported_version() {
         let fixture = Fixture::new();
         let (transport, destination) = fixture.capabilities();
-        let plan = HcsLayerExportPlan::new(
+        let plan = HcsLayerExportPlan::new_for_test(
             &fixture.stopped_system(),
             &fixture.config,
             &transport,
@@ -634,6 +769,39 @@ mod tests {
     }
 
     #[test]
+    fn worker_request_rejects_unpaired_transport_identity() {
+        let fixture = Fixture::new();
+        let (transport, destination) = fixture.capabilities();
+        let plan = HcsLayerExportPlan::new_for_test(
+            &fixture.stopped_system(),
+            &fixture.config,
+            &transport,
+            &destination,
+        )
+        .unwrap();
+        let mut request: HcsLayerExportWorkerRequest =
+            serde_json::from_slice(&plan.encode_worker_request().unwrap()).unwrap();
+        request.transport_capacity_bytes = Some(3 * 1024 * 1024);
+        let bytes = serde_json::to_vec(&request).unwrap();
+
+        assert_eq!(
+            decode_worker_request(&mut std::io::Cursor::new(worker_frame(&bytes)))
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn production_export_folder_validation_accepts_only_a_volume_child() {
+        let volume_root = r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\";
+        assert!(validate_hcs_export_folder_path(&format!("{volume_root}export")).is_ok());
+        assert!(validate_hcs_export_folder_path(&format!("{volume_root}export\\nested")).is_err());
+        assert!(validate_hcs_export_folder_path(r"C:\temp\export").is_err());
+    }
+
+    #[test]
     fn worker_request_rejects_oversize_and_overlapping_layer_roots() {
         let oversized_length = u32::try_from(MAX_EXPORT_WORKER_REQUEST_BYTES + 1)
             .unwrap()
@@ -648,7 +816,7 @@ mod tests {
 
         let fixture = Fixture::new();
         let (transport, destination) = fixture.capabilities();
-        let plan = HcsLayerExportPlan::new(
+        let plan = HcsLayerExportPlan::new_for_test(
             &fixture.stopped_system(),
             &fixture.config,
             &transport,

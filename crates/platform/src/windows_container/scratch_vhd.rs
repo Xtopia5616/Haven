@@ -198,7 +198,7 @@ impl Drop for BoundedScratchVhd {
     }
 }
 
-fn validate_capacity(maximum_size_bytes: u64) -> io::Result<()> {
+pub(super) fn validate_capacity(maximum_size_bytes: u64) -> io::Result<()> {
     if !(MINIMUM_VHDX_CAPACITY_BYTES..=MAXIMUM_SCRATCH_CAPACITY_BYTES).contains(&maximum_size_bytes)
         || !maximum_size_bytes.is_multiple_of(u64::from(VHDX_SECTOR_SIZE_BYTES))
     {
@@ -231,7 +231,7 @@ fn create_parameters(maximum_size_bytes: u64) -> CREATE_VIRTUAL_DISK_PARAMETERS 
     }
 }
 
-fn query_virtual_size(handle: HANDLE) -> io::Result<u64> {
+pub(super) fn query_virtual_size(handle: HANDLE) -> io::Result<u64> {
     let mut information = GET_VIRTUAL_DISK_INFO {
         Version: GET_VIRTUAL_DISK_INFO_SIZE,
         Anonymous: GET_VIRTUAL_DISK_INFO_0 {
@@ -258,6 +258,43 @@ fn query_virtual_size(handle: HANDLE) -> io::Result<u64> {
         ));
     }
     Ok(unsafe { information.Anonymous.Size.VirtualSize })
+}
+
+pub(super) fn open_vhd_for_info(path: &Path) -> io::Result<OwnedVhdHandle> {
+    use windows_sys::Win32::Storage::Vhd::{
+        OPEN_VIRTUAL_DISK_FLAG_NONE, OPEN_VIRTUAL_DISK_PARAMETERS, OPEN_VIRTUAL_DISK_PARAMETERS_0,
+        OPEN_VIRTUAL_DISK_PARAMETERS_0_0, OPEN_VIRTUAL_DISK_VERSION_1, OpenVirtualDisk,
+        VIRTUAL_DISK_ACCESS_GET_INFO,
+    };
+
+    let wide_path = wide_null(path.as_os_str())?;
+    let storage_type = VIRTUAL_STORAGE_TYPE {
+        DeviceId: VIRTUAL_STORAGE_TYPE_DEVICE_VHDX,
+        VendorId: VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT,
+    };
+    let parameters = OPEN_VIRTUAL_DISK_PARAMETERS {
+        Version: OPEN_VIRTUAL_DISK_VERSION_1,
+        Anonymous: OPEN_VIRTUAL_DISK_PARAMETERS_0 {
+            Version1: OPEN_VIRTUAL_DISK_PARAMETERS_0_0 { RWDepth: 1 },
+        },
+    };
+    let mut raw_handle: HANDLE = std::ptr::null_mut();
+    // SAFETY: all input structures and the terminated path remain valid for
+    // the synchronous open call, and the output handle is initialized.
+    let result = unsafe {
+        OpenVirtualDisk(
+            &storage_type,
+            wide_path.as_ptr(),
+            VIRTUAL_DISK_ACCESS_GET_INFO,
+            OPEN_VIRTUAL_DISK_FLAG_NONE,
+            &parameters,
+            &mut raw_handle,
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    OwnedVhdHandle::new(raw_handle)
 }
 
 fn format_writable_layer_vhd(handle: HANDLE) -> io::Result<()> {
