@@ -250,7 +250,6 @@ impl HcsGuestProcessParameters {
     /// Build a fixed Node invocation for one administrator-pinned MCP package.
     /// The process receives no workspace mapping, ambient environment, or
     /// caller-selected executable/arguments.
-    #[allow(dead_code)] // Consumed when the brokered MCP session owner is wired.
     pub(super) fn from_mcp_package(
         package_proof: &super::execution::McpNodePackageProof,
     ) -> io::Result<Self> {

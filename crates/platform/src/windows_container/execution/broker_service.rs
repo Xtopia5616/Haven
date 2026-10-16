@@ -39,6 +39,7 @@ use windows_sys::Win32::System::Services::{
 use windows_sys::Win32::System::Threading::{ResetEvent, SetEvent, WaitForSingleObject};
 use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath};
 
+use super::broker_mcp_session::{McpSessionDisposition, PendingMcpSession};
 use super::broker_protocol::{
     BrokerControlMessage, BrokerExecutionGateStatus, BrokerExecutionTarget, BrokerFailureCode,
     BrokerFrame, BrokerMcpNodeRuntimeStatus, BrokerQuotaGateStatus, BrokerSkillPythonRuntimeStatus,
@@ -550,15 +551,33 @@ fn run_service_listener_loop(
 
         loop {
             let outcome = match listener.accept(cancellation) {
-                Ok(mut connection) => serve_authenticated_connection(
-                    &mut connection,
-                    workspace_root,
-                    quota_attestation,
-                ),
+                Ok(mut connection) => {
+                    let outcome = serve_authenticated_connection(
+                        &mut connection,
+                        workspace_root,
+                        quota_attestation,
+                    );
+                    drop(connection);
+                    outcome
+                }
                 Err(error) => Err(error),
             };
             match outcome {
-                Ok(()) => {}
+                Ok(AuthenticatedRequestOutcome::Complete) => {}
+                Ok(AuthenticatedRequestOutcome::McpSession(pending)) => {
+                    match super::broker_mcp_session::serve_pending(
+                        *pending,
+                        &mut listener,
+                        cancellation,
+                        workspace_root,
+                        quota_attestation,
+                        || consume_mcp_session_control_signal(cancellation),
+                    )? {
+                        McpSessionDisposition::Continue => {}
+                        McpSessionDisposition::RefreshPeer => break,
+                        McpSessionDisposition::StopService => return Ok(()),
+                    }
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {
                     match consume_control_signal(cancellation)? {
                         CONTROL_SIGNAL_STOP => return Ok(()),
@@ -584,7 +603,7 @@ fn serve_authenticated_connection(
     connection: &mut super::named_pipe::BrokerPipeConnection<'_>,
     workspace_root: &BrokerWorkspaceScratchRoot,
     quota_attestation: Option<&QuotaRuntimeAttestation>,
-) -> io::Result<()> {
+) -> io::Result<AuthenticatedRequestOutcome> {
     let request_message = connection
         .read_frame(Duration::from_secs(5))?
         .decode_control();
@@ -598,15 +617,28 @@ fn serve_authenticated_connection(
                 .read_frame(Duration::from_secs(5))?
                 .decode_control()?
             {
-                BrokerControlMessage::ExecutionGateStatusAcknowledged => Ok(()),
+                BrokerControlMessage::ExecutionGateStatusAcknowledged => {
+                    Ok(AuthenticatedRequestOutcome::Complete)
+                }
                 _ => Err(invalid_data(
                     "broker execution gate status was not acknowledged",
                 )),
             };
         }
+        Ok(BrokerControlMessage::McpSessionOpen { request }) => {
+            return match super::broker_mcp_session::prepare_open(
+                connection,
+                request,
+                quota_attestation,
+            )? {
+                Some(pending) => Ok(AuthenticatedRequestOutcome::McpSession(Box::new(pending))),
+                None => Ok(AuthenticatedRequestOutcome::Complete),
+            };
+        }
         Ok(BrokerControlMessage::Execute { request }) => request,
         _ => {
-            return write_broker_failure(connection, None, BrokerFailureCode::InvalidRequest);
+            write_broker_failure(connection, None, BrokerFailureCode::InvalidRequest)?;
+            return Ok(AuthenticatedRequestOutcome::Complete);
         }
     };
 
@@ -614,36 +646,42 @@ fn serve_authenticated_connection(
     let limits = match request.validate() {
         Ok(limits) => limits,
         Err(_) => {
-            return write_broker_failure(
+            write_broker_failure(
                 connection,
                 Some(request_id),
                 BrokerFailureCode::InvalidRequest,
-            );
+            )?;
+            return Ok(AuthenticatedRequestOutcome::Complete);
         }
     };
     let attestation =
         match quota_runtime_attestation(quota_attestation, limits.storage_quota_bytes()) {
             Ok(attestation) => attestation,
-            Err(code) => return write_broker_failure(connection, Some(request_id), code),
+            Err(code) => {
+                write_broker_failure(connection, Some(request_id), code)?;
+                return Ok(AuthenticatedRequestOutcome::Complete);
+            }
         };
     if matches!(&request.target, BrokerExecutionTarget::Skill { .. })
         && !attestation.skill_python_runtime_attested()
     {
-        return write_broker_failure(
+        write_broker_failure(
             connection,
             Some(request_id),
             BrokerFailureCode::SkillRuntimeUnattested,
-        );
+        )?;
+        return Ok(AuthenticatedRequestOutcome::Complete);
     }
 
     let mut attempt = match workspace_root.create_attempt() {
         Ok(attempt) => attempt,
         Err(_) => {
-            return write_broker_failure(
+            write_broker_failure(
                 connection,
                 Some(request_id),
                 BrokerFailureCode::StagingFailed,
-            );
+            )?;
+            return Ok(AuthenticatedRequestOutcome::Complete);
         }
     };
     let deadline = Instant::now()
@@ -653,7 +691,7 @@ fn serve_authenticated_connection(
         Ok(input) => input,
         Err(code) => {
             let cleanup_succeeded = attempt.cleanup().is_ok();
-            return write_broker_failure(
+            write_broker_failure(
                 connection,
                 Some(request_id),
                 if cleanup_succeeded {
@@ -661,7 +699,8 @@ fn serve_authenticated_connection(
                 } else {
                     BrokerFailureCode::CleanupFailed
                 },
-            );
+            )?;
+            return Ok(AuthenticatedRequestOutcome::Complete);
         }
     };
     let ready = BrokerControlMessage::WorkspaceSnapshotRequested { request_id };
@@ -690,7 +729,8 @@ fn serve_authenticated_connection(
                     _ => BrokerFailureCode::StagingFailed,
                 }
             };
-            return write_broker_failure(connection, Some(request_id), code);
+            write_broker_failure(connection, Some(request_id), code)?;
+            return Ok(AuthenticatedRequestOutcome::Complete);
         }
     };
     drop(snapshot);
@@ -706,6 +746,31 @@ fn serve_authenticated_connection(
             deadline,
         },
     )
+    .map(|()| AuthenticatedRequestOutcome::Complete)
+}
+
+enum AuthenticatedRequestOutcome {
+    Complete,
+    McpSession(Box<PendingMcpSession>),
+}
+
+pub(super) enum McpSessionControlSignal {
+    None,
+    RefreshPeer,
+    StopService,
+}
+
+fn consume_mcp_session_control_signal(
+    cancellation: &BrokerPipeCancellation,
+) -> io::Result<McpSessionControlSignal> {
+    match consume_control_signal(cancellation)? {
+        CONTROL_SIGNAL_NONE => Ok(McpSessionControlSignal::None),
+        CONTROL_SIGNAL_SESSION_CHANGE => Ok(McpSessionControlSignal::RefreshPeer),
+        CONTROL_SIGNAL_STOP => Ok(McpSessionControlSignal::StopService),
+        _ => Err(invalid_data(
+            "broker service received an unknown control signal",
+        )),
+    }
 }
 
 fn receive_skill_input(
@@ -794,7 +859,7 @@ fn receive_skill_input(
 
 /// Keep the quota gate ahead of staging allocation and workspace bytes. Only
 /// the broker's private runtime proof can authorize its exact measured value.
-fn quota_runtime_attestation(
+pub(super) fn quota_runtime_attestation(
     attestation: Option<&QuotaRuntimeAttestation>,
     requested_quota_bytes: u64,
 ) -> Result<&QuotaRuntimeAttestation, BrokerFailureCode> {
@@ -805,7 +870,7 @@ fn quota_runtime_attestation(
     Ok(attestation)
 }
 
-fn execution_gate_status(
+pub(super) fn execution_gate_status(
     attestation: Option<&QuotaRuntimeAttestation>,
 ) -> BrokerExecutionGateStatus {
     let Some(attestation) = attestation else {
@@ -854,7 +919,7 @@ fn execution_gate_status_from_evidence(
     }
 }
 
-fn write_broker_failure(
+pub(super) fn write_broker_failure(
     connection: &mut super::named_pipe::BrokerPipeConnection<'_>,
     request_id: Option<[u8; 16]>,
     code: BrokerFailureCode,

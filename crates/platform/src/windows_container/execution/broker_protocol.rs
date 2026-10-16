@@ -22,7 +22,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 9;
+pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 10;
 pub(crate) const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
 const MAX_BINARY_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_MCP_SESSION_CHUNK_BYTES: usize = 16 * 1024;
@@ -203,7 +203,9 @@ pub(crate) enum BrokerControlMessage {
     },
     McpSessionExited {
         session_id: [u8; 16],
-        exit_code: u32,
+        /// `None` means the client/service stopped the generation before HCS
+        /// reported a natural process exit.
+        exit_code: Option<u32>,
     },
     Execute {
         request: BrokerExecutionRequest,
@@ -488,7 +490,7 @@ pub(crate) struct BrokerMcpSessionOpenRequest {
 }
 
 impl BrokerMcpSessionOpenRequest {
-    fn validate(&self) -> io::Result<()> {
+    pub(crate) fn validate(&self) -> io::Result<()> {
         if self.request_id.iter().all(|byte| *byte == 0)
             || !is_valid_mcp_package_id(&self.package_id)
         {
@@ -591,6 +593,7 @@ pub(crate) enum BrokerFailureCode {
     TimedOut,
     QuotaUnattested,
     SkillRuntimeUnattested,
+    McpPackageUnattested,
     StagingFailed,
     HcsFailed,
     CleanupFailed,
@@ -1049,7 +1052,11 @@ mod tests {
             BrokerControlMessage::McpSessionStop { session_id },
             BrokerControlMessage::McpSessionExited {
                 session_id,
-                exit_code: 17,
+                exit_code: Some(17),
+            },
+            BrokerControlMessage::McpSessionExited {
+                session_id,
+                exit_code: None,
             },
         ];
 

@@ -1272,3 +1272,4 @@
 - [1282：组合有界 HCS guest stdio session owner](1282-compose-bounded-hcs-stdio-session-owner.md)
 - [1283：拥有 brokered MCP HCS generation 生命周期](1283-own-brokered-mcp-hcs-generation.md)
 - [1284：允许 MCP session supervisor 有界轮询 broker control pipe](1284-poll-broker-control-pipe-during-mcp-session.md)
+- [1285：在 broker service 中监督 MCP generation](1285-supervise-brokered-mcp-generations.md)

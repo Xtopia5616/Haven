@@ -259,7 +259,6 @@ impl BrokerPipeListener {
 
     /// Create an authenticated single-instance pipe for one broker-minted
     /// MCP generation. The ID is never accepted from the interactive client.
-    #[allow(dead_code)] // Consumed by the supervised broker MCP session owner.
     pub(crate) fn new_mcp_session(
         policy: BrokerPeerPolicy,
         session_id: [u8; 16],
@@ -323,7 +322,6 @@ impl BrokerPipeListener {
     /// Poll for a client with a bounded connect wait, then perform the normal
     /// independent Hello and peer-authentication deadlines. The service can
     /// use this between HCS session polls to keep its control pipe responsive.
-    #[allow(dead_code)] // Used by the supervised broker MCP event loop.
     pub(crate) fn accept_with_timeout<'a>(
         &'a mut self,
         cancellation: &'a BrokerPipeCancellation,
@@ -362,7 +360,6 @@ impl BrokerPipeListener {
 
     /// Accept only the attach that matches this listener's broker-minted
     /// session ID and the control-pipe request that created it.
-    #[allow(dead_code)] // Consumed by the supervised broker MCP session owner.
     pub(crate) fn accept_mcp_session<'a>(
         &'a mut self,
         cancellation: &'a BrokerPipeCancellation,
@@ -440,7 +437,6 @@ impl BrokerPipeConnection<'_> {
 
     /// Create an independent MCP session listener under the same interactive
     /// logon policy as this authenticated control-pipe peer.
-    #[allow(dead_code)] // Consumed by the broker's MCP open handler.
     pub(crate) fn new_mcp_session_listener(
         &self,
         session_id: [u8; 16],
@@ -701,6 +697,51 @@ impl Drop for BrokerPipeClient {
     fn drop(&mut self) {
         unsafe { CloseHandle(self.handle) };
     }
+}
+
+#[cfg(test)]
+static NEXT_SHARED_TEST_PIPE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+#[cfg(test)]
+pub(super) fn test_control_pipe() -> io::Result<(BrokerPipeListener, String)> {
+    let current = current_process_identity()?;
+    let policy = BrokerPeerPolicy::new(
+        current.user_sid.clone(),
+        current.logon_sid,
+        current.session_id,
+        current.user_sid,
+    )?;
+    let name = format!(
+        r"\\.\pipe\Haven.ContainerBroker.SharedTest.{}.{}",
+        unsafe { windows_sys::Win32::System::Threading::GetCurrentProcessId() },
+        NEXT_SHARED_TEST_PIPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    Ok((BrokerPipeListener::create(&name, policy)?, name))
+}
+
+#[cfg(test)]
+pub(super) fn test_mcp_session_listener(session_id: [u8; 16]) -> io::Result<BrokerPipeListener> {
+    let current = current_process_identity()?;
+    let policy = BrokerPeerPolicy::new(
+        current.user_sid.clone(),
+        current.logon_sid,
+        current.session_id,
+        current.user_sid,
+    )?;
+    BrokerPipeListener::create_mcp_session(policy, session_id)
+}
+
+#[cfg(test)]
+pub(super) fn test_connect_mcp_session(
+    session_id: [u8; 16],
+    request_id: [u8; 16],
+) -> io::Result<BrokerPipeClient> {
+    BrokerPipeClient::connect_mcp_session_for_test(session_id, request_id, session_id)
+}
+
+#[cfg(test)]
+pub(super) fn test_connect_control_pipe(name: &str) -> io::Result<BrokerPipeClient> {
+    BrokerPipeClient::connect_for_test(name)
 }
 
 struct OwnedHandle(HANDLE);

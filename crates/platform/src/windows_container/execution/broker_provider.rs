@@ -236,6 +236,10 @@ fn map_broker_failure(code: BrokerFailureCode) -> io::Error {
             io::ErrorKind::PermissionDenied,
             "container Skill Python runtime is not verified",
         ),
+        BrokerFailureCode::McpPackageUnattested => (
+            io::ErrorKind::PermissionDenied,
+            "container MCP package runtime is not verified",
+        ),
         BrokerFailureCode::StagingFailed => {
             (io::ErrorKind::Other, "container workspace staging failed")
         }
@@ -293,6 +297,10 @@ mod tests {
         let error = map_broker_failure(BrokerFailureCode::QuotaUnattested);
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("not verified"));
+
+        let error = map_broker_failure(BrokerFailureCode::McpPackageUnattested);
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("MCP package"));
     }
 
     #[test]

@@ -35,6 +35,9 @@ pub(crate) mod named_pipe;
 mod broker_execution;
 
 #[cfg(windows)]
+mod broker_mcp_session;
+
+#[cfg(windows)]
 mod broker_provider;
 
 #[cfg(windows)]
@@ -57,7 +60,6 @@ impl McpNodePackageProof {
 
 #[cfg(windows)]
 impl quota_attestation::QuotaRuntimeAttestation {
-    #[allow(dead_code)] // Consumed by the brokered MCP session launcher.
     pub(super) fn mcp_node_package_proof(&self, id: &str) -> Option<McpNodePackageProof> {
         if !self.mcp_node_runtime_attested() || !self.mcp_node_package_attested(id) {
             return None;

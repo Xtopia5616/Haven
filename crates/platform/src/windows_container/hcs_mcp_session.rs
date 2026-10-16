@@ -1,8 +1,8 @@
 //! Supervised lifetime for one fixed managed MCP guest process generation.
 //!
 //! This owner holds the compute system and the bounded stdio adapters on the
-//! caller's thread. The broker service still owns authorization, session-pipe
-//! relay, workspace-attempt recovery and the decision to accept a generation.
+//! caller's thread. The broker service owns package authorization, session-pipe
+//! relay, attempt recovery, and the decision to accept a generation.
 
 use super::WindowsContainerSandboxConfig;
 use super::execution::McpNodePackageProof;
@@ -16,13 +16,11 @@ use std::time::Duration;
 
 /// Owns one active HCS compute system and at most one fixed-profile MCP
 /// process. It intentionally has no host workspace input mapping.
-#[allow(dead_code)] // Connected to BrokerPipeListener by the following integration slice.
 pub(super) struct HcsMcpGuestSessionOwner<'api> {
     stdio: Option<HcsGuestProcessStdioOwner<'api>>,
     system: Option<HcsComputeSystemOwner<'api>>,
 }
 
-#[allow(dead_code)] // Connected to BrokerPipeListener by the following integration slice.
 impl<'api> HcsMcpGuestSessionOwner<'api> {
     /// Create and start a quota-configured compute system without mounting an
     /// ExecutionWorkspace. Process launch waits for the caller's attach gate.

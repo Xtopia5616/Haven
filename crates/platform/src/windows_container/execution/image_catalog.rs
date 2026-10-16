@@ -33,8 +33,6 @@ pub(crate) struct BrokerContainerImageCatalog {
     layers: Vec<WindowsContainerLayer>,
     skill_python_runtime: Option<SkillPythonRuntimeProfile>,
     mcp_node_runtime: Option<McpNodeRuntimeProfile>,
-    // Staged for the brokered MCP launcher; no execution path consumes it yet.
-    #[allow(dead_code)]
     mcp_node_packages: Vec<McpNodePackageProfile>,
 }
 
@@ -209,7 +207,6 @@ impl BrokerContainerImageCatalog {
         self.mcp_node_runtime.as_ref()
     }
 
-    #[allow(dead_code)] // Consumed when the brokered MCP launcher is wired.
     pub(crate) fn mcp_node_package(&self, id: &str) -> Option<&McpNodePackageProfile> {
         self.mcp_node_packages
             .iter()

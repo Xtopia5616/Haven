@@ -19,12 +19,10 @@ mod hcs_layer_export;
 #[cfg(windows)]
 mod hcs_layer_output;
 #[cfg(windows)]
-#[allow(dead_code)] // Broker service open/attach lifecycle is the next integration slice.
 mod hcs_mcp_session;
 #[cfg(windows)]
 mod hcs_process;
 #[cfg(windows)]
-#[allow(dead_code)] // The broker's dedicated MCP session channel is the next integration slice.
 mod hcs_process_input;
 #[cfg(windows)]
 mod hcs_process_output;
