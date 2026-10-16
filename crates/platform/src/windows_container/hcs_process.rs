@@ -87,6 +87,10 @@ pub(super) struct HcsGuestProcessParameters {
 }
 
 impl HcsGuestProcessParameters {
+    pub(super) fn creates_stdin_pipe(&self) -> bool {
+        self.document.create_std_in_pipe
+    }
+
     /// Copy the immutable input snapshot into the container's writable C:
     /// layer before executing user code. The process is fixed and never
     /// incorporates user command text.

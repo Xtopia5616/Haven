@@ -1,4 +1,4 @@
-//! Bounded ownership of one HCS guest process and its standard-output pipes.
+//! Bounded ownership of one HCS guest process and its standard I/O pipes.
 //!
 //! The broker guest runner uses this owner for process and handle cleanup.
 //! Production requests stay unavailable until writable-layer quota enforcement
@@ -22,13 +22,14 @@ pub(super) struct GuestProcessExitStatus {
     pub(super) exit_code: u32,
 }
 
-/// Owns the HCS process handle and any stdout/stderr handles not transferred
-/// to an output reader. The borrow keeps the HCS API/module and its parent
+/// Owns the HCS process handle and any standard I/O handles not transferred
+/// to stream adapters. The borrow keeps the HCS API/module and its parent
 /// compute-system owner alive for at least this process owner's lifetime.
 pub(super) struct HcsGuestProcessOwner<'a> {
     api: &'a dyn HcsApi,
     process: Option<RawGuestProcess>,
     process_id: u32,
+    stdin: Option<OwnedGuestHandle<'a>>,
     stdout: Option<OwnedGuestHandle<'a>>,
     stderr: Option<OwnedGuestHandle<'a>>,
     exit_status: Option<GuestProcessExitStatus>,
@@ -45,16 +46,22 @@ impl<'a> HcsGuestProcessOwner<'a> {
         validate_operation_timeout(operation_timeout)?;
         let json = parameters.to_json()?;
         let info = api.create_guest_process(system, &json, operation_timeout)?;
-        Self::from_process_information(api, info)
+        Self::from_process_information(api, info, parameters.creates_stdin_pipe())
     }
 
     fn from_process_information(
         api: &'a dyn HcsApi,
         info: HcsProcessInformation,
+        stdin_expected: bool,
     ) -> io::Result<Self> {
+        let stdin_shape_matches = if stdin_expected {
+            !info.stdin.is_null()
+        } else {
+            info.stdin.is_null()
+        };
         if info.process.is_null()
             || info.process_id == 0
-            || !info.stdin.is_null()
+            || !stdin_shape_matches
             || info.stdout.is_null()
             || info.stderr.is_null()
         {
@@ -68,6 +75,7 @@ impl<'a> HcsGuestProcessOwner<'a> {
             api,
             process: Some(info.process),
             process_id: info.process_id,
+            stdin: (!info.stdin.is_null()).then(|| OwnedGuestHandle::new(api, info.stdin)),
             stdout: Some(OwnedGuestHandle::new(api, info.stdout)),
             stderr: Some(OwnedGuestHandle::new(api, info.stderr)),
             exit_status: None,
@@ -127,6 +135,13 @@ impl<'a> HcsGuestProcessOwner<'a> {
     pub(super) fn take_stderr(&mut self) -> Option<OwnedGuestHandle<'a>> {
         self.stderr.take()
     }
+
+    /// Transfer the optional stdin endpoint to the future bounded MCP stream
+    /// adapter. The returned handle remains the only owner of this HCS handle.
+    #[allow(dead_code)] // Consumed when the brokered MCP stream adapter is wired.
+    pub(super) fn take_stdin(&mut self) -> Option<OwnedGuestHandle<'a>> {
+        self.stdin.take()
+    }
 }
 
 impl Drop for HcsGuestProcessOwner<'_> {
@@ -135,6 +150,7 @@ impl Drop for HcsGuestProcessOwner<'_> {
             if self.exit_status.is_none() && !self.termination_requested {
                 let _ = self.api.terminate_guest_process(process);
             }
+            drop(self.stdin.take());
             drop(self.stdout.take());
             drop(self.stderr.take());
             self.api.close_guest_process(process);
@@ -383,12 +399,13 @@ mod tests {
                 );
                 self.record("close_guest_handle");
             } else {
-                assert!(matches!(handle as usize, 3 | 4));
-                self.record(if handle as usize == 3 {
-                    "close_stdout"
-                } else {
-                    "close_stderr"
-                });
+                let name = match handle as usize {
+                    3 => "close_stdout",
+                    4 => "close_stderr",
+                    5 => "close_stdin",
+                    _ => panic!("unexpected mock guest handle"),
+                };
+                self.record(name);
             }
         }
     }
@@ -561,6 +578,80 @@ mod tests {
         );
         drop(stdout);
         assert_eq!(api.calls.lock().unwrap().last(), Some(&"close_stdout"));
+    }
+
+    #[test]
+    fn process_owner_accepts_stdin_only_when_requested_and_closes_it_once() {
+        let api = MockHcsApi::new([]);
+        let mut process = HcsGuestProcessOwner::from_process_information(
+            &api,
+            HcsProcessInformation {
+                process: 2_usize as RawGuestProcess,
+                process_id: 42,
+                stdin: 5_usize as RawGuestHandle,
+                stdout: 3_usize as RawGuestHandle,
+                stderr: 4_usize as RawGuestHandle,
+            },
+            true,
+        )
+        .expect("expected stdin handle is owned");
+        let stdin = process.take_stdin().expect("stdin is transferred once");
+        assert_eq!(stdin.raw(), Some(5_usize as RawGuestHandle));
+        assert!(process.take_stdin().is_none());
+        drop(process);
+        assert_eq!(
+            *api.calls.lock().unwrap(),
+            [
+                "terminate_process",
+                "close_stdout",
+                "close_stderr",
+                "close_process"
+            ]
+        );
+
+        drop(stdin);
+        assert_eq!(api.calls.lock().unwrap().last(), Some(&"close_stdin"));
+    }
+
+    #[test]
+    fn process_owner_closes_partial_handles_when_stdin_shape_does_not_match_parameters() {
+        for (stdin, stdin_expected) in [
+            (std::ptr::null_mut(), true),
+            (5_usize as RawGuestHandle, false),
+        ] {
+            let api = MockHcsApi::new([]);
+            let result = HcsGuestProcessOwner::from_process_information(
+                &api,
+                HcsProcessInformation {
+                    process: 2_usize as RawGuestProcess,
+                    process_id: 42,
+                    stdin,
+                    stdout: 3_usize as RawGuestHandle,
+                    stderr: 4_usize as RawGuestHandle,
+                },
+                stdin_expected,
+            );
+            assert!(result.is_err());
+            assert_eq!(
+                *api.calls.lock().unwrap(),
+                if stdin.is_null() {
+                    vec![
+                        "close_stdout",
+                        "close_stderr",
+                        "terminate_process",
+                        "close_process",
+                    ]
+                } else {
+                    vec![
+                        "close_stdin",
+                        "close_stdout",
+                        "close_stderr",
+                        "terminate_process",
+                        "close_process",
+                    ]
+                }
+            );
+        }
     }
 
     #[test]

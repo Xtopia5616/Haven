@@ -1260,3 +1260,4 @@
 - [1270：抽取 MCP stdio 进程生命周期端口](1270-extract-mcp-stdio-process-boundary.md)
 - [1271：固定并证明 brokered MCP Node runtime](1271-pin-node-runtime-for-brokered-mcp.md)
 - [1272：在镜像 catalog 中登记受管 MCP package](1272-register-managed-mcp-packages-in-image-catalog.md)
+- [1273：拥有并校验 HCS guest stdin handle](1273-own-hcs-guest-stdin-handles.md)
