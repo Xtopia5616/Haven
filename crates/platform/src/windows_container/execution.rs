@@ -62,6 +62,8 @@ pub const WORKSPACE_WRITE_STORAGE_QUOTA_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_STDIO_BYTES_PER_STREAM: usize = 64 * 1024 * 1024;
 const MAX_EXECUTION_TIMEOUT: Duration =
     Duration::from_secs(haven_common::config::MAX_TOOL_TIMEOUT_SECS);
+pub(super) const MCP_NODE_RUNTIME_PROFILE: &str = "haven-mcp-node-v1";
+pub(super) const MCP_NODE_RUNTIME_VERSION: &str = "24.21.0";
 
 /// Guest shell selected by the trusted Tools shell configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

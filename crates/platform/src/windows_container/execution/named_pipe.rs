@@ -31,7 +31,9 @@ use super::broker_protocol::{
     BrokerFrameKind, MAX_CONTROL_PAYLOAD_BYTES, negotiate_version,
 };
 #[cfg(test)]
-use super::broker_protocol::{BrokerQuotaGateStatus, BrokerSkillPythonRuntimeStatus};
+use super::broker_protocol::{
+    BrokerMcpNodeRuntimeStatus, BrokerQuotaGateStatus, BrokerSkillPythonRuntimeStatus,
+};
 use peer_security::{
     ActiveSessionIdentity, PipeSecurityDescriptor, current_broker_service_sid,
     current_process_identity, impersonate_and_read_peer, query_unique_active_session,
@@ -1024,6 +1026,7 @@ mod tests {
                     status: BrokerExecutionGateStatus {
                         quota: BrokerQuotaGateStatus::Unattested,
                         skill_python_runtime: BrokerSkillPythonRuntimeStatus::Unattested,
+                        mcp_node_runtime: BrokerMcpNodeRuntimeStatus::Unattested,
                     },
                 })?,
                 Duration::from_secs(5),
@@ -1044,6 +1047,7 @@ mod tests {
             BrokerExecutionGateStatus {
                 quota: BrokerQuotaGateStatus::Unattested,
                 skill_python_runtime: BrokerSkillPythonRuntimeStatus::Unattested,
+                mcp_node_runtime: BrokerMcpNodeRuntimeStatus::Unattested,
             }
         );
         server.join().unwrap().unwrap();

@@ -17,7 +17,7 @@ use std::path::Path;
 const IMAGE_CATALOG_DIRECTORY: &str = "ContainerImages";
 const LAYERS_DIRECTORY: &str = "layers";
 const CATALOG_FILE: &str = "catalog.json";
-const CATALOG_VERSION: u32 = 2;
+const CATALOG_VERSION: u32 = 3;
 const MAX_CATALOG_BYTES: u64 = 64 * 1024;
 const MAX_IMAGE_LAYERS: usize = 64;
 const MAX_LAYER_DIRECTORY_NAME: usize = 64;
@@ -28,6 +28,7 @@ const MAX_LAYER_DIRECTORY_NAME: usize = 64;
 pub(crate) struct BrokerContainerImageCatalog {
     layers: Vec<WindowsContainerLayer>,
     skill_python_runtime: Option<SkillPythonRuntimeProfile>,
+    mcp_node_runtime: Option<McpNodeRuntimeProfile>,
 }
 
 /// Admin-pinned Python identity for the fixed guest executable path. This is
@@ -48,6 +49,24 @@ impl SkillPythonRuntimeProfile {
     }
 }
 
+/// Admin-pinned Node identity for the first brokered MCP runtime profile.
+/// This is catalog metadata only; startup must attest the guest executable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct McpNodeRuntimeProfile {
+    version: String,
+    executable_sha256: [u8; 32],
+}
+
+impl McpNodeRuntimeProfile {
+    pub(crate) fn version(&self) -> &str {
+        &self.version
+    }
+
+    pub(crate) fn executable_sha256(&self) -> &[u8; 32] {
+        &self.executable_sha256
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CatalogDocument {
@@ -55,6 +74,8 @@ struct CatalogDocument {
     layers: Vec<CatalogLayer>,
     #[serde(default)]
     skill_python_runtime: Option<CatalogSkillPythonRuntime>,
+    #[serde(default)]
+    mcp_node_runtime: Option<CatalogMcpNodeRuntime>,
 }
 
 #[derive(Deserialize)]
@@ -67,6 +88,14 @@ struct CatalogLayer {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CatalogSkillPythonRuntime {
+    profile: String,
+    version: String,
+    executable_sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogMcpNodeRuntime {
     profile: String,
     version: String,
     executable_sha256: String,
@@ -112,6 +141,10 @@ impl BrokerContainerImageCatalog {
         self.skill_python_runtime.as_ref()
     }
 
+    pub(crate) fn mcp_node_runtime(&self) -> Option<&McpNodeRuntimeProfile> {
+        self.mcp_node_runtime.as_ref()
+    }
+
     fn load(root: DirectoryCapability) -> io::Result<Self> {
         let mut manifest = root.open_read(Path::new(CATALOG_FILE))?;
         let manifest_metadata = manifest.metadata()?;
@@ -145,6 +178,10 @@ impl BrokerContainerImageCatalog {
         let skill_python_runtime = document
             .skill_python_runtime
             .map(parse_skill_python_runtime)
+            .transpose()?;
+        let mcp_node_runtime = document
+            .mcp_node_runtime
+            .map(parse_mcp_node_runtime)
             .transpose()?;
 
         let layers_root_path = root.root().join(LAYERS_DIRECTORY);
@@ -192,6 +229,7 @@ impl BrokerContainerImageCatalog {
         Ok(Self {
             layers,
             skill_python_runtime,
+            mcp_node_runtime,
         })
     }
 }
@@ -208,6 +246,21 @@ fn parse_skill_python_runtime(
     }
     let executable_sha256 = parse_sha256(&runtime.executable_sha256)?;
     Ok(SkillPythonRuntimeProfile {
+        version: runtime.version,
+        executable_sha256,
+    })
+}
+
+fn parse_mcp_node_runtime(runtime: CatalogMcpNodeRuntime) -> io::Result<McpNodeRuntimeProfile> {
+    if runtime.profile != super::MCP_NODE_RUNTIME_PROFILE
+        || runtime.version != super::MCP_NODE_RUNTIME_VERSION
+    {
+        return Err(invalid_data(
+            "container MCP Node runtime profile is invalid",
+        ));
+    }
+    let executable_sha256 = parse_sha256(&runtime.executable_sha256)?;
+    Ok(McpNodeRuntimeProfile {
         version: runtime.version,
         executable_sha256,
     })
@@ -283,7 +336,7 @@ mod tests {
     #[test]
     fn catalog_preserves_hcs_layer_order_and_builds_a_pinned_config() {
         let root = catalog_root(
-            r#"{"version":2,"layers":[{"id":"child-id","directory":"child"},{"id":"base-id","directory":"base"}]}"#,
+            r#"{"version":3,"layers":[{"id":"child-id","directory":"child"},{"id":"base-id","directory":"base"}]}"#,
             &["base", "child"],
         );
         let catalog =
@@ -300,8 +353,9 @@ mod tests {
     #[test]
     fn catalog_rejects_unknown_fields_and_unsupported_versions() {
         for manifest in [
-            r#"{"version":2,"layers":[{"id":"base","directory":"base","path":"C:\\evil"}]}"#,
-            r#"{"version":3,"layers":[{"id":"base","directory":"base"}]}"#,
+            r#"{"version":3,"layers":[{"id":"base","directory":"base","path":"C:\\evil"}]}"#,
+            r#"{"version":2,"layers":[{"id":"base","directory":"base"}]}"#,
+            r#"{"version":4,"layers":[{"id":"base","directory":"base"}]}"#,
             r#"{"version":1,"layers":[{"id":"base","directory":"base"}]}"#,
         ] {
             let root = catalog_root(manifest, &["base"]);
@@ -315,7 +369,7 @@ mod tests {
     #[test]
     fn catalog_rejects_traversal_duplicate_ids_and_unlisted_directories() {
         let traversal = catalog_root(
-            r#"{"version":2,"layers":[{"id":"base","directory":"../base"}]}"#,
+            r#"{"version":3,"layers":[{"id":"base","directory":"../base"}]}"#,
             &["base"],
         );
         assert!(
@@ -324,7 +378,7 @@ mod tests {
         );
 
         let duplicate_ids = catalog_root(
-            r#"{"version":2,"layers":[{"id":"same","directory":"base"},{"id":"SAME","directory":"child"}]}"#,
+            r#"{"version":3,"layers":[{"id":"same","directory":"base"},{"id":"SAME","directory":"child"}]}"#,
             &["base", "child"],
         );
         assert!(
@@ -335,7 +389,7 @@ mod tests {
         );
 
         let duplicate_directories = catalog_root(
-            r#"{"version":2,"layers":[{"id":"base-one","directory":"base"},{"id":"base-two","directory":"BASE"}]}"#,
+            r#"{"version":3,"layers":[{"id":"base-one","directory":"base"},{"id":"base-two","directory":"BASE"}]}"#,
             &["base", "child"],
         );
         assert!(
@@ -346,7 +400,7 @@ mod tests {
         );
 
         let root = catalog_root(
-            r#"{"version":2,"layers":[{"id":"base","directory":"base"}]}"#,
+            r#"{"version":3,"layers":[{"id":"base","directory":"base"}]}"#,
             &["base", "unlisted"],
         );
         assert!(
@@ -358,7 +412,7 @@ mod tests {
     #[test]
     fn catalog_rejects_missing_layer_directories() {
         let root = catalog_root(
-            r#"{"version":2,"layers":[{"id":"base","directory":"missing"}]}"#,
+            r#"{"version":3,"layers":[{"id":"base","directory":"missing"}]}"#,
             &["base"],
         );
         assert!(
@@ -378,9 +432,9 @@ mod tests {
     }
 
     #[test]
-    fn catalog_v2_pins_optional_skill_python_version_and_executable_digest() {
+    fn catalog_v3_pins_optional_skill_python_version_and_executable_digest() {
         let root = catalog_root(
-            r#"{"version":2,"layers":[{"id":"base","directory":"base"}],"skill_python_runtime":{"profile":"haven-python-skill-v1","version":"3.13.2","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}"#,
+            r#"{"version":3,"layers":[{"id":"base","directory":"base"}],"skill_python_runtime":{"profile":"haven-python-skill-v1","version":"3.13.2","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}"#,
             &["base"],
         );
         let catalog =
@@ -408,7 +462,7 @@ mod tests {
             r#"{"profile":"haven-python-skill-v1","version":"3.13.2","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","application":"C:\\evil.exe"}"#,
         ] {
             let manifest = format!(
-                r#"{{"version":2,"layers":[{{"id":"base","directory":"base"}}],"skill_python_runtime":{runtime}}}"#
+                r#"{{"version":3,"layers":[{{"id":"base","directory":"base"}}],"skill_python_runtime":{runtime}}}"#
             );
             let root = catalog_root(&manifest, &["base"]);
             assert!(
@@ -422,12 +476,63 @@ mod tests {
     #[test]
     fn catalog_without_skill_profile_remains_shell_usable_but_has_no_skill_runtime() {
         let root = catalog_root(
-            r#"{"version":2,"layers":[{"id":"base","directory":"base"}]}"#,
+            r#"{"version":3,"layers":[{"id":"base","directory":"base"}]}"#,
             &["base"],
         );
         let catalog =
             BrokerContainerImageCatalog::load(DirectoryCapability::open(root.path()).unwrap())
                 .unwrap();
         assert!(catalog.skill_python_runtime().is_none());
+    }
+
+    #[test]
+    fn catalog_v3_pins_the_fixed_mcp_node_runtime_profile() {
+        assert_eq!(
+            super::super::MCP_NODE_RUNTIME_VERSION,
+            include_str!("../../../../../.node-version").trim()
+        );
+        let root = catalog_root(
+            r#"{"version":3,"layers":[{"id":"base","directory":"base"}],"mcp_node_runtime":{"profile":"haven-mcp-node-v1","version":"24.21.0","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}"#,
+            &["base"],
+        );
+        let catalog =
+            BrokerContainerImageCatalog::load(DirectoryCapability::open(root.path()).unwrap())
+                .unwrap();
+        let runtime = catalog.mcp_node_runtime().unwrap();
+        assert_eq!(runtime.version(), "24.21.0");
+        assert_eq!(runtime.executable_sha256()[..4], [0x01, 0x23, 0x45, 0x67]);
+    }
+
+    #[test]
+    fn catalog_rejects_unpinned_or_malformed_mcp_node_profiles() {
+        for runtime in [
+            r#"{"profile":"other","version":"24.21.0","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#,
+            r#"{"profile":"haven-mcp-node-v1","version":"24.22.0","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#,
+            r#"{"profile":"haven-mcp-node-v1","version":"24.21.0","executable_sha256":"0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"}"#,
+            r#"{"profile":"haven-mcp-node-v1","version":"24.21.0","executable_sha256":"short"}"#,
+            r#"{"profile":"haven-mcp-node-v1","version":"24.21.0","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","application":"C:\\evil.exe"}"#,
+        ] {
+            let manifest = format!(
+                r#"{{"version":3,"layers":[{{"id":"base","directory":"base"}}],"mcp_node_runtime":{runtime}}}"#
+            );
+            let root = catalog_root(&manifest, &["base"]);
+            assert!(
+                BrokerContainerImageCatalog::load(DirectoryCapability::open(root.path()).unwrap())
+                    .is_err(),
+                "accepted profile {runtime}"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_without_mcp_node_profile_has_no_runtime_capability() {
+        let root = catalog_root(
+            r#"{"version":3,"layers":[{"id":"base","directory":"base"}]}"#,
+            &["base"],
+        );
+        let catalog =
+            BrokerContainerImageCatalog::load(DirectoryCapability::open(root.path()).unwrap())
+                .unwrap();
+        assert!(catalog.mcp_node_runtime().is_none());
     }
 }

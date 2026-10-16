@@ -1258,3 +1258,4 @@
 - [1268：将 Skill adapter 接入实时授权与输出审阅](1268-wire-brokered-skills-to-live-authorization.md)
 - [1269：定义受限 brokered MCP stdio session 契约](1269-define-brokered-mcp-stdio-session-contract.md)
 - [1270：抽取 MCP stdio 进程生命周期端口](1270-extract-mcp-stdio-process-boundary.md)
+- [1271：固定并证明 brokered MCP Node runtime](1271-pin-node-runtime-for-brokered-mcp.md)

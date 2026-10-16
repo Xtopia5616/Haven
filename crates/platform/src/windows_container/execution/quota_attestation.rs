@@ -29,6 +29,7 @@ const MIN_HOST_FREE_SPACE_BYTES: u64 = 1024 * 1024 * 1024;
 pub(super) struct QuotaRuntimeAttestation {
     storage_quota_bytes: u64,
     skill_python_runtime_attested: bool,
+    mcp_node_runtime_attested: bool,
     api: NativeHcsApi,
     image_catalog: BrokerContainerImageCatalog,
 }
@@ -42,6 +43,7 @@ impl QuotaRuntimeAttestation {
         let api = native_api()?;
         let storage_quota_bytes = WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
         let skill_python_runtime = image_catalog.skill_python_runtime().cloned();
+        let mcp_node_runtime = image_catalog.mcp_node_runtime().cloned();
         let mut attempt = workspace_root.create_attempt()?;
         let attempt_root = attempt.attempt_root()?.clone();
         let mut scratch = BoundedScratchVhd::create(attempt_root, storage_quota_bytes)?;
@@ -84,6 +86,7 @@ impl QuotaRuntimeAttestation {
             &config,
             storage_quota_bytes,
             skill_python_runtime.as_ref(),
+            mcp_node_runtime.as_ref(),
             QUOTA_PROBE_TIMEOUT,
             || cancellation.is_cancelled(),
         ) {
@@ -122,6 +125,7 @@ impl QuotaRuntimeAttestation {
                 },
                 host_space_after,
                 skill_python_runtime.is_some(),
+                mcp_node_runtime.is_some(),
             )
         })();
         drop(outcome);
@@ -137,6 +141,7 @@ impl QuotaRuntimeAttestation {
         Ok(Self {
             storage_quota_bytes,
             skill_python_runtime_attested: evidence.skill_python_runtime_attested,
+            mcp_node_runtime_attested: evidence.mcp_node_runtime_attested,
             api,
             image_catalog: image_catalog.clone(),
         })
@@ -156,6 +161,10 @@ impl QuotaRuntimeAttestation {
 
     pub(super) fn skill_python_runtime_attested(&self) -> bool {
         self.skill_python_runtime_attested
+    }
+
+    pub(super) fn mcp_node_runtime_attested(&self) -> bool {
+        self.mcp_node_runtime_attested
     }
 }
 
@@ -240,6 +249,7 @@ struct ScratchGrowthEvidence {
 struct QuotaProbeEvidence {
     written_bytes: u64,
     skill_python_runtime_attested: bool,
+    mcp_node_runtime_attested: bool,
 }
 
 fn available_host_space(path: &Path) -> io::Result<HostSpace> {
@@ -296,6 +306,7 @@ fn validate_probe_evidence(
     scratch: ScratchGrowthEvidence,
     host_space_after: HostSpace,
     skill_profile_configured: bool,
+    mcp_node_profile_configured: bool,
 ) -> io::Result<QuotaProbeEvidence> {
     if process.exit_code != 0
         || process.stdout_truncated
@@ -308,6 +319,11 @@ fn validate_probe_evidence(
     if evidence.skill_python_runtime_attested && !skill_profile_configured {
         return Err(unattested(
             "quota probe reported an unconfigured Skill runtime",
+        ));
+    }
+    if evidence.mcp_node_runtime_attested && !mcp_node_profile_configured {
+        return Err(unattested(
+            "quota probe reported an unconfigured MCP Node runtime",
         ));
     }
     let maximum_write = quota
@@ -345,21 +361,27 @@ fn parse_probe_output(stdout: &[u8]) -> io::Result<QuotaProbeEvidence> {
         .or_else(|| output.strip_suffix('\n'))
         .unwrap_or(output);
     let values = line
-        .strip_prefix("HAVEN_STORAGE_QUOTA_ATTESTED_V2:")
+        .strip_prefix("HAVEN_STORAGE_QUOTA_ATTESTED_V3:")
         .ok_or_else(|| unattested("quota probe did not return its exact success marker"))?;
-    let (written, runtime) = values
-        .split_once(':')
-        .filter(|(written, runtime)| {
-            !written.is_empty()
-                && written.bytes().all(|byte| byte.is_ascii_digit())
-                && matches!(*runtime, "0" | "1")
-        })
-        .ok_or_else(|| unattested("quota probe returned malformed evidence"))?;
+    let mut parts = values.split(':');
+    let (written, skill_runtime, mcp_node_runtime) =
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some(written), Some(skill_runtime), Some(mcp_node_runtime), None)
+                if !written.is_empty()
+                    && written.bytes().all(|byte| byte.is_ascii_digit())
+                    && matches!(skill_runtime, "0" | "1")
+                    && matches!(mcp_node_runtime, "0" | "1") =>
+            {
+                (written, skill_runtime, mcp_node_runtime)
+            }
+            _ => return Err(unattested("quota probe returned malformed evidence")),
+        };
     Ok(QuotaProbeEvidence {
         written_bytes: written
             .parse::<u64>()
             .map_err(|_| unattested("quota probe returned an invalid write count"))?,
-        skill_python_runtime_attested: runtime == "1",
+        skill_python_runtime_attested: skill_runtime == "1",
+        mcp_node_runtime_attested: mcp_node_runtime == "1",
     })
 }
 
@@ -384,7 +406,7 @@ mod tests {
         free_after: u64,
     ) -> io::Result<QuotaProbeEvidence> {
         let quota = WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
-        let stdout = format!("HAVEN_STORAGE_QUOTA_ATTESTED_V2:{written}:0\r\n");
+        let stdout = format!("HAVEN_STORAGE_QUOTA_ATTESTED_V3:{written}:0:0\r\n");
         validate_probe_evidence(
             quota,
             ProbeProcessEvidence {
@@ -400,6 +422,7 @@ mod tests {
             },
             host_space(free_after),
             false,
+            false,
         )
     }
 
@@ -411,6 +434,7 @@ mod tests {
             QuotaProbeEvidence {
                 written_bytes: quota / 2,
                 skill_python_runtime_attested: false,
+                mcp_node_runtime_attested: false,
             }
         );
         assert!(valid_evidence(quota / 2 - 1, quota, MIN_HOST_FREE_SPACE_BYTES).is_err());
@@ -431,7 +455,7 @@ mod tests {
         let quota = WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
         let validate_runtime_marker = |runtime_attested: bool, configured: bool| {
             let marker = format!(
-                "HAVEN_STORAGE_QUOTA_ATTESTED_V2:{}:{}\r\n",
+                "HAVEN_STORAGE_QUOTA_ATTESTED_V3:{}:{}:0\r\n",
                 quota / 2,
                 u8::from(runtime_attested)
             );
@@ -450,6 +474,7 @@ mod tests {
                 },
                 host_space(MIN_HOST_FREE_SPACE_BYTES),
                 configured,
+                false,
             )
         };
 
@@ -465,9 +490,48 @@ mod tests {
     }
 
     #[test]
+    fn mcp_node_runtime_mismatch_does_not_close_quota_but_cannot_attest_mcp_runtime() {
+        let quota = WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
+        let validate_runtime_marker = |runtime_attested: bool, configured: bool| {
+            let marker = format!(
+                "HAVEN_STORAGE_QUOTA_ATTESTED_V3:{}:0:{}\r\n",
+                quota / 2,
+                u8::from(runtime_attested)
+            );
+            validate_probe_evidence(
+                quota,
+                ProbeProcessEvidence {
+                    exit_code: 0,
+                    stdout: marker.as_bytes(),
+                    stderr: &[],
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                },
+                ScratchGrowthEvidence {
+                    physical_size_before: 1,
+                    physical_size_after: quota / 2 + 1,
+                },
+                host_space(MIN_HOST_FREE_SPACE_BYTES),
+                false,
+                configured,
+            )
+        };
+
+        let mismatch = validate_runtime_marker(false, true)
+            .expect("a missing/mismatched Node binary must not invalidate quota evidence");
+        assert!(!mismatch.mcp_node_runtime_attested);
+        assert!(
+            validate_runtime_marker(true, true)
+                .unwrap()
+                .mcp_node_runtime_attested
+        );
+        assert!(validate_runtime_marker(true, false).is_err());
+    }
+
+    #[test]
     fn quota_probe_rejects_unexpected_output_or_process_state() {
         let quota = WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
-        let stdout = format!("HAVEN_STORAGE_QUOTA_ATTESTED_V2:{}:0\r\n", quota / 2);
+        let stdout = format!("HAVEN_STORAGE_QUOTA_ATTESTED_V3:{}:0:0\r\n", quota / 2);
         let evidence = |exit_code, stderr: &[u8], stdout_truncated, stderr_truncated| {
             validate_probe_evidence(
                 quota,
@@ -484,6 +548,7 @@ mod tests {
                 },
                 host_space(MIN_HOST_FREE_SPACE_BYTES),
                 false,
+                false,
             )
         };
         assert!(evidence(0, &[], false, false).is_ok());
@@ -491,9 +556,9 @@ mod tests {
         assert!(evidence(0, b"warning", false, false).is_err());
         assert!(evidence(0, &[], true, false).is_err());
         assert!(evidence(0, &[], false, true).is_err());
-        assert!(parse_probe_output(b"HAVEN_STORAGE_QUOTA_ATTESTED_V2:1:0\nextra\n").is_err());
-        assert!(parse_probe_output(b"HAVEN_STORAGE_QUOTA_ATTESTED_V2:-1:0\n").is_err());
-        assert!(parse_probe_output(b"HAVEN_STORAGE_QUOTA_ATTESTED_V2:1:2\n").is_err());
+        assert!(parse_probe_output(b"HAVEN_STORAGE_QUOTA_ATTESTED_V3:1:0:0\nextra\n").is_err());
+        assert!(parse_probe_output(b"HAVEN_STORAGE_QUOTA_ATTESTED_V3:-1:0:0\n").is_err());
+        assert!(parse_probe_output(b"HAVEN_STORAGE_QUOTA_ATTESTED_V3:1:2:0\n").is_err());
         assert!(parse_probe_output(b"HAVEN_STORAGE_QUOTA_ATTESTED_V1:1\n").is_err());
     }
 

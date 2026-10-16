@@ -21,7 +21,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 7;
+pub(crate) const BROKER_PROTOCOL_VERSION: u16 = 8;
 pub(crate) const MAX_CONTROL_PAYLOAD_BYTES: usize = 320 * 1024;
 const MAX_BINARY_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_WIRE_PATH_BYTES: usize = 32 * 1024;
@@ -528,11 +528,22 @@ pub(crate) enum BrokerSkillPythonRuntimeStatus {
     Unattested,
 }
 
+/// Whether the optional pinned Node profile for brokered MCP is configured
+/// and verified in the guest image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BrokerMcpNodeRuntimeStatus {
+    NotConfigured,
+    Attested,
+    Unattested,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BrokerExecutionGateStatus {
     pub(crate) quota: BrokerQuotaGateStatus,
     pub(crate) skill_python_runtime: BrokerSkillPythonRuntimeStatus,
+    pub(crate) mcp_node_runtime: BrokerMcpNodeRuntimeStatus,
 }
 
 /// Attempt data sent across the broker boundary. It has no host root, tool
@@ -894,18 +905,22 @@ mod tests {
             BrokerExecutionGateStatus {
                 quota: BrokerQuotaGateStatus::Attested,
                 skill_python_runtime: BrokerSkillPythonRuntimeStatus::NotConfigured,
+                mcp_node_runtime: BrokerMcpNodeRuntimeStatus::NotConfigured,
             },
             BrokerExecutionGateStatus {
                 quota: BrokerQuotaGateStatus::Attested,
                 skill_python_runtime: BrokerSkillPythonRuntimeStatus::Attested,
+                mcp_node_runtime: BrokerMcpNodeRuntimeStatus::Attested,
             },
             BrokerExecutionGateStatus {
                 quota: BrokerQuotaGateStatus::Attested,
                 skill_python_runtime: BrokerSkillPythonRuntimeStatus::Unattested,
+                mcp_node_runtime: BrokerMcpNodeRuntimeStatus::Unattested,
             },
             BrokerExecutionGateStatus {
                 quota: BrokerQuotaGateStatus::Unattested,
                 skill_python_runtime: BrokerSkillPythonRuntimeStatus::Unattested,
+                mcp_node_runtime: BrokerMcpNodeRuntimeStatus::Unattested,
             },
         ] {
             let frame = BrokerFrame::control(&BrokerControlMessage::ExecutionGateStatus { status })

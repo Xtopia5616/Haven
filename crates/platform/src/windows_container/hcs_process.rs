@@ -20,6 +20,7 @@ const CMD_APPLICATION: &str = r"C:\Windows\System32\cmd.exe";
 const POWERSHELL_APPLICATION: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
 const ROBOCOPY_APPLICATION: &str = r"C:\Windows\System32\robocopy.exe";
 const SKILL_PYTHON_APPLICATION: &str = r"C:\Haven\Python\python.exe";
+const MCP_NODE_APPLICATION: &str = r"C:\Haven\Node\node.exe";
 const FIXED_PATH: &str = r"C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem";
 const MAX_GUEST_COMMAND_LINE_UNITS: usize = 32_766;
 const SKILL_PYTHON_LAUNCHER: &str = r#"import io,pathlib,sys
@@ -43,7 +44,9 @@ $written = 0L
 $stream = $null
 $random = $null
 $skill_runtime_attested = 0
+$mcp_node_runtime_attested = 0
 {skill_runtime_probe}
+{mcp_node_runtime_probe}
 try {
     $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     $buffer = [byte[]]::new(1048576)
@@ -69,7 +72,7 @@ try {
         [Console]::Error.WriteLine('storage probe failed for an unexpected I/O reason')
         exit 92
     }
-    [Console]::Out.WriteLine(('HAVEN_STORAGE_QUOTA_ATTESTED_V2:{0}:{1}' -f $written, $skill_runtime_attested))
+    [Console]::Out.WriteLine(('HAVEN_STORAGE_QUOTA_ATTESTED_V3:{0}:{1}:{2}' -f $written, $skill_runtime_attested, $mcp_node_runtime_attested))
     exit 0
 } finally {
     if ($null -ne $stream) { $stream.Dispose() }
@@ -112,6 +115,7 @@ impl HcsGuestProcessParameters {
     pub(super) fn quota_probe(
         storage_quota_bytes: u64,
         skill_python_runtime: Option<&super::execution::image_catalog::SkillPythonRuntimeProfile>,
+        mcp_node_runtime: Option<&super::execution::image_catalog::McpNodeRuntimeProfile>,
     ) -> io::Result<Self> {
         if storage_quota_bytes != super::execution::WORKSPACE_WRITE_STORAGE_QUOTA_BYTES {
             return Err(invalid_process_parameters(
@@ -123,9 +127,15 @@ impl HcsGuestProcessParameters {
                 skill_python_runtime_probe_script(runtime.version(), runtime.executable_sha256())
             })
             .unwrap_or_default();
+        let mcp_node_runtime_probe = mcp_node_runtime
+            .map(|runtime| {
+                mcp_node_runtime_probe_script(runtime.version(), runtime.executable_sha256())
+            })
+            .unwrap_or_default();
         let script = STORAGE_QUOTA_PROBE_SCRIPT
             .replace("{quota_bytes}", &storage_quota_bytes.to_string())
-            .replace("{skill_runtime_probe}", &runtime_probe);
+            .replace("{skill_runtime_probe}", &runtime_probe)
+            .replace("{mcp_node_runtime_probe}", &mcp_node_runtime_probe);
         Ok(Self {
             document: ProcessParametersDocument {
                 application_name: POWERSHELL_APPLICATION,
@@ -229,6 +239,25 @@ fn skill_python_runtime_probe_script(version: &str, executable_sha256: &[u8; 32]
     }}
 }} catch {{
     $skill_runtime_attested = 0
+}}"#,
+    )
+}
+
+fn mcp_node_runtime_probe_script(version: &str, executable_sha256: &[u8; 32]) -> String {
+    let digest = executable_sha256
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!(
+        r#"try {{
+    $node_path = '{MCP_NODE_APPLICATION}'
+    $node_hash = (Get-FileHash -LiteralPath $node_path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $node_version = (& $node_path --version 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0 -and $node_version -ceq 'v{version}' -and $node_hash -ceq '{digest}') {{
+        $mcp_node_runtime_attested = 1
+    }}
+}} catch {{
+    $mcp_node_runtime_attested = 0
 }}"#,
     )
 }
@@ -543,7 +572,7 @@ mod tests {
     fn quota_probe_is_fixed_bounded_and_only_accepts_the_workspace_write_ceiling() {
         let quota = super::super::execution::WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
         let value: Value = serde_json::from_str(
-            &HcsGuestProcessParameters::quota_probe(quota, None)
+            &HcsGuestProcessParameters::quota_probe(quota, None, None)
                 .expect("the fixed quota builds probe parameters")
                 .to_json()
                 .expect("probe parameters serialize"),
@@ -553,7 +582,7 @@ mod tests {
         assert_eq!(value["WorkingDirectory"], r"C:\Windows\Temp");
         assert_eq!(value["RestrictedToken"], true);
         let command_line = value["CommandLine"].as_str().unwrap();
-        assert!(!command_line.contains("HAVEN_STORAGE_QUOTA_ATTESTED_V2"));
+        assert!(!command_line.contains("HAVEN_STORAGE_QUOTA_ATTESTED_V3"));
         let encoded = command_line
             .split("-EncodedCommand\" \"")
             .nth(1)
@@ -572,10 +601,11 @@ mod tests {
         assert!(script.contains("RandomNumberGenerator]::Create()"));
         assert!(script.contains(r"C:\Windows\Temp\haven-storage-quota-probe.bin"));
         assert!(script.contains("$native_code -ne 39") && script.contains("$native_code -ne 112"));
-        assert!(script.contains("HAVEN_STORAGE_QUOTA_ATTESTED_V2:{0}:{1}"));
+        assert!(script.contains("HAVEN_STORAGE_QUOTA_ATTESTED_V3:{0}:{1}:{2}"));
         assert!(!script.contains(SKILL_PYTHON_APPLICATION));
+        assert!(!script.contains(MCP_NODE_APPLICATION));
         assert!(
-            HcsGuestProcessParameters::quota_probe(quota + 512, None).is_err(),
+            HcsGuestProcessParameters::quota_probe(quota + 512, None, None).is_err(),
             "the attestation probe cannot be sized by a caller"
         );
     }
@@ -597,6 +627,25 @@ mod tests {
         );
         assert!(script.contains("$LASTEXITCODE -eq 0"));
         assert!(script.contains("$skill_runtime_attested = 1"));
+    }
+
+    #[test]
+    fn mcp_node_runtime_probe_uses_only_the_fixed_executable_and_pinned_version_and_digest() {
+        let script = mcp_node_runtime_probe_script(
+            super::super::execution::MCP_NODE_RUNTIME_VERSION,
+            &[
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+                0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+                0x89, 0xab, 0xcd, 0xef,
+            ],
+        );
+        assert!(script.contains(MCP_NODE_APPLICATION));
+        assert!(script.contains("v24.21.0"));
+        assert!(
+            script.contains("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+        assert!(script.contains("$LASTEXITCODE -eq 0"));
+        assert!(script.contains("$mcp_node_runtime_attested = 1"));
     }
 
     #[test]

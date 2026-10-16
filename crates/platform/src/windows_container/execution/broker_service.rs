@@ -41,7 +41,7 @@ use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath}
 
 use super::broker_protocol::{
     BrokerControlMessage, BrokerExecutionGateStatus, BrokerExecutionTarget, BrokerFailureCode,
-    BrokerFrame, BrokerQuotaGateStatus, BrokerSkillPythonRuntimeStatus,
+    BrokerFrame, BrokerMcpNodeRuntimeStatus, BrokerQuotaGateStatus, BrokerSkillPythonRuntimeStatus,
 };
 use super::named_pipe::{
     BrokerClientPolicy, BrokerPeerPolicy, BrokerPipeCancellation, BrokerPipeClient,
@@ -245,6 +245,17 @@ pub fn print_status() -> io::Result<()> {
                         println!("Skill Python runtime: unattested");
                     }
                 }
+                match status.mcp_node_runtime {
+                    BrokerMcpNodeRuntimeStatus::NotConfigured => {
+                        println!("MCP Node runtime: not configured");
+                    }
+                    BrokerMcpNodeRuntimeStatus::Attested => {
+                        println!("MCP Node runtime: attested");
+                    }
+                    BrokerMcpNodeRuntimeStatus::Unattested => {
+                        println!("MCP Node runtime: unattested");
+                    }
+                }
             }
             Err(_) => {
                 println!("Execution gate: unknown (authenticated status query failed)");
@@ -253,6 +264,7 @@ pub fn print_status() -> io::Result<()> {
         _ => {
             println!("Shell gate: closed (service is not running)");
             println!("Skill Python runtime: unavailable (service is not running)");
+            println!("MCP Node runtime: unavailable (service is not running)");
         }
     }
     Ok(())
@@ -797,12 +809,14 @@ fn execution_gate_status(
     attestation: Option<&QuotaRuntimeAttestation>,
 ) -> BrokerExecutionGateStatus {
     let Some(attestation) = attestation else {
-        return execution_gate_status_from_evidence(false, false, false);
+        return execution_gate_status_from_evidence(false, false, false, false, false);
     };
     execution_gate_status_from_evidence(
         true,
         attestation.image_catalog().skill_python_runtime().is_some(),
         attestation.skill_python_runtime_attested(),
+        attestation.image_catalog().mcp_node_runtime().is_some(),
+        attestation.mcp_node_runtime_attested(),
     )
 }
 
@@ -810,6 +824,8 @@ fn execution_gate_status_from_evidence(
     quota_attested: bool,
     skill_runtime_configured: bool,
     skill_runtime_attested: bool,
+    mcp_node_runtime_configured: bool,
+    mcp_node_runtime_attested: bool,
 ) -> BrokerExecutionGateStatus {
     BrokerExecutionGateStatus {
         quota: if quota_attested {
@@ -825,6 +841,15 @@ fn execution_gate_status_from_evidence(
             BrokerSkillPythonRuntimeStatus::Attested
         } else {
             BrokerSkillPythonRuntimeStatus::Unattested
+        },
+        mcp_node_runtime: if !quota_attested {
+            BrokerMcpNodeRuntimeStatus::Unattested
+        } else if !mcp_node_runtime_configured {
+            BrokerMcpNodeRuntimeStatus::NotConfigured
+        } else if mcp_node_runtime_attested {
+            BrokerMcpNodeRuntimeStatus::Attested
+        } else {
+            BrokerMcpNodeRuntimeStatus::Unattested
         },
     }
 }
@@ -1114,6 +1139,7 @@ mod tests {
             BrokerExecutionGateStatus {
                 quota: BrokerQuotaGateStatus::Unattested,
                 skill_python_runtime: BrokerSkillPythonRuntimeStatus::Unattested,
+                mcp_node_runtime: BrokerMcpNodeRuntimeStatus::Unattested,
             }
         );
     }
@@ -1121,24 +1147,35 @@ mod tests {
     #[test]
     fn skill_python_gate_is_independent_from_quota_and_configuration() {
         assert_eq!(
-            execution_gate_status_from_evidence(true, false, false),
+            execution_gate_status_from_evidence(true, false, false, false, false),
             BrokerExecutionGateStatus {
                 quota: BrokerQuotaGateStatus::Attested,
                 skill_python_runtime: BrokerSkillPythonRuntimeStatus::NotConfigured,
+                mcp_node_runtime: BrokerMcpNodeRuntimeStatus::NotConfigured,
             }
         );
         assert_eq!(
-            execution_gate_status_from_evidence(true, true, false),
+            execution_gate_status_from_evidence(true, true, false, true, false),
             BrokerExecutionGateStatus {
                 quota: BrokerQuotaGateStatus::Attested,
                 skill_python_runtime: BrokerSkillPythonRuntimeStatus::Unattested,
+                mcp_node_runtime: BrokerMcpNodeRuntimeStatus::Unattested,
             }
         );
         assert_eq!(
-            execution_gate_status_from_evidence(true, true, true),
+            execution_gate_status_from_evidence(true, true, true, true, true),
             BrokerExecutionGateStatus {
                 quota: BrokerQuotaGateStatus::Attested,
                 skill_python_runtime: BrokerSkillPythonRuntimeStatus::Attested,
+                mcp_node_runtime: BrokerMcpNodeRuntimeStatus::Attested,
+            }
+        );
+        assert_eq!(
+            execution_gate_status_from_evidence(true, false, false, true, true),
+            BrokerExecutionGateStatus {
+                quota: BrokerQuotaGateStatus::Attested,
+                skill_python_runtime: BrokerSkillPythonRuntimeStatus::NotConfigured,
+                mcp_node_runtime: BrokerMcpNodeRuntimeStatus::Attested,
             }
         );
     }
