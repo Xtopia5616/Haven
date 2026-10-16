@@ -1208,3 +1208,4 @@
 - [1218：按 session 收窄 trust 撤销的进程范围](1218-scope-process-revocation-to-session-trust.md)
 - [1219：评估 Windows 原生 sandbox 存储配额候选](1219-evaluate-native-windows-storage-quota-candidates.md)
 - [1220：采用可选 brokered Windows Container sandbox 后端](1220-optional-brokered-windows-container-sandbox.md)
+- [1221：构造封闭的 HCS 容器配置](1221-build-closed-hcs-container-config.md)

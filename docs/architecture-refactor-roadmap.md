@@ -204,9 +204,9 @@ Skill 创建现通过固定 Skills 根 `DirectoryCapability` 创建目录树，�
 
 ADR 1215 曾将 HCS 限定为常规客户端生产执行之外的候选；ADR 1220 根据用户明确选择，将目标调整为显式安装的可选 Windows Container/HCS broker。Windows 10/11 Pro/Enterprise 仅限符合 Microsoft 当前条款的开发/测试配置；其它生产部署必须逐项核对宿主与镜像许可。没有 broker、支持矩阵不匹配、Hyper-V isolation 或运行期配额无法证明时，`WorkspaceWrite` 仍 fail closed。
 
-Windows 11 `Experimental_CreateProcessInSandbox` 没有每执行存储容量字段；NTFS 配额是默认关闭的管理员卷级 enforcement，VHD attach 要求 `SE_MANAGE_VOLUME_PRIVILEGE`，均不替代选定的 HCS scratch 配额后端（ADR 1219、1220）。后续按 typed sandbox port、配额原型、broker IPC、workspace staging、输出 review、撤销/回收、网络边界与逐工具接线分片实施。HCS backend 的落地不单独放开网络隔离 Gate，也不允许写入 host path 映射。
+Windows 11 `Experimental_CreateProcessInSandbox` 没有每执行存储容量字段；NTFS 配额是默认关闭的管理员卷级 enforcement，VHD attach 要求 `SE_MANAGE_VOLUME_PRIVILEGE`，均不替代选定的 HCS scratch 配额后端（ADR 1219、1220）。平台 crate 已有固定 HCS V1 配置构造器：固定 Hyper-V isolation、非零字节配额和闭合字段集合，不接受 host mount、网络端点或凭据；它尚未创建 compute system，不能证明运行期 quota enforcement（ADR 1221）。后续按 typed sandbox port、配额原型、broker IPC、workspace staging、输出 review、撤销/回收、网络边界与逐工具接线分片实施。HCS backend 的落地不单独放开网络隔离 Gate，也不允许写入 host path 映射。
 
-详见 [ADR 1212](adr/1212-revoke-running-skills-on-policy-change.md)、[ADR 1213](adr/1213-revoke-mcp-stdio-on-policy-change.md)、[ADR 1214](adr/1214-pin-skill-creation-writes.md)、[ADR 1215](adr/1215-limit-windows-container-quota-backend-scope.md)、[ADR 1217](adr/1217-scope-process-revocation-to-changed-tool-settings.md)、[ADR 1218](adr/1218-scope-process-revocation-to-session-trust.md)、[ADR 1219](adr/1219-evaluate-native-windows-storage-quota-candidates.md) 与 [ADR 1220](adr/1220-optional-brokered-windows-container-sandbox.md)。
+详见 [ADR 1212](adr/1212-revoke-running-skills-on-policy-change.md)、[ADR 1213](adr/1213-revoke-mcp-stdio-on-policy-change.md)、[ADR 1214](adr/1214-pin-skill-creation-writes.md)、[ADR 1215](adr/1215-limit-windows-container-quota-backend-scope.md)、[ADR 1217](adr/1217-scope-process-revocation-to-changed-tool-settings.md)、[ADR 1218](adr/1218-scope-process-revocation-to-session-trust.md)、[ADR 1219](adr/1219-evaluate-native-windows-storage-quota-candidates.md)、[ADR 1220](adr/1220-optional-brokered-windows-container-sandbox.md) 与 [ADR 1221](adr/1221-build-closed-hcs-container-config.md)。
 
 ## 6. 更新规则
 

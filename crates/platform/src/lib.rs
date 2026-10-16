@@ -9,6 +9,8 @@ pub mod process_environment;
 #[cfg(windows)]
 mod sandbox_scratch;
 #[cfg(windows)]
+pub mod windows_container;
+#[cfg(windows)]
 pub mod windows_sandbox;
 
 #[cfg(all(test, windows))]
