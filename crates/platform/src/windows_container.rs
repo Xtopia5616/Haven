@@ -9,6 +9,12 @@
 //! or caller-selected isolation mode cannot be serialized.
 
 pub mod execution;
+#[cfg(windows)]
+#[expect(
+    dead_code,
+    reason = "the broker keeps HCS execution unavailable until quota attestation and provider wiring are complete"
+)]
+mod hcs_runtime;
 #[cfg(not(test))]
 #[expect(
     dead_code,
@@ -87,6 +93,11 @@ impl WindowsContainerSandboxConfig {
             layers,
             workspace_input: None,
         })
+    }
+
+    #[cfg(windows)]
+    fn hcs_system_id(&self) -> &str {
+        &self.name
     }
 
     /// Attach the broker-owned, per-attempt workspace snapshot as the single
