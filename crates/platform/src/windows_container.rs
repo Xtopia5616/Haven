@@ -10,6 +10,15 @@
 
 pub mod execution;
 #[cfg(windows)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the bounded legacy HCS transport extractor awaits native layer-reader wiring"
+    )
+)]
+mod hcs_layer_output;
+#[cfg(windows)]
 #[expect(
     dead_code,
     reason = "guest process creation stays private until quota and output-layer handling are wired"

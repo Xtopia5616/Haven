@@ -141,7 +141,7 @@ fn guest_working_directory(relative: &Path) -> io::Result<String> {
     Ok(path)
 }
 
-fn validate_guest_path_component(component: &str) -> io::Result<()> {
+pub(super) fn validate_guest_path_component(component: &str) -> io::Result<()> {
     let stem = component
         .split('.')
         .next()
