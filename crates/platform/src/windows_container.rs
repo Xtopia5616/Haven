@@ -76,14 +76,17 @@ impl WindowsContainerLayer {
 /// Closed HCS configuration builder for a single Hyper-V-isolated execution.
 ///
 /// `storage_sandbox_size_bytes` is serialized as HCS `StorageSandboxSize` in
-/// bytes. A successful serialization does not prove that a target host
-/// enforces that size; runtime over-quota Windows verification remains
+/// bytes and must match the formatted per-attempt writable-layer VHDX. The
+/// document also carries that attempt directory as `LayerFolderPath`. A
+/// successful serialization does not prove that a target host mounts or
+/// enforces the VHDX capacity; runtime over-quota Windows verification remains
 /// mandatory before this backend is connected to production tool execution.
 #[derive(Debug, Clone)]
 pub struct WindowsContainerSandboxConfig {
     name: String,
     storage_sandbox_size_bytes: u64,
     layers: Vec<WindowsContainerLayer>,
+    writable_layer_folder: Option<PathBuf>,
     workspace_input: Option<DirectoryCapability>,
 }
 
@@ -112,8 +115,46 @@ impl WindowsContainerSandboxConfig {
             name,
             storage_sandbox_size_bytes,
             layers,
+            writable_layer_folder: None,
             workspace_input: None,
         })
+    }
+
+    /// Bind the per-attempt writable layer after the broker formatter has
+    /// verified it. The caller must keep the layer owner alive until HCS has
+    /// stopped using this path.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the broker provider will consume this binding after output extraction is implemented"
+        )
+    )]
+    pub(crate) fn with_bounded_writable_layer(
+        mut self,
+        layer: &scratch_vhd::BoundedScratchVhd,
+    ) -> io::Result<Self> {
+        if self.writable_layer_folder.is_some() {
+            return Err(invalid_config(
+                "container configuration already has a writable layer",
+            ));
+        }
+        if layer.maximum_size_bytes() != self.storage_sandbox_size_bytes {
+            return Err(invalid_config(
+                "writable layer capacity does not match the requested storage ceiling",
+            ));
+        }
+        let path = layer.layer_path()?.to_path_buf();
+        validate_local_absolute_path(&path, "writable layer path")?;
+        self.writable_layer_folder = Some(path);
+        Ok(self)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_writable_layer_folder(mut self, path: PathBuf) -> io::Result<Self> {
+        validate_local_absolute_path(&path, "test writable layer path")?;
+        self.writable_layer_folder = Some(path);
+        Ok(self)
     }
 
     #[cfg(windows)]
@@ -151,6 +192,13 @@ impl WindowsContainerSandboxConfig {
 
     /// Serialize the broker's fixed HCS v1 container document.
     pub fn to_hcs_json(&self) -> io::Result<String> {
+        let writable_layer_folder = self.writable_layer_folder.as_ref().ok_or_else(|| {
+            invalid_config("container configuration requires a formatted writable layer")
+        })?;
+        validate_local_absolute_path(writable_layer_folder, "writable layer path")?;
+        let writable_layer_folder = writable_layer_folder
+            .to_str()
+            .ok_or_else(|| invalid_config("writable layer path is not valid Unicode"))?;
         let layers =
             self.layers
                 .iter()
@@ -186,6 +234,7 @@ impl WindowsContainerSandboxConfig {
             system_type: "Container",
             name: &self.name,
             owner: HCS_OWNER,
+            layer_folder_path: writable_layer_folder,
             layers,
             storage_sandbox_size: self.storage_sandbox_size_bytes,
             hyper_v_partition: true,
@@ -205,6 +254,8 @@ struct HcsV1ContainerConfig<'a> {
     name: &'a str,
     #[serde(rename = "Owner")]
     owner: &'static str,
+    #[serde(rename = "LayerFolderPath")]
+    layer_folder_path: &'a str,
     #[serde(rename = "Layers")]
     layers: Vec<HcsLayer>,
     #[serde(rename = "StorageSandboxSize")]
@@ -279,7 +330,9 @@ mod tests {
             1024 * 1024 * 1024,
             vec![layer],
         )
-        .expect("positive storage cap and base layer are required");
+        .expect("positive storage cap and base layer are required")
+        .with_test_writable_layer_folder(PathBuf::from(r"C:\Haven\runtime\attempt\layer"))
+        .expect("test writable layer path is local");
 
         let value: Value =
             serde_json::from_str(&config.to_hcs_json().unwrap()).expect("valid HCS JSON");
@@ -287,6 +340,7 @@ mod tests {
         assert_eq!(value["Owner"], HCS_OWNER);
         assert_eq!(value["HvPartition"], true);
         assert_eq!(value["TerminateOnLastHandleClosed"], true);
+        assert_eq!(value["LayerFolderPath"], r"C:\Haven\runtime\attempt\layer");
         assert_eq!(value["StorageSandboxSize"], 1024 * 1024 * 1024u64);
         assert_eq!(value["Layers"].as_array().unwrap().len(), 1);
         assert_eq!(
@@ -306,6 +360,7 @@ mod tests {
             keys,
             BTreeSet::from([
                 "HvPartition",
+                "LayerFolderPath",
                 "Layers",
                 "Name",
                 "Owner",
@@ -327,6 +382,8 @@ mod tests {
             vec![test_layer()],
         )
         .expect("valid base config")
+        .with_test_writable_layer_folder(PathBuf::from(r"C:\Haven\runtime\attempt\layer"))
+        .expect("test writable layer path is local")
         .with_read_only_workspace_input(staging)
         .expect("read-only input is accepted");
 
@@ -371,6 +428,39 @@ mod tests {
         assert!(WindowsContainerSandboxConfig::new("run", 0, vec![test_layer()]).is_err());
         assert!(WindowsContainerSandboxConfig::new("run", 1, Vec::new()).is_err());
         assert!(WindowsContainerSandboxConfig::new("run\n", 1, vec![test_layer()]).is_err());
+    }
+
+    #[test]
+    fn hcs_config_requires_a_formatted_attempt_layer_before_serializing() {
+        let config = WindowsContainerSandboxConfig::new("run", 1, vec![test_layer()])
+            .expect("base config is valid");
+        assert!(config.to_hcs_json().is_err());
+        assert!(
+            config
+                .with_test_writable_layer_folder(PathBuf::from(r"\\server\share\layer"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn hcs_config_rejects_unformatted_or_mismatched_scratch_layers() {
+        let temp = tempfile::tempdir().expect("scratch root is created");
+        let root = DirectoryCapability::open(temp.path()).expect("scratch root is pinned");
+        let quota = 16 * 1024 * 1024;
+        let scratch = scratch_vhd::BoundedScratchVhd::create(root, quota)
+            .expect("bounded VHDX can be created without formatting privilege");
+        let matching = WindowsContainerSandboxConfig::new("run", quota, vec![test_layer()])
+            .expect("base config is valid");
+        let mismatched = WindowsContainerSandboxConfig::new("run", quota + 512, vec![test_layer()])
+            .expect("base config is valid");
+
+        assert!(
+            matching
+                .clone()
+                .with_bounded_writable_layer(&scratch)
+                .is_err()
+        );
+        assert!(mismatched.with_bounded_writable_layer(&scratch).is_err());
     }
 
     #[test]

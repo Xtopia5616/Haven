@@ -740,6 +740,10 @@ mod tests {
             ],
         )
         .expect("test config is valid")
+        .with_test_writable_layer_folder(std::path::PathBuf::from(
+            r"C:\Haven\runtime\attempt\layer",
+        ))
+        .expect("test writable layer path is valid")
     }
 
     #[test]

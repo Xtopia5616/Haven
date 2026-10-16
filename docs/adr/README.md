@@ -1233,3 +1233,4 @@
 - [1243：由 HCS process owner 管理 guest 进程与 I/O handles](1243-own-hcs-guest-process-handles.md)
 - [1244：限制 HCS guest stdout/stderr 的轮询读取](1244-bound-hcs-guest-output-polling.md)
 - [1245：通过有界差异流重建 broker 执行输出树](1245-reconstruct-broker-output-from-bounded-diff-stream.md)
+- [1246：将经验证的 attempt scratch 绑定到 HCS writable layer folder](1246-bind-bounded-scratch-to-hcs-layer-folder.md)
