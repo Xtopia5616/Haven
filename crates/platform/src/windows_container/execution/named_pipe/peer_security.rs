@@ -1,5 +1,7 @@
 //! Windows SID, token, ACL, and SCM identity operations for the broker pipe.
 
+mod wts_identity;
+
 use super::super::BROKER_SERVICE_NAME;
 use super::{
     BrokerPeerIdentity, BrokerPeerPolicy, OwnedHandle, invalid_data, invalid_input,
@@ -319,6 +321,18 @@ impl Drop for LocalString {
     fn drop(&mut self) {
         unsafe { LocalFree(self.0.cast()) };
     }
+}
+
+/// Identity snapshot read from the unique active WTS user token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ActiveSessionIdentity {
+    pub(super) session_id: u32,
+    pub(super) user_sid: Vec<u8>,
+    pub(super) logon_sid: Vec<u8>,
+}
+
+pub(super) fn query_unique_active_session() -> io::Result<ActiveSessionIdentity> {
+    wts_identity::query_unique_active_session()
 }
 
 pub(super) fn verify_pipe_server(handle: HANDLE) -> io::Result<()> {

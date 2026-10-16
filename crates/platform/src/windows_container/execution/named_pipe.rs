@@ -14,8 +14,9 @@ use super::broker_protocol::{
     MAX_CONTROL_PAYLOAD_BYTES, negotiate_version,
 };
 use peer_security::{
-    PipeSecurityDescriptor, current_process_identity, impersonate_and_read_peer,
-    validate_sid_bytes, verify_current_service_identity, verify_pipe_server,
+    ActiveSessionIdentity, PipeSecurityDescriptor, current_process_identity,
+    impersonate_and_read_peer, query_unique_active_session, validate_sid_bytes,
+    verify_current_service_identity, verify_pipe_server,
 };
 use std::io::{self, Read, Write};
 use std::mem::size_of;
@@ -56,7 +57,30 @@ pub(crate) struct BrokerPeerPolicy {
 }
 
 impl BrokerPeerPolicy {
+    /// Build the listener policy from the sole active interactive WTS session.
+    /// The service identity is supplied by the broker's fixed SCM configuration;
+    /// user and logon SIDs are never accepted from a renderer or pipe payload.
+    pub(crate) fn from_active_session(service_sid: Vec<u8>) -> io::Result<Self> {
+        validate_sid_bytes(&service_sid)?;
+        let ActiveSessionIdentity {
+            session_id,
+            user_sid,
+            logon_sid,
+        } = query_unique_active_session()?;
+        Self::from_parts(user_sid, logon_sid, session_id, service_sid)
+    }
+
+    #[cfg(test)]
     pub(crate) fn new(
+        user_sid: Vec<u8>,
+        logon_sid: Vec<u8>,
+        session_id: u32,
+        service_sid: Vec<u8>,
+    ) -> io::Result<Self> {
+        Self::from_parts(user_sid, logon_sid, session_id, service_sid)
+    }
+
+    fn from_parts(
         user_sid: Vec<u8>,
         logon_sid: Vec<u8>,
         session_id: u32,
@@ -84,6 +108,47 @@ impl BrokerPeerPolicy {
         {
             return Err(permission_denied(
                 "broker named-pipe peer is not authorized",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Client-side identity proof derived from the current process token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BrokerClientPolicy {
+    user_sid: Vec<u8>,
+    logon_sid: Vec<u8>,
+    session_id: u32,
+}
+
+impl BrokerClientPolicy {
+    /// Bind the client to its current Windows logon token without accepting
+    /// identity fields from its caller.
+    pub(crate) fn for_current_process() -> io::Result<Self> {
+        let identity = current_process_identity()?;
+        validate_sid_bytes(&identity.user_sid)?;
+        validate_sid_bytes(&identity.logon_sid)?;
+        if identity.session_id == 0 {
+            return Err(invalid_input(
+                "broker client must run in an interactive session",
+            ));
+        }
+        Ok(Self {
+            user_sid: identity.user_sid,
+            logon_sid: identity.logon_sid,
+            session_id: identity.session_id,
+        })
+    }
+
+    fn authorize(&self, identity: &BrokerPeerIdentity) -> io::Result<()> {
+        if identity.process_id == 0
+            || identity.session_id != self.session_id
+            || identity.user_sid != self.user_sid
+            || identity.logon_sid != self.logon_sid
+        {
+            return Err(permission_denied(
+                "broker client process identity is invalid",
             ));
         }
         Ok(())
@@ -230,7 +295,7 @@ pub(crate) struct BrokerPipeClient {
 }
 
 impl BrokerPipeClient {
-    pub(crate) fn connect(policy: &BrokerPeerPolicy) -> io::Result<Self> {
+    pub(crate) fn connect(policy: &BrokerClientPolicy) -> io::Result<Self> {
         let current = current_process_identity()?;
         policy.authorize(&current)?;
         let handle = connect_client_pipe(BROKER_PIPE_NAME)?;
@@ -515,6 +580,13 @@ mod tests {
         let mut missing_pid = identity;
         missing_pid.process_id = 0;
         assert!(policy.authorize(&missing_pid).is_err());
+    }
+
+    #[test]
+    fn client_policy_derives_identity_from_its_process_token() {
+        let identity = current_process_identity().unwrap();
+        let policy = BrokerClientPolicy::for_current_process().unwrap();
+        assert!(policy.authorize(&identity).is_ok());
     }
 
     #[test]
