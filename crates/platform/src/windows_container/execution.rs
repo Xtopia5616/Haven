@@ -47,8 +47,8 @@ mod broker_provider;
 mod quota_attestation;
 
 /// Opaque proof that startup verified both the fixed Node runtime and this
-/// exact administrator-pinned package entrypoint. Only quota attestation can
-/// mint this token.
+/// exact administrator-pinned MCP package file tree. Only quota attestation
+/// can mint this token.
 #[cfg(windows)]
 pub(crate) struct McpNodePackageProof {
     package: image_catalog::McpNodePackageProfile,

@@ -411,7 +411,7 @@ fn parse_probe_output(stdout: &[u8]) -> io::Result<QuotaProbeEvidence> {
     let mut package_evidence_valid = true;
     for line in lines {
         let parsed = line
-            .strip_prefix("HAVEN_MCP_PACKAGE_ATTESTED_V1:")
+            .strip_prefix("HAVEN_MCP_PACKAGE_ATTESTED_V2:")
             .and_then(|value| value.split_once(':'));
         let Some((id, status)) = parsed else {
             package_evidence_valid = false;
@@ -604,13 +604,13 @@ mod tests {
     }
 
     #[test]
-    fn mcp_package_digest_attestation_is_independent_and_bound_to_configured_ids() {
+    fn mcp_package_tree_attestation_is_independent_and_bound_to_configured_ids() {
         let quota = WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
         let filesystem = package_profile("filesystem");
         let git = package_profile("git");
         let packages = [filesystem, git];
         let stdout = format!(
-            "HAVEN_STORAGE_QUOTA_ATTESTED_V4:{}:0:1\r\nHAVEN_MCP_PACKAGE_ATTESTED_V1:filesystem:1\r\nHAVEN_MCP_PACKAGE_ATTESTED_V1:git:0\r\n",
+            "HAVEN_STORAGE_QUOTA_ATTESTED_V4:{}:0:1\r\nHAVEN_MCP_PACKAGE_ATTESTED_V2:filesystem:1\r\nHAVEN_MCP_PACKAGE_ATTESTED_V2:git:0\r\n",
             quota / 2
         );
         let evidence = validate_probe_evidence(
@@ -644,9 +644,10 @@ mod tests {
         let quota = WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
         let package = package_profile("filesystem");
         for suffix in [
-            "HAVEN_MCP_PACKAGE_ATTESTED_V1:filesystem:1\nHAVEN_MCP_PACKAGE_ATTESTED_V1:filesystem:1\n",
-            "HAVEN_MCP_PACKAGE_ATTESTED_V1:unknown:1\n",
-            "HAVEN_MCP_PACKAGE_ATTESTED_V1:filesystem:yes\n",
+            "HAVEN_MCP_PACKAGE_ATTESTED_V2:filesystem:1\nHAVEN_MCP_PACKAGE_ATTESTED_V2:filesystem:1\n",
+            "HAVEN_MCP_PACKAGE_ATTESTED_V2:unknown:1\n",
+            "HAVEN_MCP_PACKAGE_ATTESTED_V2:filesystem:yes\n",
+            "HAVEN_MCP_PACKAGE_ATTESTED_V1:filesystem:1\n",
             "unexpected output\n",
         ] {
             let stdout = format!(

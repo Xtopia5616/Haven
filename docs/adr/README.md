@@ -1275,3 +1275,4 @@
 - [1285：在 broker service 中监督 MCP generation](1285-supervise-brokered-mcp-generations.md)
 - [1286：将受管 MCP stdio generation 接入容器 broker](1286-connect-managed-mcp-to-container-broker.md)
 - [1287：将工作区绑定的 MCP 调用隔离为单次 guest](1287-isolate-workspace-bound-mcp-invocations.md)
+- [1288：证明完整受管 MCP package 文件树](1288-verify-managed-mcp-package-trees.md)

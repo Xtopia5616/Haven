@@ -52,17 +52,27 @@ $mcp_package_profiles = @(
 )
 {skill_runtime_probe}
 {mcp_node_runtime_probe}
-foreach ($package_profile in $mcp_package_profiles) {
-    $package_id, $package_entrypoint, $expected_package_hash = $package_profile.Split([char]'|')
-    $package_path = '{GUEST_MCP_PACKAGES_ROOT}' + '\' + $package_id + '\' + $package_entrypoint
-    $package_attested = 0
+. {mcp_package_tree_function}
+function Test-HavenMcpPackageTree([string]$PackageId, [string]$Entrypoint, [string]$ExpectedTreeHash) {
     try {
-        $package_hash = (Get-FileHash -LiteralPath $package_path -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($package_hash -ceq $expected_package_hash) { $package_attested = 1 }
+        $package_root = Join-Path '{GUEST_MCP_PACKAGES_ROOT}' $PackageId
+        $package_collection_root = [System.IO.Directory]::GetParent($package_root).FullName
+        $haven_root = [System.IO.Directory]::GetParent($package_collection_root).FullName
+        $drive_root = [System.IO.Path]::GetPathRoot($package_root)
+        foreach ($ancestor in @($package_collection_root, $haven_root, $drive_root)) {
+            if (Test-Path -LiteralPath (Join-Path $ancestor 'node_modules')) { return $false }
+        }
+        $tree_hash = Get-HavenMcpPackageTreeDigest -PackageRoot $package_root -Entrypoint $Entrypoint
+        return [string]::Equals($tree_hash, $ExpectedTreeHash, [System.StringComparison]::Ordinal)
     } catch {
-        $package_attested = 0
+        return $false
     }
-    $mcp_package_attestations.Add(('HAVEN_MCP_PACKAGE_ATTESTED_V1:{0}:{1}' -f $package_id, $package_attested))
+}
+foreach ($package_profile in $mcp_package_profiles) {
+    $package_id, $package_entrypoint, $expected_tree_hash = $package_profile.Split([char]'|')
+    $package_attested = 0
+    if (Test-HavenMcpPackageTree $package_id $package_entrypoint $expected_tree_hash) { $package_attested = 1 }
+    $mcp_package_attestations.Add(('HAVEN_MCP_PACKAGE_ATTESTED_V2:{0}:{1}' -f $package_id, $package_attested))
 }
 try {
     $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -165,7 +175,11 @@ impl HcsGuestProcessParameters {
             .replace("{GUEST_MCP_PACKAGES_ROOT}", GUEST_MCP_PACKAGES_ROOT)
             .replace("{skill_runtime_probe}", &runtime_probe)
             .replace("{mcp_node_runtime_probe}", &mcp_node_runtime_probe)
-            .replace("{mcp_package_profiles}", &mcp_package_profiles);
+            .replace("{mcp_package_profiles}", &mcp_package_profiles)
+            .replace(
+                "{mcp_package_tree_function}",
+                include_str!("mcp_package_tree.ps1"),
+            );
         Ok(Self {
             document: ProcessParametersDocument {
                 application_name: POWERSHELL_APPLICATION,
@@ -308,9 +322,20 @@ fn mcp_node_runtime_probe_script(version: &str, executable_sha256: &[u8; 32]) ->
         r#"try {{
     $node_path = '{MCP_NODE_APPLICATION}'
     $node_hash = (Get-FileHash -LiteralPath $node_path -Algorithm SHA256).Hash.ToLowerInvariant()
-    $node_version = (& $node_path --version 2>$null | Out-String).Trim()
-    if ($LASTEXITCODE -eq 0 -and $node_version -ceq 'v{version}' -and $node_hash -ceq '{digest}') {{
-        $mcp_node_runtime_attested = 1
+    if ($node_hash -ceq '{digest}') {{
+        $node_version = (& $node_path --version 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and $node_version -ceq 'v{version}') {{
+            $module_global_paths = (& $node_path -p "require('module').globalPaths.join('\n')" 2>$null | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0) {{
+                $module_globals_safe = $true
+                foreach ($module_path in ($module_global_paths -split '\r?\n')) {{
+                    if (-not [string]::IsNullOrWhiteSpace($module_path) -and (Test-Path -LiteralPath $module_path -PathType Container)) {{
+                        $module_globals_safe = $false
+                    }}
+                }}
+                if ($module_globals_safe) {{ $mcp_node_runtime_attested = 1 }}
+            }}
+        }}
     }}
 }} catch {{
     $mcp_node_runtime_attested = 0
@@ -322,7 +347,7 @@ fn mcp_node_package_catalog_entry(
     package: &super::execution::image_catalog::McpNodePackageProfile,
 ) -> String {
     let digest = package
-        .entrypoint_sha256()
+        .tree_sha256()
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
@@ -711,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn quota_probe_checks_catalog_entrypoint_digests_with_bounded_command_size() {
+    fn quota_probe_checks_bounded_catalog_package_trees_with_fixed_module_roots() {
         let quota = super::super::execution::WORKSPACE_WRITE_STORAGE_QUOTA_BYTES;
         let package = super::super::execution::image_catalog::McpNodePackageProfile::test_profile(
             "filesystem",
@@ -742,10 +767,23 @@ mod tests {
             .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
             .collect::<Vec<_>>();
         let script = String::from_utf16(&units).unwrap();
-        assert!(script.contains("$package_path = 'C:\\Haven\\McpPackages'"));
+        assert!(script.contains("$package_root = Join-Path 'C:\\Haven\\McpPackages' $PackageId"));
         assert!(script.contains("'filesystem|server.mjs|"));
-        assert!(script.contains("HAVEN_MCP_PACKAGE_ATTESTED_V1:{0}:{1}"));
+        assert!(script.contains("HAVEN_MCP_PACKAGE_ATTESTED_V2:{0}:{1}"));
         assert!(script.contains(&"ab".repeat(32)));
+        assert!(script.contains("Get-FileHash -LiteralPath $fullPath -Algorithm SHA256"));
+        assert!(script.contains(
+            "System.Array]::Sort($orderedRecords, [System.StringComparer]::OrdinalIgnoreCase)"
+        ));
+        assert!(script.contains("function Get-HavenMcpPackageTreeDigest"));
+        assert!(script.contains(
+            "foreach ($ancestor in @($package_collection_root, $haven_root, $drive_root))"
+        ));
+        assert!(script.contains("$maxEntries = 8192"));
+        assert!(script.contains("$maxFiles = 4096"));
+        assert!(script.contains("$maxRelativePathUnits = 1024"));
+        assert!(script.contains("$maxPackageBytes = 128MB"));
+        assert!(script.contains("$file.Length -gt ($maxPackageBytes - $totalBytes)"));
         assert!(!script.contains("filesystem\\1.2.3"));
 
         let packages = (0..super::super::execution::image_catalog::MAX_MCP_NODE_PACKAGES)
@@ -782,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_node_runtime_probe_uses_only_the_fixed_executable_and_pinned_version_and_digest() {
+    fn mcp_node_runtime_probe_hashes_before_execution_and_rejects_global_modules() {
         let script = mcp_node_runtime_probe_script(
             super::super::execution::MCP_NODE_RUNTIME_VERSION,
             &[
@@ -797,6 +835,13 @@ mod tests {
             script.contains("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
         );
         assert!(script.contains("$LASTEXITCODE -eq 0"));
+        assert!(script.contains("require('module').globalPaths.join"));
+        assert!(script.contains("Test-Path -LiteralPath $module_path -PathType Container"));
+        let digest_gate = script.find("if ($node_hash -ceq").unwrap();
+        let version_execution = script
+            .find("$node_version = (& $node_path --version")
+            .unwrap();
+        assert!(digest_gate < version_execution);
         assert!(script.contains("$mcp_node_runtime_attested = 1"));
     }
 

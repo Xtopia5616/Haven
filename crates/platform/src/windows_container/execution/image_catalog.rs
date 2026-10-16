@@ -18,7 +18,7 @@ use std::path::Path;
 const IMAGE_CATALOG_DIRECTORY: &str = "ContainerImages";
 const LAYERS_DIRECTORY: &str = "layers";
 const CATALOG_FILE: &str = "catalog.json";
-const CATALOG_VERSION: u32 = 5;
+const CATALOG_VERSION: u32 = 6;
 const MAX_CATALOG_BYTES: u64 = 64 * 1024;
 const MAX_IMAGE_LAYERS: usize = 64;
 const MAX_LAYER_DIRECTORY_NAME: usize = 64;
@@ -74,13 +74,14 @@ impl McpNodeRuntimeProfile {
 
 /// Administrator-pinned Node package identity baked into the protected image.
 /// The entrypoint is a leaf `.mjs` filename beneath the package's fixed guest
-/// directory; this descriptor never carries a host path or process command.
+/// directory. `tree_sha256` covers every regular file and its relative path;
+/// this descriptor never carries a host path or process command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct McpNodePackageProfile {
     id: String,
     version: String,
     entrypoint: String,
-    entrypoint_sha256: [u8; 32],
+    tree_sha256: [u8; 32],
 }
 
 // Startup attestation and the brokered MCP launcher consume this profile.
@@ -98,8 +99,8 @@ impl McpNodePackageProfile {
         &self.entrypoint
     }
 
-    pub(crate) fn entrypoint_sha256(&self) -> &[u8; 32] {
-        &self.entrypoint_sha256
+    pub(crate) fn tree_sha256(&self) -> &[u8; 32] {
+        &self.tree_sha256
     }
 
     #[cfg(test)]
@@ -107,13 +108,13 @@ impl McpNodePackageProfile {
         id: &str,
         version: &str,
         entrypoint: &str,
-        entrypoint_sha256: [u8; 32],
+        tree_sha256: [u8; 32],
     ) -> Self {
         Self {
             id: id.to_owned(),
             version: version.to_owned(),
             entrypoint: entrypoint.to_owned(),
-            entrypoint_sha256,
+            tree_sha256,
         }
     }
 }
@@ -160,7 +161,7 @@ struct CatalogMcpNodePackage {
     id: String,
     version: String,
     entrypoint: String,
-    entrypoint_sha256: String,
+    tree_sha256: String,
 }
 
 impl BrokerContainerImageCatalog {
@@ -366,12 +367,12 @@ fn parse_mcp_node_package(package: CatalogMcpNodePackage) -> io::Result<McpNodeP
     {
         return Err(invalid_data("container MCP package profile is invalid"));
     }
-    let entrypoint_sha256 = parse_sha256(&package.entrypoint_sha256)?;
+    let tree_sha256 = parse_sha256(&package.tree_sha256)?;
     Ok(McpNodePackageProfile {
         id: package.id,
         version: package.version,
         entrypoint: package.entrypoint,
-        entrypoint_sha256,
+        tree_sha256,
     })
 }
 
@@ -478,7 +479,7 @@ mod tests {
     #[test]
     fn catalog_preserves_hcs_layer_order_and_builds_a_pinned_config() {
         let root = catalog_root(
-            r#"{"version":5,"layers":[{"id":"child-id","directory":"child"},{"id":"base-id","directory":"base"}]}"#,
+            r#"{"version":6,"layers":[{"id":"child-id","directory":"child"},{"id":"base-id","directory":"base"}]}"#,
             &["base", "child"],
         );
         let catalog =
@@ -495,10 +496,10 @@ mod tests {
     #[test]
     fn catalog_rejects_unknown_fields_and_unsupported_versions() {
         for manifest in [
-            r#"{"version":5,"layers":[{"id":"base","directory":"base","path":"C:\\evil"}]}"#,
+            r#"{"version":6,"layers":[{"id":"base","directory":"base","path":"C:\\evil"}]}"#,
             r#"{"version":2,"layers":[{"id":"base","directory":"base"}]}"#,
             r#"{"version":4,"layers":[{"id":"base","directory":"base"}]}"#,
-            r#"{"version":6,"layers":[{"id":"base","directory":"base"}]}"#,
+            r#"{"version":5,"layers":[{"id":"base","directory":"base"}]}"#,
             r#"{"version":1,"layers":[{"id":"base","directory":"base"}]}"#,
         ] {
             let root = catalog_root(manifest, &["base"]);
@@ -512,7 +513,7 @@ mod tests {
     #[test]
     fn catalog_rejects_traversal_duplicate_ids_and_unlisted_directories() {
         let traversal = catalog_root(
-            r#"{"version":5,"layers":[{"id":"base","directory":"../base"}]}"#,
+            r#"{"version":6,"layers":[{"id":"base","directory":"../base"}]}"#,
             &["base"],
         );
         assert!(
@@ -521,7 +522,7 @@ mod tests {
         );
 
         let duplicate_ids = catalog_root(
-            r#"{"version":5,"layers":[{"id":"same","directory":"base"},{"id":"SAME","directory":"child"}]}"#,
+            r#"{"version":6,"layers":[{"id":"same","directory":"base"},{"id":"SAME","directory":"child"}]}"#,
             &["base", "child"],
         );
         assert!(
@@ -532,7 +533,7 @@ mod tests {
         );
 
         let duplicate_directories = catalog_root(
-            r#"{"version":5,"layers":[{"id":"base-one","directory":"base"},{"id":"base-two","directory":"BASE"}]}"#,
+            r#"{"version":6,"layers":[{"id":"base-one","directory":"base"},{"id":"base-two","directory":"BASE"}]}"#,
             &["base", "child"],
         );
         assert!(
@@ -543,7 +544,7 @@ mod tests {
         );
 
         let root = catalog_root(
-            r#"{"version":5,"layers":[{"id":"base","directory":"base"}]}"#,
+            r#"{"version":6,"layers":[{"id":"base","directory":"base"}]}"#,
             &["base", "unlisted"],
         );
         assert!(
@@ -555,7 +556,7 @@ mod tests {
     #[test]
     fn catalog_rejects_missing_layer_directories() {
         let root = catalog_root(
-            r#"{"version":5,"layers":[{"id":"base","directory":"missing"}]}"#,
+            r#"{"version":6,"layers":[{"id":"base","directory":"missing"}]}"#,
             &["base"],
         );
         assert!(
@@ -575,9 +576,9 @@ mod tests {
     }
 
     #[test]
-    fn catalog_v5_pins_optional_skill_python_version_and_executable_digest() {
+    fn catalog_v6_pins_optional_skill_python_version_and_executable_digest() {
         let root = catalog_root(
-            r#"{"version":5,"layers":[{"id":"base","directory":"base"}],"skill_python_runtime":{"profile":"haven-python-skill-v1","version":"3.13.2","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}"#,
+            r#"{"version":6,"layers":[{"id":"base","directory":"base"}],"skill_python_runtime":{"profile":"haven-python-skill-v1","version":"3.13.2","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}"#,
             &["base"],
         );
         let catalog =
@@ -605,7 +606,7 @@ mod tests {
             r#"{"profile":"haven-python-skill-v1","version":"3.13.2","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","application":"C:\\evil.exe"}"#,
         ] {
             let manifest = format!(
-                r#"{{"version":5,"layers":[{{"id":"base","directory":"base"}}],"skill_python_runtime":{runtime}}}"#
+                r#"{{"version":6,"layers":[{{"id":"base","directory":"base"}}],"skill_python_runtime":{runtime}}}"#
             );
             let root = catalog_root(&manifest, &["base"]);
             assert!(
@@ -619,7 +620,7 @@ mod tests {
     #[test]
     fn catalog_without_skill_profile_remains_shell_usable_but_has_no_skill_runtime() {
         let root = catalog_root(
-            r#"{"version":5,"layers":[{"id":"base","directory":"base"}]}"#,
+            r#"{"version":6,"layers":[{"id":"base","directory":"base"}]}"#,
             &["base"],
         );
         let catalog =
@@ -629,13 +630,13 @@ mod tests {
     }
 
     #[test]
-    fn catalog_v5_pins_the_fixed_mcp_node_runtime_profile() {
+    fn catalog_v6_pins_the_fixed_mcp_node_runtime_profile() {
         assert_eq!(
             super::super::MCP_NODE_RUNTIME_VERSION,
             include_str!("../../../../../.node-version").trim()
         );
         let root = catalog_root(
-            r#"{"version":5,"layers":[{"id":"base","directory":"base"}],"mcp_node_runtime":{"profile":"haven-mcp-node-v1","version":"24.21.0","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}"#,
+            r#"{"version":6,"layers":[{"id":"base","directory":"base"}],"mcp_node_runtime":{"profile":"haven-mcp-node-v1","version":"24.21.0","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}"#,
             &["base"],
         );
         let catalog =
@@ -656,7 +657,7 @@ mod tests {
             r#"{"profile":"haven-mcp-node-v1","version":"24.21.0","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","application":"C:\\evil.exe"}"#,
         ] {
             let manifest = format!(
-                r#"{{"version":5,"layers":[{{"id":"base","directory":"base"}}],"mcp_node_runtime":{runtime}}}"#
+                r#"{{"version":6,"layers":[{{"id":"base","directory":"base"}}],"mcp_node_runtime":{runtime}}}"#
             );
             let root = catalog_root(&manifest, &["base"]);
             assert!(
@@ -670,7 +671,7 @@ mod tests {
     #[test]
     fn catalog_without_mcp_node_profile_has_no_runtime_capability() {
         let root = catalog_root(
-            r#"{"version":5,"layers":[{"id":"base","directory":"base"}]}"#,
+            r#"{"version":6,"layers":[{"id":"base","directory":"base"}]}"#,
             &["base"],
         );
         let catalog =
@@ -680,9 +681,9 @@ mod tests {
     }
 
     #[test]
-    fn catalog_v5_maps_admin_package_id_to_a_closed_guest_entrypoint_and_digest() {
+    fn catalog_v6_maps_admin_package_id_to_a_closed_guest_entrypoint_and_tree_digest() {
         let root = catalog_root(
-            r#"{"version":5,"layers":[{"id":"base","directory":"base"}],"mcp_node_runtime":{"profile":"haven-mcp-node-v1","version":"24.21.0","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},"mcp_node_packages":[{"id":"filesystem","version":"1.2.3","entrypoint":"server.mjs","entrypoint_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}]}"#,
+            r#"{"version":6,"layers":[{"id":"base","directory":"base"}],"mcp_node_runtime":{"profile":"haven-mcp-node-v1","version":"24.21.0","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},"mcp_node_packages":[{"id":"filesystem","version":"1.2.3","entrypoint":"server.mjs","tree_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}]}"#,
             &["base"],
         );
         let catalog =
@@ -694,7 +695,7 @@ mod tests {
         assert_eq!(package.version(), "1.2.3");
         assert_eq!(package.entrypoint(), "server.mjs");
         assert_eq!(
-            package.entrypoint_sha256(),
+            package.tree_sha256(),
             &parse_sha256("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
                 .unwrap()
         );
@@ -703,9 +704,22 @@ mod tests {
     }
 
     #[test]
+    fn catalog_rejects_v5_package_entrypoint_only_proofs() {
+        let root = catalog_root(
+            r#"{"version":5,"layers":[{"id":"base","directory":"base"}],"mcp_node_runtime":{"profile":"haven-mcp-node-v1","version":"24.21.0","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},"mcp_node_packages":[{"id":"filesystem","version":"1.2.3","entrypoint":"server.mjs","entrypoint_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}]}"#,
+            &["base"],
+        );
+        assert!(
+            BrokerContainerImageCatalog::load(DirectoryCapability::open(root.path()).unwrap())
+                .is_err(),
+            "catalog v5 does not prove the package dependency tree"
+        );
+    }
+
+    #[test]
     fn catalog_rejects_mcp_packages_without_the_fixed_node_runtime() {
         let root = catalog_root(
-            r#"{"version":5,"layers":[{"id":"base","directory":"base"}],"mcp_node_packages":[{"id":"filesystem","version":"1.2.3","entrypoint":"server.mjs","entrypoint_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}]}"#,
+            r#"{"version":6,"layers":[{"id":"base","directory":"base"}],"mcp_node_packages":[{"id":"filesystem","version":"1.2.3","entrypoint":"server.mjs","tree_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}]}"#,
             &["base"],
         );
         assert!(
@@ -718,18 +732,18 @@ mod tests {
     fn catalog_rejects_unsafe_or_ambiguous_mcp_package_descriptors() {
         let runtime = r#"{"profile":"haven-mcp-node-v1","version":"24.21.0","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
         for package in [
-            r#"{"id":"../filesystem","version":"1.2.3","entrypoint":"server.mjs","entrypoint_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}"#,
-            r#"{"id":"FileSystem","version":"1.2.3","entrypoint":"server.mjs","entrypoint_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}"#,
-            r#"{"id":"filesystem","version":"01.2.3","entrypoint":"server.mjs","entrypoint_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}"#,
-            r#"{"id":"filesystem","version":"1.2.3-beta","entrypoint":"server.mjs","entrypoint_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}"#,
-            r#"{"id":"filesystem","version":"1.2.3","entrypoint":"server.mjs","entrypoint_sha256":"short"}"#,
+            r#"{"id":"../filesystem","version":"1.2.3","entrypoint":"server.mjs","tree_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}"#,
+            r#"{"id":"FileSystem","version":"1.2.3","entrypoint":"server.mjs","tree_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}"#,
+            r#"{"id":"filesystem","version":"01.2.3","entrypoint":"server.mjs","tree_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}"#,
+            r#"{"id":"filesystem","version":"1.2.3-beta","entrypoint":"server.mjs","tree_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}"#,
+            r#"{"id":"filesystem","version":"1.2.3","entrypoint":"server.mjs","tree_sha256":"short"}"#,
             r#"{"id":"filesystem","version":"1.2.3","entrypoint":"../server.mjs"}"#,
             r#"{"id":"filesystem","version":"1.2.3","entrypoint":"CON.mjs"}"#,
             r#"{"id":"filesystem","version":"1.2.3","entrypoint":"server.js"}"#,
-            r#"{"id":"filesystem","version":"1.2.3","entrypoint":"server.mjs","entrypoint_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789","command":"node"}"#,
+            r#"{"id":"filesystem","version":"1.2.3","entrypoint":"server.mjs","tree_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789","command":"node"}"#,
         ] {
             let manifest = format!(
-                r#"{{"version":5,"layers":[{{"id":"base","directory":"base"}}],"mcp_node_runtime":{runtime},"mcp_node_packages":[{package}]}}"#
+                r#"{{"version":6,"layers":[{{"id":"base","directory":"base"}}],"mcp_node_runtime":{runtime},"mcp_node_packages":[{package}]}}"#
             );
             let root = catalog_root(&manifest, &["base"]);
             assert!(
@@ -744,7 +758,7 @@ mod tests {
     fn catalog_rejects_duplicate_mcp_package_ids_and_excessive_package_count() {
         let runtime = r#"{"profile":"haven-mcp-node-v1","version":"24.21.0","executable_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
         let duplicate = format!(
-            r#"{{"version":5,"layers":[{{"id":"base","directory":"base"}}],"mcp_node_runtime":{runtime},"mcp_node_packages":[{{"id":"filesystem","version":"1.2.3","entrypoint":"server.mjs","entrypoint_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}},{{"id":"filesystem","version":"2.0.0","entrypoint":"server.mjs","entrypoint_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}}]}}"#
+            r#"{{"version":6,"layers":[{{"id":"base","directory":"base"}}],"mcp_node_runtime":{runtime},"mcp_node_packages":[{{"id":"filesystem","version":"1.2.3","entrypoint":"server.mjs","tree_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}},{{"id":"filesystem","version":"2.0.0","entrypoint":"server.mjs","tree_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}}]}}"#
         );
         let root = catalog_root(&duplicate, &["base"]);
         assert!(
@@ -754,12 +768,12 @@ mod tests {
 
         let packages = (0..=MAX_MCP_NODE_PACKAGES)
             .map(|index| {
-                format!(r#"{{"id":"server-{index}","version":"1.0.0","entrypoint":"server.mjs","entrypoint_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}}"#)
+                format!(r#"{{"id":"server-{index}","version":"1.0.0","entrypoint":"server.mjs","tree_sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}}"#)
             })
             .collect::<Vec<_>>()
             .join(",");
         let excessive = format!(
-            r#"{{"version":5,"layers":[{{"id":"base","directory":"base"}}],"mcp_node_runtime":{runtime},"mcp_node_packages":[{packages}]}}"#
+            r#"{{"version":6,"layers":[{{"id":"base","directory":"base"}}],"mcp_node_runtime":{runtime},"mcp_node_packages":[{packages}]}}"#
         );
         let root = catalog_root(&excessive, &["base"]);
         assert!(

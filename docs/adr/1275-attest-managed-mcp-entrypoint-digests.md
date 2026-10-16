@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 catalog v5 entrypoint SHA-256、启动 probe 的独立 package 身份结果和绑定到具体 catalog profile 的 opaque proof。broker request handler 尚未使用该 proof；stdio MCP 在 `WorkspaceWrite` 下仍 fail closed。
+历史实现记录：catalog v5 entrypoint SHA-256 已由 [ADR 1288](1288-verify-managed-mcp-package-trees.md) 的 catalog v6 完整 package 文件树证明替代。broker request handler 后续接线状态见 ADR 1276–1286。
 
 ## 背景
 
