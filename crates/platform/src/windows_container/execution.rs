@@ -6,7 +6,9 @@
 //! remain with Tools and are deliberately absent from this contract.
 
 use crate::SandboxOutputReview;
-use crate::filesystem::{DirectoryCapability, DirectoryTreeCopyLimits, DirectoryTreeDiffLimits};
+use crate::filesystem::{
+    DirectoryCapability, DirectoryTreeCopyLimits, DirectoryTreeCopySummary, DirectoryTreeDiffLimits,
+};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -29,6 +31,31 @@ pub enum WindowsContainerShell {
 pub enum WindowsContainerOutputStream {
     Stdout,
     Stderr,
+}
+
+/// Authorized workspace input whose host root is not exposed to an execution
+/// provider. Providers can create only a bounded copy into private staging.
+pub struct WindowsContainerWorkspaceInput {
+    source: DirectoryCapability,
+}
+
+impl WindowsContainerWorkspaceInput {
+    pub fn new(source: DirectoryCapability) -> Self {
+        Self { source }
+    }
+
+    /// Copy the pinned source tree into an empty private staging capability.
+    /// The source root remains hidden; the caller must discard a partial
+    /// destination after any error.
+    pub fn copy_snapshot_to(
+        &self,
+        private_staging: &DirectoryCapability,
+        limits: DirectoryTreeCopyLimits,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> io::Result<DirectoryTreeCopySummary> {
+        self.source
+            .copy_tree_to(private_staging, limits, is_cancelled)
+    }
 }
 
 /// Per-attempt limits supplied by the Tools owner and independently enforced
@@ -236,17 +263,19 @@ impl WindowsContainerExecutionResult {
 /// OS/broker implementation for one already-authorized Shell attempt.
 ///
 /// Implementations must finish draining/terminating the guest process tree
-/// before returning. They receive no proof or session identity. `workspace`
-/// is a pinned capability; its absolute root must never cross broker IPC.
-/// Output callbacks must never receive more than the request's per-stream
-/// limit. Implementations must count bytes before forwarding a chunk and fail
-/// the execution if the limit would be exceeded. `Err` on cancellation,
-/// timeout, staging failure, or unproven quota always fails the execution.
+/// before returning. They receive no proof or session identity. The source
+/// workspace root is hidden behind `WindowsContainerWorkspaceInput`; only a
+/// bounded copy can be made into private staging. Absolute paths must never
+/// cross broker IPC. Output callbacks must never receive more than the
+/// request's per-stream limit. Implementations must count bytes before
+/// forwarding a chunk and fail the execution if the limit would be exceeded.
+/// `Err` on cancellation, timeout, staging failure, or unproven quota always
+/// fails the execution.
 pub trait WindowsContainerExecutionPort: private::Sealed + Send + Sync {
     fn execute(
         &self,
         request: &WindowsContainerExecutionRequest,
-        workspace: &DirectoryCapability,
+        workspace: &WindowsContainerWorkspaceInput,
         is_cancelled: &mut dyn FnMut() -> bool,
         on_output: &mut dyn FnMut(WindowsContainerOutputStream, &[u8]),
     ) -> io::Result<WindowsContainerExecutionResult>;
@@ -314,7 +343,7 @@ mod tests {
         fn execute(
             &self,
             request: &WindowsContainerExecutionRequest,
-            _workspace: &DirectoryCapability,
+            _workspace: &WindowsContainerWorkspaceInput,
             is_cancelled: &mut dyn FnMut() -> bool,
             on_output: &mut dyn FnMut(WindowsContainerOutputStream, &[u8]),
         ) -> io::Result<WindowsContainerExecutionResult> {
@@ -392,7 +421,8 @@ mod tests {
     #[test]
     fn typed_execution_port_receives_only_scoped_request_and_returns_bounded_review() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = DirectoryCapability::open(temp.path()).unwrap();
+        let workspace =
+            WindowsContainerWorkspaceInput::new(DirectoryCapability::open(temp.path()).unwrap());
         let request = WindowsContainerExecutionRequest::new(
             WindowsContainerShell::PowerShell,
             "Write-Output 'hello'",
@@ -494,7 +524,8 @@ mod tests {
     #[test]
     fn cancelled_execution_fails_before_the_provider_starts() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = DirectoryCapability::open(temp.path()).unwrap();
+        let workspace =
+            WindowsContainerWorkspaceInput::new(DirectoryCapability::open(temp.path()).unwrap());
         let request = WindowsContainerExecutionRequest::new(
             WindowsContainerShell::Cmd,
             "echo hi",
@@ -515,5 +546,28 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert!(port.recorded.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn workspace_input_copies_a_bounded_tree_without_exposing_its_root() {
+        use std::io::Read;
+
+        let source = tempfile::tempdir().unwrap();
+        std::fs::create_dir(source.path().join("src")).unwrap();
+        std::fs::write(source.path().join("src/main.rs"), b"fn main() {}\n").unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let source =
+            WindowsContainerWorkspaceInput::new(DirectoryCapability::open(source.path()).unwrap());
+        let staging = DirectoryCapability::open(staging.path()).unwrap();
+        let limits = DirectoryTreeCopyLimits::new(8, 4, 1024, 4096).unwrap();
+
+        let summary = source.copy_snapshot_to(&staging, limits, || false).unwrap();
+
+        assert_eq!(summary.file_count, 1);
+        assert_eq!(summary.byte_count, 13);
+        let mut copied = staging.open_read(Path::new("src/main.rs")).unwrap();
+        let mut contents = Vec::new();
+        copied.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"fn main() {}\n");
     }
 }
