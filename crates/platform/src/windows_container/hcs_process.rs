@@ -16,6 +16,7 @@ const GUEST_WORKSPACE_INPUT_ROOT: &str = r"C:\Haven\workspace-input";
 const GUEST_WORKSPACE_ROOT: &str = r"C:\Haven\workspace-output";
 const GUEST_SKILL_BUNDLE_ROOT: &str = r"C:\Haven\skill-input\bundle";
 const GUEST_SKILL_PARAMETERS_PATH: &str = r"C:\Haven\skill-input\parameters.json";
+const GUEST_MCP_PACKAGES_ROOT: &str = r"C:\Haven\McpPackages";
 const CMD_APPLICATION: &str = r"C:\Windows\System32\cmd.exe";
 const POWERSHELL_APPLICATION: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
 const ROBOCOPY_APPLICATION: &str = r"C:\Windows\System32\robocopy.exe";
@@ -214,6 +215,38 @@ impl HcsGuestProcessParameters {
                 restricted_token: true,
                 emulate_console: false,
                 create_std_in_pipe: false,
+                create_std_out_pipe: true,
+                create_std_err_pipe: true,
+                use_existing_login: false,
+            },
+        })
+    }
+
+    /// Build a fixed Node invocation for one administrator-pinned MCP package.
+    /// The process receives no workspace mapping, ambient environment, or
+    /// caller-selected executable/arguments.
+    #[allow(dead_code)] // Consumed when the brokered MCP session owner is wired.
+    pub(super) fn from_mcp_package(
+        package: &super::execution::image_catalog::McpNodePackageProfile,
+        runtime_proof: Option<&super::execution::McpNodeRuntimeProof>,
+    ) -> io::Result<Self> {
+        if runtime_proof.is_none() {
+            return Err(invalid_process_parameters(
+                "MCP Node runtime is not attested",
+            ));
+        }
+        let package_root = format!("{GUEST_MCP_PACKAGES_ROOT}\\{}", package.id());
+        let guest_entrypoint = format!("{package_root}\\{}", package.entrypoint());
+        let command_line = windows_command_line(MCP_NODE_APPLICATION, &[&guest_entrypoint])?;
+        Ok(Self {
+            document: ProcessParametersDocument {
+                application_name: MCP_NODE_APPLICATION,
+                command_line,
+                working_directory: package_root,
+                environment: fixed_environment(),
+                restricted_token: true,
+                emulate_console: false,
+                create_std_in_pipe: true,
                 create_std_out_pipe: true,
                 create_std_err_pipe: true,
                 use_existing_login: false,
@@ -478,6 +511,49 @@ mod tests {
         assert!(!command_line.contains("never-on-command-line"));
         assert!(SKILL_PYTHON_LAUNCHER.contains("sys.stdin=io.TextIOWrapper"));
         assert!(SKILL_PYTHON_LAUNCHER.contains("exec(code,namespace,namespace)"));
+    }
+
+    #[test]
+    fn mcp_parameters_use_the_fixed_node_runtime_and_catalog_package_entrypoint() {
+        let package = super::super::execution::image_catalog::McpNodePackageProfile::test_profile(
+            "filesystem",
+            "1.2.3",
+            "server.mjs",
+        );
+        let runtime_proof = super::super::execution::test_mcp_node_runtime_proof();
+        let parameters =
+            HcsGuestProcessParameters::from_mcp_package(&package, Some(&runtime_proof))
+                .expect("attested fixed package builds guest parameters");
+        assert!(parameters.creates_stdin_pipe());
+        let value: Value = serde_json::from_str(&parameters.to_json().unwrap()).unwrap();
+
+        assert_eq!(value["ApplicationName"], MCP_NODE_APPLICATION);
+        assert_eq!(
+            value["WorkingDirectory"],
+            r"C:\Haven\McpPackages\filesystem"
+        );
+        assert_eq!(value["RestrictedToken"], true);
+        assert_eq!(value["CreateStdInPipe"], true);
+        assert_eq!(value["CreateStdOutPipe"], true);
+        assert_eq!(value["CreateStdErrPipe"], true);
+        assert_eq!(value["UseExistingLogin"], false);
+        assert_eq!(value["Environment"].as_object().unwrap().len(), 6);
+        let command_line = value["CommandLine"].as_str().unwrap();
+        assert!(command_line.starts_with(&format!("\"{MCP_NODE_APPLICATION}\"")));
+        assert!(command_line.contains(r"C:\Haven\McpPackages\filesystem\server.mjs"));
+        assert!(!command_line.contains("1.2.3"));
+        assert!(!value.to_string().contains("workspace-output"));
+        assert!(!value.to_string().contains("NODE_OPTIONS"));
+    }
+
+    #[test]
+    fn mcp_parameters_fail_closed_without_node_runtime_attestation() {
+        let package = super::super::execution::image_catalog::McpNodePackageProfile::test_profile(
+            "filesystem",
+            "1.2.3",
+            "server.mjs",
+        );
+        assert!(HcsGuestProcessParameters::from_mcp_package(&package, None).is_err());
     }
 
     #[test]

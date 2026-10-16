@@ -40,6 +40,27 @@ mod broker_provider;
 #[cfg(windows)]
 mod quota_attestation;
 
+/// Opaque proof that startup verified the fixed Node runtime against the
+/// protected image catalog. Only quota attestation can mint this token.
+#[cfg(windows)]
+pub(crate) struct McpNodeRuntimeProof {
+    _private: (),
+}
+
+#[cfg(windows)]
+impl quota_attestation::QuotaRuntimeAttestation {
+    #[allow(dead_code)] // Consumed by the brokered MCP session launcher.
+    pub(super) fn mcp_node_runtime_proof(&self) -> Option<McpNodeRuntimeProof> {
+        self.mcp_node_runtime_attested()
+            .then_some(McpNodeRuntimeProof { _private: () })
+    }
+}
+
+#[cfg(all(windows, test))]
+pub(crate) fn test_mcp_node_runtime_proof() -> McpNodeRuntimeProof {
+    McpNodeRuntimeProof { _private: () }
+}
+
 /// Build Haven's authenticated local broker provider for Windows Shell work.
 /// The service attests its fixed quota during startup and rejects execution
 /// when the target runtime cannot prove that limit.

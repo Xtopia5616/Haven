@@ -97,6 +97,15 @@ impl McpNodePackageProfile {
     pub(crate) fn entrypoint(&self) -> &str {
         &self.entrypoint
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_profile(id: &str, version: &str, entrypoint: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            version: version.to_owned(),
+            entrypoint: entrypoint.to_owned(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
