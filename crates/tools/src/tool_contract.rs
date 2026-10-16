@@ -294,7 +294,7 @@ pub(crate) fn operation_attributes(
     let network = match name {
         "http" | "files.summary" | "media.describe" | "media.ocr" | "media.transcribe"
         | "media.generate" => NetworkAccess::Public,
-        "shell" | "load_mcp" | "load_skill" => NetworkAccess::Opaque,
+        "shell" | "load_mcp" => NetworkAccess::Opaque,
         name if name.starts_with("mcp__")
             || name.starts_with("mcp::")
             || name.starts_with("skill__")
@@ -305,7 +305,7 @@ pub(crate) fn operation_attributes(
         _ => NetworkAccess::None,
     };
     let execution_boundary = match name {
-        "shell" | "load_mcp" | "load_skill" => ExecutionBoundary::HostProcess,
+        "shell" | "load_mcp" => ExecutionBoundary::HostProcess,
         name if name.starts_with("mcp__")
             || name.starts_with("mcp::")
             || name.starts_with("skill__")

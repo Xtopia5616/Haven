@@ -313,6 +313,89 @@ async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
 }
 
 #[tokio::test]
+async fn load_skill_activation_is_in_process_while_skill_execution_stays_host_process() {
+    let facade = ToolsFacade::new();
+    facade.rebuild_catalog().await.unwrap();
+    let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let authorization = facade.share_services().authorization;
+    authorization
+        .set_boundaries(
+            haven_common::types::SandboxMode::WorkspaceWrite,
+            Vec::new(),
+            haven_common::types::NetworkPolicy::Deny,
+        )
+        .await;
+
+    let activation = facade
+        .resolve_authorization_request(
+            Some(session_id),
+            "load_skill",
+            &json!({"skill_names": ["demo"]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(activation.policy.network_access, NetworkAccess::None);
+    assert_eq!(
+        activation.policy.execution_boundary,
+        ExecutionBoundary::InProcess
+    );
+    assert!(matches!(
+        authorization
+            .authorize_for_execution(&activation)
+            .await
+            .decision,
+        AuthorizationDecision::AutoApproved
+    ));
+
+    let skills_root = TempDir::new().unwrap();
+    let skill = crate::test_support::discover_skill_fixture(
+        skills_root.path(),
+        "demo",
+        "Sandbox boundary test",
+        Some("print('{}')\n"),
+    )
+    .await;
+    let config = haven_common::config::SkillsExecConfig::default();
+    let runner = crate::skill_runner::SkillRunner::new(
+        haven_skills::VenvManager::new(config.venv_root.clone()),
+        config,
+    );
+    let skill_tool_name = crate::skill_tool_name("demo");
+    facade
+        .register_for_session(
+            session_id,
+            Arc::new(SkillToolAdapter::new(Arc::new(skill), runner)),
+        )
+        .await;
+    authorization
+        .set_boundaries(
+            haven_common::types::SandboxMode::WorkspaceWrite,
+            Vec::new(),
+            haven_common::types::NetworkPolicy::Open,
+        )
+        .await;
+    let execution = facade
+        .resolve_authorization_request(Some(session_id), &skill_tool_name, &json!({"params": {}}))
+        .await
+        .unwrap();
+    assert_eq!(execution.policy.network_access, NetworkAccess::Opaque);
+    assert_eq!(
+        execution.policy.execution_boundary,
+        ExecutionBoundary::HostProcess
+    );
+    assert!(matches!(
+        authorization
+            .authorize_for_execution(&execution)
+            .await
+            .decision,
+        AuthorizationDecision::Blocked {
+            reason_code: AuthorizationReasonCode::SandboxBoundary,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
 async fn tool_catalog_snapshot_keeps_provider_surface_stable_after_drift() {
     let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
