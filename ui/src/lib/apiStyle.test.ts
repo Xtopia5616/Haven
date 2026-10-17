@@ -166,17 +166,26 @@ describe('apiStyle', () => {
 	});
 
 	it('mirrors media capability allowlists', () => {
-		const eleven = { api_style: 'elevenlabs', provider: 'elevenlabs' };
+		const eleven = {
+			api_style: 'elevenlabs',
+			provider: 'elevenlabs',
+			media_capabilities: { stt: false, tts: true, image_gen: false },
+		};
 		expect(mediaCapabilityBackend(eleven, 'tts')).toBe('elevenlabs');
 		expect(mediaCapabilityBackend(eleven, 'image_gen')).toBe('');
 		expect(sttCapabilityBackend(eleven)).toBe('');
-		const gemini = { api_style: 'gemini', provider: 'google' };
+		const gemini = {
+			api_style: 'gemini',
+			provider: 'google',
+			media_capabilities: { stt: true, tts: false, image_gen: true },
+		};
 		expect(mediaCapabilityBackend(gemini, 'image_gen')).toBe('gemini');
 		expect(mediaCapabilityBackend(gemini, 'tts')).toBe('');
 		const openai = {
 			api_style: 'openai-chat',
 			provider: 'openai',
 			base_url: 'https://api.openai.com/v1',
+			media_capabilities: { stt: true, tts: true, image_gen: true },
 		};
 		expect(mediaCapabilityBackend(openai, 'tts')).toBe('openai');
 		expect(sttCapabilityBackend(openai)).toBe('openai');
@@ -184,6 +193,7 @@ describe('apiStyle', () => {
 			api_style: 'openai-chat',
 			provider: 'openai-compatible',
 			base_url: 'https://gateway.example/v1',
+			media_capabilities: { stt: false, tts: false, image_gen: false },
 		};
 		expect(mediaCapabilityBackend(generic, 'tts')).toBe('');
 		expect(sttCapabilityBackend(generic)).toBe('');

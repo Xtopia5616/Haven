@@ -397,6 +397,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::Stream;
+    use haven_common::config::ProviderMediaCapabilities;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -727,6 +728,10 @@ mod tests {
                     .into(),
                 ),
                 api_key: "test-key".into(),
+                media_capabilities: ProviderMediaCapabilities {
+                    stt: true,
+                    ..Default::default()
+                },
                 ..Default::default()
             }];
             let client = build_stt_client(Some(mcp.clone()), &cfg, &providers).unwrap();
@@ -774,10 +779,10 @@ mod tests {
             provider: "openai".into(),
             base_url: "https://gateway.example/v1".into(),
             api_key: "from-provider".into(),
-            media_capabilities: Some(haven_common::config::ProviderMediaCapabilities {
+            media_capabilities: haven_common::config::ProviderMediaCapabilities {
                 stt: true,
                 ..Default::default()
-            }),
+            },
             ..Default::default()
         }];
         let cfg = SttConfig {
@@ -800,10 +805,10 @@ mod tests {
             provider: "openai".into(),
             base_url: "https://gateway.example/v1".into(),
             api_key: "from-provider".into(),
-            media_capabilities: Some(haven_common::config::ProviderMediaCapabilities {
+            media_capabilities: haven_common::config::ProviderMediaCapabilities {
                 stt: true,
                 ..Default::default()
-            }),
+            },
             ..Default::default()
         }];
         let cfg = SttConfig {

@@ -541,6 +541,10 @@ mod tests {
                     "https://api.openai.com/v1".into()
                 },
                 api_key: "k".into(),
+                media_capabilities: ProviderMediaCapabilities {
+                    image_gen: true,
+                    ..Default::default()
+                },
                 ..Default::default()
             }];
             assert!(
@@ -557,10 +561,10 @@ mod tests {
             provider: "openai".into(),
             base_url: "https://gateway.example/v1".into(),
             api_key: "secret".into(),
-            media_capabilities: Some(ProviderMediaCapabilities {
+            media_capabilities: ProviderMediaCapabilities {
                 image_gen: true,
                 ..Default::default()
-            }),
+            },
             ..Default::default()
         }];
         let cfg = ImageGenConfig {
@@ -584,6 +588,10 @@ mod tests {
             api_style: Some("gemini".into()),
             base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
             api_key: "k".into(),
+            media_capabilities: ProviderMediaCapabilities {
+                image_gen: true,
+                ..Default::default()
+            },
             ..Default::default()
         }];
         let cfg = ImageGenConfig {

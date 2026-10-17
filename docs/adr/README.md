@@ -1286,3 +1286,4 @@
 - [1295：按当前 envelope 投影 ToolRun 结果补充](1295-parse-current-toolrun-result-envelope-in-ui.md)
 - [1296：移除无消费者的持久格式与 IPC 兼容入口](1296-remove-unused-persistence-and-ipc-compatibility.md)
 - [1297：统一 SessionEvent 与持久时间戳契约](1297-canonicalize-session-event-and-persisted-timestamps.md)
+- [1298：分离 Settings snapshot 与 patch 并要求显式媒体能力](1298-separate-settings-snapshot-and-patch-contracts.md)

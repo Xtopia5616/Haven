@@ -187,9 +187,9 @@ export const PERPLEXITY_SEARCH_TYPE_INPUT_VALUES = ['web', 'fast', 'people'] as 
 export type PerplexitySearchTypeInput = (typeof PERPLEXITY_SEARCH_TYPE_INPUT_VALUES)[number];
 export const PERPLEXITY_SEARCH_TYPE_VALUES = ['web', 'fast', 'people'] as const;
 export type PerplexitySearchType = (typeof PERPLEXITY_SEARCH_TYPE_VALUES)[number];
-export interface ProviderConfigInput { name?: string; provider?: string; api_style?: string | null; media_capabilities?: ProviderMediaCapabilitiesInput | null; base_url?: string; api_key?: string; api_key_ref?: string | null; auth_header_name?: string; auth_header_prefix?: string; proxy_url?: string | null; no_proxy?: string | null; default_max_tokens?: number | null; default_temperature?: number | null; default_timeout_secs?: number | null; default_timeout_streaming_secs?: number | null; default_web_search?: string | null }
-export interface ProviderConfig { name: string; provider: string; api_style: string | null; media_capabilities?: ProviderMediaCapabilities; base_url: string; api_key_ref?: string; auth_header_name: string; auth_header_prefix: string; proxy_url: string | null; no_proxy: string | null; default_max_tokens?: number; default_temperature?: number; default_timeout_secs?: number; default_timeout_streaming_secs?: number; default_web_search?: string }
-export interface ProviderMediaCapabilitiesInput { stt?: boolean; tts?: boolean; image_gen?: boolean }
+export interface ProviderConfigInput { name?: string; provider?: string; api_style?: string | null; media_capabilities: ProviderMediaCapabilitiesInput; base_url?: string; api_key?: string; api_key_ref?: string | null; auth_header_name?: string; auth_header_prefix?: string; proxy_url?: string | null; no_proxy?: string | null; default_max_tokens?: number | null; default_temperature?: number | null; default_timeout_secs?: number | null; default_timeout_streaming_secs?: number | null; default_web_search?: string | null }
+export interface ProviderConfig { name: string; provider: string; api_style: string | null; media_capabilities: ProviderMediaCapabilities; base_url: string; api_key_ref?: string; auth_header_name: string; auth_header_prefix: string; proxy_url: string | null; no_proxy: string | null; default_max_tokens?: number; default_temperature?: number; default_timeout_secs?: number; default_timeout_streaming_secs?: number; default_web_search?: string }
+export interface ProviderMediaCapabilitiesInput { stt: boolean; tts: boolean; image_gen: boolean }
 export interface ProviderMediaCapabilities { stt: boolean; tts: boolean; image_gen: boolean }
 export const REQUEST_KIND_INPUT_VALUES = ['chat', 'fast_chat', 'vision', 'audio_chat', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
 export type RequestKindInput = (typeof REQUEST_KIND_INPUT_VALUES)[number];
@@ -197,8 +197,8 @@ export const REQUEST_KIND_VALUES = ['chat', 'fast_chat', 'vision', 'audio_chat',
 export type RequestKind = (typeof REQUEST_KIND_VALUES)[number];
 export interface RequestPolicyInput { request?: RequestKindInput; primary?: string }
 export interface RequestPolicy { request: RequestKind; primary: string }
-export interface SettingsInput { default_shell?: ShellChoiceInput; llm?: LlmConfigInput; hotkey?: HotkeyConfigInput; session?: SessionConfigInput; context_limits?: ContextLimitsConfigInput; memory?: MemoryConfigInput; security?: SecurityConfigInput; media?: MediaConfigInput; skills?: SkillsConfigInput; skills_exec?: SkillsExecConfigInput; mcp_discovery?: McpDiscoveryConfigInput; mcp_servers?: McpServerConfigInput[]; notification?: NotificationConfigInput; log?: LogConfigInput; tool_settings?: Record<string, ToolConfigInput> }
-export interface Settings { default_shell: ShellChoice; llm: LlmConfig; hotkey: HotkeyConfig; session: SessionConfig; context_limits: ContextLimitsConfig; memory: MemoryConfig; security: SecurityConfig; media: MediaConfig; skills: SkillsConfig; skills_exec: SkillsExecConfig; mcp_discovery: McpDiscoveryConfig; mcp_servers: McpServerConfig[]; notification: NotificationConfig; log: LogConfig; tool_settings: Record<string, ToolConfig> }
+export interface SettingsPatchInput { default_shell?: ShellChoiceInput | null; llm?: LlmConfigInput | null; hotkey?: HotkeyConfigInput | null; session?: SessionConfigInput | null; context_limits?: ContextLimitsConfigInput | null; memory?: MemoryConfigInput | null; security?: SecurityConfigInput | null; media?: MediaConfigInput | null; notification?: NotificationConfigInput | null; log?: LogConfigInput | null }
+export interface SettingsSnapshot { default_shell: ShellChoice; llm: LlmConfig; hotkey: HotkeyConfig; session: SessionConfig; context_limits: ContextLimitsConfig; memory: MemoryConfig; security: SecurityConfig; media: MediaConfig; skills: SkillsConfig; skills_exec: SkillsExecConfig; mcp_discovery: McpDiscoveryConfig; mcp_servers: McpServerConfig[]; notification: NotificationConfig; log: LogConfig; tool_settings: Record<string, ToolConfig> }
 export interface AudioConfigInput { max_duration_secs?: number; silence_timeout_ms?: number; vad_threshold?: number }
 export interface AudioConfig { max_duration_secs: number; silence_timeout_ms: number; vad_threshold: number }
 export interface ImageGenConfigInput { provider_name?: string; model?: string; timeout_secs?: number }
@@ -221,7 +221,6 @@ export const LOG_LEVEL_INPUT_VALUES = ['trace', 'debug', 'info', 'warn', 'error'
 export type LogLevelInput = (typeof LOG_LEVEL_INPUT_VALUES)[number];
 export const LOG_LEVEL_VALUES = ['trace', 'debug', 'info', 'warn', 'error'] as const;
 export type LogLevel = (typeof LOG_LEVEL_VALUES)[number];
-export interface McpDiscoveryConfigInput { health_interval_secs?: number; reconnect_initial_ms?: number; reconnect_max_ms?: number; reconnect_max_retries?: number }
 export interface McpDiscoveryConfig { health_interval_secs: number; reconnect_initial_ms: number; reconnect_max_ms: number; reconnect_max_retries: number }
 export interface McpEnvironmentCredentialRefInput { name: string; credential_ref?: string | null; has_value?: boolean }
 export interface McpEnvironmentCredentialRef { name: string; credential_ref?: string; has_value: boolean }
@@ -241,13 +240,10 @@ export interface SecurityConfigInput { permission_mode?: PermissionModeInput; sa
 export interface SecurityConfig { permission_mode: PermissionMode; sandbox_mode: SandboxMode; execution_root?: string; writable_roots?: string[]; network_policy: NetworkPolicy; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
 export interface SessionConfigInput { max_concurrent?: number; prompt_history_limit?: number; history_retention_days?: number; max_steps_per_run?: number; max_steps_per_session?: number | null }
 export interface SessionConfig { max_concurrent: number; prompt_history_limit: number; history_retention_days: number; max_steps_per_run: number; max_steps_per_session?: number }
-export interface SkillsConfigInput { root?: string | null; enabled?: string[] | null }
 export interface SkillsConfig { root: string | null; enabled?: string[] }
-export interface SkillsExecConfigInput { venv_root?: string; work_dir?: string; timeout_secs?: number; max_output_lines?: number }
 export interface SkillsExecConfig { venv_root: string; work_dir: string; timeout_secs: number; max_output_lines: number }
 export interface StoredPermissionInput { key: string; effect: PermissionEffectInput }
 export interface StoredPermission { key: string; effect: PermissionEffect }
-export interface ToolConfigInput { enabled?: boolean; timeout_secs?: number | null; max_output_chars?: number | null; max_retries?: number | null; retry_backoff_secs?: number | null; allowed_paths?: string[]; allowed_domains?: string[]; disabled_operations?: string[]; risk_override?: RiskLevelInput | null }
 export interface ToolConfig { enabled: boolean; timeout_secs?: number; max_output_chars?: number; max_retries?: number; retry_backoff_secs?: number; allowed_paths: string[]; allowed_domains: string[]; disabled_operations: string[]; risk_override: RiskLevel | null }
 export const SESSION_STATUS_VALUES = ['pending', 'running', 'paused', 'completed', 'error'] as const;
 export type SessionStatus = (typeof SESSION_STATUS_VALUES)[number];
@@ -364,8 +360,6 @@ export const PERMISSION_TARGET_INPUT_VALUES = ['operation', 'group', 'tool'] as 
 export type PermissionTargetInput = (typeof PERMISSION_TARGET_INPUT_VALUES)[number];
 export const PERMISSION_TARGET_VALUES = ['operation', 'group', 'tool'] as const;
 export type PermissionTarget = (typeof PERMISSION_TARGET_VALUES)[number];
-export const RISK_LEVEL_INPUT_VALUES = ['safe', 'low', 'medium', 'high', 'critical'] as const;
-export type RiskLevelInput = (typeof RISK_LEVEL_INPUT_VALUES)[number];
 export const RISK_LEVEL_VALUES = ['safe', 'low', 'medium', 'high', 'critical'] as const;
 export type RiskLevel = (typeof RISK_LEVEL_VALUES)[number];
 export const SANDBOX_MODE_INPUT_VALUES = ['read_only', 'workspace_write', 'full_access'] as const;
@@ -3552,7 +3546,7 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 									shape: { kind: 'nullable', inner: { kind: 'string' } },
 								},
 								'media_capabilities': {
-									optional: true,
+									optional: false,
 									shape: {
 										kind: 'object',
 										fields: {
@@ -7325,7 +7319,7 @@ export const SETTINGS_RESPONSE_SHAPE = {
 									shape: { kind: 'nullable', inner: { kind: 'string' } },
 								},
 								'media_capabilities': {
-									optional: true,
+									optional: false,
 									shape: {
 										kind: 'object',
 										fields: {
@@ -9037,7 +9031,7 @@ export interface TauriCommandMap {
 	get_sandbox_output_review: { request: { sessionId: string; sourceStepId: string }; response: SandboxOutputReviewManifestDto | null };
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
 	get_session_lineage: { request: { sessionId: string }; response: SessionLineageResponse };
-	get_settings: { request: undefined; response: Settings };
+	get_settings: { request: undefined; response: SettingsSnapshot };
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
 	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
@@ -9090,7 +9084,7 @@ export interface TauriCommandMap {
 	toggle_mcp_server: { request: { name: string; enabled: boolean }; response: void };
 	update_mcp_server: { request: { name: string; config: McpServerConfigInput }; response: void };
 	update_session_title: { request: { sessionId: string; title: string }; response: void };
-	update_settings: { request: { settings: SettingsInput }; response: void };
+	update_settings: { request: { settings: SettingsPatchInput }; response: void };
 }
 
 export type TauriCommandName = keyof TauriCommandMap;

@@ -185,7 +185,7 @@ fn generate(root: &Path) -> Result<String, String> {
         TypeUse::Response,
     )?;
     type_graph.emit_response_shape(
-        "haven_common::config::loader::Settings",
+        "haven_common::config::loader::SettingsSnapshot",
         "SETTINGS_RESPONSE_SHAPE",
     )?;
     type_graph.emit_response_shape(

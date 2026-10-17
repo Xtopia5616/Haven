@@ -819,7 +819,7 @@ mod tests {
         assert!(toml.contains("credential_ref"));
         assert!(toml.contains("name = \"MODE\""));
 
-        let settings = crate::config::Settings::from(&after);
+        let settings = crate::config::SettingsSnapshot::from(&after);
         assert!(settings.llm.providers[0].api_key.is_empty());
         assert!(settings.media.ocr.api_key.is_empty());
         assert!(settings.media.ocr.api_secret.is_empty());
@@ -917,7 +917,8 @@ mod tests {
         );
 
         let serialized_toml = toml::to_string(&after).unwrap();
-        let settings_wire = serde_json::to_string(&crate::config::Settings::from(&after)).unwrap();
+        let settings_wire =
+            serde_json::to_string(&crate::config::SettingsSnapshot::from(&after)).unwrap();
         let debug = format!("{after:?}");
         for output in [serialized_toml, settings_wire, debug] {
             assert!(!output.contains("aliyun-search-key-sentinel"));

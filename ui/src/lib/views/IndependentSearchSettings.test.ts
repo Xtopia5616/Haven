@@ -7,6 +7,7 @@ function drafts(providerId: string) {
 	const provider: ProviderDraft = {
 		name: 'selected',
 		provider: providerId,
+		media_capabilities: { stt: false, tts: false, image_gen: false },
 		base_url: 'https://api.example.test',
 	};
 	const model: ModelDraft = {

@@ -376,6 +376,10 @@ mod tests {
                 name: provider.into(),
                 provider: provider.into(),
                 api_key: "k".into(),
+                media_capabilities: ProviderMediaCapabilities {
+                    tts: true,
+                    ..Default::default()
+                },
                 ..Default::default()
             }];
             assert!(
@@ -392,10 +396,10 @@ mod tests {
             provider: "openai".into(),
             base_url: "https://gateway.example/v1".into(),
             api_key: "secret".into(),
-            media_capabilities: Some(ProviderMediaCapabilities {
+            media_capabilities: ProviderMediaCapabilities {
                 tts: true,
                 ..Default::default()
-            }),
+            },
             ..Default::default()
         }];
         let cfg = TtsConfig {
@@ -422,10 +426,10 @@ mod tests {
             provider: "openai".into(),
             base_url: "https://gateway.example/v1".into(),
             api_key: "from-provider".into(),
-            media_capabilities: Some(ProviderMediaCapabilities {
+            media_capabilities: ProviderMediaCapabilities {
                 tts: true,
                 ..Default::default()
-            }),
+            },
             ..Default::default()
         }];
         let cfg = TtsConfig {

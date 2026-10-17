@@ -1,8 +1,7 @@
 <script lang="ts">
 	/**
-	 * Owns the single full-Settings draft, save baseline, and leave guard.
-	 * The Rust update command accepts one full Settings snapshot, so persistence
-	 * and dirty comparison stay centralized while each intent group owns its UI.
+	 * Owns the SettingsSnapshot draft, save baseline, and leave guard. Saves send
+	 * only changed top-level sections through SettingsPatch.
 	 */
 	let {
 		isVisible = true,
@@ -476,7 +475,10 @@
 					min_confidence: asNumber(stt.min_confidence),
 				},
 				ocr: {
-					...ocr,
+					provider: ocr.provider,
+					api_key_ref: ocr.api_key_ref,
+					api_secret_ref: ocr.api_secret_ref,
+					base_url: ocr.base_url,
 					timeout_secs: asNumber(ocr.timeout_secs),
 					min_confidence: asNumber(ocr.min_confidence),
 				},
@@ -1143,9 +1145,7 @@
 			await reconcileChatModelBeforeSave();
 			await stageSettingsCredentials();
 			skipNextChatModelSync = true;
-			await updateSettingsCommand({
-				settings:
-					/** @type {import('$lib/contracts/settings.ts').SettingsUpdatePayload} */ {
+			const settingsValues = {
 						default_shell: defaultShell,
 						llm: settingsLlmInputFromState(llmConfig),
 						hotkey: {
@@ -1241,8 +1241,14 @@
 							file_enabled: log.file_enabled,
 							file_path: log.file_path ?? null,
 						},
-					},
-			});
+					};
+			const baseline = JSON.parse(savedSnapshot) as Record<string, unknown>;
+			const settingsPatch = Object.fromEntries(
+				Object.entries(settingsValues).filter(
+					([key, value]) => JSON.stringify(value) !== JSON.stringify(baseline[key]),
+				),
+			) as import('$lib/contracts/settings.ts').SettingsUpdatePayload;
+			await updateSettingsCommand({ settings: settingsPatch });
 			if (securityChanged) {
 				securityRuntimeStatus = 'current';
 				securityRuntimeNotice = '安全策略已按当前配置完成运行时应用。';

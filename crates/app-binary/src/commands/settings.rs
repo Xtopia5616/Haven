@@ -55,11 +55,12 @@ impl SettingsRuntimeApplyTiming {
 
 fn apply_settings_edit(
     config_service: &haven_common::config::ConfigService,
-    settings: &haven_common::config::Settings,
+    settings: &haven_common::config::SettingsPatch,
 ) -> anyhow::Result<Option<SettingsRuntimeApplyContext>> {
     let update = config_service.edit(|config| {
         let old_hotkey = config.hotkey.key_binding.clone();
-        config.apply_settings(settings);
+        validate_settings_payload(settings, config)?;
+        config.apply_settings_patch(settings);
         Ok(old_hotkey)
     })?;
 
@@ -74,7 +75,9 @@ fn apply_settings_edit(
 }
 
 #[tauri::command]
-pub async fn get_settings(app: tauri::AppHandle) -> Result<haven_common::config::Settings, String> {
+pub async fn get_settings(
+    app: tauri::AppHandle,
+) -> Result<haven_common::config::SettingsSnapshot, String> {
     let state = app.state::<Arc<AppState>>();
     state
         .runtime
@@ -84,7 +87,7 @@ pub async fn get_settings(app: tauri::AppHandle) -> Result<haven_common::config:
 }
 
 /// Let the user choose a candidate execution root. The selected path is
-/// validated by Tools and returned to the Settings draft; this command does
+/// validated by Tools and returned to the SettingsSnapshot draft; this command does
 /// not persist it or grant renderer file access.
 #[tauri::command]
 pub async fn pick_execution_workspace_directory(
@@ -133,7 +136,7 @@ pub async fn pick_execution_workspace_directory(
 
 /// Write a replacement provider key to secure storage first. The returned
 /// value is an opaque `cred-*` reference; secret values never enter the
-/// Settings update payload.
+/// SettingsPatch payload.
 #[tauri::command]
 pub async fn stage_provider_credential(
     state: State<'_, Arc<AppState>>,
@@ -175,7 +178,7 @@ pub async fn stage_ocr_credential(
         .map_err(|error| log_err("stage_ocr_credential", error))
 }
 
-/// Remove secure values staged by an unsaved Settings edit.
+/// Remove secure values staged by an unsaved SettingsPatch edit.
 #[tauri::command]
 pub async fn discard_staged_credentials(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     state
@@ -185,8 +188,32 @@ pub async fn discard_staged_credentials(state: State<'_, Arc<AppState>>) -> Resu
         .map_err(|error| log_err("discard_staged_credentials", error))
 }
 
-fn validate_settings_payload(settings: &haven_common::config::Settings) -> anyhow::Result<()> {
-    haven_common::config::validate_settings_contract(settings)
+fn validate_settings_payload(
+    settings: &haven_common::config::SettingsPatch,
+    current: &haven_common::config::AppConfig,
+) -> anyhow::Result<()> {
+    if settings.llm.as_ref().is_some_and(|llm| {
+        llm.providers
+            .iter()
+            .any(|provider| !provider.api_key.is_empty())
+    }) || settings
+        .media
+        .as_ref()
+        .is_some_and(|media| !media.ocr.api_key.is_empty() || !media.ocr.api_secret.is_empty())
+    {
+        anyhow::bail!(
+            "credential values must be staged in secure storage before Settings can be saved"
+        );
+    }
+    let mut candidate = current.clone();
+    let mut validation_patch = settings.clone();
+    validation_patch.llm = None;
+    candidate.apply_settings_patch(&validation_patch);
+    if let Some(llm) = &settings.llm {
+        candidate.llm = llm.clone();
+    }
+    let snapshot = haven_common::config::SettingsSnapshot::from(&candidate);
+    haven_common::config::validate_settings_contract(&snapshot)
 }
 
 /// Cold-start progress for the titlebar status chip (`loading` | `ready`).
@@ -559,10 +586,9 @@ async fn execute_settings_apply_phase(
 
 #[tauri::command]
 pub async fn update_settings(
-    settings: haven_common::config::Settings,
+    settings: haven_common::config::SettingsPatch,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    validate_settings_payload(&settings).map_err(|error| log_err("update_settings", error))?;
     let timing = Arc::new(SettingsRuntimeApplyTiming::new());
     let state = app.state::<Arc<AppState>>();
     let state = Arc::clone(&*state);
@@ -575,8 +601,9 @@ pub async fn update_settings(
         .config
         .security
         .execution_root;
-    if settings.security.execution_root != current_execution_root
-        && let Some(root) = settings.security.execution_root.as_deref()
+    if let Some(security) = settings.security.as_ref()
+        && security.execution_root != current_execution_root
+        && let Some(root) = security.execution_root.as_deref()
     {
         state
             .runtime
@@ -958,8 +985,8 @@ mod tests {
         SettingsRuntimeApplyCoordinator, SettingsRuntimeApplyOutcome, SettingsRuntimeApplyPhase,
     };
     use haven_common::config::{
-        AppConfig, ConfigLoader, ConfigService, InMemoryCredentialStore, LogLevel, Settings,
-        StoredPermission,
+        AppConfig, ConfigLoader, ConfigService, InMemoryCredentialStore, LogLevel, SettingsPatch,
+        SettingsSnapshot, StoredPermission,
     };
     use haven_common::types::{PermissionEffect, PermissionTarget, ShellChoice};
 
@@ -1060,17 +1087,14 @@ mod tests {
     fn settings_boundary_rejects_inline_provider_ocr_and_mcp_values() {
         for payload in [
             serde_json::json!({
-                "llm": { "providers": [{ "name": "primary", "api_key": "provider-secret-marker" }] }
+                "llm": { "providers": [{ "name": "primary", "api_key": "provider-secret-marker", "media_capabilities": { "stt": false, "tts": false, "image_gen": false } }] }
             }),
             serde_json::json!({
                 "media": { "ocr": { "api_key": "ocr-key-marker", "api_secret": "ocr-secret-marker" } }
             }),
-            serde_json::json!({
-                "mcp_servers": [{ "name": "server", "env": ["TOKEN=mcp-secret-marker"] }]
-            }),
         ] {
-            let settings: Settings = serde_json::from_value(payload).unwrap();
-            let error = validate_settings_payload(&settings).unwrap_err();
+            let settings: SettingsPatch = serde_json::from_value(payload).unwrap();
+            let error = validate_settings_payload(&settings, &AppConfig::default()).unwrap_err();
             for marker in [
                 "provider-secret-marker",
                 "ocr-key-marker",
@@ -1080,17 +1104,25 @@ mod tests {
                 assert!(!error.to_string().contains(marker));
             }
         }
+        assert!(
+            serde_json::from_value::<SettingsPatch>(serde_json::json!({
+                "mcp_servers": [{ "name": "server", "env": ["TOKEN=mcp-secret-marker"] }]
+            }))
+            .is_err()
+        );
     }
 
     #[test]
     fn settings_boundary_rejects_unsafe_and_invalid_numeric_values() {
-        let mut settings = Settings::default();
-        settings.context_limits.max_upload_total_bytes = 9_007_199_254_740_992;
-        assert!(validate_settings_payload(&settings).is_err());
+        let mut snapshot = SettingsSnapshot::default();
+        snapshot.context_limits.max_upload_total_bytes = 9_007_199_254_740_992;
+        let settings = SettingsPatch::from(&snapshot);
+        assert!(validate_settings_payload(&settings, &AppConfig::default()).is_err());
 
-        settings.context_limits.max_upload_total_bytes = 512 * 1024 * 1024;
-        settings.media.audio.vad_threshold = f32::INFINITY;
-        assert!(validate_settings_payload(&settings).is_err());
+        snapshot.context_limits.max_upload_total_bytes = 512 * 1024 * 1024;
+        snapshot.media.audio.vad_threshold = f32::INFINITY;
+        let settings = SettingsPatch::from(&snapshot);
+        assert!(validate_settings_payload(&settings, &AppConfig::default()).is_err());
     }
 
     #[test]
@@ -1100,34 +1132,34 @@ mod tests {
                 "models": [{ "id": "assistant", "provider_name": "", "model": "model-a" }]
             }),
             serde_json::json!({
-                "providers": [{ "name": "primary" }],
+                "providers": [{ "name": "primary", "media_capabilities": { "stt": false, "tts": false, "image_gen": false } }],
                 "models": [{ "id": "assistant", "provider_name": "removed", "model": "model-a" }]
             }),
         ] {
-            let settings: Settings =
+            let settings: SettingsPatch =
                 serde_json::from_value(serde_json::json!({ "llm": llm })).unwrap();
             assert_eq!(
-                validate_settings_payload(&settings)
+                validate_settings_payload(&settings, &AppConfig::default())
                     .unwrap_err()
                     .to_string(),
                 "llm.models[0].provider_name must reference a configured Provider"
             );
         }
 
-        let settings: Settings = serde_json::from_value(serde_json::json!({
+        let settings: SettingsPatch = serde_json::from_value(serde_json::json!({
             "llm": {
-                "providers": [{ "name": "primary" }],
+                "providers": [{ "name": "primary", "media_capabilities": { "stt": false, "tts": false, "image_gen": false } }],
                 "models": [{ "id": "assistant", "provider_name": "primary", "model": "model-a" }]
             }
         }))
         .unwrap();
-        validate_settings_payload(&settings).unwrap();
+        validate_settings_payload(&settings, &AppConfig::default()).unwrap();
     }
 
     #[test]
     fn settings_edit_captures_hotkey_and_preserves_live_security_state() {
         let mut live_config = AppConfig::default();
-        let mut stale_settings = Settings::from(&live_config);
+        let mut stale_settings = SettingsSnapshot::from(&live_config);
         live_config.hotkey.key_binding = "Ctrl+Alt+O".into();
         let live_permission = StoredPermission {
             key: "files.read".into(),
@@ -1138,7 +1170,7 @@ mod tests {
         stale_settings.hotkey.key_binding = "Ctrl+Alt+N".into();
         let (service, _dir) = config_service_with_config(live_config);
 
-        let update = apply_settings_edit(&service, &stale_settings)
+        let update = apply_settings_edit(&service, &SettingsPatch::from(&stale_settings))
             .unwrap()
             .unwrap();
 
@@ -1158,7 +1190,7 @@ mod tests {
         let settings = service.settings().unwrap();
         let receiver = service.subscribe().unwrap();
 
-        let update = apply_settings_edit(&service, &settings).unwrap();
+        let update = apply_settings_edit(&service, &SettingsPatch::from(&settings)).unwrap();
 
         assert!(update.is_none());
         assert!(receiver.try_recv().is_err());
@@ -1174,7 +1206,8 @@ mod tests {
         let mut settings = service.settings().unwrap();
         settings.log.level = LogLevel::Debug;
         let changes = service.subscribe().unwrap();
-        let update = apply_settings_edit(&service, &settings)
+        let patch = SettingsPatch::from(&settings);
+        let update = apply_settings_edit(&service, &patch)
             .unwrap()
             .expect("log level change should persist");
         let mut coordinator = SettingsRuntimeApplyCoordinator::new(
@@ -1212,7 +1245,7 @@ mod tests {
         assert_eq!(persisted.config().log.level, LogLevel::Debug);
         assert_eq!(changes.try_recv().unwrap().version, applied_version);
 
-        assert!(apply_settings_edit(&service, &settings).unwrap().is_none());
+        assert!(apply_settings_edit(&service, &patch).unwrap().is_none());
         assert!(changes.try_recv().is_err());
     }
 }

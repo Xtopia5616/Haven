@@ -8,7 +8,8 @@ export interface ProviderMediaCapabilitySettings {
 }
 
 /** The provider settings fields used for wire-style and capability hints. */
-export type ProviderStyleInput = Pick<ProviderConfigInput, 'api_style' | 'media_capabilities'> & {
+export type ProviderStyleInput = Pick<ProviderConfigInput, 'api_style'> & {
+	media_capabilities?: ProviderConfigInput['media_capabilities'] | null;
 	provider?: string | null;
 	base_url?: string | null;
 };
@@ -113,57 +114,12 @@ export function mediaCapabilitiesSupportedByStyle(
 	}
 }
 
-/**
- * Conservative defaults for existing configs. A compatible chat protocol
- * does not imply that the service implements separate media endpoints.
- */
-export function defaultProviderMediaCapabilities(
-	p: ProviderStyleInput | null | undefined,
-): ProviderMediaCapabilitySettings {
-	if (!p) return { stt: false, tts: false, image_gen: false };
-	const provider = String(p.provider || '')
-		.trim()
-		.toLowerCase();
-	const style = providerWireStyle(p);
-	let host = '';
-	try {
-		host = new URL(String(p.base_url || '')).hostname.toLowerCase();
-	} catch {
-		host = '';
-	}
-	if (style === 'elevenlabs' || provider === 'elevenlabs')
-		return { stt: false, tts: true, image_gen: false };
-	if (style === 'gemini') return { stt: true, tts: false, image_gen: true };
-	if (style === 'deepgram' || style === 'assemblyai')
-		return { stt: true, tts: false, image_gen: false };
-	if (isOpenaiFamilyWireStyle(style)) {
-		if (provider === 'groq' || host === 'groq.com' || host.endsWith('.groq.com'))
-			return { stt: true, tts: false, image_gen: false };
-		if (host === 'api.openai.com') return mediaCapabilitiesSupportedByStyle(style);
-	}
-	return { stt: false, tts: false, image_gen: false };
-}
-
-/** Explicit values override safe inferred defaults from older configs. */
-export function providerMediaCapabilities(
-	p: ProviderStyleInput | null | undefined,
-): ProviderMediaCapabilitySettings {
-	if (p?.media_capabilities) {
-		return {
-			stt: !!p.media_capabilities.stt,
-			tts: !!p.media_capabilities.tts,
-			image_gen: !!p.media_capabilities.image_gen,
-		};
-	}
-	return defaultProviderMediaCapabilities(p);
-}
-
 /** Mirror backend `tts_backend_for` / `image_gen_backend_for`. */
 export function mediaCapabilityBackend(
 	p: ProviderStyleInput | null | undefined,
 	capability: 'tts' | 'image_gen',
 ): 'openai' | 'gemini' | 'elevenlabs' | '' {
-	if (!p || !providerMediaCapabilities(p)[capability]) return '';
+	if (!p?.media_capabilities?.[capability]) return '';
 	const provider = String(p.provider || '').toLowerCase();
 	const style = providerWireStyle(p);
 	if (capability === 'tts' && (style === 'elevenlabs' || provider === 'elevenlabs'))
@@ -176,7 +132,7 @@ export function mediaCapabilityBackend(
 export function sttCapabilityBackend(
 	p: ProviderStyleInput | null | undefined,
 ): 'openai' | 'groq' | 'gemini' | 'deepgram' | 'assemblyai' | '' {
-	if (!p || !providerMediaCapabilities(p).stt) return '';
+	if (!p?.media_capabilities?.stt) return '';
 	const provider = String(p.provider || '').toLowerCase();
 	const style = providerWireStyle(p);
 	if (style === 'deepgram') return 'deepgram';

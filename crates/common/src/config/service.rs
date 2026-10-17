@@ -13,8 +13,8 @@ use super::credentials::{
 };
 use super::{
     AppConfig, ConfigLoader, CredentialStore, LlmConfig, LogLevel, McpDiscoveryConfig,
-    McpServerConfig, ModelConfig, SecurityConfig, Settings, SkillsConfig, SkillsExecConfig,
-    ToolConfig,
+    McpServerConfig, ModelConfig, SecurityConfig, SettingsPatch, SettingsSnapshot, SkillsConfig,
+    SkillsExecConfig, ToolConfig,
 };
 use crate::types::ShellChoice;
 use serde::{Deserialize, Serialize};
@@ -78,7 +78,7 @@ pub struct ConfigUpdate<T> {
 /// Typed mutations currently used by the settings and model commands.
 #[derive(Debug, Clone)]
 pub enum ConfigPatch {
-    Settings(Box<Settings>),
+    Settings(Box<SettingsPatch>),
     Llm(LlmConfig),
     LlmModel {
         model_config_id: String,
@@ -110,7 +110,7 @@ pub enum LlmModelPatch {
 impl ConfigPatch {
     fn apply(self, config: &mut AppConfig) -> anyhow::Result<()> {
         match self {
-            Self::Settings(settings) => config.apply_settings(&settings),
+            Self::Settings(settings) => config.apply_settings_patch(&settings),
             Self::Llm(llm) => config.llm = llm,
             Self::LlmModel {
                 model_config_id,
@@ -213,8 +213,8 @@ impl ConfigService {
     }
 
     /// Stage an API-key update without exposing the secret through the
-    /// Settings payload. The returned opaque reference may be sent back with
-    /// Settings; the actual value remains in the credential store.
+    /// SettingsSnapshot payload. The returned opaque reference may be sent back with
+    /// SettingsSnapshot; the actual value remains in the credential store.
     pub fn stage_provider_credential(
         &self,
         provider_name: &str,
@@ -281,7 +281,7 @@ impl ConfigService {
         Ok(reference)
     }
 
-    /// Remove staged values if a user discards an unsaved Settings edit.
+    /// Remove staged values if a user discards an unsaved SettingsSnapshot edit.
     pub fn discard_staged_credentials(&self) -> anyhow::Result<()> {
         let mut state = self.lock_state_mut()?;
         let staged = std::mem::take(&mut state.staged_credentials);
@@ -310,10 +310,10 @@ impl ConfigService {
         })
     }
 
-    pub fn settings(&self) -> anyhow::Result<Settings> {
+    pub fn settings(&self) -> anyhow::Result<SettingsSnapshot> {
         let state = self.lock_state()?;
         state.loader.ensure_writable()?;
-        Ok(Settings::from(state.loader.config()))
+        Ok(SettingsSnapshot::from(state.loader.config()))
     }
 
     pub fn path(&self) -> anyhow::Result<std::path::PathBuf> {
@@ -623,7 +623,9 @@ mod tests {
         settings.hotkey.key_binding = "Ctrl+Alt+H".into();
 
         let update = service
-            .apply_patch(ConfigPatch::Settings(Box::new(settings)))
+            .apply_patch(ConfigPatch::Settings(Box::new(SettingsPatch::from(
+                &settings,
+            ))))
             .unwrap();
         let change = update.change.clone().unwrap();
 
@@ -650,7 +652,9 @@ mod tests {
         });
 
         let error = service
-            .apply_patch(ConfigPatch::Settings(Box::new(settings)))
+            .apply_patch(ConfigPatch::Settings(Box::new(SettingsPatch::from(
+                &settings,
+            ))))
             .unwrap_err();
 
         assert!(error.to_string().contains("serialized config exceeds"));
@@ -665,7 +669,9 @@ mod tests {
         let settings = service.settings().unwrap();
 
         let update = service
-            .apply_patch(ConfigPatch::Settings(Box::new(settings)))
+            .apply_patch(ConfigPatch::Settings(Box::new(SettingsPatch::from(
+                &settings,
+            ))))
             .unwrap();
 
         assert!(update.change.is_none());
@@ -683,7 +689,9 @@ mod tests {
             let mut settings = service.settings().unwrap();
             settings.session.max_steps_per_run += 1;
             let update = service
-                .apply_patch(ConfigPatch::Settings(Box::new(settings)))
+                .apply_patch(ConfigPatch::Settings(Box::new(SettingsPatch::from(
+                    &settings,
+                ))))
                 .unwrap();
             changes.push(update.change.unwrap());
         }
@@ -704,7 +712,9 @@ mod tests {
         let mut settings = service.settings().unwrap();
         settings.session.max_steps_per_run += 1;
         let update = service
-            .apply_patch(ConfigPatch::Settings(Box::new(settings)))
+            .apply_patch(ConfigPatch::Settings(Box::new(SettingsPatch::from(
+                &settings,
+            ))))
             .unwrap();
         assert_eq!(fresh_receiver.recv().unwrap(), update.change.unwrap());
     }
@@ -730,12 +740,14 @@ mod tests {
     fn unsafe_numeric_settings_are_rejected_without_mutating_config() {
         let (service, _dir) = service();
         let before = service.snapshot().unwrap();
-        let mut settings = Settings::from(&before.config);
+        let mut settings = SettingsSnapshot::from(&before.config);
         settings.context_limits.max_upload_total_bytes = 9_007_199_254_740_992;
 
         assert!(
             service
-                .apply_patch(ConfigPatch::Settings(Box::new(settings)))
+                .apply_patch(ConfigPatch::Settings(Box::new(SettingsPatch::from(
+                    &settings
+                ))))
                 .is_err()
         );
         assert_eq!(service.snapshot().unwrap(), before);

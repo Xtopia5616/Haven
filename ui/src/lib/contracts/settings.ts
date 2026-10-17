@@ -1,7 +1,7 @@
 /** Settings request and response contracts owned by the Settings UI boundary. */
 
 import type {
-	Settings as GeneratedSettings,
+	SettingsSnapshot as GeneratedSettingsSnapshot,
 	SessionPermissionGrant as GeneratedSessionPermissionGrant,
 	TauriCommandRequest,
 } from './generatedCommands.ts';
@@ -59,8 +59,8 @@ const FLOAT_NONNEGATIVE_FIELDS = new Set([
 	'cost_per_1k_output_tokens',
 ]);
 
-// Keep this list aligned with the numeric properties in generated Settings
-// and SettingsInput. Checking by key catches strings/objects that Rust's typed
+// Keep this list aligned with the numeric properties in generated SettingsSnapshot
+// and SettingsPatchInput. Checking by key catches strings/objects that Rust's typed
 // IPC decoder would reject only after the renderer has invoked the command.
 const NUMERIC_FIELDS = new Set([
 	'attachment_image_jpeg_quality',
@@ -263,7 +263,7 @@ export type SessionPermissionGrant = Omit<GeneratedSessionPermissionGrant, 'sess
 };
 
 /** Exact Rust-owned config shape from the generated IPC contract. */
-export type SettingsPayload = GeneratedSettings;
+export type SettingsPayload = GeneratedSettingsSnapshot;
 
 /** Rust-owned settings input shape, including Serde defaults for omitted fields. */
 export type SettingsUpdatePayload = TauriCommandRequest<'update_settings'>['settings'];

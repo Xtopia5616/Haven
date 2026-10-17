@@ -856,12 +856,11 @@ impl RustTypeGraph {
                         .path
                         .segments
                         .last()
-                        .is_some_and(|part| part.ident == "settings_pair") =>
+                        .is_some_and(|part| part.ident == "config_snapshot_pair") =>
                 {
-                    let (name, fields) = parse_settings_pair(&item.mac.tokens)?;
-                    // The macro emits both aggregate structs with
-                    // `#[serde(default)]`; the input contract for Settings
-                    // must reflect that actual generated Rust declaration.
+                    let (name, fields) = parse_config_snapshot_pair(&item.mac.tokens)?;
+                    // AppConfig and SettingsSnapshot both use `#[serde(default)]`;
+                    // reflect the snapshot declaration in generated response metadata.
                     let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[serde(default)])];
                     self.insert_definition(context, &name, fields, &attrs, true, true)?;
                 }
@@ -1961,7 +1960,7 @@ fn string_match_arms(block: &syn::Block) -> HashMap<String, String> {
     values
 }
 
-fn parse_settings_pair(
+fn parse_config_snapshot_pair(
     tokens: &proc_macro2::TokenStream,
 ) -> Result<(String, Vec<FieldDef>), String> {
     struct Parser {
@@ -2006,9 +2005,9 @@ fn parse_settings_pair(
         }
     }
     let parsed = syn::parse2::<Parser>(tokens.clone())
-        .map_err(|error| format!("parse settings_pair!: {error}"))?;
-    let _settings_variable = parsed.name;
-    Ok(("Settings".into(), parsed.fields))
+        .map_err(|error| format!("parse config_snapshot_pair!: {error}"))?;
+    let _snapshot_variable = parsed.name;
+    Ok(("SettingsSnapshot".into(), parsed.fields))
 }
 
 #[cfg(test)]
@@ -2382,7 +2381,7 @@ mod tests {
     #[test]
     fn settings_macro_container_default_makes_only_input_shape_partial() {
         let item: Item = syn::parse_quote! {
-            settings_pair! {
+            config_snapshot_pair! {
                 settings;
                 default_shell: ShellChoice,
                 description: Option<String>;
@@ -2403,17 +2402,17 @@ mod tests {
             )
             .unwrap();
         graph
-            .emit_definition("test_crate::Settings", TypeUse::Response)
+            .emit_definition("test_crate::SettingsSnapshot", TypeUse::Response)
             .unwrap();
         graph
-            .emit_definition("test_crate::Settings", TypeUse::Request)
+            .emit_definition("test_crate::SettingsSnapshot", TypeUse::Request)
             .unwrap();
         let declarations = graph.declarations();
         assert!(declarations.contains(
-            "export interface Settings { default_shell: ShellChoice; description: string | null }"
+            "export interface SettingsSnapshot { default_shell: ShellChoice; description: string | null }"
         ));
         assert!(declarations.contains(
-            "export interface SettingsInput { default_shell?: ShellChoiceInput; description?: string | null }"
+            "export interface SettingsSnapshotInput { default_shell?: ShellChoiceInput; description?: string | null }"
         ));
     }
 
@@ -2466,7 +2465,7 @@ mod tests {
         graph.collect_items(&items, &context).unwrap();
 
         graph
-            .emit_response_shape("test_crate::Settings", "SETTINGS_RESPONSE_SHAPE")
+            .emit_response_shape("test_crate::SettingsSnapshot", "SETTINGS_RESPONSE_SHAPE")
             .unwrap();
 
         let declarations = graph.declarations();
@@ -2586,7 +2585,7 @@ mod tests {
         graph.collect_items(&items, &context).unwrap();
 
         let error = graph
-            .emit_response_shape("test_crate::Settings", "SETTINGS_RESPONSE_SHAPE")
+            .emit_response_shape("test_crate::SettingsSnapshot", "SETTINGS_RESPONSE_SHAPE")
             .unwrap_err();
         assert!(error.contains("recursive Rust IPC response DTO"));
     }

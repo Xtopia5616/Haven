@@ -59,7 +59,7 @@ Session prompt 首次上下文条数目前配置在 `[session].prompt_history_li
 
 API 密钥、OCR 密钥与 MCP 环境变量只通过安全凭据存储的 opaque reference 持久化。TOML 中的明文凭据会使配置加载失败并备份原文件；启动只从现有引用读取凭据，不再导入旧明文值。若引用在操作系统凭据存储中不存在，需要重新输入对应凭据。当前 provider `api_style` 仅接受 canonical wire protocol id；无效值和指向不存在 provider 的媒体配置会走同一备份与默认配置恢复。Deepgram 凭据只填写原始 API key，不要包含 `Token ` 或 `Deepgram ` 前缀；已保存前缀的凭据需要在模型设置中重新输入。
 
-Provider 的 `media_capabilities` 可选字段列出该连接实际提供的 STT、TTS 和图片生成 endpoint。旧配置没有该字段时，官方 OpenAI、Gemini、Groq、Deepgram、AssemblyAI、ElevenLabs 按已知 profile 推导能力，其它兼容服务默认关闭；这不影响聊天模型路由。设置页可在对应 wire style 支持范围内显式启用媒体 endpoint。该字段为可选配置，没有数据库迁移或重置要求。若需回退到不认识该字段的旧版本，先从 `config.toml` 的 Provider 表中删除 `media_capabilities`。
+Provider 的 `media_capabilities` 必须显式包含 `stt`、`tts` 和 `image_gen` 三个布尔值，列出该连接实际提供的媒体 endpoint。设置预设会带入明确值；自定义兼容服务可在对应 wire style 支持范围内启用媒体 endpoint。缺字段的旧配置会按配置解析失败策略备份原文件并进入只读恢复，需从备份补齐三个值，或删除 `config.toml` 后重启以用当前模板重建配置。此变化不影响数据库，无需数据库重置；不要把配置缺字段当作迁移或静默推断。
 
 模型工具使用点号 operation view，例如 `files.*`、`system.*`、`clipboard.*`、`input.*`、`window.*`、`media.*`、`tool_runs.*`、`schedule.*` 和 `haven.*`。启用 Skill 由 `load_skill` 按名称加载为当前 session 的 `skill__...`；内置 operation 由 `tool_catalog` 的 `action=load` 加载，MCP 由 `load_mcp` 按服务器加载。配置和未完成会话都没有旧工具名的转换保证。
 

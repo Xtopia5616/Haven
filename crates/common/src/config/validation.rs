@@ -2,7 +2,7 @@
 
 use super::{
     AppConfig, MAX_SESSION_STEPS_PER_RUN, MAX_SESSION_STEPS_PER_SESSION, MIN_SESSION_STEPS_PER_RUN,
-    MIN_SESSION_STEPS_PER_SESSION, Settings,
+    MIN_SESSION_STEPS_PER_SESSION, SettingsSnapshot,
 };
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -16,14 +16,14 @@ pub const MAX_INPUT_RING_BUFFER_SECS: usize = 120;
 
 /// Validate persisted config numbers before they are loaded into runtime state
 /// or written to disk. Integer fields are also exposed as JavaScript `number`
-/// values through Settings, so they must remain exactly representable there.
+/// values through SettingsSnapshot, so they must remain exactly representable there.
 fn validate_app_config_numbers(config: &AppConfig) -> Result<()> {
     validate_config_numbers(config, &config.llm, &config.context_limits, &config.media)
 }
 
-/// Validate the Settings payload before it is applied from IPC.
+/// Validate the SettingsSnapshot payload before it is applied from IPC.
 #[cfg(test)]
-fn validate_settings_numbers(settings: &Settings) -> Result<()> {
+fn validate_settings_numbers(settings: &SettingsSnapshot) -> Result<()> {
     validate_config_numbers(
         settings,
         &settings.llm,
@@ -116,22 +116,21 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         {
             anyhow::bail!("llm.providers.api_style must use a supported API style");
         }
-        if let Some(capabilities) = provider.media_capabilities {
-            let supported = super::media_capabilities_supported_by_style(
-                provider
-                    .api_style
-                    .as_deref()
-                    .filter(|style| !style.trim().is_empty())
-                    .unwrap_or("openai-chat"),
+        let supported = super::media_capabilities_supported_by_style(
+            provider
+                .api_style
+                .as_deref()
+                .filter(|style| !style.trim().is_empty())
+                .unwrap_or("openai-chat"),
+        );
+        let capabilities = provider.media_capabilities;
+        if (capabilities.stt && !supported.stt)
+            || (capabilities.tts && !supported.tts)
+            || (capabilities.image_gen && !supported.image_gen)
+        {
+            anyhow::bail!(
+                "llm.providers.media_capabilities cannot enable endpoints unsupported by api_style"
             );
-            if (capabilities.stt && !supported.stt)
-                || (capabilities.tts && !supported.tts)
-                || (capabilities.image_gen && !supported.image_gen)
-            {
-                anyhow::bail!(
-                    "llm.providers.media_capabilities cannot enable endpoints unsupported by api_style"
-                );
-            }
         }
         validate_web_search_mode(
             "llm.providers.default_web_search",
@@ -419,7 +418,7 @@ fn validate_web_search_mode(path: &str, value: Option<&str>) -> Result<()> {
     }
 }
 
-/// Validate the shared step-budget contract used by TOML, Settings and the
+/// Validate the shared step-budget contract used by TOML, SettingsSnapshot and the
 /// runtime setters. The UI represents an unlimited lifetime cap as `None`;
 /// zero is never a valid configured budget.
 pub fn validate_session_step_budgets(
@@ -789,10 +788,10 @@ fn validate_context_windows(config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-/// Validate Settings before accepting it from Tauri IPC. This uses the same
+/// Validate SettingsSnapshot before accepting it from Tauri IPC. This uses the same
 /// semantic rules as config persistence and rejects values that must be
 /// staged through the secure credential commands.
-pub fn validate_settings_contract(settings: &Settings) -> Result<()> {
+pub fn validate_settings_contract(settings: &SettingsSnapshot) -> Result<()> {
     let config = AppConfig::from(settings);
     validate_app_config(&config)?;
     super::credentials::validate_reference_syntax(&config)?;
@@ -805,7 +804,7 @@ pub fn validate_settings_contract(settings: &Settings) -> Result<()> {
         || !config.media.ocr.api_secret.is_empty()
     {
         anyhow::bail!(
-            "credential values must be staged in secure storage before Settings can be saved"
+            "credential values must be staged in secure storage before SettingsSnapshot can be saved"
         );
     }
     if config
@@ -836,7 +835,7 @@ pub fn validate_settings_contract(settings: &Settings) -> Result<()> {
 }
 
 /// Reject duplicate names that are resolved by first-match lookup in the LLM
-/// config. This shared check applies equally to TOML loads and Settings edits.
+/// config. This shared check applies equally to TOML loads and SettingsSnapshot edits.
 fn validate_unique_llm_configuration_keys(llm: &super::LlmConfig) -> Result<()> {
     let mut provider_names = HashSet::with_capacity(llm.providers.len());
     for (index, provider) in llm.providers.iter().enumerate() {
@@ -1085,7 +1084,7 @@ mod tests {
     };
     use crate::config::{
         AppConfig, IndependentSearchConfig, McpServerConfig, PerplexitySearchType, ProviderConfig,
-        Settings,
+        SettingsSnapshot,
     };
 
     type NumericConfigContractCase = (&'static str, u64, u64, fn(&mut AppConfig, u64));
@@ -1097,7 +1096,7 @@ mod tests {
         config.context_limits.default_context_window = super::super::MAX_CONTEXT_WINDOW_TOKENS;
 
         assert!(validate_app_config_numbers(&config).is_ok());
-        assert!(validate_settings_numbers(&Settings::from(&config)).is_ok());
+        assert!(validate_settings_numbers(&SettingsSnapshot::from(&config)).is_ok());
     }
 
     #[test]
@@ -1107,7 +1106,7 @@ mod tests {
 
         let error = validate_app_config(&config).unwrap_err();
         assert!(error.to_string().contains("security.execution_root"));
-        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
     }
 
     #[test]
@@ -1117,7 +1116,7 @@ mod tests {
 
         let error = validate_app_config(&config).unwrap_err();
         assert!(error.to_string().contains("skills_exec.work_dir"));
-        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
     }
 
     #[cfg(windows)]
@@ -1194,7 +1193,7 @@ mod tests {
             ..Default::default()
         });
         assert!(validate_app_config(&config).is_ok());
-        assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
 
         for (invalid, path) in [
             (
@@ -1239,7 +1238,8 @@ mod tests {
         ] {
             let config_error = validate_app_config(&invalid).unwrap_err();
             assert!(config_error.to_string().contains(path), "{config_error}");
-            let settings_error = validate_settings_contract(&Settings::from(&invalid)).unwrap_err();
+            let settings_error =
+                validate_settings_contract(&SettingsSnapshot::from(&invalid)).unwrap_err();
             assert!(
                 settings_error.to_string().contains(path),
                 "{settings_error}"
@@ -1429,7 +1429,7 @@ mod tests {
             },
         );
         assert!(validate_app_config(&config).is_ok());
-        assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
 
         config
             .tool_settings
@@ -1438,7 +1438,7 @@ mod tests {
             .max_output_chars = Some(20_001);
         for validation in [
             validate_app_config(&config),
-            validate_settings_contract(&Settings::from(&config)),
+            validate_settings_contract(&SettingsSnapshot::from(&config)),
         ] {
             assert!(
                 validation
@@ -1472,8 +1472,8 @@ mod tests {
                 set_value(&mut config, value);
                 assert!(validate_app_config(&config).is_ok(), "{path}={value}");
                 assert!(
-                    validate_settings_contract(&Settings::from(&config)).is_ok(),
-                    "Settings {path}={value}"
+                    validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok(),
+                    "SettingsSnapshot {path}={value}"
                 );
             }
 
@@ -1483,7 +1483,7 @@ mod tests {
                 let config_error = validate_app_config(&config).unwrap_err();
                 assert!(config_error.to_string().contains(path), "{config_error}");
                 let settings_error =
-                    validate_settings_contract(&Settings::from(&config)).unwrap_err();
+                    validate_settings_contract(&SettingsSnapshot::from(&config)).unwrap_err();
                 assert!(
                     settings_error.to_string().contains(path),
                     "{settings_error}"
@@ -1509,7 +1509,7 @@ mod tests {
             config.session.max_steps_per_run = max_steps_per_run;
             config.session.max_steps_per_session = max_steps_per_session;
             assert!(validate_app_config(&config).is_ok());
-            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+            assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
         }
 
         for (max_steps_per_run, max_steps_per_session, expected_path) in [
@@ -1527,7 +1527,8 @@ mod tests {
             config.session.max_steps_per_session = max_steps_per_session;
             let config_error = validate_app_config(&config).unwrap_err();
             assert!(config_error.to_string().contains(expected_path));
-            let settings_error = validate_settings_contract(&Settings::from(&config)).unwrap_err();
+            let settings_error =
+                validate_settings_contract(&SettingsSnapshot::from(&config)).unwrap_err();
             assert!(settings_error.to_string().contains(expected_path));
         }
     }
@@ -1548,7 +1549,7 @@ mod tests {
             config.media.audio.max_duration_secs = duration;
             config.media.audio.silence_timeout_ms = silence;
             assert!(validate_app_config(&config).is_ok());
-            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+            assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
         }
 
         for (duration, silence, expected_path) in [
@@ -1567,7 +1568,7 @@ mod tests {
                     .contains(expected_path)
             );
             assert!(
-                validate_settings_contract(&Settings::from(&config))
+                validate_settings_contract(&SettingsSnapshot::from(&config))
                     .unwrap_err()
                     .to_string()
                     .contains(expected_path)
@@ -1594,7 +1595,7 @@ mod tests {
             config.llm.max_concurrent_requests = llm;
             config.context_limits.max_running_background_tool_runs = background;
             assert!(validate_app_config(&config).is_ok());
-            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+            assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
         }
 
         for (session, llm, background, expected_path) in [
@@ -1615,7 +1616,7 @@ mod tests {
                     .contains(expected_path)
             );
             assert!(
-                validate_settings_contract(&Settings::from(&config))
+                validate_settings_contract(&SettingsSnapshot::from(&config))
                     .unwrap_err()
                     .to_string()
                     .contains(expected_path)
@@ -1712,8 +1713,8 @@ mod tests {
                 set_value(&mut config, value);
                 assert!(validate_app_config(&config).is_ok(), "{path}={value}");
                 assert!(
-                    validate_settings_contract(&Settings::from(&config)).is_ok(),
-                    "Settings {path}={value}"
+                    validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok(),
+                    "SettingsSnapshot {path}={value}"
                 );
             }
 
@@ -1728,11 +1729,11 @@ mod tests {
                     "config {path}={value}"
                 );
                 assert!(
-                    validate_settings_contract(&Settings::from(&config))
+                    validate_settings_contract(&SettingsSnapshot::from(&config))
                         .unwrap_err()
                         .to_string()
                         .contains(path),
-                    "Settings {path}={value}"
+                    "SettingsSnapshot {path}={value}"
                 );
             }
         }
@@ -1897,8 +1898,8 @@ mod tests {
                 set_value(&mut config, value);
                 assert!(validate_app_config(&config).is_ok(), "{path}={value}");
                 assert!(
-                    validate_settings_contract(&Settings::from(&config)).is_ok(),
-                    "Settings {path}={value}"
+                    validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok(),
+                    "SettingsSnapshot {path}={value}"
                 );
             }
 
@@ -1915,11 +1916,11 @@ mod tests {
                     "config {path}={value}"
                 );
                 assert!(
-                    validate_settings_contract(&Settings::from(&config))
+                    validate_settings_contract(&SettingsSnapshot::from(&config))
                         .unwrap_err()
                         .to_string()
                         .contains(path),
-                    "Settings {path}={value}"
+                    "SettingsSnapshot {path}={value}"
                 );
             }
         }
@@ -1943,7 +1944,7 @@ mod tests {
             config.skills_exec.max_output_lines = lines;
             assert_eq!(validate_app_config(&config).is_ok(), valid);
             assert_eq!(
-                validate_settings_contract(&Settings::from(&config)).is_ok(),
+                validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok(),
                 valid
             );
         }
@@ -1952,7 +1953,7 @@ mod tests {
             let mut config = AppConfig::default();
             config.context_limits.scheduled_tool_runs_due_horizon_secs = horizon;
             assert!(validate_app_config(&config).is_ok());
-            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+            assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
         }
         for horizon in [
             -1,
@@ -1961,7 +1962,7 @@ mod tests {
             let mut config = AppConfig::default();
             config.context_limits.scheduled_tool_runs_due_horizon_secs = horizon;
             assert!(validate_app_config(&config).is_err());
-            assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+            assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
         }
 
         for (retries, valid) in [
@@ -1973,7 +1974,7 @@ mod tests {
             config.mcp_discovery.reconnect_max_retries = retries;
             assert_eq!(validate_app_config(&config).is_ok(), valid);
             assert_eq!(
-                validate_settings_contract(&Settings::from(&config)).is_ok(),
+                validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok(),
                 valid
             );
         }
@@ -1989,7 +1990,7 @@ mod tests {
             },
         );
         assert!(validate_app_config(&config).is_ok());
-        assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
         config.tool_settings.get_mut("shell").unwrap().timeout_secs =
             Some(super::super::MAX_TOOL_TIMEOUT_SECS + 1);
         assert!(
@@ -1999,7 +2000,7 @@ mod tests {
                 .contains("tool_settings.shell.timeout_secs")
         );
         assert!(
-            validate_settings_contract(&Settings::from(&config))
+            validate_settings_contract(&SettingsSnapshot::from(&config))
                 .unwrap_err()
                 .to_string()
                 .contains("tool_settings.shell.timeout_secs")
@@ -2012,7 +2013,7 @@ mod tests {
             let mut config = AppConfig::default();
             config.session.history_retention_days = days;
             assert!(validate_app_config(&config).is_ok());
-            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+            assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
         }
 
         let mut config = AppConfig::default();
@@ -2023,7 +2024,7 @@ mod tests {
                 .to_string()
                 .contains("history_retention_days")
         );
-        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
     }
 
     #[test]
@@ -2059,7 +2060,7 @@ mod tests {
 
     #[test]
     fn rejects_negative_scheduled_horizon() {
-        let mut settings = Settings::default();
+        let mut settings = SettingsSnapshot::default();
         settings.context_limits.scheduled_tool_runs_due_horizon_secs = -1;
         assert!(validate_settings_numbers(&settings).is_err());
     }
@@ -2087,7 +2088,8 @@ mod tests {
 
         let config_error = validate_app_config(&config).unwrap_err();
         assert!(config_error.to_string().contains("max_known_facts"));
-        let settings_error = validate_settings_contract(&Settings::from(&config)).unwrap_err();
+        let settings_error =
+            validate_settings_contract(&SettingsSnapshot::from(&config)).unwrap_err();
         assert!(settings_error.to_string().contains("max_known_facts"));
     }
 
@@ -2100,21 +2102,21 @@ mod tests {
             ..Default::default()
         });
         assert!(validate_app_config(&config).is_err());
-        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
 
         config.llm.providers[0].api_style = None;
         config.media.tts.provider_name = "missing".into();
         assert!(validate_app_config(&config).is_err());
-        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
 
         let mut config = AppConfig::default();
         config.llm.providers.push(ProviderConfig {
             name: "chat-only".into(),
             api_style: Some("anthropic".into()),
-            media_capabilities: Some(crate::config::ProviderMediaCapabilities {
+            media_capabilities: crate::config::ProviderMediaCapabilities {
                 tts: true,
                 ..Default::default()
-            }),
+            },
             ..Default::default()
         });
         assert!(
@@ -2123,7 +2125,7 @@ mod tests {
                 .to_string()
                 .contains("media_capabilities")
         );
-        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
     }
 
     #[test]
@@ -2142,7 +2144,7 @@ mod tests {
             ..Default::default()
         });
         assert!(validate_app_config(&config).is_ok());
-        assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
 
         for provider_name in ["", "none", "NONE", " primary "] {
             let mut config = AppConfig::default();
@@ -2156,7 +2158,7 @@ mod tests {
                 validate_app_config(&config).is_ok(),
                 "media provider {provider_name:?}"
             );
-            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+            assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
         }
 
         let mut config = AppConfig::default();
@@ -2167,7 +2169,7 @@ mod tests {
                 .to_string()
                 .contains("media.tts.provider_name")
         );
-        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
         config.media.tts.provider_name = "none".into();
         config.media.image_gen.provider_name = "missing".into();
         assert!(
@@ -2176,7 +2178,7 @@ mod tests {
                 .to_string()
                 .contains("media.image_gen.provider_name")
         );
-        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
 
         for provider in ["llm", "baidu", "azure", "tencent", "none"] {
             let mut config = AppConfig::default();
@@ -2186,8 +2188,8 @@ mod tests {
                 "OCR provider {provider}"
             );
             assert!(
-                validate_settings_contract(&Settings::from(&config)).is_ok(),
-                "Settings OCR provider {provider}"
+                validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok(),
+                "SettingsSnapshot OCR provider {provider}"
             );
         }
 
@@ -2199,7 +2201,7 @@ mod tests {
                 .to_string()
                 .contains("media.ocr.provider")
         );
-        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
 
         for mode in [
             "off", "auto", "always", "required", "on", "1", "true", " TRUE ", "  ",
@@ -2214,7 +2216,7 @@ mod tests {
                 validate_app_config(&config).is_ok(),
                 "provider mode {mode:?}"
             );
-            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+            assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
             config.llm.providers[0].default_web_search = None;
             config.llm.models.push(crate::config::ModelConfig {
                 id: "chat".into(),
@@ -2224,7 +2226,7 @@ mod tests {
                 ..Default::default()
             });
             assert!(validate_app_config(&config).is_ok(), "model mode {mode:?}");
-            assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+            assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
         }
 
         let mut config = AppConfig::default();
@@ -2239,7 +2241,7 @@ mod tests {
                 .to_string()
                 .contains("default_web_search")
         );
-        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
         config.llm.providers[0].default_web_search = None;
         config.llm.models.push(crate::config::ModelConfig {
             id: "chat".into(),
@@ -2254,12 +2256,12 @@ mod tests {
                 .to_string()
                 .contains("web_search")
         );
-        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
 
         let mut config = AppConfig::default();
         config.media.stt.provider_name = "LLM".into();
         assert!(validate_app_config(&config).is_ok());
-        assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
         config.media.stt.provider_name = "MCP".into();
         assert!(validate_app_config(&config).is_err());
         config.mcp_servers.push(McpServerConfig {
@@ -2268,7 +2270,7 @@ mod tests {
         });
         config.media.stt.mcp_server = Some("transcriber".into());
         assert!(validate_app_config(&config).is_ok());
-        assert!(validate_settings_contract(&Settings::from(&config)).is_ok());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
         config.media.stt.mcp_server = Some("missing".into());
         assert!(
             validate_app_config(&config)
@@ -2276,7 +2278,7 @@ mod tests {
                 .to_string()
                 .contains("mcp_server")
         );
-        assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
     }
 
     #[test]
@@ -2294,7 +2296,7 @@ mod tests {
         ]);
         for validate in [
             validate_app_config(&config),
-            validate_settings_contract(&Settings::from(&config)),
+            validate_settings_contract(&SettingsSnapshot::from(&config)),
         ] {
             assert!(
                 validate
@@ -2317,7 +2319,7 @@ mod tests {
         ]);
         for validate in [
             validate_app_config(&config),
-            validate_settings_contract(&Settings::from(&config)),
+            validate_settings_contract(&SettingsSnapshot::from(&config)),
         ] {
             assert!(
                 validate
@@ -2340,7 +2342,7 @@ mod tests {
         ]);
         for validate in [
             validate_app_config(&config),
-            validate_settings_contract(&Settings::from(&config)),
+            validate_settings_contract(&SettingsSnapshot::from(&config)),
         ] {
             assert!(
                 validate
@@ -2365,7 +2367,7 @@ mod tests {
             ..Default::default()
         });
 
-        let mut settings = Settings::from(&config);
+        let mut settings = SettingsSnapshot::from(&config);
         settings.llm.models[0].id = "  ".into();
         assert!(
             validate_settings_contract(&settings)
@@ -2374,7 +2376,7 @@ mod tests {
                 .contains("llm.models[0].id")
         );
 
-        let mut settings = Settings::from(&config);
+        let mut settings = SettingsSnapshot::from(&config);
         settings.llm.models[0].model = "  ".into();
         assert!(
             validate_settings_contract(&settings)
@@ -2383,7 +2385,7 @@ mod tests {
                 .contains("llm.models[0].model")
         );
 
-        let mut settings = Settings::from(&config);
+        let mut settings = SettingsSnapshot::from(&config);
         settings.llm.models.push(settings.llm.models[0].clone());
         assert!(
             validate_settings_contract(&settings)

@@ -71,6 +71,7 @@ describe('SettingsView diagnostics export', () => {
 				name: 'primary',
 				provider: 'openai',
 				api_style: 'openai-chat',
+				media_capabilities: { stt: false, tts: false, image_gen: false },
 				base_url: 'https://example.test/v1',
 				auth_header_name: 'Authorization',
 				auth_header_prefix: 'Bearer',
@@ -134,6 +135,7 @@ describe('SettingsView diagnostics export', () => {
 				name: 'primary',
 				provider: 'openai',
 				api_style: 'openai-chat',
+				media_capabilities: { stt: false, tts: false, image_gen: false },
 				base_url: 'https://example.test/v1',
 				auth_header_name: 'Authorization',
 				auth_header_prefix: 'Bearer',
@@ -337,9 +339,8 @@ describe('SettingsView diagnostics export', () => {
 		});
 		unsubscribe();
 		const update = invoke.mock.calls.find(([command]) => command === 'update_settings');
-		expect(update?.[1]?.settings.context_limits.scheduled_tool_runs_due_horizon_secs).toBe(
-			365 * 24 * 3600,
-		);
+		expect(Object.keys(update?.[1]?.settings ?? {})).toEqual(['notification']);
+		expect(update?.[1]?.settings.context_limits).toBeUndefined();
 	});
 
 	it('publishes durable-first notification settings after a partial runtime apply failure', async () => {
@@ -446,6 +447,7 @@ describe('SettingsView diagnostics export', () => {
 				name: 'deepgram-voice',
 				provider: 'deepgram',
 				api_style: 'deepgram',
+				media_capabilities: { stt: true, tts: false, image_gen: false },
 				base_url: 'https://api.deepgram.com',
 				auth_header_name: 'Authorization',
 				auth_header_prefix: 'Token',
@@ -456,6 +458,7 @@ describe('SettingsView diagnostics export', () => {
 				name: 'speech-connection',
 				provider: 'openai',
 				api_style: 'openai-chat',
+				media_capabilities: { stt: false, tts: true, image_gen: false },
 				base_url: 'https://speech.example/v1',
 				auth_header_name: 'Authorization',
 				auth_header_prefix: 'Bearer',
@@ -466,6 +469,7 @@ describe('SettingsView diagnostics export', () => {
 				name: 'image-connection',
 				provider: 'openai',
 				api_style: 'openai-chat',
+				media_capabilities: { stt: false, tts: false, image_gen: true },
 				base_url: 'https://image.example/v1',
 				auth_header_name: 'Authorization',
 				auth_header_prefix: 'Bearer',
@@ -572,30 +576,8 @@ describe('SettingsView diagnostics export', () => {
 		);
 		const update = invoke.mock.calls.find(([command]) => command === 'update_settings');
 		const saved = update?.[1]?.settings;
-		expect(saved.session.max_steps_per_session).toBe(750);
-		expect(saved.session.prompt_history_limit).toBe(73);
-		expect(saved.memory.fact_inference_enabled).toBe(false);
-		expect(saved.security.execution_root).toBe('C:\\Haven\\Projects\\demo');
-		expect(saved.hotkey.mute_hotkey).toBe('Ctrl+M');
-		expect(saved.log.file_path).toBe('C:\\Haven\\logs\\custom.log');
-		expect(saved.media.stt.provider_name).toBe('deepgram-voice');
-		expect(saved.media.ocr.provider).toBe('azure');
-		expect(saved.media.tts.provider_name).toBe('speech-connection');
-		expect(saved.media.image_gen.provider_name).toBe('image-connection');
-		expect(saved.context_limits).toMatchObject({
-			response_token_floor: 64_000,
-			skills_max_line_bytes: 2048,
-			file_max_full_file_bytes: 256_000,
-			file_line_max_bytes: 32_000,
-			file_byte_read_max_bytes: 8 * 1024 * 1024,
-			file_write_max_bytes: 32 * 1024 * 1024,
-			mcp_max_binary_base64_bytes: 1024 * 1024,
-			max_pending_scheduled_tool_runs: 17,
-			max_running_background_tool_runs: 29,
-			tool_run_result_context_chars: 4321,
-			fact_extraction_min_interval_secs: 77,
-			turn_deadline_secs: 901,
-		});
+		expect(Object.keys(saved)).toEqual(['notification']);
+		expect(saved.notification.session_created.windows).toBe(true);
 	}, 15_000);
 
 	it('stages provider keys separately and omits values from Settings updates', async () => {

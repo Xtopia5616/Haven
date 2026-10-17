@@ -9,7 +9,7 @@ use crate::ToolRegistry;
 use anyhow::{Error, Result};
 use haven_common::config::{
     AppConfig, ConfigLoader, ConfigPatch, ConfigVersion, LogConfig, LogLevel, McpServerConfig,
-    McpStdioExecution, RequestKind, Settings,
+    McpStdioExecution, RequestKind, SettingsSnapshot,
 };
 use haven_common::mcp::McpServerTransport;
 use haven_mcp::{MCP_MAX_PARALLEL_CONNECTIONS, McpClientStatus, McpManager};
@@ -478,7 +478,7 @@ impl AdminServices {
     pub(crate) async fn config_get(&self, path: Option<&str>) -> Result<Value> {
         let config = self.read_config()?;
         let Some(path) = path.filter(|path| !path.is_empty()) else {
-            let mut settings = serde_json::to_value(Settings::from(&config))?;
+            let mut settings = serde_json::to_value(SettingsSnapshot::from(&config))?;
             super::super::admin_support::mask_sensitive_config(&mut settings);
             return Ok(settings);
         };
@@ -528,7 +528,7 @@ impl AdminServices {
         match self.read_config() {
             Ok(config) => {
                 config_path = Some(self.config_path()?.to_string_lossy().to_string());
-                let mut masked_settings = serde_json::to_value(Settings::from(&config))?;
+                let mut masked_settings = serde_json::to_value(SettingsSnapshot::from(&config))?;
                 super::super::admin_support::mask_sensitive_config(&mut masked_settings);
                 settings = Some(masked_settings);
             }

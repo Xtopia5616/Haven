@@ -1,10 +1,10 @@
-//! Aggregate application config (AppConfig / Settings) and the TOML
+//! Aggregate application config (AppConfig / SettingsSnapshot) and the TOML
 //! ConfigLoader. Both structs are generated from one shared field list by
-//! the settings_pair! macro so they cannot drift.
+//! the config_snapshot_pair! macro so the runtime and read snapshot cannot drift.
 
 use super::*;
 
-macro_rules! settings_pair {
+macro_rules! config_snapshot_pair {
     ($settings:ident; $(
         $(#[$field_doc:meta])*
         $field:ident: $ty:ty
@@ -17,11 +17,11 @@ macro_rules! settings_pair {
 
         #[derive(Debug, Clone, Serialize, Deserialize, Default)]
         #[serde(default, deny_unknown_fields)]
-        pub struct Settings {
+        pub struct SettingsSnapshot {
             $( $(#[$field_doc])* pub $field: $ty, )*
         }
 
-        impl From<&AppConfig> for Settings {
+        impl From<&AppConfig> for SettingsSnapshot {
             fn from(c: &AppConfig) -> Self {
                 let mut $settings = Self {
                     $( $field: c.$field.clone(), )*
@@ -31,17 +31,18 @@ macro_rules! settings_pair {
             }
         }
 
-        impl From<&Settings> for AppConfig {
-            fn from(settings: &Settings) -> Self {
+        impl From<&SettingsSnapshot> for AppConfig {
+            fn from(settings: &SettingsSnapshot) -> Self {
                 Self {
                     $( $field: settings.$field.clone(), )*
                 }
             }
         }
+
     };
 }
 
-settings_pair! {
+config_snapshot_pair! {
     settings;
     /// Default shell for the agent's `shell` tool when the model omits the
     /// `shell` argument. One of `powershell` (built-in Windows PowerShell),
@@ -72,6 +73,40 @@ settings_pair! {
     }
 }
 
+/// SettingsPatch write contract. Omitted sections remain untouched; nested `Option`
+/// fields retain their explicit `null` meaning for clearing a configured value.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SettingsPatch {
+    pub default_shell: Option<ShellChoice>,
+    pub llm: Option<LlmConfig>,
+    pub hotkey: Option<HotkeyConfig>,
+    pub session: Option<SessionConfig>,
+    pub context_limits: Option<ContextLimitsConfig>,
+    pub memory: Option<MemoryConfig>,
+    pub security: Option<SecurityConfig>,
+    pub media: Option<MediaConfig>,
+    pub notification: Option<NotificationConfig>,
+    pub log: Option<LogConfig>,
+}
+
+impl From<&SettingsSnapshot> for SettingsPatch {
+    fn from(snapshot: &SettingsSnapshot) -> Self {
+        Self {
+            default_shell: Some(snapshot.default_shell),
+            llm: Some(snapshot.llm.clone()),
+            hotkey: Some(snapshot.hotkey.clone()),
+            session: Some(snapshot.session.clone()),
+            context_limits: Some(snapshot.context_limits.clone()),
+            memory: Some(snapshot.memory.clone()),
+            security: Some(snapshot.security.clone()),
+            media: Some(snapshot.media.clone()),
+            notification: Some(snapshot.notification.clone()),
+            log: Some(snapshot.log.clone()),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Config loader
 // ---------------------------------------------------------------------------
@@ -96,9 +131,9 @@ settings_pair! {
 /// ```
 ///
 /// ```compile_fail
-/// use haven_common::config::{ConfigLoader, Settings};
+/// use haven_common::config::{ConfigLoader, SettingsPatch};
 /// let mut loader = ConfigLoader::load().unwrap();
-/// loader.apply_settings(&Settings::default());
+/// loader.apply_settings(&SettingsPatch::default());
 /// ```
 #[derive(Debug, Clone)]
 pub struct ConfigLoader {
@@ -434,10 +469,10 @@ impl ConfigLoader {
         &mut self.config
     }
 
-    /// Apply a frontend `Settings` update in loader unit tests.
+    /// Apply a frontend `SettingsPatch` update in loader unit tests.
     #[cfg(test)]
-    fn apply_settings(&mut self, settings: &Settings) {
-        self.config.apply_settings(settings);
+    fn apply_settings(&mut self, settings: &SettingsPatch) {
+        self.config.apply_settings_patch(settings);
     }
 
     pub fn path(&self) -> &Path {
@@ -454,70 +489,86 @@ impl ConfigLoader {
 }
 
 impl AppConfig {
-    /// Apply a frontend `Settings` update, preserving stored api keys when the
-    /// incoming value is empty.
-    pub fn apply_settings(&mut self, settings: &Settings) {
+    /// Apply only submitted SettingsPatch sections, preserving stored api keys when
+    /// the incoming value is empty.
+    pub fn apply_settings_patch(&mut self, settings: &SettingsPatch) {
         // Preserve existing keys if the frontend sends empty strings (masked).
-        // `Settings::from` blanks every api key, so the incoming `llm` carries
+        // `SettingsSnapshot::from` blanks every api key, so the incoming `llm` carries
         // no secrets; the previous live config is the only key source.
         let prev_llm = self.llm.clone();
 
         // Replace the whole `llm` section wholesale instead of copying fields
         // by hand: a new field added to `LlmConfig` is then applied here
         // automatically and cannot be forgotten (the two structs stay in sync
-        // via `From<&AppConfig> for Settings`, which masks keys only).
-        let mut llm = settings.llm.clone();
-        // Preserve masked provider keys, matched by provider name. Roles never
-        // carry keys (the api_key lives on the referenced provider), so no
-        // model-level key preservation is needed.
-        for prov in llm.providers.iter_mut() {
-            if prov.api_key.is_empty()
-                && let Some(prev) = prev_llm.providers.iter().find(|p| p.name == prov.name)
-            {
-                prov.api_key = prev.api_key.clone();
+        // via `From<&AppConfig> for SettingsSnapshot`, which masks keys only).
+        if let Some(settings_llm) = &settings.llm {
+            let mut llm = settings_llm.clone();
+            // Preserve masked provider keys, matched by provider name. Roles never
+            // carry keys (the api_key lives on the referenced provider), so no
+            // model-level key preservation is needed.
+            for prov in llm.providers.iter_mut() {
+                if prov.api_key.is_empty()
+                    && let Some(prev) = prev_llm.providers.iter().find(|p| p.name == prov.name)
+                {
+                    prov.api_key = prev.api_key.clone();
+                }
             }
+            // Drop incomplete named models so request policies cannot select a
+            // half-written provider/model assignment.
+            llm.models.retain(|model_config| {
+                model_config.is_assigned() && !model_config.id.trim().is_empty()
+            });
+            self.llm = llm;
         }
-        // Drop incomplete named models so request policies cannot select a
-        // half-written provider/model assignment.
-        llm.models.retain(|model_config| {
-            model_config.is_assigned() && !model_config.id.trim().is_empty()
-        });
-        self.llm = llm;
 
-        self.default_shell = settings.default_shell;
-        self.hotkey = settings.hotkey.clone();
-        self.session = settings.session.clone();
+        if let Some(default_shell) = settings.default_shell {
+            self.default_shell = default_shell;
+        }
+        if let Some(hotkey) = &settings.hotkey {
+            self.hotkey = hotkey.clone();
+        }
+        if let Some(session) = &settings.session {
+            self.session = session.clone();
+        }
         // The settings form sends the full `context_limits` object (the
         // frontend keeps the loaded copy intact and only edits exposed
         // fields), so applying it here cannot wipe fields the UI does not
         // render. `#[serde(default)]` fills any genuinely missing field with
         // its default, which is the current schema's partial-settings contract.
-        self.context_limits = settings.context_limits.clone();
-        self.memory = settings.memory.clone();
+        if let Some(context_limits) = &settings.context_limits {
+            self.context_limits = context_limits.clone();
+        }
+        if let Some(memory) = &settings.memory {
+            self.memory = memory.clone();
+        }
         // Permanent permissions are mutated by resolve_confirmation /
         // revoke_permission, not the settings form. The form may hold a stale
-        // snapshot (Always grant while Settings was open) — overwriting would
+        // snapshot (Always grant while SettingsSnapshot was open) — overwriting would
         // wipe live grants. Keep on-disk permissions; apply the selected
         // security boundaries and confirmation mode.
-        let prev_permissions = self.security.permissions.clone();
-        let prev_encrypt = self.security.encrypt_sensitive;
-        self.security = settings.security.clone();
-        self.security.permissions = prev_permissions;
-        // encrypt_sensitive has no UI yet; don't let the form force `true`.
-        self.security.encrypt_sensitive = prev_encrypt;
-        self.media = {
-            let mut media = settings.media.clone();
-            let prev = &self.media;
-            // OCR remains a dedicated provider with its own credentials; keep
-            // masked values when the settings form sends empty strings.
-            if media.ocr.api_key.is_empty() {
-                media.ocr.api_key = prev.ocr.api_key.clone();
-            }
-            if media.ocr.api_secret.is_empty() {
-                media.ocr.api_secret = prev.ocr.api_secret.clone();
-            }
-            media
-        };
+        if let Some(security) = &settings.security {
+            let prev_permissions = self.security.permissions.clone();
+            let prev_encrypt = self.security.encrypt_sensitive;
+            self.security = security.clone();
+            self.security.permissions = prev_permissions;
+            // encrypt_sensitive has no UI yet; don't let the form force `true`.
+            self.security.encrypt_sensitive = prev_encrypt;
+        }
+        if let Some(settings_media) = &settings.media {
+            self.media = {
+                let mut media = settings_media.clone();
+                let prev = &self.media;
+                // OCR remains a dedicated provider with its own credentials; keep
+                // masked values when the settings form sends empty strings.
+                if media.ocr.api_key.is_empty() {
+                    media.ocr.api_key = prev.ocr.api_key.clone();
+                }
+                if media.ocr.api_secret.is_empty() {
+                    media.ocr.api_secret = prev.ocr.api_secret.clone();
+                }
+                media
+            };
+        }
         // The settings form does not manage these sections — MCP servers are
         // mutated by their own bridge commands and the `self` tool, skills and
         // tool settings likewise. The frontend payload omits them, so with
@@ -527,8 +578,12 @@ impl AppConfig {
         // current values; specialized typed patches can update these sections
         // through `ConfigService` without allowing the settings form to wipe
         // them.
-        self.log = settings.log.clone();
-        self.notification = settings.notification.clone();
+        if let Some(log) = &settings.log {
+            self.log = log.clone();
+        }
+        if let Some(notification) = &settings.notification {
+            self.notification = notification.clone();
+        }
     }
 }
 
@@ -849,7 +904,7 @@ mod tests {
             api_key: "super-secret".to_string(),
             ..Default::default()
         });
-        let settings = Settings::from(&cfg);
+        let settings = SettingsSnapshot::from(&cfg);
         assert!(settings.llm.providers[0].api_key.is_empty());
         // Models never carry keys (they live on the provider).
         assert_eq!(settings.llm.models.len(), 0);
@@ -979,7 +1034,7 @@ mod tests {
             api_key: "keep-multi".to_string(),
             ..Default::default()
         });
-        let mut settings = Settings::from(&cfg);
+        let mut settings = SettingsSnapshot::from(&cfg);
         // Frontend sends empty api keys (masked) but a new base URL / model.
         settings.llm.providers[0].base_url = "https://gateway.example/v1".to_string();
         settings.llm.providers[1].name = "renamed".to_string();
@@ -1001,7 +1056,7 @@ mod tests {
             source_fingerprint: None,
             recovery_required: false,
         };
-        loader.apply_settings(&settings);
+        loader.apply_settings(&SettingsPatch::from(&settings));
         // Keys preserved by provider name.
         assert_eq!(loader.config().llm.providers[0].api_key, "keep-me");
         assert_eq!(
@@ -1039,7 +1094,7 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.media.ocr.api_key = "keep-ocr-key".to_string();
         cfg.media.ocr.api_secret = "keep-ocr-secret".to_string();
-        let mut settings = Settings::from(&cfg);
+        let mut settings = SettingsSnapshot::from(&cfg);
         // Frontend sends masked OCR credentials but new media models/voices.
         settings.media.stt.model = "whisper-1".to_string();
         settings.media.ocr.provider = "baidu".to_string();
@@ -1051,7 +1106,7 @@ mod tests {
             source_fingerprint: None,
             recovery_required: false,
         };
-        loader.apply_settings(&settings);
+        loader.apply_settings(&SettingsPatch::from(&settings));
         let media = &loader.config().media;
         assert_eq!(media.stt.model, "whisper-1");
         assert_eq!(media.ocr.api_key, "keep-ocr-key");
@@ -1066,7 +1121,7 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.media.ocr.api_key = "ocr-secret".to_string();
         cfg.media.ocr.api_secret = "ocr-secret-2".to_string();
-        let settings = Settings::from(&cfg);
+        let settings = SettingsSnapshot::from(&cfg);
         assert!(settings.media.ocr.api_key.is_empty());
         assert!(settings.media.ocr.api_secret.is_empty());
     }
@@ -1091,9 +1146,9 @@ mod tests {
         cfg.mcp_discovery.health_interval_secs = 99;
         cfg.context_limits.max_transcript_chars = 9999;
 
-        let mut settings = Settings::from(&cfg);
+        let mut settings = SettingsSnapshot::from(&cfg);
         // The settings form payload omits these sections → they deserialize
-        // to empty/defaults (Settings derives #[serde(default)]).
+        // to empty/defaults (SettingsSnapshot derives #[serde(default)]).
         settings.mcp_servers = Vec::new();
         settings.skills = SkillsConfig::default();
         settings.skills_exec = SkillsExecConfig::default();
@@ -1112,7 +1167,7 @@ mod tests {
             source_fingerprint: None,
             recovery_required: false,
         };
-        loader.apply_settings(&settings);
+        loader.apply_settings(&SettingsPatch::from(&settings));
 
         assert_eq!(loader.config().mcp_servers.len(), 1);
         assert_eq!(loader.config().mcp_servers[0].name, "tavily");
@@ -1132,7 +1187,7 @@ mod tests {
         assert_eq!(loader.config().context_limits.max_transcript_chars, 9999);
         // An explicit edit in the payload still applies.
         settings.context_limits.max_transcript_chars = 8888;
-        loader.apply_settings(&settings);
+        loader.apply_settings(&SettingsPatch::from(&settings));
         assert_eq!(loader.config().context_limits.max_transcript_chars, 8888);
     }
 
@@ -1145,6 +1200,27 @@ mod tests {
         assert!(!loader.recovery_required);
         assert_eq!(loader.config().media.audio.max_duration_secs, 60);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_patch_keeps_omitted_sections_and_clears_explicit_nullable_values() {
+        let mut config = AppConfig::default();
+        config.session.max_concurrent = 7;
+        config.security.execution_root = Some("C:\\Haven\\Workspace".into());
+        config.log.file_path = Some("C:\\Haven\\logs\\haven.log".into());
+
+        let patch: SettingsPatch = serde_json::from_value(serde_json::json!({
+            "security": { "execution_root": null }
+        }))
+        .unwrap();
+        config.apply_settings_patch(&patch);
+
+        assert_eq!(config.session.max_concurrent, 7);
+        assert_eq!(config.security.execution_root, None);
+        assert_eq!(
+            config.log.file_path,
+            Some(PathBuf::from("C:\\Haven\\logs\\haven.log"))
+        );
     }
 
     #[test]
@@ -1339,6 +1415,10 @@ default_web_search = "alway"
             (
                 "plaintext provider credential",
                 "[[llm.providers]]\nname = \"primary\"\napi_key = \"old-secret\"\n",
+            ),
+            (
+                "missing explicit provider media capabilities",
+                "[[llm.providers]]\nname = \"primary\"\nprovider = \"openai\"\nbase_url = \"https://api.openai.com/v1\"\n",
             ),
             (
                 "plaintext OCR credential",
@@ -1547,16 +1627,19 @@ provider_name = "image-connection"
 name = "deepgram-voice"
 provider = "deepgram"
 base_url = "https://api.deepgram.com"
+media_capabilities = { stt = false, tts = false, image_gen = false }
 
 [[llm.providers]]
 name = "speech-connection"
 provider = "openai"
 base_url = "https://speech.example/v1"
+media_capabilities = { stt = false, tts = false, image_gen = false }
 
 [[llm.providers]]
 name = "image-connection"
 provider = "openai"
 base_url = "https://image.example/v1"
+media_capabilities = { stt = false, tts = false, image_gen = false }
 
 [[llm.models]]
 id = "transcription-model"
