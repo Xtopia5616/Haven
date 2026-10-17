@@ -1,7 +1,7 @@
 # Haven 新一轮架构重构方案（源码审计）
 
 > 日期：2026-10-17
-> 状态：Slice 1–5 已完成（Slice 4: ADR 1303–1306；Slice 5: ADR 1307–1311）；Slice 6 `tool_runner.rs` 正在实施，任何时刻只推进一个 Active 切片。
+> 状态：Slice 1–6 已完成（Slice 4: ADR 1303–1306；Slice 5: ADR 1307–1311；Slice 6: ADR 1312）；Slice 7 为剩余窄职责的证据复核，任何时刻只推进一个 Active 切片。
 > 范围：Rust workspace、Tauri IPC/event bridge、Svelte UI 与相关架构/契约文档。
 
 ## 1. 目标与审计方法
@@ -137,11 +137,13 @@ Settings 保存还有一个必须覆盖的分支：`SettingsView.svelte` 将 par
 
 ### Slice 6 — 拆分 Agent tool runner
 
-**当前 Active。**
+**已完成（ADR 1312）。**
 
-将 step persistence、execution adapter 路由、确认/scheduled ToolRun lifecycle 分入私有子模块，全部继续使用同一 `SessionSupervisor`、执行序号和确认状态。Agent 负责 session/scheduled 生命周期；Tools 负责授权策略。验收覆盖 foreground/background/code mode/workflow、step ID 共用、取消/拒绝/过期、scheduled claim/terminal transcript 与权限 owner 校验，执行 workspace 门禁。
+step identity/persistence、foreground/background/Code Mode/workflow execution routing、session/scheduled confirmation 与 ToolRun terminal lifecycle 已分别迁入私有子模块，继续使用唯一 `SessionSupervisor`、现有步骤 ID 和 confirmation 状态。Agent 继续拥有 session/scheduled 生命周期，Tools 继续拥有授权策略。Agent crate 测试与 strict Clippy、workspace 单线程测试与 strict Clippy、格式和 ADR index 检查均通过。
 
 ### Slice 7 — 收拾剩余窄职责文件
+
+**下一步：** 先按当前生产调用点复核候选，再决定是否形成独立拆分；不因路线图列出候选而自动迁移实现。
 
 按生产调用点验证并拆 `document.rs` 的 PDF/OpenXML parser；只共享文件管理器最低层 spawn helper；视初始化顺序和测试可见性决定是否把 AppState bootstrap/cleanup 移到私有文件。以上均不改 crate 边界，不新增可变 service。合同 DTO 归位也放在此 slice 的小步执行。
 
