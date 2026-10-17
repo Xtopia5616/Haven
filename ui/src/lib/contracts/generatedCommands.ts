@@ -71,7 +71,11 @@ export const BOOTSTRAP_STATUS_VALUES = ['loading', 'ready'] as const;
 export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];
 export interface RuntimeSessionDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; waiting_reason?: SessionWaitingReason }
 export interface RuntimeSessionListResponse { sessions: RuntimeSessionDto[] }
-export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
+export const FRONTEND_FAILURE_KIND_INPUT_VALUES = ['operation_failure', 'unhandled_ui_error', 'unhandled_rejection'] as const;
+export type FrontendFailureKindInput = (typeof FRONTEND_FAILURE_KIND_INPUT_VALUES)[number];
+export interface LogInfo { enabled: boolean; level: LogLevel; path: string | null }
+export interface LogTail { path: string; content: string }
+export interface McpRefreshResult { added: string[]; removed: string[]; updated: string[]; failed: string[] }
 export interface MemoryFactCursorInput { createdAt: string; factId: string }
 export interface MemoryFactCursor { createdAt: string; factId: string }
 export interface MemoryFactPageResponse { facts: MemoryFactResponse[]; next_cursor: MemoryFactCursor | null }
@@ -82,16 +86,6 @@ export const MEMORY_FACT_SOURCE_VALUES = ['user', 'inferred'] as const;
 export type MemoryFactSource = (typeof MEMORY_FACT_SOURCE_VALUES)[number];
 export interface MemoryFactSourceRef { message_id: string; snippet: string }
 export interface MemoryRecallItem { entity_id: string; text: string; score: number; model: string }
-export interface SandboxOutputReviewChangeDto { changeIndex: number; relativePath: string; change: SandboxOutputReviewChangeKindDto; beforeBytes: number | null; afterBytes: number | null; beforeSha256: string | null; afterSha256: string | null; promoted: boolean }
-export const SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES = ['created', 'modified', 'deleted', 'type_changed'] as const;
-export type SandboxOutputReviewChangeKindDto = (typeof SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES)[number];
-export interface SandboxOutputReviewManifestDto { sessionId: string; sourceStepId: string; expiresAtUnixMs: number; storageChargeBytes: number; changes: SandboxOutputReviewChangeDto[] }
-export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
-export const FRONTEND_FAILURE_KIND_INPUT_VALUES = ['operation_failure', 'unhandled_ui_error', 'unhandled_rejection'] as const;
-export type FrontendFailureKindInput = (typeof FRONTEND_FAILURE_KIND_INPUT_VALUES)[number];
-export interface LogInfo { enabled: boolean; level: LogLevel; path: string | null }
-export interface LogTail { path: string; content: string }
-export interface McpRefreshResult { added: string[]; removed: string[]; updated: string[]; failed: string[] }
 export interface ApiKeyStatus { models: Record<string, boolean>; providers: Record<string, boolean>; stt: boolean; ocr: boolean; ocr_secret: boolean }
 export const REASONING_EFFORT_SELECTION_INPUT_VALUES = ['low', 'medium', 'high', 'off'] as const;
 export type ReasoningEffortSelectionInput = (typeof REASONING_EFFORT_SELECTION_INPUT_VALUES)[number];
@@ -104,6 +98,12 @@ export interface SessionResumeMessageDto { message_id: string; session_id: strin
 export interface SessionResumeResponse { session: SessionRecordDto; messages: SessionResumeMessageDto[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[] }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect }
 export interface ShellAvailability { available: boolean }
+export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
+export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
+export interface SandboxOutputReviewChangeDto { changeIndex: number; relativePath: string; change: SandboxOutputReviewChangeKindDto; beforeBytes: number | null; afterBytes: number | null; beforeSha256: string | null; afterSha256: string | null; promoted: boolean }
+export const SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES = ['created', 'modified', 'deleted', 'type_changed'] as const;
+export type SandboxOutputReviewChangeKindDto = (typeof SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES)[number];
+export interface SandboxOutputReviewManifestDto { sessionId: string; sourceStepId: string; expiresAtUnixMs: number; storageChargeBytes: number; changes: SandboxOutputReviewChangeDto[] }
 export interface AgentCompactionEvent { session_id: string; summary: string; tokens_before: number; tokens_after: number; degraded: boolean; episode_id?: string; event_sequence?: number }
 export interface AgentMediaPlanEvent { session_id: string; step_number: number; run_id: number; request_kind: RequestKind; strategy: MediaInputStrategy; projections: MediaProjection[]; notices: MediaPlanNotice[]; event_sequence?: number }
 export interface AgentNotificationEvent { session_id?: string; title: string; body: string; notification_kind?: AgentNotificationKind; tool_run_kind?: ToolRunKindDto; tool_run_id?: string; tool_run_status?: ToolRunCompletionStatusDto }

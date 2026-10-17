@@ -1,7 +1,7 @@
 # 第二轮逐文件审计：兼容层与不必要设计
 
 > 日期：2026-10-17
-> 类型：只读源码审计与下一轮重构方案；本轮没有修改运行时代码，也没有运行测试。
+> 类型：只读源码审计与下一轮重构方案；本轮审计时没有修改运行时代码，也没有运行测试。
 > 目标：在接受破坏性调整、无需兼容 Haven 旧版本的前提下，移除无消费者的兼容路径与空转抽象，收敛当前实现的真实 owner。
 
 ## 1. 审计口径
@@ -146,11 +146,11 @@ Inbox 侧格式要按无兼容目标明确切换：升级前备份后重置 `inb
 
 移除 App 纯转发 adapter；把 ToolRun store 改为唯一 payload map + 双索引；把 command security metadata 设为单一权威并扩展现有 generator/checker；把 AgentEvent `{channel,payload}` projection 绑定到生成 shape registry。验收检查 owner 唯一、生成产物不 drift、UI 查询生命周期与 bounded limits 保持。
 
-**实施完成（ADR 1301，2026-10-17）**：App 直接持有 Tools capability；ToolRun store 只保留一份 payload 并由 live/session 有界索引派生视图；Rust command metadata 逐字段生成并核对 TS、文档；AgentEvent 单一 projection 配对 channel 与 DTO。完整 workspace 测试、strict Clippy、UI check/完整测试/生产构建、Rust fmt 和 IPC contracts/events checker 均通过。最后修复的共享 payload 刷新竞态另经 16 项定向 UI 测试通过。Slice 9 转为当前 Active 项；Windows 发布验收仍是独立 Gate。
+**实施完成（ADR 1301，2026-10-17）**：App 直接持有 Tools capability；ToolRun store 只保留一份 payload 并由 live/session 有界索引派生视图；Rust command metadata 逐字段生成并核对 TS、文档；AgentEvent 单一 projection 配对 channel 与 DTO。完整 workspace 测试、strict Clippy、UI check/完整测试/生产构建、Rust fmt 和 IPC contracts/events checker 均通过。最后修复的共享 payload 刷新竞态另经 16 项定向 UI 测试通过。当时 Slice 9 转为 Active；其后续切片已按下一节完成。Windows 发布验收仍是独立 Gate。
 
 ### Slice 9 — 延续第一轮仍成立的内部职责切片
 
-前一轮中的通知配置单 owner 已提前为本轮 Slice 2；AppCommand confirmation owner 与 admin adapter 已完成（ADR 1302）。SessionStore fork、ingress/recovery、pending input、tool-step、event model、append、transcript projection、replay/read、rollback/usage 与 branch marker 已拆入私有模块（ADR 1303–1306），Slice 4 完成；当前进入第一轮方案 Slice 5，拆分 Tools `security.rs`，随后再拆 Agent `tool_runner.rs`，保持既有安全与事务边界。第一轮计划中关于 command metadata “Rust 目前已是权威”的事实描述以本轮复核纠正；当前实际不是逐字段校验。本轮不重新把已验证的事务、session、authorization 不变量重复设计一遍。
+**实施完成（ADR 1302–1314）。** 通知配置单 owner、AppCommand confirmation/admin adapter、SessionStore 私有职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser 与 App command DTO/process helper 均已完成。Slice 7 复核保留 AppState/bootstrap composition owner，不新增容器或纯文件搬移。当前无剩余 Active 结构切片；Windows 发布及 HCS quota 验收继续作为路线图 §5.1 的独立 Open Gate。
 
 ## 5. 实施门禁与数据切换
 

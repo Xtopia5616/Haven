@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8、§5.8 与第二轮 Slice 1–8 已完成；第二轮 Slice 9 正在实施。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 已拆分（ADR 1313）；当前 Active 为 App command DTO owner 归位复核。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
+> 状态：阶段 0–8、§5.8 与第二轮 Slice 1–9 已完成；当前无 Active 结构切片。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
 > 更新日期：2026-10-18
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active** | Slice 9：延续第一轮仍成立的内部职责切片；当前复核 Slice 7 的 App command DTO owner 归位，详见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)与[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
+| **无 Active 结构切片** | 第二轮 Slice 9 的内部职责范围和第一轮 Slice 7 均已完成；按 §5.5 的源码证据触发规则继续复核，未出现合格的新候选时不制造工作。当前状态与证据见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)及[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -91,7 +91,7 @@
 
 ### 5.2 交互生命周期所有权（行为已收口；恢复覆盖纳入新一轮）
 
-Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 request identity 路由；Session grant、resolve event/status 与 actor 唤醒顺序有明确的持久化和失败契约。交互 replay 失败保持 fail-closed，pending session 恢复有界并可取消地重试。当前行为契约与逐项验证见 ADR 0423/0424、0507–0522。2026-10-17 源码审计另发现 AppCommand pending 状态、入队/过期和 resolve continuation 分散于 `app_state.rs`、`commands/mod.rs`、`commands/session.rs`；下一轮将按新方案收拢内部 owner，不重定义既有交互契约。
+Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 request identity 路由；Session grant、resolve event/status 与 actor 唤醒顺序有明确的持久化和失败契约。交互 replay 失败保持 fail-closed，pending session 恢复有界并可取消地重试。当前行为契约与逐项验证见 ADR 0423/0424、0507–0522。2026-10-17 源码审计当时发现 AppCommand pending 状态、入队/过期和 resolve continuation 分散于 `app_state.rs`、`commands/mod.rs`、`commands/session.rs`；该 owner 已按 ADR 1302 收拢，且未重定义既有交互契约。
 
 源码复核修正了该边界：grant 写入后，Session confirmation resolution 与 `end_session` 由 `confirmation_resolution_gate` 串行；Actor 先 append `interaction_resolved`，成功后才移除 pending/唤醒 session，append 失败保留 paused pending。已有失败注入测试覆盖同一 actor 内重试且 grant upsert 不重复。进程崩溃会清除进程内 expiry task；启动恢复只自动载入 `status = pending` 的 session，因此该 paused session 要等显式 reopen 才会重建 actor、replay durable request/grant 并重新安排 expiry（过期时 delay 为零）。UI 打开历史会话前会调用 `reopen_session`；resolve IPC 对未加载 actor 返回 stale。新一轮验收明确覆盖此路径与 UI 行为，不将旧“未定义”结论当作事实，也不隐含承诺 unloaded paused session 在后台自动到期。session grant 的持久 owner 与 Agent/Memory 事务边界不变。
 
@@ -110,7 +110,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | **已完成（ADR 1307–1311）** | `tools/security.rs` 同时实现授权 engine 与有序执行边界检查。 | prompt/矩阵、路径入口、授权 contract、执行 permit、MCP/Skill 两种 process-start adapter、FileRead/FileWrite policy/path helper 与唯一 engine 均进入私有模块；三个授权入口共用按固定优先级执行的硬边界检查。`security.rs` 保持稳定 facade，授权/revoke 状态仍只有一个 owner。Windows workspace tests、strict Clippy 与格式检查通过；并发子进程测试波动和单线程完整门禁结果见 ADR 1311。 |
 | **已完成（ADR 1312）** | `agent/session/tool_runner.rs` 同时实现 step persistence、execution routing 与 confirmation/scheduled ToolRun lifecycle。 | 三类实现已迁入私有子模块；保留唯一 `SessionSupervisor`、既有 step identity 与 confirmation/claim owner。Agent 与 workspace 门禁、格式和 ADR index 检查通过。 |
 | **已完成（ADR 1313）** | `tools/document.rs` 同时包含 PDF 与 OpenXML 解析。 | 输入、页游标和输出策略留在 facade；格式解析器与各自限制进入私有模块；11 项相关测试、strict Clippy 和格式检查通过。 |
-| **Active / 证据复核** | `app-binary/commands/contracts.rs` 混合 command security metadata 与 Memory、Skills、Tools 响应 DTO；AppState bootstrap/cleanup 是否需要私有子模块仍待复核。 | DTO 是否归入唯一消费它的 command owner；保持现有 Serde/IPC 投影。文件工具当前没有外部进程启动点，不需要添加 spawn helper。 |
+| **已完成（ADR 1314）/复核后保留** | `app-binary/commands/contracts.rs` 曾混合 command security metadata 与 Memory、Skills、Tools 响应 DTO；`external` 与 `open_skills_dir` 各自 guarded spawn；AppState/bootstrap/cleanup 候选已复核。 | DTO 已归入唯一消费它们的 command owner，IPC Serde 投影不变；detached host process spawn 共用 App command helper，调用方保留 authorization、path/URL policy 与参数；AppState/runtime 和 Tauri bootstrap 保持单一依赖顺序与生命周期 owner，拆 helper 不会形成新 owner。 |
 
 **已关闭候选 — Session end 失败契约：** actorless、驻留 Actor 与运行中 Actor 的取消/清理失败语义、ToolRun claim 竞争及重试边界已按 ADR 0507、0514 收口并联合验证；当前无 Active 工作。只有同类失败/终态不一致再次复发时才重开。
 
@@ -154,7 +154,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | 4    | **crate/API 边界**           | 模块 owner 已稳定且存在单向依赖边界、独立消费者或可复核构建/维护收益。                                                                                          | API 清晰、无反向依赖或重复 adapter；否则保留现 crate 边界。              |
 | 5    | **性能与容量**               | 同负载 profile 复现用户相关延迟、资源或容量问题；固定场景记录优化前后指标。                                                                                     | 改善超过噪声并达到目标，否则关闭候选。                                   |
 
-**当前执行位置：** 阶段 0–8 已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。第二轮 Slice 1–8 已完成；第二轮 Slice 9 中 AppCommand confirmation/admin adapter 已收口（ADR 1302），SessionStore 内部拆分已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分与有序安全边界检查已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有模块拆分已完成（ADR 1312），Tools PDF/OpenXML parser 已拆分（ADR 1313）；当前 Active 为 App command DTO owner 归位复核。暂不提出 crate 合并或拆分。Windows 发布验收仍是独立 Open Gate（§5.1）。
+**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。当前无 Active 结构切片。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布及 HCS quota 验收仍是独立 Open Gate（§5.1）。
 
 ### 5.7 全项目领域术语与架构角色命名收敛（持续覆盖）
 

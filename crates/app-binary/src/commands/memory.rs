@@ -1,12 +1,164 @@
 use crate::app_state::AppState;
-use crate::commands::contracts::{
-    MemoryFactCursor, MemoryFactPageResponse, MemoryFactResponse, MemoryFactSource,
-    MemoryRecallItem,
-};
 use crate::commands::{log_err, validate_command_id};
 use haven_memory::{MemoryEntityKind, MemoryQuery};
 use std::sync::Arc;
 use tauri::State;
+
+/// Stable Tauri memory-recall item. It mirrors the typed `haven_memory` hit
+/// while keeping the existing wire shape and field names.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MemoryRecallItem {
+    pub entity_id: String,
+    pub text: String,
+    pub score: f64,
+    pub model: String,
+}
+
+impl From<haven_memory::MemoryHit> for MemoryRecallItem {
+    fn from(hit: haven_memory::MemoryHit) -> Self {
+        Self {
+            entity_id: hit.entity_id,
+            text: hit.text,
+            score: hit.score,
+            model: hit.model,
+        }
+    }
+}
+
+/// Public fact projection returned by Memory Tauri commands.
+///
+/// This keeps the IPC surface independent from the repository's `Fact` model;
+/// update the projection deliberately when fields should reach the renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryFactSource {
+    User,
+    Inferred,
+}
+
+impl MemoryFactSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Inferred => "inferred",
+        }
+    }
+}
+
+impl TryFrom<&str> for MemoryFactSource {
+    type Error = &'static str;
+
+    fn try_from(source: &str) -> Result<Self, Self::Error> {
+        match source {
+            "user" => Ok(Self::User),
+            "inferred" => Ok(Self::Inferred),
+            _ => Err("unsupported fact source"),
+        }
+    }
+}
+
+/// Keyset position for a long-term fact page. Tauri input uses camelCase at
+/// the renderer boundary; the nested fact projection remains snake_case.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryFactCursor {
+    pub created_at: String,
+    pub fact_id: String,
+}
+
+impl From<haven_memory::FactPageCursor> for MemoryFactCursor {
+    fn from(cursor: haven_memory::FactPageCursor) -> Self {
+        Self {
+            created_at: cursor.created_at,
+            fact_id: cursor.fact_id,
+        }
+    }
+}
+
+impl From<MemoryFactCursor> for haven_memory::FactPageCursor {
+    fn from(cursor: MemoryFactCursor) -> Self {
+        Self {
+            created_at: cursor.created_at,
+            fact_id: cursor.fact_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryFactResponse {
+    pub fact_id: String,
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub source: MemoryFactSource,
+    pub confidence: f64,
+    pub tags: Vec<String>,
+    pub created_at: String,
+    pub mention_count: i64,
+    pub last_seen_at: Option<String>,
+    pub source_ref: Option<MemoryFactSourceRef>,
+    pub durability: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryFactPageResponse {
+    pub facts: Vec<MemoryFactResponse>,
+    pub next_cursor: Option<MemoryFactCursor>,
+}
+
+impl TryFrom<haven_memory::FactPage> for MemoryFactPageResponse {
+    type Error = String;
+
+    fn try_from(page: haven_memory::FactPage) -> Result<Self, Self::Error> {
+        Ok(Self {
+            facts: page
+                .facts
+                .into_iter()
+                .map(MemoryFactResponse::try_from)
+                .collect::<Result<Vec<_>, _>>()?,
+            next_cursor: page.next_cursor.map(Into::into),
+        })
+    }
+}
+
+impl TryFrom<haven_memory::Fact> for MemoryFactResponse {
+    type Error = String;
+
+    fn try_from(fact: haven_memory::Fact) -> Result<Self, Self::Error> {
+        let source =
+            MemoryFactSource::try_from(fact.source.as_str()).map_err(|error| error.to_string())?;
+
+        Ok(Self {
+            fact_id: fact.fact_id,
+            subject: fact.subject,
+            predicate: fact.predicate,
+            object: fact.object,
+            source,
+            confidence: fact.confidence,
+            tags: fact.tags,
+            created_at: fact.created_at,
+            mention_count: fact.mention_count,
+            last_seen_at: fact.last_seen_at,
+            source_ref: fact.source_ref.map(Into::into),
+            durability: fact.durability,
+        })
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryFactSourceRef {
+    pub message_id: String,
+    pub snippet: String,
+}
+
+impl From<haven_memory::FactSourceRef> for MemoryFactSourceRef {
+    fn from(source: haven_memory::FactSourceRef) -> Self {
+        Self {
+            message_id: source.message_id,
+            snippet: source.snippet,
+        }
+    }
+}
 
 /// Run the full memory maintenance pass (fact dedup, sensitive purge,
 /// stale-fact flush, embedding pruning, bounded embed catch-up). Hot-path
@@ -163,7 +315,10 @@ pub async fn clear_facts(state: State<'_, Arc<AppState>>) -> Result<u64, String>
 
 #[cfg(test)]
 mod tests {
-    use super::{AddFactInput, validate_add_fact_input};
+    use super::{
+        AddFactInput, MemoryFactCursor, MemoryFactResponse, MemoryFactSource,
+        validate_add_fact_input,
+    };
 
     #[test]
     fn add_fact_input_trims_fields_and_filters_empty_tags() {
@@ -200,5 +355,96 @@ mod tests {
             validate_add_fact_input("user".into(), "likes".into(), "sk-secret".into(), None),
             Err("refusing to store credential-like facts".into())
         );
+    }
+
+    #[test]
+    fn memory_fact_cursor_uses_renderer_camel_case_fields() {
+        let cursor = MemoryFactCursor {
+            created_at: "2026-10-06T00:00:00Z".into(),
+            fact_id: "fact-0123456789abcdef0123456789abcdef".into(),
+        };
+        let wire = serde_json::to_value(&cursor).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "createdAt": "2026-10-06T00:00:00Z",
+                "factId": "fact-0123456789abcdef0123456789abcdef",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<MemoryFactCursor>(wire).unwrap(),
+            cursor
+        );
+    }
+
+    #[test]
+    fn memory_fact_response_exposes_only_its_explicit_wire_projection() {
+        let mut fact = haven_memory::Fact {
+            fact_id: "fact-0123456789abcdef0123456789abcdef".into(),
+            subject: "user".into(),
+            predicate: "likes".into(),
+            object: "Rust".into(),
+            source: "user".into(),
+            confidence: 1.0,
+            tags: vec!["language".into()],
+            created_at: "2026-10-06T00:00:00Z".into(),
+            mention_count: 2,
+            last_seen_at: Some("2026-10-06T00:00:00Z".into()),
+            source_ref: Some(haven_memory::FactSourceRef {
+                message_id: "msg-0123456789abcdef0123456789abcdef".into(),
+                snippet: "I like Rust.".into(),
+            }),
+            durability: 0.9,
+        };
+        let response = MemoryFactResponse::try_from(fact.clone()).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({
+                "fact_id": "fact-0123456789abcdef0123456789abcdef",
+                "subject": "user",
+                "predicate": "likes",
+                "object": "Rust",
+                "source": "user",
+                "confidence": 1.0,
+                "tags": ["language"],
+                "created_at": "2026-10-06T00:00:00Z",
+                "mention_count": 2,
+                "last_seen_at": "2026-10-06T00:00:00Z",
+                "source_ref": {
+                    "message_id": "msg-0123456789abcdef0123456789abcdef",
+                    "snippet": "I like Rust.",
+                },
+                "durability": 0.9,
+            })
+        );
+
+        fact.source = "external".into();
+        assert_eq!(
+            MemoryFactResponse::try_from(fact).unwrap_err(),
+            "unsupported fact source"
+        );
+    }
+
+    #[test]
+    fn memory_fact_source_uses_the_database_source_values() {
+        for (wire, source) in [
+            ("user", MemoryFactSource::User),
+            ("inferred", MemoryFactSource::Inferred),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<MemoryFactSource>(&format!("\"{wire}\"")).unwrap(),
+                source
+            );
+            assert_eq!(
+                serde_json::to_string(&source).unwrap(),
+                format!("\"{wire}\"")
+            );
+            assert_eq!(source.as_str(), wire);
+        }
+
+        for wire in ["", "external", "USER"] {
+            assert!(serde_json::from_str::<MemoryFactSource>(&format!("\"{wire}\"")).is_err());
+        }
     }
 }

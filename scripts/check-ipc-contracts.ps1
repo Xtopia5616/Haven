@@ -294,7 +294,7 @@ Assert-Contains $sessionHistoryContract "isCanonicalEntityId\(value\.session_id,
 $memoryView = Get-Source 'ui/src/lib/views/MemoryView.svelte'
 Assert-NotContains $memoryView 'invoke\s*\(\s*''(?:list_facts|add_fact|delete_fact|clear_facts|recall_memory)''' 'MemoryView must use memoryCommands.ts'
 $memoryCommands = Get-Source 'crates/app-binary/src/commands/memory.rs'
-$memoryDtos = Get-Source 'crates/app-binary/src/commands/contracts.rs'
+$memoryDtos = Get-Source 'crates/app-binary/src/commands/memory.rs'
 $memoryUiContracts = Get-Source 'ui/src/lib/contracts/memory.ts'
 Assert-Contains $memoryCommands 'Result\s*<\s*MemoryFactPageResponse\s*,\s*String\s*>' 'list_facts returns the bounded App-owned MemoryFactPageResponse DTO'
 Assert-Contains $memoryCommands 'Result\s*<\s*MemoryFactResponse\s*,\s*String\s*>' 'add_fact returns the App-owned MemoryFactResponse DTO'

@@ -1,5 +1,6 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
+use crate::commands::process::spawn_detached;
 use haven_common::tools::NetworkAccess;
 use haven_common::types::{CapabilityScope, RiskLevel, permission_key};
 use haven_tools::{AuthorizationDecision, AuthorizationRequest, OperationPolicy};
@@ -149,11 +150,6 @@ fn open_url(url: &str) -> std::io::Result<()> {
         spawn_detached(Command::new("xdg-open").arg(url))?;
         Ok(())
     }
-}
-
-fn spawn_detached(command: &mut Command) -> std::io::Result<()> {
-    let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
-    command.spawn().map(|_| ())
 }
 
 #[cfg(target_os = "windows")]

@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::commands::confirmation::UiConfirmationAction;
-use crate::commands::contracts::SkillExecutionResponse;
 use crate::commands::log_err;
+use crate::commands::process::spawn_detached;
 use crate::commands::{
     app_command_authorization_request, emit_event_logged, queue_ui_confirmation,
 };
@@ -12,6 +12,13 @@ use haven_tools::{AuthorizationDecision, AuthorizationRequest, OperationPolicy, 
 use std::sync::Arc;
 use tauri::AppHandle;
 use tauri::State;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SkillExecutionResponse {
+    pub success: bool,
+    pub output: serde_json::Value,
+    pub error: Option<String>,
+}
 
 #[tauri::command]
 pub async fn list_skills(state: State<'_, Arc<AppState>>) -> Result<Vec<SkillInfo>, String> {
@@ -129,26 +136,17 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<(), Stri
     }
     #[cfg(target_os = "windows")]
     {
-        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
-        std::process::Command::new("explorer")
-            .arg(root.as_os_str())
-            .spawn()
+        spawn_detached(std::process::Command::new("explorer").arg(root.as_os_str()))
             .map_err(|e| log_err("open_skills_dir", e))?;
     }
     #[cfg(target_os = "macos")]
     {
-        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
-        std::process::Command::new("open")
-            .arg(&root)
-            .spawn()
+        spawn_detached(std::process::Command::new("open").arg(&root))
             .map_err(|e| log_err("open_skills_dir", e))?;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
-        std::process::Command::new("xdg-open")
-            .arg(&root)
-            .spawn()
+        spawn_detached(std::process::Command::new("xdg-open").arg(&root))
             .map_err(|e| log_err("open_skills_dir", e))?;
     }
     Ok(())
@@ -227,4 +225,20 @@ pub async fn execute_skill(
         output: result.output,
         error: result.error,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SkillExecutionResponse;
+
+    #[test]
+    fn dynamic_execution_payloads_have_fixed_outer_shape() {
+        let skill = serde_json::to_value(SkillExecutionResponse {
+            success: false,
+            output: serde_json::json!(null),
+            error: Some("blocked".into()),
+        })
+        .unwrap();
+        assert_eq!(skill["error"], "blocked");
+    }
 }

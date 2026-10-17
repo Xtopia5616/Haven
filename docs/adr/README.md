@@ -1302,3 +1302,4 @@
 - [1311：拆分 Tools 授权 engine 并收敛有序边界检查](1311-split-tools-authorization-engine.md)
 - [1312：拆分 Agent tool runner 私有职责](1312-split-agent-tool-runner.md)
 - [1313：拆分 PDF 与 OpenXML 文档解析器](1313-split-document-parsers.md)
+- [1314：收拢 App command DTO 与 detached process helper](1314-finish-app-command-boundaries.md)

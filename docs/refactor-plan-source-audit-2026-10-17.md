@@ -1,7 +1,7 @@
 # Haven 新一轮架构重构方案（源码审计）
 
 > 日期：2026-10-17
-> 状态：Slice 1–6 已完成（Slice 4: ADR 1303–1306；Slice 5: ADR 1307–1311；Slice 6: ADR 1312）；Slice 7 中 PDF/OpenXML parser 拆分已完成（ADR 1313），当前复核 command DTO owner；任何时刻只推进一个 Active 切片。
+> 状态：Slice 1–7 已完成（Slice 4: ADR 1303–1306；Slice 5: ADR 1307–1311；Slice 6: ADR 1312；Slice 7: ADR 1313–1314）；当前无 Active 结构切片。
 > 范围：Rust workspace、Tauri IPC/event bridge、Svelte UI 与相关架构/契约文档。
 
 ## 1. 目标与审计方法
@@ -85,9 +85,9 @@ Settings 保存还有一个必须覆盖的分支：`SettingsView.svelte` 将 par
 | `crates/tools/src/security.rs` 与 `crates/tools/src/lib.rs` re-export | **拆私有安全模块** | 一个 engine/配置锁；contract、execution proof、filesystem capability、prompt summary 分域；无外部消费者的安全矩阵可降 visibility，`is_safe_local_path` 仍保留实际跨 crate API |
 | `crates/agent/src/session/tool_runner.rs` | **拆私有执行模块** | step persistence、tool mode execution、confirmation/scheduled lifecycle；SessionSupervisor 继续独占协调状态 |
 | `crates/tools/src/document.rs` | **低优先私有 parser 拆分** | PDF 与 OpenXML(PPTX/DOCX/XLSX) parser 可放入子模块，主 façade 继续拥有格式选择、容量/取消、页/文本 budget；合并时保留现有工作树改动 |
-| `crates/app-binary/src/commands/skills.rs`、`commands/external.rs` | **低优先窄 helper** | 可共用最底层文件管理器进程启动；`open`/`reveal` 目标、调用授权和错误语义仍由各命令保留 |
-| `crates/app-binary/src/app_state.rs`、`bootstrap.rs`、`runtime.rs` | **暂留组合根；条件式源文件拆分** | AppState 装配、启动恢复、清理有可分私有职责，但不得新增 Runtime/service container。完成高优先级 owner 后再拆 bootstrap/cleanup 文件 |
-| `crates/app-binary/src/commands/contracts.rs` 中多域 DTO | **低优先按 command domain 归位** | metadata registry 与多域 DTO 仓库职责不同；先处理 metadata 权威，不因搬 DTO 改变 IPC DTO owner |
+| `crates/app-binary/src/commands/skills.rs`、`commands/external.rs` | **已完成（ADR 1314）** | 两处共用 `commands::process::spawn_detached` 的 process-spawn lock；`open`/`reveal` 目标、调用授权和错误语义仍由各命令保留 |
+| `crates/app-binary/src/app_state.rs`、`bootstrap.rs`、`runtime.rs` | **复核后保留组合根** | `AppState` 按依赖顺序装配唯一 `ApplicationRuntime`，并注册由 runtime cancellation/task tracker 管理的 cleanup/recovery 工作；拆出 cleanup helper 不会产生独立状态 owner。`bootstrap::run` 是单一 Tauri composition root，setup、事件、窗口生命周期与命令注册按初始化顺序组合；拆散局部 adapter 只会搬文件，不会建立更清楚的 owner。不得新增 Runtime/service container；当存在独立生命周期 owner 或真实跨调用复用时再复核。 |
+| `crates/app-binary/src/commands/contracts.rs` 中多域 DTO | **已完成（ADR 1314）** | Memory、Skills、Tools DTO 与唯一消费它们的 command handler 同模块；command metadata registry 继续留在 contracts，不改变 IPC DTO owner 或 wire shape |
 | `crates/agent/src/session/mod.rs`、`crates/agent/src/memory_worker.rs`、`crates/llm/src/router.rs`、`crates/tools/src/builtin/admin.rs`、`ui/src/lib/views/SettingsView.svelte` | **本轮保留** | 当前生产 owner 连贯，体量大部分来自 inline tests 或完整表单/流程；没有已证明的双状态源足以支撑拆分。后续按函数职责审查，不按行数自动拆 |
 | `ui/src/lib/contracts/generatedCommands.ts` | **保留生成文件** | 由 Rust IPC generator 生成；只能改 generator/源 DTO，不手工重排产物 |
 | `ui/src/lib/components/ToolResultCard.svelte`、`MemoryView.svelte`、ToolRegistry/DeferredToolCatalog/SessionToolOverlay、各 workspace crate 边界 | **保留现 owner/独立概念** | Ask 卡拆分、History 视图重整或 Catalog 合并目前缺少生产状态漂移、重复 owner 或依赖收益证据 |
@@ -143,11 +143,9 @@ step identity/persistence、foreground/background/Code Mode/workflow execution r
 
 ### Slice 7 — 收拾剩余窄职责文件
 
-**当前 Active：** 复核 `commands/contracts.rs` 的 domain DTO 归属；PDF/OpenXML parser 已按 ADR 1313 拆入私有模块。
+**已完成（ADR 1313–1314）。** PDF/OpenXML parser 已进入私有模块；Memory、Skills、Tools response DTO 与各自 command owner 归位，generator/checker 路径和生成物已同步；`external` 与 `open_skills_dir` 共用 guarded detached-process helper，同时各自保留授权、路径/URL 校验和参数语义。
 
-按生产调用点复核剩余候选，不因路线图列出候选而自动迁移实现。文件工具没有直接启动外部进程的生产调用点，因此不创建共享 spawn helper；AppState constructor、runtime task 注册和 deferred bootstrap 继续结合其初始化顺序评估是否需要拆分。DTO 归位只在 handler 模块是唯一实际消费者且能保持原 IPC 投影时执行。
-
-按生产调用点验证并拆 `document.rs` 的 PDF/OpenXML parser；只共享文件管理器最低层 spawn helper；视初始化顺序和测试可见性决定是否把 AppState bootstrap/cleanup 移到私有文件。以上均不改 crate 边界，不新增可变 service。合同 DTO 归位也放在此 slice 的小步执行。
+AppState/bootstrap 复核后保留单一 composition owner：cleanup/recovery 工作依赖 AppState 装配的 stores 与 runtime-owned cancellation/task tracking；`bootstrap::run` 顺序装配 Tauri setup、事件和窗口生命周期。当前没有第二份可变状态或独立生命周期消费者，单纯搬 helper 不形成新的 owner。文件工具领域没有需要新增 App command process helper 的直接进程入口；其它受管子进程继续归其现有 Tools/Platform adapters。若后续出现独立 owner、重复生命周期状态或调用点漂移，再按源码证据重开。
 
 ## 6. 保留边界与停止条件
 

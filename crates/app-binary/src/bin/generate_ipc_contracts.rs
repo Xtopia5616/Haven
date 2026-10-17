@@ -235,11 +235,11 @@ fn generate(root: &Path) -> Result<(String, String), String> {
         "SETTINGS_RESPONSE_SHAPE",
     )?;
     type_graph.emit_response_shape(
-        "haven_app_binary_lib::commands::contracts::MemoryFactResponse",
+        "haven_app_binary_lib::commands::memory::MemoryFactResponse",
         "MEMORY_FACT_RESPONSE_SHAPE",
     )?;
     type_graph.emit_response_shape(
-        "haven_app_binary_lib::commands::contracts::MemoryRecallItem",
+        "haven_app_binary_lib::commands::memory::MemoryRecallItem",
         "MEMORY_RECALL_ITEM_RESPONSE_SHAPE",
     )?;
     type_graph.emit_response_shape(

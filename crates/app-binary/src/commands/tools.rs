@@ -1,7 +1,87 @@
 use crate::app_state::AppState;
-use crate::commands::contracts::BuiltinToolManifestListResponse;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
+
+/// Renderer-safe projection of one ephemeral sandbox review. The source tree,
+/// private workspace, and file contents remain owned by Tools.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxOutputReviewManifestDto {
+    pub session_id: String,
+    pub source_step_id: String,
+    pub expires_at_unix_ms: u64,
+    pub storage_charge_bytes: u64,
+    pub changes: Vec<SandboxOutputReviewChangeDto>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxOutputReviewChangeDto {
+    pub change_index: u32,
+    pub relative_path: String,
+    pub change: SandboxOutputReviewChangeKindDto,
+    pub before_bytes: Option<u64>,
+    pub after_bytes: Option<u64>,
+    pub before_sha256: Option<String>,
+    pub after_sha256: Option<String>,
+    pub promoted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxOutputReviewChangeKindDto {
+    Created,
+    Modified,
+    Deleted,
+    TypeChanged,
+}
+
+#[cfg(windows)]
+impl From<haven_tools::SandboxOutputReviewManifest> for SandboxOutputReviewManifestDto {
+    fn from(manifest: haven_tools::SandboxOutputReviewManifest) -> Self {
+        Self {
+            session_id: manifest.session_id,
+            source_step_id: manifest.source_step_id,
+            expires_at_unix_ms: manifest.expires_at_unix_ms,
+            storage_charge_bytes: manifest.storage_charge_bytes,
+            changes: manifest.changes.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl From<haven_tools::SandboxOutputReviewChange> for SandboxOutputReviewChangeDto {
+    fn from(change: haven_tools::SandboxOutputReviewChange) -> Self {
+        Self {
+            change_index: change.change_index,
+            relative_path: change.relative_path,
+            change: match change.change {
+                haven_tools::SandboxOutputReviewChangeKind::Created => {
+                    SandboxOutputReviewChangeKindDto::Created
+                }
+                haven_tools::SandboxOutputReviewChangeKind::Modified => {
+                    SandboxOutputReviewChangeKindDto::Modified
+                }
+                haven_tools::SandboxOutputReviewChangeKind::Deleted => {
+                    SandboxOutputReviewChangeKindDto::Deleted
+                }
+                haven_tools::SandboxOutputReviewChangeKind::TypeChanged => {
+                    SandboxOutputReviewChangeKindDto::TypeChanged
+                }
+            },
+            before_bytes: change.before_bytes,
+            after_bytes: change.after_bytes,
+            before_sha256: change.before_sha256,
+            after_sha256: change.after_sha256,
+            promoted: change.promoted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BuiltinToolManifestListResponse {
+    pub tools: Vec<haven_common::tools::ToolManifest>,
+}
 
 #[tauri::command]
 pub async fn list_builtin_tool_manifests(
@@ -49,7 +129,7 @@ pub async fn get_sandbox_output_review(
     state: State<'_, Arc<AppState>>,
     session_id: String,
     source_step_id: String,
-) -> Result<Option<crate::commands::contracts::SandboxOutputReviewManifestDto>, String> {
+) -> Result<Option<SandboxOutputReviewManifestDto>, String> {
     validate_sandbox_review_identity(&session_id, &source_step_id)?;
     validate_sandbox_review_step(&state, &session_id, &source_step_id).await?;
 
@@ -262,7 +342,10 @@ pub async fn promote_sandbox_output(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_sandbox_review_step, validate_sandbox_review_identity};
+    use super::{
+        SandboxOutputReviewChangeDto, SandboxOutputReviewChangeKindDto,
+        SandboxOutputReviewManifestDto, is_sandbox_review_step, validate_sandbox_review_identity,
+    };
     use haven_common::lifecycle::SessionStepStatus;
     use haven_memory::SessionStep;
 
@@ -332,5 +415,36 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn sandbox_review_dto_uses_camel_case_and_exposes_only_bounded_metadata() {
+        let manifest = SandboxOutputReviewManifestDto {
+            session_id: "ses-00000000000000000000000000000002".into(),
+            source_step_id: "step-00000000000000000000000000000001".into(),
+            expires_at_unix_ms: 1_800_000_000_000,
+            storage_charge_bytes: 128,
+            changes: vec![SandboxOutputReviewChangeDto {
+                change_index: 0,
+                relative_path: "reports/result.txt".into(),
+                change: SandboxOutputReviewChangeKindDto::Created,
+                before_bytes: None,
+                after_bytes: Some(12),
+                before_sha256: None,
+                after_sha256: Some("a".repeat(64)),
+                promoted: false,
+            }],
+        };
+        let value = serde_json::to_value(manifest).unwrap();
+        assert_eq!(
+            value["sourceStepId"],
+            "step-00000000000000000000000000000001"
+        );
+        assert_eq!(value["changes"][0]["changeIndex"], 0);
+        assert_eq!(value["changes"][0]["relativePath"], "reports/result.txt");
+        assert_eq!(value["changes"][0]["afterBytes"], 12);
+        assert_eq!(value["changes"][0]["promoted"], false);
+        assert!(value.get("absolute_path").is_none());
+        assert!(value.get("contents").is_none());
     }
 }
