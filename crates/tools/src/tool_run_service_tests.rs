@@ -203,7 +203,6 @@ async fn background_terminal_cas_loser_reconciles_without_publishing() {
     let completion_payload = ToolRunCompletionPayload {
         tool_run_id: tool_run_id.clone(),
         status: ToolRunStatus::Completed,
-        status_projection_kind: None,
         output: Some("external winner".to_owned()),
         error: None,
         error_reason: None,
@@ -3922,7 +3921,6 @@ async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
                 payload: haven_common::ToolRunCompletionPayload {
                     tool_run_id: format!("toolrun-{:032x}", index),
                     status: haven_common::lifecycle::ToolRunStatus::Completed,
-                    status_projection_kind: None,
                     output: None,
                     error: None,
                     error_reason: None,

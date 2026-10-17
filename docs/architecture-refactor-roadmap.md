@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；2026-10-17 第二轮逐文件审计新增兼容层清理与结构简化候选，当前顺序见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。Slice 1 ToolRun result inject 修复与 Slice 2 通知配置同进程生效均已完成；当前 Next 为 Slice 3 确定的旧格式分支清理。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
+> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；2026-10-17 第二轮逐文件审计新增兼容层清理与结构简化候选，当前顺序见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。Slice 1 ToolRun result inject 修复与 Slice 2 通知配置同进程生效均已完成；当前实施 Slice 3 确定的旧格式分支清理。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
 > 更新日期：2026-10-17
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,7 +74,8 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Next** | Slice 3 确定的旧格式分支清理；其后依次为合并持久格式变更与 schema v45 reset、Settings/config 收敛、MCP 当前协议收敛和 owner 简化，详见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。第一轮尚成立的模块职责切片接续其后，见[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
+| **Active** | Slice 3：确定的旧格式分支清理，按第二轮审计逐项移除经当前生产 writer/consumer 证明无效的 alias、fallback、旧 IPC 和旧持久 shape；安全检查、当前可选字段和原子恢复语义保持。 |
+| **Next** | 完成 session event 持久格式收敛与 schema v45 reset（v45 已因 Slice 3 的 durable DTO shape 变更启用，后续事件字段变更沿用同一未发布契约）；再进行 Settings/config 收敛、MCP 当前协议收敛和 owner 简化，详见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。第一轮尚成立的模块职责切片接续其后，见[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）

@@ -27,7 +27,6 @@ fn completion_payload(tool_run_id: &str, output: &str) -> ToolRunCompletionPaylo
     ToolRunCompletionPayload {
         tool_run_id: tool_run_id.to_owned(),
         status: ToolRunStatus::Completed,
-        status_projection_kind: None,
         output: Some(output.to_owned()),
         error: None,
         error_reason: None,

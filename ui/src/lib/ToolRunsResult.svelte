@@ -5,7 +5,6 @@
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import type { ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import {
-		normalizeToolRunsOperation,
 		type ToolRunResultStatus,
 		type ToolRunsResultOperation,
 	} from '$lib/toolResultPresentation.ts';
@@ -24,7 +23,7 @@
 	}
 
 	let { data = {} }: Props = $props();
-	let operation = $derived(normalizeToolRunsOperation(data.operation));
+	let operation = $derived(data.operation);
 
 	const statusTones: Record<
 		ToolRunResultStatus,

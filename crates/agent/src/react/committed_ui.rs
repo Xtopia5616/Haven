@@ -471,6 +471,7 @@ mod tests {
     use super::*;
     use crate::event::AgentEventEmitter;
     use async_trait::async_trait;
+    use haven_common::tools::{ToolExecutionOutcome, ToolRetryability};
     use haven_memory::{Database, SessionStore};
     use std::sync::Mutex;
 
@@ -780,7 +781,12 @@ mod tests {
                 tool_call_id: Some("provider/call-id".into()),
             },
         };
-        let mut result = ToolResultEnvelope::default();
+        let mut result = ToolResultEnvelope::from_parts(
+            ToolExecutionOutcome::Succeeded,
+            None,
+            ToolRetryability::Unknown,
+            OperationIdempotency::Unknown,
+        );
         result
             .assets
             .push("asset-00000000000000000000000000000001".into());

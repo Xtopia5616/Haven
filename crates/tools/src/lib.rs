@@ -421,14 +421,14 @@ fn select_tool_definitions_for_budget(
 /// choose an equivalent read-only path without escalating to a user-facing
 /// confirmation. This is result metadata, not authorization: unsafe and
 /// unknown operations remain non-replayable by the executor.
-fn annotate_retry_safety(result: &mut ToolResult, idempotency: OperationIdempotency) {
+fn annotate_idempotency(result: &mut ToolResult, idempotency: OperationIdempotency) {
     if result.success {
         return;
     }
-    let retry_safety = Value::String(idempotency.as_str().into());
+    let idempotency = Value::String(idempotency.as_str().into());
     match &mut result.output {
         Value::Object(object) => {
-            object.insert("retry_safety".into(), retry_safety);
+            object.insert("idempotency".into(), idempotency);
             if let Some(error_class) = result.error_class {
                 object.insert(
                     "error_class".into(),
@@ -443,7 +443,7 @@ fn annotate_retry_safety(result: &mut ToolResult, idempotency: OperationIdempote
         output => {
             let previous = std::mem::replace(output, Value::Null);
             *output = serde_json::json!({
-                "retry_safety": retry_safety,
+                "idempotency": idempotency,
                 "retryability": result.retryability.as_str(),
                 "output": previous,
             });

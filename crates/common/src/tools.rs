@@ -216,47 +216,17 @@ pub struct ToolResultEnvelope {
     pub outcome: ToolExecutionOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_class: Option<ToolErrorClass>,
-    /// Historical wire key whose vocabulary is operation idempotency.
-    /// Unrecognized strings in older durable UI annotations degrade to
-    /// `unknown`; new values always serialize from the closed enum.
-    #[serde(deserialize_with = "deserialize_legacy_operation_idempotency")]
-    pub retry_safety: OperationIdempotency,
+    pub idempotency: OperationIdempotency,
     pub retryability: ToolRetryability,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification_hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_action: Option<String>,
-    #[serde(default)]
     pub assets: Vec<String>,
     /// Ephemeral sandbox child reviews associated with this UI result. These
     /// identities are never included in the model-facing tool observation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sandbox_output_review_step_ids: Vec<String>,
-}
-
-fn deserialize_legacy_operation_idempotency<'de, D>(
-    deserializer: D,
-) -> Result<OperationIdempotency, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = String::deserialize(deserializer)?;
-    Ok(match value.as_str() {
-        "idempotent" => OperationIdempotency::Idempotent,
-        "non_idempotent" => OperationIdempotency::NonIdempotent,
-        _ => OperationIdempotency::Unknown,
-    })
-}
-
-impl Default for ToolResultEnvelope {
-    fn default() -> Self {
-        Self::from_parts(
-            ToolExecutionOutcome::Failed,
-            None,
-            ToolRetryability::Unknown,
-            OperationIdempotency::Unknown,
-        )
-    }
 }
 
 impl ToolResultEnvelope {
@@ -269,20 +239,13 @@ impl ToolResultEnvelope {
         Self {
             outcome,
             error_class,
-            retry_safety: idempotency,
+            idempotency,
             retryability,
             verification_hint: None,
             next_action: None,
             assets: Vec::new(),
             sandbox_output_review_step_ids: Vec::new(),
         }
-    }
-
-    pub fn with_default_retry_safety(mut self, idempotency: OperationIdempotency) -> Self {
-        if self.retry_safety == OperationIdempotency::Unknown {
-            self.retry_safety = idempotency;
-        }
-        self
     }
 }
 
@@ -673,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn result_envelope_types_retry_safety_and_reads_legacy_unknown_as_unknown() {
+    fn result_envelope_uses_strict_idempotency_values() {
         let current = ToolResultEnvelope::from_parts(
             ToolExecutionOutcome::Failed,
             Some(ToolErrorClass::Transient),
@@ -681,23 +644,28 @@ mod tests {
             OperationIdempotency::NonIdempotent,
         );
         let current_json = serde_json::to_value(&current).unwrap();
-        assert_eq!(current_json["retry_safety"], "non_idempotent");
+        assert_eq!(current_json["idempotency"], "non_idempotent");
         assert!(current_json.get("sandbox_output_review_step_ids").is_none());
         assert_eq!(
             serde_json::from_value::<ToolResultEnvelope>(current_json).unwrap(),
             current
         );
 
-        let legacy = serde_json::json!({
+        let invalid = serde_json::json!({
             "outcome": "succeeded",
-            "retry_safety": "untrusted_future_value",
+            "idempotency": "untrusted_future_value",
             "retryability": "unknown",
+            "assets": [],
         });
-        let decoded: ToolResultEnvelope = serde_json::from_value(legacy).unwrap();
-        assert_eq!(decoded.retry_safety, OperationIdempotency::Unknown);
-        assert_eq!(
-            serde_json::to_value(decoded).unwrap()["retry_safety"],
-            "unknown"
+        assert!(serde_json::from_value::<ToolResultEnvelope>(invalid).is_err());
+        assert!(
+            serde_json::from_value::<ToolResultEnvelope>(serde_json::json!({
+                "outcome": "succeeded",
+                "idempotency": "unknown",
+                "retryability": "unknown",
+                "assets": [],
+            }))
+            .is_ok()
         );
 
         let mut with_review = current;

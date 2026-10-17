@@ -78,8 +78,6 @@ pub(crate) trait AppToolRunPort: Send + Sync {
 
     async fn cancel_for_kind(&self, tool_run_id: &str, kind: ToolRunKind) -> bool;
 
-    async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool>;
-
     async fn clear_terminal_history(&self) -> anyhow::Result<u64>;
 
     #[cfg(test)]
@@ -127,10 +125,6 @@ impl AppToolRunPort for ToolsFacadeAppToolRunAdapter {
 
     async fn cancel_for_kind(&self, tool_run_id: &str, kind: ToolRunKind) -> bool {
         self.tool_runs.cancel_for_kind(tool_run_id, kind).await
-    }
-
-    async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool> {
-        self.tool_runs.delete_terminal(tool_run_id).await
     }
 
     async fn clear_terminal_history(&self) -> anyhow::Result<u64> {

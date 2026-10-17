@@ -373,6 +373,7 @@ pub enum AgentOperation {
 /// Typed parameters for `AgentTool`. Entry ① (native `run`) and entry ②
 /// (`Tool::execute` with LLM JSON) both land in `AgentTool::run`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentParams {
     pub operation: AgentOperation,
     /// Private owning session id, injected by the Tools facade.
@@ -429,10 +430,6 @@ pub struct AgentParams {
     /// Stable message ids to acknowledge with `ack`.
     #[serde(default)]
     pub message_ids: Option<Vec<String>>,
-    /// Legacy process-local receipt accepted only to return a migration error
-    /// for durable tool calls created before inbox switched to stable message ids.
-    #[serde(default)]
-    pub claim_token: Option<String>,
     /// Delegated task brief for spawn.
     #[serde(default)]
     pub task: Option<String>,
@@ -755,12 +752,6 @@ impl AgentTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id)?;
-        if let Some(token) = params.claim_token.as_deref() {
-            crate::tool_contract::validate_entity_id(token, "claim_token", "claim")?;
-            anyhow::bail!(
-                "claim_token is no longer supported; call inbox and acknowledge its message_ids"
-            );
-        }
         let requested = check_message_ids(params.message_ids)?;
         self.inner.register(&sid, &cancel).await?;
         let service = self.inner.service.clone();
@@ -1338,11 +1329,6 @@ mod tests {
                 "_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "in_reply_to_message_id": "msg-invalid",
                 "text": "hello"
-            }),
-            json!({
-                "operation": "ack",
-                "_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "claim_token": "claim-invalid"
             }),
             json!({
                 "operation": "status",
@@ -2144,13 +2130,6 @@ mod tests {
             .unwrap();
         assert_eq!(inbox.output["ack_required"], true);
         assert_eq!(inbox.output["message_ids"], json!([message_id]));
-        assert!(inbox.output.get("claim_token").is_none());
-        assert!(
-            tool.input_schema()["properties"]
-                .get("claim_token")
-                .is_none()
-        );
-
         // A fresh tool instance has no process-local claim state. The stable
         // message id still acknowledges the durable processing record.
         let restarted_tool = AgentTool::new(Arc::new(MessagingService::new_for_test(bus.clone())));
@@ -2181,7 +2160,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_claim_token_returns_stable_id_migration_guidance() {
+    async fn unknown_claim_token_is_rejected() {
         let (_dir, _bus, tool) = test_tools();
         let error = tool
             .execute(
@@ -2196,8 +2175,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("no longer supported"));
-        assert!(error.to_string().contains("message_ids"));
+        assert!(error.to_string().contains("claim_token"));
     }
 
     #[tokio::test]

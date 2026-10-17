@@ -31,20 +31,15 @@ fn clamp_session_usage_tokens(value: i64) -> u32 {
 /// to zero. Token counters saturate at `u32::MAX`, matching the live Agent
 /// usage tracker and event DTO. Updated on every LLM usage emit; the row lives
 /// as long as the session (ON DELETE CASCADE) and is removed with it.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
-    #[serde(default)]
     pub cached_tokens: u32,
-    #[serde(default)]
     pub cache_creation_tokens: u32,
-    #[serde(default)]
     pub cache_miss_tokens: u32,
-    #[serde(default)]
     pub context_tokens: u32,
-    #[serde(default)]
     pub context_window: Option<u32>,
     pub cost_usd: f64,
     pub has_cost: bool,
@@ -129,14 +124,12 @@ impl Database {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LlmUsageRecord {
     /// Canonical identity of this persisted usage record.
-    #[serde(alias = "id")]
     pub usage_id: String,
     pub session_id: String,
     /// ReAct step number the call served (NULL when not attributable).
     pub step_number: Option<u32>,
     /// Request kind that produced the call. The physical SQLite column keeps
     /// its historical name `llm_usage.role` and is mapped here explicitly.
-    #[serde(alias = "role")]
     pub request_kind: RequestKind,
     /// Call surface that owns the usage. Agent turns feed session totals;
     /// tool-owned media and other tool inference are retained for diagnostics
@@ -1154,8 +1147,8 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::SessionUsageDelta;
+    use crate::LlmUsageRecordInput;
     use crate::db::Database;
-    use crate::{LlmUsageRecord, LlmUsageRecordInput};
     use haven_common::config::RequestKind;
     use haven_common::usage::{CacheAccounting, LlmCallKind};
 
@@ -1516,15 +1509,6 @@ mod tests {
         assert!(wire.get("id").is_none());
         assert_eq!(wire["request_kind"], "chat");
         assert!(wire.get("role").is_none());
-        let mut historic_wire = wire.clone();
-        let object = historic_wire.as_object_mut().unwrap();
-        let usage_id = object.remove("usage_id").unwrap();
-        object.insert("id".to_owned(), usage_id);
-        let request_kind = object.remove("request_kind").unwrap();
-        object.insert("role".to_owned(), request_kind);
-        let historic: LlmUsageRecord = serde_json::from_value(historic_wire).unwrap();
-        assert_eq!(historic.usage_id, rec.usage_id);
-        assert_eq!(historic.request_kind, RequestKind::Chat);
         assert_eq!(rec.step_number, Some(1));
         assert_eq!(rec.model.as_deref(), Some("gpt-5"));
         let usage = db.list_session_llm_usage(&session.session_id).unwrap();

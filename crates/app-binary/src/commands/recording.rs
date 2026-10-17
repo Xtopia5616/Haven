@@ -11,30 +11,12 @@ use crate::recording_lifecycle::RecordingLifecycleGuard;
 use haven_common::error::sanitize_error_text;
 use haven_input::{RecordingReason, RecordingResult};
 use haven_tools::MediaTranscriptionStatus;
-use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
 
 #[path = "attachment_ingress.rs"]
 mod attachment_ingress;
 use attachment_ingress::validate_attachments;
-
-#[derive(Serialize)]
-pub struct RecordingStatus {
-    pub is_recording: bool,
-    pub is_toggle: bool,
-}
-
-#[tauri::command]
-pub async fn get_recording_state(
-    state: State<'_, Arc<AppState>>,
-) -> Result<RecordingStatus, String> {
-    let shell_state = state.runtime.shell.state().await;
-    Ok(RecordingStatus {
-        is_recording: shell_state.is_recording,
-        is_toggle: shell_state.is_recording_toggle,
-    })
-}
 
 /// Temporarily suppress the global recording shortcut while the renderer
 /// captures a new key binding. This state is in-memory and is cleared when

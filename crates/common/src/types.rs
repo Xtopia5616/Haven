@@ -686,7 +686,6 @@ pub struct CanonicalMessage {
     #[serde(
         default,
         rename = "message_id",
-        alias = "id",
         skip_serializing_if = "Option::is_none"
     )]
     pub message_id: Option<String>,
@@ -770,10 +769,7 @@ impl CanonicalMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanonicalToolCall {
-    /// Opaque provider-owned tool-call id. `id` is accepted only as a legacy
-    /// durable transcript replay alias; new serialized canonical payloads
-    /// always use the contract name `tool_call_id`.
-    #[serde(alias = "id")]
+    /// Opaque provider-owned tool-call id.
     pub tool_call_id: String,
     pub name: String,
     pub arguments: serde_json::Value,
@@ -1255,14 +1251,6 @@ mod tests {
         let value = serde_json::to_value(&call).unwrap();
         assert_eq!(value["tool_call_id"], "tc_123");
         assert!(value.get("id").is_none());
-
-        let legacy: CanonicalToolCall = serde_json::from_value(serde_json::json!({
-            "id": "tc_legacy",
-            "name": "search",
-            "arguments": {"query": "rust"}
-        }))
-        .unwrap();
-        assert_eq!(legacy.tool_call_id, "tc_legacy");
     }
 
     #[test]
@@ -1644,13 +1632,6 @@ mod tests {
         assert_eq!(decoded.role, CanonicalRole::User);
         assert_eq!(decoded.content.len(), 1);
         assert_eq!(decoded.message_id, msg.message_id);
-
-        let mut legacy = value;
-        let legacy_object = legacy.as_object_mut().unwrap();
-        let message_id = legacy_object.remove("message_id").unwrap();
-        legacy_object.insert("id".into(), message_id);
-        let decoded_legacy: CanonicalMessage = serde_json::from_value(legacy).unwrap();
-        assert_eq!(decoded_legacy.message_id, msg.message_id);
     }
 
     #[test]

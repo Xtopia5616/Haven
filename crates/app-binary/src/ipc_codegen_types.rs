@@ -2606,7 +2606,7 @@ mod tests {
             #[derive(serde::Serialize, serde::Deserialize)]
             struct Envelope {
                 #[serde(deserialize_with = "custom")]
-                retry_safety: String,
+                idempotency: String,
             }
         };
         let context = RustTypeGraph::test_context();
@@ -2618,7 +2618,7 @@ mod tests {
         assert!(
             graph
                 .runtime_shape_declarations()
-                .contains("'retry_safety':")
+                .contains("'idempotency':")
         );
         assert!(
             graph

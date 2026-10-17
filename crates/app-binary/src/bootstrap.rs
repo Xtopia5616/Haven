@@ -101,15 +101,6 @@ pub(crate) fn project_interaction(
 }
 
 pub(crate) fn run() {
-    // Keep the versioned command directory live in the application binary as
-    // well as in CI/docs. A drift in the source registry is a startup error,
-    // not a silently stale contract inventory.
-    debug_assert_eq!(commands::contracts::IPC_CONTRACT_VERSION, 1);
-    debug_assert_eq!(
-        commands::contracts::COMMAND_CONTRACTS.len(),
-        commands::contracts::EXPECTED_COMMAND_COUNT
-    );
-
     // Load config early so we can initialize tracing with the right level
     let config_loader = match haven_common::config::ConfigLoader::load() {
         Ok(loader) => loader,
@@ -680,18 +671,14 @@ pub(crate) fn run() {
             commands::tool_runs::list_tool_runs,
             commands::tool_runs::cancel_tool_run,
             commands::tool_runs::list_tool_run_history,
-            commands::tool_runs::delete_tool_run,
             commands::tool_runs::clear_tool_run_history,
             commands::session::end_session,
             commands::session::interrupt_session,
             commands::session::resolve_confirmation,
-            commands::recording::get_recording_state,
             commands::recording::set_hotkey_capture_active,
             commands::session_history::list_session_history,
             commands::session_history::count_session_history,
-            commands::session_history::search_session_history,
             commands::session_history::search_session_history_filtered,
-            commands::session_history::search_session_history_paginated,
             commands::session_history::count_session_history_search,
             commands::session::delete_session,
             commands::session::delete_all_sessions,
@@ -740,14 +727,12 @@ pub(crate) fn run() {
             commands::settings::stage_ocr_credential,
             commands::settings::discard_staged_credentials,
             commands::settings::update_settings,
-            commands::settings::list_permissions,
             commands::settings::list_session_permissions,
             commands::settings::revoke_permission,
             commands::settings::revoke_session_permission,
             commands::settings::reset_permissions,
             commands::settings::reset_session_permissions,
             commands::settings::check_shell_available,
-            commands::session_history::export_session_history,
             commands::settings::enable_autostart,
             commands::settings::disable_autostart,
             commands::settings::is_autostart_enabled,

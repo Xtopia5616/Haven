@@ -5,10 +5,7 @@
 //! stores only command names and reviewed boundary/security metadata; handler
 //! signatures and Serde DTOs are the IPC shape authority.
 
-/// Version of the public Tauri command directory.
-pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 91;
-
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
     /// Read-only application state or diagnostics.
@@ -20,6 +17,7 @@ pub enum CommandBoundary {
     Execute,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandContract {
     pub name: &'static str,
@@ -32,6 +30,7 @@ pub struct CommandContract {
 /// Every command passed to `tauri::generate_handler!` must have exactly one
 /// entry here.  Keep this list in the same domain order as `commands/mod.rs`
 /// and `lib.rs` so review can compare registration and documentation easily.
+#[cfg(test)]
 pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     // tool_run
     CommandContract {
@@ -48,11 +47,6 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "list_tool_run_history",
         boundary: CommandBoundary::Read,
         security: "optional session filter; limit capped at 200; internal tool args excluded",
-    },
-    CommandContract {
-        name: "delete_tool_run",
-        boundary: CommandBoundary::Mutate,
-        security: "delete one persisted task row by id",
     },
     CommandContract {
         name: "clear_tool_run_history",
@@ -77,17 +71,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "read-only aggregate",
     },
     CommandContract {
-        name: "search_session_history_paginated",
-        boundary: CommandBoundary::Read,
-        security: "parameterized read-only search",
-    },
-    CommandContract {
         name: "count_session_history_search",
-        boundary: CommandBoundary::Read,
-        security: "parameterized read-only search",
-    },
-    CommandContract {
-        name: "search_session_history",
         boundary: CommandBoundary::Read,
         security: "parameterized read-only search",
     },
@@ -95,11 +79,6 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "search_session_history_filtered",
         boundary: CommandBoundary::Read,
         security: "bounded page and date-filtered projection",
-    },
-    CommandContract {
-        name: "export_session_history",
-        boundary: CommandBoundary::Read,
-        security: "export contains persisted history only",
     },
     // log
     CommandContract {
@@ -243,11 +222,6 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     },
     // recording
     CommandContract {
-        name: "get_recording_state",
-        boundary: CommandBoundary::Read,
-        security: "state only; no device or provider detail",
-    },
-    CommandContract {
         name: "set_hotkey_capture_active",
         boundary: CommandBoundary::Mutate,
         security: "transient renderer key-capture state only; not persisted",
@@ -388,11 +362,6 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "update_settings",
         boundary: CommandBoundary::Mutate,
         security: "rejects inline secrets; shared loader preserves credential refs, tool sections, and permission rules",
-    },
-    CommandContract {
-        name: "list_permissions",
-        boundary: CommandBoundary::Read,
-        security: "permission keys/effects only",
     },
     CommandContract {
         name: "list_session_permissions",
@@ -753,9 +722,7 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn command_registry_is_unique_and_matches_the_expected_count() {
-        assert_eq!(IPC_CONTRACT_VERSION, 1);
-        assert_eq!(COMMAND_CONTRACTS.len(), EXPECTED_COMMAND_COUNT);
+    fn command_registry_is_unique() {
         let names: HashSet<_> = COMMAND_CONTRACTS
             .iter()
             .map(|contract| contract.name)

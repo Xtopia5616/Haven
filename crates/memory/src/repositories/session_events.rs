@@ -42,8 +42,7 @@ pub const USAGE_RECORDED_EVENT_TYPE: &str = "usage_recorded";
 pub const USAGE_DISCARDED_EVENT_TYPE: &str = "usage_discarded";
 /// Session-local interaction lifecycle events. The payload is an Agent-owned
 /// `InteractionRequest` or a small `{ "request_ids": [...] }` object; Memory
-/// only orders and durably stores the event. Agent replay owns compatibility
-/// with historical `{ "ids": [...] }` payloads.
+/// only orders and durably stores the event.
 pub const INTERACTION_REQUESTED_EVENT_TYPE: &str = "interaction_requested";
 pub const INTERACTION_RESOLVED_EVENT_TYPE: &str = "interaction_resolved";
 pub const INTERACTION_CLEARED_EVENT_TYPE: &str = "interaction_cleared";
@@ -5153,16 +5152,6 @@ mod tests {
         let payload: LlmUsageRecord = serde_json::from_str(&active_usage_event.payload).unwrap();
         assert_eq!(payload.usage_id, first_usage.usage_id);
         assert_eq!(payload.request_kind, RequestKind::Chat);
-
-        // Existing durable usage events stored the same request kind under
-        // `role`; keep replay compatible while new writes use `request_kind`.
-        let mut historic_wire = wire;
-        let historic_object = historic_wire.as_object_mut().unwrap();
-        let request_kind = historic_object.remove("request_kind").unwrap();
-        historic_object.insert("role".to_owned(), request_kind);
-        let historic_payload: LlmUsageRecord = serde_json::from_value(historic_wire).unwrap();
-        assert_eq!(historic_payload.usage_id, first_usage.usage_id);
-        assert_eq!(historic_payload.request_kind, RequestKind::Chat);
 
         let expected_event_sequence = store
             .load_replay_state(&session_id)

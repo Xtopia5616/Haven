@@ -103,9 +103,9 @@
 		toolArgsTruncated = false,
 		showFallbackIntent = false,
 	}: Props = $props();
-	let options = $derived(
-		[...new Set(rawOptions.map((option) => option.trim()).filter((option) => option.length > 0))],
-	);
+	let options = $derived([
+		...new Set(rawOptions.map((option) => option.trim()).filter((option) => option.length > 0)),
+	]);
 
 	let toolSource = $derived(classifyToolSource(toolName));
 	let sourceBadge = $derived(toolSourceLabel(toolSource));
@@ -116,7 +116,9 @@
 	// Local multi-select for ask option chips. Click toggles; Enter in the
 	// chat input submits (page composes selected options + any typed text).
 	let selectedOptions = $state<string[]>(
-		untrack(() => [...new Set(selectedAskOptions.map((option) => option.trim()).filter(Boolean))]),
+		untrack(() => [
+			...new Set(selectedAskOptions.map((option) => option.trim()).filter(Boolean)),
+		]),
 	);
 
 	function toggleAskOption(opt: string) {
@@ -590,7 +592,7 @@
 							sourceStepId={messageId}
 							failed={failedWithoutOutput}
 						/>
-					{:else if toolName.startsWith('skill__') || toolName.startsWith('skill::')}
+					{:else if toolName.startsWith('skill__')}
 						<ToolSkillResult
 							{data}
 							{rawText}
@@ -600,7 +602,7 @@
 							sourceStepId={messageId}
 							failed={failedWithoutOutput}
 						/>
-					{:else if toolName.startsWith('mcp__') || toolName.startsWith('mcp::')}
+					{:else if toolName.startsWith('mcp__')}
 						<ToolMcpResult
 							{data}
 							{rawText}

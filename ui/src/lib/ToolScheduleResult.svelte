@@ -2,10 +2,7 @@
 	import { scheduleModeLabel, toolRunTitle } from '$lib/toolRunTerminology.ts';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import type { ScheduleMode } from './contracts/toolRun.ts';
-	import {
-		normalizeToolScheduleOperation,
-		type ToolScheduleResultOperation,
-	} from './toolResultPresentation.ts';
+	import type { ToolScheduleResultOperation } from './toolResultPresentation.ts';
 
 	interface Props {
 		data?: {
@@ -24,7 +21,7 @@
 	}
 
 	let { data = {} }: Props = $props();
-	let operation = $derived(normalizeToolScheduleOperation(data.operation));
+	let operation = $derived(data.operation);
 </script>
 
 {#if operation === 'cancel'}

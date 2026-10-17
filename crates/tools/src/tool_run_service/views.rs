@@ -665,7 +665,6 @@ pub(super) fn project_completion_payload(
     let mut payload = ToolRunCompletionPayload {
         tool_run_id: tool_run_id.to_owned(),
         status: state.status(),
-        status_projection_kind: None,
         output: None,
         error: None,
         error_reason: None,
@@ -727,7 +726,6 @@ pub(super) fn project_background_completion_payload(
     source_step_id: Option<&str>,
 ) -> ToolRunCompletionPayload {
     let mut payload = project_completion_payload(tool_run_id, state);
-    payload.status_projection_kind = Some("background".to_owned());
     payload.source_step_id = source_step_id.map(str::to_owned);
     payload
 }
@@ -818,7 +816,6 @@ mod tests {
             "log_path": "C:/Temp/full.log",
         });
         let mut expected_background = expected.clone();
-        expected_background["kind"] = json!("background");
         expected_background["source_step_id"] = json!("step-00000000000000000000000000000008");
 
         assert_eq!(
@@ -845,7 +842,11 @@ mod tests {
                 state: ToolRunStateView::from_runtime_state(&state),
             }
             .to_json(false),
-            expected_background,
+            {
+                let mut expected_status = expected_background.clone();
+                expected_status["kind"] = json!("background");
+                expected_status
+            },
         );
     }
 }

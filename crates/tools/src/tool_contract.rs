@@ -894,7 +894,7 @@ impl ToolResult {
             "next_offset",
             "next_start_line",
             "hint",
-            "retry_safety",
+            "idempotency",
             "truncated",
             "tool_run_id",
             "operation",
@@ -953,7 +953,7 @@ const STRUCTURED_PRIORITY_KEYS: &[&str] = &[
     "next_offset",
     "next_start_line",
     "hint",
-    "retry_safety",
+    "idempotency",
     "truncated",
     "tool_run_id",
     "operation",
@@ -2191,7 +2191,7 @@ pub(crate) mod tests {
     fn result_envelope_keeps_recovery_metadata_and_asset_handles() {
         let result = ToolResult::ok(json!({
             "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "retry_safety": "non_idempotent",
+            "idempotency": "non_idempotent",
             "verification_hint": "Check the generated file.",
             "next_action": "Use media.inspect with the asset_id.",
             "media": {"asset_id": "asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
@@ -2204,7 +2204,7 @@ pub(crate) mod tests {
         }));
         let envelope = result.envelope(OperationIdempotency::Idempotent);
         assert_eq!(envelope.outcome, ToolExecutionOutcome::Succeeded);
-        assert_eq!(envelope.retry_safety, OperationIdempotency::Idempotent);
+        assert_eq!(envelope.idempotency, OperationIdempotency::Idempotent);
         assert_eq!(
             envelope.verification_hint.as_deref(),
             Some("Check the generated file.")

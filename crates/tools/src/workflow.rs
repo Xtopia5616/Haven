@@ -7,9 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// The only workflow definition version accepted by this build.
-pub(crate) const WORKFLOW_DEFINITION_VERSION: u16 = 1;
-
 /// Resource ceilings for one inline workflow. Callers may lower these limits;
 /// model-controlled input cannot raise the process ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,7 +97,6 @@ impl WorkflowLimits {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WorkflowDefinition {
-    pub version: u16,
     pub steps: Vec<WorkflowStep>,
 }
 
@@ -188,8 +184,6 @@ impl ValidatedWorkflow {
 pub(crate) enum WorkflowValidationError {
     #[error("workflow definition is invalid")]
     InvalidDefinition,
-    #[error("workflow definition version is unsupported")]
-    UnsupportedVersion,
     #[error("workflow definition exceeds the {limit}-byte limit")]
     DefinitionTooLarge { limit: usize },
     #[error("workflow must contain between one and {limit} steps")]
@@ -239,9 +233,6 @@ pub(crate) fn validate_workflow(
         return Err(WorkflowValidationError::DefinitionTooLarge {
             limit: limits.max_definition_bytes,
         });
-    }
-    if definition.version != WORKFLOW_DEFINITION_VERSION {
-        return Err(WorkflowValidationError::UnsupportedVersion);
     }
     if definition.steps.is_empty() || definition.steps.len() > limits.max_steps {
         return Err(WorkflowValidationError::InvalidStepCount {
@@ -529,10 +520,7 @@ mod tests {
     }
 
     fn workflow(steps: Vec<WorkflowStep>) -> WorkflowDefinition {
-        WorkflowDefinition {
-            version: WORKFLOW_DEFINITION_VERSION,
-            steps,
-        }
+        WorkflowDefinition { steps }
     }
 
     #[test]
@@ -605,13 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_versions_capabilities_and_cycles_and_orders_forward_dependencies() {
-        let mut unsupported = workflow(vec![step("one", "files.read")]);
-        unsupported.version = 2;
-        assert_eq!(
-            validate_workflow(&unsupported, &allowed(), WorkflowLimits::default()),
-            Err(WorkflowValidationError::UnsupportedVersion)
-        );
+    fn rejects_unknown_capabilities_and_cycles_and_orders_forward_dependencies() {
         assert_eq!(
             validate_workflow(
                 &workflow(vec![step("one", "admin.restart")]),
@@ -679,7 +661,6 @@ mod tests {
         );
 
         let encoded = json!({
-            "version": 1,
             "steps": [{"id": "one", "capability": "files.read", "input": {}}],
             "retry": true
         });

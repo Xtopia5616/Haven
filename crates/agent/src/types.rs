@@ -745,13 +745,10 @@ mod tests {
             thinking_blocks: Vec::new(),
         };
         let payload = call_event.to_payload().unwrap();
-        let mut value: Value = serde_json::from_str(&payload).unwrap();
+        let value: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(value["tool_calls"][0]["tool_call_id"], "provider/call-id");
         assert!(value["tool_calls"][0].get("id").is_none());
 
-        let call = value["tool_calls"][0].as_object_mut().unwrap();
-        let legacy_id = call.remove("tool_call_id").unwrap();
-        call.insert("id".into(), legacy_id);
         let replayed: TranscriptRecord = serde_json::from_value(value).unwrap();
         replayed.validate_identity().unwrap();
         let TranscriptRecord::ToolCall { tool_calls, .. } = replayed else {
@@ -847,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_summary_writes_message_id_and_replays_legacy_id() {
+    fn compact_summary_writes_and_replays_message_id() {
         let mut message = CanonicalMessage::user_text("summary");
         message.message_id = Some(MESSAGE_ID.into());
         let record = compact_summary(MESSAGE_ID, vec![message]);
@@ -856,12 +853,8 @@ mod tests {
         assert_eq!(compacted.get("message_id").unwrap(), MESSAGE_ID);
         assert!(!compacted.contains_key("id"));
 
-        let mut legacy_value = value;
-        let compacted = legacy_value["compacted"][0].as_object_mut().unwrap();
-        let message_id = compacted.remove("message_id").unwrap();
-        compacted.insert("id".into(), message_id);
-        let legacy_record: TranscriptRecord = serde_json::from_value(legacy_value).unwrap();
-        legacy_record.validate_identity().unwrap();
+        let replayed: TranscriptRecord = serde_json::from_value(value).unwrap();
+        replayed.validate_identity().unwrap();
     }
 
     #[test]

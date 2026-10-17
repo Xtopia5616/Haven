@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 44;
+pub const SCHEMA_VERSION: i32 = 45;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -531,11 +531,6 @@ fn validate_current_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             "current schema is incomplete: missing {table}.{column}; delete haven.db and restart"
         );
     }
-    let removed_table = "memory_episodes";
-    anyhow::ensure!(
-        !table_exists(conn, removed_table)?,
-        "current schema contains removed table {removed_table}; delete haven.db and restart"
-    );
     Ok(())
 }
 

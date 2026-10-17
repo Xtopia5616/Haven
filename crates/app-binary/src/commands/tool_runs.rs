@@ -93,24 +93,6 @@ pub async fn list_tool_run_history(
         .map_err(|e| log_err("list_tool_run_history", e))
 }
 
-/// Remove a persisted ToolRun row (terminal scheduled ToolRun or terminal ToolRun history)
-/// by id. Returns false when no row matched.
-#[tauri::command]
-pub async fn delete_tool_run(
-    state: State<'_, Arc<AppState>>,
-    tool_run_id: String,
-) -> Result<bool, String> {
-    validate_command_id(&tool_run_id, "tool_run_id", "toolrun")
-        .map_err(|error| log_err("delete_tool_run", error))?;
-    state
-        .runtime
-        .services
-        .tool_runs
-        .delete_terminal(&tool_run_id)
-        .await
-        .map_err(|e| log_err("delete_tool_run", e))
-}
-
 /// Clear terminal task history while preserving waiting/running work and
 /// completion results that have not yet been committed to their sessions.
 #[tauri::command]

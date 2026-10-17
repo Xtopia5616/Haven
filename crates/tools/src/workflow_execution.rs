@@ -396,7 +396,6 @@ mod tests {
         ]);
         let plan = validate_workflow(
             &WorkflowDefinition {
-                version: 1,
                 steps: vec![first, second],
             },
             &allowed,
@@ -437,7 +436,6 @@ mod tests {
     #[tokio::test]
     async fn stops_at_a_blocked_node_and_marks_prior_steps_partial_non_replayable() {
         let definition = WorkflowDefinition {
-            version: 1,
             steps: vec![
                 step("read", "mcp__notes__read"),
                 step("write", "mcp__notes__write"),
@@ -460,7 +458,6 @@ mod tests {
     #[tokio::test]
     async fn expired_workflow_budget_prevents_the_first_child_from_running() {
         let definition = WorkflowDefinition {
-            version: 1,
             steps: vec![step("read", "mcp__notes__read")],
         };
         let allowed = BTreeSet::from(["mcp__notes__read".to_owned()]);
@@ -500,7 +497,6 @@ mod tests {
         }
 
         let definition = WorkflowDefinition {
-            version: 1,
             steps: vec![step("read", "mcp__notes__read")],
         };
         let allowed = BTreeSet::from(["mcp__notes__read".to_owned()]);
@@ -526,7 +522,6 @@ mod tests {
     #[tokio::test]
     async fn observation_budget_preserves_the_identity_of_a_completed_step() {
         let definition = WorkflowDefinition {
-            version: 1,
             steps: vec![step("read", "mcp__notes__read")],
         };
         let allowed = BTreeSet::from(["mcp__notes__read".to_owned()]);

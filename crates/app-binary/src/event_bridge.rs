@@ -755,7 +755,12 @@ mod tests {
                 idempotency: haven_common::tools::OperationIdempotency::Idempotent,
                 operation_scope: haven_common::tools::ToolOperationScope::Session,
                 renderer: "files".into(),
-                result: haven_common::tools::ToolResultEnvelope::default(),
+                result: haven_common::tools::ToolResultEnvelope::from_parts(
+                    haven_common::tools::ToolExecutionOutcome::Succeeded,
+                    None,
+                    haven_common::tools::ToolRetryability::Unknown,
+                    haven_common::tools::OperationIdempotency::Unknown,
+                ),
                 event_sequence: None,
             },
             AgentEvent::ToolCallChunk {
@@ -923,7 +928,12 @@ mod tests {
             idempotency: haven_common::tools::OperationIdempotency::Idempotent,
             operation_scope: haven_common::tools::ToolOperationScope::Session,
             renderer: "files".into(),
-            result: haven_common::tools::ToolResultEnvelope::default(),
+            result: haven_common::tools::ToolResultEnvelope::from_parts(
+                haven_common::tools::ToolExecutionOutcome::Failed,
+                None,
+                haven_common::tools::ToolRetryability::Unknown,
+                haven_common::tools::OperationIdempotency::Unknown,
+            ),
             event_sequence: Some(1),
         };
 

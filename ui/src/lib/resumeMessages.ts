@@ -23,10 +23,8 @@ type ResumeMessageProjectionRow = Pick<
 	'messageId' | 'role' | 'content' | 'created_at'
 > &
 	Partial<Omit<SessionResumeMessage, 'messageId' | 'role' | 'content' | 'created_at'>>;
-type ResumeStepProjectionRow = Pick<
-	SessionResumeStep,
-	'stepId' | 'step_number' | 'created_at'
-> & Partial<Omit<SessionResumeStep, 'stepId' | 'step_number' | 'created_at'>>;
+type ResumeStepProjectionRow = Pick<SessionResumeStep, 'stepId' | 'step_number' | 'created_at'> &
+	Partial<Omit<SessionResumeStep, 'stepId' | 'step_number' | 'created_at'>>;
 
 /** Tolerant transcript rows consumed by the resume-message projection. */
 export interface ResumeTranscriptProjectionInput {
@@ -216,9 +214,7 @@ export function mergeLiveStreaming(
 	);
 	if (pendingSteering.length === 0) return out;
 	const pendingSteeringOrder = new Map(
-		existing
-			.filter((m) => pendingSteeringIds.has(m.id))
-			.map((m, index) => [m.id, index]),
+		existing.filter((m) => pendingSteeringIds.has(m.id)).map((m, index) => [m.id, index]),
 	);
 	pendingSteering.sort(
 		(a, b) => (pendingSteeringOrder.get(a.id) ?? 0) - (pendingSteeringOrder.get(b.id) ?? 0),
@@ -318,10 +314,8 @@ export function buildResumeMessages<T extends ResumeTranscriptProjectionInput>(
 				try {
 					const parsed: { options?: unknown } = JSON.parse(obs);
 					if (Array.isArray(parsed.options)) {
-						askOptions = parsed.options.map((o: unknown) =>
-							typeof o === 'string'
-								? o
-								: String((o as { answer?: unknown } | null)?.answer ?? o ?? ''),
+						askOptions = parsed.options.filter(
+							(option: unknown): option is string => typeof option === 'string',
 						);
 					}
 				} catch {

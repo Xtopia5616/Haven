@@ -4,11 +4,11 @@
 `ui/src/lib/contracts/` 与 `ui/src/lib/events.ts` 的监听封装中转换为 `camelCase`。业务状态不得在
 路由深处重复转换字段。
 
-版本 1 的全量命令目录由 `crates/app-binary/src/commands/contracts.rs` 唯一登记；
+全量命令目录由 `crates/app-binary/src/commands/contracts.rs` 唯一登记；
 前端目录 `ui/src/lib/contracts/commands.ts` 只维护经审阅的边界与安全说明；`scripts/generate-ipc-contracts.ps1` 从 Rust Tauri handler 参数和 Serde DTO 生成前端 request/response 类型，并为每个 command response 生成运行时 wire shape。事件 channel 与 Rust payload DTO 显式配对，生成器覆盖全部登记渠道并在集合漂移时失败。中心 `invoke` 和各事件 domain mapper 在语义投影前执行 shape 检查；具体 ID、闭合 enum、状态转移和跨字段约束仍由业务 contract 校验。CI 检查生成物 drift，并核对 handler、注册表和本文命令名集合。wire 字段仍保持扁平（例如 `{ sessionId }`），不额外包裹 `{ request: ... }`。
-版本 1 不保留旧字段或旧事件别名。
+命令目录不提供固定版本号或旧命令别名。
 
-## 全量命令登记（v1）
+## 全量命令登记
 
 以下表格列出完整命令集合及人工审阅的边界、安全不变量。wire shape 由 Rust handler 与 Serde DTO 生成，并在运行时统一检查；响应中的 `Value` 仅用于明确的 provider、动态工具 schema 或工具输出扩展点。
 
@@ -17,16 +17,12 @@
 | `list_tool_runs` | read | 仅任务投影字段 |
 | `cancel_tool_run` | mutate | kind 枚举校验 |
 | `list_tool_run_history` | read | 可选 `session_id` 过滤；limit ≤ 200 |
-| `delete_tool_run` | mutate | 按 id 删除单条任务 |
 | `clear_tool_run_history` | mutate | 清空已结束任务历史，保留运行中任务和未投递结果 |
 | `open_external` | execute | 仅 http(s) 或校验后的本地绝对路径 |
 | `list_session_history` | read | 按 limit/offset 读取持久会话记录 |
 | `count_session_history` | read | 持久会话总数 |
-| `search_session_history_paginated` | read | 参数化搜索并分页 |
 | `count_session_history_search` | read | 参数化搜索匹配数 |
-| `search_session_history` | read | 返回前 50 条参数化搜索匹配 |
 | `search_session_history_filtered` | read | `status` 使用生成的 `SessionHistoryStatusFilterInput`；`null` 表示不过滤；按状态、日期和文本筛选并分页 |
-| `export_session_history` | read | `status` 使用生成的 `SessionHistoryStatusFilterInput`；`null` 表示不过滤；导出日期/状态筛选后的持久会话记录 |
 | `get_log_info` | read | 不返回环境详情 |
 | `read_log_tail` | read | 尾部长度受限 |
 | `log_frontend_error` | mutate | 只接收 `operation_failure` / `unhandled_ui_error` / `unhandled_rejection`；错误正文、通知正文和 payload 不进入后端日志 |
@@ -54,7 +50,6 @@
 | `switch_model` | mutate | `requestKind` 为 `RequestKind`；`modelConfigId` 是已配置且支持该请求能力的 Haven 模型配置 ID，不是 Provider 服务模型 ID |
 | `set_reasoning_effort` | mutate | `requestKind` 选择当前已分配模型；`effort` 使用 generated `ReasoningEffortSelectionInput`（`low` / `medium` / `high` / `off`），`null` 清除覆盖。ModelConfig 中 provider-specific effort 保持开放字符串，由 LLM adapter 映射 |
 | `set_web_search` | mutate | `requestKind` 选择当前已分配模型；可选 `mode` 使用 `WebSearchModeInput` (`off` / `auto` / `always`)；`null` 清除显式覆盖并回退到环境/default resolution；启用内置搜索前校验 provider capability |
-| `get_recording_state` | read | 只返回采集状态 |
 | `set_hotkey_capture_active` | mutate | 仅控制快捷键录入期间的临时抑制状态 |
 | `start_recording` | execute | 采集生命周期由 input 管线控制 |
 | `stop_recording` | execute | 成功无响应正文；先停止采集再异步转写，结果通过 transcription 事件报告 |
@@ -84,7 +79,6 @@
 | `get_bootstrap_status` | read | 返回 `loading` / `ready` 的 `BootstrapStatus`；与 `app:bootstrap.status` 共用闭合枚举 |
 | `report_startup_ui_ready` | mutate | 无参数；首个已 hydration 的界面绘制后释放原生启动画面 |
 | `update_settings` | mutate | shared loader 保留遮蔽密钥和工具段；`ModelConfig.independent_search` 使用按 Provider 闭合的配置联合体，生成契约与运行时校验负责拒绝不匹配的产品参数 |
-| `list_permissions` | read | 只返回永久规则 key/effect |
 | `list_session_permissions` | read | 返回会话 id/title、动态 capability；`target` / `effect` 使用 generated `PermissionTarget` / `PermissionEffect` |
 | `revoke_permission` | mutate | 精确撤销永久规则 key，不影响会话 grant |
 | `revoke_session_permission` | mutate | 按 session id 与 capability 撤销单条会话 grant |
@@ -148,7 +142,6 @@ Agent 事件由 `TauriEmitter` 映射，命令直接发送的事件也必须使�
 | `list_tool_runs` | read | 当前任务投影 |
 | `cancel_tool_run` | mutate | 取消指定任务 |
 | `list_tool_run_history` | read | 有界终态历史，可按 session 过滤 |
-| `delete_tool_run` | mutate | 删除指定历史任务 |
 
 `ToolRunEvent` 是任务面板的唯一公开记录：`{ tool_run_id, kind, status?, session_id?, source_step_id?, started_at?,
 finished_at?, due_at?, title?, body?, mode?, command?, output?, error?, error_reason?,
@@ -201,7 +194,6 @@ provider 名称；两者都是明确扩展点，value 始终为布尔值。其�
 
 | 命令 | 边界 | 说明 |
 |---|---|---|
-| `get_recording_state` | read | 当前采集状态 |
 | `set_hotkey_capture_active` | mutate | 快捷键录入期间抑制录音触发，结束录入时恢复。 |
 | `start_recording` / `stop_recording` / `cancel_recording` | execute | 采集与转写生命周期由下列事件报告。 |
 | `process_transcript` | execute | 提交文本与附件进入会话；语音输入可携带 `recordingId`，仅用于关联该次录音，不作为会话身份 |
@@ -240,7 +232,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `llm:config_changed` | `()` | 设置页、模型页 | 无 payload；通知页面重新读取脱敏配置。 |
 | `agent:thought` | `AgentThoughtEvent` | 聊天页 | 按 `message_id` 归并；可选 `event_sequence` 是已提交的 `session_events.sequence`，缺失表示该事件未关联 durable event row。文本不得重复写入普通日志。 |
 | `agent:tool_call` | `AgentToolCallEvent` | 聊天页 | `input` 是工具参数动态扩展点；其余执行身份固定，`silent` 由后端计算。同一 `event_sequence` 可以对应多个 `step_id`，前端按 `(event_sequence, step_id)` 去重。 |
-| `agent:observation` | `AgentObservationEvent` | 聊天页 | 与 ToolCall 的 `step_id` / `tool_call_id` 关联；`idempotency` / `operation_scope` 及 result envelope 的 `outcome` / `error_class` / `retry_safety` / `retryability` 使用 generated Common enum；`retry_safety` 由 operation policy 提供，不信任动态输出同名字段；工具输出按后端门禁净化。去重键是 `(event_sequence, step_id)`（ADR 0743、0744）。 |
+| `agent:observation` | `AgentObservationEvent` | 聊天页 | 与 ToolCall 的 `step_id` / `tool_call_id` 关联；`idempotency` / `operation_scope` 及 result envelope 的 `outcome` / `error_class` / `idempotency` / `retryability` 使用 generated Common enum；`idempotency` 由 operation policy 提供，不信任动态输出同名字段；工具输出按后端门禁净化。去重键是 `(event_sequence, step_id)`（ADR 0743、0744）。 |
 | `agent:stream_stalled` | `AgentStreamStalledEvent` | 根布局、聊天页 | 状态提示可重复；不得携带 provider 原始响应。 |
 | `agent:thought_chunk` / `agent:reasoning_chunk` | `Agent*ChunkEvent` | 聊天页 | 只使用 chunk `seq`，不分配 durable `event_sequence`。丢失 chunk 时由完整消息投影兜底。 |
 | `agent:stream_reset` | `AgentStreamResetEvent` | 聊天页 | 与 chunk 共用后端有序队列；先清空对应 live thought/reasoning，再接受新尝试；不回滚 durable transcript。 |

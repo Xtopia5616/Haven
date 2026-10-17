@@ -669,16 +669,6 @@ pub async fn update_settings(
     Ok(())
 }
 
-/// Check whether a shell is available on this machine. The settings UI uses
-/// this to warn when the user picks PowerShell 7 (`pwsh`) without having it
-/// installed — `cmd` and the built-in `powershell` are always present.
-#[tauri::command]
-pub async fn list_permissions(
-    state: State<'_, Arc<AppState>>,
-) -> Result<Vec<haven_common::config::StoredPermission>, String> {
-    Ok(state.runtime.services.authorization.list_permanent().await)
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionPermissionGrant {
     pub session_id: String,

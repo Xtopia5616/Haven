@@ -219,20 +219,30 @@ function validSystemData(data: JsonRecord): boolean {
 				primary: isBoolean,
 			});
 		}) &&
-		hasValidUniqueRecordArray(data, 'windows', 'window_id', isNonEmptyString, (row) =>
-			hasValidRequiredFields(row, { window_id: isNonEmptyString }) &&
-			hasValidOptionalFields(row, {
-				hwnd: isStringOrNumber,
-				title: isString,
-				pid: isFiniteNumber,
-			}),
+		hasValidUniqueRecordArray(
+			data,
+			'windows',
+			'window_id',
+			isNonEmptyString,
+			(row) =>
+				hasValidRequiredFields(row, { window_id: isNonEmptyString }) &&
+				hasValidOptionalFields(row, {
+					hwnd: isStringOrNumber,
+					title: isString,
+					pid: isFiniteNumber,
+				}),
 		) &&
 		(['values', 'subkeys'] as const).every((key) =>
 			hasValidOptionalArrayField(data, key, isStringArray),
 		) &&
-		hasValidUniqueRecordArray(data, 'variables', 'name', isNonEmptyString, (row) =>
-			hasValidRequiredFields(row, { name: isNonEmptyString }) &&
-			hasValidOptionalFields(row, { value: isString }),
+		hasValidUniqueRecordArray(
+			data,
+			'variables',
+			'name',
+			isNonEmptyString,
+			(row) =>
+				hasValidRequiredFields(row, { name: isNonEmptyString }) &&
+				hasValidOptionalFields(row, { value: isString }),
 		)
 	);
 }
@@ -264,22 +274,30 @@ function validWindowData(data: JsonRecord): boolean {
 				pid: isFiniteNumber,
 			},
 		}) &&
-		hasValidUniqueRecordArray(data, 'windows', 'window_id', isNonEmptyString, (row) =>
-			hasValidRequiredFields(row, { window_id: isNonEmptyString }) &&
-			hasValidOptionalFields(row, {
-				hwnd: isStringOrNumber,
-				title: isString,
-				pid: isFiniteNumber,
-			}),
+		hasValidUniqueRecordArray(
+			data,
+			'windows',
+			'window_id',
+			isNonEmptyString,
+			(row) =>
+				hasValidRequiredFields(row, { window_id: isNonEmptyString }) &&
+				hasValidOptionalFields(row, {
+					hwnd: isStringOrNumber,
+					title: isString,
+					pid: isFiniteNumber,
+				}),
 		) &&
-		hasValidUniqueRecordArray(data, 'elements', 'element_token', (value) =>
-			typeof value === 'string' && value.trim().length > 0,
-		(row) =>
-			hasValidRequiredFields(row, { element_token: isString }) &&
-			hasValidOptionalFields(row, {
-				name: isString,
-				control_type: isToolWindowControlType,
-			}),
+		hasValidUniqueRecordArray(
+			data,
+			'elements',
+			'element_token',
+			(value) => typeof value === 'string' && value.trim().length > 0,
+			(row) =>
+				hasValidRequiredFields(row, { element_token: isString }) &&
+				hasValidOptionalFields(row, {
+					name: isString,
+					control_type: isToolWindowControlType,
+				}),
 		)
 	);
 }
@@ -329,15 +347,20 @@ function validAdminData(data: JsonRecord): boolean {
 			connected: (value) => isBoolean(value) || Array.isArray(value),
 		}) &&
 		hasValidOptionalArrayField(data, 'lines', isStringArray) &&
-		hasValidUniqueRecordArray(data, 'skills', 'name', isNonEmptyString, (row) =>
-			hasValidRequiredFields(row, { name: isNonEmptyString }) &&
-			hasValidOptionalFields(row, {
-				name: isString,
-				enabled: isBoolean,
-				executable: isBoolean,
-				unavailable_reason: isString,
-				manifest_error: isString,
-			}),
+		hasValidUniqueRecordArray(
+			data,
+			'skills',
+			'name',
+			isNonEmptyString,
+			(row) =>
+				hasValidRequiredFields(row, { name: isNonEmptyString }) &&
+				hasValidOptionalFields(row, {
+					name: isString,
+					enabled: isBoolean,
+					executable: isBoolean,
+					unavailable_reason: isString,
+					manifest_error: isString,
+				}),
 		) &&
 		hasValidRecordArray(data, 'sessions', validAdminActivityRow) &&
 		hasValidRecordArray(data, 'errors', validAdminActivityRow)
@@ -392,7 +415,6 @@ function validFileData(data: JsonRecord): boolean {
 function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 	switch (renderer) {
 		case 'files.search':
-		case 'file_search':
 			if (
 				!hasValidOptionalFields(data, {
 					count: isFiniteNumber,
@@ -563,7 +585,13 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					(value) => isCanonicalEntityId(value, 'fact'),
 					(row) =>
 						hasValidOptionalFields(row, {
-							...stringFields('id', 'subject', 'predicate', 'object', 'source_snippet'),
+							...stringFields(
+								'id',
+								'subject',
+								'predicate',
+								'object',
+								'source_snippet',
+							),
 							confidence: isFiniteNumber,
 							tags: isStringArray,
 						}) && isCanonicalEntityId(row.fact_id, 'fact'),
@@ -572,8 +600,7 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					data,
 					'hits',
 					'entity_id',
-					(value) =>
-						isCanonicalEntityId(value, data.kind === 'fact' ? 'fact' : 'msg'),
+					(value) => isCanonicalEntityId(value, data.kind === 'fact' ? 'fact' : 'msg'),
 					(row) =>
 						hasValidOptionalFields(row, {
 							...stringFields('text', 'model'),

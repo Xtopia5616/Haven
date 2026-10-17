@@ -11,10 +11,6 @@ use crate::lifecycle::ToolRunStatus;
 pub struct ToolRunCompletionPayload {
     pub tool_run_id: String,
     pub status: ToolRunStatus,
-    /// Background status projection label retained under the legacy JSON key.
-    /// Completion kind ownership remains with the Tools runtime/event variant.
-    #[serde(rename = "kind", skip_serializing_if = "Option::is_none")]
-    pub status_projection_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

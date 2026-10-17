@@ -160,8 +160,8 @@ if (-not [regex]::IsMatch($agentWire, '(?s)Observation\s*\{[^}]*idempotency:\s*O
     -not [regex]::IsMatch($agentEvents, '(?s)struct\s+AgentObservationEvent\s*\{[^}]*idempotency:\s*OperationIdempotency[^}]*operation_scope:\s*ToolOperationScope')) {
     throw 'observation idempotency and operation scope must retain their Common enum types through durable UI metadata and the App wire DTO'
 }
-if (-not [regex]::IsMatch($commonToolContracts, '(?s)pub\s+struct\s+ToolResultEnvelope\s*\{[^}]*outcome:\s*ToolExecutionOutcome[^}]*retry_safety:\s*OperationIdempotency[^}]*retryability:\s*ToolRetryability') -or
-    [regex]::IsMatch($toolContract, 'self\.output\.get\("retry_safety"\)')) {
+if (-not [regex]::IsMatch($commonToolContracts, '(?s)pub\s+struct\s+ToolResultEnvelope\s*\{[^}]*outcome:\s*ToolExecutionOutcome[^}]*idempotency:\s*OperationIdempotency[^}]*retryability:\s*ToolRetryability') -or
+    [regex]::IsMatch($toolContract, 'self\.output\.get\("idempotency"\)')) {
     throw 'ToolResultEnvelope retry metadata must be Common-owned and cannot be overridden by tool output JSON'
 }
 if (-not [regex]::IsMatch($commonToolContracts, '(?s)sandbox_output_review_step_ids:\s*Vec<String>') -or
@@ -188,11 +188,11 @@ if (-not [regex]::IsMatch($agentContract, '(?s)export interface AgentNotificatio
 }
 if (-not [regex]::IsMatch($agentContract, "(?s)import\s*\{[^}]*OPERATION_IDEMPOTENCY_VALUES[^}]*TOOL_ERROR_CLASS_VALUES[^}]*TOOL_EXECUTION_OUTCOME_VALUES[^}]*TOOL_OPERATION_SCOPE_VALUES[^}]*TOOL_RETRYABILITY_VALUES[^}]*\}\s*from\s*'\./generatedCommands\.ts'") -or
     -not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentObservationPayload\s*\{[^}]*idempotency:\s*OperationIdempotency[^}]*operationScope:\s*ToolOperationScope') -or
-    -not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentToolResultEnvelope\s*\{[^}]*outcome:\s*ToolExecutionOutcome[^}]*errorClass\?:\s*ToolErrorClass[^}]*retrySafety:\s*OperationIdempotency[^}]*retryability:\s*ToolRetryability') -or
+    -not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentToolResultEnvelope\s*\{[^}]*outcome:\s*ToolExecutionOutcome[^}]*errorClass\?:\s*ToolErrorClass[^}]*idempotency:\s*OperationIdempotency[^}]*retryability:\s*ToolRetryability') -or
     -not [regex]::IsMatch($agentContract, 'isOneOf\(idempotency,\s*OPERATION_IDEMPOTENCY_VALUES\)') -or
     -not [regex]::IsMatch($agentContract, 'isOneOf\(operationScope,\s*TOOL_OPERATION_SCOPE_VALUES\)') -or
     -not [regex]::IsMatch($agentContract, 'isOneOf\(outcome,\s*TOOL_EXECUTION_OUTCOME_VALUES\)') -or
-    -not [regex]::IsMatch($agentContract, 'isOneOf\(retrySafety,\s*OPERATION_IDEMPOTENCY_VALUES\)') -or
+    -not [regex]::IsMatch($agentContract, 'isOneOf\(idempotency,\s*OPERATION_IDEMPOTENCY_VALUES\)') -or
     -not [regex]::IsMatch($agentContract, 'isOneOf\(retryability,\s*TOOL_RETRYABILITY_VALUES\)') -or
     -not [regex]::IsMatch($agentContract, 'isOneOf\(errorClass,\s*TOOL_ERROR_CLASS_VALUES\)')) {
     throw 'Agent observation and result metadata must use generated Common enum types and runtime values'

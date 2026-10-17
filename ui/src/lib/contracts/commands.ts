@@ -1,5 +1,5 @@
 /**
- * Versioned directory of every Tauri command.
+ * Reviewed security metadata for every Tauri command.
  *
  * Rust handler signatures and Serialize DTOs own IPC shapes. This directory
  * adds only renderer-reviewed boundary and security metadata.
@@ -24,7 +24,6 @@ export const TAURI_COMMAND_CONTRACTS = {
 		boundary: 'read',
 		security: 'optional session filter; limit capped at 200; internal tool args excluded',
 	},
-	delete_tool_run: { boundary: 'mutate', security: 'delete one persisted task row by id' },
 	clear_tool_run_history: {
 		boundary: 'mutate',
 		security: 'delete terminal task history; preserve live work and undelivered results',
@@ -35,19 +34,10 @@ export const TAURI_COMMAND_CONTRACTS = {
 	},
 	list_session_history: { boundary: 'read', security: 'read-only session projection' },
 	count_session_history: { boundary: 'read', security: 'read-only aggregate' },
-	search_session_history_paginated: {
-		boundary: 'read',
-		security: 'parameterized read-only search',
-	},
 	count_session_history_search: { boundary: 'read', security: 'parameterized read-only search' },
-	search_session_history: { boundary: 'read', security: 'parameterized read-only search' },
 	search_session_history_filtered: {
 		boundary: 'read',
 		security: 'bounded page and date-filtered projection',
-	},
-	export_session_history: {
-		boundary: 'read',
-		security: 'export contains persisted history only',
 	},
 	get_log_info: { boundary: 'read', security: 'path is optional; no environment details' },
 	read_log_tail: { boundary: 'read', security: 'bounded tail; file logging must be enabled' },
@@ -70,7 +60,8 @@ export const TAURI_COMMAND_CONTRACTS = {
 	},
 	read_mcp_resource: {
 		boundary: 'execute',
-		security: 'user-selected opaque URI; enabled server and live connection binding; bounded response',
+		security:
+			'user-selected opaque URI; enabled server and live connection binding; bounded response',
 	},
 	list_mcp_prompts: {
 		boundary: 'execute',
@@ -78,7 +69,8 @@ export const TAURI_COMMAND_CONTRACTS = {
 	},
 	get_mcp_prompt: {
 		boundary: 'execute',
-		security: 'user-selected prompt and bounded arguments; enabled server and live connection binding',
+		security:
+			'user-selected prompt and bounded arguments; enabled server and live connection binding',
 	},
 	reconnect_mcp_server: {
 		boundary: 'execute',
@@ -147,7 +139,6 @@ export const TAURI_COMMAND_CONTRACTS = {
 		security:
 			'requestKind selects the assigned model; provider capability checked before config save',
 	},
-	get_recording_state: { boundary: 'read', security: 'state only; no device or provider detail' },
 	set_hotkey_capture_active: {
 		boundary: 'mutate',
 		security: 'transient renderer key-capture state only; not persisted',
@@ -196,7 +187,8 @@ export const TAURI_COMMAND_CONTRACTS = {
 	},
 	fork_session_from_message: {
 		boundary: 'mutate',
-		security: 'canonical parent and user message ids; creates an independent re-keyed transcript prefix',
+		security:
+			'canonical parent and user message ids; creates an independent re-keyed transcript prefix',
 	},
 	continue_session: {
 		boundary: 'mutate',
@@ -242,7 +234,6 @@ export const TAURI_COMMAND_CONTRACTS = {
 		boundary: 'mutate',
 		security: 'shared loader preserves masked secrets, tool sections, and permission rules',
 	},
-	list_permissions: { boundary: 'read', security: 'permanent permission keys/effects only' },
 	list_session_permissions: {
 		boundary: 'read',
 		security: 'typed session grants with exact session, capability, target, and effect',
@@ -304,7 +295,8 @@ export const TAURI_COMMAND_CONTRACTS = {
 	},
 	pick_sandbox_output_destination: {
 		boundary: 'read',
-		security: 'native save picker; returns a user-selected candidate and grants no filesystem access',
+		security:
+			'native save picker; returns a user-selected candidate and grants no filesystem access',
 	},
 } as const satisfies Record<TauriCommandName, CommandContract>;
 

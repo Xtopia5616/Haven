@@ -697,7 +697,6 @@ mod tests {
         ToolRunCompletionPayload {
             tool_run_id: tool_run_id.to_owned(),
             status,
-            status_projection_kind: None,
             output: output.map(str::to_owned),
             error: error.map(str::to_owned),
             error_reason: error_reason.map(str::to_owned),

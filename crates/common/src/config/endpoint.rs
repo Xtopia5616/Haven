@@ -853,12 +853,10 @@ impl ModelConfig {
 /// `None` falls back to the provider default, then
 /// `context_limits.default_context_window` / [`ModelEndpoint`] built-ins.
 /// A materialized model plus its declared request capabilities.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RoutedModel {
     /// Haven model-configuration identity. The Provider service model ID is
     /// stored on `endpoint.model_name`.
-    #[serde(rename = "id")]
     pub model_config_id: String,
     pub endpoint: ModelEndpoint,
     pub capabilities: Vec<Capability>,
@@ -1246,8 +1244,7 @@ pub fn is_stt_only_style(style: &str) -> bool {
 
 /// The materialized router configuration. Models and request policies remain
 /// dynamic; only router-wide execution limits are fixed fields.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RouterConfig {
     pub models: Vec<RoutedModel>,
     pub request_policies: Vec<RequestPolicy>,
@@ -1719,27 +1716,6 @@ mod tests {
             "model": "gpt-5"
         }));
         assert!(old_key.is_err(), "the old ambiguous key must be rejected");
-    }
-
-    #[test]
-    fn routed_model_config_identity_keeps_its_existing_wire_key() {
-        let routed_model = RoutedModel {
-            model_config_id: "chat-model".into(),
-            endpoint: ModelEndpoint {
-                model_name: "provider/gpt-5".into(),
-                ..Default::default()
-            },
-            capabilities: vec![Capability::Chat],
-        };
-
-        let serialized = serde_json::to_value(&routed_model).expect("serialize routed model");
-        assert_eq!(serialized["id"], "chat-model");
-        assert!(serialized.get("model_config_id").is_none());
-
-        let decoded: RoutedModel = serde_json::from_value(serialized)
-            .expect("decode routed model using stable wire identity key");
-        assert_eq!(decoded.model_config_id, "chat-model");
-        assert_eq!(decoded.endpoint.model_name, "provider/gpt-5");
     }
 
     #[test]

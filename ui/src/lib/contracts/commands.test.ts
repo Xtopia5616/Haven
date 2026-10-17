@@ -3,8 +3,8 @@ import { TAURI_COMMAND_CONTRACTS, TAURI_COMMAND_NAMES, type CommandBoundary } fr
 
 describe('Tauri command boundary directory', () => {
 	it('matches the reviewed command count without duplicating generated shapes', () => {
-		expect(TAURI_COMMAND_NAMES).toHaveLength(91);
-		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(91);
+		expect(TAURI_COMMAND_NAMES).toHaveLength(85);
+		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(85);
 		expect(TAURI_COMMAND_NAMES).toEqual(Object.keys(TAURI_COMMAND_CONTRACTS));
 		expect(TAURI_COMMAND_CONTRACTS.pick_execution_workspace_directory.boundary).toBe('read');
 		expect(TAURI_COMMAND_CONTRACTS.pick_execution_workspace_directory.security).toContain(

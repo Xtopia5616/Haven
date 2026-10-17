@@ -335,7 +335,6 @@ mod tests {
         ToolRunCompletionPayload {
             tool_run_id: tool_run_id.to_owned(),
             status,
-            status_projection_kind: None,
             output: None,
             error: None,
             error_reason: None,

@@ -454,6 +454,9 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
     } = request;
     let tool_name = tool_call.tool_name.clone();
     let tool_input = tool_call.tool_input.clone();
+    let idempotency = catalog
+        .operation_policy(&tool_name, &tool_input)
+        .idempotency;
     let tool_step_metadata = tool_step_metadata(catalog.as_ref(), &tool_name, &tool_input);
     let tool_input_bytes = serde_json::to_vec(&tool_input)
         .map(|input| input.len())
@@ -533,7 +536,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
         mut result_envelope,
     ) = match result {
         Ok(result) => {
-            let result_envelope = result.envelope(OperationIdempotency::Unknown);
+            let result_envelope = result.envelope(idempotency);
             let output_len = serde_json::to_string(&result.output)
                 .map(|text| text.len())
                 .unwrap_or(0);
@@ -602,12 +605,9 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
         .manifest(&tool_name)
         .map(|manifest| manifest.presentation.renderer)
         .unwrap_or_else(|| tool_name.split('.').next().unwrap_or("generic").into());
-    let result_envelope = result_envelope
-        .take()
-        .unwrap_or_else(|| {
-            ToolResultEnvelope::from_parts(outcome, Some(error_class), retryability, idempotency)
-        })
-        .with_default_retry_safety(idempotency);
+    let result_envelope = result_envelope.take().unwrap_or_else(|| {
+        ToolResultEnvelope::from_parts(outcome, Some(error_class), retryability, idempotency)
+    });
 
     CompletedTool {
         tool_call,

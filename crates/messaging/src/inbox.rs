@@ -47,7 +47,7 @@ use tokio::sync::watch;
 use haven_common::types::new_id;
 
 use crate::contract::{
-    MAX_MESSAGE_HISTORY_LIMIT, is_expired, validate_message_envelope,
+    MAX_MESSAGE_ENVELOPE_BYTES, MAX_MESSAGE_HISTORY_LIMIT, is_expired, validate_message_envelope,
     validate_message_envelope_for_delivery, validate_message_id, validate_session_id,
 };
 
@@ -76,9 +76,8 @@ const MAX_PENDING_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CLAIM_BATCH_LINES: usize = 100;
 const MAX_CLAIM_BATCH_BYTES: u64 = 1024 * 1024;
 const MAX_PROCESSING_BYTES: usize = MAX_CLAIM_BATCH_BYTES as usize + 1024;
-/// Historical rows predate outbound envelope limits. Keep them recoverable,
-/// but refuse to allocate an unbounded line while draining or inspecting them.
-const MAX_LEGACY_LINE_BYTES: usize = 1024 * 1024;
+/// JSONL readers allow the canonical serialized envelope plus its newline.
+const MAX_ENVELOPE_LINE_BYTES: usize = MAX_MESSAGE_ENVELOPE_BYTES + 1;
 const MAX_BACKLOG_STATE_BYTES: usize = 4 * 1024;
 /// Bound the durable lineage map so recovery never promotes or parses an
 /// unbounded tombstone file. The cap still allows hundreds of thousands of
@@ -105,13 +104,12 @@ enum BacklogPhase {
 /// `active_attempts` lets a missing processing copy be rebuilt without changing
 /// stable IDs or resetting each envelope's retry count.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BacklogState {
-    version: u8,
     source: BacklogSource,
     phase: BacklogPhase,
     cursor_bytes: u64,
     active_end_bytes: Option<u64>,
-    #[serde(default)]
     active_attempts: u32,
 }
 
@@ -197,11 +195,11 @@ impl std::fmt::Display for MessageType {
 /// everything else is optional and serialized as `null` when absent (kept on the wire
 /// for audit readability, matching the interop format).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Envelope {
     /// Unique message id, canonical `msg-{uuid32}`.
     pub message_id: String,
     /// `message | reply | broadcast | request | system | receipt`.
-    #[serde(default)]
     pub r#type: MessageType,
     /// Sender session ID.
     pub from_session_id: String,
@@ -256,6 +254,7 @@ impl Envelope {
 
 /// Registry entry for one agent (`agents.json` value).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AgentEntry {
     pub session_id: String,
     /// RFC3339 heartbeat timestamp.
@@ -271,7 +270,6 @@ struct AgentEntry {
     /// Optional parent session ID when this session was spawned by another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
-    #[serde(default)]
     pub capabilities: Vec<String>,
 }
 
@@ -1548,7 +1546,7 @@ impl InboxBus {
             return Ok(());
         }
 
-        let start = length.saturating_sub(MAX_LEGACY_LINE_BYTES as u64 + 1);
+        let start = length.saturating_sub(MAX_ENVELOPE_LINE_BYTES as u64);
         file.seek(SeekFrom::Start(start))?;
         let mut tail = Vec::with_capacity((length - start) as usize);
         file.read_to_end(&mut tail)?;
@@ -1556,13 +1554,13 @@ impl InboxBus {
         let line_start_in_tail = last_newline.map_or(0, |index| index + 1);
         if start > 0 && last_newline.is_none() {
             anyhow::bail!(
-                "unterminated legacy inbox row exceeds the bounded repair limit; the mailbox is preserved"
+                "unterminated inbox JSONL row exceeds the bounded repair limit; the mailbox is preserved"
             )
         }
         let final_line = &tail[line_start_in_tail..];
-        if final_line.len() > MAX_LEGACY_LINE_BYTES {
+        if final_line.len() > MAX_MESSAGE_ENVELOPE_BYTES {
             anyhow::bail!(
-                "unterminated legacy inbox row exceeds the bounded repair limit; the mailbox is preserved"
+                "unterminated inbox JSONL row exceeds the bounded repair limit; the mailbox is preserved"
             )
         }
         let line = std::str::from_utf8(final_line)?;
@@ -1658,10 +1656,9 @@ impl InboxBus {
                     .ok()
                     .and_then(|contents| serde_json::from_str::<BacklogState>(&contents).ok());
                 if candidate.as_ref().is_some_and(|state| {
-                    state.version == 1
-                        && state
-                            .active_end_bytes
-                            .is_none_or(|end| end >= state.cursor_bytes)
+                    state
+                        .active_end_bytes
+                        .is_none_or(|end| end >= state.cursor_bytes)
                         && (state.active_end_bytes.is_some() || state.active_attempts == 0)
                 }) {
                     std::fs::rename(state_tmp, &state_path)?;
@@ -1682,13 +1679,12 @@ impl InboxBus {
             Ok(contents) => {
                 let state: BacklogState = serde_json::from_str(&contents)
                     .map_err(|error| anyhow::anyhow!("corrupt inbox backlog state: {error}"))?;
-                if state.version != 1
-                    || state
-                        .active_end_bytes
-                        .is_some_and(|end| end < state.cursor_bytes)
+                if state
+                    .active_end_bytes
+                    .is_some_and(|end| end < state.cursor_bytes)
                     || (state.active_end_bytes.is_none() && state.active_attempts != 0)
                 {
-                    anyhow::bail!("unsupported or invalid inbox backlog state")
+                    anyhow::bail!("invalid inbox backlog state")
                 }
                 Some(state)
             }
@@ -1785,7 +1781,6 @@ impl InboxBus {
         };
 
         let state = BacklogState {
-            version: 1,
             source,
             phase: BacklogPhase::Preparing,
             cursor_bytes: 0,
@@ -1851,7 +1846,7 @@ impl InboxBus {
         content
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .map(|line| parse_envelope_with_limit(session_id, line.trim(), MAX_PROCESSING_BYTES))
+            .map(|line| parse_envelope(session_id, line.trim()))
             .collect()
     }
 
@@ -1942,9 +1937,9 @@ fn append_history_source(
     positions: &mut HashMap<String, usize>,
 ) -> anyhow::Result<()> {
     for line in content.lines() {
-        if line.len() > MAX_LEGACY_LINE_BYTES {
+        if line.len() > MAX_MESSAGE_ENVELOPE_BYTES {
             anyhow::bail!(
-                "legacy messaging row exceeds the bounded read limit of {MAX_LEGACY_LINE_BYTES} bytes; the source row is preserved"
+                "messaging JSONL row exceeds the bounded read limit of {MAX_MESSAGE_ENVELOPE_BYTES} bytes; the source row is preserved"
             )
         }
         let Ok(envelope) = parse_envelope(session_id, line.trim()) else {
@@ -2099,9 +2094,9 @@ fn read_bounded_line(reader: &mut impl BufRead) -> anyhow::Result<Option<Vec<u8>
             .iter()
             .position(|byte| *byte == b'\n')
             .map_or(available.len(), |index| index + 1);
-        if line.len().saturating_add(take) > MAX_LEGACY_LINE_BYTES {
+        if line.len().saturating_add(take) > MAX_ENVELOPE_LINE_BYTES {
             anyhow::bail!(
-                "legacy messaging row exceeds the bounded read limit of {MAX_LEGACY_LINE_BYTES} bytes; the source row is preserved"
+                "messaging JSONL row exceeds the bounded read limit of {MAX_ENVELOPE_LINE_BYTES} bytes; the source row is preserved"
             )
         }
         let has_newline = available[take - 1] == b'\n';
@@ -2175,10 +2170,7 @@ fn read_backlog_range(
     start_bytes: u64,
     end_bytes: u64,
 ) -> anyhow::Result<Vec<Envelope>> {
-    if end_bytes < start_bytes
-        || end_bytes.saturating_sub(start_bytes)
-            > MAX_CLAIM_BATCH_BYTES.max(MAX_LEGACY_LINE_BYTES as u64)
-    {
+    if end_bytes < start_bytes || end_bytes.saturating_sub(start_bytes) > MAX_CLAIM_BATCH_BYTES {
         anyhow::bail!("inbox active batch range is invalid or exceeds its byte budget")
     }
     let mut file = File::open(path)?;
@@ -2204,17 +2196,9 @@ fn read_backlog_range(
 }
 
 fn parse_envelope(session_id: &str, line: &str) -> anyhow::Result<Envelope> {
-    parse_envelope_with_limit(session_id, line, MAX_LEGACY_LINE_BYTES)
-}
-
-fn parse_envelope_with_limit(
-    session_id: &str,
-    line: &str,
-    max_bytes: usize,
-) -> anyhow::Result<Envelope> {
-    if line.len() > max_bytes {
+    if line.len() > MAX_MESSAGE_ENVELOPE_BYTES {
         anyhow::bail!(
-            "messaging row exceeds the bounded read limit of {max_bytes} bytes; the source row is preserved"
+            "messaging JSONL row exceeds the bounded read limit of {MAX_MESSAGE_ENVELOPE_BYTES} bytes; the source row is preserved"
         )
     }
     let envelope: Envelope = serde_json::from_str(line)
@@ -2282,7 +2266,7 @@ fn read_tail_from(path: &Path, lower_bound: u64, max_bytes: u64) -> anyhow::Resu
             s.drain(..=newline);
         } else {
             anyhow::bail!(
-                "legacy messaging row exceeds the bounded read window; the source row is preserved"
+                "messaging JSONL row exceeds the bounded read window; the source row is preserved"
             )
         }
     }
@@ -2307,7 +2291,7 @@ fn last_valid_line_from(
     if lower_bound >= length {
         return Ok(None);
     }
-    let max_line_bytes = MAX_LEGACY_LINE_BYTES as u64 + 1;
+    let max_line_bytes = MAX_ENVELOPE_LINE_BYTES as u64;
     let start = if length - lower_bound > max_line_bytes {
         length - max_line_bytes
     } else {
@@ -2319,7 +2303,7 @@ fn last_valid_line_from(
     if start > lower_bound {
         let Some(newline) = tail.iter().position(|byte| *byte == b'\n') else {
             anyhow::bail!(
-                "legacy messaging row exceeds the bounded read limit of {MAX_LEGACY_LINE_BYTES} bytes; the source row is preserved"
+                "messaging JSONL row exceeds the bounded read limit of {MAX_ENVELOPE_LINE_BYTES} bytes; the source row is preserved"
             )
         };
         tail.drain(..=newline);
@@ -2332,9 +2316,9 @@ fn last_valid_line_from(
         .rposition(|byte| *byte == b'\n')
         .map_or(0, |newline| newline + 1);
     let line = &tail[line_start..];
-    if line.len() > MAX_LEGACY_LINE_BYTES {
+    if line.len() > MAX_MESSAGE_ENVELOPE_BYTES {
         anyhow::bail!(
-            "legacy messaging row exceeds the bounded read limit of {MAX_LEGACY_LINE_BYTES} bytes; the source row is preserved"
+            "messaging JSONL row exceeds the bounded read limit of {MAX_ENVELOPE_LINE_BYTES} bytes; the source row is preserved"
         )
     }
     if line.is_empty() {
@@ -2505,7 +2489,8 @@ mod tests {
             "ses-old-session_id": {
                 "session_id": "ses-old-session_id",
                 "last_seen": "2026-01-01T00:00:00Z",
-                "started_at": "2026-01-01T00:00:00Z"
+                "started_at": "2026-01-01T00:00:00Z",
+                "capabilities": []
             }
         });
         std::fs::write(
@@ -2554,7 +2539,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_messaging_records_use_explicit_identity_fields() {
+    fn durable_messaging_records_use_current_explicit_shape() {
         let envelope = Envelope::new(
             "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -2580,12 +2565,29 @@ mod tests {
         });
         assert!(serde_json::from_value::<Envelope>(legacy_envelope).is_err());
 
+        let mut envelope_without_type = value.clone();
+        envelope_without_type
+            .as_object_mut()
+            .unwrap()
+            .remove("type");
+        assert!(serde_json::from_value::<Envelope>(envelope_without_type).is_err());
+
         let legacy_registry_entry = serde_json::json!({
             "name": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "last_seen": "2026-01-01T00:00:00Z",
             "started_at": "2026-01-01T00:00:00Z"
         });
         assert!(serde_json::from_value::<AgentEntry>(legacy_registry_entry).is_err());
+
+        let versioned_backlog = serde_json::json!({
+            "version": 1,
+            "source": "mailbox",
+            "phase": "preparing",
+            "cursor_bytes": 0,
+            "active_end_bytes": null,
+            "active_attempts": 0
+        });
+        assert!(serde_json::from_value::<BacklogState>(versioned_backlog).is_err());
     }
 
     #[test]
@@ -2984,7 +2986,6 @@ mod tests {
         let envelope = env_from("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "prepare");
         bus.deliver(recipient, &envelope).unwrap();
         let state = BacklogState {
-            version: 1,
             source: BacklogSource::Mailbox,
             phase: BacklogPhase::Preparing,
             cursor_bytes: 0,
@@ -3143,12 +3144,12 @@ mod tests {
     }
 
     #[test]
-    fn oversized_legacy_backlog_row_fails_closed_without_advancing_or_deleting_source() {
+    fn oversized_jsonl_row_fails_closed_without_advancing_or_deleting_source() {
         let (_dir, bus) = test_bus();
         let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         bus.register(recipient, &[]).unwrap();
         let mut envelope = env_from("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", recipient, "legacy");
-        envelope.text = "x".repeat(MAX_LEGACY_LINE_BYTES + 1);
+        envelope.text = "x".repeat(MAX_MESSAGE_ENVELOPE_BYTES + 1);
         write_mailbox(&bus, recipient, &[envelope]);
         let original_len = std::fs::metadata(bus.mailbox(recipient)).unwrap().len();
 

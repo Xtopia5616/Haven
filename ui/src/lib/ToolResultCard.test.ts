@@ -12,6 +12,7 @@ import {
 	setToolOutputPreview,
 } from './toolOutputPreviewStore.ts';
 import { getToolResultRenderer } from './toolResultRenderers.ts';
+import { isValidBuiltinToolResultData } from './toolResultValidation.ts';
 import ToolAgentResult from './ToolAgentResult.svelte';
 import ToolClipboardResult from './ToolClipboardResult.svelte';
 import ToolFileResult from './ToolFileResult.svelte';
@@ -75,22 +76,19 @@ describe('canRenderToolResult', () => {
 			),
 		).toBe(true);
 		expect(
-			canRenderToolResult(
-				'haven',
-				JSON.stringify({ operation: 'tool_runs_list', status: 'running' }),
-			),
+			canRenderToolResult('haven', JSON.stringify({ operation: 'list', status: 'running' })),
 		).toBe(true);
 		expect(
 			canRenderToolResult(
 				'haven',
-				JSON.stringify({ operation: 'schedule_list', scheduled_tool_runs: [] }),
+				JSON.stringify({ operation: 'list', scheduled_tool_runs: [] }),
 			),
 		).toBe(true);
 		expect(
 			canRenderToolResult(
 				'haven',
 				JSON.stringify({
-					operation: 'schedule_set',
+					operation: 'set',
 					tool_run_id: toolRunId(1),
 					mode: 'notify',
 				}),
@@ -99,7 +97,7 @@ describe('canRenderToolResult', () => {
 		expect(
 			canRenderToolResult(
 				'haven',
-				JSON.stringify({ operation: 'schedule_cancel', tool_run_id: toolRunId(1) }),
+				JSON.stringify({ operation: 'cancel', tool_run_id: toolRunId(1) }),
 			),
 		).toBe(true);
 		expect(
@@ -124,13 +122,28 @@ describe('canRenderToolResult', () => {
 			canRenderToolResult(
 				'haven',
 				JSON.stringify({
-					operation: 'tool_runs_cancel',
+					operation: 'cancel',
 					tool_run_id: toolRunId(1),
 					cancelled: true,
 				}),
 			),
 		).toBe(true);
 	});
+
+	it('rejects removed ToolRun and schedule operation aliases', () => {
+		for (const operation of [
+			'tool_runs_list',
+			'tool_runs_inspect',
+			'tool_runs_cancel',
+			'tool_runs_result_injected',
+		]) {
+			expect(isValidBuiltinToolResultData('tool_runs', { operation })).toBe(false);
+		}
+		for (const operation of ['schedule_set', 'schedule_list', 'schedule_cancel']) {
+			expect(isValidBuiltinToolResultData('schedule', { operation })).toBe(false);
+		}
+	});
+
 	it('accepts shell text, notify text and any JSON observation', () => {
 		expect(canRenderToolResult('shell', 'plain stdout text')).toBe(true);
 		expect(canRenderToolResult('shell', JSON.stringify({ output: 'x' }))).toBe(true);
@@ -212,7 +225,10 @@ describe('operation view UI contract', () => {
 				renderer: 'files.search',
 				data: { results: [], search_complete: true, io_error_count: 1 },
 			},
-			{ renderer: 'files.search', data: { results: [], search_complete: true, has_more: true } },
+			{
+				renderer: 'files.search',
+				data: { results: [], search_complete: true, has_more: true },
+			},
 			{ renderer: 'files', data: { results: [{ path: 42 }] } },
 			{ renderer: 'files', data: { operation: 'future-operation' } },
 			{ renderer: 'files', data: { symbols: [{ kind: 'macro' }] } },
@@ -256,10 +272,35 @@ describe('operation view UI contract', () => {
 			{ renderer: 'agent', data: { auto: 'yes' } },
 			{ renderer: 'clipboard', data: { entries: [null] } },
 			{ renderer: 'clipboard', data: { entries: null } },
-			{ renderer: 'clipboard', data: { entries: [{ entry_id: 'clip-00000000000000000000000000000001', content: 'copied text' }, { entry_id: 'clip-00000000000000000000000000000002', content: 'copied text' }] } },
+			{
+				renderer: 'clipboard',
+				data: {
+					entries: [
+						{
+							entry_id: 'clip-00000000000000000000000000000001',
+							content: 'copied text',
+						},
+						{
+							entry_id: 'clip-00000000000000000000000000000002',
+							content: 'copied text',
+						},
+					],
+				},
+			},
 			{ renderer: 'clipboard', data: { entries: [{ content: 'missing identity' }] } },
-			{ renderer: 'clipboard', data: { entries: [{ entry_id: 'clip-short', content: 'invalid identity' }] } },
-			{ renderer: 'clipboard', data: { entries: [{ entry_id: 'clip-00000000000000000000000000000001', content: 'first' }, { entry_id: 'clip-00000000000000000000000000000001', content: 'second' }] } },
+			{
+				renderer: 'clipboard',
+				data: { entries: [{ entry_id: 'clip-short', content: 'invalid identity' }] },
+			},
+			{
+				renderer: 'clipboard',
+				data: {
+					entries: [
+						{ entry_id: 'clip-00000000000000000000000000000001', content: 'first' },
+						{ entry_id: 'clip-00000000000000000000000000000001', content: 'second' },
+					],
+				},
+			},
 			{ renderer: 'input', data: { operation: 'click', clicked: [12, '20'] } },
 			{ renderer: 'input', data: { operation: 'restart' } },
 			{ renderer: 'input', data: { operation: 'click', button: 'primary' } },
@@ -270,10 +311,7 @@ describe('operation view UI contract', () => {
 			{
 				renderer: 'window',
 				data: {
-					windows: [
-						{ window_id: 'hwnd:1' },
-						{ window_id: 'hwnd:1' },
-					],
+					windows: [{ window_id: 'hwnd:1' }, { window_id: 'hwnd:1' }],
 				},
 			},
 			{ renderer: 'window', data: { operation: 'restart' } },
@@ -297,7 +335,7 @@ describe('operation view UI contract', () => {
 			{
 				renderer: 'tool_runs',
 				data: {
-					operation: 'tool_runs_cancel',
+					operation: 'cancel',
 					tool_run_id: 'toolrun-short',
 					cancelled: true,
 				},
@@ -314,7 +352,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'schedule', data: { operation: 'pause' } },
 			{
 				renderer: 'schedule',
-				data: { operation: 'schedule_cancel', tool_run_id: null },
+				data: { operation: 'cancel', tool_run_id: null },
 			},
 			{
 				renderer: 'schedule',
@@ -411,7 +449,10 @@ describe('operation view UI contract', () => {
 			{ renderer: 'memory', data: { hits: [] } },
 			{
 				renderer: 'memory',
-				data: { kind: 'fact', hits: [{ entity_id: 'msg-00000000000000000000000000000001' }] },
+				data: {
+					kind: 'fact',
+					hits: [{ entity_id: 'msg-00000000000000000000000000000001' }],
+				},
 			},
 			{
 				renderer: 'memory',
@@ -612,7 +653,17 @@ describe('operation view UI contract', () => {
 			getToolResultRenderer(
 				'custom',
 				'clipboard',
-				{ entries: [{ entry_id: 'clip-00000000000000000000000000000001', content: 'copied text' }], total: 1, written: null, content: null },
+				{
+					entries: [
+						{
+							entry_id: 'clip-00000000000000000000000000000001',
+							content: 'copied text',
+						},
+					],
+					total: 1,
+					written: null,
+					content: null,
+				},
 				'clipboard',
 			),
 		).toBe(ToolClipboardResult);
@@ -722,7 +773,7 @@ describe('operation view UI contract', () => {
 			getToolResultRenderer(
 				'custom',
 				'tool_runs',
-				{ operation: 'tool_runs_result_injected', status: 'completed' },
+				{ operation: 'result_injected', status: 'completed' },
 				'tool_runs',
 			),
 		).toBe(ToolRunsResult);
@@ -730,7 +781,7 @@ describe('operation view UI contract', () => {
 			getToolResultRenderer(
 				'custom',
 				'schedule',
-				{ operation: 'schedule_set', tool_run_id: toolRunId(1), mode: 'tool' },
+				{ operation: 'set', tool_run_id: toolRunId(1), mode: 'tool' },
 				'schedule',
 			),
 		).toBe(ToolScheduleResult);
@@ -738,7 +789,16 @@ describe('operation view UI contract', () => {
 			getToolResultRenderer(
 				'custom',
 				'clipboard',
-				{ entries: [{ entry_id: 'clip-00000000000000000000000000000001', content: 'copied text', timestamp_ms: 'not rendered' }], total: 1 },
+				{
+					entries: [
+						{
+							entry_id: 'clip-00000000000000000000000000000001',
+							content: 'copied text',
+							timestamp_ms: 'not rendered',
+						},
+					],
+					total: 1,
+				},
 				'clipboard',
 			),
 		).not.toBe(ToolJsonResult);
@@ -1329,6 +1389,22 @@ describe('ToolResultCard source + args', () => {
 		expect(screen.getByText('"Shanghai"')).toBeTruthy();
 	});
 
+	it('does not use internal qualified names as Skill or MCP renderer aliases', async () => {
+		for (const [toolName, rendererMessage] of [
+			['skill::weather', 'Skill 正在运行…'],
+			['mcp::filesystem::read', 'MCP 工具正在运行…'],
+		] as const) {
+			const { container, unmount } = render(ToolResultCard, {
+				toolName,
+				content: '{}',
+				streaming: true,
+			});
+			await expandToolCard(container);
+			expect(screen.queryByText(rendererMessage)).toBeNull();
+			unmount();
+		}
+	});
+
 	it('labels MCP activation cards while Skills use direct adapters', () => {
 		const { container, rerender } = render(ToolResultCard, {
 			toolName: 'load_mcp',
@@ -1724,7 +1800,7 @@ describe('ToolResultCard haven aggregate', () => {
 			toolName: 'tool_runs.cancel',
 			renderer: 'tool_runs',
 			content: JSON.stringify({
-				operation: 'tool_runs_cancel',
+				operation: 'cancel',
 				tool_run_id: toolRunId(2),
 				cancelled: true,
 			}),
@@ -1741,7 +1817,7 @@ describe('ToolResultCard tool_runs', () => {
 			toolName: 'tool_runs.list',
 			renderer: 'tool_runs',
 			content: JSON.stringify({
-				operation: 'tool_runs_list',
+				operation: 'list',
 				tool_run_id: toolRunId(1),
 				status: 'completed',
 				exit_code: 0,
@@ -1772,7 +1848,7 @@ describe('ToolResultCard tool_runs', () => {
 			toolName: 'tool_runs.cancel',
 			renderer: 'tool_runs',
 			content: JSON.stringify({
-				operation: 'tool_runs_cancel',
+				operation: 'cancel',
 				tool_run_id: toolRunId(2),
 				cancelled: true,
 			}),
@@ -1787,7 +1863,7 @@ describe('ToolResultCard tool_runs', () => {
 			toolName: 'tool_runs.list',
 			renderer: 'tool_runs',
 			content: JSON.stringify({
-				operation: 'tool_runs_list',
+				operation: 'list',
 				tool_runs: [{ tool_run_id: toolRunId(3), status: 'running' }],
 			}),
 		});
@@ -1952,7 +2028,7 @@ describe('ToolResultCard http', () => {
 			toolName: 'schedule.set',
 			renderer: 'schedule',
 			content: JSON.stringify({
-				operation: 'schedule_set',
+				operation: 'set',
 				tool_run_id: toolRunId(42),
 				mode: 'tool',
 				fires_at: '2026-08-05T09:00:00+08:00',
@@ -1969,7 +2045,7 @@ describe('ToolResultCard http', () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'schedule.cancel',
 			renderer: 'schedule',
-			content: JSON.stringify({ operation: 'schedule_cancel', tool_run_id: toolRunId(42) }),
+			content: JSON.stringify({ operation: 'cancel', tool_run_id: toolRunId(42) }),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
@@ -1981,7 +2057,7 @@ describe('ToolResultCard http', () => {
 			toolName: 'schedule.list',
 			renderer: 'schedule',
 			content: JSON.stringify({
-				operation: 'schedule_list',
+				operation: 'list',
 				scheduled_tool_runs: [
 					{
 						tool_run_id: toolRunId(12),
@@ -2006,7 +2082,15 @@ describe('ToolResultCard memory', () => {
 			toolName: 'memory',
 			content: JSON.stringify({
 				operation: 'search',
-				facts: [{ fact_id: 'fact-00000000000000000000000000000001', subject: 'user', predicate: '喜欢', object: 'Rust', confidence: 0.92 }],
+				facts: [
+					{
+						fact_id: 'fact-00000000000000000000000000000001',
+						subject: 'user',
+						predicate: '喜欢',
+						object: 'Rust',
+						confidence: 0.92,
+					},
+				],
 			}),
 		});
 		await expandToolCard(container);
@@ -2019,7 +2103,12 @@ describe('ToolResultCard memory', () => {
 	it('renders recall hits and empty states', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'memory',
-			content: JSON.stringify({ operation: 'recall', kind: 'fact', hits: [], mode: 'keyword' }),
+			content: JSON.stringify({
+				operation: 'recall',
+				kind: 'fact',
+				hits: [],
+				mode: 'keyword',
+			}),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('0 条召回结果 · keyword')).toBeTruthy();

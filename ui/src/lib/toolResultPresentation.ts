@@ -251,69 +251,22 @@ export const TOOL_RUNS_RESULT_OPERATIONS = [
 	'inspect',
 	'cancel',
 	'result_injected',
-	'tool_runs_list',
-	'tool_runs_inspect',
-	'tool_runs_cancel',
-	'tool_runs_result_injected',
 ] as const;
 
 export type ToolRunsResultOperation = (typeof TOOL_RUNS_RESULT_OPERATIONS)[number];
-
-export type ToolRunsOperation = 'list' | 'inspect' | 'cancel' | 'result_injected';
 
 export function isToolRunsResultOperation(value: unknown): value is ToolRunsResultOperation {
 	return isOneOf(value, TOOL_RUNS_RESULT_OPERATIONS);
 }
 
-export function normalizeToolRunsOperation(
-	value: ToolRunsResultOperation | null | undefined,
-): ToolRunsOperation | null | undefined {
-	switch (value) {
-		case 'tool_runs_list':
-			return 'list';
-		case 'tool_runs_inspect':
-			return 'inspect';
-		case 'tool_runs_cancel':
-			return 'cancel';
-		case 'tool_runs_result_injected':
-			return 'result_injected';
-		default:
-			return value;
-	}
-}
-
-export const TOOL_SCHEDULE_RESULT_OPERATIONS = [
-	'set',
-	'list',
-	'cancel',
-	'schedule_set',
-	'schedule_list',
-	'schedule_cancel',
-] as const;
+export const TOOL_SCHEDULE_RESULT_OPERATIONS = ['set', 'list', 'cancel'] as const;
 
 export type ToolScheduleResultOperation = (typeof TOOL_SCHEDULE_RESULT_OPERATIONS)[number];
-
-export type ToolScheduleOperation = 'set' | 'list' | 'cancel';
 
 export function isToolScheduleResultOperation(
 	value: unknown,
 ): value is ToolScheduleResultOperation {
 	return isOneOf(value, TOOL_SCHEDULE_RESULT_OPERATIONS);
-}
-
-export function normalizeToolScheduleOperation(
-	value: ToolScheduleResultOperation | null | undefined,
-): ToolScheduleOperation | null | undefined {
-	switch (value) {
-		case 'schedule_set':
-			return 'set';
-		case 'schedule_list':
-			return 'list';
-		case 'schedule_cancel':
-			return 'cancel';
-		default:
-			return value;
-	}
 }
 
 export const TOOL_AC_POWER_STATES = ['offline', 'online', 'unknown'] as const;

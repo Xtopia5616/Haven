@@ -150,7 +150,7 @@ foreach ($command in $countCommands) {
 }
 $booleanContract = Get-Source 'ui/src/lib/contracts/boolean.ts'
 Assert-Contains $booleanContract 'typeof value !== ''boolean''' 'scalar boolean responses require an actual boolean value'
-$booleanCommands = @('cancel_tool_run', 'delete_tool_run', 'discard_sandbox_output_review', 'is_autostart_enabled')
+$booleanCommands = @('cancel_tool_run', 'discard_sandbox_output_review', 'is_autostart_enabled')
 $booleanResponses = Get-Matches $generated '(?m)^\s{1,2}([a-z][a-z0-9_]*):\s*\{[^\r\n]*response:\s*boolean(?:;|\s*\})'
 Assert-SetEqual 'boolean scalar command responses vs reviewed boolean commands' $booleanResponses $booleanCommands
 Assert-Contains (Get-Source 'ui/src/lib/toolRunCommands.ts') "invoke\('cancel_tool_run'[\s\S]{0,180}?parseBooleanResponse\(value,\s*'cancel_tool_run'\)" 'cancel_tool_run response uses boolean validation'
@@ -226,7 +226,6 @@ Assert-Contains $externalRef 'openExternalTarget\(\{\s*target:\s*value\s*\}\)' '
 $externalCommands = Get-Source 'ui/src/lib/externalCommands.ts'
 Assert-Contains $externalCommands "invoke\('open_external',\s*request\)" 'external command adapter owns external opening'
 foreach ($file in $uiFiles) {
-    Assert-NotContains (Get-Content $file.FullName -Raw) "invoke\s*\(\s*'delete_tool_run'" "unused delete_tool_run has no unreviewed renderer caller: $($file.Name)"
     if ($file.Name -eq 'recordingOverlayController.ts') { continue }
     Assert-NotContains (Get-Content $file.FullName -Raw) '\binvoke\s*\(\s*(?:command|cmd)\s*\)' "dynamic Tauri invoke is not allowed outside the narrowed recording controller: $($file.Name)"
 }
@@ -249,14 +248,6 @@ $ownedCommands = @{
     'settingsCommands.ts' = @('get_settings', 'pick_execution_workspace_directory', 'discard_staged_credentials', 'list_session_permissions', 'is_autostart_enabled', 'run_memory_maintenance', 'revoke_permission', 'revoke_session_permission', 'reset_permissions', 'reset_session_permissions', 'set_hotkey_capture_active', 'stage_provider_credential', 'stage_independent_search_credential', 'stage_ocr_credential', 'update_settings', 'enable_autostart', 'disable_autostart')
     'chatModelCommands.ts' = @('switch_model', 'set_reasoning_effort', 'set_web_search')
 }
-$reviewedNonUiCommands = @{
-    delete_tool_run = 'Retired command is absent from the live renderer; ToolRun removal flows use cancellation and history cleanup.'
-    export_session_history = 'No renderer export flow exists; session history is currently consumed through typed read and search commands.'
-    get_recording_state = 'Recording state is driven by recording lifecycle events and the app bootstrap snapshot.'
-    list_permissions = 'Global permissions are loaded by the authorization owner outside the renderer command surface.'
-    search_session_history = 'Superseded by the filtered and paginated session history commands; no renderer caller remains.'
-    search_session_history_paginated = 'No renderer caller exists; current history search uses the filtered command and explicit count query.'
-}
 $ownedCommandNames = @($ownedCommands.Values | ForEach-Object { $_ })
 $duplicateOwners = @($ownedCommandNames | Group-Object | Where-Object Count -gt 1 | ForEach-Object Name)
 if ($duplicateOwners.Count -gt 0) {
@@ -267,11 +258,7 @@ foreach ($file in $uiFiles | Where-Object { $_.Name -notmatch '\.(test|spec)\.' 
     $literalInvokeCommands += Get-LiteralInvokeCommands (Get-Content $file.FullName -Raw)
 }
 Assert-SetEqual 'production literal invokes vs reviewed UI command owners' $literalInvokeCommands $ownedCommandNames
-Assert-SetEqual 'generated commands vs UI and reviewed non-UI dispositions' $generatedNames (@($ownedCommandNames) + @($reviewedNonUiCommands.Keys))
-if (@($reviewedNonUiCommands.GetEnumerator() | Where-Object { [string]::IsNullOrWhiteSpace($_.Value) }).Count -gt 0) {
-    throw 'every non-UI command disposition must include a review reason'
-}
-Assert-SetEqual 'reviewed non-UI commands have no renderer call' @() @($literalInvokeCommands | Where-Object { $reviewedNonUiCommands.ContainsKey($_) })
+Assert-SetEqual 'generated commands vs reviewed UI command owners' $generatedNames $ownedCommandNames
 
 foreach ($file in $uiFiles | Where-Object { $_.Name -notmatch '\.(test|spec)\.' }) {
     $fileInvokes = @(Get-LiteralInvokeCommands (Get-Content $file.FullName -Raw))

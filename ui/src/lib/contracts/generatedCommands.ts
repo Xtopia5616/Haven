@@ -95,7 +95,6 @@ export interface McpRefreshResult { added: string[]; removed: string[]; updated:
 export interface ApiKeyStatus { models: Record<string, boolean>; providers: Record<string, boolean>; stt: boolean; ocr: boolean; ocr_secret: boolean }
 export const REASONING_EFFORT_SELECTION_INPUT_VALUES = ['low', 'medium', 'high', 'off'] as const;
 export type ReasoningEffortSelectionInput = (typeof REASONING_EFFORT_SELECTION_INPUT_VALUES)[number];
-export interface RecordingStatus { is_recording: boolean; is_toggle: boolean }
 export const CONFIRMATION_RESOLUTION_RESULT_VALUES = ['resolved', 'expired', 'stale'] as const;
 export type ConfirmationResolutionResult = (typeof CONFIRMATION_RESOLUTION_RESULT_VALUES)[number];
 export interface SessionLineageChildDto { session: SessionRecordDto; parent_session_id: string }
@@ -329,7 +328,7 @@ export type ToolOperationScope = (typeof TOOL_OPERATION_SCOPE_VALUES)[number];
 export interface ToolPolicy { risk_level: RiskLevel; permission_key: string; confirmation: ConfirmationRequirement; idempotency: OperationIdempotency; scope: ToolOperationScope; concurrency: ToolConcurrencyMode; effect: OperationEffect; data_sensitivity: DataSensitivity; network_access: NetworkAccess }
 export interface ToolPresentation { label: string; renderer: string; icon: string; represented_source: ToolSource }
 export interface ToolPrompt { when_to_use: string; when_not_to_use: string; key_operations: string[] }
-export interface ToolResultEnvelope { outcome: ToolExecutionOutcome; error_class?: ToolErrorClass; retry_safety: OperationIdempotency; retryability: ToolRetryability; verification_hint?: string; next_action?: string; assets: string[]; sandbox_output_review_step_ids?: string[] }
+export interface ToolResultEnvelope { outcome: ToolExecutionOutcome; error_class?: ToolErrorClass; idempotency: OperationIdempotency; retryability: ToolRetryability; verification_hint?: string; next_action?: string; assets: string[]; sandbox_output_review_step_ids?: string[] }
 export const TOOL_RETRYABILITY_VALUES = ['retryable', 'not_retryable', 'unknown'] as const;
 export type ToolRetryability = (typeof TOOL_RETRYABILITY_VALUES)[number];
 export interface ToolRootPresentation { label: string; description: string; icon: string }
@@ -691,7 +690,7 @@ export const AGENT_OBSERVATION_EVENT_PAYLOAD_SHAPE = {
 						optional: true,
 						shape: { kind: 'enum', values: TOOL_ERROR_CLASS_VALUES },
 					},
-					'retry_safety': {
+					'idempotency': {
 						optional: false,
 						shape: { kind: 'enum', values: OPERATION_IDEMPOTENCY_VALUES },
 					},
@@ -1216,7 +1215,6 @@ export const COUNT_SESSION_HISTORY_SEARCH_RESPONSE_SHAPE = { kind: 'number' } as
 export const DELETE_ALL_SESSIONS_RESPONSE_SHAPE = { kind: 'number' } as const;
 export const DELETE_FACT_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DELETE_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
-export const DELETE_TOOL_RUN_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const DISABLE_AUTOSTART_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DISCARD_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const DISCARD_STAGED_CREDENTIALS_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -1280,7 +1278,6 @@ export const EXECUTE_SKILL_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
-export const EXPORT_SESSION_HISTORY_RESPONSE_SHAPE = { kind: 'string' } as const;
 export const FORK_SESSION_FROM_MESSAGE_RESPONSE_SHAPE = { kind: 'string' } as const;
 export const GET_API_KEY_STATUS_RESPONSE_SHAPE = {
 	kind: 'object',
@@ -2475,19 +2472,6 @@ export const GET_PERFORMANCE_METRICS_RESPONSE_SHAPE = {
 					}
 				}
 			},
-		}
-	}
-} as const;
-export const GET_RECORDING_STATE_RESPONSE_SHAPE = {
-	kind: 'object',
-	fields: {
-		'is_recording': {
-			optional: false,
-			shape: { kind: 'boolean' },
-		},
-		'is_toggle': {
-			optional: false,
-			shape: { kind: 'boolean' },
 		}
 	}
 } as const;
@@ -5410,19 +5394,6 @@ export const LIST_MCP_SERVERS_RESPONSE_SHAPE = { kind: 'array', items: {
 		}
 	}
 } } as const;
-export const LIST_PERMISSIONS_RESPONSE_SHAPE = { kind: 'array', items: {
-	kind: 'object',
-	fields: {
-		'key': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'effect': {
-			optional: false,
-			shape: { kind: 'enum', values: PERMISSION_EFFECT_VALUES },
-		}
-	}
-} } as const;
 export const LIST_RUNTIME_SESSIONS_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -6120,72 +6091,6 @@ export const RUNTIME_SESSION_LIST_RESPONSE_SHAPE = {
 } as const;
 export const RUN_MEMORY_MAINTENANCE_RESPONSE_SHAPE = { kind: 'number' } as const;
 export const SEARCH_SESSION_HISTORY_FILTERED_RESPONSE_SHAPE = { kind: 'array', items: {
-	kind: 'object',
-	fields: {
-		'session_id': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'input_text': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'title': {
-			optional: false,
-			shape: { kind: 'nullable', inner: { kind: 'string' } },
-		},
-		'status': {
-			optional: false,
-			shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
-		},
-		'run_end_reason': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'created_at': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'updated_at': {
-			optional: false,
-			shape: { kind: 'string' },
-		}
-	}
-} } as const;
-export const SEARCH_SESSION_HISTORY_PAGINATED_RESPONSE_SHAPE = { kind: 'array', items: {
-	kind: 'object',
-	fields: {
-		'session_id': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'input_text': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'title': {
-			optional: false,
-			shape: { kind: 'nullable', inner: { kind: 'string' } },
-		},
-		'status': {
-			optional: false,
-			shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
-		},
-		'run_end_reason': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'created_at': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'updated_at': {
-			optional: false,
-			shape: { kind: 'string' },
-		}
-	}
-} } as const;
-export const SEARCH_SESSION_HISTORY_RESPONSE_SHAPE = { kind: 'array', items: {
 	kind: 'object',
 	fields: {
 		'session_id': {
@@ -8984,7 +8889,6 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	delete_all_sessions: DELETE_ALL_SESSIONS_RESPONSE_SHAPE,
 	delete_fact: DELETE_FACT_RESPONSE_SHAPE,
 	delete_session: DELETE_SESSION_RESPONSE_SHAPE,
-	delete_tool_run: DELETE_TOOL_RUN_RESPONSE_SHAPE,
 	disable_autostart: DISABLE_AUTOSTART_RESPONSE_SHAPE,
 	discard_sandbox_output_review: DISCARD_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE,
 	discard_staged_credentials: DISCARD_STAGED_CREDENTIALS_RESPONSE_SHAPE,
@@ -8992,7 +8896,6 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	enable_autostart: ENABLE_AUTOSTART_RESPONSE_SHAPE,
 	end_session: END_SESSION_RESPONSE_SHAPE,
 	execute_skill: EXECUTE_SKILL_RESPONSE_SHAPE,
-	export_session_history: EXPORT_SESSION_HISTORY_RESPONSE_SHAPE,
 	fork_session_from_message: FORK_SESSION_FROM_MESSAGE_RESPONSE_SHAPE,
 	get_api_key_status: GET_API_KEY_STATUS_RESPONSE_SHAPE,
 	get_bootstrap_status: GET_BOOTSTRAP_STATUS_RESPONSE_SHAPE,
@@ -9000,7 +8903,6 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	get_log_info: GET_LOG_INFO_RESPONSE_SHAPE,
 	get_mcp_prompt: GET_MCP_PROMPT_RESPONSE_SHAPE,
 	get_performance_metrics: GET_PERFORMANCE_METRICS_RESPONSE_SHAPE,
-	get_recording_state: GET_RECORDING_STATE_RESPONSE_SHAPE,
 	get_sandbox_output_review: GET_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE,
 	get_session_for_resume: GET_SESSION_FOR_RESUME_RESPONSE_SHAPE,
 	get_session_lineage: GET_SESSION_LINEAGE_RESPONSE_SHAPE,
@@ -9012,7 +8914,6 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	list_mcp_prompts: LIST_MCP_PROMPTS_RESPONSE_SHAPE,
 	list_mcp_resources: LIST_MCP_RESOURCES_RESPONSE_SHAPE,
 	list_mcp_servers: LIST_MCP_SERVERS_RESPONSE_SHAPE,
-	list_permissions: LIST_PERMISSIONS_RESPONSE_SHAPE,
 	list_runtime_sessions: LIST_RUNTIME_SESSIONS_RESPONSE_SHAPE,
 	list_session_history: LIST_SESSION_HISTORY_RESPONSE_SHAPE,
 	list_session_permissions: LIST_SESSION_PERMISSIONS_RESPONSE_SHAPE,
@@ -9043,9 +8944,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	revoke_session_permission: REVOKE_SESSION_PERMISSION_RESPONSE_SHAPE,
 	rollback_session: ROLLBACK_SESSION_RESPONSE_SHAPE,
 	run_memory_maintenance: RUN_MEMORY_MAINTENANCE_RESPONSE_SHAPE,
-	search_session_history: SEARCH_SESSION_HISTORY_RESPONSE_SHAPE,
 	search_session_history_filtered: SEARCH_SESSION_HISTORY_FILTERED_RESPONSE_SHAPE,
-	search_session_history_paginated: SEARCH_SESSION_HISTORY_PAGINATED_RESPONSE_SHAPE,
 	set_hotkey_capture_active: SET_HOTKEY_CAPTURE_ACTIVE_RESPONSE_SHAPE,
 	set_reasoning_effort: SET_REASONING_EFFORT_RESPONSE_SHAPE,
 	set_skill_enabled: SET_SKILL_ENABLED_RESPONSE_SHAPE,
@@ -9121,7 +9020,6 @@ export interface TauriCommandMap {
 	delete_all_sessions: { request: undefined; response: number };
 	delete_fact: { request: { factId: string }; response: void };
 	delete_session: { request: { sessionId: string }; response: void };
-	delete_tool_run: { request: { toolRunId: string }; response: boolean };
 	disable_autostart: { request: undefined; response: void };
 	discard_sandbox_output_review: { request: { sessionId: string; sourceStepId: string }; response: boolean };
 	discard_staged_credentials: { request: undefined; response: void };
@@ -9129,7 +9027,6 @@ export interface TauriCommandMap {
 	enable_autostart: { request: undefined; response: void };
 	end_session: { request: { sessionId: string }; response: void };
 	execute_skill: { request: { name: string; params: unknown }; response: SkillExecutionResponse };
-	export_session_history: { request: { startDate?: string | null; endDate?: string | null; status?: SessionHistoryStatusFilterInput | null }; response: string };
 	fork_session_from_message: { request: { sessionId: string; messageId: string }; response: string };
 	get_api_key_status: { request: undefined; response: ApiKeyStatus };
 	get_bootstrap_status: { request: undefined; response: BootstrapStatus };
@@ -9137,7 +9034,6 @@ export interface TauriCommandMap {
 	get_log_info: { request: undefined; response: LogInfo };
 	get_mcp_prompt: { request: { name: string; targetBinding: string; promptName: string; arguments: Record<string, string> }; response: McpPrompt };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };
-	get_recording_state: { request: undefined; response: RecordingStatus };
 	get_sandbox_output_review: { request: { sessionId: string; sourceStepId: string }; response: SandboxOutputReviewManifestDto | null };
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
 	get_session_lineage: { request: { sessionId: string }; response: SessionLineageResponse };
@@ -9149,7 +9045,6 @@ export interface TauriCommandMap {
 	list_mcp_prompts: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpPromptList };
 	list_mcp_resources: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpResourceList };
 	list_mcp_servers: { request: undefined; response: McpServerSnapshot[] };
-	list_permissions: { request: undefined; response: StoredPermission[] };
 	list_runtime_sessions: { request: undefined; response: RuntimeSessionListResponse };
 	list_session_history: { request: { limit: number; offset: number }; response: SessionRecordDto[] };
 	list_session_permissions: { request: undefined; response: SessionPermissionGrant[] };
@@ -9180,9 +9075,7 @@ export interface TauriCommandMap {
 	revoke_session_permission: { request: { sessionId: string; capability: string }; response: void };
 	rollback_session: { request: { sessionId: string; targetStep: number; pause?: boolean | null; targetMessageId?: string | null }; response: void };
 	run_memory_maintenance: { request: undefined; response: number };
-	search_session_history: { request: { query: string }; response: SessionRecordDto[] };
 	search_session_history_filtered: { request: { query?: string | null; status?: SessionHistoryStatusFilterInput | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
-	search_session_history_paginated: { request: { query: string; limit: number; offset: number }; response: SessionRecordDto[] };
 	set_hotkey_capture_active: { request: { active: boolean }; response: void };
 	set_reasoning_effort: { request: { requestKind: RequestKindInput; effort?: ReasoningEffortSelectionInput | null }; response: void };
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };

@@ -226,7 +226,6 @@ impl Database {
                 let payload_json = serde_json::to_string(&ToolRunCompletionPayload {
                     tool_run_id: tool_run_id.to_owned(),
                     status,
-                    status_projection_kind: None,
                     output,
                     error,
                     error_reason: completion_error_reason,
@@ -877,7 +876,6 @@ mod tests {
         ToolRunCompletionPayload {
             tool_run_id: tool_run_id.to_owned(),
             status,
-            status_projection_kind: None,
             output: output.map(str::to_owned),
             error: None,
             error_reason: None,

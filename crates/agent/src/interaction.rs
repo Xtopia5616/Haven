@@ -161,7 +161,6 @@ pub struct InteractionEnvelope {
 pub struct InteractionRequest {
     /// Identity of this interaction request. Ask requests reuse their step ID;
     /// confirmation requests use a `conf-*` ID.
-    #[serde(alias = "id")]
     pub request_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -510,7 +509,6 @@ pub fn replay_session_interactions(
                 })?;
                 let ids = payload
                     .get("request_ids")
-                    .or_else(|| payload.get("ids"))
                     .and_then(Value::as_array)
                     .ok_or_else(|| {
                         anyhow::anyhow!(
@@ -618,17 +616,6 @@ mod tests {
         let decoded: InteractionRequest = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, request);
 
-        let mut legacy_wire = wire;
-        let request_id = legacy_wire
-            .as_object_mut()
-            .unwrap()
-            .remove("request_id")
-            .unwrap();
-        legacy_wire["id"] = request_id;
-        assert_eq!(
-            serde_json::from_value::<InteractionRequest>(legacy_wire).unwrap(),
-            request
-        );
         assert!(!request.clone().cancel());
     }
 
@@ -889,17 +876,6 @@ mod tests {
         );
         assert!(
             replay_session_interactions(SESSION_ID, &[asks[0].clone(), cleared])
-                .unwrap()
-                .is_empty()
-        );
-
-        let legacy_cleared = event(
-            3,
-            INTERACTION_CLEARED_EVENT_TYPE,
-            serde_json::json!({"ids": [first_step]}),
-        );
-        assert!(
-            replay_session_interactions(SESSION_ID, &[asks[0].clone(), legacy_cleared])
                 .unwrap()
                 .is_empty()
         );

@@ -412,7 +412,7 @@ describe('agent IPC contract', () => {
 				result: {
 					outcome: 'timed_out_unknown',
 					error_class: 'unknown_outcome',
-					retry_safety: 'non_idempotent',
+					idempotency: 'non_idempotent',
 					retryability: 'unknown',
 					next_action: 'inspect',
 					assets: ['asset-7291c1a5c920765ba4550234a6835861'],
@@ -429,7 +429,7 @@ describe('agent IPC contract', () => {
 		expect(event.payload.result).toEqual({
 			outcome: 'timed_out_unknown',
 			errorClass: 'unknown_outcome',
-			retrySafety: 'non_idempotent',
+			idempotency: 'non_idempotent',
 			retryability: 'unknown',
 			verificationHint: undefined,
 			nextAction: 'inspect',
@@ -462,7 +462,7 @@ describe('agent IPC contract', () => {
 						renderer: 'messaging',
 						result: {
 							outcome: 'timed_out_unknown',
-							retry_safety: 'non_idempotent',
+							idempotency: 'non_idempotent',
 							retryability: 'unknown',
 							assets,
 						},
@@ -474,7 +474,10 @@ describe('agent IPC contract', () => {
 		for (const sandbox_output_review_step_ids of [
 			['step-short'],
 			['ses-0ecf371384ab79d597760ca41f2ba21c'],
-			Array.from({ length: 65 }, (_, index) => `step-${index.toString(16).padStart(32, '0')}`),
+			Array.from(
+				{ length: 65 },
+				(_, index) => `step-${index.toString(16).padStart(32, '0')}`,
+			),
 		]) {
 			expect(
 				mapAgentEventContract({
@@ -496,7 +499,7 @@ describe('agent IPC contract', () => {
 						renderer: 'codemode_run',
 						result: {
 							outcome: 'succeeded',
-							retry_safety: 'unknown',
+							idempotency: 'unknown',
 							retryability: 'unknown',
 							assets: [],
 							sandbox_output_review_step_ids,
@@ -524,7 +527,7 @@ describe('agent IPC contract', () => {
 			renderer: 'files',
 			result: {
 				outcome: 'succeeded',
-				retry_safety: 'idempotent',
+				idempotency: 'idempotent',
 				retryability: 'not_retryable',
 				assets: [],
 			},
@@ -582,7 +585,7 @@ describe('agent IPC contract', () => {
 			renderer: 'files',
 			result: {
 				outcome: 'succeeded',
-				retry_safety: 'idempotent',
+				idempotency: 'idempotent',
 				retryability: 'retryable',
 				assets: [],
 			},
@@ -598,7 +601,7 @@ describe('agent IPC contract', () => {
 		).not.toBeNull();
 		const unknownRetrySafety = {
 			...payload,
-			result: { ...payload.result, retry_safety: 'future_retry_safety' },
+			result: { ...payload.result, idempotency: 'future_idempotency' },
 		};
 		expect(
 			mapAgentEventContract({

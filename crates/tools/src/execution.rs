@@ -669,7 +669,7 @@ impl AuthorizedExecutor<'_> {
                 .core
                 .tool_circuits
                 .record_failure(tool_name);
-            annotate_retry_safety(&mut result, idempotency);
+            annotate_idempotency(&mut result, idempotency);
             return Ok(result);
         }
         self.tools

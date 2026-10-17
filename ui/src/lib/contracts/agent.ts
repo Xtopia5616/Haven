@@ -111,7 +111,7 @@ export interface AgentObservationPayload {
 export interface AgentToolResultEnvelope {
 	outcome: ToolExecutionOutcome;
 	errorClass?: ToolErrorClass | null;
-	retrySafety: OperationIdempotency;
+	idempotency: OperationIdempotency;
 	retryability: ToolRetryability;
 	verificationHint?: string | null;
 	nextAction?: string | null;
@@ -316,12 +316,12 @@ function isCanonicalSandboxReviewStepIdArray(value: unknown): value is string[] 
 function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 	if (!isRecord(value)) return null;
 	const outcome = readStringField(value, 'outcome');
-	const retrySafety = readStringField(value, 'retry_safety');
+	const idempotency = readStringField(value, 'idempotency');
 	const retryability = readStringField(value, 'retryability');
 	const errorClass = value.error_class;
 	if (
 		!isOneOf(outcome, TOOL_EXECUTION_OUTCOME_VALUES) ||
-		!isOneOf(retrySafety, OPERATION_IDEMPOTENCY_VALUES) ||
+		!isOneOf(idempotency, OPERATION_IDEMPOTENCY_VALUES) ||
 		!isOneOf(retryability, TOOL_RETRYABILITY_VALUES) ||
 		(errorClass !== undefined &&
 			errorClass !== null &&
@@ -338,7 +338,7 @@ function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 	return {
 		outcome,
 		errorClass: errorClass as ToolErrorClass | null | undefined,
-		retrySafety,
+		idempotency,
 		retryability,
 		verificationHint: value.verification_hint as string | null | undefined,
 		nextAction: value.next_action as string | null | undefined,
