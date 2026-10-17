@@ -16,6 +16,7 @@ ADR 1290 更新了 OpenAI Responses、xAI、Anthropic、Gemini、DeepSeek、Groq
 - DashScope Chat 使用 `enable_search` 与 `search_options`，`always` 映射到 `forced_search`；需要 agent 搜索策略的 Qwen Omni 型号单独设置策略。`usage.x_tools.search.count` 按意图检测次数解释，不当作实际检索次数或账单用量。Responses 使用其 `web_search` tool 并由模型决定是否调用。
 - Groq Chat 使用 `browser_search`，仅对官方支持的 GPT-OSS 模型开放；`always` 仅在没有用户工具冲突时要求搜索工具。Groq Responses 继续使用其 `browser_search` 工具并按支持模型限制能力。
 - DeepSeek 直接 Responses 端点仅对文档支持搜索的 `deepseek-v4-pro` 开放。xAI Search 与 X Search 仍是分离功能；现有联网搜索开关不隐式启用 X Search。
+- DeepSeek Search & Fetch 是独立端点并按成功请求计费，不是模型在 Responses 请求中调用的 `web_search` 工具；本 ADR 的模型级联网搜索开关不调用这组 API。Perplexity Search API 同样是原始搜索结果产品，Sonar 的模型内搜索引用保持现状。
 - Mistral 的 `web_search` / `web_search_premium` 仍要求 Conversations/Agents API；其 Chat Completions cookbook 新增的是自定义 connector 示例，Web Search 页面仍明确说明 Chat Completions 不返回搜索引用。Haven 不因此把 Mistral 当作通用 Chat 原生搜索 Provider。
 - 智谱的 `web-search-pro` 是单独的搜索模型，返回自有 `search_result` 结构；旧 Assistant/应用推理路线依赖 assistant 或 app/conversation 身份，部分 API 已标为 deprecated。它们不等同于普通 Chat 请求可注入的搜索工具，本次不把它们伪装成 `off|auto|always` 的模型级内置搜索。
 - `capabilities.rs` 只保留公共模式解析、能力分发和中性请求装配，不持有某一个 Provider 的模型白名单或字段映射。共享 `web_search.rs` 仅归一化调用和引用，不猜测 Provider 的 usage 语义。
@@ -46,6 +47,8 @@ ADR 1290 更新了 OpenAI Responses、xAI、Anthropic、Gemini、DeepSeek、Groq
 - [Alibaba Cloud Model Studio Web Search](https://help.aliyun.com/en/model-studio/web-search)
 - [Groq Browser Search](https://console.groq.com/docs/tool-use/built-in-tools/browser-search)
 - [DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/)
+- [DeepSeek Search & Fetch API](https://api-docs.deepseek.com/guides/search/)
+- [Perplexity API overview](https://docs.perplexity.ai/discuss/66b8de9e88a46a004b5c812e)
 - [xAI Web Search](https://docs.x.ai/developers/tools/web-search)
 - [Mistral Websearch](https://docs.mistral.ai/studio/agents/agent-tools/websearch)
 - [Mistral connectors in Chat Completions](https://docs.mistral.ai/resources/cookbooks/mistral-connectors-05-connectors-in-completions)
