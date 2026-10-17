@@ -1,7 +1,7 @@
 # Haven 新一轮架构重构方案（源码审计）
 
 > 日期：2026-10-17
-> 状态：Slice 1–3 已完成（ADR 1294、1301、1302）；Slice 4 子切片 1–3 已完成（ADR 1303–1305），当前推进 rollback/usage/branch marker 拆分，任何时刻只推进一个 Active 切片。
+> 状态：Slice 1–4 已完成（Slice 4: ADR 1303–1306）；当前推进 Slice 5 Tools `security.rs` 私有职责拆分，任何时刻只推进一个 Active 切片。
 > 范围：Rust workspace、Tauri IPC/event bridge、Svelte UI 与相关架构/契约文档。
 
 ## 1. 目标与审计方法
@@ -119,11 +119,13 @@ Settings 保存还有一个必须覆盖的分支：`SettingsView.svelte` 将 par
 1. **已完成（ADR 1303）：** fork、ingress、pending input、recovery partial/terminal result、tool-step API 移入私有模块；既有 facade 测试覆盖身份、幂等、失败和恢复行为。
 2. **已完成（ADR 1304）：** 将 event model/append 与 transcript commit/projection 放入私有模块；append 与物化仍同事务，失败回滚、post-commit 发布和共享 append helper 不变。
 3. **已完成（ADR 1305）：** 将 replay/page/active transcript read 收入私有模块，保留 sequence、branch/compaction boundary 和一致读取语义。
-4. **当前 Active：** 将 rollback/usage/branch marker 收入私有模块；event cursor、projection cutoff 与 usage compensation 在原子事务中处理。
+4. **已完成（ADR 1306）：** 将 rollback、usage、branch/recovery marker 与 Memory event cursor 收入私有模块；event cursor、projection cutoff 与 usage compensation 的原子事务边界保持不变。
 
 所有方法继续由单个 `SessionStore` 实现/协调，projector 保持 Memory 私有。每子切片都迁移对应故障/恢复断言；最终需覆盖 projection failure 回滚 append、COMMIT 后 publish、stale rollback cursor 拒绝、rollback+usage compensation 同事务、容量限制和 active-root compaction。因涉及持久化恢复，执行前后跑 workspace locked tests、严格 Clippy 与适用 UI/IPC 构建检查；未触及持久 schema 时不制造数据库重置步骤。
 
 ### Slice 5 — 拆分 Tools security owner 内部职责
+
+**当前 Active。**
 
 保留唯一 AuthorizationEngine/SafetyConfig/AuthorizationPort，先搬文件并搬对应测试，再抽 `authorize_for_execution`、`verify_receipt`、`verify_execution_proof` 共用的有序边界检查。保留 critical floor、grant scope、receipt/proof 绑定与时效、revoke 生命周期、MCP stdio 与 Skill process-start 两套不同 permit。将确无外部消费者的 security matrix export 收窄；路径安全仍保留实际 App/Tools 消费路径。
 
