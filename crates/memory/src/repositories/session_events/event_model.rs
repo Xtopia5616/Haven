@@ -1,0 +1,76 @@
+use super::*;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionEvent {
+    pub session_id: String,
+    pub sequence: i64,
+    pub event_type: String,
+    pub payload: String,
+    pub created_at: String,
+    pub run_id: Option<u64>,
+    pub step_number: Option<u32>,
+}
+
+/// One bounded page from the append-only session event log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionEventPage {
+    pub events: Vec<SessionEvent>,
+    /// Sequence to pass as `after_sequence` for the next page. Remains the
+    /// input cursor when this page contains no events.
+    pub next_cursor: i64,
+    pub has_more: bool,
+}
+
+/// Maximum number of durable events returned by a single replay page.
+pub(super) const MAX_SESSION_EVENT_REPLAY_PAGE_SIZE: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SessionEventInput {
+    pub event_type: String,
+    pub payload: String,
+    pub run_id: Option<u64>,
+    pub step_number: Option<u32>,
+}
+
+#[derive(serde::Serialize)]
+pub(super) struct SessionEventInputRef<'a> {
+    pub(super) event_type: &'a str,
+    pub(super) payload: &'a str,
+    pub(super) run_id: Option<u64>,
+    pub(super) step_number: Option<u32>,
+}
+
+impl<'a> From<&'a SessionEventInput> for SessionEventInputRef<'a> {
+    fn from(event: &'a SessionEventInput) -> Self {
+        Self {
+            event_type: &event.event_type,
+            payload: &event.payload,
+            run_id: event.run_id,
+            step_number: event.step_number,
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct BoundedByteCounter {
+    pub(super) bytes: usize,
+    pub(super) exceeded: bool,
+}
+
+impl std::io::Write for BoundedByteCounter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let next_bytes = self.bytes.saturating_add(buffer.len());
+        if next_bytes > MAX_SESSION_EVENT_BATCH_PAYLOAD_BYTES {
+            self.exceeded = true;
+            return Err(std::io::Error::other(
+                "session event payload budget exceeded",
+            ));
+        }
+        self.bytes = next_bytes;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}

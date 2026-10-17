@@ -1292,3 +1292,4 @@
 - [1301：收敛 App capability、ToolRun payload 与 IPC metadata owner](1301-converge-app-capabilities-and-ipc-projections.md)
 - [1302：由 App confirmation owner 管理 AppCommand 生命周期](1302-own-app-command-confirmation-lifecycle.md)
 - [1303：拆分 SessionStore lifecycle persistence 模块](1303-split-session-store-lifecycle-modules.md)
+- [1304：由私有模块拥有 transcript append 与 projection](1304-own-transcript-append-and-projection.md)
