@@ -1301,3 +1301,4 @@
 - [1310：将 Tools 文件系统策略迁入私有模块](1310-split-tools-filesystem-policy.md)
 - [1311：拆分 Tools 授权 engine 并收敛有序边界检查](1311-split-tools-authorization-engine.md)
 - [1312：拆分 Agent tool runner 私有职责](1312-split-agent-tool-runner.md)
+- [1313：拆分 PDF 与 OpenXML 文档解析器](1313-split-document-parsers.md)

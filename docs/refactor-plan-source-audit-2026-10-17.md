@@ -1,7 +1,7 @@
 # Haven 新一轮架构重构方案（源码审计）
 
 > 日期：2026-10-17
-> 状态：Slice 1–6 已完成（Slice 4: ADR 1303–1306；Slice 5: ADR 1307–1311；Slice 6: ADR 1312）；Slice 7 为剩余窄职责的证据复核，任何时刻只推进一个 Active 切片。
+> 状态：Slice 1–6 已完成（Slice 4: ADR 1303–1306；Slice 5: ADR 1307–1311；Slice 6: ADR 1312）；Slice 7 中 PDF/OpenXML parser 拆分已完成（ADR 1313），当前复核 command DTO owner；任何时刻只推进一个 Active 切片。
 > 范围：Rust workspace、Tauri IPC/event bridge、Svelte UI 与相关架构/契约文档。
 
 ## 1. 目标与审计方法
@@ -143,7 +143,9 @@ step identity/persistence、foreground/background/Code Mode/workflow execution r
 
 ### Slice 7 — 收拾剩余窄职责文件
 
-**下一步：** 先按当前生产调用点复核候选，再决定是否形成独立拆分；不因路线图列出候选而自动迁移实现。
+**当前 Active：** 复核 `commands/contracts.rs` 的 domain DTO 归属；PDF/OpenXML parser 已按 ADR 1313 拆入私有模块。
+
+按生产调用点复核剩余候选，不因路线图列出候选而自动迁移实现。文件工具没有直接启动外部进程的生产调用点，因此不创建共享 spawn helper；AppState constructor、runtime task 注册和 deferred bootstrap 继续结合其初始化顺序评估是否需要拆分。DTO 归位只在 handler 模块是唯一实际消费者且能保持原 IPC 投影时执行。
 
 按生产调用点验证并拆 `document.rs` 的 PDF/OpenXML parser；只共享文件管理器最低层 spawn helper；视初始化顺序和测试可见性决定是否把 AppState bootstrap/cleanup 移到私有文件。以上均不改 crate 边界，不新增可变 service。合同 DTO 归位也放在此 slice 的小步执行。
 
