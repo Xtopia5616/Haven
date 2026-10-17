@@ -161,21 +161,139 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
                         "llm.models[{index}].independent_search.count must be within 1..=50"
                     );
                 }
+                super::IndependentSearchConfig::DeepseekSearch { localization, .. }
+                    if localization
+                        .as_ref()
+                        .is_some_and(|ip| ip.parse::<std::net::IpAddr>().is_err()) =>
+                {
+                    anyhow::bail!(
+                        "llm.models[{index}].independent_search.localization must be a valid IP address"
+                    );
+                }
                 super::IndependentSearchConfig::PerplexitySearch {
                     max_results,
                     search_type,
+                    country,
+                    max_tokens,
+                    max_tokens_per_page,
+                    search_language_filter,
+                    search_domain_filter,
+                    last_updated_after_filter,
+                    last_updated_before_filter,
+                    search_after_date_filter,
+                    search_before_date_filter,
                     ..
-                } if *max_results == 0
-                    || match search_type {
-                        super::PerplexitySearchType::People => *max_results > 50,
-                        super::PerplexitySearchType::Web | super::PerplexitySearchType::Fast => {
-                            *max_results > 20
+                } => {
+                    if *max_results == 0
+                        || match search_type {
+                            super::PerplexitySearchType::People => *max_results > 50,
+                            super::PerplexitySearchType::Web
+                            | super::PerplexitySearchType::Fast => *max_results > 20,
                         }
-                    } =>
-                {
-                    anyhow::bail!(
-                        "llm.models[{index}].independent_search.max_results is outside the selected Perplexity search_type limit"
-                    );
+                    {
+                        anyhow::bail!(
+                            "llm.models[{index}].independent_search.max_results is outside the selected Perplexity search_type limit"
+                        );
+                    }
+                    if country.as_ref().is_some_and(|country| {
+                        country.len() != 2
+                            || !country.bytes().all(|byte| byte.is_ascii_alphabetic())
+                    }) {
+                        anyhow::bail!(
+                            "llm.models[{index}].independent_search.country must be a two-letter country code"
+                        );
+                    }
+                    if max_tokens.is_some_and(|tokens| tokens == 0 || tokens > 1_000_000)
+                        || max_tokens_per_page
+                            .is_some_and(|tokens| tokens == 0 || tokens > 1_000_000)
+                    {
+                        anyhow::bail!(
+                            "llm.models[{index}].independent_search token limits must be within 1..=1000000"
+                        );
+                    }
+                    if search_language_filter.len() > 20
+                        || search_language_filter.iter().any(|language| {
+                            language.len() != 2
+                                || !language.bytes().all(|byte| byte.is_ascii_alphabetic())
+                        })
+                    {
+                        anyhow::bail!(
+                            "llm.models[{index}].independent_search.search_language_filter must contain at most 20 two-letter language codes"
+                        );
+                    }
+                    if search_domain_filter.len() > 20
+                        || search_domain_filter.iter().any(|domain| {
+                            domain.is_empty()
+                                || domain.len() > 253
+                                || domain.chars().any(char::is_whitespace)
+                        })
+                    {
+                        anyhow::bail!(
+                            "llm.models[{index}].independent_search.search_domain_filter must contain at most 20 domains of at most 253 characters"
+                        );
+                    }
+                    for (field, date) in [
+                        ("last_updated_after_filter", last_updated_after_filter),
+                        ("last_updated_before_filter", last_updated_before_filter),
+                        ("search_after_date_filter", search_after_date_filter),
+                        ("search_before_date_filter", search_before_date_filter),
+                    ] {
+                        if date.as_deref().is_some_and(|date| !is_valid_mmddyyyy(date)) {
+                            anyhow::bail!(
+                                "llm.models[{index}].independent_search.{field} must use MM/DD/YYYY"
+                            );
+                        }
+                    }
+                }
+                super::IndependentSearchConfig::AliyunAiSearch {
+                    endpoint,
+                    workspace_name,
+                    top_k,
+                    content_type,
+                    way,
+                    api_key_ref,
+                    ..
+                } => {
+                    let parsed = url::Url::parse(endpoint.trim()).ok();
+                    if !parsed.as_ref().is_some_and(|url| {
+                        url.scheme() == "https"
+                            && url.host_str().is_some()
+                            && url.username().is_empty()
+                            && url.password().is_none()
+                            && url.query().is_none()
+                            && url.fragment().is_none()
+                    }) {
+                        anyhow::bail!(
+                            "llm.models[{index}].independent_search.endpoint must be HTTPS without credentials, query, or fragment"
+                        );
+                    }
+                    if workspace_name.trim().is_empty()
+                        || workspace_name.len() > 128
+                        || !workspace_name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                    {
+                        anyhow::bail!(
+                            "llm.models[{index}].independent_search.workspace_name is invalid"
+                        );
+                    }
+                    if !(1..=50).contains(top_k) {
+                        anyhow::bail!(
+                            "llm.models[{index}].independent_search.top_k must be within 1..=50"
+                        );
+                    }
+                    if *way == super::AliyunSearchWay::ProFetch
+                        && *content_type != super::AliyunSearchContentType::MainText
+                    {
+                        anyhow::bail!(
+                            "llm.models[{index}].independent_search.way=pro-fetch requires content_type=mainText"
+                        );
+                    }
+                    if api_key_ref.is_none() {
+                        anyhow::bail!(
+                            "llm.models[{index}].independent_search requires a separately stored AI Search API key"
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -235,6 +353,32 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         &has_provider,
     )?;
     Ok(())
+}
+
+fn is_valid_mmddyyyy(value: &str) -> bool {
+    let mut parts = value.split('/');
+    let (Some(month), Some(day), Some(year), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let (Ok(month), Ok(day), Ok(year)) = (
+        month.parse::<u32>(),
+        day.parse::<u32>(),
+        year.parse::<u32>(),
+    ) else {
+        return false;
+    };
+    if !(1..=12).contains(&month) || year == 0 {
+        return false;
+    }
+    let max_day = match month {
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    (1..=max_day).contains(&day)
 }
 
 fn validate_optional_media_provider(
@@ -1118,14 +1262,31 @@ mod tests {
             independent_search: Some(IndependentSearchConfig::DeepseekSearch {
                 count: 1,
                 need_content: false,
+                pass_original_question: false,
+                localization: None,
             }),
             ..Default::default()
         });
         assert!(validate_app_config(&config).is_ok());
 
         config.llm.models[0].independent_search = Some(IndependentSearchConfig::DeepseekSearch {
+            count: 10,
+            need_content: false,
+            pass_original_question: true,
+            localization: Some("not-an-ip".into()),
+        });
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("localization")
+        );
+
+        config.llm.models[0].independent_search = Some(IndependentSearchConfig::DeepseekSearch {
             count: 51,
             need_content: false,
+            pass_original_question: false,
+            localization: None,
         });
         assert!(
             validate_app_config(&config)
@@ -1138,6 +1299,8 @@ mod tests {
         config.llm.models[0].independent_search = Some(IndependentSearchConfig::DeepseekSearch {
             count: 10,
             need_content: false,
+            pass_original_question: false,
+            localization: None,
         });
         assert!(
             validate_app_config(&config)
@@ -1150,18 +1313,107 @@ mod tests {
             max_results: 50,
             search_type: PerplexitySearchType::People,
             recency_filter: None,
+            country: None,
+            max_tokens: None,
+            max_tokens_per_page: None,
+            search_language_filter: Vec::new(),
+            search_domain_filter: Vec::new(),
+            last_updated_after_filter: None,
+            last_updated_before_filter: None,
+            search_after_date_filter: None,
+            search_before_date_filter: None,
         });
         assert!(validate_app_config(&config).is_ok());
+
+        config.llm.models[0].independent_search = Some(IndependentSearchConfig::PerplexitySearch {
+            max_results: 10,
+            search_type: PerplexitySearchType::Web,
+            recency_filter: None,
+            country: Some("us".into()),
+            max_tokens: Some(10_000),
+            max_tokens_per_page: Some(2_000),
+            search_language_filter: vec!["en".into(), "zh".into()],
+            search_domain_filter: vec!["wikipedia.org".into(), "-example.com".into()],
+            last_updated_after_filter: Some("02/29/2024".into()),
+            last_updated_before_filter: None,
+            search_after_date_filter: Some("01/01/2024".into()),
+            search_before_date_filter: None,
+        });
+        assert!(validate_app_config(&config).is_ok());
+        if let Some(IndependentSearchConfig::PerplexitySearch {
+            last_updated_after_filter,
+            ..
+        }) = config.llm.models[0].independent_search.as_mut()
+        {
+            *last_updated_after_filter = Some("02/30/2024".into());
+        }
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("MM/DD/YYYY")
+        );
+
         config.llm.models[0].independent_search = Some(IndependentSearchConfig::PerplexitySearch {
             max_results: 21,
             search_type: PerplexitySearchType::Web,
             recency_filter: None,
+            country: None,
+            max_tokens: None,
+            max_tokens_per_page: None,
+            search_language_filter: Vec::new(),
+            search_domain_filter: Vec::new(),
+            last_updated_after_filter: None,
+            last_updated_before_filter: None,
+            search_after_date_filter: None,
+            search_before_date_filter: None,
         });
         assert!(
             validate_app_config(&config)
                 .unwrap_err()
                 .to_string()
                 .contains("independent_search.max_results")
+        );
+
+        config.llm.providers[0].provider = "dashscope".into();
+        config.llm.models[0].independent_search = Some(IndependentSearchConfig::AliyunAiSearch {
+            endpoint: "https://opensearch.example".into(),
+            workspace_name: "default".into(),
+            top_k: 5,
+            query_rewrite: true,
+            content_type: crate::config::AliyunSearchContentType::Snippet,
+            way: crate::config::AliyunSearchWay::Pro,
+            time_range: crate::config::AliyunSearchTimeRange::NoLimit,
+            api_key_ref: Some("cred-00000000000000000000000000000000".into()),
+            api_key: String::new(),
+        });
+        assert!(validate_app_config(&config).is_ok());
+        if let Some(IndependentSearchConfig::AliyunAiSearch { way, .. }) =
+            config.llm.models[0].independent_search.as_mut()
+        {
+            *way = crate::config::AliyunSearchWay::ProFetch;
+        }
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("requires content_type=mainText")
+        );
+        if let Some(IndependentSearchConfig::AliyunAiSearch { way, .. }) =
+            config.llm.models[0].independent_search.as_mut()
+        {
+            *way = crate::config::AliyunSearchWay::Pro;
+        }
+        if let Some(IndependentSearchConfig::AliyunAiSearch { endpoint, .. }) =
+            config.llm.models[0].independent_search.as_mut()
+        {
+            *endpoint = "http://opensearch.example".into();
+        }
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("must be HTTPS")
         );
     }
 

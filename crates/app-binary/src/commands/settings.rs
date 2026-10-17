@@ -147,6 +147,20 @@ pub async fn stage_provider_credential(
         .map_err(|error| log_err("stage_provider_credential", error))
 }
 
+/// Store a replacement Alibaba AI Search key securely for one model config.
+#[tauri::command]
+pub async fn stage_independent_search_credential(
+    state: State<'_, Arc<AppState>>,
+    model_id: String,
+    api_key: String,
+) -> Result<String, String> {
+    state
+        .runtime
+        .config_service
+        .stage_independent_search_credential(&model_id, &api_key)
+        .map_err(|error| log_err("stage_independent_search_credential", error))
+}
+
 /// Write one OCR credential to secure storage and return its opaque reference.
 #[tauri::command]
 pub async fn stage_ocr_credential(

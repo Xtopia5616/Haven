@@ -229,6 +229,21 @@ impl ConfigService {
         )
     }
 
+    /// Stage a dedicated AI Search API key for one model's Alibaba search config.
+    pub fn stage_independent_search_credential(
+        &self,
+        model_id: &str,
+        value: &str,
+    ) -> anyhow::Result<String> {
+        if model_id.trim().is_empty() || value.is_empty() {
+            anyhow::bail!("model id and AI Search API key are required");
+        }
+        self.stage_credential(
+            CredentialSlot::IndependentSearchApiKey(model_id.to_string()),
+            value,
+        )
+    }
+
     /// Stage one of the dedicated OCR credentials.
     pub fn stage_ocr_credential(
         &self,

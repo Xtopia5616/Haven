@@ -297,7 +297,7 @@ pub struct ProviderConfig {
 /// Provider-owned standalone search products that are called as an Agent tool.
 /// The tagged variants deliberately keep vendor-specific parameters with the
 /// product that defines them instead of implying one shared search schema.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
 pub enum IndependentSearchConfig {
     DeepseekSearch {
@@ -305,6 +305,10 @@ pub enum IndependentSearchConfig {
         count: u8,
         #[serde(default)]
         need_content: bool,
+        #[serde(default)]
+        pass_original_question: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        localization: Option<String>,
     },
     PerplexitySearch {
         #[serde(default = "default_perplexity_search_results")]
@@ -313,6 +317,44 @@ pub enum IndependentSearchConfig {
         search_type: PerplexitySearchType,
         #[serde(default)]
         recency_filter: Option<PerplexitySearchRecency>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        country: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_tokens_per_page: Option<u32>,
+        #[serde(default)]
+        search_language_filter: Vec<String>,
+        #[serde(default)]
+        search_domain_filter: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_updated_after_filter: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_updated_before_filter: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        search_after_date_filter: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        search_before_date_filter: Option<String>,
+    },
+    AliyunAiSearch {
+        endpoint: String,
+        #[serde(default = "default_aliyun_search_workspace")]
+        workspace_name: String,
+        #[serde(default = "default_aliyun_search_top_k")]
+        top_k: u8,
+        #[serde(default = "default_true")]
+        query_rewrite: bool,
+        #[serde(default)]
+        content_type: AliyunSearchContentType,
+        #[serde(default)]
+        way: AliyunSearchWay,
+        #[serde(default)]
+        time_range: AliyunSearchTimeRange,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key_ref: Option<String>,
+        /// Runtime-only AI Search API key; persisted and returned to the UI by reference only.
+        #[serde(skip)]
+        api_key: String,
     },
     MistralWebSearch {
         #[serde(default)]
@@ -326,8 +368,93 @@ impl IndependentSearchConfig {
         match self {
             Self::DeepseekSearch { .. } => "deepseek",
             Self::PerplexitySearch { .. } => "perplexity",
+            Self::AliyunAiSearch { .. } => "dashscope",
             Self::MistralWebSearch { .. } => "mistral",
             Self::ZhipuWebSearch => "zhipu",
+        }
+    }
+}
+
+impl std::fmt::Debug for IndependentSearchConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeepseekSearch {
+                count,
+                need_content,
+                pass_original_question,
+                localization,
+            } => formatter
+                .debug_struct("DeepseekSearch")
+                .field("count", count)
+                .field("need_content", need_content)
+                .field("pass_original_question", pass_original_question)
+                .field(
+                    "localization",
+                    &localization.as_ref().map(|_| "[CONFIGURED]"),
+                )
+                .finish(),
+            Self::PerplexitySearch {
+                max_results,
+                search_type,
+                recency_filter,
+                country,
+                max_tokens,
+                max_tokens_per_page,
+                search_language_filter,
+                search_domain_filter,
+                last_updated_after_filter,
+                last_updated_before_filter,
+                search_after_date_filter,
+                search_before_date_filter,
+            } => formatter
+                .debug_struct("PerplexitySearch")
+                .field("max_results", max_results)
+                .field("search_type", search_type)
+                .field("recency_filter", recency_filter)
+                .field("country", country)
+                .field("max_tokens", max_tokens)
+                .field("max_tokens_per_page", max_tokens_per_page)
+                .field("search_language_filter", search_language_filter)
+                .field("search_domain_filter", search_domain_filter)
+                .field("last_updated_after_filter", last_updated_after_filter)
+                .field("last_updated_before_filter", last_updated_before_filter)
+                .field("search_after_date_filter", search_after_date_filter)
+                .field("search_before_date_filter", search_before_date_filter)
+                .finish(),
+            Self::AliyunAiSearch {
+                endpoint,
+                workspace_name,
+                top_k,
+                query_rewrite,
+                content_type,
+                way,
+                time_range,
+                api_key_ref,
+                ..
+            } => formatter
+                .debug_struct("AliyunAiSearch")
+                .field(
+                    "endpoint",
+                    &if endpoint.is_empty() {
+                        ""
+                    } else {
+                        "[REDACTED]"
+                    },
+                )
+                .field("workspace_name", workspace_name)
+                .field("top_k", top_k)
+                .field("query_rewrite", query_rewrite)
+                .field("content_type", content_type)
+                .field("way", way)
+                .field("time_range", time_range)
+                .field("api_key_ref", api_key_ref)
+                .field("api_key", &"[REDACTED]")
+                .finish(),
+            Self::MistralWebSearch { premium } => formatter
+                .debug_struct("MistralWebSearch")
+                .field("premium", premium)
+                .finish(),
+            Self::ZhipuWebSearch => formatter.write_str("ZhipuWebSearch"),
         }
     }
 }
@@ -338,6 +465,47 @@ const fn default_deepseek_search_count() -> u8 {
 
 const fn default_perplexity_search_results() -> u8 {
     10
+}
+
+fn default_aliyun_search_workspace() -> String {
+    "default".into()
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_aliyun_search_top_k() -> u8 {
+    5
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AliyunSearchContentType {
+    #[default]
+    Snippet,
+    Summary,
+    MainText,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AliyunSearchWay {
+    Lite,
+    #[default]
+    Pro,
+    ProFetch,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AliyunSearchTimeRange {
+    Day,
+    Week,
+    Month,
+    Year,
+    #[default]
+    NoLimit,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1415,6 +1583,8 @@ mod tests {
                 independent_search: Some(IndependentSearchConfig::DeepseekSearch {
                     count: 7,
                     need_content: true,
+                    pass_original_question: true,
+                    localization: Some("192.0.2.1".into()),
                 }),
                 ..Default::default()
             }],
@@ -1431,6 +1601,8 @@ mod tests {
             Some(IndependentSearchConfig::DeepseekSearch {
                 count: 7,
                 need_content: true,
+                pass_original_question: true,
+                localization: Some("192.0.2.1".into()),
             })
         );
     }

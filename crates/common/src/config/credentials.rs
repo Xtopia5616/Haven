@@ -8,7 +8,9 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use super::{AppConfig, McpEnvironmentCredentialRef, McpServerConfig, OcrConfig};
+use super::{
+    AppConfig, IndependentSearchConfig, McpEnvironmentCredentialRef, McpServerConfig, OcrConfig,
+};
 use crate::types::{is_canonical_id, new_id};
 
 /// Opaque references are persisted in config; secret values stay behind this
@@ -91,6 +93,7 @@ impl CredentialStore for InMemoryCredentialStore {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum CredentialSlot {
     ProviderApiKey(String),
+    IndependentSearchApiKey(String),
     OcrApiKey,
     OcrApiSecret,
 }
@@ -108,6 +111,16 @@ pub(crate) fn hydrate_from_store(
             store,
             "provider API key",
         )?;
+    }
+    for model in &mut config.llm.models {
+        if let Some(IndependentSearchConfig::AliyunAiSearch {
+            api_key,
+            api_key_ref,
+            ..
+        }) = model.independent_search.as_mut()
+        {
+            hydrate_reference(api_key, api_key_ref.as_deref(), store, "AI Search API key")?;
+        }
     }
     let api_key_ref = config.media.ocr.api_key_ref.clone();
     hydrate_reference(
@@ -140,6 +153,15 @@ pub(super) fn validate_reference_syntax(config: &AppConfig) -> anyhow::Result<()
     };
     for provider in &config.llm.providers {
         if let Some(reference) = provider.api_key_ref.as_deref() {
+            insert(reference)?;
+        }
+    }
+    for model in &config.llm.models {
+        if let Some(IndependentSearchConfig::AliyunAiSearch {
+            api_key_ref: Some(reference),
+            ..
+        }) = model.independent_search.as_ref()
+        {
             insert(reference)?;
         }
     }
@@ -292,6 +314,44 @@ pub(crate) fn prepare_after_edit(
         }
     }
 
+    for model in &mut after.llm.models {
+        let Some(IndependentSearchConfig::AliyunAiSearch {
+            api_key,
+            api_key_ref,
+            ..
+        }) = model.independent_search.as_mut()
+        else {
+            continue;
+        };
+        let slot = CredentialSlot::IndependentSearchApiKey(model.id.clone());
+        let previous_reference = before
+            .llm
+            .models
+            .iter()
+            .find(|previous| previous.id == model.id)
+            .and_then(|previous| previous.independent_search.as_ref())
+            .and_then(|search| match search {
+                IndependentSearchConfig::AliyunAiSearch { api_key_ref, .. } => {
+                    api_key_ref.as_deref()
+                }
+                _ => None,
+            });
+        let mut reference = api_key_ref.clone();
+        prepare_credential_value(
+            api_key,
+            &mut reference,
+            CredentialPreparation {
+                previous_reference,
+                slot,
+                label: "AI Search API key",
+                store,
+                staged,
+                consumed: &mut consumed,
+            },
+        )?;
+        *api_key_ref = reference;
+    }
+
     prepare_ocr_field(
         &mut after.media.ocr,
         OcrCredentialField::ApiKey,
@@ -341,6 +401,28 @@ fn validate_reference_changes(
         .iter()
         .map(|provider| provider.name.as_str())
         .collect();
+    let old_search_credential_owners: HashMap<&str, &str> = before
+        .llm
+        .models
+        .iter()
+        .filter_map(|model| {
+            model
+                .independent_search
+                .as_ref()
+                .and_then(|search| match search {
+                    IndependentSearchConfig::AliyunAiSearch { api_key_ref, .. } => api_key_ref
+                        .as_deref()
+                        .map(|reference| (reference, model.id.as_str())),
+                    _ => None,
+                })
+        })
+        .collect();
+    let new_model_ids: HashSet<&str> = after
+        .llm
+        .models
+        .iter()
+        .map(|model| model.id.as_str())
+        .collect();
     let mut references = HashSet::new();
     for provider in &after.llm.providers {
         let Some(reference) = provider.api_key_ref.as_deref() else {
@@ -362,6 +444,43 @@ fn validate_reference_changes(
         }
         if !references.insert(reference) {
             anyhow::bail!("a credential reference cannot be assigned to multiple providers");
+        }
+    }
+
+    for model in &after.llm.models {
+        let Some(IndependentSearchConfig::AliyunAiSearch {
+            api_key_ref: Some(reference),
+            ..
+        }) = model.independent_search.as_ref()
+        else {
+            continue;
+        };
+        let previous_reference = before
+            .llm
+            .models
+            .iter()
+            .find(|previous| previous.id == model.id)
+            .and_then(|previous| previous.independent_search.as_ref())
+            .and_then(|search| match search {
+                IndependentSearchConfig::AliyunAiSearch { api_key_ref, .. } => {
+                    api_key_ref.as_deref()
+                }
+                _ => None,
+            });
+        let staged_for_model = staged
+            .get(&CredentialSlot::IndependentSearchApiKey(model.id.clone()))
+            .is_some_and(|staged_reference| staged_reference == reference);
+        let moved_from_removed_model = old_search_credential_owners
+            .get(reference.as_str())
+            .is_some_and(|old_model_id| !new_model_ids.contains(old_model_id));
+        if Some(reference.as_str()) != previous_reference
+            && !staged_for_model
+            && !moved_from_removed_model
+        {
+            anyhow::bail!("AI Search credential reference does not belong to this model");
+        }
+        if !references.insert(reference.as_str()) {
+            anyhow::bail!("a credential reference cannot be assigned to multiple settings");
         }
     }
 
@@ -465,6 +584,49 @@ fn prepare_ocr_field(
     Ok(())
 }
 
+struct CredentialPreparation<'a> {
+    previous_reference: Option<&'a str>,
+    slot: CredentialSlot,
+    label: &'a str,
+    store: &'a dyn CredentialStore,
+    staged: &'a HashMap<CredentialSlot, String>,
+    consumed: &'a mut HashSet<CredentialSlot>,
+}
+
+fn prepare_credential_value(
+    value: &mut String,
+    reference: &mut Option<String>,
+    preparation: CredentialPreparation<'_>,
+) -> anyhow::Result<()> {
+    if let Some(next_reference) = preparation
+        .staged
+        .get(&preparation.slot)
+        .filter(|next_reference| reference.as_deref() == Some(next_reference.as_str()))
+    {
+        *reference = Some(next_reference.clone());
+        *value = read_staged(preparation.store, next_reference, preparation.label)?;
+        preparation.consumed.insert(preparation.slot);
+    } else if value.is_empty() {
+        if reference.is_none() {
+            *reference = preparation.previous_reference.map(ToOwned::to_owned);
+        }
+        hydrate_reference(
+            value,
+            reference.as_deref(),
+            preparation.store,
+            preparation.label,
+        )?;
+    } else {
+        *reference = Some(store_secret_if_needed(
+            preparation.previous_reference,
+            value,
+            preparation.store,
+            preparation.label,
+        )?);
+    }
+    Ok(())
+}
+
 fn read_staged(
     store: &dyn CredentialStore,
     reference: &str,
@@ -532,6 +694,18 @@ pub(crate) fn validate_config_references(config: &AppConfig) -> anyhow::Result<(
             anyhow::bail!("provider API key has no secure storage reference");
         }
     }
+    for model in &config.llm.models {
+        if let Some(IndependentSearchConfig::AliyunAiSearch {
+            api_key,
+            api_key_ref,
+            ..
+        }) = model.independent_search.as_ref()
+            && !api_key.is_empty()
+            && api_key_ref.is_none()
+        {
+            anyhow::bail!("AI Search API key has no secure storage reference");
+        }
+    }
     if !config.media.ocr.api_key.is_empty() && config.media.ocr.api_key_ref.is_none() {
         anyhow::bail!("OCR API key has no secure storage reference");
     }
@@ -561,6 +735,15 @@ pub(crate) fn credential_references(config: &AppConfig) -> HashSet<String> {
             .iter()
             .filter_map(|provider| provider.api_key_ref.clone()),
     );
+    references.extend(config.llm.models.iter().filter_map(|model| {
+        model
+            .independent_search
+            .as_ref()
+            .and_then(|search| match search {
+                IndependentSearchConfig::AliyunAiSearch { api_key_ref, .. } => api_key_ref.clone(),
+                _ => None,
+            })
+    }));
     references.extend(config.media.ocr.api_key_ref.clone());
     references.extend(config.media.ocr.api_secret_ref.clone());
     references.extend(config.mcp_servers.iter().flat_map(|server| {
@@ -575,7 +758,10 @@ pub(crate) fn credential_references(config: &AppConfig) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{McpEnvironmentCredentialRef, McpServerConfig, ProviderConfig};
+    use crate::config::{
+        AliyunSearchContentType, AliyunSearchTimeRange, AliyunSearchWay, IndependentSearchConfig,
+        McpEnvironmentCredentialRef, McpServerConfig, ModelConfig, ProviderConfig,
+    };
 
     #[test]
     fn ocr_credential_field_uses_a_closed_snake_case_wire_vocabulary() {
@@ -687,6 +873,70 @@ mod tests {
             ..Default::default()
         });
         assert!(hydrate_from_store(&mut missing, &store).is_err());
+    }
+
+    #[test]
+    fn aliyun_search_key_is_staged_hydrated_and_never_serialized() {
+        let store = InMemoryCredentialStore::default();
+        let service = AppConfig::default();
+        let mut after = service.clone();
+        after.llm.models.push(ModelConfig {
+            id: "aliyun-search-model".into(),
+            provider_name: "dashscope".into(),
+            model: "qwen-plus".into(),
+            independent_search: Some(IndependentSearchConfig::AliyunAiSearch {
+                endpoint: "https://opensearch.example".into(),
+                workspace_name: "default".into(),
+                top_k: 5,
+                query_rewrite: true,
+                content_type: AliyunSearchContentType::Snippet,
+                way: AliyunSearchWay::Pro,
+                time_range: AliyunSearchTimeRange::NoLimit,
+                api_key_ref: None,
+                api_key: "aliyun-search-key-sentinel".into(),
+            }),
+            ..Default::default()
+        });
+
+        prepare_after_edit(&service, &mut after, &store, &mut HashMap::new()).unwrap();
+        let search = after.llm.models[0].independent_search.as_ref().unwrap();
+        let IndependentSearchConfig::AliyunAiSearch {
+            api_key,
+            api_key_ref,
+            ..
+        } = search
+        else {
+            unreachable!();
+        };
+        assert_eq!(api_key, "aliyun-search-key-sentinel");
+        let reference = api_key_ref.as_deref().unwrap();
+        assert!(is_canonical_id(reference, "cred"));
+        assert_eq!(
+            store.read(reference).unwrap().as_deref(),
+            Some(api_key.as_str())
+        );
+
+        let serialized_toml = toml::to_string(&after).unwrap();
+        let settings_wire = serde_json::to_string(&crate::config::Settings::from(&after)).unwrap();
+        let debug = format!("{after:?}");
+        for output in [serialized_toml, settings_wire, debug] {
+            assert!(!output.contains("aliyun-search-key-sentinel"));
+        }
+
+        let mut loaded: AppConfig = toml::from_str(&toml::to_string(&after).unwrap()).unwrap();
+        let IndependentSearchConfig::AliyunAiSearch { api_key, .. } =
+            loaded.llm.models[0].independent_search.as_ref().unwrap()
+        else {
+            unreachable!();
+        };
+        assert!(api_key.is_empty());
+        hydrate_from_store(&mut loaded, &store).unwrap();
+        let IndependentSearchConfig::AliyunAiSearch { api_key, .. } =
+            loaded.llm.models[0].independent_search.as_ref().unwrap()
+        else {
+            unreachable!();
+        };
+        assert_eq!(api_key, "aliyun-search-key-sentinel");
     }
 
     #[test]

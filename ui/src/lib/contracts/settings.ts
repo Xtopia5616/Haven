@@ -679,6 +679,39 @@ function isSupportedWebSearchSetting(value: unknown): boolean {
 	);
 }
 
+function isValidMmddyyyy(value: string): boolean {
+	const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(value);
+	if (!match) return false;
+	const month = Number(match[1]);
+	const day = Number(match[2]);
+	const year = Number(match[3]);
+	const date = new Date(Date.UTC(year, month - 1, day));
+	return (
+		month >= 1 &&
+		month <= 12 &&
+		year >= 1 &&
+		date.getUTCFullYear() === year &&
+		date.getUTCMonth() === month - 1 &&
+		date.getUTCDate() === day
+	);
+}
+
+function isValidIpAddress(value: string): boolean {
+	if (!value || value.length > 45) return false;
+	if (!value.includes(':')) {
+		const parts = value.split('.');
+		return (
+			parts.length === 4 &&
+			parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+		);
+	}
+	try {
+		return new URL(`http://[${value}]/`).hostname.length > 2;
+	} catch {
+		return false;
+	}
+}
+
 function isIndependentSearchConfig(value: unknown, provider: unknown): boolean {
 	if (!isRecord(value) || typeof value.provider !== 'string') return false;
 	const providerId = typeof provider === 'string' ? provider.trim().toLowerCase() : '';
@@ -689,9 +722,21 @@ function isIndependentSearchConfig(value: unknown, provider: unknown): boolean {
 				isSafeUnsignedInteger(value.count) &&
 				value.count >= 1 &&
 				value.count <= 50 &&
-				typeof value.need_content === 'boolean'
+				typeof value.need_content === 'boolean' &&
+				typeof value.pass_original_question === 'boolean' &&
+				(value.localization == null ||
+					(typeof value.localization === 'string' && isValidIpAddress(value.localization)))
 			);
-		case 'perplexity_search':
+		case 'perplexity_search': {
+			const optionalString = (candidate: unknown) => candidate == null || typeof candidate === 'string';
+			const validDate = (candidate: unknown) =>
+				candidate == null ||
+				(typeof candidate === 'string' && isValidMmddyyyy(candidate));
+			const validTokenLimit = (candidate: unknown) =>
+				candidate == null ||
+				(isSafeUnsignedInteger(candidate) && candidate >= 1 && candidate <= 1_000_000);
+			const languageFilters = value.search_language_filter;
+			const domainFilters = value.search_domain_filter;
 			return (
 				providerId === 'perplexity' &&
 				isSafeUnsignedInteger(value.max_results) &&
@@ -699,8 +744,54 @@ function isIndependentSearchConfig(value: unknown, provider: unknown): boolean {
 				value.max_results <= (value.search_type === 'people' ? 50 : 20) &&
 				['web', 'fast', 'people'].includes(String(value.search_type)) &&
 				(value.recency_filter == null ||
-					['hour', 'day', 'week', 'month', 'year'].includes(String(value.recency_filter)))
+					['hour', 'day', 'week', 'month', 'year'].includes(String(value.recency_filter))) &&
+				(optionalString(value.country) &&
+					(value.country == null || /^[A-Za-z]{2}$/.test(value.country))) &&
+				validTokenLimit(value.max_tokens) &&
+				validTokenLimit(value.max_tokens_per_page) &&
+				Array.isArray(languageFilters) &&
+				languageFilters.length <= 20 &&
+				languageFilters.every((language) => typeof language === 'string' && /^[A-Za-z]{2}$/.test(language)) &&
+				Array.isArray(domainFilters) &&
+				domainFilters.length <= 20 &&
+				domainFilters.every((domain) => typeof domain === 'string' && domain.length > 0 && domain.length <= 253 && !/\s/.test(domain)) &&
+				validDate(value.last_updated_after_filter) &&
+				validDate(value.last_updated_before_filter) &&
+				validDate(value.search_after_date_filter) &&
+				validDate(value.search_before_date_filter)
 			);
+		}
+		case 'aliyun_ai_search': {
+			let validEndpoint = false;
+			if (typeof value.endpoint === 'string') {
+				try {
+					const parsed = new URL(value.endpoint);
+					validEndpoint =
+						parsed.protocol === 'https:' &&
+						!parsed.username &&
+						!parsed.password &&
+						!parsed.search &&
+						!parsed.hash;
+				} catch {
+					validEndpoint = false;
+				}
+			}
+			return (
+				providerId === 'dashscope' &&
+				validEndpoint &&
+				typeof value.workspace_name === 'string' &&
+				/^[A-Za-z0-9_-]{1,128}$/.test(value.workspace_name) &&
+				isSafeUnsignedInteger(value.top_k) &&
+				value.top_k >= 1 &&
+				value.top_k <= 50 &&
+				typeof value.query_rewrite === 'boolean' &&
+				['snippet', 'summary', 'mainText'].includes(String(value.content_type)) &&
+				['lite', 'pro', 'pro-fetch'].includes(String(value.way)) &&
+				(value.content_type === 'mainText' || value.way !== 'pro-fetch') &&
+				['day', 'week', 'month', 'year', 'no_limit'].includes(String(value.time_range)) &&
+				isCanonicalEntityId(value.api_key_ref, 'cred')
+			);
+		}
 		case 'mistral_web_search':
 			return providerId === 'mistral' && typeof value.premium === 'boolean';
 		case 'zhipu_web_search':

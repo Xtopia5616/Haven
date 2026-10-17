@@ -21,6 +21,8 @@ const MAX_QUERY_CHARS: usize = 512;
 #[serde(deny_unknown_fields)]
 pub struct WebSearchParams {
     pub query: String,
+    #[serde(default)]
+    pub original_question: Option<String>,
 }
 
 pub struct WebSearchTool {
@@ -66,6 +68,12 @@ impl TypedToolOperation for WebSearchTool {
                     "minLength": 1,
                     "maxLength": MAX_QUERY_CHARS,
                     "description": "A concise web search query. DeepSeek Search accepts at most 128 characters."
+                },
+                "original_question": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "The user's original question that led to this search. Forwarded only when DeepSeek Search has original-question forwarding enabled."
                 }
             },
             "required": ["query"]
@@ -88,9 +96,18 @@ impl TypedToolOperation for WebSearchTool {
                 ToolErrorMetadata::validation(),
             ));
         }
+        let original_question = args.original_question.as_deref().map(str::trim);
+        if original_question
+            .is_some_and(|question| question.is_empty() || question.chars().count() > 128)
+        {
+            return Err(StructuredToolError::new(
+                "original_question must contain 1 to 128 characters",
+                ToolErrorMetadata::validation(),
+            ));
+        }
         match self
             .router
-            .independent_web_search(RequestKind::Chat, query, cancel.clone())
+            .independent_web_search(RequestKind::Chat, query, original_question, cancel.clone())
             .await
         {
             Ok(output) => Ok(output),
@@ -106,7 +123,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> String {
-        "Search the web using the standalone API configured for the current model. Use for current facts and include returned source links in the answer.".into()
+        "Search the web using the standalone API configured for the current model. Use for current facts and include returned source links in the answer. For DeepSeek, include original_question when the search query reformulates the user's request.".into()
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {
@@ -165,7 +182,7 @@ fn map_search_error(error: haven_llm::LlmError, cancelled: bool) -> StructuredTo
 }
 
 pub fn typed_adapter(router: Arc<haven_llm::LlmRouter>) -> crate::TypedToolAdapter<WebSearchTool> {
-    const DESCRIPTION: &str = "Search the web using the standalone API configured for the current model. Use for current facts and include returned source links in the answer.";
+    const DESCRIPTION: &str = "Search the web using the standalone API configured for the current model. Use for current facts and include returned source links in the answer. For DeepSeek, include original_question when the search query reformulates the user's request.";
     let mut spec = crate::operation_view::root_tool_spec(
         "web_search_api",
         DESCRIPTION,

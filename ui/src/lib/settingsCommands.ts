@@ -81,6 +81,13 @@ export function stageProviderCredential(
 	return invoke('stage_provider_credential', request).then(parseStagedCredentialReference);
 }
 
+/** Stage an Alibaba AI Search key in secure storage for one model config. */
+export function stageIndependentSearchCredential(
+	request: TauriCommandRequest<'stage_independent_search_credential'>,
+): Promise<string> {
+	return invoke('stage_independent_search_credential', request).then(parseStagedCredentialReference);
+}
+
 /** Stage an OCR key or secret in secure storage and return its opaque reference. */
 export function stageOcrCredential(
 	request: TauriCommandRequest<'stage_ocr_credential'>,

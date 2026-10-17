@@ -217,6 +217,7 @@ describe('settings command contracts', () => {
 				provider: 'deepseek_search',
 				count: 12,
 				need_content: true,
+				pass_original_question: false,
 			},
 		});
 		expect(parseSettingsPayload(valid)).toBe(valid);
@@ -232,6 +233,7 @@ describe('settings command contracts', () => {
 			provider: 'deepseek_search',
 			count: 51,
 			need_content: false,
+			pass_original_question: false,
 		};
 		expect(() => parseSettingsPayload(invalidCount)).toThrow(
 			'settings.llm.models[0].independent_search',
@@ -258,9 +260,49 @@ describe('settings command contracts', () => {
 				max_results: 50,
 				search_type: 'people',
 				recency_filter: null,
+				search_language_filter: [],
+				search_domain_filter: [],
 			},
 		});
 		expect(parseSettingsPayload(perplexityPeople)).toBe(perplexityPeople);
+
+		const aliyunSearch = createSettingsFixture();
+		aliyunSearch.llm.providers.push({
+			name: 'dashscope',
+			provider: 'dashscope',
+			api_style: null,
+			base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+			auth_header_name: 'Authorization',
+			auth_header_prefix: 'Bearer',
+			proxy_url: null,
+			no_proxy: null,
+		});
+		aliyunSearch.llm.models.push({
+			id: 'aliyun-search',
+			provider_name: 'dashscope',
+			model: 'qwen-plus',
+			capabilities: ['chat'],
+			independent_search: {
+				provider: 'aliyun_ai_search',
+				endpoint: 'https://opensearch.example',
+				workspace_name: 'default',
+				top_k: 5,
+				query_rewrite: true,
+				content_type: 'mainText',
+				way: 'pro-fetch',
+				time_range: 'week',
+				api_key_ref: 'cred-00000000000000000000000000000000',
+			},
+		});
+		expect(parseSettingsPayload(aliyunSearch)).toBe(aliyunSearch);
+		const invalidAliyunEndpoint = structuredClone(aliyunSearch);
+		const invalidSearch = invalidAliyunEndpoint.llm.models[0].independent_search;
+		if (invalidSearch?.provider === 'aliyun_ai_search') {
+			invalidSearch.endpoint = 'http://opensearch.example';
+		}
+		expect(() => parseSettingsPayload(invalidAliyunEndpoint)).toThrow(
+			'settings.llm.models[0].independent_search',
+		);
 	});
 
 	it('rejects incomplete Settings records and unknown closed-enum values', () => {

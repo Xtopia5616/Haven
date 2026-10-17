@@ -736,6 +736,7 @@ pub(crate) fn run() {
             commands::settings::get_settings,
             commands::settings::pick_execution_workspace_directory,
             commands::settings::stage_provider_credential,
+            commands::settings::stage_independent_search_credential,
             commands::settings::stage_ocr_credential,
             commands::settings::discard_staged_credentials,
             commands::settings::update_settings,

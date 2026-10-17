@@ -13,6 +13,7 @@ import {
 	revokeSessionPermission,
 	runMemoryMaintenance,
 	setHotkeyCaptureActive,
+	stageIndependentSearchCredential,
 	stageOcrCredential,
 	stageProviderCredential,
 	updateSettings,
@@ -95,6 +96,7 @@ describe('Settings commands', () => {
 			.mockResolvedValueOnce(2)
 			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce('cred-0000008c3defb1edb984fe2ac71c71c7')
+			.mockResolvedValueOnce('cred-0000008c3defb1edb984fe2ac71c71c8')
 			.mockResolvedValueOnce('cred-000001187bdf63db7309fc558e38e38e')
 			.mockResolvedValueOnce('cred-000001a4b9cf15c92c8efa8055555555')
 			.mockResolvedValueOnce(undefined)
@@ -116,6 +118,9 @@ describe('Settings commands', () => {
 		expect(await stageProviderCredential({ providerName: 'provider', apiKey: 'secret' })).toBe(
 			'cred-0000008c3defb1edb984fe2ac71c71c7',
 		);
+		expect(
+			await stageIndependentSearchCredential({ modelId: 'model-1', apiKey: 'secret' }),
+		).toBe('cred-0000008c3defb1edb984fe2ac71c71c8');
 		expect(await stageOcrCredential({ field: 'api_key', value: 'key' })).toBe(
 			'cred-000001187bdf63db7309fc558e38e38e',
 		);
@@ -143,6 +148,7 @@ describe('Settings commands', () => {
 			['reset_session_permissions'],
 			['set_hotkey_capture_active', { active: true }],
 			['stage_provider_credential', { providerName: 'provider', apiKey: 'secret' }],
+			['stage_independent_search_credential', { modelId: 'model-1', apiKey: 'secret' }],
 			['stage_ocr_credential', { field: 'api_key', value: 'key' }],
 			['stage_ocr_credential', { field: 'api_secret', value: 'secret' }],
 			['update_settings', settingsRequest],

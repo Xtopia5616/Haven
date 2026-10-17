@@ -26,11 +26,14 @@ fn supports_responses_model(model: &str) -> bool {
 pub(crate) async fn independent_search(
     endpoint: &ModelEndpoint,
     query: &str,
+    original_question: Option<&str>,
     cancel: CancellationToken,
 ) -> Result<Value, crate::types::LlmError> {
     let Some(IndependentSearchConfig::DeepseekSearch {
         count,
         need_content,
+        pass_original_question,
+        localization,
     }) = endpoint.independent_search.as_ref()
     else {
         return Err(crate::types::LlmError::UnsupportedCapability(
@@ -42,11 +45,14 @@ pub(crate) async fn independent_search(
             "DeepSeek Search queries must be at most 128 characters".into(),
         ));
     }
-    let body = json!({
-        "query": query,
-        "count": count,
-        "need_content": need_content,
-    });
+    let body = search_request_body(
+        query,
+        *count,
+        *need_content,
+        *pass_original_question,
+        original_question,
+        localization.as_deref(),
+    )?;
     let response = super::independent_search::post_json(
         endpoint,
         &search_api_url(&endpoint.base_url),
@@ -75,6 +81,40 @@ pub(crate) async fn independent_search(
         "DeepSeek Search",
         rows,
     ))
+}
+
+fn search_request_body(
+    query: &str,
+    count: u8,
+    need_content: bool,
+    pass_original_question: bool,
+    original_question: Option<&str>,
+    localization: Option<&str>,
+) -> Result<Value, crate::types::LlmError> {
+    let mut body = json!({
+        "query": query,
+        "count": count,
+        "need_content": need_content,
+    });
+    if pass_original_question
+        && let Some(original_question) = original_question
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    {
+        if original_question.chars().count() > 128 {
+            return Err(crate::types::LlmError::Configuration(
+                "DeepSeek Search original questions must be at most 128 characters".into(),
+            ));
+        }
+        body["ori_question"] = json!(original_question);
+    }
+    if let Some(localization) = localization
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body["localization"] = json!(localization);
+    }
+    Ok(body)
 }
 
 fn search_api_url(base_url: &str) -> String {
@@ -130,5 +170,24 @@ mod tests {
             search_api_url("https://api.deepseek.com/v1/"),
             "https://api.deepseek.com/v1/tools/search"
         );
+    }
+
+    #[test]
+    fn sends_original_question_only_when_enabled_and_explicitly_provided() {
+        let body = search_request_body("weather tomorrow", 5, false, false, Some("original"), None)
+            .unwrap();
+        assert!(body.get("ori_question").is_none());
+
+        let body = search_request_body(
+            "weather tomorrow",
+            5,
+            false,
+            true,
+            Some("  What is the weather tomorrow?  "),
+            Some("203.0.113.7"),
+        )
+        .unwrap();
+        assert_eq!(body["ori_question"], "What is the weather tomorrow?");
+        assert_eq!(body["localization"], "203.0.113.7");
     }
 }

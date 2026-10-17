@@ -1,3 +1,4 @@
+mod aliyun_search;
 pub mod anthropic;
 pub mod assemblyai;
 mod capabilities;

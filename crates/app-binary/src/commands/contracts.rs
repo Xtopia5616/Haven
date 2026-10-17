@@ -7,7 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 90;
+pub const EXPECTED_COMMAND_COUNT: usize = 91;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -358,6 +358,11 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "stage_provider_credential",
         boundary: CommandBoundary::Mutate,
         security: "writes provider secret to secure storage and returns only an opaque reference",
+    },
+    CommandContract {
+        name: "stage_independent_search_credential",
+        boundary: CommandBoundary::Mutate,
+        security: "writes a model's Alibaba AI Search key to secure storage and returns only an opaque reference",
     },
     CommandContract {
         name: "stage_ocr_credential",

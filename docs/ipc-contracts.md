@@ -78,6 +78,7 @@
 | `get_settings` | read | 响应遮蔽凭据和 MCP 环境变量 |
 | `pick_execution_workspace_directory` | read | 用户通过系统目录选择器选择本地目录，只验证候选且不授予文件访问 |
 | `stage_provider_credential` | mutate | provider 密钥只写入安全凭据存储，返回不透明引用 |
+| `stage_independent_search_credential` | mutate | 模型配置的阿里云 AI Search 密钥只写入安全凭据存储，返回不透明引用 |
 | `stage_ocr_credential` | mutate | OCR 密钥只写入安全凭据存储，返回不透明引用 |
 | `discard_staged_credentials` | mutate | 删除未由 Settings 保存提交的暂存凭据 |
 | `get_bootstrap_status` | read | 返回 `loading` / `ready` 的 `BootstrapStatus`；与 `app:bootstrap.status` 共用闭合枚举 |

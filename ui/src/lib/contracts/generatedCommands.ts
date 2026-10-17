@@ -158,12 +158,24 @@ export type VadStateDto = (typeof VAD_STATE_DTO_VALUES)[number];
 export interface VadStatusEvent { signal: VadSignalDto; state: VadStateDto }
 export const OCR_CREDENTIAL_FIELD_INPUT_VALUES = ['api_key', 'api_secret'] as const;
 export type OcrCredentialFieldInput = (typeof OCR_CREDENTIAL_FIELD_INPUT_VALUES)[number];
+export const ALIYUN_SEARCH_CONTENT_TYPE_INPUT_VALUES = ['snippet', 'summary', 'mainText'] as const;
+export type AliyunSearchContentTypeInput = (typeof ALIYUN_SEARCH_CONTENT_TYPE_INPUT_VALUES)[number];
+export const ALIYUN_SEARCH_CONTENT_TYPE_VALUES = ['snippet', 'summary', 'mainText'] as const;
+export type AliyunSearchContentType = (typeof ALIYUN_SEARCH_CONTENT_TYPE_VALUES)[number];
+export const ALIYUN_SEARCH_TIME_RANGE_INPUT_VALUES = ['day', 'week', 'month', 'year', 'no_limit'] as const;
+export type AliyunSearchTimeRangeInput = (typeof ALIYUN_SEARCH_TIME_RANGE_INPUT_VALUES)[number];
+export const ALIYUN_SEARCH_TIME_RANGE_VALUES = ['day', 'week', 'month', 'year', 'no_limit'] as const;
+export type AliyunSearchTimeRange = (typeof ALIYUN_SEARCH_TIME_RANGE_VALUES)[number];
+export const ALIYUN_SEARCH_WAY_INPUT_VALUES = ['lite', 'pro', 'pro-fetch'] as const;
+export type AliyunSearchWayInput = (typeof ALIYUN_SEARCH_WAY_INPUT_VALUES)[number];
+export const ALIYUN_SEARCH_WAY_VALUES = ['lite', 'pro', 'pro-fetch'] as const;
+export type AliyunSearchWay = (typeof ALIYUN_SEARCH_WAY_VALUES)[number];
 export const CAPABILITY_INPUT_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
 export type CapabilityInput = (typeof CAPABILITY_INPUT_VALUES)[number];
 export const CAPABILITY_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
 export type Capability = (typeof CAPABILITY_VALUES)[number];
-export type IndependentSearchConfigInput = { provider: 'deepseek_search'; count?: number; need_content?: boolean } | { provider: 'perplexity_search'; max_results?: number; search_type?: PerplexitySearchTypeInput; recency_filter?: PerplexitySearchRecencyInput | null } | { provider: 'mistral_web_search'; premium?: boolean } | { provider: 'zhipu_web_search' };
-export type IndependentSearchConfig = { provider: 'deepseek_search'; count: number; need_content: boolean } | { provider: 'perplexity_search'; max_results: number; search_type: PerplexitySearchType; recency_filter: PerplexitySearchRecency | null } | { provider: 'mistral_web_search'; premium: boolean } | { provider: 'zhipu_web_search' };
+export type IndependentSearchConfigInput = { provider: 'deepseek_search'; count?: number; need_content?: boolean; pass_original_question?: boolean; localization?: string | null } | { provider: 'perplexity_search'; max_results?: number; search_type?: PerplexitySearchTypeInput; recency_filter?: PerplexitySearchRecencyInput | null; country?: string | null; max_tokens?: number | null; max_tokens_per_page?: number | null; search_language_filter?: string[]; search_domain_filter?: string[]; last_updated_after_filter?: string | null; last_updated_before_filter?: string | null; search_after_date_filter?: string | null; search_before_date_filter?: string | null } | { provider: 'aliyun_ai_search'; endpoint: string; workspace_name?: string; top_k?: number; query_rewrite?: boolean; content_type?: AliyunSearchContentTypeInput; way?: AliyunSearchWayInput; time_range?: AliyunSearchTimeRangeInput; api_key_ref?: string | null } | { provider: 'mistral_web_search'; premium?: boolean } | { provider: 'zhipu_web_search' };
+export type IndependentSearchConfig = { provider: 'deepseek_search'; count: number; need_content: boolean; pass_original_question: boolean; localization?: string | null } | { provider: 'perplexity_search'; max_results: number; search_type: PerplexitySearchType; recency_filter: PerplexitySearchRecency | null; country?: string | null; max_tokens?: number | null; max_tokens_per_page?: number | null; search_language_filter: string[]; search_domain_filter: string[]; last_updated_after_filter?: string | null; last_updated_before_filter?: string | null; search_after_date_filter?: string | null; search_before_date_filter?: string | null } | { provider: 'aliyun_ai_search'; endpoint: string; workspace_name: string; top_k: number; query_rewrite: boolean; content_type: AliyunSearchContentType; way: AliyunSearchWay; time_range: AliyunSearchTimeRange; api_key_ref?: string | null } | { provider: 'mistral_web_search'; premium: boolean } | { provider: 'zhipu_web_search' };
 export interface LlmConfigInput { providers?: ProviderConfigInput[]; models?: ModelConfigInput[]; request_policies?: RequestPolicyInput[]; max_total_duration_secs?: number; stream_idle_timeout_secs?: number; retry_max_retries?: number; retry_base_secs?: number; retry_factor?: number; retry_max_secs?: number; retry_jitter?: number; max_concurrent_requests?: number }
 export interface LlmConfig { providers: ProviderConfig[]; models: ModelConfig[]; request_policies: RequestPolicy[]; max_total_duration_secs: number; stream_idle_timeout_secs: number; retry_max_retries: number; retry_base_secs: number; retry_factor: number; retry_max_secs: number; retry_jitter: number; max_concurrent_requests: number }
 export interface ModelConfigInput { id?: string; provider_name?: string; model?: string; capabilities?: CapabilityInput[]; temperature?: number | null; context_window?: number | null; cost_per_1k_input_tokens?: number | null; cost_per_1k_output_tokens?: number | null; cost_per_1k_cache_read_tokens?: number | null; cost_per_1k_cache_write_tokens?: number | null; max_tokens?: number | null; reasoning_effort?: string | null; web_search?: string | null; independent_search?: IndependentSearchConfigInput | null; reasoning_echo_max_chars?: number | null }
@@ -3696,6 +3708,14 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 												'need_content': {
 													optional: false,
 													shape: { kind: 'boolean' },
+												},
+												'pass_original_question': {
+													optional: false,
+													shape: { kind: 'boolean' },
+												},
+												'localization': {
+													optional: true,
+													shape: { kind: 'string' },
 												}
 											}
 										},
@@ -3717,6 +3737,83 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 												'recency_filter': {
 													optional: false,
 													shape: { kind: 'nullable', inner: { kind: 'enum', values: PERPLEXITY_SEARCH_RECENCY_VALUES } },
+												},
+												'country': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'max_tokens': {
+													optional: true,
+													shape: { kind: 'number' },
+												},
+												'max_tokens_per_page': {
+													optional: true,
+													shape: { kind: 'number' },
+												},
+												'search_language_filter': {
+													optional: false,
+													shape: { kind: 'array', items: { kind: 'string' } },
+												},
+												'search_domain_filter': {
+													optional: false,
+													shape: { kind: 'array', items: { kind: 'string' } },
+												},
+												'last_updated_after_filter': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'last_updated_before_filter': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'search_after_date_filter': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'search_before_date_filter': {
+													optional: true,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'provider': {
+													optional: false,
+													shape: { kind: 'literal', value: 'aliyun_ai_search' },
+												},
+												'endpoint': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'workspace_name': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'top_k': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'query_rewrite': {
+													optional: false,
+													shape: { kind: 'boolean' },
+												},
+												'content_type': {
+													optional: false,
+													shape: { kind: 'enum', values: ALIYUN_SEARCH_CONTENT_TYPE_VALUES },
+												},
+												'way': {
+													optional: false,
+													shape: { kind: 'enum', values: ALIYUN_SEARCH_WAY_VALUES },
+												},
+												'time_range': {
+													optional: false,
+													shape: { kind: 'enum', values: ALIYUN_SEARCH_TIME_RANGE_VALUES },
+												},
+												'api_key_ref': {
+													optional: true,
+													shape: { kind: 'string' },
 												}
 											}
 										},
@@ -7463,6 +7560,14 @@ export const SETTINGS_RESPONSE_SHAPE = {
 												'need_content': {
 													optional: false,
 													shape: { kind: 'boolean' },
+												},
+												'pass_original_question': {
+													optional: false,
+													shape: { kind: 'boolean' },
+												},
+												'localization': {
+													optional: true,
+													shape: { kind: 'string' },
 												}
 											}
 										},
@@ -7484,6 +7589,83 @@ export const SETTINGS_RESPONSE_SHAPE = {
 												'recency_filter': {
 													optional: false,
 													shape: { kind: 'nullable', inner: { kind: 'enum', values: PERPLEXITY_SEARCH_RECENCY_VALUES } },
+												},
+												'country': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'max_tokens': {
+													optional: true,
+													shape: { kind: 'number' },
+												},
+												'max_tokens_per_page': {
+													optional: true,
+													shape: { kind: 'number' },
+												},
+												'search_language_filter': {
+													optional: false,
+													shape: { kind: 'array', items: { kind: 'string' } },
+												},
+												'search_domain_filter': {
+													optional: false,
+													shape: { kind: 'array', items: { kind: 'string' } },
+												},
+												'last_updated_after_filter': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'last_updated_before_filter': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'search_after_date_filter': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'search_before_date_filter': {
+													optional: true,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'provider': {
+													optional: false,
+													shape: { kind: 'literal', value: 'aliyun_ai_search' },
+												},
+												'endpoint': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'workspace_name': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'top_k': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'query_rewrite': {
+													optional: false,
+													shape: { kind: 'boolean' },
+												},
+												'content_type': {
+													optional: false,
+													shape: { kind: 'enum', values: ALIYUN_SEARCH_CONTENT_TYPE_VALUES },
+												},
+												'way': {
+													optional: false,
+													shape: { kind: 'enum', values: ALIYUN_SEARCH_WAY_VALUES },
+												},
+												'time_range': {
+													optional: false,
+													shape: { kind: 'enum', values: ALIYUN_SEARCH_TIME_RANGE_VALUES },
+												},
+												'api_key_ref': {
+													optional: true,
+													shape: { kind: 'string' },
 												}
 											}
 										},
@@ -8428,6 +8610,7 @@ export const SKILLS_STATUS_CHANGE_EVENT_PAYLOAD_SHAPE = {
 		}
 	}
 } as const;
+export const STAGE_INDEPENDENT_SEARCH_CREDENTIAL_RESPONSE_SHAPE = { kind: 'string' } as const;
 export const STAGE_OCR_CREDENTIAL_RESPONSE_SHAPE = { kind: 'string' } as const;
 export const STAGE_PROVIDER_CREDENTIAL_RESPONSE_SHAPE = { kind: 'string' } as const;
 export const START_RECORDING_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -8868,6 +9051,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	set_skill_enabled: SET_SKILL_ENABLED_RESPONSE_SHAPE,
 	set_tool_enabled: SET_TOOL_ENABLED_RESPONSE_SHAPE,
 	set_web_search: SET_WEB_SEARCH_RESPONSE_SHAPE,
+	stage_independent_search_credential: STAGE_INDEPENDENT_SEARCH_CREDENTIAL_RESPONSE_SHAPE,
 	stage_ocr_credential: STAGE_OCR_CREDENTIAL_RESPONSE_SHAPE,
 	stage_provider_credential: STAGE_PROVIDER_CREDENTIAL_RESPONSE_SHAPE,
 	start_recording: START_RECORDING_RESPONSE_SHAPE,
@@ -9004,6 +9188,7 @@ export interface TauriCommandMap {
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_tool_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_web_search: { request: { requestKind: RequestKindInput; mode?: WebSearchModeInput | null }; response: void };
+	stage_independent_search_credential: { request: { modelId: string; apiKey: string }; response: string };
 	stage_ocr_credential: { request: { field: OcrCredentialFieldInput; value: string }; response: string };
 	stage_provider_credential: { request: { providerName: string; apiKey: string }; response: string };
 	start_recording: { request: undefined; response: void };

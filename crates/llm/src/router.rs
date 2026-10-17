@@ -679,6 +679,7 @@ impl LlmRouter {
         &self,
         request: RequestKind,
         query: &str,
+        original_question: Option<&str>,
         cancel: CancellationToken,
     ) -> Result<serde_json::Value, LlmError> {
         let endpoint = {
@@ -702,7 +703,8 @@ impl LlmRouter {
                 permit.map_err(|_| LlmError::Cancelled)?
             }
         };
-        let result = crate::adapters::independent_search(&endpoint, query, cancel).await;
+        let result =
+            crate::adapters::independent_search(&endpoint, query, original_question, cancel).await;
         drop(permit);
         result
     }

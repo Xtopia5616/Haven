@@ -220,6 +220,11 @@ export const TAURI_COMMAND_CONTRACTS = {
 		boundary: 'mutate',
 		security: 'writes provider secret to secure storage and returns only an opaque reference',
 	},
+	stage_independent_search_credential: {
+		boundary: 'mutate',
+		security:
+			"writes a model's Alibaba AI Search key to secure storage and returns only an opaque reference",
+	},
 	stage_ocr_credential: {
 		boundary: 'mutate',
 		security: 'writes OCR secret to secure storage and returns only an opaque reference',

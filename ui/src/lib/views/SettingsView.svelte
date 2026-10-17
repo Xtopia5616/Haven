@@ -44,6 +44,7 @@
 		revokeSessionPermission as revokeSessionPermissionCommand,
 		runMemoryMaintenance,
 		setHotkeyCaptureActive as setHotkeyCaptureActiveCommand,
+		stageIndependentSearchCredential,
 		stageOcrCredential,
 		stageProviderCredential,
 		updateSettings as updateSettingsCommand,
@@ -1095,6 +1096,19 @@
 				});
 			}
 			delete provider.api_key;
+		}
+		for (const model of llmConfig.models || []) {
+			if (model.independentSearchApiKey) {
+				const search = model.independent_search;
+				if (search?.provider !== 'aliyun_ai_search') {
+					throw new Error('Alibaba AI Search key requires Alibaba AI Search to be enabled');
+				}
+				search.api_key_ref = await stageIndependentSearchCredential({
+					modelId: model.id,
+					apiKey: model.independentSearchApiKey,
+				});
+				model.independentSearchApiKey = '';
+			}
 		}
 		if (ocr.api_key) {
 			ocr.api_key_ref = await stageOcrCredential({

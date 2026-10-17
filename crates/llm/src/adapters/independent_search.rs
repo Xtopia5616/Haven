@@ -21,19 +21,26 @@ pub(crate) struct SearchResultRow {
 }
 
 pub(crate) fn independent_search_available(endpoint: &ModelEndpoint) -> bool {
-    !endpoint.api_key.is_empty()
-        && !endpoint.base_url.trim().is_empty()
-        && endpoint.independent_search.as_ref().is_some_and(|search| {
-            endpoint
-                .provider
-                .trim()
-                .eq_ignore_ascii_case(search.provider_id())
-        })
+    endpoint.independent_search.as_ref().is_some_and(|search| {
+        endpoint
+            .provider
+            .trim()
+            .eq_ignore_ascii_case(search.provider_id())
+            && match search {
+                IndependentSearchConfig::AliyunAiSearch {
+                    endpoint: search_endpoint,
+                    api_key,
+                    ..
+                } => !search_endpoint.trim().is_empty() && !api_key.is_empty(),
+                _ => !endpoint.api_key.is_empty() && !endpoint.base_url.trim().is_empty(),
+            }
+    })
 }
 
 pub(crate) async fn independent_search(
     endpoint: &ModelEndpoint,
     query: &str,
+    original_question: Option<&str>,
     cancel: CancellationToken,
 ) -> Result<Value, LlmError> {
     let query = query.trim();
@@ -59,10 +66,13 @@ pub(crate) async fn independent_search(
         .expect("availability check requires standalone search config");
     match search {
         IndependentSearchConfig::DeepseekSearch { .. } => {
-            super::deepseek::independent_search(endpoint, query, cancel).await
+            super::deepseek::independent_search(endpoint, query, original_question, cancel).await
         }
         IndependentSearchConfig::PerplexitySearch { .. } => {
             super::perplexity::independent_search(endpoint, query, cancel).await
+        }
+        IndependentSearchConfig::AliyunAiSearch { .. } => {
+            super::aliyun_search::independent_search(endpoint, query, cancel).await
         }
         IndependentSearchConfig::MistralWebSearch { .. } => {
             super::mistral::independent_search(endpoint, query, cancel).await

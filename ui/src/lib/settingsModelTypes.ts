@@ -17,6 +17,8 @@ export type ModelDraft = Omit<
 	providerName: string;
 	model: string;
 	capabilities: CapabilityInput[];
+	/** Temporary edit value; staged into Credential Manager before Settings save. */
+	independentSearchApiKey?: string;
 };
 
 /** Project the Rust-owned `provider_name` wire key into the settings editor name. */
@@ -27,8 +29,12 @@ export function modelDraftFromConfig(model: ModelConfig): ModelDraft {
 
 /** Restore the Rust-owned `provider_name` key at the update_settings boundary. */
 export function modelConfigInputFromDraft(model: ModelDraft): ModelConfigInput {
-	const { providerName, ...fields } = model;
-	return { ...fields, provider_name: providerName };
+	const fields = Object.fromEntries(
+		Object.entries(model).filter(
+			([key]) => key !== 'providerName' && key !== 'independentSearchApiKey',
+		),
+	) as Omit<ModelConfigInput, 'provider_name'>;
+	return { ...fields, provider_name: model.providerName };
 }
 
 /** Convert a loaded wire config once before it enters the settings editor. */
