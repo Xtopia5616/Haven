@@ -162,10 +162,20 @@ export const CAPABILITY_INPUT_VALUES = ['chat', 'fast_chat', 'vision', 'audio_in
 export type CapabilityInput = (typeof CAPABILITY_INPUT_VALUES)[number];
 export const CAPABILITY_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
 export type Capability = (typeof CAPABILITY_VALUES)[number];
+export type IndependentSearchConfigInput = { provider: 'deepseek_search'; count?: number; need_content?: boolean } | { provider: 'perplexity_search'; max_results?: number; search_type?: PerplexitySearchTypeInput; recency_filter?: PerplexitySearchRecencyInput | null } | { provider: 'mistral_web_search'; premium?: boolean } | { provider: 'zhipu_web_search' };
+export type IndependentSearchConfig = { provider: 'deepseek_search'; count: number; need_content: boolean } | { provider: 'perplexity_search'; max_results: number; search_type: PerplexitySearchType; recency_filter: PerplexitySearchRecency | null } | { provider: 'mistral_web_search'; premium: boolean } | { provider: 'zhipu_web_search' };
 export interface LlmConfigInput { providers?: ProviderConfigInput[]; models?: ModelConfigInput[]; request_policies?: RequestPolicyInput[]; max_total_duration_secs?: number; stream_idle_timeout_secs?: number; retry_max_retries?: number; retry_base_secs?: number; retry_factor?: number; retry_max_secs?: number; retry_jitter?: number; max_concurrent_requests?: number }
 export interface LlmConfig { providers: ProviderConfig[]; models: ModelConfig[]; request_policies: RequestPolicy[]; max_total_duration_secs: number; stream_idle_timeout_secs: number; retry_max_retries: number; retry_base_secs: number; retry_factor: number; retry_max_secs: number; retry_jitter: number; max_concurrent_requests: number }
-export interface ModelConfigInput { id?: string; provider_name?: string; model?: string; capabilities?: CapabilityInput[]; temperature?: number | null; context_window?: number | null; cost_per_1k_input_tokens?: number | null; cost_per_1k_output_tokens?: number | null; cost_per_1k_cache_read_tokens?: number | null; cost_per_1k_cache_write_tokens?: number | null; max_tokens?: number | null; reasoning_effort?: string | null; web_search?: string | null; reasoning_echo_max_chars?: number | null }
-export interface ModelConfig { id: string; provider_name: string; model: string; capabilities: Capability[]; temperature?: number; context_window?: number; cost_per_1k_input_tokens?: number; cost_per_1k_output_tokens?: number; cost_per_1k_cache_read_tokens?: number; cost_per_1k_cache_write_tokens?: number; max_tokens?: number; reasoning_effort?: string; web_search?: string; reasoning_echo_max_chars?: number }
+export interface ModelConfigInput { id?: string; provider_name?: string; model?: string; capabilities?: CapabilityInput[]; temperature?: number | null; context_window?: number | null; cost_per_1k_input_tokens?: number | null; cost_per_1k_output_tokens?: number | null; cost_per_1k_cache_read_tokens?: number | null; cost_per_1k_cache_write_tokens?: number | null; max_tokens?: number | null; reasoning_effort?: string | null; web_search?: string | null; independent_search?: IndependentSearchConfigInput | null; reasoning_echo_max_chars?: number | null }
+export interface ModelConfig { id: string; provider_name: string; model: string; capabilities: Capability[]; temperature?: number; context_window?: number; cost_per_1k_input_tokens?: number; cost_per_1k_output_tokens?: number; cost_per_1k_cache_read_tokens?: number; cost_per_1k_cache_write_tokens?: number; max_tokens?: number; reasoning_effort?: string; web_search?: string; independent_search?: IndependentSearchConfig; reasoning_echo_max_chars?: number }
+export const PERPLEXITY_SEARCH_RECENCY_INPUT_VALUES = ['hour', 'day', 'week', 'month', 'year'] as const;
+export type PerplexitySearchRecencyInput = (typeof PERPLEXITY_SEARCH_RECENCY_INPUT_VALUES)[number];
+export const PERPLEXITY_SEARCH_RECENCY_VALUES = ['hour', 'day', 'week', 'month', 'year'] as const;
+export type PerplexitySearchRecency = (typeof PERPLEXITY_SEARCH_RECENCY_VALUES)[number];
+export const PERPLEXITY_SEARCH_TYPE_INPUT_VALUES = ['web', 'fast', 'people'] as const;
+export type PerplexitySearchTypeInput = (typeof PERPLEXITY_SEARCH_TYPE_INPUT_VALUES)[number];
+export const PERPLEXITY_SEARCH_TYPE_VALUES = ['web', 'fast', 'people'] as const;
+export type PerplexitySearchType = (typeof PERPLEXITY_SEARCH_TYPE_VALUES)[number];
 export interface ProviderConfigInput { name?: string; provider?: string; api_style?: string | null; media_capabilities?: ProviderMediaCapabilitiesInput | null; base_url?: string; api_key?: string; api_key_ref?: string | null; auth_header_name?: string; auth_header_prefix?: string; proxy_url?: string | null; no_proxy?: string | null; default_max_tokens?: number | null; default_temperature?: number | null; default_timeout_secs?: number | null; default_timeout_streaming_secs?: number | null; default_web_search?: string | null }
 export interface ProviderConfig { name: string; provider: string; api_style: string | null; media_capabilities?: ProviderMediaCapabilities; base_url: string; api_key_ref?: string; auth_header_name: string; auth_header_prefix: string; proxy_url: string | null; no_proxy: string | null; default_max_tokens?: number; default_temperature?: number; default_timeout_secs?: number; default_timeout_streaming_secs?: number; default_web_search?: string }
 export interface ProviderMediaCapabilitiesInput { stt?: boolean; tts?: boolean; image_gen?: boolean }
@@ -3668,6 +3678,71 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 								'web_search': {
 									optional: true,
 									shape: { kind: 'string' },
+								},
+								'independent_search': {
+									optional: true,
+									shape: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'provider': {
+													optional: false,
+													shape: { kind: 'literal', value: 'deepseek_search' },
+												},
+												'count': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'need_content': {
+													optional: false,
+													shape: { kind: 'boolean' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'provider': {
+													optional: false,
+													shape: { kind: 'literal', value: 'perplexity_search' },
+												},
+												'max_results': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'search_type': {
+													optional: false,
+													shape: { kind: 'enum', values: PERPLEXITY_SEARCH_TYPE_VALUES },
+												},
+												'recency_filter': {
+													optional: false,
+													shape: { kind: 'nullable', inner: { kind: 'enum', values: PERPLEXITY_SEARCH_RECENCY_VALUES } },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'provider': {
+													optional: false,
+													shape: { kind: 'literal', value: 'mistral_web_search' },
+												},
+												'premium': {
+													optional: false,
+													shape: { kind: 'boolean' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'provider': {
+													optional: false,
+													shape: { kind: 'literal', value: 'zhipu_web_search' },
+												}
+											}
+										}
+									] },
 								},
 								'reasoning_echo_max_chars': {
 									optional: true,
@@ -7370,6 +7445,71 @@ export const SETTINGS_RESPONSE_SHAPE = {
 								'web_search': {
 									optional: true,
 									shape: { kind: 'string' },
+								},
+								'independent_search': {
+									optional: true,
+									shape: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'provider': {
+													optional: false,
+													shape: { kind: 'literal', value: 'deepseek_search' },
+												},
+												'count': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'need_content': {
+													optional: false,
+													shape: { kind: 'boolean' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'provider': {
+													optional: false,
+													shape: { kind: 'literal', value: 'perplexity_search' },
+												},
+												'max_results': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'search_type': {
+													optional: false,
+													shape: { kind: 'enum', values: PERPLEXITY_SEARCH_TYPE_VALUES },
+												},
+												'recency_filter': {
+													optional: false,
+													shape: { kind: 'nullable', inner: { kind: 'enum', values: PERPLEXITY_SEARCH_RECENCY_VALUES } },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'provider': {
+													optional: false,
+													shape: { kind: 'literal', value: 'mistral_web_search' },
+												},
+												'premium': {
+													optional: false,
+													shape: { kind: 'boolean' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'provider': {
+													optional: false,
+													shape: { kind: 'literal', value: 'zhipu_web_search' },
+												}
+											}
+										}
+									] },
 								},
 								'reasoning_echo_max_chars': {
 									optional: true,

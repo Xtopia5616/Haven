@@ -196,6 +196,73 @@ describe('settings command contracts', () => {
 		expect(() => parseSettingsPayload(mcpStt)).toThrow('settings.media.stt.mcp_server');
 	});
 
+	it('validates provider-specific standalone search settings', () => {
+		const valid = createSettingsFixture();
+		valid.llm.providers.push({
+			name: 'search-provider',
+			provider: 'deepseek',
+			api_style: null,
+			base_url: 'https://api.deepseek.com',
+			auth_header_name: 'Authorization',
+			auth_header_prefix: 'Bearer',
+			proxy_url: null,
+			no_proxy: null,
+		});
+		valid.llm.models.push({
+			id: 'search-model',
+			provider_name: 'search-provider',
+			model: 'deepseek-chat',
+			capabilities: ['chat'],
+			independent_search: {
+				provider: 'deepseek_search',
+				count: 12,
+				need_content: true,
+			},
+		});
+		expect(parseSettingsPayload(valid)).toBe(valid);
+
+		const mismatch = structuredClone(valid);
+		mismatch.llm.providers[0].provider = 'perplexity';
+		expect(() => parseSettingsPayload(mismatch)).toThrow(
+			'settings.llm.models[0].independent_search',
+		);
+
+		const invalidCount = structuredClone(valid);
+		invalidCount.llm.models[0].independent_search = {
+			provider: 'deepseek_search',
+			count: 51,
+			need_content: false,
+		};
+		expect(() => parseSettingsPayload(invalidCount)).toThrow(
+			'settings.llm.models[0].independent_search',
+		);
+
+		const perplexityPeople = createSettingsFixture();
+		perplexityPeople.llm.providers.push({
+			name: 'perplexity',
+			provider: 'perplexity',
+			api_style: null,
+			base_url: 'https://api.perplexity.ai',
+			auth_header_name: 'Authorization',
+			auth_header_prefix: 'Bearer',
+			proxy_url: null,
+			no_proxy: null,
+		});
+		perplexityPeople.llm.models.push({
+			id: 'people-search',
+			provider_name: 'perplexity',
+			model: 'sonar',
+			capabilities: ['chat'],
+			independent_search: {
+				provider: 'perplexity_search',
+				max_results: 50,
+				search_type: 'people',
+				recency_filter: null,
+			},
+		});
+		expect(parseSettingsPayload(perplexityPeople)).toBe(perplexityPeople);
+	});
+
 	it('rejects incomplete Settings records and unknown closed-enum values', () => {
 		expect(() => parseSettingsPayload({})).toThrow('Invalid get_settings response shape');
 		expect(() => parseSettingsPayload({ llm: { providers: [] } })).toThrow(

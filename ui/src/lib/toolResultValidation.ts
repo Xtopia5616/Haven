@@ -536,7 +536,7 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 			);
 		case 'web_search':
 			return (
-				hasValidOptionalFields(data, { label: isString }) &&
+				hasValidOptionalFields(data, { label: isString, answer: isString }) &&
 				hasValidOptionalArrayField(data, 'queries', isStringArray) &&
 				hasValidRecordArray(
 					data,

@@ -82,7 +82,7 @@
 | `discard_staged_credentials` | mutate | 删除未由 Settings 保存提交的暂存凭据 |
 | `get_bootstrap_status` | read | 返回 `loading` / `ready` 的 `BootstrapStatus`；与 `app:bootstrap.status` 共用闭合枚举 |
 | `report_startup_ui_ready` | mutate | 无参数；首个已 hydration 的界面绘制后释放原生启动画面 |
-| `update_settings` | mutate | shared loader 保留遮蔽密钥和工具段 |
+| `update_settings` | mutate | shared loader 保留遮蔽密钥和工具段；`ModelConfig.independent_search` 使用按 Provider 闭合的配置联合体，生成契约与运行时校验负责拒绝不匹配的产品参数 |
 | `list_permissions` | read | 只返回永久规则 key/effect |
 | `list_session_permissions` | read | 返回会话 id/title、动态 capability；`target` / `effect` 使用 generated `PermissionTarget` / `PermissionEffect` |
 | `revoke_permission` | mutate | 精确撤销永久规则 key，不影响会话 grant |

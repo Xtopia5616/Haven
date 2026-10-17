@@ -1524,7 +1524,8 @@ mod capability_tests {
                     let capabilities = tools.runtime_capabilities().await;
                     assert!(matches!(
                         capabilities.web_search,
-                        WebSearchAvailability::Provider
+                        WebSearchAvailability::Independent
+                            | WebSearchAvailability::Provider
                             | WebSearchAvailability::Mcp
                             | WebSearchAvailability::Unavailable
                     ));

@@ -143,6 +143,43 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
             &format!("llm.models[{index}].web_search"),
             model.web_search.as_deref(),
         )?;
+        if let Some(search) = &model.independent_search {
+            let provider = config
+                .llm
+                .provider_config_by_name(&model.provider_name)
+                .map(|provider| provider.provider.trim().to_ascii_lowercase());
+            if provider.as_deref() != Some(search.provider_id()) {
+                anyhow::bail!(
+                    "llm.models[{index}].independent_search must match the selected Provider"
+                );
+            }
+            match search {
+                super::IndependentSearchConfig::DeepseekSearch { count, .. }
+                    if !(1..=50).contains(count) =>
+                {
+                    anyhow::bail!(
+                        "llm.models[{index}].independent_search.count must be within 1..=50"
+                    );
+                }
+                super::IndependentSearchConfig::PerplexitySearch {
+                    max_results,
+                    search_type,
+                    ..
+                } if *max_results == 0
+                    || match search_type {
+                        super::PerplexitySearchType::People => *max_results > 50,
+                        super::PerplexitySearchType::Web | super::PerplexitySearchType::Fast => {
+                            *max_results > 20
+                        }
+                    } =>
+                {
+                    anyhow::bail!(
+                        "llm.models[{index}].independent_search.max_results is outside the selected Perplexity search_type limit"
+                    );
+                }
+                _ => {}
+            }
+        }
     }
 
     let has_provider = |name: &str| {
@@ -902,7 +939,10 @@ mod tests {
         MIN_SESSION_STEPS_PER_RUN, MIN_SESSION_STEPS_PER_SESSION, validate_app_config,
         validate_app_config_numbers, validate_settings_contract, validate_settings_numbers,
     };
-    use crate::config::{AppConfig, McpServerConfig, ProviderConfig, Settings};
+    use crate::config::{
+        AppConfig, IndependentSearchConfig, McpServerConfig, PerplexitySearchType, ProviderConfig,
+        Settings,
+    };
 
     type NumericConfigContractCase = (&'static str, u64, u64, fn(&mut AppConfig, u64));
 
@@ -1061,6 +1101,68 @@ mod tests {
                 "{settings_error}"
             );
         }
+    }
+
+    #[test]
+    fn independent_search_must_match_provider_and_documented_bounds() {
+        let mut config = AppConfig::default();
+        config.llm.providers.push(ProviderConfig {
+            name: "primary".into(),
+            provider: "deepseek".into(),
+            ..Default::default()
+        });
+        config.llm.models.push(crate::config::ModelConfig {
+            id: "search-model".into(),
+            provider_name: "primary".into(),
+            model: "deepseek-chat".into(),
+            independent_search: Some(IndependentSearchConfig::DeepseekSearch {
+                count: 1,
+                need_content: false,
+            }),
+            ..Default::default()
+        });
+        assert!(validate_app_config(&config).is_ok());
+
+        config.llm.models[0].independent_search = Some(IndependentSearchConfig::DeepseekSearch {
+            count: 51,
+            need_content: false,
+        });
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("independent_search.count")
+        );
+
+        config.llm.providers[0].provider = "perplexity".into();
+        config.llm.models[0].independent_search = Some(IndependentSearchConfig::DeepseekSearch {
+            count: 10,
+            need_content: false,
+        });
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("must match the selected Provider")
+        );
+
+        config.llm.models[0].independent_search = Some(IndependentSearchConfig::PerplexitySearch {
+            max_results: 50,
+            search_type: PerplexitySearchType::People,
+            recency_filter: None,
+        });
+        assert!(validate_app_config(&config).is_ok());
+        config.llm.models[0].independent_search = Some(IndependentSearchConfig::PerplexitySearch {
+            max_results: 21,
+            search_type: PerplexitySearchType::Web,
+            recency_filter: None,
+        });
+        assert!(
+            validate_app_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("independent_search.max_results")
+        );
     }
 
     #[test]

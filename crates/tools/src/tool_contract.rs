@@ -306,8 +306,8 @@ pub(crate) fn operation_attributes(
         _ => DataSensitivity::None,
     };
     let network = match name {
-        "http" | "files.summary" | "media.describe" | "media.ocr" | "media.transcribe"
-        | "media.generate" => NetworkAccess::Public,
+        "http" | "web_search_api" | "files.summary" | "media.describe" | "media.ocr"
+        | "media.transcribe" | "media.generate" => NetworkAccess::Public,
         "shell" | "load_mcp" => NetworkAccess::Opaque,
         name if name.starts_with("mcp__")
             || name.starts_with("mcp::")
@@ -1203,6 +1203,7 @@ pub(crate) fn default_tool_label(name: &str) -> String {
         "tool_runs" => "后台任务",
         "schedule" => "定时任务",
         "web_search" => "联网搜索",
+        "web_search_api" => "独立联网搜索",
         _ => name
             .strip_prefix("skill__")
             .or_else(|| name.strip_prefix("mcp__"))
@@ -1229,6 +1230,7 @@ pub(crate) fn default_root_presentation(
             "agent" => ("Agent 协作", "users"),
             "tool_runs" => ("后台任务", "clock"),
             "schedule" => ("定时任务", "bell"),
+            "web_search_api" => ("联网搜索", "search"),
             "haven" => ("Haven", "settings"),
             _ => (root, "tools"),
         },
@@ -2141,6 +2143,13 @@ pub(crate) mod tests {
         assert!(!result.truncated);
         assert_eq!(result.output, json!({"status": "done"}));
         assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn standalone_search_is_read_only_and_declares_public_network_access() {
+        let attributes = operation_attributes("web_search_api", ToolConcurrency::ReadOnly);
+        assert_eq!(attributes.effect, OperationEffect::ReadOnly);
+        assert_eq!(attributes.network_access, NetworkAccess::Public);
     }
 
     #[test]

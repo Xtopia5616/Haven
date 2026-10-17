@@ -24,7 +24,25 @@ pub(crate) async fn resolve_snapshot(
         }
         None => false,
     };
-    assemble_tool_capability_snapshot(media, provider_search_available, mcp_index)
+    let independent_search_available = match &platform.router {
+        Some(router) => {
+            platform
+                .tool_settings
+                .get("web_search_api")
+                .map(|setting| setting.enabled)
+                .unwrap_or(true)
+                && router
+                    .independent_web_search_available(RequestKind::Chat)
+                    .await
+        }
+        None => false,
+    };
+    assemble_tool_capability_snapshot(
+        media,
+        independent_search_available,
+        provider_search_available,
+        mcp_index,
+    )
 }
 
 /// One freshly resolved view of capabilities owned by `ToolsFacade`.
@@ -96,6 +114,7 @@ async fn resolve_backend_media_capabilities(
 
 fn assemble_tool_capability_snapshot(
     media: MediaCapabilities,
+    independent_search_available: bool,
     provider_search_available: bool,
     mcp_index: &[McpServerIndexEntry],
 ) -> ToolCapabilitySnapshot {
@@ -103,6 +122,7 @@ fn assemble_tool_capability_snapshot(
     ToolCapabilitySnapshot {
         media,
         web_search: resolve_web_search_availability(
+            independent_search_available,
             provider_search_available,
             mcp_search_available,
         ),
@@ -110,10 +130,13 @@ fn assemble_tool_capability_snapshot(
 }
 
 fn resolve_web_search_availability(
+    independent_search_available: bool,
     provider_search_available: bool,
     mcp_search_available: bool,
 ) -> WebSearchAvailability {
-    if provider_search_available {
+    if independent_search_available {
+        WebSearchAvailability::Independent
+    } else if provider_search_available {
         WebSearchAvailability::Provider
     } else if mcp_search_available {
         WebSearchAvailability::Mcp
@@ -143,20 +166,24 @@ mod tests {
     #[test]
     fn provider_search_takes_priority_over_mcp_search() {
         assert_eq!(
-            resolve_web_search_availability(true, true),
+            resolve_web_search_availability(false, true, true),
             WebSearchAvailability::Provider
         );
         assert_eq!(
-            resolve_web_search_availability(true, false),
+            resolve_web_search_availability(false, true, false),
             WebSearchAvailability::Provider
         );
         assert_eq!(
-            resolve_web_search_availability(false, true),
+            resolve_web_search_availability(false, false, true),
             WebSearchAvailability::Mcp
         );
         assert_eq!(
-            resolve_web_search_availability(false, false),
+            resolve_web_search_availability(false, false, false),
             WebSearchAvailability::Unavailable
+        );
+        assert_eq!(
+            resolve_web_search_availability(true, true, true),
+            WebSearchAvailability::Independent
         );
     }
 
@@ -171,6 +198,7 @@ mod tests {
                 record: false,
                 speak: true,
             },
+            false,
             false,
             &[],
         );
@@ -192,6 +220,7 @@ mod tests {
                 ..MediaCapabilities::default()
             },
             false,
+            false,
             &[],
         );
         let capabilities = snapshot.project_runtime_capabilities();
@@ -210,6 +239,7 @@ mod tests {
                 record: true,
                 ..MediaCapabilities::default()
             },
+            false,
             true,
             &[mcp_entry("research", &["web_search"])],
         );

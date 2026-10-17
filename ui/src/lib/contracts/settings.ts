@@ -679,6 +679,37 @@ function isSupportedWebSearchSetting(value: unknown): boolean {
 	);
 }
 
+function isIndependentSearchConfig(value: unknown, provider: unknown): boolean {
+	if (!isRecord(value) || typeof value.provider !== 'string') return false;
+	const providerId = typeof provider === 'string' ? provider.trim().toLowerCase() : '';
+	switch (value.provider) {
+		case 'deepseek_search':
+			return (
+				providerId === 'deepseek' &&
+				isSafeUnsignedInteger(value.count) &&
+				value.count >= 1 &&
+				value.count <= 50 &&
+				typeof value.need_content === 'boolean'
+			);
+		case 'perplexity_search':
+			return (
+				providerId === 'perplexity' &&
+				isSafeUnsignedInteger(value.max_results) &&
+				value.max_results >= 1 &&
+				value.max_results <= (value.search_type === 'people' ? 50 : 20) &&
+				['web', 'fast', 'people'].includes(String(value.search_type)) &&
+				(value.recency_filter == null ||
+					['hour', 'day', 'week', 'month', 'year'].includes(String(value.recency_filter)))
+			);
+		case 'mistral_web_search':
+			return providerId === 'mistral' && typeof value.premium === 'boolean';
+		case 'zhipu_web_search':
+			return providerId === 'zhipu' && Object.keys(value).every((key) => key === 'provider');
+		default:
+			return false;
+	}
+}
+
 function findInvalidSettingsSemantics(value: unknown): string | null {
 	if (!isRecord(value)) return null;
 	const media = isRecord(value.media) ? value.media : null;
@@ -712,6 +743,18 @@ function findInvalidSettingsSemantics(value: unknown): string | null {
 			!isSupportedWebSearchSetting(model.web_search)
 		) {
 			return `settings.llm.models[${index}].web_search`;
+		}
+		if (model.independent_search != null) {
+			const provider = providers.find(
+				(candidate) =>
+					isRecord(candidate) && candidate.name === model.provider_name,
+			);
+			if (
+				!isRecord(provider) ||
+				!isIndependentSearchConfig(model.independent_search, provider.provider)
+			) {
+				return `settings.llm.models[${index}].independent_search`;
+			}
 		}
 	}
 

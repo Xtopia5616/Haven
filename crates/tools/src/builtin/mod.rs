@@ -26,6 +26,7 @@ pub mod system;
 pub(crate) mod tool_catalog;
 pub mod tool_runs;
 mod tool_schema;
+pub mod web_search;
 pub mod window;
 
 use serde_json::Value;
@@ -192,6 +193,17 @@ pub(crate) async fn register_builtin_tools(
         mcp_manager: mcp_manager.clone(),
         mcp_server_config_source: mcp_server_config_source.clone(),
     }));
+    if settings
+        .get("web_search_api")
+        .map(|setting| setting.enabled)
+        .unwrap_or(true)
+        && let Some(search_router) = router.as_ref()
+        && search_router
+            .independent_web_search_available(haven_common::config::RequestKind::Chat)
+            .await
+    {
+        tools.push(Arc::new(web_search::typed_adapter(search_router.clone())));
+    }
     // One media runtime serves every producer/consumer boundary. `files` and
     // `window` only create assets; interpretation and generation always land
     // in this same instance and therefore share provider routing, limits,

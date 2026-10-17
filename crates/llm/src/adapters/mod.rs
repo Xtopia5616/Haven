@@ -7,9 +7,12 @@ mod deepseek;
 mod embedding;
 pub mod gemini;
 mod groq;
+mod independent_search;
+mod mistral;
 pub mod openai;
 pub mod openai_responses;
 mod openrouter;
+mod perplexity;
 mod provider_features;
 mod stream;
 mod tool_arguments;
@@ -17,6 +20,7 @@ mod tool_schema;
 mod transport;
 mod web_search;
 mod xai;
+mod zhipu;
 
 pub use capabilities::{WebSearchMode, resolve_web_search_mode};
 pub(crate) use capabilities::{
@@ -51,6 +55,7 @@ pub(in crate::adapters) fn current_epoch_seconds() -> u64 {
 pub(crate) use crate::tool_names::{ToolNameMap, ToolNamePolicy};
 
 pub(crate) use embedding::{openai_compatible_embed, openai_embeddings_url};
+pub(crate) use independent_search::{independent_search, independent_search_available};
 pub(crate) use openrouter::is_openrouter;
 pub(crate) use provider_features::{
     chat_thinking_extras, is_deepseek, reasoning_tail, reasoning_text_from_thinking_blocks,

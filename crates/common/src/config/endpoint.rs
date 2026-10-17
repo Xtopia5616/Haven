@@ -76,6 +76,11 @@ pub struct ModelEndpoint {
     /// (web search is opt-in).
     #[serde(default)]
     pub web_search: Option<String>,
+    /// Standalone search API configuration selected in the model settings.
+    /// When present, the model can call Haven's `web_search_api` tool; native
+    /// provider search is suppressed for this routed model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub independent_search: Option<IndependentSearchConfig>,
     // §3.16: cost tracking. USD per 1K tokens (input and output). When both
     // are zero, cost is reported as None.
     pub cost_per_1k_input_tokens: f64,
@@ -133,6 +138,7 @@ impl std::fmt::Debug for ModelEndpoint {
             .field("timeout_streaming_secs", &self.timeout_streaming_secs)
             .field("reasoning_effort", &self.reasoning_effort)
             .field("web_search", &self.web_search)
+            .field("independent_search", &self.independent_search)
             .field("cost_per_1k_input_tokens", &self.cost_per_1k_input_tokens)
             .field("cost_per_1k_output_tokens", &self.cost_per_1k_output_tokens)
             .field(
@@ -211,6 +217,7 @@ impl Default for ModelEndpoint {
             timeout_streaming_secs: None,
             reasoning_effort: None,
             web_search: None,
+            independent_search: None,
             cost_per_1k_input_tokens: 0.0,
             cost_per_1k_output_tokens: 0.0,
             cost_per_1k_cache_read_tokens: None,
@@ -285,6 +292,71 @@ pub struct ProviderConfig {
     /// Default provider built-in web search mode (`off`/`auto`/`always`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_web_search: Option<String>,
+}
+
+/// Provider-owned standalone search products that are called as an Agent tool.
+/// The tagged variants deliberately keep vendor-specific parameters with the
+/// product that defines them instead of implying one shared search schema.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
+pub enum IndependentSearchConfig {
+    DeepseekSearch {
+        #[serde(default = "default_deepseek_search_count")]
+        count: u8,
+        #[serde(default)]
+        need_content: bool,
+    },
+    PerplexitySearch {
+        #[serde(default = "default_perplexity_search_results")]
+        max_results: u8,
+        #[serde(default)]
+        search_type: PerplexitySearchType,
+        #[serde(default)]
+        recency_filter: Option<PerplexitySearchRecency>,
+    },
+    MistralWebSearch {
+        #[serde(default)]
+        premium: bool,
+    },
+    ZhipuWebSearch,
+}
+
+impl IndependentSearchConfig {
+    pub const fn provider_id(&self) -> &'static str {
+        match self {
+            Self::DeepseekSearch { .. } => "deepseek",
+            Self::PerplexitySearch { .. } => "perplexity",
+            Self::MistralWebSearch { .. } => "mistral",
+            Self::ZhipuWebSearch => "zhipu",
+        }
+    }
+}
+
+const fn default_deepseek_search_count() -> u8 {
+    10
+}
+
+const fn default_perplexity_search_results() -> u8 {
+    10
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PerplexitySearchType {
+    #[default]
+    Web,
+    Fast,
+    People,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PerplexitySearchRecency {
+    Hour,
+    Day,
+    Week,
+    Month,
+    Year,
 }
 
 impl std::fmt::Debug for ProviderConfig {
@@ -592,6 +664,8 @@ pub struct ModelConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_search: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub independent_search: Option<IndependentSearchConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_echo_max_chars: Option<usize>,
 }
 
@@ -834,6 +908,7 @@ impl LlmConfig {
         if let Some(w) = &model_config.web_search {
             ep.web_search = Some(w.clone());
         }
+        ep.independent_search = model_config.independent_search.clone();
         if let Some(r) = model_config.reasoning_echo_max_chars {
             ep.reasoning_echo_max_chars = Some(r);
         }
@@ -846,7 +921,9 @@ impl LlmConfig {
             .as_deref()
             .filter(|s| !s.is_empty())
             .unwrap_or("openai-chat");
-        if !supports_builtin_web_search(style) {
+        if ep.independent_search.is_some() {
+            ep.web_search = Some("off".into());
+        } else if !supports_builtin_web_search(style) {
             ep.web_search = None;
         }
         RoutedModel {
@@ -1317,6 +1394,45 @@ mod tests {
         let ep = llm.materialize_model_config("default_model").endpoint;
         assert_eq!(ep.web_search.as_deref(), Some("always"));
         assert_eq!(ep.provider, "deepseek");
+    }
+
+    #[test]
+    fn materialize_suppresses_native_search_when_standalone_search_is_configured() {
+        let llm = LlmConfig {
+            providers: vec![ProviderConfig {
+                name: "ds".into(),
+                provider: "deepseek".into(),
+                api_key: "sk".into(),
+                base_url: "https://api.deepseek.com/v1".into(),
+                ..Default::default()
+            }],
+            models: vec![ModelConfig {
+                id: "default_model".into(),
+                provider_name: "ds".into(),
+                model: "deepseek-chat".into(),
+                capabilities: vec![Capability::Chat],
+                web_search: Some("always".into()),
+                independent_search: Some(IndependentSearchConfig::DeepseekSearch {
+                    count: 7,
+                    need_content: true,
+                }),
+                ..Default::default()
+            }],
+            request_policies: vec![RequestPolicy {
+                request: RequestKind::Chat,
+                primary: "default_model".into(),
+            }],
+            ..Default::default()
+        };
+        let endpoint = llm.materialize_model_config("default_model").endpoint;
+        assert_eq!(endpoint.web_search.as_deref(), Some("off"));
+        assert_eq!(
+            endpoint.independent_search,
+            Some(IndependentSearchConfig::DeepseekSearch {
+                count: 7,
+                need_content: true,
+            })
+        );
     }
 
     #[test]

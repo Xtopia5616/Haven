@@ -219,11 +219,13 @@ pub struct StartupWiring {
 /// The source currently providing model-visible web search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebSearchAvailability {
+    /// A provider-owned standalone API is exposed as the `web_search_api` tool.
+    Independent,
     /// The configured Chat route supports provider built-in search.
     Provider,
     /// At least one discovered MCP server exposes a web-search tool.
     Mcp,
-    /// Neither provider built-in search nor MCP search is available.
+    /// No provider search API, built-in search, or MCP search is available.
     Unavailable,
 }
 

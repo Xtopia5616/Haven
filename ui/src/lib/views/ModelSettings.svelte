@@ -124,6 +124,7 @@
 		model.cost_per_1k_output_tokens = null;
 		model.cost_per_1k_cache_read_tokens = null;
 		model.cost_per_1k_cache_write_tokens = null;
+		model.independent_search = null;
 		if (providerName) discovery.refreshProviderModels(providerName);
 	}
 	function setCapability(model: ModelDraft, capability: CapabilityInput, checked: boolean) {

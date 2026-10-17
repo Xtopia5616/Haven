@@ -11,11 +11,12 @@
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
 	import type { CapabilityInput } from '$lib/contracts/generatedCommands.ts';
 	import type { SelectOption } from '$lib/selectOption.ts';
-	import type { ModelDraft, ModelOverrideField } from '$lib/settingsModelTypes.ts';
+	import type { ModelDraft, ModelOverrideField, ProviderDraft } from '$lib/settingsModelTypes.ts';
+	import IndependentSearchSettings from './IndependentSearchSettings.svelte';
 
 	interface Props {
 		model: ModelDraft;
-		providers?: Array<{ name: string }>;
+		providers?: ProviderDraft[];
 		options?: SelectOption[];
 		loading?: boolean;
 		hasDiscoveredModels?: boolean;
@@ -61,6 +62,9 @@
 	]);
 	const needsProviderBinding = $derived(
 		!providers.some((provider) => provider.name === model.providerName),
+	);
+	const selectedProvider = $derived(
+		providers.find((provider) => provider.name === model.providerName),
 	);
 	const assigned = $derived(!!model.providerName && !!model.model && !needsProviderBinding);
 	const configuredCapabilities = $derived(
@@ -160,6 +164,7 @@
 							</div>
 						</div>
 					</div>
+					<IndependentSearchSettings model={model} provider={selectedProvider} />
 
 					<fieldset class="capability-fieldset">
 						<legend class="field-label">模型能力</legend>

@@ -78,6 +78,7 @@ const SESSION_DESCRIPTION_TOKEN_BUDGET: u32 = 384;
 
 fn web_search_availability_prompt_value(availability: WebSearchAvailability) -> &'static str {
     match availability {
+        WebSearchAvailability::Independent => "independent (use web_search_api)",
         WebSearchAvailability::Provider => "provider",
         WebSearchAvailability::Mcp => "mcp",
         WebSearchAvailability::Unavailable => {
@@ -1061,6 +1062,10 @@ mod tests {
 
     #[test]
     fn web_search_availability_keeps_existing_prompt_values() {
+        assert_eq!(
+            web_search_availability_prompt_value(WebSearchAvailability::Independent),
+            "independent (use web_search_api)"
+        );
         assert_eq!(
             web_search_availability_prompt_value(WebSearchAvailability::Provider),
             "provider"

@@ -189,6 +189,9 @@ pub struct LlmRouter {
     /// deadline before dispatching, so a burst of parallel sessions does not
     /// retry simultaneously and amplify the load.
     rate_limited: RwLock<HashMap<String, Instant>>,
+    /// Standalone search products share their vendor account QPS budget across
+    /// sessions. Two in-flight requests per router keeps local fan-out bounded.
+    independent_search_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 /// How a new provider attempt treats output already visible to the caller.
@@ -267,6 +270,7 @@ impl LlmRouter {
             stream_rules,
             semaphores,
             rate_limited,
+            independent_search_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
         }
     }
 
@@ -516,6 +520,7 @@ impl LlmRouter {
             // not to serialize mock-based tests.
             semaphores,
             rate_limited,
+            independent_search_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
         }
     }
 
@@ -657,6 +662,49 @@ impl LlmRouter {
             crate::adapters::WebSearchMode::Off
         ) && haven_common::config::supports_builtin_web_search(style)
             && crate::adapters::provider_builtin_web_search_available(endpoint, style)
+    }
+
+    /// Whether the selected route exposes its configured standalone search
+    /// product through the model-callable `web_search_api` tool.
+    pub async fn independent_web_search_available(&self, request: RequestKind) -> bool {
+        let config = self.config.read().await;
+        self.model_directory
+            .endpoint_for_request(&config, request)
+            .is_some_and(crate::adapters::independent_search_available)
+    }
+
+    /// Execute the standalone search product attached to the selected model.
+    /// Provider-specific request and result mapping stays in the LLM adapter.
+    pub async fn independent_web_search(
+        &self,
+        request: RequestKind,
+        query: &str,
+        cancel: CancellationToken,
+    ) -> Result<serde_json::Value, LlmError> {
+        let endpoint = {
+            let config = self.config.read().await;
+            self.model_directory
+                .endpoint_for_request(&config, request)
+                .cloned()
+                .ok_or_else(|| {
+                    LlmError::Configuration(format!("no configured model for {}", request.as_str()))
+                })?
+        };
+        if !crate::adapters::independent_search_available(&endpoint) {
+            return Err(LlmError::UnsupportedCapability(
+                "standalone web search is not configured for the selected model".into(),
+            ));
+        }
+        let permit = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(LlmError::Cancelled),
+            permit = self.independent_search_semaphore.clone().acquire_owned() => {
+                permit.map_err(|_| LlmError::Cancelled)?
+            }
+        };
+        let result = crate::adapters::independent_search(&endpoint, query, cancel).await;
+        drop(permit);
+        result
     }
 
     /// Return route diagnostics without exposing the router's configuration

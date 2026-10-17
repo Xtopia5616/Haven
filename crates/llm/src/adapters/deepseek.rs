@@ -1,6 +1,8 @@
 //! DeepSeek-specific search capability checks.
 
-use haven_common::config::ModelEndpoint;
+use haven_common::config::{IndependentSearchConfig, ModelEndpoint};
+use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use super::{openrouter, provider_features::is_deepseek};
 
@@ -17,6 +19,73 @@ pub(crate) fn builtin_search_available(endpoint: &ModelEndpoint, api_style: &str
 
 fn supports_responses_model(model: &str) -> bool {
     model.eq_ignore_ascii_case("deepseek-v4-pro")
+}
+
+/// Call DeepSeek's standalone Search API. This remains separate from its
+/// Responses `web_search` tool and uses Search & Fetch product parameters.
+pub(crate) async fn independent_search(
+    endpoint: &ModelEndpoint,
+    query: &str,
+    cancel: CancellationToken,
+) -> Result<Value, crate::types::LlmError> {
+    let Some(IndependentSearchConfig::DeepseekSearch {
+        count,
+        need_content,
+    }) = endpoint.independent_search.as_ref()
+    else {
+        return Err(crate::types::LlmError::UnsupportedCapability(
+            "DeepSeek Search is not configured".into(),
+        ));
+    };
+    if query.chars().count() > 128 {
+        return Err(crate::types::LlmError::Configuration(
+            "DeepSeek Search queries must be at most 128 characters".into(),
+        ));
+    }
+    let body = json!({
+        "query": query,
+        "count": count,
+        "need_content": need_content,
+    });
+    let response = super::independent_search::post_json(
+        endpoint,
+        &search_api_url(&endpoint.base_url),
+        body,
+        cancel,
+    )
+    .await?;
+    let snippet_keys: &[&str] = if *need_content {
+        &["content", "summary", "snippet"]
+    } else {
+        &["summary", "snippet"]
+    };
+    let rows = super::independent_search::rows_from_values(
+        response
+            .get("results")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .cloned(),
+        "title",
+        "url",
+        snippet_keys,
+    );
+    Ok(super::independent_search::normalize_results(
+        query,
+        "DeepSeek Search",
+        rows,
+    ))
+}
+
+fn search_api_url(base_url: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    if base.ends_with("/v1/tools/search") {
+        base.to_string()
+    } else if base.ends_with("/v1") {
+        format!("{base}/tools/search")
+    } else {
+        format!("{base}/v1/tools/search")
+    }
 }
 
 #[cfg(test)]
@@ -48,6 +117,18 @@ mod tests {
         assert_eq!(
             builtin_search_available(&endpoint("deepseek-v4-pro"), "openai-chat"),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn standalone_search_url_supports_host_and_v1_bases() {
+        assert_eq!(
+            search_api_url("https://api.deepseek.com"),
+            "https://api.deepseek.com/v1/tools/search"
+        );
+        assert_eq!(
+            search_api_url("https://api.deepseek.com/v1/"),
+            "https://api.deepseek.com/v1/tools/search"
         );
     }
 }

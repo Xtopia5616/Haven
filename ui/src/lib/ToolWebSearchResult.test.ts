@@ -20,4 +20,13 @@ describe('ToolWebSearchResult', () => {
 
 		expect(screen.getAllByText(repeated.title)).toHaveLength(2);
 	});
+
+	it('renders an answer returned with provider search references', () => {
+		render(
+			ToolWebSearchResult,
+			{ data: { answer: 'A grounded Mistral answer.', results: [] } },
+		);
+
+		expect(screen.getByText('A grounded Mistral answer.')).toBeTruthy();
+	});
 });

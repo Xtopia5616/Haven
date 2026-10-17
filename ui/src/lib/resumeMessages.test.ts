@@ -1175,7 +1175,7 @@ describe('mergeLiveStreaming', () => {
 		expect(merged.find((m) => m.id === 'msg-00000000000000000000000000000009')!.content).toBe('先想想一部分');
 	});
 
-	it('keeps finalized step-* tool cards and drops transient web_search', () => {
+	it('keeps finalized step-* cards and standalone search while dropping transient web_search', () => {
 		// Continue resync can race the retry's ToolCall/Observation and miss the
 		// pending step row for one frame; dropping step-* cards made post-resume
 		// tool calls vanish. web_search indicators are never persisted — drop.
@@ -1195,9 +1195,20 @@ describe('mergeLiveStreaming', () => {
 				content: '已联网搜索',
 				streaming: false,
 			},
+			{
+				id: 'step-00000000000000000000000000000002',
+				type: 'tool' as const,
+				toolName: 'web_search_api',
+				content: '{"results":[]}',
+				streaming: false,
+			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toEqual(['msg-00000000000000000000000000000001', 'step-00000000000000000000000000000001']);
+		expect(merged.map((m) => m.id)).toEqual([
+			'msg-00000000000000000000000000000001',
+			'step-00000000000000000000000000000001',
+			'step-00000000000000000000000000000002',
+		]);
 		expect(merged.find((m) => m.id === 'step-00000000000000000000000000000001')).toMatchObject({
 			type: 'tool' as const,
 			content: 'Interrupted',

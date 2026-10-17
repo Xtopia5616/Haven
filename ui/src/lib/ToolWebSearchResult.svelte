@@ -5,6 +5,7 @@
 	interface Props {
 		data?: {
 			label?: string | null;
+			answer?: string | null;
 			queries?: string[];
 			results?: Array<{ url: string; title: string; snippet?: string | null }>;
 		};
@@ -30,6 +31,9 @@
 </script>
 
 <div class="tool-result-label">{data.label}</div>
+{#if data.answer}
+	<p class="tool-result-message">{data.answer}</p>
+{/if}
 {#if Array.isArray(data.queries) && data.queries.length > 0}
 	<div class="tool-result-meta tool-result-meta--compact">查询：{data.queries.join('；')}</div>
 {/if}
@@ -52,7 +56,7 @@
 				</div>
 			{/snippet}
 		</ToolResultList>
-	{:else}
+	{:else if !data.answer}
 		<p class="tool-result-message">（未返回结果）</p>
 	{/if}
 {/if}
