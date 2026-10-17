@@ -24,7 +24,9 @@ use haven_memory::{
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use crate::fact_extraction::{LlmFact, extract_json_array, sanitize_fact_field, sanitize_tags};
+use crate::fact_extraction::{
+    LlmFact, extract_json_array, parse_llm_fact_batch, sanitize_fact_field, sanitize_tags,
+};
 #[cfg(test)]
 use crate::fact_inference::{
     ContradictionDemoteProposal, PredicateMergeProposal, gate_contradiction_demote,
@@ -738,13 +740,20 @@ impl MemoryWorker {
         }
 
         let json_str = extract_json_array(&response);
-        let facts: Vec<LlmFact> = serde_json::from_str(&json_str).map_err(|error| {
+        let (facts, rejected_entries) = parse_llm_fact_batch(&json_str).map_err(|error| {
             anyhow::anyhow!(
                 "failed to parse LLM fact JSON at line {}, column {}",
                 error.line(),
                 error.column()
             )
         })?;
+
+        if rejected_entries > 0 {
+            tracing::warn!(
+                rejected_entries,
+                "LLM fact extraction: rejected malformed fact entries"
+            );
+        }
 
         tracing::info!("LLM fact extraction: {} facts extracted", facts.len());
         Ok(facts)
@@ -1223,41 +1232,70 @@ mod tests {
     }
 
     #[test]
-    fn test_llm_fact_coerces_non_string_fields() {
+    fn test_llm_fact_batch_skips_entries_with_wrong_field_types() {
         let json = r#"[
-            {"subject":"user","predicate":"has_pentest_mcp","object":true,"tags":["workspace"],"confidence":0.6,"message_index":0},
-            {"subject":"user","predicate":"likes_count","object":3,"tags":["preference"],"confidence":0.8},
-            {"subject":"user","predicate":"nickname","object":null,"tags":["identity"]},
-            {"subject":"user","predicate":"name","object":"Alice","tags":[42],"confidence":0.9}
+            {"subject":"user","predicate":"name","object":"Alice","tags":["identity"],"confidence":0.9},
+            {"subject":"user","predicate":"has_pentest_mcp","object":true,"tags":["workspace"]},
+            {"subject":"user","predicate":"likes_count","object":3},
+            {"subject":"user","predicate":"nickname","object":null},
+            {"subject":"user","predicate":{},"object":"Alice"},
+            {"subject":[],"predicate":"name","object":"Alice"},
+            {"subject":"user","predicate":"name","object":"Alice","tags":[42]},
+            {"subject":"user","predicate":"name","object":"Alice","tags":null},
+            {"subject":"user","predicate":"name","object":"Alice","confidence":"0.8"},
+            {"subject":"user","predicate":"name","object":"Alice","durability":false},
+            {"subject":"user","predicate":"name","object":"Alice","message_index":"0"}
         ]"#;
-        let facts: Vec<LlmFact> = serde_json::from_str(json).unwrap();
-        assert_eq!(facts.len(), 4);
-        assert_eq!(facts[0].object, "true");
-        assert_eq!(facts[0].predicate, "has_pentest_mcp");
-        assert_eq!(facts[1].object, "3");
-        assert_eq!(facts[2].object, "");
-        assert_eq!(facts[3].object, "Alice");
-        assert_eq!(facts[3].tags, vec!["42"]);
+        let (facts, rejected) = parse_llm_fact_batch(json).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(rejected, 10);
+        assert_eq!(facts[0].object, "Alice");
+        assert_eq!(facts[0].tags, vec!["identity"]);
     }
 
     #[test]
     fn test_llm_fact_durability_optional_with_default() {
         // Omitted durability → None (persistence maps to the 0.6 fallback).
-        let no_dup: Vec<LlmFact> =
-            serde_json::from_str(r#"[{"subject":"user","predicate":"name","object":"Alice"}]"#)
+        let (no_dup, rejected) =
+            parse_llm_fact_batch(r#"[{"subject":"user","predicate":"name","object":"Alice"}]"#)
                 .unwrap();
+        assert_eq!(rejected, 0);
         assert!(no_dup[0].durability.is_none());
         // Explicit value round-trips; subject defaults to "user".
-        let with_dup: Vec<LlmFact> = serde_json::from_str(
+        let (with_dup, rejected) = parse_llm_fact_batch(
             r#"[{"subject":"haven","predicate":"project_path","object":"D:/w","durability":0.4}]"#,
         )
         .unwrap();
+        assert_eq!(rejected, 0);
         assert_eq!(with_dup[0].durability, Some(0.4));
         assert_eq!(with_dup[0].subject, "haven");
         // Cross-subject facts deserialize without a subject field defaulting.
-        let default_subj: Vec<LlmFact> =
-            serde_json::from_str(r#"[{"predicate":"name","object":"A"}]"#).unwrap();
+        let (default_subj, rejected) =
+            parse_llm_fact_batch(r#"[{"predicate":"name","object":"A"}]"#).unwrap();
+        assert_eq!(rejected, 0);
         assert_eq!(default_subj[0].subject, "user");
+    }
+
+    #[test]
+    fn test_fact_inference_proposals_reject_non_string_identity_fields() {
+        assert!(
+            serde_json::from_str::<PredicateMergeProposal>(
+                r#"{"from":3,"to":"language","confidence":0.9}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<PredicateMergeProposal>(
+                r#"{"from":"favorite_language","to":{},"confidence":0.9}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<ContradictionDemoteProposal>(
+                r#"{"demote_id":null,"confidence":1.0}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -3420,6 +3458,35 @@ mod tests {
             .get_kv(&format!("fact_extraction.{}", session.session_id))
             .unwrap();
         assert_eq!(cursor, None);
+    }
+
+    #[tokio::test]
+    async fn infer_facts_partial_invalid_batch_persists_only_valid_fact() {
+        let db = temp_db();
+        let session = db.create_session("partial malformed fact batch").unwrap();
+        db.add_message(
+            &session.session_id,
+            haven_common::types::CanonicalRole::User,
+            "I use TypeScript at work.",
+            Some(haven_common::types::TranscriptMessageKind::Text),
+            None,
+        )
+        .unwrap();
+        let router = mock_router(
+            r#"[
+                {"subject":"user","predicate":"uses","object":"TypeScript","confidence":0.9},
+                {"subject":"user","predicate":"uses","object":{"value":"JavaScript"},"confidence":0.95},
+                {"subject":"user","predicate":"uses","object":null,"confidence":1.0}
+            ]"#,
+        );
+        let engine = MemoryWorker::new(db.clone(), router, 4_000, 64, 40, 256, 0);
+
+        engine.infer_facts(&session.session_id).await;
+
+        let facts = db.list_facts_by_subject("user").unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].predicate, "uses");
+        assert_eq!(facts[0].object, "TypeScript");
     }
 
     #[tokio::test]

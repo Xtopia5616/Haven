@@ -140,6 +140,8 @@ Inbox 侧格式要按无兼容目标明确切换：升级前备份后重置 `inb
 
 移除 `fact_extraction` / `fact_inference` 的宽泛类型 coercion；对 schema 不匹配的模型输出拒绝或跳过对应项，不将 null 变为空事实，不把对象/数组 stringify 后写入记忆。保留 JSON 响应 envelope 提取、字符串清洗、提示注入过滤和事实身份/实体验证。验收覆盖当前合法模型输出与各错型值、部分无效 batch 不污染有效事实。
 
+**实施完成（ADR 1300）**：事实数组逐条严格反序列化并跳过错型条目，保留同批合法项；事实推断 proposal 的身份字段改为严格字符串类型。错项只记录数量，不记录模型内容。实现与门禁结果见 ADR 1300。
+
 ### Slice 8 — 合并 App 转发层和重复数据/metadata 副本
 
 移除 App 纯转发 adapter；把 ToolRun store 改为唯一 payload map + 双索引；把 command security metadata 设为单一权威并扩展现有 generator/checker；把 AgentEvent `{channel,payload}` projection 绑定到生成 shape registry。验收检查 owner 唯一、生成产物不 drift、UI 查询生命周期与 bounded limits 保持。

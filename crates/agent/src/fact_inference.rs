@@ -9,8 +9,6 @@ use haven_memory::{
 };
 use serde::Deserialize;
 
-use crate::fact_extraction::coerce_to_string;
-
 /// Max preceding assistant text turns kept per new user (M4). Closest first.
 const EXTRACTION_MAX_ASSISTANTS_PER_TURN: usize = 2;
 /// Max tool observations kept per new user turn (M4).
@@ -223,9 +221,7 @@ fn timestamp_in_turn(ts: &str, after_ts: Option<&str>, user_ts: &str) -> bool {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct PredicateMergeProposal {
-    #[serde(deserialize_with = "coerce_to_string")]
     pub(crate) from: String,
-    #[serde(deserialize_with = "coerce_to_string")]
     pub(crate) to: String,
     #[serde(default)]
     pub(crate) confidence: f64,
@@ -233,7 +229,6 @@ pub(crate) struct PredicateMergeProposal {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ContradictionDemoteProposal {
-    #[serde(deserialize_with = "coerce_to_string")]
     pub(crate) demote_id: String,
     #[serde(default)]
     pub(crate) confidence: f64,

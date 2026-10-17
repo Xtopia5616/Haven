@@ -1,7 +1,7 @@
 //! Shared fact-extraction wire parsing and sanitization.
 //!
 //! The memory worker owns scheduling, prompts and persistence orchestration.
-//! This module owns only the model-facing fact shape, field coercion and
+//! This module owns only the model-facing fact shape, strict field parsing and
 //! sanitization before values enter prompts or storage. Canonical predicate
 //! naming is owned by Memory because every fact write path shares that policy.
 
@@ -10,13 +10,11 @@ use serde::Deserialize;
 /// A fact extracted by the LLM, deserialized from the model's JSON response.
 #[derive(Clone, Deserialize)]
 pub(crate) struct LlmFact {
-    #[serde(default = "default_subject", deserialize_with = "coerce_to_string")]
+    #[serde(default = "default_subject")]
     pub(crate) subject: String,
-    #[serde(deserialize_with = "coerce_to_string")]
     pub(crate) predicate: String,
-    #[serde(deserialize_with = "coerce_to_string")]
     pub(crate) object: String,
-    #[serde(default, deserialize_with = "coerce_string_array")]
+    #[serde(default)]
     pub(crate) tags: Vec<String>,
     #[serde(default = "default_confidence")]
     pub(crate) confidence: f64,
@@ -33,36 +31,20 @@ fn default_subject() -> String {
     "user".into()
 }
 
-/// Deserialize any JSON value into a string. The extraction model sometimes
-/// emits booleans or numbers for fact fields (e.g. `"object": true`), which
-/// would otherwise hard-fail the whole batch; coerce them to their string
-/// form instead of dropping the fact.
-fn coerce_value_to_string(value: serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(s) => s,
-        serde_json::Value::Bool(b) => b.to_string(),
-        serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::Null => String::new(),
-        other => other.to_string(),
+/// Parse a JSON fact batch while isolating malformed entries. Required text
+/// fields and tag elements must have their declared string types; one invalid
+/// model item is skipped without discarding valid facts from the same batch.
+pub(crate) fn parse_llm_fact_batch(json: &str) -> Result<(Vec<LlmFact>, usize), serde_json::Error> {
+    let values: Vec<serde_json::Value> = serde_json::from_str(json)?;
+    let mut facts = Vec::with_capacity(values.len());
+    let mut rejected = 0;
+    for value in values {
+        match serde_json::from_value(value) {
+            Ok(fact) => facts.push(fact),
+            Err(_) => rejected += 1,
+        }
     }
-}
-
-pub(crate) fn coerce_to_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(coerce_value_to_string(value))
-}
-
-/// Deserialize an array of arbitrary JSON values into strings, coercing each
-/// element the same way `coerce_to_string` does.
-fn coerce_string_array<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
-    Ok(values.into_iter().map(coerce_value_to_string).collect())
+    Ok((facts, rejected))
 }
 
 fn default_confidence() -> f64 {

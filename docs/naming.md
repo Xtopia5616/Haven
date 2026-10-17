@@ -205,7 +205,7 @@ CLIXML 与 Task Scheduler XML entity decoding 使用 `haven_common::encoding::xm
 
 Tools builtin 的多个名称列表使用 `ordered_unique_non_empty_names` 保留首次出现顺序并丢弃空项；Skill 前缀处理与 tool catalog 请求 trim/展平仍由 `normalize_skill_names`、`normalize_requested_names` 各自拥有。不要把纯列表机制提升为跨 crate API，也不要把领域规范化挪进共享 helper（ADR 0865）。
 
-事实谓词的 trim、小写和 alias 映射由 `haven-memory::repositories::facts::normalize_predicate` 独占；Agent extraction、predicate merge maintenance 和 Memory 写入直接复用它。Agent 的 `fact_extraction` 只拥有 LLM fact shape、字段 coercion/sanitization 与数组提取，不声明转发式 predicate normalizer（ADR 0866）。
+事实谓词的 trim、小写和 alias 映射由 `haven-memory::repositories::facts::normalize_predicate` 独占；Agent extraction、predicate merge maintenance 和 Memory 写入直接复用它。Agent 的 `fact_extraction` 只拥有 LLM fact shape、严格字段解析/sanitization 与数组提取；错型事实条目独立跳过，不将任意 JSON 值转换为事实文本（ADR 0866、1300）。
 
 跨 crate 错误文本清洗只调用 `haven_common::error::sanitize_error_text`。App `logging.rs` 拥有 `log_err` 和 tracing 上下文，不再重导出清洗函数；通知、事件、命令与日志调用方直接引用 Common（ADR 0867）。
 

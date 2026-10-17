@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；2026-10-17 第二轮逐文件审计新增兼容层清理与结构简化候选，当前顺序见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。Slice 1–6 均已完成；当前实施 Slice 7。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
+> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；2026-10-17 第二轮逐文件审计新增兼容层清理与结构简化候选，当前顺序见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。Slice 1–7 均已完成；当前实施 Slice 8。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
 > 更新日期：2026-10-17
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,8 +74,8 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active** | Slice 7：收紧模型生成的事实抽取结构，保留现有 envelope 提取、清洗和身份验证。 |
-| **Next** | Slice 8：合并 App 转发层和重复数据/metadata 副本；之后延续第一轮仍成立的内部职责切片，详见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)与[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
+| **Active** | Slice 8：合并 App 转发层和重复数据/metadata 副本，详见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。 |
+| **Next** | Slice 9：延续第一轮仍成立的内部职责切片，详见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)与[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）

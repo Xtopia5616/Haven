@@ -475,9 +475,10 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryOutboxStore::p
 - `token_budget.rs`：Agent 的 tokenizer 初始化、provider-visible message/tool/request 估算与前缀/后缀文本 token 截断唯一 owner。`ReActState` 只持有版本作用域的增量 canonical token estimate cache；`compactor.rs` 保留 compaction 专属的区间前缀和、范围选择与 summary 编排，`prompt_renderer.rs` 保留按完整行选择与 MEMORY fence 布局（ADR 0856）。
 - `prompt.rs` 对 memory fact 文本使用 `sanitize_fact_prompt_field` 应用固定 256 字符领域预算；底层控制字符替换与长度截取复用 Common `sanitize_prompt_field(input, max_chars)`（ADR 0868）。
 - Memory outbox retry 与 `MemoryRuntime` 恢复退避复用 common 纯策略/退避计算；worker 仍拥有 marker、cursor、等待、取消与恢复时序（ADR 0268、0447）。
-- `fact_extraction.rs`：事实抽取 DTO、LLM 字段 coercion、标签清洗、prompt 字段清洗和
-  JSON array 提取；规范事实谓词由 `haven-memory::repositories::facts::normalize_predicate`
-  唯一拥有，Agent extraction 与 maintenance 直接复用（ADR 0029、0169、0866）。
+- `fact_extraction.rs`：事实抽取 DTO、严格模型字段解析、标签清洗、prompt 字段清洗和
+  JSON array 提取；数组元素独立校验并跳过错型条目，规范事实谓词由
+  `haven-memory::repositories::facts::normalize_predicate` 唯一拥有，Agent extraction
+  与 maintenance 直接复用（ADR 0029、0169、0866、1300）。
 - 调用 `LlmRouter`、执行 `haven-tools` 工具、写 `haven-memory`、
   通过 `AgentEvent` 对外发事件。
 
