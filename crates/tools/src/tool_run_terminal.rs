@@ -106,7 +106,10 @@ impl TerminalTimestamps {
     }
 
     pub(crate) fn now(started_at: impl Into<String>) -> Self {
-        Self::new(started_at, chrono::Utc::now().to_rfc3339())
+        Self::new(
+            started_at,
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        )
     }
 
     pub(crate) fn build(self, payload: TerminalPayload) -> ToolRunState {

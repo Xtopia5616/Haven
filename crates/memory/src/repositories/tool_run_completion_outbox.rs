@@ -277,6 +277,9 @@ mod tests {
     use super::*;
     use crate::Database;
 
+    const TEST_STARTED_AT: &str = "2026-09-24T10:00:00.000Z";
+    const TEST_FINISHED_AT: &str = "2026-09-24T11:00:00.000Z";
+
     fn save_scheduled_tool(db: &Database, id: &str, session_id: Option<&str>) {
         db.save_scheduled_tool_run(
             id,
@@ -291,7 +294,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(db.start_scheduled_tool_run(id, "started").unwrap());
+        assert!(db.start_scheduled_tool_run(id, TEST_STARTED_AT).unwrap());
     }
 
     #[test]
@@ -301,7 +304,7 @@ mod tests {
             "toolrun-d21abf676dbf16ce90950071af56a65c",
             Some("ses-7ae290dbf0b4468c9d2c401be649850b"),
             "echo ok",
-            "start",
+            TEST_STARTED_AT,
         )
         .unwrap();
         db.finish_tool_run(
@@ -312,7 +315,7 @@ mod tests {
             None,
             None,
             Some(0),
-            "finish",
+            TEST_FINISHED_AT,
         )
         .unwrap();
 
@@ -338,7 +341,7 @@ mod tests {
             "toolrun-9aaff7e6f778708d51ee059267de8cfc",
             Some("ses-0e53a23edbb118d12b6c608f990b237d"),
             "echo source",
-            "start",
+            TEST_STARTED_AT,
             Some("step-7d7e314e3e701378c1bd927c5ac0f07f"),
         )
         .unwrap();
@@ -350,7 +353,7 @@ mod tests {
             None,
             None,
             Some(0),
-            "finish",
+            TEST_FINISHED_AT,
         )
         .unwrap();
 
@@ -368,7 +371,7 @@ mod tests {
             "toolrun-07dd4014335ee6040b532bad1c3fe4e5",
             Some("ses-7ae290dbf0b4468c9d2c401be649850b"),
             "echo ok",
-            "start",
+            TEST_STARTED_AT,
         )
         .unwrap();
         db.finish_tool_run(
@@ -379,7 +382,7 @@ mod tests {
             None,
             None,
             Some(0),
-            "finish",
+            TEST_FINISHED_AT,
         )
         .unwrap();
 
@@ -413,7 +416,7 @@ mod tests {
             "toolrun-e844406e862c8ae8d76da654618b3b2e",
             None,
             "echo late",
-            "start",
+            TEST_STARTED_AT,
         )
         .unwrap();
         db.finish_tool_run(
@@ -424,7 +427,7 @@ mod tests {
             None,
             None,
             Some(0),
-            "finish",
+            TEST_FINISHED_AT,
         )
         .unwrap();
 
@@ -461,7 +464,7 @@ mod tests {
             "toolrun-0ae56b2eeb5989c4f88283c53eb2032b",
             None,
             "echo owner",
-            "start",
+            TEST_STARTED_AT,
         )
         .unwrap();
         db.finish_tool_run(
@@ -472,7 +475,7 @@ mod tests {
             None,
             None,
             Some(0),
-            "finish",
+            TEST_FINISHED_AT,
         )
         .unwrap();
         assert!(db.claim_tool_run_completion().unwrap().is_some());
@@ -503,7 +506,7 @@ mod tests {
             "toolrun-9a4745acf96cffe92a4ae2e4a500aebc",
             Some("ses-1cc8cbf92fd671cc35312beac2bffedb"),
             "echo winner",
-            "started",
+            TEST_STARTED_AT,
         )
         .unwrap();
 
@@ -515,8 +518,8 @@ mod tests {
             None,
             Some("winner.log"),
             Some(0),
-            Some("started"),
-            Some("winner finish"),
+            Some(TEST_STARTED_AT),
+            Some(TEST_FINISHED_AT),
             None,
         );
         assert!(
@@ -531,8 +534,8 @@ mod tests {
             Some("late reason"),
             Some("late.log"),
             Some(1),
-            Some("started"),
-            Some("late finish"),
+            Some(TEST_STARTED_AT),
+            Some(TEST_FINISHED_AT),
             None,
         );
         assert!(!db.finish_tool_run_with_completion(&losing_payload).unwrap());
@@ -544,7 +547,7 @@ mod tests {
         assert_eq!(tool_run.status, ToolRunStatus::Completed);
         assert_eq!(tool_run.output.as_deref(), Some("winning output"));
         assert_eq!(tool_run.log_path.as_deref(), Some("winner.log"));
-        assert_eq!(tool_run.finished_at.as_deref(), Some("winner finish"));
+        assert_eq!(tool_run.finished_at.as_deref(), Some(TEST_FINISHED_AT));
 
         let completion = db.claim_tool_run_completion().unwrap().unwrap();
         assert_eq!(completion.status, tool_run.status);
@@ -583,7 +586,7 @@ mod tests {
             let db = Database::open_in_memory().unwrap();
             save_scheduled_tool(&db, id, Some("ses-2148a6ca499bafd3fdb8080b66f0c081"));
             assert!(
-                db.finish_scheduled_tool_run(id, status, summary, error_reason, "finished")
+                db.finish_scheduled_tool_run(id, status, summary, error_reason, TEST_FINISHED_AT)
                     .unwrap()
             );
 
@@ -632,6 +635,9 @@ mod tests {
         // Simulate a terminal row written by an older writer or a crash window
         // before the completion outbox was populated.
         db.conn()
+            .execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .unwrap();
+        db.conn()
             .execute(
                 "UPDATE tool_runs SET status = 'failed', error_reason = ?2,
                     finished_at = 'finished' WHERE id = ?1",
@@ -671,7 +677,7 @@ mod tests {
                 ToolRunStatus::Completed,
                 Some("summary"),
                 None,
-                "finished",
+                TEST_FINISHED_AT,
             )
             .unwrap()
         );
@@ -700,7 +706,10 @@ mod tests {
             .unwrap();
         assert!(
             cancelled
-                .cancel_scheduled_tool_run("toolrun-62bd87f8415fe5d89b4cbe83e96a1c93", "cancelled")
+                .cancel_scheduled_tool_run(
+                    "toolrun-62bd87f8415fe5d89b4cbe83e96a1c93",
+                    TEST_FINISHED_AT
+                )
                 .unwrap()
         );
         assert!(cancelled.claim_tool_run_completion().unwrap().is_none());
@@ -722,7 +731,10 @@ mod tests {
             .unwrap();
         assert!(
             continue_mode
-                .start_scheduled_tool_run("toolrun-a689bd31e6d6a8255907cffe248d8f8b", "started")
+                .start_scheduled_tool_run(
+                    "toolrun-a689bd31e6d6a8255907cffe248d8f8b",
+                    TEST_STARTED_AT
+                )
                 .unwrap()
         );
         assert!(
@@ -732,7 +744,7 @@ mod tests {
                     ToolRunStatus::Completed,
                     None,
                     None,
-                    "finished",
+                    TEST_FINISHED_AT,
                 )
                 .unwrap()
         );

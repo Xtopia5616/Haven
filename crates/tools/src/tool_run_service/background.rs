@@ -101,7 +101,7 @@ impl ToolRunService {
         // session's agent enumerate and read other sessions' background outputs
         // through status (which is RiskLevel::Safe).
         let tool_run_id = haven_common::types::new_id("toolrun");
-        let started_at = chrono::Utc::now().to_rfc3339();
+        let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let (kill_tx, kill_rx) = oneshot::channel();
         let tail = self.output_port.new_tail().await;
         let emit_interval = *self.tool_run_output_emit_interval.read().await;

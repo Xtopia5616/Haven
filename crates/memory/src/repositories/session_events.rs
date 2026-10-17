@@ -54,7 +54,6 @@ pub const CONFIRMATION_BATCH_PLANNED_EVENT_TYPE: &str = "confirmation_batch_plan
 /// an append-only control event so an interrupted repair remains observable
 /// even when materialized projection rows are incomplete.
 const RECOVERY_PERSISTENCE_EVENT_TYPE: &str = "recovery_persistence";
-pub const CURRENT_EVENT_VERSION: i64 = 1;
 /// Hard ceiling for one session-event append transaction, including pure
 /// domain-event batches. ReAct context/tool batches are smaller; this protects
 /// the persistence boundary if a caller bypasses those planners.
@@ -121,11 +120,11 @@ fn session_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionEv
         ));
     }
     let run_id = row
-        .get::<_, Option<i64>>(6)?
+        .get::<_, Option<i64>>(5)?
         .map(|value| {
             u64::try_from(value).map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    6,
+                    5,
                     rusqlite::types::Type::Integer,
                     error.into(),
                 )
@@ -136,11 +135,10 @@ fn session_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionEv
         session_id,
         sequence: row.get(1)?,
         event_type: row.get(2)?,
-        event_version: row.get(3)?,
-        payload: row.get(4)?,
-        created_at: row.get(5)?,
+        payload: row.get(3)?,
+        created_at: row.get(4)?,
         run_id,
-        step_number: row.get(7)?,
+        step_number: row.get(6)?,
     })
 }
 
@@ -179,7 +177,6 @@ pub struct SessionEvent {
     pub session_id: String,
     pub sequence: i64,
     pub event_type: String,
-    pub event_version: i64,
     pub payload: String,
     pub created_at: String,
     pub run_id: Option<u64>,
@@ -2163,14 +2160,13 @@ impl SessionStore {
                 .map_err(|_| anyhow::anyhow!("run_id does not fit SQLite INTEGER"))?;
             conn.execute(
                 "INSERT INTO session_events
-                    (session_id, sequence, event_type, event_version, payload,
+                    (session_id, sequence, event_type, payload,
                      created_at, run_id, step_number)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 rusqlite::params![
                     session_id,
                     sequence,
                     event.event_type,
-                    CURRENT_EVENT_VERSION,
                     event.payload,
                     created_at,
                     run_id,
@@ -2181,7 +2177,6 @@ impl SessionStore {
                 session_id: session_id.into(),
                 sequence,
                 event_type: event.event_type.clone(),
-                event_version: CURRENT_EVENT_VERSION,
                 payload: event.payload.clone(),
                 created_at,
                 run_id: event.run_id,
@@ -3025,7 +3020,7 @@ impl SessionStore {
     ) -> anyhow::Result<Option<SessionEvent>> {
         ensure_session_id(session_id)?;
         conn.query_row(
-            "SELECT session_id, sequence, event_type, event_version, payload,
+            "SELECT session_id, sequence, event_type, payload,
                     created_at, run_id, step_number
              FROM session_events
              WHERE session_id = ?1 AND event_type = ?2
@@ -3108,7 +3103,7 @@ impl SessionStore {
 
         let conn = self.db.conn();
         let mut stmt = conn.prepare(
-            "SELECT session_id, sequence, event_type, event_version, payload,
+            "SELECT session_id, sequence, event_type, payload,
                     created_at, run_id, step_number
              FROM session_events
              WHERE session_id = ?1 AND sequence > ?2
@@ -3163,7 +3158,7 @@ impl SessionStore {
     ) -> anyhow::Result<Vec<SessionEvent>> {
         ensure_session_id(session_id)?;
         let mut stmt = conn.prepare(
-            "SELECT session_id, sequence, event_type, event_version, payload,
+            "SELECT session_id, sequence, event_type, payload,
                     created_at, run_id, step_number
              FROM session_events
              WHERE session_id = ?1 AND sequence > ?2
@@ -3213,12 +3208,6 @@ impl SessionStore {
         let after_sequence = Self::active_replay_boundary_in_connection(conn, session_id)?;
         let mut active = Vec::new();
         for event in Self::read_from_in_connection(conn, session_id, after_sequence)? {
-            anyhow::ensure!(
-                event.event_version == CURRENT_EVENT_VERSION,
-                "unsupported session event version {} at sequence {}",
-                event.event_version,
-                event.sequence
-            );
             if event.event_type == TIMELINE_ROLLBACK_EVENT_TYPE {
                 let target = serde_json::from_str::<serde_json::Value>(&event.payload)?
                     .get("to_sequence")
@@ -3719,8 +3708,8 @@ mod tests {
         db.conn()
             .execute(
                 "INSERT INTO session_events
-                    (session_id, sequence, event_type, event_version, payload, created_at, run_id, step_number)
-                 VALUES (?1, 2, 'test_corrupt_step_number', 1, '{}', '2026-10-12T00:00:00Z', NULL, -1)",
+                    (session_id, sequence, event_type, payload, created_at, run_id, step_number)
+                 VALUES (?1, 2, 'test_corrupt_step_number', '{}', '2026-10-12T00:00:00Z', NULL, -1)",
                 rusqlite::params![session_id],
             )
             .unwrap();
@@ -3734,8 +3723,8 @@ mod tests {
         db.conn()
             .execute(
                 "INSERT INTO session_events
-                    (session_id, sequence, event_type, event_version, payload, created_at, run_id, step_number)
-                 VALUES (?1, 1, 'test_corrupt_run_id', 1, '{}', '2026-10-12T00:00:00Z', -1, NULL)",
+                    (session_id, sequence, event_type, payload, created_at, run_id, step_number)
+                 VALUES (?1, 1, 'test_corrupt_run_id', '{}', '2026-10-12T00:00:00Z', -1, NULL)",
                 rusqlite::params![session_id],
             )
             .unwrap();
@@ -5643,7 +5632,7 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         let invalid = conn
             .query_row(
-                "SELECT 'ses-short', 1, 'event', 1, '{}', 'now', NULL, NULL",
+                "SELECT 'ses-short', 1, 'event', '{}', 'now', NULL, NULL",
                 [],
                 session_event_from_row,
             )
@@ -5653,7 +5642,7 @@ mod tests {
         let session_id = haven_common::types::new_id("ses");
         let event = conn
             .query_row(
-                "SELECT ?1, 1, 'event', 1, '{}', 'now', NULL, NULL",
+                "SELECT ?1, 1, 'event', '{}', 'now', NULL, NULL",
                 [&session_id],
                 session_event_from_row,
             )
@@ -6583,19 +6572,11 @@ mod tests {
             .create_tool_step(&session_id, 1, "read_file", "{}", false, false, None, None)
             .unwrap();
         let before_usage = store.append_usage(&session_id, &usage_input(1, 5)).unwrap();
-        let legacy_timestamp = "2099-03-04T05:06:07.123456789+00:00";
-        db.conn()
-            .execute(
-                "UPDATE session_steps SET created_at = ?1 WHERE id = ?2",
-                rusqlite::params![legacy_timestamp, before_step.step_id],
-            )
-            .unwrap();
-
         let (_, branch_cursor) = store
             .append_branch_point_from_projection(&session_id, 2, None)
             .unwrap();
         let cutoff = branch_cursor.last_msg_at.as_deref().unwrap();
-        assert_eq!(cutoff, "2099-03-04T05:06:07.123Z");
+        assert_eq!(cutoff, before_usage.created_at);
         assert!(cutoff >= baseline.created_at.as_str());
         assert!(cutoff >= before_step.created_at.as_str());
         assert!(cutoff >= before_usage.created_at.as_str());
@@ -6630,6 +6611,39 @@ mod tests {
         let usage = db.list_session_llm_usage(&session_id).unwrap();
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].usage_id, before_usage.usage_id);
+    }
+
+    #[test]
+    fn projection_watermark_rejects_noncanonical_timestamps() {
+        let (db, store, session_id) = store();
+        let message = db
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::User,
+                "baseline",
+                Some(haven_common::types::TranscriptMessageKind::Text),
+                None,
+            )
+            .unwrap();
+
+        for timestamp in [
+            "2099-03-04T05:06:07.123456789+00:00",
+            "2099-03-04T05:06:07.123+00:00",
+            "2099-03-04T05:06:07Z",
+        ] {
+            db.conn()
+                .execute(
+                    "UPDATE messages SET created_at = ?1 WHERE id = ?2",
+                    rusqlite::params![timestamp, message.message_id],
+                )
+                .unwrap();
+            assert!(
+                store
+                    .append_branch_point_from_projection(&session_id, 2, None)
+                    .is_err(),
+                "accepted noncanonical timestamp {timestamp}"
+            );
+        }
     }
 
     #[test]

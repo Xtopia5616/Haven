@@ -256,7 +256,7 @@ impl ToolRunService {
         if self.shutting_down.load(Ordering::Acquire) {
             return;
         }
-        let started_at = chrono::Utc::now().to_rfc3339();
+        let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let (schedule, session_id) = {
             let tool_runs = self.tool_runs.read().await;
             let Some(tool_run) = tool_runs.get(tool_run_id) else {

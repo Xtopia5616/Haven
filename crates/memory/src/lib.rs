@@ -51,14 +51,13 @@ pub use repositories::session_authorization::{
     SessionAuthorizationGrant, StoredSessionAuthorizationGrant,
 };
 pub use repositories::session_events::{
-    ActiveBranchPoint, CONFIRMATION_BATCH_PLANNED_EVENT_TYPE, CURRENT_EVENT_VERSION,
-    INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
-    INTERACTION_RESOLVED_EVENT_TYPE, MEMORY_TRIGGER_EVENT_TYPE, RecoveryPartialKind,
-    RecoveryPersistenceStatus, RollbackProjectionBoundary, RollbackRequest, RollbackResult,
-    SessionCommitResult, SessionCommitted, SessionCursor, SessionEvent, SessionEventInput,
-    SessionEventPage, SessionForkBranchPoint, SessionForkSnapshot, SessionHistoryFilter,
-    SessionHistoryStatusFilter, SessionMessageText, SessionReplayState, SessionResumeMedia,
-    SessionResumeProjection, SessionStore, SessionTitleGenerationContext,
+    ActiveBranchPoint, CONFIRMATION_BATCH_PLANNED_EVENT_TYPE, INTERACTION_CLEARED_EVENT_TYPE,
+    INTERACTION_REQUESTED_EVENT_TYPE, INTERACTION_RESOLVED_EVENT_TYPE, MEMORY_TRIGGER_EVENT_TYPE,
+    RecoveryPartialKind, RecoveryPersistenceStatus, RollbackProjectionBoundary, RollbackRequest,
+    RollbackResult, SessionCommitResult, SessionCommitted, SessionCursor, SessionEvent,
+    SessionEventInput, SessionEventPage, SessionForkBranchPoint, SessionForkSnapshot,
+    SessionHistoryFilter, SessionHistoryStatusFilter, SessionMessageText, SessionReplayState,
+    SessionResumeMedia, SessionResumeProjection, SessionStore, SessionTitleGenerationContext,
     SqliteStorageWriteFailure, TIMELINE_ROLLBACK_EVENT_TYPE, TRANSCRIPT_EVENT_TYPE,
     USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
 };

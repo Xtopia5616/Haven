@@ -2753,7 +2753,8 @@ async fn test_restore_scheduled_tool_run_uses_tool_run_session_and_schedule_due_
     let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_events = events.clone();
-    let due_at = (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339();
+    let due_at = (chrono::Utc::now() + chrono::Duration::days(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     db.save_scheduled_tool_run(
         "toolrun-0000000000000000000000000000000e",
         &due_at,
@@ -3664,7 +3665,7 @@ async fn scheduled_execution_claim_arbitrates_with_cancellation() {
             haven_common::lifecycle::ToolRunStatus::Completed,
             Some("remote terminal transition"),
             None,
-            "remote-finish",
+            "2026-10-17T00:00:00.000Z",
         )
         .unwrap()
     );

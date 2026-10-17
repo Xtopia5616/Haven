@@ -569,7 +569,7 @@ impl ToolRunService {
     /// exponential backoff. This prevents a transient DB outage from turning
     /// a durable `waiting` row into a permanently invisible ToolRun.
     async fn quarantine_invalid_scheduled_row(self: &Arc<Self>, tool_run_id: &str, reason: &str) {
-        let finished_at = chrono::Utc::now().to_rfc3339();
+        let finished_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         match self
             .try_quarantine_invalid_scheduled_row(tool_run_id, reason, &finished_at)
             .await
@@ -671,7 +671,7 @@ impl ToolRunService {
         // as `running` would create a restart-only ghost. Preserve a terminal
         // failure as a last-resort compensation; restore_after_restart can then
         // safely treat the row as history even if the delete path is unavailable.
-        let finished_at = chrono::Utc::now().to_rfc3339();
+        let finished_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let tool_run_id = tool_run_id.to_string();
         let reason = "background ToolRun failed before its process was admitted";
         let mut fallback_error = None;
@@ -1525,7 +1525,7 @@ impl ToolRunService {
         tool_run_id: &str,
     ) -> anyhow::Result<()> {
         let _terminal = self.terminal_transition.lock().await;
-        let finished_at = chrono::Utc::now().to_rfc3339();
+        let finished_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let retry_policy = ToolRunStoreRetryPolicy::inline_store();
         let mut last_error = None;
         for attempt in 1..=retry_policy.max_attempts() {

@@ -15,7 +15,7 @@ schema v43 为待投递输入增加 `steering` 路由，恢复时保留「立即
 
 schema v44 为会话来源增加 `fork` 与 `fork_source_message_id`，支持从用户消息派生独立会话；派生事务会复制有效 transcript 前缀及对应 messages/steps，并重映射 child-owned `msg-*` / `step-*` 身份（ADR 1157）。v43 及更早数据库不做运行时迁移，升级前需按下文删除数据库文件；配置与 inbox 无需重置。
 
-schema v45 收敛 durable session event DTO：interaction/transcript/usage 身份只接受规范字段，ToolResult envelope 使用 `idempotency`，不再为旧字段名或旧 JSON shape 提供读取 fallback（ADR 1296）。v44 及更早数据库不做运行时迁移，必须先备份并按下文删除 `haven.db`、`haven.db-wal` 与 `haven.db-shm`；升级会清除会话、transcript、记忆、授权、ToolRun 和用量。
+schema v45 收敛 durable session event DTO：interaction/transcript/usage 身份只接受规范字段，ToolResult envelope 使用 `idempotency`；SessionEvent 删除没有解码器的单版本 `event_version` 列。`tool_runs` 的 `due_at`、`started_at`、`finished_at`、`created_at` 和 messages/steps/usage 共享投影时间统一为固定毫秒 UTC RFC3339；reader 拒绝 SQLite datetime、非 UTC offset 和超精度投影值（ADR 1296、1297）。v44 及更早数据库不做运行时迁移，必须先备份并按下文删除 `haven.db`、`haven.db-wal` 与 `haven.db-shm`；升级会清除会话、transcript、记忆、授权、ToolRun 和用量。
 
 跨 session 消息 inbox 只接受规范 `ses-{uuid32}` 身份、规范 `msg-{uuid32}` envelope id 和当前必填字段 shape。旧 registry、缺 `Envelope.type` 的 JSONL、缺 `AgentEntry.capabilities` 的条目、旧 backlog version marker 与超过当前 serialized envelope 上限的行均不迁移；坏行阻塞时 source 保持不变。切换格式前必须先完整备份并按下方步骤重置整个 `inbox/`；这会清除所有 peer 的 registry、未处理消息、backlog/cursor、processing、archive 与 deletion tombstone，但不删除 SQLite transcript、会话或记忆。每 recipient 新写入预算为 16 MiB，history 最多返回 100 条；删除谱系 `deleted_sessions.json` 最多 64 MiB。升级期间必须退出所有共享该目录的 Haven 进程，不能让旧 binary 与新格式并发访问。备份保留原始行供离线检查，不能直接作为运行时数据恢复。
 

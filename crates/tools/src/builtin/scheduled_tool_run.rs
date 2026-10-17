@@ -1383,7 +1383,7 @@ mod tests {
 
         db.save_scheduled_tool_run(
             "toolrun-00000000000000000000000000000001",
-            "not-a-timestamp",
+            "2026-10-17T00:00:00.000Z",
             "Bad due",
             "must not run",
             haven_common::tool_run::ScheduleMode::Continue,
@@ -1394,6 +1394,14 @@ mod tests {
             None,
         )
         .unwrap();
+        db.conn()
+            .execute_batch(
+                "PRAGMA ignore_check_constraints = ON;\
+                 UPDATE tool_runs SET due_at = 'not-a-timestamp' \
+                 WHERE id = 'toolrun-00000000000000000000000000000001';\
+                 PRAGMA ignore_check_constraints = OFF;",
+            )
+            .unwrap();
         db.save_scheduled_tool_run(
             "toolrun-00000000000000000000000000000002",
             &(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),

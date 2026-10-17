@@ -1,10 +1,21 @@
 use crate::db::Database;
+use crate::repositories::messages::now_rfc3339_millis;
+use anyhow::Context as _;
+use chrono::{DateTime, SecondsFormat, Utc};
 use haven_common::ToolRunCompletionPayload;
 use haven_common::lifecycle::ToolRunStatus;
 use haven_common::tool_run::ScheduleMode;
 use rusqlite::OptionalExtension;
 
 const SCHEDULED_EXECUTION_CLAIM_PREFIX: &str = "scheduled_execution_claim.";
+
+pub(super) fn normalize_tool_run_timestamp(value: &str, field: &str) -> anyhow::Result<String> {
+    let timestamp = DateTime::parse_from_rfc3339(value)
+        .with_context(|| format!("{field} must be an RFC3339 timestamp"))?;
+    Ok(timestamp
+        .with_timezone(&Utc)
+        .to_rfc3339_opts(SecondsFormat::Millis, true))
+}
 
 fn scheduled_execution_claim_key(tool_run_id: &str) -> String {
     format!("{SCHEDULED_EXECUTION_CLAIM_PREFIX}{tool_run_id}")
@@ -55,10 +66,15 @@ impl Database {
             (!due_at.trim().is_empty()) != watch_tool_run_id.is_some(),
             "scheduled ToolRun requires exactly one of due_at or watch_tool_run_id"
         );
+        let due_at = if due_at.trim().is_empty() {
+            String::new()
+        } else {
+            normalize_tool_run_timestamp(due_at, "due_at")?
+        };
         let conn = self.conn();
         conn.execute(
             "INSERT INTO tool_runs (id, kind, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, watch_tool_run_id, status, created_at)
-             VALUES (?1, 'scheduled', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'waiting', datetime('now'))",
+             VALUES (?1, 'scheduled', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'waiting', ?11)",
             rusqlite::params![
                 tool_run_id,
                 due_at,
@@ -69,7 +85,8 @@ impl Database {
                 tool_name,
                 tool_args,
                 prompt,
-                watch_tool_run_id
+                watch_tool_run_id,
+                now_rfc3339_millis()
             ],
         )?;
         Ok(())
@@ -147,6 +164,7 @@ impl Database {
         tool_run_id: &str,
         started_at: &str,
     ) -> anyhow::Result<bool> {
+        let started_at = normalize_tool_run_timestamp(started_at, "started_at")?;
         let conn = self.conn();
         let changed = conn.execute(
             "UPDATE tool_runs SET status = 'running', started_at = ?2
@@ -186,6 +204,7 @@ impl Database {
         ) {
             anyhow::bail!("scheduled ToolRun terminal status must be terminal");
         }
+        let finished_at = normalize_tool_run_timestamp(finished_at, "finished_at")?;
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
@@ -232,7 +251,7 @@ impl Database {
                     log_path: None,
                     exit_code: None,
                     started_at: None,
-                    finished_at: Some(finished_at.to_owned()),
+                    finished_at: Some(finished_at.clone()),
                     source_step_id: None,
                     truncated: false,
                 })?;
@@ -293,6 +312,7 @@ impl Database {
         tool_run_id: &str,
         finished_at: &str,
     ) -> anyhow::Result<bool> {
+        let finished_at = normalize_tool_run_timestamp(finished_at, "finished_at")?;
         let conn = self.conn();
         let claim_key = scheduled_execution_claim_key(tool_run_id);
         let changed = conn.execute(
@@ -401,6 +421,7 @@ impl Database {
         error_reason: &str,
         finished_at: &str,
     ) -> anyhow::Result<bool> {
+        let finished_at = normalize_tool_run_timestamp(finished_at, "finished_at")?;
         let conn = self.conn();
         let changed = conn.execute(
             "UPDATE tool_runs SET status = 'failed', error_reason = ?2, finished_at = ?3
@@ -503,11 +524,19 @@ impl Database {
         started_at: &str,
         source_step_id: Option<&str>,
     ) -> anyhow::Result<()> {
+        let started_at = normalize_tool_run_timestamp(started_at, "started_at")?;
         let conn = self.conn();
         conn.execute(
             "INSERT INTO tool_runs (id, kind, session_id, source_step_id, command, status, started_at, created_at)
-             VALUES (?1, 'background', ?2, ?3, ?4, 'running', ?5, datetime('now'))",
-            rusqlite::params![tool_run_id, session_id, source_step_id, command, started_at],
+             VALUES (?1, 'background', ?2, ?3, ?4, 'running', ?5, ?6)",
+            rusqlite::params![
+                tool_run_id,
+                session_id,
+                source_step_id,
+                command,
+                started_at,
+                now_rfc3339_millis()
+            ],
         )?;
         Ok(())
     }
@@ -565,6 +594,7 @@ impl Database {
             matches!(status, ToolRunStatus::Completed | ToolRunStatus::Failed),
             "background ToolRun terminal status must be completed or failed"
         );
+        let finished_at = normalize_tool_run_timestamp(finished_at, "finished_at")?;
         let conn = self.conn();
         let changed = conn.execute(
             "UPDATE tool_runs
@@ -593,6 +623,7 @@ impl Database {
         tool_run_id: &str,
         finished_at: &str,
     ) -> anyhow::Result<bool> {
+        let finished_at = normalize_tool_run_timestamp(finished_at, "finished_at")?;
         let conn = self.conn();
         let changed = conn.execute(
             "UPDATE tool_runs
@@ -617,11 +648,23 @@ impl Database {
             ),
             "background completion outbox only accepts completed or failed tool_runs"
         );
+        let mut payload = payload.clone();
+        payload.started_at = payload
+            .started_at
+            .as_deref()
+            .map(|started_at| normalize_tool_run_timestamp(started_at, "started_at"))
+            .transpose()?;
+        payload.finished_at = payload
+            .finished_at
+            .as_deref()
+            .map(|finished_at| normalize_tool_run_timestamp(finished_at, "finished_at"))
+            .transpose()?;
         let finished_at = payload
             .finished_at
             .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("terminal ToolRun completion requires finished_at"))?;
-        let payload_json = serde_json::to_string(payload)?;
+            .ok_or_else(|| anyhow::anyhow!("terminal ToolRun completion requires finished_at"))?
+            .to_owned();
+        let payload_json = serde_json::to_string(&payload)?;
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
@@ -822,7 +865,7 @@ impl Database {
     /// restart is stale and must not surface as live work. Idempotent.
     pub fn mark_interrupted_tool_runs(&self) -> anyhow::Result<usize> {
         let conn = self.conn();
-        let finished_at = chrono::Utc::now().to_rfc3339();
+        let finished_at = now_rfc3339_millis();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<usize> {
             let n = conn.execute(
@@ -863,6 +906,9 @@ mod tests {
     use haven_common::tool_run::ScheduleMode;
     use haven_common::types::new_id;
 
+    const TEST_STARTED_AT: &str = "2026-09-24T10:00:00.000Z";
+    const TEST_FINISHED_AT: &str = "2026-09-24T11:00:00.000Z";
+
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")
     }
@@ -881,7 +927,7 @@ mod tests {
             error_reason: None,
             log_path: None,
             exit_code: Some(0),
-            started_at: Some("started".to_owned()),
+            started_at: Some(TEST_STARTED_AT.to_owned()),
             finished_at: Some(finished_at.to_owned()),
             source_step_id: None,
             truncated: false,
@@ -968,7 +1014,7 @@ mod tests {
             "toolrun-c1c06c9bd135a4b74d2018105af6c82e",
             Some("ses-499ca13ea6e741627e78b0587cc1dbbf"),
             "echo source",
-            "started",
+            TEST_STARTED_AT,
             Some("step-7469d05e68e65b64fab2ddb439cbcf39"),
         )
         .unwrap();
@@ -994,7 +1040,7 @@ mod tests {
         let db = test_db();
         let producer_id = new_id("toolrun");
         let continuation_id = new_id("toolrun");
-        db.save_tool_run(&producer_id, None, "echo result", "started")
+        db.save_tool_run(&producer_id, None, "echo result", TEST_STARTED_AT)
             .unwrap();
         db.finish_tool_run(
             &producer_id,
@@ -1004,7 +1050,7 @@ mod tests {
             None,
             None,
             Some(0),
-            "finished",
+            TEST_FINISHED_AT,
         )
         .unwrap();
         db.save_scheduled_tool_run(
@@ -1040,14 +1086,14 @@ mod tests {
         let projected = db.get_tool_run(&continuation_id).unwrap().unwrap();
         assert!(projected.output.is_none());
 
-        db.start_scheduled_tool_run(&continuation_id, "fired")
+        db.start_scheduled_tool_run(&continuation_id, TEST_STARTED_AT)
             .unwrap();
         db.finish_scheduled_tool_run(
             &continuation_id,
             ToolRunStatus::Completed,
             Some("scheduled tool result"),
             None,
-            "finished",
+            TEST_FINISHED_AT,
         )
         .unwrap();
         let dependency = db
@@ -1272,7 +1318,7 @@ mod tests {
         assert!(
             !db.cancel_scheduled_tool_run(
                 "toolrun-e39d162ef3e068d4c7313ee944e38099",
-                "cancel-lost"
+                TEST_FINISHED_AT
             )
             .unwrap()
         );
@@ -1288,7 +1334,7 @@ mod tests {
                 ToolRunStatus::Completed,
                 Some("done"),
                 None,
-                "finish-approved",
+                TEST_FINISHED_AT,
             )
             .unwrap()
         );
@@ -1299,8 +1345,11 @@ mod tests {
         );
 
         assert!(
-            db.cancel_scheduled_tool_run("toolrun-a7494ea15f8baebbba418a9ec4d9ae60", "cancel-won")
-                .unwrap()
+            db.cancel_scheduled_tool_run(
+                "toolrun-a7494ea15f8baebbba418a9ec4d9ae60",
+                TEST_FINISHED_AT
+            )
+            .unwrap()
         );
         assert!(
             !db.claim_scheduled_tool_run_execution(
@@ -1337,8 +1386,11 @@ mod tests {
         )
         .unwrap();
         assert!(
-            db.start_scheduled_tool_run("toolrun-ec30bce074ec534f0ad80aba9a4c00e5", "started")
-                .unwrap()
+            db.start_scheduled_tool_run(
+                "toolrun-ec30bce074ec534f0ad80aba9a4c00e5",
+                TEST_STARTED_AT
+            )
+            .unwrap()
         );
         assert!(
             db.claim_scheduled_tool_run_execution(
@@ -1393,7 +1445,10 @@ mod tests {
             .unwrap();
         assert!(
             approver
-                .start_scheduled_tool_run("toolrun-da6248246093e8ee88aaf51dce7ce93a", "started")
+                .start_scheduled_tool_run(
+                    "toolrun-da6248246093e8ee88aaf51dce7ce93a",
+                    TEST_STARTED_AT
+                )
                 .unwrap()
         );
 
@@ -1409,7 +1464,7 @@ mod tests {
             !canceller
                 .cancel_scheduled_tool_run(
                     "toolrun-da6248246093e8ee88aaf51dce7ce93a",
-                    "cancel-lost"
+                    TEST_FINISHED_AT
                 )
                 .unwrap()
         );
@@ -1423,7 +1478,10 @@ mod tests {
         );
         assert!(
             canceller
-                .cancel_scheduled_tool_run("toolrun-da6248246093e8ee88aaf51dce7ce93a", "cancel-won")
+                .cancel_scheduled_tool_run(
+                    "toolrun-da6248246093e8ee88aaf51dce7ce93a",
+                    TEST_FINISHED_AT
+                )
                 .unwrap()
         );
         assert!(
@@ -1442,19 +1500,19 @@ mod tests {
     #[test]
     fn malformed_waiting_scheduled_tool_runs_can_be_quarantined() {
         let db = test_db();
-        db.save_scheduled_tool_run(
-            "toolrun-1aeb68b4774efae8b0fa672f9b3b77e9",
-            "not-a-timestamp",
-            "Haven",
-            "bad schedule",
-            haven_common::tool_run::ScheduleMode::Tool,
-            None,
-            Some("notify"),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        db.conn()
+            .execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO tool_runs (id, kind, due_at, title, body, mode, status, created_at)
+                 VALUES (?1, 'scheduled', 'not-a-timestamp', 'Haven', 'bad schedule', 'tool', 'waiting', ?2)",
+                rusqlite::params![
+                    "toolrun-1aeb68b4774efae8b0fa672f9b3b77e9",
+                    "2026-09-24T10:00:00.000Z"
+                ],
+            )
+            .unwrap();
 
         assert!(
             db.fail_waiting_scheduled_tool_run(
@@ -1471,7 +1529,7 @@ mod tests {
             .unwrap();
         assert_eq!(row.status, ToolRunStatus::Failed);
         assert_eq!(row.error_reason.as_deref(), Some("invalid due_at"));
-        assert_eq!(row.finished_at.as_deref(), Some("2026-08-04T02:00:01Z"));
+        assert_eq!(row.finished_at.as_deref(), Some("2026-08-04T02:00:01.000Z"));
     }
 
     #[test]
@@ -1585,10 +1643,10 @@ mod tests {
                 ToolRunStatus::Failed,
             ),
         ] {
-            db.save_tool_run(id, None, "echo lifecycle", "started")
+            db.save_tool_run(id, None, "echo lifecycle", TEST_STARTED_AT)
                 .unwrap();
             if first_status == ToolRunStatus::Cancelled {
-                assert!(db.cancel_background_tool_run(id, "first finish").unwrap());
+                assert!(db.cancel_background_tool_run(id, TEST_FINISHED_AT).unwrap());
             } else {
                 assert!(
                     db.finish_tool_run(
@@ -1599,7 +1657,7 @@ mod tests {
                         Some("first reason"),
                         None,
                         Some(1),
-                        "first finish",
+                        TEST_FINISHED_AT,
                     )
                     .unwrap()
                 );
@@ -1615,14 +1673,11 @@ mod tests {
                     Some("late reason"),
                     Some("late.log"),
                     Some(2),
-                    "late finish",
+                    TEST_FINISHED_AT,
                 )
                 .unwrap()
             );
-            assert!(
-                !db.cancel_background_tool_run(id, "late cancellation")
-                    .unwrap()
-            );
+            assert!(!db.cancel_background_tool_run(id, TEST_FINISHED_AT).unwrap());
 
             let after_late_write = db.get_tool_run(id).unwrap().unwrap();
             assert_eq!(after_late_write.status, first.status, "{id}");
@@ -1642,7 +1697,7 @@ mod tests {
             "toolrun-af85722cf18ba91f9215191ddeda32e5",
             None,
             "echo cancel",
-            "started",
+            TEST_STARTED_AT,
         )
         .unwrap();
 
@@ -1655,13 +1710,16 @@ mod tests {
                 None,
                 None,
                 None,
-                "finished",
+                TEST_FINISHED_AT,
             )
             .is_err()
         );
         assert!(
-            db.cancel_background_tool_run("toolrun-af85722cf18ba91f9215191ddeda32e5", "finished")
-                .unwrap()
+            db.cancel_background_tool_run(
+                "toolrun-af85722cf18ba91f9215191ddeda32e5",
+                TEST_FINISHED_AT
+            )
+            .unwrap()
         );
         assert_eq!(
             db.get_tool_run("toolrun-af85722cf18ba91f9215191ddeda32e5")
@@ -1679,7 +1737,7 @@ mod tests {
             "toolrun-1ea0dba6bc75630f9034c95ef551b986",
             Some("ses-7ae290dbf0b4468c9d2c401be649850b"),
             "echo restart",
-            "started",
+            TEST_STARTED_AT,
         )
         .unwrap();
         assert_eq!(db.mark_interrupted_tool_runs().unwrap(), 1);
@@ -1693,7 +1751,7 @@ mod tests {
                 "toolrun-1ea0dba6bc75630f9034c95ef551b986",
                 ToolRunStatus::Completed,
                 Some("late output"),
-                "late finish",
+                TEST_FINISHED_AT,
             ))
             .unwrap()
         );

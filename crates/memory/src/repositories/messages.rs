@@ -1,4 +1,5 @@
 use crate::db::Database;
+use anyhow::Context as _;
 use base64::Engine as _;
 use chrono::{SecondsFormat, Utc};
 use haven_common::media::{MediaInput, message_attachment_to_media_input};
@@ -24,30 +25,39 @@ pub(crate) fn last_projection_created_at(
     session_id: &str,
 ) -> anyhow::Result<Option<String>> {
     ensure_session_id(session_id)?;
-    let (last, invalid_count): (Option<String>, i64) = conn.query_row(
-        "WITH projection_timestamps AS (
+    let mut statement = conn.prepare(
+        "SELECT created_at FROM (
             SELECT created_at FROM messages WHERE session_id = ?1
             UNION ALL SELECT created_at FROM session_steps WHERE session_id = ?1
             UNION ALL SELECT created_at FROM llm_usage WHERE session_id = ?1
-        ), normalized AS (
-            SELECT strftime('%Y-%m-%dT%H:%M:%fZ', created_at) AS created_at
-            FROM projection_timestamps
-        )
-        SELECT MAX(created_at), COALESCE(SUM(created_at IS NULL), 0) FROM normalized",
-        rusqlite::params![session_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        )",
     )?;
-    anyhow::ensure!(
-        invalid_count == 0,
-        "session projection contains an invalid created_at timestamp"
-    );
+    let rows = statement.query_map(rusqlite::params![session_id], |row| row.get::<_, String>(0))?;
+    let mut last: Option<String> = None;
+    for row in rows {
+        let created_at = row?;
+        let timestamp = chrono::DateTime::parse_from_rfc3339(&created_at)
+            .context("session projection contains an invalid created_at timestamp")?;
+        let canonical = timestamp
+            .with_timezone(&Utc)
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        anyhow::ensure!(
+            created_at == canonical,
+            "session projection created_at must be canonical UTC RFC3339 milliseconds"
+        );
+        if last
+            .as_deref()
+            .is_none_or(|last_created_at| created_at.as_str() > last_created_at)
+        {
+            last = Some(created_at);
+        }
+    }
     Ok(last)
 }
 
 /// Mint a fixed millisecond UTC timestamp strictly after every durable
 /// projection for this session and any earlier timestamp allocated in the
-/// same batch. The read side rounds legacy higher-precision timestamps to the
-/// end of their millisecond bucket, so string cutoffs remain safe.
+/// same batch. Persisted rows must already use that exact canonical format.
 pub(crate) fn next_projection_created_at(
     conn: &rusqlite::Connection,
     session_id: &str,

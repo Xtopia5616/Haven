@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use haven_common::retry::BackoffPolicy;
-use haven_memory::{CURRENT_EVENT_VERSION, MEMORY_TRIGGER_EVENT_TYPE, SessionEvent, SessionStore};
+use haven_memory::{MEMORY_TRIGGER_EVENT_TYPE, SessionEvent, SessionStore};
 use tokio::sync::broadcast;
 use tokio::time::{Instant, sleep, sleep_until};
 use tokio_util::sync::CancellationToken;
@@ -457,11 +457,6 @@ impl MemoryRuntime {
         );
 
         let enqueued = if event.event_type == MEMORY_TRIGGER_EVENT_TYPE {
-            anyhow::ensure!(
-                event.event_version == CURRENT_EVENT_VERSION,
-                "unsupported memory_trigger event version {}",
-                event.event_version
-            );
             let payload: MemoryTriggerPayload =
                 serde_json::from_str(&event.payload).context("invalid memory_trigger payload")?;
             payload
@@ -657,7 +652,6 @@ mod tests {
             session_id: session_id.to_owned(),
             sequence,
             event_type: event_type.to_owned(),
-            event_version: CURRENT_EVENT_VERSION,
             payload,
             created_at: "2026-09-24T00:00:00Z".to_owned(),
             run_id: None,

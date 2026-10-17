@@ -570,7 +570,6 @@ mod tests {
             session_id: SESSION_ID.into(),
             sequence,
             event_type: event_type.into(),
-            event_version: haven_memory::CURRENT_EVENT_VERSION,
             payload: serde_json::to_string(&payload).unwrap(),
             created_at: format!("2026-10-03T00:00:{sequence:02}Z"),
             run_id: Some(1),

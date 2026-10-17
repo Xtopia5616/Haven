@@ -36,7 +36,7 @@ use crate::types::{ToolCall, TranscriptRecord, canonical_for_compaction_event_wi
 use haven_common::tools::{OperationIdempotency, ToolOperationScope, ToolResultEnvelope};
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
-use haven_memory::{CURRENT_EVENT_VERSION, SessionCommitted, SessionEvent, TRANSCRIPT_EVENT_TYPE};
+use haven_memory::{SessionCommitted, SessionEvent, TRANSCRIPT_EVENT_TYPE};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -685,7 +685,6 @@ impl ReActEngine {
                                 session_id: ctx.session_id.clone(),
                                 sequence,
                                 event_type: TRANSCRIPT_EVENT_TYPE.to_string(),
-                                event_version: CURRENT_EVENT_VERSION,
                                 payload: serde_json::to_string(&media_record)?,
                                 created_at: String::new(),
                                 run_id: Some(ctx.run_id),

@@ -71,7 +71,6 @@ const SCHEMA_SQL: &[&str] = &[
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         sequence INTEGER NOT NULL,
         event_type TEXT NOT NULL CHECK(length(trim(event_type)) > 0),
-        event_version INTEGER NOT NULL DEFAULT 1 CHECK(event_version > 0),
         payload TEXT NOT NULL CHECK(json_valid(payload)),
         created_at TEXT NOT NULL,
         run_id INTEGER,
@@ -165,7 +164,11 @@ const SCHEMA_SQL: &[&str] = &[
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL DEFAULT 'scheduled'
             CHECK(kind IN ('background','scheduled')),
-        due_at TEXT,
+        due_at TEXT CHECK(due_at IS NULL OR due_at = '' OR (
+            length(due_at) = 24 AND
+            due_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', due_at) = due_at
+        )),
         title TEXT NOT NULL DEFAULT 'Haven',
         body TEXT,
         mode TEXT NOT NULL DEFAULT 'tool',
@@ -184,9 +187,21 @@ const SCHEMA_SQL: &[&str] = &[
         error_reason TEXT,
         log_path TEXT,
         exit_code INTEGER,
-        started_at TEXT,
-        finished_at TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        started_at TEXT CHECK(started_at IS NULL OR (
+            length(started_at) = 24 AND
+            started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', started_at) = started_at
+        )),
+        finished_at TEXT CHECK(finished_at IS NULL OR (
+            length(finished_at) = 24 AND
+            finished_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', finished_at) = finished_at
+        )),
+        created_at TEXT NOT NULL CHECK(
+            length(created_at) = 24 AND
+            created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', created_at) = created_at
+        )
     )",
     // Durable delivery records for terminal background ToolRun results. The
     // ToolRun row is the result source; this table records whether the result
@@ -500,7 +515,6 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("messages", "ui_metadata"),
     ("messages", "media_inputs"),
     ("session_events", "payload"),
-    ("session_events", "event_version"),
     ("pending_session_inputs", "disposition"),
     ("session_authorization_grants", "permission_target"),
     ("session_authorization_grants", "session_id"),
@@ -652,6 +666,15 @@ mod tests {
             assert!(user_tables(&conn).iter().any(|name| name == table));
         }
         assert!(!table_exists(&conn, "memory_edges").unwrap());
+        assert!(!column_exists(&conn, "session_events", "event_version").unwrap());
+        let tool_run_created_at_default: Option<String> = conn
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('tool_runs') WHERE name = 'created_at'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(tool_run_created_at_default.is_none());
 
         let version = user_version(&conn).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
@@ -726,12 +749,37 @@ mod tests {
         let tool_run_id = haven_common::types::new_id("toolrun");
         let error = conn
             .execute(
-                "INSERT INTO tool_runs (id, kind, status) VALUES (?1, 'unknown', 'waiting')",
+                "INSERT INTO tool_runs (id, kind, status, created_at) VALUES (?1, 'unknown', 'waiting', '2026-09-24T10:00:00.000Z')",
                 [&tool_run_id],
             )
             .unwrap_err();
 
         assert!(error.to_string().contains("CHECK constraint failed"));
+    }
+
+    #[test]
+    fn tool_run_timestamps_require_canonical_utc_milliseconds() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+
+        for timestamp in [
+            "2026-09-24T10:00:00Z",
+            "2026-09-24T10:00:00.000+00:00",
+            "2026-02-30T10:00:00.000Z",
+            "2026-09-24 10:00:00",
+        ] {
+            let tool_run_id = haven_common::types::new_id("toolrun");
+            let error = conn
+                .execute(
+                    "INSERT INTO tool_runs (id, kind, status, created_at) VALUES (?1, 'scheduled', 'waiting', ?2)",
+                    rusqlite::params![tool_run_id, timestamp],
+                )
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("CHECK constraint failed"),
+                "accepted noncanonical timestamp {timestamp}: {error}"
+            );
+        }
     }
 
     #[test]

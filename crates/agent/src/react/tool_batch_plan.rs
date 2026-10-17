@@ -593,7 +593,6 @@ mod tests {
             session_id: "ses-37d95174ca2a846e8425178b7dc6ed84".into(),
             sequence,
             event_type: event_type.into(),
-            event_version: haven_memory::CURRENT_EVENT_VERSION,
             payload,
             created_at: "2026-01-01T00:00:00Z".into(),
             run_id: None,

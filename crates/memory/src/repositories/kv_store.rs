@@ -1679,8 +1679,8 @@ mod tests {
         db.conn()
             .execute(
                 "INSERT INTO session_events
-                    (session_id, sequence, event_type, event_version, payload, created_at)
-                 VALUES (?1, 1, 'usage_recorded', 1, '{}', '2026-10-06T00:00:00Z')",
+                    (session_id, sequence, event_type, payload, created_at)
+                 VALUES (?1, 1, 'usage_recorded', '{}', '2026-10-06T00:00:00Z')",
                 rusqlite::params![existing.session_id],
             )
             .unwrap();

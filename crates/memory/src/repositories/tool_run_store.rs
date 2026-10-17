@@ -9,21 +9,17 @@ use std::sync::Arc;
 
 use crate::Database;
 use crate::repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
-use crate::repositories::tool_runs::{ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow};
+use crate::repositories::tool_runs::{
+    ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow, normalize_tool_run_timestamp,
+};
 use anyhow::Context;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use haven_common::ToolRunCompletionPayload;
 use haven_common::lifecycle::ToolRunStatus;
 use haven_common::tool_run::ScheduleMode;
 use haven_common::types::is_canonical_id;
 
 const MAX_TOOL_RUN_HISTORY_PAGE_SIZE: usize = 200;
-
-fn normalize_tool_run_timestamp(value: &str, field: &str) -> anyhow::Result<String> {
-    let timestamp = DateTime::parse_from_rfc3339(value)
-        .with_context(|| format!("{field} must be an RFC3339 timestamp"))?;
-    Ok(timestamp.with_timezone(&Utc).to_rfc3339())
-}
 
 fn normalize_optional_tool_run_timestamp(
     value: Option<String>,
@@ -36,18 +32,16 @@ fn normalize_optional_tool_run_timestamp(
 }
 
 fn normalize_persisted_tool_run_timestamp(value: &str, field: &str) -> anyhow::Result<String> {
-    if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
-        return Ok(timestamp.with_timezone(&Utc).to_rfc3339());
-    }
-
-    // SQLite's datetime('now') values are UTC but omit both the separator and
-    // offset required by RFC3339. Accept that legacy storage form at reads so
-    // callers always receive canonical timestamps.
-    let timestamp =
-        NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").with_context(|| {
-            format!("invalid persisted {field}: expected RFC3339 or SQLite UTC time")
-        })?;
-    Ok(timestamp.and_utc().to_rfc3339())
+    let timestamp = DateTime::parse_from_rfc3339(value)
+        .with_context(|| format!("invalid persisted {field}: expected RFC3339 timestamp"))?;
+    let canonical = timestamp
+        .with_timezone(&Utc)
+        .to_rfc3339_opts(SecondsFormat::Millis, true);
+    anyhow::ensure!(
+        value == canonical,
+        "invalid persisted {field}: expected canonical UTC RFC3339 milliseconds"
+    );
+    Ok(canonical)
 }
 
 fn normalize_optional_persisted_tool_run_timestamp(
@@ -675,9 +669,9 @@ mod tests {
     use crate::Database;
     use haven_common::types::new_id;
 
-    const STARTED_AT: &str = "2026-09-24T10:00:00Z";
-    const FINISHED_AT: &str = "2026-09-24T11:00:00Z";
-    const LATE_AT: &str = "2026-09-24T11:01:00Z";
+    const STARTED_AT: &str = "2026-09-24T10:00:00.000Z";
+    const FINISHED_AT: &str = "2026-09-24T11:00:00.000Z";
+    const LATE_AT: &str = "2026-09-24T11:01:00.000Z";
 
     fn store() -> (Arc<Database>, ToolRunStore) {
         let db = Arc::new(Database::open_in_memory().unwrap());
@@ -758,11 +752,8 @@ mod tests {
             .unwrap();
 
         let row = store.get_tool_run(background_id).await.unwrap().unwrap();
-        assert_eq!(row.started_at.as_deref(), Some("2026-09-24T10:00:00+00:00"));
-        assert_eq!(
-            row.finished_at.as_deref(),
-            Some("2026-09-24T11:00:00+00:00")
-        );
+        assert_eq!(row.started_at.as_deref(), Some("2026-09-24T10:00:00.000Z"));
+        assert_eq!(row.finished_at.as_deref(), Some("2026-09-24T11:00:00.000Z"));
         assert!(DateTime::parse_from_rfc3339(&row.created_at).is_ok());
 
         let scheduled_id = new_id("toolrun");
@@ -789,7 +780,7 @@ mod tests {
             .find(|row| row.tool_run_id == scheduled_id)
             .unwrap()
             .due_at;
-        assert_eq!(due_at, "2026-09-25T10:00:00+00:00");
+        assert_eq!(due_at, "2026-09-25T10:00:00.000Z");
     }
 
     #[tokio::test]
@@ -856,10 +847,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn normalizes_legacy_sqlite_timestamps_when_reading_tool_runs() {
+    async fn rejects_legacy_sqlite_timestamps_when_reading_tool_runs() {
         let (db, store) = store();
         let tool_run_id = new_id("toolrun");
         db.save_tool_run(&tool_run_id, None, "echo legacy", STARTED_AT)
+            .unwrap();
+        db.conn()
+            .execute_batch("PRAGMA ignore_check_constraints = ON;")
             .unwrap();
         db.conn()
             .execute(
@@ -868,13 +862,7 @@ mod tests {
             )
             .unwrap();
 
-        let row = store.get_tool_run(tool_run_id).await.unwrap().unwrap();
-        assert_eq!(row.started_at.as_deref(), Some("2026-09-24T10:00:00+00:00"));
-        assert_eq!(
-            row.finished_at.as_deref(),
-            Some("2026-09-24T11:00:00+00:00")
-        );
-        assert!(DateTime::parse_from_rfc3339(&row.created_at).is_ok());
+        assert!(store.get_tool_run(tool_run_id).await.is_err());
     }
 
     #[tokio::test]
@@ -882,7 +870,7 @@ mod tests {
         let (db, store) = store();
         for index in 0..(MAX_TOOL_RUN_HISTORY_PAGE_SIZE + 5) {
             let tool_run_id = new_id("toolrun");
-            let started_at = format!("2026-09-24T10:{:02}:00Z", index % 60);
+            let started_at = format!("2026-09-24T10:{:02}:00.000Z", index % 60);
             db.save_tool_run(&tool_run_id, None, "echo history", &started_at)
                 .unwrap();
             db.finish_tool_run(
@@ -893,7 +881,7 @@ mod tests {
                 None,
                 None,
                 Some(0),
-                "2026-09-24T11:00:00Z",
+                "2026-09-24T11:00:00.000Z",
             )
             .unwrap();
         }
@@ -944,11 +932,11 @@ mod tests {
         assert_eq!(claimed.payload.output.as_deref(), Some("durable result"));
         assert_eq!(
             claimed.payload.started_at.as_deref(),
-            Some("2026-09-24T10:00:00+00:00")
+            Some("2026-09-24T10:00:00.000Z")
         );
         assert_eq!(
             claimed.payload.finished_at.as_deref(),
-            Some("2026-09-24T11:00:00+00:00")
+            Some("2026-09-24T11:00:00.000Z")
         );
         // The unexpired claim prevents another consumer from claiming it.
         assert!(store.claim_pending_completion().await.unwrap().is_none());
@@ -1092,19 +1080,16 @@ mod tests {
         assert_eq!(dependency.result.as_deref(), Some("tool result"));
 
         let invalid_tool_run_id = new_id("toolrun");
-        db.save_scheduled_tool_run(
-            &invalid_tool_run_id,
-            "invalid",
-            "Reminder",
-            "bad",
-            ScheduleMode::Tool,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        db.conn()
+            .execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO tool_runs (id, kind, due_at, title, body, mode, status, created_at)
+                 VALUES (?1, 'scheduled', 'invalid', 'Reminder', 'bad', 'tool', 'waiting', ?2)",
+                rusqlite::params![invalid_tool_run_id, "2026-09-24T10:00:00.000Z"],
+            )
+            .unwrap();
         assert!(
             store
                 .quarantine_waiting_scheduled_tool_run(
