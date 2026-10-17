@@ -14,11 +14,12 @@ use sha2::{Digest, Sha256};
 use crate::adapters::{
     LineMode, MAX_JSON_RESPONSE_BYTES, ToolNameMap, ToolNamePolicy, WebSearchMode, build_client,
     build_headers, empty_chunk, health_check_request, is_deepseek, line_payload_channel,
-    normalize_web_search_call_item, parse_completed_tool_arguments, read_text_bounded,
-    reasoning_tail, reasoning_text_from_thinking_blocks, requires_reasoning_echo,
-    resolve_web_search_mode, responses_output_config, responses_reasoning_config, send_request,
-    serialize_tool_arguments, spawn_line_reader, stream_header_timeout, upsert_web_search_call,
-    web_search_result_of,
+    normalize_web_search_call_item, parse_completed_tool_arguments,
+    provider_builtin_web_search_available, read_text_bounded, reasoning_tail,
+    reasoning_text_from_thinking_blocks, requires_reasoning_echo, resolve_web_search_mode,
+    responses_output_config, responses_reasoning_config, responses_web_search_tool_type,
+    send_request, serialize_tool_arguments, spawn_line_reader, stream_header_timeout,
+    upsert_web_search_call, web_search_result_of,
 };
 use crate::client::LlmClient;
 use haven_common::media::CapabilityProfile;

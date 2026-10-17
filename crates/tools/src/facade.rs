@@ -1351,6 +1351,7 @@ mod capability_tests {
                 endpoint: ModelEndpoint {
                     provider: "deepseek".into(),
                     api_style: Some("openai-responses".into()),
+                    model_name: "deepseek-v4-pro".into(),
                     api_key: "test-key".into(),
                     web_search: Some("auto".into()),
                     ..Default::default()

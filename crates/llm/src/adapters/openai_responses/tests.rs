@@ -647,6 +647,29 @@ fn web_search_mode_shapes_the_request() {
     let body = client.build_request_body_with_mode(vec![], Vec::new(), false, WebSearchMode::Off);
     assert!(body.tools.is_none());
     assert!(body.tool_choice.is_none());
+
+    let groq = OpenAiResponsesAdapter::new(ModelEndpoint {
+        provider: "groq".into(),
+        model_name: "openai/gpt-oss-20b".into(),
+        base_url: "https://api.groq.com/openai/v1".into(),
+        ..Default::default()
+    });
+    let body = groq.build_request_body_with_mode(vec![], vec![], false, WebSearchMode::Auto);
+    assert_eq!(
+        body.tools.unwrap(),
+        vec![serde_json::json!({"type": "browser_search"})]
+    );
+    assert_eq!(body.tool_choice, Some(serde_json::json!("auto")));
+
+    let deepseek_flash = OpenAiResponsesAdapter::new(ModelEndpoint {
+        provider: "deepseek".into(),
+        model_name: "deepseek-v4-flash".into(),
+        ..Default::default()
+    });
+    let body =
+        deepseek_flash.build_request_body_with_mode(vec![], vec![], false, WebSearchMode::Always);
+    assert!(body.tools.is_none());
+    assert!(body.tool_choice.is_none());
 }
 
 #[test]
@@ -740,6 +763,7 @@ fn parse_response_collects_web_search_calls() {
                 item_type: Some("message".into()),
                 content: vec![ResponsesContentPart {
                     text: Some("found it".into()),
+                    annotations: Vec::new(),
                 }],
                 call_id: None,
                 id: Some("msg_1".into()),
@@ -771,6 +795,65 @@ fn parse_response_collects_web_search_calls() {
 }
 
 #[test]
+fn responses_url_citations_are_exposed_as_search_results() {
+    let wire: ResponsesResponse = serde_json::from_value(serde_json::json!({
+        "status": "completed",
+        "model": "gpt-5",
+        "output": [{
+            "type": "message",
+            "content": [{
+                "type": "output_text",
+                "text": "A current answer [1].",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url": "https://example.com/source",
+                    "title": "Example Source",
+                    "start_index": 17,
+                    "end_index": 20
+                }]
+            }]
+        }]
+    }))
+    .unwrap();
+    let response = OpenAiResponsesAdapter::new(ModelEndpoint::default())
+        .parse_response(wire, None)
+        .unwrap();
+
+    assert_eq!(response.web_search_calls.len(), 1);
+    assert_eq!(response.web_search_calls[0]["id"], "responses_citations");
+    assert_eq!(
+        response.web_search_calls[0]["action"]["citations"][0]["title"],
+        "Example Source"
+    );
+    assert_eq!(
+        crate::adapters::web_search_result_of(&response.web_search_calls[0]).unwrap()["results"][0]
+            ["url"],
+        "https://example.com/source"
+    );
+    let messages = vec![CanonicalMessage {
+        role: CanonicalRole::Assistant,
+        content: vec![ContentPart::text(response.text)],
+        tool_call_id: None,
+        tool_calls: None,
+        reasoning: None,
+        web_search_calls: response.web_search_calls,
+        thinking_blocks: Vec::new(),
+        source: None,
+        message_id: None,
+    }];
+    let converted = OpenAiResponsesAdapter::convert_input(
+        messages,
+        OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+        false,
+    );
+    assert_eq!(
+        converted.input.len(),
+        1,
+        "citation-only UI data is not a provider tool call"
+    );
+}
+
+#[test]
 fn parse_response_text_tool_call_usage() {
     let json = ResponsesResponse {
         status: Some("completed".into()),
@@ -779,6 +862,7 @@ fn parse_response_text_tool_call_usage() {
                 item_type: Some("message".into()),
                 content: vec![ResponsesContentPart {
                     text: Some("checking".into()),
+                    annotations: Vec::new(),
                 }],
                 call_id: None,
                 id: Some("msg_1".into()),

@@ -14,6 +14,9 @@ mod transport;
 mod web_search;
 
 pub use capabilities::{WebSearchMode, resolve_web_search_mode, xai_search_mode};
+pub(crate) use capabilities::{
+    provider_builtin_web_search_available, responses_web_search_tool_type,
+};
 pub(crate) use tool_arguments::{parse_completed_tool_arguments, serialize_tool_arguments};
 
 /// Bound provider-controlled tool-call indices before streaming aggregation.
@@ -250,7 +253,7 @@ pub(crate) fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
 ///   (OpenAI, Ollama, vLLM, DeepSeek chat, llama.cpp server, and most
 ///   third-party gateways). Whisper-family models also implement `transcribe`
 ///   via `/audio/transcriptions`. Embeddings use `/embeddings`.
-/// - `xai`: same OpenAI chat adapter with xAI Live Search `search_parameters`
+/// - `xai`: legacy OpenAI chat adapter with xAI Live Search `search_parameters`
 ///   (embeddings still `/embeddings`)
 /// - `openai-responses`: OpenAI Responses API
 ///   (`/v1/responses`), including DeepSeek thinking + built-in `web_search`.

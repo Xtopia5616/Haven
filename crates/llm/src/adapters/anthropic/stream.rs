@@ -118,6 +118,7 @@ impl AnthropicAdapter {
             tool_id: String,
             tool_name: String,
             tool_input: String,
+            raw_provider_block: Value,
             thinking: String,
             thinking_signature: String,
             started: bool,
@@ -135,6 +136,8 @@ impl AnthropicAdapter {
             Thinking,
             RedactedThinking,
             ToolUse,
+            WebSearchCall,
+            WebSearchResult,
         }
 
         struct UnfoldState {
@@ -233,15 +236,11 @@ impl AnthropicAdapter {
                                 CacheAccounting::Exclusive,
                                 state.last_model.clone(),
                             );
-                            usage.cache_diagnostics = Some(
-                                state
-                                    .cache_diagnostics
-                                    .clone()
-                                    .with_provider_usage(
-                                        u.cache_read_tokens_reported(),
-                                        u.cache_usage_reported(),
-                                    ),
-                            );
+                            usage.cache_diagnostics =
+                                Some(state.cache_diagnostics.clone().with_provider_usage(
+                                    u.cache_read_tokens_reported(),
+                                    u.cache_usage_reported(),
+                                ));
                             state.usage = Some(usage);
                         }
                         let mut chunk = empty_chunk();
@@ -252,22 +251,21 @@ impl AnthropicAdapter {
                         index,
                         content_block,
                     }) => {
-                        let index = match checked_content_block_start(
-                            index,
-                            state.started_block_count,
-                        ) {
-                            Ok(index) => index,
-                            Err(error) => {
-                                state.done = true;
-                                return Some((Err(error), state));
-                            }
-                        };
+                        let index =
+                            match checked_content_block_start(index, state.started_block_count) {
+                                Ok(index) => index,
+                                Err(error) => {
+                                    state.done = true;
+                                    return Some((Err(error), state));
+                                }
+                            };
                         while state.blocks.len() <= index {
                             state.blocks.push(BlockState {
                                 kind: BlockKind::Text,
                                 tool_id: String::new(),
                                 tool_name: String::new(),
                                 tool_input: String::new(),
+                                raw_provider_block: Value::Null,
                                 thinking: String::new(),
                                 thinking_signature: String::new(),
                                 started: false,
@@ -290,11 +288,13 @@ impl AnthropicAdapter {
                             block.started = true;
                             block.pos = index;
                             block.text_before = state.accumulated_text.chars().count();
+                            block.raw_provider_block = content_block.to_wire_value();
                             match content_block.block_type.as_deref() {
                                 Some("tool_use") => {
                                     block.kind = BlockKind::ToolUse;
                                     block.tool_id = content_block.id.clone().unwrap_or_default();
-                                    block.tool_name = content_block.name.clone().unwrap_or_default();
+                                    block.tool_name =
+                                        content_block.name.clone().unwrap_or_default();
                                     block.tool_input = String::new();
                                     // Some gateways send the full input in the
                                     // start event instead of `{}` + deltas.
@@ -320,54 +320,37 @@ impl AnthropicAdapter {
                                     // `redacted_thinking` block for the echo.
                                     block.kind = BlockKind::RedactedThinking;
                                 }
+                                Some("server_tool_use")
+                                    if content_block.name.as_deref() == Some("web_search") =>
+                                {
+                                    block.kind = BlockKind::WebSearchCall;
+                                    block.tool_id = content_block
+                                        .id
+                                        .clone()
+                                        .unwrap_or_else(|| format!("ws_{index}"));
+                                    block.tool_input = String::new();
+                                    if let Some(input) = content_block.input.as_ref() {
+                                        let serialized =
+                                            serde_json::to_string(input).unwrap_or_default();
+                                        if serialized != "{}" {
+                                            block.tool_input = serialized;
+                                        }
+                                    }
+                                }
+                                Some("web_search_tool_result") => {
+                                    block.kind = BlockKind::WebSearchResult;
+                                    block.tool_id = content_block
+                                        .extra
+                                        .get("tool_use_id")
+                                        .and_then(Value::as_str)
+                                        .or(content_block.id.as_deref())
+                                        .map(str::to_string)
+                                        .unwrap_or_else(|| format!("ws_result_{index}"));
+                                }
                                 _ => block.kind = BlockKind::Text,
                             }
                         }
                         state.started_block_count += 1;
-                        match content_block.block_type.as_deref() {
-                            Some("server_tool_use")
-                                if content_block.name.as_deref() == Some("web_search") =>
-                            {
-                                let id = content_block
-                                    .id
-                                    .clone()
-                                    .unwrap_or_else(|| format!("ws_{index}"));
-                                let queries = content_block
-                                    .input
-                                    .as_ref()
-                                    .and_then(|v| v.get("query"))
-                                    .cloned()
-                                    .map(|q| json!([q]))
-                                    .unwrap_or_else(|| json!([]));
-                                state.web_search_calls.push(normalize_web_search_call_item(
-                                    json!({
-                                        "type": "web_search_call",
-                                        "id": id,
-                                        "status": "completed",
-                                        "action": {"type": "search", "queries": queries},
-                                    }),
-                                ));
-                            }
-                            Some("web_search_tool_result") => {
-                                let id = content_block
-                                    .id
-                                    .clone()
-                                    .unwrap_or_else(|| format!("ws_result_{index}"));
-                                state.web_search_calls.push(normalize_web_search_call_item(
-                                    json!({
-                                        "type": "web_search_call",
-                                        "id": id,
-                                        "status": "completed",
-                                        "action": {
-                                            "type": "search",
-                                            "queries": [],
-                                            "result": content_block.input.clone().unwrap_or(Value::Null),
-                                        },
-                                    }),
-                                ));
-                            }
-                            _ => {}
-                        }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
                         if state.blocks[index].kind == BlockKind::ToolUse {
@@ -378,8 +361,9 @@ impl AnthropicAdapter {
                                 .filter(|block| block.kind == BlockKind::ToolUse)
                                 .count();
                             let block = &state.blocks[index];
-                            chunk.tool_call_updates.push(
-                                crate::types::StreamToolCallUpdate {
+                            chunk
+                                .tool_call_updates
+                                .push(crate::types::StreamToolCallUpdate {
                                     tool_index: tool_index as u32,
                                     tool_call_id: (!block.tool_id.is_empty())
                                         .then(|| block.tool_id.clone()),
@@ -387,8 +371,7 @@ impl AnthropicAdapter {
                                         .then(|| block.tool_name.clone()),
                                     arguments_snapshot: Some(block.tool_input.clone()),
                                     arguments_delta: None,
-                                },
-                            );
+                                });
                         }
                         Some((Ok(chunk), state))
                     }
@@ -461,7 +444,9 @@ impl AnthropicAdapter {
                                     state.pending_tool_calls.push(CanonicalToolCall {
                                         tool_call_id: block.tool_id.clone(),
                                         name: state.tool_names.to_canonical(&block.tool_name),
-                                        arguments: parse_completed_tool_arguments(&block.tool_input),
+                                        arguments: parse_completed_tool_arguments(
+                                            &block.tool_input,
+                                        ),
                                     });
                                     state.layout.push((
                                         Self::LAYOUT_KIND_TOOL_USE,
@@ -505,6 +490,78 @@ impl AnthropicAdapter {
                                         ));
                                     }
                                 }
+                                BlockKind::WebSearchCall => {
+                                    let input = if block.tool_input.is_empty() {
+                                        block
+                                            .raw_provider_block
+                                            .get("input")
+                                            .cloned()
+                                            .unwrap_or_else(|| json!({}))
+                                    } else {
+                                        serde_json::from_str(&block.tool_input)
+                                            .unwrap_or_else(|_| json!({}))
+                                    };
+                                    block.raw_provider_block["input"] = input.clone();
+                                    chunk.thinking_blocks.push(block.raw_provider_block.clone());
+                                    state.layout.push((
+                                        Self::LAYOUT_KIND_THINKING,
+                                        block.pos,
+                                        block.text_before,
+                                    ));
+                                    let queries = input
+                                        .get("query")
+                                        .cloned()
+                                        .map(|query| json!([query]))
+                                        .unwrap_or_else(|| json!([]));
+                                    crate::adapters::upsert_web_search_call(
+                                        &mut state.web_search_calls,
+                                        normalize_web_search_call_item(json!({
+                                            "type": "web_search_call",
+                                            "id": block.tool_id,
+                                            "status": "completed",
+                                            "action": {"type": "search", "queries": queries},
+                                        })),
+                                    );
+                                }
+                                BlockKind::WebSearchResult => {
+                                    chunk.thinking_blocks.push(block.raw_provider_block.clone());
+                                    state.layout.push((
+                                        Self::LAYOUT_KIND_THINKING,
+                                        block.pos,
+                                        block.text_before,
+                                    ));
+                                    let queries = state
+                                        .web_search_calls
+                                        .iter()
+                                        .find(|call| {
+                                            call.get("id").and_then(Value::as_str)
+                                                == Some(block.tool_id.as_str())
+                                        })
+                                        .and_then(|call| call.pointer("/action/queries"))
+                                        .cloned()
+                                        .unwrap_or_else(|| json!([]));
+                                    let result = block
+                                        .raw_provider_block
+                                        .get("content")
+                                        .cloned()
+                                        .or_else(|| {
+                                            block.raw_provider_block.get("error_code").cloned()
+                                        })
+                                        .unwrap_or(Value::Null);
+                                    crate::adapters::upsert_web_search_call(
+                                        &mut state.web_search_calls,
+                                        normalize_web_search_call_item(json!({
+                                            "type": "web_search_call",
+                                            "id": block.tool_id,
+                                            "status": "completed",
+                                            "action": {
+                                                "type": "search",
+                                                "queries": queries,
+                                                "result": result,
+                                            },
+                                        })),
+                                    );
+                                }
                                 BlockKind::Text => {}
                             }
                         }
@@ -530,10 +587,7 @@ impl AnthropicAdapter {
                                     state
                                         .cache_diagnostics
                                         .clone()
-                                        .with_provider_usage(
-                                            u.cache_read_tokens_reported(),
-                                            true,
-                                        ),
+                                        .with_provider_usage(u.cache_read_tokens_reported(), true),
                                 );
                             }
                             existing.total_tokens = existing.prompt_tokens

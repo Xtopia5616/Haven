@@ -112,11 +112,71 @@ impl GeminiAdapter {
             .or_else(|| meta.get("web_search_queries"))
             .cloned()
             .unwrap_or_else(|| json!([]));
+        let supports = meta
+            .get("groundingSupports")
+            .or_else(|| meta.get("grounding_supports"))
+            .and_then(Value::as_array);
+        let mut snippets_by_chunk: std::collections::HashMap<usize, Vec<String>> =
+            std::collections::HashMap::new();
+        if let Some(supports) = supports {
+            for support in supports {
+                let snippet = support
+                    .get("segment")
+                    .and_then(|segment| segment.get("text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim();
+                if snippet.is_empty() {
+                    continue;
+                }
+                let indices = support
+                    .get("groundingChunkIndices")
+                    .or_else(|| support.get("grounding_chunk_indices"))
+                    .and_then(Value::as_array);
+                if let Some(indices) = indices {
+                    for index in indices.iter().filter_map(Value::as_u64) {
+                        snippets_by_chunk
+                            .entry(index as usize)
+                            .or_default()
+                            .push(snippet.to_string());
+                    }
+                }
+            }
+        }
+        let citations = meta
+            .get("groundingChunks")
+            .or_else(|| meta.get("grounding_chunks"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(index, chunk)| {
+                let web = chunk
+                    .get("web")
+                    .or_else(|| chunk.get("image"))
+                    .or_else(|| chunk.get("web_chunk"))
+                    .or_else(|| chunk.get("image_chunk"))?;
+                let url = web
+                    .get("uri")
+                    .or_else(|| web.get("sourceUri"))
+                    .or_else(|| web.get("source_uri"))
+                    .and_then(Value::as_str)?;
+                if url.is_empty() {
+                    return None;
+                }
+                let title = web.get("title").and_then(Value::as_str).unwrap_or(url);
+                let snippet = snippets_by_chunk
+                    .get(&index)
+                    .map(|snippets| snippets.join(" "))
+                    .unwrap_or_default();
+                Some(json!({"title": title, "url": url, "snippet": snippet}))
+            })
+            .collect::<Vec<_>>();
         vec![normalize_web_search_call_item(json!({
             "type": "web_search_call",
             "id": "gemini_grounding",
             "status": "completed",
-            "action": {"type": "search", "queries": queries},
+            "action": {"type": "search", "queries": queries, "citations": citations},
         }))]
     }
 

@@ -656,6 +656,7 @@ impl LlmRouter {
             crate::adapters::resolve_web_search_mode(endpoint),
             crate::adapters::WebSearchMode::Off
         ) && haven_common::config::supports_builtin_web_search(style)
+            && crate::adapters::provider_builtin_web_search_available(endpoint, style)
     }
 
     /// Return route diagnostics without exposing the router's configuration
@@ -2408,41 +2409,51 @@ mod tests {
 
     #[tokio::test]
     async fn narrow_provider_capability_queries_respect_route_and_adapter_policy() {
-        let make_router =
-            |request: RequestKind, api_style: &str, web_search: Option<&str>, provider: &str| {
-                LlmRouter::new(RouterConfig {
-                    models: vec![RoutedModel {
-                        model_config_id: "selected".into(),
-                        endpoint: ModelEndpoint {
-                            provider: provider.into(),
-                            api_style: Some(api_style.into()),
-                            model_name: "selected-model".into(),
-                            api_key: "test-key".into(),
-                            web_search: web_search.map(str::to_string),
-                            ..Default::default()
-                        },
-                        capabilities: vec![request.required_capability()],
-                    }],
-                    request_policies: vec![RequestPolicy {
-                        request,
-                        primary: "selected".into(),
-                    }],
-                    ..Default::default()
-                })
-            };
+        let make_router = |request: RequestKind,
+                           api_style: &str,
+                           web_search: Option<&str>,
+                           provider: &str,
+                           model_name: &str| {
+            LlmRouter::new(RouterConfig {
+                models: vec![RoutedModel {
+                    model_config_id: "selected".into(),
+                    endpoint: ModelEndpoint {
+                        provider: provider.into(),
+                        api_style: Some(api_style.into()),
+                        model_name: model_name.into(),
+                        api_key: "test-key".into(),
+                        web_search: web_search.map(str::to_string),
+                        ..Default::default()
+                    },
+                    capabilities: vec![request.required_capability()],
+                }],
+                request_policies: vec![RequestPolicy {
+                    request,
+                    primary: "selected".into(),
+                }],
+                ..Default::default()
+            })
+        };
 
         let search = make_router(
             RequestKind::Chat,
             "openai-responses",
             Some("auto"),
             "openai",
+            "selected-model",
         );
         assert!(
             search
                 .provider_web_search_available(RequestKind::Chat)
                 .await
         );
-        let search_off = make_router(RequestKind::Chat, "openai-responses", Some("off"), "openai");
+        let search_off = make_router(
+            RequestKind::Chat,
+            "openai-responses",
+            Some("off"),
+            "openai",
+            "selected-model",
+        );
         assert!(
             !search_off
                 .provider_web_search_available(RequestKind::Chat)
@@ -2454,15 +2465,65 @@ mod tests {
                 .await
         );
 
-        let stt_only = make_router(RequestKind::Transcription, "deepgram", None, "deepgram");
+        let deepseek_flash = make_router(
+            RequestKind::Chat,
+            "openai-responses",
+            Some("auto"),
+            "deepseek",
+            "deepseek-v4-flash",
+        );
+        assert!(
+            !deepseek_flash
+                .provider_web_search_available(RequestKind::Chat)
+                .await
+        );
+        let deepseek_pro = make_router(
+            RequestKind::Chat,
+            "openai-responses",
+            Some("auto"),
+            "deepseek",
+            "deepseek-v4-pro",
+        );
+        assert!(
+            deepseek_pro
+                .provider_web_search_available(RequestKind::Chat)
+                .await
+        );
+        let groq_supported = make_router(
+            RequestKind::Chat,
+            "openai-responses",
+            Some("auto"),
+            "groq",
+            "openai/gpt-oss-20b",
+        );
+        assert!(
+            groq_supported
+                .provider_web_search_available(RequestKind::Chat)
+                .await
+        );
+
+        let stt_only = make_router(
+            RequestKind::Transcription,
+            "deepgram",
+            None,
+            "deepgram",
+            "nova-3",
+        );
         assert!(stt_only.transcription_available().await);
-        let unsupported = make_router(RequestKind::Transcription, "anthropic", None, "anthropic");
+        let unsupported = make_router(
+            RequestKind::Transcription,
+            "anthropic",
+            None,
+            "anthropic",
+            "claude",
+        );
         assert!(!unsupported.transcription_available().await);
         let custom = make_router(
             RequestKind::Transcription,
             "custom-wire",
             None,
             "custom-provider",
+            "custom-model",
         );
         assert!(custom.transcription_available().await);
         assert!(

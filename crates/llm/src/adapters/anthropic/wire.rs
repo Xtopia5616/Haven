@@ -54,7 +54,7 @@ pub(super) struct AnthropicResponse {
     pub(super) model: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub(super) struct AnthropicResponseBlock {
     #[serde(rename = "type")]
     pub(super) block_type: Option<String>,
@@ -76,6 +76,59 @@ pub(super) struct AnthropicResponseBlock {
     /// echoed back verbatim on tool-use turns.
     #[serde(default)]
     pub(super) data: Option<String>,
+    /// Web Search result blocks link back to `server_tool_use` by this ID.
+    #[serde(default)]
+    pub(super) tool_use_id: Option<String>,
+    /// Search result content is provider-opaque and must be echoed on the
+    /// next request together with `encrypted_content`, when present.
+    #[serde(default)]
+    pub(super) content: Option<Value>,
+    #[serde(default)]
+    pub(super) encrypted_content: Option<String>,
+    #[serde(default)]
+    pub(super) error_code: Option<String>,
+    /// Preserve fields added to provider block types without dropping them
+    /// from the next-turn echo.
+    #[serde(flatten)]
+    pub(super) extra: serde_json::Map<String, Value>,
+}
+
+impl AnthropicResponseBlock {
+    fn insert_optional<T: Serialize>(
+        block: &mut serde_json::Map<String, Value>,
+        key: &str,
+        value: Option<&T>,
+    ) {
+        if let Some(value) = value {
+            block.insert(
+                key.into(),
+                serde_json::to_value(value).unwrap_or(Value::Null),
+            );
+        }
+    }
+
+    pub(super) fn to_wire_value(&self) -> Value {
+        let mut block = self.extra.clone();
+        if let Some(value) = &self.block_type {
+            block.insert("type".into(), Value::String(value.clone()));
+        }
+        Self::insert_optional(&mut block, "text", self.text.as_ref());
+        Self::insert_optional(&mut block, "thinking", self.thinking.as_ref());
+        Self::insert_optional(&mut block, "id", self.id.as_ref());
+        Self::insert_optional(&mut block, "name", self.name.as_ref());
+        Self::insert_optional(&mut block, "input", self.input.as_ref());
+        Self::insert_optional(&mut block, "signature", self.signature.as_ref());
+        Self::insert_optional(&mut block, "data", self.data.as_ref());
+        Self::insert_optional(&mut block, "tool_use_id", self.tool_use_id.as_ref());
+        Self::insert_optional(&mut block, "content", self.content.as_ref());
+        Self::insert_optional(
+            &mut block,
+            "encrypted_content",
+            self.encrypted_content.as_ref(),
+        );
+        Self::insert_optional(&mut block, "error_code", self.error_code.as_ref());
+        Value::Object(block)
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -162,6 +215,37 @@ pub(super) struct AnthropicStreamBlock {
     /// Thinking-block signature delivered on the `content_block_start` event.
     #[serde(default)]
     pub(super) signature: Option<String>,
+    /// Provider-specific fields such as `content`, `tool_use_id`, and
+    /// `encrypted_content` on web search result blocks.
+    #[serde(flatten)]
+    pub(super) extra: serde_json::Map<String, Value>,
+}
+
+impl AnthropicStreamBlock {
+    fn insert_optional<T: Serialize>(
+        block: &mut serde_json::Map<String, Value>,
+        key: &str,
+        value: Option<&T>,
+    ) {
+        if let Some(value) = value {
+            block.insert(
+                key.into(),
+                serde_json::to_value(value).unwrap_or(Value::Null),
+            );
+        }
+    }
+
+    pub(super) fn to_wire_value(&self) -> Value {
+        let mut block = self.extra.clone();
+        if let Some(value) = &self.block_type {
+            block.insert("type".into(), Value::String(value.clone()));
+        }
+        Self::insert_optional(&mut block, "id", self.id.as_ref());
+        Self::insert_optional(&mut block, "name", self.name.as_ref());
+        Self::insert_optional(&mut block, "input", self.input.as_ref());
+        Self::insert_optional(&mut block, "signature", self.signature.as_ref());
+        Value::Object(block)
+    }
 }
 
 #[derive(Debug, Deserialize)]

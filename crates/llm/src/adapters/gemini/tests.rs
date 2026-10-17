@@ -645,19 +645,35 @@ fn google_search_tool_injected_when_web_search_on() {
 }
 
 #[test]
-fn grounding_metadata_keeps_queries_only() {
+fn grounding_metadata_preserves_search_queries_and_citations() {
     let raw = json!({
         "candidates": [{
             "groundingMetadata": {
                 "webSearchQueries": ["haven voice"],
-                "groundingChunks": [{"huge": "blob".repeat(100)}],
+                "groundingChunks": [
+                    {"web": {"uri": "https://haven.example/", "title": "Haven"}},
+                    {"huge": "blob".repeat(100)}
+                ],
+                "groundingSupports": [{
+                    "segment": {"text": "Haven is a voice assistant."},
+                    "groundingChunkIndices": [0]
+                }]
             }
         }]
     });
     let calls = GeminiAdapter::web_search_calls_from_grounding(&raw);
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["action"]["queries"], json!(["haven voice"]));
-    assert!(calls[0]["action"].get("grounding_metadata").is_none());
+    assert_eq!(calls[0]["action"]["citations"][0]["title"], "Haven");
+    assert_eq!(
+        calls[0]["action"]["citations"][0]["url"],
+        "https://haven.example/"
+    );
+    assert_eq!(
+        calls[0]["action"]["citations"][0]["snippet"],
+        "Haven is a voice assistant."
+    );
+    assert_eq!(calls[0]["action"]["citations"].as_array().unwrap().len(), 1);
 }
 
 #[test]

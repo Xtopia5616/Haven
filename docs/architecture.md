@@ -235,10 +235,10 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   `with_retry`。LLM error 分类留在 `haven-llm`，attempt/backoff/stop 决策复用
   `haven-common::retry::RecoveryPolicy`（ADR 0447）。能力矩阵见 `adapters/capabilities.rs`：
   - `openai-chat` / `llama.cpp` → OpenAI Chat Completions；embedding 走 `/embeddings`
-  - `openai-responses`（含 DeepSeek Responses thinking echo + `web_search`）；embedding 仍走 `/v1/embeddings`
-  - `xai` → OpenAI chat + xAI Live Search `search_parameters`；embedding 走 `/embeddings`
-  - `anthropic` → Messages API（可选 server `web_search_*`）；无 embedding
-  - `gemini` → `generateContent`（可选 `google_search` grounding）；embedding 走 `batchEmbedContents`
+  - `openai-responses`（OpenAI / xAI `web_search`、Groq GPT-OSS `browser_search`、DeepSeek v4-pro `web_search`）；embedding 仍走 `/v1/embeddings`
+  - `xai` → 旧 Chat Completions + Live Search `search_parameters`；新预设使用 Responses API；embedding 走 `/embeddings`
+  - `anthropic` → Messages API（`web_search_20260318`，保留 `web_search_tool_result` 与 `encrypted_content`）；无 embedding
+  - `gemini` → `generateContent`（`google_search` grounding、queries 与 citations）；embedding 走 `batchEmbedContents`
   - `deepgram` / `assemblyai` → STT only
 - `adapters/tool_arguments.rs`：adapter 私有的工具参数 wire 序列化与完成流解析；Common 中的
   `CanonicalToolCall` 不负责 provider JSON 字符串或流截断修复。
@@ -251,7 +251,9 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   `Usage::effective_cache_miss_tokens()` 取有效值，为零时按 `CacheAccounting` 推导。
 - 聊天页「联网搜索」为命名模型级 `off|auto|always`；仅
   `supports_builtin_web_search(api_style)` 为真时由对应适配器注入内置搜索工具，
-  UI 对不支持的线协议灰显。
+  UI 对不支持的线协议灰显；DeepSeek 与 Groq 还按官方支持的模型列表做运行时能力裁剪。
+  Perplexity Sonar 的 Chat Completions citations 继续作为搜索来源显示；Mistral 的 `web_search`
+  仅支持 Conversations/Agents API，当前 Chat Completions 线协议不能承载引用，暂不注入。
 - 厂商扩展（DeepSeek `thinking` / Responses `reasoning.effort`、Kimi
   `thinking.type`+`keep` 等）挂在对应 adapter + provider/base_url/model 检测上，
   复用聊天页「思考强度」，不另开线协议。Preset 必须保留具体厂商 identity，不能因它们使用 OpenAI-compatible 或 Responses wire protocol 而折叠为 `openai`。

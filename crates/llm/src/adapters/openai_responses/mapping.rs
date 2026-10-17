@@ -203,7 +203,9 @@ impl OpenAiResponsesAdapter {
                     // captured skeleton lacks it (DeepSeek rejects an
                     // `action`-less item with a 400).
                     for ws in &m.web_search_calls {
-                        items.push(normalize_web_search_call_item(ws.clone()));
+                        if ws.get("_responses_citation_only") != Some(&Value::Bool(true)) {
+                            items.push(normalize_web_search_call_item(ws.clone()));
+                        }
                     }
                     if let Some(calls) = m.tool_calls.as_ref() {
                         for tc in calls {

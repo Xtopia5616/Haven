@@ -82,6 +82,64 @@ async fn stream_message_stop_releases_completed_tool_call() {
     assert_eq!(tool_calls[0].arguments["operation"], "read");
 }
 
+#[tokio::test]
+async fn stream_search_blocks_preserve_encrypted_result_for_next_turn() {
+    let body = concat!(
+        "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-test\"}}\n\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"srvtoolu_search_1\",\"name\":\"web_search\",\"input\":{}}}\n\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"query\\\":\\\"latest Rust release\\\"}\"}}\n\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"web_search_tool_result\",\"tool_use_id\":\"srvtoolu_search_1\",\"content\":[{\"type\":\"web_search_result\",\"title\":\"Rust\",\"url\":\"https://rust-lang.org\"}],\"encrypted_content\":\"encrypted-search-payload\"}}\n\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+        "data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"text_delta\",\"text\":\"Found the current release.\"}}\n\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":2}\n\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    let (base_url, server) = crate::test_support::serve_sse(body).await;
+    let client = AnthropicAdapter::new(ModelEndpoint {
+        base_url: format!("{base_url}/v1"),
+        model_name: "claude-test".into(),
+        ..Default::default()
+    });
+    let mut stream = client
+        .chat_stream_with_tools(Vec::new(), Vec::new())
+        .await
+        .unwrap();
+    let mut text = String::new();
+    let mut thinking_blocks = Vec::new();
+    let mut web_search_calls = Vec::new();
+    while let Some(item) = stream.next().await {
+        let chunk = item.unwrap();
+        if let Some(delta) = chunk.text {
+            text.push_str(&delta);
+        }
+        thinking_blocks.extend(chunk.thinking_blocks);
+        web_search_calls.extend(chunk.web_search_calls);
+    }
+    server.await.unwrap();
+
+    let assistant = CanonicalMessage {
+        role: CanonicalRole::Assistant,
+        content: vec![ContentPart::text(text)],
+        tool_call_id: None,
+        tool_calls: None,
+        reasoning: None,
+        web_search_calls,
+        thinking_blocks,
+        source: None,
+        message_id: None,
+    };
+    let converted = AnthropicAdapter::convert_messages(vec![assistant]);
+    let content = converted.messages[0].content.as_array().unwrap();
+    assert_eq!(content[0]["type"], "server_tool_use");
+    assert_eq!(content[0]["input"]["query"], "latest Rust release");
+    assert_eq!(content[1]["type"], "web_search_tool_result");
+    assert_eq!(content[1]["tool_use_id"], "srvtoolu_search_1");
+    assert_eq!(content[1]["encrypted_content"], "encrypted-search-payload");
+    assert_eq!(content[2]["text"], "Found the current release.");
+}
+
 #[test]
 fn build_headers_respects_custom_auth_scheme() {
     let ep = ModelEndpoint {
@@ -332,6 +390,7 @@ fn resp_block(
         input,
         signature: signature.map(String::from),
         data: None,
+        ..Default::default()
     }
 }
 
@@ -361,6 +420,34 @@ fn parse_and_echo(content: Vec<AnthropicResponseBlock>) -> Vec<Value> {
     let AnthropicMessageConversion { messages: out, .. } =
         AnthropicAdapter::convert_messages(vec![msg]);
     out[0].content.as_array().unwrap().clone()
+}
+
+#[test]
+fn web_search_blocks_and_encrypted_results_round_trip() {
+    let server_tool = resp_block(
+        "server_tool_use",
+        None,
+        None,
+        Some("srvtoolu_search_1"),
+        Some("web_search"),
+        Some(json!({"query": "latest Rust release"})),
+        None,
+    );
+    let mut result = resp_block("web_search_tool_result", None, None, None, None, None, None);
+    result.tool_use_id = Some("srvtoolu_search_1".into());
+    result.content = Some(json!([
+        {"type": "web_search_result", "title": "Rust", "url": "https://rust-lang.org", "page_age": "today"}
+    ]));
+    result.encrypted_content = Some("encrypted-search-payload".into());
+
+    let echoed = parse_and_echo(vec![server_tool, result]);
+    assert_eq!(echoed.len(), 2);
+    assert_eq!(echoed[0]["type"], "server_tool_use");
+    assert_eq!(echoed[0]["input"]["query"], "latest Rust release");
+    assert_eq!(echoed[1]["type"], "web_search_tool_result");
+    assert_eq!(echoed[1]["tool_use_id"], "srvtoolu_search_1");
+    assert_eq!(echoed[1]["encrypted_content"], "encrypted-search-payload");
+    assert_eq!(echoed[1]["content"][0]["url"], "https://rust-lang.org");
 }
 
 #[test]
@@ -1067,6 +1154,8 @@ fn web_search_mode_injects_server_tool() {
     assert_eq!(tools.len(), 2);
     assert_eq!(tools[1]["type"], ANTHROPIC_WEB_SEARCH_TOOL_TYPE);
     assert_eq!(tools[1]["name"], "web_search");
+    assert_eq!(tools[1]["allowed_callers"], json!(["direct"]));
+    assert_eq!(tools[1]["response_inclusion"], "full");
     assert_eq!(
         tools[0]["cache_control"],
         json!({"type": "ephemeral"}),
@@ -1154,6 +1243,7 @@ fn parse_response_text_and_usage() {
             input: None,
             signature: None,
             data: None,
+            ..Default::default()
         }],
         stop_reason: Some("end_turn".into()),
         usage: Some(AnthropicUsage {
@@ -1191,6 +1281,7 @@ fn parse_response_usage_includes_cache_tokens_in_total() {
             input: None,
             signature: None,
             data: None,
+            ..Default::default()
         }],
         stop_reason: Some("end_turn".into()),
         usage: Some(AnthropicUsage {
@@ -1310,6 +1401,7 @@ fn parse_response_tool_use_blocks() {
                 input: None,
                 signature: None,
                 data: None,
+                ..Default::default()
             },
             AnthropicResponseBlock {
                 block_type: Some("tool_use".into()),
@@ -1320,6 +1412,7 @@ fn parse_response_tool_use_blocks() {
                 input: Some(json!({"operation": "read", "path": "."})),
                 signature: None,
                 data: None,
+                ..Default::default()
             },
         ],
         stop_reason: Some("tool_use".into()),
@@ -1350,6 +1443,7 @@ fn parse_response_thinking_becomes_reasoning() {
                 input: None,
                 signature: Some("sig_1".into()),
                 data: None,
+                ..Default::default()
             },
             AnthropicResponseBlock {
                 block_type: Some("text".into()),
@@ -1360,6 +1454,7 @@ fn parse_response_thinking_becomes_reasoning() {
                 input: None,
                 signature: None,
                 data: None,
+                ..Default::default()
             },
         ],
         stop_reason: None,
@@ -1393,6 +1488,7 @@ fn parse_response_thinking_block_without_signature_omits_field() {
             input: None,
             signature: None,
             data: None,
+            ..Default::default()
         }],
         stop_reason: None,
         usage: None,
@@ -1419,6 +1515,7 @@ fn parse_response_redacted_thinking_captured_for_echo() {
                 input: None,
                 signature: None,
                 data: Some("base64-redacted".into()),
+                ..Default::default()
             },
             AnthropicResponseBlock {
                 block_type: Some("text".into()),
@@ -1429,6 +1526,7 @@ fn parse_response_redacted_thinking_captured_for_echo() {
                 input: None,
                 signature: None,
                 data: None,
+                ..Default::default()
             },
         ],
         stop_reason: None,

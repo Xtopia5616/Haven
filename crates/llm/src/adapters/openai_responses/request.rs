@@ -63,6 +63,12 @@ impl OpenAiResponsesAdapter {
     ) -> ResponsesRequest {
         let messages = messages.as_ref();
         let tools = tools.as_ref();
+        let web_search_mode =
+            if provider_builtin_web_search_available(&self.endpoint, "openai-responses") {
+                web_search_mode
+            } else {
+                WebSearchMode::Off
+            };
         let tool_names = self.tool_name_map(messages, tools);
         let prompt_cache_key = self.prompt_cache_key(messages, tools, web_search_mode);
         let cache_diagnostics = Self::cache_diagnostics(messages, prompt_cache_key.is_some())
@@ -103,12 +109,13 @@ impl OpenAiResponsesAdapter {
                 }
             }
             WebSearchMode::Auto => {
-                tools_json.push(json!({"type": "web_search"}));
+                tools_json.push(json!({"type": responses_web_search_tool_type(&self.endpoint)}));
                 Some(json!("auto"))
             }
             WebSearchMode::Always => {
-                tools_json.push(json!({"type": "web_search"}));
-                Some(json!({"type": "web_search"}))
+                let tool_type = responses_web_search_tool_type(&self.endpoint);
+                tools_json.push(json!({"type": tool_type}));
+                Some(json!({"type": tool_type}))
             }
         };
         let reasoning = responses_reasoning_config(&self.endpoint);

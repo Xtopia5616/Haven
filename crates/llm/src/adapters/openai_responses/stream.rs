@@ -235,7 +235,7 @@ impl OpenAiResponsesAdapter {
                                         return Some((Ok(chunk), state));
                                     }
                                 }
-                                "web_search_call" => {
+                                "web_search_call" | "browser_search_call" => {
                                     let call_id = item.id.clone();
                                     let action = web_search_tool_run_of(&item);
                                     if let Some(id) = call_id.clone() {
@@ -323,7 +323,7 @@ impl OpenAiResponsesAdapter {
                             // (`action`/`queries`): replace the in-progress
                             // skeleton captured from `output_item.added`, or
                             // record the item when no skeleton arrived.
-                            if item_type == "web_search_call" {
+                            if matches!(item_type, "web_search_call" | "browser_search_call") {
                                 let call_id = item.id.clone();
                                 let action = web_search_tool_run_of(&item);
                                 let normalized = normalize_web_search_call_item(
@@ -393,7 +393,9 @@ impl OpenAiResponsesAdapter {
                         let mut call_id = item_id;
                         let mut result = None;
                         if let Some(item) = item
-                            && item.item_type.as_deref() == Some("web_search_call")
+                            && item.item_type.as_deref().is_some_and(|kind| {
+                                matches!(kind, "web_search_call" | "browser_search_call")
+                            })
                         {
                             if call_id.is_none() {
                                 call_id = item.id.clone();
@@ -437,9 +439,29 @@ impl OpenAiResponsesAdapter {
                         };
                         state.saw_completed = true;
                         let mut completed_text = None;
+                        let mut response_citations = Vec::new();
                         if let Some(resp) = response {
                             completed_text =
                                 append_completed_output(&mut state.accumulated_text, &resp.output);
+                            for item in &resp.output {
+                                for part in &item.content {
+                                    response_citations.extend(Self::citations_from_annotations(
+                                        &part.annotations,
+                                    ));
+                                }
+                                if matches!(
+                                    item.item_type.as_deref(),
+                                    Some("web_search_call") | Some("browser_search_call")
+                                ) {
+                                    upsert_web_search_call(
+                                        &mut state.web_search_calls,
+                                        normalize_web_search_call_item(
+                                            serde_json::to_value(item).unwrap_or_default(),
+                                        ),
+                                    );
+                                }
+                            }
+                            Self::merge_citations(&mut state.web_search_calls, response_citations);
                             if let Some(m) = &resp.model {
                                 state.last_model = Some(m.clone());
                             }

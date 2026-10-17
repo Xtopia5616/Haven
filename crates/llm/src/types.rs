@@ -339,11 +339,11 @@ pub struct LlmResponse {
     /// Internal reasoning/chain-of-thought produced by the model (e.g.
     /// DeepSeek-R1's reasoning_content, Claude's extended thinking).
     pub reasoning: Option<String>,
-    /// Raw `web_search_call` output items (see
+    /// Provider-native web search calls and citation sources (see
     /// [`haven_common::types::CanonicalMessage::web_search_calls`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub web_search_calls: Vec<serde_json::Value>,
-    /// Provider-opaque thinking state (see
+    /// Provider-opaque replay state (see
     /// [`haven_common::types::CanonicalMessage::thinking_blocks`]). Carried so
     /// adapters can echo signed/opaque provider state on later turns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

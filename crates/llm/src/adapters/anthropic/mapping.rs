@@ -132,7 +132,10 @@ impl AnthropicAdapter {
             .filter(|block| {
                 matches!(
                     block.get("type").and_then(Value::as_str),
-                    Some("thinking") | Some("redacted_thinking")
+                    Some("thinking")
+                        | Some("redacted_thinking")
+                        | Some("server_tool_use")
+                        | Some("web_search_tool_result")
                 )
             })
             .collect();
@@ -245,7 +248,10 @@ impl AnthropicAdapter {
                     captured.retain(|block| {
                         matches!(
                             block.get("type").and_then(Value::as_str),
-                            Some("thinking") | Some("redacted_thinking")
+                            Some("thinking")
+                                | Some("redacted_thinking")
+                                | Some("server_tool_use")
+                                | Some("web_search_tool_result")
                         )
                     });
                     let blocks = match layout {

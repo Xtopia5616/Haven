@@ -16,7 +16,7 @@ pub struct ModelEndpoint {
     ///   (also Ollama, vLLM, DeepSeek chat, and most gateways)
     /// - `llama.cpp`: llama.cpp server (OpenAI-compatible `/chat/completions`)
     /// - `openai-responses`: OpenAI / DeepSeek Responses API (`/v1/responses`)
-    /// - `xai`: xAI Grok chat + Live Search (`search_parameters`)
+    /// - `xai`: legacy xAI Grok Chat Completions + Live Search (`search_parameters`)
     /// - `anthropic`: Anthropic Messages API (`/v1/messages`)
     /// - `gemini`: Google Gemini `generateContent` / `streamGenerateContent`
     /// - `deepgram` / `assemblyai`: speech-to-text only

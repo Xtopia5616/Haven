@@ -18,6 +18,8 @@
 use haven_common::config::ModelEndpoint;
 use serde::{Deserialize, Serialize};
 
+use super::provider_features::{is_deepseek, vendor_haystack};
+
 /// Web search mode for a provider's built-in search tool. Selected via the
 /// endpoint's `web_search` config field or the `HAVEN_WEB_SEARCH` environment
 /// variable (`off` | `auto` | `always`). Unconfigured defaults to `off`.
@@ -61,6 +63,45 @@ pub fn resolve_web_search_mode(endpoint: &ModelEndpoint) -> WebSearchMode {
     match endpoint.web_search.as_deref() {
         Some(v) if !v.trim().is_empty() => parse_web_search_mode(Some(v)),
         _ => web_search_mode_from_env(),
+    }
+}
+
+/// Whether this provider/model pair supports Haven's built-in search request
+/// shape. Protocol support alone is not enough for vendors that restrict
+/// search to a subset of their models.
+pub(crate) fn provider_builtin_web_search_available(
+    endpoint: &ModelEndpoint,
+    api_style: &str,
+) -> bool {
+    let vendor = vendor_haystack(endpoint);
+    if is_deepseek(endpoint)
+        && !endpoint
+            .model_name
+            .to_ascii_lowercase()
+            .starts_with("deepseek-v4-pro")
+    {
+        return false;
+    }
+
+    if vendor.contains("groq") {
+        let model = endpoint.model_name.to_ascii_lowercase();
+        let supported_model =
+            matches!(model.as_str(), "openai/gpt-oss-20b" | "openai/gpt-oss-120b");
+        return api_style == "openai-responses"
+            && supported_model
+            && endpoint.response_format.is_none();
+    }
+
+    true
+}
+
+/// Groq names its Responses API server tool `browser_search`; other current
+/// Responses integrations use the OpenAI-compatible `web_search` name.
+pub(crate) fn responses_web_search_tool_type(endpoint: &ModelEndpoint) -> &'static str {
+    if vendor_haystack(endpoint).contains("groq") {
+        "browser_search"
+    } else {
+        "web_search"
     }
 }
 
@@ -152,5 +193,48 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_web_search_mode(&off), WebSearchMode::Off);
+    }
+
+    #[test]
+    fn provider_search_capability_is_model_aware() {
+        let endpoint = |provider: &str, model: &str, response_format| ModelEndpoint {
+            provider: provider.into(),
+            model_name: model.into(),
+            response_format,
+            ..Default::default()
+        };
+
+        assert!(provider_builtin_web_search_available(
+            &endpoint("deepseek", "deepseek-v4-pro", None),
+            "openai-responses"
+        ));
+        assert!(!provider_builtin_web_search_available(
+            &endpoint("deepseek", "deepseek-v4-flash", None),
+            "openai-responses"
+        ));
+        assert!(provider_builtin_web_search_available(
+            &endpoint("groq", "openai/gpt-oss-20b", None),
+            "openai-responses"
+        ));
+        assert!(!provider_builtin_web_search_available(
+            &endpoint("groq", "llama-3.3-70b-versatile", None),
+            "openai-responses"
+        ));
+        assert!(!provider_builtin_web_search_available(
+            &endpoint(
+                "groq",
+                "openai/gpt-oss-20b",
+                Some(serde_json::json!({"type":"json_object"}))
+            ),
+            "openai-responses"
+        ));
+        assert_eq!(
+            responses_web_search_tool_type(&endpoint("groq", "openai/gpt-oss-20b", None)),
+            "browser_search"
+        );
+        assert_eq!(
+            responses_web_search_tool_type(&endpoint("xai", "grok-4.6", None)),
+            "web_search"
+        );
     }
 }

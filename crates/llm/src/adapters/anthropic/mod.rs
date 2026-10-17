@@ -27,7 +27,7 @@ use crate::types::{FinishReason, LlmError, LlmResponse, LlmToolDefinition, Strea
 use haven_common::config::ModelEndpoint;
 
 /// Anthropic server-side web search tool type id (Messages API).
-const ANTHROPIC_WEB_SEARCH_TOOL_TYPE: &str = "web_search_20250305";
+const ANTHROPIC_WEB_SEARCH_TOOL_TYPE: &str = "web_search_20260318";
 
 mod features;
 mod mapping;

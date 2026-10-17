@@ -44,6 +44,15 @@ describe('apiStyle', () => {
 		expect(p.base_url).toContain('deepseek');
 	});
 
+	it('uses the current search-capable Responses API presets for xAI and Groq', () => {
+		const xai = providerPreset('xai');
+		expect(xai.api_style).toBe('openai-responses');
+		expect(xai.provider).toBe('xai');
+		const groq = providerPreset('groq');
+		expect(groq.api_style).toBe('openai-responses');
+		expect(groq.provider).toBe('groq');
+	});
+
 	it('maps openai-compatible vendor presets', () => {
 		const moonshot = providerPreset('moonshot');
 		expect(moonshot.api_style).toBe('openai-chat');

@@ -93,6 +93,8 @@ impl AnthropicAdapter {
                     "type": ANTHROPIC_WEB_SEARCH_TOOL_TYPE,
                     "name": "web_search",
                     "max_uses": 5,
+                    "allowed_callers": ["direct"],
+                    "response_inclusion": "full",
                 }));
                 Some(json!({"type": "auto"}))
             }
@@ -101,6 +103,8 @@ impl AnthropicAdapter {
                     "type": ANTHROPIC_WEB_SEARCH_TOOL_TYPE,
                     "name": "web_search",
                     "max_uses": 5,
+                    "allowed_callers": ["direct"],
+                    "response_inclusion": "full",
                 }));
                 // Force only when there are no Haven ReAct function tools —
                 // otherwise `tool_choice: web_search` blocks the agent loop.

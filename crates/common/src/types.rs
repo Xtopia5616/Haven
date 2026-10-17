@@ -665,16 +665,15 @@ pub struct CanonicalMessage {
     /// back to APIs that require it in multi-turn requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
-    /// Raw `web_search_call` output items produced by the provider's built-in
-    /// web search tool. Carried on assistant messages so they are passed back
-    /// verbatim in the next request's input (the server restores the search
-    /// context from them). Never parsed or rewritten.
+    /// Provider-native search calls and citation sources. Adapters keep the
+    /// response shape needed by their transcript/UI contract and replay only
+    /// provider items required for the next request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub web_search_calls: Vec<serde_json::Value>,
-    /// Provider-opaque thinking state. Anthropic stores signed `thinking` /
-    /// `redacted_thinking` blocks here; Gemini stores `thoughtSignature`
-    /// markers. Adapters echo only the representation accepted by their own
-    /// provider on the next stateless request.
+    /// Provider-opaque replay state. Anthropic stores signed `thinking` /
+    /// `redacted_thinking` blocks and server-side web search blocks here;
+    /// Gemini stores `thoughtSignature` markers. Adapters echo only the
+    /// representation accepted by their own provider on the next request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thinking_blocks: Vec<serde_json::Value>,
     /// Structured inject origin (Phase 6 / B3). Skipped on the wire by

@@ -1277,3 +1277,4 @@
 - [1287：将工作区绑定的 MCP 调用隔离为单次 guest](1287-isolate-workspace-bound-mcp-invocations.md)
 - [1288：证明完整受管 MCP package 文件树](1288-verify-managed-mcp-package-trees.md)
 - [1289：拒绝受管 MCP package 的 NTFS alternate data streams](1289-reject-mcp-package-alternate-data-streams.md)
+- [1290：更新 Provider 原生搜索适配与引用回显](1290-update-provider-native-search-integrations.md)

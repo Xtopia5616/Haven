@@ -79,25 +79,50 @@ impl AnthropicAdapter {
                         .cloned()
                         .map(|q| json!([q]))
                         .unwrap_or_else(|| json!([]));
-                    web_search_calls.push(normalize_web_search_call_item(json!({
-                        "type": "web_search_call",
-                        "id": id,
-                        "status": "completed",
-                        "action": {"type": "search", "queries": queries},
-                    })));
+                    crate::adapters::upsert_web_search_call(
+                        &mut web_search_calls,
+                        normalize_web_search_call_item(json!({
+                            "type": "web_search_call",
+                            "id": id,
+                            "status": "completed",
+                            "action": {"type": "search", "queries": queries},
+                        })),
+                    );
+                    thinking_blocks.push(block.to_wire_value());
+                    layout.push((Self::LAYOUT_KIND_THINKING, i, text.chars().count()));
                 }
                 Some("web_search_tool_result") => {
-                    let id = block.id.clone().unwrap_or_else(|| format!("ws_result_{i}"));
-                    web_search_calls.push(normalize_web_search_call_item(json!({
-                        "type": "web_search_call",
-                        "id": id,
-                        "status": "completed",
-                        "action": {
-                            "type": "search",
-                            "queries": [],
-                            "result": block.input.clone().unwrap_or(Value::Null),
-                        },
-                    })));
+                    let id = block
+                        .tool_use_id
+                        .clone()
+                        .or(block.id.clone())
+                        .unwrap_or_else(|| format!("ws_result_{i}"));
+                    let queries = web_search_calls
+                        .iter()
+                        .find(|call: &&Value| call.get("id").and_then(Value::as_str) == Some(&id))
+                        .and_then(|call| call.pointer("/action/queries"))
+                        .cloned()
+                        .unwrap_or_else(|| json!([]));
+                    let result = block
+                        .content
+                        .clone()
+                        .or_else(|| block.error_code.clone().map(Value::String))
+                        .unwrap_or(Value::Null);
+                    crate::adapters::upsert_web_search_call(
+                        &mut web_search_calls,
+                        normalize_web_search_call_item(json!({
+                            "type": "web_search_call",
+                            "id": id,
+                            "status": "completed",
+                            "action": {
+                                "type": "search",
+                                "queries": queries,
+                                "result": result,
+                            },
+                        })),
+                    );
+                    thinking_blocks.push(block.to_wire_value());
+                    layout.push((Self::LAYOUT_KIND_THINKING, i, text.chars().count()));
                 }
                 _ => {}
             }

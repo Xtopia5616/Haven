@@ -83,6 +83,10 @@ pub(super) struct ResponsesItem {
 pub(super) struct ResponsesContentPart {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) text: Option<String>,
+    /// URL citations attached to output text by OpenAI-compatible Responses
+    /// providers, including OpenAI and Groq.
+    #[serde(default)]
+    pub(super) annotations: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
