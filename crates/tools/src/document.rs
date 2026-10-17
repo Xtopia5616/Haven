@@ -846,7 +846,7 @@ fn append_xml_text(
     output: &mut String,
     event: &quick_xml::events::BytesText<'_>,
 ) -> anyhow::Result<()> {
-    output.push_str(&event.xml_content()?);
+    output.push_str(&event.xml10_content()?);
     Ok(())
 }
 
