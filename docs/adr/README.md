@@ -1299,3 +1299,4 @@
 - [1308：将 Tools 授权契约迁入私有模块](1308-move-tools-authorization-contracts.md)
 - [1309：拆分 Tools 执行期授权与进程启动许可](1309-split-tools-execution-permits.md)
 - [1310：将 Tools 文件系统策略迁入私有模块](1310-split-tools-filesystem-policy.md)
+- [1311：拆分 Tools 授权 engine 并收敛有序边界检查](1311-split-tools-authorization-engine.md)

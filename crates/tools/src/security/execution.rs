@@ -1,6 +1,6 @@
 #[cfg(test)]
-use super::execution_proof_expiry;
-use super::{AuthorizationEngine, SafetyConfig, confirmation_now};
+use super::engine::execution_proof_expiry;
+use super::engine::{AuthorizationEngine, SafetyConfig, confirmation_now};
 use crate::{
     StructuredToolError, ToolErrorClass, ToolErrorMetadata, ToolExecutionOutcome, ToolRetryability,
 };

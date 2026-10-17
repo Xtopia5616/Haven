@@ -1,4 +1,4 @@
-use super::{canonical_authorization_hash, execution_proof_expiry};
+use super::engine::{canonical_authorization_hash, execution_proof_expiry};
 use crate::OperationPolicy;
 use haven_common::config::{SecurityConfig, StoredPermission};
 use haven_common::types::{
