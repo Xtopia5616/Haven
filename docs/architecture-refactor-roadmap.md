@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；2026-10-17 第二轮逐文件审计新增兼容层清理与结构简化候选，当前顺序见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。Slice 1–7 均已完成；当前实施 Slice 8。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
+> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；2026-10-17 第二轮逐文件审计新增兼容层清理与结构简化候选，当前顺序见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。Slice 1–8 均已完成；当前实施 Slice 9。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
 > 更新日期：2026-10-17
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,8 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active** | Slice 8：合并 App 转发层和重复数据/metadata 副本，详见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。 |
-| **Next** | Slice 9：延续第一轮仍成立的内部职责切片，详见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)与[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
+| **Active** | Slice 9：延续第一轮仍成立的内部职责切片，详见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)与[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -106,7 +105,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Next / 高影响** | `session_events.rs` 除 append、projection、rollback 外，还包含 fork、ingress、pending-input、recovery、tool-step、replay/read 和 usage 等生产职责。 | 仍由唯一 `SessionStore`/Memory owner 协调；逐步拆私有模块，保持 append/projection 同事务、rollback/usage 补偿同事务、提交后才广播；不暴露 backing DB 或投影 intent（ADR 0466、0479、0206、0915、1123）。 |
 | **已完成（2026-10-17）** | layout session/permission 通知读取 `notifyCfg`，ToolRun completion 读取独立 store；Settings 保存只更新后者，造成同进程配置版本分裂。 | layout 现在拥有全类通知唯一运行快照；Settings 成功保存后发布新快照，durable-first partial-apply 时重读已写配置，普通保存失败不更新；revision guard 阻止初始异步读取覆盖晚到的新快照。验收见 ADR 1294。 |
-| **Next / 已发生 drift** | 命令 boundary/security metadata 在 Rust、TS、文档间人工复制，脚本只比命令名；`execute_skill` 已出现 AuthorizationPort/AuthorizationEngine 文案差异。Rust `COMMAND_CONTRACTS` 当前未被逐字段核验，不能称为已经生效的机器权威。事件 channel 与 DTO 是两个 exhaustive match，二者配对目前不受同一 projection 登记约束。 | 将 Rust metadata 设为权威并生成/逐字段验证派生值；AgentEvent 一次生成 channel+payload projection 并与 generated shape registry 配对校验。当前 generator 已提供命令响应和事件 payload shape，不再把它列为缺失。 |
+| **已完成（2026-10-17，ADR 1301）** | App composition root 曾将 Tools 提供的 ToolRun/live-output capability 再包成无行为转发 adapter；UI live board 与 session history 各自保有完整 ToolRun payload；命令安全 metadata 只按命令名校验；AgentEvent channel 与 DTO 分别选择。 | App 直接持有窄 capability；UI payload 收敛到单一 map、两个有界 ID 索引；Rust `COMMAND_CONTRACTS` 生成并逐字段校验 TS 与文档 metadata；AgentEvent 在同一 exhaustive projection 中绑定 channel+payload，事件 checker 对照生成 DTO registry。完整门禁见 ADR 1301。 |
 | **Next / owner 收敛** | AppCommand pending map 在 `app_state.rs`；入队/超时在 `commands/mod.rs`；仲裁/授权/continuation 在 `commands/session.rs`。Session grant append failure 同进程重试已有故障注入覆盖，进程重启恢复路径需纳入下一轮验收。 | 新建明确 App confirmation owner；`resolve_confirmation` 保持 Session/ScheduledToolRun/AppCommand 薄路由。Admin UI authorization/finalization 留在 App command adapter，policy 继续归 Tools `AuthorizationPort`；覆盖 grant durable / resolved event fail / restart / expiry。 |
 | **Next / 私有模块整理** | `tools/security.rs` 同时实现授权 engine、process-start permit、filesystem policy、路径安全和 prompt summary；`agent/session/tool_runner.rs` 同时实现 step persistence、执行模式和 confirmation/scheduled lifecycle。 | 各自按职责拆私有模块；唯一 `AuthorizationEngine`/`SafetyConfig` 与 `SessionSupervisor` 不变。Tools 先提供唯一策略复核，Agent 仍负责会话生命周期。 |
 

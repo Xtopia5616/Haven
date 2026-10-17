@@ -17,11 +17,12 @@ import {
 	refreshSessionToolRuns,
 	setActiveSessionToolRun,
 	finalizeBackgroundToolRunMessages,
+	resetToolRunStoreForTest,
 } from './toolRunStore.ts';
 
 describe('upsertToolRun', () => {
 	beforeEach(() => {
-		toolRunStore.set({});
+		resetToolRunStoreForTest();
 	});
 
 	it('keeps the explicit background create payload', () => {
@@ -35,6 +36,36 @@ describe('upsertToolRun', () => {
 		expect(row.status).toBe('running');
 		expect(row.kind).toBe('background');
 		expect(row.toolRunId).toBe('toolrun-d409f06a31c9daee6d1a4f437a1f1f85');
+	});
+
+	it('shares one canonical payload between the live and session indexes', () => {
+		const payload = {
+			toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
+			kind: 'background' as const,
+			status: 'running' as const,
+			sessionId: 'ses-0123456789abcdef0123456789abcdef',
+		};
+		upsertToolRun(payload);
+		upsertSessionToolRun(payload);
+
+		expect(get(toolRunStore)[payload.toolRunId]).toBe(
+			get(sessionToolRunStore)[payload.sessionId]?.[payload.toolRunId],
+		);
+	});
+
+	it('keeps terminal history after a row leaves the live board', () => {
+		const payload = {
+			toolRunId: 'toolrun-799dd769de1342a01fddd367f57dd080',
+			kind: 'background' as const,
+			status: 'completed' as const,
+			sessionId: 'ses-0123456789abcdef0123456789abcdef',
+		};
+		upsertToolRun(payload);
+		upsertSessionToolRun(payload);
+		removeToolRun(payload.toolRunId);
+
+		expect(get(toolRunStore)[payload.toolRunId]).toBeUndefined();
+		expect(get(sessionToolRunStore)[payload.sessionId]?.[payload.toolRunId]).toBeDefined();
 	});
 
 	it('keeps a session binding update after an evicted row', () => {
@@ -100,7 +131,7 @@ describe('upsertToolRun', () => {
 	});
 
 	it('ignores an older ToolRun refresh response', async () => {
-		toolRunStore.set({});
+		resetToolRunStoreForTest();
 		let resolveOlder!: (value: unknown) => void;
 		let resolveNewer!: (value: unknown) => void;
 		const older = new Promise((resolve) => {
@@ -170,8 +201,43 @@ describe('upsertToolRun', () => {
 		vi.mocked(invoke).mockResolvedValue(undefined);
 	});
 
+	it('fences a live-board refresh when a session lifecycle event updates the shared payload', async () => {
+		const sessionId = 'ses-0123456789abcdef0123456789abcdef';
+		const toolRunId = 'toolrun-016864084f6608895ba0e6ecb4ea39f8';
+		let resolveRefresh!: (value: unknown) => void;
+		const refreshResponse = new Promise((resolve) => {
+			resolveRefresh = resolve;
+		});
+		vi.mocked(invoke)
+			.mockReset()
+			.mockReturnValueOnce(refreshResponse as never);
+
+		const refresh = refreshToolRuns();
+		upsertSessionToolRun({
+			toolRunId,
+			sessionId,
+			kind: 'background',
+			status: 'completed',
+			output: 'event result',
+		});
+		resolveRefresh([
+			{
+				tool_run_id: toolRunId,
+				kind: 'background',
+				status: 'running',
+			},
+		]);
+		await refresh;
+
+		expect(get(sessionToolRunStore)[sessionId]?.[toolRunId]).toMatchObject({
+			status: 'completed',
+			output: 'event result',
+		});
+		vi.mocked(invoke).mockResolvedValue(undefined);
+	});
+
 	it('reconciles live rows across kinds while excluding terminal background history', async () => {
-		toolRunStore.set({});
+		resetToolRunStoreForTest();
 		vi.mocked(invoke)
 			.mockReset()
 			.mockResolvedValue([
@@ -278,7 +344,7 @@ describe('upsertToolRun', () => {
 
 describe('session ToolRun history hydration', () => {
 	beforeEach(() => {
-		sessionToolRunStore.set({});
+		resetToolRunStoreForTest();
 		setActiveSessionToolRun(null);
 		vi.mocked(invoke).mockReset();
 	});

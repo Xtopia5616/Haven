@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { TAURI_COMMAND_CONTRACTS, TAURI_COMMAND_NAMES, type CommandBoundary } from './commands.ts';
 
 describe('Tauri command boundary directory', () => {
-	it('matches the reviewed command count without duplicating generated shapes', () => {
-		expect(TAURI_COMMAND_NAMES).toHaveLength(85);
-		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(85);
+	it('matches the generated registry without duplicating command metadata', () => {
+		expect(TAURI_COMMAND_NAMES.length).toBeGreaterThan(0);
+		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(TAURI_COMMAND_NAMES.length);
 		expect(TAURI_COMMAND_NAMES).toEqual(Object.keys(TAURI_COMMAND_CONTRACTS));
 		expect(TAURI_COMMAND_CONTRACTS.pick_execution_workspace_directory.boundary).toBe('read');
 		expect(TAURI_COMMAND_CONTRACTS.pick_execution_workspace_directory.security).toContain(
@@ -36,7 +36,10 @@ describe('Tauri command boundary directory', () => {
 				'promote_sandbox_output',
 			]),
 		);
-		expect(TAURI_COMMAND_CONTRACTS.execute_skill.security).toContain('AuthorizationEngine');
+		expect(TAURI_COMMAND_CONTRACTS.execute_skill.security).toContain('AuthorizationPort');
+		expect(TAURI_COMMAND_CONTRACTS.resolve_confirmation.security).toContain(
+			'retryable failures keep pending',
+		);
 	});
 
 	it('keeps MCP administration tied to the native authorization boundary', () => {
@@ -50,7 +53,7 @@ describe('Tauri command boundary directory', () => {
 		] as const) {
 			const contract = TAURI_COMMAND_CONTRACTS[command];
 			expect(contract.boundary).toBe('execute');
-			expect(contract.security).toContain('AuthorizationEngine');
+			expect(contract.security).toContain('AuthorizationPort');
 		}
 	});
 });

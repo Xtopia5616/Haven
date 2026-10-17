@@ -1,19 +1,57 @@
-import { writable } from 'svelte/store';
+import { derived, writable } from 'svelte/store';
 import logger from '$lib/logger.ts';
 import { reportError } from '$lib/errorHandling.ts';
 import { cancelToolRunCommand, listToolRunHistory, listToolRunRows } from './toolRunCommands.ts';
 import { type ToolRunKind, type ToolRunPayload } from './contracts/toolRun.ts';
 import { appSessionReducer, backgroundToolRunResultContent } from './sessionReducer.ts';
 
-/**
- * ToolRun registry (background ToolRuns + pending scheduled ToolRuns). Both
- * toolRun kinds share the same normalized id and lifecycle projection.
- */
-export const toolRunStore = writable<Record<string, ToolRunPayload>>({});
-/** Bounded per-session cache for timeline history and lifecycle events. */
-export const sessionToolRunStore = writable<Record<string, Record<string, ToolRunPayload>>>({});
+interface ToolRunState {
+	payloadsById: Record<string, ToolRunPayload>;
+	/** Ordered live-board identity index. Payloads live only in payloadsById. */
+	liveBoardIds: string[];
+	/** Per-session ordered history identity indexes. */
+	sessionHistoryIds: Record<string, string[]>;
+	/** LRU order for the bounded session-history index cache. */
+	sessionCacheIds: string[];
+}
 
-/** Cap terminal entries so a long session cannot grow the store unbounded. */
+const EMPTY_TOOL_RUN_STATE: ToolRunState = {
+	payloadsById: {},
+	liveBoardIds: [],
+	sessionHistoryIds: {},
+	sessionCacheIds: [],
+};
+
+/**
+ * The only ToolRun payload owner. The live board and session timeline expose
+ * derived views over this map and keep only their own bounded identity indexes.
+ */
+const toolRunState = writable<ToolRunState>(EMPTY_TOOL_RUN_STATE);
+export const toolRunStore = derived(toolRunState, ({ payloadsById, liveBoardIds }) =>
+	Object.fromEntries(
+		liveBoardIds.flatMap((id) => {
+			const payload = payloadsById[id];
+			return payload ? [[id, payload] as const] : [];
+		}),
+	),
+);
+export const sessionToolRunStore = derived(
+	toolRunState,
+	({ payloadsById, sessionHistoryIds }) =>
+		Object.fromEntries(
+			Object.entries(sessionHistoryIds).map(([sessionId, ids]) => [
+				sessionId,
+				Object.fromEntries(
+					ids.flatMap((id) => {
+						const payload = payloadsById[id];
+						return payload ? [[id, payload] as const] : [];
+					}),
+				),
+			]),
+		),
+);
+
+/** Cap terminal entries so a long live board cannot grow the store unbounded. */
 const TOOL_RUN_STORE_MAX = 64;
 const SESSION_TOOL_RUN_MAX = 200;
 const SESSION_TOOL_RUN_CACHE_MAX = 16;
@@ -34,79 +72,113 @@ function isLiveToolRunRow(entry: ToolRunPayload) {
 	return entry.status === 'waiting' || entry.status === 'running';
 }
 
-function trimToolRunStore(entries: Record<string, ToolRunPayload>) {
-	const ids = Object.keys(entries);
-	if (ids.length <= TOOL_RUN_STORE_MAX) return entries;
-	const excess = ids.length - TOOL_RUN_STORE_MAX;
-	const victims = ids.filter((id) => !isLiveToolRunRow(entries[id]));
-	let removed = 0;
-	for (const id of victims) {
-		if (removed >= excess) break;
-		delete entries[id];
-		removed++;
-	}
-	return entries;
-}
-
 function toolRunRecency(toolRun: ToolRunPayload): string {
 	return toolRun.finishedAt || toolRun.startedAt || toolRun.dueAt || '';
 }
 
-function trimSessionToolRuns(entries: Record<string, ToolRunPayload>) {
-	const newest = Object.values(entries)
-		.sort(
-			(left, right) =>
-				toolRunRecency(right).localeCompare(toolRunRecency(left)) ||
-				right.toolRunId.localeCompare(left.toolRunId),
-		)
-		.slice(0, SESSION_TOOL_RUN_MAX);
-	return Object.fromEntries(newest.map((entry) => [entry.toolRunId, entry]));
+function trimLiveBoardIds(ids: string[], payloadsById: Record<string, ToolRunPayload>) {
+	if (ids.length <= TOOL_RUN_STORE_MAX) return ids;
+	const excess = ids.length - TOOL_RUN_STORE_MAX;
+	const victims = ids.filter((id) => !isLiveToolRunRow(payloadsById[id]));
+	const removed = new Set(victims.slice(0, excess));
+	return ids.filter((id) => !removed.has(id));
 }
 
-function touchSessionToolRunCache(
-	current: Record<string, Record<string, ToolRunPayload>>,
-	sessionId: string,
-	toolRuns: Record<string, ToolRunPayload>,
-) {
-	const next = { ...current };
-	delete next[sessionId];
-	next[sessionId] = trimSessionToolRuns(toolRuns);
-	while (Object.keys(next).length > SESSION_TOOL_RUN_CACHE_MAX) {
-		const victim = Object.keys(next).find((key) => key !== activeTimelineSessionId);
-		if (!victim) break;
-		delete next[victim];
+function trimSessionHistoryIds(ids: string[], payloadsById: Record<string, ToolRunPayload>) {
+	return [...ids]
+		.sort((leftId, rightId) => {
+			const left = payloadsById[leftId];
+			const right = payloadsById[rightId];
+			if (!left || !right) return left ? -1 : right ? 1 : leftId.localeCompare(rightId);
+			return (
+				toolRunRecency(right).localeCompare(toolRunRecency(left)) ||
+				right.toolRunId.localeCompare(left.toolRunId)
+			);
+		})
+		.slice(0, SESSION_TOOL_RUN_MAX);
+}
+
+function pruneUnindexedPayloads(state: ToolRunState): ToolRunState {
+	const indexedIds = new Set(state.liveBoardIds);
+	for (const ids of Object.values(state.sessionHistoryIds)) {
+		for (const id of ids) indexedIds.add(id);
 	}
+	const payloadsById = Object.fromEntries(
+		Object.entries(state.payloadsById).filter(([id]) => indexedIds.has(id)),
+	);
+	return { ...state, payloadsById };
+}
+
+function pruneSessionRequestState(sessionHistoryIds: Record<string, string[]>) {
 	for (const key of sessionToolRunVersions.keys()) {
-		if (!(key in next)) sessionToolRunVersions.delete(key);
+		if (!(key in sessionHistoryIds)) sessionToolRunVersions.delete(key);
 	}
 	for (const key of sessionToolRunRefreshRequests.keys()) {
-		if (!(key in next)) sessionToolRunRefreshRequests.delete(key);
+		if (!(key in sessionHistoryIds)) sessionToolRunRefreshRequests.delete(key);
 	}
-	return next;
 }
 
-/** Pin the visible session's cache entry until the user switches away. */
+function touchSessionHistory(
+	state: ToolRunState,
+	sessionId: string,
+	ids: string[],
+): ToolRunState {
+	const sessionHistoryIds = {
+		...state.sessionHistoryIds,
+		[sessionId]: trimSessionHistoryIds(ids, state.payloadsById),
+	};
+	let sessionCacheIds = state.sessionCacheIds.filter((id) => id !== sessionId);
+	sessionCacheIds.push(sessionId);
+	while (sessionCacheIds.length > SESSION_TOOL_RUN_CACHE_MAX) {
+		const victim = sessionCacheIds.find((id) => id !== activeTimelineSessionId);
+		if (!victim) break;
+		sessionCacheIds = sessionCacheIds.filter((id) => id !== victim);
+		delete sessionHistoryIds[victim];
+	}
+	pruneSessionRequestState(sessionHistoryIds);
+	return { ...state, sessionHistoryIds, sessionCacheIds };
+}
+
+function mergePayload(state: ToolRunState, payload: ToolRunPayload): ToolRunState {
+	const previous = state.payloadsById[payload.toolRunId];
+	return {
+		...state,
+		payloadsById: {
+			...state.payloadsById,
+			[payload.toolRunId]: { ...previous, ...payload },
+		},
+	};
+}
+
+/** Pin the visible session's index entry until the user switches away. */
 export function setActiveSessionToolRun(sessionId: string | null) {
 	activeTimelineSessionId = sessionId;
 	if (!sessionId) return;
-	sessionToolRunStore.update((current) =>
-		touchSessionToolRunCache(current, sessionId, current[sessionId] || {}),
+	toolRunState.update((current) =>
+		pruneUnindexedPayloads(
+			touchSessionHistory(current, sessionId, current.sessionHistoryIds[sessionId] || []),
+		),
 	);
 }
 
-/** Keep a lifecycle event in the owning session's timeline cache. */
+/** Keep a lifecycle event in the owning session's timeline identity index. */
 export function upsertSessionToolRun(payload: ToolRunPayload) {
 	if (!payload.toolRunId || !payload.sessionId) return;
-	sessionToolRunVersions.set(
-		payload.sessionId,
-		(sessionToolRunVersions.get(payload.sessionId) || 0) + 1,
-	);
-	sessionToolRunStore.update((current) => {
-		const entries = current[payload.sessionId!] || {};
-		return touchSessionToolRunCache(current, payload.sessionId!, {
-			...entries,
-			[payload.toolRunId]: { ...entries[payload.toolRunId], ...payload },
-		});
+	// Session lifecycle events update the same payload map as the live board;
+	// fence any board hydration that began before this newer event arrived.
+	toolRunStateVersion++;
+	const sessionId = payload.sessionId;
+	sessionToolRunVersions.set(sessionId, (sessionToolRunVersions.get(sessionId) || 0) + 1);
+	toolRunState.update((current) => {
+		const merged = mergePayload(current, payload);
+		const ids = merged.sessionHistoryIds[sessionId] || [];
+		return pruneUnindexedPayloads(
+			touchSessionHistory(
+				merged,
+				sessionId,
+				ids.includes(payload.toolRunId) ? ids : [...ids, payload.toolRunId],
+			),
+		);
 	});
 }
 
@@ -119,17 +191,22 @@ export async function refreshSessionToolRuns(sessionId: string) {
 	try {
 		const rows = await listToolRunHistory(undefined, SESSION_TOOL_RUN_MAX, sessionId);
 		if (sessionToolRunRefreshRequests.get(sessionId) !== requestId) return;
-		sessionToolRunStore.update((current) => {
-			const nextRows: Record<string, ToolRunPayload> = {};
+		const preserveEvents = (sessionToolRunVersions.get(sessionId) || 0) !== stateVersion;
+		toolRunState.update((current) => {
+			let next = current;
+			const refreshedIds: string[] = [];
+			const eventIds = new Set(current.sessionHistoryIds[sessionId] || []);
 			for (const row of rows) {
-				if (row.sessionId === sessionId) nextRows[row.toolRunId] = row;
+				if (row.sessionId !== sessionId) continue;
+				if (!preserveEvents || !eventIds.has(row.toolRunId)) {
+					next = mergePayload(next, row);
+				}
+				if (!refreshedIds.includes(row.toolRunId)) refreshedIds.push(row.toolRunId);
 			}
-			// Keep events received after the DB read began; they may be newer than
-			// the command response or not persisted yet.
-			if ((sessionToolRunVersions.get(sessionId) || 0) !== stateVersion) {
-				Object.assign(nextRows, current[sessionId] || {});
-			}
-			return touchSessionToolRunCache(current, sessionId, nextRows);
+			const ids = preserveEvents
+				? [...new Set([...refreshedIds, ...(current.sessionHistoryIds[sessionId] || [])])]
+				: refreshedIds;
+			return pruneUnindexedPayloads(touchSessionHistory(next, sessionId, ids));
 		});
 	} catch (error) {
 		reportError(error, {
@@ -140,29 +217,31 @@ export async function refreshSessionToolRuns(sessionId: string) {
 	}
 }
 
+/** Insert or update one payload and add it to the live-board identity index. */
 export function upsertToolRun(payload: ToolRunPayload) {
 	const key = payload.toolRunId;
 	if (!key) return;
 	toolRunStateVersion++;
-	toolRunStore.update((current) => {
-		const prev = current[key];
-		const next: ToolRunPayload = {
-			...prev,
-			...payload,
-		};
-		return trimToolRunStore({ ...current, [key]: next });
+	toolRunState.update((current) => {
+		const merged = mergePayload(current, payload);
+		const ids = current.liveBoardIds.includes(key) ? current.liveBoardIds : [...current.liveBoardIds, key];
+		return pruneUnindexedPayloads({
+			...merged,
+			liveBoardIds: trimLiveBoardIds(ids, merged.payloadsById),
+		});
 	});
 }
 
-/** Drop a ToolRun removed from the live board by a terminal lifecycle event. */
+/** Drop a ToolRun from the live board while preserving any session index. */
 export function removeToolRun(toolRunId: string) {
 	if (!toolRunId) return;
 	toolRunStateVersion++;
-	toolRunStore.update((current) => {
-		if (!(toolRunId in current)) return current;
-		const next = { ...current };
-		delete next[toolRunId];
-		return next;
+	toolRunState.update((current) => {
+		if (!current.liveBoardIds.includes(toolRunId)) return current;
+		return pruneUnindexedPayloads({
+			...current,
+			liveBoardIds: current.liveBoardIds.filter((id) => id !== toolRunId),
+		});
 	});
 }
 
@@ -174,28 +253,26 @@ export async function refreshToolRuns() {
 		if (!rows) return;
 		if (requestId !== toolRunRefreshRequest) return;
 		if (stateVersion !== toolRunStateVersion) return;
-		// Missing rows were removed server-side, so replace the registry instead
-		// of leaving stale lifecycle entries in the UI.
-		toolRunStore.update((current) => {
-			const next: Record<string, ToolRunPayload> = {};
+		toolRunState.update((current) => {
+			let next = current;
+			const liveBoardIds: string[] = [];
 			for (const row of rows) {
 				if (!row) {
 					logger.warn('toolRunStore', 'Dropping malformed toolRun board row');
 					continue;
 				}
-				const key = row.toolRunId;
-				const merged: ToolRunPayload = {
-					...(current[key] || {}),
-					...row,
-					toolRunId: key,
-				};
+				next = mergePayload(next, { ...row, toolRunId: row.toolRunId });
+				const merged = next.payloadsById[row.toolRunId];
 				// Terminal background ToolRuns do not belong in the live registry.
 				if (merged.kind === 'background' && merged.status && merged.status !== 'running') {
 					continue;
 				}
-				next[key] = merged;
+				if (!liveBoardIds.includes(row.toolRunId)) liveBoardIds.push(row.toolRunId);
 			}
-			return trimToolRunStore(next);
+			return pruneUnindexedPayloads({
+				...next,
+				liveBoardIds: trimLiveBoardIds(liveBoardIds, next.payloadsById),
+			});
 		});
 	} catch (error) {
 		reportError(error, {
@@ -204,6 +281,16 @@ export async function refreshToolRuns() {
 			notify: false,
 		});
 	}
+}
+
+/** @internal Store reset hook for isolated UI tests. */
+export function resetToolRunStoreForTest() {
+	toolRunRefreshRequest++;
+	toolRunStateVersion = 0;
+	sessionToolRunRefreshRequests.clear();
+	sessionToolRunVersions.clear();
+	activeTimelineSessionId = null;
+	toolRunState.set(EMPTY_TOOL_RUN_STATE);
 }
 
 export async function cancelToolRun(toolRunId: string, kind: ToolRunKind = 'background') {

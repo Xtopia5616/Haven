@@ -4,7 +4,7 @@ import { tick } from 'svelte';
 import ToolResultCard from './ToolResultCard.svelte';
 import GlobalContextMenu from './GlobalContextMenu.svelte';
 import { canRenderToolResult, parseToolResult } from './toolResultParsing.ts';
-import { toolRunStore, upsertToolRun } from './toolRunStore.ts';
+import { toolRunStore, upsertToolRun, resetToolRunStoreForTest } from './toolRunStore.ts';
 import {
 	clearToolOutputPreview,
 	clearToolOutputPreviewsForSession,
@@ -1283,7 +1283,7 @@ describe('ToolResultCard shell / notify / generic', () => {
 });
 
 afterEach(() => {
-	toolRunStore.set({});
+	resetToolRunStoreForTest();
 	clearToolOutputPreviewsForSession(null);
 });
 

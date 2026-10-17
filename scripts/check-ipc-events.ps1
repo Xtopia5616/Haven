@@ -34,6 +34,33 @@ if (-not $eventShapeRegistry.Success) { throw 'generated Rust event payload shap
 $eventShapeNames = Get-Matches $eventShapeRegistry.Groups[1].Value "(?m)^\s*'([^']+:[^']+)'\s*:"
 Assert-SetEqual 'Rust event directory vs generated payload shape registry' $rustEvents $eventShapeNames
 
+$eventDtoRegistry = [regex]::Match($generated, '(?sm)export const IPC_EVENT_PAYLOAD_DTO_TYPES = \{(.*?)^\} as const;')
+if (-not $eventDtoRegistry.Success) { throw 'generated Rust event DTO pairing registry is missing' }
+$eventDtoPairs = @{}
+foreach ($match in [regex]::Matches($eventDtoRegistry.Groups[1].Value, '(?m)^\s*''([^'']+:[^'']+)''\s*:\s*(?:''([^'']+)''|"([^"]+)"|(null))\s*,?')) {
+    $dtoType = if ($match.Groups[2].Success) { $match.Groups[2].Value } elseif ($match.Groups[3].Success) { $match.Groups[3].Value } else { $null }
+    $eventDtoPairs[$match.Groups[1].Value] = $dtoType
+}
+$eventConstants = @{}
+foreach ($match in [regex]::Matches($events, '(?m)^pub\(crate\) const ([A-Z0-9_]+): &str = "([^"]+)";')) {
+    $eventConstants[$match.Groups[1].Value] = $match.Groups[2].Value
+}
+$eventBridge = Get-Content (Join-Path $root 'crates/app-binary/src/event_bridge.rs') -Raw
+$agentProjectionMatch = [regex]::Match($eventBridge, '(?s)fn project_with_chunk_seq\(.*?(?=/// 保留原有按变体区分的 tracing 日志)')
+if (-not $agentProjectionMatch.Success) { throw 'single AgentEvent projection function is missing' }
+$agentProjectionPairs = @()
+foreach ($match in [regex]::Matches($agentProjectionMatch.Value, 'AgentEvent::([A-Za-z0-9_]+)[\s\S]*?=>\s*project\(\s*([A-Z0-9_]+_EVENT)\s*,\s*serialize\(\s*([A-Za-z0-9_]+)')) {
+    $channelConstant = $match.Groups[2].Value
+    if (-not $eventConstants.ContainsKey($channelConstant)) { throw "AgentEvent projection references unknown channel constant $channelConstant" }
+    $channel = $eventConstants[$channelConstant]
+    $agentProjectionPairs += "$channel|$($match.Groups[3].Value)"
+}
+$expectedAgentProjectionPairs = @($eventDtoPairs.GetEnumerator() | Where-Object {
+    ($_.Key.StartsWith('agent:') -and $_.Key -ne 'agent:tool_output') -or
+    ($_.Key -in @('session:lifecycle', 'notification:show'))
+} | ForEach-Object { "$($_.Key)|$($_.Value)" })
+Assert-SetEqual 'AgentEvent channel/DTO projections vs generated event shape registry' $expectedAgentProjectionPairs $agentProjectionPairs
+
 # Keep every direct Tauri emission site visible for review. New emitters must
 # add their source file and count here, then remain covered by the channel and
 # DTO ownership checks below.
@@ -218,4 +245,4 @@ if ($rustEvents.Count -ne 36) {
     throw "expected 36 public IPC events, found $($rustEvents.Count)"
 }
 
-Write-Host "IPC event directory verified: $($rustEvents.Count) channels agree, runtime enum validators use generated Rust vocabularies, and all direct emitter sites match the reviewed inventory."
+Write-Host "IPC event directory verified: $($rustEvents.Count) channels and AgentEvent channel/DTO pairs agree with generated Rust registries; runtime enum validators and direct emitter sites match their reviewed inventories."

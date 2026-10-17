@@ -1038,7 +1038,7 @@ mod tests {
         let tool_run_id = state
             .runtime
             .services
-            .tool_runs
+            .tool_run_test_support
             .schedule(haven_tools::ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: Some(3600),

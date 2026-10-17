@@ -146,6 +146,8 @@ Inbox 侧格式要按无兼容目标明确切换：升级前备份后重置 `inb
 
 移除 App 纯转发 adapter；把 ToolRun store 改为唯一 payload map + 双索引；把 command security metadata 设为单一权威并扩展现有 generator/checker；把 AgentEvent `{channel,payload}` projection 绑定到生成 shape registry。验收检查 owner 唯一、生成产物不 drift、UI 查询生命周期与 bounded limits 保持。
 
+**实施完成（ADR 1301，2026-10-17）**：App 直接持有 Tools capability；ToolRun store 只保留一份 payload 并由 live/session 有界索引派生视图；Rust command metadata 逐字段生成并核对 TS、文档；AgentEvent 单一 projection 配对 channel 与 DTO。完整 workspace 测试、strict Clippy、UI check/完整测试/生产构建、Rust fmt 和 IPC contracts/events checker 均通过。最后修复的共享 payload 刷新竞态另经 16 项定向 UI 测试通过。Slice 9 转为当前 Active 项；Windows 发布验收仍是独立 Gate。
+
 ### Slice 9 — 延续第一轮仍成立的内部职责切片
 
 前一轮中的通知配置单 owner 已提前为本轮 Slice 2；AppCommand confirmation owner、SessionStore 私有模块拆分、Tools `security.rs` 私有职责拆分、Agent `tool_runner.rs` 私有职责拆分仍成立，按 [第一轮源码审计方案](refactor-plan-source-audit-2026-10-17.md) 的事务与安全边界执行。第一轮计划中关于 command metadata “Rust 目前已是权威”的事实描述以本轮复核纠正；当前实际不是逐字段校验。本轮不重新把已验证的事务、session、authorization 不变量重复设计一遍。

@@ -20,6 +20,11 @@ pub(crate) struct ToolRunEventProjection {
     pub(crate) payload: ToolRunEvent,
 }
 
+struct AgentEventProjection {
+    channel: &'static str,
+    payload: serde_json::Value,
+}
+
 /// Adapt a typed Tools lifecycle event to the App-owned Tauri contract.
 pub(crate) fn emit_tool_run_event(handle: &tauri::AppHandle, event: ToolRunLifecycleEvent) {
     let projection = project_tool_run_event(event);
@@ -64,7 +69,6 @@ pub(crate) fn project_tool_run_event(event: ToolRunLifecycleEvent) -> ToolRunEve
 impl AgentEventEmitter for TauriEmitter {
     async fn emit(&self, event: AgentEvent) {
         Self::trace_event(&event);
-        let channel = Self::channel(&event);
         let chunk_seq = match &event {
             AgentEvent::ThoughtChunk { .. }
             | AgentEvent::ReasoningChunk { .. }
@@ -82,10 +86,10 @@ impl AgentEventEmitter for TauriEmitter {
             }
             _ => None,
         };
-        let payload = Self::payload_with_chunk_seq(&event, chunk_seq, display_title);
-        if let Err(error) = self.handle.emit(channel, payload) {
+        let projection = Self::project_with_chunk_seq(&event, chunk_seq, display_title);
+        if let Err(error) = self.handle.emit(projection.channel, projection.payload) {
             tracing::warn!(
-                channel,
+                channel = projection.channel,
                 error = %sanitize_error_text(&error.to_string()),
                 "failed to emit agent event"
             );
@@ -95,31 +99,10 @@ impl AgentEventEmitter for TauriEmitter {
 }
 
 impl TauriEmitter {
-    /// 单一事实来源：AgentEvent 变体 → 前端订阅的 channel 名。
+    /// Test convenience that reads the channel from the paired projection.
+    #[cfg(test)]
     pub(crate) fn channel(event: &AgentEvent) -> &'static str {
-        match event {
-            AgentEvent::Thought { .. } => AGENT_THOUGHT_EVENT,
-            AgentEvent::ToolCall { .. } => AGENT_TOOL_CALL_EVENT,
-            AgentEvent::Observation { .. } => AGENT_OBSERVATION_EVENT,
-            AgentEvent::SessionCreated(_)
-            | AgentEvent::SessionCompleted { .. }
-            | AgentEvent::SessionUpdated { .. }
-            | AgentEvent::SessionError { .. }
-            | AgentEvent::SessionDeleted { .. }
-            | AgentEvent::TitleUpdated { .. } => SESSION_LIFECYCLE_EVENT,
-            AgentEvent::Notification { .. } => NOTIFICATION_SHOW_EVENT,
-            AgentEvent::ToolRunCompletionNotification { .. } => NOTIFICATION_SHOW_EVENT,
-            AgentEvent::ThoughtChunk { .. } => AGENT_THOUGHT_CHUNK_EVENT,
-            AgentEvent::ReasoningChunk { .. } => AGENT_REASONING_CHUNK_EVENT,
-            AgentEvent::ToolCallChunk { .. } => AGENT_TOOL_CALL_CHUNK_EVENT,
-            AgentEvent::StreamReset { .. } => AGENT_STREAM_RESET_EVENT,
-            AgentEvent::MediaPlan { .. } => AGENT_MEDIA_PLAN_EVENT,
-            AgentEvent::WebSearch { .. } => AGENT_WEB_SEARCH_EVENT,
-            AgentEvent::StreamStalled { .. } => AGENT_STREAM_STALLED_EVENT,
-            AgentEvent::Supplement { .. } => AGENT_SUPPLEMENT_EVENT,
-            AgentEvent::Compaction { .. } => AGENT_COMPACTION_EVENT,
-            AgentEvent::Usage { .. } => AGENT_USAGE_EVENT,
-        }
+        Self::project_with_chunk_seq(event, None, None).channel
     }
 
     /// Construct the wire payload from an explicit DTO for every event. Dynamic
@@ -127,14 +110,14 @@ impl TauriEmitter {
     /// extension point: tool input, web-search result, and usage diagnostics.
     #[cfg(test)]
     pub(crate) fn payload(event: &AgentEvent, chunk_seq: Option<u64>) -> serde_json::Value {
-        Self::payload_with_chunk_seq(event, chunk_seq, None)
+        Self::project_with_chunk_seq(event, chunk_seq, None).payload
     }
 
-    fn payload_with_chunk_seq(
+    fn project_with_chunk_seq(
         event: &AgentEvent,
         chunk_seq: Option<u64>,
         display_title: Option<String>,
-    ) -> serde_json::Value {
+    ) -> AgentEventProjection {
         fn serialize<T: serde::Serialize>(payload: T) -> serde_json::Value {
             match serde_json::to_value(payload) {
                 Ok(value) => value,
@@ -148,6 +131,10 @@ impl TauriEmitter {
             }
         }
 
+        fn project(channel: &'static str, payload: serde_json::Value) -> AgentEventProjection {
+            AgentEventProjection { channel, payload }
+        }
+
         match event {
             AgentEvent::Thought {
                 session_id,
@@ -156,14 +143,17 @@ impl TauriEmitter {
                 run_id,
                 message_id,
                 event_sequence,
-            } => serialize(AgentThoughtEvent {
-                session_id: session_id.clone(),
-                thought: thought.clone(),
-                step_number: *step_number,
-                run_id: *run_id,
-                message_id: message_id.clone(),
-                event_sequence: *event_sequence,
-            }),
+            } => project(
+                AGENT_THOUGHT_EVENT,
+                serialize(AgentThoughtEvent {
+                    session_id: session_id.clone(),
+                    thought: thought.clone(),
+                    step_number: *step_number,
+                    run_id: *run_id,
+                    message_id: message_id.clone(),
+                    event_sequence: *event_sequence,
+                }),
+            ),
             AgentEvent::ToolCall {
                 session_id,
                 tool_name,
@@ -175,19 +165,22 @@ impl TauriEmitter {
                 step_id,
                 suppress_streamed_thought,
                 event_sequence: durable_event_sequence,
-            } => serialize(AgentToolCallEvent {
-                session_id: session_id.clone(),
-                tool_name: tool_name.clone(),
-                input: input.clone(),
-                step_number: *step_number,
-                run_id: *run_id,
-                tool_call_id: tool_call_id.clone(),
-                tool_index: *tool_index,
-                step_id: step_id.clone(),
-                suppress_streamed_thought: *suppress_streamed_thought,
-                silent: haven_tools::is_silent_tool_call(tool_name, input),
-                event_sequence: *durable_event_sequence,
-            }),
+            } => project(
+                AGENT_TOOL_CALL_EVENT,
+                serialize(AgentToolCallEvent {
+                    session_id: session_id.clone(),
+                    tool_name: tool_name.clone(),
+                    input: input.clone(),
+                    step_number: *step_number,
+                    run_id: *run_id,
+                    tool_call_id: tool_call_id.clone(),
+                    tool_index: *tool_index,
+                    step_id: step_id.clone(),
+                    suppress_streamed_thought: *suppress_streamed_thought,
+                    silent: haven_tools::is_silent_tool_call(tool_name, input),
+                    event_sequence: *durable_event_sequence,
+                }),
+            ),
             AgentEvent::Observation {
                 session_id,
                 observation,
@@ -204,38 +197,47 @@ impl TauriEmitter {
                 renderer,
                 result,
                 event_sequence: durable_event_sequence,
-            } => serialize(AgentObservationEvent {
-                session_id: session_id.clone(),
-                observation: observation.clone(),
-                tool_name: tool_name.clone(),
-                step_number: *step_number,
-                run_id: *run_id,
-                silent: *silent,
-                tool_call_id: tool_call_id.clone(),
-                tool_index: *tool_index,
-                ask_options: ask_options.clone(),
-                step_id: step_id.clone(),
-                idempotency: *idempotency,
-                operation_scope: *operation_scope,
-                renderer: renderer.clone(),
-                result: result.clone(),
-                event_sequence: *durable_event_sequence,
-            }),
-            AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent::Created {
-                session_id: session.session_id.clone(),
-                status: session.status,
-                waiting_reason: session.waiting_reason,
-                title: session.title.clone(),
-            }),
+            } => project(
+                AGENT_OBSERVATION_EVENT,
+                serialize(AgentObservationEvent {
+                    session_id: session_id.clone(),
+                    observation: observation.clone(),
+                    tool_name: tool_name.clone(),
+                    step_number: *step_number,
+                    run_id: *run_id,
+                    silent: *silent,
+                    tool_call_id: tool_call_id.clone(),
+                    tool_index: *tool_index,
+                    ask_options: ask_options.clone(),
+                    step_id: step_id.clone(),
+                    idempotency: *idempotency,
+                    operation_scope: *operation_scope,
+                    renderer: renderer.clone(),
+                    result: result.clone(),
+                    event_sequence: *durable_event_sequence,
+                }),
+            ),
+            AgentEvent::SessionCreated(session) => project(
+                SESSION_LIFECYCLE_EVENT,
+                serialize(SessionLifecycleEvent::Created {
+                    session_id: session.session_id.clone(),
+                    status: session.status,
+                    waiting_reason: session.waiting_reason,
+                    title: session.title.clone(),
+                }),
+            ),
             AgentEvent::SessionCompleted {
                 session_id,
                 title,
                 reason,
-            } => serialize(SessionLifecycleEvent::Completed {
-                session_id: session_id.clone(),
-                title: title.clone(),
-                reason: sanitize_error_text(reason),
-            }),
+            } => project(
+                SESSION_LIFECYCLE_EVENT,
+                serialize(SessionLifecycleEvent::Completed {
+                    session_id: session_id.clone(),
+                    title: title.clone(),
+                    reason: sanitize_error_text(reason),
+                }),
+            ),
             AgentEvent::SessionUpdated {
                 session_id,
                 status,
@@ -244,7 +246,8 @@ impl TauriEmitter {
             } => {
                 let title = display_title.clone().unwrap_or_else(|| session_id.clone());
                 match status {
-                    haven_common::lifecycle::SessionStatus::Completed => {
+                    haven_common::lifecycle::SessionStatus::Completed => project(
+                        SESSION_LIFECYCLE_EVENT,
                         serialize(SessionLifecycleEvent::Completed {
                             session_id: session_id.clone(),
                             title,
@@ -252,9 +255,10 @@ impl TauriEmitter {
                                 .as_deref()
                                 .map(sanitize_error_text)
                                 .unwrap_or_else(|| "会话已完成。".to_string()),
-                        })
-                    }
-                    haven_common::lifecycle::SessionStatus::Error => {
+                        }),
+                    ),
+                    haven_common::lifecycle::SessionStatus::Error => project(
+                        SESSION_LIFECYCLE_EVENT,
                         serialize(SessionLifecycleEvent::Error {
                             session_id: session_id.clone(),
                             title,
@@ -262,77 +266,88 @@ impl TauriEmitter {
                                 .as_deref()
                                 .map(sanitize_error_text)
                                 .unwrap_or_else(|| "会话已停止，但未收到错误详情。".to_string()),
-                        })
-                    }
-                    haven_common::lifecycle::SessionStatus::Pending => {
+                        }),
+                    ),
+                    haven_common::lifecycle::SessionStatus::Pending => project(
+                        SESSION_LIFECYCLE_EVENT,
                         serialize(SessionLifecycleEvent::Updated {
                             session_id: session_id.clone(),
                             status: SessionUpdateStatus::Pending,
                             waiting_reason: None,
                             title,
                             reason: reason.as_deref().map(sanitize_error_text),
-                        })
-                    }
-                    haven_common::lifecycle::SessionStatus::Running => {
+                        }),
+                    ),
+                    haven_common::lifecycle::SessionStatus::Running => project(
+                        SESSION_LIFECYCLE_EVENT,
                         serialize(SessionLifecycleEvent::Updated {
                             session_id: session_id.clone(),
                             status: SessionUpdateStatus::Running,
                             waiting_reason: None,
                             title,
                             reason: reason.as_deref().map(sanitize_error_text),
-                        })
-                    }
-                    haven_common::lifecycle::SessionStatus::Paused => {
+                        }),
+                    ),
+                    haven_common::lifecycle::SessionStatus::Paused => project(
+                        SESSION_LIFECYCLE_EVENT,
                         serialize(SessionLifecycleEvent::Updated {
                             session_id: session_id.clone(),
                             status: SessionUpdateStatus::Paused,
                             waiting_reason: *waiting_reason,
                             title,
                             reason: reason.as_deref().map(sanitize_error_text),
-                        })
-                    }
+                        }),
+                    ),
                 }
             }
-            AgentEvent::SessionError { session_id, error } => {
+            AgentEvent::SessionError { session_id, error } => project(
+                SESSION_LIFECYCLE_EVENT,
                 serialize(SessionLifecycleEvent::Error {
                     session_id: session_id.clone(),
                     title: display_title.clone().unwrap_or_else(|| session_id.clone()),
                     error: sanitize_error_text(error),
-                })
-            }
-            AgentEvent::SessionDeleted { session_id } => {
+                }),
+            ),
+            AgentEvent::SessionDeleted { session_id } => project(
+                SESSION_LIFECYCLE_EVENT,
                 serialize(SessionLifecycleEvent::Deleted {
                     session_id: session_id.clone(),
-                })
-            }
+                }),
+            ),
             AgentEvent::ThoughtChunk {
                 session_id,
                 delta,
                 step_number,
                 run_id,
                 message_id,
-            } => serialize(AgentThoughtChunkEvent {
-                session_id: session_id.clone(),
-                delta: delta.clone(),
-                step_number: *step_number,
-                run_id: *run_id,
-                message_id: message_id.clone(),
-                seq: chunk_seq.unwrap_or(0),
-            }),
+            } => project(
+                AGENT_THOUGHT_CHUNK_EVENT,
+                serialize(AgentThoughtChunkEvent {
+                    session_id: session_id.clone(),
+                    delta: delta.clone(),
+                    step_number: *step_number,
+                    run_id: *run_id,
+                    message_id: message_id.clone(),
+                    seq: chunk_seq.unwrap_or(0),
+                }),
+            ),
             AgentEvent::ReasoningChunk {
                 session_id,
                 delta,
                 step_number,
                 run_id,
                 message_id,
-            } => serialize(AgentReasoningChunkEvent {
-                session_id: session_id.clone(),
-                delta: delta.clone(),
-                step_number: *step_number,
-                run_id: *run_id,
-                message_id: message_id.clone(),
-                seq: chunk_seq.unwrap_or(0),
-            }),
+            } => project(
+                AGENT_REASONING_CHUNK_EVENT,
+                serialize(AgentReasoningChunkEvent {
+                    session_id: session_id.clone(),
+                    delta: delta.clone(),
+                    step_number: *step_number,
+                    run_id: *run_id,
+                    message_id: message_id.clone(),
+                    seq: chunk_seq.unwrap_or(0),
+                }),
+            ),
             AgentEvent::ToolCallChunk {
                 session_id,
                 preview_id,
@@ -342,30 +357,36 @@ impl TauriEmitter {
                 step_number,
                 run_id,
                 tool_index,
-            } => serialize(AgentToolCallChunkEvent {
-                session_id: session_id.clone(),
-                preview_id: preview_id.clone(),
-                tool_name: tool_name.clone(),
-                arguments: arguments.clone(),
-                arguments_truncated: *arguments_truncated,
-                step_number: *step_number,
-                run_id: *run_id,
-                tool_index: *tool_index,
-                seq: chunk_seq.unwrap_or(0),
-            }),
+            } => project(
+                AGENT_TOOL_CALL_CHUNK_EVENT,
+                serialize(AgentToolCallChunkEvent {
+                    session_id: session_id.clone(),
+                    preview_id: preview_id.clone(),
+                    tool_name: tool_name.clone(),
+                    arguments: arguments.clone(),
+                    arguments_truncated: *arguments_truncated,
+                    step_number: *step_number,
+                    run_id: *run_id,
+                    tool_index: *tool_index,
+                    seq: chunk_seq.unwrap_or(0),
+                }),
+            ),
             AgentEvent::StreamReset {
                 session_id,
                 step_number,
                 run_id,
                 thought_message_id,
                 reasoning_message_id,
-            } => serialize(AgentStreamResetEvent {
-                session_id: session_id.clone(),
-                step_number: *step_number,
-                run_id: *run_id,
-                thought_message_id: thought_message_id.clone(),
-                reasoning_message_id: reasoning_message_id.clone(),
-            }),
+            } => project(
+                AGENT_STREAM_RESET_EVENT,
+                serialize(AgentStreamResetEvent {
+                    session_id: session_id.clone(),
+                    step_number: *step_number,
+                    run_id: *run_id,
+                    thought_message_id: thought_message_id.clone(),
+                    reasoning_message_id: reasoning_message_id.clone(),
+                }),
+            ),
             AgentEvent::MediaPlan {
                 session_id,
                 step_number,
@@ -375,16 +396,19 @@ impl TauriEmitter {
                 projections,
                 notices,
                 event_sequence: durable_event_sequence,
-            } => serialize(AgentMediaPlanEvent {
-                session_id: session_id.clone(),
-                step_number: *step_number,
-                run_id: *run_id,
-                request_kind: *request_kind,
-                strategy: *strategy,
-                projections: projections.clone(),
-                notices: notices.clone(),
-                event_sequence: *durable_event_sequence,
-            }),
+            } => project(
+                AGENT_MEDIA_PLAN_EVENT,
+                serialize(AgentMediaPlanEvent {
+                    session_id: session_id.clone(),
+                    step_number: *step_number,
+                    run_id: *run_id,
+                    request_kind: *request_kind,
+                    strategy: *strategy,
+                    projections: projections.clone(),
+                    notices: notices.clone(),
+                    event_sequence: *durable_event_sequence,
+                }),
+            ),
             AgentEvent::WebSearch {
                 session_id,
                 phase,
@@ -394,19 +418,25 @@ impl TauriEmitter {
                 call_index,
                 action,
                 result,
-            } => serialize(AgentWebSearchEvent {
-                session_id: session_id.clone(),
-                phase: *phase,
-                step_number: *step_number,
-                run_id: *run_id,
-                call_id: call_id.clone(),
-                call_index: *call_index,
-                action: action.clone(),
-                result: result.clone(),
-            }),
-            AgentEvent::StreamStalled { session_id } => serialize(AgentStreamStalledEvent {
-                session_id: session_id.clone(),
-            }),
+            } => project(
+                AGENT_WEB_SEARCH_EVENT,
+                serialize(AgentWebSearchEvent {
+                    session_id: session_id.clone(),
+                    phase: *phase,
+                    step_number: *step_number,
+                    run_id: *run_id,
+                    call_id: call_id.clone(),
+                    call_index: *call_index,
+                    action: action.clone(),
+                    result: result.clone(),
+                }),
+            ),
+            AgentEvent::StreamStalled { session_id } => project(
+                AGENT_STREAM_STALLED_EVENT,
+                serialize(AgentStreamStalledEvent {
+                    session_id: session_id.clone(),
+                }),
+            ),
             AgentEvent::Supplement {
                 session_id,
                 additional_context,
@@ -416,16 +446,19 @@ impl TauriEmitter {
                 supplement_id,
                 inject_source,
                 event_sequence: durable_event_sequence,
-            } => serialize(AgentSupplementEvent {
-                session_id: session_id.clone(),
-                additional_context: additional_context.clone(),
-                step_number: *step_number,
-                run_id: *run_id,
-                message_id: message_id.clone(),
-                supplement_id: supplement_id.clone(),
-                inject_source: *inject_source,
-                event_sequence: *durable_event_sequence,
-            }),
+            } => project(
+                AGENT_SUPPLEMENT_EVENT,
+                serialize(AgentSupplementEvent {
+                    session_id: session_id.clone(),
+                    additional_context: additional_context.clone(),
+                    step_number: *step_number,
+                    run_id: *run_id,
+                    message_id: message_id.clone(),
+                    supplement_id: supplement_id.clone(),
+                    inject_source: *inject_source,
+                    event_sequence: *durable_event_sequence,
+                }),
+            ),
             AgentEvent::Compaction {
                 session_id,
                 summary,
@@ -434,34 +467,41 @@ impl TauriEmitter {
                 degraded,
                 episode_id,
                 event_sequence: durable_event_sequence,
-            } => serialize(AgentCompactionEvent {
-                session_id: session_id.clone(),
-                summary: summary.clone(),
-                tokens_before: *tokens_before,
-                tokens_after: *tokens_after,
-                degraded: *degraded,
-                episode_id: episode_id.clone(),
-                event_sequence: *durable_event_sequence,
-            }),
-            AgentEvent::TitleUpdated { session_id, title } => {
+            } => project(
+                AGENT_COMPACTION_EVENT,
+                serialize(AgentCompactionEvent {
+                    session_id: session_id.clone(),
+                    summary: summary.clone(),
+                    tokens_before: *tokens_before,
+                    tokens_after: *tokens_after,
+                    degraded: *degraded,
+                    episode_id: episode_id.clone(),
+                    event_sequence: *durable_event_sequence,
+                }),
+            ),
+            AgentEvent::TitleUpdated { session_id, title } => project(
+                SESSION_LIFECYCLE_EVENT,
                 serialize(SessionLifecycleEvent::TitleUpdated {
                     session_id: session_id.clone(),
                     title: title.clone(),
-                })
-            }
+                }),
+            ),
             AgentEvent::Notification {
                 session_id,
                 title,
                 body,
-            } => serialize(AgentNotificationEvent {
-                session_id: session_id.clone(),
-                title: title.clone(),
-                body: body.clone(),
-                notification_kind: None,
-                tool_run_kind: None,
-                tool_run_id: None,
-                tool_run_status: None,
-            }),
+            } => project(
+                NOTIFICATION_SHOW_EVENT,
+                serialize(AgentNotificationEvent {
+                    session_id: session_id.clone(),
+                    title: title.clone(),
+                    body: body.clone(),
+                    notification_kind: None,
+                    tool_run_kind: None,
+                    tool_run_id: None,
+                    tool_run_status: None,
+                }),
+            ),
             AgentEvent::ToolRunCompletionNotification {
                 tool_run_kind,
                 tool_run_id,
@@ -469,27 +509,32 @@ impl TauriEmitter {
                 tool_run_status,
                 title,
                 body,
-            } => serialize(AgentNotificationEvent {
-                session_id: session_id.clone(),
-                title: title.clone(),
-                body: body.clone(),
-                notification_kind: Some(AgentNotificationKind::ToolRunCompletion),
-                tool_run_kind: Some(match tool_run_kind {
-                    haven_agent::ToolRunNotificationSource::Background => {
-                        ToolRunKindDto::Background
-                    }
-                    haven_agent::ToolRunNotificationSource::Scheduled => ToolRunKindDto::Scheduled,
+            } => project(
+                NOTIFICATION_SHOW_EVENT,
+                serialize(AgentNotificationEvent {
+                    session_id: session_id.clone(),
+                    title: title.clone(),
+                    body: body.clone(),
+                    notification_kind: Some(AgentNotificationKind::ToolRunCompletion),
+                    tool_run_kind: Some(match tool_run_kind {
+                        haven_agent::ToolRunNotificationSource::Background => {
+                            ToolRunKindDto::Background
+                        }
+                        haven_agent::ToolRunNotificationSource::Scheduled => {
+                            ToolRunKindDto::Scheduled
+                        }
+                    }),
+                    tool_run_id: Some(tool_run_id.clone()),
+                    tool_run_status: tool_run_status.map(|status| match status {
+                        haven_agent::ToolRunCompletionStatus::Completed => {
+                            ToolRunCompletionStatusDto::Completed
+                        }
+                        haven_agent::ToolRunCompletionStatus::Failed => {
+                            ToolRunCompletionStatusDto::Failed
+                        }
+                    }),
                 }),
-                tool_run_id: Some(tool_run_id.clone()),
-                tool_run_status: tool_run_status.map(|status| match status {
-                    haven_agent::ToolRunCompletionStatus::Completed => {
-                        ToolRunCompletionStatusDto::Completed
-                    }
-                    haven_agent::ToolRunCompletionStatus::Failed => {
-                        ToolRunCompletionStatusDto::Failed
-                    }
-                }),
-            }),
+            ),
             AgentEvent::Usage {
                 session_id,
                 prompt_tokens,
@@ -517,34 +562,37 @@ impl TauriEmitter {
                 request_kind,
                 call_kind,
                 has_cost,
-            } => serialize(AgentUsageEvent {
-                session_id: session_id.clone(),
-                prompt_tokens: *prompt_tokens,
-                completion_tokens: *completion_tokens,
-                total_tokens: *total_tokens,
-                cached_tokens: *cached_tokens,
-                cache_creation_tokens: *cache_creation_tokens,
-                cache_miss_tokens: *cache_miss_tokens,
-                context_tokens: *context_tokens,
-                cache_exclusive: *cache_exclusive,
-                cache_accounting: *cache_accounting,
-                cost_usd: *cost_usd,
-                model: model.clone(),
-                cumulative_prompt_tokens: *cumulative_prompt_tokens,
-                cumulative_completion_tokens: *cumulative_completion_tokens,
-                cumulative_total_tokens: *cumulative_total_tokens,
-                cumulative_cached_tokens: *cumulative_cached_tokens,
-                cumulative_cache_creation_tokens: *cumulative_cache_creation_tokens,
-                cumulative_cache_miss_tokens: *cumulative_cache_miss_tokens,
-                cache_diagnostics: cache_diagnostics.clone(),
-                cumulative_cost_usd: *cumulative_cost_usd,
-                context_window: *context_window,
-                step_number: *step_number,
-                duration_ms: *duration_ms,
-                request_kind: *request_kind,
-                call_kind: *call_kind,
-                has_cost: *has_cost,
-            }),
+            } => project(
+                AGENT_USAGE_EVENT,
+                serialize(AgentUsageEvent {
+                    session_id: session_id.clone(),
+                    prompt_tokens: *prompt_tokens,
+                    completion_tokens: *completion_tokens,
+                    total_tokens: *total_tokens,
+                    cached_tokens: *cached_tokens,
+                    cache_creation_tokens: *cache_creation_tokens,
+                    cache_miss_tokens: *cache_miss_tokens,
+                    context_tokens: *context_tokens,
+                    cache_exclusive: *cache_exclusive,
+                    cache_accounting: *cache_accounting,
+                    cost_usd: *cost_usd,
+                    model: model.clone(),
+                    cumulative_prompt_tokens: *cumulative_prompt_tokens,
+                    cumulative_completion_tokens: *cumulative_completion_tokens,
+                    cumulative_total_tokens: *cumulative_total_tokens,
+                    cumulative_cached_tokens: *cumulative_cached_tokens,
+                    cumulative_cache_creation_tokens: *cumulative_cache_creation_tokens,
+                    cumulative_cache_miss_tokens: *cumulative_cache_miss_tokens,
+                    cache_diagnostics: cache_diagnostics.clone(),
+                    cumulative_cost_usd: *cumulative_cost_usd,
+                    context_window: *context_window,
+                    step_number: *step_number,
+                    duration_ms: *duration_ms,
+                    request_kind: *request_kind,
+                    call_kind: *call_kind,
+                    has_cost: *has_cost,
+                }),
+            ),
         }
     }
 

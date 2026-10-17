@@ -4,102 +4,102 @@
 `ui/src/lib/contracts/` 与 `ui/src/lib/events.ts` 的监听封装中转换为 `camelCase`。业务状态不得在
 路由深处重复转换字段。
 
-全量命令目录由 `crates/app-binary/src/commands/contracts.rs` 唯一登记；
-前端目录 `ui/src/lib/contracts/commands.ts` 只维护经审阅的边界与安全说明；`scripts/generate-ipc-contracts.ps1` 从 Rust Tauri handler 参数和 Serde DTO 生成前端 request/response 类型，并为每个 command response 生成运行时 wire shape。事件 channel 与 Rust payload DTO 显式配对，生成器覆盖全部登记渠道并在集合漂移时失败。中心 `invoke` 和各事件 domain mapper 在语义投影前执行 shape 检查；具体 ID、闭合 enum、状态转移和跨字段约束仍由业务 contract 校验。CI 检查生成物 drift，并核对 handler、注册表和本文命令名集合。wire 字段仍保持扁平（例如 `{ sessionId }`），不额外包裹 `{ request: ... }`。
+命令 boundary 与 security metadata 由 `crates/app-binary/src/commands/contracts.rs` 单点登记，IPC 生成器据此生成前端 registry 与下方文档表；检查器逐字段拒绝生成物 drift。`scripts/generate-ipc-contracts.ps1` 也从 Rust Tauri handler 参数和 Serde DTO 生成前端 request/response 类型，并为每个 command response 生成运行时 wire shape。事件 channel 与 Rust payload DTO 显式配对，生成器覆盖全部登记渠道并在集合漂移时失败。中心 `invoke` 和各事件 domain mapper 在语义投影前执行 shape 检查；具体 ID、闭合 enum、状态转移和跨字段约束仍由业务 contract 校验。CI 检查生成物 drift，并核对 handler、注册表和本文命令名集合。wire 字段仍保持扁平（例如 `{ sessionId }`），不额外包裹 `{ request: ... }`。
 命令目录不提供固定版本号或旧命令别名。
 
 ## 全量命令登记
 
-以下表格列出完整命令集合及人工审阅的边界、安全不变量。wire shape 由 Rust handler 与 Serde DTO 生成，并在运行时统一检查；响应中的 `Value` 仅用于明确的 provider、动态工具 schema 或工具输出扩展点。
+以下表格由 Rust command registry 生成，列出完整命令集合及人工审阅的边界、安全不变量。wire shape 由 Rust handler 与 Serde DTO 生成，并在运行时统一检查；响应中的 `Value` 仅用于明确的 provider、动态工具 schema 或工具输出扩展点。
 
+<!-- BEGIN GENERATED COMMAND SECURITY METADATA -->
 | 命令 | 边界 | 安全不变量 |
 |---|---|---|
-| `list_tool_runs` | read | 仅任务投影字段 |
-| `cancel_tool_run` | mutate | kind 枚举校验 |
-| `list_tool_run_history` | read | 可选 `session_id` 过滤；limit ≤ 200 |
-| `clear_tool_run_history` | mutate | 清空已结束任务历史，保留运行中任务和未投递结果 |
-| `open_external` | execute | 仅 http(s) 或校验后的本地绝对路径 |
-| `list_session_history` | read | 按 limit/offset 读取持久会话记录 |
-| `count_session_history` | read | 持久会话总数 |
-| `count_session_history_search` | read | 参数化搜索匹配数 |
-| `search_session_history_filtered` | read | `status` 使用生成的 `SessionHistoryStatusFilterInput`；`null` 表示不过滤；按状态、日期和文本筛选并分页 |
-| `get_log_info` | read | 不返回环境详情 |
-| `read_log_tail` | read | 尾部长度受限 |
-| `log_frontend_error` | mutate | 只接收 `operation_failure` / `unhandled_ui_error` / `unhandled_rejection`；错误正文、通知正文和 payload 不进入后端日志 |
-| `get_performance_metrics` | read | 仅返回有界、无内容的后端与渲染器计数 |
-| `list_mcp_servers` | read | 返回服务器配置/状态/工具清单快照，不执行工具，env 值统一遮蔽 |
-| `list_mcp_resources` | execute | 用户打开资源浏览后，按当前 enabled server 和连接绑定发现资源；有界分页，不暴露模型可调用工具 |
-| `read_mcp_resource` | execute | 仅读取用户从当前 server 目录选中的不透明 URI；检查 live target binding 和响应上限 |
-| `list_mcp_prompts` | execute | 用户打开提示词浏览后发现可选项；不暴露模型可调用工具 |
-| `get_mcp_prompt` | execute | 仅渲染用户选定的 prompt 和已声明参数；结果有界且进入预览/草稿确认流程 |
-| `reconnect_mcp_server` | execute | 只重连一个已启用且当前连接的服务器；连接前经过 AuthorizationEngine |
-| `refresh_mcp_servers` | execute | renderer 触发的配置客户端 reconcile；不接收进程参数 |
-| `add_mcp_server` | execute | 共享 self 操作校验并持久化 |
-| `update_mcp_server` | execute | 共享 self 操作安全重连 |
-| `remove_mcp_server` | execute | 共享 self 操作删除 |
-| `toggle_mcp_server` | execute | 启用前先连接 |
-| `run_memory_maintenance` | mutate | 维护路径统一清理 |
-| `recall_memory` | read | 可选 `kind` 使用生成的 `MemoryEntityKindInput`（`fact` / `episode`）；省略时默认为 `fact`。UI 的 `all` 只在 renderer 展开为两次 typed 查询；limit 有界且事实结果过滤凭据 |
-| `list_facts` | read | 可选 `source` 使用 generated `MemoryFactSourceInput`（`user` / `inferred`）；`null` 或省略表示全部来源；响应以 `fact_id` 标识事实，`source` 使用 generated `MemoryFactSource` |
-| `add_fact` | mutate | 拒绝凭据样式内容 |
-| `delete_fact` | mutate | 按 fact id 删除 |
-| `clear_facts` | mutate | 清空长期事实并失效派生缓存 |
-| `get_api_key_status` | read | 只返回 presence，不返回凭据 |
-| `check_llm_connection` | read | 返回状态与非敏感原因分类，不返回 endpoint 或 provider 响应 |
-| `discover_models` | execute | 可选 `providerName` 指已配置的连接名；可选 `requestKind` 使用从 Rust `RequestKind` 生成的 `RequestKindInput` union，`transcription` 选择 STT 配置路径；仅 HTTP(S) endpoint；显式输入 key 使用 provider preset 的鉴权方案；已保存 key 仅发送到名称与地址均匹配的 provider；keyless 预设可显式跳过鉴权；代理沿用对应 Provider 设置 |
-| `switch_model` | mutate | `requestKind` 为 `RequestKind`；`modelConfigId` 是已配置且支持该请求能力的 Haven 模型配置 ID，不是 Provider 服务模型 ID |
-| `set_reasoning_effort` | mutate | `requestKind` 选择当前已分配模型；`effort` 使用 generated `ReasoningEffortSelectionInput`（`low` / `medium` / `high` / `off`），`null` 清除覆盖。ModelConfig 中 provider-specific effort 保持开放字符串，由 LLM adapter 映射 |
-| `set_web_search` | mutate | `requestKind` 选择当前已分配模型；可选 `mode` 使用 `WebSearchModeInput` (`off` / `auto` / `always`)；`null` 清除显式覆盖并回退到环境/default resolution；启用内置搜索前校验 provider capability |
-| `set_hotkey_capture_active` | mutate | 仅控制快捷键录入期间的临时抑制状态 |
-| `start_recording` | execute | 采集生命周期由 input 管线控制 |
-| `stop_recording` | execute | 成功无响应正文；先停止采集再异步转写，结果通过 transcription 事件报告 |
-| `cancel_recording` | execute | 清除 in-flight recording id |
-| `process_transcript` | execute | 附件限制和文件持久化校验 |
-| `reopen_session` | mutate | session id 选择持久化会话 |
-| `list_runtime_sessions` | read | 仅当前进程中驻留且未终结的会话；App allowlist 返回 `session_id` / `input_text`、`title`、`status` 和可选 `waiting_reason`，不暴露 Agent summary 或步骤详情 |
-| `get_session_lineage` | read | 当前会话的父会话和直接子会话 |
-| `fork_session_from_message` | mutate | 从指定用户消息创建独立子会话并重新运行该输入；源会话不变 |
-| `end_session` | mutate | 仅显式结束 |
-| `interrupt_session` | mutate | 停止当前输出但保留会话，可继续 |
-| `resolve_confirmation` | mutate | 显式 owner + `request_id` 选路；`effect` / `scope` / `target` 使用生成的权限 enum，receipt 与目标祖先仍由后端复核；返回 `resolved`/`expired`/`stale`，可重试失败保留 pending |
-| `update_session_title` | mutate | trim 后不得为空 |
-
-| `delete_session` | mutate | 删除并释放运行态 |
-| `delete_all_sessions` | mutate | 删除所有持久会话及其投影，并清理会话授权和运行态 |
-| `rollback_session` | mutate | event cursor 与 projection clock 一起回退 |
-| `continue_session` | mutate | 从 `session_events` 重放并继续错误会话 |
-| `get_session_for_resume` | read | 会话范围投影；嵌套 usage 的 `call_kind` 是 generated `LlmCallKind` |
-| `get_latest_session_for_resume` | read | 只取最近持久化会话；与指定会话恢复共用同一 typed response |
-| `get_settings` | read | 响应遮蔽凭据和 MCP 环境变量 |
-| `pick_execution_workspace_directory` | read | 用户通过系统目录选择器选择本地目录，只验证候选且不授予文件访问 |
-| `stage_provider_credential` | mutate | provider 密钥只写入安全凭据存储，返回不透明引用 |
-| `stage_independent_search_credential` | mutate | 模型配置的阿里云 AI Search 密钥只写入安全凭据存储，返回不透明引用 |
-| `stage_ocr_credential` | mutate | OCR 密钥只写入安全凭据存储，返回不透明引用 |
-| `discard_staged_credentials` | mutate | 删除未由 Settings 保存提交的暂存凭据 |
-| `get_bootstrap_status` | read | 返回 `loading` / `ready` 的 `BootstrapStatus`；与 `app:bootstrap.status` 共用闭合枚举 |
-| `report_startup_ui_ready` | mutate | 无参数；首个已 hydration 的界面绘制后释放原生启动画面 |
-| `update_settings` | mutate | shared loader 保留遮蔽密钥和工具段；`ModelConfig.independent_search` 使用按 Provider 闭合的配置联合体，生成契约与运行时校验负责拒绝不匹配的产品参数 |
-| `list_session_permissions` | read | 返回会话 id/title、动态 capability；`target` / `effect` 使用 generated `PermissionTarget` / `PermissionEffect` |
-| `revoke_permission` | mutate | 精确撤销永久规则 key，不影响会话 grant |
-| `revoke_session_permission` | mutate | 按 session id 与 capability 撤销单条会话 grant |
-| `reset_permissions` | mutate | 只清除永久规则，保留会话 grant 与当前默认策略 |
-| `reset_session_permissions` | mutate | 只清除持久会话授权，保留永久规则 |
-| `check_shell_available` | read | 必填 `shell` 使用 generated `ShellChoiceInput`（`powershell` / `cmd` / `pwsh`）；只返回 available |
-| `enable_autostart` | execute | 仅 release 构建 |
-| `disable_autostart` | execute | 只能删除受管条目 |
-| `is_autostart_enabled` | read | 只返回状态布尔值 |
-| `list_skills` | read | 仅元数据投影 |
-| `refresh_skills` | execute | 只扫描配置 skills root |
-| `set_skill_enabled` | mutate | 共享 self 操作持久化切换 |
-| `set_tool_enabled` | mutate | 共享 self 操作持久化切换 |
-| `open_skills_dir` | execute | 只能打开配置 skills root |
-| `execute_skill` | execute | 限定 skill 名并经过 AuthorizationEngine |
-| `list_builtin_tool_manifests` | read | 返回 built-in tools 的启用/禁用 manifest；ToolPolicy 固定策略类别使用生成的 enum，`permission_key` 保持动态；不包含 Skill/MCP 清单 |
-| `reset_tool_circuits` | mutate | 只清本地 circuit 状态 |
-| `get_sandbox_output_review` | read | 只接受会话内已完成的 Shell step；返回不含内容与绝对源路径的有界变更清单 |
-| `discard_sandbox_output_review` | mutate | 只丢弃该会话、该 Shell step 持有的短期审阅数据 |
-| `pick_sandbox_output_destination` | read | 原生保存位置选择；只返回用户选中的候选，不授予文件访问 |
-| `promote_sandbox_output` | execute | Windows only；source 通过 session/step/change index 从 review owner 查找；目标经 Files workspace policy 校验；授权只接受 Once/Operation 并由 receipt 签发执行 proof；目标已存在时拒绝覆盖 |
+| `add_fact` | mutate | credential-like predicates and values rejected |
+| `add_mcp_server` | execute | AuthorizationPort; typed native admin operation validates and persists config |
+| `cancel_recording` | execute | cancel clears the in-flight recording id |
+| `cancel_tool_run` | mutate | kind is enum; cancel only the selected task kind |
+| `check_llm_connection` | read | status and non-sensitive reason only; no endpoint or provider payload |
+| `check_shell_available` | read | availability boolean only |
+| `clear_facts` | mutate | delete all saved long-term facts and invalidate derived caches |
+| `clear_tool_run_history` | mutate | delete terminal task history; preserve live work and undelivered results |
+| `continue_session` | mutate | replay durable session_events and truncate partial projection |
+| `count_session_history` | read | read-only aggregate |
+| `count_session_history_search` | read | parameterized read-only search |
+| `delete_all_sessions` | mutate | clears persisted sessions and session trust |
+| `delete_fact` | mutate | delete one fact by id |
+| `delete_session` | mutate | delete by session id and release runtime state |
+| `disable_autostart` | execute | managed autostart entry only |
+| `discard_sandbox_output_review` | mutate | canonical session/step pair; only the owning Shell review can be discarded |
+| `discard_staged_credentials` | mutate | deletes staged values not committed by a Settings save |
+| `discover_models` | execute | http(s) endpoint; typed auth scheme for an explicitly entered key; stored keys require a matching configured endpoint |
+| `enable_autostart` | execute | release build only |
+| `end_session` | mutate | explicit user termination |
+| `execute_skill` | execute | AuthorizationPort; confirmation queues direct calls and errors are renderer-safe |
+| `fork_session_from_message` | mutate | canonical parent and user message ids; creates an independent re-keyed transcript prefix |
+| `get_api_key_status` | read | boolean presence only; credentials excluded |
+| `get_bootstrap_status` | read | status enum only |
+| `get_latest_session_for_resume` | read | most recent persisted session only |
+| `get_log_info` | read | path is optional; no environment details |
+| `get_mcp_prompt` | execute | explicit user-selected prompt and declared arguments; enabled live target binding; bounded untrusted messages |
+| `get_performance_metrics` | read | bounded content-free backend counters plus renderer stream counters |
+| `get_sandbox_output_review` | read | canonical session/step pair; only completed Shell steps; bounded owner manifest without file content or absolute source paths |
+| `get_session_for_resume` | read | session-scoped persisted projection |
+| `get_session_lineage` | read | parent and direct child sessions of the selected session only |
+| `get_settings` | read | config response redacts credentials and MCP environment values |
+| `interrupt_session` | mutate | pauses the selected active session without deleting it |
+| `is_autostart_enabled` | read | state boolean only |
+| `list_builtin_tool_manifests` | read | builtin manifest projection; schemas are dynamic extension data |
+| `list_facts` | read | read-only fact projection |
+| `list_mcp_prompts` | execute | user-driven prompt discovery; enabled live target binding; no model callable surface |
+| `list_mcp_resources` | execute | explicit host discovery; enabled live target binding; bounded opaque resource metadata |
+| `list_mcp_servers` | read | snapshot only; env values redacted; invocation remains gated |
+| `list_runtime_sessions` | read | resident nonterminal runtime sessions only |
+| `list_session_history` | read | read-only session projection |
+| `list_session_permissions` | read | typed session grants with exact session, capability, target, and effect |
+| `list_skills` | read | metadata projection |
+| `list_tool_run_history` | read | optional session filter; limit capped at 200; internal tool args excluded |
+| `list_tool_runs` | read | projected task fields only |
+| `log_frontend_error` | mutate | fixed renderer failure category only; error text and payload are not mirrored |
+| `open_external` | execute | http(s) or validated absolute local path only |
+| `open_skills_dir` | execute | configured skills root only |
+| `pick_execution_workspace_directory` | read | user-selected local directory candidate only; validates but grants no file access |
+| `pick_sandbox_output_destination` | read | native save picker; returns a user-selected candidate only and grants no filesystem access |
+| `process_transcript` | execute | attachment limits and file persistence are enforced |
+| `promote_sandbox_output` | execute | Windows only; owner-held change index; exact session request; required one-time confirmation; current Files capability and live execution proof |
+| `read_log_tail` | read | bounded tail; file logging must be enabled |
+| `read_mcp_resource` | execute | explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content |
+| `recall_memory` | read | bounded and credential-filtered recall |
+| `reconnect_mcp_server` | execute | AuthorizationPort; typed native operation reconnects one existing configured server after final version check |
+| `refresh_mcp_servers` | execute | AuthorizationPort; one batch over persisted config diff and its affected targets; no renderer process arguments |
+| `refresh_skills` | execute | configured skills root scan |
+| `remove_mcp_server` | execute | AuthorizationPort; typed native admin operation removes client and config |
+| `reopen_session` | mutate | session id selects persisted session |
+| `report_startup_ui_ready` | mutate | no arguments; releases the startup surface after the first hydrated app paint |
+| `reset_permissions` | mutate | clears permanent rules only; keeps session grants and selected default policy |
+| `reset_session_permissions` | mutate | clears durable session grants only; keeps permanent rules |
+| `reset_tool_circuits` | mutate | clears local circuit state only |
+| `resolve_confirmation` | mutate | owner/request id selects one registry; receipt, effect, scope, target and expiry are revalidated; retryable failures keep pending |
+| `revoke_permission` | mutate | non-empty exact permanent key; session grants are retained |
+| `revoke_session_permission` | mutate | non-empty session id and capability; removes one session grant |
+| `rollback_session` | mutate | event cursor and projection clock rollback |
+| `run_memory_maintenance` | mutate | maintenance path owns purge and embedding cleanup |
+| `search_session_history_filtered` | read | bounded page and date-filtered projection |
+| `set_hotkey_capture_active` | mutate | transient renderer key-capture state only; not persisted |
+| `set_reasoning_effort` | mutate | request kind selects the assigned model; validated before config save |
+| `set_skill_enabled` | mutate | AuthorizationPort; typed native admin operation persists the toggle |
+| `set_tool_enabled` | mutate | AuthorizationPort; typed native admin operation persists the toggle |
+| `set_web_search` | mutate | request kind selects the assigned model; provider capability checked before config save |
+| `stage_independent_search_credential` | mutate | writes a model's Alibaba AI Search key to secure storage and returns only an opaque reference |
+| `stage_ocr_credential` | mutate | writes OCR secret to secure storage and returns only an opaque reference |
+| `stage_provider_credential` | mutate | writes provider secret to secure storage and returns only an opaque reference |
+| `start_recording` | execute | input pipeline owns capture lifecycle |
+| `stop_recording` | execute | capture stops before asynchronous transcription |
+| `switch_model` | mutate | requestKind selects the route; modelConfigId is an assigned, capability-compatible Haven ModelConfig identity, not a Provider service model ID |
+| `toggle_mcp_server` | execute | AuthorizationPort; typed native admin operation connects before enabling |
+| `update_mcp_server` | execute | AuthorizationPort; typed native admin operation validates and reconnects safely |
+| `update_session_title` | mutate | trimmed non-empty title only |
+| `update_settings` | mutate | rejects inline secrets; shared loader preserves credential refs, tool sections, and permission rules |
+<!-- END GENERATED COMMAND SECURITY METADATA -->
 
 `list_facts` / `add_fact` 返回 App-owned `MemoryFactResponse`，以 `fact_id` 表示事实身份；其中 `source_ref` 使用
 `MemoryFactSourceRef`。事实的 `source` 使用 generated `MemoryFactSource`；App mapper 严格解析

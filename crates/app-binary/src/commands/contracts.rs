@@ -7,7 +7,7 @@
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandBoundary {
+pub(crate) enum CommandBoundary {
     /// Read-only application state or diagnostics.
     Read,
     /// User-initiated state mutation.
@@ -19,19 +19,19 @@ pub enum CommandBoundary {
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CommandContract {
-    pub name: &'static str,
-    pub boundary: CommandBoundary,
+pub(crate) struct CommandContract {
+    pub(crate) name: &'static str,
+    pub(crate) boundary: CommandBoundary,
     /// Short security invariant; detailed negative cases live in the tools
     /// security regression matrix.
-    pub security: &'static str,
+    pub(crate) security: &'static str,
 }
 
 /// Every command passed to `tauri::generate_handler!` must have exactly one
 /// entry here.  Keep this list in the same domain order as `commands/mod.rs`
 /// and `lib.rs` so review can compare registration and documentation easily.
 #[cfg(test)]
-pub const COMMAND_CONTRACTS: &[CommandContract] = &[
+pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
     // tool_run
     CommandContract {
         name: "list_tool_runs",

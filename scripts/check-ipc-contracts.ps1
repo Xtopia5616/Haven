@@ -63,9 +63,10 @@ $rustContracts = Get-Source 'crates/app-binary/src/commands/contracts.rs'
 $rustContractNames = Get-Matches $rustContracts 'name:\s*"([a-z0-9_]+)"'
 
 $tsContracts = Get-Source 'ui/src/lib/contracts/commands.ts'
-$tsSectionMatch = [regex]::Match($tsContracts, '(?s)TAURI_COMMAND_CONTRACTS\s*=\s*\{(.*?)\}\s*as const')
-if (-not $tsSectionMatch.Success) { throw 'could not find frontend command boundary/security registry' }
-$frontendNames = Get-Matches $tsSectionMatch.Groups[1].Value '(?m)^\s*([a-z][a-z0-9_]*)\s*:\s*\{\s*boundary\s*:'
+$generated = Get-Source 'ui/src/lib/contracts/generatedCommands.ts'
+$generatedContractMatch = [regex]::Match($generated, '(?s)TAURI_COMMAND_CONTRACTS\s*=\s*\{(.*?)\}\s*as const satisfies Record<TauriCommandName, CommandContract>')
+if (-not $generatedContractMatch.Success) { throw 'generated Rust command boundary/security registry is missing' }
+$frontendNames = Get-Matches $generatedContractMatch.Groups[1].Value '(?m)^\s*([a-z][a-z0-9_]*)\s*:\s*\{\s*boundary\s*:'
 
 $docs = Get-Source 'docs/ipc-contracts.md'
 $documentedNames = Get-Matches $docs '(?m)^\|\s*`([a-z][a-z0-9_]*)`\s*\|'
@@ -74,8 +75,9 @@ Assert-SetEqual 'Tauri handlers vs generate_handler' $implemented $registered
 Assert-SetEqual 'Tauri handlers vs Rust boundary/security registry' $implemented $rustContractNames
 Assert-SetEqual 'Rust registry vs frontend boundary/security registry' $rustContractNames $frontendNames
 Assert-SetEqual 'Tauri handlers vs IPC contract docs' $implemented $documentedNames
+Assert-Contains $tsContracts 'export \{ TAURI_COMMAND_CONTRACTS \}' 'frontend command metadata is re-exported from the Rust-generated registry'
+Assert-NotContains $tsContracts 'TAURI_COMMAND_CONTRACTS\s*=\s*\{' 'frontend command metadata must not have a manually maintained copy'
 
-$generated = Get-Source 'ui/src/lib/contracts/generatedCommands.ts'
 $generatedNames = Get-Matches $generated '(?m)^\s{1,2}([a-z][a-z0-9_]*)\s*:\s*\{\s*request:'
 Assert-SetEqual 'Tauri handlers vs generated command map' $implemented $generatedNames
 Assert-Contains $generated '(?m)^export interface TauriCommandMap\s*\{' 'generated command map export'

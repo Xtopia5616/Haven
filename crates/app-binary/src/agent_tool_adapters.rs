@@ -12,13 +12,10 @@ use haven_agent::{
 use haven_common::types::{MessageAttachment, RiskLevel};
 use haven_tools::{
     AuthorizationDecision, AuthorizationPort, AuthorizationRequest, ConfirmationReceipt,
-    LiveOutputSinkPort, SkillCatalogPort, ToolCatalogSnapshot, ToolRegistration, ToolResult,
-    ToolRunAgentCapability, ToolRunCompletion, ToolRunCompletionCapability, ToolRunHistoryQuery,
-    ToolRunKind, ToolRunLifecycleEventSink, ToolRunListView, ToolRunManagementCapability,
-    ToolRunRestoreSummary, ToolRunView, ToolsFacade,
+    SkillCatalogPort, ToolCatalogSnapshot, ToolRegistration, ToolResult, ToolRunAgentCapability,
+    ToolRunCompletion, ToolRunCompletionCapability, ToolRunListView, ToolRunRestoreSummary,
+    ToolsFacade,
 };
-#[cfg(test)]
-use haven_tools::{ScheduledToolRunSpec, ToolRunTestSupportPort};
 use serde_json::Value;
 
 /// Assemble the one shared ToolsFacade into the narrow capabilities consumed
@@ -61,100 +58,6 @@ fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentToolPorts {
         services.skills,
         services.tool_run_agent,
     )
-}
-
-/// App-owned contract for ToolRun IPC and application lifecycle operations.
-#[async_trait]
-pub(crate) trait AppToolRunPort: Send + Sync {
-    fn set_lifecycle_event_sink(&self, sink: ToolRunLifecycleEventSink);
-
-    async fn shutdown(&self);
-
-    async fn board(&self) -> Vec<ToolRunView>;
-
-    async fn list_board_history(&self) -> anyhow::Result<Vec<ToolRunView>>;
-
-    async fn list_history(&self, query: ToolRunHistoryQuery) -> anyhow::Result<Vec<ToolRunView>>;
-
-    async fn cancel_for_kind(&self, tool_run_id: &str, kind: ToolRunKind) -> bool;
-
-    async fn clear_terminal_history(&self) -> anyhow::Result<u64>;
-
-    #[cfg(test)]
-    async fn schedule(&self, spec: ScheduledToolRunSpec) -> anyhow::Result<String>;
-}
-
-pub(crate) fn app_tool_run_port(
-    tool_runs: Arc<dyn ToolRunManagementCapability>,
-    #[cfg(test)] test_support: Arc<dyn ToolRunTestSupportPort>,
-) -> Arc<dyn AppToolRunPort> {
-    Arc::new(ToolsFacadeAppToolRunAdapter {
-        tool_runs,
-        #[cfg(test)]
-        test_support,
-    })
-}
-
-struct ToolsFacadeAppToolRunAdapter {
-    tool_runs: Arc<dyn ToolRunManagementCapability>,
-    #[cfg(test)]
-    test_support: Arc<dyn ToolRunTestSupportPort>,
-}
-
-#[async_trait]
-impl AppToolRunPort for ToolsFacadeAppToolRunAdapter {
-    fn set_lifecycle_event_sink(&self, sink: ToolRunLifecycleEventSink) {
-        self.tool_runs.set_lifecycle_event_sink(sink);
-    }
-
-    async fn shutdown(&self) {
-        self.tool_runs.shutdown().await;
-    }
-
-    async fn board(&self) -> Vec<ToolRunView> {
-        self.tool_runs.board().await
-    }
-
-    async fn list_board_history(&self) -> anyhow::Result<Vec<ToolRunView>> {
-        self.tool_runs.list_board_history().await
-    }
-
-    async fn list_history(&self, query: ToolRunHistoryQuery) -> anyhow::Result<Vec<ToolRunView>> {
-        self.tool_runs.list_history(query).await
-    }
-
-    async fn cancel_for_kind(&self, tool_run_id: &str, kind: ToolRunKind) -> bool {
-        self.tool_runs.cancel_for_kind(tool_run_id, kind).await
-    }
-
-    async fn clear_terminal_history(&self) -> anyhow::Result<u64> {
-        self.tool_runs.clear_terminal_history().await
-    }
-
-    #[cfg(test)]
-    async fn schedule(&self, spec: ScheduledToolRunSpec) -> anyhow::Result<String> {
-        self.test_support.schedule(spec).await
-    }
-}
-
-pub(crate) trait AppLiveOutputPort: Send + Sync {
-    fn set_event_sink(&self, sink: Arc<dyn Fn(String, Value) + Send + Sync>);
-}
-
-pub(crate) fn app_live_output_port(
-    live_output: Arc<dyn LiveOutputSinkPort>,
-) -> Arc<dyn AppLiveOutputPort> {
-    Arc::new(ToolsFacadeLiveOutputAdapter { live_output })
-}
-
-struct ToolsFacadeLiveOutputAdapter {
-    live_output: Arc<dyn LiveOutputSinkPort>,
-}
-
-impl AppLiveOutputPort for ToolsFacadeLiveOutputAdapter {
-    fn set_event_sink(&self, sink: Arc<dyn Fn(String, Value) + Send + Sync>) {
-        self.live_output.set_event_sink(sink);
-    }
 }
 
 struct ToolsFacadeAgentAdapter {

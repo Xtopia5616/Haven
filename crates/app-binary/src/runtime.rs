@@ -7,9 +7,6 @@
 //! application gives them one cancellation boundary and tears them down in a
 //! deterministic order.
 
-use crate::agent_tool_adapters::{
-    AppLiveOutputPort, AppToolRunPort, app_live_output_port, app_tool_run_port,
-};
 use crate::config_runtime::RuntimeConfigCoordinator;
 use crate::desktop::DesktopShell;
 use haven_agent::{AgentLayer, MemoryStartup, PendingSessionRecovery, SessionSupervisor};
@@ -17,9 +14,11 @@ use haven_common::config::ConfigService;
 use haven_common::error::sanitize_error_text;
 use haven_input::InputPipeline;
 use haven_memory::{MemoryFactStore, SessionStore};
+#[cfg(test)]
+use haven_tools::ToolRunTestSupportPort;
 use haven_tools::{
-    AuthorizationPort, ManagedAssetLifecyclePort, McpRuntimePort, SkillCatalogPort,
-    SkillExecutionPort, ToolServices, ToolsFacade,
+    AuthorizationPort, LiveOutputSinkPort, ManagedAssetLifecyclePort, McpRuntimePort,
+    SkillCatalogPort, SkillExecutionPort, ToolRunManagementCapability, ToolServices, ToolsFacade,
 };
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,7 +40,7 @@ pub struct ApplicationRuntime {
     pub(crate) session_store: SessionStore,
     pub(crate) memory_fact_store: MemoryFactStore,
     pub(crate) tools: Arc<ToolsFacade>,
-    /// App-facing domain capabilities adapted from the Tools composition root.
+    /// App-facing domain capabilities provided by the Tools composition root.
     pub(crate) services: AppServices,
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) agent: Arc<AgentLayer>,
@@ -85,20 +84,16 @@ pub(crate) struct AppServices {
     pub(crate) authorization: Arc<dyn AuthorizationPort>,
     #[cfg(windows)]
     pub(crate) sandbox_output_reviews: Arc<dyn haven_tools::SandboxOutputReviewPort>,
-    pub(crate) tool_runs: Arc<dyn AppToolRunPort>,
-    pub(crate) live_output: Arc<dyn AppLiveOutputPort>,
+    pub(crate) tool_runs: Arc<dyn ToolRunManagementCapability>,
+    pub(crate) live_output: Arc<dyn LiveOutputSinkPort>,
+    #[cfg(test)]
+    pub(crate) tool_run_test_support: Arc<dyn ToolRunTestSupportPort>,
     pub(crate) managed_assets: Arc<dyn ManagedAssetLifecyclePort>,
 }
 
 impl ApplicationRuntime {
     pub(crate) fn new(runtime_services: RuntimeServices) -> Self {
         let tool_services = runtime_services.tool_services;
-        let tool_runs = app_tool_run_port(
-            tool_services.tool_run_management,
-            #[cfg(test)]
-            tool_services.tool_run_test_support,
-        );
-        let live_output = app_live_output_port(tool_services.live_output);
         let services = AppServices {
             mcp: tool_services.mcp,
             mcp_tool_caller: tool_services.mcp_tool_caller,
@@ -107,8 +102,10 @@ impl ApplicationRuntime {
             authorization: tool_services.authorization,
             #[cfg(windows)]
             sandbox_output_reviews: tool_services.sandbox_output_reviews,
-            tool_runs,
-            live_output,
+            tool_runs: tool_services.tool_run_management,
+            live_output: tool_services.live_output,
+            #[cfg(test)]
+            tool_run_test_support: tool_services.tool_run_test_support,
             managed_assets: tool_services.managed_assets,
         };
         let config_apply_gate = runtime_services.config_apply_gate;

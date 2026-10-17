@@ -4,7 +4,7 @@ use quote::ToTokens;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use syn::{FnArg, Item, Pat, ReturnType, Type};
+use syn::{Expr, FnArg, Item, Lit, Pat, ReturnType, Type};
 
 #[path = "../ipc_codegen_types.rs"]
 mod ipc_types;
@@ -18,10 +18,20 @@ struct Command {
     response_shape: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandSecurityContract {
+    boundary: &'static str,
+    security: String,
+}
+
+const GENERATED_COMMAND_METADATA_START: &str = "<!-- BEGIN GENERATED COMMAND SECURITY METADATA -->";
+const GENERATED_COMMAND_METADATA_END: &str = "<!-- END GENERATED COMMAND SECURITY METADATA -->";
+
 fn main() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = root.join("ui/src/lib/contracts/generatedCommands.ts");
-    let generated =
+    let docs = root.join("docs/ipc-contracts.md");
+    let (generated, command_table) =
         generate(&root).unwrap_or_else(|error| panic!("IPC contract generation failed: {error}"));
 
     match std::env::args().nth(1).as_deref() {
@@ -38,16 +48,36 @@ fn main() {
                     output.display()
                 );
             }
+            let current_docs = fs::read_to_string(&docs).unwrap_or_else(|_| {
+                panic!(
+                    "{} is missing; run scripts/generate-ipc-contracts.ps1",
+                    docs.display()
+                )
+            });
+            let expected_docs = replace_generated_command_table(&current_docs, &command_table)
+                .unwrap_or_else(|error| panic!("IPC documentation generation failed: {error}"));
+            if current_docs != expected_docs {
+                panic!(
+                    "{} has stale command security metadata; run scripts/generate-ipc-contracts.ps1",
+                    docs.display()
+                );
+            }
         }
         Some("--write") | None => {
             fs::write(&output, generated)
                 .unwrap_or_else(|error| panic!("failed to write {}: {error}", output.display()));
+            let current_docs = fs::read_to_string(&docs)
+                .unwrap_or_else(|error| panic!("failed to read {}: {error}", docs.display()));
+            let updated_docs = replace_generated_command_table(&current_docs, &command_table)
+                .unwrap_or_else(|error| panic!("IPC documentation generation failed: {error}"));
+            fs::write(&docs, updated_docs)
+                .unwrap_or_else(|error| panic!("failed to write {}: {error}", docs.display()));
         }
         Some(argument) => panic!("unsupported argument {argument:?}; expected --check or --write"),
     }
 }
 
-fn generate(root: &Path) -> Result<String, String> {
+fn generate(root: &Path) -> Result<(String, String), String> {
     let commands_root = root.join("crates/app-binary/src/commands");
     let mut type_graph = RustTypeGraph::load(root)?;
     let mut commands = BTreeMap::new();
@@ -104,6 +134,22 @@ fn generate(root: &Path) -> Result<String, String> {
 
     if commands.is_empty() {
         return Err("no #[tauri::command] handlers found".into());
+    }
+
+    let command_contracts =
+        command_security_contracts(&root.join("crates/app-binary/src/commands/contracts.rs"))?;
+    let handler_names = commands.keys().cloned().collect::<HashSet<_>>();
+    let contract_names = command_contracts.keys().cloned().collect::<HashSet<_>>();
+    if handler_names != contract_names {
+        return Err(format!(
+            "command security registry does not match Tauri handlers (missing: {:?}; unknown: {:?})",
+            handler_names
+                .difference(&contract_names)
+                .collect::<Vec<_>>(),
+            contract_names
+                .difference(&handler_names)
+                .collect::<Vec<_>>(),
+        ));
     }
 
     let event_channels = event_channels(&root.join("crates/app-binary/src/events.rs"))?;
@@ -316,6 +362,13 @@ fn generate(root: &Path) -> Result<String, String> {
             .unwrap_or_else(|| "{ kind: 'null' }".to_string());
         output.push_str(&format!("\t'{channel}': {shape},\n"));
     }
+    output.push_str("} as const;\n\nexport const IPC_EVENT_PAYLOAD_DTO_TYPES = {\n");
+    for (channel, type_name) in event_payload_shapes {
+        let type_name = type_name
+            .map(|name| serde_json::to_string(name).unwrap())
+            .unwrap_or_else(|| "null".to_string());
+        output.push_str(&format!("\t'{channel}': {type_name},\n"));
+    }
     output.push_str("} as const;\n");
     output.push_str(&format!(
         "\nexport const AGENT_METRICS_PHASE_COUNT = {METRICS_PHASE_COUNT} as const;\nexport const MAX_FACTS_IN_EXTRACTION_PROMPT = {MAX_FACTS_IN_EXTRACTION_PROMPT} as const;\n\n"
@@ -344,6 +397,147 @@ fn generate(root: &Path) -> Result<String, String> {
              ): Promise<TauriCommandResponse<K>>;\n\
          };\n",
     );
+    output.push_str(
+        "\nexport type CommandBoundary = 'read' | 'mutate' | 'execute';\n\n\
+         export interface CommandContract {\n\
+         \tboundary: CommandBoundary;\n\
+         \tsecurity: string;\n\
+         }\n\n\
+         export const TAURI_COMMAND_CONTRACTS = {\n",
+    );
+    for command in commands.values() {
+        let contract = &command_contracts[&command.name];
+        let security = serde_json::to_string(&contract.security)
+            .map_err(|error| format!("serialize command metadata for {}: {error}", command.name))?;
+        output.push_str(&format!(
+            "\t{}: {{ boundary: '{}', security: {} }},\n",
+            command.name, contract.boundary, security
+        ));
+    }
+    output.push_str("} as const satisfies Record<TauriCommandName, CommandContract>;\n");
+
+    let mut command_table = String::from("| 命令 | 边界 | 安全不变量 |\n|---|---|---|\n");
+    for command in commands.values() {
+        let contract = &command_contracts[&command.name];
+        let security = contract.security.replace('|', "\\|");
+        command_table.push_str(&format!(
+            "| `{}` | {} | {} |\n",
+            command.name, contract.boundary, security
+        ));
+    }
+    Ok((output, command_table))
+}
+
+fn command_security_contracts(
+    path: &Path,
+) -> Result<BTreeMap<String, CommandSecurityContract>, String> {
+    let source =
+        fs::read_to_string(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let file =
+        syn::parse_file(&source).map_err(|error| format!("parse {}: {error}", path.display()))?;
+    let registry = file
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Const(item) if item.ident == "COMMAND_CONTRACTS" => Some(item),
+            _ => None,
+        })
+        .ok_or_else(|| "COMMAND_CONTRACTS registry is missing".to_string())?;
+    let Expr::Reference(reference) = registry.expr.as_ref() else {
+        return Err("COMMAND_CONTRACTS must be a reference to a static array".into());
+    };
+    let Expr::Array(entries) = reference.expr.as_ref() else {
+        return Err("COMMAND_CONTRACTS must be a reference to a static array".into());
+    };
+
+    let mut contracts = BTreeMap::new();
+    for entry in &entries.elems {
+        let Expr::Struct(contract) = entry else {
+            return Err("COMMAND_CONTRACTS entries must be CommandContract struct literals".into());
+        };
+        let type_name = contract
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string());
+        if type_name.as_deref() != Some("CommandContract") {
+            return Err("COMMAND_CONTRACTS entries must be CommandContract struct literals".into());
+        }
+        let mut name = None;
+        let mut boundary = None;
+        let mut security = None;
+        for field in &contract.fields {
+            let syn::Member::Named(field_name) = &field.member else {
+                return Err("CommandContract fields must be named".into());
+            };
+            match field_name.to_string().as_str() {
+                "name" => name = Some(string_literal(&field.expr, "command name")?),
+                "boundary" => boundary = Some(boundary_name(&field.expr)?),
+                "security" => security = Some(string_literal(&field.expr, "security metadata")?),
+                other => return Err(format!("unknown CommandContract field {other}")),
+            }
+        }
+        let name = name.ok_or_else(|| "CommandContract is missing name".to_string())?;
+        let contract = CommandSecurityContract {
+            boundary: boundary.ok_or_else(|| format!("{name} is missing boundary"))?,
+            security: security.ok_or_else(|| format!("{name} is missing security metadata"))?,
+        };
+        if contract.security.trim().is_empty() {
+            return Err(format!("{name} security metadata must not be empty"));
+        }
+        if contracts.insert(name.clone(), contract).is_some() {
+            return Err(format!("command {name} has duplicate security metadata"));
+        }
+    }
+    Ok(contracts)
+}
+
+fn string_literal(expression: &Expr, label: &str) -> Result<String, String> {
+    let Expr::Lit(expression) = expression else {
+        return Err(format!("{label} must be a string literal"));
+    };
+    let Lit::Str(value) = &expression.lit else {
+        return Err(format!("{label} must be a string literal"));
+    };
+    Ok(value.value())
+}
+
+fn boundary_name(expression: &Expr) -> Result<&'static str, String> {
+    let Expr::Path(expression) = expression else {
+        return Err("command boundary must be a CommandBoundary variant".into());
+    };
+    match expression
+        .path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+        .as_deref()
+    {
+        Some("Read") => Ok("read"),
+        Some("Mutate") => Ok("mutate"),
+        Some("Execute") => Ok("execute"),
+        _ => Err("command boundary must be Read, Mutate, or Execute".into()),
+    }
+}
+
+fn replace_generated_command_table(source: &str, table: &str) -> Result<String, String> {
+    let start = source
+        .find(GENERATED_COMMAND_METADATA_START)
+        .ok_or_else(|| format!("missing {GENERATED_COMMAND_METADATA_START} marker"))?;
+    let end = source
+        .find(GENERATED_COMMAND_METADATA_END)
+        .ok_or_else(|| format!("missing {GENERATED_COMMAND_METADATA_END} marker"))?;
+    if end <= start {
+        return Err("generated command metadata markers are out of order".into());
+    }
+    let content_start = source[start..]
+        .find('\n')
+        .map(|offset| start + offset + 1)
+        .ok_or_else(|| "generated command metadata start marker has no line ending".to_string())?;
+    let mut output = String::with_capacity(source.len() + table.len());
+    output.push_str(&source[..content_start]);
+    output.push_str(table);
+    output.push_str(&source[end..]);
     Ok(output)
 }
 
