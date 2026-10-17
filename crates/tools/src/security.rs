@@ -21,14 +21,14 @@ pub(crate) use execution::{
     execution_policy_denied,
 };
 pub use filesystem::is_safe_local_path;
+pub(crate) use filesystem::{FileReadPolicy, FileWritePolicy};
+use filesystem::{is_unc_or_device_path, open_directory_roots, path_is_allowed};
+#[cfg(test)]
+use filesystem::{path_is_within, resolve_path_without_reparse};
 use haven_common::config::{SecurityConfig, StoredPermission, ToolConfig};
 use haven_common::types::{
     CapabilityScope, NetworkPolicy, PermissionEffect, PermissionMode, PermissionScope, RiskLevel,
     SandboxMode,
-};
-use haven_platform::filesystem::DirectoryCapability;
-use haven_platform::filesystem::{
-    is_link_or_reparse_point, open_for_metadata, open_read_only, same_file_identity,
 };
 pub use prompt::permission_prompt_summary;
 #[cfg(test)]
@@ -36,9 +36,6 @@ pub(crate) use prompt::{LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
-use std::fs::File;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::RwLock;
@@ -87,139 +84,6 @@ pub struct AuthorizationEngine {
     process_boundary_changes: tokio::sync::watch::Sender<Arc<()>>,
     tool_processes: Mutex<HashMap<String, Vec<Weak<CancellationToken>>>>,
     session_processes: Mutex<HashMap<String, Vec<Weak<CancellationToken>>>>,
-}
-
-/// Captured path roots for one read operation. Each opened file is checked
-/// against these roots by identity before the caller consumes the handle.
-#[derive(Clone, Default)]
-pub(crate) struct FileReadPolicy {
-    allowed_roots: Vec<Vec<PathBuf>>,
-}
-
-/// Per-attempt filesystem authority derived from the same policy revision as
-/// an execution proof. Bounded path groups represent intersections: a path
-/// must be below one held directory in every group.
-#[derive(Clone, Default)]
-pub(crate) struct FileWritePolicy {
-    root_constraints: Vec<Vec<DirectoryCapability>>,
-    ambient: bool,
-}
-
-impl FileWritePolicy {
-    #[cfg(test)]
-    pub(crate) fn ambient_for_test() -> Self {
-        Self {
-            root_constraints: Vec::new(),
-            ambient: true,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test_roots(roots: &[PathBuf]) -> Self {
-        Self {
-            root_constraints: vec![open_directory_roots(roots)],
-            ambient: false,
-        }
-    }
-
-    pub(crate) fn resolve(&self, path: &Path) -> io::Result<(DirectoryCapability, PathBuf)> {
-        if !path.is_absolute() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "file mutation path is not absolute",
-            ));
-        }
-        let resolved = resolve_path_without_reparse(path).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "file mutation path changed or contains a reparse point",
-            )
-        })?;
-
-        let mut selected = Vec::new();
-        for candidates in &self.root_constraints {
-            let capability = candidates
-                .iter()
-                .filter(|candidate| candidate.relative_path(&resolved).is_some())
-                .max_by_key(|candidate| candidate.root().components().count())
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "file mutation path has no directory capability",
-                    )
-                })?;
-            selected.push(capability.clone());
-        }
-
-        if let Some(capability) = selected
-            .into_iter()
-            .max_by_key(|candidate| candidate.root().components().count())
-        {
-            let relative = capability.relative_path(&resolved).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "file mutation path is outside its directory capability",
-                )
-            })?;
-            return Ok((capability, relative));
-        }
-
-        if self.ambient {
-            return DirectoryCapability::open_ambient_for_path(&resolved);
-        }
-        Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "file mutation has no authorized directory capability",
-        ))
-    }
-}
-
-impl FileReadPolicy {
-    pub(crate) fn open_read(&self, path: &Path) -> io::Result<File> {
-        let opened = open_read_only(path)?;
-        self.validate_opened(path, &opened, true)?;
-        Ok(opened)
-    }
-
-    pub(crate) fn open_metadata(&self, path: &Path) -> io::Result<File> {
-        let opened = open_for_metadata(path)?;
-        self.validate_opened(path, &opened, false)?;
-        Ok(opened)
-    }
-
-    fn validate_opened(&self, path: &Path, opened: &File, require_file: bool) -> io::Result<()> {
-        let denied = || io::Error::new(io::ErrorKind::PermissionDenied, "path is not allowed");
-        if !path.is_absolute() || is_unc_or_device_path(path) {
-            return Err(denied());
-        }
-        let opened_metadata = opened.metadata()?;
-        if (require_file && !opened_metadata.is_file())
-            || (!opened_metadata.is_file() && !opened_metadata.is_dir())
-            || is_link_or_reparse_point(&opened_metadata)
-        {
-            return Err(denied());
-        }
-        let Some(resolved) = resolve_path_without_reparse(path) else {
-            return Err(denied());
-        };
-        let resolved_file = if opened_metadata.is_dir() {
-            open_for_metadata(&resolved)?
-        } else {
-            open_read_only(&resolved)?
-        };
-        if !same_file_identity(opened, &resolved_file)? {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "file changed during path validation",
-            ));
-        }
-        for roots in &self.allowed_roots {
-            if !resolved_path_is_allowed(&resolved, roots) {
-                return Err(denied());
-            }
-        }
-        Ok(())
-    }
 }
 
 impl AuthorizationEngine {
@@ -1466,122 +1330,6 @@ fn collect_path_params(params: &Value) -> Vec<PathBuf> {
         }
     }
     out
-}
-
-fn path_is_allowed(path: &Path, allowed: &[PathBuf]) -> bool {
-    // Relative paths and UNC/device paths are rejected even when the current
-    // working directory happens to be inside an allowed root. Otherwise the
-    // meaning of the same tool input changes with process launch context.
-    if !path.is_absolute() || is_unc_or_device_path(path) {
-        return false;
-    }
-    let Some(canon) = resolve_path_without_reparse(path) else {
-        return false;
-    };
-    resolved_path_is_allowed(&canon, allowed)
-}
-
-fn open_directory_roots(paths: &[PathBuf]) -> Vec<DirectoryCapability> {
-    paths
-        .iter()
-        .filter_map(|path| DirectoryCapability::open(path).ok())
-        .collect()
-}
-
-fn resolved_path_is_allowed(canon: &Path, allowed: &[PathBuf]) -> bool {
-    for base in allowed {
-        if !base.is_absolute() || is_unc_or_device_path(base) {
-            continue;
-        }
-        let Some(base_abs) = resolve_path_without_reparse(base) else {
-            continue;
-        };
-        if path_is_within(canon, &base_abs) {
-            return true;
-        }
-    }
-    false
-}
-
-/// Resolve the existing prefix of a path while rejecting every symlink or
-/// Windows reparse point encountered on that prefix. The non-existing suffix
-/// is appended only after the trusted prefix has been canonicalized. This is
-/// intentionally fail-closed: a metadata/canonicalization error denies the
-/// operation instead of falling back to lexical prefix matching.
-fn resolve_path_without_reparse(path: &Path) -> Option<PathBuf> {
-    let abs = normalize_path(path)?;
-    let components: Vec<_> = abs.components().collect();
-    let mut existing = PathBuf::new();
-    let mut suffix: Vec<OsString> = Vec::new();
-    let mut missing_started = false;
-
-    for (index, component) in components.iter().enumerate() {
-        if missing_started {
-            suffix.push(component.as_os_str().to_owned());
-            continue;
-        }
-
-        existing.push(component.as_os_str());
-        match std::fs::symlink_metadata(&existing) {
-            Ok(metadata) => {
-                if is_link_or_reparse_point(&metadata) {
-                    return None;
-                }
-                if index + 1 < components.len() && !metadata.file_type().is_dir() {
-                    return None;
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                existing.pop();
-                missing_started = true;
-                suffix.push(component.as_os_str().to_owned());
-            }
-            Err(_) => return None,
-        }
-    }
-
-    let mut resolved = std::fs::canonicalize(&existing).ok()?;
-    for component in suffix {
-        resolved.push(component);
-    }
-    Some(resolved)
-}
-
-fn is_unc_or_device_path(path: &Path) -> bool {
-    let value = path.to_string_lossy();
-    value.starts_with("\\\\") || value.starts_with("//")
-}
-
-fn path_is_within(path: &Path, base: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        let path = path.to_string_lossy().to_ascii_lowercase();
-        let base = base.to_string_lossy().to_ascii_lowercase();
-        Path::new(&path).starts_with(Path::new(&base))
-    }
-    #[cfg(not(windows))]
-    {
-        path.starts_with(base)
-    }
-}
-
-/// Lexically normalize `.` / `..` after making the path absolute so
-/// `allowed\..\Windows` cannot prefix-match `allowed`.
-fn normalize_path(path: &Path) -> Option<PathBuf> {
-    let abs = std::path::absolute(path).ok()?;
-    let mut out = PathBuf::new();
-    for comp in abs.components() {
-        match comp {
-            std::path::Component::ParentDir => {
-                if !out.pop() {
-                    return None;
-                }
-            }
-            std::path::Component::CurDir => {}
-            other => out.push(other.as_os_str()),
-        }
-    }
-    Some(out)
 }
 
 #[cfg(test)]
@@ -4754,133 +4502,6 @@ mod tests {
                 "missing matrix family: {expected}"
             );
         }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_path_sandbox_rejects_symlink_reparse_escape() {
-        let allowed = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let link = allowed.path().join("link");
-        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
-
-        assert!(!path_is_allowed(
-            &link.join("secret.txt"),
-            &[allowed.path().to_path_buf()]
-        ));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn file_read_policy_rejects_replacement_after_open_and_keeps_handle_bound() {
-        use std::io::Read;
-
-        let allowed = tempfile::tempdir().unwrap();
-        let path = allowed.path().join("note.txt");
-        let moved = allowed.path().join("original.txt");
-        std::fs::write(&path, b"authorized contents").unwrap();
-        let opened = open_read_only(&path).unwrap();
-        let policy = FileReadPolicy {
-            allowed_roots: vec![vec![allowed.path().to_path_buf()]],
-        };
-
-        std::fs::rename(&path, &moved).unwrap();
-        std::fs::write(&path, b"replacement contents").unwrap();
-
-        assert!(policy.validate_opened(&path, &opened, true).is_err());
-        let mut contents = Vec::new();
-        let mut opened = opened;
-        opened.read_to_end(&mut contents).unwrap();
-        assert_eq!(contents, b"authorized contents");
-    }
-
-    #[test]
-    fn file_read_policy_rejects_file_outside_configured_root() {
-        let allowed = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let path = outside.path().join("secret.txt");
-        std::fs::write(&path, b"secret").unwrap();
-        let policy = FileReadPolicy {
-            allowed_roots: vec![vec![allowed.path().to_path_buf()]],
-        };
-
-        assert_eq!(
-            policy.open_read(&path).unwrap_err().kind(),
-            std::io::ErrorKind::PermissionDenied
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn file_read_policy_rejects_a_symlink_path() {
-        let allowed = tempfile::tempdir().unwrap();
-        let target = allowed.path().join("target.txt");
-        let link = allowed.path().join("link.txt");
-        std::fs::write(&target, b"target").unwrap();
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        let policy = FileReadPolicy {
-            allowed_roots: vec![vec![allowed.path().to_path_buf()]],
-        };
-
-        assert!(policy.open_read(&link).is_err());
-    }
-
-    #[test]
-    fn file_read_policy_returns_the_validated_file_handle() {
-        use std::io::Read;
-
-        let allowed = tempfile::tempdir().unwrap();
-        let path = allowed.path().join("note.txt");
-        std::fs::write(&path, b"same handle").unwrap();
-        let policy = FileReadPolicy {
-            allowed_roots: vec![vec![allowed.path().to_path_buf()]],
-        };
-
-        let mut opened = policy.open_read(&path).unwrap();
-        let mut contents = Vec::new();
-        opened.read_to_end(&mut contents).unwrap();
-        assert_eq!(contents, b"same handle");
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn file_read_policy_blocks_replacement_while_the_handle_is_open() {
-        use std::io::Read;
-
-        let allowed = tempfile::tempdir().unwrap();
-        let path = allowed.path().join("note.txt");
-        let moved = allowed.path().join("moved.txt");
-        std::fs::write(&path, b"authorized contents").unwrap();
-        let policy = FileReadPolicy {
-            allowed_roots: vec![vec![allowed.path().to_path_buf()]],
-        };
-
-        let mut opened = policy.open_read(&path).unwrap();
-        assert!(std::fs::rename(&path, &moved).is_err());
-        let mut contents = Vec::new();
-        opened.read_to_end(&mut contents).unwrap();
-        assert_eq!(contents, b"authorized contents");
-    }
-
-    #[test]
-    fn test_path_sandbox_allows_only_absolute_paths_inside_canonical_root() {
-        let allowed = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let inside = allowed.path().join("new").join("file.txt");
-
-        assert!(path_is_allowed(&inside, &[allowed.path().to_path_buf()]));
-        assert!(!path_is_allowed(
-            &outside.path().join("file.txt"),
-            &[allowed.path().to_path_buf()]
-        ));
-        assert!(!path_is_allowed(
-            Path::new("relative.txt"),
-            &[allowed.path().to_path_buf()]
-        ));
-        assert!(!path_is_allowed(
-            Path::new("//server/share/file.txt"),
-            &[allowed.path().to_path_buf()]
-        ));
     }
 
     #[tokio::test]
