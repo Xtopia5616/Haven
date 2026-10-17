@@ -204,7 +204,8 @@ function applySupplement(
 		const presentationKey = `peer-mail:${payload.supplementId}`;
 		const content = JSON.stringify({ operation: 'inbox', auto: true, text: context });
 		return withMessages(state, payload.sessionId, (messages) => {
-			if (messages.some((message) => message.presentationKey === presentationKey)) return messages;
+			if (messages.some((message) => message.presentationKey === presentationKey))
+				return messages;
 			return insertAgentMessage(
 				messages,
 				newToolMessage({
@@ -220,14 +221,28 @@ function applySupplement(
 	}
 	if (payload.injectSource === 'tool_run_result') {
 		const parsed = parseToolRunResultInject(context);
-		const toolRunId = parsed?.tool_run_id || 'unknown';
-		const presentationKey = `tool-run-result:${payload.supplementId}:${toolRunId}`;
-		const content = JSON.stringify({
-			...(parsed || { tool_run_id: toolRunId, status: 'completed', auto: true }),
-			operation: 'tool_runs_result_injected',
-		});
+		if (!parsed) {
+			const presentationKey = `tool-run-result-text:${payload.supplementId}`;
+			return withMessages(state, payload.sessionId, (messages) => {
+				if (messages.some((message) => message.presentationKey === presentationKey))
+					return messages;
+				return insertAgentMessage(messages, {
+					id: payload.supplementId,
+					presentationKey,
+					role: 'assistant',
+					content: context,
+					type: 'supplement',
+					voice: false,
+					stepNumber: payload.stepNumber,
+					time: new Date().toLocaleTimeString(),
+				});
+			});
+		}
+		const presentationKey = `tool-run-result:${payload.supplementId}:${parsed.tool_run_id}`;
+		const content = JSON.stringify(parsed);
 		return withMessages(state, payload.sessionId, (messages) => {
-			if (messages.some((message) => message.presentationKey === presentationKey)) return messages;
+			if (messages.some((message) => message.presentationKey === presentationKey))
+				return messages;
 			return insertAgentMessage(
 				messages,
 				newToolMessage({
@@ -321,7 +336,8 @@ export function reduceAgent(
 		}
 		case 'agent/web-search': {
 			const payload = action.payload;
-			if (!payload.sessionId || (!payload.callId && payload.callIndex === undefined)) return state;
+			if (!payload.sessionId || (!payload.callId && payload.callIndex === undefined))
+				return state;
 			const searchId = webSearchId(
 				payload.sessionId,
 				payload.stepNumber,
