@@ -71,7 +71,7 @@ pub use media::{MediaTranscriptionResult, MediaTranscriptionStatus};
 /// ONLY output limit: tools truncate their own output to it, and the loop
 /// applies the same budget as a safety net for adapters, so there is no
 /// double truncation with different values.
-fn tool_output_cap(
+pub(crate) fn tool_output_cap(
     settings: &HashMap<String, haven_common::config::ToolConfig>,
     name: &str,
     default_cap: usize,
@@ -363,8 +363,14 @@ pub(crate) async fn register_builtin_tools(
     tools.push(Arc::new(load_skill::LoadSkillTool {
         deferred_catalog: deferred_catalog.clone(),
         registry: registry.clone(),
+        skill_registry: skill_registry.clone(),
         session_tool_overlay: session_tool_overlay.clone(),
         max_tools_per_request: max_tools,
+        max_observation_chars: tool_output_cap(
+            settings,
+            "load_skill",
+            limits.max_observation_chars,
+        ),
     }));
     tools.push(Arc::new(load_mcp::LoadMcpTool {
         mcp_manager: mcp_manager.clone(),

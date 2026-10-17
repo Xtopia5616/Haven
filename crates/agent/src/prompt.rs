@@ -27,7 +27,8 @@ use crate::token_budget::{estimate_tokens, truncate_prefix_to_token_budget};
 /// `tool_catalog`, `load_skill`, or `load_mcp` updates the session
 /// tool surface; the next provider request receives exact definitions from an
 /// immutable session catalog snapshot. Loading a tool does not rewrite the
-/// prompt. On resume, [`Self::rebuild_canonical_system_without_memory`]
+/// prompt; `load_skill` returns the selected body in its tool observation. On
+/// resume, [`Self::rebuild_canonical_system_without_memory`]
 /// refreshes the index from global catalogs. Mid-run memory refresh stays
 /// fence-only via [`Self::patch_canonical_memory_fence`] (M2). `tool_catalog describe` exposes
 /// schemas on demand, and loaded schemas enter the per-request API `tools[]`

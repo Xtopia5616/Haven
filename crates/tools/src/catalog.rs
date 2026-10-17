@@ -171,23 +171,23 @@ impl ToolsFacade {
     /// Skill is a soft restore failure; the session continues with the skills
     /// that are still available.
     pub async fn load_skill_for_session(&self, session_id: &str, names: Vec<String>) -> bool {
+        let platform = self.coordinator.runtime.platform().await;
         let loader = builtin::load_skill::LoadSkillTool {
             deferred_catalog: self.coordinator.core.operations.deferred.clone(),
             registry: self.coordinator.core.operations.installed.clone(),
+            skill_registry: self.coordinator.builtins.skill_registry.clone(),
             session_tool_overlay: self
                 .coordinator
                 .core
                 .operations
                 .session_tool_overlay
                 .clone(),
-            max_tools_per_request: self
-                .coordinator
-                .runtime
-                .platform()
-                .await
-                .context_limits
-                .max_tools_per_request
-                .max(1),
+            max_tools_per_request: platform.context_limits.max_tools_per_request.max(1),
+            max_observation_chars: builtin::tool_output_cap(
+                &platform.tool_settings,
+                "load_skill",
+                platform.context_limits.max_observation_chars,
+            ),
         };
         match loader
             .run(

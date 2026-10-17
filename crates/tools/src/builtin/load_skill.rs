@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use super::name_list::ordered_unique_non_empty_names;
 use crate::registry::{DeferredToolCatalog, SessionToolOverlay};
 use crate::{Tool, ToolRegistry, ToolResult};
+use haven_skills::SkillRegistry;
 
 /// Activates enabled Skill adapters for one session. Skill discovery remains
 /// global and cheap; the executable adapter and schema are session-local only
@@ -15,8 +16,10 @@ use crate::{Tool, ToolRegistry, ToolResult};
 pub struct LoadSkillTool {
     pub deferred_catalog: DeferredToolCatalog,
     pub registry: ToolRegistry,
+    pub skill_registry: SkillRegistry,
     pub session_tool_overlay: SessionToolOverlay,
     pub max_tools_per_request: usize,
+    pub max_observation_chars: usize,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -74,6 +77,52 @@ impl LoadSkillTool {
             );
         }
 
+        // Resolve the complete selected bodies before registering any adapter.
+        // The result is persisted as the loader observation, so it must fit the
+        // same bounded context budget as every other tool observation.
+        let mut selected_skills = Vec::with_capacity(selected_tools.len());
+        for name in &names {
+            if selected_names.contains(&qualified_name(name)) {
+                selected_skills.push(self.skill_registry.get_executable_skill(name).await?);
+            }
+        }
+
+        let skill_instructions = selected_skills
+            .iter()
+            .map(|skill| {
+                serde_json::json!({
+                    "name": skill.name(),
+                    "content": skill.instructions(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let instructions_output = serde_json::json!({
+            // Use the longest possible status value when checking the budget.
+            "status": "already_loaded",
+            "skills": selected_skills.iter().map(|skill| skill.name()).collect::<Vec<_>>(),
+            "skill_instructions": skill_instructions.clone(),
+            "missing_skills": missing.clone(),
+        });
+        let output_chars = serde_json::to_string(&instructions_output)
+            .map(|output| output.chars().count())
+            .unwrap_or(usize::MAX);
+        if output_chars > self.max_observation_chars {
+            return Ok(ToolResult::ok(serde_json::json!({
+                "status": "needs_selection",
+                "reason": "The selected Skills' instructions exceed the tool observation budget. Select fewer Skills or shorten their SKILL.md bodies; no Skill was loaded.",
+                "available_skills": selected_skills
+                    .iter()
+                    .map(|skill| {
+                        serde_json::json!({
+                            "name": skill.name(),
+                            "description": truncate_description(skill.description()),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+                "max_observation_chars": self.max_observation_chars,
+            })));
+        }
+
         let global_count = self.registry.list().await.len();
         let max = self.max_tools_per_request.max(1);
         match self
@@ -84,10 +133,8 @@ impl LoadSkillTool {
             Ok(loaded) => {
                 let mut output = serde_json::json!({
                     "status": if loaded.is_empty() { "already_loaded" } else { "loaded" },
-                    "skills": loaded
-                        .iter()
-                        .map(|name| name.trim_start_matches("skill__"))
-                        .collect::<Vec<_>>(),
+                    "skills": selected_skills.iter().map(|skill| skill.name()).collect::<Vec<_>>(),
+                    "skill_instructions": skill_instructions,
                 });
                 if !missing.is_empty() {
                     output["missing_skills"] = serde_json::json!(missing);
@@ -259,11 +306,31 @@ mod tests {
         let deferred_catalog = DeferredToolCatalog::new();
         let tool: ToolHandle = Arc::new(SkillStub);
         deferred_catalog.replace(vec![tool]).await;
+        let skills_root = tempfile::tempdir().expect("temporary Skills root");
+        let demo_root = skills_root.path().join("demo");
+        std::fs::create_dir_all(demo_root.join("scripts")).expect("create Skill fixture");
+        std::fs::write(
+            demo_root.join("SKILL.md"),
+            "---\nname: demo\ndescription: Demo Skill\n---\n\nRun the skill.\n",
+        )
+        .expect("write Skill manifest");
+        std::fs::write(demo_root.join("scripts/main.py"), "print('{}')\n")
+            .expect("write Skill entry script");
+        let skill_registry = SkillRegistry::new();
+        skill_registry
+            .set_config(
+                Some(skills_root.path().to_path_buf()),
+                Some(vec!["demo".into()]),
+            )
+            .await
+            .expect("load Skill fixture");
         let loader = LoadSkillTool {
             deferred_catalog,
             registry: ToolRegistry::new(),
+            skill_registry,
             session_tool_overlay: SessionToolOverlay::new(),
             max_tools_per_request: 4,
+            max_observation_chars: 16_000,
         };
 
         let result = loader
@@ -280,6 +347,10 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.output["status"], "loaded");
         assert_eq!(result.output["skills"], serde_json::json!(["demo"]));
+        assert_eq!(
+            result.output["skill_instructions"][0]["content"],
+            "Run the skill."
+        );
         assert_eq!(
             loader
                 .session_tool_overlay

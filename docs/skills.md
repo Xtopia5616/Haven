@@ -41,6 +41,8 @@ Describe the skill behavior here.
 
 正文是 frontmatter 之后的完整 Markdown，不要求 `## Instructions` 标题。可选资源目录遵循 Agent Skills 惯例，包括 `scripts/`、`references/` 和 `assets/`；Haven 当前只执行 `scripts/main.py` 或 `scripts/<name>.py`，并不自动加载引用文件。
 
+模型通过 `load_skill` 激活 Skill 时，成功结果会带上所选 Skill 的完整正文（`skill_instructions`），供当前对话后续步骤按任务使用。正文与状态一起进入有界工具观察；若所选正文无法完整放入 `load_skill` 的有效输出上限（受全局 `max_observation_chars` 及更低的单工具 `max_output_chars` 约束），Haven 会拒绝这次激活并提示缩短正文或减少选择，不会把截断正文当作已加载指令。
+
 `manifest_error` 只表示 `SKILL.md` 解析失败；有效清单因 allowlist 或入口脚本不可用时，由 `unavailable_reason` 说明。无效清单的 `has_script: false` 表示脚本状态未知，不能据此推断磁盘上没有入口脚本。
 
 Skill 根目录最多扫描 1024 个条目；超限时刷新失败并保留上一次完整列表。可选 `requirements.txt` 最大为 1 MiB，必须解析到 Skill 根目录内的普通文件；指纹与 pip 安装使用同一份有界文件快照，requirements 超限或越界时不会启动 pip。入口脚本最大为 16 MiB；执行前从已校验句柄复制到临时快照，保留原脚本路径与同目录模块导入行为；入口脚本超限或越界时不会启动 Skill 脚本。

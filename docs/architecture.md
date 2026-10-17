@@ -177,7 +177,7 @@ Builtin 的模型目录统一按点号 operation view 暴露：例如 `files.rea
 第一层 family/root 摘要（例如 `system`、`agent`、`haven`），`tool_catalog` 按需提供第二层
 root 和第三层 operation 的名称、描述与精确 schema；未选中的 builtin operation 保留在
 host-owned deferred catalog，由 `tool_catalog` 的 `action=load` 按 operation/root 原子加载到当前 session；
-启用 Skill 只进入紧凑索引，由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`；
+启用 Skill 只进入紧凑索引，由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`，并在成功加载结果中返回完整 `SKILL.md` 正文作为任务指引；若正文超出有效工具观察预算（全局观察上限与单工具输出上限中较小者）则拒绝激活，避免模型收到截断指令；
 MCP 服务器索引保持紧凑，仍由 `load_mcp` 按服务器加载并注册到 `SessionToolOverlay`
 （ADR 0127、0131、0137、0145、0148、0816）。provider 常驻工具只保留澄清、通知和目录/加载入口；
 `files.read`、`files.outline`、`files.search`、`system.info` 等 operation 由模型按需加载。内置 `load`
