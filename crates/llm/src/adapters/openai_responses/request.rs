@@ -115,7 +115,11 @@ impl OpenAiResponsesAdapter {
             WebSearchMode::Always => {
                 let tool_type = responses_web_search_tool_type(&self.endpoint);
                 tools_json.push(json!({"type": tool_type}));
-                Some(json!({"type": tool_type}))
+                if crate::adapters::responses_search_can_force(&self.endpoint) {
+                    Some(json!({"type": tool_type}))
+                } else {
+                    Some(json!("auto"))
+                }
             }
         };
         let reasoning = responses_reasoning_config(&self.endpoint);

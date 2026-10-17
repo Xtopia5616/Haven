@@ -1,5 +1,6 @@
 import { reportError } from '$lib/errorHandling.ts';
-import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
+import { normalizeApiStyle } from '$lib/apiStyle.ts';
+import { supportsBuiltinWebSearchForModel } from '$lib/providerSearchCapabilities.ts';
 import { setWebSearch } from '$lib/chatModelCommands.ts';
 import { loadSettings } from '$lib/settingsCommands.ts';
 import type { SettingsPayload } from '$lib/contracts/settings.ts';
@@ -34,7 +35,12 @@ function chatModelOptions(settings: SettingsPayload): ChatModelOption[] {
 			return [];
 		}
 		const apiStyle = normalizeApiStyle(provider.api_style || 'openai-chat');
-		const webSearchSupported = supportsBuiltinWebSearch(apiStyle);
+		const webSearchSupported = supportsBuiltinWebSearchForModel(
+			apiStyle,
+			provider.provider,
+			model.model,
+			provider.base_url,
+		);
 		const modelWebSearch = normalizeConfiguredWebSearch(model.web_search);
 		const providerWebSearch = normalizeConfiguredWebSearch(provider.default_web_search);
 		return [
@@ -94,7 +100,14 @@ export function createChatModelSync(options: ModelSyncOptions) {
 			? settings.llm.providers.find((item) => item.name === providerName)
 			: undefined;
 		const apiStyle = normalizeApiStyle(provider?.api_style || 'openai-chat');
-		const webSearchSupported = !!selectedModel && supportsBuiltinWebSearch(apiStyle);
+		const webSearchSupported =
+			!!selectedModel &&
+			supportsBuiltinWebSearchForModel(
+				apiStyle,
+				provider?.provider,
+				selectedModel.model,
+				provider?.base_url,
+			);
 		const explicitWebSearch = normalizeConfiguredWebSearch(selectedModel?.web_search);
 		const providerWebSearch = normalizeConfiguredWebSearch(provider?.default_web_search);
 		const storedWebSearch = explicitWebSearch ?? providerWebSearch ?? 'inherit';

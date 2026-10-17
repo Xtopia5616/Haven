@@ -1,21 +1,27 @@
 pub mod anthropic;
 pub mod assemblyai;
 mod capabilities;
+mod dashscope;
 pub mod deepgram;
+mod deepseek;
 mod embedding;
 pub mod gemini;
+mod groq;
 pub mod openai;
 pub mod openai_responses;
+mod openrouter;
 mod provider_features;
 mod stream;
 mod tool_arguments;
 mod tool_schema;
 mod transport;
 mod web_search;
+mod xai;
 
-pub use capabilities::{WebSearchMode, resolve_web_search_mode, xai_search_mode};
+pub use capabilities::{WebSearchMode, resolve_web_search_mode};
 pub(crate) use capabilities::{
-    provider_builtin_web_search_available, responses_web_search_tool_type,
+    chat_search_calls, chat_search_request, provider_builtin_web_search_available,
+    responses_search_can_force, responses_web_search_tool_type,
 };
 pub(crate) use tool_arguments::{parse_completed_tool_arguments, serialize_tool_arguments};
 
@@ -45,10 +51,10 @@ pub(in crate::adapters) fn current_epoch_seconds() -> u64 {
 pub(crate) use crate::tool_names::{ToolNameMap, ToolNamePolicy};
 
 pub(crate) use embedding::{openai_compatible_embed, openai_embeddings_url};
+pub(crate) use openrouter::is_openrouter;
 pub(crate) use provider_features::{
-    chat_thinking_extras, is_deepseek, is_openrouter, reasoning_tail,
-    reasoning_text_from_thinking_blocks, requires_reasoning_echo, responses_output_config,
-    responses_reasoning_config,
+    chat_thinking_extras, is_deepseek, reasoning_tail, reasoning_text_from_thinking_blocks,
+    requires_reasoning_echo, responses_output_config, responses_reasoning_config,
 };
 pub(crate) use stream::{LineMode, empty_chunk, line_payload_channel, spawn_line_reader};
 pub(crate) use transport::{
@@ -58,6 +64,8 @@ pub(crate) use transport::{
 };
 pub use web_search::web_search_result_of;
 pub(crate) use web_search::{normalize_web_search_call_item, upsert_web_search_call};
+#[cfg(test)]
+pub(crate) use xai::legacy_search_mode as xai_search_mode;
 
 /// Capabilities guaranteed by a chat wire protocol. Model-specific limits
 /// remain unknown; this helper only records representations the adapter can
@@ -253,6 +261,8 @@ pub(crate) fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
 ///   (OpenAI, Ollama, vLLM, DeepSeek chat, llama.cpp server, and most
 ///   third-party gateways). Whisper-family models also implement `transcribe`
 ///   via `/audio/transcriptions`. Embeddings use `/embeddings`.
+/// - `openrouter`: OpenRouter Chat Completions server tools, including web search.
+/// - `dashscope`: DashScope Chat Completions search extension (`enable_search`).
 /// - `xai`: legacy OpenAI chat adapter with xAI Live Search `search_parameters`
 ///   (embeddings still `/embeddings`)
 /// - `openai-responses`: OpenAI Responses API
@@ -276,6 +286,12 @@ pub fn adapter_for(endpoint: &ModelEndpoint) -> Box<dyn LlmClient> {
         );
     }
     match style {
+        "openrouter" => openai::OpenAiAdapter::try_new_with_style(endpoint.clone(), "openrouter")
+            .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
+            .unwrap_or_else(|error| unavailable("openrouter", error)),
+        "dashscope" => openai::OpenAiAdapter::try_new_with_style(endpoint.clone(), "dashscope")
+            .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
+            .unwrap_or_else(|error| unavailable("dashscope", error)),
         "anthropic" => anthropic::AnthropicAdapter::try_new(endpoint.clone())
             .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
             .unwrap_or_else(|error| unavailable("anthropic", error)),
@@ -570,7 +586,7 @@ mod tests {
         assert_eq!(adapter_for(&assemblyai).style(), "assemblyai");
         assert!(supports_builtin_web_search("openai-responses"));
         assert!(supports_builtin_web_search("xai"));
-        assert!(!supports_builtin_web_search("openai-chat"));
+        assert!(supports_builtin_web_search("openai-chat"));
     }
 
     #[tokio::test]

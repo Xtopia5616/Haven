@@ -142,12 +142,16 @@ impl OpenAiAdapter {
                     // stateless chat API to restore the search context, with
                     // the `action` discriminator filled when the captured
                     // skeleton lacks it (DeepSeek 400s otherwise).
-                    // Skip synthetic xAI citation markers — Live Search is
-                    // driven by `search_parameters`, not call round-trip.
+                    // Provider citation summaries are UI-facing records, not
+                    // server search-call items. Echo only actual provider
+                    // `web_search_call` outputs (currently DeepSeek).
                     web_search_call: m
                         .web_search_calls
                         .iter()
-                        .filter(|c| c.get("id").and_then(Value::as_str) != Some("xai_citations"))
+                        .filter(|c| {
+                            let id = c.get("id").and_then(Value::as_str).unwrap_or_default();
+                            id != "xai_citations" && !id.starts_with("haven_search_")
+                        })
                         .cloned()
                         .map(normalize_web_search_call_item)
                         .collect(),
@@ -300,14 +304,14 @@ impl OpenAiAdapter {
                     crate::adapters::tool_schema::project_tool_parameters_for_object_root(
                         parameters,
                     );
-                OpenAiTool {
+                OpenAiTool::Function(OpenAiFunctionTool {
                     tool_type: t.tool_type.clone(),
                     function: OpenAiToolFunction {
                         name: tool_names.to_provider(&t.function.name),
                         description: t.function.description.clone(),
                         parameters: haven_common::json::canonicalize_json(parameters),
                     },
-                }
+                })
             })
             .collect()
     }

@@ -7,7 +7,7 @@
 //!
 //! | Stored / derived style     | Normalized wire   | Built-in web search |
 //! |----------------------------|-------------------|---------------------|
-//! | `openai-chat`              | `openai-chat`     | no                  |
+//! | `openai-chat`              | `openai-chat`     | OpenAI search model / provider tools |
 //! | `llama.cpp`                | `llama.cpp`       | no                  |
 //! | `openai-responses`         | `openai-responses`| yes                 |
 //! | `xai`                      | `xai`             | yes                 |
@@ -17,8 +17,7 @@
 
 use haven_common::config::ModelEndpoint;
 use serde::{Deserialize, Serialize};
-
-use super::provider_features::{is_deepseek, vendor_haystack};
+use serde_json::Value;
 
 /// Web search mode for a provider's built-in search tool. Selected via the
 /// endpoint's `web_search` config field or the `HAVEN_WEB_SEARCH` environment
@@ -66,57 +65,125 @@ pub fn resolve_web_search_mode(endpoint: &ModelEndpoint) -> WebSearchMode {
     }
 }
 
-/// Whether this provider/model pair supports Haven's built-in search request
-/// shape. Protocol support alone is not enough for vendors that restrict
-/// search to a subset of their models.
+/// Dispatch the endpoint policy to the provider that owns its limits. Generic
+/// wire styles retain their protocol-level behavior when no vendor policy
+/// applies.
 pub(crate) fn provider_builtin_web_search_available(
     endpoint: &ModelEndpoint,
     api_style: &str,
 ) -> bool {
-    let vendor = vendor_haystack(endpoint);
-    if is_deepseek(endpoint)
-        && !endpoint
-            .model_name
-            .to_ascii_lowercase()
-            .starts_with("deepseek-v4-pro")
-    {
-        return false;
-    }
-
-    if vendor.contains("groq") {
-        let model = endpoint.model_name.to_ascii_lowercase();
-        let supported_model =
-            matches!(model.as_str(), "openai/gpt-oss-20b" | "openai/gpt-oss-120b");
-        return api_style == "openai-responses"
-            && supported_model
-            && endpoint.response_format.is_none();
-    }
-
-    true
+    [
+        super::openrouter::builtin_search_available(endpoint, api_style),
+        super::dashscope::builtin_search_available(endpoint, api_style),
+        super::openai::search_available(endpoint, api_style),
+        super::groq::builtin_search_available(endpoint, api_style),
+        super::deepseek::builtin_search_available(endpoint, api_style),
+        super::xai::builtin_search_available(endpoint, api_style),
+    ]
+    .into_iter()
+    .flatten()
+    .next()
+    .unwrap_or_else(|| {
+        // OpenAI Responses defines the generic `web_search` tool. Chat
+        // Completions has no protocol-wide search tool; vendor/model modules
+        // must opt in above or the configured mode would be silently ignored.
+        api_style == "openai-responses"
+    })
 }
 
 /// Groq names its Responses API server tool `browser_search`; other current
 /// Responses integrations use the OpenAI-compatible `web_search` name.
 pub(crate) fn responses_web_search_tool_type(endpoint: &ModelEndpoint) -> &'static str {
-    if vendor_haystack(endpoint).contains("groq") {
-        "browser_search"
+    if let Some(tool_type) = super::openrouter::responses_search_tool_type(endpoint) {
+        tool_type
     } else {
-        "web_search"
+        super::groq::responses_search_tool_type(endpoint).unwrap_or("web_search")
     }
 }
 
-/// xAI Live Search `search_parameters.mode` string for a [`WebSearchMode`].
-pub fn xai_search_mode(mode: WebSearchMode) -> Option<&'static str> {
-    match mode {
-        WebSearchMode::Off => None,
-        WebSearchMode::Auto => Some("auto"),
-        WebSearchMode::Always => Some("on"),
+pub(crate) fn responses_search_can_force(endpoint: &ModelEndpoint) -> bool {
+    [
+        super::openrouter::responses_search_can_force(endpoint),
+        super::dashscope::responses_search_can_force(endpoint),
+    ]
+    .into_iter()
+    .flatten()
+    .next()
+    .unwrap_or(true)
+}
+
+/// Provider-specific fields that the OpenAI Chat Completions adapter merges
+/// into its common request DTO. Each wire extension is built by its provider
+/// module; this dispatcher only selects the applicable adapter.
+#[derive(Default)]
+pub(crate) struct ChatSearchRequest {
+    pub(crate) server_tool_type: Option<&'static str>,
+    pub(crate) search_parameters: Option<Value>,
+    pub(crate) web_search_options: Option<Value>,
+    pub(crate) enable_search: Option<bool>,
+    pub(crate) include_tool_usage: Option<bool>,
+    pub(crate) dashscope_search_options: Option<Value>,
+    pub(crate) force_server_tool: bool,
+}
+
+pub(crate) fn chat_search_request(
+    endpoint: &ModelEndpoint,
+    api_style: &str,
+    mode: WebSearchMode,
+    has_function_tools: bool,
+) -> ChatSearchRequest {
+    let dashscope_enabled = super::dashscope::builtin_search_available(endpoint, api_style)
+        == Some(true)
+        && super::dashscope::chat_search_enabled(mode);
+
+    ChatSearchRequest {
+        server_tool_type: super::openrouter::chat_search_tool(endpoint, api_style, mode)
+            .or_else(|| super::groq::chat_search_tool(endpoint, api_style, mode)),
+        search_parameters: super::xai::chat_search_parameters(endpoint, api_style, mode),
+        web_search_options: super::openai::search_options(endpoint, api_style, mode),
+        enable_search: dashscope_enabled.then_some(true),
+        include_tool_usage: dashscope_enabled.then_some(true),
+        dashscope_search_options: dashscope_enabled
+            .then(|| super::dashscope::chat_search_options(&endpoint.model_name, mode))
+            .flatten(),
+        force_server_tool: super::groq::chat_search_is_required(
+            endpoint,
+            api_style,
+            mode,
+            has_function_tools,
+        ),
     }
+}
+
+/// Collect Chat Completions search activity using the owning provider's wire
+/// schema. Adapters pass optional provider usage blocks through without
+/// interpreting their fields here.
+pub(crate) fn chat_search_calls(
+    endpoint: &ModelEndpoint,
+    api_style: &str,
+    annotations: &[serde_json::Value],
+    x_tools: Option<&serde_json::Value>,
+    server_tool_use: Option<&serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    [
+        super::openai::search_call(endpoint, api_style, annotations),
+        super::openrouter::chat_search_call(endpoint, api_style, annotations, server_tool_use),
+        super::groq::chat_search_available(endpoint, api_style)
+            .filter(|available| *available)
+            .and_then(|_| super::groq::search_call(annotations)),
+        super::dashscope::builtin_search_available(endpoint, api_style)
+            .filter(|available| *available)
+            .and_then(|_| super::dashscope::chat_search_call(x_tools)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::xai_search_mode;
     use haven_common::config::{
         is_known_api_style, normalize_api_style, supports_builtin_web_search,
     };
@@ -154,13 +221,99 @@ mod tests {
     #[test]
     fn web_search_capability_matrix() {
         assert!(supports_builtin_web_search("openai-responses"));
+        assert!(supports_builtin_web_search("openai-chat"));
         assert!(supports_builtin_web_search("xai"));
         assert!(supports_builtin_web_search("anthropic"));
         assert!(supports_builtin_web_search("gemini"));
-        assert!(!supports_builtin_web_search("openai-chat"));
         assert!(!supports_builtin_web_search("llama.cpp"));
         assert!(!supports_builtin_web_search("deepgram"));
         assert!(!supports_builtin_web_search("assemblyai"));
+    }
+
+    #[test]
+    fn generic_chat_does_not_claim_an_unimplemented_search_tool() {
+        assert!(!provider_builtin_web_search_available(
+            &ModelEndpoint {
+                provider: "custom-openai-compatible".into(),
+                model_name: "some-model".into(),
+                ..Default::default()
+            },
+            "openai-chat"
+        ));
+        assert!(provider_builtin_web_search_available(
+            &ModelEndpoint {
+                provider: "custom-responses".into(),
+                model_name: "some-model".into(),
+                ..Default::default()
+            },
+            "openai-responses"
+        ));
+    }
+
+    #[test]
+    fn provider_chat_search_request_fields_are_owned_by_vendor_adapters() {
+        let openai = ModelEndpoint {
+            provider: "openai".into(),
+            model_name: "gpt-5-search-api".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            chat_search_request(&openai, "openai-chat", WebSearchMode::Auto, false)
+                .web_search_options,
+            Some(serde_json::json!({}))
+        );
+
+        let dashscope = ModelEndpoint {
+            provider: "dashscope".into(),
+            model_name: "qwen-plus".into(),
+            ..Default::default()
+        };
+        let request = chat_search_request(&dashscope, "dashscope", WebSearchMode::Always, false);
+        assert_eq!(request.enable_search, Some(true));
+        assert_eq!(request.include_tool_usage, Some(true));
+        assert_eq!(
+            request.dashscope_search_options,
+            Some(serde_json::json!({"forced_search": true}))
+        );
+
+        let groq = ModelEndpoint {
+            provider: "groq".into(),
+            model_name: "openai/gpt-oss-20b".into(),
+            ..Default::default()
+        };
+        let request = chat_search_request(&groq, "openai-chat", WebSearchMode::Always, false);
+        assert_eq!(request.server_tool_type, Some("browser_search"));
+        assert!(request.force_server_tool);
+        assert!(
+            !chat_search_request(&groq, "openai-chat", WebSearchMode::Always, true)
+                .force_server_tool
+        );
+
+        let openrouter = ModelEndpoint {
+            provider: "openrouter".into(),
+            model_name: "openai/gpt-5.5".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            chat_search_request(&openrouter, "openrouter", WebSearchMode::Auto, false)
+                .server_tool_type,
+            Some("openrouter:web_search")
+        );
+    }
+
+    #[test]
+    fn openrouter_and_dashscope_responses_leave_search_choice_to_model() {
+        let openrouter = ModelEndpoint {
+            provider: "openrouter".into(),
+            ..Default::default()
+        };
+        let dashscope = ModelEndpoint {
+            provider: "dashscope".into(),
+            ..Default::default()
+        };
+        assert!(!responses_search_can_force(&openrouter));
+        assert!(!responses_search_can_force(&dashscope));
+        assert!(responses_search_can_force(&ModelEndpoint::default()));
     }
 
     #[test]
@@ -193,48 +346,5 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_web_search_mode(&off), WebSearchMode::Off);
-    }
-
-    #[test]
-    fn provider_search_capability_is_model_aware() {
-        let endpoint = |provider: &str, model: &str, response_format| ModelEndpoint {
-            provider: provider.into(),
-            model_name: model.into(),
-            response_format,
-            ..Default::default()
-        };
-
-        assert!(provider_builtin_web_search_available(
-            &endpoint("deepseek", "deepseek-v4-pro", None),
-            "openai-responses"
-        ));
-        assert!(!provider_builtin_web_search_available(
-            &endpoint("deepseek", "deepseek-v4-flash", None),
-            "openai-responses"
-        ));
-        assert!(provider_builtin_web_search_available(
-            &endpoint("groq", "openai/gpt-oss-20b", None),
-            "openai-responses"
-        ));
-        assert!(!provider_builtin_web_search_available(
-            &endpoint("groq", "llama-3.3-70b-versatile", None),
-            "openai-responses"
-        ));
-        assert!(!provider_builtin_web_search_available(
-            &endpoint(
-                "groq",
-                "openai/gpt-oss-20b",
-                Some(serde_json::json!({"type":"json_object"}))
-            ),
-            "openai-responses"
-        ));
-        assert_eq!(
-            responses_web_search_tool_type(&endpoint("groq", "openai/gpt-oss-20b", None)),
-            "browser_search"
-        );
-        assert_eq!(
-            responses_web_search_tool_type(&endpoint("xai", "grok-4.6", None)),
-            "web_search"
-        );
     }
 }

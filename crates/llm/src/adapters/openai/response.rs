@@ -22,6 +22,12 @@ impl OpenAiAdapter {
             .as_ref()
             .and_then(|m| m.reasoning_content.clone());
         let tool_calls = Self::extract_tool_calls(&choice);
+        let annotations = choice
+            .message
+            .as_ref()
+            .map(|m| m.annotations.as_slice())
+            .unwrap_or_default();
+        let usage = json.usage.as_ref();
         let mut web_search_calls: Vec<Value> = choice
             .message
             .as_ref()
@@ -33,19 +39,17 @@ impl OpenAiAdapter {
                     .collect()
             })
             .unwrap_or_default();
+        web_search_calls.extend(crate::adapters::chat_search_calls(
+            &self.endpoint,
+            self.style,
+            annotations,
+            usage.and_then(|usage| usage.x_tools.as_ref()),
+            usage.and_then(|usage| usage.server_tool_use.as_ref()),
+        ));
         // xAI returns citation URLs at the top level; fold them into the
         // canonical web_search_calls list so multi-turn echo / UI cards work.
-        if !json.citations.is_empty() {
-            web_search_calls.push(normalize_web_search_call_item(serde_json::json!({
-                "type": "web_search_call",
-                "id": "xai_citations",
-                "status": "completed",
-                "action": {
-                    "type": "search",
-                    "queries": [],
-                    "citations": json.citations,
-                },
-            })));
+        if let Some(call) = crate::adapters::xai::citation_search_call(json.citations) {
+            web_search_calls.push(normalize_web_search_call_item(call));
         }
 
         let usage = json

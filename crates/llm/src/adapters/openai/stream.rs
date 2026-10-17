@@ -88,6 +88,8 @@ impl OpenAiAdapter {
             })?;
         tracing::debug!("chat_stream_inner response status: {}", resp.status());
         let cache_diagnostics = body.cache_diagnostics;
+        let search_endpoint = Arc::new(self.endpoint.clone());
+        let search_style = self.style;
 
         use tokio::sync::mpsc;
 
@@ -138,6 +140,9 @@ impl OpenAiAdapter {
             accumulated_text: String,
             tool_calls_acc: Vec<(String, String, String)>,
             web_search_acc: Vec<serde_json::Value>,
+            search_annotations: Vec<serde_json::Value>,
+            search_x_tools: Option<serde_json::Value>,
+            search_server_tool_use: Option<serde_json::Value>,
             last_model: Option<String>,
             has_finish_reason: bool,
             usage: Option<Usage>,
@@ -152,171 +157,203 @@ impl OpenAiAdapter {
                 accumulated_text: String::new(),
                 tool_calls_acc: Vec::new(),
                 web_search_acc: Vec::new(),
+                search_annotations: Vec::new(),
+                search_x_tools: None,
+                search_server_tool_use: None,
                 last_model: None,
                 has_finish_reason: false,
                 usage: None,
                 cache_diagnostics,
                 tool_names,
             },
-            move |mut state| async move {
-                if state.done {
-                    return None;
-                }
-                let data = match state.rx.recv().await {
-                    Some(Ok(d)) => d,
-                    Some(Err(error)) => {
-                        state.done = true;
-                        return Some((Err(error), state));
+            move |mut state| {
+                let search_endpoint = Arc::clone(&search_endpoint);
+                async move {
+                    if state.done {
+                        return None;
                     }
-                    None => {
-                        // A complete-looking payload is not authoritative until
-                        // the protocol's finish_reason arrives.
-                        let chunk = if !state.has_finish_reason {
-                            Err(LlmError::StreamTruncated)
-                        } else {
-                            Ok(StreamChunk {
-                                text: None,
-                                tool_calls: std::mem::take(&mut state.tool_calls_acc)
-                                    .into_iter()
-                                    .map(|(id, name, args)| CanonicalToolCall {
-                                        tool_call_id: id,
-                                        name: state.tool_names.to_canonical(&name),
-                                        arguments: parse_completed_tool_arguments(&args),
-                                    })
-                                    .collect(),
-                                tool_call_updates: Vec::new(),
-                                finish_reason: None,
-                                usage: state.usage.take(),
-                                model: state.last_model.clone(),
-                                reasoning: None,
-                                web_search: None,
-                                web_search_calls: std::mem::take(&mut state.web_search_acc),
-                                thinking_blocks: Vec::new(),
-                            })
-                        };
-                        state.done = true;
-                        return Some((chunk, state));
-                    }
-                };
-                let parsed: Result<OpenAiStreamResponse, _> = serde_json::from_str(&data);
-                match parsed {
-                    Ok(resp) => {
-                        if let Some(model) = &resp.model {
-                            state.last_model = Some(model.clone());
+                    let data = match state.rx.recv().await {
+                        Some(Ok(d)) => d,
+                        Some(Err(error)) => {
+                            state.done = true;
+                            return Some((Err(error), state));
                         }
-                        if let Some(u) = resp.usage {
-                            let mut usage = u.to_usage(state.last_model.clone());
-                            usage.cache_diagnostics =
-                                Some(state.cache_diagnostics.clone().with_provider_usage(
-                                    u.cached_tokens_reported(),
-                                    u.cache_usage_reported(),
-                                ));
-                            state.usage = Some(usage);
-                        }
-                        if !resp.citations.is_empty() {
-                            crate::adapters::upsert_web_search_call(
-                                &mut state.web_search_acc,
-                                normalize_web_search_call_item(serde_json::json!({
-                                    "type": "web_search_call",
-                                    "id": "xai_citations",
-                                    "status": "completed",
-                                    "action": {
-                                        "type": "search",
-                                        "queries": [],
-                                        "citations": resp.citations,
-                                    },
-                                })),
-                            );
-                        }
-                        if let Some(choice) = resp.choices.into_iter().next() {
-                            let text = stream_content(&choice).and_then(|content| {
-                                append_stream_text(&mut state.accumulated_text, &content)
-                            });
-                            let mut tool_call_updates = Vec::new();
-                            if let Some(delta) = choice_delta(&choice)
-                                && let Some(calls) = &delta.tool_calls
-                            {
-                                for c in calls {
-                                    let idx = match checked_tool_call_index(c.index) {
-                                        Ok(index) => index,
-                                        Err(error) => {
-                                            state.done = true;
-                                            return Some((Err(error), state));
-                                        }
-                                    };
-                                    merge_tool_call(
-                                        &mut state.tool_calls_acc,
-                                        idx,
-                                        c.id.as_deref(),
-                                        c.function.name.as_deref(),
-                                        c.function.arguments.as_deref(),
-                                    );
-                                    let (tool_call_id, name, _) = &state.tool_calls_acc[idx];
-                                    tool_call_updates.push(crate::types::StreamToolCallUpdate {
-                                        tool_index: idx as u32,
-                                        tool_call_id: (!tool_call_id.is_empty())
-                                            .then(|| tool_call_id.clone()),
-                                        name: (!name.is_empty()).then(|| name.clone()),
-                                        arguments_delta: c.function.arguments.clone(),
-                                        arguments_snapshot: None,
-                                    });
-                                }
-                            }
-                            // DeepSeek's built-in web search: accumulate the
-                            // `web_search_call` items so they can be echoed
-                            // back verbatim on the next request.
-                            if let Some(delta) = choice_delta(&choice)
-                                && !delta.web_search_call.is_empty()
-                            {
-                                state
-                                    .web_search_acc
-                                    .extend(delta.web_search_call.iter().cloned());
-                            }
-                            if choice.finish_reason.is_some() {
-                                state.has_finish_reason = true;
-                            }
-                            let finish_reason = choice
-                                .finish_reason
-                                .as_ref()
-                                .and_then(|value| FinishReason::parse_provider_value(value));
-                            Some((
-                                Ok(StreamChunk {
-                                    text,
-                                    reasoning: choice_delta(&choice)
-                                        .and_then(|d| d.reasoning_content.clone()),
-                                    tool_calls: Vec::new(),
-                                    tool_call_updates,
-                                    finish_reason,
-                                    usage: None,
-                                    model: state.last_model.clone(),
-                                    web_search: None,
-                                    web_search_calls: Vec::new(),
-                                    thinking_blocks: Vec::new(),
-                                }),
-                                state,
-                            ))
-                        } else {
-                            Some((
+                        None => {
+                            // A complete-looking payload is not authoritative until
+                            // the protocol's finish_reason arrives.
+                            let chunk = if !state.has_finish_reason {
+                                Err(LlmError::StreamTruncated)
+                            } else {
                                 Ok(StreamChunk {
                                     text: None,
-                                    reasoning: None,
-                                    tool_calls: Vec::new(),
+                                    tool_calls: std::mem::take(&mut state.tool_calls_acc)
+                                        .into_iter()
+                                        .map(|(id, name, args)| CanonicalToolCall {
+                                            tool_call_id: id,
+                                            name: state.tool_names.to_canonical(&name),
+                                            arguments: parse_completed_tool_arguments(&args),
+                                        })
+                                        .collect(),
                                     tool_call_updates: Vec::new(),
                                     finish_reason: None,
                                     usage: state.usage.take(),
                                     model: state.last_model.clone(),
+                                    reasoning: None,
                                     web_search: None,
-                                    web_search_calls: Vec::new(),
+                                    web_search_calls: std::mem::take(&mut state.web_search_acc),
                                     thinking_blocks: Vec::new(),
-                                }),
-                                state,
-                            ))
+                                })
+                            };
+                            state.done = true;
+                            return Some((chunk, state));
                         }
+                    };
+                    let parsed: Result<OpenAiStreamResponse, _> = serde_json::from_str(&data);
+                    match parsed {
+                        Ok(resp) => {
+                            if let Some(model) = &resp.model {
+                                state.last_model = Some(model.clone());
+                            }
+                            if let Some(u) = resp.usage.as_ref() {
+                                let mut usage = u.to_usage(state.last_model.clone());
+                                usage.cache_diagnostics =
+                                    Some(state.cache_diagnostics.clone().with_provider_usage(
+                                        u.cached_tokens_reported(),
+                                        u.cache_usage_reported(),
+                                    ));
+                                state.usage = Some(usage);
+                                state.search_x_tools = u.x_tools.clone();
+                                state.search_server_tool_use = u.server_tool_use.clone();
+                            }
+                            if let Some(call) =
+                                crate::adapters::xai::citation_search_call(resp.citations.clone())
+                            {
+                                crate::adapters::upsert_web_search_call(
+                                    &mut state.web_search_acc,
+                                    normalize_web_search_call_item(call),
+                                );
+                            }
+                            for call in crate::adapters::chat_search_calls(
+                                &search_endpoint,
+                                search_style,
+                                &state.search_annotations,
+                                state.search_x_tools.as_ref(),
+                                state.search_server_tool_use.as_ref(),
+                            ) {
+                                crate::adapters::upsert_web_search_call(
+                                    &mut state.web_search_acc,
+                                    normalize_web_search_call_item(call),
+                                );
+                            }
+                            if let Some(choice) = resp.choices.into_iter().next() {
+                                let text = stream_content(&choice).and_then(|content| {
+                                    append_stream_text(&mut state.accumulated_text, &content)
+                                });
+                                let mut tool_call_updates = Vec::new();
+                                if let Some(delta) = choice_delta(&choice)
+                                    && let Some(calls) = &delta.tool_calls
+                                {
+                                    for c in calls {
+                                        let idx = match checked_tool_call_index(c.index) {
+                                            Ok(index) => index,
+                                            Err(error) => {
+                                                state.done = true;
+                                                return Some((Err(error), state));
+                                            }
+                                        };
+                                        merge_tool_call(
+                                            &mut state.tool_calls_acc,
+                                            idx,
+                                            c.id.as_deref(),
+                                            c.function.name.as_deref(),
+                                            c.function.arguments.as_deref(),
+                                        );
+                                        let (tool_call_id, name, _) = &state.tool_calls_acc[idx];
+                                        tool_call_updates.push(
+                                            crate::types::StreamToolCallUpdate {
+                                                tool_index: idx as u32,
+                                                tool_call_id: (!tool_call_id.is_empty())
+                                                    .then(|| tool_call_id.clone()),
+                                                name: (!name.is_empty()).then(|| name.clone()),
+                                                arguments_delta: c.function.arguments.clone(),
+                                                arguments_snapshot: None,
+                                            },
+                                        );
+                                    }
+                                }
+                                // DeepSeek's built-in web search: accumulate the
+                                // `web_search_call` items so they can be echoed
+                                // back verbatim on the next request.
+                                if let Some(delta) = choice_delta(&choice) {
+                                    for annotation in &delta.annotations {
+                                        if !state.search_annotations.contains(annotation) {
+                                            state.search_annotations.push(annotation.clone());
+                                        }
+                                    }
+                                    for call in crate::adapters::chat_search_calls(
+                                        &search_endpoint,
+                                        search_style,
+                                        &state.search_annotations,
+                                        state.search_x_tools.as_ref(),
+                                        state.search_server_tool_use.as_ref(),
+                                    ) {
+                                        crate::adapters::upsert_web_search_call(
+                                            &mut state.web_search_acc,
+                                            normalize_web_search_call_item(call),
+                                        );
+                                    }
+                                    if !delta.web_search_call.is_empty() {
+                                        state
+                                            .web_search_acc
+                                            .extend(delta.web_search_call.iter().cloned());
+                                    }
+                                }
+                                if choice.finish_reason.is_some() {
+                                    state.has_finish_reason = true;
+                                }
+                                let finish_reason = choice
+                                    .finish_reason
+                                    .as_ref()
+                                    .and_then(|value| FinishReason::parse_provider_value(value));
+                                Some((
+                                    Ok(StreamChunk {
+                                        text,
+                                        reasoning: choice_delta(&choice)
+                                            .and_then(|d| d.reasoning_content.clone()),
+                                        tool_calls: Vec::new(),
+                                        tool_call_updates,
+                                        finish_reason,
+                                        usage: None,
+                                        model: state.last_model.clone(),
+                                        web_search: None,
+                                        web_search_calls: Vec::new(),
+                                        thinking_blocks: Vec::new(),
+                                    }),
+                                    state,
+                                ))
+                            } else {
+                                Some((
+                                    Ok(StreamChunk {
+                                        text: None,
+                                        reasoning: None,
+                                        tool_calls: Vec::new(),
+                                        tool_call_updates: Vec::new(),
+                                        finish_reason: None,
+                                        usage: state.usage.take(),
+                                        model: state.last_model.clone(),
+                                        web_search: None,
+                                        web_search_calls: Vec::new(),
+                                        thinking_blocks: Vec::new(),
+                                    }),
+                                    state,
+                                ))
+                            }
+                        }
+                        Err(e) => Some((
+                            Err(LlmError::InvalidResponse(format!("parse error: {}", e))),
+                            state,
+                        )),
                     }
-                    Err(e) => Some((
-                        Err(LlmError::InvalidResponse(format!("parse error: {}", e))),
-                        state,
-                    )),
                 }
             },
         )

@@ -249,9 +249,9 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   `FinishReason::parse_provider_value` 归一化。
 - `Usage.cache_miss_tokens` 是 adapter 写入的归一化字段；调用方用
   `Usage::effective_cache_miss_tokens()` 取有效值，为零时按 `CacheAccounting` 推导。
-- 聊天页「联网搜索」为命名模型级 `off|auto|always`；仅
-  `supports_builtin_web_search(api_style)` 为真时由对应适配器注入内置搜索工具，
-  UI 对不支持的线协议灰显；DeepSeek 与 Groq 还按官方支持的模型列表做运行时能力裁剪。
+- 聊天页「联网搜索」为命名模型级 `off|auto|always`；共享能力层负责解析设置和调用 Provider
+  能力分发，具体厂商的模型白名单、请求参数、强制策略和引用格式分别由
+  `adapters/{openai/search,dashscope,deepseek,groq,openrouter,xai}.rs` 实现。UI 依据当前 Provider、模型和线协议能力灰显；
   Perplexity Sonar 的 Chat Completions citations 继续作为搜索来源显示；Mistral 的 `web_search`
   仅支持 Conversations/Agents API，当前 Chat Completions 线协议不能承载引用，暂不注入。
 - 厂商扩展（DeepSeek `thinking` / Responses `reasoning.effort`、Kimi
@@ -322,6 +322,10 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
 - `adapters/web_search.rs`：内置 web search call 的 action 规范化、citation
   结果 DTO 和按 id 去重；provider 只捕获 wire 事件，Agent/UI 消费统一结果
   （ADR 0027）。
+- `adapters/{openai/search,dashscope,deepseek,groq,openrouter,xai}.rs`：各自拥有
+  搜索模型白名单、wire 参数、强制语义、usage 解释和 citation 投影；
+  `adapters/capabilities.rs` 只协调共享 `off|auto|always` 模式与适配器分发
+  （ADR 1291）。
 - `adapters/provider_features.rs`：vendor 检测、thinking/reasoning 映射、
   echo 判定及 reasoning 长度限制；Chat/Responses adapter 共享同一规则
   （ADR 0028）。

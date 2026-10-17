@@ -17,7 +17,6 @@ use crate::adapters::{
     parse_completed_tool_arguments, read_text_bounded, reasoning_tail,
     reasoning_text_from_thinking_blocks, requires_reasoning_echo, resolve_web_search_mode,
     send_request, serialize_tool_arguments, spawn_line_reader, stream_header_timeout,
-    xai_search_mode,
 };
 use crate::client::LlmClient;
 use haven_common::media::CapabilityProfile;
@@ -40,6 +39,7 @@ mod mapping;
 pub(super) mod prompt_cache_key;
 mod request;
 mod response;
+mod search;
 mod stream;
 mod wire;
 
@@ -49,6 +49,7 @@ pub(super) use features::*;
 pub(super) use mapping::*;
 #[allow(unused_imports)]
 pub(super) use response::*;
+pub(super) use search::{search_available, search_call, search_options};
 #[allow(unused_imports)]
 pub(super) use stream::*;
 #[allow(unused_imports)]

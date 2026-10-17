@@ -64,6 +64,7 @@ fn extract_tool_calls_parses_correctly() {
             }]),
             reasoning_content: None,
             web_search_call: Vec::new(),
+            annotations: Vec::new(),
         }),
         delta: None,
         finish_reason: None,
@@ -89,6 +90,7 @@ fn parse_openai_response_collects_web_search_calls() {
             tool_calls: None,
             reasoning_content: None,
             web_search_call: vec![ws.clone()],
+            annotations: Vec::new(),
         }),
         delta: None,
         finish_reason: Some("stop".into()),
@@ -621,7 +623,10 @@ fn prompt_cache_key_changes_when_tools_change_or_is_unsupported() {
 
 #[test]
 fn prompt_cache_key_changes_with_openai_web_search_mode() {
-    let client = OpenAiAdapter::new(ModelEndpoint::default());
+    let client = OpenAiAdapter::new(ModelEndpoint {
+        model_name: "gpt-5-search-api".into(),
+        ..ModelEndpoint::default()
+    });
     let messages = vec![CanonicalMessage::system(vec![ContentPart::text(
         "stable system",
     )])];
@@ -889,7 +894,7 @@ fn build_request_body_with_tools() {
     let body = client.build_request_body(vec![], tools, false);
     assert!(body.tools.is_some());
     assert_eq!(body.tools.as_ref().unwrap().len(), 1);
-    assert_eq!(body.tools.unwrap()[0].tool_type, "function");
+    assert_eq!(body.tools.unwrap()[0].tool_type(), "function");
 }
 
 #[test]
@@ -909,7 +914,7 @@ fn openai_projects_dotted_names_but_deepseek_keeps_128_character_names() {
         ..Default::default()
     })
     .build_request_body(vec![], vec![dotted], false);
-    assert_eq!(openai.tools.unwrap()[0].function.name, "files_read");
+    assert_eq!(openai.tools.unwrap()[0].function().name, "files_read");
 
     let long_name = "a".repeat(80);
     let deepseek = OpenAiAdapter::new(ModelEndpoint {
@@ -930,7 +935,7 @@ fn openai_projects_dotted_names_but_deepseek_keeps_128_character_names() {
         }],
         false,
     );
-    assert_eq!(deepseek.tools.unwrap()[0].function.name, long_name);
+    assert_eq!(deepseek.tools.unwrap()[0].function().name, long_name);
 }
 
 #[test]
@@ -957,7 +962,7 @@ fn xai_style_preserves_documented_tool_names() {
         false,
     );
 
-    assert_eq!(body.tools.unwrap()[0].function.name, "files.read");
+    assert_eq!(body.tools.unwrap()[0].function().name, "files.read");
 }
 
 #[test]
@@ -1372,12 +1377,14 @@ fn stream_content_recovers_long_message_next_to_short_delta() {
             tool_calls: None,
             reasoning_content: None,
             web_search_call: Vec::new(),
+            annotations: Vec::new(),
         }),
         delta: Some(OpenAiMessageOut {
             content: Some("我先".into()),
             tool_calls: None,
             reasoning_content: None,
             web_search_call: Vec::new(),
+            annotations: Vec::new(),
         }),
         finish_reason: Some("tool_calls".into()),
     };
@@ -1408,6 +1415,7 @@ fn extract_tool_calls_message_without_tool_calls_field() {
             tool_calls: None,
             reasoning_content: None,
             web_search_call: Vec::new(),
+            annotations: Vec::new(),
         }),
         delta: None,
         finish_reason: Some("stop".into()),
@@ -1432,6 +1440,7 @@ fn extract_tool_calls_empty_name_skipped() {
             }]),
             reasoning_content: None,
             web_search_call: Vec::new(),
+            annotations: Vec::new(),
         }),
         finish_reason: None,
     };
@@ -1454,6 +1463,7 @@ fn extract_tool_calls_missing_id_defaults_to_empty() {
             }]),
             reasoning_content: None,
             web_search_call: Vec::new(),
+            annotations: Vec::new(),
         }),
         delta: None,
         finish_reason: None,
@@ -1476,9 +1486,9 @@ fn convert_tools_single_tool() {
     }];
     let result = OpenAiAdapter::convert_tools(tools);
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0].tool_type, "function");
-    assert_eq!(result[0].function.name, "read");
-    assert_eq!(result[0].function.description, "read file contents");
+    assert_eq!(result[0].tool_type(), "function");
+    assert_eq!(result[0].function().name, "read");
+    assert_eq!(result[0].function().description, "read file contents");
 }
 
 #[test]
@@ -1503,8 +1513,8 @@ fn convert_tools_multiple_tools() {
     ];
     let result = OpenAiAdapter::convert_tools(tools);
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0].function.name, "a");
-    assert_eq!(result[1].function.name, "b");
+    assert_eq!(result[0].function().name, "a");
+    assert_eq!(result[1].function().name, "b");
 }
 
 #[test]
@@ -1525,7 +1535,7 @@ fn convert_tools_sanitizes_non_object_schema() {
     }]);
 
     assert_eq!(
-        result[0].function.parameters,
+        result[0].function().parameters,
         serde_json::json!({"type": "object", "properties": {}})
     );
 }
@@ -1562,7 +1572,7 @@ fn openai_convert_tools_projects_root_union_schema() {
     }];
 
     let result = OpenAiAdapter::convert_tools(tools);
-    let parameters = &result[0].function.parameters;
+    let parameters = &result[0].function().parameters;
     assert_eq!(parameters["type"], "object");
     assert!(parameters.get("oneOf").is_none());
     assert_eq!(parameters["properties"]["operation"]["type"], "string");
@@ -1637,7 +1647,8 @@ fn openai_chat_projects_schedule_schema_for_xai_provider() {
     };
 
     let body = client.build_request_body(vec![], vec![schedule], false);
-    let parameters = &body.tools.unwrap()[0].function.parameters;
+    let tools = body.tools.unwrap();
+    let parameters = &tools[0].function().parameters;
     assert_eq!(parameters["type"], "object");
     assert!(parameters.get("oneOf").is_none());
     assert_eq!(
@@ -1667,8 +1678,8 @@ fn openai_convert_tools_projects_undiscriminated_root_union_schema() {
     }];
 
     let result = OpenAiAdapter::convert_tools(tools);
-    assert!(result[0].function.parameters.get("oneOf").is_none());
-    assert!(result[0].function.parameters["properties"].is_object());
+    assert!(result[0].function().parameters.get("oneOf").is_none());
+    assert!(result[0].function().parameters["properties"].is_object());
 }
 
 #[test]
@@ -1762,6 +1773,7 @@ fn response_without_usage_keeps_cache_outcome_unknown() {
                         tool_calls: None,
                         reasoning_content: None,
                         web_search_call: Vec::new(),
+                        annotations: Vec::new(),
                     }),
                     delta: None,
                     finish_reason: Some("stop".into()),

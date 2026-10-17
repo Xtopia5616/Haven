@@ -60,7 +60,11 @@ fn citation_of(raw: &Value) -> Option<Value> {
             if title.is_empty() && url.is_empty() {
                 return None;
             }
-            Some(serde_json::json!({"title": title, "url": url, "snippet": snippet}))
+            Some(serde_json::json!({
+                "title": if title.is_empty() { url } else { title },
+                "url": url,
+                "snippet": snippet
+            }))
         }
         _ => None,
     }
@@ -90,6 +94,37 @@ fn collect_citations(source: &Value, out: &mut Vec<Value>) {
     }
 }
 
+/// Project standard `url_citation` annotations into Haven's citation shape.
+pub(crate) fn citations_from_annotations(annotations: &[Value]) -> Vec<Value> {
+    annotations
+        .iter()
+        .filter(|annotation| annotation.get("type").and_then(Value::as_str) == Some("url_citation"))
+        .filter_map(|annotation| {
+            let citation = annotation
+                .get("url_citation")
+                .filter(|value| value.is_object())
+                .unwrap_or(annotation);
+            let url = citation.get("url")?.as_str()?;
+            if url.is_empty() {
+                return None;
+            }
+            let title = citation
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|title| !title.is_empty())
+                .unwrap_or(url);
+            Some(serde_json::json!({
+                "title": title,
+                "url": url,
+                "snippet": citation.get("content")
+                    .or_else(|| citation.get("text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            }))
+        })
+        .collect()
+}
+
 /// Extract the tool return of a provider built-in web search from a
 /// `web_search_call` item: a compact `{queries, results}` payload where each
 /// result is `{title, url, snippet}`. Reads `action.search.citations` /
@@ -109,8 +144,14 @@ pub fn web_search_result_of(item: &Value) -> Option<Value> {
                 .map(str::to_string),
         );
     }
+    if queries.is_empty()
+        && let Some(query) = action.get("query").and_then(Value::as_str)
+        && !query.is_empty()
+    {
+        queries.push(query.to_string());
+    }
     let mut results: Vec<Value> = Vec::new();
-    for key in ["citations", "results", "result"] {
+    for key in ["citations", "results", "result", "sources"] {
         if let Some(source) = action.get(key) {
             collect_citations(source, &mut results);
         }
@@ -274,6 +315,50 @@ mod tests {
         assert_eq!(result["queries"], serde_json::json!(["best laptop 2026"]));
         assert_eq!(result["results"][0]["title"], "Top Laptops");
         assert_eq!(result["results"][0]["snippet"], "long content…");
+    }
+
+    #[test]
+    fn result_of_reads_dashscope_sources_and_singular_query() {
+        let item = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": "completed",
+            "action": {
+                "type": "search",
+                "query": "current weather",
+                "sources": [{"type": "url", "url": "https://weather.example/today"}]
+            }
+        });
+        let result = web_search_result_of(&item).expect("result payload");
+        assert_eq!(result["queries"], serde_json::json!(["current weather"]));
+        assert_eq!(
+            result["results"][0],
+            serde_json::json!({
+                "title": "https://weather.example/today",
+                "url": "https://weather.example/today",
+                "snippet": ""
+            })
+        );
+    }
+
+    #[test]
+    fn citations_from_annotations_accepts_openai_chat_nested_url_citation() {
+        let citations = citations_from_annotations(&[serde_json::json!({
+            "type": "url_citation",
+            "url_citation": {
+                "title": "Example title",
+                "url": "https://example.com",
+                "content": "Evidence excerpt"
+            }
+        })]);
+        assert_eq!(
+            citations,
+            vec![serde_json::json!({
+                "title": "Example title",
+                "url": "https://example.com",
+                "snippet": "Evidence excerpt"
+            })]
+        );
     }
 
     #[test]

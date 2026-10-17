@@ -112,23 +112,7 @@ impl OpenAiResponsesAdapter {
     }
 
     pub(super) fn citations_from_annotations(annotations: &[Value]) -> Vec<Value> {
-        annotations
-            .iter()
-            .filter(|annotation| {
-                annotation.get("type").and_then(Value::as_str) == Some("url_citation")
-            })
-            .filter_map(|annotation| {
-                let url = annotation.get("url")?.as_str()?;
-                if url.is_empty() {
-                    return None;
-                }
-                Some(serde_json::json!({
-                    "title": annotation.get("title").and_then(Value::as_str).unwrap_or(url),
-                    "url": url,
-                    "snippet": annotation.get("text").and_then(Value::as_str).unwrap_or_default(),
-                }))
-            })
-            .collect()
+        crate::adapters::web_search::citations_from_annotations(annotations)
     }
 
     pub(super) fn merge_citations(calls: &mut Vec<Value>, citations: Vec<Value>) {

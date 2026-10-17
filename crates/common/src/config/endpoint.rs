@@ -13,10 +13,12 @@ pub struct ModelEndpoint {
     pub provider: String,
     /// Wire protocol style for this endpoint. One of:
     /// - `openai-chat` (default): OpenAI `/chat/completions` compatible
-    ///   (also Ollama, vLLM, DeepSeek chat, and most gateways)
+    ///   (also OpenAI Chat search model, Ollama, vLLM, DeepSeek chat, and most gateways)
     /// - `llama.cpp`: llama.cpp server (OpenAI-compatible `/chat/completions`)
     /// - `openai-responses`: OpenAI / DeepSeek Responses API (`/v1/responses`)
     /// - `xai`: legacy xAI Grok Chat Completions + Live Search (`search_parameters`)
+    /// - `openrouter`: OpenRouter Chat Completions with `openrouter:web_search`
+    /// - `dashscope`: DashScope Chat Completions with `enable_search`
     /// - `anthropic`: Anthropic Messages API (`/v1/messages`)
     /// - `gemini`: Google Gemini `generateContent` / `streamGenerateContent`
     /// - `deepgram` / `assemblyai`: speech-to-text only
@@ -836,8 +838,9 @@ impl LlmConfig {
             ep.reasoning_echo_max_chars = Some(r);
         }
         // Sticky role/provider `web_search` must not reshape requests for
-        // styles without a built-in search tool (e.g. openai-chat leftovers
-        // from when the chat UI had no capability gate).
+        // wire styles that cannot carry a built-in search tool. OpenAI Chat
+        // can carry provider-specific search for a subset of providers/models;
+        // adapters apply that narrower capability check at request time.
         let style = ep
             .api_style
             .as_deref()
@@ -924,6 +927,8 @@ pub fn normalize_api_style(style: &str) -> &'static str {
         "openai-chat" => "openai-chat",
         "llama.cpp" => "llama.cpp",
         "xai" => "xai",
+        "openrouter" => "openrouter",
+        "dashscope" => "dashscope",
         "anthropic" => "anthropic",
         "gemini" => "gemini",
         "deepgram" => "deepgram",
@@ -941,6 +946,8 @@ pub fn is_known_api_style(style: &str) -> bool {
             | "openai-chat"
             | "llama.cpp"
             | "xai"
+            | "openrouter"
+            | "dashscope"
             | "anthropic"
             | "gemini"
             | "deepgram"
@@ -953,7 +960,7 @@ pub fn is_known_api_style(style: &str) -> bool {
 pub fn is_openai_family_wire_style(style: &str) -> bool {
     matches!(
         normalize_api_style(style),
-        "openai-chat" | "openai-responses" | "llama.cpp" | "xai"
+        "openai-chat" | "openai-responses" | "llama.cpp" | "xai" | "openrouter" | "dashscope"
     )
 }
 
@@ -977,7 +984,13 @@ pub fn provider_config_wire_style(p: &ProviderConfig) -> &'static str {
 pub fn supports_builtin_web_search(style: &str) -> bool {
     matches!(
         normalize_api_style(style),
-        "openai-responses" | "xai" | "anthropic" | "gemini"
+        "openai-chat"
+            | "openai-responses"
+            | "xai"
+            | "openrouter"
+            | "dashscope"
+            | "anthropic"
+            | "gemini"
     )
 }
 
@@ -1254,16 +1267,14 @@ mod tests {
         let llm = LlmConfig {
             providers: vec![ProviderConfig {
                 name: "chat".into(),
-                provider: "openai".into(),
-                api_style: Some("openai-chat".into()),
-                api_key: "sk".into(),
-                base_url: "https://api.openai.com/v1".into(),
+                provider: "llama.cpp".into(),
+                api_style: Some("llama.cpp".into()),
                 ..Default::default()
             }],
             models: vec![ModelConfig {
                 id: "default_model".into(),
                 provider_name: "chat".into(),
-                model: "gpt-4o".into(),
+                model: "llama3".into(),
                 capabilities: vec![Capability::Chat],
                 web_search: Some("auto".into()),
                 ..Default::default()

@@ -17,6 +17,7 @@ import {
 	supportsBuiltinWebSearch,
 	supportsSamplingField,
 } from './apiStyle.ts';
+import { supportsBuiltinWebSearchForModel } from './providerSearchCapabilities.ts';
 
 describe('apiStyle', () => {
 	it('accepts canonical styles and rejects aliases', () => {
@@ -33,7 +34,7 @@ describe('apiStyle', () => {
 		expect(supportsBuiltinWebSearch('xai')).toBe(true);
 		expect(supportsBuiltinWebSearch('anthropic')).toBe(true);
 		expect(supportsBuiltinWebSearch('gemini')).toBe(true);
-		expect(supportsBuiltinWebSearch('openai-chat')).toBe(false);
+		expect(supportsBuiltinWebSearch('openai-chat')).toBe(true);
 		expect(supportsBuiltinWebSearch('llama.cpp')).toBe(false);
 	});
 
@@ -123,6 +124,24 @@ describe('apiStyle', () => {
 				base_url: 'https://fakeopenrouter.ai.example/v1',
 			}),
 		).toBe('openai-chat');
+	});
+
+	it('gates chat search by provider and model capability', () => {
+		expect(
+			supportsBuiltinWebSearchForModel('openai-chat', 'openai', 'gpt-5-search-api', ''),
+		).toBe(true);
+		expect(
+			supportsBuiltinWebSearchForModel('openai-chat', 'groq', 'openai/gpt-oss-20b', ''),
+		).toBe(true);
+		expect(
+			supportsBuiltinWebSearchForModel('openai-chat', 'ollama', 'llama3', 'http://localhost:11434'),
+		).toBe(false);
+		expect(
+			supportsBuiltinWebSearchForModel('dashscope', 'dashscope', 'qwen3.8-max', ''),
+		).toBe(true);
+		expect(
+			supportsBuiltinWebSearchForModel('openai-responses', 'deepseek', 'deepseek-v4-flash', ''),
+		).toBe(false);
 	});
 
 	it('exposes grouped preset options', () => {

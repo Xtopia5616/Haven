@@ -33,10 +33,6 @@ pub(crate) fn is_kimi_or_moonshot(endpoint: &ModelEndpoint) -> bool {
     hay.contains("kimi") || hay.contains("moonshot")
 }
 
-pub(crate) fn is_openrouter(endpoint: &ModelEndpoint) -> bool {
-    vendor_haystack(endpoint).contains("openrouter")
-}
-
 /// True when the configured effort means "turn thinking off"
 /// (`none` / `off` / `disabled`). Used by DeepSeek chat (`thinking.type`) and
 /// Responses (`reasoning.effort: "none"`), and by Kimi `thinking.type`.

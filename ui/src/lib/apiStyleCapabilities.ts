@@ -22,6 +22,8 @@ export function isKnownApiStyle(style: string | null | undefined): boolean {
 		s === 'openai-chat' ||
 		s === 'llama.cpp' ||
 		s === 'xai' ||
+		s === 'openrouter' ||
+		s === 'dashscope' ||
 		s === 'anthropic' ||
 		s === 'gemini' ||
 		s === 'deepgram' ||
@@ -43,6 +45,10 @@ export function normalizeApiStyle(style: string | null | undefined): string {
 			return 'llama.cpp';
 		case 'xai':
 			return 'xai';
+		case 'openrouter':
+			return 'openrouter';
+		case 'dashscope':
+			return 'dashscope';
 		case 'anthropic':
 			return 'anthropic';
 		case 'gemini':
@@ -74,7 +80,14 @@ export function providerWireStyle(
 /** Mirror Rust `is_openai_family_wire_style`. */
 export function isOpenaiFamilyWireStyle(style: string | null | undefined): boolean {
 	const n = normalizeApiStyle(style);
-	return n === 'openai-chat' || n === 'openai-responses' || n === 'llama.cpp' || n === 'xai';
+	return (
+		n === 'openai-chat' ||
+		n === 'openai-responses' ||
+		n === 'llama.cpp' ||
+		n === 'xai' ||
+		n === 'openrouter' ||
+		n === 'dashscope'
+	);
 }
 
 /** Mirror Rust `is_tts_only_style`. */
@@ -179,7 +192,15 @@ export function sttCapabilityBackend(
 
 export function supportsBuiltinWebSearch(style: string | null | undefined): boolean {
 	const n = normalizeApiStyle(style);
-	return n === 'openai-responses' || n === 'xai' || n === 'anthropic' || n === 'gemini';
+	return (
+		n === 'openai-chat' ||
+		n === 'openai-responses' ||
+		n === 'xai' ||
+		n === 'openrouter' ||
+		n === 'dashscope' ||
+		n === 'anthropic' ||
+		n === 'gemini'
+	);
 }
 
 export function isSttOnlyStyle(style: string | null | undefined): boolean {

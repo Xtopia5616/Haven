@@ -84,6 +84,18 @@ pub(super) struct OpenAiRequest {
     /// when web search mode is `off`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) search_parameters: Option<Value>,
+    /// OpenAI Chat Completions' dedicated search model options.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) web_search_options: Option<Value>,
+    /// DashScope Chat Completions search extension.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) enable_search: Option<bool>,
+    /// Ask DashScope to report server-side search usage in `usage.x_tools`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) include_tool_usage: Option<bool>,
+    /// DashScope Chat Completions search controls such as `forced_search`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) search_options: Option<Value>,
     /// Stable routing hint for the official OpenAI Chat Completions cache.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) prompt_cache_key: Option<String>,
@@ -101,10 +113,40 @@ pub(super) struct StreamOptions {
 }
 
 #[derive(Debug, Serialize)]
-pub(super) struct OpenAiTool {
+#[serde(untagged)]
+pub(super) enum OpenAiTool {
+    Function(OpenAiFunctionTool),
+    Server(OpenAiServerTool),
+}
+
+#[cfg(test)]
+impl OpenAiTool {
+    pub(super) fn tool_type(&self) -> &str {
+        match self {
+            Self::Function(tool) => &tool.tool_type,
+            Self::Server(tool) => &tool.tool_type,
+        }
+    }
+
+    pub(super) fn function(&self) -> &OpenAiToolFunction {
+        match self {
+            Self::Function(tool) => &tool.function,
+            Self::Server(_) => panic!("server tools do not have a function payload"),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct OpenAiFunctionTool {
     #[serde(rename = "type")]
     pub(super) tool_type: String,
     pub(super) function: OpenAiToolFunction,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct OpenAiServerTool {
+    #[serde(rename = "type")]
+    pub(super) tool_type: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,6 +176,9 @@ pub(super) struct OpenAiMessageOut {
     /// Accumulated and echoed back verbatim in the next request.
     #[serde(default)]
     pub(super) web_search_call: Vec<serde_json::Value>,
+    /// OpenRouter's server search returns standard URL citation annotations.
+    #[serde(default)]
+    pub(super) annotations: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +232,12 @@ pub(super) struct OpenAiUsage {
     pub(super) prompt_cache_miss_tokens: Option<u32>,
     #[serde(default)]
     pub(super) cache_write_tokens: Option<u32>,
+    /// OpenAI-compatible providers report server tool counts here.
+    #[serde(default)]
+    pub(super) x_tools: Option<Value>,
+    /// OpenRouter server-tool usage count.
+    #[serde(default)]
+    pub(super) server_tool_use: Option<Value>,
 }
 
 impl OpenAiUsage {

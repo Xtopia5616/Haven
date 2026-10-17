@@ -44,7 +44,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		...BEARER,
 		docs_url: 'https://platform.openai.com/docs/api-reference',
 		console_url: 'https://platform.openai.com/api-keys',
-		hint: '标准 Chat Completions；多数第三方网关也兼容此协议。',
+		hint: '标准 Chat Completions；OpenAI 的 gpt-5-search-api 可通过此接口使用联网搜索。',
 		match_hosts: ['api.openai.com'],
 	},
 	{
@@ -134,13 +134,13 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		value: 'openrouter',
 		label: 'OpenRouter',
 		group: '模型聚合',
-		api_style: 'openai-chat',
+		api_style: 'openrouter',
 		provider: 'openrouter',
 		base_url: 'https://openrouter.ai/api/v1',
 		...BEARER,
 		docs_url: 'https://openrouter.ai/docs',
 		console_url: 'https://openrouter.ai/keys',
-		hint: '多模型聚合；/models 常带定价与上下文窗口。',
+		hint: '多模型聚合；新 server tool 为 openrouter:web_search，旧 :online 已弃用。',
 		match_hosts: ['openrouter.ai'],
 	},
 	{
@@ -154,6 +154,19 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		docs_url: 'https://console.groq.com/docs/responses-api',
 		console_url: 'https://console.groq.com/keys',
 		hint: 'Responses API；GPT-OSS 20B/120B 支持 browser_search；也可作 Whisper STT。',
+		match_hosts: ['api.groq.com'],
+	},
+	{
+		value: 'groq-chat',
+		label: 'Groq Chat Completions',
+		group: '推理托管',
+		api_style: 'openai-chat',
+		provider: 'groq',
+		base_url: 'https://api.groq.com/openai/v1',
+		...BEARER,
+		docs_url: 'https://console.groq.com/docs/tool-use/built-in-tools/browser-search',
+		console_url: 'https://console.groq.com/keys',
+		hint: 'GPT-OSS 20B/120B/Safeguard 20B 支持 browser_search；不兼容结构化输出。',
 		match_hosts: ['api.groq.com'],
 	},
 	{
@@ -292,13 +305,26 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		value: 'dashscope',
 		label: '通义千问 (DashScope)',
 		group: '国内服务',
-		api_style: 'openai-chat',
+		api_style: 'dashscope',
 		provider: 'dashscope',
 		base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
 		...BEARER,
 		docs_url: 'https://help.aliyun.com/zh/model-studio/',
 		console_url: 'https://dashscope.console.aliyun.com/',
-		hint: '阿里云百炼 OpenAI 兼容模式。',
+		hint: 'Chat enable_search/forced_search 并可读用量；Responses web_search 返回来源。',
+		match_hosts: ['dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com'],
+	},
+	{
+		value: 'dashscope-responses',
+		label: '通义千问 (DashScope Responses)',
+		group: '国内服务',
+		api_style: 'openai-responses',
+		provider: 'dashscope',
+		base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+		...BEARER,
+		docs_url: 'https://help.aliyun.com/en/model-studio/web-search',
+		console_url: 'https://dashscope.console.aliyun.com/',
+		hint: 'Responses web_search；仅官方列出的 Qwen、DeepSeek、GLM、Kimi 模型支持，是否搜索由模型决定。',
 		match_hosts: ['dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com'],
 	},
 	{
@@ -613,13 +639,9 @@ export function resolveProviderPreset(p: ProviderStyleInput | null | undefined):
 	if (style === 'openai-chat' && provider.includes('deepseek')) {
 		return 'deepseek-chat';
 	}
-
-	const sameWire = PROVIDER_PRESETS.filter((pr) => normalizeApiStyle(pr.api_style) === style);
-
-	// Non-generic vendor hints map 1:1 to a preset on the same wire style.
-	if (provider && provider !== 'openai') {
-		const byProvider = sameWire.find((pr) => pr.provider.toLowerCase() === provider);
-		if (byProvider) return byProvider.value;
+	if (provider.includes('openrouter')) return 'openrouter';
+	if (provider.includes('dashscope')) {
+		return style === 'openai-responses' ? 'dashscope-responses' : 'dashscope';
 	}
 
 	/** @type {string | null} */
@@ -629,6 +651,23 @@ export function resolveProviderPreset(p: ProviderStyleInput | null | undefined):
 	} catch {
 		host = null;
 	}
+	// A generic OpenAI provider may point at a known vendor host; surface that
+	// vendor's preset so its provider-specific search capability is available.
+	if (provider === 'openai') {
+		const byVendorHost = PROVIDER_PRESETS.find(
+			(pr) => pr.provider !== 'openai' && hostMatches(host, pr.match_hosts || []),
+		);
+		if (byVendorHost) return byVendorHost.value;
+	}
+
+	const sameWire = PROVIDER_PRESETS.filter((pr) => normalizeApiStyle(pr.api_style) === style);
+
+	// Non-generic vendor hints map 1:1 to a preset on the same wire style.
+	if (provider && provider !== 'openai') {
+		const byProvider = sameWire.find((pr) => pr.provider.toLowerCase() === provider);
+		if (byProvider) return byProvider.value;
+	}
+
 	const byHost = sameWire.find((pr) => hostMatches(host, pr.match_hosts || []));
 	if (byHost) return byHost.value;
 

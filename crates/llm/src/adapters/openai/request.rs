@@ -60,7 +60,12 @@ impl OpenAiAdapter {
         web_search_mode: WebSearchMode,
         max_tokens: u32,
     ) -> OpenAiRequest {
-        let has_tools = !tools.is_empty();
+        let web_search_mode =
+            if crate::adapters::provider_builtin_web_search_available(&self.endpoint, self.style) {
+                web_search_mode
+            } else {
+                WebSearchMode::Off
+            };
         let tool_names = self.tool_name_map(messages, tools);
         let prompt_cache_key = self.prompt_cache_key(messages, tools, web_search_mode);
         let x_grok_conv_id = self.xai_conversation_id(messages);
@@ -97,13 +102,27 @@ impl OpenAiAdapter {
                 .and_then(|value| value.get("type"))
                 .and_then(Value::as_str)
                 == Some("enabled");
-        let search_parameters = if self.style == "xai" {
-            xai_search_mode(web_search_mode).map(|mode| {
-                serde_json::json!({
-                    "mode": mode,
-                    "return_citations": true,
-                })
-            })
+        let mut request_tools = if tools.is_empty() {
+            Vec::new()
+        } else {
+            Self::convert_tools_ref_with_names(tools, &tool_names)
+        };
+        let has_function_tools = !tools.is_empty();
+        let search_request = crate::adapters::chat_search_request(
+            &self.endpoint,
+            self.style,
+            web_search_mode,
+            has_function_tools,
+        );
+        if let Some(tool_type) = search_request.server_tool_type {
+            request_tools.push(OpenAiTool::Server(OpenAiServerTool {
+                tool_type: tool_type.to_string(),
+            }));
+        }
+        let tool_choice = if search_request.force_server_tool {
+            Some(serde_json::json!("required"))
+        } else if has_function_tools {
+            Some(serde_json::json!("auto"))
         } else {
             None
         };
@@ -115,16 +134,12 @@ impl OpenAiAdapter {
             // temperature. Omit whenever effort or vendor thinking is pinned.
             temperature: (!omit_temperature).then_some(self.endpoint.temperature),
             stream,
-            tools: if has_tools {
-                Some(Self::convert_tools_ref_with_names(tools, &tool_names))
-            } else {
+            tools: if request_tools.is_empty() {
                 None
-            },
-            tool_choice: if has_tools {
-                Some(serde_json::json!("auto"))
             } else {
-                None
+                Some(request_tools)
             },
+            tool_choice,
             top_p: (!deepseek_thinking)
                 .then_some(self.endpoint.top_p)
                 .flatten(),
@@ -147,7 +162,11 @@ impl OpenAiAdapter {
             } else {
                 None
             },
-            search_parameters,
+            search_parameters: search_request.search_parameters,
+            web_search_options: search_request.web_search_options,
+            enable_search: search_request.enable_search,
+            include_tool_usage: search_request.include_tool_usage,
+            search_options: search_request.dashscope_search_options,
             prompt_cache_key,
             x_grok_conv_id,
             cache_diagnostics,

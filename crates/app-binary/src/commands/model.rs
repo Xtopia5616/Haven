@@ -2,7 +2,7 @@ use crate::app_state::AppState;
 use crate::commands::{log_err, log_external_err};
 use haven_common::config::{
     AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind, is_stt_only_style,
-    normalize_api_style, provider_config_wire_style, supports_builtin_web_search,
+    normalize_api_style,
 };
 use haven_llm::{ModelDiscoveryAuthHeader, ModelInfo, ModelRegistry};
 use serde::Deserialize;
@@ -76,18 +76,15 @@ fn validate_builtin_search(config: &AppConfig, request_kind: RequestKind) -> Res
         .policy(request_kind)
         .map(|policy| policy.primary.as_str())
         .ok_or_else(|| format!("request is not configured: {}", request_kind.as_str()))?;
-    let slot = llm
-        .model_config(model_config_id)
-        .ok_or_else(|| format!("request is not configured: {}", request_kind.as_str()))?;
-    let style = llm
-        .providers
-        .iter()
-        .find(|provider| provider.name == slot.provider_name)
-        .map(provider_config_wire_style)
+    let endpoint = llm.materialize_model_config(model_config_id).endpoint;
+    let style = endpoint
+        .api_style
+        .as_deref()
+        .map(normalize_api_style)
         .unwrap_or("openai-chat");
-    if !supports_builtin_web_search(style) {
+    if !haven_llm::supports_builtin_web_search_for_endpoint(&endpoint) {
         return Err(format!(
-            "provider wire style `{style}` does not support built-in search"
+            "provider/model combination for wire style `{style}` does not support built-in search"
         ));
     }
     Ok(())
@@ -583,8 +580,8 @@ pub async fn set_reasoning_effort(
 /// model override and restores environment/default resolution. Updates
 /// config.toml and hot-swaps the LlmRouter at runtime.
 ///
-/// Non-`off` modes are rejected when the selected model/request's provider wire style does not
-/// support a built-in search tool (see `supports_builtin_web_search`).
+/// Non-`off` modes are rejected when the selected provider/model/protocol does
+/// not support a built-in search tool.
 #[tauri::command]
 pub async fn set_web_search(
     request_kind: RequestKind,
@@ -864,6 +861,7 @@ mod tests {
         cfg.llm.models.push(ModelConfig {
             id: "chat-model".into(),
             provider_name: "chat-provider".into(),
+            model: "provider/model".into(),
             ..Default::default()
         });
         cfg.llm.request_policies.push(RequestPolicy {
@@ -873,7 +871,7 @@ mod tests {
 
         assert_eq!(
             validate_builtin_search(&cfg, RequestKind::Chat),
-            Err("provider wire style `openai-chat` does not support built-in search".into())
+            Err("provider/model combination for wire style `openai-chat` does not support built-in search".into())
         );
         assert_eq!(
             validate_builtin_search(&cfg, RequestKind::Vision),
@@ -882,5 +880,23 @@ mod tests {
 
         cfg.llm.providers[0].api_style = Some("openai-responses".into());
         assert_eq!(validate_builtin_search(&cfg, RequestKind::Chat), Ok(()));
+
+        let mut direct_openai =
+            cfg_with_providers(vec![provider("openai", "api-key", Some("openai-chat"))]);
+        direct_openai.llm.providers[0].provider = "openai".into();
+        direct_openai.llm.models.push(ModelConfig {
+            id: "search-model".into(),
+            provider_name: "openai".into(),
+            model: "gpt-5-search-api".into(),
+            ..Default::default()
+        });
+        direct_openai.llm.request_policies.push(RequestPolicy {
+            request: RequestKind::Chat,
+            primary: "search-model".into(),
+        });
+        assert_eq!(
+            validate_builtin_search(&direct_openai, RequestKind::Chat),
+            Ok(())
+        );
     }
 }

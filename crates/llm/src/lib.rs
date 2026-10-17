@@ -22,6 +22,21 @@ mod tts;
 mod types;
 
 pub use adapters::{WebSearchMode, web_search_result_of};
+
+/// Whether this materialized endpoint can run a provider-native search tool
+/// for its selected protocol and model.
+pub fn supports_builtin_web_search_for_endpoint(
+    endpoint: &haven_common::config::ModelEndpoint,
+) -> bool {
+    let api_style = endpoint
+        .api_style
+        .as_deref()
+        .filter(|style| !style.trim().is_empty())
+        .map(haven_common::config::normalize_api_style)
+        .unwrap_or("openai-chat");
+    adapters::provider_builtin_web_search_available(endpoint, api_style)
+}
+
 pub use client::{LlmClient, endpoint_host};
 pub use image_gen::{GeneratedImage, ImageGenClient, build_image_gen_client};
 pub use media::project_media_plan;
