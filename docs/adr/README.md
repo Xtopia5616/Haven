@@ -1296,3 +1296,4 @@
 - [1305：隔离 SessionStore event replay/read 实现](1305-isolate-session-event-replay-reads.md)
 - [1306：由私有模块拥有 SessionStore rollback 与 usage 事务](1306-own-session-rollback-and-usage-transactions.md)
 - [1307：拆分 Tools 安全提示与路径入口模块](1307-split-tools-security-prompts-and-path-entry.md)
+- [1308：将 Tools 授权契约迁入私有模块](1308-move-tools-authorization-contracts.md)
