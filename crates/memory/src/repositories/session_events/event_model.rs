@@ -74,3 +74,35 @@ impl std::io::Write for BoundedByteCounter {
         Ok(())
     }
 }
+
+pub(super) fn session_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionEvent> {
+    let session_id: String = row.get(0)?;
+    if !is_canonical_id(&session_id, "ses") {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            "invalid persisted session_events.session_id".into(),
+        ));
+    }
+    let run_id = row
+        .get::<_, Option<i64>>(5)?
+        .map(|value| {
+            u64::try_from(value).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    5,
+                    rusqlite::types::Type::Integer,
+                    error.into(),
+                )
+            })
+        })
+        .transpose()?;
+    Ok(SessionEvent {
+        session_id,
+        sequence: row.get(1)?,
+        event_type: row.get(2)?,
+        payload: row.get(3)?,
+        created_at: row.get(4)?,
+        run_id,
+        step_number: row.get(6)?,
+    })
+}
