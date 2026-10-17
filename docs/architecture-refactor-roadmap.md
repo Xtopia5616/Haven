@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 与 §5.7 概念/实现规范审计均已完成；Agent capability surface 与执行边界实现已完成，当前无 Active/Next，见 §5.8；Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。桌面事实列表分页与 Memory 加载更多已完成。
+> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；2026-10-17 源码审计新增下一轮候选，按 [新一轮方案](refactor-plan-source-audit-2026-10-17.md) 顺序推进。当前 Next 为 UI 通知设置同进程生效修复；Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
 > 更新日期：2026-10-17
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -70,11 +70,11 @@
 
 ## 5. 未完成事项
 
-状态按执行性质区分：**Gate** 是发布前签核条件；**Active** 是当前唯一实施切片；**Next** 是已有证据、等待前一切片完成后再进入的结构目标；**Candidate** 尚未进入实现队列，只有证据与退出条件明确后才立项。证据未达到准入条件时允许没有 Active/Next；在 §5.6 的复核触发点到来前不制造实现任务。结构性目标一次只推进一个 Active slice；行数下降、文件变少或 crate 变少不是完成指标。
+状态按执行性质区分：**Gate** 是发布前签核条件；**Active** 是当前唯一实施切片；**Next** 是已有证据、等待前一切片完成后再进入的目标；**Candidate** 是已记录证据但不在当前顺序中的工作。结构性目标一次只推进一个 Active slice；行数下降、文件变少或 crate 变少不是完成指标。风险用于确定分片和验收，不单独作为暂缓理由。
 
 | 状态 | 当前项 |
 |---|---|
-| **No Active/Next** | §5.8 Agent capability surface 与执行边界的代码实现已完成；目前没有证据支持新的结构切片。Windows 发布和 HCS quota 实际验收仍由独立 Open Gate 跟踪，见 §5.1。 |
+| **Next** | UI 通知设置同进程生效修复；其后依次为 IPC metadata/event 投影、AppCommand confirmation、SessionStore、Tools security 与 Agent tool runner 私有模块重组，详见 [新一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -89,27 +89,31 @@
 
 可以提前准备隔离 profile、安装器和物理盘耗尽环境；最终验收必须使用交互生命周期等 IPC/UI 变更完成后的最新构建。此项是发布签核门，不阻塞不影响发布路径的独立模块整理。
 
-### 5.2 交互生命周期所有权（已完成；一项边界暂缓）
+### 5.2 交互生命周期所有权（行为已收口；恢复覆盖纳入新一轮）
 
-Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 request identity 路由；Session grant、resolve event/status 与 actor 唤醒顺序有明确的持久化和失败契约。交互 replay 失败保持 fail-closed，pending session 恢复有界并可取消地重试。当前契约与逐项验证见 ADR 0423/0424、0507–0522；此域没有 Active 实现候选。
+Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 request identity 路由；Session grant、resolve event/status 与 actor 唤醒顺序有明确的持久化和失败契约。交互 replay 失败保持 fail-closed，pending session 恢复有界并可取消地重试。当前行为契约与逐项验证见 ADR 0423/0424、0507–0522。2026-10-17 源码审计另发现 AppCommand pending 状态、入队/过期和 resolve continuation 分散于 `app_state.rs`、`commands/mod.rs`、`commands/session.rs`；下一轮将按新方案收拢内部 owner，不重定义既有交互契约。
 
-**暂缓边界：** Session grant durable write 成功、`interaction_resolved` append 失败后，如果原 actor 在两步之间退出，stale request 的重试/过期语义尚未定义。现有契约允许调用方对原 pending 请求重试，但没有规定 actor 退出时的跨 owner 补偿。只有出现可复现的卡死/重复授权问题或新增明确产品要求时，才重新定义该边界；不预先引入跨 owner 事务或第二授权状态源。
+源码复核修正了该边界：grant 写入后，Session confirmation resolution 与 `end_session` 由 `confirmation_resolution_gate` 串行；Actor 先 append `interaction_resolved`，成功后才移除 pending/唤醒 session，append 失败保留 paused pending。已有失败注入测试覆盖同一 actor 内重试且 grant upsert 不重复。进程崩溃会清除进程内 expiry task；启动恢复只自动载入 `status = pending` 的 session，因此该 paused session 要等显式 reopen 才会重建 actor、replay durable request/grant 并重新安排 expiry（过期时 delay 为零）。UI 打开历史会话前会调用 `reopen_session`；resolve IPC 对未加载 actor 返回 stale。新一轮验收明确覆盖此路径与 UI 行为，不将旧“未定义”结论当作事实，也不隐含承诺 unloaded paused session 在后台自动到期。session grant 的持久 owner 与 Agent/Memory 事务边界不变。
 
 ### 5.3 内部模块与 crate 边界（按证据复核）
 
-本节只保留未解决项与已复核候选的重开条件；已完成切片的背景、决定和验证以对应 ADR 为准。私有模块整理与 crate 拆分都必须通过 §5.5 准入，不以文件或 crate 体量为目标。
+本节记录当前源码已确认的结构候选与保留边界；历史决定和验证以对应 ADR 为准。候选依据当前生产职责、调用路径和状态读写方，不沿用旧文档的“高风险暂缓”结论；详细切片与验收见[新一轮方案](refactor-plan-source-audit-2026-10-17.md)。
 
 #### 已复核候选与已知限制
 
 | 状态                       | 问题与当前证据                                                                                                                                                                                                                                          | 重开条件与边界                                                                                                                                                                                 |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **高风险 Candidate，暂缓** | `session_events.rs` 的 append、transcript projection、rollback、cache invalidation 和 post-commit broadcast 同属事务敏感的 SessionStore owner。只读 history 测试与 SessionStore facade 已分别收口；当前没有同类事务/rollback 缺陷复发或独立消费者收益。 | 仅在同一事务不变量修复后复发、无关修改持续耦合进核心，或测试职责无法隔离且能证明收益时重开。拆分不得暴露事务内部、改变 append/projection/rollback 原子性或引入第二恢复来源（ADR 0466、0479）。 |
+| **Next / 高影响** | `session_events.rs` 除 append、projection、rollback 外，还包含 fork、ingress、pending-input、recovery、tool-step、replay/read 和 usage 等生产职责。 | 仍由唯一 `SessionStore`/Memory owner 协调；逐步拆私有模块，保持 append/projection 同事务、rollback/usage 补偿同事务、提交后才广播；不暴露 backing DB 或投影 intent（ADR 0466、0479、0206、0915、1123）。 |
+| **Next / 生产缺陷** | layout session/permission 通知读取 `notifyCfg`，ToolRun completion 读取独立 store；Settings 保存只更新后者，造成同进程配置版本分裂。 | 将全类通知归到 layout 唯一运行投影；保存成功与 durable-first partial-apply 更新，普通保存失败不更新，阻止异步旧 snapshot 覆盖新值。 |
+| **Next / 已发生 drift** | 命令 boundary/security metadata 在 Rust、TS、文档间人工复制，脚本只比命令名；`execute_skill` 已出现 AuthorizationPort/AuthorizationEngine 文案差异。事件 channel 与 DTO 是两个 exhaustive match，二者配对目前不受同一 projection 登记约束。 | Rust metadata 保持权威并生成/逐字段验证派生值；AgentEvent 一次生成 channel+payload projection 并与 generated shape registry 配对校验。当前 generator 已提供命令响应和事件 payload shape，不再把它列为缺失。 |
+| **Next / owner 收敛** | AppCommand pending map 在 `app_state.rs`；入队/超时在 `commands/mod.rs`；仲裁/授权/continuation 在 `commands/session.rs`。Session grant append failure 同进程重试已有故障注入覆盖，进程重启恢复路径需纳入下一轮验收。 | 新建明确 App confirmation owner；`resolve_confirmation` 保持 Session/ScheduledToolRun/AppCommand 薄路由。Admin UI authorization/finalization 留在 App command adapter，policy 继续归 Tools `AuthorizationPort`；覆盖 grant durable / resolved event fail / restart / expiry。 |
+| **Next / 私有模块整理** | `tools/security.rs` 同时实现授权 engine、process-start permit、filesystem policy、路径安全和 prompt summary；`agent/session/tool_runner.rs` 同时实现 step persistence、执行模式和 confirmation/scheduled lifecycle。 | 各自按职责拆私有模块；唯一 `AuthorizationEngine`/`SafetyConfig` 与 `SessionSupervisor` 不变。Tools 先提供唯一策略复核，Agent 仍负责会话生命周期。 |
 
 **已关闭候选 — Session end 失败契约：** actorless、驻留 Actor 与运行中 Actor 的取消/清理失败语义、ToolRun claim 竞争及重试边界已按 ADR 0507、0514 收口并联合验证；当前无 Active 工作。只有同类失败/终态不一致再次复发时才重开。
 
-#### 已复核但不进入 Next
+#### 保留边界与较低优先级候选
 
-- **Tools 与安全边界：** `tool_contract.rs` 继续作为共享执行契约 owner；`builtin/admin.rs` 由 AdminServices 承接副作用，Admin 保留 operation/request/output contract；messaging adapter 继续复用 `haven_messaging`。只有稳定后再次出现 policy/schema drift、同边界回归或独立消费者，才重新评估私有模块（[ADR 0213](adr/0213-operation-spec-single-policy-source.md)、[0391](adr/0391-admin-services-typed-output-projections.md)、[0396](adr/0396-messaging-domain-crate.md)、[0506](adr/0506-mcp-admin-connection-network-policy.md)）。
+- **Tools 其余边界保留：** `tool_contract.rs` 继续作为共享执行契约 owner；`builtin/admin.rs` 由 AdminServices 承接副作用，Admin 保留 operation/request/output contract；messaging adapter 继续复用 `haven_messaging`（[ADR 0213](adr/0213-operation-spec-single-policy-source.md)、[0391](adr/0391-admin-services-typed-output-projections.md)、[0396](adr/0396-messaging-domain-crate.md)、[0506](adr/0506-mcp-admin-connection-network-policy.md)）。本轮只拆 `security.rs` 内部职责，不挪 operation policy。
 - **工具运行时三个集合各自保留（已复核，暂不合并）：** `ToolRegistry` 是已安装工具的权威注册表，保留注册顺序并拒绝重复名；`DeferredToolCatalog` 保存尚未激活、供发现和按需加载使用的定义；`SessionToolOverlay` 是某个 session 当前可执行的附加工具集合，loader batch 负责幂等、预算准入与 session version。published global/session catalog generation 由 `ToolCatalogVersion` 表达，不在 installed registry 复制一套无生产消费者的 version counter。三者分别表达注册、延迟发现和 session 执行作用域，不能因 lookup/list/definition projection 外观相近而统一成一个通用 Catalog。Provider 定义、校验、manifest 与执行的共享 turn-level immutable view 已由 `ToolCatalogSnapshot` 承担；共同规则若真实重复并导致漂移，再评估窄 helper。ADR 0145/0148 的 provider visibility 与 session 隔离不变（本轮名称对齐见 [ADR 0533](adr/0533-tool-runtime-nomenclature-alignment.md)）。
 - **MCP prompt index 边界保留：** `McpServerIndexEntry` 是固定的 Tools→App→Agent prompt 摘要；tool schema/result 保持动态 JSON。仅在摘要新增稳定字段或出现独立消费者时重开（ADR 0516）。
 - **Admin 风险 metadata 保留单一来源：** 共用操作由 `OperationContract` 拥有风险级别，parity 门禁覆盖共享 operation 集合；MCP refresh/reconnect 等 native-only 操作保持独立测试。operation surface 或风险策略变化时重开（ADR 0512、0528）。
@@ -128,7 +132,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 ### 5.5 长期候选准入与复核
 
-长期结构治理按“有证据的问题队列”推进，不预设日期或全仓重写目标。候选只有在出现下列至少一项时才进入审查：同一业务状态被两个 owner 维护、调用链反复跨不稳定边界、重复分支已导致 bug/回归、某热点在多个变更中频繁发生跨职责修改、依赖图暴露反向/多余依赖，或同负载 profile 显示可复现的资源/延迟问题。文件超过约 800 行或多于两个独立职责只触发复核，不单独证明要拆。
+长期结构治理按“有源码证据的问题队列”推进，不预设日期或全仓重写目标。进入审查的证据包括：同一业务状态被两个 owner 维护、调用链反复跨不稳定边界、重复分支已导致 bug/回归、热点在多次变更中跨职责修改、依赖图暴露反向/多余依赖、同负载 profile 显示可复现问题，或单一实现文件承载多个可独立命名的生产操作族且其测试/调用者/生命周期边界彼此不同。文件超过约 800 行仅触发复核，不单独证明要拆；候选也不必等到先发生回归才可拆。
 
 每个候选的短 ADR/评估要记录：现有 owner 与不变量、生产代码和测试的职责分布、调用/依赖边界、预期收益及观察方式、破坏面和停止条件、适用门禁、回滚方式。实施顺序固定为：证据确认 → 接受目标与切片 → 迁一条垂直调用链 → 删除旧入口 → 跑影响面门禁 → 对比 owner/依赖/性能指标 → 独立提交并更新状态。若只移动代码、扩大公共 API、暴露事务内部、增加第二权威来源，或验证不能证明维护/运行收益，立即停止并把候选记为“不需拆分/暂缓”。
 
@@ -147,13 +151,13 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | 4    | **crate/API 边界**           | 模块 owner 已稳定且存在单向依赖边界、独立消费者或可复核构建/维护收益。                                                                                          | API 清晰、无反向依赖或重复 adapter；否则保留现 crate 边界。              |
 | 5    | **性能与容量**               | 同负载 profile 复现用户相关延迟、资源或容量问题；固定场景记录优化前后指标。                                                                                     | 改善超过噪声并达到目标，否则关闭候选。                                   |
 
-**当前执行位置：** 阶段 0–8 已完成；本轮全库术语与实现规范审计完成，Rust 生产源码 271/271、UI/App/IPC/文档清单 320/320、未核对项 0（见覆盖记录）。此前已完成 API owner、持久身份、UI command/event contract、配置规则和文档引用的多轮切片，全部 command response 与 event channel 有结构级 runtime coverage，语义约束由各领域 owner 校验。本轮进一步发现并修复 branch projection watermark 只覆盖 messages 的持久化边界缺口（ADR 1043）；Interaction append 与 replay 已复用 identity validator（ADR 1047），继续覆盖进程内 ID 穿入 durable history 的边界。现有证据仍不支持新的 crate 合并/拆分。§5.3 的 Deferred 候选保留其各自重开条件；Windows 发布验收是独立 Open Gate（§5.1）。
+**当前执行位置：** 阶段 0–8 已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。本轮 2026-10-17 源码复核确认 UI notification stale bug、命令 metadata 值检查缺口、Agent event channel/DTO 双映射、AppCommand confirmation 状态分散，以及 SessionStore/Tools security/Agent tool runner 内部职责可拆分。按新方案排队；目前不提出 crate 合并或拆分。Windows 发布验收仍是独立 Open Gate（§5.1）。
 
 ### 5.7 全项目领域术语与架构角色命名收敛（持续覆盖）
 
 范围覆盖所有 Rust crate、Svelte/TypeScript、Tauri IPC/事件，以及架构、命名和契约文档。职责以 `docs/architecture.md` 为准，命名以 `docs/naming.md` 为准，历史决定与实现细节见对应 ADR。
 
-当前没有证据支持新的架构合并或拆分。已建立的基线包括实体身份与跨层映射、配置和资源约束、IPC 结构校验、日志边界、持久化/replay 契约及各领域 API owner；最近完成的 Rust helper、具名结果、事件边界诊断和跨层语义校验见 ADR 1075–1079；ToolRun `kind` schema 约束见 ADR 1080，恢复 Thought helper 收窄见 ADR 1081，MCP 协议 session 身份见 ADR 1084，错误凭据脱敏、运行时 session allowlist 和 Memory fail-closed 身份契约见 ADR 1085–1087；MCP 工具名称单射、Skill setup 与配置发布、renderer row identity 和 MediaPlan cache 有界策略见 ADR 1088–1092；App 完成任务句柄收割和 Unicode-safe URL 分类见 ADR 1093–1094；Messaging 新写入 envelope 限额、ToolRun lease subject identity 与 ConfigService 有界通知见 ADR 1095–1097；共享 HTTP destination policy、Registry 有界枚举、ToolsFacade 执行入口及 Messaging child cap 语义见 ADR 1098–1101，录音与 provider stream 生命周期见 ADR 1102；MCP Ask/Restricted 复用 Common HTTP destination validator，并在 stdio read cancel/timeout 后 poison/discard 以触发 health monitor reconnect 见 ADR 1103；Skill requirements、目录扫描与配置读取上限见 ADR 1104；标题任务、Agent 后台消费者与 Session dispatcher/inbox cleanup 所有权见 ADR 1105–1107；Settings LLM config event 经 app mapper 映射后供页面使用见 ADR 1108；prompt cache sections 改为具名字段，Memory 集合读取和事实/session 身份参数按 list/实体角色命名见 ADR 1109；取消退出时的最终 cursor 核验不继承已取消的 run token，避免正常取消被竞态升级成边界错误（ADR 1110）；MCP manager 持有并 join notification consumer，client join 每代 HTTP SSE listener，连接失败清理 listener（ADR 1111）；Memory query generation 有硬上限、facts subject 与全量缓存 key 分离且同一 mutation 原子失效两者（ADR 1112）；MCP 配置加载、动态连接、手动 reconnect 与自动重连共享 8 路 admission，批量任务句柄同样有界（ADR 1113）；InputPipeline 的 start/shutdown admission 终态关闭、capture/VAD worker join、auto-stop task owner 与 rec identity 校验见 ADR 1114；ToolRunService 以 TaskTracker 持有 runner、output emitter、scheduled worker 与持久化 retry，shutdown 关闭 admission、取消运行项并等待全部任务退出；并发 shutdown 调用共享 drain，Waiting schedule 仍留在 durable store（ADR 1115）；Messaging 删除写入最小 parent lineage tombstone、清除该 session 所有消息正文并封锁旧读写入口（ADR 1116）；Messaging 每 recipient 16 MiB pending budget、100 行/1 MiB claim batch、不可变 backlog cursor 恢复、bounded history/find/reply 与 broadcast 部分失败可见性见 ADR 1117；文件搜索结果将容量截断与文件系统错误分开，并将不完整状态传给 renderer（ADR 1118）；没有事件流时，fresh-run 排除 pending marker 消息的 prompt-history 重复，并对初始输入与待投递 marker 以外的 transcript 投影 fail closed（ADR 1119）；搜索结果与草稿附件使用稳定、无碰撞 renderer identity（ADR 1120）；无效配置回退仍允许 runtime 读取，但 Settings 加载、配置写入和凭据暂存保持 fail closed，直到修复/恢复配置并重启（ADR 1121）；scheduled ToolRun 依据 ToolResult.success 判定终态，并且只有 durable CAS 获胜后才发布完成通知（ADR 1122）；所有 session_events 写入共用 128 条/4 MiB 上限，并在复制 payload 或进入事务前校验（ADR 1123）；持久化 CacheAccounting 只接受 inclusive/exclusive/unknown，非法字段返回存储转换错误，而 runtime parse 保持 unknown 回退（ADR 1124）；过期的异步 resume、提交、继续与回退 UI 后续按用户选择代次执行或丢弃（ADR 1125）；流式工具调用身份与索引、ToolRun 变量、compaction prompt 标签使用领域名（ADR 1130）；OCR 凭据命令改用生成的闭合字段 enum（ADR 1131）；Credential Manager machine target 规范为小写且无需迁移（ADR 1132）；同资源工具开关按用户意图串行化并由权威列表收敛（ADR 1133）；ToolRun 删除 helper 私有化和闭合类型、Session 集合 API 及身份参数按语义命名、Messaging tombstone 事务恢复和持久 OS 锁、诊断/配置 Debug 值脱敏、文件摘要读取使用具名结果分别见 ADR 1134–1138；Skills manifest、requirements 与执行脚本由已验证句柄固定读取，requirements 指纹与 pip 共用快照（ADR 1151）。录音静音/callback 诊断不再输出样本幅值；本地路径错误不回显路径；前端待处理交互使用 `requestId`。本轮 Rust、UI、IPC、持久状态与日志领域均完成覆盖；后续按变更影响面复核，不把未来变更算入本轮未核对项。
+本节此前的领域职责与历史完成事项保留为当时记录。源码审计确认的新一轮候选及顺序见 §5.3 和 [重构方案](refactor-plan-source-audit-2026-10-17.md)；历史覆盖表不作为当前源文件、命令 metadata 或 checker 状态的替代证据。
 
 #### 当前审计覆盖与剩余范围
 
@@ -168,7 +172,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | Tools、网络与操作系统边界 | 不可信 HTTP URL 共享目标校验、DNS pin 和跳转规则，HTTP request 限额与取消、图片 URL redirect 校验见 ADR 1098；MCP Ask/Restricted 复用 Common destination resolver，stdio read 中断后 poison/discard 并令 liveness monitor 可触发 reconnect（ADR 1103）；Registry names-only 枚举、256 条/类上限、截断标志与阻塞线程取消见 ADR 1099；raw ToolHandle getter 不进入默认生产 facade，见 ADR 1100；文件搜索分别统计遍历/读取失败并把搜索不完整状态传给 renderer（ADR 1118）；MCP manager 的连接 reservation、策略重检、代次安全清理和 shutdown drain 见 ADR 1129；Credential Manager target 使用小写 `haven/` 且无需迁移（ADR 1132）。 | Tools/Platform/Input production inventory 已分域核对；本轮确认并修复 VAD shutdown、MCP list refresh/SSE 等运行边界。真实 Registry 与进程树行为仍由 Windows 发布 gate 验收。 |
 | 日志与诊断 | 动态敏感内容、长度单位和事件边界指标命名已收敛；Common 错误清洗器覆盖 JSON 敏感字段和 URL 密码 userinfo（ADR 1085）；Skill setup 不向模型观察传递原始安装输出或路径（ADR 1089）；Input capture 启动日志只保留采样率、声道数和格式，不记录用户自定义设备名称；静音/callback 诊断不输出样本幅值，本机路径错误不回显路径，配置 Debug 对命令、目录、URL path/query、代理例外和认证前缀使用占位符（ADR 1137）。 | 日志/错误与诊断生产路径本轮完成扫描分类，稳定失败文本与本机路径脱敏已同步；以后新增动态字段按 conventions 校验。 |
 | 文档与 ADR | 命名、架构和 IPC 契约有明确权威文档；本轮修正 Rust/UI 错误日志边界、ApplicationRuntime 名称、真实 crate 依赖、Settings snake_case 例外、UI listener/TypeScript 示例及 `load_skill` 安全矩阵，并更新输出清单日期。 | 核心架构/命名/输出契约与历史 ADR 18 项完成交叉核对；按覆盖记录保存本轮结果，历史 ADR 保留历史表述。 |
-| 架构合并/拆分 | 已审查的候选均无足够收益或独立边界证据，当前无 Active 结构候选。 | 仅在 §5.5 的证据触发时重开；以真实职责重叠、依赖问题或可复现性能数据作为准入依据。 |
+| 架构合并/拆分 | 当前无 crate 级拆分/合并候选；已确认多个私有模块职责/状态 owner 候选，见 §5.3 与新一轮方案。 | 完成排队切片后按源码与生产调用重新评估；不得用旧审计覆盖数或“高风险”标签替代当前证据。 |
 
 #### 执行顺序与完成条件
 
@@ -178,7 +182,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 ### 5.8 Agent capability surface 与执行边界（实现完成）
 
-目标契约见 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。本节代码实现已完成；当前没有证据支持新的 Active/Next 结构切片。
+目标契约见 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。本节代码实现已完成；其后新增的内部模块候选按 §5.3 与新一轮方案跟踪。
 
 - **工具暴露与执行模式：**`direct`、`model_only`、`deferred`、`codemode`、`hidden` 由同一确定性 resolver 驱动目录、加载、provider surface 与执行校验；MCP server 可切换 Legacy/CodeMode，并配置 per-tool overrides。CodeMode 使用无宿主 API 的 QuickJS 与有界子调用；每个子调用仍经 Tools 的实时授权、target、sandbox/network 和结果上限校验。隐藏或已撤权的旧调用 fail closed。见 [ADR 1183](adr/1183-add-mcp-model-only-exposure.md) 与 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。
 - **MCP resources/prompts 与 Workflow：**资源和 prompt 由用户浏览、预览和选择，读取有类型与预算限制，不进入模型可调用工具面；Workflow 是有界静态 DAG，在当前 turn 内串行执行，每步经标准 Tools gateway 独立授权。需要确认的子步骤在 handler 前 fail closed；Workflow 不持久化、不后台运行且部分完成不自动重放。见 [ADR 1164](adr/1164-mcp-resources-and-user-selected-prompts.md)、[ADR 1165](adr/1165-bounded-declarative-workflow-validation.md) 与 [ADR 1166](adr/1166-execute-workflows-through-standard-tool-gateway.md)。
