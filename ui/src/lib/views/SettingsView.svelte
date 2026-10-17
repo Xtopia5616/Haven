@@ -20,7 +20,7 @@
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import LoadingState from '$lib/LoadingState.svelte';
 	import { addNotification } from '$lib/notificationStore.ts';
-	import { setToolRunCompletionNotificationChannels } from '$lib/toolRunCompletionNotificationSettings.ts';
+	import { publishNotificationSettingsChanged } from '$lib/notificationSettingsEvents.ts';
 	import { validateSettingsModelDrafts } from '$lib/settingsModelValidation.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import {
@@ -931,7 +931,6 @@
 				.map((server) => server.name || '')
 				.filter(Boolean);
 			notification = { ...notification, ...(settings.notification || {}) };
-			setToolRunCompletionNotificationChannels(notification.tool_run_completed);
 			log = { ...log, ...(settings.log || {}) };
 			defaultShell = settings.default_shell || 'powershell';
 			checkShells();
@@ -1101,7 +1100,9 @@
 			if (model.independentSearchApiKey) {
 				const search = model.independent_search;
 				if (search?.provider !== 'aliyun_ai_search') {
-					throw new Error('Alibaba AI Search key requires Alibaba AI Search to be enabled');
+					throw new Error(
+						'Alibaba AI Search key requires Alibaba AI Search to be enabled',
+					);
 				}
 				search.api_key_ref = await stageIndependentSearchCredential({
 					modelId: model.id,
@@ -1246,7 +1247,7 @@
 				securityRuntimeStatus = 'current';
 				securityRuntimeNotice = '安全策略已按当前配置完成运行时应用。';
 			}
-			setToolRunCompletionNotificationChannels(notification.tool_run_completed);
+			publishNotificationSettingsChanged(notification);
 			addNotification('设置已写入配置', 'success');
 			try {
 				await refreshApiKeyStatus();
@@ -1276,6 +1277,20 @@
 			saveState = 'error';
 			const partialApplyFailure = isPartialConfigApplyError(e);
 			saveError = partialApplyFailure ? PARTIAL_APPLY_SAVE_MESSAGE : formatError(e);
+			if (partialApplyFailure) {
+				try {
+					const persistedSettings = await loadSettings();
+					if (persistedSettings?.notification) {
+						publishNotificationSettingsChanged(persistedSettings.notification);
+					}
+				} catch (refreshError) {
+					reportError(refreshError, {
+						context: 'SettingsView',
+						message: '读取已写入的通知设置失败',
+						log: false,
+					});
+				}
+			}
 			if (partialApplyFailure && securityChanged) {
 				const detail = formatError(e);
 				const configVersion = detail.match(/config_version=(\d+)/)?.[1];

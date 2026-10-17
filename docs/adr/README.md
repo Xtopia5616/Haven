@@ -1281,3 +1281,5 @@
 - [1291：按 Provider 隔离原生搜索实现](1291-provider-search-implementation-boundaries.md)
 - [1292：将 Provider 独立搜索作为模型级工具](1292-provider-standalone-search-tool.md)
 - [1293：在 Skill 激活结果中提供正文指令](1293-provide-skill-instructions-on-activation.md)
+- [1294：由 layout 拥有通知设置运行快照](1294-own-live-notification-settings-in-layout.md)
+- [1295：按当前 envelope 投影 ToolRun 结果补充](1295-parse-current-toolrun-result-envelope-in-ui.md)

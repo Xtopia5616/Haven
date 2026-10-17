@@ -1,19 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
 	createToolRunCompletionNotificationGate,
 	MAX_PENDING_TOOL_RUN_COMPLETION_NOTIFICATIONS,
 	projectToolRunCompletionToast,
 } from './toolRunCompletionNotificationProjection.ts';
-import {
-	DEFAULT_TOOL_RUN_COMPLETION_NOTIFICATION_CHANNELS,
-	setToolRunCompletionNotificationChannels,
-	shouldShowToolRunCompletionInApp,
-} from './toolRunCompletionNotificationSettings.ts';
-
-afterEach(() => {
-	setToolRunCompletionNotificationChannels(DEFAULT_TOOL_RUN_COMPLETION_NOTIFICATION_CHANNELS);
-});
-
 describe('ToolRun completion toast projection', () => {
 	it('waits for persisted notification settings and then preserves event order', () => {
 		const delivered: string[] = [];
@@ -33,7 +23,10 @@ describe('ToolRun completion toast projection', () => {
 		gate.notify(second);
 		expect(delivered).toEqual([]);
 		gate.settingsLoaded();
-		expect(delivered).toEqual(['toolrun-00000000000000000000000000000001', 'toolrun-00000000000000000000000000000002']);
+		expect(delivered).toEqual([
+			'toolrun-00000000000000000000000000000001',
+			'toolrun-00000000000000000000000000000002',
+		]);
 	});
 
 	it('caps the pending FIFO and drops arrivals after it is full', () => {
@@ -68,27 +61,6 @@ describe('ToolRun completion toast projection', () => {
 		expect(delivered).not.toContain('toolrun-1f7a56c167a044bd47e3ae6c51b6ee86');
 	});
 
-	it('drops queued toasts when hydrated settings disable the in-app channel', () => {
-		const delivered: string[] = [];
-		const gate = createToolRunCompletionNotificationGate((payload) => {
-			if (shouldShowToolRunCompletionInApp()) delivered.push(payload.toolRunId || '');
-		});
-		const pending = {
-			sessionId: '',
-			title: 'scheduled',
-			body: 'result',
-			notificationKind: 'tool_run_completion' as const,
-			toolRunKind: 'scheduled' as const,
-			toolRunId: 'toolrun-67270727d37ee25e9d99c0ac92b70db1',
-		};
-
-		gate.notify(pending);
-		setToolRunCompletionNotificationChannels({ in_app: false, windows: true });
-		gate.settingsLoaded();
-
-		expect(delivered).toEqual([]);
-	});
-
 	it('preserves background status and active-session rules', () => {
 		const completed = {
 			sessionId: 'ses-d186f90b4f33cc53ee287f9e8c401e6a',
@@ -99,8 +71,12 @@ describe('ToolRun completion toast projection', () => {
 			toolRunId: 'toolrun-00000000000000000000000000000001',
 			toolRunStatus: 'completed' as const,
 		};
-		expect(projectToolRunCompletionToast(completed, 'ses-d186f90b4f33cc53ee287f9e8c401e6a')).toBeNull();
-		expect(projectToolRunCompletionToast(completed, 'ses-fb38531de0466990f46b178209103744')).toEqual({
+		expect(
+			projectToolRunCompletionToast(completed, 'ses-d186f90b4f33cc53ee287f9e8c401e6a'),
+		).toBeNull();
+		expect(
+			projectToolRunCompletionToast(completed, 'ses-fb38531de0466990f46b178209103744'),
+		).toEqual({
 			message: '后台任务完成: toolrun-00000000000000000000000000000001',
 			type: 'success',
 			durationMs: 4000,

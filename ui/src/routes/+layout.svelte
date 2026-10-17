@@ -7,9 +7,10 @@
 	import { recordingOverlayController } from '$lib/recordingOverlayController.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import {
-		setToolRunCompletionNotificationChannels,
-		shouldShowToolRunCompletionInApp,
-	} from '$lib/toolRunCompletionNotificationSettings.ts';
+		isNotificationInAppEnabled,
+		onNotificationSettingsChanged,
+		shouldApplyInitialNotificationSnapshot,
+	} from '$lib/notificationSettingsEvents.ts';
 	import {
 		createToolRunCompletionNotificationGate,
 		projectToolRunCompletionToast,
@@ -508,11 +509,13 @@
 		session_resumed: { in_app: true },
 		session_error: { in_app: true },
 		permission_requested: { in_app: true },
+		tool_run_completed: { in_app: true },
 	});
+	let notificationSettingsRevision = 0;
 
 	function showAgentNotification(data: AgentNotificationPayload) {
 		if (data.notificationKind === 'tool_run_completion') {
-			if (!shouldShowToolRunCompletionInApp()) return;
+			if (!isNotificationInAppEnabled(notifyCfg, 'tool_run_completed')) return;
 			const toast = projectToolRunCompletionToast(
 				data,
 				appSessionReducer.snapshot().activeSessionId,
@@ -823,9 +826,14 @@
 
 	let eventRegistrations: { ready: Promise<void>; dispose: () => void } | null = null;
 	let removeGlobalErrorHandlers: () => void = () => {};
+	let removeNotificationSettingsListener: () => void = () => {};
 
 	onMount(async () => {
 		recordingOverlayController.resumeTimer();
+		removeNotificationSettingsListener = onNotificationSettingsChanged((notification) => {
+			notificationSettingsRevision += 1;
+			notifyCfg = { ...notifyCfg, ...notification };
+		});
 		runtime = isTauri() ? 'tauri' : 'browser';
 		if (isTauri()) {
 			listBuiltinToolManifests()
@@ -869,13 +877,17 @@
 		// Load notify config in background — don't block
 		// listener registration. Skip outside Tauri (browser / SSR preview).
 		if (isTauri()) {
+			const revisionAtLoadStart = notificationSettingsRevision;
 			loadSettings()
 				.then((settings) => {
-					if (settings?.notification) {
+					if (
+						settings?.notification &&
+						shouldApplyInitialNotificationSnapshot(
+							revisionAtLoadStart,
+							notificationSettingsRevision,
+						)
+					) {
 						notifyCfg = { ...notifyCfg, ...settings.notification };
-						setToolRunCompletionNotificationChannels(
-							settings.notification.tool_run_completed,
-						);
 					}
 				})
 				.catch((e) => {
@@ -1225,6 +1237,7 @@
 	onDestroy(() => {
 		unsubscribeExecutionPhase();
 		removeGlobalErrorHandlers();
+		removeNotificationSettingsListener();
 		recordingOverlayController.dispose();
 		if (llmProbeTimer) clearTimeout(llmProbeTimer);
 		if (bootstrapProbeTimer) clearTimeout(bootstrapProbeTimer);

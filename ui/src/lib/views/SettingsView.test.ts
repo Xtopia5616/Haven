@@ -9,17 +9,12 @@ const { invoke, listen } = vi.hoisted(() => ({
 	listen: vi.fn(),
 }));
 
-import {
-	DEFAULT_TOOL_RUN_COMPLETION_NOTIFICATION_CHANNELS,
-	setToolRunCompletionNotificationChannels,
-	shouldShowToolRunCompletionInApp,
-} from '$lib/toolRunCompletionNotificationSettings.ts';
+import { onNotificationSettingsChanged } from '$lib/notificationSettingsEvents.ts';
 
 vi.mock('$lib/tauri.ts', () => ({ invoke, listen }));
 
 describe('SettingsView diagnostics export', () => {
 	beforeEach(() => {
-		setToolRunCompletionNotificationChannels(DEFAULT_TOOL_RUN_COMPLETION_NOTIFICATION_CHANNELS);
 		invoke.mockImplementation(async (command: string) => {
 			switch (command) {
 				case 'get_settings':
@@ -309,6 +304,12 @@ describe('SettingsView diagnostics export', () => {
 		expect((inApp as HTMLInputElement).checked).toBe(true);
 		expect((windows as HTMLInputElement).checked).toBe(true);
 
+		const publishedNotification: {
+			value: import('$lib/contracts/generatedCommands.ts').NotificationConfigInput | null;
+		} = { value: null };
+		const unsubscribe = onNotificationSettingsChanged((notification) => {
+			publishedNotification.value = notification;
+		});
 		await fireEvent.click(inApp);
 		await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeTruthy());
 		expect(container.querySelector('.save-bar--bottom-edge')).toBeTruthy();
@@ -330,11 +331,110 @@ describe('SettingsView diagnostics export', () => {
 				}),
 			);
 		});
-		expect(shouldShowToolRunCompletionInApp()).toBe(false);
+		expect(publishedNotification.value?.tool_run_completed).toEqual({
+			in_app: false,
+			windows: false,
+		});
+		unsubscribe();
 		const update = invoke.mock.calls.find(([command]) => command === 'update_settings');
 		expect(update?.[1]?.settings.context_limits.scheduled_tool_runs_due_horizon_secs).toBe(
 			365 * 24 * 3600,
 		);
+	});
+
+	it('publishes durable-first notification settings after a partial runtime apply failure', async () => {
+		const settings = createSettingsFixture();
+		settings.notification.tool_run_completed.in_app = true;
+		let settingsReads = 0;
+		invoke.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'get_settings':
+					settingsReads += 1;
+					if (settingsReads > 1) {
+						return {
+							...settings,
+							notification: {
+								...settings.notification,
+								tool_run_completed: { in_app: false, windows: true },
+							},
+						};
+					}
+					return settings;
+				case 'update_settings':
+					throw new Error('部分 apply 失败：config_version=2');
+				case 'get_api_key_status':
+					return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
+				case 'is_autostart_enabled':
+					return false;
+				default:
+					return [];
+			}
+		});
+		const publishedNotification: {
+			value: import('$lib/contracts/generatedCommands.ts').NotificationConfigInput | null;
+		} = { value: null };
+		const unsubscribe = onNotificationSettingsChanged((notification) => {
+			publishedNotification.value = notification;
+		});
+		render(SettingsView);
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('is_autostart_enabled'));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await fireEvent.click(screen.getByRole('tab', { name: /界面与通知/ }));
+		const inApp = await screen.findByRole('switch', { name: '任务完成应用内提示' });
+		expect((inApp as HTMLInputElement).checked).toBe(true);
+		await fireEvent.click(inApp);
+		expect((inApp as HTMLInputElement).checked).toBe(false);
+		await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeTruthy());
+		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+		await waitFor(() => {
+			expect(publishedNotification.value?.tool_run_completed).toEqual({
+				in_app: false,
+				windows: true,
+			});
+		});
+		unsubscribe();
+	});
+
+	it('does not publish notification draft values when persistence fails', async () => {
+		const settings = createSettingsFixture();
+		settings.notification.tool_run_completed.in_app = true;
+		invoke.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'get_settings':
+					return settings;
+				case 'update_settings':
+					throw new Error('disk write failed');
+				case 'get_api_key_status':
+					return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
+				case 'is_autostart_enabled':
+					return false;
+				default:
+					return [];
+			}
+		});
+		const publishedNotification: {
+			value: import('$lib/contracts/generatedCommands.ts').NotificationConfigInput | null;
+		} = { value: null };
+		const unsubscribe = onNotificationSettingsChanged((notification) => {
+			publishedNotification.value = notification;
+		});
+		render(SettingsView);
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('is_autostart_enabled'));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await fireEvent.click(screen.getByRole('tab', { name: /界面与通知/ }));
+		const inApp = await screen.findByRole('switch', { name: '任务完成应用内提示' });
+		expect((inApp as HTMLInputElement).checked).toBe(true);
+		await fireEvent.click(inApp);
+		expect((inApp as HTMLInputElement).checked).toBe(false);
+		await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeTruthy());
+		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+		await waitFor(() => expect(screen.getByText('disk write failed')).toBeTruthy());
+		expect(publishedNotification.value).toBeNull();
+		unsubscribe();
 	});
 
 	it('preserves backend settings that are outside the visible category during a full save', async () => {
