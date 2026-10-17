@@ -1,7 +1,7 @@
 # Haven 新一轮架构重构方案（源码审计）
 
 > 日期：2026-10-17
-> 状态：Slice 1–3 已完成（ADR 1294、1301、1302）；当前推进 Slice 4 的 SessionStore 私有模块拆分，任何时刻只推进一个 Active 切片。
+> 状态：Slice 1–3 已完成（ADR 1294、1301、1302）；Slice 4 子切片 1 已完成（ADR 1303），当前推进 event/append 与 transcript projection 拆分，任何时刻只推进一个 Active 切片。
 > 范围：Rust workspace、Tauri IPC/event bridge、Svelte UI 与相关架构/契约文档。
 
 ## 1. 目标与审计方法
@@ -116,8 +116,8 @@ Settings 保存还有一个必须覆盖的分支：`SettingsView.svelte` 将 par
 
 四个子切片顺序执行：
 
-1. 迁移 fork、ingress、pending input、recovery partial/terminal result、tool step API 及同职责测试。
-2. 将 event model/append 与 transcript commit/projection 放入私有模块；append 与物化仍同事务。
+1. **已完成（ADR 1303）：** fork、ingress、pending input、recovery partial/terminal result、tool-step API 移入私有模块；既有 facade 测试覆盖身份、幂等、失败和恢复行为。
+2. **当前 Active：** 将 event model/append 与 transcript commit/projection 放入私有模块；append 与物化仍同事务。
 3. 将 replay/page/active transcript read 收入私有模块，保留 sequence、branch/compaction boundary 和一致读取语义。
 4. 将 rollback/usage/branch marker 收入私有模块；event cursor、projection cutoff 与 usage compensation 在原子事务中处理。
 
