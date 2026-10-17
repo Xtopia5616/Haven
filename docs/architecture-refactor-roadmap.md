@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；2026-10-17 源码审计新增下一轮候选，按 [新一轮方案](refactor-plan-source-audit-2026-10-17.md) 顺序推进。当前 Next 为 UI 通知设置同进程生效修复；Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
+> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；2026-10-17 第二轮逐文件审计新增兼容层清理与结构简化候选，当前顺序见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。当前 Next 是修复 ToolRun result inject 格式错配，其后处理通知配置同进程生效；Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
 > 更新日期：2026-10-17
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Next** | UI 通知设置同进程生效修复；其后依次为 IPC metadata/event 投影、AppCommand confirmation、SessionStore、Tools security 与 Agent tool runner 私有模块重组，详见 [新一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
+| **Next** | 修复 ToolRun result inject 当前 producer/parser 格式错配；其后依次为通知配置同进程生效、确定的旧格式分支清理、合并持久格式变更与 schema v45 reset、Settings/config 收敛、MCP 当前协议收敛和 owner 简化，详见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。第一轮尚成立的模块职责切片接续其后，见[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -97,7 +97,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 ### 5.3 内部模块与 crate 边界（按证据复核）
 
-本节记录当前源码已确认的结构候选与保留边界；历史决定和验证以对应 ADR 为准。候选依据当前生产职责、调用路径和状态读写方，不沿用旧文档的“高风险暂缓”结论；详细切片与验收见[新一轮方案](refactor-plan-source-audit-2026-10-17.md)。
+本节记录当前源码已确认的结构候选与保留边界；历史决定和验证以对应 ADR 为准。候选依据当前生产职责、调用路径和状态读写方，不沿用旧文档的“高风险暂缓”结论；当前切片顺序见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)，第一轮模块职责切片见[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。
 
 #### 已复核候选与已知限制
 
@@ -105,7 +105,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Next / 高影响** | `session_events.rs` 除 append、projection、rollback 外，还包含 fork、ingress、pending-input、recovery、tool-step、replay/read 和 usage 等生产职责。 | 仍由唯一 `SessionStore`/Memory owner 协调；逐步拆私有模块，保持 append/projection 同事务、rollback/usage 补偿同事务、提交后才广播；不暴露 backing DB 或投影 intent（ADR 0466、0479、0206、0915、1123）。 |
 | **Next / 生产缺陷** | layout session/permission 通知读取 `notifyCfg`，ToolRun completion 读取独立 store；Settings 保存只更新后者，造成同进程配置版本分裂。 | 将全类通知归到 layout 唯一运行投影；保存成功与 durable-first partial-apply 更新，普通保存失败不更新，阻止异步旧 snapshot 覆盖新值。 |
-| **Next / 已发生 drift** | 命令 boundary/security metadata 在 Rust、TS、文档间人工复制，脚本只比命令名；`execute_skill` 已出现 AuthorizationPort/AuthorizationEngine 文案差异。事件 channel 与 DTO 是两个 exhaustive match，二者配对目前不受同一 projection 登记约束。 | Rust metadata 保持权威并生成/逐字段验证派生值；AgentEvent 一次生成 channel+payload projection 并与 generated shape registry 配对校验。当前 generator 已提供命令响应和事件 payload shape，不再把它列为缺失。 |
+| **Next / 已发生 drift** | 命令 boundary/security metadata 在 Rust、TS、文档间人工复制，脚本只比命令名；`execute_skill` 已出现 AuthorizationPort/AuthorizationEngine 文案差异。Rust `COMMAND_CONTRACTS` 当前未被逐字段核验，不能称为已经生效的机器权威。事件 channel 与 DTO 是两个 exhaustive match，二者配对目前不受同一 projection 登记约束。 | 将 Rust metadata 设为权威并生成/逐字段验证派生值；AgentEvent 一次生成 channel+payload projection 并与 generated shape registry 配对校验。当前 generator 已提供命令响应和事件 payload shape，不再把它列为缺失。 |
 | **Next / owner 收敛** | AppCommand pending map 在 `app_state.rs`；入队/超时在 `commands/mod.rs`；仲裁/授权/continuation 在 `commands/session.rs`。Session grant append failure 同进程重试已有故障注入覆盖，进程重启恢复路径需纳入下一轮验收。 | 新建明确 App confirmation owner；`resolve_confirmation` 保持 Session/ScheduledToolRun/AppCommand 薄路由。Admin UI authorization/finalization 留在 App command adapter，policy 继续归 Tools `AuthorizationPort`；覆盖 grant durable / resolved event fail / restart / expiry。 |
 | **Next / 私有模块整理** | `tools/security.rs` 同时实现授权 engine、process-start permit、filesystem policy、路径安全和 prompt summary；`agent/session/tool_runner.rs` 同时实现 step persistence、执行模式和 confirmation/scheduled lifecycle。 | 各自按职责拆私有模块；唯一 `AuthorizationEngine`/`SafetyConfig` 与 `SessionSupervisor` 不变。Tools 先提供唯一策略复核，Agent 仍负责会话生命周期。 |
 
@@ -157,7 +157,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 范围覆盖所有 Rust crate、Svelte/TypeScript、Tauri IPC/事件，以及架构、命名和契约文档。职责以 `docs/architecture.md` 为准，命名以 `docs/naming.md` 为准，历史决定与实现细节见对应 ADR。
 
-本节此前的领域职责与历史完成事项保留为当时记录。源码审计确认的新一轮候选及顺序见 §5.3 和 [重构方案](refactor-plan-source-audit-2026-10-17.md)；历史覆盖表不作为当前源文件、命令 metadata 或 checker 状态的替代证据。
+本节此前的领域职责与历史完成事项保留为当时记录。第二轮源码审计确认的兼容清理与简化顺序见 §5.3 和[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)；第一轮结构候选见[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。历史覆盖表不作为当前源文件、命令 metadata 或 checker 状态的替代证据。
 
 #### 当前审计覆盖与剩余范围
 
@@ -172,7 +172,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | Tools、网络与操作系统边界 | 不可信 HTTP URL 共享目标校验、DNS pin 和跳转规则，HTTP request 限额与取消、图片 URL redirect 校验见 ADR 1098；MCP Ask/Restricted 复用 Common destination resolver，stdio read 中断后 poison/discard 并令 liveness monitor 可触发 reconnect（ADR 1103）；Registry names-only 枚举、256 条/类上限、截断标志与阻塞线程取消见 ADR 1099；raw ToolHandle getter 不进入默认生产 facade，见 ADR 1100；文件搜索分别统计遍历/读取失败并把搜索不完整状态传给 renderer（ADR 1118）；MCP manager 的连接 reservation、策略重检、代次安全清理和 shutdown drain 见 ADR 1129；Credential Manager target 使用小写 `haven/` 且无需迁移（ADR 1132）。 | Tools/Platform/Input production inventory 已分域核对；本轮确认并修复 VAD shutdown、MCP list refresh/SSE 等运行边界。真实 Registry 与进程树行为仍由 Windows 发布 gate 验收。 |
 | 日志与诊断 | 动态敏感内容、长度单位和事件边界指标命名已收敛；Common 错误清洗器覆盖 JSON 敏感字段和 URL 密码 userinfo（ADR 1085）；Skill setup 不向模型观察传递原始安装输出或路径（ADR 1089）；Input capture 启动日志只保留采样率、声道数和格式，不记录用户自定义设备名称；静音/callback 诊断不输出样本幅值，本机路径错误不回显路径，配置 Debug 对命令、目录、URL path/query、代理例外和认证前缀使用占位符（ADR 1137）。 | 日志/错误与诊断生产路径本轮完成扫描分类，稳定失败文本与本机路径脱敏已同步；以后新增动态字段按 conventions 校验。 |
 | 文档与 ADR | 命名、架构和 IPC 契约有明确权威文档；本轮修正 Rust/UI 错误日志边界、ApplicationRuntime 名称、真实 crate 依赖、Settings snake_case 例外、UI listener/TypeScript 示例及 `load_skill` 安全矩阵，并更新输出清单日期。 | 核心架构/命名/输出契约与历史 ADR 18 项完成交叉核对；按覆盖记录保存本轮结果，历史 ADR 保留历史表述。 |
-| 架构合并/拆分 | 当前无 crate 级拆分/合并候选；已确认多个私有模块职责/状态 owner 候选，见 §5.3 与新一轮方案。 | 完成排队切片后按源码与生产调用重新评估；不得用旧审计覆盖数或“高风险”标签替代当前证据。 |
+| 架构合并/拆分 | 当前无 crate 级拆分/合并候选；已确认多个私有模块职责/状态 owner 候选，见 §5.3 与两轮重构方案。 | 完成排队切片后按源码与生产调用重新评估；不得用旧审计覆盖数或“高风险”标签替代当前证据。 |
 
 #### 执行顺序与完成条件
 
@@ -182,7 +182,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 ### 5.8 Agent capability surface 与执行边界（实现完成）
 
-目标契约见 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。本节代码实现已完成；其后新增的内部模块候选按 §5.3 与新一轮方案跟踪。
+目标契约见 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。本节代码实现已完成；其后新增的内部模块候选按 §5.3 与第一、二轮方案跟踪。
 
 - **工具暴露与执行模式：**`direct`、`model_only`、`deferred`、`codemode`、`hidden` 由同一确定性 resolver 驱动目录、加载、provider surface 与执行校验；MCP server 可切换 Legacy/CodeMode，并配置 per-tool overrides。CodeMode 使用无宿主 API 的 QuickJS 与有界子调用；每个子调用仍经 Tools 的实时授权、target、sandbox/network 和结果上限校验。隐藏或已撤权的旧调用 fail closed。见 [ADR 1183](adr/1183-add-mcp-model-only-exposure.md) 与 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。
 - **MCP resources/prompts 与 Workflow：**资源和 prompt 由用户浏览、预览和选择，读取有类型与预算限制，不进入模型可调用工具面；Workflow 是有界静态 DAG，在当前 turn 内串行执行，每步经标准 Tools gateway 独立授权。需要确认的子步骤在 handler 前 fail closed；Workflow 不持久化、不后台运行且部分完成不自动重放。见 [ADR 1164](adr/1164-mcp-resources-and-user-selected-prompts.md)、[ADR 1165](adr/1165-bounded-declarative-workflow-validation.md) 与 [ADR 1166](adr/1166-execute-workflows-through-standard-tool-gateway.md)。
