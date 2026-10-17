@@ -1295,3 +1295,4 @@
 - [1304：由私有模块拥有 transcript append 与 projection](1304-own-transcript-append-and-projection.md)
 - [1305：隔离 SessionStore event replay/read 实现](1305-isolate-session-event-replay-reads.md)
 - [1306：由私有模块拥有 SessionStore rollback 与 usage 事务](1306-own-session-rollback-and-usage-transactions.md)
+- [1307：拆分 Tools 安全提示与路径入口模块](1307-split-tools-security-prompts-and-path-entry.md)

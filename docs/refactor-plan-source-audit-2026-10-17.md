@@ -1,7 +1,7 @@
 # Haven 新一轮架构重构方案（源码审计）
 
 > 日期：2026-10-17
-> 状态：Slice 1–4 已完成（Slice 4: ADR 1303–1306）；当前推进 Slice 5 Tools `security.rs` 私有职责拆分，任何时刻只推进一个 Active 切片。
+> 状态：Slice 1–4 已完成（Slice 4: ADR 1303–1306）；Slice 5 已完成 prompt/path 子切片（ADR 1307），当前继续拆分 Tools `security.rs`，任何时刻只推进一个 Active 切片。
 > 范围：Rust workspace、Tauri IPC/event bridge、Svelte UI 与相关架构/契约文档。
 
 ## 1. 目标与审计方法
@@ -125,11 +125,12 @@ Settings 保存还有一个必须覆盖的分支：`SettingsView.svelte` 将 par
 
 ### Slice 5 — 拆分 Tools security owner 内部职责
 
-**当前 Active。**
+**当前 Active；第 1 子切片已完成（ADR 1307）。**
 
-保留唯一 AuthorizationEngine/SafetyConfig/AuthorizationPort，先搬文件并搬对应测试，再抽 `authorize_for_execution`、`verify_receipt`、`verify_execution_proof` 共用的有序边界检查。保留 critical floor、grant scope、receipt/proof 绑定与时效、revoke 生命周期、MCP stdio 与 Skill process-start 两套不同 permit。将确无外部消费者的 security matrix export 收窄；路径安全仍保留实际 App/Tools 消费路径。
+1. **已完成：** permission prompt summary 与本地安全矩阵进入私有 `security/prompt.rs`，其七项摘要测试随模块迁移；`is_safe_local_path` 进入私有 `security/filesystem.rs` 并继续作为 App 使用的公开入口。矩阵没有 `haven-tools` crate 外的消费者，已从公共 re-export 收窄。授权 engine 与安全检查行为未改动。
+2. **继续实施：** 将授权 contract、唯一 engine、execution permit/process-start adapters 和其余 filesystem policy 分入私有模块；把对应测试迁入职责 owner。之后抽取 `authorize_for_execution`、`verify_receipt`、`verify_execution_proof` 共享的有序纯边界检查。
 
-验收覆盖 deny/revision 后重验、网络/路径/reparse、执行期 live policy guard、MCP/Skill 子进程入口、tool/session 局部 revoke；使用 workspace locked tests/clippy，并在 Windows 环境验证真实系统行为。
+整个 Slice 保留唯一 AuthorizationEngine/SafetyConfig/AuthorizationPort；保留 critical floor、grant scope、receipt/proof 绑定与时效、revoke 生命周期、MCP stdio 与 Skill process-start 两套不同 permit，以及网络/路径/reparse 和执行期 live policy guard。最终验收覆盖 deny/revision 后重验、tool/session 局部 revoke、MCP/Skill 子进程入口，使用 workspace locked tests/clippy；Windows release/HCS quota 验收记录在 §5.1 独立 Open Gate。
 
 ### Slice 6 — 拆分 Agent tool runner
 
