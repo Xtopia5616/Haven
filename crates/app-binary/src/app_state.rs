@@ -1,3 +1,4 @@
+use crate::commands::confirmation::AppConfirmationOwner;
 use crate::config_runtime::apply_log_level_to_handles;
 use crate::desktop::DesktopShell;
 use crate::events::AppBootstrapEvent;
@@ -50,31 +51,6 @@ impl haven_tools::LogLevelPort for ReloadLogLevelPort {
 pub enum BootstrapStatus {
     Loading,
     Ready,
-}
-
-/// A renderer-triggered Skill invocation waiting in the same confirmation queue
-/// as agent tool_runs. Raw arguments stay backend-only until the request is
-/// resolved and are never part of an IPC error payload.
-pub(crate) enum UiConfirmationAction {
-    Skill {
-        name: String,
-        params: serde_json::Value,
-    },
-    Admin {
-        request: Box<haven_tools::AdminRequest>,
-    },
-    /// A reviewed sandbox file selected for a one-time destination write.
-    /// The exact operation input and receipt stay in `UiConfirmationPending`.
-    SandboxOutputPromotion,
-}
-
-pub(crate) struct UiConfirmationPending {
-    /// Canonical interaction lifecycle used by the renderer projection and
-    /// shared with agent/scheduled confirmations.
-    pub request: haven_agent::InteractionRequest,
-    pub authorization_request: haven_tools::AuthorizationRequest,
-    pub receipt: haven_tools::ConfirmationReceipt,
-    pub action: UiConfirmationAction,
 }
 
 #[derive(Clone)]
@@ -194,7 +170,7 @@ pub struct AppState {
     /// Suppresses the global recording shortcut while the renderer is
     /// capturing a replacement key binding.
     pub(crate) hotkey_capture_active: Arc<AtomicBool>,
-    pub(crate) ui_confirmations: Arc<tokio::sync::Mutex<HashMap<String, UiConfirmationPending>>>,
+    pub(crate) app_confirmations: AppConfirmationOwner,
     /// Last config version whose complete Security settings phase succeeded.
     /// One-off permission edits layer on top of this baseline.
     pub(crate) last_fully_applied_security_config_version: AtomicU64,
@@ -544,7 +520,7 @@ impl AppState {
             #[cfg(test)]
             pending_recovery_retry_scheduled: Arc::new(AtomicBool::new(false)),
             hotkey_capture_active: Arc::new(AtomicBool::new(false)),
-            ui_confirmations: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            app_confirmations: AppConfirmationOwner::default(),
             last_fully_applied_security_config_version: AtomicU64::new(
                 last_fully_applied_security_config_version,
             ),

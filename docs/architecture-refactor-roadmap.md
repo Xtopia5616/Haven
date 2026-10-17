@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；2026-10-17 第二轮逐文件审计新增兼容层清理与结构简化候选，当前顺序见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。Slice 1–8 均已完成；当前实施 Slice 9。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
+> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；第二轮 Slice 1–8 已完成；当前实施 Slice 9。第一轮 AppCommand confirmation owner 与 admin adapter 已完成（ADR 1302），下一个切片是 SessionStore 内部拆分。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
 > 更新日期：2026-10-17
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -103,10 +103,10 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 | 状态                       | 问题与当前证据                                                                                                                                                                                                                                          | 重开条件与边界                                                                                                                                                                                 |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Next / 高影响** | `session_events.rs` 除 append、projection、rollback 外，还包含 fork、ingress、pending-input、recovery、tool-step、replay/read 和 usage 等生产职责。 | 仍由唯一 `SessionStore`/Memory owner 协调；逐步拆私有模块，保持 append/projection 同事务、rollback/usage 补偿同事务、提交后才广播；不暴露 backing DB 或投影 intent（ADR 0466、0479、0206、0915、1123）。 |
+| **Active / 高影响** | `session_events.rs` 除 append、projection、rollback 外，还包含 fork、ingress、pending-input、recovery、tool-step、replay/read 和 usage 等生产职责。 | 仍由唯一 `SessionStore`/Memory owner 协调；逐步拆私有模块，保持 append/projection 同事务、rollback/usage 补偿同事务、提交后才广播；不暴露 backing DB 或投影 intent（ADR 0466、0479、0206、0915、1123）。 |
 | **已完成（2026-10-17）** | layout session/permission 通知读取 `notifyCfg`，ToolRun completion 读取独立 store；Settings 保存只更新后者，造成同进程配置版本分裂。 | layout 现在拥有全类通知唯一运行快照；Settings 成功保存后发布新快照，durable-first partial-apply 时重读已写配置，普通保存失败不更新；revision guard 阻止初始异步读取覆盖晚到的新快照。验收见 ADR 1294。 |
 | **已完成（2026-10-17，ADR 1301）** | App composition root 曾将 Tools 提供的 ToolRun/live-output capability 再包成无行为转发 adapter；UI live board 与 session history 各自保有完整 ToolRun payload；命令安全 metadata 只按命令名校验；AgentEvent channel 与 DTO 分别选择。 | App 直接持有窄 capability；UI payload 收敛到单一 map、两个有界 ID 索引；Rust `COMMAND_CONTRACTS` 生成并逐字段校验 TS 与文档 metadata；AgentEvent 在同一 exhaustive projection 中绑定 channel+payload，事件 checker 对照生成 DTO registry。完整门禁见 ADR 1301。 |
-| **Next / owner 收敛** | AppCommand pending map 在 `app_state.rs`；入队/超时在 `commands/mod.rs`；仲裁/授权/continuation 在 `commands/session.rs`。Session grant append failure 同进程重试已有故障注入覆盖，进程重启恢复路径需纳入下一轮验收。 | 新建明确 App confirmation owner；`resolve_confirmation` 保持 Session/ScheduledToolRun/AppCommand 薄路由。Admin UI authorization/finalization 留在 App command adapter，policy 继续归 Tools `AuthorizationPort`；覆盖 grant durable / resolved event fail / restart / expiry。 |
+| **已完成（2026-10-17，ADR 1302）** | AppCommand pending map、入队/超时、仲裁/授权/continuation 曾分散于 `app_state.rs`、`commands/mod.rs` 与 `commands/session.rs`；admin adapter 也混在通用命令模块。 | 私有 `AppConfirmationOwner` 管理 pending 状态与生命周期；`resolve_confirmation` 保留为跨 owner router；native admin authorization、执行与 UI 收尾移入独立 adapter。Session grant durable/append-failure/reopen 语义仍由既有 Agent owner 保持。App crate 测试、strict Clippy 与 IPC contract 检查见 ADR 1302。 |
 | **Next / 私有模块整理** | `tools/security.rs` 同时实现授权 engine、process-start permit、filesystem policy、路径安全和 prompt summary；`agent/session/tool_runner.rs` 同时实现 step persistence、执行模式和 confirmation/scheduled lifecycle。 | 各自按职责拆私有模块；唯一 `AuthorizationEngine`/`SafetyConfig` 与 `SessionSupervisor` 不变。Tools 先提供唯一策略复核，Agent 仍负责会话生命周期。 |
 
 **已关闭候选 — Session end 失败契约：** actorless、驻留 Actor 与运行中 Actor 的取消/清理失败语义、ToolRun claim 竞争及重试边界已按 ADR 0507、0514 收口并联合验证；当前无 Active 工作。只有同类失败/终态不一致再次复发时才重开。
@@ -151,7 +151,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | 4    | **crate/API 边界**           | 模块 owner 已稳定且存在单向依赖边界、独立消费者或可复核构建/维护收益。                                                                                          | API 清晰、无反向依赖或重复 adapter；否则保留现 crate 边界。              |
 | 5    | **性能与容量**               | 同负载 profile 复现用户相关延迟、资源或容量问题；固定场景记录优化前后指标。                                                                                     | 改善超过噪声并达到目标，否则关闭候选。                                   |
 
-**当前执行位置：** 阶段 0–8 已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。本轮 2026-10-17 源码复核确认 UI notification stale bug、命令 metadata 值检查缺口、Agent event channel/DTO 双映射、AppCommand confirmation 状态分散，以及 SessionStore/Tools security/Agent tool runner 内部职责可拆分。按新方案排队；目前不提出 crate 合并或拆分。Windows 发布验收仍是独立 Open Gate（§5.1）。
+**当前执行位置：** 阶段 0–8 已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。第二轮 Slice 1–8 已完成，AppCommand confirmation/admin adapter 也已收口（ADR 1302）；当前 Active 是单一 `SessionStore` 内部模块拆分，随后按第一轮方案继续 Tools security 与 Agent tool runner。暂不提出 crate 合并或拆分。Windows 发布验收仍是独立 Open Gate（§5.1）。
 
 ### 5.7 全项目领域术语与架构角色命名收敛（持续覆盖）
 

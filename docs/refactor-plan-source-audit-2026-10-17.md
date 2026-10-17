@@ -1,7 +1,7 @@
 # Haven 新一轮架构重构方案（源码审计）
 
 > 日期：2026-10-17
-> 状态：已审计，待按顺序实施；任何时刻只推进一个 Active 切片。
+> 状态：Slice 1–3 已完成（ADR 1294、1301、1302）；当前推进 Slice 4 的 SessionStore 私有模块拆分，任何时刻只推进一个 Active 切片。
 > 范围：Rust workspace、Tauri IPC/event bridge、Svelte UI 与相关架构/契约文档。
 
 ## 1. 目标与审计方法

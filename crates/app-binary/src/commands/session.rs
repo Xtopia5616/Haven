@@ -1,11 +1,9 @@
-use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
+use crate::app_state::AppState;
+use crate::commands::confirmation::{persist_permanent_permission, resolve_app_confirmation};
 use crate::commands::{
     RuntimeSessionListResponse, emit_event_logged, log_err, validate_command_id,
 };
-use crate::events::{
-    INTERACTION_REQUESTED_EVENT, InteractionRequestedEvent, NOTIFICATION_SHOW_EVENT,
-    SESSION_LIFECYCLE_EVENT, SessionLifecycleEvent,
-};
+use crate::events::{InteractionRequestedEvent, SESSION_LIFECYCLE_EVENT, SessionLifecycleEvent};
 use haven_agent::InteractionStatus;
 use haven_common::error::sanitize_error_text;
 use haven_memory::SessionStep;
@@ -13,7 +11,6 @@ use haven_memory::{Session, SessionOrigin};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::AppHandle;
-use tauri::Manager;
 use tauri::State;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -438,388 +435,6 @@ pub async fn resolve_confirmation(
     Ok(ConfirmationResolutionResult::Resolved)
 }
 
-async fn resolve_app_confirmation(
-    state: &Arc<AppState>,
-    app: &AppHandle,
-    owner: &haven_agent::InteractionOwner,
-    request_id: &str,
-    perm_effect: haven_common::types::PermissionEffect,
-    perm_scope: haven_common::types::PermissionScope,
-    perm_target: haven_common::types::PermissionTarget,
-) -> Result<ConfirmationResolutionResult, String> {
-    if owner != &haven_agent::InteractionOwner::AppCommand {
-        tracing::warn!(
-            request_id,
-            ?owner,
-            "app confirmation resolve used a different owner"
-        );
-        return Ok(ConfirmationResolutionResult::Stale);
-    }
-    let resolution = arbitrate_app_confirmation(
-        state.as_ref(),
-        owner,
-        request_id,
-        perm_effect,
-        perm_scope,
-        perm_target,
-    )
-    .await?;
-    let pending = match resolution {
-        AppConfirmationResolution::Stale => return Ok(ConfirmationResolutionResult::Stale),
-        AppConfirmationResolution::Expired(pending) => {
-            app.state::<Arc<crate::notification::DesktopNotifications>>()
-                .maybe_show_interaction_request(
-                    &pending.request,
-                    &haven_agent::InteractionOwner::AppCommand,
-                );
-            emit_event_logged(
-                app,
-                INTERACTION_REQUESTED_EVENT,
-                crate::bootstrap::project_interaction(
-                    &pending.request,
-                    haven_agent::InteractionOwner::AppCommand,
-                ),
-                "ui_interaction_expired",
-            );
-            return Ok(ConfirmationResolutionResult::Expired);
-        }
-        AppConfirmationResolution::Resolved(pending) => pending,
-    };
-
-    let confirmed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
-    let session_id = pending.request.session_id.clone();
-    let request_id = pending.request.request_id.clone();
-    let decision = if confirmed { "approved" } else { "denied" };
-    app.state::<Arc<crate::notification::DesktopNotifications>>()
-        .maybe_show_interaction_request(
-            &pending.request,
-            &haven_agent::InteractionOwner::AppCommand,
-        );
-    emit_event_logged(
-        app,
-        INTERACTION_REQUESTED_EVENT,
-        crate::bootstrap::project_interaction(
-            &pending.request,
-            haven_agent::InteractionOwner::AppCommand,
-        ),
-        "ui_interaction_decision_accepted",
-    );
-    tracing::info!(
-        session_id = ?session_id,
-        request_id = %request_id,
-        decision,
-        status = "accepted",
-        "renderer permission decision accepted"
-    );
-    if confirmed {
-        let task_app = (*app).clone();
-        let task_state = state.clone();
-        let spawn_state = task_state.clone();
-        let request_id = request_id.clone();
-        let task = async move {
-            let result = execute_ui_confirmation_action(&task_state, &task_app, pending).await;
-            let (title, body) = match result {
-                Ok(()) => ("操作已完成", "已授权的操作已经完成。"),
-                Err(_) => {
-                    tracing::error!(
-                        request_id,
-                        failure_kind = "confirmed_ui_action",
-                        "renderer permission continuation failed"
-                    );
-                    (
-                        "操作未完成",
-                        "授权已接受，但操作执行失败。你可以重新发起该操作。",
-                    )
-                }
-            };
-            emit_event_logged(
-                &task_app,
-                NOTIFICATION_SHOW_EVENT,
-                crate::events::AgentNotificationEvent {
-                    session_id: None,
-                    title: title.into(),
-                    body: body.into(),
-                    notification_kind: None,
-                    tool_run_kind: None,
-                    tool_run_id: None,
-                    tool_run_status: None,
-                },
-                "ui_confirmation_continuation_result",
-            );
-        };
-        if !spawn_state
-            .runtime
-            .spawn("ui-confirmation-continuation", task)
-        {
-            emit_event_logged(
-                app,
-                NOTIFICATION_SHOW_EVENT,
-                crate::events::AgentNotificationEvent {
-                    session_id: None,
-                    title: "操作未启动".into(),
-                    body: "授权已接受，但应用正在关闭，操作没有启动。请重新发起该操作。".into(),
-                    notification_kind: None,
-                    tool_run_kind: None,
-                    tool_run_id: None,
-                    tool_run_status: None,
-                },
-                "ui_confirmation_continuation_rejected",
-            );
-        }
-    }
-    Ok(ConfirmationResolutionResult::Resolved)
-}
-
-enum AppConfirmationResolution {
-    Resolved(UiConfirmationPending),
-    Expired(UiConfirmationPending),
-    Stale,
-}
-
-async fn arbitrate_app_confirmation(
-    state: &AppState,
-    owner: &haven_agent::InteractionOwner,
-    request_id: &str,
-    perm_effect: haven_common::types::PermissionEffect,
-    perm_scope: haven_common::types::PermissionScope,
-    perm_target: haven_common::types::PermissionTarget,
-) -> Result<AppConfirmationResolution, String> {
-    if owner != &haven_agent::InteractionOwner::AppCommand {
-        return Ok(AppConfirmationResolution::Stale);
-    }
-    let mut pending_registry = state.ui_confirmations.lock().await;
-    let Some(pending) = pending_registry.get_mut(request_id) else {
-        return Ok(AppConfirmationResolution::Stale);
-    };
-    if pending.request.request_id != request_id
-        || pending.receipt.confirmation_id.to_string() != request_id
-        || pending.request.session_id.is_some()
-        || pending.request.kind != haven_agent::InteractionKind::Confirm
-        || pending.request.status != InteractionStatus::Pending
-    {
-        return Ok(AppConfirmationResolution::Stale);
-    }
-    validate_app_confirmation_decision(&pending.action, perm_scope, perm_target)
-        .map_err(|error| log_err("resolve_confirmation", error))?;
-    if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
-        return Err(log_err(
-            "resolve_confirmation",
-            "session-scoped authorization requires a persisted session; choose once or permanent",
-        ));
-    }
-    if pending
-        .request
-        .pending_permission_deadline()
-        .map(|deadline| deadline <= chrono::Utc::now())
-        .unwrap_or(true)
-    {
-        let mut pending = pending_registry
-            .remove(request_id)
-            .expect("checked pending app confirmation");
-        let _ = pending.request.expire();
-        return Ok(AppConfirmationResolution::Expired(pending));
-    }
-    accept_ui_confirmation(state, pending, perm_effect, perm_scope, perm_target).await?;
-    let pending = pending_registry
-        .remove(request_id)
-        .expect("accepted app confirmation remains registered");
-    Ok(AppConfirmationResolution::Resolved(pending))
-}
-
-fn validate_app_confirmation_decision(
-    action: &UiConfirmationAction,
-    scope: haven_common::types::PermissionScope,
-    target: haven_common::types::PermissionTarget,
-) -> Result<(), &'static str> {
-    if matches!(action, UiConfirmationAction::SandboxOutputPromotion) {
-        if scope != haven_common::types::PermissionScope::Once {
-            return Err("sandbox output promotion only accepts a one-time decision");
-        }
-        if target != haven_common::types::PermissionTarget::Operation {
-            return Err("sandbox output promotion only accepts an operation-scoped decision");
-        }
-    }
-    Ok(())
-}
-
-async fn accept_ui_confirmation(
-    state: &AppState,
-    pending: &mut UiConfirmationPending,
-    perm_effect: haven_common::types::PermissionEffect,
-    perm_scope: haven_common::types::PermissionScope,
-    perm_target: haven_common::types::PermissionTarget,
-) -> Result<(), String> {
-    if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
-        return Err(log_err(
-            "resolve_ui_confirmation",
-            "session-scoped authorization requires a persisted session",
-        ));
-    }
-    let grant_key = pending
-        .authorization_request
-        .policy
-        .capability
-        .target(perm_target)
-        .ok_or_else(|| {
-            format!(
-                "permission target '{}' is broader than capability '{}'",
-                perm_target.as_str(),
-                pending.authorization_request.policy.capability
-            )
-        })
-        .map_err(|error| log_err("resolve_ui_confirmation", error))?;
-    tracing::debug!(
-        request_id = %pending.request.request_id,
-        session_id = ?pending.request.session_id,
-        interaction_kind = ?pending.request.kind,
-        risk = ?pending.receipt.effective_risk,
-        "resolving renderer-triggered confirmation"
-    );
-    let allowed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
-    if allowed {
-        let authorization_request = &pending.authorization_request;
-        state
-            .runtime
-            .services
-            .authorization
-            .verify_receipt(authorization_request, &pending.receipt)
-            .await
-            .map_err(|reason| {
-                log_err(
-                    "resolve_ui_confirmation",
-                    format!("confirmation is no longer valid: {reason}"),
-                )
-            })?;
-    }
-
-    match perm_scope {
-        haven_common::types::PermissionScope::Once => {}
-        haven_common::types::PermissionScope::Session => {
-            return Err(log_err(
-                "resolve_ui_confirmation",
-                "session-scoped authorization requires a persisted session",
-            ));
-        }
-        haven_common::types::PermissionScope::Always => {
-            let config_apply_guard =
-                persist_permanent_permission(state, grant_key.as_str(), perm_effect).await?;
-            state
-                .runtime
-                .services
-                .authorization
-                .grant(None, grant_key, perm_effect, perm_scope)
-                .await;
-            drop(config_apply_guard);
-        }
-    }
-
-    if !pending.request.resolve(serde_json::Value::Bool(allowed)) {
-        return Err(log_err(
-            "resolve_ui_confirmation",
-            "UI confirmation request is no longer pending",
-        ));
-    }
-    Ok(())
-}
-
-async fn execute_ui_confirmation_action(
-    state: &AppState,
-    app: &AppHandle,
-    pending: UiConfirmationPending,
-) -> Result<(), String> {
-    match &pending.action {
-        UiConfirmationAction::Skill { name, params } => {
-            let proof = state
-                .runtime
-                .services
-                .authorization
-                .confirm_for_execution(&pending.authorization_request, &pending.receipt)
-                .await
-                .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;
-            state
-                .runtime
-                .services
-                .skill_execution
-                .execute_skill(
-                    name,
-                    params,
-                    &pending.authorization_request,
-                    &proof,
-                    tokio_util::sync::CancellationToken::new(),
-                )
-                .await
-                .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;
-        }
-        UiConfirmationAction::Admin { request } => {
-            let result = crate::commands::execute_admin_operation(
-                state,
-                "resolve_ui_confirmation admin",
-                request.as_ref().clone(),
-            )
-            .await?;
-            crate::commands::finalize_confirmed_admin_ui_operation(state, app, request, &result)
-                .await?;
-        }
-        UiConfirmationAction::SandboxOutputPromotion => {
-            let proof = state
-                .runtime
-                .services
-                .authorization
-                .confirm_for_execution(&pending.authorization_request, &pending.receipt)
-                .await
-                .map_err(|error| log_err("resolve_ui_confirmation sandbox promotion", error))?;
-            #[cfg(windows)]
-            {
-                state
-                    .runtime
-                    .tools
-                    .promote_reviewed_sandbox_output(
-                        &pending.authorization_request,
-                        &proof,
-                        tokio_util::sync::CancellationToken::new(),
-                    )
-                    .await
-                    .map_err(|error| log_err("resolve_ui_confirmation sandbox promotion", error))?;
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = proof;
-                return Err(log_err(
-                    "resolve_ui_confirmation sandbox promotion",
-                    "sandbox output promotion is available only on Windows",
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn persist_permanent_permission(
-    state: &AppState,
-    key: &str,
-    effect: haven_common::types::PermissionEffect,
-) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
-    use haven_common::config::StoredPermission;
-    let guard = state.runtime.config_runtime_coordinator.lock_owned().await;
-    state
-        .runtime
-        .config_service
-        .edit(|config| {
-            let permissions = &mut config.security.permissions;
-            if let Some(existing) = permissions.iter_mut().find(|p| p.key == key) {
-                existing.effect = effect;
-            } else {
-                permissions.push(StoredPermission {
-                    key: key.to_string(),
-                    effect,
-                });
-            }
-            Ok(())
-        })
-        .map_err(|e| log_err("persist_permanent_permission", e))?;
-    Ok(guard)
-}
-
 /// Manually update a session's display title.
 #[tauri::command]
 pub async fn update_session_title(
@@ -1097,13 +712,16 @@ pub async fn get_latest_session_for_resume(
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfirmationResolution, ConfirmationResolutionResult, ExecutorSessionDisplay,
-        InteractionStatus, SessionOrigin, SessionRecordDto, SessionResumeMessageDto,
-        accept_ui_confirmation, arbitrate_app_confirmation, end_session_display_title,
+        ConfirmationResolutionResult, ExecutorSessionDisplay, InteractionStatus, SessionOrigin,
+        SessionRecordDto, SessionResumeMessageDto, end_session_display_title,
         latest_session_for_resume_from_store, resume_response_for_session,
-        resume_session_from_store, session_lineage_from_store, validate_app_confirmation_decision,
+        resume_session_from_store, session_lineage_from_store,
     };
-    use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
+    use crate::app_state::AppState;
+    use crate::commands::confirmation::{
+        AppConfirmationResolution, UiConfirmationAction, UiConfirmationPending,
+        accept_ui_confirmation, arbitrate_app_confirmation, validate_app_confirmation_decision,
+    };
     use crate::commands::{RuntimeSessionDto, RuntimeSessionListResponse};
     use haven_agent::{InteractionOwner, InteractionRequest, SessionInfo, StepInfo};
     use haven_common::lifecycle::SessionStatus;
@@ -1180,18 +798,21 @@ mod tests {
         let request =
             InteractionRequest::ui_confirm(tool_name.into(), tool_input.clone(), receipt.clone());
         let request_id = request.request_id.clone();
-        state.ui_confirmations.lock().await.insert(
-            request_id.clone(),
-            UiConfirmationPending {
-                request,
-                authorization_request,
-                receipt,
-                action: UiConfirmationAction::Skill {
-                    name: "test".into(),
-                    params: tool_input,
+        state
+            .app_confirmations
+            .insert_for_test(
+                request_id.clone(),
+                UiConfirmationPending {
+                    request,
+                    authorization_request,
+                    receipt,
+                    action: UiConfirmationAction::Skill {
+                        name: "test".into(),
+                        params: tool_input,
+                    },
                 },
-            },
-        );
+            )
+            .await;
         (directory, state, request_id)
     }
 
@@ -1641,26 +1262,14 @@ mod tests {
             deny_app_confirmation(&state, &session_owner, &request_id).await,
             Ok(AppConfirmationResolution::Stale)
         ));
-        assert!(
-            state
-                .ui_confirmations
-                .lock()
-                .await
-                .contains_key(&request_id)
-        );
+        assert!(state.app_confirmations.contains(&request_id).await);
 
         let owner = app_command_owner();
         assert!(matches!(
             deny_app_confirmation(&state, &owner, "conf-97baf3a9879fa02d47c84b6f30c91057").await,
             Ok(AppConfirmationResolution::Stale)
         ));
-        assert!(
-            state
-                .ui_confirmations
-                .lock()
-                .await
-                .contains_key(&request_id)
-        );
+        assert!(state.app_confirmations.contains(&request_id).await);
 
         let AppConfirmationResolution::Resolved(pending) =
             deny_app_confirmation(&state, &owner, &request_id)
@@ -1670,13 +1279,7 @@ mod tests {
             panic!("matching app owner and request id should resolve")
         };
         assert_eq!(pending.request.status, InteractionStatus::Resolved);
-        assert!(
-            !state
-                .ui_confirmations
-                .lock()
-                .await
-                .contains_key(&request_id)
-        );
+        assert!(!state.app_confirmations.contains(&request_id).await);
         assert!(matches!(
             deny_app_confirmation(&state, &owner, &request_id).await,
             Ok(AppConfirmationResolution::Stale)
@@ -1699,13 +1302,7 @@ mod tests {
             panic!("expired request should return the Expired result")
         };
         assert_eq!(pending.request.status, InteractionStatus::Expired);
-        assert!(
-            !state
-                .ui_confirmations
-                .lock()
-                .await
-                .contains_key(&request_id)
-        );
+        assert!(!state.app_confirmations.contains(&request_id).await);
         assert_eq!(
             serde_json::to_string(&ConfirmationResolutionResult::Expired).unwrap(),
             "\"expired\""
@@ -1731,12 +1328,10 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.contains("persisted session"));
-        let registry = state.ui_confirmations.lock().await;
         assert_eq!(
-            registry.get(&request_id).unwrap().request.status,
-            InteractionStatus::Pending
+            state.app_confirmations.status(&request_id).await,
+            Some(InteractionStatus::Pending)
         );
-        drop(registry);
         state.runtime.shutdown().await;
     }
 

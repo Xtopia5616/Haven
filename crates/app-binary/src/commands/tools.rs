@@ -236,7 +236,7 @@ pub async fn promote_sandbox_output(
                     &app,
                     request,
                     receipt,
-                    crate::app_state::UiConfirmationAction::SandboxOutputPromotion,
+                    crate::commands::confirmation::UiConfirmationAction::SandboxOutputPromotion,
                 )
                 .await?)
             }

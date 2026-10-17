@@ -1,4 +1,5 @@
-use crate::app_state::{AppState, UiConfirmationAction};
+use crate::app_state::AppState;
+use crate::commands::confirmation::UiConfirmationAction;
 use crate::commands::contracts::SkillExecutionResponse;
 use crate::commands::log_err;
 use crate::commands::{

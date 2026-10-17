@@ -150,7 +150,7 @@ Inbox 侧格式要按无兼容目标明确切换：升级前备份后重置 `inb
 
 ### Slice 9 — 延续第一轮仍成立的内部职责切片
 
-前一轮中的通知配置单 owner 已提前为本轮 Slice 2；AppCommand confirmation owner、SessionStore 私有模块拆分、Tools `security.rs` 私有职责拆分、Agent `tool_runner.rs` 私有职责拆分仍成立，按 [第一轮源码审计方案](refactor-plan-source-audit-2026-10-17.md) 的事务与安全边界执行。第一轮计划中关于 command metadata “Rust 目前已是权威”的事实描述以本轮复核纠正；当前实际不是逐字段校验。本轮不重新把已验证的事务、session、authorization 不变量重复设计一遍。
+前一轮中的通知配置单 owner 已提前为本轮 Slice 2；AppCommand confirmation owner 与 admin adapter 已完成（ADR 1302）。当前按 [第一轮源码审计方案](refactor-plan-source-audit-2026-10-17.md) 推进 SessionStore 私有模块拆分，随后是 Tools `security.rs` 和 Agent `tool_runner.rs` 私有职责拆分，保持各自既有事务与安全边界。第一轮计划中关于 command metadata “Rust 目前已是权威”的事实描述以本轮复核纠正；当前实际不是逐字段校验。本轮不重新把已验证的事务、session、authorization 不变量重复设计一遍。
 
 ## 5. 实施门禁与数据切换
 
