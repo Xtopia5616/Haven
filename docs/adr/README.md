@@ -1297,3 +1297,4 @@
 - [1306：由私有模块拥有 SessionStore rollback 与 usage 事务](1306-own-session-rollback-and-usage-transactions.md)
 - [1307：拆分 Tools 安全提示与路径入口模块](1307-split-tools-security-prompts-and-path-entry.md)
 - [1308：将 Tools 授权契约迁入私有模块](1308-move-tools-authorization-contracts.md)
+- [1309：拆分 Tools 执行期授权与进程启动许可](1309-split-tools-execution-permits.md)
