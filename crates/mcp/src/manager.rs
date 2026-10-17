@@ -1798,31 +1798,19 @@ mod manager_lifecycle_tests {
     struct MockHttpServer {
         address: std::net::SocketAddr,
         methods: tokio::sync::mpsc::UnboundedReceiver<String>,
-        session_ids: tokio::sync::mpsc::UnboundedReceiver<Option<String>>,
         cancel: CancellationToken,
         task: tokio::task::JoinHandle<()>,
     }
 
     impl MockHttpServer {
         async fn start(gated_method: Option<&str>) -> (Self, Option<oneshot::Sender<()>>) {
-            Self::start_on_occurrence(gated_method, 1).await
-        }
-
-        async fn start_legacy() -> Self {
-            Self::start_on_occurrence_mode(None, 1, true).await.0
+            Self::start_on_occurrence(gated_method, 1, false).await
         }
 
         async fn start_on_occurrence(
             gated_method: Option<&str>,
             occurrence: usize,
-        ) -> (Self, Option<oneshot::Sender<()>>) {
-            Self::start_on_occurrence_mode(gated_method, occurrence, false).await
-        }
-
-        async fn start_on_occurrence_mode(
-            gated_method: Option<&str>,
-            occurrence: usize,
-            legacy_probe: bool,
+            reject_discovery: bool,
         ) -> (Self, Option<oneshot::Sender<()>>) {
             let listener = TcpListener::bind("127.0.0.1:0")
                 .await
@@ -1831,7 +1819,6 @@ mod manager_lifecycle_tests {
             let cancel = CancellationToken::new();
             let server_cancel = cancel.clone();
             let (method_tx, methods) = tokio::sync::mpsc::unbounded_channel();
-            let (session_id_tx, session_ids) = tokio::sync::mpsc::unbounded_channel();
             let (release_tx, release_rx) = oneshot::channel();
             let gate = gated_method.map(|method| {
                 Arc::new(Mutex::new(Some((
@@ -1851,18 +1838,9 @@ mod manager_lifecycle_tests {
                                 let method_tx = method_tx.clone();
                                 let gate = server_gate.clone();
                                 let cancel = server_cancel.clone();
-                                let legacy_probe = legacy_probe;
-                                let session_id_tx = session_id_tx.clone();
+                                let reject_discovery = reject_discovery;
                                 handlers.spawn(async move {
-                                    serve_mcp_request(
-                                        stream,
-                                        method_tx,
-                                        session_id_tx,
-                                        gate,
-                                        cancel,
-                                        legacy_probe,
-                                    )
-                                    .await;
+                                    serve_mcp_request(stream, method_tx, gate, cancel, reject_discovery).await;
                                 });
                             }
                             Err(_) => break,
@@ -1877,7 +1855,6 @@ mod manager_lifecycle_tests {
                 Self {
                     address,
                     methods,
-                    session_ids,
                     cancel,
                     task,
                 },
@@ -1907,19 +1884,6 @@ mod manager_lifecycle_tests {
             .unwrap_or_else(|_| panic!("timed out waiting for MCP method {expected}"));
         }
 
-        async fn wait_for_session_id(&mut self, expected: &str) {
-            tokio::time::timeout(Duration::from_secs(3), async {
-                while let Some(session_id) = self.session_ids.recv().await {
-                    if session_id.as_deref() == Some(expected) {
-                        return;
-                    }
-                }
-                panic!("mock MCP endpoint stopped before receiving the session id");
-            })
-            .await
-            .expect("timed out waiting for the MCP session header");
-        }
-
         async fn shutdown(self) {
             self.cancel.cancel();
             let _ = tokio::time::timeout(Duration::from_secs(2), self.task).await;
@@ -1929,10 +1893,9 @@ mod manager_lifecycle_tests {
     async fn serve_mcp_request(
         stream: TcpStream,
         method_tx: tokio::sync::mpsc::UnboundedSender<String>,
-        session_id_tx: tokio::sync::mpsc::UnboundedSender<Option<String>>,
         gate: Option<MockRequestGate>,
         cancel: CancellationToken,
-        legacy_probe: bool,
+        reject_discovery: bool,
     ) {
         let (read_half, mut writer) = stream.into_split();
         let mut reader = BufReader::new(read_half);
@@ -1945,9 +1908,8 @@ mod manager_lifecycle_tests {
         if length == 0 {
             return;
         }
-        let is_get = line.starts_with("GET ");
+        let is_non_post = !line.starts_with("POST ");
         let mut content_length = 0usize;
-        let mut session_id = None;
         loop {
             line.clear();
             let Ok(Ok(length)) =
@@ -1963,13 +1925,8 @@ mod manager_lifecycle_tests {
             {
                 content_length = value.trim().parse().unwrap_or_default();
             }
-            if let Some((header, value)) = line.split_once(':')
-                && header.eq_ignore_ascii_case("mcp-session-id")
-            {
-                session_id = Some(value.trim().to_string());
-            }
         }
-        if is_get {
+        if is_non_post {
             let _ = writer
                 .write_all(
                     b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -1988,8 +1945,15 @@ mod manager_lifecycle_tests {
         let Some(method) = request.get("method").and_then(Value::as_str) else {
             return;
         };
-        let _ = session_id_tx.send(session_id);
         let _ = method_tx.send(method.to_string());
+        if method == "server/discover" && reject_discovery {
+            let _ = writer
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+            return;
+        }
         if let Some(gate) = gate {
             let receiver = {
                 let mut gate = gate.lock().await;
@@ -2021,15 +1985,6 @@ mod manager_lifecycle_tests {
             }
         }
 
-        if method == "server/discover" && legacy_probe {
-            let _ = writer
-                .write_all(
-                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await;
-            return;
-        }
-
         let (status, response) = match method {
             "server/discover" => (
                 "200 OK",
@@ -2050,19 +2005,6 @@ mod manager_lifecycle_tests {
                 })
                 .to_string(),
             ),
-            "initialize" => (
-                "200 OK",
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": request.get("id"),
-                    "result": {
-                        "protocolVersion": crate::protocol::LEGACY_PROTOCOL_VERSION,
-                        "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "manager-test-server", "version": "1"}
-                    }
-                })
-                .to_string(),
-            ),
             "tools/list" => (
                 "200 OK",
                 serde_json::json!({
@@ -2076,7 +2018,6 @@ mod manager_lifecycle_tests {
                 })
                 .to_string(),
             ),
-            "notifications/initialized" => ("202 Accepted", String::new()),
             _ => ("202 Accepted", String::new()),
         };
         let content_type = if response.is_empty() {
@@ -2084,13 +2025,8 @@ mod manager_lifecycle_tests {
         } else {
             "Content-Type: application/json\r\n".to_string()
         };
-        let session_header = if legacy_probe && method == "initialize" {
-            "Mcp-Session-Id: manager-test-session\r\n"
-        } else {
-            ""
-        };
         let response_bytes = format!(
-            "HTTP/1.1 {status}\r\n{content_type}{session_header}Content-Length: {}\r\nConnection: close\r\n\r\n{response}",
+            "HTTP/1.1 {status}\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n{response}",
             response.len()
         );
         let _ = writer.write_all(response_bytes.as_bytes()).await;
@@ -2129,24 +2065,23 @@ mod manager_lifecycle_tests {
     }
 
     #[tokio::test]
-    async fn legacy_http_peer_uses_initialize_fallback_and_session_header() {
+    async fn old_http_peer_fails_without_legacy_handshake_fallback() {
         let manager = McpManager::new_with_network_policy(haven_common::types::NetworkPolicy::Open);
-        let mut server = MockHttpServer::start_legacy().await;
+        let (mut server, _) = MockHttpServer::start_on_occurrence(None, 1, true).await;
 
-        manager
+        let error = manager
             .connect_server(&server.config("legacy-http"))
             .await
-            .expect("legacy MCP HTTP peers remain supported");
+            .expect_err("old MCP HTTP peers must fail the required handshake");
 
         server.wait_for_method("server/discover").await;
-        server.wait_for_method("initialize").await;
-        server.wait_for_method("notifications/initialized").await;
-        server.wait_for_method("tools/list").await;
-        server.wait_for_session_id("manager-test-session").await;
-        assert!(matches!(
-            manager.client_status("legacy-http").await,
-            McpClientStatus::Connected
-        ));
+        assert!(
+            error
+                .to_string()
+                .contains("required modern server/discover handshake")
+        );
+        assert!(server.methods.try_recv().is_err());
+        assert!(manager.client("legacy-http").await.is_none());
 
         manager.shutdown_all().await;
         server.shutdown().await;
@@ -2232,7 +2167,7 @@ mod manager_lifecycle_tests {
             haven_common::types::NetworkPolicy::Open,
         ));
         let (mut server, _release) =
-            MockHttpServer::start_on_occurrence(Some("server/discover"), 2).await;
+            MockHttpServer::start_on_occurrence(Some("server/discover"), 2, false).await;
         let config = server.config("reconnect-denied");
         manager
             .connect_server(&config)

@@ -2,14 +2,13 @@ mod feature_runtime;
 
 use crate::features::{McpPromptList, McpResourceList, McpResourceRead, McpServerCapabilities};
 use crate::protocol::{
-    LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, McpCallOutput, McpClientStatus,
-    McpManagedCallOutput, McpProtocolMode, McpRpcError, McpServerSnapshot, McpStatusChangeEvent,
-    McpToolInfo, McpToolListPage, extract_mcp_content, http_parameter_headers,
-    should_fallback_to_legacy, supported_legacy_version,
+    MODERN_PROTOCOL_VERSION, McpCallOutput, McpClientStatus, McpManagedCallOutput, McpRpcError,
+    McpServerSnapshot, McpStatusChangeEvent, McpToolInfo, McpToolListPage, extract_mcp_content,
+    http_parameter_headers,
 };
 use crate::transport::{
     HttpInner, HttpShared, McpClientInner, NOTIFICATION_QUEUE_CAPACITY, StdioInner,
-    ToolsListChangedSignal, http_is_alive, spawn_sse_listener,
+    ToolsListChangedSignal, http_is_alive,
 };
 use crate::{McpStdioLaunchSpec, McpStdioProcess, McpStdioProcessLauncher};
 use futures_util::future::BoxFuture;
@@ -219,7 +218,7 @@ mod stdio_launcher_tests {
                 .unwrap();
         });
 
-        let response = stdio.request(1, "tools/list", None, false).await.unwrap();
+        let response = stdio.request(1, "tools/list", None).await.unwrap();
         assert_eq!(response["tools"], serde_json::json!([]));
         server.await.unwrap();
         drop(stdio);
@@ -657,8 +656,6 @@ pub struct McpClient {
     pub(crate) url: String,
     pub(crate) enabled: Arc<AtomicBool>,
     pub(crate) inner: Arc<Mutex<Option<McpClientInner>>>,
-    /// Protocol era and negotiated version for the active connection.
-    pub(crate) protocol_mode: Arc<Mutex<McpProtocolMode>>,
     server_capabilities: Arc<Mutex<McpServerCapabilities>>,
     pub(crate) status: Arc<Mutex<McpClientStatus>>,
     pub(crate) next_id: Arc<AtomicU64>,
@@ -670,7 +667,7 @@ pub struct McpClient {
     prompt_list_cache: Mutex<Option<McpPromptListSnapshot>>,
     prompt_list_refresh: Mutex<()>,
     pub(crate) last_error: Arc<Mutex<Option<String>>>,
-    /// Protocol selection and tool-discovery diagnostics; see `McpServerSnapshot`.
+    /// Protocol discovery and tool-catalog diagnostics; see `McpServerSnapshot`.
     pub(crate) last_diagnostic: Arc<Mutex<Option<String>>>,
     pub(crate) last_seen_at: Arc<Mutex<Option<i64>>>,
     pub(crate) reconnect_retries: Arc<Mutex<u32>>,
@@ -680,7 +677,7 @@ pub struct McpClient {
     /// receiver after a new connection is installed.
     pub(crate) notification_cancel: CancellationToken,
     /// Join owner for the current generation's server notification stream:
-    /// legacy HTTP GET SSE or modern `subscriptions/listen`.
+    /// modern `subscriptions/listen` response stream.
     pub(crate) notification_stream_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub(crate) rate_limiter: Arc<Mutex<RateLimiter>>,
     pub(crate) notification_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<Value>>>>,
@@ -1089,7 +1086,6 @@ impl McpClient {
             url: config.url.clone(),
             enabled: Arc::new(AtomicBool::new(config.enabled)),
             inner: Arc::new(Mutex::new(None)),
-            protocol_mode: Arc::new(Mutex::new(McpProtocolMode::Uninitialized)),
             server_capabilities: Arc::new(Mutex::new(McpServerCapabilities::default())),
             status: Arc::new(Mutex::new(McpClientStatus::Disconnected)),
             next_id: Arc::new(AtomicU64::new(1)),
@@ -1361,7 +1357,7 @@ impl McpClient {
             );
         }
         // Disable redirects: user-configured credential headers (e.g.
-        // X-API-Key) and the MCP session id are attached to every request,
+        // X-API-Key) are attached to every request,
         // and reqwest only strips the fixed auth-header list on cross-host
         // redirects. Following a redirect would leak those to an unverified
         // host, so refuse to follow any.
@@ -1371,7 +1367,6 @@ impl McpClient {
             http: built_client.client,
             url: built_client.endpoint.to_string(),
             headers,
-            mcp_session_id: Arc::new(tokio::sync::Mutex::new(String::new())),
             cancel: self.cancel_token.lock().await.clone(),
         });
         let inner = HttpInner {
@@ -1452,138 +1447,22 @@ impl McpClient {
     async fn connect_inner(&self) -> anyhow::Result<()> {
         let (notification_tx, new_rx) = tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
         *self.notification_rx.lock().await = Some(new_rx);
-        *self.protocol_mode.lock().await = McpProtocolMode::Uninitialized;
-
-        let mut http_shared: Option<Arc<HttpShared>> = None;
         let mut inner = match self.transport {
             McpServerTransport::Stdio => {
                 McpClientInner::Stdio(Box::new(self.spawn_stdio(notification_tx.clone()).await?))
             }
             McpServerTransport::Http => {
-                let (shared, inner) = self.spawn_http(notification_tx.clone()).await?;
-                http_shared = Some(shared);
+                let (_shared, inner) = self.spawn_http(notification_tx.clone()).await?;
                 McpClientInner::Http(inner)
             }
         };
 
-        // Discover the modern stateless protocol first. stdio needs this probe
-        // because a legacy server may otherwise process an era-ambiguous RPC
-        // before initialization; HTTP identifies legacy peers through its
-        // transport-level rejection.
-        let modern_mode = McpProtocolMode::modern(MODERN_PROTOCOL_VERSION);
+        // Every connection must implement the current stateless handshake.
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let discovery = inner
-            .request(id, "server/discover", None, &modern_mode, &[])
-            .await;
+        let discovery = inner.request(id, "server/discover", None, &[]).await;
 
-        let mut modern_tools_supported = false;
-        let mut modern_tools_list_changed = false;
-        let (mode, server_name, server_version, server_protocol, capabilities) = match discovery {
-            Ok(result) => {
-                let versions = result["supportedVersions"].as_array().ok_or_else(|| {
-                    anyhow::anyhow!("MCP server discovery response omitted supportedVersions")
-                })?;
-                if !versions
-                    .iter()
-                    .any(|version| version.as_str() == Some(MODERN_PROTOCOL_VERSION))
-                {
-                    anyhow::bail!(
-                        "MCP server discovery did not advertise the requested protocol version"
-                    );
-                }
-                let tools_capabilities = result
-                    .get("capabilities")
-                    .and_then(|value| value.get("tools"));
-                modern_tools_supported = tools_capabilities.is_some();
-                modern_tools_list_changed = tools_capabilities
-                    .and_then(|value| value.get("listChanged"))
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let capabilities =
-                    McpServerCapabilities::from_wire_capabilities(result.get("capabilities"));
-                let server_info = &result["_meta"]["io.modelcontextprotocol/serverInfo"];
-                (
-                    modern_mode,
-                    server_info["name"].as_str().unwrap_or("?").to_string(),
-                    server_info["version"].as_str().unwrap_or("?").to_string(),
-                    MODERN_PROTOCOL_VERSION.to_string(),
-                    capabilities,
-                )
-            }
-            Err(error)
-                if should_fallback_to_legacy(
-                    &error,
-                    matches!(self.transport, McpServerTransport::Http),
-                ) || supported_legacy_version(&error).is_some() =>
-            {
-                if self.cancel_token.lock().await.is_cancelled() {
-                    return Err(error);
-                }
-                let legacy_request_version =
-                    supported_legacy_version(&error).unwrap_or(LEGACY_PROTOCOL_VERSION);
-                // If the stdio reader died during the probe, do not reuse the
-                // broken stream for the legacy initialize handshake.
-                if matches!(&inner, McpClientInner::Stdio(stdio) if stdio.poisoned()) {
-                    inner = McpClientInner::Stdio(Box::new(
-                        self.spawn_stdio(notification_tx.clone()).await?,
-                    ));
-                }
-                let initialize = inner
-                    .request(
-                        self.next_id.fetch_add(1, Ordering::SeqCst),
-                        "initialize",
-                        Some(serde_json::json!({
-                            "protocolVersion": legacy_request_version,
-                            "capabilities": {},
-                            "clientInfo": {
-                                "name": "haven",
-                                "version": env!("CARGO_PKG_VERSION"),
-                            },
-                        })),
-                        &McpProtocolMode::Uninitialized,
-                        &[],
-                    )
-                    .await?;
-                let server_name = initialize["serverInfo"]["name"]
-                    .as_str()
-                    .unwrap_or("?")
-                    .to_string();
-                let server_version = initialize["serverInfo"]["version"]
-                    .as_str()
-                    .unwrap_or("?")
-                    .to_string();
-                let server_protocol = initialize["protocolVersion"]
-                    .as_str()
-                    .unwrap_or(LEGACY_PROTOCOL_VERSION)
-                    .to_string();
-                let capabilities =
-                    McpServerCapabilities::from_wire_capabilities(initialize.get("capabilities"));
-                if let Some(warning) = initialize["warning"].as_str() {
-                    tracing::warn!(
-                        server = %self.name,
-                        warning_bytes = warning.len(),
-                        "MCP server returned a warning"
-                    );
-                }
-                if server_protocol != legacy_request_version {
-                    tracing::warn!(
-                        server = %self.name,
-                        negotiated_protocol_bytes = server_protocol.len(),
-                        "MCP server selected a different legacy protocol version"
-                    );
-                    *self.last_diagnostic.lock().await = Some(format!(
-                        "server negotiated legacy MCP protocol '{}'; Haven requested '{}'",
-                        server_protocol, legacy_request_version
-                    ));
-                }
-                (
-                    McpProtocolMode::legacy(server_protocol.clone()),
-                    server_name,
-                    server_version,
-                    server_protocol,
-                    capabilities,
-                )
-            }
+        let result = match discovery {
+            Ok(result) => result,
             Err(error) => {
                 if let Some(rpc_error) = error.downcast_ref::<McpRpcError>()
                     && rpc_error.code == -32022
@@ -1594,17 +1473,44 @@ impl McpClient {
                         .and_then(|data| data["supported"].as_array())
                         .map_or(0, Vec::len);
                     anyhow::bail!(
-                        "MCP server does not support protocol version '{}'; it advertised {} supported version(s)",
+                        "MCP peer does not support the required modern protocol '{}'; it advertised {} version(s)",
                         MODERN_PROTOCOL_VERSION,
                         advertised
                     );
                 }
-                return Err(error.context("MCP modern protocol discovery failed"));
+                anyhow::bail!(
+                    "MCP peer does not support the required modern server/discover handshake: {}",
+                    haven_common::error::sanitize_error_text(&error.to_string())
+                );
             }
         };
-        *self.protocol_mode.lock().await = mode.clone();
+        let versions = result["supportedVersions"].as_array().ok_or_else(|| {
+            anyhow::anyhow!("MCP server discovery response omitted supportedVersions")
+        })?;
+        if !versions
+            .iter()
+            .any(|version| version.as_str() == Some(MODERN_PROTOCOL_VERSION))
+        {
+            anyhow::bail!(
+                "MCP server discovery did not advertise required protocol version '{}'",
+                MODERN_PROTOCOL_VERSION
+            );
+        }
+        let tools_capabilities = result
+            .get("capabilities")
+            .and_then(|value| value.get("tools"));
+        let modern_tools_supported = tools_capabilities.is_some();
+        let modern_tools_list_changed = tools_capabilities
+            .and_then(|value| value.get("listChanged"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let capabilities =
+            McpServerCapabilities::from_wire_capabilities(result.get("capabilities"));
+        let server_info = &result["_meta"]["io.modelcontextprotocol/serverInfo"];
+        let server_name = server_info["name"].as_str().unwrap_or("?").to_string();
+        let server_version = server_info["version"].as_str().unwrap_or("?").to_string();
+        let server_protocol = MODERN_PROTOCOL_VERSION.to_string();
         *self.server_capabilities.lock().await = capabilities;
-        inner.set_modern(mode.is_modern());
 
         tracing::info!(
             server = %self.name,
@@ -1613,35 +1519,13 @@ impl McpClient {
             "MCP server protocol selected"
         );
 
-        if mode.is_legacy() {
-            inner
-                .notify("notifications/initialized", None, &mode)
-                .await?;
-        }
-
         *self.inner.lock().await = Some(inner);
-
-        // HTTP: keep an SSE stream open so server-to-client notifications
-        // (e.g. tools/list_changed) are received.
-        if let Some(shared) = http_shared.filter(|_| mode.is_legacy()) {
-            let cancel = self.cancel_token.lock().await.clone();
-            let listener = spawn_sse_listener(
-                self.name.clone(),
-                cancel,
-                shared,
-                notification_tx,
-                self.max_sse_buffer,
-                self.tools_list_changed.clone(),
-                mode.clone(),
-            );
-            *self.notification_stream_task.lock().await = Some(listener);
-        }
 
         // Cache tools after successful connection. A successful handshake
         // with zero tools is suspicious (often a client/server SDK protocol
         // mismatch rather than an empty server), so record a diagnostic that
         // distinguishes the two cases.
-        let list_result = if mode.is_modern() && !modern_tools_supported {
+        let list_result = if !modern_tools_supported {
             Ok(McpToolListSnapshot {
                 tools: Vec::new(),
                 expires_at: None,
@@ -1654,7 +1538,7 @@ impl McpClient {
             Ok(snapshot) => {
                 let tools = snapshot.tools.clone();
                 *self.tools_cache.lock().await = Some(snapshot);
-                if tools.is_empty() && (!mode.is_modern() || modern_tools_supported) {
+                if tools.is_empty() && modern_tools_supported {
                     *self.last_diagnostic.lock().await = Some(format!(
                         "Connected, but tools/list returned 0 tools (server {} v{}, protocol {}). Either the server exposes no tools, or the client/server protocols are incompatible — check the server's logs and its SDK protocol support.",
                         server_name, server_version, server_protocol
@@ -1679,14 +1563,11 @@ impl McpClient {
         *self.last_error.lock().await = None;
         *self.last_seen_at.lock().await = Some(chrono::Utc::now().timestamp());
 
-        if mode.is_modern() && modern_tools_list_changed {
+        if modern_tools_list_changed {
             let inner = self.inner.lock().await;
             if let Some(inner) = inner.as_ref() {
-                let listener = inner.spawn_tools_subscription(
-                    self.name.clone(),
-                    self.next_id.clone(),
-                    mode.clone(),
-                );
+                let listener =
+                    inner.spawn_tools_subscription(self.name.clone(), self.next_id.clone());
                 *self.notification_stream_task.lock().await = Some(listener);
             }
         }
@@ -1797,7 +1678,6 @@ impl McpClient {
         &self,
         stop_notification_listener: bool,
     ) -> anyhow::Result<Option<haven_platform::SandboxOutputReview>> {
-        let protocol_mode = self.protocol_mode.lock().await.clone();
         // Cancel the client's own token first so any in-flight `call_tool`
         // (which selects on this token) aborts and releases the `inner` lock.
         self.cancel_token.lock().await.cancel();
@@ -1829,72 +1709,61 @@ impl McpClient {
         let mut guard = self.inner.lock().await;
         let mut stop_failure = None;
         let mut output_review = None;
-        if matches!(guard.as_ref(), Some(McpClientInner::Stdio(_))) {
-            if protocol_mode.is_legacy() {
-                let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-                if let Some(McpClientInner::Stdio(stdio)) = guard.as_ref()
-                    && let Err(error) = stdio.shutdown_protocol(id, &protocol_mode).await
-                {
+        if matches!(guard.as_ref(), Some(McpClientInner::Stdio(_)))
+            && let Some(McpClientInner::Stdio(stdio)) = guard.as_mut()
+        {
+            if let Err(error) = stdio.close_stdin().await {
+                tracing::debug!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "MCP stdio stdin did not close cleanly"
+                );
+            }
+
+            let exited = match stdio.bounded_exit_wait().await {
+                Ok(exited) => exited,
+                Err(error) => {
                     tracing::debug!(
                         error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                        "MCP stdio graceful shutdown exchange failed"
+                        "MCP stdio graceful process wait failed"
                     );
+                    false
+                }
+            };
+            if !exited {
+                if let Err(error) = stdio.start_kill().await {
+                    tracing::debug!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "MCP stdio process termination request failed"
+                    );
+                }
+                match stdio.bounded_kill_wait().await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        tracing::warn!(
+                            server = %self.name,
+                            "MCP stdio process did not exit within the bounded termination wait"
+                        );
+                        stop_failure = Some(
+                            "MCP stdio process did not stop within the bounded termination wait"
+                                .to_owned(),
+                        );
+                    }
+                    Err(error) => {
+                        let safe_error =
+                            haven_common::error::sanitize_error_text(&error.to_string());
+                        tracing::warn!(
+                            server = %self.name,
+                            error = %safe_error,
+                            "MCP stdio process wait failed after termination"
+                        );
+                        stop_failure = Some(format!(
+                            "MCP stdio process stop could not be confirmed: {safe_error}"
+                        ));
+                    }
                 }
             }
-            if let Some(McpClientInner::Stdio(stdio)) = guard.as_mut() {
-                if let Err(error) = stdio.close_stdin().await {
-                    tracing::debug!(
-                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                        "MCP stdio stdin did not close cleanly"
-                    );
-                }
-
-                let exited = match stdio.bounded_exit_wait().await {
-                    Ok(exited) => exited,
-                    Err(error) => {
-                        tracing::debug!(
-                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                            "MCP stdio graceful process wait failed"
-                        );
-                        false
-                    }
-                };
-                if !exited {
-                    if let Err(error) = stdio.start_kill().await {
-                        tracing::debug!(
-                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                            "MCP stdio process termination request failed"
-                        );
-                    }
-                    match stdio.bounded_kill_wait().await {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            tracing::warn!(
-                                server = %self.name,
-                                "MCP stdio process did not exit within the bounded termination wait"
-                            );
-                            stop_failure = Some(
-                                "MCP stdio process did not stop within the bounded termination wait"
-                                    .to_owned(),
-                            );
-                        }
-                        Err(error) => {
-                            let safe_error =
-                                haven_common::error::sanitize_error_text(&error.to_string());
-                            tracing::warn!(
-                                server = %self.name,
-                                error = %safe_error,
-                                "MCP stdio process wait failed after termination"
-                            );
-                            stop_failure = Some(format!(
-                                "MCP stdio process stop could not be confirmed: {safe_error}"
-                            ));
-                        }
-                    }
-                }
-                if stop_failure.is_none() {
-                    output_review = stdio.take_output_review().await;
-                }
+            if stop_failure.is_none() {
+                output_review = stdio.take_output_review().await;
             }
         }
         if let Some(error) = stop_failure {
@@ -1904,7 +1773,6 @@ impl McpClient {
             return Err(anyhow::anyhow!(error));
         }
         *guard = None;
-        *self.protocol_mode.lock().await = McpProtocolMode::Uninitialized;
         *self.server_capabilities.lock().await = McpServerCapabilities::default();
         *self.resource_list_cache.lock().await = None;
         self.resource_read_cache.lock().await.clear();
@@ -1914,7 +1782,6 @@ impl McpClient {
     }
 
     async fn list_tool_snapshot(&self) -> anyhow::Result<McpToolListSnapshot> {
-        let protocol_mode = self.protocol_mode.lock().await.clone();
         if self.inner.lock().await.is_none() {
             anyhow::bail!("MCP client '{}' is not connected", self.name);
         }
@@ -1943,20 +1810,16 @@ impl McpClient {
                 let Some(inner) = guard.as_mut() else {
                     anyhow::bail!("MCP client '{}' disconnected during tools/list", self.name);
                 };
-                let result = inner
-                    .request(id, "tools/list", params, &protocol_mode, &[])
-                    .await;
+                let result = inner.request(id, "tools/list", params, &[]).await;
                 self.discard_interrupted_stdio(&mut guard).await;
                 result?
             };
             let page: McpToolListPage = serde_json::from_value(result)
                 .map_err(|e| anyhow::anyhow!("invalid tools/list from '{}': {}", self.name, e))?;
-            if protocol_mode.is_modern() {
-                let page_ttl = page.ttl_ms.unwrap_or(0);
-                ttl_ms = Some(ttl_ms.map_or(page_ttl, |current| current.min(page_ttl)));
-                if page.cache_scope.as_deref() != Some("public") {
-                    cache_scope = McpToolCacheScope::Private;
-                }
+            let page_ttl = page.ttl_ms.unwrap_or(0);
+            ttl_ms = Some(ttl_ms.map_or(page_ttl, |current| current.min(page_ttl)));
+            if page.cache_scope.as_deref() != Some("public") {
+                cache_scope = McpToolCacheScope::Private;
             }
             if tools.len().saturating_add(page.tools.len()) > MAX_TOOLS_PER_SERVER {
                 anyhow::bail!(
@@ -1978,7 +1841,7 @@ impl McpClient {
         }
 
         validate_unique_tool_names(&tools)?;
-        if protocol_mode.is_modern() && matches!(self.transport, McpServerTransport::Http) {
+        if matches!(self.transport, McpServerTransport::Http) {
             tools.retain(|tool| {
                 if let Err(reason) = http_parameter_headers(&tool.input_schema, &Value::Null) {
                     tracing::warn!(
@@ -2188,10 +2051,7 @@ impl McpClient {
         }
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let protocol_mode = self.protocol_mode.lock().await.clone();
-        let parameter_headers = if protocol_mode.is_modern()
-            && matches!(self.transport, McpServerTransport::Http)
-        {
+        let parameter_headers = if matches!(self.transport, McpServerTransport::Http) {
             let schema = self
                 .tools_cache
                 .lock()
@@ -2214,7 +2074,6 @@ impl McpClient {
                     "name": tool_name,
                     "arguments": input,
                 })),
-                &protocol_mode,
                 &parameter_headers,
             ) => (Some(r), None),
             _ = client_cancel.cancelled() => (None, Some(true)),
@@ -2697,7 +2556,6 @@ mod modern_tool_list_tests {
             ..Default::default()
         };
         let client = McpClient::new(&config, 1024, 1024);
-        *client.protocol_mode.lock().await = McpProtocolMode::modern(MODERN_PROTOCOL_VERSION);
         *client.server_capabilities.lock().await = McpServerCapabilities {
             tools: false,
             resources,
@@ -2711,7 +2569,6 @@ mod modern_tool_list_tests {
             http: reqwest::Client::new(),
             url: config.url,
             headers: Vec::new(),
-            mcp_session_id: Arc::new(Mutex::new(String::new())),
             cancel,
         });
         *client.inner.lock().await = Some(McpClientInner::Http(HttpInner {
@@ -2771,7 +2628,6 @@ mod modern_tool_list_tests {
             ..Default::default()
         };
         let client = McpClient::new(&config, 1024, 1024);
-        *client.protocol_mode.lock().await = McpProtocolMode::modern(MODERN_PROTOCOL_VERSION);
         let (notification_tx, _notification_rx) =
             tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
         let cancel = client.cancel_token.lock().await.clone();
@@ -2779,7 +2635,6 @@ mod modern_tool_list_tests {
             http: reqwest::Client::new(),
             url: config.url,
             headers: Vec::new(),
-            mcp_session_id: Arc::new(Mutex::new(String::new())),
             cancel,
         });
         *client.inner.lock().await = Some(McpClientInner::Http(HttpInner {
@@ -2832,7 +2687,6 @@ mod modern_tool_list_tests {
             ..Default::default()
         };
         let client = McpClient::new(&config, 1024, 1024);
-        *client.protocol_mode.lock().await = McpProtocolMode::modern(MODERN_PROTOCOL_VERSION);
         *client.tools_cache.lock().await = Some(McpToolListSnapshot {
             tools: vec![McpToolInfo {
                 name: "stale".into(),
@@ -2849,7 +2703,6 @@ mod modern_tool_list_tests {
             http: reqwest::Client::new(),
             url: config.url,
             headers: Vec::new(),
-            mcp_session_id: Arc::new(Mutex::new(String::new())),
             cancel,
         });
         *client.inner.lock().await = Some(McpClientInner::Http(HttpInner {
@@ -2925,7 +2778,6 @@ mod modern_tool_list_tests {
             ..Default::default()
         };
         let client = McpClient::new(&config, 1024, 1024);
-        *client.protocol_mode.lock().await = McpProtocolMode::modern(MODERN_PROTOCOL_VERSION);
         *client.status.lock().await = McpClientStatus::Connected;
         *client.tools_cache.lock().await = Some(McpToolListSnapshot {
             tools: vec![McpToolInfo {
@@ -2943,7 +2795,6 @@ mod modern_tool_list_tests {
             http: reqwest::Client::new(),
             url: config.url,
             headers: Vec::new(),
-            mcp_session_id: Arc::new(Mutex::new(String::new())),
             cancel,
         });
         *client.inner.lock().await = Some(McpClientInner::Http(HttpInner {

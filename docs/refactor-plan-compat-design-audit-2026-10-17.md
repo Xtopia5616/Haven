@@ -134,6 +134,8 @@ Inbox 侧格式要按无兼容目标明确切换：升级前备份后重置 `inb
 
 删除旧 initialize negotiation、Legacy `McpProtocolMode`、Mcp-Session-Id 和 legacy HTTP SSE 路径以及对应测试。保留现代 stdio/HTTP 行为、SSE/request-stream 取消与 shutdown、现代 capability mapping 和安全检查。验证旧 peer 清晰失败，现代 peer 经两种 transport 完整连接、列举、调用和关闭；同步界面支持说明。
 
+**实施完成（ADR 1299）**：旧握手/session/独立 GET SSE 和兼容测试已移除；连接只接受当前 `server/discover`。现代 stdio/HTTP 请求、request-scoped SSE 与 bounded process shutdown 保留。代码和集成门禁结果由 ADR 1299 记录。
+
 ### Slice 7 — 收紧模型生成的事实抽取结构
 
 移除 `fact_extraction` / `fact_inference` 的宽泛类型 coercion；对 schema 不匹配的模型输出拒绝或跳过对应项，不将 null 变为空事实，不把对象/数组 stringify 后写入记忆。保留 JSON 响应 envelope 提取、字符串清洗、提示注入过滤和事实身份/实体验证。验收覆盖当前合法模型输出与各错型值、部分无效 batch 不污染有效事实。

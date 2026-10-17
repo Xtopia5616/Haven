@@ -1,6 +1,6 @@
 use crate::McpStdioProcess;
 use crate::protocol::{
-    McpHttpStatusError, McpProtocolMode, McpRpcError, REQUEST_TIMEOUT_SECS,
+    MODERN_PROTOCOL_VERSION, McpHttpStatusError, McpRpcError, REQUEST_TIMEOUT_SECS,
     encode_mcp_header_value, jsonrpc_notification, jsonrpc_request, params_with_protocol_meta,
 };
 use crate::sse::SseParser;
@@ -18,12 +18,9 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_STDIO_LINE_BYTES: usize = 1024 * 1024;
 const MAX_JSON_BODY_BYTES: usize = 4 * 1024 * 1024;
-const MAX_NOTIFY_BODY_BYTES: usize = 64 * 1024;
-const STDIO_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const STDIO_CLOSE_INPUT_TIMEOUT: Duration = Duration::from_millis(500);
 const STDIO_EXIT_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 const STDIO_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
-const STDIO_SHUTDOWN_WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 pub(crate) const NOTIFICATION_QUEUE_CAPACITY: usize = 256;
 
 /// Coalesced signal for `tools/list_changed`. The notification itself carries
@@ -69,7 +66,6 @@ pub(crate) struct StdioIo {
     stdin: AsyncMutex<Option<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>,
     pending: AsyncMutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
     active_subscriptions: std::sync::Mutex<HashSet<u64>>,
-    modern: AtomicBool,
     reader_failed: AtomicBool,
     notification_tx: tokio::sync::mpsc::Sender<Value>,
     tools_list_changed: Arc<ToolsListChangedSignal>,
@@ -115,7 +111,6 @@ impl StdioInner {
             stdin: AsyncMutex::new(Some(Box::new(stdin))),
             pending: AsyncMutex::new(HashMap::new()),
             active_subscriptions: std::sync::Mutex::new(HashSet::new()),
-            modern: AtomicBool::new(false),
             reader_failed: AtomicBool::new(false),
             notification_tx,
             tools_list_changed,
@@ -139,36 +134,12 @@ impl StdioInner {
         self.io.reader_failed.store(true, Ordering::Release);
     }
 
-    pub(crate) fn set_modern(&self, modern: bool) {
-        self.io.modern.store(modern, Ordering::Release);
-    }
-
     pub(crate) async fn is_alive(&self) -> bool {
         self.process.lock().await.is_alive().unwrap_or(false)
     }
 
     pub(crate) async fn start_kill(&self) -> std::io::Result<()> {
         self.process.lock().await.start_kill()
-    }
-
-    /// Send the legacy MCP shutdown exchange while keeping the response
-    /// reader alive after normal requests have been cancelled.
-    pub(crate) async fn shutdown_protocol(
-        &self,
-        id: u64,
-        mode: &McpProtocolMode,
-    ) -> anyhow::Result<()> {
-        if !mode.is_legacy() {
-            return Ok(());
-        }
-        let deadline = tokio::time::Instant::now() + STDIO_SHUTDOWN_TIMEOUT;
-        let shutdown_result = self
-            .io
-            .request_for_shutdown(id, "shutdown", None, deadline)
-            .await;
-        let exit_result = self.io.notify_for_shutdown("exit", None, deadline).await;
-        shutdown_result?;
-        exit_result
     }
 
     /// Close stdin to deliver EOF to the server. This is bounded and drops the
@@ -204,22 +175,16 @@ impl StdioInner {
         id: u64,
         method: &str,
         params: Option<Value>,
-        modern: bool,
     ) -> anyhow::Result<Value> {
-        self.io.request(id, method, params, modern).await
-    }
-
-    pub(crate) async fn notify(&self, method: &str, params: Option<Value>) -> anyhow::Result<()> {
-        self.io.notify(method, params).await
+        self.io.request(id, method, params).await
     }
 
     pub(crate) fn spawn_tools_subscription(
         &self,
         name: String,
         next_id: Arc<std::sync::atomic::AtomicU64>,
-        mode: McpProtocolMode,
     ) -> JoinHandle<()> {
-        spawn_stdio_tools_subscription(name, self.io.clone(), next_id, mode)
+        spawn_stdio_tools_subscription(name, self.io.clone(), next_id)
     }
 }
 
@@ -236,19 +201,13 @@ impl Drop for StdioInner {
 }
 
 impl StdioIo {
-    async fn request(
-        &self,
-        id: u64,
-        method: &str,
-        params: Option<Value>,
-        modern: bool,
-    ) -> anyhow::Result<Value> {
+    async fn request(&self, id: u64, method: &str, params: Option<Value>) -> anyhow::Result<Value> {
         if self.reader_failed.load(Ordering::Acquire) {
             anyhow::bail!("MCP stdio response reader has stopped");
         }
         let (response_tx, response_rx) = oneshot::channel();
         self.pending.lock().await.insert(id, response_tx);
-        if modern && method == "subscriptions/listen" {
+        if method == "subscriptions/listen" {
             self.active_subscriptions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -278,7 +237,7 @@ impl StdioIo {
                 result = response_rx => match result {
                     Err(_) => Err(anyhow::anyhow!("MCP stdio response reader stopped")),
                     Ok(Err(error)) => Err(anyhow::anyhow!("{error}")),
-                    Ok(Ok(value)) => Ok(unpack_jsonrpc(value, None)?),
+                    Ok(Ok(value)) => Ok(unpack_jsonrpc(value)?),
                 }
             }
         } else {
@@ -289,7 +248,7 @@ impl StdioIo {
                         Err(_) => Err(anyhow::anyhow!("MCP request '{}' timed out", method)),
                         Ok(Err(_)) => Err(anyhow::anyhow!("MCP stdio response reader stopped")),
                         Ok(Ok(Err(error))) => Err(anyhow::anyhow!("{error}")),
-                        Ok(Ok(Ok(value))) => Ok(unpack_jsonrpc(value, None)?),
+                        Ok(Ok(Ok(value))) => Ok(unpack_jsonrpc(value)?),
                     }
                 }
             }
@@ -297,77 +256,6 @@ impl StdioIo {
         self.pending.lock().await.remove(&id);
         self.remove_subscription(id);
         response
-    }
-
-    async fn request_for_shutdown(
-        &self,
-        id: u64,
-        method: &str,
-        params: Option<Value>,
-        deadline: tokio::time::Instant,
-    ) -> anyhow::Result<Value> {
-        if self.reader_failed.load(Ordering::Acquire) {
-            anyhow::bail!("MCP stdio response reader has stopped");
-        }
-        let (response_tx, response_rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, response_tx);
-        let mut line = serde_json::to_string(&jsonrpc_request(id, method, params))?;
-        line.push('\n');
-
-        let write_result = async {
-            let mut stdin = tokio::time::timeout_at(deadline, self.stdin.lock())
-                .await
-                .map_err(|_| anyhow::anyhow!("MCP stdio shutdown writer lock timed out"))?;
-            let Some(stdin) = stdin.as_mut() else {
-                anyhow::bail!("MCP stdio stdin has been closed");
-            };
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            write_stdio_line_with_timeout(
-                &mut **stdin,
-                &line,
-                method,
-                &CancellationToken::new(),
-                remaining.min(STDIO_SHUTDOWN_WRITE_TIMEOUT),
-            )
-            .await
-        }
-        .await;
-        let result = match write_result {
-            Ok(()) => match tokio::time::timeout_at(deadline, response_rx).await {
-                Ok(Ok(Ok(response))) => unpack_jsonrpc(response, None),
-                Ok(Ok(Err(error))) => Err(anyhow::anyhow!("{error}")),
-                Ok(Err(_)) => Err(anyhow::anyhow!("MCP stdio response reader stopped")),
-                Err(_) => Err(anyhow::anyhow!("MCP stdio shutdown response timed out")),
-            },
-            Err(error) => Err(error),
-        };
-        self.pending.lock().await.remove(&id);
-        result
-    }
-
-    async fn notify_for_shutdown(
-        &self,
-        method: &str,
-        params: Option<Value>,
-        deadline: tokio::time::Instant,
-    ) -> anyhow::Result<()> {
-        let mut line = serde_json::to_string(&jsonrpc_notification(method, params))?;
-        line.push('\n');
-        let mut stdin = tokio::time::timeout_at(deadline, self.stdin.lock())
-            .await
-            .map_err(|_| anyhow::anyhow!("MCP stdio shutdown writer lock timed out"))?;
-        let Some(stdin) = stdin.as_mut() else {
-            anyhow::bail!("MCP stdio stdin has been closed");
-        };
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        write_stdio_line_with_timeout(
-            &mut **stdin,
-            &line,
-            method,
-            &CancellationToken::new(),
-            remaining.min(STDIO_SHUTDOWN_WRITE_TIMEOUT),
-        )
-        .await
     }
 
     async fn close_stdin(&self, timeout: Duration) -> std::io::Result<()> {
@@ -389,17 +277,6 @@ impl StdioIo {
                 "MCP stdio stdin did not close in time",
             )),
         }
-    }
-
-    async fn notify(&self, method: &str, params: Option<Value>) -> anyhow::Result<()> {
-        let notification = jsonrpc_notification(method, params);
-        let mut line = serde_json::to_string(&notification)?;
-        line.push('\n');
-        let mut stdin = self.stdin.lock().await;
-        let Some(stdin) = stdin.as_mut() else {
-            anyhow::bail!("MCP stdio stdin has been closed");
-        };
-        write_stdio_line(&mut **stdin, &line, method, &self.cancel).await
     }
 
     async fn notify_cancelled_request(&self, request_id: u64) -> anyhow::Result<()> {
@@ -435,10 +312,7 @@ impl StdioIo {
     }
 
     fn accepts_notification(&self, value: &Value) -> bool {
-        if !self.modern.load(Ordering::Acquire)
-            || value.get("method").and_then(Value::as_str)
-                != Some("notifications/tools/list_changed")
-        {
+        if value.get("method").and_then(Value::as_str) != Some("notifications/tools/list_changed") {
             return true;
         }
         let Some(subscription_id) =
@@ -458,8 +332,8 @@ where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let failure = loop {
-        // Keep reading until EOF so a legacy shutdown response can still be
-        // received after the normal request token has been cancelled.
+        // Keep reading until EOF so a pending response can still be received
+        // after the normal request token has been cancelled.
         let line = read_line_bounded(&mut stdout).await;
         let line = match line {
             Ok(line) if !line.is_empty() => line,
@@ -498,7 +372,6 @@ fn spawn_stdio_tools_subscription(
     name: String,
     io: Arc<StdioIo>,
     next_id: Arc<std::sync::atomic::AtomicU64>,
-    mode: McpProtocolMode,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut backoff = Duration::from_secs(2);
@@ -506,20 +379,14 @@ fn spawn_stdio_tools_subscription(
             if io.cancel.is_cancelled() {
                 break;
             }
-            let version = match &mode {
-                McpProtocolMode::Modern { version } => version,
-                _ => break,
-            };
             let id = next_id.fetch_add(1, Ordering::SeqCst);
             let params = params_with_protocol_meta(
                 Some(serde_json::json!({
                     "notifications": {"toolsListChanged": true}
                 })),
-                version,
+                MODERN_PROTOCOL_VERSION,
             );
-            let result = io
-                .request(id, "subscriptions/listen", Some(params), true)
-                .await;
+            let result = io.request(id, "subscriptions/listen", Some(params)).await;
             if io.cancel.is_cancelled() {
                 if io.notify_cancelled_request(id).await.is_err() {
                     tracing::debug!(server = %name, "MCP stdio subscription cancellation could not be sent");
@@ -583,22 +450,16 @@ async fn write_stdio_line_with_timeout<W: tokio::io::AsyncWrite + Unpin + ?Sized
     }
 }
 
-/// Shared state for the Streamable HTTP transport: the reqwest client, the
-/// endpoint URL, request headers (from the config `env` list), and the legacy
-/// MCP protocol session id returned by the server (`Mcp-Session-Id`). It is
-/// not a Haven conversation session id and is unused by stateless peers.
+/// Shared state for the Streamable HTTP transport.
 pub(crate) struct HttpShared {
     pub(crate) http: reqwest::Client,
     pub(crate) url: String,
     pub(crate) headers: Vec<(String, String)>,
-    pub(crate) mcp_session_id: Arc<tokio::sync::Mutex<String>>,
     pub(crate) cancel: CancellationToken,
 }
 
-/// Streamable HTTP transport for modern stateless requests and older
-/// session-based peers. Requests are POSTed to the endpoint; responses may be
-/// JSON or request-scoped SSE. The legacy mode also opens a GET SSE stream for
-/// server-to-client notifications.
+/// Streamable HTTP transport. Requests are POSTed to the endpoint; responses
+/// may be JSON or request-scoped SSE.
 pub(crate) struct HttpInner {
     pub(crate) shared: Arc<HttpShared>,
     pub(crate) notification_tx: tokio::sync::mpsc::Sender<Value>,
@@ -613,11 +474,9 @@ impl HttpInner {
         id: u64,
         method: &str,
         params: Option<Value>,
-        mode: &McpProtocolMode,
         parameter_headers: &[(String, String)],
     ) -> anyhow::Result<Value> {
-        if mode.is_modern()
-            && method == "tools/call"
+        if method == "tools/call"
             && params
                 .as_ref()
                 .and_then(|params| params.get("name"))
@@ -633,15 +492,8 @@ impl HttpInner {
             .post(&self.shared.url)
             .json(&req)
             .header("Accept", "application/json, text/event-stream");
-        let builder = apply_http_request_headers(
-            builder,
-            &self.shared,
-            method,
-            &req,
-            mode,
-            parameter_headers,
-        )
-        .await;
+        let builder =
+            apply_http_request_headers(builder, &self.shared, method, &req, parameter_headers);
 
         let resp = tokio::select! {
             _ = self.shared.cancel.cancelled() => {
@@ -657,23 +509,12 @@ impl HttpInner {
             let status = status.as_u16();
             let body = read_bytes_bounded(resp, MAX_JSON_BODY_BYTES, &self.shared.cancel).await?;
             if let Ok(value) = serde_json::from_slice::<Value>(&body)
-                && let Some(error) = McpRpcError::from_response(&value, Some(status))
+                && let Some(error) = McpRpcError::from_response(&value)
             {
                 return Err(error.into());
             }
             return Err(McpHttpStatusError { status }.into());
         }
-        // Capture/refresh the session id so subsequent requests (and the SSE
-        // listener) can attach it.
-        if !mode.is_modern()
-            && let Some(mcp_session_id) = resp
-                .headers()
-                .get("mcp-session-id")
-                .and_then(|value| value.to_str().ok())
-        {
-            *self.shared.mcp_session_id.lock().await = mcp_session_id.to_string();
-        }
-
         let is_sse = resp
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -693,52 +534,8 @@ impl HttpInner {
             .await
         } else {
             let value = read_json_bounded(resp, MAX_JSON_BODY_BYTES, &self.shared.cancel).await?;
-            unpack_jsonrpc(value, None)
+            unpack_jsonrpc(value)
         }
-    }
-
-    pub(crate) async fn notify(
-        &mut self,
-        method: &str,
-        params: Option<Value>,
-        mode: &McpProtocolMode,
-    ) -> anyhow::Result<()> {
-        if mode.is_modern() {
-            anyhow::bail!("MCP notifications are not supported by the modern HTTP protocol");
-        }
-        let notification = jsonrpc_notification(method, params);
-        let builder = self
-            .shared
-            .http
-            .post(&self.shared.url)
-            .json(&notification)
-            .header("Accept", "application/json");
-        let builder =
-            apply_http_request_headers(builder, &self.shared, method, &notification, mode, &[])
-                .await;
-        let resp = tokio::select! {
-            _ = self.shared.cancel.cancelled() => {
-                anyhow::bail!("MCP HTTP notify '{}' cancelled", method)
-            }
-            r = tokio::time::timeout(
-                Duration::from_secs(REQUEST_TIMEOUT_SECS),
-                builder.send(),
-            ) => r.map_err(|_| anyhow::anyhow!("MCP HTTP notify '{}' timed out", method))??,
-        };
-        let status = resp.status();
-        if !status.is_success() {
-            let body = read_text_bounded(resp, MAX_JSON_BODY_BYTES, &self.shared.cancel).await?;
-            anyhow::bail!(
-                "MCP HTTP notify error (status {}): {}",
-                status.as_u16(),
-                haven_common::error::sanitize_error_text(&body)
-            );
-        }
-        // Drain the body to release the connection for reuse. A failed drain
-        // is still a transport failure: otherwise a broken connection is
-        // reported as a successful notification and can poison the pool.
-        read_bytes_bounded(resp, MAX_NOTIFY_BODY_BYTES, &self.shared.cancel).await?;
-        Ok(())
     }
 }
 
@@ -748,39 +545,17 @@ pub(crate) enum McpClientInner {
 }
 
 impl McpClientInner {
-    pub(crate) fn set_modern(&self, modern: bool) {
-        if let McpClientInner::Stdio(stdio) = self {
-            stdio.set_modern(modern);
-        }
-    }
-
     pub(crate) async fn request(
         &mut self,
         id: u64,
         method: &str,
         params: Option<Value>,
-        mode: &McpProtocolMode,
         parameter_headers: &[(String, String)],
     ) -> anyhow::Result<Value> {
-        let params = match mode {
-            McpProtocolMode::Modern { version } => Some(params_with_protocol_meta(params, version)),
-            McpProtocolMode::Uninitialized | McpProtocolMode::Legacy { .. } => params,
-        };
+        let params = Some(params_with_protocol_meta(params, MODERN_PROTOCOL_VERSION));
         match self {
-            McpClientInner::Stdio(s) => s.request(id, method, params, mode.is_modern()).await,
-            McpClientInner::Http(h) => h.request(id, method, params, mode, parameter_headers).await,
-        }
-    }
-
-    pub(crate) async fn notify(
-        &mut self,
-        method: &str,
-        params: Option<Value>,
-        mode: &McpProtocolMode,
-    ) -> anyhow::Result<()> {
-        match self {
-            McpClientInner::Stdio(s) => s.notify(method, params).await,
-            McpClientInner::Http(h) => h.notify(method, params, mode).await,
+            McpClientInner::Stdio(s) => s.request(id, method, params).await,
+            McpClientInner::Http(h) => h.request(id, method, params, parameter_headers).await,
         }
     }
 
@@ -788,10 +563,9 @@ impl McpClientInner {
         &self,
         name: String,
         next_id: Arc<std::sync::atomic::AtomicU64>,
-        mode: McpProtocolMode,
     ) -> JoinHandle<()> {
         match self {
-            McpClientInner::Stdio(stdio) => stdio.spawn_tools_subscription(name, next_id, mode),
+            McpClientInner::Stdio(stdio) => stdio.spawn_tools_subscription(name, next_id),
             McpClientInner::Http(http) => spawn_http_tools_subscription(
                 name,
                 http.shared.clone(),
@@ -799,7 +573,6 @@ impl McpClientInner {
                 http.max_sse_buffer,
                 http.tools_list_changed.clone(),
                 next_id,
-                mode,
             ),
         }
     }
@@ -807,42 +580,29 @@ impl McpClientInner {
 
 /// Read an SSE streamed response body until the JSON-RPC response matching
 /// `id` arrives; id-less messages in the stream are routed as notifications.
-fn unpack_jsonrpc(value: Value, http_status: Option<u16>) -> anyhow::Result<Value> {
-    if let Some(error) = McpRpcError::from_response(&value, http_status) {
+fn unpack_jsonrpc(value: Value) -> anyhow::Result<Value> {
+    if let Some(error) = McpRpcError::from_response(&value) {
         return Err(error.into());
     }
     Ok(value["result"].clone())
 }
 
-/// Attach the current MCP protocol session id (if any) and every
-/// user-configured header to a request builder. Shared by all HTTP transport
-/// call sites so the session/auth header handling cannot drift.
-pub(crate) async fn apply_http_mcp_session_headers(
+/// Attach every user-configured header to a request builder.
+pub(crate) fn apply_http_headers(
     mut builder: reqwest::RequestBuilder,
     shared: &HttpShared,
-    mode: Option<&McpProtocolMode>,
 ) -> reqwest::RequestBuilder {
     for (k, v) in &shared.headers {
         builder = builder.header(k.as_str(), v);
     }
-    let mcp_session_id = shared.mcp_session_id.lock().await;
-    if !mcp_session_id.is_empty() {
-        builder = builder.header("Mcp-Session-Id", mcp_session_id.as_str());
-    }
-    if let Some(McpProtocolMode::Legacy { version }) = mode
-        && version.as_str() >= "2025-06-18"
-    {
-        builder = builder.header("MCP-Protocol-Version", version.as_str());
-    }
     builder
 }
 
-async fn apply_http_request_headers(
+fn apply_http_request_headers(
     mut builder: reqwest::RequestBuilder,
     shared: &HttpShared,
     method: &str,
     request: &Value,
-    mode: &McpProtocolMode,
     parameter_headers: &[(String, String)],
 ) -> reqwest::RequestBuilder {
     for (key, value) in &shared.headers {
@@ -851,30 +611,14 @@ async fn apply_http_request_headers(
     for (key, value) in parameter_headers {
         builder = builder.header(key.as_str(), value.as_str());
     }
-    match mode {
-        McpProtocolMode::Uninitialized => {}
-        McpProtocolMode::Legacy { version } => {
-            let session_id = shared.mcp_session_id.lock().await;
-            if !session_id.is_empty() {
-                builder = builder.header("Mcp-Session-Id", session_id.as_str());
-            }
-            // Versions before 2025-06-18 predate this header. Omitting it for
-            // those peers preserves the established legacy wire contract.
-            if version.as_str() >= "2025-06-18" {
-                builder = builder.header("MCP-Protocol-Version", version.as_str());
-            }
-        }
-        McpProtocolMode::Modern { version } => {
-            builder = builder
-                .header("MCP-Protocol-Version", version.as_str())
-                .header("Mcp-Method", method);
-            let name = request["params"]["name"]
-                .as_str()
-                .or_else(|| request["params"]["uri"].as_str());
-            if let Some(name) = name {
-                builder = builder.header("Mcp-Name", encode_mcp_header_value(name));
-            }
-        }
+    builder = builder
+        .header("MCP-Protocol-Version", MODERN_PROTOCOL_VERSION)
+        .header("Mcp-Method", method);
+    let name = request["params"]["name"]
+        .as_str()
+        .or_else(|| request["params"]["uri"].as_str());
+    if let Some(name) = name {
+        builder = builder.header("Mcp-Name", encode_mcp_header_value(name));
     }
     builder
 }
@@ -900,7 +644,7 @@ async fn read_sse_response(
             Some(Ok(bytes)) => {
                 for ev in parser.feed(&bytes) {
                     if ev.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                        return unpack_jsonrpc(ev, None);
+                        return unpack_jsonrpc(ev);
                     }
                     if cancel.is_cancelled() {
                         anyhow::bail!("MCP HTTP request cancelled");
@@ -918,107 +662,6 @@ async fn read_sse_response(
     )
 }
 
-/// Open a long-lived SSE stream (GET) and route every server-to-client message
-/// into the notification channel. Ends when the stream closes or the cancel
-/// token fires; the caller retries with backoff.
-async fn listen_sse(
-    shared: &Arc<HttpShared>,
-    tx: &tokio::sync::mpsc::Sender<Value>,
-    cancel: &CancellationToken,
-    max_sse_buffer: usize,
-    tools_list_changed: &ToolsListChangedSignal,
-    mode: &McpProtocolMode,
-) -> anyhow::Result<()> {
-    let builder = shared
-        .http
-        .get(&shared.url)
-        .header("Accept", "text/event-stream");
-    let req = apply_http_mcp_session_headers(builder, shared, Some(mode)).await;
-    let resp = tokio::select! {
-        _ = cancel.cancelled() => return Ok(()),
-        result = tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), req.send()) => {
-            result.map_err(|_| anyhow::anyhow!("MCP SSE connection timed out"))??
-        }
-    };
-    let status = resp.status();
-    if !status.is_success() {
-        anyhow::bail!("SSE stream open failed (status {})", status.as_u16());
-    }
-    let mut stream = resp.bytes_stream();
-    let mut parser = SseParser::new(max_sse_buffer);
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => return Ok(()),
-            chunk = stream.next() => {
-                match chunk {
-                    Some(Ok(bytes)) => {
-                        for ev in parser.feed(&bytes) {
-                            if cancel.is_cancelled() {
-                                return Ok(());
-                            }
-                            enqueue_notification(tx, tools_list_changed, ev)?;
-                        }
-                    }
-                    Some(Err(e)) => return Err(e.into()),
-                    None => return Ok(()), // stream closed by the server
-                }
-            }
-        }
-    }
-}
-
-/// Background session that keeps an SSE notification stream open for an HTTP
-/// client, reconnecting with a short backoff when the stream drops.
-pub(crate) fn spawn_sse_listener(
-    name: String,
-    cancel: CancellationToken,
-    shared: Arc<HttpShared>,
-    notification_tx: tokio::sync::mpsc::Sender<Value>,
-    max_sse_buffer: usize,
-    tools_list_changed: Arc<ToolsListChangedSignal>,
-    mode: McpProtocolMode,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut backoff = Duration::from_secs(2);
-        loop {
-            if cancel.is_cancelled() {
-                break;
-            }
-            match listen_sse(
-                &shared,
-                &notification_tx,
-                &cancel,
-                max_sse_buffer,
-                &tools_list_changed,
-                &mode,
-            )
-            .await
-            {
-                Ok(()) => {}
-                Err(_) => {
-                    tracing::debug!(
-                        server = %name,
-                        "MCP HTTP SSE stream closed; retrying"
-                    );
-                }
-            }
-            if cancel.is_cancelled() {
-                break;
-            }
-            let jitter_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| u64::from(duration.subsec_millis() % 500))
-                .unwrap_or(0);
-            let delay = backoff.saturating_add(Duration::from_millis(jitter_ms));
-            backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                _ = tokio::time::sleep(delay) => {}
-            }
-        }
-    })
-}
-
 fn spawn_http_tools_subscription(
     name: String,
     shared: Arc<HttpShared>,
@@ -1026,13 +669,8 @@ fn spawn_http_tools_subscription(
     max_sse_buffer: usize,
     tools_list_changed: Arc<ToolsListChangedSignal>,
     next_id: Arc<std::sync::atomic::AtomicU64>,
-    mode: McpProtocolMode,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let version = match &mode {
-            McpProtocolMode::Modern { version } => version.clone(),
-            _ => return,
-        };
         let mut backoff = Duration::from_secs(2);
         loop {
             if shared.cancel.is_cancelled() {
@@ -1043,7 +681,7 @@ fn spawn_http_tools_subscription(
                 Some(serde_json::json!({
                     "notifications": {"toolsListChanged": true}
                 })),
-                &version,
+                MODERN_PROTOCOL_VERSION,
             );
             let request = jsonrpc_request(id, "subscriptions/listen", Some(params));
             let builder = shared
@@ -1051,15 +689,8 @@ fn spawn_http_tools_subscription(
                 .post(&shared.url)
                 .json(&request)
                 .header("Accept", "application/json, text/event-stream");
-            let builder = apply_http_request_headers(
-                builder,
-                &shared,
-                "subscriptions/listen",
-                &request,
-                &mode,
-                &[],
-            )
-            .await;
+            let builder =
+                apply_http_request_headers(builder, &shared, "subscriptions/listen", &request, &[]);
             let response = tokio::select! {
                 _ = shared.cancel.cancelled() => break,
                 result = tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), builder.send()) => result
@@ -1140,7 +771,7 @@ async fn read_tools_subscription_stream(
                         return Ok(());
                     }
                     if event.get("id").and_then(Value::as_u64) == Some(subscription_id) {
-                        unpack_jsonrpc(event, None)?;
+                        unpack_jsonrpc(event)?;
                         return Ok(());
                     }
                     let event_subscription_id =
@@ -1299,11 +930,8 @@ async fn read_json_bounded(
 /// status) means the endpoint is reachable; only a transport failure or
 /// timeout reports it dead.
 pub(crate) async fn http_is_alive(shared: &Arc<HttpShared>) -> bool {
-    let builder = shared
-        .http
-        .get(&shared.url)
-        .header("Accept", "text/event-stream");
-    let req = apply_http_mcp_session_headers(builder, shared, None).await;
+    let builder = shared.http.head(&shared.url);
+    let req = apply_http_headers(builder, shared);
     tokio::select! {
         biased;
         _ = shared.cancel.cancelled() => false,
@@ -1434,65 +1062,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_shutdown_exchange_survives_request_cancellation_and_closes_stdin() {
-        let (client_stream, peer_stream) = tokio::io::duplex(4096);
-        let (stdout, stdin) = tokio::io::split(client_stream);
-        let alive = Arc::new(AtomicBool::new(true));
-        let process = Box::new(PipeProcess {
-            stdin: Some(Box::new(stdin)),
-            stdout: Some(Box::new(stdout)),
-            stderr: None,
-            alive: alive.clone(),
-            kill_count: Arc::new(AtomicUsize::new(0)),
-        });
-        let (notification_tx, _notification_rx) =
-            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
-        let cancelled = CancellationToken::new();
-        let inner = StdioInner::new(
-            process,
-            notification_tx,
-            Arc::new(ToolsListChangedSignal::new()),
-            cancelled.clone(),
-        )
-        .unwrap();
-        cancelled.cancel();
-
-        let server = tokio::spawn(async move {
-            let (reader, mut writer) = tokio::io::split(peer_stream);
-            let mut reader = tokio::io::BufReader::new(reader);
-            let mut line = String::new();
-            reader.read_line(&mut line).await.unwrap();
-            let shutdown: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(shutdown["method"], "shutdown");
-            writer
-                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{}}\n")
-                .await
-                .unwrap();
-
-            line.clear();
-            reader.read_line(&mut line).await.unwrap();
-            let exit: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(exit["method"], "exit");
-
-            let mut trailing = Vec::new();
-            reader.read_to_end(&mut trailing).await.unwrap();
-            assert!(trailing.is_empty());
-        });
-
-        inner
-            .shutdown_protocol(7, &McpProtocolMode::legacy("2025-06-18"))
-            .await
-            .unwrap();
-        inner.close_stdin().await.unwrap();
-        tokio::time::timeout(Duration::from_secs(1), server)
-            .await
-            .expect("server must observe shutdown, exit, and stdin EOF")
-            .unwrap();
-        drop(inner);
-        assert!(!alive.load(Ordering::Acquire));
-    }
-
-    #[tokio::test]
     async fn process_wait_can_be_bounded_then_retried_after_kill() {
         let (client_stream, _peer_stream) = tokio::io::duplex(64);
         let (stdout, stdin) = tokio::io::split(client_stream);
@@ -1558,7 +1127,6 @@ mod tests {
             http: reqwest::Client::new(),
             url: "http://127.0.0.1:1/mcp".into(),
             headers: vec![("Authorization".into(), "Bearer token".into())],
-            mcp_session_id: Arc::new(tokio::sync::Mutex::new("legacy-session".into())),
             cancel: CancellationToken::new(),
         };
         let request = jsonrpc_request(
@@ -1567,15 +1135,7 @@ mod tests {
             Some(serde_json::json!({"name": "東京", "arguments": {}})),
         );
         let builder = shared.http.post(&shared.url).json(&request);
-        let builder = apply_http_request_headers(
-            builder,
-            &shared,
-            "tools/call",
-            &request,
-            &McpProtocolMode::modern("2026-07-28"),
-            &[],
-        )
-        .await;
+        let builder = apply_http_request_headers(builder, &shared, "tools/call", &request, &[]);
         let headers = builder.build().unwrap().headers().clone();
 
         assert_eq!(headers["mcp-protocol-version"], "2026-07-28");
@@ -1679,7 +1239,6 @@ mod tests {
             http: reqwest::Client::builder().no_proxy().build().unwrap(),
             url: format!("http://{address}/"),
             headers: Vec::new(),
-            mcp_session_id: Arc::new(tokio::sync::Mutex::new(String::new())),
             cancel: cancel.clone(),
         });
         let probe = tokio::spawn({
@@ -1793,7 +1352,6 @@ mod tests {
             stdin: AsyncMutex::new(Some(Box::new(client_write))),
             pending: AsyncMutex::new(HashMap::new()),
             active_subscriptions: std::sync::Mutex::new(HashSet::new()),
-            modern: AtomicBool::new(true),
             reader_failed: AtomicBool::new(false),
             notification_tx,
             tools_list_changed: tools_list_changed.clone(),
@@ -1809,14 +1367,13 @@ mod tests {
                     1,
                     "subscriptions/listen",
                     Some(serde_json::json!({"notifications": {"toolsListChanged": true}})),
-                    true,
                 )
                 .await
             }
         });
         let request = tokio::spawn({
             let io = io.clone();
-            async move { io.request(2, "tools/list", None, true).await }
+            async move { io.request(2, "tools/list", None).await }
         });
 
         let mut server_reader = BufReader::new(server_read);
@@ -1875,7 +1432,6 @@ mod tests {
             stdin: AsyncMutex::new(Some(Box::new(client_stream))),
             pending: AsyncMutex::new(HashMap::new()),
             active_subscriptions: std::sync::Mutex::new(HashSet::new()),
-            modern: AtomicBool::new(true),
             reader_failed: AtomicBool::new(false),
             notification_tx: _notification_tx,
             tools_list_changed: Arc::new(ToolsListChangedSignal::new()),
@@ -1977,7 +1533,6 @@ mod tests {
             http: reqwest::Client::new(),
             url: format!("http://{address}/mcp"),
             headers: Vec::new(),
-            mcp_session_id: Arc::new(AsyncMutex::new(String::new())),
             cancel: cancel.clone(),
         });
         let task = spawn_http_tools_subscription(
@@ -1987,7 +1542,6 @@ mod tests {
             1024,
             signal.clone(),
             Arc::new(std::sync::atomic::AtomicU64::new(1)),
-            McpProtocolMode::modern("2026-07-28"),
         );
         tokio::time::timeout(Duration::from_secs(2), signal.notified())
             .await

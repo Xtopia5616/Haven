@@ -227,21 +227,16 @@ pub(crate) struct McpPromptResponse {
     pub(crate) messages: Vec<McpPromptMessage>,
 }
 
-pub(crate) fn validate_complete_result(
-    result: &Value,
-    modern: bool,
-    method: &str,
-) -> Result<(), String> {
+pub(crate) fn validate_complete_result(result: &Value, method: &str) -> Result<(), String> {
     match result.get("resultType") {
         Some(Value::String(result_type)) if result_type == "complete" => Ok(()),
         Some(Value::String(result_type)) if result_type == "input_required" => Err(format!(
             "MCP {method} requires additional interaction; Haven did not execute it"
         )),
         Some(_) => Err(format!("MCP {method} returned an unsupported result type")),
-        None if modern => Err(format!(
+        None => Err(format!(
             "MCP {method} response omitted the required result type"
         )),
-        None => Ok(()),
     }
 }
 
@@ -516,12 +511,11 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn modern_complete_result_is_required_and_mrtr_is_rejected_without_echoing_state() {
-        assert!(validate_complete_result(&serde_json::json!({}), true, "resources/read").is_err());
+    fn complete_result_is_required_and_mrtr_is_rejected_without_echoing_state() {
+        assert!(validate_complete_result(&serde_json::json!({}), "resources/read").is_err());
         assert!(
             validate_complete_result(
                 &serde_json::json!({"resultType": "complete"}),
-                true,
                 "resources/read"
             )
             .is_ok()
@@ -532,17 +526,16 @@ mod tests {
                 "requestState": "private-server-state",
                 "inputRequests": {"secret": {"method": "elicitation/create"}}
             }),
-            true,
             "resources/read",
         )
         .unwrap_err();
         assert!(error.contains("requires additional interaction"));
         assert!(!error.contains("private-server-state"));
-        assert!(validate_complete_result(&serde_json::json!({}), false, "prompts/get").is_ok());
+        assert!(validate_complete_result(&serde_json::json!({}), "prompts/get").is_err());
     }
 
     #[test]
-    fn modern_and_legacy_capabilities_are_detected_independently() {
+    fn current_capabilities_are_detected_from_discovery() {
         let modern = McpServerCapabilities::from_wire_capabilities(Some(&serde_json::json!({
             "resources": {"listChanged": true},
             "prompts": {}
@@ -551,14 +544,6 @@ mod tests {
         assert!(modern.resources);
         assert!(modern.prompts);
 
-        let legacy = McpServerCapabilities::from_wire_capabilities(Some(&serde_json::json!({
-            "tools": {},
-            "resources": null,
-            "prompts": {}
-        })));
-        assert!(legacy.tools);
-        assert!(!legacy.resources);
-        assert!(legacy.prompts);
         assert_eq!(
             McpServerCapabilities::from_wire_capabilities(None),
             McpServerCapabilities::default()

@@ -1,11 +1,9 @@
 use crate::client::{McpClient, RateLimiter};
 use crate::manager::McpManager;
 use crate::protocol::{
-    LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION, McpClientStatus, McpHttpStatusError,
-    McpProtocolMode, McpRpcError, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
-    encode_mcp_header_value, extract_mcp_content, http_parameter_headers, jsonrpc_notification,
-    jsonrpc_request, params_with_protocol_meta, should_fallback_to_legacy,
-    supported_legacy_version,
+    MODERN_PROTOCOL_VERSION, McpClientStatus, McpRpcError, McpServerSnapshot, McpStatusChangeEvent,
+    McpToolInfo, encode_mcp_header_value, extract_mcp_content, http_parameter_headers,
+    jsonrpc_notification, jsonrpc_request, params_with_protocol_meta,
 };
 use base64::Engine;
 use haven_common::config::McpServerConfig;
@@ -18,10 +16,10 @@ mod stdio_network_policy_tests;
 
 #[test]
 fn jsonrpc_request_basic() {
-    let req = jsonrpc_request(1, "initialize", None);
+    let req = jsonrpc_request(1, "server/discover", None);
     assert_eq!(req["jsonrpc"], "2.0");
     assert_eq!(req["id"], 1);
-    assert_eq!(req["method"], "initialize");
+    assert_eq!(req["method"], "server/discover");
     assert!(req.get("params").is_none());
 }
 
@@ -44,7 +42,6 @@ fn modern_request_metadata_is_self_describing() {
         "Haven"
     );
     assert!(params["_meta"]["io.modelcontextprotocol/clientCapabilities"].is_object());
-    assert!(McpProtocolMode::legacy(LEGACY_PROTOCOL_VERSION).is_legacy());
 }
 
 #[test]
@@ -105,52 +102,26 @@ fn modern_parameter_header_schema_fails_closed() {
 }
 
 #[test]
-fn legacy_fallback_only_uses_transport_compatibility_signals() {
-    let status = anyhow::Error::new(McpHttpStatusError { status: 400 });
-    assert!(should_fallback_to_legacy(&status, true));
-    assert!(!should_fallback_to_legacy(
-        &anyhow::anyhow!("connection failed"),
-        true
-    ));
-    assert!(should_fallback_to_legacy(
-        &anyhow::anyhow!("unknown method"),
-        false
-    ));
-
-    let modern_error = McpRpcError::from_response(
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "error": {"code": -32022, "message": "unsupported", "data": {"supported": ["2026-07-28"]}}
-        }),
-        Some(400),
-    )
+fn unsupported_protocol_errors_keep_advertised_versions_structured() {
+    let error = McpRpcError::from_response(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {"code": -32022, "message": "unsupported", "data": {"supported": ["2026-07-28"]}}
+    }))
     .expect("protocol error is retained structurally");
-    let supported_legacy = McpRpcError::from_response(
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "error": {"code": -32022, "message": "unsupported", "data": {"supported": ["2024-11-05", "2025-11-25"]}}
-        }),
-        Some(400),
-    )
-    .expect("unsupported-version response is retained");
+    assert_eq!(error.code, -32022);
     assert_eq!(
-        supported_legacy_version(&anyhow::Error::new(supported_legacy)),
-        Some("2025-11-25")
+        error.data.unwrap()["supported"].as_array().unwrap().len(),
+        1
     );
-    assert!(!should_fallback_to_legacy(
-        &anyhow::Error::new(modern_error),
-        true
-    ));
 }
 
 #[test]
-fn jsonrpc_notification_no_id() {
-    let req = jsonrpc_notification("notifications/initialized", None);
+fn jsonrpc_cancellation_notification_has_no_id() {
+    let req = jsonrpc_notification("notifications/cancelled", Some(json!({"requestId": 7})));
     assert_eq!(req["jsonrpc"], "2.0");
     assert!(req.get("id").is_none());
-    assert_eq!(req["method"], "notifications/initialized");
+    assert_eq!(req["method"], "notifications/cancelled");
 }
 
 #[test]

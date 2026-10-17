@@ -348,7 +348,12 @@
 		</MaterialField>
 
 		{#if isHttp()}
-			<MaterialField label="URL" forId="mcp-url" error={fieldErrors.url}>
+			<MaterialField
+				label="URL"
+				forId="mcp-url"
+				hint="Haven requires the current stateless MCP server/discover handshake. Older initialize/session peers are not supported. Streamable HTTP may return JSON or request-scoped SSE."
+				error={fieldErrors.url}
+			>
 				{#snippet children()}
 					<input
 						id="mcp-url"

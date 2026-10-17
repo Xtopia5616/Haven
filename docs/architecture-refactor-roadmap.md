@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；2026-10-17 第二轮逐文件审计新增兼容层清理与结构简化候选，当前顺序见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。Slice 1–5 均已完成；当前实施 Slice 6 MCP protocol 收敛。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
+> 状态：阶段 0–8 与 §5.8 Agent capability surface 实现已完成；2026-10-17 第二轮逐文件审计新增兼容层清理与结构简化候选，当前顺序见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)。Slice 1–6 均已完成；当前实施 Slice 7。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
 > 更新日期：2026-10-17
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,8 +74,8 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active** | Slice 6：将 MCP protocol 固定到当前现代握手，按第二轮审计保留 stdio/HTTP 现代传输行为与安全边界。 |
-| **Next** | Slice 6：将 MCP protocol 固定到当前现代握手，保留现代 stdio/HTTP、安全和取消行为。其后进行 owner 收敛及第一轮仍成立的模块职责切片，详见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)与[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
+| **Active** | Slice 7：收紧模型生成的事实抽取结构，保留现有 envelope 提取、清洗和身份验证。 |
+| **Next** | Slice 8：合并 App 转发层和重复数据/metadata 副本；之后延续第一轮仍成立的内部职责切片，详见[第二轮方案](refactor-plan-compat-design-audit-2026-10-17.md)与[第一轮方案](refactor-plan-source-audit-2026-10-17.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）

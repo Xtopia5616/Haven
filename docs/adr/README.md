@@ -1287,3 +1287,4 @@
 - [1296：移除无消费者的持久格式与 IPC 兼容入口](1296-remove-unused-persistence-and-ipc-compatibility.md)
 - [1297：统一 SessionEvent 与持久时间戳契约](1297-canonicalize-session-event-and-persisted-timestamps.md)
 - [1298：分离 Settings snapshot 与 patch 并要求显式媒体能力](1298-separate-settings-snapshot-and-patch-contracts.md)
+- [1299：仅支持当前无状态 MCP 协议](1299-require-modern-mcp-protocol.md)

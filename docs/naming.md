@@ -62,7 +62,7 @@
 - **Session permission grant 输出复用授权枚举**：`SessionPermissionGrant.target` 与 `.effect` 使用 Common `PermissionTarget` / `PermissionEffect`，UI 消费生成的 closed values；分层 capability 标识继续是字符串（ADR 0740）。
 - **消息角色复用 canonical vocabulary**：持久消息、Agent history、resume/live UI 中的 `role` 使用 Common `CanonicalRole`；数据库文本在写入时由 enum 序列化，读取时严格解析，UI 消费 generated type。Provider wire role 继续由各 LLM adapter 映射；模型发现与模型配置命令用 `request_kind: RequestKind` 选择逻辑请求，UI 请求引用生成的 `RequestKindInput`。消息角色、请求路由与模型配置 ID 是不同身份，不复用 `role` 字段（ADR 0726、0728、0729）。
 - **模型操作路由参数明确命名**：`discover_models`、`switch_model`、`set_reasoning_effort` 与 `set_web_search` 均以 `request_kind: RequestKind` 标识逻辑请求路由；参数命令仅修改该路由当前分配的模型。选择指定模型配置时使用独立的 `model_config_id`（renderer 边界为 `modelConfigId`；ADR 0728、0729）。
-- **协议 session ID 明确区分本地会话**：MCP peer 的 `Mcp-Session-Id` 保持协议给出的格式，内部字段命名为 `mcp_session_id`，不使用专指 Haven 对话的 `session_id`。
+- **MCP 当前连接无协议 session ID**：连接使用无状态现代握手，不保存或转发 `Mcp-Session-Id`；`session_id` 仍专指 Haven 对话。
 - **renderer 展示键与实体身份分开**：`StreamMessage.id` 保持 canonical 实体 ID；当同一实体需并行展示第二种投影时，使用稳定 `presentationKey` 作为 keyed rendering / resume projection key。此 key 不用于领域关联，也不持久化；tool card、交互请求和 transcript 关联仍按实体 `id`（ADR 1083）。
 - **持久消息类别与 UI 展示类型分开**：`messages.message_type` 使用 Common `TranscriptMessageKind` 表达 SQLite 闭合集合，写库序列化、读库严格解析并生成到 resume IPC；`StreamMessage.type` 是 renderer presentation discriminator，由 resume mapper 从 durable kind 投影，不复用或冒充持久类别（ADR 0727）。
 - **IPC 请求类型按命令 owner 命名**：前端 wrapper 的 request alias 必须从它实际调用的 generated command 派生；即使两个命令的字段形状相同，也分别命名，如 `SetSkillEnabledRequest` / `SetToolEnabledRequest`、`ReconnectMcpServerRequest` / `RemoveMcpServerRequest`，不要用某一个命令的类型 alias 覆盖另一个命令（ADR 0681、0731）。

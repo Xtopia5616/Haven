@@ -87,6 +87,8 @@ Common 不拥有网络 I/O 或这些传输生命周期（ADR 0855）。
 `transport.rs`（stdio、Streamable HTTP、SSE 和进程边界）、`client.rs`（单服务器连接、
 限流、重连与健康监控）和 `manager.rs`（多服务器 reconcile 与 LLM caller 适配）；
 `lib.rs` 只保留模块声明和公共导出，`sse.rs` 保留为 SSE parser。
+连接固定使用当前 MCP `server/discover` 无状态握手，HTTP 通知只通过 `subscriptions/listen`
+请求响应流传递；不支持旧 `initialize`、协议 session header 或独立 HTTP GET SSE listener。
 
 `haven-tools` 的工具核心按稳定边界分为 `tool_contract.rs`（Tool、ToolResult、typed
 operation 与执行策略）、`registry.rs`（全局注册表、SessionToolOverlay、版本快照与 probe）和

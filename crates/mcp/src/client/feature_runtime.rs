@@ -53,7 +53,6 @@ impl McpClient {
         &self,
         cancel: CancellationToken,
     ) -> anyhow::Result<McpResourceListSnapshot> {
-        let modern = self.protocol_mode.lock().await.is_modern();
         let fetched_at = Instant::now();
         let mut resources = Vec::new();
         let mut cursor = None::<String>;
@@ -74,8 +73,7 @@ impl McpClient {
             let result = self
                 .request_with_cancel("resources/list", params, &cancel)
                 .await?;
-            validate_complete_result(&result, modern, "resources/list")
-                .map_err(anyhow::Error::msg)?;
+            validate_complete_result(&result, "resources/list").map_err(anyhow::Error::msg)?;
             let page: McpResourceListPage = serde_json::from_value(result)
                 .map_err(|_| anyhow::anyhow!("MCP resources/list returned an invalid page"))?;
             let page_ttl = page.ttl_ms.unwrap_or(0);
@@ -146,7 +144,6 @@ impl McpClient {
             return Ok(entry.result.clone());
         }
 
-        let modern = self.protocol_mode.lock().await.is_modern();
         let fetched_at = Instant::now();
         let result = self
             .request_with_cancel(
@@ -155,7 +152,7 @@ impl McpClient {
                 &cancel,
             )
             .await?;
-        validate_complete_result(&result, modern, "resources/read").map_err(anyhow::Error::msg)?;
+        validate_complete_result(&result, "resources/read").map_err(anyhow::Error::msg)?;
         let response: McpResourceReadResponse = serde_json::from_value(result)
             .map_err(|_| anyhow::anyhow!("MCP resources/read returned an invalid response"))?;
         validate_resource_contents(&response.contents).map_err(anyhow::Error::msg)?;
@@ -226,7 +223,6 @@ impl McpClient {
         &self,
         cancel: CancellationToken,
     ) -> anyhow::Result<McpPromptListSnapshot> {
-        let modern = self.protocol_mode.lock().await.is_modern();
         let fetched_at = Instant::now();
         let mut prompts = Vec::new();
         let mut cursor = None::<String>;
@@ -247,8 +243,7 @@ impl McpClient {
             let result = self
                 .request_with_cancel("prompts/list", params, &cancel)
                 .await?;
-            validate_complete_result(&result, modern, "prompts/list")
-                .map_err(anyhow::Error::msg)?;
+            validate_complete_result(&result, "prompts/list").map_err(anyhow::Error::msg)?;
             let page: McpPromptListPage = serde_json::from_value(result)
                 .map_err(|_| anyhow::anyhow!("MCP prompts/list returned an invalid page"))?;
             let page_ttl = page.ttl_ms.unwrap_or(0);
@@ -324,7 +319,6 @@ impl McpClient {
             anyhow::bail!("MCP prompt argument value exceeded the byte limit");
         }
 
-        let modern = self.protocol_mode.lock().await.is_modern();
         let result = self
             .request_with_cancel(
                 "prompts/get",
@@ -332,7 +326,7 @@ impl McpClient {
                 &cancel,
             )
             .await?;
-        validate_complete_result(&result, modern, "prompts/get").map_err(anyhow::Error::msg)?;
+        validate_complete_result(&result, "prompts/get").map_err(anyhow::Error::msg)?;
         let response: McpPromptResponse = serde_json::from_value(result.clone())
             .map_err(|_| anyhow::anyhow!("MCP prompts/get returned an invalid response"))?;
         let prompt = McpPrompt {
@@ -383,10 +377,9 @@ impl McpClient {
             anyhow::bail!("MCP client '{}' is not connected", self.name);
         }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let protocol_mode = self.protocol_mode.lock().await.clone();
         let result = tokio::select! {
             result = guard.as_mut().expect("checked MCP client inner").request(
-                id, method, params, &protocol_mode, &[],
+                id, method, params, &[],
             ) => result,
             _ = client_cancel.cancelled() => {
                 self.discard_interrupted_stdio(&mut guard).await;

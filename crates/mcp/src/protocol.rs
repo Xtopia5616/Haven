@@ -6,49 +6,9 @@ use std::error::Error;
 use std::fmt;
 
 pub(crate) const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
-pub(crate) const LEGACY_PROTOCOL_VERSION: &str = "2024-11-05";
 pub(crate) const REQUEST_TIMEOUT_SECS: u64 = 30;
 
 const MCP_META_PREFIX: &str = "io.modelcontextprotocol/";
-const MCP_RPC_HEADER_MISMATCH: i64 = -32020;
-const MCP_RPC_MISSING_CLIENT_CAPABILITY: i64 = -32021;
-const MCP_RPC_UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
-
-/// Wire behavior selected for a peer. The protocol version belongs to the
-/// MCP peer, not to Haven's own session identity.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) enum McpProtocolMode {
-    #[default]
-    Uninitialized,
-    Modern {
-        version: String,
-    },
-    Legacy {
-        version: String,
-    },
-}
-
-impl McpProtocolMode {
-    pub(crate) fn modern(version: impl Into<String>) -> Self {
-        Self::Modern {
-            version: version.into(),
-        }
-    }
-
-    pub(crate) fn legacy(version: impl Into<String>) -> Self {
-        Self::Legacy {
-            version: version.into(),
-        }
-    }
-
-    pub(crate) fn is_modern(&self) -> bool {
-        matches!(self, Self::Modern { .. })
-    }
-
-    pub(crate) fn is_legacy(&self) -> bool {
-        matches!(self, Self::Legacy { .. })
-    }
-}
 
 /// Modern MCP carries client identity, capabilities, and protocol version on
 /// every request. This helper is also used for the `server/discover` probe.
@@ -71,17 +31,16 @@ pub(crate) fn params_with_protocol_meta(params: Option<Value>, version: &str) ->
     Value::Object(params)
 }
 
-/// Structured protocol error retained long enough for transport-era
-/// detection. Display text intentionally excludes server-controlled details.
+/// Structured protocol error. Display text intentionally excludes
+/// server-controlled details.
 #[derive(Debug)]
 pub(crate) struct McpRpcError {
     pub(crate) code: i64,
     pub(crate) data: Option<Value>,
-    pub(crate) http_status: Option<u16>,
 }
 
 impl McpRpcError {
-    pub(crate) fn from_response(value: &Value, http_status: Option<u16>) -> Option<Self> {
+    pub(crate) fn from_response(value: &Value) -> Option<Self> {
         if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
             return None;
         }
@@ -89,17 +48,7 @@ impl McpRpcError {
         Some(Self {
             code: error.get("code")?.as_i64()?,
             data: error.get("data").cloned(),
-            http_status,
         })
-    }
-
-    pub(crate) fn is_recognized_modern(&self) -> bool {
-        matches!(
-            self.code,
-            MCP_RPC_HEADER_MISMATCH
-                | MCP_RPC_MISSING_CLIENT_CAPABILITY
-                | MCP_RPC_UNSUPPORTED_PROTOCOL_VERSION
-        ) || (self.http_status == Some(404) && self.code == -32601)
     }
 }
 
@@ -123,44 +72,6 @@ impl fmt::Display for McpHttpStatusError {
 }
 
 impl Error for McpHttpStatusError {}
-
-pub(crate) fn should_fallback_to_legacy(error: &anyhow::Error, is_http: bool) -> bool {
-    if error
-        .downcast_ref::<McpRpcError>()
-        .is_some_and(McpRpcError::is_recognized_modern)
-    {
-        return false;
-    }
-    if !is_http {
-        return true;
-    }
-    error
-        .downcast_ref::<McpHttpStatusError>()
-        .is_some_and(|error| matches!(error.status, 400 | 404 | 405))
-        || error
-            .downcast_ref::<McpRpcError>()
-            .is_some_and(|error| matches!(error.http_status, Some(400 | 404 | 405)))
-}
-
-pub(crate) fn supported_legacy_version(error: &anyhow::Error) -> Option<&'static str> {
-    let rpc_error = error.downcast_ref::<McpRpcError>()?;
-    if rpc_error.code != MCP_RPC_UNSUPPORTED_PROTOCOL_VERSION {
-        return None;
-    }
-    let supported = rpc_error.data.as_ref()?.get("supported")?.as_array()?;
-    [
-        "2025-11-25",
-        "2025-06-18",
-        "2025-03-26",
-        LEGACY_PROTOCOL_VERSION,
-    ]
-    .into_iter()
-    .find(|version| {
-        supported
-            .iter()
-            .any(|candidate| candidate.as_str() == Some(*version))
-    })
-}
 
 /// Encode an HTTP routing-header value per Streamable HTTP. Header values
 /// outside the safe visible-ASCII set, surrounding whitespace, or the
@@ -217,7 +128,7 @@ pub(crate) fn http_parameter_headers(
 }
 
 /// Wire page returned by `tools/list`. New protocol revisions add pagination
-/// and cache hints while legacy peers may omit all three fields.
+/// and cache hints. All supported peers implement this current contract.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct McpToolListPage {
