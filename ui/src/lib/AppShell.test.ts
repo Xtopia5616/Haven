@@ -3,13 +3,13 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 import AppShell from './AppShell.svelte';
 
 describe('AppShell', () => {
-	it('marks development builds in the window chrome', () => {
+	it('shows a dev badge in the window chrome for development builds', () => {
 		render(AppShell, { activeTab: 'memory', tabs: [] } as any);
 
 		if (import.meta.env.DEV) {
-			expect(screen.getByText('开发版')).toBeTruthy();
+			expect(screen.getByText('dev')).toBeTruthy();
 		} else {
-			expect(screen.queryByText('开发版')).toBeNull();
+			expect(screen.queryByText('dev')).toBeNull();
 		}
 	});
 

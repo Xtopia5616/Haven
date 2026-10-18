@@ -11,7 +11,7 @@
 ## 决定
 
 - 开发启动使用 `tauri.dev.conf.json` 中独立的 `com.haven.app.dev` identifier，让开发版与正式版各自保持单实例并能并行运行。
-- 开发窗口的原生标题和应用内标题栏显示“开发版”；生产构建继续显示“Haven”。
+- 开发窗口的原生标题显示“Haven · 开发版”，应用内标题栏在 Haven 标题后显示 `dev` 徽标；生产构建继续显示“Haven”且不显示徽标。
 - 根目录 `pnpm run dev` 设置 `HAVEN_DATA_DIR` 为 `%APPDATA%\haven-dev`（非 Windows 为 `~/.local/share/haven-dev`）。`ConfigLoader::data_dir()` 是该显式覆盖值的唯一读取入口；所有衍生持久路径继续从它计算。
 - 直接运行 `cargo tauri dev` 时，开发者需同时传入开发 Tauri 配置并设置 `HAVEN_DATA_DIR`。
 

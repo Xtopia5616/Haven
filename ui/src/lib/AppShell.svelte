@@ -91,7 +91,7 @@
 				{/snippet}
 			</MaterialButton>
 			{#if isDevelopmentBuild}
-				<span class="development-badge" title="此窗口连接 Haven 开发环境">开发版</span>
+				<span class="development-badge" title="此窗口连接 Haven 开发环境">dev</span>
 			{/if}
 		</div>
 		<div class="titlebar-right">
