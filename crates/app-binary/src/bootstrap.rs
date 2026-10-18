@@ -9,13 +9,16 @@ use crate::events::*;
 use crate::handlers::{HavenInputEventHandler, HavenShellHandler, make_tray_icon};
 use crate::logging::init_tracing;
 use crate::notification::DesktopNotifications;
+use crate::startup_error::{StartupFailure, should_show_startup_error, show_startup_error};
+#[cfg(windows)]
+use crate::startup_error::{WebviewFailure, WebviewFailureMonitor};
 use haven_common::config::LogConfig;
 use haven_common::error::sanitize_error_text;
 use haven_input::{KeyCode, KeyCombo, KeyModifier};
 use haven_memory::SessionStore;
 use haven_tools::ToolRunLifecycleEvent;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -105,18 +108,19 @@ pub(crate) fn run() {
         Ok(loader) => loader,
         Err(error) => {
             // Configuration may be unavailable before its logging settings
-            // can be read. Install a console-only fallback so this startup
-            // failure still uses the normal structured logging path.
-            let fallback_log_cfg = LogConfig {
-                file_enabled: false,
-                ..LogConfig::default()
-            };
+            // can be read. Use the default log file path so this failure is
+            // still diagnosable for unattended autostart launches.
+            let fallback_log_cfg = LogConfig::default();
             let _ = init_tracing(&fallback_log_cfg);
+            let safe_error = sanitize_error_text(&error.to_string());
             tracing::error!(
-                error = %sanitize_error_text(&error.to_string()),
+                error = %safe_error,
                 "Haven cannot start because configuration is unavailable"
             );
-            return;
+            if should_show_startup_error(autostart::is_autostart_launch()) {
+                show_startup_error(StartupFailure::Configuration, Some(&safe_error));
+            }
+            std::process::exit(1);
         }
     };
     let log_cfg = config_loader.config().log.clone();
@@ -159,6 +163,14 @@ pub(crate) fn run() {
     let ui_assets = crate::ui_assets::ResourceUiAssets::default();
     let context = tauri::generate_context!(assets = ui_assets.clone());
     let ui_assets_for_setup = ui_assets.clone();
+    let app_state_initialization_failed = Arc::new(AtomicBool::new(false));
+    let setup_app_state_initialization_failed = Arc::clone(&app_state_initialization_failed);
+    #[cfg(windows)]
+    let webview_failure_monitor = Arc::new(WebviewFailureMonitor::default());
+    #[cfg(windows)]
+    let setup_webview_failure_monitor = Arc::clone(&webview_failure_monitor);
+    #[cfg(windows)]
+    let window_event_webview_failure_monitor = Arc::clone(&webview_failure_monitor);
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
@@ -173,10 +185,15 @@ pub(crate) fn run() {
                 log_ignored_result!("single_instance.set_focus", w.set_focus());
             });
         }))
-        .on_window_event(|window, event| {
+        .on_window_event(move |window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 log_ignored_result!("window.close.hide", window.hide());
+            }
+            #[cfg(windows)]
+            if matches!(event, tauri::WindowEvent::Focused(true)) {
+                window_event_webview_failure_monitor
+                    .on_window_focused(window.app_handle().clone());
             }
         })
         .setup(move |app| {
@@ -215,14 +232,36 @@ pub(crate) fn run() {
             // Window from tauri.conf already exists here. Init backend now so
             // cold-start work no longer runs with zero visible window.
             let t_setup = std::time::Instant::now();
-            let app_state = init_app_state(
+            let app_state = match init_app_state(
                 tracing_initialization.filter_handles,
                 tracing_initialization.effective_log_config,
                 config_loader,
-            );
+            ) {
+                Ok(state) => state,
+                Err(error) => {
+                    setup_app_state_initialization_failed.store(true, Ordering::Release);
+                    if should_show_startup_error(autostart::is_autostart_launch()) {
+                        show_startup_error(
+                            StartupFailure::ApplicationState,
+                            Some(&sanitize_error_text(&error.to_string())),
+                        );
+                    }
+                    return Err(error.into());
+                }
+            };
             app.manage(Arc::new(app_state));
             let notifications = Arc::new(DesktopNotifications::new(handle.clone()));
             app.manage(notifications.clone());
+
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                install_webview_failure_handlers(
+                    &window,
+                    handle.clone(),
+                    Arc::clone(&setup_webview_failure_monitor),
+                );
+            }
+
             tracing::info!(
                 "setup AppState ready in {}ms",
                 t_setup.elapsed().as_millis()
@@ -744,10 +783,16 @@ pub(crate) fn run() {
         ])
         .build(context)
         .unwrap_or_else(|error| {
-            tracing::error!(
-                error = %sanitize_error_text(&error.to_string()),
-                "error while building Haven app"
-            );
+            if !app_state_initialization_failed.load(Ordering::Acquire) {
+                let safe_error = sanitize_error_text(&error.to_string());
+                tracing::error!(
+                    error = %safe_error,
+                    "error while building Haven app"
+                );
+                if should_show_startup_error(autostart::is_autostart_launch()) {
+                    show_startup_error(StartupFailure::ApplicationBuild, Some(&safe_error));
+                }
+            }
             std::process::exit(1);
         })
         .run(|app_handle, event| {
@@ -763,6 +808,80 @@ pub(crate) fn run() {
                 state.runtime.teardown_blocking();
             }
         });
+}
+
+#[cfg(windows)]
+fn install_webview_failure_handlers(
+    window: &tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    monitor: Arc<WebviewFailureMonitor>,
+) {
+    use webview2_com::{NavigationCompletedEventHandler, ProcessFailedEventHandler};
+
+    let callback_monitor = Arc::clone(&monitor);
+    let callback_app = app.clone();
+    let result = window.with_webview(move |platform| {
+        let controller = platform.controller();
+        let core = match unsafe { controller.CoreWebView2() } {
+            Ok(core) => core,
+            Err(error) => {
+                tracing::error!(
+                    error = %sanitize_error_text(&error.to_string()),
+                    "failed to access the main WebView2 controller"
+                );
+                callback_monitor.report(&callback_app, WebviewFailure::Navigation);
+                return;
+            }
+        };
+
+        let navigation_monitor = Arc::clone(&callback_monitor);
+        let navigation_app = callback_app.clone();
+        let navigation_handler =
+            NavigationCompletedEventHandler::create(Box::new(move |_, args| {
+                if let Some(args) = args {
+                    let mut success = unsafe { std::mem::zeroed() };
+                    if unsafe { args.IsSuccess(std::ptr::addr_of_mut!(success)) }.is_ok()
+                        && !success.as_bool()
+                    {
+                        navigation_monitor.report(&navigation_app, WebviewFailure::Navigation);
+                    }
+                }
+                Ok(())
+            }));
+        let mut navigation_token = 0;
+        if let Err(error) =
+            unsafe { core.add_NavigationCompleted(&navigation_handler, &mut navigation_token) }
+        {
+            tracing::error!(
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to observe WebView2 navigation failures"
+            );
+            callback_monitor.report(&callback_app, WebviewFailure::Navigation);
+            return;
+        }
+
+        let process_monitor = Arc::clone(&callback_monitor);
+        let process_app = callback_app.clone();
+        let process_handler = ProcessFailedEventHandler::create(Box::new(move |_, _| {
+            process_monitor.report(&process_app, WebviewFailure::Process);
+            Ok(())
+        }));
+        let mut process_token = 0;
+        if let Err(error) = unsafe { core.add_ProcessFailed(&process_handler, &mut process_token) }
+        {
+            tracing::error!(
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to observe WebView2 process failures"
+            );
+        }
+    });
+    if let Err(error) = result {
+        tracing::error!(
+            error = %sanitize_error_text(&error.to_string()),
+            "failed to install WebView2 failure handlers"
+        );
+        monitor.report(&app, WebviewFailure::Navigation);
+    }
 }
 
 fn pause_running_sessions_on_exit(session_store: &SessionStore) {
@@ -885,7 +1004,7 @@ fn init_app_state(
     filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
     log_config: Arc<std::sync::Mutex<LogConfig>>,
     config_loader: haven_common::config::ConfigLoader,
-) -> AppState {
+) -> anyhow::Result<AppState> {
     let file_logging_enabled = log_config
         .lock()
         .map(|config| config.file_enabled)
@@ -900,24 +1019,21 @@ fn init_app_state(
         );
     }
     let fh = filter_handles.clone();
-    tokio::task::block_in_place(|| {
+    let result = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(AppState::new(
             &db_path,
             fh,
             config_loader,
             file_logging_enabled,
         ))
-    })
-    .unwrap_or_else(|e| {
-        // No degraded fallback: a failed backend is not usable, so exit with
-        // a clear error (e.g. an old-version haven.db rejected by the schema
-        // check tells the user to delete the file and rebuild).
+    });
+    if let Err(error) = &result {
         tracing::error!(
-            error = %sanitize_error_text(&e.to_string()),
+            error = %sanitize_error_text(&error.to_string()),
             "failed to initialize application state"
         );
-        std::process::exit(1);
-    })
+    }
+    result
 }
 
 #[cfg(test)]

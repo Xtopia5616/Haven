@@ -1305,3 +1305,4 @@
 - [1314：收拢 App command DTO 与 detached process helper](1314-finish-app-command-boundaries.md)
 - [1315：将 Tauri 前端资源移出 Rust 可执行文件](1315-externalize-tauri-ui-assets.md)
 - [1316：移除 Windows 原生启动加载与失败恢复](1316-remove-native-startup-splash.md)
+- [1317：补充轻量启动失败反馈](1317-focused-startup-failure-feedback.md)

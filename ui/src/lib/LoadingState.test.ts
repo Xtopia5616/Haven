@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/svelte';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import LoadingState from './LoadingState.svelte';
 import loadingStateSource from './LoadingState.svelte?raw';
 import appHtmlSource from '../app.html?raw';
@@ -42,6 +42,42 @@ describe('LoadingState', () => {
 		expect(bootLoaderStyles).toBeTruthy();
 		expect(bootLoaderStyles).toMatch(/position:\s*fixed\s*;/);
 		expect(bootLoaderStyles).toMatch(/inset:\s*0\s*;/);
+	});
+
+	it('shows a retry fallback when the initial app boot does not complete', () => {
+		expect(appHtmlSource).toContain('id="haven-boot-error"');
+		expect(appHtmlSource).toContain('Haven 启动遇到问题');
+		expect(appHtmlSource).toContain('id="haven-boot-retry"');
+		expect(appHtmlSource).toContain('window.location.reload()');
+		expect(appHtmlSource).toMatch(/\},\s*45000\);/);
+	});
+
+	it('changes the static loader into an error state after the startup timeout', () => {
+		const boot = document.createElement('div');
+		boot.id = 'haven-boot';
+		boot.setAttribute('aria-busy', 'true');
+		boot.innerHTML =
+			'<div class="boot-loading-bars"></div><section id="haven-boot-error" hidden></section>';
+		document.body.append(boot);
+		const recoveryScript = [...appHtmlSource.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+			.map((match) => match[1])
+			.find((script) => script.includes('window.setTimeout'));
+		expect(recoveryScript).toBeTruthy();
+
+		vi.useFakeTimers();
+		try {
+			new Function(recoveryScript!)();
+			vi.advanceTimersByTime(44_999);
+			expect(boot.getAttribute('aria-busy')).toBe('true');
+			vi.advanceTimersByTime(1);
+			expect(boot.getAttribute('aria-busy')).toBe('false');
+			expect(boot.getAttribute('aria-live')).toBe('assertive');
+			expect(boot.querySelector('.boot-loading-bars')?.hasAttribute('hidden')).toBe(true);
+			expect(boot.querySelector('#haven-boot-error')?.hasAttribute('hidden')).toBe(false);
+		} finally {
+			vi.useRealTimers();
+			boot.remove();
+		}
 	});
 
 	it('supports the compact inline layout for opt-in embedded surfaces', () => {

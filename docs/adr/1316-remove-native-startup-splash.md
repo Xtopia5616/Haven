@@ -27,3 +27,7 @@ ADR 1154 引入了独立 Win32 加载窗口、启动超时监测和 WebView2 故
 - 通过 `cargo fmt --all -- --check`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings` 和 `cargo test --workspace --locked`。
 - 通过 UI check、全量 UI 测试（161 个文件 / 1337 项）和生产构建。
 - 通过 IPC contract 检查（84 handlers）与 IPC event 检查（36 channels）。本轮未执行安装后桌面冷启动的人工视觉验收。
+
+## 后续
+
+ADR 1317 为启动失败补充了静态界面回退、fatal startup 错误提示和定向 WebView2 导航/进程监听；未恢复原生 splash、超时协调器或自动重试。

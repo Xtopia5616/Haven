@@ -93,6 +93,46 @@
 				background: var(--md-sys-color-background);
 				-webkit-font-smoothing: antialiased;
 			}
+			#haven-boot-error {
+				width: min(440px, calc(100vw - 48px));
+				box-sizing: border-box;
+				padding: 28px;
+				border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 24%, transparent);
+				border-radius: 16px;
+				background: var(--md-sys-color-background);
+				color: var(--md-sys-color-on-background, #202124);
+				font-family: Roboto, Arial, sans-serif;
+				text-align: center;
+			}
+			#haven-boot-error[hidden] {
+				display: none;
+			}
+			#haven-boot-error h1 {
+				margin: 0 0 12px;
+				font-size: 18px;
+				font-weight: 600;
+			}
+			#haven-boot-error p {
+				margin: 0 0 20px;
+				font-size: 14px;
+				line-height: 1.6;
+				opacity: 0.8;
+			}
+			#haven-boot-retry {
+				min-height: 40px;
+				padding: 0 18px;
+				border: 0;
+				border-radius: 999px;
+				background: var(--md-sys-color-primary);
+				color: var(--md-sys-color-on-primary, #fff);
+				font: inherit;
+				font-size: 14px;
+				cursor: pointer;
+			}
+			#haven-boot-retry:focus-visible {
+				outline: 2px solid var(--md-sys-color-primary);
+				outline-offset: 3px;
+			}
 			.boot-loading-bars {
 				display: inline-flex;
 				align-items: center;
@@ -146,7 +186,34 @@
 				<span class="boot-loading-bar boot-loading-bar--tall"></span>
 				<span class="boot-loading-bar boot-loading-bar--medium"></span>
 			</div>
+			<section id="haven-boot-error" hidden>
+				<h1>Haven 启动遇到问题</h1>
+				<p>界面未能完成加载。可以重新加载；如果仍然失败，请从系统托盘退出 Haven 后重新启动。</p>
+				<button id="haven-boot-retry" type="button">重新加载</button>
+			</section>
 		</div>
+		<script>
+			(function () {
+				window.setTimeout(function () {
+					var boot = document.getElementById('haven-boot');
+					if (!boot || !boot.isConnected) return;
+					var loading = boot.querySelector('.boot-loading-bars');
+					var failure = document.getElementById('haven-boot-error');
+					if (loading) loading.hidden = true;
+					if (failure) failure.hidden = false;
+					boot.setAttribute('role', 'alert');
+					boot.setAttribute('aria-live', 'assertive');
+					boot.setAttribute('aria-busy', 'false');
+					boot.setAttribute('aria-label', 'Haven 启动遇到问题');
+				}, 45000);
+				document.addEventListener('click', function (event) {
+					var target = event.target;
+					if (target instanceof Element && target.closest('#haven-boot-retry')) {
+						window.location.reload();
+					}
+				});
+			})();
+		</script>
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>
 </html>
