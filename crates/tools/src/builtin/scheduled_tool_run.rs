@@ -443,13 +443,13 @@ impl Tool for ScheduleTool {
                 "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "description": "Fire after this many seconds; choose this or due_at, not both" },
                 "due_at": { "type": "string", "minLength": 1, "description": "Absolute fire time as an ISO 8601 timestamp with an explicit timezone offset; choose this or delay_secs, not both" },
                 "watch_tool_run_id": canonical_entity_id_schema("toolrun", Some("Schedule continuation when this background task reaches a terminal state; requires mode=continue")),
-                "mode": { "type": "string", "enum": ["tool", "continue", "new_session"], "default": "tool", "description": "Call tool_name, resume this session, or create a new session from prompt" },
-                "repeat_interval_secs": { "type": "integer", "minimum": 60, "maximum": 31536000, "description": "Repeat at this fixed interval (mode=new_session only; missed intervals are skipped)" },
+                "mode": { "type": "string", "enum": ["tool", "continue", "new_session"], "default": "tool", "description": "Call tool_name, resume this session, or create a fresh session from a self-contained prompt; a fresh session has no source-session transcript" },
+                "repeat_interval_secs": { "type": "integer", "minimum": 60, "maximum": 31536000, "description": "Repeat the same new-session prompt at this fixed number of seconds (mode=new_session only; missed intervals are skipped; local wall-clock times are unsupported)" },
                 "title": { "type": "string", "minLength": 1, "description": "Short title shown for the scheduled task; defaults to Haven" },
-                "body": { "type": "string", "minLength": 1, "description": "Required message shown when the schedule fires" },
+                "body": { "type": "string", "minLength": 1, "description": "Required short user-visible summary shown when the schedule fires; the execution instruction belongs in prompt" },
                 "tool_name": { "type": "string", "minLength": 1, "description": "Available built-in tool to call when mode=tool" },
                 "tool_args": { "type": "object", "description": "Arguments for tool_name when mode=tool; omit or use an empty object for no arguments" },
-                "prompt": { "type": "string", "minLength": 1, "description": "Instruction delivered to this session when mode=continue" },
+                "prompt": { "type": "string", "minLength": 1, "description": "Execution instruction for the resumed or newly created session; for new_session write a self-contained task because it has no source-session transcript" },
                 "tool_run_id": canonical_entity_id_schema("toolrun", Some("One scheduled ToolRun occurrence id; required to cancel that occurrence")),
                 "schedule_id": canonical_entity_id_schema("sched", Some("Recurring schedule id; required to cancel future occurrences"))
             },
@@ -480,13 +480,13 @@ impl Tool for ScheduleTool {
                         "operation": { "const": "set" },
                         "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "description": "Fire after this many seconds; choose this or due_at, not both" },
                         "due_at": { "type": "string", "minLength": 1, "description": "Absolute fire time as an ISO 8601 timestamp with an explicit timezone offset; choose this or delay_secs, not both" },
-                        "mode": { "type": "string", "enum": ["tool", "continue", "new_session"], "default": "tool", "description": "Call tool_name, resume this session, or create a new session from prompt" },
-                        "repeat_interval_secs": { "type": "integer", "minimum": 60, "maximum": 31536000, "description": "Repeat at this fixed interval (mode=new_session only; missed intervals are skipped)" },
+                        "mode": { "type": "string", "enum": ["tool", "continue", "new_session"], "default": "tool", "description": "Call tool_name, resume this session, or create a fresh session from a self-contained prompt; a fresh session has no source-session transcript" },
+                        "repeat_interval_secs": { "type": "integer", "minimum": 60, "maximum": 31536000, "description": "Repeat the same new-session prompt at this fixed number of seconds (mode=new_session only; missed intervals are skipped; local wall-clock times are unsupported)" },
                         "title": { "type": "string", "minLength": 1, "description": "Short task title; defaults to Haven" },
-                        "body": { "type": "string", "minLength": 1, "description": "Required message shown when the schedule fires" },
+                        "body": { "type": "string", "minLength": 1, "description": "Required short user-visible summary shown when the schedule fires; the execution instruction belongs in prompt" },
                         "tool_name": { "type": "string", "minLength": 1, "description": "Available built-in tool to call when mode=tool" },
                         "tool_args": { "type": "object", "description": "Arguments for tool_name when mode=tool; omit or use an empty object for no arguments" },
-                        "prompt": { "type": "string", "minLength": 1, "description": "Instruction for the resumed or newly created session" }
+                        "prompt": { "type": "string", "minLength": 1, "description": "Execution instruction for the resumed or newly created session; for new_session write a self-contained task because it has no source-session transcript" }
                     },
                     "required": ["operation", "body"],
                     "oneOf": [
@@ -699,6 +699,64 @@ mod tests {
             )
             .await;
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn new_session_schedule_schema_explains_execution_prompt_and_summary() {
+        let tool = make_tool();
+        assert!(
+            tool.description()
+                .contains("self-contained execution prompt")
+        );
+
+        let schema = tool.input_schema();
+        assert!(
+            schema["properties"]["body"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("user-visible summary")
+        );
+        assert!(
+            schema["properties"]["prompt"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("no source-session transcript")
+        );
+        assert!(
+            schema["properties"]["repeat_interval_secs"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("local wall-clock times are unsupported")
+        );
+    }
+
+    #[tokio::test]
+    async fn one_off_session_schedule_rejects_prompts_over_64_kib() {
+        let tool = make_tool();
+        let error = tool
+            .run(
+                ScheduleParams {
+                    operation: ScheduleOperation::Set,
+                    delay_secs: Some(60),
+                    due_at: None,
+                    watch_tool_run_id: None,
+                    mode: Some(ScheduleMode::NewSession),
+                    title: Some("Bounded prompt".into()),
+                    body: Some("Run later".into()),
+                    tool_name: None,
+                    tool_args: None,
+                    prompt: Some("x".repeat(64 * 1024 + 1)),
+                    repeat_interval_secs: None,
+                    tool_run_id: None,
+                    schedule_id: None,
+                    session_id: Some("ses-09df36791e54c51f7be063867e10b9af".into()),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("64 KiB"));
     }
 
     #[tokio::test]

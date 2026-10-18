@@ -2,6 +2,8 @@
 use super::views::scheduled_status_json;
 use super::*;
 
+const MAX_SCHEDULED_PROMPT_BYTES: usize = 64 * 1024;
+
 impl ToolRunService {
     #[allow(clippy::too_many_arguments)]
     pub async fn create_recurring_session_task(
@@ -143,6 +145,12 @@ impl ToolRunService {
             && watch_tool_run_id.is_none()
         {
             anyhow::bail!("prompt is required for continue and new_session schedules");
+        }
+        if prompt
+            .as_deref()
+            .is_some_and(|prompt| prompt.len() > MAX_SCHEDULED_PROMPT_BYTES)
+        {
+            anyhow::bail!("scheduled prompt exceeds the 64 KiB limit");
         }
         if mode == ScheduleMode::NewSession && session_id.is_none() {
             anyhow::bail!("new_session mode requires an owning session");

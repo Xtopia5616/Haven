@@ -11,8 +11,8 @@ Workflow 逐步扩展成了模型可调用的 DSL、嵌套工具授权与恢复�
 
 ## 决策
 
-1. **统一 occurrence 生命周期。** 后台执行与定时执行继续由 `tool_runs` 和 `ToolRunService` 管理。单次 `tool`、`continue` 与 `new_session` 计划均表示为一条 scheduled ToolRun。`new_session` occurrence 执行时创建一个新的用户来源 ReAct 会话，并以持久提示词作为首条输入。
-2. **重复计划只支持新会话。** `schedule` 工具接受 `repeat_interval_secs`，且只允许配合 `mode=new_session`；间隔范围为 60 秒至 1 年。周期计划使用 `sched-*` 身份，存入 Memory 的 `recurring_session_tasks`，记录来源会话、标题、用户可见摘要、提示词、UTC 间隔锚点、下次触发时间和活动 ToolRun ID；提示词不出现在计划列表投影中。
+1. **统一 occurrence 生命周期。** 后台执行与定时执行继续由 `tool_runs` 和 `ToolRunService` 管理。单次 `tool`、`continue` 与 `new_session` 计划均表示为一条 scheduled ToolRun。`new_session` occurrence 执行时创建一个新的用户来源 ReAct 会话，并以持久提示词作为首条输入。Agent 为 `new_session` 编写完整、自包含的执行提示词，因为新会话不继承来源会话 transcript；`body` 只作为简短的用户可见摘要。所有 scheduled prompt 的 UTF-8 大小上限为 64 KiB。
+2. **重复计划只支持新会话。** `schedule` 工具接受 `repeat_interval_secs`，且只允许配合 `mode=new_session`；间隔范围为 60 秒至 1 年。周期计划使用 `sched-*` 身份，存入 Memory 的 `recurring_session_tasks`，记录来源会话、标题、用户可见摘要、提示词、UTC 间隔锚点、下次触发时间和活动 ToolRun ID；每次 occurrence 原样复用同一提示词，提示词不出现在计划列表投影中。
 3. **每次触发创建标准 occurrence。** 持久调度器原子领取到期计划并创建一条 `mode=new_session` scheduled ToolRun。确认、授权、执行、失败、取消、终态通知和重启恢复继续复用 ToolRun 生命周期；发生在运行过程中的重启按现有策略将未知结果标记失败，不自动重放可能有副作用的工作。
 4. **周期不重叠、不追赶。** 一条计划最多关联一个活动 occurrence。occurrence 到达终态后，基于原 UTC 锚点推进到晚于完成时间的下一次触发点；错过的 tick 跳过，不并行追赶。全局最多 64 条启用计划，单次调度轮询最多领取 32 条，并受现有 ToolRun pending admission limit 约束。
 5. **删除计划使用现有取消边界。** 删除计划会阻止未来触发，并把当前 occurrence 的取消交给通用 ToolRun 取消路径。它不会增加强制中断正在执行 handler 的能力。
