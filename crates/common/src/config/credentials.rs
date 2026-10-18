@@ -93,6 +93,7 @@ impl CredentialStore for InMemoryCredentialStore {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum CredentialSlot {
     ProviderApiKey(String),
+    ProviderChatGptPlan(String),
     IndependentSearchApiKey(String),
     OcrApiKey,
     OcrApiSecret,
@@ -105,11 +106,16 @@ pub(crate) fn hydrate_from_store(
 ) -> anyhow::Result<()> {
     validate_reference_syntax(config)?;
     for provider in &mut config.llm.providers {
+        let label = if super::is_chatgpt_plan_provider(&provider.provider) {
+            "ChatGPT plan credential"
+        } else {
+            "provider API key"
+        };
         hydrate_reference(
             &mut provider.api_key,
             provider.api_key_ref.as_deref(),
             store,
-            "provider API key",
+            label,
         )?;
     }
     for model in &mut config.llm.models {
@@ -280,17 +286,35 @@ pub(crate) fn prepare_after_edit(
     validate_reference_changes(before, after, staged)?;
     let mut consumed = HashSet::new();
     for provider in &mut after.llm.providers {
-        let slot = CredentialSlot::ProviderApiKey(provider.name.clone());
+        let is_chatgpt_plan = super::is_chatgpt_plan_provider(&provider.provider);
+        let slot = if is_chatgpt_plan {
+            CredentialSlot::ProviderChatGptPlan(provider.name.clone())
+        } else {
+            CredentialSlot::ProviderApiKey(provider.name.clone())
+        };
+        let label = if is_chatgpt_plan {
+            "ChatGPT plan credential"
+        } else {
+            "provider API key"
+        };
+        let previous_provider = before.llm.provider_config_by_name(&provider.name);
+        let previous_reference = previous_provider
+            .filter(|previous| {
+                super::is_chatgpt_plan_provider(&previous.provider) == is_chatgpt_plan
+            })
+            .and_then(|previous| previous.api_key_ref.as_deref());
         if let Some(reference) = staged
             .get(&slot)
             .filter(|reference| provider.api_key_ref.as_deref() == Some(reference.as_str()))
         {
             provider.api_key_ref = Some(reference.clone());
-            provider.api_key = read_staged(store, reference, "provider API key")?;
+            provider.api_key = read_staged(store, reference, label)?;
             consumed.insert(slot);
         } else if provider.api_key.is_empty() {
             if provider.api_key_ref.is_none()
-                && let Some(previous) = before.llm.provider_config_by_name(&provider.name)
+                && let Some(previous) = previous_provider.filter(|previous| {
+                    super::is_chatgpt_plan_provider(&previous.provider) == is_chatgpt_plan
+                })
             {
                 provider.api_key_ref = previous.api_key_ref.clone();
                 provider.api_key = previous.api_key.clone();
@@ -299,17 +323,14 @@ pub(crate) fn prepare_after_edit(
                 &mut provider.api_key,
                 provider.api_key_ref.as_deref(),
                 store,
-                "provider API key",
+                label,
             )?;
         } else {
             provider.api_key_ref = Some(store_secret_if_needed(
-                before
-                    .llm
-                    .provider_config_by_name(&provider.name)
-                    .and_then(|previous| previous.api_key_ref.as_deref()),
+                previous_reference,
                 &provider.api_key,
                 store,
-                "provider API key",
+                label,
             )?);
         }
     }
@@ -431,10 +452,19 @@ fn validate_reference_changes(
         let same_provider = before
             .llm
             .provider_config_by_name(&provider.name)
+            .filter(|previous| {
+                super::is_chatgpt_plan_provider(&previous.provider)
+                    == super::is_chatgpt_plan_provider(&provider.provider)
+            })
             .and_then(|previous| previous.api_key_ref.as_deref())
             == Some(reference);
+        let slot = if super::is_chatgpt_plan_provider(&provider.provider) {
+            CredentialSlot::ProviderChatGptPlan(provider.name.clone())
+        } else {
+            CredentialSlot::ProviderApiKey(provider.name.clone())
+        };
         let staged_for_provider = staged
-            .get(&CredentialSlot::ProviderApiKey(provider.name.clone()))
+            .get(&slot)
             .is_some_and(|staged_reference| staged_reference == reference);
         let moved_from_removed_provider = old_provider_references
             .get(reference)

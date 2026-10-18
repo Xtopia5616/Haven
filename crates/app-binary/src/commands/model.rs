@@ -4,6 +4,7 @@ use haven_common::config::{
     AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind, is_stt_only_style,
     normalize_api_style,
 };
+use haven_llm::ChatGptPlanAuthPort;
 use haven_llm::{ModelDiscoveryAuthHeader, ModelInfo, ModelRegistry};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -400,6 +401,52 @@ pub async fn discover_models(
     }
     if let Some(list) = stt_only_catalog_for_url(&base_url) {
         return Ok(list);
+    }
+
+    if let Some(name) = provider_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+    {
+        let configured_plan = cfg
+            .llm
+            .provider_config_by_name(name)
+            .is_some_and(|provider| {
+                haven_common::config::is_chatgpt_plan_provider(&provider.provider)
+            });
+        let staged_reference = state
+            .runtime
+            .config_service
+            .chatgpt_plan_credential_reference(name)
+            .map_err(|error| log_err("discover_models", error))?;
+        if configured_plan || staged_reference.is_some() {
+            if base_url.trim_end_matches('/') != haven_common::config::CHATGPT_PLAN_BASE_URL {
+                return Err(log_err(
+                    "discover_models",
+                    "ChatGPT plan models can only be listed from the official endpoint",
+                ));
+            }
+            if request_kind == Some(RequestKind::Transcription) {
+                return Err(log_err(
+                    "discover_models",
+                    "ChatGPT plan sign-in does not provide a transcription endpoint",
+                ));
+            }
+            let reference = staged_reference
+                .ok_or_else(|| log_err("discover_models", "ChatGPT account is not connected"))?;
+            let access_token = state
+                .runtime
+                .chatgpt_plan_auth
+                .access_token(&reference)
+                .await
+                .map_err(|error| log_err("discover_models", error))?;
+            return haven_llm::list_chatgpt_plan_models(
+                &access_token,
+                proxy_url.as_deref(),
+                no_proxy.as_deref(),
+            )
+            .await
+            .map_err(|error| log_err("discover_models", error));
+        }
     }
 
     let resolved_auth = if api_key.is_empty() && skip_auth.unwrap_or(false) {

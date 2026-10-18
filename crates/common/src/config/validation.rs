@@ -124,6 +124,23 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
                 .unwrap_or("openai-chat"),
         );
         let capabilities = provider.media_capabilities;
+        if super::is_chatgpt_plan_provider(&provider.provider) {
+            let style = provider
+                .api_style
+                .as_deref()
+                .map(super::normalize_api_style)
+                .unwrap_or("openai-chat");
+            if style != "openai-responses"
+                || provider.base_url.trim_end_matches('/') != super::CHATGPT_PLAN_BASE_URL
+                || capabilities.stt
+                || capabilities.tts
+                || capabilities.image_gen
+            {
+                anyhow::bail!(
+                    "ChatGPT plan providers require the OpenAI Responses endpoint and disable separate media endpoints"
+                );
+            }
+        }
         if (capabilities.stt && !supported.stt)
             || (capabilities.tts && !supported.tts)
             || (capabilities.image_gen && !supported.image_gen)
@@ -138,6 +155,25 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         )?;
     }
     for (index, model) in config.llm.models.iter().enumerate() {
+        if config
+            .llm
+            .provider_config_by_name(&model.provider_name)
+            .is_some_and(|provider| super::is_chatgpt_plan_provider(&provider.provider))
+            && model.capabilities.iter().any(|capability| {
+                matches!(
+                    capability,
+                    super::Capability::AudioInput
+                        | super::Capability::Transcription
+                        | super::Capability::Embedding
+                        | super::Capability::ImageGeneration
+                        | super::Capability::SpeechSynthesis
+                )
+            })
+        {
+            anyhow::bail!(
+                "llm.models[{index}] ChatGPT plan assignments cannot route audio, embeddings, or media generation"
+            );
+        }
         validate_web_search_mode(
             &format!("llm.models[{index}].web_search"),
             model.web_search.as_deref(),
@@ -1097,6 +1133,32 @@ mod tests {
 
         assert!(validate_app_config_numbers(&config).is_ok());
         assert!(validate_settings_numbers(&SettingsSnapshot::from(&config)).is_ok());
+    }
+
+    #[test]
+    fn chatgpt_plan_provider_is_fixed_to_responses_and_has_no_separate_media_endpoints() {
+        let provider = ProviderConfig {
+            name: "chatgpt".into(),
+            provider: super::super::CHATGPT_PLAN_PROVIDER_IDENTITY.into(),
+            api_style: Some("openai-responses".into()),
+            base_url: super::super::CHATGPT_PLAN_BASE_URL.into(),
+            ..Default::default()
+        };
+        let mut config = AppConfig::default();
+        config.llm.providers.push(provider.clone());
+        assert!(validate_app_config(&config).is_ok());
+
+        config.llm.providers[0].base_url = "https://gateway.example/v1".into();
+        assert!(validate_app_config(&config).is_err());
+
+        config.llm.providers[0] = ProviderConfig {
+            media_capabilities: super::super::ProviderMediaCapabilities {
+                stt: true,
+                ..Default::default()
+            },
+            ..provider
+        };
+        assert!(validate_app_config(&config).is_err());
     }
 
     #[test]

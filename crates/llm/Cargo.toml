@@ -15,14 +15,16 @@ tracing.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
-reqwest = { version = "0.13.4", features = ["json", "stream", "multipart"] }
+reqwest = { version = "0.13.4", features = ["json", "stream", "multipart", "form"] }
 bytes = "1"
 futures-util.workspace = true
 tokio-util.workspace = true
 regex = "1"
 base64.workspace = true
 sha2.workspace = true
+jsonwebtoken.workspace = true
 chrono.workspace = true
+uuid.workspace = true
 haven-common = { path = "../common" }
 url = "2.5.8"
 

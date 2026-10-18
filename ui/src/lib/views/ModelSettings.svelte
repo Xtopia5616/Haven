@@ -16,6 +16,14 @@
 	} from '$lib/modelDiscovery.ts';
 	import { emptyModel, CAPABILITY_OPTIONS, REQUEST_POLICY_OPTIONS } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
+	import { openExternalTarget } from '$lib/externalCommands.ts';
+import {
+	cancelChatGptPlanLogin,
+	completeChatGptPlanLogin,
+	discardStagedChatGptPlanCredential,
+	reassignStagedChatGptPlanCredential,
+	startChatGptPlanLogin,
+} from '$lib/settingsCommands.ts';
 	import { CONCURRENCY_BOUNDS } from '$lib/contracts/settings.ts';
 	import type { ApiKeyStatus } from '$lib/contracts/diagnostics.ts';
 	import type {
@@ -267,6 +275,9 @@
 				media_capabilities: { ...providerPreset('openai-chat').media_capabilities },
 				base_url: 'https://api.openai.com/v1',
 				api_key: '',
+				api_key_ref: null,
+				chatgpt_plan_account_email: null,
+				chatgpt_plan_plan_usage_enabled: null,
 				proxy_mode: 'system',
 				proxy_url: '',
 				no_proxy: '',
@@ -284,12 +295,78 @@
 				media_capabilities: { ...provider.media_capabilities },
 				base_url: provider.base_url,
 				api_key: '',
+				api_key_ref: provider.api_key_ref || null,
+				chatgpt_plan_account_email: null,
+				chatgpt_plan_plan_usage_enabled: null,
 				proxy_mode:
 					provider.proxy_url === '' ? 'direct' : provider.proxy_url ? 'custom' : 'system',
 				proxy_url: provider.proxy_url || '',
 				no_proxy: provider.no_proxy || '',
 			},
 		};
+	}
+	function closeProviderDialog() {
+		const form = providerDialog?.form;
+		if (form?.chatgpt_plan_saving) return;
+		const loginId = form?.chatgpt_plan_login_id;
+		const stagedCredentialRef = form?.api_key_ref;
+		const credentialIsInDraft = stagedCredentialRef
+			? llmConfig.providers.some((provider) => provider.api_key_ref === stagedCredentialRef)
+			: false;
+		providerDialog = { idx: null, form: null };
+		if (loginId) {
+			void cancelChatGptPlanLogin({ loginId }).catch(() =>
+				addNotification('无法停止 ChatGPT 登录回调', 'error', 3000),
+			);
+		}
+		if (stagedCredentialRef && !credentialIsInDraft) {
+			void discardStagedChatGptPlanCredential({ credentialRef: stagedCredentialRef }).catch(() =>
+				addNotification('无法清理未保存的 ChatGPT 凭据', 'error', 3000),
+			);
+		}
+	}
+	async function connectChatGptPlan() {
+		const form = providerDialog?.form;
+		if (!form || form.chatgpt_plan_connecting) return;
+		const providerName = form.name.trim();
+		if (!providerName) {
+			addNotification('请先填写 Provider 名称', 'error', 3000);
+			return;
+		}
+		form.chatgpt_plan_connecting = true;
+		let loginId: string | null = null;
+		try {
+			const login = await startChatGptPlanLogin({ providerName });
+			loginId = login.loginId;
+			form.chatgpt_plan_login_id = loginId;
+			form.chatgpt_plan_account_email = login.accountEmail;
+			form.chatgpt_plan_plan_usage_enabled = login.planUsageEnabled;
+			if (providerDialog?.form !== form) {
+				await cancelChatGptPlanLogin({ loginId });
+				return;
+			}
+			await openExternalTarget({ target: login.authorizationUrl });
+			const connected = await completeChatGptPlanLogin({
+				loginId: login.loginId,
+				providerName,
+			});
+			if (providerDialog?.form !== form) {
+				await discardStagedChatGptPlanCredential({ credentialRef: connected.credentialRef });
+				return;
+			}
+			form.api_key_ref = connected.credentialRef;
+			form.chatgpt_plan_account_email = connected.accountEmail;
+			form.chatgpt_plan_plan_usage_enabled = connected.planUsageEnabled;
+			addNotification('ChatGPT 账户已连接；保存设置后生效', 'success', 3000);
+		} catch {
+			addNotification('ChatGPT 登录未完成，请重试', 'error', 3500);
+			if (loginId) {
+				void cancelChatGptPlanLogin({ loginId }).catch(() => undefined);
+			}
+		} finally {
+			form.chatgpt_plan_login_id = null;
+			form.chatgpt_plan_connecting = false;
+		}
 	}
 	async function saveProvider() {
 		if (!providerDialog?.form) return;
@@ -324,6 +401,22 @@
 		}
 		const previous = idx !== null ? llmConfig.providers[idx] : null;
 		const preset = providerPreset(form.preset);
+		const isChatGptPlan = preset.provider === 'chatgpt-plan';
+		const previousIsChatGptPlan = previous?.provider === 'chatgpt-plan';
+		if (isChatGptPlan && form.api_key_ref) {
+			form.chatgpt_plan_saving = true;
+			try {
+				await reassignStagedChatGptPlanCredential({
+					credentialRef: form.api_key_ref,
+					providerName: name,
+				});
+			} catch {
+				form.chatgpt_plan_saving = false;
+				addNotification('无法将 ChatGPT 凭据关联到此 Provider，请重新连接', 'error', 3500);
+				return;
+			}
+			form.chatgpt_plan_saving = false;
+		}
 		const provider = {
 			...(previous || {}),
 			name,
@@ -331,7 +424,12 @@
 			api_style: form.api_style,
 			media_capabilities: { ...form.media_capabilities },
 			base_url: form.base_url.trim(),
-			api_key: form.api_key.trim() || previous?.api_key || '',
+			api_key: isChatGptPlan ? '' : form.api_key.trim() || previous?.api_key || '',
+			api_key_ref: isChatGptPlan
+				? form.api_key_ref || (previousIsChatGptPlan ? previous?.api_key_ref : null) || null
+				: previousIsChatGptPlan
+					? null
+					: previous?.api_key_ref || null,
 			auth_header_name: preset.auth_header_name,
 			auth_header_prefix: preset.auth_header_prefix,
 			proxy_url:
@@ -342,7 +440,7 @@
 			default_timeout_secs:
 				previous?.default_timeout_secs ?? (isSttOnlyStyle(form.api_style) ? 30 : null),
 			default_timeout_streaming_secs: previous?.default_timeout_streaming_secs ?? null,
-			default_web_search: previous?.default_web_search ?? null,
+			default_web_search: isChatGptPlan ? 'off' : previous?.default_web_search ?? null,
 		};
 		if (previous && !isSameModelDiscoveryTarget(previous, provider)) {
 			discovery.invalidateProviderCatalog(previous.name);
@@ -407,7 +505,17 @@
 		addNotification(`已删除 Provider ${provider.name}`, 'success', 2000);
 	}
 	function applyApiStylePreset(style: string) {
-		if (providerDialog?.form) applyProviderPreset(providerDialog.form, style);
+		const form = providerDialog?.form;
+		if (!form) return;
+		const previousIsChatGptPlan = providerPreset(form.preset).provider === 'chatgpt-plan';
+		const nextIsChatGptPlan = providerPreset(style).provider === 'chatgpt-plan';
+		const previousCredentialRef = form.api_key_ref;
+		applyProviderPreset(form, style);
+		if (previousIsChatGptPlan && !nextIsChatGptPlan && previousCredentialRef) {
+			void discardStagedChatGptPlanCredential({ credentialRef: previousCredentialRef }).catch(() =>
+				addNotification('无法清理未使用的 ChatGPT 凭据', 'error', 3000),
+			);
+		}
 	}
 	function apiStyleLabel(providerOrStyle: ProviderDraft | string) {
 		const style =
@@ -579,9 +687,10 @@
 	dialog={providerDialog}
 	providers={llmConfig.providers || []}
 	{isProviderKeyConfigured}
-	onClose={() => (providerDialog = { idx: null, form: null })}
+	onClose={closeProviderDialog}
 	onSave={saveProvider}
 	onApplyApiStylePreset={applyApiStylePreset}
+	onConnectChatGptPlan={connectChatGptPlan}
 />
 
 <style>

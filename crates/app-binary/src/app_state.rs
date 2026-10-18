@@ -1,3 +1,5 @@
+use crate::chatgpt_plan_auth::ConfigChatGptPlanAuthPort;
+use crate::chatgpt_plan_login::ChatGptPlanLoginOwner;
 use crate::commands::confirmation::AppConfirmationOwner;
 use crate::config_runtime::apply_log_level_to_handles;
 use crate::desktop::DesktopShell;
@@ -150,6 +152,7 @@ fn daily_cleanup_interval(period: std::time::Duration) -> tokio::time::Interval 
 
 pub struct AppState {
     pub(crate) runtime: Arc<ApplicationRuntime>,
+    pub(crate) chatgpt_plan_login: ChatGptPlanLoginOwner,
     /// App-owned voice recording lifecycle and event identity. It is separate
     /// from timed `media.record` captures, which share the input pipeline but
     /// do not produce app recording events.
@@ -238,6 +241,7 @@ impl AppState {
             config_loader,
             credential_store,
         )?);
+        let chatgpt_plan_auth = Arc::new(ConfigChatGptPlanAuthPort::new(config_service.clone()));
         let config_apply_gate = Arc::new(tokio::sync::Mutex::new(()));
         let initial_config = config_service.snapshot()?;
         let last_fully_applied_security_config_version = initial_config.version;
@@ -254,7 +258,8 @@ impl AppState {
         );
         let mcp_caller: Arc<dyn haven_llm::McpToolCaller> =
             Arc::clone(&tool_services.mcp_tool_caller);
-        let router_media_build = build_router_media(&cfg, Some(mcp_caller));
+        let router_media_build =
+            build_router_media(&cfg, Some(mcp_caller), Some(chatgpt_plan_auth.clone()));
         let router = Arc::clone(&router_media_build.router);
         let max_steps_per_run = cfg.session.max_steps_per_run;
         let max_steps_per_session = cfg.session.max_steps_per_session;
@@ -302,6 +307,7 @@ impl AppState {
             shell: shell.clone(),
             log_filter_handles: filter_handles.clone(),
             config_service: config_service.clone(),
+            chatgpt_plan_auth: chatgpt_plan_auth.clone(),
             config_apply_gate: config_apply_gate.clone(),
         }));
 
@@ -512,6 +518,7 @@ impl AppState {
 
         Ok(Self {
             runtime,
+            chatgpt_plan_login: ChatGptPlanLoginOwner::default(),
             recording_lifecycle: RecordingLifecycleOwner::default(),
             pending_recording_usage: Arc::new(std::sync::Mutex::new(HashMap::new())),
             bootstrap_ready: Arc::new(AtomicBool::new(false)),

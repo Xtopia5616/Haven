@@ -58,6 +58,12 @@ export interface ProviderDialogForm {
 	media_capabilities: ProviderMediaCapabilitySettings;
 	base_url: string;
 	api_key: string;
+	api_key_ref?: string | null;
+	chatgpt_plan_account_email?: string | null;
+	chatgpt_plan_plan_usage_enabled?: boolean | null;
+	chatgpt_plan_login_id?: string | null;
+	chatgpt_plan_connecting?: boolean;
+	chatgpt_plan_saving?: boolean;
 	proxy_mode: 'system' | 'direct' | 'custom';
 	proxy_url: string;
 	no_proxy: string;

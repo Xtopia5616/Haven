@@ -1,6 +1,7 @@
 mod adapters;
 mod aggregated_stream_executor;
 mod call_executor;
+mod chatgpt_plan;
 mod client;
 mod endpoint_circuit_breaker;
 mod image_gen;
@@ -22,6 +23,10 @@ mod tts;
 mod types;
 
 pub use adapters::{WebSearchMode, web_search_result_of};
+pub use chatgpt_plan::{
+    ChatGptPlanAuthPort, ChatGptPlanAuthorization, ChatGptPlanCredential,
+    list_models as list_chatgpt_plan_models, refresh_credential as refresh_chatgpt_plan_credential,
+};
 
 /// Whether this materialized endpoint can run a provider-native search tool
 /// for its selected protocol and model.

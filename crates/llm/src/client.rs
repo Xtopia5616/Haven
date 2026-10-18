@@ -242,17 +242,26 @@ pub trait LlmClient: Send + Sync {
 fn extract_error_body(body: &str) -> String {
     let extracted = if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
         // OpenAI: {"error": {"message": "...", "code": "..."}}
-        if let Some(msg) = val
-            .get("error")
-            .and_then(|e| e.get("message"))
-            .and_then(|m| m.as_str())
-        {
-            msg.to_string()
+        if let Some(error) = val.get("error") {
+            if let Some(message) = error.get("message").and_then(|value| value.as_str()) {
+                let code = error.get("code").and_then(|value| value.as_str());
+                let param = error.get("param").and_then(|value| value.as_str());
+                match (code, param) {
+                    (Some(code), Some(param)) => {
+                        format!("{message} (code={code}, param={param})")
+                    }
+                    (Some(code), None) => format!("{message} (code={code})"),
+                    (None, Some(param)) => format!("{message} (param={param})"),
+                    (None, None) => message.to_string(),
+                }
+            } else if let Some(message) = error.as_str() {
+                message.to_string()
+            } else {
+                serde_json::to_string(&val).unwrap_or_else(|_| "provider returned an error".into())
+            }
         } else if let Some(msg) = val.get("message").and_then(|m| m.as_str()) {
             msg.to_string()
         } else if let Some(msg) = val.get("detail").and_then(|m| m.as_str()) {
-            msg.to_string()
-        } else if let Some(msg) = val.get("error").and_then(|m| m.as_str()) {
             msg.to_string()
         } else {
             serde_json::to_string(&val).unwrap_or_else(|_| "provider returned an error".into())
@@ -261,6 +270,30 @@ fn extract_error_body(body: &str) -> String {
         body.to_string()
     };
     haven_common::error::sanitize_error_text(&extracted)
+}
+
+pub(crate) fn attach_request_id(error: LlmError, request_id: Option<&str>) -> LlmError {
+    let Some(request_id) = request_id.filter(|value| {
+        !value.is_empty()
+            && value.len() <= 128
+            && value.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '_' | '-')
+            })
+    }) else {
+        return error;
+    };
+    let append = |message: String| format!("{message} (request_id={request_id})");
+    match error {
+        LlmError::Auth(message) => LlmError::Auth(append(message)),
+        LlmError::ServerError(message) => LlmError::ServerError(append(message)),
+        LlmError::RequestFailed(message) => LlmError::RequestFailed(append(message)),
+        LlmError::Billing(message) => LlmError::Billing(append(message)),
+        LlmError::Timeout(message) => LlmError::Timeout(append(message)),
+        LlmError::InvalidResponse(message) => LlmError::InvalidResponse(append(message)),
+        LlmError::Unknown(message) => LlmError::Unknown(append(message)),
+        LlmError::RateLimit { retry_after } => LlmError::RateLimit { retry_after },
+        other => other,
+    }
 }
 
 /// Shared HTTP status → `LlmError` mapping used by all adapters.
@@ -273,7 +306,23 @@ pub(crate) fn http_status_to_error(
     let lower_body = err_body.to_ascii_lowercase();
     match status.as_u16() {
         401 | 403 => LlmError::Auth(format!("{}: {}", status, err_body)),
-        429 => LlmError::RateLimit { retry_after },
+        429 => {
+            let code = serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .pointer("/error/code")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                });
+            if code.as_deref() == Some("subscription_sharing_usage_limit_exceeded") {
+                LlmError::Billing(
+                    "ChatGPT plan usage limit reached; check ChatGPT settings → Usage".into(),
+                )
+            } else {
+                LlmError::RateLimit { retry_after }
+            }
+        }
         // The provider did not complete the request in time. Treat this like
         // a transport timeout so the bounded retry/failover policy can move
         // to another candidate when one exists.
@@ -502,6 +551,32 @@ mod tests {
         );
         assert!(matches!(e, LlmError::RateLimit { .. }));
         assert_eq!(e.retry_after(), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn chatgpt_plan_usage_limit_429_is_not_treated_as_transient_rate_limit() {
+        let error = http_status_to_error(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"limit"}}"#,
+            Some(Duration::from_secs(30)),
+        );
+        assert!(matches!(error, LlmError::Billing(_)));
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn http_error_body_retains_structured_provider_code_and_param() {
+        let error = http_status_to_error(
+            reqwest::StatusCode::FORBIDDEN,
+            r#"{"error":{"message":"restricted","code":"subscription_sharing_user_not_eligible","param":"model"}}"#,
+            None,
+        );
+        let rendered = error.to_string();
+        assert!(rendered.contains("subscription_sharing_user_not_eligible"));
+        assert!(rendered.contains("param=model"));
+
+        let error = attach_request_id(error, Some("req_abc-123"));
+        assert!(error.to_string().contains("request_id=req_abc-123"));
     }
 
     #[test]

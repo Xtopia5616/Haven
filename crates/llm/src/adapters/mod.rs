@@ -281,6 +281,13 @@ pub(crate) fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
 ///   embeddings via `batchEmbedContents`
 /// - `deepgram` / `assemblyai`: speech-to-text only
 pub fn adapter_for(endpoint: &ModelEndpoint) -> Box<dyn LlmClient> {
+    adapter_for_with_chatgpt_plan_auth(endpoint, None)
+}
+
+pub(crate) fn adapter_for_with_chatgpt_plan_auth(
+    endpoint: &ModelEndpoint,
+    chatgpt_plan_auth: Option<std::sync::Arc<dyn crate::chatgpt_plan::ChatGptPlanAuthPort>>,
+) -> Box<dyn LlmClient> {
     let style = api_style_for(endpoint);
     if style == "invalid" {
         return unavailable(
@@ -304,9 +311,14 @@ pub fn adapter_for(endpoint: &ModelEndpoint) -> Box<dyn LlmClient> {
         "gemini" => gemini::GeminiAdapter::try_new(endpoint.clone())
             .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
             .unwrap_or_else(|error| unavailable("gemini", error)),
-        "openai-responses" => openai_responses::OpenAiResponsesAdapter::try_new(endpoint.clone())
+        "openai-responses" => {
+            openai_responses::OpenAiResponsesAdapter::try_new_with_chatgpt_plan_auth(
+                endpoint.clone(),
+                chatgpt_plan_auth,
+            )
             .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
-            .unwrap_or_else(|error| unavailable("openai-responses", error)),
+            .unwrap_or_else(|error| unavailable("openai-responses", error))
+        }
         "deepgram" => deepgram::DeepgramAdapter::try_new(endpoint.clone())
             .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
             .unwrap_or_else(|error| unavailable("deepgram", error)),

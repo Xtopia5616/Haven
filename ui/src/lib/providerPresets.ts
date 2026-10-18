@@ -62,6 +62,19 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		match_hosts: ['api.openai.com'],
 	},
 	{
+		value: 'chatgpt-plan',
+		label: 'ChatGPT 订阅',
+		group: '原厂服务',
+		api_style: 'openai-responses',
+		provider: 'chatgpt-plan',
+		base_url: 'https://api.openai.com/v1',
+		media_capabilities: { stt: false, tts: false, image_gen: false },
+		...BEARER,
+		docs_url: 'https://developers.openai.com/siwc/token-sharing-open-source',
+		hint: '通过 ChatGPT 登录使用订阅额度。预览功能仅支持流式 Responses 与 Haven 本地工具。',
+		match_hosts: ['api.openai.com'],
+	},
+	{
 		value: 'openai-azure',
 		label: 'Azure OpenAI',
 		group: '原厂服务',
@@ -597,8 +610,8 @@ function normalizePresetUrl(url: string): string {
 
 /**
  * Apply a provider preset while keeping its identity separate from the wire
- * protocol. Existing custom URLs/capability choices are retained.
- * Never touches `api_key`.
+ * protocol. Existing custom URLs/capability choices are retained. Moving to
+ * or from ChatGPT plan authentication clears incompatible credential state.
  */
 export function applyProviderPreset(
 	form: {
@@ -606,6 +619,10 @@ export function applyProviderPreset(
 		api_style: string;
 		base_url: string;
 		api_key?: string;
+		api_key_ref?: string | null;
+		chatgpt_plan_account_email?: string | null;
+		chatgpt_plan_plan_usage_enabled?: boolean | null;
+		chatgpt_plan_login_id?: string | null;
 		media_capabilities: ProviderMediaCapabilitySettings;
 	},
 	nextStyle: string,
@@ -626,6 +643,13 @@ export function applyProviderPreset(
 	if (stillPresetCapabilities) form.media_capabilities = { ...nextCapabilities };
 	if (!current || current === prevDefault) {
 		form.base_url = next.base_url;
+	}
+	if (prev.provider !== next.provider && (prev.provider === 'chatgpt-plan' || next.provider === 'chatgpt-plan')) {
+		form.api_key = '';
+		form.api_key_ref = null;
+		form.chatgpt_plan_account_email = null;
+		form.chatgpt_plan_plan_usage_enabled = null;
+		form.chatgpt_plan_login_id = null;
 	}
 }
 

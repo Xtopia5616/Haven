@@ -21,6 +21,7 @@
 		onClose: () => void;
 		onSave: () => void | Promise<void>;
 		onApplyApiStylePreset: (style: string) => void;
+		onConnectChatGptPlan: () => void | Promise<void>;
 	}
 
 	let {
@@ -30,12 +31,14 @@
 		onClose,
 		onSave,
 		onApplyApiStylePreset,
+		onConnectChatGptPlan,
 	}: Props = $props();
 </script>
 
 {#if dialog.form}
 	{@const form = dialog.form}
 	{@const mediaSupport = mediaCapabilitiesSupportedByStyle(form.api_style)}
+	{@const isChatGptPlan = providerPreset(form.preset).provider === 'chatgpt-plan'}
 	<MaterialDialog
 		open={true}
 		title={dialog.idx === null ? '添加 Provider' : '编辑 Provider'}
@@ -49,6 +52,7 @@
 						type="text"
 						class="md-input"
 						bind:value={form.name}
+						disabled={form.chatgpt_plan_connecting || form.chatgpt_plan_saving}
 						placeholder="唯一名称，角色据此选择"
 						autocomplete="off"
 					/>
@@ -59,6 +63,7 @@
 						id="prov-api-style"
 						value={form.preset}
 						options={PROVIDER_PRESET_OPTIONS}
+						disabled={form.chatgpt_plan_connecting || form.chatgpt_plan_saving}
 						onChange={withStringValue(onApplyApiStylePreset)}
 					/>
 				</div>
@@ -101,11 +106,16 @@
 						type="text"
 						class="md-input"
 						bind:value={form.base_url}
+						disabled={isChatGptPlan}
 						placeholder="https://api.openai.com/v1"
 						autocomplete="off"
 					/>
 				</div>
-				<fieldset class="media-capability-fieldset">
+				{#if isChatGptPlan}
+					<p class="model-hint">
+						ChatGPT 订阅登录不提供 STT、TTS、图片生成、音频或 Embeddings 端点。
+					</p>
+				{:else}<fieldset class="media-capability-fieldset">
 					<legend class="field-label">媒体端点</legend>
 					<p class="model-hint">
 						聊天协议兼容不代表服务提供这些独立端点。只为服务端确实实现的接口启用。
@@ -137,8 +147,38 @@
 							onChange={(checked) => (form.media_capabilities.image_gen = checked)}
 						/>
 					</div>
-				</fieldset>
-				<div class="model-field">
+				</fieldset>{/if}
+				{#if isChatGptPlan}
+					<div class="model-field">
+						<span class="field-label">ChatGPT 账户</span>
+						{#if form.api_key_ref}
+							{#if form.chatgpt_plan_plan_usage_enabled === false}
+								<p class="model-hint">此账户尚未授权使用 ChatGPT 订阅额度。重新登录并接受订阅用量授权即可启用。</p>
+							{:else if form.chatgpt_plan_plan_usage_enabled === true}
+							<p class="model-hint">
+								{form.chatgpt_plan_account_email || '已连接'} · 保存设置后使用订阅额度
+							</p>
+							{:else}
+								<p class="model-hint">
+									已连接，订阅用量授权状态未载入。点击登录按钮检查或更新授权。
+								</p>
+							{/if}
+						{:else}
+							<p class="model-hint">通过官方 ChatGPT 登录授权。令牌保存在 Windows 凭据库中。</p>
+						{/if}
+						<MaterialButton
+							variant="outlined"
+							label={form.chatgpt_plan_connecting
+							? '等待 ChatGPT 授权…'
+								: 'Continue with ChatGPT'}
+						disabled={form.chatgpt_plan_connecting || form.chatgpt_plan_saving || !form.name.trim()}
+							onclick={onConnectChatGptPlan}
+						/>
+						<p class="model-hint">
+							预览限制：Responses 请求必须流式且不保存服务端状态，Haven 在本机执行工具。
+						</p>
+					</div>
+				{:else}<div class="model-field">
 					<span class="field-label">API Key</span>
 					<ApiKeyField
 						mode="edit"
@@ -147,7 +187,7 @@
 							isProviderKeyConfigured(providers[dialog.idx])}
 						placeholder={dialog.idx === null ? 'sk-...' : ''}
 					/>
-				</div>
+				</div>{/if}
 				<div class="model-field">
 					<span class="field-label">代理路由</span>
 					<MaterialSelect
@@ -209,8 +249,18 @@
 			</div>
 		{/snippet}
 		{#snippet footer()}
-			<MaterialButton variant="text" label="取消" onclick={onClose} />
-			<MaterialButton variant="filled" label="保存" onclick={onSave} />
+			<MaterialButton
+				variant="text"
+				label="取消"
+				disabled={form.chatgpt_plan_saving}
+				onclick={onClose}
+			/>
+			<MaterialButton
+				variant="filled"
+				label={form.chatgpt_plan_saving ? '保存中…' : '保存'}
+				disabled={form.chatgpt_plan_connecting || form.chatgpt_plan_saving}
+				onclick={onSave}
+			/>
 		{/snippet}
 	</MaterialDialog>
 {/if}

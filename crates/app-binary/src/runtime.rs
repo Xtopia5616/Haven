@@ -7,6 +7,7 @@
 //! application gives them one cancellation boundary and tears them down in a
 //! deterministic order.
 
+use crate::chatgpt_plan_auth::ConfigChatGptPlanAuthPort;
 use crate::config_runtime::RuntimeConfigCoordinator;
 use crate::desktop::DesktopShell;
 use haven_agent::{AgentLayer, MemoryStartup, PendingSessionRecovery, SessionSupervisor};
@@ -49,6 +50,7 @@ pub struct ApplicationRuntime {
     pub(crate) shell: Arc<DesktopShell>,
     pub(crate) log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
     pub(crate) config_service: Arc<ConfigService>,
+    pub(crate) chatgpt_plan_auth: Arc<ConfigChatGptPlanAuthPort>,
     /// Serializes settings and model config commit-plus-apply operations so a
     /// later snapshot cannot publish before an earlier runtime update ends.
     pub(crate) config_runtime_coordinator: RuntimeConfigCoordinator,
@@ -73,6 +75,7 @@ pub(crate) struct RuntimeServices {
     pub(crate) shell: Arc<DesktopShell>,
     pub(crate) log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
     pub(crate) config_service: Arc<ConfigService>,
+    pub(crate) chatgpt_plan_auth: Arc<ConfigChatGptPlanAuthPort>,
     pub(crate) config_apply_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -121,6 +124,7 @@ impl ApplicationRuntime {
             shell: runtime_services.shell,
             log_filter_handles: runtime_services.log_filter_handles,
             config_service: runtime_services.config_service,
+            chatgpt_plan_auth: runtime_services.chatgpt_plan_auth,
             config_runtime_coordinator: RuntimeConfigCoordinator::with_shared_gate(
                 config_apply_gate,
             ),

@@ -229,6 +229,197 @@ impl ConfigService {
         )
     }
 
+    /// Stage the protected ChatGPT plan OAuth record for a dedicated provider.
+    /// The serialized token bundle is kept in the secure store and only its
+    /// opaque `cred-*` reference is returned to the settings draft.
+    pub fn stage_chatgpt_plan_credential(
+        &self,
+        provider_name: &str,
+        value: &str,
+    ) -> anyhow::Result<String> {
+        if provider_name.trim().is_empty() || value.is_empty() {
+            anyhow::bail!("provider name and ChatGPT plan credential are required");
+        }
+        self.stage_credential(
+            CredentialSlot::ProviderChatGptPlan(provider_name.to_string()),
+            value,
+        )
+    }
+
+    /// Remove one exact staged ChatGPT credential if its OAuth result was
+    /// abandoned before the Settings draft adopted the returned reference.
+    pub fn discard_staged_chatgpt_plan_credential(&self, reference: &str) -> anyhow::Result<()> {
+        crate::config::validate_credential_reference(reference)?;
+        let mut state = self.lock_state_mut()?;
+        let active_owner = state.loader.config().llm.providers.iter().any(|provider| {
+            super::is_chatgpt_plan_provider(&provider.provider)
+                && provider.api_key_ref.as_deref() == Some(reference)
+        });
+        if active_owner {
+            return Ok(());
+        }
+        let slot = state
+            .staged_credentials
+            .iter()
+            .find_map(|(slot, staged_reference)| {
+                (matches!(slot, CredentialSlot::ProviderChatGptPlan(_))
+                    && staged_reference == reference)
+                    .then(|| slot.clone())
+            });
+        let Some(slot) = slot else {
+            return Ok(());
+        };
+        state
+            .credential_store
+            .delete(reference)
+            .map_err(|_| anyhow::anyhow!("failed to remove abandoned ChatGPT plan credential"))?;
+        state.staged_credentials.remove(&slot);
+        Ok(())
+    }
+
+    /// Move one staged ChatGPT credential to the provider name selected by the
+    /// current Settings draft, without exposing or rewriting its secret.
+    pub fn reassign_staged_chatgpt_plan_credential(
+        &self,
+        reference: &str,
+        provider_name: &str,
+    ) -> anyhow::Result<()> {
+        crate::config::validate_credential_reference(reference)?;
+        if provider_name.trim().is_empty() {
+            anyhow::bail!("provider name is required");
+        }
+        let mut state = self.lock_state_mut()?;
+        let source_slot = state
+            .staged_credentials
+            .iter()
+            .find_map(|(slot, staged_reference)| {
+                (matches!(slot, CredentialSlot::ProviderChatGptPlan(_))
+                    && staged_reference == reference)
+                    .then(|| slot.clone())
+            });
+        let Some(source_slot) = source_slot else {
+            let active_owner = state.loader.config().llm.providers.iter().any(|provider| {
+                super::is_chatgpt_plan_provider(&provider.provider)
+                    && provider.api_key_ref.as_deref() == Some(reference)
+            });
+            anyhow::ensure!(
+                active_owner,
+                "ChatGPT plan credential is not staged or active"
+            );
+            return Ok(());
+        };
+        let target_slot = CredentialSlot::ProviderChatGptPlan(provider_name.to_string());
+        if source_slot == target_slot {
+            return Ok(());
+        }
+        if state.loader.config().llm.providers.iter().any(|provider| {
+            provider.name == provider_name && !super::is_chatgpt_plan_provider(&provider.provider)
+        }) {
+            anyhow::bail!("ChatGPT credential cannot be assigned to another provider type");
+        }
+        anyhow::ensure!(
+            !state.staged_credentials.contains_key(&target_slot),
+            "another ChatGPT credential is already staged for this provider"
+        );
+        state.staged_credentials.remove(&source_slot);
+        state
+            .staged_credentials
+            .insert(target_slot, reference.to_string());
+        Ok(())
+    }
+
+    /// Read a ChatGPT plan token bundle only when its credential reference is
+    /// owned by an active or staged `chatgpt-plan` provider.
+    pub fn read_chatgpt_plan_credential(&self, reference: &str) -> anyhow::Result<String> {
+        crate::config::validate_credential_reference(reference)?;
+        let state = self.lock_state()?;
+        let active_owner = state.loader.config().llm.providers.iter().any(|provider| {
+            super::is_chatgpt_plan_provider(&provider.provider)
+                && provider.api_key_ref.as_deref() == Some(reference)
+        });
+        let staged_owner = state
+            .staged_credentials
+            .iter()
+            .any(|(slot, staged_reference)| {
+                matches!(slot, CredentialSlot::ProviderChatGptPlan(_))
+                    && staged_reference == reference
+            });
+        anyhow::ensure!(
+            active_owner || staged_owner,
+            "ChatGPT plan credential is not configured"
+        );
+        state
+            .credential_store
+            .read(reference)
+            .map_err(|_| anyhow::anyhow!("failed to read ChatGPT plan credential securely"))?
+            .ok_or_else(|| {
+                anyhow::anyhow!("ChatGPT plan credential is missing from secure storage")
+            })
+    }
+
+    /// Resolve a named ChatGPT plan provider from the active configuration or
+    /// an unsaved OAuth login staged for that provider.
+    pub fn chatgpt_plan_credential_reference(
+        &self,
+        provider_name: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let state = self.lock_state()?;
+        if let Some(reference) = state
+            .staged_credentials
+            .get(&CredentialSlot::ProviderChatGptPlan(
+                provider_name.to_string(),
+            ))
+        {
+            return Ok(Some(reference.clone()));
+        }
+        if let Some(provider) = state
+            .loader
+            .config()
+            .llm
+            .provider_config_by_name(provider_name)
+        {
+            if !super::is_chatgpt_plan_provider(&provider.provider) {
+                return Ok(None);
+            }
+            if provider.api_key_ref.is_some() {
+                return Ok(provider.api_key_ref.clone());
+            }
+        }
+        Ok(None)
+    }
+
+    /// Replace a ChatGPT plan token bundle in place after OAuth refresh. The
+    /// existing reference remains stable while access and rotating refresh
+    /// tokens are replaced atomically by the secure-store adapter.
+    pub fn replace_chatgpt_plan_credential(
+        &self,
+        reference: &str,
+        value: &str,
+    ) -> anyhow::Result<()> {
+        crate::config::validate_credential_reference(reference)?;
+        anyhow::ensure!(!value.is_empty(), "ChatGPT plan credential cannot be empty");
+        let state = self.lock_state()?;
+        let active_owner = state.loader.config().llm.providers.iter().any(|provider| {
+            super::is_chatgpt_plan_provider(&provider.provider)
+                && provider.api_key_ref.as_deref() == Some(reference)
+        });
+        let staged_owner = state
+            .staged_credentials
+            .iter()
+            .any(|(slot, staged_reference)| {
+                matches!(slot, CredentialSlot::ProviderChatGptPlan(_))
+                    && staged_reference == reference
+            });
+        anyhow::ensure!(
+            active_owner || staged_owner,
+            "ChatGPT plan credential is not configured"
+        );
+        state
+            .credential_store
+            .write(reference, value)
+            .map_err(|_| anyhow::anyhow!("failed to update ChatGPT plan credential securely"))
+    }
+
     /// Stage a dedicated AI Search API key for one model's Alibaba search config.
     pub fn stage_independent_search_credential(
         &self,
@@ -567,6 +758,195 @@ mod tests {
         let after = std::fs::read_to_string(&path).unwrap();
         assert_eq!(after, before);
         assert!(!after.contains("secret"));
+    }
+
+    #[test]
+    fn chatgpt_plan_credentials_are_staged_in_the_dedicated_owner_slot() {
+        let (service, _dir) = service();
+        let abandoned_reference = service
+            .stage_chatgpt_plan_credential("abandoned", "abandoned-token-bundle")
+            .unwrap();
+        let reference = service
+            .stage_chatgpt_plan_credential("chatgpt", "protected-token-bundle")
+            .unwrap();
+        service
+            .discard_staged_chatgpt_plan_credential(&abandoned_reference)
+            .unwrap();
+        assert!(
+            service
+                .read_chatgpt_plan_credential(&abandoned_reference)
+                .is_err()
+        );
+        assert!(
+            service
+                .read_chatgpt_plan_credential(&reference)
+                .unwrap()
+                .contains("protected-token-bundle")
+        );
+
+        let ordinary_reference = service
+            .stage_provider_credential("ordinary", "api-key")
+            .unwrap();
+        assert!(
+            service
+                .read_chatgpt_plan_credential(&ordinary_reference)
+                .is_err()
+        );
+
+        service
+            .edit(|config| {
+                config.llm.providers.push(crate::config::ProviderConfig {
+                    name: "chatgpt".into(),
+                    provider: super::super::CHATGPT_PLAN_PROVIDER_IDENTITY.into(),
+                    api_style: Some("openai-responses".into()),
+                    base_url: super::super::CHATGPT_PLAN_BASE_URL.into(),
+                    api_key_ref: Some(reference.clone()),
+                    ..Default::default()
+                });
+                Ok(())
+            })
+            .unwrap();
+        let active = service
+            .chatgpt_plan_credential_reference("chatgpt")
+            .unwrap();
+        assert_eq!(active.as_deref(), Some(reference.as_str()));
+        let staged_replacement = service
+            .stage_chatgpt_plan_credential("chatgpt", "replacement-token-bundle")
+            .unwrap();
+        assert_eq!(
+            service
+                .chatgpt_plan_credential_reference("chatgpt")
+                .unwrap()
+                .as_deref(),
+            Some(staged_replacement.as_str())
+        );
+        service
+            .discard_staged_chatgpt_plan_credential(&staged_replacement)
+            .unwrap();
+        service
+            .discard_staged_chatgpt_plan_credential(&reference)
+            .unwrap();
+        assert_eq!(
+            service.read_chatgpt_plan_credential(&reference).unwrap(),
+            "protected-token-bundle"
+        );
+    }
+
+    #[test]
+    fn staged_chatgpt_plan_credential_follows_provider_rename_before_settings_save() {
+        let (service, _dir) = service();
+        let reference = service
+            .stage_chatgpt_plan_credential("original-name", "protected-token-bundle")
+            .unwrap();
+        let other_reference = service
+            .stage_chatgpt_plan_credential("renamed", "other-token-bundle")
+            .unwrap();
+        assert!(
+            service
+                .reassign_staged_chatgpt_plan_credential(&reference, "renamed")
+                .is_err()
+        );
+        service
+            .discard_staged_chatgpt_plan_credential(&other_reference)
+            .unwrap();
+        service
+            .reassign_staged_chatgpt_plan_credential(&reference, "renamed")
+            .unwrap();
+        assert_eq!(
+            service
+                .chatgpt_plan_credential_reference("renamed")
+                .unwrap()
+                .as_deref(),
+            Some(reference.as_str())
+        );
+
+        service
+            .edit(|config| {
+                config.llm.providers.push(crate::config::ProviderConfig {
+                    name: "renamed".into(),
+                    provider: super::super::CHATGPT_PLAN_PROVIDER_IDENTITY.into(),
+                    api_style: Some("openai-responses".into()),
+                    base_url: super::super::CHATGPT_PLAN_BASE_URL.into(),
+                    api_key_ref: Some(reference.clone()),
+                    ..Default::default()
+                });
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            service
+                .chatgpt_plan_credential_reference("renamed")
+                .unwrap()
+                .as_deref(),
+            Some(reference.as_str())
+        );
+        assert!(
+            service
+                .chatgpt_plan_credential_reference("original-name")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            service.read_chatgpt_plan_credential(&reference).unwrap(),
+            "protected-token-bundle"
+        );
+    }
+
+    #[test]
+    fn staged_chatgpt_plan_credential_can_replace_an_api_provider_draft() {
+        let (service, _dir) = service();
+        let api_reference = service
+            .stage_provider_credential("convert-me", "api-key")
+            .unwrap();
+        service
+            .edit(|config| {
+                config.llm.providers.push(crate::config::ProviderConfig {
+                    name: "convert-me".into(),
+                    provider: "openai".into(),
+                    api_style: Some("openai-responses".into()),
+                    base_url: super::super::CHATGPT_PLAN_BASE_URL.into(),
+                    api_key_ref: Some(api_reference.clone()),
+                    ..Default::default()
+                });
+                Ok(())
+            })
+            .unwrap();
+
+        let plan_reference = service
+            .stage_chatgpt_plan_credential("convert-me", "protected-token-bundle")
+            .unwrap();
+        assert_eq!(
+            service
+                .chatgpt_plan_credential_reference("convert-me")
+                .unwrap()
+                .as_deref(),
+            Some(plan_reference.as_str())
+        );
+
+        service
+            .edit(|config| {
+                let provider = config
+                    .llm
+                    .providers
+                    .iter_mut()
+                    .find(|provider| provider.name == "convert-me")
+                    .unwrap();
+                provider.provider = super::super::CHATGPT_PLAN_PROVIDER_IDENTITY.into();
+                provider.api_style = Some("openai-responses".into());
+                provider.base_url = super::super::CHATGPT_PLAN_BASE_URL.into();
+                provider.api_key_ref = Some(plan_reference.clone());
+                provider.api_key.clear();
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            service
+                .read_chatgpt_plan_credential(&plan_reference)
+                .unwrap(),
+            "protected-token-bundle"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@ import {
 } from '$lib/contracts/settings.ts';
 import { parseBooleanResponse } from '$lib/contracts/boolean.ts';
 import { parseCountResponse } from '$lib/contracts/count.ts';
-import type { TauriCommandRequest } from './contracts/generatedCommands.ts';
+import type { TauriCommandRequest, TauriCommandResponse } from './contracts/generatedCommands.ts';
 import { invoke } from '$lib/tauri.ts';
 
 /** Load Settings through the single runtime boundary used by renderer callers. */
@@ -79,6 +79,41 @@ export function stageProviderCredential(
 	request: TauriCommandRequest<'stage_provider_credential'>,
 ): Promise<string> {
 	return invoke('stage_provider_credential', request).then(parseStagedCredentialReference);
+}
+
+/** Begin Sign in with ChatGPT using Haven's local loopback callback. */
+export function startChatGptPlanLogin(
+	request: TauriCommandRequest<'start_chatgpt_plan_login'>,
+): Promise<TauriCommandResponse<'start_chatgpt_plan_login'>> {
+	return invoke('start_chatgpt_plan_login', request);
+}
+
+/** Validate the ChatGPT OAuth callback and stage its token record securely. */
+export function completeChatGptPlanLogin(
+	request: TauriCommandRequest<'complete_chatgpt_plan_login'>,
+): Promise<TauriCommandResponse<'complete_chatgpt_plan_login'>> {
+	return invoke('complete_chatgpt_plan_login', request);
+}
+
+/** Cancel one local ChatGPT login attempt and close its loopback listener. */
+export function cancelChatGptPlanLogin(
+	request: TauriCommandRequest<'cancel_chatgpt_plan_login'>,
+): Promise<void> {
+	return invoke('cancel_chatgpt_plan_login', request);
+}
+
+/** Delete one staged ChatGPT credential when its login result was abandoned. */
+export function discardStagedChatGptPlanCredential(
+	request: TauriCommandRequest<'discard_staged_chatgpt_plan_credential'>,
+): Promise<void> {
+	return invoke('discard_staged_chatgpt_plan_credential', request);
+}
+
+/** Move a staged ChatGPT credential when the Settings draft renames its provider. */
+export function reassignStagedChatGptPlanCredential(
+	request: TauriCommandRequest<'reassign_staged_chatgpt_plan_credential'>,
+): Promise<void> {
+	return invoke('reassign_staged_chatgpt_plan_credential', request);
 }
 
 /** Stage an Alibaba AI Search key in secure storage for one model config. */

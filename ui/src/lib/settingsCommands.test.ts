@@ -9,6 +9,11 @@ import {
 	pickExecutionWorkspaceDirectory,
 	resetPermissions,
 	resetSessionPermissions,
+	startChatGptPlanLogin,
+	completeChatGptPlanLogin,
+	cancelChatGptPlanLogin,
+	discardStagedChatGptPlanCredential,
+	reassignStagedChatGptPlanCredential,
 	revokePermission,
 	revokeSessionPermission,
 	runMemoryMaintenance,
@@ -96,6 +101,20 @@ describe('Settings commands', () => {
 			.mockResolvedValueOnce(2)
 			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce('cred-0000008c3defb1edb984fe2ac71c71c7')
+			.mockResolvedValueOnce({
+				loginId: 'login-1',
+				authorizationUrl: 'https://auth.openai.com/authorize',
+			accountEmail: null,
+			planUsageEnabled: false,
+			})
+			.mockResolvedValueOnce({
+				credentialRef: 'cred-0000008c3defb1edb984fe2ac71c71c9',
+				accountEmail: 'user@example.com',
+			planUsageEnabled: true,
+			})
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce('cred-0000008c3defb1edb984fe2ac71c71c8')
 			.mockResolvedValueOnce('cred-000001187bdf63db7309fc558e38e38e')
 			.mockResolvedValueOnce('cred-000001a4b9cf15c92c8efa8055555555')
@@ -118,6 +137,27 @@ describe('Settings commands', () => {
 		expect(await stageProviderCredential({ providerName: 'provider', apiKey: 'secret' })).toBe(
 			'cred-0000008c3defb1edb984fe2ac71c71c7',
 		);
+		await expect(startChatGptPlanLogin({ providerName: 'chatgpt' })).resolves.toEqual({
+			loginId: 'login-1',
+			authorizationUrl: 'https://auth.openai.com/authorize',
+			accountEmail: null,
+			planUsageEnabled: false,
+		});
+		await expect(
+			completeChatGptPlanLogin({ loginId: 'login-1', providerName: 'chatgpt' }),
+		).resolves.toEqual({
+			credentialRef: 'cred-0000008c3defb1edb984fe2ac71c71c9',
+			accountEmail: 'user@example.com',
+			planUsageEnabled: true,
+		});
+		await cancelChatGptPlanLogin({ loginId: 'login-1' });
+		await discardStagedChatGptPlanCredential({
+			credentialRef: 'cred-0000008c3defb1edb984fe2ac71c71c9',
+		});
+		await reassignStagedChatGptPlanCredential({
+			credentialRef: 'cred-0000008c3defb1edb984fe2ac71c71c9',
+			providerName: 'chatgpt-renamed',
+		});
 		expect(
 			await stageIndependentSearchCredential({ modelId: 'model-1', apiKey: 'secret' }),
 		).toBe('cred-0000008c3defb1edb984fe2ac71c71c8');
@@ -148,6 +188,26 @@ describe('Settings commands', () => {
 			['reset_session_permissions'],
 			['set_hotkey_capture_active', { active: true }],
 			['stage_provider_credential', { providerName: 'provider', apiKey: 'secret' }],
+			[
+				'start_chatgpt_plan_login',
+				{ providerName: 'chatgpt' },
+			],
+			[
+				'complete_chatgpt_plan_login',
+				{ loginId: 'login-1', providerName: 'chatgpt' },
+			],
+			['cancel_chatgpt_plan_login', { loginId: 'login-1' }],
+			[
+				'discard_staged_chatgpt_plan_credential',
+				{ credentialRef: 'cred-0000008c3defb1edb984fe2ac71c71c9' },
+			],
+			[
+				'reassign_staged_chatgpt_plan_credential',
+				{
+					credentialRef: 'cred-0000008c3defb1edb984fe2ac71c71c9',
+					providerName: 'chatgpt-renamed',
+				},
+			],
 			['stage_independent_search_credential', { modelId: 'model-1', apiKey: 'secret' }],
 			['stage_ocr_credential', { field: 'api_key', value: 'key' }],
 			['stage_ocr_credential', { field: 'api_secret', value: 'secret' }],

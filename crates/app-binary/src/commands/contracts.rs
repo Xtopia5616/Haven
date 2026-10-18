@@ -334,6 +334,31 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "writes provider secret to secure storage and returns only an opaque reference",
     },
     CommandContract {
+        name: "start_chatgpt_plan_login",
+        boundary: CommandBoundary::Execute,
+        security: "starts a state- and PKCE-bound loopback OAuth callback and returns only the official authorization URL",
+    },
+    CommandContract {
+        name: "complete_chatgpt_plan_login",
+        boundary: CommandBoundary::Mutate,
+        security: "validates OAuth state, issuer, audience, nonce and signature; stores token and granted-scope state only in secure storage",
+    },
+    CommandContract {
+        name: "cancel_chatgpt_plan_login",
+        boundary: CommandBoundary::Mutate,
+        security: "cancels one in-memory OAuth attempt and aborts its loopback callback listener",
+    },
+    CommandContract {
+        name: "discard_staged_chatgpt_plan_credential",
+        boundary: CommandBoundary::Mutate,
+        security: "deletes only the exact uncommitted ChatGPT plan credential reference abandoned by the settings draft",
+    },
+    CommandContract {
+        name: "reassign_staged_chatgpt_plan_credential",
+        boundary: CommandBoundary::Mutate,
+        security: "moves one exact staged ChatGPT credential reference to another ChatGPT plan provider name without exposing its secret",
+    },
+    CommandContract {
         name: "stage_independent_search_credential",
         boundary: CommandBoundary::Mutate,
         security: "writes a model's Alibaba AI Search key to secure storage and returns only an opaque reference",

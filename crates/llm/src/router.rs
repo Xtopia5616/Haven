@@ -238,9 +238,18 @@ impl LlmRouter {
     /// Like [`Self::new`], but clamp `max_tokens` against
     /// `context_limits.default_context_window` when a model has no explicit
     /// `context_window` (instead of the hardcoded 128K fallback).
-    pub fn with_default_context_window(
+    pub fn with_default_context_window(config: RouterConfig, default_context_window: u32) -> Self {
+        Self::with_default_context_window_and_chatgpt_plan_auth(
+            config,
+            default_context_window,
+            None,
+        )
+    }
+
+    pub fn with_default_context_window_and_chatgpt_plan_auth(
         mut config: RouterConfig,
         default_context_window: u32,
+        chatgpt_plan_auth: Option<Arc<dyn crate::chatgpt_plan::ChatGptPlanAuthPort>>,
     ) -> Self {
         let fallback = Self::normalize_context_windows(&mut config, default_context_window);
         // The response token floor can raise `max_tokens` above the model's
@@ -249,7 +258,8 @@ impl LlmRouter {
         // exceed that window; small configured floors are applied so long
         // outputs are not truncated mid-stream.
         ModelDirectory::clamp_max_tokens_to_context_windows(&mut config, fallback);
-        let model_directory = ModelDirectory::from_config(&config);
+        let model_directory =
+            ModelDirectory::from_config_with_chatgpt_plan_auth(&config, chatgpt_plan_auth);
         let request_limit = Self::request_limit(&config);
         let LlmRouterRuntimeState {
             endpoint_circuits,

@@ -76,6 +76,37 @@ describe('apiStyle', () => {
 		expect(providerPreset('vllm').provider).toBe('vllm');
 	});
 
+	it('keeps ChatGPT plan sign-in separate and drops credentials when switching auth modes', () => {
+		const plan = providerPreset('chatgpt-plan');
+		expect(plan.provider).toBe('chatgpt-plan');
+		expect(plan.api_style).toBe('openai-responses');
+		expect(plan.base_url).toBe('https://api.openai.com/v1');
+		expect(plan.media_capabilities).toEqual({ stt: false, tts: false, image_gen: false });
+
+		const form = {
+			preset: 'openai-chat',
+			api_style: 'openai-chat',
+			base_url: 'https://api.openai.com/v1',
+			api_key: 'sk-api-key',
+			api_key_ref: 'cred-00000000000000000000000000000000',
+			chatgpt_plan_account_email: 'user@example.com',
+			chatgpt_plan_plan_usage_enabled: true,
+			media_capabilities: { stt: true, tts: true, image_gen: true },
+		};
+		applyProviderPreset(form, 'chatgpt-plan');
+		expect(form.api_key).toBe('');
+		expect(form.api_key_ref).toBeNull();
+		expect(form.chatgpt_plan_account_email).toBeNull();
+		expect(form.chatgpt_plan_plan_usage_enabled).toBeNull();
+		expect(form.media_capabilities).toEqual({ stt: false, tts: false, image_gen: false });
+
+		form.api_key_ref = 'cred-00000000000000000000000000000001';
+		form.chatgpt_plan_plan_usage_enabled = true;
+		applyProviderPreset(form, 'openai-chat');
+		expect(form.api_key_ref).toBeNull();
+		expect(form.chatgpt_plan_plan_usage_enabled).toBeNull();
+	});
+
 	it('displays deepseek provider as deepseek-responses or deepseek-chat', () => {
 		expect(resolveProviderPreset({ api_style: 'openai-responses', provider: 'deepseek' })).toBe(
 			'deepseek-responses',

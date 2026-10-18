@@ -37,6 +37,8 @@ pub(super) struct ResponsesRequest {
     pub(super) top_p: Option<f32>,
     pub(super) stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) store: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tools: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tool_choice: Option<Value>,
@@ -262,7 +264,16 @@ pub(super) enum ResponsesStreamEvent {
         response: Option<ResponsesStreamResponse>,
     },
     #[serde(rename = "error")]
-    Error { message: Option<String> },
+    Error {
+        #[serde(default)]
+        message: Option<String>,
+        #[serde(default)]
+        code: Option<String>,
+        #[serde(default)]
+        param: Option<String>,
+        #[serde(default)]
+        error: Option<Value>,
+    },
     #[serde(other)]
     Other,
 }

@@ -49,6 +49,8 @@ haven-llm = { path = "../llm" }
 async-trait.workspace = true
 tokio-util.workspace = true
 base64.workspace = true
+sha2.workspace = true
+url = "2.5.8"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"

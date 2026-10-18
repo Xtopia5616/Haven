@@ -3,6 +3,16 @@ mod golden;
 
 use super::*;
 use crate::ToolFunction;
+use std::sync::Arc;
+
+struct ChatGptPlanAuthStub;
+
+#[async_trait::async_trait]
+impl crate::chatgpt_plan::ChatGptPlanAuthPort for ChatGptPlanAuthStub {
+    async fn access_token(&self, _credential_ref: &str) -> Result<String, LlmError> {
+        Ok("test-access-token".into())
+    }
+}
 
 #[test]
 fn stream_event_parses_reasoning_text_delta() {
@@ -517,6 +527,79 @@ fn build_request_body_with_tools() {
     assert_eq!(tools[0]["name"], "search");
     assert_eq!(tools[0]["strict"], false);
     assert_eq!(body.tool_choice, Some(serde_json::json!("auto")));
+}
+
+#[test]
+fn chatgpt_plan_request_obeys_preview_transport_and_parameter_limits() {
+    let client = OpenAiResponsesAdapter::try_new_with_chatgpt_plan_auth(
+        ModelEndpoint {
+            provider: "chatgpt-plan".into(),
+            api_style: Some("openai-responses".into()),
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: "cred-00000000000000000000000000000000".into(),
+            model_name: "gpt-6.1-sol".into(),
+            max_tokens: 8192,
+            temperature: 0.25,
+            top_p: Some(0.75),
+            ..Default::default()
+        },
+        Some(Arc::new(ChatGptPlanAuthStub)),
+    )
+    .unwrap();
+    let tool = LlmToolDefinition {
+        tool_type: "function".into(),
+        function: ToolFunction {
+            name: "files.read".into(),
+            description: "Read a local file".into(),
+            parameters: json!({"type": "object", "properties": {}}),
+        },
+    };
+    let body = client.build_request_body(
+        vec![
+            CanonicalMessage::system(vec![ContentPart::text("system rules")]),
+            CanonicalMessage::user_text("hello"),
+            CanonicalMessage::assistant(
+                Vec::new(),
+                Some(vec![CanonicalToolCall {
+                    tool_call_id: "call_1".into(),
+                    name: "files.read".into(),
+                    arguments: json!({"path": "notes.txt"}),
+                }]),
+                None,
+                Vec::new(),
+                Vec::new(),
+            ),
+        ],
+        vec![tool],
+        false,
+    );
+    let wire = serde_json::to_value(body).unwrap();
+    assert_eq!(wire["stream"], true);
+    assert_eq!(wire["store"], false);
+    assert_eq!(wire["instructions"], "system rules");
+    assert!(wire.get("max_output_tokens").is_none());
+    assert!(wire.get("temperature").is_none());
+    assert!(wire.get("top_p").is_none());
+    assert!(wire.get("prompt_cache_key").is_none());
+    assert_eq!(wire["tools"][0]["type"], "namespace");
+    assert_eq!(wire["tools"][0]["name"], "haven");
+    assert_eq!(wire["tools"][0]["tools"][0]["type"], "function");
+    assert_eq!(wire["tools"][0]["tools"][0]["name"], "files_read");
+    let historical_call = wire["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call")
+        .unwrap();
+    assert_eq!(historical_call["namespace"], "haven");
+    assert_eq!(historical_call["name"], "files_read");
+    assert!(
+        wire["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| { item.get("role").and_then(Value::as_str) != Some("system") })
+    );
 }
 
 #[test]

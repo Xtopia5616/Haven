@@ -15,6 +15,7 @@
 		id?: string;
 		ariaLabel?: string;
 		width?: ControlWidth;
+		disabled?: boolean;
 	}
 
 	let {
@@ -24,6 +25,7 @@
 		id = undefined,
 		ariaLabel = '',
 		width = 'fill',
+		disabled = false,
 	}: Props = $props();
 
 	let open = $state(false);
@@ -46,10 +48,12 @@
 	});
 
 	function toggle(): void {
+		if (disabled) return;
 		open = !open;
 	}
 
 	function select(selectedValue: string): void {
+		if (disabled) return;
 		open = false;
 		onChange?.(selectedValue);
 	}
@@ -82,6 +86,8 @@
 		{id}
 		class="md-select-trigger"
 		class:open
+		class:disabled
+		disabled={disabled}
 		aria-label={ariaLabel || undefined}
 		onclick={toggle}
 		onblur={handleBlur}
@@ -148,6 +154,14 @@
 	}
 	.md-select-trigger:hover {
 		border-color: var(--md-sys-color-on-surface);
+	}
+	.md-select-trigger:disabled {
+		color: var(--md-sys-color-on-surface-variant);
+		border-color: var(--md-sys-color-outline-variant);
+		cursor: not-allowed;
+	}
+	.md-select-trigger:disabled :global(.md-select-arrow) {
+		opacity: 0.5;
 	}
 	.md-select-trigger.open,
 	.md-select-trigger:focus {

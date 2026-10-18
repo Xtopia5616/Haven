@@ -38,6 +38,7 @@ futures-util = "0.3"
 tempfile = "3"
 encoding_rs = "0.8"
 sha2 = "0.10"
+jsonwebtoken = "9.3.1"
 syn = { version = "2", features = ["full", "parsing"] }
 quote = "1"
 proc-macro2 = "1"

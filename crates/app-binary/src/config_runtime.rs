@@ -97,7 +97,12 @@ impl RuntimeConfigCoordinator {
     ) -> Result<PreparedRouterRuntime, String> {
         let mcp_caller: Arc<dyn haven_llm::McpToolCaller> =
             Arc::clone(&state.runtime.services.mcp_tool_caller);
-        Self::prepare_router_from_snapshot(snapshot, Some(mcp_caller), ctx)
+        Self::prepare_router_from_snapshot(
+            snapshot,
+            Some(mcp_caller),
+            Some(state.runtime.chatgpt_plan_auth.clone()),
+            ctx,
+        )
     }
 
     /// Publish a fully prepared router generation and its dependent media
@@ -168,9 +173,10 @@ impl RuntimeConfigCoordinator {
     fn prepare_router_from_snapshot(
         snapshot: &ConfigSnapshot,
         mcp_caller: Option<Arc<dyn haven_llm::McpToolCaller>>,
+        chatgpt_plan_auth: Option<Arc<dyn haven_llm::ChatGptPlanAuthPort>>,
         ctx: &str,
     ) -> Result<PreparedRouterRuntime, String> {
-        let built = build_router_media(&snapshot.config, mcp_caller);
+        let built = build_router_media(&snapshot.config, mcp_caller, chatgpt_plan_auth);
         let stt_client = built
             .stt_client
             .map_err(|error| log_err(&format!("{ctx} STT"), error))?;
@@ -1576,7 +1582,7 @@ mod tests {
         };
 
         let prepared =
-            RuntimeConfigCoordinator::prepare_router_from_snapshot(&snapshot, None, "test")
+            RuntimeConfigCoordinator::prepare_router_from_snapshot(&snapshot, None, None, "test")
                 .expect("default router and media clients should prepare");
 
         assert_eq!(prepared.config_version, snapshot.version);
@@ -1628,7 +1634,7 @@ mod tests {
             .finish();
 
         let result = tracing::subscriber::with_default(subscriber, || {
-            RuntimeConfigCoordinator::prepare_router_from_snapshot(&snapshot, None, "test")
+            RuntimeConfigCoordinator::prepare_router_from_snapshot(&snapshot, None, None, "test")
         });
         let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
 

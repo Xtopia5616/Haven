@@ -93,6 +93,7 @@ corepack pnpm run check
 | `rec-` | 录音（一次录音一个 id，`recording:started`/`transcription:*` 事件共用） | `haven_app` |
 | `call-` | provider tool_call_id 缺失或同一 batch 重复时生成的 durable transcript 调用关联 fallback | `haven_agent` |
 | `preview-` | 流式工具调用参数预览身份 | `haven_agent` |
+| `login-` | 进程内 OAuth 登录尝试身份（仅用于开始、完成与取消关联） | `haven_app` |
 
 `file-{uuid32}` 会作为上传批次目录名或生成文件名的身份部分；上传文件名还可带原始文件名，生成媒体可带扩展名。消息附件元数据可能持久引用这些路径。`.file-{uuid32}.tmp` 是独立 staging 名称，只用于崩溃清理，不是持久实体身份。媒体资产跨层身份仍使用 `asset-*`。
 

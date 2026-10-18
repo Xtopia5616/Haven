@@ -6,6 +6,8 @@ mod agent_tool_adapters;
 mod app_state;
 mod autostart;
 mod bootstrap;
+mod chatgpt_plan_auth;
+mod chatgpt_plan_login;
 mod commands;
 mod config_runtime;
 mod desktop;

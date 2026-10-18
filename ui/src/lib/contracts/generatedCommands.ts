@@ -69,6 +69,7 @@ export interface UiMetricsSnapshot { frames: number; chunks: number; drops: numb
 export type ProcessResult = { 'SessionCreated': { session_id: string; message_id?: string | null } } | { 'Supplemented': { session_id: string; message_id?: string | null } };
 export const BOOTSTRAP_STATUS_VALUES = ['loading', 'ready'] as const;
 export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];
+export interface LoginStart { loginId: string; authorizationUrl: string; accountEmail: string | null; planUsageEnabled: boolean }
 export interface RuntimeSessionDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; waiting_reason?: SessionWaitingReason }
 export interface RuntimeSessionListResponse { sessions: RuntimeSessionDto[] }
 export const FRONTEND_FAILURE_KIND_INPUT_VALUES = ['operation_failure', 'unhandled_ui_error', 'unhandled_rejection'] as const;
@@ -96,6 +97,7 @@ export interface SessionLineageResponse { session_id: string; parent_session_id:
 export interface SessionRecordDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; run_end_reason?: string; created_at: string; updated_at: string }
 export interface SessionResumeMessageDto { message_id: string; session_id: string; role: CanonicalRole; content: string; message_type: TranscriptMessageKind | null; created_at: string; tool_call_id: string | null; attachments: MessageAttachment[]; media_inputs?: MediaInput[]; voice: boolean }
 export interface SessionResumeResponse { session: SessionRecordDto; messages: SessionResumeMessageDto[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[] }
+export interface ChatGptPlanLoginComplete { credentialRef: string; accountEmail: string | null; planUsageEnabled: boolean }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect }
 export interface ShellAvailability { available: boolean }
 export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
@@ -1169,6 +1171,7 @@ export const APP_BOOTSTRAP_EVENT_PAYLOAD_SHAPE = {
 		}
 	}
 } as const;
+export const CANCEL_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const CANCEL_RECORDING_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const CANCEL_TOOL_RUN_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const CHECK_LLM_CONNECTION_RESPONSE_SHAPE = {
@@ -1203,6 +1206,23 @@ export const CHECK_SHELL_AVAILABLE_RESPONSE_SHAPE = {
 } as const;
 export const CLEAR_FACTS_RESPONSE_SHAPE = { kind: 'number' } as const;
 export const CLEAR_TOOL_RUN_HISTORY_RESPONSE_SHAPE = { kind: 'number' } as const;
+export const COMPLETE_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'credentialRef': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'accountEmail': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'planUsageEnabled': {
+			optional: false,
+			shape: { kind: 'boolean' },
+		}
+	}
+} as const;
 export const CONTINUE_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const COUNT_SESSION_HISTORY_RESPONSE_SHAPE = { kind: 'number' } as const;
 export const COUNT_SESSION_HISTORY_SEARCH_RESPONSE_SHAPE = { kind: 'number' } as const;
@@ -1211,6 +1231,7 @@ export const DELETE_FACT_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DELETE_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DISABLE_AUTOSTART_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DISCARD_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE = { kind: 'boolean' } as const;
+export const DISCARD_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DISCARD_STAGED_CREDENTIALS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DISCOVER_MODELS_RESPONSE_SHAPE = { kind: 'array', items: {
 	kind: 'object',
@@ -5928,6 +5949,7 @@ export const READ_MCP_RESOURCE_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const REASSIGN_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const RECALL_MEMORY_RESPONSE_SHAPE = { kind: 'array', items: {
 	kind: 'object',
 	fields: {
@@ -8511,6 +8533,27 @@ export const SKILLS_STATUS_CHANGE_EVENT_PAYLOAD_SHAPE = {
 export const STAGE_INDEPENDENT_SEARCH_CREDENTIAL_RESPONSE_SHAPE = { kind: 'string' } as const;
 export const STAGE_OCR_CREDENTIAL_RESPONSE_SHAPE = { kind: 'string' } as const;
 export const STAGE_PROVIDER_CREDENTIAL_RESPONSE_SHAPE = { kind: 'string' } as const;
+export const START_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'loginId': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'authorizationUrl': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'accountEmail': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'planUsageEnabled': {
+			optional: false,
+			shape: { kind: 'boolean' },
+		}
+	}
+} as const;
 export const START_RECORDING_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const STOP_RECORDING_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const SWITCH_MODEL_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -8870,12 +8913,14 @@ export const UPDATE_SETTINGS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	add_fact: ADD_FACT_RESPONSE_SHAPE,
 	add_mcp_server: ADD_MCP_SERVER_RESPONSE_SHAPE,
+	cancel_chatgpt_plan_login: CANCEL_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE,
 	cancel_recording: CANCEL_RECORDING_RESPONSE_SHAPE,
 	cancel_tool_run: CANCEL_TOOL_RUN_RESPONSE_SHAPE,
 	check_llm_connection: CHECK_LLM_CONNECTION_RESPONSE_SHAPE,
 	check_shell_available: CHECK_SHELL_AVAILABLE_RESPONSE_SHAPE,
 	clear_facts: CLEAR_FACTS_RESPONSE_SHAPE,
 	clear_tool_run_history: CLEAR_TOOL_RUN_HISTORY_RESPONSE_SHAPE,
+	complete_chatgpt_plan_login: COMPLETE_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE,
 	continue_session: CONTINUE_SESSION_RESPONSE_SHAPE,
 	count_session_history: COUNT_SESSION_HISTORY_RESPONSE_SHAPE,
 	count_session_history_search: COUNT_SESSION_HISTORY_SEARCH_RESPONSE_SHAPE,
@@ -8884,6 +8929,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	delete_session: DELETE_SESSION_RESPONSE_SHAPE,
 	disable_autostart: DISABLE_AUTOSTART_RESPONSE_SHAPE,
 	discard_sandbox_output_review: DISCARD_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE,
+	discard_staged_chatgpt_plan_credential: DISCARD_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE,
 	discard_staged_credentials: DISCARD_STAGED_CREDENTIALS_RESPONSE_SHAPE,
 	discover_models: DISCOVER_MODELS_RESPONSE_SHAPE,
 	enable_autostart: ENABLE_AUTOSTART_RESPONSE_SHAPE,
@@ -8922,6 +8968,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	promote_sandbox_output: PROMOTE_SANDBOX_OUTPUT_RESPONSE_SHAPE,
 	read_log_tail: READ_LOG_TAIL_RESPONSE_SHAPE,
 	read_mcp_resource: READ_MCP_RESOURCE_RESPONSE_SHAPE,
+	reassign_staged_chatgpt_plan_credential: REASSIGN_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE,
 	recall_memory: RECALL_MEMORY_RESPONSE_SHAPE,
 	reconnect_mcp_server: RECONNECT_MCP_SERVER_RESPONSE_SHAPE,
 	refresh_mcp_servers: REFRESH_MCP_SERVERS_RESPONSE_SHAPE,
@@ -8945,6 +8992,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	stage_independent_search_credential: STAGE_INDEPENDENT_SEARCH_CREDENTIAL_RESPONSE_SHAPE,
 	stage_ocr_credential: STAGE_OCR_CREDENTIAL_RESPONSE_SHAPE,
 	stage_provider_credential: STAGE_PROVIDER_CREDENTIAL_RESPONSE_SHAPE,
+	start_chatgpt_plan_login: START_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE,
 	start_recording: START_RECORDING_RESPONSE_SHAPE,
 	stop_recording: STOP_RECORDING_RESPONSE_SHAPE,
 	switch_model: SWITCH_MODEL_RESPONSE_SHAPE,
@@ -9039,12 +9087,14 @@ export const MAX_FACTS_IN_EXTRACTION_PROMPT = 64 as const;
 export interface TauriCommandMap {
 	add_fact: { request: { subject: string; predicate: string; object: string; tags?: string[] | null }; response: MemoryFactResponse };
 	add_mcp_server: { request: { config: McpServerConfigInput }; response: void };
+	cancel_chatgpt_plan_login: { request: { loginId: string }; response: void };
 	cancel_recording: { request: undefined; response: void };
 	cancel_tool_run: { request: { toolRunId: string; kind: ToolRunKindDtoInput }; response: boolean };
 	check_llm_connection: { request: undefined; response: LlmConnectionReport };
 	check_shell_available: { request: { shell: ShellChoiceInput }; response: ShellAvailability };
 	clear_facts: { request: undefined; response: number };
 	clear_tool_run_history: { request: undefined; response: number };
+	complete_chatgpt_plan_login: { request: { loginId: string; providerName: string }; response: ChatGptPlanLoginComplete };
 	continue_session: { request: { sessionId: string }; response: void };
 	count_session_history: { request: undefined; response: number };
 	count_session_history_search: { request: { query: string }; response: number };
@@ -9053,6 +9103,7 @@ export interface TauriCommandMap {
 	delete_session: { request: { sessionId: string }; response: void };
 	disable_autostart: { request: undefined; response: void };
 	discard_sandbox_output_review: { request: { sessionId: string; sourceStepId: string }; response: boolean };
+	discard_staged_chatgpt_plan_credential: { request: { credentialRef: string }; response: void };
 	discard_staged_credentials: { request: undefined; response: void };
 	discover_models: { request: { baseUrl: string; apiKey: string; providerName?: string | null; requestKind?: RequestKindInput | null; authHeaderName?: string | null; authHeaderPrefix?: string | null; skipAuth?: boolean | null; proxyUrl?: string | null; noProxy?: string | null }; response: ModelInfo[] };
 	enable_autostart: { request: undefined; response: void };
@@ -9091,6 +9142,7 @@ export interface TauriCommandMap {
 	promote_sandbox_output: { request: { sessionId: string; sourceStepId: string; changeIndex: number; destination: string }; response: void };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
 	read_mcp_resource: { request: { name: string; targetBinding: string; uri: string; forceRefresh: boolean }; response: McpResourceRead };
+	reassign_staged_chatgpt_plan_credential: { request: { credentialRef: string; providerName: string }; response: void };
 	recall_memory: { request: { query: string; kind?: MemoryEntityKindInput | null; limit?: number | null }; response: MemoryRecallItem[] };
 	reconnect_mcp_server: { request: { name: string }; response: void };
 	refresh_mcp_servers: { request: undefined; response: McpRefreshResult };
@@ -9114,6 +9166,7 @@ export interface TauriCommandMap {
 	stage_independent_search_credential: { request: { modelId: string; apiKey: string }; response: string };
 	stage_ocr_credential: { request: { field: OcrCredentialFieldInput; value: string }; response: string };
 	stage_provider_credential: { request: { providerName: string; apiKey: string }; response: string };
+	start_chatgpt_plan_login: { request: { providerName: string }; response: LoginStart };
 	start_recording: { request: undefined; response: void };
 	stop_recording: { request: undefined; response: void };
 	switch_model: { request: { requestKind: RequestKindInput; modelConfigId: string }; response: void };
@@ -9149,12 +9202,14 @@ export interface CommandContract {
 export const TAURI_COMMAND_CONTRACTS = {
 	add_fact: { boundary: 'mutate', security: "credential-like predicates and values rejected" },
 	add_mcp_server: { boundary: 'execute', security: "AuthorizationPort; typed native admin operation validates and persists config" },
+	cancel_chatgpt_plan_login: { boundary: 'mutate', security: "cancels one in-memory OAuth attempt and aborts its loopback callback listener" },
 	cancel_recording: { boundary: 'execute', security: "cancel clears the in-flight recording id" },
 	cancel_tool_run: { boundary: 'mutate', security: "kind is enum; cancel only the selected task kind" },
 	check_llm_connection: { boundary: 'read', security: "status and non-sensitive reason only; no endpoint or provider payload" },
 	check_shell_available: { boundary: 'read', security: "availability boolean only" },
 	clear_facts: { boundary: 'mutate', security: "delete all saved long-term facts and invalidate derived caches" },
 	clear_tool_run_history: { boundary: 'mutate', security: "delete terminal task history; preserve live work and undelivered results" },
+	complete_chatgpt_plan_login: { boundary: 'mutate', security: "validates OAuth state, issuer, audience, nonce and signature; stores token and granted-scope state only in secure storage" },
 	continue_session: { boundary: 'mutate', security: "replay durable session_events and truncate partial projection" },
 	count_session_history: { boundary: 'read', security: "read-only aggregate" },
 	count_session_history_search: { boundary: 'read', security: "parameterized read-only search" },
@@ -9163,6 +9218,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	delete_session: { boundary: 'mutate', security: "delete by session id and release runtime state" },
 	disable_autostart: { boundary: 'execute', security: "managed autostart entry only" },
 	discard_sandbox_output_review: { boundary: 'mutate', security: "canonical session/step pair; only the owning Shell review can be discarded" },
+	discard_staged_chatgpt_plan_credential: { boundary: 'mutate', security: "deletes only the exact uncommitted ChatGPT plan credential reference abandoned by the settings draft" },
 	discard_staged_credentials: { boundary: 'mutate', security: "deletes staged values not committed by a Settings save" },
 	discover_models: { boundary: 'execute', security: "http(s) endpoint; typed auth scheme for an explicitly entered key; stored keys require a matching configured endpoint" },
 	enable_autostart: { boundary: 'execute', security: "release build only" },
@@ -9201,6 +9257,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	promote_sandbox_output: { boundary: 'execute', security: "Windows only; owner-held change index; exact session request; required one-time confirmation; current Files capability and live execution proof" },
 	read_log_tail: { boundary: 'read', security: "bounded tail; file logging must be enabled" },
 	read_mcp_resource: { boundary: 'execute', security: "explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content" },
+	reassign_staged_chatgpt_plan_credential: { boundary: 'mutate', security: "moves one exact staged ChatGPT credential reference to another ChatGPT plan provider name without exposing its secret" },
 	recall_memory: { boundary: 'read', security: "bounded and credential-filtered recall" },
 	reconnect_mcp_server: { boundary: 'execute', security: "AuthorizationPort; typed native operation reconnects one existing configured server after final version check" },
 	refresh_mcp_servers: { boundary: 'execute', security: "AuthorizationPort; one batch over persisted config diff and its affected targets; no renderer process arguments" },
@@ -9224,6 +9281,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	stage_independent_search_credential: { boundary: 'mutate', security: "writes a model's Alibaba AI Search key to secure storage and returns only an opaque reference" },
 	stage_ocr_credential: { boundary: 'mutate', security: "writes OCR secret to secure storage and returns only an opaque reference" },
 	stage_provider_credential: { boundary: 'mutate', security: "writes provider secret to secure storage and returns only an opaque reference" },
+	start_chatgpt_plan_login: { boundary: 'execute', security: "starts a state- and PKCE-bound loopback OAuth callback and returns only the official authorization URL" },
 	start_recording: { boundary: 'execute', security: "input pipeline owns capture lifecycle" },
 	stop_recording: { boundary: 'execute', security: "capture stops before asynchronous transcription" },
 	switch_model: { boundary: 'mutate', security: "requestKind selects the route; modelConfigId is an assigned, capability-compatible Haven ModelConfig identity, not a Provider service model ID" },

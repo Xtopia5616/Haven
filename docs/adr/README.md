@@ -1307,3 +1307,4 @@
 - [1316：移除 Windows 原生启动加载与失败恢复](1316-remove-native-startup-splash.md)
 - [1317：补充轻量启动失败反馈](1317-focused-startup-failure-feedback.md)
 - [1318：区分开发窗口与正式版实例](1318-distinguish-development-instance.md)
+- [1319：将 ChatGPT 订阅登录作为独立 Provider](1319-chatgpt-plan-provider.md)

@@ -13,7 +13,7 @@ use haven_common::config::{
 };
 use haven_common::media::CapabilityProfile;
 
-use crate::adapters::adapter_for;
+use crate::adapters::{adapter_for, adapter_for_with_chatgpt_plan_auth};
 use crate::client::LlmClient;
 use crate::request_descriptor::RequestDescriptor;
 use crate::types::LlmError;
@@ -45,14 +45,28 @@ pub(crate) struct ModelDirectory {
 impl ModelDirectory {
     /// Build one provider client per materialized model and keep only
     /// credential-ready, capability-compatible primary routes.
+    #[cfg(test)]
     pub(crate) fn from_config(config: &RouterConfig) -> Self {
+        Self::from_config_with_chatgpt_plan_auth(config, None)
+    }
+
+    pub(crate) fn from_config_with_chatgpt_plan_auth(
+        config: &RouterConfig,
+        chatgpt_plan_auth: Option<Arc<dyn crate::chatgpt_plan::ChatGptPlanAuthPort>>,
+    ) -> Self {
         let clients = config
             .models
             .iter()
             .map(|routed_model| {
                 (
                     routed_model.model_config_id.clone(),
-                    Arc::from(adapter_for(&routed_model.endpoint)) as Arc<dyn LlmClient>,
+                    Arc::from(match chatgpt_plan_auth.as_ref() {
+                        Some(auth) => adapter_for_with_chatgpt_plan_auth(
+                            &routed_model.endpoint,
+                            Some(Arc::clone(auth)),
+                        ),
+                        None => adapter_for(&routed_model.endpoint),
+                    }) as Arc<dyn LlmClient>,
                 )
             })
             .collect();

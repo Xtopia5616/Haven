@@ -67,6 +67,8 @@ impl OpenAiResponsesAdapter {
 
         let resp = self.send_request(&url, &mut body, true).await?;
         let cache_diagnostics = body.cache_diagnostics;
+        let is_chatgpt_plan =
+            haven_common::config::is_chatgpt_plan_provider(&self.endpoint.provider);
 
         use tokio::sync::mpsc;
 
@@ -195,7 +197,13 @@ impl OpenAiResponsesAdapter {
                                 .push(crate::types::StreamToolCallUpdate {
                                     tool_index: index as u32,
                                     tool_call_id: (!call_id.is_empty()).then(|| call_id.clone()),
-                                    name: (!name.is_empty()).then(|| name.clone()),
+                                    name: (!name.is_empty()).then(|| {
+                                        if is_chatgpt_plan {
+                                            state.tool_names.to_canonical(name)
+                                        } else {
+                                            name.clone()
+                                        }
+                                    }),
                                     arguments_delta: Some(d),
                                     arguments_snapshot: None,
                                 });
@@ -227,7 +235,13 @@ impl OpenAiResponsesAdapter {
                                                 tool_index: index as u32,
                                                 tool_call_id: (!call_id.is_empty())
                                                     .then_some(call_id),
-                                                name: (!name.is_empty()).then_some(name),
+                                                name: (!name.is_empty()).then(|| {
+                                                    if is_chatgpt_plan {
+                                                        state.tool_names.to_canonical(&name)
+                                                    } else {
+                                                        name.clone()
+                                                    }
+                                                }),
                                                 arguments_snapshot: Some(arguments),
                                                 arguments_delta: None,
                                             },
@@ -313,7 +327,13 @@ impl OpenAiResponsesAdapter {
                                         tool_index: index as u32,
                                         tool_call_id: (!call_id.is_empty())
                                             .then(|| call_id.clone()),
-                                        name: (!name.is_empty()).then(|| name.clone()),
+                                        name: (!name.is_empty()).then(|| {
+                                            if is_chatgpt_plan {
+                                                state.tool_names.to_canonical(name)
+                                            } else {
+                                                name.clone()
+                                            }
+                                        }),
                                         arguments_snapshot: Some(arguments.clone()),
                                         arguments_delta: None,
                                     });
@@ -437,6 +457,15 @@ impl OpenAiResponsesAdapter {
                             | ResponsesStreamEvent::Incomplete { response } => response,
                             _ => unreachable!("guarded response terminal event"),
                         };
+                        if incomplete && is_chatgpt_plan {
+                            let error = chatgpt_plan_response_error(
+                                response
+                                    .as_ref()
+                                    .and_then(|response| response.error.as_ref()),
+                            );
+                            state.done = true;
+                            return Some((Err(error), state));
+                        }
                         state.saw_completed = true;
                         let mut completed_text = None;
                         let mut response_citations = Vec::new();
@@ -510,17 +539,40 @@ impl OpenAiResponsesAdapter {
                         Some((Ok(final_chunk), state))
                     }
                     Ok(ResponsesStreamEvent::Failed { response }) => {
-                        let msg = response
-                            .and_then(|r| r.error)
-                            .map(|e| serde_json::to_string(&e).unwrap_or_default())
-                            .unwrap_or_else(|| "response failed".into());
                         state.done = true;
-                        Some((Err(LlmError::RequestFailed(msg)), state))
+                        let error = if is_chatgpt_plan {
+                            chatgpt_plan_response_error(
+                                response
+                                    .as_ref()
+                                    .and_then(|response| response.error.as_ref()),
+                            )
+                        } else {
+                            let msg = response
+                                .and_then(|response| response.error)
+                                .map(|value| serde_json::to_string(&value).unwrap_or_default())
+                                .unwrap_or_else(|| "response failed".into());
+                            LlmError::RequestFailed(msg)
+                        };
+                        Some((Err(error), state))
                     }
-                    Ok(ResponsesStreamEvent::Error { message, .. }) => {
+                    Ok(ResponsesStreamEvent::Error {
+                        message,
+                        code,
+                        param,
+                        error,
+                    }) => {
                         state.done = true;
-                        let msg = message.unwrap_or_else(|| "stream error".into());
-                        Some((Err(LlmError::RequestFailed(msg)), state))
+                        let error = if is_chatgpt_plan {
+                            let structured_error = error.unwrap_or_else(
+                                || serde_json::json!({"code": code, "param": param}),
+                            );
+                            chatgpt_plan_response_error(Some(&structured_error))
+                        } else {
+                            LlmError::RequestFailed(
+                                message.unwrap_or_else(|| "stream error".into()),
+                            )
+                        };
+                        Some((Err(error), state))
                     }
                     Ok(ResponsesStreamEvent::Other) => {
                         let mut chunk = empty_chunk();
@@ -537,6 +589,87 @@ impl OpenAiResponsesAdapter {
         .fuse();
 
         Ok(Box::pin(mapped))
+    }
+}
+
+fn chatgpt_plan_response_error(error: Option<&Value>) -> LlmError {
+    let safe_field = |name: &str| {
+        error
+            .and_then(|value| value.get(name))
+            .and_then(Value::as_str)
+            .filter(|value| {
+                !value.is_empty()
+                    && value.chars().all(|ch| {
+                        ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '[' | ']')
+                    })
+            })
+    };
+    let code = safe_field("code");
+    let param = safe_field("param");
+    let detail = match (code, param) {
+        (Some(code), Some(param)) => format!("code={code}, param={param}"),
+        (Some(code), None) => format!("code={code}"),
+        (None, Some(param)) => format!("param={param}"),
+        (None, None) => "no structured error code".into(),
+    };
+    match code {
+        Some("subscription_sharing_usage_limit_exceeded") => LlmError::Billing(
+            "ChatGPT plan usage limit reached; check ChatGPT settings → Usage".into(),
+        ),
+        Some(
+            "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable",
+        ) => LlmError::ServerError(format!(
+            "ChatGPT plan usage is temporarily unavailable ({detail})"
+        )),
+        _ => LlmError::RequestFailed(format!("ChatGPT plan response failed ({detail})")),
+    }
+}
+
+#[cfg(test)]
+mod plan_error_tests {
+    use super::*;
+
+    #[test]
+    fn usage_limit_is_non_retryable_and_usage_unavailable_is_retryable() {
+        let limited = chatgpt_plan_response_error(Some(&serde_json::json!({
+            "code": "subscription_sharing_usage_limit_exceeded",
+            "param": "model"
+        })));
+        assert!(matches!(limited, LlmError::Billing(_)));
+        assert!(!limited.is_retryable());
+
+        let unavailable = chatgpt_plan_response_error(Some(&serde_json::json!({
+            "code": "subscription_sharing_usage_unavailable"
+        })));
+        assert!(matches!(unavailable, LlmError::ServerError(_)));
+        assert!(unavailable.is_retryable());
+
+        let user_unavailable = chatgpt_plan_response_error(Some(&serde_json::json!({
+            "code": "subscription_sharing_user_unavailable"
+        })));
+        assert!(matches!(user_unavailable, LlmError::ServerError(_)));
+        assert!(user_unavailable.is_retryable());
+    }
+
+    #[test]
+    fn unknown_plan_error_does_not_surface_untrusted_message_text() {
+        let error = chatgpt_plan_response_error(Some(&serde_json::json!({
+            "code": "subscription_sharing_user_not_eligible",
+            "message": "sensitive detail"
+        })));
+        let rendered = error.to_string();
+        assert!(rendered.contains("subscription_sharing_user_not_eligible"));
+        assert!(!rendered.contains("sensitive detail"));
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn top_level_stream_error_uses_structured_plan_code() {
+        let error = chatgpt_plan_response_error(Some(&serde_json::json!({
+            "code": "subscription_sharing_usage_limit_exceeded"
+        })));
+        assert!(matches!(error, LlmError::Billing(_)));
+        assert!(!error.is_retryable());
     }
 }
 pub(super) fn append_completed_output(

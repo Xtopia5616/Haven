@@ -21,14 +21,18 @@ pub(crate) struct RouterMediaBuild {
 pub(crate) fn build_router_media(
     config: &AppConfig,
     mcp_caller: Option<Arc<dyn haven_llm::McpToolCaller>>,
+    chatgpt_plan_auth: Option<Arc<dyn haven_llm::ChatGptPlanAuthPort>>,
 ) -> RouterMediaBuild {
-    let router = Arc::new(LlmRouter::with_default_context_window(
-        config.llm.materialize(
-            Some(config.context_limits.response_token_floor),
-            Some(config.context_limits.reasoning_echo_max_chars),
+    let router = Arc::new(
+        LlmRouter::with_default_context_window_and_chatgpt_plan_auth(
+            config.llm.materialize(
+                Some(config.context_limits.response_token_floor),
+                Some(config.context_limits.reasoning_echo_max_chars),
+            ),
+            config.context_limits.default_context_window,
+            chatgpt_plan_auth,
         ),
-        config.context_limits.default_context_window,
-    ));
+    );
     let media = config.media.clone();
     let providers = &config.llm.providers;
 
@@ -59,7 +63,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.media.ocr.provider = "invalid-provider".into();
 
-        let built = build_router_media(&config, None);
+        let built = build_router_media(&config, None, None);
 
         assert!(built.ocr_client.is_err());
         assert!(built.stt_client.is_ok());

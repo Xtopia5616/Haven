@@ -1,4 +1,5 @@
 use crate::app_state::{AppState, BootstrapStatus};
+use crate::chatgpt_plan_login::{LoginStart, serialize_credential};
 use crate::commands::{log_err, validate_command_id};
 use crate::config_runtime::{
     PreparedRouterRuntime, RouterRuntimePublishError, SettingsRuntimeApplyCoordinator,
@@ -148,6 +149,96 @@ pub async fn stage_provider_credential(
         .config_service
         .stage_provider_credential(&provider_name, &api_key)
         .map_err(|error| log_err("stage_provider_credential", error))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatGptPlanLoginComplete {
+    credential_ref: String,
+    account_email: Option<String>,
+    plan_usage_enabled: bool,
+}
+
+/// Start the official Sign in with ChatGPT OAuth flow on a local loopback
+/// callback. The renderer opens the returned URL through `open_external`.
+#[tauri::command]
+pub async fn start_chatgpt_plan_login(
+    state: State<'_, Arc<AppState>>,
+    provider_name: String,
+) -> Result<LoginStart, String> {
+    state
+        .chatgpt_plan_login
+        .start(
+            &provider_name,
+            &state.runtime.config_service,
+            &state.runtime.chatgpt_plan_auth,
+        )
+        .await
+        .map_err(|error| log_err("start_chatgpt_plan_login", error))
+}
+
+/// Complete OAuth after the browser returns to Haven's loopback listener.
+/// Only the credential reference and validated account email cross IPC.
+#[tauri::command]
+pub async fn complete_chatgpt_plan_login(
+    state: State<'_, Arc<AppState>>,
+    login_id: String,
+    provider_name: String,
+) -> Result<ChatGptPlanLoginComplete, String> {
+    let result = state
+        .chatgpt_plan_login
+        .complete(&login_id, &provider_name)
+        .await
+        .map_err(|error| log_err("complete_chatgpt_plan_login", error))?;
+    let serialized = serialize_credential(&result.credential)
+        .map_err(|error| log_err("complete_chatgpt_plan_login", error))?;
+    let credential_ref = state
+        .runtime
+        .config_service
+        .stage_chatgpt_plan_credential(&provider_name, &serialized)
+        .map_err(|error| log_err("complete_chatgpt_plan_login", error))?;
+    Ok(ChatGptPlanLoginComplete {
+        credential_ref,
+        account_email: result.account_email,
+        plan_usage_enabled: result.plan_usage_enabled,
+    })
+}
+
+/// Cancel one in-flight ChatGPT login and close its loopback callback listener.
+#[tauri::command]
+pub async fn cancel_chatgpt_plan_login(
+    state: State<'_, Arc<AppState>>,
+    login_id: String,
+) -> Result<(), String> {
+    state.chatgpt_plan_login.cancel(&login_id).await;
+    Ok(())
+}
+
+/// Remove one ChatGPT credential staged by a login result the settings draft abandoned.
+#[tauri::command]
+pub async fn discard_staged_chatgpt_plan_credential(
+    state: State<'_, Arc<AppState>>,
+    credential_ref: String,
+) -> Result<(), String> {
+    state
+        .runtime
+        .config_service
+        .discard_staged_chatgpt_plan_credential(&credential_ref)
+        .map_err(|error| log_err("discard_staged_chatgpt_plan_credential", error))
+}
+
+/// Reassign one staged ChatGPT credential to the provider name in the current Settings draft.
+#[tauri::command]
+pub async fn reassign_staged_chatgpt_plan_credential(
+    state: State<'_, Arc<AppState>>,
+    credential_ref: String,
+    provider_name: String,
+) -> Result<(), String> {
+    state
+        .runtime
+        .config_service
+        .reassign_staged_chatgpt_plan_credential(&credential_ref, &provider_name)
+        .map_err(|error| log_err("reassign_staged_chatgpt_plan_credential", error))
 }
 
 /// Store a replacement Alibaba AI Search key securely for one model config.

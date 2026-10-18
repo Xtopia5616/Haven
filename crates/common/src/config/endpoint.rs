@@ -6,6 +6,16 @@ use super::*;
 
 pub const MIN_LLM_CONCURRENT_REQUESTS: usize = 1;
 pub const MAX_LLM_CONCURRENT_REQUESTS: usize = 16;
+/// Dedicated provider identity for OpenAI's preview Sign in with ChatGPT flow.
+/// Its wire protocol remains `openai-responses`.
+pub const CHATGPT_PLAN_PROVIDER_IDENTITY: &str = "chatgpt-plan";
+pub const CHATGPT_PLAN_BASE_URL: &str = "https://api.openai.com/v1";
+
+pub fn is_chatgpt_plan_provider(provider: &str) -> bool {
+    provider
+        .trim()
+        .eq_ignore_ascii_case(CHATGPT_PLAN_PROVIDER_IDENTITY)
+}
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -999,7 +1009,15 @@ impl LlmConfig {
             };
         };
         ep.model_name = model_config.model.clone();
-        ep.api_key = p.api_key.clone();
+        // For the plan-auth provider the materialized API-key slot carries
+        // only the opaque Credential Manager reference. The Responses adapter
+        // resolves it through its narrow auth port and never sends the ref as
+        // an Authorization header.
+        ep.api_key = if is_chatgpt_plan_provider(&p.provider) {
+            p.api_key_ref.clone().unwrap_or_default()
+        } else {
+            p.api_key.clone()
+        };
         ep.api_style = p.api_style.clone();
         ep.provider = p.provider.clone();
         ep.base_url = p.base_url.clone();
@@ -1011,7 +1029,11 @@ impl LlmConfig {
         ep.temperature = p.default_temperature.unwrap_or(ep.temperature);
         ep.timeout_secs = p.default_timeout_secs.unwrap_or(ep.timeout_secs);
         ep.timeout_streaming_secs = p.default_timeout_streaming_secs;
-        ep.web_search = p.default_web_search.clone();
+        ep.web_search = if is_chatgpt_plan_provider(&p.provider) {
+            Some("off".into())
+        } else {
+            p.default_web_search.clone()
+        };
         // Per-model overrides win over provider defaults.
         if let Some(t) = model_config.temperature {
             ep.temperature = t;
@@ -1095,6 +1117,12 @@ impl LlmConfig {
 /// True when a provider has usable credentials: a non-empty API key, or a
 /// keyless local server (llama.cpp / Ollama).
 pub fn provider_credentials_ready(p: &ProviderConfig) -> bool {
+    if is_chatgpt_plan_provider(&p.provider) {
+        return p
+            .api_key_ref
+            .as_deref()
+            .is_some_and(|reference| crate::types::is_canonical_id(reference, "cred"));
+    }
     if !p.api_key.is_empty() {
         return true;
     }
@@ -1108,6 +1136,9 @@ pub fn provider_credentials_ready(p: &ProviderConfig) -> bool {
 /// True when a materialized endpoint has usable credentials (same keyless
 /// rules as [`provider_credentials_ready`]).
 pub fn endpoint_credentials_ready(ep: &ModelEndpoint) -> bool {
+    if is_chatgpt_plan_provider(&ep.provider) {
+        return crate::types::is_canonical_id(&ep.api_key, "cred");
+    }
     if !ep.api_key.is_empty() {
         return true;
     }
@@ -1417,6 +1448,40 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn chatgpt_plan_uses_an_opaque_credential_reference_and_fixed_endpoint() {
+        let reference = "cred-00000000000000000000000000000000".to_string();
+        let llm = LlmConfig {
+            providers: vec![ProviderConfig {
+                name: "chatgpt".into(),
+                provider: CHATGPT_PLAN_PROVIDER_IDENTITY.into(),
+                api_style: Some("openai-responses".into()),
+                base_url: CHATGPT_PLAN_BASE_URL.into(),
+                api_key_ref: Some(reference.clone()),
+                ..Default::default()
+            }],
+            models: vec![ModelConfig {
+                id: "chatgpt-chat".into(),
+                provider_name: "chatgpt".into(),
+                model: "gpt-6.1-sol".into(),
+                capabilities: vec![Capability::Chat],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(provider_credentials_ready(&llm.providers[0]));
+        let endpoint = llm.materialize_model_config("chatgpt-chat").endpoint;
+        assert_eq!(endpoint.provider, CHATGPT_PLAN_PROVIDER_IDENTITY);
+        assert_eq!(endpoint.base_url, CHATGPT_PLAN_BASE_URL);
+        assert_eq!(endpoint.api_key, reference);
+        assert_eq!(endpoint.web_search.as_deref(), Some("off"));
+        assert!(endpoint_credentials_ready(&endpoint));
+
+        let mut invalid = llm.providers[0].clone();
+        invalid.api_key_ref = Some("credential-ref-is-not-canonical".into());
+        assert!(!provider_credentials_ready(&invalid));
     }
 
     #[test]

@@ -16,12 +16,14 @@
 |---|---|---|
 | `add_fact` | mutate | credential-like predicates and values rejected |
 | `add_mcp_server` | execute | AuthorizationPort; typed native admin operation validates and persists config |
+| `cancel_chatgpt_plan_login` | mutate | cancels one in-memory OAuth attempt and aborts its loopback callback listener |
 | `cancel_recording` | execute | cancel clears the in-flight recording id |
 | `cancel_tool_run` | mutate | kind is enum; cancel only the selected task kind |
 | `check_llm_connection` | read | status and non-sensitive reason only; no endpoint or provider payload |
 | `check_shell_available` | read | availability boolean only |
 | `clear_facts` | mutate | delete all saved long-term facts and invalidate derived caches |
 | `clear_tool_run_history` | mutate | delete terminal task history; preserve live work and undelivered results |
+| `complete_chatgpt_plan_login` | mutate | validates OAuth state, issuer, audience, nonce and signature; stores token and granted-scope state only in secure storage |
 | `continue_session` | mutate | replay durable session_events and truncate partial projection |
 | `count_session_history` | read | read-only aggregate |
 | `count_session_history_search` | read | parameterized read-only search |
@@ -30,6 +32,7 @@
 | `delete_session` | mutate | delete by session id and release runtime state |
 | `disable_autostart` | execute | managed autostart entry only |
 | `discard_sandbox_output_review` | mutate | canonical session/step pair; only the owning Shell review can be discarded |
+| `discard_staged_chatgpt_plan_credential` | mutate | deletes only the exact uncommitted ChatGPT plan credential reference abandoned by the settings draft |
 | `discard_staged_credentials` | mutate | deletes staged values not committed by a Settings save |
 | `discover_models` | execute | http(s) endpoint; typed auth scheme for an explicitly entered key; stored keys require a matching configured endpoint |
 | `enable_autostart` | execute | release build only |
@@ -68,6 +71,7 @@
 | `promote_sandbox_output` | execute | Windows only; owner-held change index; exact session request; required one-time confirmation; current Files capability and live execution proof |
 | `read_log_tail` | read | bounded tail; file logging must be enabled |
 | `read_mcp_resource` | execute | explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content |
+| `reassign_staged_chatgpt_plan_credential` | mutate | moves one exact staged ChatGPT credential reference to another ChatGPT plan provider name without exposing its secret |
 | `recall_memory` | read | bounded and credential-filtered recall |
 | `reconnect_mcp_server` | execute | AuthorizationPort; typed native operation reconnects one existing configured server after final version check |
 | `refresh_mcp_servers` | execute | AuthorizationPort; one batch over persisted config diff and its affected targets; no renderer process arguments |
@@ -91,6 +95,7 @@
 | `stage_independent_search_credential` | mutate | writes a model's Alibaba AI Search key to secure storage and returns only an opaque reference |
 | `stage_ocr_credential` | mutate | writes OCR secret to secure storage and returns only an opaque reference |
 | `stage_provider_credential` | mutate | writes provider secret to secure storage and returns only an opaque reference |
+| `start_chatgpt_plan_login` | execute | starts a state- and PKCE-bound loopback OAuth callback and returns only the official authorization URL |
 | `start_recording` | execute | input pipeline owns capture lifecycle |
 | `stop_recording` | execute | capture stops before asynchronous transcription |
 | `switch_model` | mutate | requestKind selects the route; modelConfigId is an assigned, capability-compatible Haven ModelConfig identity, not a Provider service model ID |

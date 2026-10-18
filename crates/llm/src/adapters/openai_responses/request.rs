@@ -1,13 +1,21 @@
 use super::*;
 use crate::adapters::openai::prompt_cache_key::is_unsupported_prompt_cache_key_error;
 
+const CHATGPT_PLAN_TOOL_NAMESPACE: &str = "haven";
+
 impl OpenAiResponsesAdapter {
     pub(super) fn tool_name_map(
         &self,
         messages: &[CanonicalMessage],
         tools: &[LlmToolDefinition],
     ) -> ToolNameMap {
-        let max_len = if is_deepseek(&self.endpoint) { 128 } else { 64 };
+        let max_len = if is_deepseek(&self.endpoint)
+            || haven_common::config::is_chatgpt_plan_provider(&self.endpoint.provider)
+        {
+            128
+        } else {
+            64
+        };
         ToolNameMap::for_request(tools, messages, ToolNamePolicy::Restricted { max_len })
     }
 
@@ -64,13 +72,21 @@ impl OpenAiResponsesAdapter {
         let messages = messages.as_ref();
         let tools = tools.as_ref();
         let web_search_mode =
-            if provider_builtin_web_search_available(&self.endpoint, "openai-responses") {
+            if !haven_common::config::is_chatgpt_plan_provider(&self.endpoint.provider)
+                && provider_builtin_web_search_available(&self.endpoint, "openai-responses")
+            {
                 web_search_mode
             } else {
                 WebSearchMode::Off
             };
         let tool_names = self.tool_name_map(messages, tools);
-        let prompt_cache_key = self.prompt_cache_key(messages, tools, web_search_mode);
+        let is_chatgpt_plan =
+            haven_common::config::is_chatgpt_plan_provider(&self.endpoint.provider);
+        let prompt_cache_key = if is_chatgpt_plan {
+            None
+        } else {
+            self.prompt_cache_key(messages, tools, web_search_mode)
+        };
         let cache_diagnostics = Self::cache_diagnostics(messages, prompt_cache_key.is_some())
             .with_provider(self.endpoint.provider.clone());
         let max_reasoning_echo_chars = self
@@ -94,9 +110,20 @@ impl OpenAiResponsesAdapter {
                 && let Some(name) = item.get("name").and_then(Value::as_str)
             {
                 item["name"] = Value::String(tool_names.to_provider(name));
+                if is_chatgpt_plan {
+                    item["namespace"] = json!(CHATGPT_PLAN_TOOL_NAMESPACE);
+                }
             }
         }
         let mut tools_json = Self::convert_tools_with_names(tools, &tool_names);
+        if is_chatgpt_plan && !tools_json.is_empty() {
+            tools_json = vec![json!({
+                "type": "namespace",
+                "name": CHATGPT_PLAN_TOOL_NAMESPACE,
+                "description": "Haven local tools",
+                "tools": tools_json
+            })];
+        }
         // `tool_choice` semantics: `None` (no tools at all), string
         // `"auto"`, or a specific tool object like
         // `{"type": "web_search"}` for forced search.
@@ -144,10 +171,11 @@ impl OpenAiResponsesAdapter {
             model: self.endpoint.model_name.clone(),
             instructions: converted_input.instructions,
             input: converted_input.input,
-            max_output_tokens: Some(max_output_tokens),
-            temperature,
-            top_p,
-            stream,
+            max_output_tokens: (!is_chatgpt_plan).then_some(max_output_tokens),
+            temperature: (!is_chatgpt_plan).then_some(temperature).flatten(),
+            top_p: (!is_chatgpt_plan).then_some(top_p).flatten(),
+            stream: stream || is_chatgpt_plan,
+            store: is_chatgpt_plan.then_some(false),
             tools: if tools_json.is_empty() {
                 None
             } else {
@@ -254,7 +282,7 @@ impl OpenAiResponsesAdapter {
         let mut req = self
             .client
             .post(url)
-            .headers(self.build_headers()?)
+            .headers(self.request_headers().await?)
             .json(body);
         if stream {
             if let Some(timeout) = self.endpoint.timeout_streaming_secs {
@@ -291,6 +319,44 @@ impl OpenAiResponsesAdapter {
         stream: bool,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
+        if haven_common::config::is_chatgpt_plan_provider(&self.endpoint.provider) {
+            use futures_util::StreamExt;
+
+            let mut chunks = self
+                .chat_stream_inner_with_max_tokens(messages, tools, max_output_tokens)
+                .await?;
+            let mut response = LlmResponse {
+                model: Some(self.endpoint.model_name.clone()),
+                ..Default::default()
+            };
+            while let Some(chunk) = chunks.next().await {
+                let chunk = chunk?;
+                if let Some(text) = chunk.text {
+                    response.text.push_str(&text);
+                }
+                if !chunk.tool_calls.is_empty() {
+                    response.tool_calls = chunk.tool_calls;
+                }
+                if let Some(reasoning) = chunk.reasoning {
+                    response
+                        .reasoning
+                        .get_or_insert_with(String::new)
+                        .push_str(&reasoning);
+                }
+                if let Some(usage) = chunk.usage {
+                    response.usage = usage;
+                }
+                if chunk.finish_reason.is_some() {
+                    response.finish_reason = chunk.finish_reason;
+                }
+                if let Some(model) = chunk.model {
+                    response.model = Some(model);
+                }
+                response.web_search_calls.extend(chunk.web_search_calls);
+                response.thinking_blocks.extend(chunk.thinking_blocks);
+            }
+            return Ok(response);
+        }
         let tool_names = self.tool_name_map(&messages, &tools);
         let mut body = self.build_request_body_with_mode_and_max_tokens(
             messages,

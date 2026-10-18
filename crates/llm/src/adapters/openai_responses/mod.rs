@@ -71,13 +71,31 @@ pub struct OpenAiResponsesAdapter {
     web_search_mode: WebSearchMode,
     prompt_cache_key_support: PromptCacheKeySupport,
     developer_input_state: AtomicU8,
+    chatgpt_plan_auth: Option<Arc<dyn crate::chatgpt_plan::ChatGptPlanAuthPort>>,
 }
 
 const DEVELOPER_INPUT_UNKNOWN: u8 = 0;
 const DEVELOPER_INPUT_UNSUPPORTED: u8 = 1;
 
 impl OpenAiResponsesAdapter {
+    #[cfg(test)]
     pub(super) fn try_new(endpoint: ModelEndpoint) -> Result<Self, LlmError> {
+        Self::try_new_with_chatgpt_plan_auth(endpoint, None)
+    }
+
+    pub(super) fn try_new_with_chatgpt_plan_auth(
+        endpoint: ModelEndpoint,
+        chatgpt_plan_auth: Option<Arc<dyn crate::chatgpt_plan::ChatGptPlanAuthPort>>,
+    ) -> Result<Self, LlmError> {
+        if haven_common::config::is_chatgpt_plan_provider(&endpoint.provider)
+            && (endpoint.base_url.trim_end_matches('/')
+                != haven_common::config::CHATGPT_PLAN_BASE_URL
+                || chatgpt_plan_auth.is_none())
+        {
+            return Err(LlmError::Configuration(
+                "ChatGPT plan authentication is unavailable or endpoint is invalid".into(),
+            ));
+        }
         let client = build_client(&endpoint)?;
         let web_search_mode = resolve_web_search_mode(&endpoint);
         Ok(Self {
@@ -86,6 +104,7 @@ impl OpenAiResponsesAdapter {
             web_search_mode,
             prompt_cache_key_support: PromptCacheKeySupport::new(),
             developer_input_state: AtomicU8::new(DEVELOPER_INPUT_UNKNOWN),
+            chatgpt_plan_auth,
         })
     }
 
@@ -95,7 +114,28 @@ impl OpenAiResponsesAdapter {
     }
 
     pub(super) fn build_headers(&self) -> Result<HeaderMap, LlmError> {
+        if haven_common::config::is_chatgpt_plan_provider(&self.endpoint.provider) {
+            return Err(LlmError::Configuration(
+                "ChatGPT plan headers require an active OAuth token".into(),
+            ));
+        }
         build_headers(&self.endpoint, "Authorization", true)
+    }
+
+    pub(super) async fn request_headers(&self) -> Result<HeaderMap, LlmError> {
+        if haven_common::config::is_chatgpt_plan_provider(&self.endpoint.provider) {
+            let auth = self.chatgpt_plan_auth.as_ref().ok_or_else(|| {
+                LlmError::Configuration("ChatGPT plan authentication is unavailable".into())
+            })?;
+            let token = auth.access_token(&self.endpoint.api_key).await?;
+            let mut headers = HeaderMap::new();
+            let value = format!("Bearer {token}")
+                .parse()
+                .map_err(|_| LlmError::Configuration("ChatGPT access token is invalid".into()))?;
+            headers.insert(reqwest::header::AUTHORIZATION, value);
+            return Ok(headers);
+        }
+        self.build_headers()
     }
 }
 
@@ -186,11 +226,16 @@ impl LlmClient for OpenAiResponsesAdapter {
     }
 
     async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {
+        if haven_common::config::is_chatgpt_plan_provider(&self.endpoint.provider) {
+            return Err(LlmError::Configuration(
+                "ChatGPT plan provider does not support embeddings".into(),
+            ));
+        }
         // Chat uses `/v1/responses`; embeddings stay on the OpenAI-compatible
         // `/v1/embeddings` path (OpenAI, DeepSeek, and most gateways).
         super::openai_compatible_embed(
             &self.client,
-            self.build_headers()?,
+            self.request_headers().await?,
             &super::openai_embeddings_url(&self.endpoint.base_url, true),
             &self.endpoint.model_name,
             self.endpoint.timeout_secs,
@@ -209,7 +254,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         health_check_request(
             &self.client,
             &url,
-            self.build_headers()?,
+            self.request_headers().await?,
             self.endpoint.timeout_secs,
         )
         .await

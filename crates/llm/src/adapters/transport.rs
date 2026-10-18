@@ -198,10 +198,18 @@ pub(crate) async fn send_request(
         return Ok(resp);
     }
     let status = resp.status();
+    let request_id = resp
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     // §2.3: extract Retry-After header before consuming body
     let retry_after = retry_after_from_headers(resp.headers());
     let txt = read_error_body(resp).await?;
-    Err(http_status_to_error(status, &txt, retry_after))
+    Err(crate::client::attach_request_id(
+        http_status_to_error(status, &txt, retry_after),
+        request_id.as_deref(),
+    ))
 }
 
 fn retry_after_from_headers(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
