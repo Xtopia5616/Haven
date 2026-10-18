@@ -74,7 +74,6 @@
 | `refresh_skills` | execute | configured skills root scan |
 | `remove_mcp_server` | execute | AuthorizationPort; typed native admin operation removes client and config |
 | `reopen_session` | mutate | session id selects persisted session |
-| `report_startup_ui_ready` | mutate | no arguments; releases the startup surface after the first hydrated app paint |
 | `reset_permissions` | mutate | clears permanent rules only; keeps session grants and selected default policy |
 | `reset_session_permissions` | mutate | clears durable session grants only; keeps permanent rules |
 | `reset_tool_circuits` | mutate | clears local circuit state only |

@@ -6042,7 +6042,6 @@ export const REFRESH_MCP_SERVERS_RESPONSE_SHAPE = {
 export const REFRESH_SKILLS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const REMOVE_MCP_SERVER_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const REOPEN_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
-export const REPORT_STARTUP_UI_READY_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const RESET_PERMISSIONS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const RESET_SESSION_PERMISSIONS_RESPONSE_SHAPE = { kind: 'number' } as const;
 export const RESET_TOOL_CIRCUITS_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -8929,7 +8928,6 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	refresh_skills: REFRESH_SKILLS_RESPONSE_SHAPE,
 	remove_mcp_server: REMOVE_MCP_SERVER_RESPONSE_SHAPE,
 	reopen_session: REOPEN_SESSION_RESPONSE_SHAPE,
-	report_startup_ui_ready: REPORT_STARTUP_UI_READY_RESPONSE_SHAPE,
 	reset_permissions: RESET_PERMISSIONS_RESPONSE_SHAPE,
 	reset_session_permissions: RESET_SESSION_PERMISSIONS_RESPONSE_SHAPE,
 	reset_tool_circuits: RESET_TOOL_CIRCUITS_RESPONSE_SHAPE,
@@ -9099,7 +9097,6 @@ export interface TauriCommandMap {
 	refresh_skills: { request: undefined; response: void };
 	remove_mcp_server: { request: { name: string }; response: void };
 	reopen_session: { request: { sessionId: string }; response: void };
-	report_startup_ui_ready: { request: undefined; response: void };
 	reset_permissions: { request: undefined; response: void };
 	reset_session_permissions: { request: undefined; response: number };
 	reset_tool_circuits: { request: undefined; response: void };
@@ -9210,7 +9207,6 @@ export const TAURI_COMMAND_CONTRACTS = {
 	refresh_skills: { boundary: 'execute', security: "configured skills root scan" },
 	remove_mcp_server: { boundary: 'execute', security: "AuthorizationPort; typed native admin operation removes client and config" },
 	reopen_session: { boundary: 'mutate', security: "session id selects persisted session" },
-	report_startup_ui_ready: { boundary: 'mutate', security: "no arguments; releases the startup surface after the first hydrated app paint" },
 	reset_permissions: { boundary: 'mutate', security: "clears permanent rules only; keeps session grants and selected default policy" },
 	reset_session_permissions: { boundary: 'mutate', security: "clears durable session grants only; keeps permanent rules" },
 	reset_tool_circuits: { boundary: 'mutate', security: "clears local circuit state only" },

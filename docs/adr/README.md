@@ -1304,3 +1304,4 @@
 - [1313：拆分 PDF 与 OpenXML 文档解析器](1313-split-document-parsers.md)
 - [1314：收拢 App command DTO 与 detached process helper](1314-finish-app-command-boundaries.md)
 - [1315：将 Tauri 前端资源移出 Rust 可执行文件](1315-externalize-tauri-ui-assets.md)
+- [1316：移除 Windows 原生启动加载与失败恢复](1316-remove-native-startup-splash.md)

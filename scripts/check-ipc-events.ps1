@@ -66,8 +66,9 @@ Assert-SetEqual 'AgentEvent channel/DTO projections vs generated event shape reg
 # DTO ownership checks below.
 $emitSiteInventory = @{
     'crates/app-binary/src/bootstrap.rs' = 6
+    'crates/app-binary/src/commands/confirmation.rs' = 1
     'crates/app-binary/src/commands/mcp.rs' = 1
-    'crates/app-binary/src/commands/mod.rs' = 2
+    'crates/app-binary/src/commands/mod.rs' = 1
     'crates/app-binary/src/commands/settings.rs' = 1
     'crates/app-binary/src/event_bridge.rs' = 2
     'crates/app-binary/src/handlers.rs' = 3

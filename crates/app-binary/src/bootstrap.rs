@@ -9,7 +9,6 @@ use crate::events::*;
 use crate::handlers::{HavenInputEventHandler, HavenShellHandler, make_tray_icon};
 use crate::logging::init_tracing;
 use crate::notification::DesktopNotifications;
-use crate::startup::StartupCoordinator;
 use haven_common::config::LogConfig;
 use haven_common::error::sanitize_error_text;
 use haven_input::{KeyCode, KeyCombo, KeyModifier};
@@ -124,8 +123,6 @@ pub(crate) fn run() {
 
     // Initialize tracing subscriber (console + optional file output)
     let tracing_initialization = init_tracing(&log_cfg);
-    let startup_ui = StartupCoordinator::new(autostart::is_autostart_launch());
-    let startup_for_build_failure = Arc::clone(&startup_ui);
 
     // Set global panic hook to capture and log panics (M6-06)
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -190,21 +187,11 @@ pub(crate) fn run() {
                 .into());
             }
 
-            app.manage(Arc::clone(&startup_ui));
-            #[cfg(windows)]
-            startup_ui.start_driver(app.handle().clone());
             if !autostart::is_autostart_launch()
                 && let Some(window) = app.get_webview_window("main")
             {
-                log_ignored_result!("startup.main_window.show_behind_splash", window.show());
-            }
-            #[cfg(windows)]
-            if let Some(window) = app.get_webview_window("main") {
-                install_webview_failure_handlers(
-                    &window,
-                    app.handle().clone(),
-                    Arc::clone(&startup_ui),
-                );
+                log_ignored_result!("startup.main_window.show", window.show());
+                log_ignored_result!("startup.main_window.set_focus", window.set_focus());
             }
 
             #[cfg(windows)]
@@ -695,7 +682,6 @@ pub(crate) fn run() {
             commands::model::get_api_key_status,
             commands::model::check_llm_connection,
             commands::settings::get_bootstrap_status,
-            commands::startup::report_startup_ui_ready,
             commands::model::discover_models,
             commands::model::switch_model,
             commands::model::set_reasoning_effort,
@@ -762,15 +748,11 @@ pub(crate) fn run() {
                 error = %sanitize_error_text(&error.to_string()),
                 "error while building Haven app"
             );
-            startup_for_build_failure.report_builder_failure();
             std::process::exit(1);
         })
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
                 tracing::info!("Haven app exit requested");
-                if let Some(startup) = app_handle.try_state::<Arc<StartupCoordinator>>() {
-                    startup.shutdown();
-                }
                 let state = app_handle.state::<Arc<AppState>>();
                 // Pause in-flight sessions so they survive a restart in a
                 // resumable state. Without this, every still-`running` session
@@ -781,71 +763,6 @@ pub(crate) fn run() {
                 state.runtime.teardown_blocking();
             }
         });
-}
-
-#[cfg(windows)]
-fn install_webview_failure_handlers(
-    window: &tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    startup: Arc<StartupCoordinator>,
-) {
-    use webview2_com::{NavigationCompletedEventHandler, ProcessFailedEventHandler};
-
-    let error_startup = Arc::clone(&startup);
-    let error_app = app.clone();
-    let callback_startup = Arc::clone(&startup);
-    let event_app = app.clone();
-    let result = window.with_webview(move |platform| {
-        let controller = platform.controller();
-        let core = match unsafe { controller.CoreWebView2() } {
-            Ok(core) => core,
-            Err(error) => {
-                tracing::error!(error = %sanitize_error_text(&error.to_string()), "failed to access the main WebView2 controller");
-                error_startup.report_navigation_failure(&error_app);
-                return;
-            }
-        };
-
-        let navigation_startup = Arc::clone(&callback_startup);
-        let navigation_app = event_app.clone();
-        let navigation_handler = NavigationCompletedEventHandler::create(Box::new(
-            move |_, args| {
-                if let Some(args) = args {
-                    let mut success = unsafe { std::mem::zeroed() };
-                    if unsafe { args.IsSuccess(std::ptr::addr_of_mut!(success)) }.is_ok()
-                        && !success.as_bool()
-                    {
-                        navigation_startup.report_navigation_failure(&navigation_app);
-                    }
-                }
-                Ok(())
-            },
-        ));
-        let mut navigation_token = 0;
-        if let Err(error) = unsafe {
-            core.add_NavigationCompleted(&navigation_handler, &mut navigation_token)
-        } {
-            tracing::error!(error = %sanitize_error_text(&error.to_string()), "failed to observe WebView2 navigation failures");
-            callback_startup.report_navigation_failure(&event_app);
-            return;
-        }
-
-        let process_startup = Arc::clone(&callback_startup);
-        let process_app = event_app.clone();
-        let process_handler = ProcessFailedEventHandler::create(Box::new(move |_, _| {
-            process_startup.report_process_failure(&process_app);
-            Ok(())
-        }));
-        let mut process_token = 0;
-        if let Err(error) = unsafe { core.add_ProcessFailed(&process_handler, &mut process_token) }
-        {
-            tracing::error!(error = %sanitize_error_text(&error.to_string()), "failed to observe WebView2 process failures");
-        }
-    });
-    if let Err(error) = result {
-        tracing::error!(error = %sanitize_error_text(&error.to_string()), "failed to install WebView2 failure handlers");
-        startup.report_navigation_failure(&app);
-    }
 }
 
 fn pause_running_sessions_on_exit(session_store: &SessionStore) {

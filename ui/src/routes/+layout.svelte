@@ -53,7 +53,6 @@
 	} from '$lib/sessionStatus.ts';
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 	import { loadSettings } from '$lib/settingsCommands.ts';
-	import { reportStartupUiReady } from '$lib/startupCommands.ts';
 	import { toolRunStatusLabel } from '$lib/toolRunTerminology.ts';
 	import { setToolManifests } from '$lib/toolManifest.ts';
 	import { listBuiltinToolManifests } from '$lib/toolsCommands.ts';
@@ -851,26 +850,12 @@
 		// This avoids exposing a partially hydrated layout for one frame, while
 		// the shell's structure and tokens keep the visual handoff quiet.
 		const bootShell = document.getElementById('haven-boot');
-		const reportStartupReady = () => {
-			if (isTauri()) {
-				void reportStartupUiReady().catch((error) =>
-					reportError(error, {
-						context: '+layout',
-						message: '确认启动界面已就绪失败',
-						notify: false,
-					}),
-				);
-			}
-		};
 		if (bootShell) {
 			requestAnimationFrame(() => {
 				requestAnimationFrame(() => {
 					bootShell.remove();
-					requestAnimationFrame(reportStartupReady);
 				});
 			});
-		} else {
-			requestAnimationFrame(() => requestAnimationFrame(reportStartupReady));
 		}
 		loadTabView(activeTab);
 

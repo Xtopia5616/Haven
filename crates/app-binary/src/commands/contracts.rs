@@ -354,11 +354,6 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "status enum only",
     },
     CommandContract {
-        name: "report_startup_ui_ready",
-        boundary: CommandBoundary::Mutate,
-        security: "no arguments; releases the startup surface after the first hydrated app paint",
-    },
-    CommandContract {
         name: "update_settings",
         boundary: CommandBoundary::Mutate,
         security: "rejects inline secrets; shared loader preserves credential refs, tool sections, and permission rules",

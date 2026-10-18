@@ -237,7 +237,6 @@ foreach ($file in $uiFiles) {
 # policy they already own.
 $ownedCommands = @{
     '+layout.svelte' = @('get_bootstrap_status', 'check_llm_connection', 'resolve_confirmation')
-    'startupCommands.ts' = @('report_startup_ui_ready')
     'errorHandling.ts' = @('log_frontend_error')
     'externalCommands.ts' = @('open_external')
     'recordingOverlayController.ts' = @('start_recording', 'stop_recording', 'cancel_recording')
