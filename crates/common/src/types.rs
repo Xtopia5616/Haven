@@ -1423,8 +1423,8 @@ mod tests {
             "tool_runs.cancel"
         );
         assert_eq!(
-            permission_key("agent", &serde_json::json!({"operation": "spawn"})),
-            "agent.spawn"
+            permission_key("session", &serde_json::json!({"operation": "create"})),
+            "session.create"
         );
         assert_eq!(
             permission_key(

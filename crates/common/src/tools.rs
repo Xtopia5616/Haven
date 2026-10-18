@@ -67,7 +67,7 @@ impl ToolCatalogGroup {
             Self::System => {
                 "PC and workspace tools: files, shell, windows, input, media, network, and notifications."
             }
-            Self::Agent => "Peer-agent discovery, delegation, and messages.",
+            Self::Agent => "Peer-agent discovery, session coordination, and messages.",
             Self::Skills => "User-configured Skills for specialized, task-specific workflows.",
             Self::Mcp => "User-configured MCP servers for additional integrations.",
             Self::Other => "Additional capabilities for the task.",
@@ -592,7 +592,7 @@ mod tests {
             ),
             (
                 ToolCatalogGroup::Agent,
-                "Peer-agent discovery, delegation, and messages.",
+                "Peer-agent discovery, session coordination, and messages.",
             ),
             (
                 ToolCatalogGroup::Skills,

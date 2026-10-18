@@ -69,6 +69,7 @@ const MODEL_TOGGLEABLE_TOOL_NAMES: &[&str] = &[
     "http",
     "notify",
     "agent",
+    "session",
     "memory",
     "clipboard",
     "input",

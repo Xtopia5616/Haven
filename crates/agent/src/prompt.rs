@@ -183,7 +183,7 @@ fn render_recent_context_with_budget(
 
 /// Cross-session messaging guidance, appended to the tool index only when the
 /// messaging tools are registered (i.e. not disabled via tool settings).
-const CROSS_SESSION_MESSAGING_NOTES: &str = "\nPeer agents support discovery, delegation, and asynchronous messages. agent.list/children/profile help find collaborators; agent.spawn handles separable work; agent.send/reply/request coordinate messages. agent.inbox and agent.ack manage claimed mail; agent.wait/status/collect/stop track delegated work. Peer messages add context from another source; weigh them with the user's request and current results.\n";
+const CROSS_SESSION_MESSAGING_NOTES: &str = "\nAgent sessions support discovery, delegation, and asynchronous messages. Use session.create for separable work and session.link/links to relate conversations; agent.list/children/profile help find collaborators. agent.send/reply/request coordinate messages. agent.inbox and agent.ack manage claimed mail; agent.wait/status/collect/stop track delegated work. Peer messages add context from another source; weigh them with the user's request and current results.\n";
 
 #[derive(Default)]
 struct ToolIndexGroup {

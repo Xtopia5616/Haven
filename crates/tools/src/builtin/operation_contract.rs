@@ -96,11 +96,14 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         "agent.reply" => ("回复 Agent", ToolCatalogGroup::Agent, false, None),
         "agent.profile" => ("Agent 资料", ToolCatalogGroup::Agent, true, None),
         "agent.request" => ("请求 Agent", ToolCatalogGroup::Agent, false, None),
-        "agent.spawn" => ("创建 Agent", ToolCatalogGroup::Agent, false, None),
         "agent.status" => ("Agent 状态", ToolCatalogGroup::Agent, true, None),
         "agent.wait" => ("等待 Agent", ToolCatalogGroup::Agent, true, None),
         "agent.stop" => ("停止 Agent", ToolCatalogGroup::Agent, false, None),
         "agent.collect" => ("收集 Agent 结果", ToolCatalogGroup::Agent, true, None),
+        "session.create" => ("创建子会话", ToolCatalogGroup::Agent, false, None),
+        "session.link" => ("关联会话", ToolCatalogGroup::Agent, false, None),
+        "session.unlink" => ("取消会话关联", ToolCatalogGroup::Agent, false, None),
+        "session.links" => ("查看关联会话", ToolCatalogGroup::Agent, true, None),
         "tool_runs.list" => ("后台任务列表", ToolCatalogGroup::Haven, true, None),
         "tool_runs.inspect" => ("查看后台任务", ToolCatalogGroup::Haven, true, None),
         "tool_runs.cancel" => ("取消后台任务", ToolCatalogGroup::Haven, false, None),
@@ -256,6 +259,7 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         | "haven.mcp.mcp_connect"
         | "haven.mcp.mcp_disconnect"
         | "haven.mcp.mcp_toggle" => OperationIdempotency::Idempotent,
+        "session.link" | "session.unlink" => OperationIdempotency::Idempotent,
         // Creation and replacement/removal requests must be verified before
         // replay because their first attempt may already have changed state.
         "haven.skills.skill_create"
@@ -349,5 +353,18 @@ mod tests {
         let errors = operation_contract("haven.diagnostics.errors");
         assert!(errors.read_only);
         assert_eq!(errors.network_access_override, None);
+
+        assert_eq!(
+            operation_contract("session.link").idempotency,
+            OperationIdempotency::Idempotent
+        );
+        assert_eq!(
+            operation_contract("session.unlink").idempotency,
+            OperationIdempotency::Idempotent
+        );
+        assert_eq!(
+            operation_contract("session.create").idempotency,
+            OperationIdempotency::NonIdempotent
+        );
     }
 }

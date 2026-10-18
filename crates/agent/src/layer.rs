@@ -1720,7 +1720,7 @@ impl AgentLayer {
         } else {
             format!("Capabilities: {}\n", req.capabilities.join(", "))
         };
-        // Fixed wrapper: task body is sanitized by agent spawn before it
+        // Fixed wrapper: task body is sanitized by session.create before it
         // reaches here; closers are neutralized so the parent cannot break
         // out of the low-trust enclosure. Kickoff still uses the user-turn
         // channel (ReAct needs an initial turn) but is explicitly labeled.

@@ -21,6 +21,7 @@ mod operation_contract;
 mod power;
 mod registry;
 pub mod scheduled_tool_run;
+pub mod session;
 pub mod shell;
 pub mod system;
 pub(crate) mod tool_catalog;
@@ -330,6 +331,14 @@ pub(crate) async fn register_builtin_tools(
     // Cross-session messaging / peer collab: one aggregate implementation over
     // the service-owned transport and session mailbox. Agents lazily register
     // on first call; the desktop runtime is an optional typed service port.
+    let session_store = admin_context
+        .as_ref()
+        .and_then(|context| context.session_store.clone());
+    let session_tool: ToolHandle = Arc::new(session::SessionTool::new(
+        messaging_service.clone(),
+        session_store,
+    ));
+    add_operation_views(tools, session_tool, settings, SESSION_OPERATION_VIEWS);
     let agent_tool: ToolHandle = Arc::new(messaging::AgentTool::new(messaging_service));
     add_operation_views(tools, agent_tool, settings, AGENT_OPERATION_VIEWS);
     let max_tools = limits
@@ -849,11 +858,17 @@ const AGENT_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("agent.reply", "reply", "agent", "users"),
     split_spec!("agent.profile", "profile", "agent", "users"),
     split_spec!("agent.request", "request", "agent", "users"),
-    split_spec!("agent.spawn", "spawn", "agent", "users"),
     split_spec!("agent.status", "status", "agent", "users"),
     split_spec!("agent.wait", "wait", "agent", "users"),
     split_spec!("agent.stop", "stop", "agent", "users"),
     split_spec!("agent.collect", "collect", "agent", "fileText"),
+];
+
+const SESSION_OPERATION_VIEWS: &[SplitOperationSpec] = &[
+    split_spec!("session.create", "create", "session", "users"),
+    split_spec!("session.link", "link", "session", "link"),
+    split_spec!("session.unlink", "unlink", "session", "link"),
+    split_spec!("session.links", "links", "session", "link"),
 ];
 
 const ACTION_OPERATION_VIEWS: &[SplitOperationSpec] = &[split_spec!(

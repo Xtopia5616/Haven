@@ -1,6 +1,6 @@
 //! Cross-session messaging / peer-collab: single builtin tool `agent` with
 //! `operation` ∈ list | children | history | send | inbox | ack | reply |
-//! profile | request | spawn | status | wait | stop | collect.
+//! profile | request | status | wait | stop | collect.
 //! Thin tool layer over [`haven_messaging::MessagingService`].
 //!
 //! The agent identity is its owning session id (injected privately as
@@ -14,7 +14,7 @@
 //! as low-trust input, never as user instructions.
 //!
 //! Collaboration protocol (prompt-reinforced):
-//! 1. `agent` operation=spawn → child session starts with a delegated task brief
+//! 1. `session` operation=create → child session starts with a delegated task brief
 //! 2. coordinator `agent` operation=request (or send type=request) → worker
 //! 3. worker `agent` operation=reply with `in_reply_to_message_id` → coordinator (wait returns)
 //! 4. auto `receipt` confirms the peer actually read the mail
@@ -30,37 +30,35 @@ use tokio_util::sync::CancellationToken;
 use super::canonical_entity_id_schema;
 use crate::{OperationIdempotency, Tool, ToolResult};
 use haven_messaging::{
-    AgentControlOperation, AgentControlRequest, AgentSpawnRequest, AgentStatus, Envelope,
+    AgentControlOperation, AgentControlRequest, AgentStatus, Envelope,
     MAX_MESSAGE_HISTORY_LIMIT as MAX_HISTORY_LIMIT, MAX_MESSAGE_PAYLOAD_BYTES,
     MAX_MESSAGE_SUBJECT_BYTES, MAX_MESSAGE_TEXT_BYTES, MAX_MESSAGE_TIMESTAMP_BYTES, MessageType,
     MessagingService, SendOutcome, validate_message_payload_size,
 };
 #[cfg(test)]
-use haven_messaging::{AgentControlResult, AgentSpawnResult, MessageTransport, MessagingRuntime};
+use haven_messaging::{
+    AgentControlResult, AgentSpawnRequest, AgentSpawnResult, MessageTransport, MessagingRuntime,
+};
 
 /// Default / max wait for `operation=request` (tool timeout sits above this).
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 60;
 const MAX_REQUEST_TIMEOUT_SECS: u64 = 300;
-const MAX_CAPABILITIES: usize = 16;
-const MAX_CAPABILITY_BYTES: usize = 64;
-const MAX_ROLE_BYTES: usize = 64;
-const MAX_TITLE_BYTES: usize = 128;
-const MAX_TASK_BYTES: usize = 16 * 1024;
+pub(super) const MAX_CAPABILITIES: usize = 16;
+pub(super) const MAX_CAPABILITY_BYTES: usize = 64;
+pub(super) const MAX_ROLE_BYTES: usize = 64;
+pub(super) const MAX_TITLE_BYTES: usize = 128;
 const DEFAULT_LIST_LIMIT: usize = 50;
 const MAX_LIST_LIMIT: usize = 100;
 const DEFAULT_HISTORY_LIMIT: usize = 20;
 const MAX_INBOX_ACK_IDS: usize = 100;
-/// Soft cap on concurrently discoverable children per parent session (online or offline
-/// registry entries with `parent_session_id` set). Prevents unbounded spawn storms.
-const MAX_CHILDREN_PER_PARENT: usize = 8;
 const OPERATIONS: &[&str] = &[
-    "list", "children", "history", "send", "inbox", "ack", "reply", "profile", "request", "spawn",
-    "status", "wait", "stop", "collect",
+    "list", "children", "history", "send", "inbox", "ack", "reply", "profile", "request", "status",
+    "wait", "stop", "collect",
 ];
 
 /// Run a blocking messaging-service operation on the blocking pool so lock
 /// waits and file I/O never stall the async executor.
-async fn blocking<T>(
+pub(super) async fn blocking<T>(
     service: Arc<MessagingService>,
     f: impl FnOnce(&MessagingService) -> anyhow::Result<T> + Send + 'static,
 ) -> anyhow::Result<T>
@@ -151,14 +149,14 @@ fn sanitize_profile_token(raw: &str, max_bytes: usize) -> anyhow::Result<Option<
     Ok(Some(trimmed.to_string()))
 }
 
-fn check_role(role: Option<String>) -> anyhow::Result<Option<String>> {
+pub(super) fn check_role(role: Option<String>) -> anyhow::Result<Option<String>> {
     match role {
         Some(r) => sanitize_profile_token(&r, MAX_ROLE_BYTES),
         None => Ok(None),
     }
 }
 
-fn check_title(title: Option<String>) -> anyhow::Result<Option<String>> {
+pub(super) fn check_title(title: Option<String>) -> anyhow::Result<Option<String>> {
     match title {
         Some(t) => {
             let t = t.trim().to_string();
@@ -174,7 +172,7 @@ fn check_title(title: Option<String>) -> anyhow::Result<Option<String>> {
     }
 }
 
-fn check_capabilities(caps: Option<Vec<String>>) -> anyhow::Result<Vec<String>> {
+pub(super) fn check_capabilities(caps: Option<Vec<String>>) -> anyhow::Result<Vec<String>> {
     let Some(caps) = caps else {
         return Ok(Vec::new());
     };
@@ -188,31 +186,6 @@ fn check_capabilities(caps: Option<Vec<String>>) -> anyhow::Result<Vec<String>> 
         }
     }
     Ok(out)
-}
-
-fn check_task(task: &str) -> anyhow::Result<String> {
-    let task = task.trim();
-    if task.is_empty() {
-        anyhow::bail!("task must not be empty");
-    }
-    if task.len() > MAX_TASK_BYTES {
-        anyhow::bail!("task too long (max {MAX_TASK_BYTES} bytes)");
-    }
-    // Neutralize wrapper closers and strip non-newline control chars so the
-    // delegated brief cannot escape its low-trust enclosure.
-    let cleaned: String = task
-        .chars()
-        .map(|c| {
-            if c == '\n' || c == '\t' || !c.is_control() {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    Ok(cleaned
-        .replace("</delegated_task>", "[/delegated_task]")
-        .replace("<delegated_task>", "[delegated_task]"))
 }
 
 fn check_timeout_secs(timeout_secs: Option<u64>) -> u64 {
@@ -363,7 +336,6 @@ pub enum AgentOperation {
     Reply,
     Profile,
     Request,
-    Spawn,
     Status,
     Wait,
     Stop,
@@ -430,9 +402,6 @@ pub struct AgentParams {
     /// Stable message ids to acknowledge with `ack`.
     #[serde(default)]
     pub message_ids: Option<Vec<String>>,
-    /// Delegated task brief for spawn.
-    #[serde(default)]
-    pub task: Option<String>,
 }
 
 /// Unified cross-session messaging / peer-collab tool.
@@ -464,7 +433,6 @@ impl AgentTool {
             AgentOperation::Reply => self.op_reply(params, cancel).await,
             AgentOperation::Profile => self.op_profile(params, cancel).await,
             AgentOperation::Request => self.op_request(params, cancel).await,
-            AgentOperation::Spawn => self.op_spawn(params, cancel).await,
             AgentOperation::Status => {
                 self.op_control(params, cancel, AgentControlOperation::Status)
                     .await
@@ -1066,67 +1034,6 @@ impl AgentTool {
             llm_usage: Vec::new(),
         })
     }
-
-    async fn op_spawn(
-        &self,
-        params: AgentParams,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        let sid = session_of(params.session_id)?;
-        self.inner.register(&sid, &cancel).await?;
-        let task = check_task(params.task.as_deref().unwrap_or(""))?;
-        let title = check_title(params.title)?;
-        let role = check_role(params.role)?;
-        let capabilities = check_capabilities(params.capabilities)?;
-
-        let service = self.inner.service.clone();
-        let parent_session_id = sid.clone();
-        let child_count = blocking(service, move |service| {
-            service.count_registered_children(&parent_session_id)
-        })
-        .await?;
-        if child_count >= MAX_CHILDREN_PER_PARENT {
-            anyhow::bail!(
-                "parent_session_id has {child_count} registered child sessions (maximum {MAX_CHILDREN_PER_PARENT}); offline, ended, and deleted child identities still count, so no additional child can be spawned"
-            );
-        }
-
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        let result = self
-            .inner
-            .service
-            .spawn_peer_session(AgentSpawnRequest {
-                parent_session_id: sid.clone(),
-                task,
-                title: title.clone(),
-                role: role.clone(),
-                capabilities: capabilities.clone(),
-            })
-            .await?;
-
-        let hint = if result.queued {
-            format!(
-                "Child session created but queued behind other runs ({}/{} slots busy). Prefer a longer request timeout, or wait until the child is online via operation=list before operation=request.",
-                result.running_sessions, result.max_concurrent
-            )
-        } else {
-            "Use agent operation=request to coordinate; the child should agent operation=reply with in_reply_to_message_id set to the request id.".into()
-        };
-        Ok(ToolResult::ok(json!({
-            "ok": true,
-            "session_id": result.session_id,
-            "parent_session_id": sid,
-            "title": result.title.or(title),
-            "role": result.role.or(role),
-            "capabilities": capabilities,
-            "queued": result.queued,
-            "running_sessions": result.running_sessions,
-            "max_concurrent": result.max_concurrent,
-            "hint": hint,
-        })))
-    }
 }
 
 #[async_trait]
@@ -1141,7 +1048,6 @@ impl Tool for AgentTool {
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input.get("operation").and_then(|v| v.as_str()) {
-            Some("spawn") => RiskLevel::Medium,
             Some("stop") => RiskLevel::High,
             _ => RiskLevel::Safe,
         }
@@ -1151,10 +1057,11 @@ impl Tool for AgentTool {
         match input.get("operation").and_then(Value::as_str) {
             Some("list") | Some("children") | Some("history") | Some("ack") | Some("profile")
             | Some("status") | Some("wait") | Some("collect") => OperationIdempotency::Idempotent,
-            // inbox claims mail and the delivery/reply/request/spawn/stop
+            // inbox claims mail and the delivery/reply/request/stop
             // operations have externally visible side effects.
-            Some("inbox") | Some("send") | Some("reply") | Some("request") | Some("spawn")
-            | Some("stop") => OperationIdempotency::NonIdempotent,
+            Some("inbox") | Some("send") | Some("reply") | Some("request") | Some("stop") => {
+                OperationIdempotency::NonIdempotent
+            }
             _ => OperationIdempotency::Unknown,
         }
     }
@@ -1172,7 +1079,6 @@ impl Tool for AgentTool {
             // request waits up to MAX_REQUEST_TIMEOUT_SECS inside the tool.
             Some("request") => MAX_REQUEST_TIMEOUT_SECS + 15,
             Some("wait") => MAX_REQUEST_TIMEOUT_SECS + 15,
-            Some("spawn") => 60,
             _ => 30,
         }
     }
@@ -1193,14 +1099,13 @@ impl Tool for AgentTool {
                 "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES, "description": "Exact capability token to filter agents by" },
                 "parent_session_id": canonical_entity_id_schema("ses", Some("Exact parent session ID to filter agents by")),
                 "status": { "type": "string", "enum": ["online", "offline"], "description": "Filter agents to online or offline" },
-                "role": { "type": "string", "minLength": 1, "description": "Agent role label; on list this is an exact filter, on profile/spawn it describes the agent" },
+                "role": { "type": "string", "minLength": 1, "description": "Agent role label; on list this is an exact filter and on profile it describes this agent" },
                 "title": { "type": "string", "minLength": 1, "description": "Short human-readable agent title" },
                 "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES }, "description": "Declared capability tokens used for peer discovery" },
                 "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS, "default": DEFAULT_REQUEST_TIMEOUT_SECS, "description": "Maximum wait in seconds; defaults to 60 and is capped at 300" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "description": "Maximum results; list defaults to 50, history/collect to 20" },
                 "ack": { "type": "boolean", "default": false, "description": "For inbox only: acknowledge immediately. Defaults to false; process messages, then call ack" },
                 "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": canonical_entity_id_schema("msg", None), "description": "Stable message ids returned by inbox; acknowledge at most 100 ids per call" },
-                "task": { "type": "string", "minLength": 1, "description": "Clear task brief for the new child agent" }
             },
             "required": ["operation"],
             "oneOf": [
@@ -1264,18 +1169,6 @@ impl Tool for AgentTool {
                     },
                     "required": ["operation", "to_session_id", "text"]
                 },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "operation": { "const": "spawn" },
-                        "task": { "type": "string", "minLength": 1, "description": "Self-contained task brief for the child agent" },
-                        "title": { "type": "string", "minLength": 1, "description": "Optional short title for the child" },
-                        "role": { "type": "string", "minLength": 1, "description": "Optional role label for peer discovery" },
-                        "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES }, "description": "Optional capability tokens for peer discovery" }
-                    },
-                    "required": ["operation", "task"]
-                },
                 { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "status" }, "target_session_id": canonical_entity_id_schema("ses", Some("Current session or descendant session id; omit to read this session's status")) }, "required": ["operation"] },
                 { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "wait" }, "target_session_id": canonical_entity_id_schema("ses", Some("Required descendant session id to wait for")), "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS, "default": DEFAULT_REQUEST_TIMEOUT_SECS, "description": "Maximum wait; defaults to 60 seconds, maximum 300" } }, "required": ["operation", "target_session_id"] },
                 { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "stop" }, "target_session_id": canonical_entity_id_schema("ses", Some("Required descendant session id to stop")) }, "required": ["operation", "target_session_id"] },
@@ -1312,6 +1205,35 @@ mod tests {
         assert!(
             check_message_ids(Some(vec!["msg-0123456789abcdef0123456789abcdef".into()])).is_ok()
         );
+    }
+
+    #[test]
+    fn agent_operation_set_contains_messaging_and_control_only() {
+        let (_dir, _bus, tool) = test_tools();
+        let schema = tool.input_schema();
+        let operations = schema["properties"]["operation"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(!operations.contains(&json!("spawn")));
+        assert!(operations.contains(&json!("request")));
+        assert!(operations.contains(&json!("send")));
+    }
+
+    #[tokio::test]
+    async fn agent_spawn_operation_is_rejected_at_the_tool_boundary() {
+        let (_dir, _bus, tool) = test_tools();
+        let error = tool
+            .execute(
+                json!({
+                    "operation": "spawn",
+                    "_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "task": "old tool path"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid 'agent' input"));
     }
 
     #[tokio::test]
@@ -1465,7 +1387,6 @@ mod tests {
                 "request",
                 json!({"to_session_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "timeout_secs": 1}),
             ),
-            op("spawn", json!({"task": "do X"})),
             op("status", json!({})),
             op(
                 "wait",
@@ -2435,7 +2356,7 @@ mod tests {
     }
 
     #[test]
-    fn risk_levels_are_safe_except_spawn() {
+    fn risk_levels_are_safe_except_stop() {
         let (_dir, _bus, tool) = test_tools();
         for op_name in [
             "list", "children", "history", "send", "inbox", "ack", "reply", "profile", "request",
@@ -2447,10 +2368,6 @@ mod tests {
                 "{op_name}"
             );
         }
-        assert_eq!(
-            tool.risk_level(&json!({"operation": "spawn"})),
-            RiskLevel::Medium
-        );
         assert_eq!(
             tool.risk_level(&json!({"operation": "stop"})),
             RiskLevel::High
@@ -2670,71 +2587,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_spawn_uses_runtime_and_registers_child() {
-        let (_dir, bus, _unused) = test_tools();
-        let service = Arc::new(MessagingService::new_for_test(bus.clone()));
-        service
-            .bind_runtime(Arc::new(TestRuntime { bus: bus.clone() }))
-            .unwrap();
-        let spawn = AgentTool::new(service);
-        let result = spawn
-            .execute(
-                with_sid(
-                    op(
-                        "spawn",
-                        json!({
-                            "task": "调研 API",
-                            "title": "worker-api",
-                            "role": "researcher",
-                            "capabilities": ["docs"]
-                        }),
-                    ),
-                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                ),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(result.output["ok"], true);
-        assert_eq!(
-            result.output["session_id"],
-            "ses-00000000000000000000000000000001"
-        );
-        assert_eq!(
-            result.output["parent_session_id"],
-            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        );
-        let agents = bus.list_agents().unwrap();
-        let child = agents
-            .iter()
-            .find(|a| a.session_id == "ses-00000000000000000000000000000001")
-            .unwrap();
-        assert_eq!(child.role.as_deref(), Some("researcher"));
-        assert_eq!(
-            child.parent_session_id.as_deref(),
-            Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-        );
-        assert_eq!(child.capabilities, vec!["docs"]);
-    }
-
-    #[tokio::test]
-    async fn agent_spawn_without_runtime_errors() {
-        let (_dir, _bus, tool) = test_tools();
-        let err = tool
-            .execute(
-                with_sid(
-                    op("spawn", json!({"task": "x"})),
-                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                ),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("session runtime"), "{err}");
-    }
-
-    #[tokio::test]
     async fn reply_with_explicit_to_auto_fills_in_reply_to() {
         let (_dir, _bus, tool) = test_tools();
         tool.execute(
@@ -2866,44 +2718,6 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("profile token"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn agent_spawn_enforces_child_cap() {
-        let (_dir, bus, tool) = test_tools();
-        for i in 0..MAX_CHILDREN_PER_PARENT {
-            let name = format!("ses-{:032x}", i + 1);
-            bus.register_with_profile(
-                &name,
-                &[],
-                None,
-                None,
-                Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            )
-            .unwrap();
-            if i == 0 {
-                bus.mark_offline(&name).unwrap();
-            }
-        }
-
-        let err = tool
-            .execute(
-                with_sid(
-                    op("spawn", json!({"task": "another"})),
-                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                ),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("maximum 8"), "{err}");
-        assert!(
-            err.contains("offline, ended, and deleted child identities still count"),
-            "{err}"
-        );
-        assert!(err.contains("no additional child can be spawned"), "{err}");
-        assert!(!err.contains("end or reuse"), "{err}");
     }
 
     #[test]
