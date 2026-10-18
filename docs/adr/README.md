@@ -1308,6 +1308,7 @@
 - [1317：补充轻量启动失败反馈](1317-focused-startup-failure-feedback.md)
 - [1318：区分开发窗口与正式版实例](1318-distinguish-development-instance.md)
 - [1319：将 ChatGPT 订阅登录作为独立 Provider](1319-chatgpt-plan-provider.md)
+- [1320：为原生目录与外链打开接入 AppCommand 确认](1320-queue-native-open-confirmations.md)
 - [1321：嵌套确认续接与持久 Workflow ToolRun](1321-resumable-nested-workflow-executions.md)
 - [1322：Workflow 定义库、运行进度与周期调度](1322-workflow-library-progress-and-recurring-runs.md)
 - [1323：基于 ToolRun 的周期新会话计划](1323-recurring-session-schedules-on-toolruns.md)

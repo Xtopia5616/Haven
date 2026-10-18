@@ -1,13 +1,15 @@
 use crate::app_state::AppState;
+use crate::commands::confirmation::UiConfirmationAction;
 use crate::commands::log_err;
 use crate::commands::process::spawn_detached;
+use crate::commands::{app_command_authorization_request, queue_ui_confirmation};
 use haven_common::tools::NetworkAccess;
 use haven_common::types::{CapabilityScope, RiskLevel, permission_key};
-use haven_tools::{AuthorizationDecision, AuthorizationRequest, OperationPolicy};
+use haven_tools::{AuthorizationDecision, OperationPolicy};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 /// Open a URL in the default browser, or a local filesystem path in the file manager.
 ///
@@ -15,14 +17,19 @@ use tauri::State;
 /// - absolute local paths only → reveal file / open folder
 /// - UNC / relative / other schemes → rejected
 #[tauri::command]
-pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> Result<(), String> {
-    let value = target.trim();
+pub async fn open_external(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+    target: String,
+) -> Result<(), String> {
+    let value = target.trim().to_owned();
     if value.is_empty() {
         return Err(log_err("open_external", "empty target"));
     }
+    validate_external_target(&value).map_err(|error| log_err("open_external", error))?;
 
-    let params = serde_json::json!({"target": value});
-    let network_access = if looks_like_http_url(value) {
+    let params = serde_json::json!({"target": value.clone()});
+    let network_access = if looks_like_http_url(&value) {
         // The default browser owns DNS, redirects, cookies, and any follow-up
         // requests, so Haven cannot validate this destination like its own
         // HTTP tool. Treat it as opaque and require an explicit open boundary.
@@ -34,8 +41,7 @@ pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> R
         .map_err(|error| log_err("open_external", error))?;
     let policy =
         OperationPolicy::native("open_external", capability, RiskLevel::Low, network_access);
-    let authorization_request =
-        AuthorizationRequest::new(None, "open_external", params.clone(), policy);
+    let authorization_request = app_command_authorization_request("open_external", params, policy);
     match state
         .runtime
         .services
@@ -43,33 +49,50 @@ pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> R
         .authorize(&authorization_request)
         .await
     {
-        AuthorizationDecision::AutoApproved => {}
-        AuthorizationDecision::Blocked { .. } => {
+        AuthorizationDecision::AutoApproved => open_external_target("open_external", &value)?,
+        AuthorizationDecision::Blocked { reason, .. } => {
             return Err(log_err(
                 "open_external",
-                "external open blocked by security policy",
+                format!("external open blocked by security policy: {reason}"),
             ));
         }
-        AuthorizationDecision::RequiresConfirmation { .. } => {
-            return Err(log_err(
-                "open_external",
-                "external open requires confirmation",
-            ));
+        AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
+            return Err(queue_ui_confirmation(
+                &state,
+                &app,
+                authorization_request,
+                receipt,
+                UiConfirmationAction::ExternalOpen { target: value },
+            )
+            .await?);
         }
     }
 
+    Ok(())
+}
+
+/// Revalidate a target immediately before authorizing it and again when a
+/// queued confirmation resumes, so delayed approvals cannot open a target
+/// that changed into an unsafe local path.
+fn validate_external_target(value: &str) -> Result<(), String> {
     if looks_like_http_url(value) {
-        validate_http_url(value).map_err(|error| log_err("open_external", error))?;
-        open_url(value).map_err(|e| log_err("open_external", e))
+        validate_http_url(value)
     } else {
-        let path = validate_local_path(value).map_err(|error| log_err("open_external", error))?;
+        let path = validate_local_path(value)?;
         if !haven_tools::is_safe_local_path(&path) {
-            return Err(log_err(
-                "open_external",
-                "local path contains an unsafe reparse point or cannot be resolved",
-            ));
+            return Err("local path contains an unsafe reparse point or cannot be resolved".into());
         }
-        open_path(&path).map_err(|e| log_err("open_external", e))
+        Ok(())
+    }
+}
+
+pub(crate) fn open_external_target(ctx: &str, value: &str) -> Result<(), String> {
+    validate_external_target(value).map_err(|error| log_err(ctx, error))?;
+    if looks_like_http_url(value) {
+        open_url(value).map_err(|error| log_err(ctx, error))
+    } else {
+        let path = validate_local_path(value).map_err(|error| log_err(ctx, error))?;
+        open_path(&path).map_err(|error| log_err(ctx, error))
     }
 }
 

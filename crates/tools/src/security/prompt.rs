@@ -173,6 +173,25 @@ pub(crate) const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
 /// state. They can contain shell commands, URLs with credentials, file
 /// contents, or MCP/skill secrets and must never be sent to the renderer.
 pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
+    if tool_name == "open_external" {
+        let target = params
+            .get("target")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if target
+            .get(..7)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+            || target
+                .get(..8)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+        {
+            return "将在系统浏览器中打开外部链接（链接详情已隐藏）".into();
+        }
+        return "将在文件管理器中打开本地路径（路径详情已隐藏）".into();
+    }
+    if tool_name == "open_skills_dir" {
+        return "将在文件管理器中打开配置的 Skills 目录（路径已隐藏）".into();
+    }
     if tool_name == "files.promote_sandbox_output" {
         let change_index = params
             .get("change_index")

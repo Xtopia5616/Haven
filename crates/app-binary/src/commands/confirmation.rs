@@ -4,6 +4,7 @@ use crate::commands::{emit_event_logged, log_err};
 use crate::events::{INTERACTION_REQUESTED_EVENT, NOTIFICATION_SHOW_EVENT};
 use haven_agent::InteractionStatus;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
@@ -63,6 +64,12 @@ pub(crate) enum UiConfirmationAction {
     Skill {
         name: String,
         params: serde_json::Value,
+    },
+    ExternalOpen {
+        target: String,
+    },
+    OpenSkillsDirectory {
+        root: PathBuf,
     },
     Admin {
         request: Box<haven_tools::AdminRequest>,
@@ -529,6 +536,32 @@ async fn execute_ui_confirmation_action(
                 )
                 .await
                 .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;
+        }
+        UiConfirmationAction::ExternalOpen { target } => {
+            let _proof = state
+                .runtime
+                .services
+                .authorization
+                .confirm_for_execution(&pending.authorization_request, &pending.receipt)
+                .await
+                .map_err(|error| log_err("resolve_ui_confirmation external open", error))?;
+            crate::commands::external::open_external_target(
+                "resolve_ui_confirmation external open",
+                target,
+            )?;
+        }
+        UiConfirmationAction::OpenSkillsDirectory { root } => {
+            let _proof = state
+                .runtime
+                .services
+                .authorization
+                .confirm_for_execution(&pending.authorization_request, &pending.receipt)
+                .await
+                .map_err(|error| log_err("resolve_ui_confirmation skills directory", error))?;
+            crate::commands::skills::open_skills_directory(
+                root,
+                "resolve_ui_confirmation skills directory",
+            )?;
         }
         UiConfirmationAction::Admin { request } => {
             let result = crate::commands::execute_admin_operation(

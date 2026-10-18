@@ -1,5 +1,6 @@
 import { copyText } from '$lib/clipboard.ts';
 import { openExternalTarget } from '$lib/externalCommands.ts';
+import { isAuthorizationConfirmationPending } from '$lib/formatError.ts';
 import { addNotification } from '$lib/notificationStore.ts';
 import { reportError } from '$lib/errorHandling.ts';
 
@@ -30,6 +31,7 @@ export async function openExternal(target: string): Promise<boolean> {
 		await openExternalTarget({ target: value });
 		return true;
 	} catch (e) {
+		if (isAuthorizationConfirmationPending(e)) return true;
 		reportError(e, {
 			context: 'externalRef',
 			message: '打开失败',

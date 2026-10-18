@@ -63,8 +63,8 @@
 | `list_tool_run_history` | read | optional session filter; limit capped at 200; internal tool args excluded |
 | `list_tool_runs` | read | projected task fields only |
 | `log_frontend_error` | mutate | fixed renderer failure category only; error text and payload are not mirrored |
-| `open_external` | execute | http(s) or validated absolute local path only |
-| `open_skills_dir` | execute | configured skills root only |
+| `open_external` | execute | AuthorizationPort; queues AppCommand confirmation; http(s) or validated absolute local path only |
+| `open_skills_dir` | execute | AuthorizationPort; queues AppCommand confirmation; configured skills root only |
 | `pick_execution_workspace_directory` | read | user-selected local directory candidate only; validates but grants no file access |
 | `pick_sandbox_output_destination` | read | native save picker; returns a user-selected candidate only and grants no filesystem access |
 | `process_transcript` | execute | attachment limits and file persistence are enforced |

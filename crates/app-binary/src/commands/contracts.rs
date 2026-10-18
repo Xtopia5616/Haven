@@ -57,7 +57,7 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "open_external",
         boundary: CommandBoundary::Execute,
-        security: "http(s) or validated absolute local path only",
+        security: "AuthorizationPort; queues AppCommand confirmation; http(s) or validated absolute local path only",
     },
     // session_history
     CommandContract {
@@ -447,7 +447,7 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "open_skills_dir",
         boundary: CommandBoundary::Execute,
-        security: "configured skills root only",
+        security: "AuthorizationPort; queues AppCommand confirmation; configured skills root only",
     },
     CommandContract {
         name: "execute_skill",

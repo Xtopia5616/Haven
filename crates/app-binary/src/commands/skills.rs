@@ -8,7 +8,8 @@ use crate::commands::{
 use crate::events::{SKILLS_STATUS_CHANGED_EVENT, SkillsStatusChangedEvent, SkillsStatusOperation};
 use haven_common::tools::NetworkAccess;
 use haven_common::types::{CapabilityScope, RiskLevel, permission_key};
-use haven_tools::{AuthorizationDecision, AuthorizationRequest, OperationPolicy, SkillInfo};
+use haven_tools::{AuthorizationDecision, OperationPolicy, SkillInfo};
+use std::path::Path;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tauri::State;
@@ -85,14 +86,12 @@ pub async fn set_skill_enabled(
 }
 
 #[tauri::command]
-pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+pub async fn open_skills_dir(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+) -> Result<(), String> {
     let root = state.runtime.services.skills.resolved_root().await;
-    if !haven_tools::is_safe_local_path(&root) {
-        return Err(log_err(
-            "open_skills_dir",
-            "skills directory contains an unsafe reparse point or cannot be resolved",
-        ));
-    }
+    validate_skills_directory(&root, "open_skills_dir")?;
     let params = serde_json::json!({"target": root});
     let capability = CapabilityScope::try_new(permission_key("open_skills_dir", &params))
         .map_err(|error| log_err("open_skills_dir", error))?;
@@ -103,7 +102,7 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<(), Stri
         NetworkAccess::None,
     );
     let authorization_request =
-        AuthorizationRequest::new(None, "open_skills_dir", params.clone(), policy);
+        app_command_authorization_request("open_skills_dir", params, policy);
     match state
         .runtime
         .services
@@ -111,45 +110,67 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<(), Stri
         .authorize(&authorization_request)
         .await
     {
-        AuthorizationDecision::AutoApproved => {}
+        AuthorizationDecision::AutoApproved => {
+            open_skills_directory(&root, "open_skills_dir")?;
+        }
         AuthorizationDecision::Blocked { .. } => {
             return Err(log_err(
                 "open_skills_dir",
                 "opening skills directory blocked by security policy",
             ));
         }
-        AuthorizationDecision::RequiresConfirmation { .. } => {
-            return Err(log_err(
-                "open_skills_dir",
-                "opening skills directory requires confirmation",
-            ));
+        AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
+            return Err(queue_ui_confirmation(
+                &state,
+                &app,
+                authorization_request,
+                receipt,
+                UiConfirmationAction::OpenSkillsDirectory { root },
+            )
+            .await?);
         }
     }
+    Ok(())
+}
+
+pub(crate) fn open_skills_directory(root: &Path, ctx: &str) -> Result<(), String> {
+    validate_skills_directory(root, ctx)?;
     // Ensure the directory exists so the file manager opens something sensible
     // instead of erroring; users may have an empty skills root on first run.
-    std::fs::create_dir_all(&root).map_err(|e| log_err("open_skills_dir", e))?;
-    if !haven_tools::is_safe_local_path(&root) {
+    std::fs::create_dir_all(root).map_err(|error| log_err(ctx, error))?;
+    if !haven_tools::is_safe_local_path(root) {
         return Err(log_err(
-            "open_skills_dir",
+            ctx,
             "skills directory changed to an unsafe reparse point",
         ));
     }
     #[cfg(target_os = "windows")]
     {
         spawn_detached(std::process::Command::new("explorer").arg(root.as_os_str()))
-            .map_err(|e| log_err("open_skills_dir", e))?;
+            .map_err(|error| log_err(ctx, error))?;
     }
     #[cfg(target_os = "macos")]
     {
-        spawn_detached(std::process::Command::new("open").arg(&root))
-            .map_err(|e| log_err("open_skills_dir", e))?;
+        spawn_detached(std::process::Command::new("open").arg(root))
+            .map_err(|error| log_err(ctx, error))?;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        spawn_detached(std::process::Command::new("xdg-open").arg(&root))
-            .map_err(|e| log_err("open_skills_dir", e))?;
+        spawn_detached(std::process::Command::new("xdg-open").arg(root))
+            .map_err(|error| log_err(ctx, error))?;
     }
     Ok(())
+}
+
+fn validate_skills_directory(root: &Path, ctx: &str) -> Result<(), String> {
+    if haven_tools::is_safe_local_path(root) {
+        Ok(())
+    } else {
+        Err(log_err(
+            ctx,
+            "skills directory contains an unsafe reparse point or cannot be resolved",
+        ))
+    }
 }
 
 #[tauri::command]

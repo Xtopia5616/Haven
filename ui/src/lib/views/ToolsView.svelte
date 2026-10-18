@@ -407,6 +407,7 @@
 			await openSkillsDir();
 			addNotification('已打开技能文件夹', 'info', 3000);
 		} catch (e) {
+			if (isAuthorizationConfirmationPending(e)) return;
 			reportError(e, { context: 'ToolsView', message: '打开技能文件夹失败', log: false });
 		}
 	}
