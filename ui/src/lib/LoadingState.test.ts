@@ -49,7 +49,7 @@ describe('LoadingState', () => {
 		expect(appHtmlSource).toContain('Haven 启动遇到问题');
 		expect(appHtmlSource).toContain('id="haven-boot-retry"');
 		expect(appHtmlSource).toContain('window.location.reload()');
-		expect(appHtmlSource).toMatch(/\},\s*45000\);/);
+		expect(appHtmlSource).toMatch(/\},\s*30000\);/);
 	});
 
 	it('changes the static loader into an error state after the startup timeout', () => {
@@ -67,7 +67,7 @@ describe('LoadingState', () => {
 		vi.useFakeTimers();
 		try {
 			new Function(recoveryScript!)();
-			vi.advanceTimersByTime(44_999);
+			vi.advanceTimersByTime(29_999);
 			expect(boot.getAttribute('aria-busy')).toBe('true');
 			vi.advanceTimersByTime(1);
 			expect(boot.getAttribute('aria-busy')).toBe('false');
