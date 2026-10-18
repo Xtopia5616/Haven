@@ -53,51 +53,6 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         boundary: CommandBoundary::Mutate,
         security: "delete terminal task history; preserve live work and undelivered results",
     },
-    CommandContract {
-        name: "list_workflow_definitions",
-        boundary: CommandBoundary::Read,
-        security: "versioned data-only definitions; no grants or execution authority",
-    },
-    CommandContract {
-        name: "save_workflow_definition",
-        boundary: CommandBoundary::Mutate,
-        security: "bounded JSON document; runtime authorization is never persisted",
-    },
-    CommandContract {
-        name: "delete_workflow_definition",
-        boundary: CommandBoundary::Mutate,
-        security: "canonical wfdef ID; running snapshots remain independent",
-    },
-    CommandContract {
-        name: "run_workflow_definition",
-        boundary: CommandBoundary::Execute,
-        security: "session context is canonical; every child still uses the live standard authorization gateway",
-    },
-    CommandContract {
-        name: "retry_workflow_run",
-        boundary: CommandBoundary::Execute,
-        security: "ToolRun owner permits only a persisted safe_to_retry checkpoint with no completed child calls",
-    },
-    CommandContract {
-        name: "list_workflow_schedules",
-        boundary: CommandBoundary::Read,
-        security: "snapshot metadata only; stored definition and runtime authorization excluded",
-    },
-    CommandContract {
-        name: "create_workflow_schedule",
-        boundary: CommandBoundary::Mutate,
-        security: "canonical definition/session IDs; schedule stores immutable definition snapshot and no grants",
-    },
-    CommandContract {
-        name: "set_workflow_schedule_enabled",
-        boundary: CommandBoundary::Mutate,
-        security: "canonical wfsched ID; disabling prevents future occurrences only",
-    },
-    CommandContract {
-        name: "delete_workflow_schedule",
-        boundary: CommandBoundary::Mutate,
-        security: "canonical wfsched ID; active occurrence retains its snapshot until terminal",
-    },
     // external
     CommandContract {
         name: "open_external",

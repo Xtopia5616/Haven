@@ -198,8 +198,6 @@ impl ToolRuntime {
 pub struct StartupWiring {
     /// Durable ToolRun persistence constructed by the application composition root.
     pub tool_run_store: Option<ToolRunStore>,
-    /// Versioned Workflow definitions and recurring schedule snapshots.
-    pub workflow_definition_store: Option<haven_memory::WorkflowDefinitionStore>,
     pub tool_settings: std::collections::HashMap<String, ToolConfig>,
     pub default_shell: ShellChoice,
     pub context_limits: ContextLimitsConfig,

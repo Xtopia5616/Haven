@@ -186,7 +186,7 @@ MCP 服务器索引保持紧凑，仍由 `load_mcp` 按服务器加载并注册�
 请求不设固定 operation 数量上限，批次仍受 `context_limits.max_tools_per_request` 的原子准入预算约束。
 
 MCP exposure 按 tool 生效：`direct` 与 `model_only` 进入 provider-native 工具列表；`model_only`
-不得成为 Workflow 或 CodeMode 的嵌套 capability。`deferred` 经目录显式加载后走 Legacy 原生调用，
+不得成为 CodeMode 的嵌套 capability。`deferred` 经目录显式加载后走 Legacy 原生调用，
 `codemode` 只进入受限 CodeMode allowlist，`hidden` 不可发现也不可执行。暴露只控制路由，不替代
 授权、sandbox 或网络策略（ADR 1163、1183）。
 

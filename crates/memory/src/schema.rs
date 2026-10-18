@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 46;
+pub const SCHEMA_VERSION: i32 = 47;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -185,12 +185,6 @@ const SCHEMA_SQL: &[&str] = &[
         output TEXT,
         error TEXT,
         error_reason TEXT,
-        workflow_step_id TEXT,
-        workflow_step_index INTEGER,
-        workflow_step_total INTEGER,
-        workflow_definition_id TEXT,
-        workflow_revision INTEGER,
-        workflow_schedule_id TEXT REFERENCES workflow_schedules(id) ON DELETE SET NULL,
         log_path TEXT,
         exit_code INTEGER,
         started_at TEXT CHECK(started_at IS NULL OR (
@@ -209,32 +203,38 @@ const SCHEMA_SQL: &[&str] = &[
             strftime('%Y-%m-%dT%H:%M:%fZ', created_at) = created_at
         )
     )",
-    "CREATE TABLE IF NOT EXISTS workflow_definitions (
+    "CREATE TABLE IF NOT EXISTS recurring_session_tasks (
         id TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE CHECK(length(trim(name)) BETWEEN 1 AND 80),
-        description TEXT NOT NULL DEFAULT '' CHECK(length(description) <= 1000),
-        revision INTEGER NOT NULL CHECK(revision > 0),
-        definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    )",
-    "CREATE TABLE IF NOT EXISTS workflow_schedules (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 80),
-        workflow_definition_id TEXT,
-        workflow_revision INTEGER NOT NULL CHECK(workflow_revision > 0),
-        definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
-        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        source_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 80),
+        body TEXT NOT NULL CHECK(length(trim(body)) BETWEEN 1 AND 2000),
+        prompt TEXT NOT NULL CHECK(length(trim(prompt)) > 0 AND length(CAST(prompt AS BLOB)) <= 65536),
         interval_seconds INTEGER NOT NULL CHECK(interval_seconds BETWEEN 60 AND 31536000),
-        anchor_at TEXT NOT NULL,
-        next_due_at TEXT NOT NULL,
+        anchor_at TEXT NOT NULL CHECK(
+            length(anchor_at) = 24 AND
+            anchor_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', anchor_at) = anchor_at
+        ),
+        next_due_at TEXT NOT NULL CHECK(
+            length(next_due_at) = 24 AND
+            next_due_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', next_due_at) = next_due_at
+        ),
         enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
         active_tool_run_id TEXT REFERENCES tool_runs(id) ON DELETE SET NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        created_at TEXT NOT NULL CHECK(
+            length(created_at) = 24 AND
+            created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', created_at) = created_at
+        ),
+        updated_at TEXT NOT NULL CHECK(
+            length(updated_at) = 24 AND
+            updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', updated_at) = updated_at
+        )
     )",
-    "CREATE INDEX IF NOT EXISTS idx_workflow_schedules_due
-        ON workflow_schedules(enabled, next_due_at)",
+    "CREATE INDEX IF NOT EXISTS idx_recurring_session_tasks_due
+        ON recurring_session_tasks(enabled, next_due_at)",
     // Durable delivery records for terminal background ToolRun results. The
     // ToolRun row is the result source; this table records whether the result
     // crossed the agent transcript boundary so a transient broadcast loss or
@@ -560,17 +560,11 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("tool_runs", "kind"),
     ("tool_runs", "watch_tool_run_id"),
     ("tool_runs", "result_summary"),
-    ("tool_runs", "workflow_step_id"),
-    ("tool_runs", "workflow_step_index"),
-    ("tool_runs", "workflow_step_total"),
-    ("tool_runs", "workflow_definition_id"),
-    ("tool_runs", "workflow_revision"),
-    ("tool_runs", "workflow_schedule_id"),
-    ("workflow_definitions", "revision"),
-    ("workflow_definitions", "definition_json"),
-    ("workflow_schedules", "definition_json"),
-    ("workflow_schedules", "interval_seconds"),
-    ("workflow_schedules", "active_tool_run_id"),
+    ("recurring_session_tasks", "source_session_id"),
+    ("recurring_session_tasks", "body"),
+    ("recurring_session_tasks", "prompt"),
+    ("recurring_session_tasks", "interval_seconds"),
+    ("recurring_session_tasks", "active_tool_run_id"),
     ("llm_usage", "call_kind"),
 ];
 

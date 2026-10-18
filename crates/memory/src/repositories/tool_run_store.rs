@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use crate::Database;
+use crate::repositories::scheduled_session_tasks::RecurringSessionTaskRow;
 use crate::repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
 use crate::repositories::tool_runs::{
     ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow, normalize_tool_run_timestamp,
@@ -572,6 +573,66 @@ impl ToolRunStore {
             .await
     }
 
+    pub async fn create_recurring_session_task(
+        &self,
+        source_session_id: String,
+        title: String,
+        body: String,
+        prompt: String,
+        interval_seconds: u64,
+        anchor_at: String,
+    ) -> anyhow::Result<RecurringSessionTaskRow> {
+        validate_id(&source_session_id, "ses", "source_session_id")?;
+        let anchor_at = normalize_tool_run_timestamp(&anchor_at, "anchor_at")?;
+        self.db
+            .run_blocking(move |db| {
+                db.create_recurring_session_task(
+                    &source_session_id,
+                    &title,
+                    &body,
+                    &prompt,
+                    interval_seconds,
+                    &anchor_at,
+                )
+            })
+            .await
+    }
+
+    pub async fn list_recurring_session_tasks(
+        &self,
+        source_session_id: String,
+    ) -> anyhow::Result<Vec<RecurringSessionTaskRow>> {
+        validate_id(&source_session_id, "ses", "source_session_id")?;
+        self.db
+            .run_blocking(move |db| db.list_recurring_session_tasks(&source_session_id))
+            .await
+    }
+
+    pub async fn delete_recurring_session_task(
+        &self,
+        schedule_id: String,
+        source_session_id: String,
+    ) -> anyhow::Result<(bool, Option<String>)> {
+        validate_id(&schedule_id, "sched", "schedule_id")?;
+        validate_id(&source_session_id, "ses", "source_session_id")?;
+        self.db
+            .run_blocking(move |db| {
+                db.delete_recurring_session_task(&schedule_id, &source_session_id)
+            })
+            .await
+    }
+
+    pub async fn claim_due_recurring_session_tasks(
+        &self,
+        now: String,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ScheduledToolRunRow>> {
+        let now = normalize_tool_run_timestamp(&now, "now")?;
+        self.db
+            .run_blocking(move |db| db.claim_due_recurring_session_tasks(&now, limit))
+            .await
+    }
+
     /// Claim a waiting scheduled trigger with a waiting-to-running CAS.
     pub async fn start_scheduled_tool_run(
         &self,
@@ -659,60 +720,6 @@ impl ToolRunStore {
         let finished_at = normalize_tool_run_timestamp(&finished_at, "finished_at")?;
         self.db
             .run_blocking(move |db| db.cancel_scheduled_tool_run(&tool_run_id, &finished_at))
-            .await
-    }
-
-    pub async fn cancel_claimed_workflow_tool_run(
-        &self,
-        tool_run_id: String,
-        claim_id: String,
-        finished_at: String,
-    ) -> anyhow::Result<bool> {
-        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        anyhow::ensure!(
-            haven_common::types::is_canonical_id(&claim_id, "conf") || claim_id == tool_run_id,
-            "invalid scheduled execution claim ID"
-        );
-        let finished_at = normalize_tool_run_timestamp(&finished_at, "finished_at")?;
-        self.db
-            .run_blocking(move |db| {
-                db.cancel_claimed_workflow_tool_run(&tool_run_id, &claim_id, &finished_at)
-            })
-            .await
-    }
-
-    pub async fn set_workflow_tool_run_metadata(
-        &self,
-        tool_run_id: String,
-        workflow_definition_id: String,
-        workflow_revision: u32,
-    ) -> anyhow::Result<bool> {
-        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        validate_id(&workflow_definition_id, "wfdef", "workflow_definition_id")?;
-        anyhow::ensure!(workflow_revision > 0, "workflow_revision must be positive");
-        self.db
-            .run_blocking(move |db| {
-                db.set_workflow_tool_run_metadata(
-                    &tool_run_id,
-                    &workflow_definition_id,
-                    workflow_revision,
-                )
-            })
-            .await
-    }
-
-    pub async fn update_workflow_tool_run_progress(
-        &self,
-        tool_run_id: String,
-        step_id: String,
-        step_index: u32,
-        step_total: u32,
-    ) -> anyhow::Result<bool> {
-        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        self.db
-            .run_blocking(move |db| {
-                db.update_workflow_tool_run_progress(&tool_run_id, &step_id, step_index, step_total)
-            })
             .await
     }
 }
@@ -819,7 +826,7 @@ mod tests {
                 "body".into(),
                 ScheduleMode::Tool,
                 None,
-                None,
+                Some("test_tool".into()),
                 None,
                 None,
                 None,
@@ -1066,7 +1073,7 @@ mod tests {
                 "body".into(),
                 ScheduleMode::Tool,
                 None,
-                None,
+                Some("test_tool".into()),
                 None,
                 None,
                 None,
@@ -1280,7 +1287,7 @@ mod tests {
                 "body".into(),
                 ScheduleMode::Tool,
                 None,
-                None,
+                Some("test_tool".into()),
                 None,
                 None,
                 None,

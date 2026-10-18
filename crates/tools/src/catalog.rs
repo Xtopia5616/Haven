@@ -389,33 +389,6 @@ impl ToolsFacade {
         self.coordinator.core.operations.installed.get(name).await
     }
 
-    /// Resolve an MCP capability for a nested Workflow call. The regular
-    /// model-facing resolver also accepts ModelOnly, so this path applies the
-    /// narrower live policy again after resolving the adapter.
-    pub(crate) async fn get_workflow_subcall_tool_for_session(
-        &self,
-        session_id: Option<&str>,
-        name: &str,
-    ) -> Option<ToolHandle> {
-        if !session_id.is_some_and(|id| haven_common::types::is_canonical_id(id, "ses")) {
-            return None;
-        }
-        let tool = self.get_tool_for_session(session_id, name).await?;
-        let (server_name, tool_name) = tool.mcp_tool_identity()?;
-        let config = self
-            .coordinator
-            .builtins
-            .mcp_server_config_source
-            .get(server_name)
-            .await
-            .ok()
-            .flatten()?;
-        if !config.enabled || !config.exposure.for_tool(tool_name).is_workflow_callable() {
-            return None;
-        }
-        Some(tool)
-    }
-
     /// Resolve an MCP adapter exclusively through a CodeMode allowlist. This
     /// path intentionally does not consult the provider-native surface, and
     /// refuses tools whose live config no longer selects CodeMode.
@@ -721,52 +694,6 @@ impl OperationCatalog<'_> {
         tool
     }
 
-    /// Build a synthetic Workflow tool only from MCP capabilities already
-    /// visible through the current Legacy session surface. CodeMode-only,
-    /// hidden, and not-yet-loaded deferred operations never enter this set.
-    async fn workflow_tool_for_session(
-        &self,
-        session: &[ToolHandle],
-        direct: &[ToolHandle],
-        settings: &HashMap<String, ToolConfig>,
-    ) -> Option<ToolHandle> {
-        let mut definitions = std::collections::BTreeMap::new();
-        for tool in session.iter().chain(direct) {
-            let Some((server_name, tool_name)) = tool.mcp_tool_identity() else {
-                continue;
-            };
-            let config = self
-                .facade
-                .coordinator
-                .builtins
-                .mcp_server_config_source
-                .get(server_name)
-                .await
-                .ok()
-                .flatten();
-            if !config.is_some_and(|config| {
-                config.enabled && config.exposure.for_tool(tool_name).is_workflow_callable()
-            }) {
-                continue;
-            }
-            let definition = tool.tool_def();
-            if !tool_config_enabled(settings, &definition.name) {
-                continue;
-            }
-            definitions.insert(
-                definition.name.clone(),
-                crate::WorkflowCapabilityDefinition {
-                    name: definition.name,
-                    description: definition.description,
-                    input_schema: definition.input_schema,
-                },
-            );
-        }
-        crate::workflow_tool::WorkflowInvocationTool::from_definitions(
-            definitions.into_values().collect(),
-        )
-    }
-
     /// Refresh only the MCP adapters already active in this session. A live
     /// tools/list response can update or remove selected tools, but never
     /// activates newly discovered names without an explicit `load_mcp` call.
@@ -869,9 +796,6 @@ impl OperationCatalog<'_> {
             let direct = self.direct_mcp_tools_for_session().await;
             let codemode = self.codemode_tool_for_session().await;
             let platform = self.facade.coordinator.runtime.platform().await;
-            let workflow = self
-                .workflow_tool_for_session(&session, &direct, &platform.tool_settings)
-                .await;
             let after = self.facade.catalog_version_for_session(session_id).await;
 
             let mut tools = HashMap::with_capacity(global.len() + session.len() + direct.len());
@@ -879,9 +803,6 @@ impl OperationCatalog<'_> {
             let mut session_defs: Vec<_> = session.iter().map(|tool| tool.tool_def()).collect();
             session_defs.extend(direct.iter().map(|tool| tool.tool_def()));
             if let Some(tool) = codemode.as_ref() {
-                session_defs.push(tool.tool_def());
-            }
-            if let Some(tool) = workflow.as_ref() {
                 session_defs.push(tool.tool_def());
             }
             for tool in global {
@@ -894,9 +815,6 @@ impl OperationCatalog<'_> {
                 tools.insert(tool.name(), tool);
             }
             if let Some(tool) = codemode {
-                tools.insert(tool.name(), tool);
-            }
-            if let Some(tool) = workflow {
                 tools.insert(tool.name(), tool);
             }
             let max = platform.context_limits.max_tools_per_request.max(1);
@@ -935,20 +853,6 @@ impl OperationCatalog<'_> {
         let direct = self.direct_mcp_tools_for_session().await;
         session_defs.extend(direct.iter().map(|tool| tool.tool_def()));
         if let Some(tool) = self.codemode_tool_for_session().await {
-            session_defs.push(tool.tool_def());
-        }
-        let session_tools = self
-            .facade
-            .coordinator
-            .core
-            .operations
-            .session_tool_overlay
-            .list(session_id)
-            .await;
-        if let Some(tool) = self
-            .workflow_tool_for_session(&session_tools, &direct, &platform.tool_settings)
-            .await
-        {
             session_defs.push(tool.tool_def());
         }
         let total = global_len + session_defs.len();

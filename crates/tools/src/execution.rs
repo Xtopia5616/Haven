@@ -20,7 +20,6 @@ pub(crate) struct AuthorizedExecutor<'a> {
 enum ExecutionSurface {
     Model,
     CodeModeSubcall,
-    WorkflowSubcall,
 }
 
 /// Proof-carrying execution request for the synthetic model-facing CodeMode
@@ -45,27 +44,6 @@ pub struct AuthorizedCodeModeSubcallExecution {
     pub proof: crate::AuthorizationExecutionProof,
 }
 
-/// Proof-carrying request for one Legacy-only Workflow child operation.
-pub struct AuthorizedWorkflowSubcallExecution {
-    pub session_id: Option<String>,
-    pub tool_name: String,
-    pub input: Value,
-    pub cancel: CancellationToken,
-    pub step_id: Option<String>,
-    pub proof: crate::AuthorizationExecutionProof,
-}
-
-/// Proof-carrying request for the synthetic model-facing Workflow tool.
-pub struct AuthorizedWorkflowToolExecution {
-    pub session_id: Option<String>,
-    pub tool_name: String,
-    pub input: Value,
-    pub cancel: CancellationToken,
-    pub step_id: Option<String>,
-    pub proof: crate::AuthorizationExecutionProof,
-    pub subcalls: Arc<dyn crate::WorkflowSubcallPort>,
-}
-
 struct ExecutionRequest {
     session_id: Option<String>,
     tool_name: String,
@@ -75,7 +53,6 @@ struct ExecutionRequest {
     authorization_proof: Option<crate::AuthorizationExecutionProof>,
     surface: ExecutionSurface,
     codemode_subcalls: Option<Arc<dyn crate::CodeModeSubcallPort>>,
-    workflow_subcalls: Option<Arc<dyn crate::WorkflowSubcallPort>>,
 }
 
 impl ToolsFacade {
@@ -145,24 +122,6 @@ impl ToolsFacade {
             .await
     }
 
-    pub async fn execute_authorized_workflow_subcall_with_step(
-        &self,
-        execution: AuthorizedWorkflowSubcallExecution,
-    ) -> anyhow::Result<ToolResult> {
-        self.executor()
-            .execute_authorized_workflow_subcall_with_step(execution)
-            .await
-    }
-
-    pub async fn execute_authorized_workflow_tool_with_step(
-        &self,
-        execution: AuthorizedWorkflowToolExecution,
-    ) -> anyhow::Result<ToolResult> {
-        self.executor()
-            .execute_authorized_workflow_tool_with_step(execution)
-            .await
-    }
-
     #[cfg(test)]
     pub(crate) fn tool_circuits(&self) -> &ToolCircuitRegistry {
         &self.coordinator.core.tool_circuits
@@ -221,7 +180,6 @@ impl AuthorizedExecutor<'_> {
             authorization_proof: None,
             surface: ExecutionSurface::Model,
             codemode_subcalls: None,
-            workflow_subcalls: None,
         })
         .await
     }
@@ -244,7 +202,6 @@ impl AuthorizedExecutor<'_> {
             authorization_proof: Some(proof),
             surface: ExecutionSurface::Model,
             codemode_subcalls: None,
-            workflow_subcalls: None,
         })
         .await
     }
@@ -262,7 +219,6 @@ impl AuthorizedExecutor<'_> {
             authorization_proof: Some(execution.proof),
             surface: ExecutionSurface::Model,
             codemode_subcalls: Some(execution.subcalls),
-            workflow_subcalls: None,
         })
         .await
     }
@@ -280,43 +236,6 @@ impl AuthorizedExecutor<'_> {
             authorization_proof: Some(execution.proof),
             surface: ExecutionSurface::CodeModeSubcall,
             codemode_subcalls: None,
-            workflow_subcalls: None,
-        })
-        .await
-    }
-
-    pub async fn execute_authorized_workflow_subcall_with_step(
-        &self,
-        execution: AuthorizedWorkflowSubcallExecution,
-    ) -> anyhow::Result<ToolResult> {
-        self.execute_tool_inner(ExecutionRequest {
-            session_id: execution.session_id,
-            tool_name: execution.tool_name,
-            input: execution.input,
-            cancel: execution.cancel,
-            step_id: execution.step_id,
-            authorization_proof: Some(execution.proof),
-            surface: ExecutionSurface::WorkflowSubcall,
-            codemode_subcalls: None,
-            workflow_subcalls: None,
-        })
-        .await
-    }
-
-    pub async fn execute_authorized_workflow_tool_with_step(
-        &self,
-        execution: AuthorizedWorkflowToolExecution,
-    ) -> anyhow::Result<ToolResult> {
-        self.execute_tool_inner(ExecutionRequest {
-            session_id: execution.session_id,
-            tool_name: execution.tool_name,
-            input: execution.input,
-            cancel: execution.cancel,
-            step_id: execution.step_id,
-            authorization_proof: Some(execution.proof),
-            surface: ExecutionSurface::Model,
-            codemode_subcalls: None,
-            workflow_subcalls: Some(execution.subcalls),
         })
         .await
     }
@@ -331,7 +250,6 @@ impl AuthorizedExecutor<'_> {
             authorization_proof,
             surface: execution_surface,
             codemode_subcalls,
-            workflow_subcalls,
         } = request;
         let session_id = session_id.as_deref();
         let tool_name = tool_name.as_str();
@@ -370,11 +288,6 @@ impl AuthorizedExecutor<'_> {
             ExecutionSurface::CodeModeSubcall => {
                 self.tools
                     .get_codemode_subcall_tool_for_session(session_id, tool_name)
-                    .await
-            }
-            ExecutionSurface::WorkflowSubcall => {
-                self.tools
-                    .get_workflow_subcall_tool_for_session(session_id, tool_name)
                     .await
             }
         }
@@ -499,27 +412,6 @@ impl AuthorizedExecutor<'_> {
                     }
                     current
                 }
-                ExecutionSurface::WorkflowSubcall => {
-                    let Some(current) = self
-                        .tools
-                        .get_workflow_subcall_tool_for_session(session_id, tool_name)
-                        .await
-                    else {
-                        return Ok(ToolResult::failed_with_class(
-                            Value::Null,
-                            "MCP capability is no longer callable by Workflow",
-                            ToolErrorClass::Permission,
-                        ));
-                    };
-                    if let Err(error) = current.validate_input(&exec_input) {
-                        return Ok(ToolResult::failed_with_class(
-                            Value::Null,
-                            error.to_string(),
-                            ToolErrorClass::Validation,
-                        ));
-                    }
-                    current
-                }
             };
 
             let mut authorization_target_binding = None;
@@ -538,15 +430,6 @@ impl AuthorizedExecutor<'_> {
                     ExecutionSurface::CodeModeSubcall => {
                         self.tools
                             .resolve_codemode_subcall_authorization_request(
-                                session_id,
-                                tool_name,
-                                &authorization_input,
-                            )
-                            .await
-                    }
-                    ExecutionSurface::WorkflowSubcall => {
-                        self.tools
-                            .resolve_workflow_subcall_authorization_request(
                                 session_id,
                                 tool_name,
                                 &authorization_input,
@@ -580,16 +463,6 @@ impl AuthorizedExecutor<'_> {
             let execution = if let Some(subcalls) = codemode_subcalls.clone() {
                 attempt_tool
                     .execute_with_codemode_subcalls_timeout(
-                        exec_input.clone(),
-                        cancel.clone(),
-                        timeout_secs,
-                        authorization_target_binding.as_deref(),
-                        subcalls,
-                    )
-                    .await
-            } else if let Some(subcalls) = workflow_subcalls.clone() {
-                attempt_tool
-                    .execute_with_workflow_subcalls_timeout(
                         exec_input.clone(),
                         cancel.clone(),
                         timeout_secs,

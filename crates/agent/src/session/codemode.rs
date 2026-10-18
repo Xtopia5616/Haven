@@ -241,7 +241,6 @@ impl CodeModeSubcallPort for AuthorizedCodeModeSubcallPort {
                     tool_name,
                     input: &input,
                     result: &result,
-                    observation: None,
                     sandbox_output_review_step_id: None,
                 })
                 .await?;

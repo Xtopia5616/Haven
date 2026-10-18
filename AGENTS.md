@@ -80,8 +80,7 @@ corepack pnpm run check
 | `fact-` | 事实 facts.id（SPO 图谱行） | `haven_memory` |
 | `node-` | 记忆节点 memory_nodes.id | `haven_memory` |
 | `toolrun-` | 工具运行 tool_runs.id（后台任务 kind=`background` + 定时任务 kind=`scheduled`） | `haven_tools` |
-| `wfdef-` | 可复用 Workflow 定义 | `haven_memory` / `haven_tools` |
-| `wfsched-` | 周期 Workflow 计划 | `haven_memory` / `haven_tools` |
+| `sched-` | 周期新会话计划 recurring_session_tasks.id | `haven_memory` / `haven_tools` |
 | `asset-` | 受管媒体资产 MediaAsset.asset_id | `haven_common` |
 | `cred-` | Credential Manager 凭据引用（仅引用，不是密钥值） | `haven_common` / `haven_platform` |
 | `usage-` | 单次 LLM 调用用量明细 llm_usage.id | `haven_memory` |

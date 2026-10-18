@@ -70,7 +70,7 @@
 		{ value: 'direct', label: 'Legacy · direct — send schemas with every request' },
 		{
 			value: 'model_only',
-			label: 'Model-only — direct model calls only; no nested Workflow or CodeMode',
+			label: 'Model-only — direct model calls only; no nested CodeMode',
 		},
 		{ value: 'deferred', label: 'Legacy · deferred — discover and load when needed' },
 		{ value: 'codemode', label: 'CodeMode — compose allowed tools in a bounded script' },
@@ -312,7 +312,7 @@
 		{/if}
 		<MaterialField
 			label="Assistant exposure"
-			hint="Legacy uses ordinary tool calls. Model-only tools are callable only as top-level model calls, never as nested Workflow or CodeMode calls. CodeMode composes only listed tools in a bounded script; each call is authorized separately. Calls requiring confirmation must use Legacy. Hidden tools cannot be called."
+			hint="Legacy uses ordinary tool calls. Model-only tools are callable only as top-level model calls, never as nested CodeMode calls. CodeMode composes only listed tools in a bounded script; each call is authorized separately. Calls requiring confirmation must use Legacy. Hidden tools cannot be called."
 		>
 			{#snippet children()}
 				<MaterialSelect

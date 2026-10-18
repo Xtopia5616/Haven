@@ -97,15 +97,6 @@ pub struct ToolRunLifecyclePayload {
     pub error: Option<String>,
     pub error_reason: Option<String>,
     pub exit_code: Option<i32>,
-    pub workflow_progress: Option<WorkflowProgress>,
-}
-
-/// Content-free progress for one active Workflow ToolRun node.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct WorkflowProgress {
-    pub step_id: String,
-    pub step_index: u32,
-    pub step_total: u32,
 }
 
 impl ToolRunLifecyclePayload {
@@ -128,7 +119,6 @@ impl ToolRunLifecyclePayload {
             error: None,
             error_reason: None,
             exit_code: None,
-            workflow_progress: None,
         }
     }
 
@@ -237,9 +227,6 @@ impl ToolRunLifecycleEvent {
             }
             if let Some(exit_code) = payload.exit_code {
                 value["exit_code"] = json!(exit_code);
-            }
-            if let Some(progress) = payload.workflow_progress {
-                value["workflow_progress"] = json!(progress);
             }
             value
         }

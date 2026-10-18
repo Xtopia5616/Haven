@@ -917,48 +917,23 @@ impl SessionSupervisor {
             return;
         }
         let scheduled_tool_input = tool_args.clone();
-        let outcome = async {
-            if tool_name == haven_tools::WORKFLOW_RUN_TOOL_NAME {
-                let execution_cancellation = self
-                    .tool_runs
-                    .workflow_run_cancellation_token(&tool_run_id)
-                    .await
-                    .unwrap_or_else(CancellationToken::new);
-                tokio::select! {
-                    _ = execution_cancellation.cancelled() => {
-                        Err(anyhow::anyhow!("定时 Workflow 已取消"))
-                    }
-                    outcome = self.execute_gated_with_nested_confirmation(
-                        super::execution::GatedToolExecutionRequest {
-                            session_id: session_id.as_deref(),
-                            tool_name: &tool_name,
-                            input: tool_args,
-                            cancel: execution_cancellation.clone(),
-                            receipt: nested_confirmation.is_none().then_some(receipt),
-                            step_id: None,
-                            nested_confirmation,
-                            tool_run_id: Some(&tool_run_id),
-                        }
-                    ) => outcome,
-                }
-            } else {
-                self.execute_gated(
-                    session_id.as_deref(),
-                    &tool_name,
-                    tool_args,
-                    CancellationToken::new(),
-                    Some(receipt),
-                    None,
-                )
-                .await
-            }
-        }
-        .instrument(tracing::info_span!(
-            "scheduled_tool_run_confirmation_execution",
-            tool_run_id = %tool_run_id,
-            session_id = ?session_id
-        ))
-        .await;
+        let outcome = self
+            .execute_gated_with_nested_confirmation(super::execution::GatedToolExecutionRequest {
+                session_id: session_id.as_deref(),
+                tool_name: &tool_name,
+                input: tool_args,
+                cancel: CancellationToken::new(),
+                receipt: nested_confirmation.is_none().then_some(receipt),
+                step_id: None,
+                nested_confirmation,
+                tool_run_id: Some(&tool_run_id),
+            })
+            .instrument(tracing::info_span!(
+                "scheduled_tool_run_confirmation_execution",
+                tool_run_id = %tool_run_id,
+                session_id = ?session_id
+            ))
+            .await;
         if let Ok(execution) = &outcome
             && let Some(nested) = execution.result.signals.nested_confirmation.clone()
         {
@@ -973,7 +948,7 @@ impl SessionSupervisor {
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to release previous scheduled claim before nested confirmation"
                 );
-                let reason = "无法续接 Workflow 确认";
+                let reason = "无法续接嵌套工具确认";
                 if self
                     .persist_scheduled_terminal_state(&tool_run_id, Err(reason))
                     .await
@@ -1001,7 +976,7 @@ impl SessionSupervisor {
             {
                 return;
             }
-            let reason = "无法创建 Workflow 子调用确认";
+            let reason = "无法创建嵌套工具确认";
             if self
                 .persist_scheduled_terminal_state(&tool_run_id, Err(reason))
                 .await
@@ -1021,36 +996,6 @@ impl SessionSupervisor {
         let succeeded = outcome
             .as_ref()
             .is_ok_and(crate::session::scheduled_tool_execution_succeeded);
-        let workflow_retry_metadata =
-            if !succeeded && tool_name == haven_tools::WORKFLOW_RUN_TOOL_NAME {
-                outcome.as_ref().ok().map(|execution| {
-                    let output = &execution.result.output;
-                    let completed_step_ids = output
-                        .get("completed_step_ids")
-                        .and_then(Value::as_array)
-                        .map(|steps| {
-                            steps
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .filter(|step_id| step_id.chars().count() <= 48)
-                                .take(16)
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    let safe_to_retry = output
-                        .get("safe_to_retry")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                        && completed_step_ids.is_empty();
-                    serde_json::json!({
-                        "safe_to_retry": safe_to_retry,
-                        "completed_step_ids": completed_step_ids,
-                    })
-                    .to_string()
-                })
-            } else {
-                None
-            };
         let mut result_summary = None;
         let body = match outcome {
             Ok(g) if succeeded => {
@@ -1069,26 +1014,8 @@ impl SessionSupervisor {
                 .await
         } else {
             let failure_summary = crate::truncate_notification(&body, summary_chars);
-            if let Some(workflow_result) = workflow_retry_metadata.as_deref() {
-                match self
-                    .tool_runs
-                    .fail_scheduled_with_result(&tool_run_id, workflow_result, &failure_summary)
-                    .await
-                {
-                    Ok(changed) => changed,
-                    Err(error) => {
-                        tracing::warn!(
-                            tool_run_id,
-                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                            "failed to persist Workflow retry metadata"
-                        );
-                        false
-                    }
-                }
-            } else {
-                self.persist_scheduled_terminal_state(&tool_run_id, Err(&failure_summary))
-                    .await
-            }
+            self.persist_scheduled_terminal_state(&tool_run_id, Err(&failure_summary))
+                .await
         };
         if persisted {
             self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {

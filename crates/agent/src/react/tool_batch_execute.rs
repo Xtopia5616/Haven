@@ -142,7 +142,7 @@ impl ReActEngine {
         let has_nested_parent = plan.iter().any(|planned| {
             matches!(
                 planned.tool_call.tool_name.as_str(),
-                haven_tools::CODEMODE_RUN_TOOL_NAME | haven_tools::WORKFLOW_RUN_TOOL_NAME
+                haven_tools::CODEMODE_RUN_TOOL_NAME
             )
         });
         if has_nested_parent && plan.len() > 1 {
@@ -154,7 +154,8 @@ impl ReActEngine {
                         step_number,
                         planned,
                         catalog,
-                        "CodeMode and Workflow calls must run alone when they may pause for nested confirmation".into(),
+                        "CodeMode calls must run alone when they may pause for nested confirmation"
+                            .into(),
                     )
                     .await,
                 );

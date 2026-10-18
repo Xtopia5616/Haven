@@ -3,143 +3,89 @@ use super::views::scheduled_status_json;
 use super::*;
 
 impl ToolRunService {
-    pub async fn start_workflow_run(
-        self: &Arc<Self>,
-        session_id: &str,
-        workflow_definition_id: &str,
-        workflow_revision: u32,
-        name: &str,
-        definition: Value,
-    ) -> anyhow::Result<String> {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_recurring_session_task(
+        &self,
+        source_session_id: &str,
+        title: &str,
+        body: &str,
+        prompt: &str,
+        interval_seconds: u64,
+        due_at: Option<String>,
+        delay_secs: Option<u64>,
+    ) -> anyhow::Result<haven_memory::RecurringSessionTaskRow> {
         anyhow::ensure!(
-            haven_common::types::is_canonical_id(session_id, "ses"),
-            "invalid session_id"
+            haven_common::types::is_canonical_id(source_session_id, "ses"),
+            "invalid source_session_id"
         );
-        anyhow::ensure!(
-            haven_common::types::is_canonical_id(workflow_definition_id, "wfdef"),
-            "invalid workflow_definition_id"
-        );
-        anyhow::ensure!(workflow_revision > 0, "workflow_revision must be positive");
-        anyhow::ensure!(
-            name.chars().count() <= 80 && !name.trim().is_empty(),
-            "Workflow name is invalid"
-        );
-        anyhow::ensure!(
-            definition.is_object()
-                && definition.get("steps").is_some_and(Value::is_array)
-                && definition["steps"]
-                    .as_array()
-                    .is_some_and(|steps| !steps.is_empty() && steps.len() <= 16)
-                && serde_json::to_vec(&definition).map_or(usize::MAX, |bytes| bytes.len())
-                    <= 64 * 1024,
-            "Workflow definition is invalid or exceeds its limits"
-        );
-        let store =
-            self.tool_run_store.read().await.clone().ok_or_else(|| {
-                anyhow::anyhow!("persistent Workflow runs require a ToolRun store")
-            })?;
-        let tool_args = serde_json::json!({
-            "execution_mode": "inline",
-            "workflow": definition,
-        });
-        let tool_run_id = self
-            .schedule(ScheduledToolRunSpec {
-                due_at: None,
-                delay_secs: Some(2),
-                watch_tool_run_id: None,
-                title: name.trim().to_owned(),
-                body: format!("Run Workflow: {}", name.trim()),
-                mode: ScheduleMode::Tool,
-                session_id: Some(session_id.to_owned()),
-                tool_name: Some(crate::WORKFLOW_RUN_TOOL_NAME.to_owned()),
-                tool_args: Some(tool_args),
-                prompt: None,
-            })
-            .await?;
-        let attached = store
-            .set_workflow_tool_run_metadata(
-                tool_run_id.clone(),
-                workflow_definition_id.to_owned(),
-                workflow_revision,
+        let store = self.tool_run_store.read().await.clone().ok_or_else(|| {
+            anyhow::anyhow!("recurring session tasks require persistent ToolRun storage")
+        })?;
+        let now = chrono::Utc::now();
+        let candidate = ScheduledTriggerRequest::new(due_at, delay_secs, None)?.resolve(now)?;
+        candidate.validate_due_horizon(*self.max_due_horizon_secs.read().await)?;
+        let ScheduledTrigger::At { due_at, .. } = candidate.into_trigger() else {
+            anyhow::bail!("recurring session tasks require a time trigger");
+        };
+        store
+            .create_recurring_session_task(
+                source_session_id.to_owned(),
+                title.to_owned(),
+                body.to_owned(),
+                prompt.to_owned(),
+                interval_seconds,
+                due_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             )
-            .await;
-        match attached {
-            Ok(true) => {}
-            Ok(false) => {
-                self.cancel_for_kind(&tool_run_id, ToolRunKind::Scheduled)
-                    .await;
-                anyhow::bail!("Workflow ToolRun could not attach its definition revision");
-            }
-            Err(error) => {
-                self.cancel_for_kind(&tool_run_id, ToolRunKind::Scheduled)
-                    .await;
-                return Err(error.context("failed to persist Workflow run provenance"));
-            }
-        }
-        Ok(tool_run_id)
+            .await
     }
 
-    pub async fn retry_workflow_run(
-        self: &Arc<Self>,
-        tool_run_id: &str,
-    ) -> anyhow::Result<Option<String>> {
+    pub async fn list_recurring_session_tasks(
+        &self,
+        source_session_id: &str,
+    ) -> anyhow::Result<Vec<haven_memory::RecurringSessionTaskRow>> {
         anyhow::ensure!(
-            haven_common::types::is_canonical_id(tool_run_id, "toolrun"),
-            "invalid tool_run_id"
+            haven_common::types::is_canonical_id(source_session_id, "ses"),
+            "invalid source_session_id"
         );
-        let store =
-            self.tool_run_store.read().await.clone().ok_or_else(|| {
-                anyhow::anyhow!("Workflow retry requires persistent ToolRun history")
-            })?;
-        let Some(row) = store.get_tool_run(tool_run_id.to_owned()).await? else {
-            return Ok(None);
+        let Some(store) = self.tool_run_store.read().await.clone() else {
+            return Ok(Vec::new());
         };
-        if row.kind != "scheduled"
-            || row.status != ToolRunStatus::Failed
-            || row.mode.as_deref() != Some("tool")
-            || row.tool_name.as_deref() != Some(crate::WORKFLOW_RUN_TOOL_NAME)
+        store
+            .list_recurring_session_tasks(source_session_id.to_owned())
+            .await
+    }
+
+    pub async fn cancel_recurring_session_task(
+        &self,
+        schedule_id: &str,
+        source_session_id: &str,
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(
+            haven_common::types::is_canonical_id(schedule_id, "sched"),
+            "invalid schedule_id"
+        );
+        anyhow::ensure!(
+            haven_common::types::is_canonical_id(source_session_id, "ses"),
+            "invalid source_session_id"
+        );
+        let store = self.tool_run_store.read().await.clone().ok_or_else(|| {
+            anyhow::anyhow!("recurring session tasks require persistent ToolRun storage")
+        })?;
+        let (deleted, active_tool_run_id) = store
+            .delete_recurring_session_task(schedule_id.to_owned(), source_session_id.to_owned())
+            .await?;
+        if let Some(tool_run_id) = active_tool_run_id
+            && !self
+                .cancel_for_session(&tool_run_id, source_session_id)
+                .await
         {
-            return Ok(None);
+            let finished_at =
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            let _ = store
+                .cancel_scheduled_tool_run(tool_run_id, finished_at)
+                .await?;
         }
-        let Some(summary) = row.result_summary.as_deref() else {
-            return Ok(None);
-        };
-        let result: Value = match serde_json::from_str(summary) {
-            Ok(value) => value,
-            Err(_) => return Ok(None),
-        };
-        if result.get("safe_to_retry") != Some(&Value::Bool(true))
-            || !result
-                .get("completed_step_ids")
-                .and_then(Value::as_array)
-                .is_some_and(Vec::is_empty)
-        {
-            return Ok(None);
-        }
-        let (Some(session_id), Some(workflow_definition_id), Some(workflow_revision), Some(args)) = (
-            row.session_id.as_deref(),
-            row.workflow_definition_id.as_deref(),
-            row.workflow_revision,
-            row.tool_args.as_deref(),
-        ) else {
-            return Ok(None);
-        };
-        let args: Value = match serde_json::from_str(args) {
-            Ok(value) => value,
-            Err(_) => return Ok(None),
-        };
-        let Some(definition) = args.get("workflow").cloned() else {
-            return Ok(None);
-        };
-        self.start_workflow_run(
-            session_id,
-            workflow_definition_id,
-            workflow_revision,
-            &row.title,
-            definition,
-        )
-        .await
-        .map(Some)
+        Ok(deleted)
     }
 
     /// Schedule a timer or a ToolRun dependency in the same state map as
@@ -192,8 +138,14 @@ impl ToolRunService {
         if mode == ScheduleMode::Tool && tool_name.is_none() {
             anyhow::bail!("tool_name is required when mode is 'tool'");
         }
-        if mode == ScheduleMode::Continue && prompt.is_none() && watch_tool_run_id.is_none() {
-            anyhow::bail!("prompt is required when mode is 'continue'");
+        if matches!(mode, ScheduleMode::Continue | ScheduleMode::NewSession)
+            && prompt.is_none()
+            && watch_tool_run_id.is_none()
+        {
+            anyhow::bail!("prompt is required for continue and new_session schedules");
+        }
+        if mode == ScheduleMode::NewSession && session_id.is_none() {
+            anyhow::bail!("new_session mode requires an owning session");
         }
         if let Some(args) = &tool_args
             && !args.is_object()
@@ -278,7 +230,6 @@ impl ToolRunService {
             mutation
         };
 
-        let cancellation_token = CancellationToken::new();
         let entry = ScheduledToolRunEntry {
             title: title.clone(),
             body: body.clone(),
@@ -288,7 +239,6 @@ impl ToolRunService {
             tool_args: tool_args.clone(),
             prompt: prompt.clone(),
             watch_tool_run_id: watch_tool_run_id.clone(),
-            cancellation_token,
         };
         self.tool_runs.write().await.insert(
             tool_run_id.clone(),
@@ -649,21 +599,6 @@ impl ToolRunService {
             .await
     }
 
-    pub async fn fail_scheduled_with_result(
-        self: &Arc<Self>,
-        tool_run_id: &str,
-        result: &str,
-        reason: &str,
-    ) -> anyhow::Result<bool> {
-        self.finish_scheduled(
-            tool_run_id,
-            ToolRunStatus::Failed,
-            Some(result),
-            Some(reason),
-        )
-        .await
-    }
-
     async fn finish_scheduled_in_memory(
         &self,
         tool_run_id: &str,
@@ -967,12 +902,11 @@ impl ToolRunService {
         owner: Option<&str>,
     ) -> anyhow::Result<bool> {
         let _terminal = self.terminal_transition.lock().await;
-        let execution_claim = self
+        let execution_claimed = self
             .scheduled_execution_claims
             .read()
             .await
-            .get(tool_run_id)
-            .cloned();
+            .contains_key(tool_run_id);
         let (schedule, started_at, session_id) = {
             let tool_runs = self.tool_runs.read().await;
             let Some(tool_run) = tool_runs.get(tool_run_id) else {
@@ -1001,11 +935,7 @@ impl ToolRunService {
             };
             (schedule.clone(), started_at, tool_run.session_id.clone())
         };
-        let claimed_workflow = execution_claim.is_some()
-            && schedule.mode == ScheduleMode::Tool
-            && schedule.tool_name.as_deref() == Some(crate::WORKFLOW_RUN_TOOL_NAME)
-            && !started_at.is_empty();
-        if execution_claim.is_some() && !claimed_workflow {
+        if execution_claimed {
             return Ok(false);
         }
         let timestamps = TerminalTimestamps::now(started_at);
@@ -1013,22 +943,12 @@ impl ToolRunService {
             let mut last_error = None;
             let retry_policy = ToolRunStoreRetryPolicy::inline_store();
             for attempt in 1..=retry_policy.max_attempts() {
-                let result = if let Some(claim_id) = execution_claim.as_deref() {
-                    store
-                        .cancel_claimed_workflow_tool_run(
-                            tool_run_id.to_string(),
-                            claim_id.to_string(),
-                            timestamps.finished_at.clone(),
-                        )
-                        .await
-                } else {
-                    store
-                        .cancel_scheduled_tool_run(
-                            tool_run_id.to_string(),
-                            timestamps.finished_at.clone(),
-                        )
-                        .await
-                };
+                let result = store
+                    .cancel_scheduled_tool_run(
+                        tool_run_id.to_string(),
+                        timestamps.finished_at.clone(),
+                    )
+                    .await;
                 match result {
                     Ok(true) => {
                         last_error = None;
@@ -1064,7 +984,6 @@ impl ToolRunService {
             return Ok(false);
         }
         tool_run.state = state.clone();
-        schedule.cancellation_token.cancel();
         self.scheduled_execution_claims
             .write()
             .await

@@ -5,7 +5,6 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use haven_common::ToolRunCompletionPayload;
 use haven_common::lifecycle::ToolRunStatus;
 use haven_common::tool_run::ScheduleMode;
-use haven_common::types::is_canonical_id;
 use rusqlite::OptionalExtension;
 
 const SCHEDULED_EXECUTION_CLAIM_PREFIX: &str = "scheduled_execution_claim.";
@@ -72,6 +71,28 @@ impl Database {
         } else {
             normalize_tool_run_timestamp(due_at, "due_at")?
         };
+        anyhow::ensure!(
+            mode == ScheduleMode::Tool || tool_name.is_none() && tool_args.is_none(),
+            "tool_name and tool_args require mode 'tool'"
+        );
+        anyhow::ensure!(
+            mode != ScheduleMode::Tool || tool_name.is_some(),
+            "tool_name is required when mode is 'tool'"
+        );
+        anyhow::ensure!(
+            !matches!(mode, ScheduleMode::Continue | ScheduleMode::NewSession)
+                || prompt.is_some()
+                || (mode == ScheduleMode::Continue && watch_tool_run_id.is_some()),
+            "prompt is required for continue and new_session modes"
+        );
+        anyhow::ensure!(
+            mode != ScheduleMode::NewSession || session_id.is_some(),
+            "new_session mode requires a source session"
+        );
+        anyhow::ensure!(
+            watch_tool_run_id.is_none() || mode == ScheduleMode::Continue,
+            "watch_tool_run_id requires mode 'continue'"
+        );
         let conn = self.conn();
         conn.execute(
             "INSERT INTO tool_runs (id, kind, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, watch_tool_run_id, status, created_at)
@@ -224,15 +245,11 @@ impl Database {
             if changed == 0 {
                 return Ok(false);
             }
-            if status == ToolRunStatus::Failed && error_reason == Some("关联会话已结束或不存在")
-            {
-                conn.execute(
-                    "UPDATE workflow_schedules SET enabled = 0, updated_at = ?2
-                     WHERE id = (SELECT workflow_schedule_id FROM tool_runs WHERE id = ?1)",
-                    rusqlite::params![tool_run_id, finished_at],
-                )?;
-            }
-            settle_workflow_schedule(&conn, tool_run_id, &finished_at)?;
+            super::scheduled_session_tasks::settle_recurring_session_task(
+                &conn,
+                tool_run_id,
+                &finished_at,
+            )?;
             conn.execute(
                 "DELETE FROM kv_store WHERE key = ?1",
                 [scheduled_execution_claim_key(tool_run_id)],
@@ -334,71 +351,13 @@ impl Database {
                 rusqlite::params![tool_run_id, finished_at, claim_key],
             )?;
             if changed > 0 {
-                settle_workflow_schedule(&conn, tool_run_id, &finished_at)?;
+                super::scheduled_session_tasks::settle_recurring_session_task(
+                    &conn,
+                    tool_run_id,
+                    &finished_at,
+                )?;
             }
             Ok(changed > 0)
-        })();
-        match result {
-            Ok(cancelled) => {
-                conn.execute_batch("COMMIT")?;
-                Ok(cancelled)
-            }
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                Err(error)
-            }
-        }
-    }
-
-    /// Cancel a running Workflow ToolRun while its scheduled execution claim is
-    /// held. The claim value must match exactly so cancellation and terminal
-    /// completion still arbitrate as one durable first-wins transition.
-    pub fn cancel_claimed_workflow_tool_run(
-        &self,
-        tool_run_id: &str,
-        claim_id: &str,
-        finished_at: &str,
-    ) -> anyhow::Result<bool> {
-        let finished_at = normalize_tool_run_timestamp(finished_at, "finished_at")?;
-        let conn = self.conn();
-        let claim_key = scheduled_execution_claim_key(tool_run_id);
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<bool> {
-            let row: Option<(String, String, Option<String>)> = conn
-                .query_row(
-                    "SELECT status, mode, tool_name FROM tool_runs
-                     WHERE id = ?1 AND kind = 'scheduled'",
-                    [tool_run_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .optional()?;
-            if !matches!(row, Some((status, mode, Some(tool_name)))
-                if status == "running" && mode == "tool" && tool_name == "workflow_run")
-            {
-                return Ok(false);
-            }
-            let existing_claim: Option<String> = conn
-                .query_row(
-                    "SELECT value FROM kv_store WHERE key = ?1",
-                    [&claim_key],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if existing_claim.as_deref() != Some(claim_id) {
-                return Ok(false);
-            }
-            let changed = conn.execute(
-                "UPDATE tool_runs SET status = 'cancelled', finished_at = ?2
-                 WHERE id = ?1 AND kind = 'scheduled' AND status = 'running'
-                   AND mode = 'tool' AND tool_name = 'workflow_run'",
-                rusqlite::params![tool_run_id, finished_at],
-            )?;
-            if changed == 0 {
-                return Ok(false);
-            }
-            settle_workflow_schedule(&conn, tool_run_id, &finished_at)?;
-            conn.execute("DELETE FROM kv_store WHERE key = ?1", [&claim_key])?;
-            Ok(true)
         })();
         match result {
             Ok(cancelled) => {
@@ -520,66 +479,6 @@ impl Database {
     }
 }
 
-fn settle_workflow_schedule(
-    conn: &rusqlite::Connection,
-    tool_run_id: &str,
-    finished_at: &str,
-) -> anyhow::Result<()> {
-    let schedule: Option<(String, String, i64, bool)> = conn
-        .query_row(
-            "SELECT schedules.id, schedules.anchor_at, schedules.interval_seconds, schedules.enabled
-             FROM workflow_schedules AS schedules
-             JOIN tool_runs ON tool_runs.workflow_schedule_id = schedules.id
-             WHERE tool_runs.id = ?1 AND schedules.active_tool_run_id = ?1",
-            [tool_run_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get::<_, i64>(3)? == 1)),
-        )
-        .optional()?;
-    let Some((schedule_id, anchor_at, interval_seconds, enabled)) = schedule else {
-        return Ok(());
-    };
-    if !enabled {
-        conn.execute(
-            "DELETE FROM workflow_schedules WHERE id = ?1 AND active_tool_run_id = ?2",
-            rusqlite::params![schedule_id, tool_run_id],
-        )?;
-        return Ok(());
-    }
-    anyhow::ensure!(
-        interval_seconds > 0,
-        "workflow schedule interval must be positive"
-    );
-    let anchor = DateTime::parse_from_rfc3339(&anchor_at)?.with_timezone(&Utc);
-    let finished = DateTime::parse_from_rfc3339(finished_at)?.with_timezone(&Utc);
-    let elapsed = finished.signed_duration_since(anchor).num_seconds();
-    let periods = elapsed.div_euclid(interval_seconds).saturating_add(1);
-    let offset_seconds = interval_seconds
-        .checked_mul(periods)
-        .context("workflow schedule next due timestamp overflows")?;
-    let next_due_at = anchor
-        .checked_add_signed(chrono::Duration::seconds(offset_seconds))
-        .context("workflow schedule next due timestamp is out of range")?
-        .to_rfc3339_opts(SecondsFormat::Millis, true);
-    conn.execute(
-        "UPDATE workflow_schedules SET active_tool_run_id = NULL, next_due_at = ?3, updated_at = ?4
-         WHERE id = ?1 AND active_tool_run_id = ?2",
-        rusqlite::params![schedule_id, tool_run_id, next_due_at, finished_at],
-    )?;
-    Ok(())
-}
-
-fn valid_workflow_step_id(step_id: &str) -> bool {
-    let mut bytes = step_id.bytes();
-    let Some(first) = bytes.next() else {
-        return false;
-    };
-    first.is_ascii_lowercase()
-        && step_id.len() <= 48
-        && bytes.all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
-        })
-}
-
 /// A persisted ToolRun row (background or scheduled).
 /// Scheduled-ToolRun rows carry `kind: "scheduled"` (due_at/mode/tool_name/
 /// tool_args/prompt); background-ToolRun rows carry `kind: "background"` with the
@@ -610,12 +509,6 @@ pub struct ToolRunRow {
     pub finished_at: Option<String>,
     pub created_at: String,
     pub result_summary: Option<String>,
-    pub workflow_step_id: Option<String>,
-    pub workflow_step_index: Option<u32>,
-    pub workflow_step_total: Option<u32>,
-    pub workflow_definition_id: Option<String>,
-    pub workflow_revision: Option<u32>,
-    pub workflow_schedule_id: Option<String>,
 }
 
 /// Minimal persisted producer state used by scheduled dependency watchers.
@@ -626,7 +519,7 @@ pub struct ToolRunDependencyRow {
     pub result: Option<String>,
 }
 
-const TOOL_RUN_COLUMNS: &str = "id, kind, due_at, title, body, mode, session_id, source_step_id, tool_name, tool_args, prompt, status, command, output, error, error_reason, log_path, exit_code, started_at, finished_at, created_at, result_summary, workflow_step_id, workflow_step_index, workflow_step_total, workflow_definition_id, workflow_revision, workflow_schedule_id";
+const TOOL_RUN_COLUMNS: &str = "id, kind, due_at, title, body, mode, session_id, source_step_id, tool_name, tool_args, prompt, status, command, output, error, error_reason, log_path, exit_code, started_at, finished_at, created_at, result_summary";
 
 fn row_to_tool_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolRunRow> {
     Ok(ToolRunRow {
@@ -652,14 +545,6 @@ fn row_to_tool_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolRunRow> {
         finished_at: row.get(19)?,
         created_at: row.get(20)?,
         result_summary: row.get(21)?,
-        workflow_step_id: row.get(22)?,
-        workflow_step_index: row.get(23)?,
-        workflow_step_total: row.get(24)?,
-        workflow_definition_id: row.get(25)?,
-        workflow_revision: row
-            .get::<_, Option<i64>>(26)?
-            .map(|value| u32::try_from(value).unwrap_or_default()),
-        workflow_schedule_id: row.get(27)?,
     })
 }
 
@@ -954,68 +839,6 @@ impl Database {
         rows.next().transpose().map_err(Into::into)
     }
 
-    pub fn set_workflow_tool_run_metadata(
-        &self,
-        tool_run_id: &str,
-        workflow_definition_id: &str,
-        workflow_revision: u32,
-    ) -> anyhow::Result<bool> {
-        anyhow::ensure!(
-            is_canonical_id(tool_run_id, "toolrun"),
-            "invalid tool_run_id"
-        );
-        anyhow::ensure!(
-            is_canonical_id(workflow_definition_id, "wfdef"),
-            "invalid workflow_definition_id"
-        );
-        anyhow::ensure!(workflow_revision > 0, "workflow_revision must be positive");
-        let conn = self.conn();
-        Ok(conn.execute(
-            "UPDATE tool_runs SET workflow_definition_id = ?2, workflow_revision = ?3
-             WHERE id = ?1 AND kind = 'scheduled' AND mode = 'tool'
-               AND tool_name = 'workflow_run' AND status = 'waiting'",
-            rusqlite::params![
-                tool_run_id,
-                workflow_definition_id,
-                i64::from(workflow_revision)
-            ],
-        )? > 0)
-    }
-
-    pub fn update_workflow_tool_run_progress(
-        &self,
-        tool_run_id: &str,
-        step_id: &str,
-        step_index: u32,
-        step_total: u32,
-    ) -> anyhow::Result<bool> {
-        anyhow::ensure!(
-            is_canonical_id(tool_run_id, "toolrun"),
-            "invalid tool_run_id"
-        );
-        anyhow::ensure!(
-            step_index > 0 && step_total > 0 && step_index <= step_total,
-            "workflow progress is invalid"
-        );
-        anyhow::ensure!(
-            valid_workflow_step_id(step_id),
-            "workflow step identity is invalid"
-        );
-        let conn = self.conn();
-        Ok(conn.execute(
-            "UPDATE tool_runs SET workflow_step_id = ?2, workflow_step_index = ?3,
-                 workflow_step_total = ?4
-             WHERE id = ?1 AND kind = 'scheduled' AND mode = 'tool'
-               AND tool_name = 'workflow_run' AND status = 'running'",
-            rusqlite::params![
-                tool_run_id,
-                step_id,
-                i64::from(step_index),
-                i64::from(step_total)
-            ],
-        )? > 0)
-    }
-
     /// Remove a persisted ToolRun (background or scheduled) by `tool_run_id`.
     pub fn delete_tool_run(&self, tool_run_id: &str) -> anyhow::Result<bool> {
         // Rebuild a missing background completion row before deciding whether
@@ -1094,26 +917,27 @@ impl Database {
         let finished_at = now_rfc3339_millis();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<usize> {
-            // A Workflow ToolRun is resumable from its append-only child-call
-            // checkpoints. Re-arm the existing run identity immediately; the
-            // Agent journal will replay completed children and fail closed if
-            // a child was still in flight when the process stopped.
-            conn.execute(
-                "UPDATE tool_runs
-                 SET status = 'waiting', due_at = ?1, started_at = NULL,
-                     finished_at = NULL, error_reason = NULL
-                 WHERE kind = 'scheduled' AND status = 'running'
-                   AND mode = 'tool' AND tool_name = 'workflow_run'",
-                [&finished_at],
-            )?;
+            let interrupted_scheduled = {
+                let mut statement = conn.prepare(
+                    "SELECT id FROM tool_runs WHERE kind = 'scheduled' AND status = 'running'",
+                )?;
+                let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
             let n = conn.execute(
                 "UPDATE tool_runs
                  SET status = 'failed', error_reason = 'App restarted while the ToolRun was running',
                      finished_at = ?1
-                 WHERE kind IN ('background', 'scheduled') AND status = 'running'
-                   AND NOT (kind = 'scheduled' AND mode = 'tool' AND tool_name = 'workflow_run')",
+                 WHERE kind IN ('background', 'scheduled') AND status = 'running'",
                 [&finished_at],
             )?;
+            for tool_run_id in interrupted_scheduled {
+                super::scheduled_session_tasks::settle_recurring_session_task(
+                    &conn,
+                    &tool_run_id,
+                    &finished_at,
+                )?;
+            }
             // Scheduled confirmations and execution claims are process-local
             // work; no approval claim may survive this recovery boundary.
             conn.execute(
@@ -1300,7 +1124,7 @@ mod tests {
             Some("ses-b6745a2e56b364791ed6b2ff6441cfe7"),
             None,
             None,
-            None,
+            Some("continue with result"),
             Some(&producer_id),
         )
         .unwrap();
@@ -1448,7 +1272,7 @@ mod tests {
             "Drink water",
             ScheduleMode::Tool,
             Some(&session_id),
-            None,
+            Some("test_tool"),
             None,
             None,
             None,
@@ -1461,7 +1285,7 @@ mod tests {
             "Stand up",
             ScheduleMode::Tool,
             Some(&other_session_id),
-            None,
+            Some("test_tool"),
             None,
             None,
             None,
@@ -1606,77 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn claimed_workflow_cancellation_requires_the_matching_claim() {
-        let db = test_db();
-        let workflow_id = "toolrun-1b22d1c43a3d4d0a8a18e9a52c529ab1";
-        let ordinary_id = "toolrun-2c33e2d54b4e5e1b9b29f0b63d63ab12";
-        let workflow_claim = "conf-3d44f3e65c5f6f2caa3a01c74e74bc23";
-        let ordinary_claim = "conf-4e5504f76d60703dbb4b12d85f85cd34";
-        for (id, tool_name) in [(workflow_id, "workflow_run"), (ordinary_id, "notify")] {
-            db.save_scheduled_tool_run(
-                id,
-                "2026-08-04T02:00:00Z",
-                "Haven",
-                "claimed execution",
-                haven_common::tool_run::ScheduleMode::Tool,
-                None,
-                Some(tool_name),
-                Some("{}"),
-                None,
-                None,
-            )
-            .unwrap();
-            assert!(db.start_scheduled_tool_run(id, TEST_STARTED_AT).unwrap());
-        }
-        assert!(
-            db.claim_scheduled_tool_run_execution(workflow_id, workflow_claim)
-                .unwrap()
-        );
-        assert!(
-            db.claim_scheduled_tool_run_execution(ordinary_id, ordinary_claim)
-                .unwrap()
-        );
-
-        assert!(
-            !db.cancel_claimed_workflow_tool_run(workflow_id, ordinary_claim, TEST_FINISHED_AT)
-                .unwrap()
-        );
-        assert!(
-            !db.cancel_claimed_workflow_tool_run(ordinary_id, ordinary_claim, TEST_FINISHED_AT)
-                .unwrap()
-        );
-        assert!(
-            !db.cancel_scheduled_tool_run(workflow_id, TEST_FINISHED_AT)
-                .unwrap()
-        );
-        assert!(
-            db.cancel_claimed_workflow_tool_run(workflow_id, workflow_claim, TEST_FINISHED_AT)
-                .unwrap()
-        );
-
-        assert_eq!(
-            db.get_tool_run(workflow_id).unwrap().unwrap().status,
-            ToolRunStatus::Cancelled
-        );
-        assert_eq!(
-            db.get_tool_run(ordinary_id).unwrap().unwrap().status,
-            ToolRunStatus::Running
-        );
-        assert_eq!(
-            db.get_kv(&super::scheduled_execution_claim_key(workflow_id))
-                .unwrap(),
-            None
-        );
-        assert_eq!(
-            db.get_kv(&super::scheduled_execution_claim_key(ordinary_id))
-                .unwrap()
-                .as_deref(),
-            Some(ordinary_claim)
-        );
-    }
-
-    #[test]
-    fn restarting_requeues_workflows_fails_other_running_runs_and_clears_claims() {
+    fn restarting_fails_running_scheduled_runs_and_clears_claims() {
         let db = test_db();
         db.set_kv("scheduledXexecution_claim.keep", "unrelated")
             .unwrap();
@@ -1707,17 +1461,16 @@ mod tests {
             )
             .unwrap()
         );
-        let workflow_args = r#"{"execution_mode":"inline","workflow":{"steps":[]}}"#;
         db.save_scheduled_tool_run(
             "toolrun-fc30bce074ec534f0ad80aba9a4c00e5",
             "2026-08-04T02:00:00+08:00",
-            "Workflow",
-            "Run a Workflow",
-            haven_common::tool_run::ScheduleMode::Tool,
+            "Haven",
+            "new session",
+            haven_common::tool_run::ScheduleMode::NewSession,
             Some("ses-0123456789abcdef0123456789abcdef"),
-            Some("workflow_run"),
-            Some(workflow_args),
             None,
+            None,
+            Some("start a fresh session"),
             None,
         )
         .unwrap();
@@ -1736,7 +1489,7 @@ mod tests {
             .unwrap()
         );
 
-        assert_eq!(db.mark_interrupted_tool_runs().unwrap(), 1);
+        assert_eq!(db.mark_interrupted_tool_runs().unwrap(), 2);
         let interrupted = db
             .get_tool_run("toolrun-ec30bce074ec534f0ad80aba9a4c00e5")
             .unwrap()
@@ -1746,17 +1499,11 @@ mod tests {
             chrono::DateTime::parse_from_rfc3339(interrupted.finished_at.as_deref().unwrap())
                 .is_ok()
         );
-        let workflow = db
+        let interrupted_session = db
             .get_tool_run("toolrun-fc30bce074ec534f0ad80aba9a4c00e5")
             .unwrap()
             .unwrap();
-        assert_eq!(workflow.status, ToolRunStatus::Waiting);
-        assert_eq!(workflow.tool_name.as_deref(), Some("workflow_run"));
-        assert_eq!(workflow.tool_args.as_deref(), Some(workflow_args));
-        assert!(
-            chrono::DateTime::parse_from_rfc3339(workflow.due_at.as_deref().unwrap()).unwrap()
-                <= chrono::Utc::now()
-        );
+        assert_eq!(interrupted_session.status, ToolRunStatus::Failed);
         assert_eq!(
             db.get_kv("scheduled_execution_claim.toolrun-ec30bce074ec534f0ad80aba9a4c00e5")
                 .unwrap(),

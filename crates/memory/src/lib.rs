@@ -18,6 +18,7 @@ pub use recall::{
     MemoryRecall, MemoryRecallDiagnostics, MemoryRecallEmptyReason, MemoryRecallMode,
     MemoryRecallSourceStatus, MemoryRecallSuggestion, normalize_memory_query,
 };
+pub use repositories::RecurringSessionTaskRow;
 pub use repositories::embedding_store::{
     MemoryEmbeddingSaveFailure, MemoryEmbeddingSaveReport, MemoryEmbeddingStore,
     MemoryEmbeddingVector, PendingMemoryEmbedding,
@@ -67,6 +68,3 @@ pub use repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
 pub use repositories::tool_run_store::ToolRunStore;
 pub use repositories::tool_runs::{ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow};
 pub use repositories::usage::{LlmUsageRecord, LlmUsageRecordInput, SessionUsage};
-pub use repositories::workflow_definitions::{
-    CreateWorkflowSchedule, WorkflowDefinitionRow, WorkflowDefinitionStore, WorkflowScheduleRow,
-};

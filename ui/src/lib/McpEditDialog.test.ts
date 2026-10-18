@@ -53,7 +53,7 @@ describe('McpEditDialog CodeMode exposure', () => {
 		await fireEvent.click(selects[2]!);
 		await fireEvent.click(
 			screen.getByRole('option', {
-				name: 'Model-only — direct model calls only; no nested Workflow or CodeMode',
+				name: 'Model-only — direct model calls only; no nested CodeMode',
 			}),
 		);
 		await fireEvent.click(screen.getByRole('button', { name: 'Add' }));

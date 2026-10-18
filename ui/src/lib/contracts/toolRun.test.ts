@@ -128,46 +128,6 @@ describe('tool run IPC contract', () => {
 		).toBeNull();
 	});
 
-	it('maps bounded Workflow progress and safe retry availability', () => {
-		const projected = mapToolRunPayload({
-			tool_run_id: 'toolrun-00c73d0e8748c1a18702bf89c4bd4353',
-			kind: 'scheduled',
-			status: 'failed',
-			workflow_retry_available: true,
-			error_reason: 'child authorization rejected',
-		});
-		expect(projected).toMatchObject({
-			workflowRetryAvailable: true,
-			errorReason: 'child authorization rejected',
-		});
-		expect(
-			mapToolRunPayload({
-				tool_run_id: 'toolrun-00c73d0e8748c1a18702bf89c4bd4353',
-				kind: 'scheduled',
-				status: 'running',
-				workflow_progress: { step_id: 'read_source', step_index: 2, step_total: 4 },
-			}),
-		).toMatchObject({
-			workflowProgress: { stepId: 'read_source', stepIndex: 2, stepTotal: 4 },
-		});
-		expect(
-			mapToolRunPayload({
-				tool_run_id: 'toolrun-00c73d0e8748c1a18702bf89c4bd4353',
-				kind: 'background',
-				status: 'failed',
-				workflow_retry_available: true,
-			}),
-		).toBeNull();
-		expect(
-			mapToolRunPayload({
-				tool_run_id: 'toolrun-00c73d0e8748c1a18702bf89c4bd4353',
-				kind: 'scheduled',
-				status: 'running',
-				workflow_progress: { step_id: 'secret/name', step_index: 1, step_total: 1 },
-			}),
-		).toBeNull();
-	});
-
 	it('enforces the required fields of each lifecycle channel', () => {
 		const toolRunId = 'toolrun-58ec300e6432076c8ec176f56120ec01';
 		const event = (

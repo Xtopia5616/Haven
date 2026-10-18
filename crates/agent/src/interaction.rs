@@ -307,8 +307,8 @@ impl InteractionRequest {
         }
     }
 
-    /// Confirmation for a child operation inside one parent CodeMode or
-    /// Workflow tool call. The renderer identity stays bound to the parent
+    /// Confirmation for a child operation inside one parent CodeMode call.
+    /// The renderer identity stays bound to the parent
     /// card while the prompt and receipt describe the exact child operation.
     pub fn confirm_nested(
         session_id: &str,

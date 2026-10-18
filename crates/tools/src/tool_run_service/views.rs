@@ -1,5 +1,4 @@
 use super::*;
-use crate::WorkflowProgress;
 use haven_common::ToolRunCompletionPayload;
 use haven_common::tool_run::ScheduleMode;
 use haven_memory::ToolRunRow;
@@ -46,8 +45,6 @@ pub struct ToolRunView {
     pub error_reason: Option<String>,
     pub exit_code: Option<i32>,
     pub preview: Option<String>,
-    pub workflow_progress: Option<WorkflowProgress>,
-    pub workflow_retry_available: Option<bool>,
 }
 
 pub(super) fn project_persisted_tool_run(row: ToolRunRow) -> anyhow::Result<ToolRunView> {
@@ -61,12 +58,6 @@ pub(super) fn project_persisted_tool_run(row: ToolRunRow) -> anyhow::Result<Tool
     } else {
         None
     };
-    let workflow_progress = if row.status == ToolRunStatus::Running {
-        workflow_progress_from_row(&row)?
-    } else {
-        None
-    };
-    let workflow_retry_available = workflow_retry_available(&row);
     Ok(ToolRunView {
         tool_run_id: row.tool_run_id,
         kind,
@@ -89,47 +80,7 @@ pub(super) fn project_persisted_tool_run(row: ToolRunRow) -> anyhow::Result<Tool
         error_reason: row.error_reason,
         exit_code: row.exit_code,
         preview: None,
-        workflow_progress,
-        workflow_retry_available,
     })
-}
-
-fn workflow_retry_available(row: &ToolRunRow) -> Option<bool> {
-    if row.kind != "scheduled"
-        || row.status != ToolRunStatus::Failed
-        || row.mode.as_deref() != Some("tool")
-        || row.tool_name.as_deref() != Some(crate::WORKFLOW_RUN_TOOL_NAME)
-    {
-        return None;
-    }
-    let summary = row.result_summary.as_deref()?;
-    let result: serde_json::Value = serde_json::from_str(summary).ok()?;
-    let safe = result.get("safe_to_retry")?.as_bool()?;
-    let completed = result.get("completed_step_ids")?.as_array()?;
-    Some(safe && completed.is_empty())
-}
-
-fn workflow_progress_from_row(row: &ToolRunRow) -> anyhow::Result<Option<WorkflowProgress>> {
-    match (
-        row.workflow_step_id.as_deref(),
-        row.workflow_step_index,
-        row.workflow_step_total,
-    ) {
-        (None, None, None) => Ok(None),
-        (Some(step_id), Some(step_index), Some(step_total))
-            if crate::workflow::valid_step_id(step_id, 48)
-                && step_index > 0
-                && step_index <= step_total
-                && step_total > 0 =>
-        {
-            Ok(Some(WorkflowProgress {
-                step_id: step_id.to_owned(),
-                step_index,
-                step_total,
-            }))
-        }
-        _ => anyhow::bail!("persisted Workflow progress is incomplete"),
-    }
 }
 
 pub(super) fn project_persisted_background_board_row(
@@ -553,8 +504,6 @@ pub(super) fn project_board_tool_run(tool_run_id: &str, entry: &ToolRunEntry) ->
         error_reason: None,
         exit_code: None,
         preview: None,
-        workflow_progress: None,
-        workflow_retry_available: None,
     };
 
     match &entry.state {
@@ -813,12 +762,6 @@ mod tests {
             finished_at: Some("finished".into()),
             created_at: "created".into(),
             result_summary: None,
-            workflow_step_id: None,
-            workflow_step_index: None,
-            workflow_step_total: None,
-            workflow_definition_id: None,
-            workflow_revision: None,
-            workflow_schedule_id: None,
         }
     }
 
@@ -831,42 +774,6 @@ mod tests {
         assert_eq!(view.title.as_deref(), Some("Reminder"));
         assert_eq!(view.output.as_deref(), Some("result"));
         assert_eq!(view.preview, None);
-    }
-
-    #[test]
-    fn workflow_failure_projection_exposes_only_safe_retry_and_current_progress() {
-        let mut row = persisted_row("scheduled");
-        row.status = ToolRunStatus::Failed;
-        row.mode = Some("tool".into());
-        row.tool_name = Some(crate::WORKFLOW_RUN_TOOL_NAME.into());
-        row.error_reason = Some("child authorization rejected".into());
-        row.output = None;
-        row.result_summary = Some(r#"{"safe_to_retry":true,"completed_step_ids":[]}"#.into());
-
-        let view = project_persisted_tool_run(row).unwrap();
-        assert_eq!(view.workflow_retry_available, Some(true));
-        assert_eq!(view.error.as_deref(), Some("child authorization rejected"));
-        assert_eq!(
-            view.output, None,
-            "retry metadata must not be shown as tool output"
-        );
-
-        let mut row = persisted_row("scheduled");
-        row.status = ToolRunStatus::Running;
-        row.mode = Some("tool".into());
-        row.tool_name = Some(crate::WORKFLOW_RUN_TOOL_NAME.into());
-        row.workflow_step_id = Some("read_source".into());
-        row.workflow_step_index = Some(2);
-        row.workflow_step_total = Some(4);
-        let view = project_persisted_tool_run(row).unwrap();
-        assert_eq!(
-            view.workflow_progress,
-            Some(WorkflowProgress {
-                step_id: "read_source".into(),
-                step_index: 2,
-                step_total: 4,
-            })
-        );
     }
 
     #[test]

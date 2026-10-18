@@ -51,7 +51,6 @@ impl ToolRuntimeCoordinator {
     pub(crate) async fn wire_startup(&self, wiring: StartupWiring) -> anyhow::Result<()> {
         let StartupWiring {
             tool_run_store,
-            workflow_definition_store,
             tool_settings,
             default_shell,
             context_limits,
@@ -115,10 +114,6 @@ impl ToolRuntimeCoordinator {
         self.runtime
             .tool_run_service
             .set_tool_run_store(tool_run_store)
-            .await;
-        self.runtime
-            .tool_run_service
-            .set_workflow_definition_store(workflow_definition_store)
             .await;
         self.runtime
             .clipboard_history
@@ -477,7 +472,6 @@ mod tests {
     fn startup_wiring() -> StartupWiring {
         StartupWiring {
             tool_run_store: None,
-            workflow_definition_store: None,
             tool_settings: HashMap::new(),
             default_shell: ShellChoice::default(),
             context_limits: ContextLimitsConfig::default(),

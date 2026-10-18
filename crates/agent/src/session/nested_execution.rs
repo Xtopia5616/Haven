@@ -30,7 +30,6 @@ enum NestedExecutionEvent {
         tool_name: String,
         input: Value,
         result: Box<ToolResult>,
-        observation: Option<String>,
         sandbox_output_review_step_id: Option<String>,
     },
 }
@@ -39,7 +38,6 @@ enum NestedExecutionEvent {
 pub(super) struct CompletedNestedCall {
     pub child_step_id: String,
     pub result: ToolResult,
-    pub observation: Option<String>,
     pub sandbox_output_review_step_id: Option<String>,
 }
 
@@ -49,7 +47,6 @@ pub(super) struct NestedCallCompletion<'a> {
     pub(super) tool_name: &'a str,
     pub(super) input: &'a Value,
     pub(super) result: &'a ToolResult,
-    pub(super) observation: Option<&'a str>,
     pub(super) sandbox_output_review_step_id: Option<&'a str>,
 }
 
@@ -59,7 +56,6 @@ struct NestedCallRecord {
     tool_name: String,
     input: Value,
     result: Option<ToolResult>,
-    observation: Option<String>,
     sandbox_output_review_step_id: Option<String>,
 }
 
@@ -122,7 +118,6 @@ impl NestedExecutionJournal {
             return Ok(Err(CompletedNestedCall {
                 child_step_id: record.child_step_id.clone(),
                 result,
-                observation: record.observation.clone(),
                 sandbox_output_review_step_id: record.sandbox_output_review_step_id.clone(),
             }));
         }
@@ -158,7 +153,6 @@ impl NestedExecutionJournal {
             tool_name: tool_name.to_owned(),
             input: input.clone(),
             result: None,
-            observation: None,
             sandbox_output_review_step_id: None,
         });
         Ok(())
@@ -188,14 +182,12 @@ impl NestedExecutionJournal {
             tool_name: completion.tool_name.to_owned(),
             input: completion.input.clone(),
             result: Box::new(completion.result.clone()),
-            observation: completion.observation.map(str::to_owned),
             sandbox_output_review_step_id: completion
                 .sandbox_output_review_step_id
                 .map(str::to_owned),
         };
         self.append_event(&event).await?;
         record.result = Some(completion.result.clone());
-        record.observation = completion.observation.map(str::to_owned);
         record.sandbox_output_review_step_id =
             completion.sandbox_output_review_step_id.map(str::to_owned);
         Ok(())
@@ -259,7 +251,6 @@ fn replay_records(
                     tool_name,
                     input,
                     result: None,
-                    observation: None,
                     sandbox_output_review_step_id: None,
                 });
             }
@@ -270,7 +261,6 @@ fn replay_records(
                 tool_name,
                 input,
                 result,
-                observation,
                 sandbox_output_review_step_id,
             } if event_parent == parent_execution_id => {
                 let Some(record) = records.get_mut(call_index as usize) else {
@@ -284,7 +274,6 @@ fn replay_records(
                     return Err("nested call completion does not match its durable start".into());
                 }
                 record.result = Some(*result);
-                record.observation = observation;
                 record.sandbox_output_review_step_id = sandbox_output_review_step_id;
             }
             _ => {}
@@ -332,7 +321,6 @@ mod tests {
                 tool_name,
                 input: &input,
                 result: &result,
-                observation: Some("read one note"),
                 sandbox_output_review_step_id: None,
             })
             .await
@@ -351,6 +339,5 @@ mod tests {
             .expect_err("completed child calls replay their durable result");
         assert_eq!(replay.child_step_id, child_step_id);
         assert_eq!(replay.result.output, json!({"title": "Note"}));
-        assert_eq!(replay.observation.as_deref(), Some("read one note"));
     }
 }

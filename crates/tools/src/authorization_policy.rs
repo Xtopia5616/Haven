@@ -123,27 +123,6 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         )
     }
 
-    async fn workflow_subcall_authorization_request(
-        &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        input: &Value,
-    ) -> Result<AuthorizationRequest, String> {
-        let tool = self
-            .tools
-            .get_workflow_subcall_tool_for_session(session_id, tool_name)
-            .await
-            .ok_or_else(|| {
-                "MCP capability is not enabled for Legacy Workflow in this session".to_owned()
-            })?;
-        let contract = tool.authorization_contract(input).await?;
-        let authorization_input = Self::authorization_input_for(Some(&tool), input);
-        Ok(
-            AuthorizationRequest::new(session_id, tool_name, authorization_input, contract.policy)
-                .with_target_binding(contract.target_binding),
-        )
-    }
-
     async fn authorization_request_from_snapshot(
         catalog: &ToolCatalogSnapshot,
         session_id: Option<&str>,
@@ -229,19 +208,6 @@ impl ToolsFacade {
     ) -> Result<AuthorizationRequest, String> {
         ToolAuthorizationRequestResolver::new(self)
             .codemode_subcall_authorization_request(session_id, tool_name, input)
-            .await
-    }
-
-    /// Build an authorization request only for a currently enabled MCP tool
-    /// exposed to Legacy Workflow (Direct or loaded Deferred).
-    pub async fn resolve_workflow_subcall_authorization_request(
-        &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        input: &Value,
-    ) -> Result<AuthorizationRequest, String> {
-        ToolAuthorizationRequestResolver::new(self)
-            .workflow_subcall_authorization_request(session_id, tool_name, input)
             .await
     }
 

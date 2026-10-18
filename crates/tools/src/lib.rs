@@ -53,9 +53,6 @@ mod tool_run_trigger_policy;
 mod tool_run_types;
 mod tool_runtime;
 mod util;
-mod workflow;
-mod workflow_execution;
-mod workflow_tool;
 
 use haven_common::config::{
     ContextLimitsConfig, McpServerConfig, SecurityConfig, SkillsExecConfig, ToolConfig,
@@ -158,10 +155,7 @@ pub use codemode::{
     CodeModeSubcallPort, CodeModeToolDefinition, NestedConfirmationRequest,
 };
 pub use codemode_tool::CODEMODE_RUN_TOOL_NAME;
-pub use execution::{
-    AuthorizedCodeModeSubcallExecution, AuthorizedCodeModeToolExecution,
-    AuthorizedWorkflowSubcallExecution, AuthorizedWorkflowToolExecution,
-};
+pub use execution::{AuthorizedCodeModeSubcallExecution, AuthorizedCodeModeToolExecution};
 pub use execution_workspace::ExecutionWorkspaceSnapshot;
 pub use facade::{
     AdminOperationPort, McpRuntimePort, McpStatusEventReceiver, SkillCatalogPort,
@@ -228,7 +222,7 @@ pub(crate) use tool_contract::{
 };
 pub use tool_run_events::{
     ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunLifecycleState, ToolRunLifecycleUpdate,
-    ToolRunOutputPayload, ToolRunSessionAttachedPayload, WorkflowProgress,
+    ToolRunOutputPayload, ToolRunSessionAttachedPayload,
 };
 pub(crate) use tool_run_lifecycle::ToolRunLifecycle;
 pub(crate) use tool_run_service::BackgroundShellRequest;
@@ -248,10 +242,6 @@ pub use tool_runtime::{
     LogLevelPort, MemoryRecallPort, RuntimeCapabilities, StartupWiring, ToolControlPort,
     WebSearchAvailability,
 };
-pub use workflow_execution::{
-    WorkflowCapabilityDefinition, WorkflowSubcallPort, WorkflowSubcallResult,
-};
-pub use workflow_tool::WORKFLOW_RUN_TOOL_NAME;
 
 /// Convert an internal qualified tool name (`mcp::server::tool`, `skill::name`)
 /// into a provider-safe form (`mcp__server__tool`, `skill__name`) accepted by

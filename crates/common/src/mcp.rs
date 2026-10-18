@@ -28,7 +28,7 @@ pub enum McpToolExposure {
     /// Add the tool schema to the provider-native tool list.
     Direct,
     /// Add the tool schema to the provider-native tool list, but never permit
-    /// it as a nested CodeMode or Workflow capability.
+    /// it as a nested CodeMode capability.
     #[serde(rename = "model_only")]
     ModelOnly,
     /// Require catalog discovery and explicit activation before native calls.
@@ -55,12 +55,6 @@ impl McpToolExposure {
     /// Whether the tool belongs to the provider-native model surface.
     pub const fn is_provider_native(self) -> bool {
         matches!(self, Self::Direct | Self::ModelOnly)
-    }
-
-    /// Whether another Haven tool may invoke this capability as a bounded
-    /// Workflow child. ModelOnly deliberately does not satisfy this policy.
-    pub const fn is_workflow_callable(self) -> bool {
-        matches!(self, Self::Direct | Self::Deferred)
     }
 
     /// Whether the capability may be described through Haven's MCP catalog.
@@ -147,7 +141,6 @@ mod tests {
             serde_json::to_string(&Exposure::ModelOnly).unwrap(),
             "\"model_only\""
         );
-        assert!(!Exposure::ModelOnly.is_workflow_callable());
         assert!(Exposure::ModelOnly.is_provider_native());
     }
 

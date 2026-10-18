@@ -12,7 +12,7 @@ import {
 import { isValidTauriEventId, type TauriEvent } from './tauriEvent.ts';
 import { matchesGeneratedEventPayload } from './generatedWireShape.ts';
 import { isRecord } from './objectGuards.ts';
-import { isBoolean, isNumber, isOneOf, isString, isU32 } from './valueGuards.ts';
+import { isNumber, isOneOf, isString } from './valueGuards.ts';
 import {
 	canonicalIdField,
 	isCanonicalEntityId,
@@ -33,7 +33,6 @@ export type ToolRunEventName = (typeof TOOL_RUN_EVENT_NAMES)[number];
 export type ToolRunKind = GeneratedToolRunKindDto;
 export type ToolRunStatus = GeneratedToolRunStatus;
 export type ScheduleMode = GeneratedScheduleMode;
-export type WorkflowProgress = { stepId: string; stepIndex: number; stepTotal: number };
 
 export interface ToolRunPayload {
 	toolRunId: string;
@@ -53,8 +52,6 @@ export interface ToolRunPayload {
 	errorReason?: string;
 	exitCode?: number;
 	preview?: string;
-	workflowProgress?: WorkflowProgress;
-	workflowRetryAvailable?: boolean;
 }
 
 /** Full command row projection; command list/history rows always carry status. */
@@ -109,32 +106,6 @@ function hasValidOptionalFields(payload: WireRecord): boolean {
 	) {
 		return false;
 	}
-	if (payload.workflow_retry_available !== undefined && !isBoolean(payload.workflow_retry_available)) {
-		return false;
-	}
-	if (
-		payload.workflow_retry_available === true &&
-		(payload.kind !== 'scheduled' || payload.status !== 'failed')
-	) {
-		return false;
-	}
-	if (payload.workflow_progress !== undefined) {
-		const progress = payload.workflow_progress;
-		if (
-			payload.kind !== 'scheduled' ||
-			payload.status !== 'running' ||
-			!isRecord(progress) ||
-			!isString(progress.step_id) ||
-			!/^[a-z][a-z0-9_-]{0,47}$/.test(progress.step_id) ||
-			!isU32(progress.step_index) ||
-			!isU32(progress.step_total) ||
-			progress.step_index === 0 ||
-			progress.step_total === 0 ||
-			progress.step_index > progress.step_total
-		) {
-			return false;
-		}
-	}
 	return OPTIONAL_STRING_FIELDS.every((field) => optionalStringFieldIsValid(payload, field));
 }
 
@@ -177,16 +148,6 @@ export function mapToolRunPayload(
 	if (isString(payload.error_reason)) mapped.errorReason = payload.error_reason;
 	if (isNumber(payload.exit_code)) mapped.exitCode = payload.exit_code;
 	if (isString(payload.preview)) mapped.preview = payload.preview;
-	if (isRecord(payload.workflow_progress)) {
-		mapped.workflowProgress = {
-			stepId: payload.workflow_progress.step_id as string,
-			stepIndex: payload.workflow_progress.step_index as number,
-			stepTotal: payload.workflow_progress.step_total as number,
-		};
-	}
-	if (isBoolean(payload.workflow_retry_available)) {
-		mapped.workflowRetryAvailable = payload.workflow_retry_available;
-	}
 	return mapped;
 }
 

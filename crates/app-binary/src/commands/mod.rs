@@ -26,7 +26,6 @@ pub mod settings;
 pub mod skills;
 pub mod tool_runs;
 pub mod tools;
-pub mod workflows;
 
 use crate::events::LLM_CONFIG_CHANGED_EVENT;
 use haven_common::error::sanitize_error_text;

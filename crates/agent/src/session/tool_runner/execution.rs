@@ -665,35 +665,6 @@ impl SessionSupervisor {
         } else {
             None
         };
-        let workflow_subcalls = if tool_name == haven_tools::WORKFLOW_RUN_TOOL_NAME {
-            let Some(session_id) = session_id else {
-                return Err(anyhow::anyhow!("Workflow requires a live session context"));
-            };
-            let snapshot = self.tool_catalog.catalog_snapshot(session_id).await;
-            let definitions = snapshot
-                .get(tool_name)
-                .and_then(|tool| tool.workflow_capability_definitions());
-            let Some(definitions) = definitions.filter(|definitions| !definitions.is_empty())
-            else {
-                return Ok(ToolExecution {
-                    result: ToolResult::failed_with_class(
-                        Value::Null,
-                        "Workflow capabilities are no longer exposed in this session",
-                        haven_common::tools::ToolErrorClass::Permission,
-                    ),
-                    risk_level,
-                    confirmed: Some(false),
-                });
-            };
-            Some(self.workflow_subcall_port_with_resume(
-                session_id,
-                definitions.into_iter().map(|definition| definition.name),
-                tool_run_id.or(step_id),
-                nested_confirmation,
-            )?)
-        } else {
-            None
-        };
         let context = ToolExecutionContext {
             session_id: session_id.map(str::to_owned),
             tool_name: tool_name.to_owned(),
@@ -702,36 +673,15 @@ impl SessionSupervisor {
             step_id: step_id.map(str::to_owned),
             authorization_proof: Some(execution_proof),
         };
-        let result = match (codemode_subcalls, workflow_subcalls) {
-            (Some(subcalls), None) => self.execution.execute_codemode(context, subcalls).await?,
-            (None, Some(subcalls)) => self.execution.execute_workflow(context, subcalls).await?,
-            (None, None) => self.execution.execute(context).await?,
-            (Some(_), Some(_)) => anyhow::bail!("tool cannot receive two nested execution ports"),
+        let result = if let Some(subcalls) = codemode_subcalls {
+            self.execution.execute_codemode(context, subcalls).await?
+        } else {
+            self.execution.execute(context).await?
         };
         Ok(ToolExecution {
             result,
             risk_level,
             confirmed,
         })
-    }
-
-    pub(crate) async fn execute_scheduled_workflow_with_nested_confirmation(
-        &self,
-        session_id: Option<&str>,
-        input: Value,
-        cancel: CancellationToken,
-        tool_run_id: &str,
-    ) -> anyhow::Result<ToolExecution> {
-        self.execute_gated_with_nested_confirmation(GatedToolExecutionRequest {
-            session_id,
-            tool_name: haven_tools::WORKFLOW_RUN_TOOL_NAME,
-            input,
-            cancel,
-            receipt: None,
-            step_id: None,
-            nested_confirmation: None,
-            tool_run_id: Some(tool_run_id),
-        })
-        .await
     }
 }

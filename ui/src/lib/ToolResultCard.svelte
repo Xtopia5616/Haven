@@ -612,7 +612,7 @@
 							sourceStepId={result?.sandboxOutputReviewStepIds?.[0] ?? messageId}
 							failed={failedWithoutOutput}
 						/>
-					{:else if toolName === 'codemode_run' || toolName === 'workflow_run'}
+					{:else if toolName === 'codemode_run'}
 						<ToolNestedReviewResult
 							{data}
 							{rawText}

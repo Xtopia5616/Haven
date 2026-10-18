@@ -493,7 +493,6 @@ mod run_engine;
 mod status;
 mod tool_ports;
 mod tool_runner;
-mod workflow;
 #[cfg(test)]
 pub(crate) use dispatcher::DirectSessionRunLease;
 pub use tool_ports::SessionToolPorts;
@@ -547,50 +546,6 @@ impl SessionSupervisor {
             Arc::clone(&self.execution),
             journal,
             resume_confirmation,
-        )))
-    }
-
-    /// Bind a Workflow invocation to its captured MCP allowlist and this
-    /// session's authorization, execution, and observation owners.
-    #[cfg(test)]
-    pub(crate) fn workflow_subcall_port(
-        &self,
-        session_id: &str,
-        allowed_tool_names: impl IntoIterator<Item = String>,
-    ) -> Arc<dyn haven_tools::WorkflowSubcallPort> {
-        self.workflow_subcall_port_with_resume(session_id, allowed_tool_names, None, None)
-            .expect("test Workflow subcall port has a valid session context")
-    }
-
-    pub(crate) fn workflow_subcall_port_with_resume(
-        &self,
-        session_id: &str,
-        allowed_tool_names: impl IntoIterator<Item = String>,
-        parent_execution_id: Option<&str>,
-        resume_confirmation: Option<haven_tools::NestedConfirmationRequest>,
-    ) -> anyhow::Result<Arc<dyn haven_tools::WorkflowSubcallPort>> {
-        let journal = parent_execution_id
-            .map(|parent_execution_id| {
-                nested_execution::NestedExecutionJournal::new(
-                    self.store.clone(),
-                    session_id,
-                    parent_execution_id,
-                )
-                .map(Arc::new)
-            })
-            .transpose()?;
-        Ok(Arc::new(workflow::AuthorizedWorkflowSubcallPort::new(
-            workflow::AuthorizedWorkflowSubcallConfig {
-                session_id: session_id.to_owned(),
-                allowed_tool_names: allowed_tool_names.into_iter().collect(),
-                authorization: Arc::clone(&self.authorization),
-                execution: Arc::clone(&self.execution),
-                observations: Arc::clone(&self.observation_port),
-                tool_runs: Arc::clone(&self.tool_runs),
-                journal,
-                parent_execution_id: parent_execution_id.map(str::to_owned),
-                resume_confirmation,
-            },
         )))
     }
 

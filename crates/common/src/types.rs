@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 //   - Persisted prefixes: `ses-` (sessions), `msg-` (messages and memory
 //     episodes — memory_items shares the message id space), `step-`
 //     (session_steps), `fact-` (facts), `node-` (memory_nodes), `toolrun-`
-//     (ToolRuns — background and scheduled), `wfdef-` (Workflow definitions),
-//     `wfsched-` (recurring Workflow schedules), `asset-` (managed media),
+//     (ToolRuns — background and scheduled), `sched-` (recurring session schedules),
+//     `asset-` (managed media),
 //     `cred-` (Credential Manager references), and `usage-` (llm_usage).
 //   - Runtime-generated prefixes: `conf-` (confirmation request ids), `rec-`
 //     (voice recordings), `preview-` (streaming tool-call previews), and

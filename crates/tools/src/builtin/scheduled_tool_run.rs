@@ -17,11 +17,13 @@ use haven_common::tool_run::ScheduleMode;
 /// delay, list pending ones, or cancel one. Timers run detached from the
 /// ReAct loop, so the agent can schedule and continue working.
 ///
-/// Two fire behaviors are available via `mode`:
+/// Fire behaviors are selected via `mode`:
 /// - `tool` (default): call the tool in `tool_name` with `tool_args`; use the
 ///   `notify` tool with `{title, body}` to send a message at fire time.
 /// - `continue`: resume the session that scheduled the ToolRun, delivering
 ///   `prompt` as a continuation instruction in that session.
+/// - `new_session`: start a fresh session from `prompt`; add
+///   `repeat_interval_secs` to persist a recurring schedule.
 pub(crate) struct ScheduleTool {
     pub(crate) service: Arc<ToolRunService>,
     /// Weak probe into the tool registry so `set` can reject unknown
@@ -55,13 +57,13 @@ pub struct ScheduleParams {
     /// Set only: fire when the watched ToolRun reaches a terminal state.
     #[serde(default)]
     pub watch_tool_run_id: Option<String>,
-    /// Behavior when it fires (set only): tool or continue.
+    /// Behavior when it fires (set only): call a tool, resume this session, or start a new session.
     #[serde(default)]
     pub mode: Option<ScheduleMode>,
     /// Scheduled ToolRun title (defaults to 'Haven').
     #[serde(default)]
     pub title: Option<String>,
-    /// Scheduled ToolRun message shown when it fires (set only).
+    /// User-visible summary shown in the task list and when it fires (set only).
     #[serde(default)]
     pub body: Option<String>,
     /// Tool to call when it fires (set only, mode=tool).
@@ -70,12 +72,18 @@ pub struct ScheduleParams {
     /// Arguments for the tool call (set only, mode=tool).
     #[serde(default)]
     pub tool_args: Option<Value>,
-    /// Continuation instruction delivered on resume (set only, mode=continue).
+    /// Instruction delivered to the resumed or newly created session (set only).
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Repeat interval in seconds, allowed only with mode=new_session.
+    #[serde(default)]
+    pub repeat_interval_secs: Option<u64>,
     /// Scheduled ToolRun id returned by set (cancel only).
     #[serde(default)]
     pub tool_run_id: Option<String>,
+    /// Recurring session schedule id returned by set (cancel only).
+    #[serde(default)]
+    pub schedule_id: Option<String>,
     /// Private owning session id, injected by the Tools facade.
     #[serde(default, rename = "_session_id")]
     pub session_id: Option<String>,
@@ -127,6 +135,10 @@ impl ScheduleTool {
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("body is required for set"))?;
                 let mode = params.mode.unwrap_or(ScheduleMode::Tool);
+                let repeat_interval_secs = params.repeat_interval_secs;
+                if repeat_interval_secs.is_some() && mode != ScheduleMode::NewSession {
+                    anyhow::bail!("repeat_interval_secs requires mode 'new_session'");
+                }
                 if watch.is_some() && mode != ScheduleMode::Continue {
                     anyhow::bail!(
                         "watch_tool_run_id requires mode 'continue' (the schedule fires by resuming the session with the ToolRun result)"
@@ -159,6 +171,15 @@ impl ScheduleTool {
                             .is_none_or(|prompt| prompt.trim().is_empty())
                         {
                             anyhow::bail!("prompt is required when mode is 'continue'");
+                        }
+                    }
+                    ScheduleMode::NewSession => {
+                        if params
+                            .prompt
+                            .as_deref()
+                            .is_none_or(|prompt| prompt.trim().is_empty())
+                        {
+                            anyhow::bail!("prompt is required when mode is 'new_session'");
                         }
                     }
                 }
@@ -205,31 +226,56 @@ impl ScheduleTool {
                     None
                 };
                 let prompt = params.prompt.map(|prompt| prompt.trim().to_string());
-                let tool_run_id = self
-                    .service
-                    .schedule(ScheduledToolRunSpec {
-                        due_at: due_at.clone(),
-                        delay_secs: delay.map(|d| d as u64),
-                        watch_tool_run_id: watch_tool_run_id.clone(),
-                        title: title.to_string(),
-                        body: body.to_string(),
-                        mode,
-                        session_id,
-                        tool_name,
-                        tool_args,
-                        prompt,
-                    })
-                    .await?;
-                let fires_at = if watch.is_some() {
-                    String::new()
+                let (tool_run_id, schedule_id, fires_at) = if let Some(interval) =
+                    repeat_interval_secs
+                {
+                    let session_id = session_id.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("recurring new_session requires an active session")
+                    })?;
+                    let prompt = prompt.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("prompt is required when mode is 'new_session'")
+                    })?;
+                    let recurring = self
+                        .service
+                        .create_recurring_session_task(
+                            session_id,
+                            title,
+                            body,
+                            prompt,
+                            interval,
+                            due_at.clone(),
+                            delay.map(|value| value as u64),
+                        )
+                        .await?;
+                    (None, Some(recurring.schedule_id), recurring.next_due_at)
                 } else {
-                    due_at
-                        .and_then(|d| chrono::DateTime::parse_from_rfc3339(d.trim()).ok())
-                        .map(|d| d.to_rfc3339())
-                        .unwrap_or_else(|| {
-                            (chrono::Utc::now() + chrono::Duration::seconds(delay.unwrap_or(0)))
-                                .to_rfc3339()
+                    let tool_run_id = self
+                        .service
+                        .schedule(ScheduledToolRunSpec {
+                            due_at: due_at.clone(),
+                            delay_secs: delay.map(|d| d as u64),
+                            watch_tool_run_id: watch_tool_run_id.clone(),
+                            title: title.to_string(),
+                            body: body.to_string(),
+                            mode,
+                            session_id,
+                            tool_name,
+                            tool_args,
+                            prompt,
                         })
+                        .await?;
+                    let fires_at = if watch.is_some() {
+                        String::new()
+                    } else {
+                        due_at
+                            .and_then(|d| chrono::DateTime::parse_from_rfc3339(d.trim()).ok())
+                            .map(|d| d.to_rfc3339())
+                            .unwrap_or_else(|| {
+                                (chrono::Utc::now() + chrono::Duration::seconds(delay.unwrap_or(0)))
+                                    .to_rfc3339()
+                            })
+                    };
+                    (Some(tool_run_id), None, fires_at)
                 };
                 let mut output = serde_json::json!({
                     "operation": "set",
@@ -237,8 +283,16 @@ impl ScheduleTool {
                     "mode": mode.as_str(),
                     "fires_at": fires_at,
                     "wakes_session": mode == ScheduleMode::Continue,
-                    "note": "The scheduled ToolRun fires while the app is running; overdue ones fire on next startup.",
+                    "creates_session": mode == ScheduleMode::NewSession,
+                    "repeat_interval_secs": repeat_interval_secs,
+                    "note": "The scheduled task fires while the app is running; overdue timers fire on next startup.",
                 });
+                if let Some(schedule_id) = schedule_id {
+                    output["schedule_id"] = serde_json::json!(schedule_id);
+                    output["note"] = serde_json::json!(
+                        "This recurring schedule persists across restarts and creates a new session at each interval. Missed ticks are skipped."
+                    );
+                }
                 if let Some(tool_run_id) = &watch_tool_run_id {
                     output["watch_tool_run_id"] = serde_json::json!(tool_run_id);
                     output["note"] = serde_json::json!(format!(
@@ -271,8 +325,26 @@ impl ScheduleTool {
                     .into_iter()
                     .map(|view| view.to_json(true))
                     .collect::<Vec<_>>();
+                let recurring = self
+                    .service
+                    .list_recurring_session_tasks(session_id)
+                    .await?
+                    .into_iter()
+                    .map(|task| {
+                        serde_json::json!({
+                            "schedule_id": task.schedule_id,
+                            "title": task.title,
+                            "body": task.body,
+                            "interval_seconds": task.interval_seconds,
+                            "anchor_at": task.anchor_at,
+                            "next_due_at": task.next_due_at,
+                            "enabled": task.enabled,
+                            "active_tool_run_id": task.active_tool_run_id,
+                        })
+                    })
+                    .collect::<Vec<_>>();
                 Ok(ToolResult::ok(
-                    serde_json::json!({ "operation": "list", "scheduled_tool_runs": rows }),
+                    serde_json::json!({ "operation": "list", "scheduled_tool_runs": rows, "recurring_session_tasks": recurring }),
                 ))
             }
             ScheduleOperation::Cancel => {
@@ -280,23 +352,52 @@ impl ScheduleTool {
                     .session_id
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("schedule cancel requires a session context"))?;
-                let tool_run_id = params
-                    .tool_run_id
-                    .ok_or_else(|| anyhow::anyhow!("tool_run_id is required for cancel"))?;
-                crate::tool_contract::validate_entity_id(&tool_run_id, "tool_run_id", "toolrun")?;
-                if self
-                    .service
-                    .cancel_for_session(&tool_run_id, session_id)
-                    .await
-                {
-                    Ok(ToolResult::ok(
-                        serde_json::json!({ "operation": "cancel", "tool_run_id": tool_run_id }),
-                    ))
-                } else {
-                    anyhow::bail!(
-                        "scheduled ToolRun '{}' not found or no longer waiting",
-                        tool_run_id
-                    )
+                match (params.tool_run_id, params.schedule_id) {
+                    (Some(tool_run_id), None) => {
+                        crate::tool_contract::validate_entity_id(
+                            &tool_run_id,
+                            "tool_run_id",
+                            "toolrun",
+                        )?;
+                        if self
+                            .service
+                            .cancel_for_session(&tool_run_id, session_id)
+                            .await
+                        {
+                            Ok(ToolResult::ok(
+                                serde_json::json!({ "operation": "cancel", "tool_run_id": tool_run_id }),
+                            ))
+                        } else {
+                            anyhow::bail!(
+                                "scheduled ToolRun '{}' not found or already claimed",
+                                tool_run_id
+                            )
+                        }
+                    }
+                    (None, Some(schedule_id)) => {
+                        crate::tool_contract::validate_entity_id(
+                            &schedule_id,
+                            "schedule_id",
+                            "sched",
+                        )?;
+                        if self
+                            .service
+                            .cancel_recurring_session_task(&schedule_id, session_id)
+                            .await?
+                        {
+                            Ok(ToolResult::ok(
+                                serde_json::json!({ "operation": "cancel", "schedule_id": schedule_id }),
+                            ))
+                        } else {
+                            anyhow::bail!(
+                                "recurring session schedule '{}' was not found",
+                                schedule_id
+                            )
+                        }
+                    }
+                    _ => anyhow::bail!(
+                        "provide exactly one of tool_run_id or schedule_id for cancel"
+                    ),
                 }
             }
         }
@@ -329,8 +430,7 @@ impl Tool for ScheduleTool {
         }
     }
 
-    /// Needs the private `_session_id` input so `continue` mode knows which
-    /// session to resume.
+    /// Needs the private `_session_id` input for ownership and continue mode.
     fn requires_session_id(&self) -> bool {
         true
     }
@@ -343,13 +443,15 @@ impl Tool for ScheduleTool {
                 "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "description": "Fire after this many seconds; choose this or due_at, not both" },
                 "due_at": { "type": "string", "minLength": 1, "description": "Absolute fire time as an ISO 8601 timestamp with an explicit timezone offset; choose this or delay_secs, not both" },
                 "watch_tool_run_id": canonical_entity_id_schema("toolrun", Some("Schedule continuation when this background task reaches a terminal state; requires mode=continue")),
-                "mode": { "type": "string", "enum": ["tool", "continue"], "default": "tool", "description": "At fire time, call tool_name (default) or resume this session with prompt" },
+                "mode": { "type": "string", "enum": ["tool", "continue", "new_session"], "default": "tool", "description": "Call tool_name, resume this session, or create a new session from prompt" },
+                "repeat_interval_secs": { "type": "integer", "minimum": 60, "maximum": 31536000, "description": "Repeat at this fixed interval (mode=new_session only; missed intervals are skipped)" },
                 "title": { "type": "string", "minLength": 1, "description": "Short title shown for the scheduled task; defaults to Haven" },
                 "body": { "type": "string", "minLength": 1, "description": "Required message shown when the schedule fires" },
                 "tool_name": { "type": "string", "minLength": 1, "description": "Available built-in tool to call when mode=tool" },
                 "tool_args": { "type": "object", "description": "Arguments for tool_name when mode=tool; omit or use an empty object for no arguments" },
                 "prompt": { "type": "string", "minLength": 1, "description": "Instruction delivered to this session when mode=continue" },
-                "tool_run_id": canonical_entity_id_schema("toolrun", Some("Scheduled task id returned by schedule.set; required for cancel"))
+                "tool_run_id": canonical_entity_id_schema("toolrun", Some("One scheduled ToolRun occurrence id; required to cancel that occurrence")),
+                "schedule_id": canonical_entity_id_schema("sched", Some("Recurring schedule id; required to cancel future occurrences"))
             },
             "required": ["operation"],
             "oneOf": [
@@ -362,8 +464,14 @@ impl Tool for ScheduleTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "cancel" }, "tool_run_id": canonical_entity_id_schema("toolrun", Some("Scheduled task id returned by schedule.set")) },
+                    "properties": { "operation": { "const": "cancel" }, "tool_run_id": canonical_entity_id_schema("toolrun", Some("One scheduled ToolRun occurrence id")) },
                     "required": ["operation", "tool_run_id"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "cancel" }, "schedule_id": canonical_entity_id_schema("sched", Some("Recurring schedule id returned by schedule.set")) },
+                    "required": ["operation", "schedule_id"]
                 },
                 {
                     "type": "object",
@@ -372,12 +480,13 @@ impl Tool for ScheduleTool {
                         "operation": { "const": "set" },
                         "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "description": "Fire after this many seconds; choose this or due_at, not both" },
                         "due_at": { "type": "string", "minLength": 1, "description": "Absolute fire time as an ISO 8601 timestamp with an explicit timezone offset; choose this or delay_secs, not both" },
-                        "mode": { "type": "string", "enum": ["tool", "continue"], "default": "tool", "description": "Call tool_name when it fires (default), or resume this session with prompt" },
+                        "mode": { "type": "string", "enum": ["tool", "continue", "new_session"], "default": "tool", "description": "Call tool_name, resume this session, or create a new session from prompt" },
+                        "repeat_interval_secs": { "type": "integer", "minimum": 60, "maximum": 31536000, "description": "Repeat at this fixed interval (mode=new_session only; missed intervals are skipped)" },
                         "title": { "type": "string", "minLength": 1, "description": "Short task title; defaults to Haven" },
                         "body": { "type": "string", "minLength": 1, "description": "Required message shown when the schedule fires" },
                         "tool_name": { "type": "string", "minLength": 1, "description": "Available built-in tool to call when mode=tool" },
                         "tool_args": { "type": "object", "description": "Arguments for tool_name when mode=tool; omit or use an empty object for no arguments" },
-                        "prompt": { "type": "string", "minLength": 1, "description": "Instruction delivered to this session when mode=continue" }
+                        "prompt": { "type": "string", "minLength": 1, "description": "Instruction for the resumed or newly created session" }
                     },
                     "required": ["operation", "body"],
                     "oneOf": [
@@ -399,6 +508,14 @@ impl Tool for ScheduleTool {
                         {
                             "if": { "properties": { "mode": { "const": "tool" } } },
                             "then": { "required": ["tool_name"], "not": { "required": ["prompt"] } }
+                        },
+                        {
+                            "if": { "properties": { "mode": { "const": "new_session" } } },
+                            "then": { "required": ["prompt"], "not": { "anyOf": [{ "required": ["tool_name"] }, { "required": ["tool_args"] }] } }
+                        },
+                        {
+                            "if": { "required": ["repeat_interval_secs"] },
+                            "then": { "properties": { "mode": { "const": "new_session" } }, "required": ["mode", "prompt"] }
                         }
                     ]
                 },
@@ -481,8 +598,17 @@ mod tests {
         let description = "Absolute fire time as an ISO 8601 timestamp with an explicit timezone offset; choose this or delay_secs, not both";
 
         assert_eq!(schema["properties"]["due_at"]["description"], description);
+        let due_at_branch = schema["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|branch| {
+                branch["properties"]["operation"]["const"] == "set"
+                    && branch["properties"]["due_at"].is_object()
+            })
+            .expect("time-triggered set branch");
         assert_eq!(
-            schema["oneOf"][2]["properties"]["due_at"]["description"],
+            due_at_branch["properties"]["due_at"]["description"],
             description
         );
     }
@@ -516,6 +642,10 @@ mod tests {
         assert_eq!(ScheduleMode::default(), ScheduleMode::Tool);
         assert_eq!(ScheduleMode::Tool.as_str(), "tool");
         assert_eq!(ScheduleMode::Continue.as_str(), "continue");
+        assert_eq!(
+            ScheduleMode::parse("new_session"),
+            Some(ScheduleMode::NewSession)
+        );
     }
 
     #[tokio::test]
@@ -587,7 +717,9 @@ mod tests {
                     tool_name: None,
                     tool_args: None,
                     prompt: Some("continue".into()),
+                    repeat_interval_secs: None,
                     tool_run_id: None,
+                    schedule_id: None,
                     session_id: Some("ses-09df36791e54c51f7be063867e10b9af".into()),
                 },
                 CancellationToken::new(),
@@ -610,7 +742,9 @@ mod tests {
                     tool_name: None,
                     tool_args: None,
                     prompt: None,
+                    repeat_interval_secs: None,
                     tool_run_id: Some("toolrun-invalid".into()),
+                    schedule_id: None,
                     session_id: Some("ses-09df36791e54c51f7be063867e10b9af".into()),
                 },
                 CancellationToken::new(),
@@ -635,7 +769,9 @@ mod tests {
                     tool_name: None,
                     tool_args: None,
                     prompt: None,
+                    repeat_interval_secs: None,
                     tool_run_id: None,
+                    schedule_id: None,
                     session_id: None,
                 },
                 CancellationToken::new(),
@@ -1250,6 +1386,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recurring_new_session_schedules_use_the_schedule_tool_and_hide_prompts_in_lists() {
+        let (db, _dir) = test_db();
+        let session = db.create_session("schedule owner").unwrap();
+        let service = Arc::new(ToolRunService::new());
+        service
+            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+            .await;
+        let tool = ScheduleTool {
+            service: service.clone(),
+            registry: None,
+        };
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "set",
+                    "due_at": (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+                    "title": "Daily review",
+                    "body": "Review the day's open work",
+                    "mode": "new_session",
+                    "prompt": "Review the current project and summarize unresolved work",
+                    "repeat_interval_secs": 86400,
+                    "_session_id": session.session_id.clone()
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["mode"], json!("new_session"));
+        assert_eq!(result.output["creates_session"], json!(true));
+        assert_eq!(result.output["repeat_interval_secs"], json!(86400));
+        let schedule_id = result.output["schedule_id"].as_str().unwrap().to_owned();
+        assert!(result.output["tool_run_id"].is_null());
+
+        let list = tool
+            .execute(
+                json!({"operation": "list", "_session_id": session.session_id.clone()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            list.output["recurring_session_tasks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            list.output["recurring_session_tasks"][0]["schedule_id"],
+            json!(schedule_id)
+        );
+        assert_eq!(
+            list.output["recurring_session_tasks"][0]["body"],
+            json!("Review the day's open work")
+        );
+        assert!(
+            list.output["recurring_session_tasks"][0]
+                .get("prompt")
+                .is_none()
+        );
+
+        let cancelled = tool
+            .execute(
+                json!({
+                    "operation": "cancel",
+                    "schedule_id": schedule_id,
+                    "_session_id": session.session_id.clone()
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cancelled.output["schedule_id"], json!(schedule_id));
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_reminder_fires_and_delivers() {
         let center = Arc::new(ToolRunService::new());
         let mut rx = center.take_tool_run_receiver().expect("receiver available");
@@ -1409,7 +1622,7 @@ mod tests {
             "must not run",
             haven_common::tool_run::ScheduleMode::Tool,
             None,
-            None,
+            Some("notify"),
             None,
             None,
             None,

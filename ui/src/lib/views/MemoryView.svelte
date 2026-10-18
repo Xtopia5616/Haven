@@ -30,7 +30,6 @@
 	} from '$lib/sessionCommands.ts';
 	import { registerSessionLifecycleListener } from '$lib/events.ts';
 	import { clearToolRunHistory, listToolRunHistory } from '$lib/toolRunCommands.ts';
-	import { retryWorkflowRun } from '$lib/workflowCommands.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import RefreshButton from '$lib/RefreshButton.svelte';
@@ -225,21 +224,6 @@
 			reportError(e, { context: 'MemoryView', message: '加载任务历史失败', log: false });
 		} finally {
 			if (sequence === loadTaskHistorySeq) toolRunHistoryLoading = false;
-		}
-	}
-
-	async function retryWorkflow(toolRunId: string) {
-		try {
-			const retryId = await retryWorkflowRun(toolRunId);
-			if (!retryId) {
-				addNotification('该 Workflow 运行已不满足安全重试条件', 'error', 3500);
-				await loadTaskHistory();
-				return;
-			}
-			addNotification(`Workflow 已创建新的运行 ${retryId}`, 'success', 3500);
-			await loadTaskHistory();
-		} catch (error) {
-			reportError(error, { context: 'MemoryView', message: '重试 Workflow 失败', log: false });
 		}
 	}
 
@@ -771,7 +755,6 @@
 							{scheduledToolRunCountdown}
 							{onOpenSession}
 							{onCancel}
-							onRetryWorkflow={retryWorkflow}
 						/>
 					{:else}
 						<div class="memory-tools-view" aria-label="长期记忆">

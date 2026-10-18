@@ -15,7 +15,7 @@ use haven_common::config::{ConfigLoader, ConfigService, CredentialStore, LogLeve
 use haven_input::InputPipeline;
 #[cfg(test)]
 use haven_memory::Database;
-use haven_memory::{MemoryPersistence, SessionStore, WorkflowDefinitionStore};
+use haven_memory::{MemoryPersistence, SessionStore};
 use haven_platform::credentials::PlatformCredentialStore;
 use haven_tools::ToolsFacade;
 use std::collections::HashMap;
@@ -152,7 +152,6 @@ fn daily_cleanup_interval(period: std::time::Duration) -> tokio::time::Interval 
 
 pub struct AppState {
     pub(crate) runtime: Arc<ApplicationRuntime>,
-    pub(crate) workflow_definitions: WorkflowDefinitionStore,
     pub(crate) chatgpt_plan_login: ChatGptPlanLoginOwner,
     /// App-owned voice recording lifecycle and event identity. It is separate
     /// from timed `media.record` captures, which share the input pipeline but
@@ -495,7 +494,6 @@ impl AppState {
         tools
             .wire_startup(haven_tools::StartupWiring {
                 tool_run_store: Some(memory_persistence.tool_run_store()),
-                workflow_definition_store: Some(memory_persistence.workflow_definition_store()),
                 tool_settings: cfg.tool_settings.clone(),
                 default_shell: cfg.default_shell,
                 context_limits: context_limits_clone,
@@ -520,7 +518,6 @@ impl AppState {
 
         Ok(Self {
             runtime,
-            workflow_definitions: memory_persistence.workflow_definition_store(),
             chatgpt_plan_login: ChatGptPlanLoginOwner::default(),
             recording_lifecycle: RecordingLifecycleOwner::default(),
             pending_recording_usage: Arc::new(std::sync::Mutex::new(HashMap::new())),

@@ -703,7 +703,7 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
         .await
         .unwrap();
 
-    let service = ToolRunService::new();
+    let service = Arc::new(ToolRunService::new());
     service.set_tool_run_store(Some(store)).await;
 
     let all = service
@@ -715,7 +715,6 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
     assert_eq!(all[0].tool_run_id, scheduled_tool_run_id);
     assert_eq!(all[1].tool_run_id, newer_tool_run_id);
     assert_eq!(all[2].tool_run_id, older_tool_run_id);
-
     let background_page = service
         .list_history(ToolRunHistoryQuery::new(
             Some(ToolRunKind::Background),
@@ -739,6 +738,7 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
             .all(|view| view.kind == ToolRunKind::Background)
     );
     assert!(board_history.iter().all(|view| view.preview.is_some()));
+    service.shutdown().await;
 }
 
 /// Spawn the two fixture echo ToolRuns (`tool-run-a` / `tool-run-b`) and attach them to
@@ -1826,7 +1826,6 @@ async fn board_returns_typed_safe_views_in_started_order() {
             tool_args: Some(json!({"token": "private-tool-args"})),
             prompt: Some("private-prompt".into()),
             watch_tool_run_id: Some("private-watch-id".into()),
-            cancellation_token: CancellationToken::new(),
         }),
     };
 
@@ -2126,7 +2125,6 @@ async fn owned_live_cancellation_selection_is_typed_sequential_and_non_short_cir
         tool_args: None,
         prompt: None,
         watch_tool_run_id: None,
-        cancellation_token: CancellationToken::new(),
     };
     {
         let mut tool_runs = service.tool_runs.write().await;
@@ -3356,102 +3354,6 @@ async fn scheduled_tool_results_use_shared_tool_run_result_transport() {
 }
 
 #[tokio::test]
-async fn workflow_retry_requires_a_persisted_safe_zero_step_failure() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let db = Arc::new(Database::open(&dir.path().join("workflow-retry.db")).unwrap());
-    let store = ToolRunStore::new(db);
-    let service = Arc::new(ToolRunService::new());
-    service.set_tool_run_store(Some(store.clone())).await;
-
-    let workflow_id = haven_common::types::new_id("wfdef");
-    let session_id = haven_common::types::new_id("ses");
-    let definition = serde_json::json!({
-        "steps": [{"id": "read", "capability": "files.read", "input": {}}]
-    });
-    let create_failed_workflow = |result: Value| {
-        let service = Arc::clone(&service);
-        let store = store.clone();
-        let workflow_id = workflow_id.clone();
-        let session_id = session_id.clone();
-        let definition = definition.clone();
-        async move {
-            let args = serde_json::json!({
-                "execution_mode": "inline",
-                "workflow": definition,
-            });
-            let tool_run_id = service
-                .schedule(ScheduledToolRunSpec {
-                    due_at: None,
-                    delay_secs: Some(3600),
-                    watch_tool_run_id: None,
-                    title: "Workflow retry test".into(),
-                    body: "test failure".into(),
-                    mode: ScheduleMode::Tool,
-                    session_id: Some(session_id),
-                    tool_name: Some(crate::WORKFLOW_RUN_TOOL_NAME.into()),
-                    tool_args: Some(args),
-                    prompt: None,
-                })
-                .await
-                .unwrap();
-            assert!(
-                store
-                    .set_workflow_tool_run_metadata(tool_run_id.clone(), workflow_id, 1)
-                    .await
-                    .unwrap()
-            );
-            let mut receiver = service
-                .take_tool_run_receiver()
-                .expect("scheduled Workflow receiver is available");
-            service.fire_scheduled(&tool_run_id).await;
-            assert!(matches!(
-                receiver.recv().await,
-                Some(ToolRunCompletion::Scheduled(_))
-            ));
-            assert!(
-                service
-                    .fail_scheduled_with_result(&tool_run_id, &result.to_string(), "blocked")
-                    .await
-                    .unwrap()
-            );
-            tool_run_id
-        }
-    };
-
-    let retryable_id = create_failed_workflow(serde_json::json!({
-        "safe_to_retry": true,
-        "completed_step_ids": [],
-    }))
-    .await;
-    let retry_id = service
-        .retry_workflow_run(&retryable_id)
-        .await
-        .unwrap()
-        .expect("safe failure may be retried");
-    assert_ne!(retry_id, retryable_id);
-    let retry_row = store.get_tool_run(retry_id.clone()).await.unwrap().unwrap();
-    assert_eq!(
-        retry_row.workflow_definition_id.as_deref(),
-        Some(workflow_id.as_str())
-    );
-    assert_eq!(retry_row.workflow_revision, Some(1));
-    assert!(service.cancel(&retry_id).await);
-
-    let unsafe_id = create_failed_workflow(serde_json::json!({
-        "safe_to_retry": false,
-        "completed_step_ids": [],
-    }))
-    .await;
-    assert_eq!(service.retry_workflow_run(&unsafe_id).await.unwrap(), None);
-    let partial_id = create_failed_workflow(serde_json::json!({
-        "safe_to_retry": true,
-        "completed_step_ids": ["read"],
-    }))
-    .await;
-    assert_eq!(service.retry_workflow_run(&partial_id).await.unwrap(), None);
-}
-
-#[tokio::test]
 async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_terminal_row() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());
@@ -4521,103 +4423,6 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
 }
 
 #[tokio::test]
-async fn cancelling_claimed_workflow_signals_its_token_but_preserves_other_schedule_rules() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let db = Arc::new(Database::open(&dir.path().join("workflow-cancel.db")).unwrap());
-    let service = Arc::new(ToolRunService::new());
-    service
-        .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
-        .await;
-
-    let workflow_id = haven_common::types::new_id("toolrun");
-    let ordinary_id = haven_common::types::new_id("toolrun");
-    let started_at = chrono::Utc::now().to_rfc3339();
-    let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-    let workflow_token = CancellationToken::new();
-    let ordinary_token = CancellationToken::new();
-    for (tool_run_id, tool_name, cancellation_token) in [
-        (workflow_id.as_str(), "workflow_run", workflow_token.clone()),
-        (ordinary_id.as_str(), "notify", ordinary_token.clone()),
-    ] {
-        db.save_scheduled_tool_run(
-            tool_run_id,
-            &due_at,
-            "Haven",
-            "cancel test",
-            ScheduleMode::Tool,
-            None,
-            Some(tool_name),
-            Some("{}"),
-            None,
-            None,
-        )
-        .unwrap();
-        assert!(
-            db.start_scheduled_tool_run(tool_run_id, &started_at)
-                .unwrap()
-        );
-        service.tool_runs.write().await.insert(
-            tool_run_id.to_string(),
-            ToolRunEntry {
-                kind: ToolRunKind::Scheduled,
-                session_id: None,
-                source_step_id: None,
-                state: ToolRunState::Running {
-                    started_at: started_at.clone(),
-                },
-                kill: None,
-                tail: None,
-                command: String::new(),
-                shell: String::new(),
-                scheduled: Some(ScheduledToolRunEntry {
-                    title: "Haven".into(),
-                    body: "cancel test".into(),
-                    due_at: due_at.clone(),
-                    mode: ScheduleMode::Tool,
-                    tool_name: Some(tool_name.into()),
-                    tool_args: Some(serde_json::json!({})),
-                    prompt: None,
-                    watch_tool_run_id: None,
-                    cancellation_token,
-                }),
-            },
-        );
-    }
-    let workflow_claim = haven_common::types::new_id("conf");
-    let ordinary_claim = haven_common::types::new_id("conf");
-    assert!(
-        service
-            .claim_scheduled_execution(&workflow_id, &workflow_claim)
-            .await
-            .unwrap()
-    );
-    assert!(
-        service
-            .claim_scheduled_execution(&ordinary_id, &ordinary_claim)
-            .await
-            .unwrap()
-    );
-
-    let service_token = service
-        .workflow_run_cancellation_token(&workflow_id)
-        .await
-        .expect("live workflow exposes its cancellation token");
-    assert!(service.cancel(&workflow_id).await);
-    assert!(service_token.is_cancelled());
-    assert!(workflow_token.is_cancelled());
-    assert!(!service.cancel(&ordinary_id).await);
-    assert!(!ordinary_token.is_cancelled());
-    assert_eq!(
-        db.get_tool_run(&workflow_id).unwrap().unwrap().status,
-        haven_common::lifecycle::ToolRunStatus::Cancelled
-    );
-    assert_eq!(
-        db.get_tool_run(&ordinary_id).unwrap().unwrap().status,
-        haven_common::lifecycle::ToolRunStatus::Running
-    );
-}
-
-#[tokio::test]
 async fn test_restore_quarantines_corrupt_waiting_scheduled_rows() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
@@ -5031,4 +4836,53 @@ async fn test_concurrent_shutdown_calls_wait_for_the_same_task_drain() {
         .unwrap();
     assert!(service.task_tracker.is_closed());
     assert!(service.task_tracker.is_empty());
+}
+
+#[tokio::test]
+async fn recurring_dispatcher_creates_a_standard_new_session_tool_run() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let session = db.create_session("recurring dispatcher source").unwrap();
+    let anchor_at = (chrono::Utc::now() - chrono::Duration::seconds(2))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    db.create_recurring_session_task(
+        &session.session_id,
+        "Hourly review",
+        "Review the work",
+        "Summarize the latest project activity",
+        3600,
+        &anchor_at,
+    )
+    .unwrap();
+
+    let service = Arc::new(ToolRunService::new());
+    let mut receiver = service
+        .take_tool_run_receiver()
+        .expect("ToolRun completion receiver is available");
+    service
+        .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+        .await;
+    let Some(ToolRunCompletion::Scheduled(fired)) =
+        tokio::time::timeout(Duration::from_secs(3), receiver.recv())
+            .await
+            .expect("due recurring task should be dispatched")
+    else {
+        panic!("recurring schedule must enter the standard scheduled ToolRun path");
+    };
+
+    assert_eq!(fired.mode, ScheduleMode::NewSession);
+    assert_eq!(
+        fired.session_id.as_deref(),
+        Some(session.session_id.as_str())
+    );
+    assert_eq!(
+        fired.prompt.as_deref(),
+        Some("Summarize the latest project activity")
+    );
+    let row = db.get_tool_run(&fired.tool_run_id).unwrap().unwrap();
+    assert_eq!(row.kind, "scheduled");
+    assert_eq!(row.mode.as_deref(), Some("new_session"));
+    assert_eq!(row.status, ToolRunStatus::Running);
+
+    assert!(service.cancel(&fired.tool_run_id).await);
+    service.shutdown().await;
 }

@@ -147,22 +147,6 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
         }
     }
 
-    async fn authorization_request_for_workflow_subcall(
-        &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        input: &Value,
-    ) -> Result<AuthorizationRequest, String> {
-        if tool_name.starts_with("mcp__") {
-            self.tools
-                .resolve_workflow_subcall_authorization_request(session_id, tool_name, input)
-                .await
-        } else {
-            self.authorization_request(session_id, tool_name, input)
-                .await
-        }
-    }
-
     async fn authorization_request_from_catalog(
         &self,
         catalog: &ToolCatalogSnapshot,
@@ -284,20 +268,8 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
 
 #[async_trait]
 impl AgentToolRunPort for ToolsFacadeAgentAdapter {
-    async fn schedule_workflow_run(
-        &self,
-        spec: haven_tools::ScheduledToolRunSpec,
-    ) -> anyhow::Result<String> {
+    async fn schedule(&self, spec: haven_tools::ScheduledToolRunSpec) -> anyhow::Result<String> {
         self.tool_runs.schedule(spec).await
-    }
-
-    async fn workflow_run_cancellation_token(
-        &self,
-        tool_run_id: &str,
-    ) -> Option<tokio_util::sync::CancellationToken> {
-        self.tool_runs
-            .workflow_run_cancellation_token(tool_run_id)
-            .await
     }
 
     async fn attach_session(&self, tool_run_id: &str, session_id: &str) {
@@ -356,29 +328,6 @@ impl AgentToolRunPort for ToolsFacadeAgentAdapter {
 
     async fn fail_scheduled(&self, tool_run_id: &str, reason: &str) -> anyhow::Result<bool> {
         self.tool_runs.fail_scheduled(tool_run_id, reason).await
-    }
-
-    async fn fail_scheduled_with_result(
-        &self,
-        tool_run_id: &str,
-        result: &str,
-        reason: &str,
-    ) -> anyhow::Result<bool> {
-        self.tool_runs
-            .fail_scheduled_with_result(tool_run_id, result, reason)
-            .await
-    }
-
-    async fn report_workflow_progress(
-        &self,
-        tool_run_id: &str,
-        step_id: &str,
-        step_index: u32,
-        step_total: u32,
-    ) -> anyhow::Result<bool> {
-        self.tool_runs
-            .report_workflow_progress(tool_run_id, step_id, step_index, step_total)
-            .await
     }
 
     async fn restore(&self) -> ToolRunRestoreSummary {
@@ -459,29 +408,6 @@ impl ToolExecutionPort for ToolsFacadeAgentAdapter {
             .await
     }
 
-    async fn execute_workflow(
-        &self,
-        context: ToolExecutionContext,
-        subcalls: Arc<dyn haven_tools::WorkflowSubcallPort>,
-    ) -> anyhow::Result<ToolResult> {
-        let proof = context.authorization_proof.ok_or_else(|| {
-            anyhow::anyhow!("Workflow execution is missing an authorization proof")
-        })?;
-        self.tools
-            .execute_authorized_workflow_tool_with_step(
-                haven_tools::AuthorizedWorkflowToolExecution {
-                    session_id: context.session_id,
-                    tool_name: context.tool_name,
-                    input: context.input,
-                    cancel: context.cancel,
-                    step_id: context.step_id,
-                    proof,
-                    subcalls,
-                },
-            )
-            .await
-    }
-
     async fn execute_codemode_subcall(
         &self,
         context: ToolExecutionContext,
@@ -514,30 +440,6 @@ impl ToolExecutionPort for ToolsFacadeAgentAdapter {
                 )
                 .await
         }
-    }
-
-    async fn execute_workflow_subcall(
-        &self,
-        context: ToolExecutionContext,
-    ) -> anyhow::Result<ToolResult> {
-        let proof = context
-            .authorization_proof
-            .ok_or_else(|| anyhow::anyhow!("Workflow child is missing an authorization proof"))?;
-        if !context.tool_name.starts_with("mcp__") {
-            anyhow::bail!("Workflow children must be MCP capabilities")
-        }
-        self.tools
-            .execute_authorized_workflow_subcall_with_step(
-                haven_tools::AuthorizedWorkflowSubcallExecution {
-                    session_id: context.session_id,
-                    tool_name: context.tool_name,
-                    input: context.input,
-                    cancel: context.cancel,
-                    step_id: context.step_id,
-                    proof,
-                },
-            )
-            .await
     }
 
     async fn registrations(
