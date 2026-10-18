@@ -87,12 +87,18 @@ impl ConfirmationBatchPlan {
                             tool_name,
                             tool_input,
                             tool_call_id,
+                            nested_confirmation,
                             ..
                         } if *request_step_number == plan_step_number
                             && step_id == &planned.step_id
                             && *tool_index == planned.tool_index
-                            && tool_name == &planned.tool_call.tool_name
-                            && tool_input == &planned.tool_call.tool_input
+                            && (if let Some(nested) = nested_confirmation {
+                                tool_name == &nested.tool_name
+                                    && tool_input == &nested.input
+                            } else {
+                                tool_name == &planned.tool_call.tool_name
+                                    && tool_input == &planned.tool_call.tool_input
+                            })
                             && tool_call_id
                                 == planned.tool_call.tool_call_id.as_deref().unwrap_or_default()
                     )

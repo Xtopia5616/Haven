@@ -634,7 +634,12 @@ impl AuthorizedExecutor<'_> {
                     .record_success(tool_name);
                 // Attach the tool's declared side-channel signals (ask
                 // question / notify toast) BEFORE returning.
+                let nested_confirmation = result.signals.nested_confirmation.take();
+                let sandbox_output_review_step_ids =
+                    std::mem::take(&mut result.signals.sandbox_output_review_step_ids);
                 result.signals = attempt_tool.signals(&result.output);
+                result.signals.nested_confirmation = nested_confirmation;
+                result.signals.sandbox_output_review_step_ids = sandbox_output_review_step_ids;
                 return Ok(result);
             }
 

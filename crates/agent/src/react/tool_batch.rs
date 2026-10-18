@@ -59,6 +59,7 @@ pub(super) struct ToolBatchState {
     tool_usages: Vec<ToolLlmUsage>,
     confirmation_completion: Option<(Vec<String>, u32)>,
     completed_confirm_request_ids: Vec<String>,
+    pub(super) nested_confirmation: Option<(u32, haven_tools::NestedConfirmationRequest)>,
 }
 
 impl ToolBatchState {
@@ -73,6 +74,12 @@ impl ToolBatchState {
 
     pub(super) fn completed_confirmation_ids(&self) -> Vec<String> {
         self.completed_confirm_request_ids.clone()
+    }
+
+    pub(super) fn nested_confirmation(
+        &self,
+    ) -> Option<(u32, haven_tools::NestedConfirmationRequest)> {
+        self.nested_confirmation.clone()
     }
 
     /// Project already committed observations into canonical history in plan
@@ -145,6 +152,7 @@ impl ToolBatchState {
             ask_options,
             notify_title,
             notify_body,
+            nested_confirmation: _,
             step_id,
             tool_index,
         } = result;
@@ -378,8 +386,9 @@ pub(super) struct CompletedTool {
     ask_options: Vec<String>,
     notify_title: Option<String>,
     notify_body: Option<String>,
+    pub(super) nested_confirmation: Option<haven_tools::NestedConfirmationRequest>,
     pub(super) step_id: String,
-    tool_index: u32,
+    pub(super) tool_index: u32,
 }
 
 impl CompletedTool {
@@ -418,6 +427,7 @@ impl CompletedTool {
             ask_options: Vec::new(),
             notify_title: None,
             notify_body: None,
+            nested_confirmation: None,
             step_id,
             tool_index,
         }
@@ -437,6 +447,7 @@ pub(super) struct ToolCallRequest {
     pub tool_index: u32,
     pub step_id: String,
     pub receipt: Option<haven_tools::ConfirmationReceipt>,
+    pub nested_confirmation: Option<haven_tools::NestedConfirmationRequest>,
     pub cancel: tokio_util::sync::CancellationToken,
 }
 
@@ -450,6 +461,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
         tool_index,
         step_id,
         receipt,
+        nested_confirmation,
         cancel,
     } = request;
     let tool_name = tool_call.tool_name.clone();
@@ -479,9 +491,9 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
     // tool error so one bad tool cannot tear down the whole ReAct task and
     // strand sibling calls without ordered results.
     let result = std::panic::AssertUnwindSafe(async {
-        if let Some(receipt) = receipt {
+        if receipt.is_some() || nested_confirmation.is_some() {
             executor
-                .execute_step_preconfirmed_with_identity_and_metadata_and_cancel(
+                .execute_step_preconfirmed_with_identity_and_metadata_and_cancel_and_nested(
                     &session_id,
                     &tool_name,
                     tool_input,
@@ -490,6 +502,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
                     tool_call.tool_call_id.as_deref(),
                     &step_id,
                     receipt,
+                    nested_confirmation,
                     tool_step_metadata,
                     cancel,
                 )
@@ -522,6 +535,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
         )))
     });
 
+    let mut nested_confirmation = None;
     let (
         step_result,
         is_error,
@@ -535,7 +549,8 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
         notify_body,
         mut result_envelope,
     ) = match result {
-        Ok(result) => {
+        Ok(mut result) => {
+            nested_confirmation = result.signals.nested_confirmation.take();
             let result_envelope = result.envelope(idempotency);
             let output_len = serde_json::to_string(&result.output)
                 .map(|text| text.len())
@@ -626,6 +641,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
         ask_options,
         notify_title,
         notify_body,
+        nested_confirmation,
         step_id,
         tool_index,
     }

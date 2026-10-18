@@ -1,5 +1,16 @@
 use super::*;
 
+pub(super) struct GatedToolExecutionRequest<'a> {
+    pub(super) session_id: Option<&'a str>,
+    pub(super) tool_name: &'a str,
+    pub(super) input: Value,
+    pub(super) cancel: CancellationToken,
+    pub(super) receipt: Option<haven_tools::ConfirmationReceipt>,
+    pub(super) step_id: Option<&'a str>,
+    pub(super) nested_confirmation: Option<haven_tools::NestedConfirmationRequest>,
+    pub(super) tool_run_id: Option<&'a str>,
+}
+
 impl SessionSupervisor {
     pub async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
         self.observation_port
@@ -47,6 +58,7 @@ impl SessionSupervisor {
             None,
             None,
             None,
+            None,
         )
         .await
     }
@@ -67,6 +79,35 @@ impl SessionSupervisor {
         metadata: ToolStepMetadata,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        self.execute_step_with_identity_and_metadata_and_cancel_and_nested(
+            session_id,
+            tool_name,
+            input,
+            step_number,
+            tool_index,
+            tool_call_id,
+            step_id,
+            metadata,
+            cancel,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn execute_step_with_identity_and_metadata_and_cancel_and_nested(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: Value,
+        step_number: u32,
+        tool_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+        metadata: ToolStepMetadata,
+        cancel: tokio_util::sync::CancellationToken,
+        nested_confirmation: Option<haven_tools::NestedConfirmationRequest>,
+    ) -> anyhow::Result<ToolResult> {
         self.execute_step_inner(
             session_id,
             tool_name,
@@ -76,6 +117,7 @@ impl SessionSupervisor {
             tool_call_id,
             step_id,
             None,
+            nested_confirmation,
             Some(metadata),
             Some(cancel),
         )
@@ -130,12 +172,13 @@ impl SessionSupervisor {
             Some(receipt),
             None,
             None,
+            None,
         )
         .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn execute_step_preconfirmed_with_identity_and_metadata_and_cancel(
+    pub(crate) async fn execute_step_preconfirmed_with_identity_and_metadata_and_cancel_and_nested(
         &self,
         session_id: &str,
         tool_name: &str,
@@ -144,7 +187,8 @@ impl SessionSupervisor {
         tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
-        receipt: haven_tools::ConfirmationReceipt,
+        receipt: Option<haven_tools::ConfirmationReceipt>,
+        nested_confirmation: Option<haven_tools::NestedConfirmationRequest>,
         metadata: ToolStepMetadata,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
@@ -156,7 +200,8 @@ impl SessionSupervisor {
             tool_index,
             tool_call_id,
             step_id,
-            Some(receipt),
+            receipt,
+            nested_confirmation,
             Some(metadata),
             Some(cancel),
         )
@@ -174,6 +219,7 @@ impl SessionSupervisor {
         tool_call_id: Option<&str>,
         step_id: &str,
         receipt: Option<haven_tools::ConfirmationReceipt>,
+        nested_confirmation: Option<haven_tools::NestedConfirmationRequest>,
         tool_step_metadata: Option<ToolStepMetadata>,
         cancel_override: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<ToolResult> {
@@ -270,14 +316,16 @@ impl SessionSupervisor {
         self.start_running_tool_step_context(tool_step_context)
             .await?;
         let gated = match self
-            .execute_gated(
-                Some(session_id),
+            .execute_gated_with_nested_confirmation(GatedToolExecutionRequest {
+                session_id: Some(session_id),
                 tool_name,
-                input.clone(),
-                cancel.clone(),
+                input: input.clone(),
+                cancel: cancel.clone(),
                 receipt,
-                Some(step_id),
-            )
+                step_id: Some(step_id),
+                nested_confirmation,
+                tool_run_id: None,
+            })
             .await
         {
             Ok(gated) => gated,
@@ -325,6 +373,10 @@ impl SessionSupervisor {
             risk_level,
             confirmed,
         } = gated;
+        if result.signals.nested_confirmation.is_some() {
+            // Keep the parent step open while its nested confirmation waits.
+            return Ok(result);
+        }
         tracing::info!(
             session_id = %session_id,
             step_number,
@@ -443,6 +495,33 @@ impl SessionSupervisor {
         receipt: Option<haven_tools::ConfirmationReceipt>,
         step_id: Option<&str>,
     ) -> anyhow::Result<ToolExecution> {
+        self.execute_gated_with_nested_confirmation(GatedToolExecutionRequest {
+            session_id,
+            tool_name,
+            input,
+            cancel,
+            receipt,
+            step_id,
+            nested_confirmation: None,
+            tool_run_id: None,
+        })
+        .await
+    }
+
+    pub(super) async fn execute_gated_with_nested_confirmation(
+        &self,
+        request: GatedToolExecutionRequest<'_>,
+    ) -> anyhow::Result<ToolExecution> {
+        let GatedToolExecutionRequest {
+            session_id,
+            tool_name,
+            input,
+            cancel,
+            receipt,
+            step_id,
+            nested_confirmation,
+            tool_run_id,
+        } = request;
         let authorization_request = self
             .authorization
             .authorization_request(session_id, tool_name, &input)
@@ -577,10 +656,12 @@ impl SessionSupervisor {
                     confirmed: Some(false),
                 });
             };
-            Some(self.codemode_subcall_port(
+            Some(self.codemode_subcall_port_with_resume(
                 session_id,
                 definitions.into_iter().map(|definition| definition.name),
-            ))
+                tool_run_id.or(step_id),
+                nested_confirmation.clone(),
+            )?)
         } else {
             None
         };
@@ -604,10 +685,12 @@ impl SessionSupervisor {
                     confirmed: Some(false),
                 });
             };
-            Some(self.workflow_subcall_port(
+            Some(self.workflow_subcall_port_with_resume(
                 session_id,
                 definitions.into_iter().map(|definition| definition.name),
-            ))
+                tool_run_id.or(step_id),
+                nested_confirmation,
+            )?)
         } else {
             None
         };
@@ -630,5 +713,25 @@ impl SessionSupervisor {
             risk_level,
             confirmed,
         })
+    }
+
+    pub(crate) async fn execute_scheduled_workflow_with_nested_confirmation(
+        &self,
+        session_id: Option<&str>,
+        input: Value,
+        cancel: CancellationToken,
+        tool_run_id: &str,
+    ) -> anyhow::Result<ToolExecution> {
+        self.execute_gated_with_nested_confirmation(GatedToolExecutionRequest {
+            session_id,
+            tool_name: haven_tools::WORKFLOW_RUN_TOOL_NAME,
+            input,
+            cancel,
+            receipt: None,
+            step_id: None,
+            nested_confirmation: None,
+            tool_run_id: Some(tool_run_id),
+        })
+        .await
     }
 }

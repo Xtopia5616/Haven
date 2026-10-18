@@ -483,6 +483,10 @@ pub struct ToolSignals {
     pub notify_title: Option<String>,
     /// The `notify` tool's toast body.
     pub notify_body: Option<String>,
+    /// Runtime-only signal used to pause a parent ReAct tool batch when an
+    /// independently authorized CodeMode or Workflow child needs confirmation.
+    #[serde(skip)]
+    pub nested_confirmation: Option<crate::NestedConfirmationRequest>,
     /// Runtime-only sandbox review identities, projected into the UI result
     /// envelope and kept out of the model-facing observation.
     #[serde(skip)]

@@ -303,6 +303,13 @@ impl SkillCatalogPort for SharedSkillCatalogPort {
 /// restore, and deliver session-owned ToolRuns.
 #[async_trait::async_trait]
 pub trait ToolRunAgentCapability: Send + Sync {
+    async fn schedule(&self, spec: crate::ScheduledToolRunSpec) -> anyhow::Result<String>;
+
+    async fn workflow_run_cancellation_token(
+        &self,
+        tool_run_id: &str,
+    ) -> Option<tokio_util::sync::CancellationToken>;
+
     async fn attach_session(&self, tool_run_id: &str, session_id: &str);
 
     async fn claim_scheduled_execution(

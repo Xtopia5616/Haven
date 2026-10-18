@@ -661,6 +661,25 @@ impl ToolRunStore {
             .run_blocking(move |db| db.cancel_scheduled_tool_run(&tool_run_id, &finished_at))
             .await
     }
+
+    pub async fn cancel_claimed_workflow_tool_run(
+        &self,
+        tool_run_id: String,
+        claim_id: String,
+        finished_at: String,
+    ) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
+        anyhow::ensure!(
+            haven_common::types::is_canonical_id(&claim_id, "conf") || claim_id == tool_run_id,
+            "invalid scheduled execution claim ID"
+        );
+        let finished_at = normalize_tool_run_timestamp(&finished_at, "finished_at")?;
+        self.db
+            .run_blocking(move |db| {
+                db.cancel_claimed_workflow_tool_run(&tool_run_id, &claim_id, &finished_at)
+            })
+            .await
+    }
 }
 
 #[cfg(test)]

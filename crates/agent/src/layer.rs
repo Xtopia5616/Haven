@@ -693,6 +693,7 @@ impl AgentLayer {
                                 Err("关联会话已结束或不存在".into())
                             } else {
                                 let args = fired.tool_args.unwrap_or(Value::Null);
+                                let scheduled_tool_input = args.clone();
                                 let decision = agent
                                     .executor
                                     .authorize_scheduled_tool(
@@ -748,20 +749,84 @@ impl AgentLayer {
                                                 Ok(true) => unreachable!(),
                                             })
                                         } else {
-                                            match agent
-                                                .executor
-                                                .execute_gated(
-                                                    fired.session_id.as_deref(),
-                                                    &tool_name,
-                                                    args,
-                                                    task_cancellation.clone(),
-                                                    None,
-                                                    None,
-                                                )
-                                                .await
+                                            let execution = if tool_name
+                                                == haven_tools::WORKFLOW_RUN_TOOL_NAME
                                             {
+                                                let execution_cancellation = tool_run_port
+                                                    .workflow_run_cancellation_token(
+                                                        &fired.tool_run_id,
+                                                    )
+                                                    .await
+                                                    .unwrap_or_else(|| task_cancellation.clone());
+                                                tokio::select! {
+                                                    _ = task_cancellation.cancelled() => {
+                                                        execution_cancellation.cancel();
+                                                        deferred = true;
+                                                        Err(anyhow::anyhow!("应用正在关闭，定时任务留待恢复"))
+                                                    }
+                                                    _ = execution_cancellation.cancelled() => {
+                                                        Err(anyhow::anyhow!("定时 Workflow 已取消"))
+                                                    }
+                                                    result = agent
+                                                        .executor
+                                                        .execute_scheduled_workflow_with_nested_confirmation(
+                                                            fired.session_id.as_deref(),
+                                                            args,
+                                                            execution_cancellation.clone(),
+                                                            &fired.tool_run_id,
+                                                        )
+                                                    => result,
+                                                }
+                                            } else {
+                                                agent
+                                                    .executor
+                                                    .execute_gated(
+                                                        fired.session_id.as_deref(),
+                                                        &tool_name,
+                                                        args,
+                                                        task_cancellation.clone(),
+                                                        None,
+                                                        None,
+                                                    )
+                                                    .await
+                                            };
+                                            match execution {
                                                 Ok(g) if g.confirmed == Some(false) => {
                                                     Err("确认被拒绝或已超时".into())
+                                                }
+                                                Ok(g)
+                                                    if let Some(nested) = g
+                                                        .result
+                                                        .signals
+                                                        .nested_confirmation
+                                                        .clone() =>
+                                                {
+                                                    let released = tool_run_port
+                                                        .release_scheduled_execution_claim(
+                                                            &fired.tool_run_id,
+                                                            &fired.tool_run_id,
+                                                        )
+                                                        .await;
+                                                    if !matches!(released, Ok(true)) {
+                                                        Err("无法为 Workflow 确认释放定时任务执行权。".into())
+                                                    } else if agent
+                                                        .executor
+                                                        .request_scheduled_nested_confirm(
+                                                            &fired.tool_run_id,
+                                                            fired.session_id.as_deref(),
+                                                            &tool_name,
+                                                            scheduled_tool_input,
+                                                            nested,
+                                                            &fired.title,
+                                                        )
+                                                        .await
+                                                        .is_some()
+                                                    {
+                                                        deferred = true;
+                                                        Ok(())
+                                                    } else {
+                                                        Err("Workflow 子调用确认请求无法创建。".into())
+                                                    }
                                                 }
                                                 Ok(g)
                                                     if !crate::session::scheduled_tool_execution_succeeded(
@@ -1008,9 +1073,9 @@ impl AgentLayer {
         // Re-arm scheduled_tool_runs persisted by a previous run: overdue ones (the app
         // was closed when they expired) fire immediately, future ones resume
         // their countdown. Runs in the background; the notification consumer
-        // spawned above delivers the overdue fires. Also clean up ToolRun rows a
-        // previous run left `running` (their child processes died with the
-        // app), so persisted ToolRun history never shows stale live work.
+        // spawned above delivers the overdue fires. Interrupted Workflow runs
+        // are re-armed from their durable child-call journal; other interrupted
+        // ToolRuns are marked failed.
         let tool_runs = self.executor.tool_run_port();
         let cancellation = cancellation.clone();
         let task_cancellation = cancellation.clone();

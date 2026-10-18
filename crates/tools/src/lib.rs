@@ -155,7 +155,7 @@ pub use builtin::{
 pub use catalog::McpServerIndexEntry;
 pub use codemode::{
     CodeModeCallResult, CodeModeError, CodeModeEvaluator, CodeModeExecution, CodeModeLimits,
-    CodeModeSubcallPort, CodeModeToolDefinition,
+    CodeModeSubcallPort, CodeModeToolDefinition, NestedConfirmationRequest,
 };
 pub use codemode_tool::CODEMODE_RUN_TOOL_NAME;
 pub use execution::{
@@ -242,7 +242,6 @@ pub use tool_run_service::{
 };
 pub(crate) use tool_run_service::{ToolRunCompletionReceiver, ToolRunService};
 pub use tool_run_types::ScheduledToolRunFired;
-#[cfg(feature = "test-support")]
 pub use tool_run_types::ScheduledToolRunSpec;
 pub(crate) use tool_runtime::MemoryRecallSlot;
 pub use tool_runtime::{

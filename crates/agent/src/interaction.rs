@@ -33,11 +33,20 @@ pub(crate) fn validate_interaction_ids(request: &InteractionRequest) -> anyhow::
         (
             InteractionKind::Confirm,
             InteractionDetails::Confirm {
-                step_id, receipt, ..
+                step_id,
+                receipt,
+                nested_confirmation,
+                ..
             },
         ) => {
             require_canonical_id(step_id, "step", "confirmation step ID")?;
-            if let Some(receipt) = receipt {
+            if let Some(nested) = nested_confirmation {
+                require_canonical_id(&nested.step_id, "step", "nested confirmation step ID")?;
+                anyhow::ensure!(
+                    request.request_id == nested.receipt.confirmation_id.to_string(),
+                    "nested confirmation request ID does not match its receipt"
+                );
+            } else if let Some(receipt) = receipt {
                 anyhow::ensure!(
                     request.request_id == receipt.confirmation_id.to_string(),
                     "confirmation request ID does not match its receipt"
@@ -50,14 +59,24 @@ pub(crate) fn validate_interaction_ids(request: &InteractionRequest) -> anyhow::
             InteractionDetails::ScheduledConfirm {
                 tool_run_id,
                 receipt,
+                nested_confirmation,
                 ..
             },
         ) => {
             require_canonical_id(tool_run_id, "toolrun", "scheduled tool run ID")?;
-            anyhow::ensure!(
-                request.request_id == receipt.confirmation_id.to_string(),
-                "scheduled confirmation request ID does not match its receipt"
-            );
+            if let Some(nested) = nested_confirmation {
+                require_canonical_id(&nested.step_id, "step", "nested confirmation step ID")?;
+                anyhow::ensure!(
+                    request.request_id == nested.receipt.confirmation_id.to_string()
+                        && receipt == &nested.receipt,
+                    "scheduled nested confirmation request ID does not match its receipt"
+                );
+            } else {
+                anyhow::ensure!(
+                    request.request_id == receipt.confirmation_id.to_string(),
+                    "scheduled confirmation request ID does not match its receipt"
+                );
+            }
             ("conf", Vec::new())
         }
         _ => anyhow::bail!("interaction kind does not match its details"),
@@ -108,12 +127,16 @@ pub enum InteractionDetails {
         risk_level: haven_common::types::RiskLevel,
         #[serde(skip_serializing_if = "Option::is_none")]
         receipt: Option<haven_tools::ConfirmationReceipt>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nested_confirmation: Option<haven_tools::NestedConfirmationRequest>,
     },
     ScheduledConfirm {
         tool_run_id: String,
         tool_name: String,
         tool_input: Value,
         receipt: haven_tools::ConfirmationReceipt,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nested_confirmation: Option<haven_tools::NestedConfirmationRequest>,
         title: String,
     },
 }
@@ -275,8 +298,45 @@ impl InteractionRequest {
                 tool_index,
                 risk_level,
                 receipt,
+                nested_confirmation: None,
             },
             correlation_ids: vec![step_id],
+            response: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at,
+        }
+    }
+
+    /// Confirmation for a child operation inside one parent CodeMode or
+    /// Workflow tool call. The renderer identity stays bound to the parent
+    /// card while the prompt and receipt describe the exact child operation.
+    pub fn confirm_nested(
+        session_id: &str,
+        step_number: u32,
+        tool_call_id: String,
+        parent_step_id: String,
+        tool_index: u32,
+        nested: haven_tools::NestedConfirmationRequest,
+    ) -> Self {
+        let expires_at = confirmation_expires_at(&nested.receipt);
+        let request_id = nested.receipt.confirmation_id.to_string();
+        Self {
+            request_id,
+            session_id: Some(session_id.to_string()),
+            kind: InteractionKind::Confirm,
+            status: InteractionStatus::Pending,
+            details: InteractionDetails::Confirm {
+                step_number,
+                tool_name: nested.tool_name.clone(),
+                tool_input: nested.input.clone(),
+                tool_call_id,
+                step_id: parent_step_id.clone(),
+                tool_index,
+                risk_level: nested.receipt.effective_risk,
+                receipt: None,
+                nested_confirmation: Some(nested),
+            },
+            correlation_ids: vec![parent_step_id],
             response: None,
             created_at: chrono::Utc::now().to_rfc3339(),
             expires_at,
@@ -310,6 +370,7 @@ impl InteractionRequest {
                 tool_index: 0,
                 risk_level: receipt.effective_risk,
                 receipt: Some(receipt),
+                nested_confirmation: None,
             },
             correlation_ids: Vec::new(),
             response: None,
@@ -337,6 +398,37 @@ impl InteractionRequest {
                 tool_name,
                 tool_input,
                 receipt,
+                nested_confirmation: None,
+                title,
+            },
+            correlation_ids: Vec::new(),
+            response: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at,
+        }
+    }
+
+    pub fn scheduled_confirm_nested(
+        tool_run_id: String,
+        session_id: Option<&str>,
+        tool_name: String,
+        tool_input: Value,
+        nested: haven_tools::NestedConfirmationRequest,
+        title: String,
+    ) -> Self {
+        let receipt = nested.receipt.clone();
+        let expires_at = confirmation_expires_at(&receipt);
+        Self {
+            request_id: receipt.confirmation_id.to_string(),
+            session_id: session_id.map(str::to_owned),
+            kind: InteractionKind::ScheduledConfirm,
+            status: InteractionStatus::Pending,
+            details: InteractionDetails::ScheduledConfirm {
+                tool_run_id,
+                tool_name,
+                tool_input,
+                receipt,
+                nested_confirmation: Some(nested),
                 title,
             },
             correlation_ids: Vec::new(),

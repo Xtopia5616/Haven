@@ -487,6 +487,7 @@ mod actor;
 // Agent-owned authorization for nested CodeMode child calls.
 mod codemode;
 mod dispatcher;
+mod nested_execution;
 mod queues;
 mod run_engine;
 mod status;
@@ -512,33 +513,84 @@ impl SessionSupervisor {
     /// Bind a CodeMode invocation to this session's authorization and execution
     /// owners. The supplied names come from the run's resolved CodeMode-only
     /// catalog; this port never exposes a tool registry or raw adapter.
+    #[cfg(test)]
     pub(crate) fn codemode_subcall_port(
         &self,
         session_id: &str,
         allowed_tool_names: impl IntoIterator<Item = String>,
     ) -> Arc<dyn haven_tools::CodeModeSubcallPort> {
-        Arc::new(codemode::AuthorizedCodeModeSubcallPort::new(
+        self.codemode_subcall_port_with_resume(session_id, allowed_tool_names, None, None)
+            .expect("test CodeMode subcall port has a valid session context")
+    }
+
+    pub(crate) fn codemode_subcall_port_with_resume(
+        &self,
+        session_id: &str,
+        allowed_tool_names: impl IntoIterator<Item = String>,
+        parent_execution_id: Option<&str>,
+        resume_confirmation: Option<haven_tools::NestedConfirmationRequest>,
+    ) -> anyhow::Result<Arc<dyn haven_tools::CodeModeSubcallPort>> {
+        let journal = parent_execution_id
+            .map(|parent_execution_id| {
+                nested_execution::NestedExecutionJournal::new(
+                    self.store.clone(),
+                    session_id,
+                    parent_execution_id,
+                )
+                .map(Arc::new)
+            })
+            .transpose()?;
+        Ok(Arc::new(codemode::AuthorizedCodeModeSubcallPort::new(
             session_id,
             allowed_tool_names,
             Arc::clone(&self.authorization),
             Arc::clone(&self.execution),
-        ))
+            journal,
+            resume_confirmation,
+        )))
     }
 
     /// Bind a Workflow invocation to its captured MCP allowlist and this
     /// session's authorization, execution, and observation owners.
+    #[cfg(test)]
     pub(crate) fn workflow_subcall_port(
         &self,
         session_id: &str,
         allowed_tool_names: impl IntoIterator<Item = String>,
     ) -> Arc<dyn haven_tools::WorkflowSubcallPort> {
-        Arc::new(workflow::AuthorizedWorkflowSubcallPort::new(
-            session_id,
-            allowed_tool_names,
-            Arc::clone(&self.authorization),
-            Arc::clone(&self.execution),
-            Arc::clone(&self.observation_port),
-        ))
+        self.workflow_subcall_port_with_resume(session_id, allowed_tool_names, None, None)
+            .expect("test Workflow subcall port has a valid session context")
+    }
+
+    pub(crate) fn workflow_subcall_port_with_resume(
+        &self,
+        session_id: &str,
+        allowed_tool_names: impl IntoIterator<Item = String>,
+        parent_execution_id: Option<&str>,
+        resume_confirmation: Option<haven_tools::NestedConfirmationRequest>,
+    ) -> anyhow::Result<Arc<dyn haven_tools::WorkflowSubcallPort>> {
+        let journal = parent_execution_id
+            .map(|parent_execution_id| {
+                nested_execution::NestedExecutionJournal::new(
+                    self.store.clone(),
+                    session_id,
+                    parent_execution_id,
+                )
+                .map(Arc::new)
+            })
+            .transpose()?;
+        Ok(Arc::new(workflow::AuthorizedWorkflowSubcallPort::new(
+            workflow::AuthorizedWorkflowSubcallConfig {
+                session_id: session_id.to_owned(),
+                allowed_tool_names: allowed_tool_names.into_iter().collect(),
+                authorization: Arc::clone(&self.authorization),
+                execution: Arc::clone(&self.execution),
+                observations: Arc::clone(&self.observation_port),
+                tool_runs: Arc::clone(&self.tool_runs),
+                journal,
+                resume_confirmation,
+            },
+        )))
     }
 
     pub fn new(store: SessionStore, ports: SessionToolPorts, max_concurrent: usize) -> Self {

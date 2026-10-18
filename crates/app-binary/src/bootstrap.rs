@@ -72,6 +72,7 @@ pub(crate) fn project_interaction(
             tool_input,
             risk_level,
             receipt,
+            nested_confirmation,
             ..
         } => {
             event.tool_name = Some(tool_name.clone());
@@ -81,6 +82,7 @@ pub(crate) fn project_interaction(
             ));
             event.permission_key = receipt
                 .as_ref()
+                .or_else(|| nested_confirmation.as_ref().map(|nested| &nested.receipt))
                 .map(|receipt| receipt.capability.to_string());
             event.invocation_step_id = (!step_id.is_empty()).then(|| step_id.clone());
             event.tool_index = Some(*tool_index);
@@ -90,13 +92,30 @@ pub(crate) fn project_interaction(
             tool_name,
             tool_input,
             receipt,
+            nested_confirmation,
             ..
         } => {
-            event.tool_name = Some(tool_name.clone());
+            let display_name = nested_confirmation
+                .as_ref()
+                .map(|nested| &nested.tool_name)
+                .unwrap_or(tool_name);
+            let display_input = nested_confirmation
+                .as_ref()
+                .map(|nested| &nested.input)
+                .unwrap_or(tool_input);
+            event.tool_name = Some(display_name.clone());
             event.summary = Some(haven_tools::permission_prompt_summary(
-                tool_name, tool_input,
+                display_name,
+                display_input,
             ));
-            event.permission_key = Some(receipt.capability.to_string());
+            event.permission_key = Some(
+                nested_confirmation
+                    .as_ref()
+                    .map(|nested| &nested.receipt)
+                    .unwrap_or(receipt)
+                    .capability
+                    .to_string(),
+            );
         }
     }
     event

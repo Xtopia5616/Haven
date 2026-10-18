@@ -126,7 +126,7 @@ impl Tool for CodeModeInvocationTool {
             .execute(script, self.definitions.clone(), subcalls.clone(), cancel)
             .await;
         let review_step_ids = subcalls.sandbox_output_review_step_ids();
-        let result = match execution {
+        let mut result = match execution {
             Ok(execution) => ToolResult::from_output(
                 json!({ "output": execution.output, "call_count": execution.call_count }),
                 false,
@@ -136,6 +136,7 @@ impl Tool for CodeModeInvocationTool {
             }
             Err(error) => ToolResult::failed(Value::Null, error.to_string()),
         };
+        result.signals.nested_confirmation = subcalls.pending_confirmation();
         Ok(result.with_sandbox_output_review_step_ids(review_step_ids))
     }
 }
@@ -165,6 +166,7 @@ mod tests {
     impl CodeModeSubcallPort for EchoSubcalls {
         async fn call(
             &self,
+            _call_index: u32,
             tool_name: &str,
             input: Value,
             _cancel: CancellationToken,

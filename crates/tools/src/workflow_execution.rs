@@ -37,10 +37,21 @@ pub struct WorkflowSubcallResult {
 pub trait WorkflowSubcallPort: Send + Sync {
     async fn call(
         &self,
+        workflow_step_id: &str,
         capability: &str,
         input: Value,
         cancel: CancellationToken,
     ) -> Result<WorkflowSubcallResult, String>;
+
+    /// Persist this bounded definition as a scheduled ToolRun. Implementations
+    /// that do not own ToolRun lifecycle reject the request.
+    async fn schedule_run(&self, _input: Value, _due_at: Option<String>) -> Result<String, String> {
+        Err("this Workflow runtime cannot create persistent runs".into())
+    }
+
+    fn pending_confirmation(&self) -> Option<crate::NestedConfirmationRequest> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,7 +263,7 @@ pub(crate) async fn execute_workflow(
                 );
                 break;
             }
-            result = subcalls.call(&step.capability, input, step_cancel.clone()) => result,
+            result = subcalls.call(&step.id, &step.capability, input, step_cancel.clone()) => result,
         };
         let call = match call_result {
             Ok(call) => call,
@@ -352,6 +363,7 @@ mod tests {
     impl WorkflowSubcallPort for EchoPort {
         async fn call(
             &self,
+            _workflow_step_id: &str,
             _capability: &str,
             input: Value,
             _cancel: CancellationToken,
@@ -418,6 +430,7 @@ mod tests {
     impl WorkflowSubcallPort for StopAfterFirst {
         async fn call(
             &self,
+            _workflow_step_id: &str,
             capability: &str,
             input: Value,
             _cancel: CancellationToken,
@@ -486,6 +499,7 @@ mod tests {
         impl WorkflowSubcallPort for BlockingPort {
             async fn call(
                 &self,
+                _workflow_step_id: &str,
                 _capability: &str,
                 _input: Value,
                 cancel: CancellationToken,

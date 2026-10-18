@@ -1826,6 +1826,7 @@ async fn board_returns_typed_safe_views_in_started_order() {
             tool_args: Some(json!({"token": "private-tool-args"})),
             prompt: Some("private-prompt".into()),
             watch_tool_run_id: Some("private-watch-id".into()),
+            cancellation_token: CancellationToken::new(),
         }),
     };
 
@@ -2125,6 +2126,7 @@ async fn owned_live_cancellation_selection_is_typed_sequential_and_non_short_cir
         tool_args: None,
         prompt: None,
         watch_tool_run_id: None,
+        cancellation_token: CancellationToken::new(),
     };
     {
         let mut tool_runs = service.tool_runs.write().await;
@@ -4419,6 +4421,103 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
     assert_eq!(
         cancel_event["finished_at"].as_str(),
         cancel_row.finished_at.as_deref()
+    );
+}
+
+#[tokio::test]
+async fn cancelling_claimed_workflow_signals_its_token_but_preserves_other_schedule_rules() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("workflow-cancel.db")).unwrap());
+    let service = Arc::new(ToolRunService::new());
+    service
+        .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+        .await;
+
+    let workflow_id = haven_common::types::new_id("toolrun");
+    let ordinary_id = haven_common::types::new_id("toolrun");
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let workflow_token = CancellationToken::new();
+    let ordinary_token = CancellationToken::new();
+    for (tool_run_id, tool_name, cancellation_token) in [
+        (workflow_id.as_str(), "workflow_run", workflow_token.clone()),
+        (ordinary_id.as_str(), "notify", ordinary_token.clone()),
+    ] {
+        db.save_scheduled_tool_run(
+            tool_run_id,
+            &due_at,
+            "Haven",
+            "cancel test",
+            ScheduleMode::Tool,
+            None,
+            Some(tool_name),
+            Some("{}"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            db.start_scheduled_tool_run(tool_run_id, &started_at)
+                .unwrap()
+        );
+        service.tool_runs.write().await.insert(
+            tool_run_id.to_string(),
+            ToolRunEntry {
+                kind: ToolRunKind::Scheduled,
+                session_id: None,
+                source_step_id: None,
+                state: ToolRunState::Running {
+                    started_at: started_at.clone(),
+                },
+                kill: None,
+                tail: None,
+                command: String::new(),
+                shell: String::new(),
+                scheduled: Some(ScheduledToolRunEntry {
+                    title: "Haven".into(),
+                    body: "cancel test".into(),
+                    due_at: due_at.clone(),
+                    mode: ScheduleMode::Tool,
+                    tool_name: Some(tool_name.into()),
+                    tool_args: Some(serde_json::json!({})),
+                    prompt: None,
+                    watch_tool_run_id: None,
+                    cancellation_token,
+                }),
+            },
+        );
+    }
+    let workflow_claim = haven_common::types::new_id("conf");
+    let ordinary_claim = haven_common::types::new_id("conf");
+    assert!(
+        service
+            .claim_scheduled_execution(&workflow_id, &workflow_claim)
+            .await
+            .unwrap()
+    );
+    assert!(
+        service
+            .claim_scheduled_execution(&ordinary_id, &ordinary_claim)
+            .await
+            .unwrap()
+    );
+
+    let service_token = service
+        .workflow_run_cancellation_token(&workflow_id)
+        .await
+        .expect("live workflow exposes its cancellation token");
+    assert!(service.cancel(&workflow_id).await);
+    assert!(service_token.is_cancelled());
+    assert!(workflow_token.is_cancelled());
+    assert!(!service.cancel(&ordinary_id).await);
+    assert!(!ordinary_token.is_cancelled());
+    assert_eq!(
+        db.get_tool_run(&workflow_id).unwrap().unwrap().status,
+        haven_common::lifecycle::ToolRunStatus::Cancelled
+    );
+    assert_eq!(
+        db.get_tool_run(&ordinary_id).unwrap().unwrap().status,
+        haven_common::lifecycle::ToolRunStatus::Running
     );
 }
 

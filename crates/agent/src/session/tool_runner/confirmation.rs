@@ -71,6 +71,16 @@ pub(super) fn scheduled_confirmation_is_expired(
     }
 }
 
+struct ScheduledConfirmSpec {
+    tool_run_id: String,
+    session_id: Option<String>,
+    tool_name: String,
+    tool_args: Value,
+    receipt: haven_tools::ConfirmationReceipt,
+    nested_confirmation: Option<haven_tools::NestedConfirmationRequest>,
+    title: String,
+}
+
 impl SessionSupervisor {
     pub(super) async fn scheduled_authorization_request(
         &self,
@@ -121,18 +131,75 @@ impl SessionSupervisor {
         receipt: haven_tools::ConfirmationReceipt,
         title: &str,
     ) -> Option<haven_common::types::ConfirmId> {
-        let step_id = receipt.confirmation_id.clone();
-        let request = crate::interaction::InteractionRequest::scheduled_confirm(
-            tool_run_id.to_string(),
-            session_id,
-            tool_name.to_string(),
+        self.queue_scheduled_confirm(ScheduledConfirmSpec {
+            tool_run_id: tool_run_id.to_owned(),
+            session_id: session_id.map(str::to_owned),
+            tool_name: tool_name.to_owned(),
             tool_args,
             receipt,
-            title.to_string(),
-        );
+            nested_confirmation: None,
+            title: title.to_owned(),
+        })
+        .await
+    }
+
+    pub async fn request_scheduled_nested_confirm(
+        self: &Arc<Self>,
+        tool_run_id: &str,
+        session_id: Option<&str>,
+        tool_name: &str,
+        tool_args: Value,
+        nested: haven_tools::NestedConfirmationRequest,
+        title: &str,
+    ) -> Option<haven_common::types::ConfirmId> {
+        let receipt = nested.receipt.clone();
+        self.queue_scheduled_confirm(ScheduledConfirmSpec {
+            tool_run_id: tool_run_id.to_owned(),
+            session_id: session_id.map(str::to_owned),
+            tool_name: tool_name.to_owned(),
+            tool_args,
+            receipt,
+            nested_confirmation: Some(nested),
+            title: title.to_owned(),
+        })
+        .await
+    }
+
+    async fn queue_scheduled_confirm(
+        self: &Arc<Self>,
+        spec: ScheduledConfirmSpec,
+    ) -> Option<haven_common::types::ConfirmId> {
+        let ScheduledConfirmSpec {
+            tool_run_id,
+            session_id,
+            tool_name,
+            tool_args,
+            receipt,
+            nested_confirmation,
+            title,
+        } = spec;
+        let step_id = receipt.confirmation_id.clone();
+        let request = match nested_confirmation {
+            Some(nested) => crate::interaction::InteractionRequest::scheduled_confirm_nested(
+                tool_run_id.clone(),
+                session_id.as_deref(),
+                tool_name.clone(),
+                tool_args,
+                nested,
+                title,
+            ),
+            None => crate::interaction::InteractionRequest::scheduled_confirm(
+                tool_run_id.clone(),
+                session_id.as_deref(),
+                tool_name,
+                tool_args,
+                receipt,
+                title,
+            ),
+        };
         if request.validate_new_pending_permission().is_err() {
             tracing::warn!(
-                %tool_run_id,
+                tool_run_id = %tool_run_id,
                 request_id = %step_id,
                 failure_kind = "invalid_confirmation_request",
                 "scheduled confirmation has no valid future deadline"
@@ -140,10 +207,9 @@ impl SessionSupervisor {
             return None;
         }
         let Some(expiry_delay) = confirmation_expiry_delay(request.expires_at.as_deref()) else {
-            tracing::warn!(%tool_run_id, request_id = %step_id, "scheduled confirmation deadline cannot be scheduled");
+            tracing::warn!(tool_run_id = %tool_run_id, request_id = %step_id, "scheduled confirmation deadline cannot be scheduled");
             return None;
         };
-        let tool_run_id = tool_run_id.to_string();
         {
             let mut scheduled_confirms = self.scheduled_confirms.lock().await;
             if scheduled_confirms.contains_key(&tool_run_id) {
@@ -160,10 +226,19 @@ impl SessionSupervisor {
                 request,
             }),
         });
+        self.spawn_scheduled_confirmation_expiry(tool_run_id, step_id.clone(), expiry_delay);
+        Some(step_id)
+    }
+
+    fn spawn_scheduled_confirmation_expiry(
+        self: &Arc<Self>,
+        tool_run_id: String,
+        timeout_id: haven_common::types::ConfirmId,
+        expiry_delay: std::time::Duration,
+    ) {
         // The canonical request deadline is the hard lifetime for this
         // approval, including when the renderer is closed or crashed.
         let executor = Arc::clone(self);
-        let timeout_id = step_id.clone();
         tokio::spawn(async move {
             tokio::time::sleep(expiry_delay).await;
             if executor
@@ -200,7 +275,6 @@ impl SessionSupervisor {
                 }
             }
         });
-        Some(step_id)
     }
 
     pub(super) async fn scheduled_confirmation_request(
@@ -241,12 +315,15 @@ impl SessionSupervisor {
             }
             crate::interaction::InteractionDetails::Confirm {
                 receipt,
+                nested_confirmation,
                 tool_name,
                 tool_input,
                 ..
             } => {
                 if let Some(receipt) = receipt {
                     Some(receipt.capability.clone())
+                } else if let Some(nested) = nested_confirmation {
+                    Some(nested.receipt.capability.clone())
                 } else {
                     let session_id = request.session_id.as_deref()?;
                     self.authorization
@@ -364,8 +441,12 @@ impl SessionSupervisor {
                 tool_name,
                 tool_input,
                 receipt,
+                nested_confirmation,
                 ..
-            } => (tool_name, tool_input, Some(receipt)),
+            } => match nested_confirmation {
+                Some(nested) => (&nested.tool_name, &nested.input, Some(&nested.receipt)),
+                None => (tool_name, tool_input, Some(receipt)),
+            },
             _ => return Ok(None),
         };
         let session_id = request
@@ -449,7 +530,7 @@ impl SessionSupervisor {
                     .await
             {
                 tracing::warn!(
-                    %tool_run_id,
+                tool_run_id = %tool_run_id,
                     request_id = %step_id,
                     error = %haven_common::error::sanitize_error_text(&release_error.to_string()),
                     "failed to release scheduled confirmation claim after grant persistence failed"
@@ -762,29 +843,32 @@ impl SessionSupervisor {
     }
 
     pub(super) async fn finish_scheduled_confirm(
-        &self,
+        self: &Arc<Self>,
         request: crate::interaction::InteractionRequest,
         confirmed: bool,
         expired: bool,
     ) {
-        let (tool_run_id, session_id, tool_name, tool_args, receipt, title) = match request.details
-        {
-            crate::interaction::InteractionDetails::ScheduledConfirm {
-                tool_run_id,
-                tool_name,
-                tool_input,
-                receipt,
-                title,
-            } => (
-                tool_run_id,
-                request.session_id.clone(),
-                tool_name,
-                tool_input,
-                receipt,
-                title,
-            ),
-            _ => return,
-        };
+        let request_id = request.request_id.clone();
+        let (tool_run_id, session_id, tool_name, tool_args, receipt, nested_confirmation, title) =
+            match request.details {
+                crate::interaction::InteractionDetails::ScheduledConfirm {
+                    tool_run_id,
+                    tool_name,
+                    tool_input,
+                    receipt,
+                    nested_confirmation,
+                    title,
+                } => (
+                    tool_run_id,
+                    request.session_id.clone(),
+                    tool_name,
+                    tool_input,
+                    receipt,
+                    nested_confirmation,
+                    title,
+                ),
+                _ => return,
+            };
         if confirmed
             && let Some(live_session_id) = session_id.as_deref()
             && !self.session_is_live(live_session_id).await
@@ -832,21 +916,105 @@ impl SessionSupervisor {
             }
             return;
         }
-        let outcome = self
-            .execute_gated(
-                session_id.as_deref(),
-                &tool_name,
-                tool_args,
-                CancellationToken::new(),
-                Some(receipt),
-                None,
-            )
-            .instrument(tracing::info_span!(
-                "scheduled_tool_run_confirmation_execution",
-                tool_run_id = %tool_run_id,
-                session_id = ?session_id
-            ))
-            .await;
+        let scheduled_tool_input = tool_args.clone();
+        let outcome = async {
+            if tool_name == haven_tools::WORKFLOW_RUN_TOOL_NAME {
+                let execution_cancellation = self
+                    .tool_runs
+                    .workflow_run_cancellation_token(&tool_run_id)
+                    .await
+                    .unwrap_or_else(CancellationToken::new);
+                tokio::select! {
+                    _ = execution_cancellation.cancelled() => {
+                        Err(anyhow::anyhow!("定时 Workflow 已取消"))
+                    }
+                    outcome = self.execute_gated_with_nested_confirmation(
+                        super::execution::GatedToolExecutionRequest {
+                            session_id: session_id.as_deref(),
+                            tool_name: &tool_name,
+                            input: tool_args,
+                            cancel: execution_cancellation.clone(),
+                            receipt: nested_confirmation.is_none().then_some(receipt),
+                            step_id: None,
+                            nested_confirmation,
+                            tool_run_id: Some(&tool_run_id),
+                        }
+                    ) => outcome,
+                }
+            } else {
+                self.execute_gated(
+                    session_id.as_deref(),
+                    &tool_name,
+                    tool_args,
+                    CancellationToken::new(),
+                    Some(receipt),
+                    None,
+                )
+                .await
+            }
+        }
+        .instrument(tracing::info_span!(
+            "scheduled_tool_run_confirmation_execution",
+            tool_run_id = %tool_run_id,
+            session_id = ?session_id
+        ))
+        .await;
+        if let Ok(execution) = &outcome
+            && let Some(nested) = execution.result.signals.nested_confirmation.clone()
+        {
+            if let Err(error) = self
+                .tool_runs
+                .release_scheduled_execution_claim(&tool_run_id, &request_id)
+                .await
+            {
+                tracing::warn!(
+                    tool_run_id,
+                    request_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to release previous scheduled claim before nested confirmation"
+                );
+                let reason = "无法续接 Workflow 确认";
+                if self
+                    .persist_scheduled_terminal_state(&tool_run_id, Err(reason))
+                    .await
+                {
+                    self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
+                        tool_run_id,
+                        session_id,
+                        title,
+                        body: format!("Scheduled tool '{tool_name}' failed: {reason}."),
+                    });
+                }
+                return;
+            }
+            if self
+                .request_scheduled_nested_confirm(
+                    &tool_run_id,
+                    session_id.as_deref(),
+                    &tool_name,
+                    scheduled_tool_input,
+                    nested,
+                    &title,
+                )
+                .await
+                .is_some()
+            {
+                return;
+            }
+            let reason = "无法创建 Workflow 子调用确认";
+            if self
+                .persist_scheduled_terminal_state(&tool_run_id, Err(reason))
+                .await
+            {
+                self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
+                    tool_run_id,
+                    session_id,
+                    title,
+                    body: format!("Scheduled tool '{tool_name}' failed: {reason}."),
+                });
+            }
+            return;
+        }
         let summary_chars = self
             .notification_summary_chars
             .load(std::sync::atomic::Ordering::Relaxed);

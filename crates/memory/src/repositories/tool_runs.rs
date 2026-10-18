@@ -324,6 +324,67 @@ impl Database {
         Ok(changed > 0)
     }
 
+    /// Cancel a running Workflow ToolRun while its scheduled execution claim is
+    /// held. The claim value must match exactly so cancellation and terminal
+    /// completion still arbitrate as one durable first-wins transition.
+    pub fn cancel_claimed_workflow_tool_run(
+        &self,
+        tool_run_id: &str,
+        claim_id: &str,
+        finished_at: &str,
+    ) -> anyhow::Result<bool> {
+        let finished_at = normalize_tool_run_timestamp(finished_at, "finished_at")?;
+        let conn = self.conn();
+        let claim_key = scheduled_execution_claim_key(tool_run_id);
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<bool> {
+            let row: Option<(String, String, Option<String>)> = conn
+                .query_row(
+                    "SELECT status, mode, tool_name FROM tool_runs
+                     WHERE id = ?1 AND kind = 'scheduled'",
+                    [tool_run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            if !matches!(row, Some((status, mode, Some(tool_name)))
+                if status == "running" && mode == "tool" && tool_name == "workflow_run")
+            {
+                return Ok(false);
+            }
+            let existing_claim: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM kv_store WHERE key = ?1",
+                    [&claim_key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if existing_claim.as_deref() != Some(claim_id) {
+                return Ok(false);
+            }
+            let changed = conn.execute(
+                "UPDATE tool_runs SET status = 'cancelled', finished_at = ?2
+                 WHERE id = ?1 AND kind = 'scheduled' AND status = 'running'
+                   AND mode = 'tool' AND tool_name = 'workflow_run'",
+                rusqlite::params![tool_run_id, finished_at],
+            )?;
+            if changed == 0 {
+                return Ok(false);
+            }
+            conn.execute("DELETE FROM kv_store WHERE key = ?1", [&claim_key])?;
+            Ok(true)
+        })();
+        match result {
+            Ok(cancelled) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(cancelled)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
     /// Durably arbitrate confirmation approval against scheduled ToolRun
     /// cancellation. The request ID is the idempotency token for retries after
     /// a later grant write fails. The claim and the ToolRun's running status are
@@ -868,16 +929,28 @@ impl Database {
         let finished_at = now_rfc3339_millis();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<usize> {
+            // A Workflow ToolRun is resumable from its append-only child-call
+            // checkpoints. Re-arm the existing run identity immediately; the
+            // Agent journal will replay completed children and fail closed if
+            // a child was still in flight when the process stopped.
+            conn.execute(
+                "UPDATE tool_runs
+                 SET status = 'waiting', due_at = ?1, started_at = NULL,
+                     finished_at = NULL, error_reason = NULL
+                 WHERE kind = 'scheduled' AND status = 'running'
+                   AND mode = 'tool' AND tool_name = 'workflow_run'",
+                [&finished_at],
+            )?;
             let n = conn.execute(
                 "UPDATE tool_runs
                  SET status = 'failed', error_reason = 'App restarted while the ToolRun was running',
                      finished_at = ?1
-                 WHERE kind IN ('background', 'scheduled') AND status = 'running'",
+                 WHERE kind IN ('background', 'scheduled') AND status = 'running'
+                   AND NOT (kind = 'scheduled' AND mode = 'tool' AND tool_name = 'workflow_run')",
                 [&finished_at],
             )?;
             // Scheduled confirmations and execution claims are process-local
-            // work. Running rows are failed above rather than replayed, so no
-            // approval claim may survive this recovery boundary.
+            // work; no approval claim may survive this recovery boundary.
             conn.execute(
                 "DELETE FROM kv_store
                  WHERE substr(key, 1, length(?1)) = ?1",
@@ -1368,7 +1441,77 @@ mod tests {
     }
 
     #[test]
-    fn restarting_fails_running_tool_runs_and_clears_scheduled_claims() {
+    fn claimed_workflow_cancellation_requires_the_matching_claim() {
+        let db = test_db();
+        let workflow_id = "toolrun-1b22d1c43a3d4d0a8a18e9a52c529ab1";
+        let ordinary_id = "toolrun-2c33e2d54b4e5e1b9b29f0b63d63ab12";
+        let workflow_claim = "conf-3d44f3e65c5f6f2caa3a01c74e74bc23";
+        let ordinary_claim = "conf-4e5504f76d60703dbb4b12d85f85cd34";
+        for (id, tool_name) in [(workflow_id, "workflow_run"), (ordinary_id, "notify")] {
+            db.save_scheduled_tool_run(
+                id,
+                "2026-08-04T02:00:00Z",
+                "Haven",
+                "claimed execution",
+                haven_common::tool_run::ScheduleMode::Tool,
+                None,
+                Some(tool_name),
+                Some("{}"),
+                None,
+                None,
+            )
+            .unwrap();
+            assert!(db.start_scheduled_tool_run(id, TEST_STARTED_AT).unwrap());
+        }
+        assert!(
+            db.claim_scheduled_tool_run_execution(workflow_id, workflow_claim)
+                .unwrap()
+        );
+        assert!(
+            db.claim_scheduled_tool_run_execution(ordinary_id, ordinary_claim)
+                .unwrap()
+        );
+
+        assert!(
+            !db.cancel_claimed_workflow_tool_run(workflow_id, ordinary_claim, TEST_FINISHED_AT)
+                .unwrap()
+        );
+        assert!(
+            !db.cancel_claimed_workflow_tool_run(ordinary_id, ordinary_claim, TEST_FINISHED_AT)
+                .unwrap()
+        );
+        assert!(
+            !db.cancel_scheduled_tool_run(workflow_id, TEST_FINISHED_AT)
+                .unwrap()
+        );
+        assert!(
+            db.cancel_claimed_workflow_tool_run(workflow_id, workflow_claim, TEST_FINISHED_AT)
+                .unwrap()
+        );
+
+        assert_eq!(
+            db.get_tool_run(workflow_id).unwrap().unwrap().status,
+            ToolRunStatus::Cancelled
+        );
+        assert_eq!(
+            db.get_tool_run(ordinary_id).unwrap().unwrap().status,
+            ToolRunStatus::Running
+        );
+        assert_eq!(
+            db.get_kv(&super::scheduled_execution_claim_key(workflow_id))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.get_kv(&super::scheduled_execution_claim_key(ordinary_id))
+                .unwrap()
+                .as_deref(),
+            Some(ordinary_claim)
+        );
+    }
+
+    #[test]
+    fn restarting_requeues_workflows_fails_other_running_runs_and_clears_claims() {
         let db = test_db();
         db.set_kv("scheduledXexecution_claim.keep", "unrelated")
             .unwrap();
@@ -1399,6 +1542,34 @@ mod tests {
             )
             .unwrap()
         );
+        let workflow_args = r#"{"execution_mode":"inline","workflow":{"steps":[]}}"#;
+        db.save_scheduled_tool_run(
+            "toolrun-fc30bce074ec534f0ad80aba9a4c00e5",
+            "2026-08-04T02:00:00+08:00",
+            "Workflow",
+            "Run a Workflow",
+            haven_common::tool_run::ScheduleMode::Tool,
+            Some("ses-0123456789abcdef0123456789abcdef"),
+            Some("workflow_run"),
+            Some(workflow_args),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            db.start_scheduled_tool_run(
+                "toolrun-fc30bce074ec534f0ad80aba9a4c00e5",
+                TEST_STARTED_AT
+            )
+            .unwrap()
+        );
+        assert!(
+            db.claim_scheduled_tool_run_execution(
+                "toolrun-fc30bce074ec534f0ad80aba9a4c00e5",
+                "toolrun-fc30bce074ec534f0ad80aba9a4c00e5"
+            )
+            .unwrap()
+        );
 
         assert_eq!(db.mark_interrupted_tool_runs().unwrap(), 1);
         let interrupted = db
@@ -1410,8 +1581,24 @@ mod tests {
             chrono::DateTime::parse_from_rfc3339(interrupted.finished_at.as_deref().unwrap())
                 .is_ok()
         );
+        let workflow = db
+            .get_tool_run("toolrun-fc30bce074ec534f0ad80aba9a4c00e5")
+            .unwrap()
+            .unwrap();
+        assert_eq!(workflow.status, ToolRunStatus::Waiting);
+        assert_eq!(workflow.tool_name.as_deref(), Some("workflow_run"));
+        assert_eq!(workflow.tool_args.as_deref(), Some(workflow_args));
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(workflow.due_at.as_deref().unwrap()).unwrap()
+                <= chrono::Utc::now()
+        );
         assert_eq!(
             db.get_kv("scheduled_execution_claim.toolrun-ec30bce074ec534f0ad80aba9a4c00e5")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.get_kv("scheduled_execution_claim.toolrun-fc30bce074ec534f0ad80aba9a4c00e5")
                 .unwrap(),
             None
         );

@@ -209,6 +209,16 @@ pub trait ToolAuthorizationPort: Send + Sync {
 /// retains ToolRun state, persistence, timers, and completion recovery.
 #[async_trait]
 pub trait AgentToolRunPort: Send + Sync {
+    async fn schedule_workflow_run(
+        &self,
+        spec: haven_tools::ScheduledToolRunSpec,
+    ) -> anyhow::Result<String>;
+
+    async fn workflow_run_cancellation_token(
+        &self,
+        tool_run_id: &str,
+    ) -> Option<tokio_util::sync::CancellationToken>;
+
     async fn attach_session(&self, tool_run_id: &str, session_id: &str);
 
     async fn claim_scheduled_execution(
@@ -699,6 +709,22 @@ impl ToolsFacadeToolRunAdapter {
 #[cfg(test)]
 #[async_trait]
 impl AgentToolRunPort for ToolsFacadeToolRunAdapter {
+    async fn schedule_workflow_run(
+        &self,
+        spec: haven_tools::ScheduledToolRunSpec,
+    ) -> anyhow::Result<String> {
+        self.tool_runs.schedule(spec).await
+    }
+
+    async fn workflow_run_cancellation_token(
+        &self,
+        tool_run_id: &str,
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        self.tool_runs
+            .workflow_run_cancellation_token(tool_run_id)
+            .await
+    }
+
     async fn attach_session(&self, tool_run_id: &str, session_id: &str) {
         self.tool_runs.attach_session(tool_run_id, session_id).await;
     }

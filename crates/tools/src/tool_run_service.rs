@@ -156,6 +156,7 @@ pub(crate) struct ScheduledToolRunEntry {
     pub(crate) tool_args: Option<Value>,
     pub(crate) prompt: Option<String>,
     pub(crate) watch_tool_run_id: Option<String>,
+    pub(crate) cancellation_token: CancellationToken,
 }
 
 struct ScheduledTerminalRetry {
@@ -732,10 +733,10 @@ impl ToolRunService {
     /// Stop ToolRun workers owned by the application.
     ///
     /// Running background processes are cancelled and become terminal so the
-    /// ToolRun board cannot retain a ghost `running` row. Pending scheduled rows
-    /// are left durable and are only stopped in memory; they can be restored by
-    /// the next process instead of being silently cancelled on a normal app
-    /// exit.
+    /// ToolRun board cannot retain a ghost `running` row. Pending schedules and
+    /// running Workflow ToolRuns are left durable and stopped only in memory;
+    /// the next process can restore them instead of silently cancelling them
+    /// on a normal app exit.
     pub async fn shutdown(&self) {
         let _shutdown = self.shutdown_gate.lock().await;
         if self.task_tracker.is_closed() && self.task_tracker.is_empty() {
@@ -760,7 +761,12 @@ impl ToolRunService {
                             ToolRunKind::Background | ToolRunKind::Scheduled,
                             ToolRunState::Running { .. }
                         )
-                    )
+                    ) && !(entry.kind == ToolRunKind::Scheduled
+                        && entry.scheduled.as_ref().is_some_and(|schedule| {
+                            schedule.mode == ScheduleMode::Tool
+                                && schedule.tool_name.as_deref()
+                                    == Some(crate::WORKFLOW_RUN_TOOL_NAME)
+                        }))
                 })
                 .map(|(id, _)| id.clone())
                 .collect::<Vec<_>>()
@@ -774,10 +780,11 @@ impl ToolRunService {
         self.task_tracker.wait().await;
     }
 
-    /// Post-restart cleanup: ToolRun rows a previous process left `running` are
-    /// stale (their child processes died with the app), so mark them failed.
+    /// Post-restart cleanup: background processes left `running` are failed;
+    /// scheduled Workflow runs are returned to `waiting` so their durable
+    /// child-call journal can resume or fail closed on an unknown outcome.
     /// Called once from the agent layer startup. Returns the number of rows
-    /// marked. Idempotent.
+    /// marked failed. Idempotent.
     pub async fn restore_after_restart(&self) -> usize {
         #[cfg(not(test))]
         cleanup_shell_output_logs_after_restart();
@@ -1284,10 +1291,10 @@ impl ToolRunService {
     }
 
     /// Request cancellation of a live ToolRun (kept for inspection afterwards).
-    /// A scheduled ToolRun can be cancelled only before execution is claimed;
-    /// after approval or operation start, cancellation returns `false` and the
-    /// claimed work reports its own terminal result. Background tool_runs retain
-    /// their process-signal behavior.
+    /// Scheduled ToolRuns can normally be cancelled only before execution is
+    /// claimed. A running Workflow is the exception: its durable claim and
+    /// cancellation token let cancellation stop the active child call safely.
+    /// Background tool_runs retain their process-signal behavior.
     pub async fn cancel(&self, tool_run_id: &str) -> bool {
         let mut tool_runs = self.tool_runs.write().await;
         let Some(entry) = tool_runs.get_mut(tool_run_id) else {
@@ -1307,7 +1314,7 @@ impl ToolRunService {
     }
 
     /// Request cancellation only when the ToolRun belongs to `session_id`.
-    /// Scheduled ToolRuns follow the same pre-execution-claim cancellation rule.
+    /// Scheduled ToolRuns follow the same claim rule as [`Self::cancel`].
     pub async fn cancel_for_session(&self, tool_run_id: &str, session_id: &str) -> bool {
         let mut tool_runs = self.tool_runs.write().await;
         let Some(entry) = tool_runs.get_mut(tool_run_id) else {
@@ -1597,9 +1604,9 @@ impl ToolRunService {
         }
     }
 
-    /// Re-arm persisted timers and dependency watchers. Running rows are first
-    /// marked failed by [`restore_after_restart`]; recovery stays in this
-    /// service rather than introducing a separate ToolRun registry.
+    /// Re-arm persisted timers and dependency watchers after interrupted rows
+    /// have been classified by [`restore_after_restart`]. Recovery stays in
+    /// this service rather than introducing a separate ToolRun registry.
     pub async fn restore_pending(self: &Arc<Self>) -> usize {
         let Some(store) = self.tool_run_store.read().await.clone() else {
             return 0;
@@ -1728,6 +1735,7 @@ impl ToolRunService {
                 tool_args,
                 prompt: row.prompt,
                 watch_tool_run_id: watch_tool_run_id.clone(),
+                cancellation_token: CancellationToken::new(),
             };
             let timer_entry = entry.clone();
             let tool_run_id = row.tool_run_id;
@@ -1763,6 +1771,25 @@ impl ToolRunService {
             self.fire_scheduled(&tool_run_id).await;
         }
         overdue
+    }
+
+    /// Return the cancellation authority for one live scheduled Workflow run.
+    /// Other scheduled tool calls retain the existing pre-claim-only cancel
+    /// behavior.
+    pub async fn workflow_run_cancellation_token(
+        &self,
+        tool_run_id: &str,
+    ) -> Option<CancellationToken> {
+        self.tool_runs
+            .read()
+            .await
+            .get(tool_run_id)
+            .and_then(|entry| entry.scheduled.as_ref())
+            .filter(|schedule| {
+                schedule.mode == ScheduleMode::Tool
+                    && schedule.tool_name.as_deref() == Some(crate::WORKFLOW_RUN_TOOL_NAME)
+            })
+            .map(|schedule| schedule.cancellation_token.clone())
     }
 }
 

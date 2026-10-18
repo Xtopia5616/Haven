@@ -58,6 +58,7 @@ fn tool_execution_outcome(outcome: ToolStepOutcome) -> ToolExecutionOutcome {
 struct AdmittedTool {
     plan_index: usize,
     receipt: Option<haven_tools::ConfirmationReceipt>,
+    nested_confirmation: Option<haven_tools::NestedConfirmationRequest>,
     concurrency: ToolConcurrency,
 }
 
@@ -135,6 +136,32 @@ impl ReActEngine {
             results: ToolBatchResults::new(plan.len()),
         };
 
+        // A nested confirmation suspends and later replays the parent entry
+        // point. Keep such an invocation isolated so a sibling tool in the
+        // same provider batch cannot be repeated across that boundary.
+        let has_nested_parent = plan.iter().any(|planned| {
+            matches!(
+                planned.tool_call.tool_name.as_str(),
+                haven_tools::CODEMODE_RUN_TOOL_NAME | haven_tools::WORKFLOW_RUN_TOOL_NAME
+            )
+        });
+        if has_nested_parent && plan.len() > 1 {
+            for (plan_index, planned) in plan.iter().enumerate() {
+                admission.results.set(
+                    plan_index,
+                    self.failed_admission_tool(
+                        session_id,
+                        step_number,
+                        planned,
+                        catalog,
+                        "CodeMode and Workflow calls must run alone when they may pause for nested confirmation".into(),
+                    )
+                    .await,
+                );
+            }
+            return admission;
+        }
+
         // The production pre-tool hook only reads the pending interaction and
         // evaluates the current authorization policy. Bound these independent
         // checks like execution, while `buffered` keeps their outputs in plan
@@ -207,6 +234,7 @@ impl ReActEngine {
                     admission.runnable.push(AdmittedTool {
                         plan_index,
                         receipt,
+                        nested_confirmation: None,
                         concurrency,
                     });
                 }
@@ -369,6 +397,7 @@ impl ReActEngine {
                         tool_index,
                         step_id,
                         receipt: admitted.receipt,
+                        nested_confirmation: admitted.nested_confirmation,
                         cancel,
                     })
                     .await;
@@ -445,6 +474,10 @@ impl ReActEngine {
             let Some(result) = results.take_completed(index) else {
                 continue;
             };
+            if let Some(nested) = result.nested_confirmation.clone() {
+                batch_state.nested_confirmation = Some((result.tool_index, nested));
+                continue;
+            }
             self.committed_ui
                 .publish_tool_call(&ctx.emitter, &ctx.session_id, &result.step_id)
                 .await;
@@ -611,7 +644,7 @@ impl ReActEngine {
         };
         let ToolBatchAdmission {
             runnable,
-            need_confirm,
+            mut need_confirm,
             results,
             ..
         } = admission;
@@ -636,7 +669,23 @@ impl ReActEngine {
         // assistant call. ToolCall cards publish when each call starts, and
         // observations publish as calls finish; only canonical projection
         // waits for the ordered batch.
-        if execution.cancelled || need_confirm.is_empty() {
+        let nested_confirmation = batch_state.nested_confirmation();
+        if let Some((tool_index, nested)) = nested_confirmation.as_ref() {
+            let planned = plan
+                .iter()
+                .find(|planned| planned.tool_index == *tool_index)
+                .ok_or_else(|| anyhow::anyhow!("nested confirmation has no parent tool call"))?;
+            need_confirm.push(crate::interaction::InteractionRequest::confirm_nested(
+                session_id,
+                step_number,
+                planned.tool_call.tool_call_id.clone().unwrap_or_default(),
+                planned.step_id.clone(),
+                planned.tool_index,
+                nested.clone(),
+            ));
+        }
+
+        if nested_confirmation.is_none() && (execution.cancelled || need_confirm.is_empty()) {
             let _timer =
                 self.metrics
                     .start(MetricsPhase::OrderedCommit, session_id, run_id, step_number);
@@ -970,10 +1019,21 @@ impl ReActEngine {
                     // gate may bypass it on resume. Siblings that were safe
                     // at admission have no receipt and are rechecked normally.
                     receipt: pending_request.and_then(|request| match &request.details {
-                        crate::interaction::InteractionDetails::Confirm { receipt, .. } => {
-                            receipt.clone()
-                        }
+                        crate::interaction::InteractionDetails::Confirm {
+                            receipt,
+                            nested_confirmation,
+                            ..
+                        } if nested_confirmation.is_none() => receipt.clone(),
                         _ => None,
+                    }),
+                    nested_confirmation: pending_request.and_then(|request| {
+                        match &request.details {
+                            crate::interaction::InteractionDetails::Confirm {
+                                nested_confirmation,
+                                ..
+                            } => nested_confirmation.clone(),
+                            _ => None,
+                        }
                     }),
                     concurrency,
                 });
@@ -1033,6 +1093,56 @@ impl ReActEngine {
                 cancel_res: cancel,
             })
             .await?;
+        if let Some((tool_index, nested)) = batch_state.nested_confirmation() {
+            if execution.cancelled {
+                return Ok(ToolBatchOutcome::Done(
+                    self.exit_cancelled(session_id, state, step_number).await,
+                ));
+            }
+            let planned = plan
+                .iter()
+                .find(|planned| planned.tool_index == tool_index)
+                .ok_or_else(|| anyhow::anyhow!("nested confirmation has no parent tool call"))?;
+            let request = crate::interaction::InteractionRequest::confirm_nested(
+                session_id,
+                step_number,
+                planned.tool_call.tool_call_id.clone().unwrap_or_default(),
+                planned.step_id.clone(),
+                planned.tool_index,
+                nested,
+            );
+            self.committed_ui
+                .publish_tool_call(emitter, session_id, &planned.step_id)
+                .await;
+            let plan_with_nested_confirmation =
+                super::tool_batch_plan::ConfirmationBatchPlan::from_plan(
+                    step_number,
+                    &plan,
+                    std::slice::from_ref(&request),
+                )?;
+            self.executor
+                .request_confirm_batch_with_plan(
+                    session_id,
+                    vec![request],
+                    plan_with_nested_confirmation,
+                )
+                .await?;
+            self.executor
+                .forget_interactions(session_id, &batch_state.completed_confirmation_ids())
+                .await?;
+            let mut pause = super::effects::EffectBatch::continue_batch();
+            pause.pause(
+                step_number + 1,
+                SessionStatus::Paused,
+                Some(haven_common::lifecycle::SessionWaitingReason::Confirmation),
+                None,
+                PauseReason::Confirm,
+            );
+            return Ok(self
+                .apply_committed_batch(&proj_ctx, state, pause)
+                .await?
+                .into());
+        }
         batch_state
             .project_ordered_results(self, &proj_ctx, execution.results, state)
             .await?;

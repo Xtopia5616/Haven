@@ -226,7 +226,7 @@ mod scheduled_authorization_tests {
                 })
                 .collect::<anyhow::Result<serde_json::Map<_, _>>>()?;
             let child = subcalls
-                .call(capability, Value::Object(child_input), cancel)
+                .call(&step_id, capability, Value::Object(child_input), cancel)
                 .await
                 .map_err(anyhow::Error::msg)?;
             Ok(ToolResult::from_output(
@@ -611,6 +611,7 @@ mod scheduled_authorization_tests {
         let port = supervisor.codemode_subcall_port(session_id, [tool_name.to_owned()]);
         let result = port
             .call(
+                0,
                 tool_name,
                 json!({"operation": "read"}),
                 CancellationToken::new(),
@@ -642,8 +643,8 @@ mod scheduled_authorization_tests {
             .await;
 
         let port = supervisor.codemode_subcall_port(session_id, [tool_name.to_owned()]);
-        for _ in 0..2 {
-            port.call(tool_name, json!({}), CancellationToken::new())
+        for call_index in 0..2 {
+            port.call(call_index, tool_name, json!({}), CancellationToken::new())
                 .await
                 .expect("CodeMode child call should execute");
         }
@@ -728,7 +729,7 @@ mod scheduled_authorization_tests {
                 session_id,
                 Arc::new(PolicyTestTool {
                     name: tool_name.into(),
-                    risk_level: RiskLevel::Critical,
+                    risk_level: RiskLevel::High,
                     on_execute: Some(Arc::new(move || {
                         executed_by_tool.store(true, std::sync::atomic::Ordering::SeqCst);
                     })),
@@ -740,6 +741,7 @@ mod scheduled_authorization_tests {
         let port = supervisor.codemode_subcall_port(session_id, [tool_name.to_owned()]);
         let error = port
             .call(
+                0,
                 tool_name,
                 json!({"operation": "write"}),
                 CancellationToken::new(),
@@ -749,6 +751,29 @@ mod scheduled_authorization_tests {
 
         assert!(error.contains("requires its own user confirmation"));
         assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
+        let nested = port
+            .pending_confirmation()
+            .expect("CodeMode must retain the exact child confirmation request");
+        assert_eq!(nested.call_index, 0);
+        let resumed = supervisor
+            .codemode_subcall_port_with_resume(
+                session_id,
+                [tool_name.to_owned()],
+                None,
+                Some(nested),
+            )
+            .unwrap();
+        let result = resumed
+            .call(
+                0,
+                tool_name,
+                json!({"operation": "write"}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("the resumed child should execute with its receipt");
+        assert!(result.success);
+        assert!(executed.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -776,7 +801,7 @@ mod scheduled_authorization_tests {
 
         let port = supervisor.codemode_subcall_port(session_id, std::iter::empty());
         let error = port
-            .call(tool_name, json!({}), CancellationToken::new())
+            .call(0, tool_name, json!({}), CancellationToken::new())
             .await
             .expect_err("unlisted tool must not reach authorization or execution");
 
@@ -825,7 +850,12 @@ mod scheduled_authorization_tests {
 
         let port = supervisor.workflow_subcall_port(session_id, [tool_name.to_owned()]);
         let result = port
-            .call(tool_name, json!({"id": "n-1"}), CancellationToken::new())
+            .call(
+                "read",
+                tool_name,
+                json!({"id": "n-1"}),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
 
@@ -870,8 +900,8 @@ mod scheduled_authorization_tests {
             .await;
 
         let port = supervisor.workflow_subcall_port(session_id, [tool_name.to_owned()]);
-        for _ in 0..2 {
-            port.call(tool_name, json!({}), CancellationToken::new())
+        for step_id in ["read", "read-again"] {
+            port.call(step_id, tool_name, json!({}), CancellationToken::new())
                 .await
                 .expect("Workflow child call should execute");
         }
@@ -980,7 +1010,7 @@ mod scheduled_authorization_tests {
                 session_id,
                 Arc::new(PolicyTestTool {
                     name: tool_name.into(),
-                    risk_level: RiskLevel::Critical,
+                    risk_level: RiskLevel::High,
                     on_execute: Some(Arc::new(move || {
                         executed_by_tool.store(true, std::sync::atomic::Ordering::SeqCst);
                     })),
@@ -992,6 +1022,7 @@ mod scheduled_authorization_tests {
         let port = supervisor.workflow_subcall_port(session_id, [tool_name.to_owned()]);
         let error = port
             .call(
+                "write",
                 tool_name,
                 json!({"id": "n-1", "text": "change"}),
                 CancellationToken::new(),
@@ -1001,6 +1032,29 @@ mod scheduled_authorization_tests {
 
         assert!(error.contains("requires its own user confirmation"));
         assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
+        let nested = port
+            .pending_confirmation()
+            .expect("Workflow must retain the exact child confirmation request");
+        assert_eq!(nested.call_index, 0);
+        let resumed = supervisor
+            .workflow_subcall_port_with_resume(
+                session_id,
+                [tool_name.to_owned()],
+                None,
+                Some(nested),
+            )
+            .unwrap();
+        let result = resumed
+            .call(
+                "write",
+                tool_name,
+                json!({"id": "n-1", "text": "change"}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("the resumed child should execute with its receipt");
+        assert!(result.result.success);
+        assert!(executed.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -1028,7 +1082,7 @@ mod scheduled_authorization_tests {
 
         let port = supervisor.workflow_subcall_port(session_id, std::iter::empty());
         let error = port
-            .call(tool_name, json!({}), CancellationToken::new())
+            .call("read", tool_name, json!({}), CancellationToken::new())
             .await
             .expect_err("an unlisted child must stop before authorization");
 

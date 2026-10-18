@@ -139,6 +139,7 @@ impl ToolRunService {
             mutation
         };
 
+        let cancellation_token = CancellationToken::new();
         let entry = ScheduledToolRunEntry {
             title: title.clone(),
             body: body.clone(),
@@ -148,6 +149,7 @@ impl ToolRunService {
             tool_args: tool_args.clone(),
             prompt: prompt.clone(),
             watch_tool_run_id: watch_tool_run_id.clone(),
+            cancellation_token,
         };
         self.tool_runs.write().await.insert(
             tool_run_id.clone(),
@@ -811,14 +813,12 @@ impl ToolRunService {
         owner: Option<&str>,
     ) -> anyhow::Result<bool> {
         let _terminal = self.terminal_transition.lock().await;
-        if self
+        let execution_claim = self
             .scheduled_execution_claims
             .read()
             .await
-            .contains_key(tool_run_id)
-        {
-            return Ok(false);
-        }
+            .get(tool_run_id)
+            .cloned();
         let (schedule, started_at, session_id) = {
             let tool_runs = self.tool_runs.read().await;
             let Some(tool_run) = tool_runs.get(tool_run_id) else {
@@ -847,18 +847,35 @@ impl ToolRunService {
             };
             (schedule.clone(), started_at, tool_run.session_id.clone())
         };
+        let claimed_workflow = execution_claim.is_some()
+            && schedule.mode == ScheduleMode::Tool
+            && schedule.tool_name.as_deref() == Some(crate::WORKFLOW_RUN_TOOL_NAME)
+            && !started_at.is_empty();
+        if execution_claim.is_some() && !claimed_workflow {
+            return Ok(false);
+        }
         let timestamps = TerminalTimestamps::now(started_at);
         if let Some(store) = self.tool_run_store.read().await.clone() {
             let mut last_error = None;
             let retry_policy = ToolRunStoreRetryPolicy::inline_store();
             for attempt in 1..=retry_policy.max_attempts() {
-                match store
-                    .cancel_scheduled_tool_run(
-                        tool_run_id.to_string(),
-                        timestamps.finished_at.clone(),
-                    )
-                    .await
-                {
+                let result = if let Some(claim_id) = execution_claim.as_deref() {
+                    store
+                        .cancel_claimed_workflow_tool_run(
+                            tool_run_id.to_string(),
+                            claim_id.to_string(),
+                            timestamps.finished_at.clone(),
+                        )
+                        .await
+                } else {
+                    store
+                        .cancel_scheduled_tool_run(
+                            tool_run_id.to_string(),
+                            timestamps.finished_at.clone(),
+                        )
+                        .await
+                };
+                match result {
                     Ok(true) => {
                         last_error = None;
                         break;
@@ -893,6 +910,7 @@ impl ToolRunService {
             return Ok(false);
         }
         tool_run.state = state.clone();
+        schedule.cancellation_token.cancel();
         self.scheduled_execution_claims
             .write()
             .await

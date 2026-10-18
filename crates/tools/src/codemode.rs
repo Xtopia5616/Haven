@@ -109,6 +109,19 @@ pub struct CodeModeCallResult {
     pub truncated: bool,
 }
 
+/// One independently authorized nested operation that needs its own user
+/// decision. The Agent attaches the parent provider tool identity when it
+/// turns this into a durable session confirmation request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NestedConfirmationRequest {
+    pub call_index: u32,
+    pub step_id: String,
+    pub tool_name: String,
+    pub input: Value,
+    pub receipt: crate::ConfirmationReceipt,
+}
+
 /// The only host capability exposed to CodeMode JavaScript.
 ///
 /// The implementation must resolve the session and authorization context from
@@ -117,10 +130,18 @@ pub struct CodeModeCallResult {
 pub trait CodeModeSubcallPort: Send + Sync {
     async fn call(
         &self,
+        call_index: u32,
         tool_name: &str,
         input: Value,
         cancel: CancellationToken,
     ) -> Result<CodeModeCallResult, String>;
+
+    /// A confirmation-required call pauses the enclosing invocation after
+    /// returning from the evaluator, even if untrusted script code catches
+    /// the bridge error.
+    fn pending_confirmation(&self) -> Option<NestedConfirmationRequest> {
+        None
+    }
 
     /// Return review identities created by completed child calls. This stays
     /// out of the JavaScript result and is projected only into the parent UI
@@ -297,7 +318,12 @@ impl CodeModeEvaluator {
                     call_count += 1;
                     let call_cancel = cancel.child_token();
                     let child_cancel = call_cancel.clone();
-                    let call = subcalls.call(&request.tool_name, request.input, call_cancel);
+                    let call = subcalls.call(
+                        call_count.saturating_sub(1) as u32,
+                        &request.tool_name,
+                        request.input,
+                        call_cancel,
+                    );
                     let result = tokio::select! {
                         result = call => result,
                         _ = cancel.cancelled() => {
@@ -641,6 +667,7 @@ mod tests {
     impl CodeModeSubcallPort for BlockingSubcalls {
         async fn call(
             &self,
+            _call_index: u32,
             _tool_name: &str,
             _input: Value,
             cancel: CancellationToken,
@@ -655,6 +682,7 @@ mod tests {
     impl CodeModeSubcallPort for EchoSubcalls {
         async fn call(
             &self,
+            _call_index: u32,
             tool_name: &str,
             input: Value,
             _cancel: CancellationToken,

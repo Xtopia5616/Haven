@@ -28,6 +28,19 @@ struct SharedToolRunAgentCapability {
 
 #[async_trait::async_trait]
 impl ToolRunAgentCapability for SharedToolRunAgentCapability {
+    async fn schedule(&self, spec: crate::ScheduledToolRunSpec) -> anyhow::Result<String> {
+        self.service.schedule(spec).await
+    }
+
+    async fn workflow_run_cancellation_token(
+        &self,
+        tool_run_id: &str,
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        self.service
+            .workflow_run_cancellation_token(tool_run_id)
+            .await
+    }
+
     async fn attach_session(&self, tool_run_id: &str, session_id: &str) {
         self.service.attach_session(tool_run_id, session_id).await;
     }
