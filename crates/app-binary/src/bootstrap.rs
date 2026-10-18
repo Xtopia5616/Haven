@@ -204,11 +204,17 @@ pub(crate) fn run() {
                 .into());
             }
 
-            if !autostart::is_autostart_launch()
-                && let Some(window) = app.get_webview_window("main")
-            {
-                log_ignored_result!("startup.main_window.show", window.show());
-                log_ignored_result!("startup.main_window.set_focus", window.set_focus());
+            if let Some(window) = app.get_webview_window("main") {
+                if tauri::is_dev() {
+                    log_ignored_result!(
+                        "startup.main_window.set_development_title",
+                        window.set_title("Haven · 开发版")
+                    );
+                }
+                if !autostart::is_autostart_launch() {
+                    log_ignored_result!("startup.main_window.show", window.show());
+                    log_ignored_result!("startup.main_window.set_focus", window.set_focus());
+                }
             }
 
             #[cfg(windows)]

@@ -49,6 +49,8 @@
 		status,
 		content,
 	}: Props = $props();
+
+	const isDevelopmentBuild = import.meta.env.DEV;
 </script>
 
 {#snippet themeControl()}
@@ -88,6 +90,9 @@
 					<Logo size={22} withText={true} />
 				{/snippet}
 			</MaterialButton>
+			{#if isDevelopmentBuild}
+				<span class="development-badge" title="此窗口连接 Haven 开发环境">开发版</span>
+			{/if}
 		</div>
 		<div class="titlebar-right">
 			{@render shellControls()}
@@ -163,6 +168,24 @@
 	.titlebar-right {
 		display: flex;
 		align-items: center;
+	}
+	.titlebar-left {
+		gap: var(--md-sys-space-sm);
+	}
+	.development-badge {
+		display: inline-flex;
+		align-items: center;
+		min-height: 24px;
+		padding: 0 var(--md-sys-space-sm);
+		border: 1px solid color-mix(in srgb, var(--md-sys-color-tertiary) 45%, transparent);
+		border-radius: var(--md-sys-shape-full);
+		background: color-mix(in srgb, var(--md-sys-color-tertiary-container) 78%, transparent);
+		color: var(--md-sys-color-on-tertiary-container);
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		line-height: 1;
+		-webkit-app-region: no-drag;
 	}
 	.workspace-rail {
 		display: none;

@@ -3,6 +3,16 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 import AppShell from './AppShell.svelte';
 
 describe('AppShell', () => {
+	it('marks development builds in the window chrome', () => {
+		render(AppShell, { activeTab: 'memory', tabs: [] } as any);
+
+		if (import.meta.env.DEV) {
+			expect(screen.getByText('开发版')).toBeTruthy();
+		} else {
+			expect(screen.queryByText('开发版')).toBeNull();
+		}
+	});
+
 	it('refreshes the application from both responsive Haven title buttons', async () => {
 		const onRefreshApp = vi.fn();
 		render(AppShell, { activeTab: 'memory', tabs: [], onRefreshApp } as any);

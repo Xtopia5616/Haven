@@ -752,6 +752,19 @@ fn test_app_data_dir_on_windows_uses_appdata() {
 }
 
 #[test]
+fn development_tauri_config_uses_a_distinct_instance_identifier() {
+    let production: serde_json::Value =
+        serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");
+    let development: serde_json::Value =
+        serde_json::from_str(include_str!("../tauri.dev.conf.json"))
+            .expect("valid development Tauri config");
+
+    assert_eq!(production["identifier"], "com.haven.app");
+    assert_eq!(development["identifier"], "com.haven.app.dev");
+    assert_ne!(production["identifier"], development["identifier"]);
+}
+
+#[test]
 fn tauri_csp_is_explicit_and_keeps_only_required_capabilities() {
     let config: serde_json::Value =
         serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");

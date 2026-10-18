@@ -40,11 +40,21 @@ corepack pnpm run dev
 如果浏览器预览已经先启动，UI 入口会复用现有的 Haven Vite 进程，不会再启动第二个
 前端服务；如果端口被其它程序占用，会给出明确错误。
 
-也可以直接使用 Tauri CLI。若尚未安装，可执行 `cargo install tauri-cli --version "^2"`，随后运行：
+开发窗口会标记为“开发版”，并使用独立的 Tauri 单实例标识与 `%APPDATA%\haven-dev`
+数据目录；Linux/macOS 开发环境使用 `~/.local/share/haven-dev`。它可以与已安装的 Haven
+并排运行，开发配置、数据库、日志和媒体不会混入正式版数据。
+
+也可以直接使用 Tauri CLI 构建 Release 包。若尚未安装，可执行 `cargo install tauri-cli --version "^2"`，随后运行：
 
 ```powershell
-cargo tauri dev
 cargo tauri build
+```
+
+直接运行开发命令时，请先设置隔离的数据目录：
+
+```powershell
+$env:HAVEN_DATA_DIR = Join-Path $env:APPDATA 'haven-dev'
+cargo tauri dev --config crates/app-binary/tauri.dev.conf.json
 ```
 
 `cargo tauri build` 会先执行 `corepack pnpm --dir ui run build`，不依赖开发服务器；可在

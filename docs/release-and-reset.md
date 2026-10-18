@@ -73,13 +73,13 @@ Skill 名称现在统一限制为 1–128 个 ASCII 字母、数字、`-` 或 `_
 
 ## 用户数据位置
 
-Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：
+Windows 正式版默认数据根目录是 `%APPDATA%\haven`。其中包括：
 
 - `config.toml`：模型、工具与安全确认配置；
 - `haven.db`（及 SQLite journal/WAL）：会话、记忆与任务；
 - `logs/`、`media/`、`skills/` 与 `inbox/`：日志、生成媒体、本地技能及多会话消息。
 
-非 Windows 开发环境使用 `~/.local/share/haven`。路径由 `haven_common::config::ConfigLoader::data_dir()` 统一决定，宿主层不得另行推导。
+非 Windows 正式版使用 `~/.local/share/haven`。通过 `pnpm run dev` 启动的开发版使用独立的 `%APPDATA%\haven-dev`（非 Windows 为 `~/.local/share/haven-dev`），可与正式版并行运行；开发配置、数据库、日志、技能和媒体不会与正式版共享。路径由 `haven_common::config::ConfigLoader::data_dir()` 统一决定；特殊运行可通过 `HAVEN_DATA_DIR` 显式指定数据根目录。
 
 ## 重置步骤
 

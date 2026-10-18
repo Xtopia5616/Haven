@@ -316,29 +316,37 @@ fn invalid_config_entry(config: &AppConfig) -> Option<&'static str> {
 }
 
 impl ConfigLoader {
-    /// Returns the default config path: `%APPDATA%/haven/config.toml` on Windows.
+    /// Returns the default config path under the application's data directory.
     pub fn default_path() -> PathBuf {
         Self::data_dir().join("config.toml")
     }
 
-    /// Returns the Haven data directory: `%APPDATA%/haven` on Windows,
-    /// `~/.local/share/haven` elsewhere. Single source of truth for every
-    /// persisted artifact (config, database, logs, skills); the app binary
-    /// must not re-implement this.
+    /// Returns the Haven data directory. `HAVEN_DATA_DIR` can override the
+    /// platform default (`%APPDATA%/haven` on Windows or
+    /// `~/.local/share/haven` elsewhere) for isolated development or support
+    /// runs. This remains the single source of truth for config, database,
+    /// logs, media and skills.
     pub fn data_dir() -> PathBuf {
-        #[cfg(target_os = "windows")]
-        {
-            let base = std::env::var("APPDATA").unwrap_or_else(|_| {
-                let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:".into());
-                format!("{}\\AppData\\Roaming", home)
-            });
-            PathBuf::from(base).join("haven")
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            PathBuf::from(home).join(".local/share/haven")
-        }
+        data_dir_with_override(
+            std::env::var_os("HAVEN_DATA_DIR")
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from),
+            || {
+                #[cfg(target_os = "windows")]
+                {
+                    let base = std::env::var("APPDATA").unwrap_or_else(|_| {
+                        let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:".into());
+                        format!("{}\\AppData\\Roaming", home)
+                    });
+                    PathBuf::from(base).join("haven")
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                    PathBuf::from(home).join(".local/share/haven")
+                }
+            },
+        )
     }
 
     /// Default skills directory: `<data_dir>/skills`.
@@ -587,6 +595,13 @@ impl AppConfig {
     }
 }
 
+fn data_dir_with_override(
+    override_path: Option<PathBuf>,
+    default_path: impl FnOnce() -> PathBuf,
+) -> PathBuf {
+    override_path.unwrap_or_else(default_path)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -594,6 +609,24 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_directory_override_skips_the_platform_default() {
+        let override_path = PathBuf::from("isolated-data-root");
+        let default_was_called = std::cell::Cell::new(false);
+
+        let selected = data_dir_with_override(Some(override_path.clone()), || {
+            default_was_called.set(true);
+            PathBuf::from("shared-data-root")
+        });
+
+        assert_eq!(selected, override_path);
+        assert!(!default_was_called.get());
+
+        let selected = data_dir_with_override(None, || PathBuf::from("platform-default"));
+        assert_eq!(selected, PathBuf::from("platform-default"));
+    }
+
     #[test]
     fn default_config_has_expected_values() {
         let cfg = AppConfig::default();

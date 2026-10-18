@@ -368,11 +368,11 @@ try {
 
 | 域 | 大小写 | 示例 |
 |---|---|---|
-| 窗口标题 / 托盘 tooltip / 系统通知标题 | `Haven` | `tauri.conf.json` `productName`、`app-binary` 通知与托盘文案 |
+| 窗口标题 / 托盘 tooltip / 系统通知标题 | 正式版 `Haven`；开发窗口 `Haven · 开发版` | `tauri.conf.json` `productName`、App 启动时的开发标题、通知与托盘文案 |
 | 通知默认标题（`notify` / `schedule` 工具） | `Haven` | `tool_contract.rs` / `notify.rs` / `scheduled_tool_run.rs` 默认 title |
 | 前端 UI 文案（欢迎页、气泡标签、设置页） | `Haven` | `+page.svelte`、`ChatBubble.svelte`、`Logo.svelte` |
 | Windows 计划任务名（Action Scheduler 中展示） | `Haven` | `app-binary/src/autostart.rs` `ACTION_NAME` |
-| 数据目录 / 运行时临时根 / 媒体存储根 / 日志文件名 | `haven` | `ConfigLoader::data_dir()`、`default_runtime_temp_root()`、`default_generated_media_root()`、`haven.log` |
+| 数据目录 / 运行时临时根 / 媒体存储根 / 日志文件名 | `haven`；开发数据目录 `haven-dev` | `ConfigLoader::data_dir()`、`default_runtime_temp_root()`、`default_generated_media_root()`、`haven.log` |
 | 进程名 / crate / 包名 / Tauri identifier | `haven` | `haven-app-binary`、`haven-ui`、`com.haven.app` |
 | localStorage / kv 键 | `haven` | `haven.theme`、`haven.accent`、`haven.no_auto_restore` |
 | MCP `clientInfo.name` 等协议标识 | `haven` | `crates/mcp/src/client.rs` |
