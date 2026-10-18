@@ -1312,3 +1312,4 @@
 - [1321：嵌套确认续接与持久 Workflow ToolRun](1321-resumable-nested-workflow-executions.md)
 - [1322：Workflow 定义库、运行进度与周期调度](1322-workflow-library-progress-and-recurring-runs.md)
 - [1323：基于 ToolRun 的周期新会话计划](1323-recurring-session-schedules-on-toolruns.md)
+- [1324：统一 Session 创建来源并收窄 ToolRun](1324-session-creation-and-background-toolrun-boundaries.md)
