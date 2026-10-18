@@ -63,7 +63,10 @@ pub use repositories::session_events::{
     USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
 };
 pub use repositories::session_steps::{SessionStep, ToolStepOutcome, ToolStepWrite};
-pub use repositories::sessions::{Session, SessionOrigin};
+pub use repositories::sessions::{
+    Session, SessionCreation, SessionCreationMethod, SessionCreationSource, SessionCreator,
+    SessionLink,
+};
 pub use repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
 pub use repositories::tool_run_store::ToolRunStore;
 pub use repositories::tool_runs::{ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow};

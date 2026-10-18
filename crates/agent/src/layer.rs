@@ -994,12 +994,14 @@ impl AgentLayer {
                                         })
                                     } else {
                                         match agent
-                                            .create_session_with_first_message_and_origin(
+                                            .create_session_with_first_message_and_creation(
                                                 prompt,
                                                 &[],
                                                 false,
                                                 true,
-                                                haven_memory::SessionOrigin::User,
+                                                haven_memory::SessionCreation::scheduled(
+                                                    fired.tool_run_id.clone(),
+                                                ),
                                             )
                                             .await
                                         {
@@ -1462,28 +1464,28 @@ impl AgentLayer {
         attachments: &[haven_common::types::MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<CreatedSession> {
-        self.create_session_with_first_message_and_origin(
+        self.create_session_with_first_message_and_creation(
             input,
             attachments,
             voice,
             true,
-            haven_memory::SessionOrigin::User,
+            haven_memory::SessionCreation::user_new(),
         )
         .await
     }
 
-    /// Same as [`Self::create_session_with_first_message`] with a durable
-    /// origin that determines the first user message type.
+    /// Same as [`Self::create_session_with_first_message`] with durable
+    /// creation metadata that determines the first user message type.
     /// When `dispatch` is false, the session is loaded but left non-Pending so
     /// the caller can register inbox parent links before waking the dispatcher.
     /// Returns the created session and its first durable user message identity.
-    pub(crate) async fn create_session_with_first_message_and_origin(
+    pub(crate) async fn create_session_with_first_message_and_creation(
         &self,
         input: &str,
         attachments: &[haven_common::types::MessageAttachment],
         voice: bool,
         dispatch: bool,
-        origin: haven_memory::SessionOrigin,
+        creation: haven_memory::SessionCreation,
     ) -> anyhow::Result<CreatedSession> {
         // Keep creation, first-message persistence, and actor registration in
         // one lifecycle window. A concurrent history clear must observe either
@@ -1493,7 +1495,7 @@ impl AgentLayer {
         let record = self
             .executor
             .session_store()
-            .create_session_with_origin(input, origin)
+            .create_session_with_creation(input, creation)
             .await?;
         // The first user turn (and its attachments) must be on disk BEFORE
         // the dispatcher can pick the session up; if persisting fails, remove
@@ -1521,7 +1523,7 @@ impl AgentLayer {
         // User-originated sessions get a title as soon as their first input is
         // durable. Peer kickoff sessions use their explicit title/fallback
         // path below and must not spend a small-model call here.
-        if dispatch && record.origin == haven_memory::SessionOrigin::User {
+        if dispatch && record.creation.creator == haven_memory::SessionCreator::User {
             self.spawn_title_generation(&record.session_id);
         }
         if dispatch {
@@ -1743,14 +1745,12 @@ impl AgentLayer {
         // Create without dispatch so parent/child inbox links exist before the
         // child can be claimed (cascade end must see `parent` immediately).
         let mut session = self
-            .create_session_with_first_message_and_origin(
+            .create_session_with_first_message_and_creation(
                 &brief,
                 &[],
                 false,
                 false,
-                haven_memory::SessionOrigin::AgentSpawn {
-                    parent_session_id: req.parent_session_id.clone(),
-                },
+                haven_memory::SessionCreation::agent_spawn(req.parent_session_id.clone()),
             )
             .await?
             .session;
@@ -2112,10 +2112,8 @@ mod tests {
                 .unwrap();
             assert_eq!(stored_peer.title, expected_title);
             assert_eq!(
-                stored_peer.origin,
-                haven_memory::SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.session_id.clone(),
-                }
+                stored_peer.creation,
+                haven_memory::SessionCreation::agent_spawn(parent.session_id.clone())
             );
             if let Some(title) = title.filter(|_| !fail_write) {
                 expected_title_events.push((result.session_id.clone(), title.to_string()));
@@ -2184,12 +2182,12 @@ mod tests {
             .unwrap();
 
         let error = agent
-            .create_session_with_first_message_and_origin(
+            .create_session_with_first_message_and_creation(
                 "first user input",
                 &[],
                 false,
                 false,
-                haven_memory::SessionOrigin::User,
+                haven_memory::SessionCreation::user_new(),
             )
             .await
             .unwrap_err();
@@ -2247,12 +2245,12 @@ mod tests {
         agent.events.set_emitter(events.clone());
 
         let created = agent
-            .create_session_with_first_message_and_origin(
+            .create_session_with_first_message_and_creation(
                 "input that starts title generation",
                 &[],
                 false,
                 true,
-                haven_memory::SessionOrigin::User,
+                haven_memory::SessionCreation::user_new(),
             )
             .await
             .unwrap();

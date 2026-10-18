@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 47;
+pub const SCHEMA_VERSION: i32 = 48;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -20,19 +20,39 @@ const SCHEMA_SQL: &[&str] = &[
         run_end_reason TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-        origin TEXT NOT NULL DEFAULT 'user'
-            CHECK(origin IN ('user','agent_spawn','fork')),
-        parent_session_id TEXT,
-        fork_source_message_id TEXT,
-        CHECK((origin = 'user' AND parent_session_id IS NULL
-                AND fork_source_message_id IS NULL)
-            OR (origin = 'agent_spawn' AND parent_session_id IS NOT NULL
-                AND length(trim(parent_session_id)) > 0
-                AND fork_source_message_id IS NULL)
-            OR (origin = 'fork' AND parent_session_id IS NOT NULL
-                AND length(trim(parent_session_id)) > 0
-                AND fork_source_message_id IS NOT NULL
-                AND length(trim(fork_source_message_id)) > 0))
+        creator TEXT NOT NULL DEFAULT 'user'
+            CHECK(creator IN ('user','agent','scheduler','system')),
+        creation_method TEXT NOT NULL DEFAULT 'new'
+            CHECK(creation_method IN ('new','agent_spawn','fork','scheduled')),
+        source_kind TEXT NOT NULL DEFAULT 'none'
+            CHECK(source_kind IN ('none','session','message','tool_run')),
+        source_session_id TEXT,
+        source_message_id TEXT,
+        source_tool_run_id TEXT,
+        CHECK((creator = 'user' AND creation_method = 'new' AND source_kind = 'none'
+                AND source_session_id IS NULL AND source_message_id IS NULL AND source_tool_run_id IS NULL)
+            OR (creator = 'system' AND creation_method = 'new' AND source_kind = 'none'
+                AND source_session_id IS NULL AND source_message_id IS NULL AND source_tool_run_id IS NULL)
+            OR (creator = 'agent' AND creation_method = 'agent_spawn' AND source_kind = 'session'
+                AND source_session_id IS NOT NULL AND length(trim(source_session_id)) > 0
+                AND source_message_id IS NULL AND source_tool_run_id IS NULL)
+            OR (creator = 'user' AND creation_method = 'fork' AND source_kind = 'message'
+                AND source_session_id IS NOT NULL AND length(trim(source_session_id)) > 0
+                AND source_message_id IS NOT NULL AND length(trim(source_message_id)) > 0
+                AND source_tool_run_id IS NULL)
+            OR (creator = 'scheduler' AND creation_method = 'scheduled' AND source_kind = 'tool_run'
+                AND source_session_id IS NULL AND source_message_id IS NULL
+                AND source_tool_run_id IS NOT NULL AND length(trim(source_tool_run_id)) > 0))
+    )",
+    // Explicit symmetric links connect independent sessions without changing
+    // their creation provenance. IDs intentionally have no FK so a deleted
+    // session does not rewrite the surviving session's relationship history.
+    "CREATE TABLE IF NOT EXISTS session_links (
+        session_id TEXT NOT NULL,
+        related_session_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        CHECK(session_id < related_session_id),
+        PRIMARY KEY(session_id, related_session_id)
     )",
     "CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
@@ -323,7 +343,8 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_session_kind ON llm_usage(session_id, call_kind)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)",
-    "CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_source_session ON sessions(source_session_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_session_links_related ON session_links(related_session_id, session_id)",
 ];
 
 /// Vector index for semantic memory. `entity_type` selects the owning memory
@@ -547,6 +568,11 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("messages", "ui_metadata"),
     ("messages", "media_inputs"),
     ("session_events", "payload"),
+    ("sessions", "creator"),
+    ("sessions", "creation_method"),
+    ("sessions", "source_kind"),
+    ("sessions", "source_tool_run_id"),
+    ("session_links", "related_session_id"),
     ("pending_session_inputs", "disposition"),
     ("session_authorization_grants", "permission_target"),
     ("session_authorization_grants", "session_id"),

@@ -102,10 +102,10 @@ impl SessionStore {
         }
 
         let session_id = haven_common::types::new_id("ses");
-        let origin = SessionOrigin::Fork {
-            parent_session_id: snapshot.parent_session_id.clone(),
-            source_message_id: snapshot.source_message_id.clone(),
-        };
+        let creation = SessionCreation::fork(
+            snapshot.parent_session_id.clone(),
+            snapshot.source_message_id.clone(),
+        );
         let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         let conn = self.db.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
@@ -140,9 +140,9 @@ impl SessionStore {
 
             conn.execute(
                 "INSERT INTO sessions (
-                    id, input_text, status, created_at, updated_at, origin,
-                    parent_session_id, fork_source_message_id
-                 ) VALUES (?1, ?2, 'pending', ?3, ?3, 'fork', ?4, ?5)",
+                    id, input_text, status, created_at, updated_at, creator,
+                    creation_method, source_kind, source_session_id, source_message_id
+                 ) VALUES (?1, ?2, 'pending', ?3, ?3, 'user', 'fork', 'message', ?4, ?5)",
                 rusqlite::params![
                     session_id,
                     snapshot.input_text,
@@ -310,7 +310,7 @@ impl SessionStore {
             run_end_reason: None,
             created_at: now.clone(),
             updated_at: now,
-            origin,
+            creation,
         })
     }
 }

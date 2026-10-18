@@ -35,20 +35,23 @@ fn session_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<String> {
 fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
     let id = session_id_from_row(row)?;
     let status = row.get::<_, String>(3)?;
-    let origin = SessionOrigin::from_storage(
+    let creation = SessionCreation::from_storage(
         row.get::<_, String>(6)?,
-        row.get::<_, Option<String>>(7)?,
-        row.get::<_, Option<String>>(8)?,
+        row.get::<_, String>(7)?,
+        row.get::<_, String>(8)?,
+        row.get::<_, Option<String>>(9)?,
+        row.get::<_, Option<String>>(10)?,
+        row.get::<_, Option<String>>(11)?,
     )?;
     Ok(Session {
         session_id: id,
         input_text: row.get(1)?,
         title: row.get(2)?,
         status: SessionStatus::from_status_str(&status),
-        run_end_reason: row.get(9)?,
+        run_end_reason: row.get(12)?,
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
-        origin,
+        creation,
     })
 }
 
@@ -86,145 +89,395 @@ pub struct Session {
     pub run_end_reason: Option<String>,
     pub created_at: String,
     pub updated_at: String,
-    #[serde(default)]
-    pub origin: SessionOrigin,
+    pub creation: SessionCreation,
 }
 
-/// Durable provenance for a session. Forks preserve the source session and
-/// selected user message while keeping their transcript in a separate session.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SessionOrigin {
+/// Identity of the actor responsible for creating a session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionCreator {
     #[default]
     User,
-    AgentSpawn {
-        parent_session_id: String,
+    Agent,
+    Scheduler,
+    System,
+}
+
+impl SessionCreator {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Agent => "agent",
+            Self::Scheduler => "scheduler",
+            Self::System => "system",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::User),
+            "agent" => Some(Self::Agent),
+            "scheduler" => Some(Self::Scheduler),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+}
+
+/// Operation that created the durable session record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionCreationMethod {
+    New,
+    AgentSpawn,
+    Fork,
+    Scheduled,
+}
+
+impl SessionCreationMethod {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::AgentSpawn => "agent_spawn",
+            Self::Fork => "fork",
+            Self::Scheduled => "scheduled",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "new" => Some(Self::New),
+            "agent_spawn" => Some(Self::AgentSpawn),
+            "fork" => Some(Self::Fork),
+            "scheduled" => Some(Self::Scheduled),
+            _ => None,
+        }
+    }
+}
+
+/// Typed immediate source for a session creation. Source identities are
+/// provenance, not foreign keys, so source deletion never rewrites history.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionCreationSource {
+    #[default]
+    None,
+    Session {
+        session_id: String,
     },
-    Fork {
-        parent_session_id: String,
-        source_message_id: String,
+    Message {
+        session_id: String,
+        message_id: String,
+    },
+    ToolRun {
+        tool_run_id: String,
     },
 }
 
-impl SessionOrigin {
+/// Durable classification of who created a session, how it was created, and
+/// which existing entity directly caused the creation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionCreation {
+    pub creator: SessionCreator,
+    #[serde(default)]
+    pub method: SessionCreationMethod,
+    #[serde(default)]
+    pub source: SessionCreationSource,
+}
+
+impl Default for SessionCreationMethod {
+    fn default() -> Self {
+        Self::New
+    }
+}
+
+impl SessionCreation {
+    pub fn user_new() -> Self {
+        Self::default()
+    }
+
+    pub fn system_new() -> Self {
+        Self {
+            creator: SessionCreator::System,
+            ..Self::default()
+        }
+    }
+
+    pub fn agent_spawn(parent_session_id: impl Into<String>) -> Self {
+        Self {
+            creator: SessionCreator::Agent,
+            method: SessionCreationMethod::AgentSpawn,
+            source: SessionCreationSource::Session {
+                session_id: parent_session_id.into(),
+            },
+        }
+    }
+
+    pub fn fork(
+        parent_session_id: impl Into<String>,
+        source_message_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            creator: SessionCreator::User,
+            method: SessionCreationMethod::Fork,
+            source: SessionCreationSource::Message {
+                session_id: parent_session_id.into(),
+                message_id: source_message_id.into(),
+            },
+        }
+    }
+
+    pub fn scheduled(tool_run_id: impl Into<String>) -> Self {
+        Self {
+            creator: SessionCreator::Scheduler,
+            method: SessionCreationMethod::Scheduled,
+            source: SessionCreationSource::ToolRun {
+                tool_run_id: tool_run_id.into(),
+            },
+        }
+    }
+
     pub(crate) const fn first_user_message_type(
         &self,
     ) -> haven_common::types::TranscriptMessageKind {
-        match self {
-            Self::User => haven_common::types::TranscriptMessageKind::Text,
-            Self::AgentSpawn { .. } => haven_common::types::TranscriptMessageKind::PeerKickoff,
-            Self::Fork { .. } => haven_common::types::TranscriptMessageKind::Text,
+        match self.method {
+            SessionCreationMethod::AgentSpawn => {
+                haven_common::types::TranscriptMessageKind::PeerKickoff
+            }
+            SessionCreationMethod::New
+            | SessionCreationMethod::Fork
+            | SessionCreationMethod::Scheduled => haven_common::types::TranscriptMessageKind::Text,
         }
     }
 
-    fn storage_parts(&self) -> (&'static str, Option<&str>, Option<&str>) {
-        match self {
-            Self::User => ("user", None, None),
-            Self::AgentSpawn { parent_session_id } => {
-                ("agent_spawn", Some(parent_session_id), None)
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.has_valid_shape(),
+            "session creator, creation method, and source do not match"
+        );
+        match &self.source {
+            SessionCreationSource::None => {}
+            SessionCreationSource::Session { session_id } => anyhow::ensure!(
+                is_canonical_id(session_id, "ses"),
+                "invalid source session id"
+            ),
+            SessionCreationSource::Message {
+                session_id,
+                message_id,
+            } => {
+                anyhow::ensure!(
+                    is_canonical_id(session_id, "ses"),
+                    "invalid source session id"
+                );
+                anyhow::ensure!(
+                    is_canonical_id(message_id, "msg"),
+                    "invalid source message id"
+                );
             }
-            Self::Fork {
-                parent_session_id,
-                source_message_id,
-            } => ("fork", Some(parent_session_id), Some(source_message_id)),
+            SessionCreationSource::ToolRun { tool_run_id } => anyhow::ensure!(
+                is_canonical_id(tool_run_id, "toolrun"),
+                "invalid source tool_run_id"
+            ),
         }
+        Ok(())
     }
 
     fn from_storage(
-        origin: String,
-        parent_session_id: Option<String>,
+        creator: String,
+        method: String,
+        source_kind: String,
+        source_session_id: Option<String>,
         source_message_id: Option<String>,
+        source_tool_run_id: Option<String>,
     ) -> rusqlite::Result<Self> {
-        match (origin.as_str(), parent_session_id, source_message_id) {
-            ("user", None, None) => Ok(Self::User),
-            ("agent_spawn", Some(parent_session_id), None)
-                if is_canonical_id(&parent_session_id, "ses") =>
+        let Some(creator) = SessionCreator::parse(&creator) else {
+            return Err(invalid_session_creation_row(6));
+        };
+        let Some(method) = SessionCreationMethod::parse(&method) else {
+            return Err(invalid_session_creation_row(7));
+        };
+        let source = match (
+            source_kind.as_str(),
+            source_session_id,
+            source_message_id,
+            source_tool_run_id,
+        ) {
+            ("none", None, None, None) => SessionCreationSource::None,
+            ("session", Some(session_id), None, None) if is_canonical_id(&session_id, "ses") => {
+                SessionCreationSource::Session { session_id }
+            }
+            ("message", Some(session_id), Some(message_id), None)
+                if is_canonical_id(&session_id, "ses") && is_canonical_id(&message_id, "msg") =>
             {
-                Ok(Self::AgentSpawn { parent_session_id })
+                SessionCreationSource::Message {
+                    session_id,
+                    message_id,
+                }
             }
-            ("fork", Some(parent_session_id), Some(source_message_id))
-                if is_canonical_id(&parent_session_id, "ses")
-                    && is_canonical_id(&source_message_id, "msg") =>
+            ("tool_run", None, None, Some(tool_run_id))
+                if is_canonical_id(&tool_run_id, "toolrun") =>
             {
-                Ok(Self::Fork {
-                    parent_session_id,
-                    source_message_id,
-                })
+                SessionCreationSource::ToolRun { tool_run_id }
             }
-            _ => {
-                let invalid_column = match origin.as_str() {
-                    "agent_spawn" => 7,
-                    "fork" => 8,
-                    _ => 6,
-                };
-                Err(rusqlite::Error::FromSqlConversionFailure(
-                    invalid_column,
-                    rusqlite::types::Type::Text,
-                    Box::new(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "invalid persisted session origin metadata",
-                    )),
-                ))
-            }
+            _ => return Err(invalid_session_creation_row(8)),
+        };
+        let creation = Self {
+            creator,
+            method,
+            source,
+        };
+        if !creation.has_valid_shape() {
+            return Err(invalid_session_creation_row(6));
+        }
+        Ok(creation)
+    }
+
+    fn has_valid_shape(&self) -> bool {
+        matches!(
+            (self.creator, self.method, &self.source),
+            (
+                SessionCreator::User,
+                SessionCreationMethod::New,
+                SessionCreationSource::None
+            ) | (
+                SessionCreator::System,
+                SessionCreationMethod::New,
+                SessionCreationSource::None
+            ) | (
+                SessionCreator::Agent,
+                SessionCreationMethod::AgentSpawn,
+                SessionCreationSource::Session { .. }
+            ) | (
+                SessionCreator::User,
+                SessionCreationMethod::Fork,
+                SessionCreationSource::Message { .. }
+            ) | (
+                SessionCreator::Scheduler,
+                SessionCreationMethod::Scheduled,
+                SessionCreationSource::ToolRun { .. }
+            )
+        )
+    }
+
+    fn storage_parts(
+        &self,
+    ) -> (
+        &'static str,
+        &'static str,
+        &'static str,
+        Option<&str>,
+        Option<&str>,
+        Option<&str>,
+    ) {
+        match &self.source {
+            SessionCreationSource::None => (
+                self.creator.as_str(),
+                self.method.as_str(),
+                "none",
+                None,
+                None,
+                None,
+            ),
+            SessionCreationSource::Session { session_id } => (
+                self.creator.as_str(),
+                self.method.as_str(),
+                "session",
+                Some(session_id),
+                None,
+                None,
+            ),
+            SessionCreationSource::Message {
+                session_id,
+                message_id,
+            } => (
+                self.creator.as_str(),
+                self.method.as_str(),
+                "message",
+                Some(session_id),
+                Some(message_id),
+                None,
+            ),
+            SessionCreationSource::ToolRun { tool_run_id } => (
+                self.creator.as_str(),
+                self.method.as_str(),
+                "tool_run",
+                None,
+                None,
+                Some(tool_run_id),
+            ),
         }
     }
+}
+
+fn invalid_session_creation_row(column: usize) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid persisted session creation metadata",
+        )),
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionLink {
+    pub session_id: String,
+    pub related_session_id: String,
+    pub created_at: String,
 }
 
 impl Database {
     #[cfg(any(test, feature = "test-support"))]
     pub fn create_session(&self, input_text: &str) -> anyhow::Result<Session> {
-        self.create_session_with_origin(input_text, SessionOrigin::User)
+        self.create_session_with_creation(input_text, SessionCreation::user_new())
     }
 
-    /// Create a durable session and validate that its parent identity is
-    /// canonical and present. The parent id is provenance, not a foreign key:
-    /// deleting a parent must not rewrite a surviving child's origin.
-    pub fn create_session_with_origin(
+    /// Create a durable session and validate its source before writing. Source
+    /// identities are provenance, not foreign keys: deleting a source must not
+    /// rewrite the surviving session's creation record.
+    pub fn create_session_with_creation(
         &self,
         input_text: &str,
-        origin: SessionOrigin,
+        creation: SessionCreation,
     ) -> anyhow::Result<Session> {
         anyhow::ensure!(
-            !matches!(&origin, SessionOrigin::Fork { .. }),
+            creation.method != SessionCreationMethod::Fork,
             "fork sessions must be created with an atomic transcript snapshot"
         );
-        let (origin_kind, parent_session_id, source_message_id) = origin.storage_parts();
-        if let Some(parent_session_id) = parent_session_id {
-            anyhow::ensure!(
-                is_canonical_id(parent_session_id, "ses"),
-                "invalid parent session id"
-            );
-        }
-        if let Some(source_message_id) = source_message_id {
-            anyhow::ensure!(
-                is_canonical_id(source_message_id, "msg"),
-                "invalid fork source message id"
-            );
-        }
+        creation.validate()?;
+        let (
+            creator,
+            method,
+            source_kind,
+            source_session_id,
+            source_message_id,
+            source_tool_run_id,
+        ) = creation.storage_parts();
         let session_id = haven_common::types::new_id("ses");
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let write_result = (|| -> anyhow::Result<()> {
-            if let Some(parent_session_id) = parent_session_id {
-                let parent_exists: bool = conn.query_row(
+            if let Some(source_session_id) = source_session_id {
+                let source_exists: bool = conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
-                    rusqlite::params![parent_session_id],
+                    rusqlite::params![source_session_id],
                     |row| row.get(0),
                 )?;
                 anyhow::ensure!(
-                    parent_exists,
-                    "parent session '{}' not found",
-                    parent_session_id
+                    source_exists,
+                    "source session '{}' not found",
+                    source_session_id
                 );
             }
-            if let (Some(parent_session_id), Some(source_message_id)) =
-                (parent_session_id, source_message_id)
+            if let (Some(source_session_id), Some(source_message_id)) =
+                (source_session_id, source_message_id)
             {
                 let source_exists: bool = conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM messages
                      WHERE session_id = ?1 AND id = ?2 AND role = 'user')",
-                    rusqlite::params![parent_session_id, source_message_id],
+                    rusqlite::params![source_session_id, source_message_id],
                     |row| row.get(0),
                 )?;
                 anyhow::ensure!(
@@ -233,19 +486,35 @@ impl Database {
                     source_message_id
                 );
             }
+            if let Some(source_tool_run_id) = source_tool_run_id {
+                let source_exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM tool_runs WHERE id = ?1)",
+                    rusqlite::params![source_tool_run_id],
+                    |row| row.get(0),
+                )?;
+                anyhow::ensure!(
+                    source_exists,
+                    "source tool_run '{}' not found",
+                    source_tool_run_id
+                );
+            }
             conn.execute(
                 "INSERT INTO sessions (
-                    id, input_text, status, created_at, updated_at, origin, parent_session_id,
-                    fork_source_message_id
-                 ) VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6, ?7)",
+                    id, input_text, status, created_at, updated_at, creator,
+                    creation_method, source_kind, source_session_id, source_message_id,
+                    source_tool_run_id
+                 ) VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
                     session_id,
                     input_text,
                     now,
                     now,
-                    origin_kind,
-                    parent_session_id,
-                    source_message_id
+                    creator,
+                    method,
+                    source_kind,
+                    source_session_id,
+                    source_message_id,
+                    source_tool_run_id
                 ],
             )?;
             Ok(())
@@ -268,7 +537,7 @@ impl Database {
             run_end_reason: None,
             created_at: now.clone(),
             updated_at: now,
-            origin,
+            creation,
         })
     }
 
@@ -277,7 +546,8 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
-            origin, parent_session_id, fork_source_message_id, run_end_reason
+            creator, creation_method, source_kind, source_session_id,
+            source_message_id, source_tool_run_id, run_end_reason
              FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![session_id])?;
@@ -416,7 +686,8 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id, fork_source_message_id, run_end_reason
+                    creator, creation_method, source_kind, source_session_id,
+                    source_message_id, source_tool_run_id, run_end_reason
              FROM sessions ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit, offset], map_session_list_row)?;
@@ -435,7 +706,8 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id, fork_source_message_id, run_end_reason
+                    creator, creation_method, source_kind, source_session_id,
+                    source_message_id, source_tool_run_id, run_end_reason
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT 50",
         ))?;
@@ -473,7 +745,8 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id, fork_source_message_id, run_end_reason
+                    creator, creation_method, source_kind, source_session_id,
+                    source_message_id, source_tool_run_id, run_end_reason
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
         ))?;
@@ -499,15 +772,118 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id, fork_source_message_id, run_end_reason
+                    creator, creation_method, source_kind, source_session_id,
+                    source_message_id, source_tool_run_id, run_end_reason
              FROM sessions
-             WHERE origin IN ('agent_spawn', 'fork') AND parent_session_id = ?1
+             WHERE source_session_id = ?1 AND creation_method IN ('agent_spawn', 'fork')
              ORDER BY created_at DESC, id ASC LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(
             rusqlite::params![parent_session_id, limit, offset],
             map_session_list_row,
         )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Create one symmetric, idempotent link between two existing sessions.
+    pub fn link_sessions(
+        &self,
+        first_session_id: &str,
+        second_session_id: &str,
+    ) -> anyhow::Result<bool> {
+        validate_session_id(first_session_id)?;
+        validate_session_id(second_session_id)?;
+        anyhow::ensure!(
+            first_session_id != second_session_id,
+            "a session cannot be linked to itself"
+        );
+        let (session_id, related_session_id) = if first_session_id < second_session_id {
+            (first_session_id, second_session_id)
+        } else {
+            (second_session_id, first_session_id)
+        };
+        let conn = self.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<bool> {
+            for id in [session_id, related_session_id] {
+                let exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )?;
+                anyhow::ensure!(exists, "session '{}' not found", id);
+            }
+            Ok(conn.execute(
+                "INSERT OR IGNORE INTO session_links(session_id, related_session_id, created_at)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    session_id,
+                    related_session_id,
+                    crate::repositories::messages::now_rfc3339_millis()
+                ],
+            )? > 0)
+        })();
+        match result {
+            Ok(inserted) => {
+                if let Err(error) = conn.execute_batch("COMMIT") {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(error.into());
+                }
+                Ok(inserted)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// Remove an explicit session link. Creation provenance remains intact.
+    pub fn unlink_sessions(
+        &self,
+        first_session_id: &str,
+        second_session_id: &str,
+    ) -> anyhow::Result<bool> {
+        validate_session_id(first_session_id)?;
+        validate_session_id(second_session_id)?;
+        anyhow::ensure!(
+            first_session_id != second_session_id,
+            "a session cannot be linked to itself"
+        );
+        let (session_id, related_session_id) = if first_session_id < second_session_id {
+            (first_session_id, second_session_id)
+        } else {
+            (second_session_id, first_session_id)
+        };
+        let changed = self.conn().execute(
+            "DELETE FROM session_links WHERE session_id = ?1 AND related_session_id = ?2",
+            rusqlite::params![session_id, related_session_id],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// List linked session identities from either endpoint. Missing targets
+    /// remain visible as canonical historical identities after deletion.
+    pub fn list_session_links(&self, session_id: &str) -> anyhow::Result<Vec<SessionLink>> {
+        validate_session_id(session_id)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT session_id, related_session_id, created_at FROM session_links
+             WHERE session_id = ?1 OR related_session_id = ?1
+             ORDER BY created_at DESC, session_id ASC, related_session_id ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+            let left: String = row.get(0)?;
+            let right: String = row.get(1)?;
+            if !is_canonical_id(&left, "ses") || !is_canonical_id(&right, "ses") {
+                return Err(invalid_session_creation_row(0));
+            }
+            Ok(SessionLink {
+                session_id: session_id.to_owned(),
+                related_session_id: if left == session_id { right } else { left },
+                created_at: row.get(2)?,
+            })
+        })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -805,7 +1181,8 @@ impl Database {
 
         let sql = format!(
             "SELECT id, input_text, title, status, created_at, updated_at, \
-                    origin, parent_session_id, fork_source_message_id, run_end_reason \
+                    creator, creation_method, source_kind, source_session_id, \
+                    source_message_id, source_tool_run_id, run_end_reason \
              FROM sessions {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
 
@@ -836,7 +1213,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::SessionOrigin;
+    use super::SessionCreation;
     use crate::Database;
     use chrono::{Local, Utc};
     use haven_common::lifecycle::SessionStatus;
@@ -853,7 +1230,7 @@ mod tests {
         assert_eq!(session.input_text, "input text");
         assert_eq!(session.title, None);
         assert_eq!(session.status, SessionStatus::Pending);
-        assert_eq!(session.origin, SessionOrigin::User);
+        assert_eq!(session.creation, SessionCreation::user_new());
         assert!(!session.created_at.is_empty());
         assert!(!session.updated_at.is_empty());
 
@@ -869,24 +1246,37 @@ mod tests {
     }
 
     #[test]
-    fn peer_session_origin_is_queryable_and_survives_parent_deletion() {
+    fn system_created_sessions_keep_their_creator_classification() {
+        let db = create_db();
+        let session = db
+            .create_session_with_creation("system session", SessionCreation::system_new())
+            .unwrap();
+
+        assert_eq!(session.creation, SessionCreation::system_new());
+        assert_eq!(
+            db.get_session(&session.session_id)
+                .unwrap()
+                .unwrap()
+                .creation,
+            SessionCreation::system_new()
+        );
+    }
+
+    #[test]
+    fn peer_session_creation_is_queryable_and_survives_parent_deletion() {
         let db = create_db();
         let parent = db.create_session("parent").unwrap();
         let unrelated = db.create_session("unrelated").unwrap();
         let child = db
-            .create_session_with_origin(
+            .create_session_with_creation(
                 "delegated kickoff",
-                SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.session_id.clone(),
-                },
+                SessionCreation::agent_spawn(parent.session_id.clone()),
             )
             .unwrap();
 
         assert_eq!(
-            child.origin,
-            SessionOrigin::AgentSpawn {
-                parent_session_id: parent.session_id.clone(),
-            }
+            child.creation,
+            SessionCreation::agent_spawn(parent.session_id.clone())
         );
         assert_eq!(
             db.list_session_children(&parent.session_id, 10, 0)
@@ -905,61 +1295,53 @@ mod tests {
         db.delete_session(&parent.session_id).unwrap();
         let retained = db.get_session(&child.session_id).unwrap().unwrap();
         assert_eq!(
-            retained.origin,
-            SessionOrigin::AgentSpawn {
-                parent_session_id: parent.session_id,
-            }
+            retained.creation,
+            SessionCreation::agent_spawn(parent.session_id)
         );
     }
 
     #[test]
-    fn peer_session_origin_rejects_missing_parent() {
+    fn peer_session_creation_rejects_missing_parent() {
         let db = create_db();
         let error = db
-            .create_session_with_origin(
+            .create_session_with_creation(
                 "orphan kickoff",
-                SessionOrigin::AgentSpawn {
-                    parent_session_id: "ses-00000000000000000000000000000000".into(),
-                },
+                SessionCreation::agent_spawn("ses-00000000000000000000000000000000"),
             )
             .unwrap_err();
 
-        assert!(error.to_string().contains("parent session"));
+        assert!(error.to_string().contains("source session"));
         assert_eq!(db.count_sessions().unwrap(), 0);
     }
 
     #[test]
-    fn peer_session_origin_rejects_noncanonical_parent_before_write() {
+    fn peer_session_creation_rejects_noncanonical_parent_before_write() {
         let db = create_db();
         let error = db
-            .create_session_with_origin(
+            .create_session_with_creation(
                 "invalid parent kickoff",
-                SessionOrigin::AgentSpawn {
-                    parent_session_id: "session-invalid".into(),
-                },
+                SessionCreation::agent_spawn("session-invalid"),
             )
             .unwrap_err();
 
-        assert!(error.to_string().contains("invalid parent session id"));
+        assert!(error.to_string().contains("invalid source session id"));
         assert_eq!(db.count_sessions().unwrap(), 0);
     }
 
     #[test]
-    fn persisted_peer_session_origin_rejects_noncanonical_parent_identity() {
+    fn persisted_peer_session_creation_rejects_noncanonical_source_identity() {
         let db = create_db();
         let parent = db.create_session("parent").unwrap();
         let child = db
-            .create_session_with_origin(
+            .create_session_with_creation(
                 "delegated kickoff",
-                SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.session_id,
-                },
+                SessionCreation::agent_spawn(parent.session_id),
             )
             .unwrap();
 
         db.conn()
             .execute(
-                "UPDATE sessions SET parent_session_id = 'session-invalid' WHERE id = ?1",
+                "UPDATE sessions SET source_session_id = 'session-invalid' WHERE id = ?1",
                 [&child.session_id],
             )
             .unwrap();
@@ -968,8 +1350,40 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("invalid persisted session origin metadata")
+                .contains("invalid persisted session creation metadata")
         );
+    }
+
+    #[test]
+    fn session_links_are_symmetric_deduplicated_and_require_existing_sessions() {
+        let db = create_db();
+        let first = db.create_session("first").unwrap();
+        let second = db.create_session("second").unwrap();
+        let missing_session_id = "ses-00000000000000000000000000000000";
+
+        let link = db
+            .link_sessions(&first.session_id, &second.session_id)
+            .unwrap();
+        assert!(link);
+        assert_eq!(db.list_session_links(&first.session_id).unwrap().len(), 1);
+        assert_eq!(db.list_session_links(&second.session_id).unwrap().len(), 1);
+        assert!(
+            db.link_sessions(&first.session_id, &first.session_id)
+                .unwrap_err()
+                .to_string()
+                .contains("cannot be linked to itself")
+        );
+        assert!(
+            db.link_sessions(&first.session_id, missing_session_id)
+                .unwrap_err()
+                .to_string()
+                .contains("not found")
+        );
+        assert!(
+            db.unlink_sessions(&second.session_id, &first.session_id)
+                .unwrap()
+        );
+        assert!(db.list_session_links(&first.session_id).unwrap().is_empty());
     }
 
     #[test]

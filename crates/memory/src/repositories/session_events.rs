@@ -12,7 +12,7 @@ use crate::repositories::messages::{
     next_projection_created_at,
 };
 use crate::repositories::session_steps::{SessionStep, ToolStepOutcome, ToolStepWrite};
-use crate::repositories::sessions::{Session, SessionOrigin};
+use crate::repositories::sessions::{Session, SessionCreation};
 use crate::repositories::usage::{LlmUsageRecord, LlmUsageRecordInput, SessionUsage};
 use chrono::{SecondsFormat, Utc};
 use haven_common::lifecycle::SessionStatus;
@@ -491,7 +491,7 @@ fn bump_step_sequence(conn: &rusqlite::Connection, session_id: &str) -> anyhow::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repositories::sessions::SessionOrigin;
+    use crate::repositories::sessions::SessionCreation;
     use haven_common::config::RequestKind;
     use haven_common::usage::{CacheAccounting, LlmCallKind};
 
@@ -1332,11 +1332,9 @@ mod tests {
         let parent = store.create_session("parent").await.unwrap();
         let user_session = store.create_session("user seed").await.unwrap();
         let kickoff_session = store
-            .create_session_with_origin(
+            .create_session_with_creation(
                 "kickoff seed",
-                SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.session_id,
-                },
+                SessionCreation::agent_spawn(parent.session_id),
             )
             .await
             .unwrap();

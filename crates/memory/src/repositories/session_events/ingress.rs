@@ -3,7 +3,7 @@ use super::*;
 impl SessionStore {
     /// Persist a new session's crash-safe user seed before it is exposed to
     /// the dispatcher. The seed type is derived from the durable session
-    /// origin; later input must use the pending-input and `UserInject` path.
+    /// creation method; later input must use the pending-input and `UserInject` path.
     pub async fn persist_ingress_user_seed(
         &self,
         session_id: &str,
@@ -12,16 +12,16 @@ impl SessionStore {
         voice: bool,
     ) -> anyhow::Result<Message> {
         ensure_session_id(session_id)?;
-        let origin = self
+        let creation = self
             .load_session_record(session_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("session {session_id} not found"))?
-            .origin;
+            .creation;
         self.persist_message_row(
             session_id,
             haven_common::types::CanonicalRole::User,
             content,
-            Some(origin.first_user_message_type()),
+            Some(creation.first_user_message_type()),
             attachments,
             voice,
             None,

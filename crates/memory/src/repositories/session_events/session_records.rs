@@ -1,6 +1,6 @@
 use super::{SessionStore, ensure_message_or_step_id, ensure_session_id};
 use crate::repositories::kv_store::MAX_MEMORY_SESSION_ID_PAGE_SIZE;
-use crate::repositories::sessions::{Session, SessionOrigin};
+use crate::repositories::sessions::{Session, SessionCreation, SessionLink};
 use haven_common::lifecycle::SessionStatus;
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
@@ -176,34 +176,74 @@ impl SessionStore {
     /// boundary. Actor installation, lifecycle gates, and dispatch remain
     /// owned by the Agent layer.
     pub async fn create_session(&self, input_text: &str) -> anyhow::Result<Session> {
-        self.create_session_with_origin(input_text, SessionOrigin::User)
+        self.create_session_with_creation(input_text, SessionCreation::user_new())
             .await
     }
 
     /// Create a session with typed provenance. Parent and fork source ids are
     /// validated and persisted by the same SessionStore boundary as user
     /// sessions; runtime admission remains owned by Agent.
-    pub async fn create_session_with_origin(
+    pub async fn create_session_with_creation(
         &self,
         input_text: &str,
-        origin: SessionOrigin,
+        creation: SessionCreation,
     ) -> anyhow::Result<Session> {
-        match &origin {
-            SessionOrigin::AgentSpawn { parent_session_id } => {
-                ensure_session_id(parent_session_id)?;
-            }
-            SessionOrigin::Fork { .. } => {
-                anyhow::bail!("fork sessions must be created with an atomic transcript snapshot")
-            }
-            SessionOrigin::User => {}
+        creation.validate()?;
+        anyhow::ensure!(
+            creation.method != crate::repositories::sessions::SessionCreationMethod::Fork,
+            "fork sessions must be created with an atomic transcript snapshot"
+        );
+        if let crate::repositories::sessions::SessionCreationSource::Session { session_id }
+        | crate::repositories::sessions::SessionCreationSource::Message {
+            session_id, ..
+        } = &creation.source
+        {
+            ensure_session_id(session_id)?;
         }
         let input_text = input_text.to_owned();
         let session = self
             .db
-            .run_blocking(move |db| db.create_session_with_origin(&input_text, origin))
+            .run_blocking(move |db| db.create_session_with_creation(&input_text, creation))
             .await?;
         ensure_session_id(&session.session_id)?;
         Ok(session)
+    }
+
+    /// Persist a symmetric relationship between two independent sessions.
+    pub async fn link_sessions(
+        &self,
+        session_id: &str,
+        related_session_id: &str,
+    ) -> anyhow::Result<bool> {
+        ensure_session_id(session_id)?;
+        ensure_session_id(related_session_id)?;
+        let session_id = session_id.to_owned();
+        let related_session_id = related_session_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.link_sessions(&session_id, &related_session_id))
+            .await
+    }
+
+    pub async fn unlink_sessions(
+        &self,
+        session_id: &str,
+        related_session_id: &str,
+    ) -> anyhow::Result<bool> {
+        ensure_session_id(session_id)?;
+        ensure_session_id(related_session_id)?;
+        let session_id = session_id.to_owned();
+        let related_session_id = related_session_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.unlink_sessions(&session_id, &related_session_id))
+            .await
+    }
+
+    pub async fn list_session_links(&self, session_id: &str) -> anyhow::Result<Vec<SessionLink>> {
+        ensure_session_id(session_id)?;
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.list_session_links(&session_id))
+            .await
     }
 
     /// Read direct children from the durable session lineage projection.
@@ -609,7 +649,7 @@ mod tests {
         assert!(!session.session_id.is_empty());
         assert_eq!(session.input_text, "created through store");
         assert_eq!(session.status, SessionStatus::Pending);
-        assert_eq!(session.origin, SessionOrigin::User);
+        assert_eq!(session.creation, SessionCreation::user_new());
         assert!(
             store
                 .load_session_record(&session.session_id)
@@ -627,11 +667,9 @@ mod tests {
         let parent = store.create_session("parent").await.unwrap();
 
         let child = store
-            .create_session_with_origin(
+            .create_session_with_creation(
                 "delegated kickoff",
-                SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.session_id.clone(),
-                },
+                SessionCreation::agent_spawn(parent.session_id.clone()),
             )
             .await
             .unwrap();
@@ -642,7 +680,7 @@ mod tests {
 
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].session_id, child.session_id);
-        assert_eq!(children[0].origin, child.origin);
+        assert_eq!(children[0].creation, child.creation);
         assert_eq!(store.latest_sequence(&child.session_id).unwrap(), 0);
     }
 }

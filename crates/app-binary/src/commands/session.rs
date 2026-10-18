@@ -7,7 +7,7 @@ use crate::events::{InteractionRequestedEvent, SESSION_LIFECYCLE_EVENT, SessionL
 use haven_agent::InteractionStatus;
 use haven_common::error::sanitize_error_text;
 use haven_memory::SessionStep;
-use haven_memory::{Session, SessionOrigin};
+use haven_memory::{Session, SessionCreation, SessionCreationSource};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::AppHandle;
@@ -94,6 +94,7 @@ pub struct SessionRecordDto {
     pub run_end_reason: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub creation: SessionCreation,
 }
 
 impl From<Session> for SessionRecordDto {
@@ -106,6 +107,7 @@ impl From<Session> for SessionRecordDto {
             run_end_reason: session.run_end_reason,
             created_at: session.created_at,
             updated_at: session.updated_at,
+            creation: session.creation,
         }
     }
 }
@@ -132,12 +134,10 @@ async fn session_lineage_from_store(
         .load_session_record(session_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("session not found: {session_id}"))?;
-    let parent_session_id = match &session.origin {
-        SessionOrigin::AgentSpawn { parent_session_id }
-        | SessionOrigin::Fork {
-            parent_session_id, ..
-        } => Some(parent_session_id.clone()),
-        SessionOrigin::User => None,
+    let parent_session_id = match &session.creation.source {
+        SessionCreationSource::Session { session_id }
+        | SessionCreationSource::Message { session_id, .. } => Some(session_id.clone()),
+        SessionCreationSource::None | SessionCreationSource::ToolRun { .. } => None,
     };
     let parent = match parent_session_id.as_deref() {
         Some(parent_id) => session_store.load_session_record(parent_id).await?,
@@ -148,12 +148,10 @@ async fn session_lineage_from_store(
         .await?
         .into_iter()
         .map(|child| {
-            let child_parent_session_id = match &child.origin {
-                SessionOrigin::AgentSpawn { parent_session_id }
-                | SessionOrigin::Fork {
-                    parent_session_id, ..
-                } => parent_session_id.clone(),
-                SessionOrigin::User => {
+            let child_parent_session_id = match &child.creation.source {
+                SessionCreationSource::Session { session_id }
+                | SessionCreationSource::Message { session_id, .. } => session_id.clone(),
+                SessionCreationSource::None | SessionCreationSource::ToolRun { .. } => {
                     anyhow::bail!("session lineage child has no parent session identity")
                 }
             };
@@ -712,7 +710,7 @@ pub async fn get_latest_session_for_resume(
 #[cfg(test)]
 mod tests {
     use super::{
-        ConfirmationResolutionResult, ExecutorSessionDisplay, InteractionStatus, SessionOrigin,
+        ConfirmationResolutionResult, ExecutorSessionDisplay, InteractionStatus, SessionCreation,
         SessionRecordDto, SessionResumeMessageDto, end_session_display_title,
         latest_session_for_resume_from_store, resume_response_for_session,
         resume_session_from_store, session_lineage_from_store,
@@ -961,20 +959,16 @@ mod tests {
         let store = haven_memory::SessionStore::new(db.clone());
         let parent = store.create_session("parent").await.unwrap();
         let child = store
-            .create_session_with_origin(
+            .create_session_with_creation(
                 "child",
-                SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.session_id.clone(),
-                },
+                SessionCreation::agent_spawn(parent.session_id.clone()),
             )
             .await
             .unwrap();
         let sibling = store
-            .create_session_with_origin(
+            .create_session_with_creation(
                 "sibling",
-                SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.session_id.clone(),
-                },
+                SessionCreation::agent_spawn(parent.session_id.clone()),
             )
             .await
             .unwrap();
