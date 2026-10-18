@@ -3356,6 +3356,102 @@ async fn scheduled_tool_results_use_shared_tool_run_result_transport() {
 }
 
 #[tokio::test]
+async fn workflow_retry_requires_a_persisted_safe_zero_step_failure() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("workflow-retry.db")).unwrap());
+    let store = ToolRunStore::new(db);
+    let service = Arc::new(ToolRunService::new());
+    service.set_tool_run_store(Some(store.clone())).await;
+
+    let workflow_id = haven_common::types::new_id("wfdef");
+    let session_id = haven_common::types::new_id("ses");
+    let definition = serde_json::json!({
+        "steps": [{"id": "read", "capability": "files.read", "input": {}}]
+    });
+    let create_failed_workflow = |result: Value| {
+        let service = Arc::clone(&service);
+        let store = store.clone();
+        let workflow_id = workflow_id.clone();
+        let session_id = session_id.clone();
+        let definition = definition.clone();
+        async move {
+            let args = serde_json::json!({
+                "execution_mode": "inline",
+                "workflow": definition,
+            });
+            let tool_run_id = service
+                .schedule(ScheduledToolRunSpec {
+                    due_at: None,
+                    delay_secs: Some(3600),
+                    watch_tool_run_id: None,
+                    title: "Workflow retry test".into(),
+                    body: "test failure".into(),
+                    mode: ScheduleMode::Tool,
+                    session_id: Some(session_id),
+                    tool_name: Some(crate::WORKFLOW_RUN_TOOL_NAME.into()),
+                    tool_args: Some(args),
+                    prompt: None,
+                })
+                .await
+                .unwrap();
+            assert!(
+                store
+                    .set_workflow_tool_run_metadata(tool_run_id.clone(), workflow_id, 1)
+                    .await
+                    .unwrap()
+            );
+            let mut receiver = service
+                .take_tool_run_receiver()
+                .expect("scheduled Workflow receiver is available");
+            service.fire_scheduled(&tool_run_id).await;
+            assert!(matches!(
+                receiver.recv().await,
+                Some(ToolRunCompletion::Scheduled(_))
+            ));
+            assert!(
+                service
+                    .fail_scheduled_with_result(&tool_run_id, &result.to_string(), "blocked")
+                    .await
+                    .unwrap()
+            );
+            tool_run_id
+        }
+    };
+
+    let retryable_id = create_failed_workflow(serde_json::json!({
+        "safe_to_retry": true,
+        "completed_step_ids": [],
+    }))
+    .await;
+    let retry_id = service
+        .retry_workflow_run(&retryable_id)
+        .await
+        .unwrap()
+        .expect("safe failure may be retried");
+    assert_ne!(retry_id, retryable_id);
+    let retry_row = store.get_tool_run(retry_id.clone()).await.unwrap().unwrap();
+    assert_eq!(
+        retry_row.workflow_definition_id.as_deref(),
+        Some(workflow_id.as_str())
+    );
+    assert_eq!(retry_row.workflow_revision, Some(1));
+    assert!(service.cancel(&retry_id).await);
+
+    let unsafe_id = create_failed_workflow(serde_json::json!({
+        "safe_to_retry": false,
+        "completed_step_ids": [],
+    }))
+    .await;
+    assert_eq!(service.retry_workflow_run(&unsafe_id).await.unwrap(), None);
+    let partial_id = create_failed_workflow(serde_json::json!({
+        "safe_to_retry": true,
+        "completed_step_ids": ["read"],
+    }))
+    .await;
+    assert_eq!(service.retry_workflow_run(&partial_id).await.unwrap(), None);
+}
+
+#[tokio::test]
 async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_terminal_row() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());

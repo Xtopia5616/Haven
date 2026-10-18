@@ -3,6 +3,145 @@ use super::views::scheduled_status_json;
 use super::*;
 
 impl ToolRunService {
+    pub async fn start_workflow_run(
+        self: &Arc<Self>,
+        session_id: &str,
+        workflow_definition_id: &str,
+        workflow_revision: u32,
+        name: &str,
+        definition: Value,
+    ) -> anyhow::Result<String> {
+        anyhow::ensure!(
+            haven_common::types::is_canonical_id(session_id, "ses"),
+            "invalid session_id"
+        );
+        anyhow::ensure!(
+            haven_common::types::is_canonical_id(workflow_definition_id, "wfdef"),
+            "invalid workflow_definition_id"
+        );
+        anyhow::ensure!(workflow_revision > 0, "workflow_revision must be positive");
+        anyhow::ensure!(
+            name.chars().count() <= 80 && !name.trim().is_empty(),
+            "Workflow name is invalid"
+        );
+        anyhow::ensure!(
+            definition.is_object()
+                && definition.get("steps").is_some_and(Value::is_array)
+                && definition["steps"]
+                    .as_array()
+                    .is_some_and(|steps| !steps.is_empty() && steps.len() <= 16)
+                && serde_json::to_vec(&definition).map_or(usize::MAX, |bytes| bytes.len())
+                    <= 64 * 1024,
+            "Workflow definition is invalid or exceeds its limits"
+        );
+        let store =
+            self.tool_run_store.read().await.clone().ok_or_else(|| {
+                anyhow::anyhow!("persistent Workflow runs require a ToolRun store")
+            })?;
+        let tool_args = serde_json::json!({
+            "execution_mode": "inline",
+            "workflow": definition,
+        });
+        let tool_run_id = self
+            .schedule(ScheduledToolRunSpec {
+                due_at: None,
+                delay_secs: Some(2),
+                watch_tool_run_id: None,
+                title: name.trim().to_owned(),
+                body: format!("Run Workflow: {}", name.trim()),
+                mode: ScheduleMode::Tool,
+                session_id: Some(session_id.to_owned()),
+                tool_name: Some(crate::WORKFLOW_RUN_TOOL_NAME.to_owned()),
+                tool_args: Some(tool_args),
+                prompt: None,
+            })
+            .await?;
+        let attached = store
+            .set_workflow_tool_run_metadata(
+                tool_run_id.clone(),
+                workflow_definition_id.to_owned(),
+                workflow_revision,
+            )
+            .await;
+        match attached {
+            Ok(true) => {}
+            Ok(false) => {
+                self.cancel_for_kind(&tool_run_id, ToolRunKind::Scheduled)
+                    .await;
+                anyhow::bail!("Workflow ToolRun could not attach its definition revision");
+            }
+            Err(error) => {
+                self.cancel_for_kind(&tool_run_id, ToolRunKind::Scheduled)
+                    .await;
+                return Err(error.context("failed to persist Workflow run provenance"));
+            }
+        }
+        Ok(tool_run_id)
+    }
+
+    pub async fn retry_workflow_run(
+        self: &Arc<Self>,
+        tool_run_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        anyhow::ensure!(
+            haven_common::types::is_canonical_id(tool_run_id, "toolrun"),
+            "invalid tool_run_id"
+        );
+        let store =
+            self.tool_run_store.read().await.clone().ok_or_else(|| {
+                anyhow::anyhow!("Workflow retry requires persistent ToolRun history")
+            })?;
+        let Some(row) = store.get_tool_run(tool_run_id.to_owned()).await? else {
+            return Ok(None);
+        };
+        if row.kind != "scheduled"
+            || row.status != ToolRunStatus::Failed
+            || row.mode.as_deref() != Some("tool")
+            || row.tool_name.as_deref() != Some(crate::WORKFLOW_RUN_TOOL_NAME)
+        {
+            return Ok(None);
+        }
+        let Some(summary) = row.result_summary.as_deref() else {
+            return Ok(None);
+        };
+        let result: Value = match serde_json::from_str(summary) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        if result.get("safe_to_retry") != Some(&Value::Bool(true))
+            || !result
+                .get("completed_step_ids")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+        {
+            return Ok(None);
+        }
+        let (Some(session_id), Some(workflow_definition_id), Some(workflow_revision), Some(args)) = (
+            row.session_id.as_deref(),
+            row.workflow_definition_id.as_deref(),
+            row.workflow_revision,
+            row.tool_args.as_deref(),
+        ) else {
+            return Ok(None);
+        };
+        let args: Value = match serde_json::from_str(args) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        let Some(definition) = args.get("workflow").cloned() else {
+            return Ok(None);
+        };
+        self.start_workflow_run(
+            session_id,
+            workflow_definition_id,
+            workflow_revision,
+            &row.title,
+            definition,
+        )
+        .await
+        .map(Some)
+    }
+
     /// Schedule a timer or a ToolRun dependency in the same state map as
     /// background processes. `Waiting` is the explicit pre-fire state; fire
     /// is one idempotent transition that publishes the work item. The consumer
@@ -508,6 +647,21 @@ impl ToolRunService {
     ) -> anyhow::Result<bool> {
         self.finish_scheduled(tool_run_id, ToolRunStatus::Failed, None, Some(reason))
             .await
+    }
+
+    pub async fn fail_scheduled_with_result(
+        self: &Arc<Self>,
+        tool_run_id: &str,
+        result: &str,
+        reason: &str,
+    ) -> anyhow::Result<bool> {
+        self.finish_scheduled(
+            tool_run_id,
+            ToolRunStatus::Failed,
+            Some(result),
+            Some(reason),
+        )
+        .await
     }
 
     async fn finish_scheduled_in_memory(

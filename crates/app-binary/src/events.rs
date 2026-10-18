@@ -114,6 +114,10 @@ pub struct ToolRunEvent {
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_progress: Option<haven_tools::WorkflowProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_retry_available: Option<bool>,
 }
 
 impl ToolRunEvent {
@@ -139,6 +143,8 @@ impl ToolRunEvent {
             error_reason: payload.error_reason,
             exit_code: payload.exit_code,
             preview: None,
+            workflow_progress: payload.workflow_progress,
+            workflow_retry_available: None,
         }
     }
 
@@ -163,6 +169,8 @@ impl ToolRunEvent {
             error_reason: None,
             exit_code: None,
             preview: None,
+            workflow_progress: None,
+            workflow_retry_available: None,
         }
     }
 
@@ -187,6 +195,8 @@ impl ToolRunEvent {
             error_reason: None,
             exit_code: None,
             preview: None,
+            workflow_progress: None,
+            workflow_retry_available: None,
         }
     }
 }
@@ -211,6 +221,8 @@ impl From<ToolRunView> for ToolRunEvent {
             error_reason: view.error_reason,
             exit_code: view.exit_code,
             preview: view.preview,
+            workflow_progress: view.workflow_progress,
+            workflow_retry_available: view.workflow_retry_available,
         }
     }
 }
@@ -884,6 +896,8 @@ mod tests {
             error_reason: None,
             exit_code: Some(0),
             preview: Some("done".into()),
+            workflow_progress: None,
+            workflow_retry_available: None,
         });
 
         assert_eq!(
@@ -923,6 +937,8 @@ mod tests {
             error_reason: None,
             exit_code: None,
             preview: None,
+            workflow_progress: None,
+            workflow_retry_available: None,
         });
         let wire = serde_json::to_value(event).unwrap();
 

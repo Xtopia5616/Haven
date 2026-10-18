@@ -294,7 +294,7 @@ pub(crate) fn validate_workflow(
     Ok(ValidatedWorkflow { steps, limits })
 }
 
-fn valid_step_id(id: &str, max_bytes: usize) -> bool {
+pub(crate) fn valid_step_id(id: &str, max_bytes: usize) -> bool {
     if id.is_empty() || id.len() > max_bytes {
         return false;
     }

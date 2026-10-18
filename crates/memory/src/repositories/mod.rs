@@ -24,3 +24,4 @@ pub mod tool_run_completion_outbox;
 pub mod tool_run_store;
 pub mod tool_runs;
 pub mod usage;
+pub mod workflow_definitions;

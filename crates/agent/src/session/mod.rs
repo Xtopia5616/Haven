@@ -588,6 +588,7 @@ impl SessionSupervisor {
                 observations: Arc::clone(&self.observation_port),
                 tool_runs: Arc::clone(&self.tool_runs),
                 journal,
+                parent_execution_id: parent_execution_id.map(str::to_owned),
                 resume_confirmation,
             },
         )))

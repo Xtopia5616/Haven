@@ -37,6 +37,7 @@
 	import McpEditDialog from '$lib/McpEditDialog.svelte';
 	import McpFeatureDialog from '$lib/McpFeatureDialog.svelte';
 	import BuiltinToolCard from '$lib/BuiltinToolCard.svelte';
+	import WorkflowLibrary from '$lib/WorkflowLibrary.svelte';
 	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
@@ -74,12 +75,13 @@
 
 	type ToggleScope = 'skill' | 'mcp' | 'builtin';
 
-	const TOOL_TAB_IDS = ['builtin', 'mcp', 'skills'] as const;
+	const TOOL_TAB_IDS = ['builtin', 'mcp', 'skills', 'workflow'] as const;
 	type ToolTabId = (typeof TOOL_TAB_IDS)[number];
 	const TOOL_TAB_LABELS: Record<ToolTabId, string> = {
 		builtin: '内置工具',
 		mcp: 'MCP',
 		skills: '技能',
+		workflow: 'Workflow',
 	};
 
 	let unlistenSkills: { dispose: () => void } | undefined;
@@ -653,7 +655,7 @@
 						</div>
 					{/if}
 				</section>
-			{:else}
+			{:else if activeTab === 'skills'}
 				<section class="resource-panel motion-surface-enter" aria-label="技能">
 					<WorkspaceSectionHeader
 						title="技能"
@@ -696,6 +698,8 @@
 						</div>
 					{/if}
 				</section>
+			{:else}
+				<WorkflowLibrary />
 			{/if}
 		</div>
 	</div>

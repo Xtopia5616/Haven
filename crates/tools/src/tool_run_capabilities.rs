@@ -99,6 +99,29 @@ impl ToolRunAgentCapability for SharedToolRunAgentCapability {
         self.service.fail_scheduled(tool_run_id, reason).await
     }
 
+    async fn fail_scheduled_with_result(
+        &self,
+        tool_run_id: &str,
+        result: &str,
+        reason: &str,
+    ) -> anyhow::Result<bool> {
+        self.service
+            .fail_scheduled_with_result(tool_run_id, result, reason)
+            .await
+    }
+
+    async fn report_workflow_progress(
+        &self,
+        tool_run_id: &str,
+        step_id: &str,
+        step_index: u32,
+        step_total: u32,
+    ) -> anyhow::Result<bool> {
+        self.service
+            .report_workflow_progress(tool_run_id, step_id, step_index, step_total)
+            .await
+    }
+
     async fn restore(&self) -> ToolRunRestoreSummary {
         self.service.restore().await
     }
@@ -170,6 +193,29 @@ impl ToolRunManagementCapability for SharedToolRunManagementCapability {
         query: crate::ToolRunHistoryQuery,
     ) -> anyhow::Result<Vec<ToolRunView>> {
         self.service.list_history(query).await
+    }
+
+    async fn start_workflow_run(
+        &self,
+        session_id: &str,
+        workflow_definition_id: &str,
+        workflow_revision: u32,
+        name: &str,
+        definition: serde_json::Value,
+    ) -> anyhow::Result<String> {
+        self.service
+            .start_workflow_run(
+                session_id,
+                workflow_definition_id,
+                workflow_revision,
+                name,
+                definition,
+            )
+            .await
+    }
+
+    async fn retry_workflow_run(&self, tool_run_id: &str) -> anyhow::Result<Option<String>> {
+        self.service.retry_workflow_run(tool_run_id).await
     }
 
     async fn cancel_for_kind(&self, tool_run_id: &str, kind: ToolRunKind) -> bool {

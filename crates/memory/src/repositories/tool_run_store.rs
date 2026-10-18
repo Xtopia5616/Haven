@@ -680,6 +680,41 @@ impl ToolRunStore {
             })
             .await
     }
+
+    pub async fn set_workflow_tool_run_metadata(
+        &self,
+        tool_run_id: String,
+        workflow_definition_id: String,
+        workflow_revision: u32,
+    ) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
+        validate_id(&workflow_definition_id, "wfdef", "workflow_definition_id")?;
+        anyhow::ensure!(workflow_revision > 0, "workflow_revision must be positive");
+        self.db
+            .run_blocking(move |db| {
+                db.set_workflow_tool_run_metadata(
+                    &tool_run_id,
+                    &workflow_definition_id,
+                    workflow_revision,
+                )
+            })
+            .await
+    }
+
+    pub async fn update_workflow_tool_run_progress(
+        &self,
+        tool_run_id: String,
+        step_id: String,
+        step_index: u32,
+        step_total: u32,
+    ) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
+        self.db
+            .run_blocking(move |db| {
+                db.update_workflow_tool_run_progress(&tool_run_id, &step_id, step_index, step_total)
+            })
+            .await
+    }
 }
 
 #[cfg(test)]

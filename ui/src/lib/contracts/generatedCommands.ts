@@ -106,6 +106,8 @@ export interface SandboxOutputReviewChangeDto { changeIndex: number; relativePat
 export const SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES = ['created', 'modified', 'deleted', 'type_changed'] as const;
 export type SandboxOutputReviewChangeKindDto = (typeof SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES)[number];
 export interface SandboxOutputReviewManifestDto { sessionId: string; sourceStepId: string; expiresAtUnixMs: number; storageChargeBytes: number; changes: SandboxOutputReviewChangeDto[] }
+export interface WorkflowDefinitionDto { workflowId: string; name: string; description: string; revision: number; definition: unknown; createdAt: string; updatedAt: string }
+export interface WorkflowScheduleDto { scheduleId: string; name: string; workflowDefinitionId: string | null; workflowRevision: number; sessionId: string; intervalSeconds: number; anchorAt: string; nextDueAt: string; enabled: boolean; activeToolRunId: string | null; createdAt: string; updatedAt: string }
 export interface AgentCompactionEvent { session_id: string; summary: string; tokens_before: number; tokens_after: number; degraded: boolean; episode_id?: string; event_sequence?: number }
 export interface AgentMediaPlanEvent { session_id: string; step_number: number; run_id: number; request_kind: RequestKind; strategy: MediaInputStrategy; projections: MediaProjection[]; notices: MediaPlanNotice[]; event_sequence?: number }
 export interface AgentNotificationEvent { session_id?: string; title: string; body: string; notification_kind?: AgentNotificationKind; tool_run_kind?: ToolRunKindDto; tool_run_id?: string; tool_run_status?: ToolRunCompletionStatusDto }
@@ -141,7 +143,7 @@ export const SKILLS_STATUS_OPERATION_VALUES = ['refresh', 'auto_refresh', 'toggl
 export type SkillsStatusOperation = (typeof SKILLS_STATUS_OPERATION_VALUES)[number];
 export const TOOL_RUN_COMPLETION_STATUS_DTO_VALUES = ['completed', 'failed'] as const;
 export type ToolRunCompletionStatusDto = (typeof TOOL_RUN_COMPLETION_STATUS_DTO_VALUES)[number];
-export interface ToolRunEvent { tool_run_id: string; kind: ToolRunKindDto; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: ScheduleMode; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
+export interface ToolRunEvent { tool_run_id: string; kind: ToolRunKindDto; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: ScheduleMode; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string; workflow_progress?: WorkflowProgress; workflow_retry_available?: boolean }
 export const TOOL_RUN_KIND_DTO_INPUT_VALUES = ['background', 'scheduled'] as const;
 export type ToolRunKindDtoInput = (typeof TOOL_RUN_KIND_DTO_INPUT_VALUES)[number];
 export const TOOL_RUN_KIND_DTO_VALUES = ['background', 'scheduled'] as const;
@@ -418,6 +420,7 @@ export interface SessionStep { step_id: string; session_id: string; step_number:
 export interface LlmUsageRecord { usage_id: string; session_id: string; step_number: number | null; request_kind: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: CacheAccounting; cache_diagnostics?: CacheDiagnostics; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; executable: boolean; has_script: boolean; unavailable_reason: string | null; manifest_error: string | null }
+export interface WorkflowProgress { step_id: string; step_index: number; step_total: number }
 export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;
 export const ADD_FACT_RESPONSE_SHAPE = {
 	kind: 'object',
@@ -1226,9 +1229,64 @@ export const COMPLETE_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE = {
 export const CONTINUE_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const COUNT_SESSION_HISTORY_RESPONSE_SHAPE = { kind: 'number' } as const;
 export const COUNT_SESSION_HISTORY_SEARCH_RESPONSE_SHAPE = { kind: 'number' } as const;
+export const CREATE_WORKFLOW_SCHEDULE_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'scheduleId': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'name': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'workflowDefinitionId': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'workflowRevision': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'sessionId': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'intervalSeconds': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'anchorAt': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'nextDueAt': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'enabled': {
+			optional: false,
+			shape: { kind: 'boolean' },
+		},
+		'activeToolRunId': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'createdAt': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'updatedAt': {
+			optional: false,
+			shape: { kind: 'string' },
+		}
+	}
+} as const;
 export const DELETE_ALL_SESSIONS_RESPONSE_SHAPE = { kind: 'number' } as const;
 export const DELETE_FACT_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DELETE_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const DELETE_WORKFLOW_DEFINITION_RESPONSE_SHAPE = { kind: 'boolean' } as const;
+export const DELETE_WORKFLOW_SCHEDULE_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const DISABLE_AUTOSTART_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DISCARD_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const DISCARD_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -5611,6 +5669,30 @@ export const LIST_TOOL_RUNS_RESPONSE_SHAPE = { kind: 'array', items: {
 		'preview': {
 			optional: true,
 			shape: { kind: 'string' },
+		},
+		'workflow_progress': {
+			optional: true,
+			shape: {
+				kind: 'object',
+				fields: {
+					'step_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'step_index': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'step_total': {
+						optional: false,
+						shape: { kind: 'number' },
+					}
+				}
+			},
+		},
+		'workflow_retry_available': {
+			optional: true,
+			shape: { kind: 'boolean' },
 		}
 	}
 } } as const;
@@ -5683,6 +5765,116 @@ export const LIST_TOOL_RUN_HISTORY_RESPONSE_SHAPE = { kind: 'array', items: {
 		},
 		'preview': {
 			optional: true,
+			shape: { kind: 'string' },
+		},
+		'workflow_progress': {
+			optional: true,
+			shape: {
+				kind: 'object',
+				fields: {
+					'step_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'step_index': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'step_total': {
+						optional: false,
+						shape: { kind: 'number' },
+					}
+				}
+			},
+		},
+		'workflow_retry_available': {
+			optional: true,
+			shape: { kind: 'boolean' },
+		}
+	}
+} } as const;
+export const LIST_WORKFLOW_DEFINITIONS_RESPONSE_SHAPE = { kind: 'array', items: {
+	kind: 'object',
+	fields: {
+		'workflowId': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'name': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'description': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'revision': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'definition': {
+			optional: false,
+			shape: { kind: 'unknown' },
+		},
+		'createdAt': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'updatedAt': {
+			optional: false,
+			shape: { kind: 'string' },
+		}
+	}
+} } as const;
+export const LIST_WORKFLOW_SCHEDULES_RESPONSE_SHAPE = { kind: 'array', items: {
+	kind: 'object',
+	fields: {
+		'scheduleId': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'name': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'workflowDefinitionId': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'workflowRevision': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'sessionId': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'intervalSeconds': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'anchorAt': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'nextDueAt': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'enabled': {
+			optional: false,
+			shape: { kind: 'boolean' },
+		},
+		'activeToolRunId': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'createdAt': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'updatedAt': {
+			optional: false,
 			shape: { kind: 'string' },
 		}
 	}
@@ -6068,6 +6260,7 @@ export const RESET_PERMISSIONS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const RESET_SESSION_PERMISSIONS_RESPONSE_SHAPE = { kind: 'number' } as const;
 export const RESET_TOOL_CIRCUITS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const RESOLVE_CONFIRMATION_RESPONSE_SHAPE = { kind: 'enum', values: CONFIRMATION_RESOLUTION_RESULT_VALUES } as const;
+export const RETRY_WORKFLOW_RUN_RESPONSE_SHAPE = { kind: 'nullable', inner: { kind: 'string' } } as const;
 export const REVOKE_PERMISSION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const REVOKE_SESSION_PERMISSION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const ROLLBACK_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -6105,6 +6298,40 @@ export const RUNTIME_SESSION_LIST_RESPONSE_SHAPE = {
 	}
 } as const;
 export const RUN_MEMORY_MAINTENANCE_RESPONSE_SHAPE = { kind: 'number' } as const;
+export const RUN_WORKFLOW_DEFINITION_RESPONSE_SHAPE = { kind: 'string' } as const;
+export const SAVE_WORKFLOW_DEFINITION_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'workflowId': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'name': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'description': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'revision': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'definition': {
+			optional: false,
+			shape: { kind: 'unknown' },
+		},
+		'createdAt': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'updatedAt': {
+			optional: false,
+			shape: { kind: 'string' },
+		}
+	}
+} as const;
 export const SEARCH_SESSION_HISTORY_FILTERED_RESPONSE_SHAPE = { kind: 'array', items: {
 	kind: 'object',
 	fields: {
@@ -8521,6 +8748,7 @@ export const SET_REASONING_EFFORT_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const SET_SKILL_ENABLED_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const SET_TOOL_ENABLED_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const SET_WEB_SEARCH_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const SET_WORKFLOW_SCHEDULE_ENABLED_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const SKILLS_STATUS_CHANGE_EVENT_PAYLOAD_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -8628,6 +8856,30 @@ export const TOOL_RUN_CREATED_EVENT_PAYLOAD_SHAPE = {
 		'preview': {
 			optional: true,
 			shape: { kind: 'string' },
+		},
+		'workflow_progress': {
+			optional: true,
+			shape: {
+				kind: 'object',
+				fields: {
+					'step_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'step_index': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'step_total': {
+						optional: false,
+						shape: { kind: 'number' },
+					}
+				}
+			},
+		},
+		'workflow_retry_available': {
+			optional: true,
+			shape: { kind: 'boolean' },
 		}
 	}
 } as const;
@@ -8701,6 +8953,30 @@ export const TOOL_RUN_FINISHED_EVENT_PAYLOAD_SHAPE = {
 		'preview': {
 			optional: true,
 			shape: { kind: 'string' },
+		},
+		'workflow_progress': {
+			optional: true,
+			shape: {
+				kind: 'object',
+				fields: {
+					'step_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'step_index': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'step_total': {
+						optional: false,
+						shape: { kind: 'number' },
+					}
+				}
+			},
+		},
+		'workflow_retry_available': {
+			optional: true,
+			shape: { kind: 'boolean' },
 		}
 	}
 } as const;
@@ -8774,6 +9050,30 @@ export const TOOL_RUN_OUTPUT_EVENT_PAYLOAD_SHAPE = {
 		'preview': {
 			optional: true,
 			shape: { kind: 'string' },
+		},
+		'workflow_progress': {
+			optional: true,
+			shape: {
+				kind: 'object',
+				fields: {
+					'step_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'step_index': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'step_total': {
+						optional: false,
+						shape: { kind: 'number' },
+					}
+				}
+			},
+		},
+		'workflow_retry_available': {
+			optional: true,
+			shape: { kind: 'boolean' },
 		}
 	}
 } as const;
@@ -8847,6 +9147,30 @@ export const TOOL_RUN_UPDATED_EVENT_PAYLOAD_SHAPE = {
 		'preview': {
 			optional: true,
 			shape: { kind: 'string' },
+		},
+		'workflow_progress': {
+			optional: true,
+			shape: {
+				kind: 'object',
+				fields: {
+					'step_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'step_index': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'step_total': {
+						optional: false,
+						shape: { kind: 'number' },
+					}
+				}
+			},
+		},
+		'workflow_retry_available': {
+			optional: true,
+			shape: { kind: 'boolean' },
 		}
 	}
 } as const;
@@ -8924,9 +9248,12 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	continue_session: CONTINUE_SESSION_RESPONSE_SHAPE,
 	count_session_history: COUNT_SESSION_HISTORY_RESPONSE_SHAPE,
 	count_session_history_search: COUNT_SESSION_HISTORY_SEARCH_RESPONSE_SHAPE,
+	create_workflow_schedule: CREATE_WORKFLOW_SCHEDULE_RESPONSE_SHAPE,
 	delete_all_sessions: DELETE_ALL_SESSIONS_RESPONSE_SHAPE,
 	delete_fact: DELETE_FACT_RESPONSE_SHAPE,
 	delete_session: DELETE_SESSION_RESPONSE_SHAPE,
+	delete_workflow_definition: DELETE_WORKFLOW_DEFINITION_RESPONSE_SHAPE,
+	delete_workflow_schedule: DELETE_WORKFLOW_SCHEDULE_RESPONSE_SHAPE,
 	disable_autostart: DISABLE_AUTOSTART_RESPONSE_SHAPE,
 	discard_sandbox_output_review: DISCARD_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE,
 	discard_staged_chatgpt_plan_credential: DISCARD_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE,
@@ -8959,6 +9286,8 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	list_skills: LIST_SKILLS_RESPONSE_SHAPE,
 	list_tool_run_history: LIST_TOOL_RUN_HISTORY_RESPONSE_SHAPE,
 	list_tool_runs: LIST_TOOL_RUNS_RESPONSE_SHAPE,
+	list_workflow_definitions: LIST_WORKFLOW_DEFINITIONS_RESPONSE_SHAPE,
+	list_workflow_schedules: LIST_WORKFLOW_SCHEDULES_RESPONSE_SHAPE,
 	log_frontend_error: LOG_FRONTEND_ERROR_RESPONSE_SHAPE,
 	open_external: OPEN_EXTERNAL_RESPONSE_SHAPE,
 	open_skills_dir: OPEN_SKILLS_DIR_RESPONSE_SHAPE,
@@ -8979,16 +9308,20 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	reset_session_permissions: RESET_SESSION_PERMISSIONS_RESPONSE_SHAPE,
 	reset_tool_circuits: RESET_TOOL_CIRCUITS_RESPONSE_SHAPE,
 	resolve_confirmation: RESOLVE_CONFIRMATION_RESPONSE_SHAPE,
+	retry_workflow_run: RETRY_WORKFLOW_RUN_RESPONSE_SHAPE,
 	revoke_permission: REVOKE_PERMISSION_RESPONSE_SHAPE,
 	revoke_session_permission: REVOKE_SESSION_PERMISSION_RESPONSE_SHAPE,
 	rollback_session: ROLLBACK_SESSION_RESPONSE_SHAPE,
 	run_memory_maintenance: RUN_MEMORY_MAINTENANCE_RESPONSE_SHAPE,
+	run_workflow_definition: RUN_WORKFLOW_DEFINITION_RESPONSE_SHAPE,
+	save_workflow_definition: SAVE_WORKFLOW_DEFINITION_RESPONSE_SHAPE,
 	search_session_history_filtered: SEARCH_SESSION_HISTORY_FILTERED_RESPONSE_SHAPE,
 	set_hotkey_capture_active: SET_HOTKEY_CAPTURE_ACTIVE_RESPONSE_SHAPE,
 	set_reasoning_effort: SET_REASONING_EFFORT_RESPONSE_SHAPE,
 	set_skill_enabled: SET_SKILL_ENABLED_RESPONSE_SHAPE,
 	set_tool_enabled: SET_TOOL_ENABLED_RESPONSE_SHAPE,
 	set_web_search: SET_WEB_SEARCH_RESPONSE_SHAPE,
+	set_workflow_schedule_enabled: SET_WORKFLOW_SCHEDULE_ENABLED_RESPONSE_SHAPE,
 	stage_independent_search_credential: STAGE_INDEPENDENT_SEARCH_CREDENTIAL_RESPONSE_SHAPE,
 	stage_ocr_credential: STAGE_OCR_CREDENTIAL_RESPONSE_SHAPE,
 	stage_provider_credential: STAGE_PROVIDER_CREDENTIAL_RESPONSE_SHAPE,
@@ -9098,9 +9431,12 @@ export interface TauriCommandMap {
 	continue_session: { request: { sessionId: string }; response: void };
 	count_session_history: { request: undefined; response: number };
 	count_session_history_search: { request: { query: string }; response: number };
+	create_workflow_schedule: { request: { workflowId: string; sessionId: string; intervalSeconds: number; anchorAt: string }; response: WorkflowScheduleDto };
 	delete_all_sessions: { request: undefined; response: number };
 	delete_fact: { request: { factId: string }; response: void };
 	delete_session: { request: { sessionId: string }; response: void };
+	delete_workflow_definition: { request: { workflowId: string }; response: boolean };
+	delete_workflow_schedule: { request: { scheduleId: string }; response: boolean };
 	disable_autostart: { request: undefined; response: void };
 	discard_sandbox_output_review: { request: { sessionId: string; sourceStepId: string }; response: boolean };
 	discard_staged_chatgpt_plan_credential: { request: { credentialRef: string }; response: void };
@@ -9133,6 +9469,8 @@ export interface TauriCommandMap {
 	list_skills: { request: undefined; response: SkillInfo[] };
 	list_tool_run_history: { request: { kind?: ToolRunKindDtoInput | null; limit?: number | null; sessionId?: string | null }; response: ToolRunEvent[] };
 	list_tool_runs: { request: undefined; response: ToolRunEvent[] };
+	list_workflow_definitions: { request: undefined; response: WorkflowDefinitionDto[] };
+	list_workflow_schedules: { request: undefined; response: WorkflowScheduleDto[] };
 	log_frontend_error: { request: { failureKind: FrontendFailureKindInput }; response: void };
 	open_external: { request: { target: string }; response: void };
 	open_skills_dir: { request: undefined; response: void };
@@ -9153,16 +9491,20 @@ export interface TauriCommandMap {
 	reset_session_permissions: { request: undefined; response: number };
 	reset_tool_circuits: { request: undefined; response: void };
 	resolve_confirmation: { request: { owner: InteractionOwnerInput; requestId: string; effect: PermissionEffectInput; scope: PermissionScopeInput; target: PermissionTargetInput }; response: ConfirmationResolutionResult };
+	retry_workflow_run: { request: { toolRunId: string }; response: string | null };
 	revoke_permission: { request: { key: string }; response: void };
 	revoke_session_permission: { request: { sessionId: string; capability: string }; response: void };
 	rollback_session: { request: { sessionId: string; targetStep: number; pause?: boolean | null; targetMessageId?: string | null }; response: void };
 	run_memory_maintenance: { request: undefined; response: number };
+	run_workflow_definition: { request: { workflowId: string; sessionId: string }; response: string };
+	save_workflow_definition: { request: { workflowId?: string | null; expectedRevision?: number | null; name: string; description: string; definition: unknown }; response: WorkflowDefinitionDto };
 	search_session_history_filtered: { request: { query?: string | null; status?: SessionHistoryStatusFilterInput | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
 	set_hotkey_capture_active: { request: { active: boolean }; response: void };
 	set_reasoning_effort: { request: { requestKind: RequestKindInput; effort?: ReasoningEffortSelectionInput | null }; response: void };
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_tool_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_web_search: { request: { requestKind: RequestKindInput; mode?: WebSearchModeInput | null }; response: void };
+	set_workflow_schedule_enabled: { request: { scheduleId: string; enabled: boolean }; response: boolean };
 	stage_independent_search_credential: { request: { modelId: string; apiKey: string }; response: string };
 	stage_ocr_credential: { request: { field: OcrCredentialFieldInput; value: string }; response: string };
 	stage_provider_credential: { request: { providerName: string; apiKey: string }; response: string };
@@ -9213,9 +9555,12 @@ export const TAURI_COMMAND_CONTRACTS = {
 	continue_session: { boundary: 'mutate', security: "replay durable session_events and truncate partial projection" },
 	count_session_history: { boundary: 'read', security: "read-only aggregate" },
 	count_session_history_search: { boundary: 'read', security: "parameterized read-only search" },
+	create_workflow_schedule: { boundary: 'mutate', security: "canonical definition/session IDs; schedule stores immutable definition snapshot and no grants" },
 	delete_all_sessions: { boundary: 'mutate', security: "clears persisted sessions and session trust" },
 	delete_fact: { boundary: 'mutate', security: "delete one fact by id" },
 	delete_session: { boundary: 'mutate', security: "delete by session id and release runtime state" },
+	delete_workflow_definition: { boundary: 'mutate', security: "canonical wfdef ID; running snapshots remain independent" },
+	delete_workflow_schedule: { boundary: 'mutate', security: "canonical wfsched ID; active occurrence retains its snapshot until terminal" },
 	disable_autostart: { boundary: 'execute', security: "managed autostart entry only" },
 	discard_sandbox_output_review: { boundary: 'mutate', security: "canonical session/step pair; only the owning Shell review can be discarded" },
 	discard_staged_chatgpt_plan_credential: { boundary: 'mutate', security: "deletes only the exact uncommitted ChatGPT plan credential reference abandoned by the settings draft" },
@@ -9248,6 +9593,8 @@ export const TAURI_COMMAND_CONTRACTS = {
 	list_skills: { boundary: 'read', security: "metadata projection" },
 	list_tool_run_history: { boundary: 'read', security: "optional session filter; limit capped at 200; internal tool args excluded" },
 	list_tool_runs: { boundary: 'read', security: "projected task fields only" },
+	list_workflow_definitions: { boundary: 'read', security: "versioned data-only definitions; no grants or execution authority" },
+	list_workflow_schedules: { boundary: 'read', security: "snapshot metadata only; stored definition and runtime authorization excluded" },
 	log_frontend_error: { boundary: 'mutate', security: "fixed renderer failure category only; error text and payload are not mirrored" },
 	open_external: { boundary: 'execute', security: "http(s) or validated absolute local path only" },
 	open_skills_dir: { boundary: 'execute', security: "configured skills root only" },
@@ -9268,16 +9615,20 @@ export const TAURI_COMMAND_CONTRACTS = {
 	reset_session_permissions: { boundary: 'mutate', security: "clears durable session grants only; keeps permanent rules" },
 	reset_tool_circuits: { boundary: 'mutate', security: "clears local circuit state only" },
 	resolve_confirmation: { boundary: 'mutate', security: "owner/request id selects one registry; receipt, effect, scope, target and expiry are revalidated; retryable failures keep pending" },
+	retry_workflow_run: { boundary: 'execute', security: "ToolRun owner permits only a persisted safe_to_retry checkpoint with no completed child calls" },
 	revoke_permission: { boundary: 'mutate', security: "non-empty exact permanent key; session grants are retained" },
 	revoke_session_permission: { boundary: 'mutate', security: "non-empty session id and capability; removes one session grant" },
 	rollback_session: { boundary: 'mutate', security: "event cursor and projection clock rollback" },
 	run_memory_maintenance: { boundary: 'mutate', security: "maintenance path owns purge and embedding cleanup" },
+	run_workflow_definition: { boundary: 'execute', security: "session context is canonical; every child still uses the live standard authorization gateway" },
+	save_workflow_definition: { boundary: 'mutate', security: "bounded JSON document; runtime authorization is never persisted" },
 	search_session_history_filtered: { boundary: 'read', security: "bounded page and date-filtered projection" },
 	set_hotkey_capture_active: { boundary: 'mutate', security: "transient renderer key-capture state only; not persisted" },
 	set_reasoning_effort: { boundary: 'mutate', security: "request kind selects the assigned model; validated before config save" },
 	set_skill_enabled: { boundary: 'mutate', security: "AuthorizationPort; typed native admin operation persists the toggle" },
 	set_tool_enabled: { boundary: 'mutate', security: "AuthorizationPort; typed native admin operation persists the toggle" },
 	set_web_search: { boundary: 'mutate', security: "request kind selects the assigned model; provider capability checked before config save" },
+	set_workflow_schedule_enabled: { boundary: 'mutate', security: "canonical wfsched ID; disabling prevents future occurrences only" },
 	stage_independent_search_credential: { boundary: 'mutate', security: "writes a model's Alibaba AI Search key to secure storage and returns only an opaque reference" },
 	stage_ocr_credential: { boundary: 'mutate', security: "writes OCR secret to secure storage and returns only an opaque reference" },
 	stage_provider_credential: { boundary: 'mutate', security: "writes provider secret to secure storage and returns only an opaque reference" },

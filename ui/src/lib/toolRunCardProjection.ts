@@ -1,4 +1,4 @@
-import type { ToolRunPayload, ToolRunStatus } from './contracts/toolRun.ts';
+import type { ToolRunPayload, ToolRunStatus, WorkflowProgress } from './contracts/toolRun.ts';
 import { scheduleModeLabel, toolRunTitle } from './toolRunTerminology.ts';
 import type { StatusTone } from './statusColors.ts';
 
@@ -16,6 +16,8 @@ export interface ToolRunCardDetails {
 	error?: string;
 	preview?: string;
 	body?: string;
+	workflowProgress?: WorkflowProgress;
+	workflowRetryAvailable?: boolean;
 }
 
 /** Shared visible structure for background and scheduled ToolRun cards. */
@@ -138,12 +140,26 @@ export function projectToolRunCard(
 	const details: ToolRunCardDetails = scheduled
 		? {
 				body: toolRun.body,
+				...(toolRun.output === undefined ? {} : { output: toolRun.output }),
+				...(toolRun.error === undefined ? {} : { error: toolRun.error }),
+				...(toolRun.workflowProgress === undefined
+					? {}
+					: { workflowProgress: toolRun.workflowProgress }),
+				...(toolRun.workflowRetryAvailable === undefined
+					? {}
+					: { workflowRetryAvailable: toolRun.workflowRetryAvailable }),
 			}
 		: {
 				command: toolRun.command,
 				output: toolRun.output,
 				error: toolRun.error,
 				preview: toolRun.preview,
+				...(toolRun.workflowProgress === undefined
+					? {}
+					: { workflowProgress: toolRun.workflowProgress }),
+				...(toolRun.workflowRetryAvailable === undefined
+					? {}
+					: { workflowRetryAvailable: toolRun.workflowRetryAvailable }),
 			};
 
 	return {

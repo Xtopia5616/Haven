@@ -340,6 +340,21 @@ pub trait ToolRunAgentCapability: Send + Sync {
 
     async fn fail_scheduled(&self, tool_run_id: &str, reason: &str) -> anyhow::Result<bool>;
 
+    async fn fail_scheduled_with_result(
+        &self,
+        tool_run_id: &str,
+        result: &str,
+        reason: &str,
+    ) -> anyhow::Result<bool>;
+
+    async fn report_workflow_progress(
+        &self,
+        tool_run_id: &str,
+        step_id: &str,
+        step_index: u32,
+        step_total: u32,
+    ) -> anyhow::Result<bool>;
+
     async fn restore(&self) -> ToolRunRestoreSummary;
 
     async fn acknowledge_completion(&self, tool_run_result_id: &str);
@@ -369,6 +384,17 @@ pub trait ToolRunManagementCapability: Send + Sync {
     async fn list_board_history(&self) -> anyhow::Result<Vec<ToolRunView>>;
 
     async fn list_history(&self, query: ToolRunHistoryQuery) -> anyhow::Result<Vec<ToolRunView>>;
+
+    async fn start_workflow_run(
+        &self,
+        session_id: &str,
+        workflow_definition_id: &str,
+        workflow_revision: u32,
+        name: &str,
+        definition: Value,
+    ) -> anyhow::Result<String>;
+
+    async fn retry_workflow_run(&self, tool_run_id: &str) -> anyhow::Result<Option<String>>;
 
     async fn cancel_for_kind(&self, tool_run_id: &str, kind: ToolRunKind) -> bool;
 

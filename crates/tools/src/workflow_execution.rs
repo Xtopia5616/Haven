@@ -43,6 +43,15 @@ pub trait WorkflowSubcallPort: Send + Sync {
         cancel: CancellationToken,
     ) -> Result<WorkflowSubcallResult, String>;
 
+    /// True only when the last failed child was rejected before a handler
+    /// started. The default keeps retry unavailable for unknown implementations.
+    fn last_failure_before_handler_is_retry_safe(&self) -> bool {
+        false
+    }
+
+    /// Report the active node without exposing arguments, outputs, or observations.
+    async fn report_progress(&self, _step_id: &str, _step_index: u32, _step_total: u32) {}
+
     /// Persist this bounded definition as a scheduled ToolRun. Implementations
     /// that do not own ToolRun lifecycle reject the request.
     async fn schedule_run(&self, _input: Value, _due_at: Option<String>) -> Result<String, String> {
@@ -85,6 +94,8 @@ pub(crate) struct WorkflowExecutionResult {
     pub(crate) error: Option<String>,
     pub(crate) call_count: usize,
     #[serde(default)]
+    pub(crate) safe_to_retry: bool,
+    #[serde(default)]
     pub(crate) truncated: bool,
     #[serde(skip)]
     pub(crate) error_class: Option<ToolErrorClass>,
@@ -101,6 +112,7 @@ impl WorkflowExecutionResult {
             failed_step_id: None,
             error: None,
             call_count: 0,
+            safe_to_retry: false,
             truncated: false,
             error_class: None,
             sandbox_output_review_step_ids: Vec::new(),
@@ -183,7 +195,11 @@ pub(crate) async fn execute_workflow(
     let mut total_output_bytes = 0usize;
     let deadline = Instant::now() + Duration::from_secs(limits.max_execution_duration_secs);
 
-    for step in plan.steps() {
+    let total_steps = plan.steps().len() as u32;
+    for (step_index, step) in plan.steps().iter().enumerate() {
+        subcalls
+            .report_progress(&step.id, step_index as u32 + 1, total_steps)
+            .await;
         if cancel.is_cancelled() {
             execution.status = if execution.completed_step_ids.is_empty() {
                 WorkflowStatus::Cancelled
@@ -268,6 +284,8 @@ pub(crate) async fn execute_workflow(
         let call = match call_result {
             Ok(call) => call,
             Err(_) => {
+                execution.safe_to_retry = execution.completed_step_ids.is_empty()
+                    && subcalls.last_failure_before_handler_is_retry_safe();
                 execution.stop(
                     Some(&step.id),
                     "Workflow step was blocked before its handler ran",

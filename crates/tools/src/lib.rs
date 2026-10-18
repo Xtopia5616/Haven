@@ -228,7 +228,7 @@ pub(crate) use tool_contract::{
 };
 pub use tool_run_events::{
     ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunLifecycleState, ToolRunLifecycleUpdate,
-    ToolRunOutputPayload, ToolRunSessionAttachedPayload,
+    ToolRunOutputPayload, ToolRunSessionAttachedPayload, WorkflowProgress,
 };
 pub(crate) use tool_run_lifecycle::ToolRunLifecycle;
 pub(crate) use tool_run_service::BackgroundShellRequest;

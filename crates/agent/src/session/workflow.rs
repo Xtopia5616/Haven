@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -28,6 +28,7 @@ pub(super) struct AuthorizedWorkflowSubcallConfig {
     pub(super) observations: Arc<dyn ToolObservationPort>,
     pub(super) tool_runs: Arc<dyn AgentToolRunPort>,
     pub(super) journal: Option<Arc<NestedExecutionJournal>>,
+    pub(super) parent_execution_id: Option<String>,
     pub(super) resume_confirmation: Option<haven_tools::NestedConfirmationRequest>,
 }
 
@@ -39,9 +40,11 @@ pub(super) struct AuthorizedWorkflowSubcallPort {
     observations: Arc<dyn ToolObservationPort>,
     tool_runs: Arc<dyn AgentToolRunPort>,
     journal: Option<Arc<NestedExecutionJournal>>,
+    parent_execution_id: Option<String>,
     resume_confirmation: Option<haven_tools::NestedConfirmationRequest>,
     pending_confirmation: Mutex<Option<haven_tools::NestedConfirmationRequest>>,
     next_call_index: AtomicU32,
+    last_failure_before_handler: AtomicBool,
 }
 
 impl AuthorizedWorkflowSubcallPort {
@@ -54,15 +57,42 @@ impl AuthorizedWorkflowSubcallPort {
             observations: config.observations,
             tool_runs: config.tool_runs,
             journal: config.journal,
+            parent_execution_id: config.parent_execution_id,
             resume_confirmation: config.resume_confirmation,
             pending_confirmation: Mutex::new(None),
             next_call_index: AtomicU32::new(0),
+            last_failure_before_handler: AtomicBool::new(false),
         }
     }
 }
 
 #[async_trait]
 impl WorkflowSubcallPort for AuthorizedWorkflowSubcallPort {
+    async fn report_progress(&self, step_id: &str, step_index: u32, step_total: u32) {
+        let Some(tool_run_id) = self
+            .parent_execution_id
+            .as_deref()
+            .filter(|id| is_canonical_id(id, "toolrun"))
+        else {
+            return;
+        };
+        if let Err(error) = self
+            .tool_runs
+            .report_workflow_progress(tool_run_id, step_id, step_index, step_total)
+            .await
+        {
+            tracing::warn!(
+                tool_run_id,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "failed to persist Workflow node progress"
+            );
+        }
+    }
+
+    fn last_failure_before_handler_is_retry_safe(&self) -> bool {
+        self.last_failure_before_handler.load(Ordering::Acquire)
+    }
+
     async fn schedule_run(
         &self,
         mut input: Value,
@@ -101,6 +131,8 @@ impl WorkflowSubcallPort for AuthorizedWorkflowSubcallPort {
         input: Value,
         cancel: CancellationToken,
     ) -> Result<WorkflowSubcallResult, String> {
+        self.last_failure_before_handler
+            .store(false, Ordering::Release);
         if !is_canonical_id(&self.session_id, "ses") {
             return Err("Workflow session context is invalid".into());
         }
@@ -161,6 +193,10 @@ impl WorkflowSubcallPort for AuthorizedWorkflowSubcallPort {
             },
             None => (proposed_step_id, None),
         };
+        if completed.is_none() {
+            self.last_failure_before_handler
+                .store(true, Ordering::Release);
+        }
 
         let request = self
             .authorization
@@ -204,6 +240,8 @@ impl WorkflowSubcallPort for AuthorizedWorkflowSubcallPort {
         };
 
         if let Some(completed) = completed {
+            self.last_failure_before_handler
+                .store(false, Ordering::Release);
             let observation = completed
                 .observation
                 .ok_or_else(|| "Workflow checkpoint is missing its observation".to_owned())?;
@@ -215,11 +253,15 @@ impl WorkflowSubcallPort for AuthorizedWorkflowSubcallPort {
         }
 
         if let Some(journal) = &self.journal {
+            self.last_failure_before_handler
+                .store(false, Ordering::Release);
             journal
                 .start_call(call_index, &step_id, capability, &journal_input)
                 .await?;
         }
 
+        self.last_failure_before_handler
+            .store(false, Ordering::Release);
         let result = self
             .execution
             .execute_workflow_subcall(ToolExecutionContext {

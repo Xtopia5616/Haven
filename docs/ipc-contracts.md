@@ -27,9 +27,12 @@
 | `continue_session` | mutate | replay durable session_events and truncate partial projection |
 | `count_session_history` | read | read-only aggregate |
 | `count_session_history_search` | read | parameterized read-only search |
+| `create_workflow_schedule` | mutate | canonical definition/session IDs; schedule stores immutable definition snapshot and no grants |
 | `delete_all_sessions` | mutate | clears persisted sessions and session trust |
 | `delete_fact` | mutate | delete one fact by id |
 | `delete_session` | mutate | delete by session id and release runtime state |
+| `delete_workflow_definition` | mutate | canonical wfdef ID; running snapshots remain independent |
+| `delete_workflow_schedule` | mutate | canonical wfsched ID; active occurrence retains its snapshot until terminal |
 | `disable_autostart` | execute | managed autostart entry only |
 | `discard_sandbox_output_review` | mutate | canonical session/step pair; only the owning Shell review can be discarded |
 | `discard_staged_chatgpt_plan_credential` | mutate | deletes only the exact uncommitted ChatGPT plan credential reference abandoned by the settings draft |
@@ -62,6 +65,8 @@
 | `list_skills` | read | metadata projection |
 | `list_tool_run_history` | read | optional session filter; limit capped at 200; internal tool args excluded |
 | `list_tool_runs` | read | projected task fields only |
+| `list_workflow_definitions` | read | versioned data-only definitions; no grants or execution authority |
+| `list_workflow_schedules` | read | snapshot metadata only; stored definition and runtime authorization excluded |
 | `log_frontend_error` | mutate | fixed renderer failure category only; error text and payload are not mirrored |
 | `open_external` | execute | http(s) or validated absolute local path only |
 | `open_skills_dir` | execute | configured skills root only |
@@ -82,16 +87,20 @@
 | `reset_session_permissions` | mutate | clears durable session grants only; keeps permanent rules |
 | `reset_tool_circuits` | mutate | clears local circuit state only |
 | `resolve_confirmation` | mutate | owner/request id selects one registry; receipt, effect, scope, target and expiry are revalidated; retryable failures keep pending |
+| `retry_workflow_run` | execute | ToolRun owner permits only a persisted safe_to_retry checkpoint with no completed child calls |
 | `revoke_permission` | mutate | non-empty exact permanent key; session grants are retained |
 | `revoke_session_permission` | mutate | non-empty session id and capability; removes one session grant |
 | `rollback_session` | mutate | event cursor and projection clock rollback |
 | `run_memory_maintenance` | mutate | maintenance path owns purge and embedding cleanup |
+| `run_workflow_definition` | execute | session context is canonical; every child still uses the live standard authorization gateway |
+| `save_workflow_definition` | mutate | bounded JSON document; runtime authorization is never persisted |
 | `search_session_history_filtered` | read | bounded page and date-filtered projection |
 | `set_hotkey_capture_active` | mutate | transient renderer key-capture state only; not persisted |
 | `set_reasoning_effort` | mutate | request kind selects the assigned model; validated before config save |
 | `set_skill_enabled` | mutate | AuthorizationPort; typed native admin operation persists the toggle |
 | `set_tool_enabled` | mutate | AuthorizationPort; typed native admin operation persists the toggle |
 | `set_web_search` | mutate | request kind selects the assigned model; provider capability checked before config save |
+| `set_workflow_schedule_enabled` | mutate | canonical wfsched ID; disabling prevents future occurrences only |
 | `stage_independent_search_credential` | mutate | writes a model's Alibaba AI Search key to secure storage and returns only an opaque reference |
 | `stage_ocr_credential` | mutate | writes OCR secret to secure storage and returns only an opaque reference |
 | `stage_provider_credential` | mutate | writes provider secret to secure storage and returns only an opaque reference |

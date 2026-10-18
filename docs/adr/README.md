@@ -1309,3 +1309,4 @@
 - [1318：区分开发窗口与正式版实例](1318-distinguish-development-instance.md)
 - [1319：将 ChatGPT 订阅登录作为独立 Provider](1319-chatgpt-plan-provider.md)
 - [1321：嵌套确认续接与持久 Workflow ToolRun](1321-resumable-nested-workflow-executions.md)
+- [1322：Workflow 定义库、运行进度与周期调度](1322-workflow-library-progress-and-recurring-runs.md)

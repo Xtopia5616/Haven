@@ -26,6 +26,7 @@
 		toolRunHistoryFailed?: boolean;
 		onOpenSession?: (sessionId: string) => void;
 		onCancel?: (toolRunId: string, kind?: ToolRunKind) => void;
+		onRetryWorkflow?: (toolRunId: string) => void;
 		onRefreshTaskHistory?: () => void;
 	}
 
@@ -41,6 +42,7 @@
 		scheduledToolRunCountdown = () => '',
 		onOpenSession = () => {},
 		onCancel = () => {},
+		onRetryWorkflow = () => {},
 		onRefreshTaskHistory = () => {},
 	}: Props = $props();
 
@@ -359,6 +361,12 @@
 						<p class="task-detail-copy">{selectedRow.details.body}</p>
 					</section>
 				{/if}
+				{#if selectedRow.details.workflowProgress}
+					<section class="task-dialog-section">
+						<h4>Workflow 进度</h4>
+						<p class="task-detail-copy">步骤 {selectedRow.details.workflowProgress.stepIndex}/{selectedRow.details.workflowProgress.stepTotal} · {selectedRow.details.workflowProgress.stepId}</p>
+					</section>
+				{/if}
 				{#if selectedRow.details.output}
 					<section class="task-dialog-section">
 						<h4>任务输出</h4>
@@ -372,6 +380,13 @@
 					</section>
 				{/if}
 				<div class="task-actions">
+					{#if selectedRow.kind === 'scheduled' && selectedRow.status === 'failed' && selectedRow.details.workflowRetryAvailable === true}
+						<MaterialButton
+							variant="filled"
+							label="安全重试 Workflow"
+							onclick={() => onRetryWorkflow?.(selectedRow.toolRunId)}
+						/>
+					{/if}
 					{#if selectedRow.kind === 'background' && selectedRow.status === 'running'}
 						<MaterialButton
 							variant="danger"

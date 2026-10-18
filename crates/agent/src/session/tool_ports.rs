@@ -249,6 +249,21 @@ pub trait AgentToolRunPort: Send + Sync {
 
     async fn fail_scheduled(&self, tool_run_id: &str, reason: &str) -> anyhow::Result<bool>;
 
+    async fn fail_scheduled_with_result(
+        &self,
+        tool_run_id: &str,
+        result: &str,
+        reason: &str,
+    ) -> anyhow::Result<bool>;
+
+    async fn report_workflow_progress(
+        &self,
+        tool_run_id: &str,
+        step_id: &str,
+        step_index: u32,
+        step_total: u32,
+    ) -> anyhow::Result<bool>;
+
     async fn restore(&self) -> ToolRunRestoreSummary;
 
     async fn acknowledge_completion(&self, tool_run_result_id: &str);
@@ -781,6 +796,29 @@ impl AgentToolRunPort for ToolsFacadeToolRunAdapter {
 
     async fn fail_scheduled(&self, tool_run_id: &str, reason: &str) -> anyhow::Result<bool> {
         self.tool_runs.fail_scheduled(tool_run_id, reason).await
+    }
+
+    async fn fail_scheduled_with_result(
+        &self,
+        tool_run_id: &str,
+        result: &str,
+        reason: &str,
+    ) -> anyhow::Result<bool> {
+        self.tool_runs
+            .fail_scheduled_with_result(tool_run_id, result, reason)
+            .await
+    }
+
+    async fn report_workflow_progress(
+        &self,
+        tool_run_id: &str,
+        step_id: &str,
+        step_index: u32,
+        step_total: u32,
+    ) -> anyhow::Result<bool> {
+        self.tool_runs
+            .report_workflow_progress(tool_run_id, step_id, step_index, step_total)
+            .await
     }
 
     async fn restore(&self) -> ToolRunRestoreSummary {

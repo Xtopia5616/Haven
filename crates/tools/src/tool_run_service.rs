@@ -30,7 +30,7 @@ use crate::tool_run_trigger_policy::{ScheduledTrigger, ScheduledTriggerRequest};
 use crate::tool_run_types::{ScheduledToolRunFired, ScheduledToolRunSpec};
 use crate::{
     ToolRunLifecycle, ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunLifecycleState,
-    ToolRunLifecycleUpdate, ToolRunOutputPayload, ToolRunSessionAttachedPayload,
+    ToolRunLifecycleUpdate, ToolRunOutputPayload, ToolRunSessionAttachedPayload, WorkflowProgress,
 };
 use haven_common::tool_run::ScheduleMode;
 use haven_memory::{ToolRunCompletionOutboxRow, ToolRunStore};
@@ -274,6 +274,8 @@ pub struct ToolRunService {
     scheduled_execution_claims: RwLock<HashMap<String, String>>,
     /// Transient completion transport and scheduled-fire recovery claims.
     completion_bus: ToolRunCompletionBus,
+    /// Latest content-free Workflow progress for currently retained ToolRuns.
+    workflow_progress: RwLock<HashMap<String, WorkflowProgress>>,
     /// At most one retry worker is allowed for each scheduled ToolRun whose
     /// terminal DB write failed. The worker is cancelled with the service and
     /// stops once the durable transition succeeds.
@@ -307,6 +309,9 @@ pub struct ToolRunService {
     /// reaps them according to `tool_run_terminal_ttl_secs`, so results survive
     /// app restarts.
     tool_run_store: RwLock<Option<ToolRunStore>>,
+    /// Versioned Workflow definitions and recurring schedule persistence.
+    workflow_definition_store: RwLock<Option<haven_memory::WorkflowDefinitionStore>>,
+    workflow_scheduler_started: AtomicBool,
     /// Cancels process runners, output preview loops and scheduled timers
     /// during application teardown. Every service-owned task is tracked here
     /// so shutdown can wait until its future and destructor have completed.
@@ -331,6 +336,7 @@ impl ToolRunService {
             terminal_transition: TerminalTransitionGuard::default(),
             scheduled_execution_claims: RwLock::new(HashMap::new()),
             completion_bus: ToolRunCompletionBus::new(),
+            workflow_progress: RwLock::new(HashMap::new()),
             terminal_persistence_retries: RwLock::new(HashSet::new()),
             background_terminal_retries: RwLock::new(HashSet::new()),
             quarantine_persistence_retries: RwLock::new(HashSet::new()),
@@ -342,6 +348,8 @@ impl ToolRunService {
             max_due_horizon_secs: RwLock::new(365 * 24 * 3600),
             lifecycle_events: ToolRunLifecycle::default(),
             tool_run_store: RwLock::new(None),
+            workflow_definition_store: RwLock::new(None),
+            workflow_scheduler_started: AtomicBool::new(false),
             task_tracker: TaskTracker::new(),
             shutdown_gate: tokio::sync::Mutex::new(()),
             shutdown_token: CancellationToken::new(),
@@ -486,6 +494,67 @@ impl ToolRunService {
         *self.tool_run_store.write().await = tool_run_store;
     }
 
+    /// Attach persistent Workflow schedules and start their bounded dispatcher.
+    pub async fn set_workflow_definition_store(
+        self: &Arc<Self>,
+        store: Option<haven_memory::WorkflowDefinitionStore>,
+    ) {
+        *self.workflow_definition_store.write().await = store.clone();
+        if store.is_none() {
+            return;
+        }
+        if self.tool_run_store.read().await.is_none() {
+            tracing::warn!("recurring Workflow scheduler requires a persistent ToolRun store");
+            return;
+        }
+        if self.workflow_scheduler_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let service = self.clone();
+        let shutdown = self.shutdown_token.clone();
+        self.spawn_owned_task(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(2));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    _ = ticker.tick() => {
+                        let Some(store) = service.workflow_definition_store.read().await.clone() else {
+                            continue;
+                        };
+                        let now = chrono::Utc::now()
+                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                        match store.claim_due_occurrences(now).await {
+                            Ok(occurrences) if !occurrences.is_empty() => {
+                                let ids = occurrences.iter().map(|row| row.tool_run_id.clone()).collect::<Vec<_>>();
+                                for row in occurrences {
+                                    let mut event = ToolRunLifecyclePayload::new(
+                                        ToolRunKind::Scheduled,
+                                        row.tool_run_id,
+                                        ToolRunLifecycleState::Waiting,
+                                    );
+                                    event.session_id = row.session_id;
+                                    event.title = Some(row.title);
+                                    event.body = Some(row.body);
+                                    event.mode = Some(ScheduleMode::Tool);
+                                    event.due_at = Some(row.due_at);
+                                    service.emit(ToolRunLifecycleEvent::Created(event));
+                                }
+                                service.restore_pending().await;
+                                tracing::debug!(count = ids.len(), "created recurring Workflow ToolRun occurrences");
+                            }
+                            Ok(_) => {}
+                            Err(error) => tracing::warn!(
+                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                                "recurring Workflow schedule dispatch failed"
+                            ),
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     /// Load terminal background history for board hydration and project it into
     /// the safe application-facing ToolRun view.
     pub async fn list_board_history(&self) -> anyhow::Result<Vec<ToolRunView>> {
@@ -525,6 +594,76 @@ impl ToolRunService {
             .into_iter()
             .map(project_persisted_tool_run)
             .collect()
+    }
+
+    /// Persist and publish the latest content-free node progress for one live
+    /// Workflow ToolRun. Progress is an observation, never an execution input.
+    pub async fn report_workflow_progress(
+        &self,
+        tool_run_id: &str,
+        step_id: &str,
+        step_index: u32,
+        step_total: u32,
+    ) -> anyhow::Result<bool> {
+        if !haven_common::types::is_canonical_id(tool_run_id, "toolrun")
+            || !crate::workflow::valid_step_id(step_id, 48)
+            || step_index == 0
+            || step_total == 0
+            || step_index > step_total
+        {
+            anyhow::bail!("Workflow progress is invalid");
+        }
+        let (session_id, schedule, state) = {
+            let tool_runs = self.tool_runs.read().await;
+            let Some(entry) = tool_runs.get(tool_run_id) else {
+                return Ok(false);
+            };
+            let Some(schedule) = entry.scheduled.as_ref() else {
+                return Ok(false);
+            };
+            if entry.kind != ToolRunKind::Scheduled
+                || !matches!(&entry.state, ToolRunState::Running { .. })
+                || schedule.mode != ScheduleMode::Tool
+                || schedule.tool_name.as_deref() != Some(crate::WORKFLOW_RUN_TOOL_NAME)
+            {
+                return Ok(false);
+            }
+            (
+                entry.session_id.clone(),
+                schedule.clone(),
+                entry.state.clone(),
+            )
+        };
+        let store = self.tool_run_store.read().await.clone().ok_or_else(|| {
+            anyhow::anyhow!("Workflow progress requires a persistent ToolRun store")
+        })?;
+        if !store
+            .update_workflow_tool_run_progress(
+                tool_run_id.to_owned(),
+                step_id.to_owned(),
+                step_index,
+                step_total,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+        let progress = WorkflowProgress {
+            step_id: step_id.to_owned(),
+            step_index,
+            step_total,
+        };
+        self.workflow_progress
+            .write()
+            .await
+            .insert(tool_run_id.to_owned(), progress.clone());
+        let mut event =
+            scheduled_lifecycle_payload(tool_run_id, session_id.as_deref(), &schedule, &state);
+        event.workflow_progress = Some(progress);
+        self.emit(ToolRunLifecycleEvent::Updated(
+            ToolRunLifecycleUpdate::StateChanged(Box::new(event)),
+        ));
+        Ok(true)
     }
 
     /// Try to move a malformed persisted waiting row to terminal history.
@@ -1117,15 +1256,22 @@ impl ToolRunService {
     /// ToolRun set to the UI (the per-session variant `list_for_session` serves the
     /// agent). Order: oldest first.
     pub async fn board(&self) -> Vec<ToolRunView> {
+        let progress = self.workflow_progress.read().await.clone();
         let tool_runs = self.tool_runs.read().await;
         let mut rows = Vec::new();
         for (id, entry) in tool_runs.iter() {
             match entry.kind {
-                ToolRunKind::Background => rows.push(project_board_tool_run(id, entry)),
+                ToolRunKind::Background => {
+                    let mut view = project_board_tool_run(id, entry);
+                    view.workflow_progress = progress.get(id).cloned();
+                    rows.push(view);
+                }
                 ToolRunKind::Scheduled
                     if entry.state.status().is_live() && entry.scheduled.is_some() =>
                 {
-                    rows.push(project_board_tool_run(id, entry));
+                    let mut view = project_board_tool_run(id, entry);
+                    view.workflow_progress = progress.get(id).cloned();
+                    rows.push(view);
                 }
                 ToolRunKind::Scheduled => {}
             }

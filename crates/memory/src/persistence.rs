@@ -17,6 +17,7 @@ use crate::repositories::memory_outbox_store::MemoryOutboxStore;
 use crate::repositories::memory_recall_store::MemoryRecallStore;
 use crate::repositories::session_events::SessionStore;
 use crate::repositories::tool_run_store::ToolRunStore;
+use crate::repositories::workflow_definitions::WorkflowDefinitionStore;
 
 /// Opens the backing database and creates the typed Memory persistence ports.
 ///
@@ -61,6 +62,11 @@ impl MemoryPersistence {
     /// Create the typed ToolRun persistence port.
     pub fn tool_run_store(&self) -> ToolRunStore {
         ToolRunStore::new(self.db.clone())
+    }
+
+    /// Create the typed persistence capability for reusable Workflow definitions.
+    pub fn workflow_definition_store(&self) -> WorkflowDefinitionStore {
+        WorkflowDefinitionStore::new(self.db.clone())
     }
 }
 
