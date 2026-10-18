@@ -64,7 +64,7 @@ pub(super) struct SafetyConfig {
     tool_settings: HashMap<String, ToolConfig>,
 }
 
-/// Central authorization engine for every tool, adapter and scheduled ToolRun.
+/// Central authorization engine for every foreground or background tool call.
 ///
 /// The engine owns policy evaluation; callers never decide based on a
 /// frontend-provided `confirmed` flag. Hard safety boundaries run before
@@ -3962,7 +3962,7 @@ mod tests {
             .map(str::to_owned)
             .unwrap_or_else(|| match tool_name {
                 "ask" => "ask".into(),
-                "tool_runs" => "list".into(),
+                "toolrun" => "list".into(),
                 "shell" => "execute".into(),
                 "http" => "request".into(),
                 "notify" => "notify".into(),

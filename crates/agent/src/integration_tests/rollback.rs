@@ -30,20 +30,13 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
     )
     .await;
     let tool_run_id = "toolrun-00000000000000000000000000000004";
-    let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
     agent
         .db
-        .save_scheduled_tool_run(
+        .save_tool_run(
             tool_run_id,
-            &due_at,
-            "Rollback closing",
-            "must remain untouched",
-            haven_common::tool_run::ScheduleMode::Tool,
             Some(&session.session_id),
-            Some("notify"),
-            None,
-            None,
-            None,
+            "echo rollback closing",
+            "2026-09-24T10:00:00Z",
         )
         .unwrap();
     executor
@@ -69,7 +62,7 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
     assert_eq!(before.events.len(), after.events.len());
     assert_eq!(
         agent.db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-        haven_common::lifecycle::ToolRunStatus::Waiting
+        haven_common::lifecycle::ToolRunStatus::Running
     );
 }
 

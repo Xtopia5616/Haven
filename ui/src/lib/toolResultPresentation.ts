@@ -9,14 +9,6 @@ export function isToolAgentPresenceStatus(value: unknown): value is ToolAgentPre
 	return isOneOf(value, TOOL_AGENT_PRESENCE_STATUSES);
 }
 
-export const TOOL_EXECUTION_MODES = ['foreground', 'background'] as const;
-
-export type ToolExecutionMode = (typeof TOOL_EXECUTION_MODES)[number];
-
-export function isToolExecutionMode(value: unknown): value is ToolExecutionMode {
-	return isOneOf(value, TOOL_EXECUTION_MODES);
-}
-
 export const TOOL_FILE_OPERATIONS = [
 	'read',
 	'inspect',
@@ -247,6 +239,7 @@ export function isToolRunResultStatus(value: unknown): value is ToolRunResultSta
 }
 
 export const TOOL_RUNS_RESULT_OPERATIONS = [
+	'start',
 	'list',
 	'inspect',
 	'cancel',

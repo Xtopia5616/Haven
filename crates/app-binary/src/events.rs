@@ -1,6 +1,6 @@
 use haven_common::lifecycle::{SessionStatus, SessionWaitingReason, ToolRunStatus};
 use haven_common::tools::{OperationIdempotency, ToolOperationScope, ToolResultEnvelope};
-use haven_tools::{ScheduleMode, ToolRunLifecyclePayload, ToolRunOutputPayload, ToolRunView};
+use haven_tools::{ToolRunLifecyclePayload, ToolRunView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -26,7 +26,6 @@ pub(crate) const TRANSCRIPTION_ERROR_EVENT: &str = "transcription:error";
 /// an accidental frontend API.
 pub(crate) const TOOL_RUN_CREATED_EVENT: &str = "tool_run:created";
 pub(crate) const TOOL_RUN_UPDATED_EVENT: &str = "tool_run:updated";
-pub(crate) const TOOL_RUN_OUTPUT_EVENT: &str = "tool_run:output";
 pub(crate) const TOOL_RUN_FINISHED_EVENT: &str = "tool_run:finished";
 
 /// Stable channels for the remaining app-shell events. Their producers may
@@ -65,7 +64,6 @@ pub(crate) const NOTIFICATION_SHOW_EVENT: &str = "notification:show";
 #[serde(rename_all = "snake_case")]
 pub enum ToolRunKindDto {
     Background,
-    Scheduled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -84,6 +82,7 @@ pub enum ToolRunCompletionStatusDto {
 pub struct ToolRunEvent {
     pub tool_run_id: String,
     pub kind: ToolRunKindDto,
+    pub tool_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<ToolRunStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -95,23 +94,11 @@ pub struct ToolRunEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub due_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub body: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<ScheduleMode>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
 }
@@ -124,44 +111,15 @@ impl ToolRunEvent {
         Self {
             tool_run_id: payload.tool_run_id,
             kind: ToolRunKindDto::from(payload.kind),
+            tool_name: payload.tool_name,
             status: Some(status),
             session_id: payload.session_id,
             source_step_id: payload.source_step_id,
             started_at,
             finished_at,
-            due_at: payload.due_at,
-            title: payload.title,
-            body: payload.body,
-            mode: payload.mode,
-            command: None,
             output: payload.output,
             error: payload.error,
             error_reason: payload.error_reason,
-            exit_code: payload.exit_code,
-            preview: None,
-        }
-    }
-
-    /// Narrow projection for a live output preview. The typed Tools payload
-    /// cannot carry command metadata, dynamic arguments, or unbounded stderr.
-    pub(crate) fn from_output_payload(payload: ToolRunOutputPayload) -> Self {
-        Self {
-            tool_run_id: payload.tool_run_id,
-            kind: ToolRunKindDto::Background,
-            status: Some(ToolRunStatus::Running),
-            session_id: None,
-            source_step_id: payload.source_step_id,
-            started_at: None,
-            finished_at: None,
-            due_at: None,
-            title: None,
-            body: None,
-            mode: None,
-            command: None,
-            output: Some(payload.output),
-            error: None,
-            error_reason: None,
-            exit_code: None,
             preview: None,
         }
     }
@@ -172,20 +130,15 @@ impl ToolRunEvent {
         Self {
             tool_run_id: payload.tool_run_id,
             kind: ToolRunKindDto::Background,
+            tool_name: payload.tool_name,
             status: None,
             session_id: Some(payload.session_id),
             source_step_id: payload.source_step_id,
             started_at: None,
             finished_at: None,
-            due_at: None,
-            title: None,
-            body: None,
-            mode: None,
-            command: None,
             output: None,
             error: None,
             error_reason: None,
-            exit_code: None,
             preview: None,
         }
     }
@@ -196,20 +149,15 @@ impl From<ToolRunView> for ToolRunEvent {
         Self {
             tool_run_id: view.tool_run_id,
             kind: ToolRunKindDto::from(view.kind),
+            tool_name: view.tool_name,
             status: Some(view.status),
             session_id: view.session_id,
             source_step_id: view.source_step_id,
             started_at: view.started_at,
             finished_at: view.finished_at,
-            due_at: view.due_at,
-            title: view.title,
-            body: view.body,
-            mode: view.mode,
-            command: view.command,
             output: view.output,
             error: view.error,
             error_reason: view.error_reason,
-            exit_code: view.exit_code,
             preview: view.preview,
         }
     }
@@ -219,7 +167,6 @@ impl From<haven_tools::ToolRunKind> for ToolRunKindDto {
     fn from(kind: haven_tools::ToolRunKind) -> Self {
         match kind {
             haven_tools::ToolRunKind::Background => Self::Background,
-            haven_tools::ToolRunKind::Scheduled => Self::Scheduled,
         }
     }
 }
@@ -228,7 +175,6 @@ impl From<ToolRunKindDto> for haven_tools::ToolRunKind {
     fn from(kind: ToolRunKindDto) -> Self {
         match kind {
             ToolRunKindDto::Background => Self::Background,
-            ToolRunKindDto::Scheduled => Self::Scheduled,
         }
     }
 }
@@ -813,6 +759,7 @@ mod tests {
         let mut payload = ToolRunLifecyclePayload::new_for_test(
             haven_tools::ToolRunKind::Background,
             "toolrun-11111111111111111111111111111111",
+            "files.write",
             haven_tools::ToolRunLifecycleState::Completed {
                 started_at: "2026-09-23T10:00:00Z".into(),
                 finished_at: "2026-09-23T10:00:01Z".into(),
@@ -821,7 +768,6 @@ mod tests {
         payload.session_id = Some("ses-11111111111111111111111111111111".into());
         payload.source_step_id = Some("step-11111111111111111111111111111111".into());
         payload.output = Some("done".into());
-        payload.exit_code = Some(0);
         let event = ToolRunEvent::from_lifecycle_payload(payload);
 
         assert_eq!(
@@ -829,39 +775,15 @@ mod tests {
             serde_json::json!({
                 "tool_run_id": "toolrun-11111111111111111111111111111111",
                 "kind": "background",
+                "tool_name": "files.write",
                 "status": "completed",
                 "started_at": "2026-09-23T10:00:00Z",
                 "finished_at": "2026-09-23T10:00:01Z",
                 "session_id": "ses-11111111111111111111111111111111",
                 "source_step_id": "step-11111111111111111111111111111111",
                 "output": "done",
-                "exit_code": 0,
             })
         );
-    }
-
-    #[test]
-    fn tool_run_event_hides_scheduled_execution_details() {
-        let mut payload = ToolRunLifecyclePayload::new_for_test(
-            haven_tools::ToolRunKind::Scheduled,
-            "toolrun-44444444444444444444444444444444",
-            haven_tools::ToolRunLifecycleState::Waiting,
-        );
-        payload.title = Some("Reminder".into());
-        payload.body = Some("Take a break".into());
-        payload.mode = Some(ScheduleMode::Tool);
-        let event = ToolRunEvent::from_lifecycle_payload(payload);
-        let wire = serde_json::to_value(event).unwrap();
-
-        assert_eq!(
-            wire["tool_run_id"],
-            "toolrun-44444444444444444444444444444444"
-        );
-        assert_eq!(wire["kind"], "scheduled");
-        assert_eq!(wire["status"], "waiting");
-        assert!(wire.get("tool_name").is_none());
-        assert!(wire.get("tool_args").is_none());
-        assert!(wire.get("prompt").is_none());
     }
 
     #[test]
@@ -869,20 +791,15 @@ mod tests {
         let event = ToolRunEvent::from(ToolRunView {
             tool_run_id: "toolrun-e8d9795bbfceef9833b59c0bbf1b3315".into(),
             kind: haven_tools::ToolRunKind::Background,
+            tool_name: "shell".into(),
             status: ToolRunStatus::Completed,
             session_id: Some("ses-7ae290dbf0b4468c9d2c401be649850b".into()),
             source_step_id: Some("step-7469d05e68e65b64fab2ddb439cbcf39".into()),
             started_at: Some("2026-09-23T10:00:00Z".into()),
             finished_at: Some("2026-09-23T10:00:01Z".into()),
-            due_at: None,
-            title: None,
-            body: None,
-            mode: None,
-            command: None,
             output: Some("done".into()),
             error: None,
             error_reason: None,
-            exit_code: Some(0),
             preview: Some("done".into()),
         });
 
@@ -891,66 +808,16 @@ mod tests {
             serde_json::json!({
                 "tool_run_id": "toolrun-e8d9795bbfceef9833b59c0bbf1b3315",
                 "kind": "background",
+                "tool_name": "shell",
                 "status": "completed",
                 "session_id": "ses-7ae290dbf0b4468c9d2c401be649850b",
                 "source_step_id": "step-7469d05e68e65b64fab2ddb439cbcf39",
                 "started_at": "2026-09-23T10:00:00Z",
                 "finished_at": "2026-09-23T10:00:01Z",
                 "output": "done",
-                "exit_code": 0,
                 "preview": "done",
             })
         );
-    }
-
-    #[test]
-    fn scheduled_tool_run_view_preserves_wire_contract_without_internal_fields() {
-        let event = ToolRunEvent::from(ToolRunView {
-            tool_run_id: "toolrun-07d3d49fefbdfe364742555319bb7669".into(),
-            kind: haven_tools::ToolRunKind::Scheduled,
-            status: ToolRunStatus::Waiting,
-            session_id: Some("ses-0d64523ce8dd6152d96419b5fce658eb".into()),
-            source_step_id: None,
-            started_at: None,
-            finished_at: None,
-            due_at: Some("2026-09-24T10:00:00Z".into()),
-            title: Some("Take a break".into()),
-            body: Some("Stand up".into()),
-            mode: Some(ScheduleMode::Continue),
-            command: None,
-            output: None,
-            error: None,
-            error_reason: None,
-            exit_code: None,
-            preview: None,
-        });
-        let wire = serde_json::to_value(event).unwrap();
-
-        assert_eq!(
-            wire,
-            serde_json::json!({
-                "tool_run_id": "toolrun-07d3d49fefbdfe364742555319bb7669",
-                "kind": "scheduled",
-                "status": "waiting",
-                "session_id": "ses-0d64523ce8dd6152d96419b5fce658eb",
-                "due_at": "2026-09-24T10:00:00Z",
-                "title": "Take a break",
-                "body": "Stand up",
-                "mode": "continue",
-            })
-        );
-        for internal_field in [
-            "tool_args",
-            "prompt",
-            "tool_name",
-            "watch_tool_run_id",
-            "log_path",
-        ] {
-            assert!(
-                wire.get(internal_field).is_none(),
-                "leaked {internal_field}"
-            );
-        }
     }
 
     #[test]

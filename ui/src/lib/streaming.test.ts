@@ -935,12 +935,12 @@ describe('newToolMessage', () => {
 		expect('time' in msg).toBe(false);
 	});
 
-	it('carries toolRunId for background shell observations', () => {
+	it('carries toolRunId for background ToolRun observations', () => {
 		const msg = newToolMessage({
 			id: 'step-00000000000000000000000000000001',
 			stepNumber: 1,
 			toolName: 'shell',
-			content: '{"execution_mode":"background"}',
+			content: '{"tool_run_id":"toolrun-7121023493ef04de24194cb433e7c8fd"}',
 			toolRunId: 'toolrun-7121023493ef04de24194cb433e7c8fd',
 		});
 		expect(msg.toolRunId).toBe('toolrun-7121023493ef04de24194cb433e7c8fd');
@@ -982,28 +982,28 @@ describe('newToolMessage', () => {
 });
 
 describe('toolRunIdFromObservation', () => {
-	it('extracts tool_run_id from background shell observations', () => {
+	it('extracts tool_run_id from toolrun.start observations', () => {
 		expect(
 			toolRunIdFromObservation(
+				'toolrun.start',
 				JSON.stringify({
-					execution_mode: 'background',
 					tool_run_id: 'toolrun-00000000000000000000000000000001',
-					status: 'running',
+					tool_name: 'files.write',
 				}),
 			),
 		).toBe('toolrun-00000000000000000000000000000001');
 	});
 	it('returns null for foreground / non-JSON observations', () => {
-		expect(toolRunIdFromObservation('{"output":"hi"}')).toBeNull();
-		expect(toolRunIdFromObservation('plain text')).toBeNull();
-		expect(toolRunIdFromObservation('')).toBeNull();
-		expect(toolRunIdFromObservation(null)).toBeNull();
+		expect(toolRunIdFromObservation('toolrun.start', '{"output":"hi"}')).toBeNull();
+		expect(toolRunIdFromObservation('files.read', 'plain text')).toBeNull();
+		expect(toolRunIdFromObservation('toolrun.start', '')).toBeNull();
+		expect(toolRunIdFromObservation('toolrun.start', null)).toBeNull();
 	});
 	it('rejects non-canonical background ToolRun IDs', () => {
 		expect(
 			toolRunIdFromObservation(
+				'toolrun.start',
 				JSON.stringify({
-					execution_mode: 'background',
 					tool_run_id: 'toolrun-not-canonical',
 				}),
 			),
@@ -1012,12 +1012,11 @@ describe('toolRunIdFromObservation', () => {
 });
 
 describe('sourceToolRunIdFromObservation', () => {
-	it('anchors a scheduled creation result by its persisted ToolRun ID', () => {
+	it('anchors the toolrun.start result by its persisted ToolRun ID', () => {
 		expect(
 			sourceToolRunIdFromObservation(
-				'schedule.set',
+				'toolrun.start',
 				JSON.stringify({
-					operation: 'set',
 					tool_run_id: 'toolrun-921be352ed48806cc0ff8635f2c282b9',
 				}),
 			),
@@ -1033,11 +1032,11 @@ describe('sourceToolRunIdFromObservation', () => {
 		).toBeNull();
 	});
 
-	it('rejects non-canonical scheduled ToolRun IDs', () => {
+	it('rejects non-canonical ToolRun IDs', () => {
 		expect(
 			sourceToolRunIdFromObservation(
-				'schedule.set',
-				JSON.stringify({ operation: 'set', tool_run_id: 'toolrun-not-canonical' }),
+				'toolrun.start',
+				JSON.stringify({ tool_run_id: 'toolrun-not-canonical' }),
 			),
 		).toBeNull();
 	});

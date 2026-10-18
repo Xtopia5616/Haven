@@ -83,7 +83,8 @@ pub enum SessionWaitingReason {
     ScheduledTask,
     StepBudget,
     /// Explicit end could not confirm the durable cleanup of an owned
-    /// scheduled ToolRun. The session remains resumable and end can be retried.
+    /// owned Schedule or background ToolRun. The session remains resumable and
+    /// end can be retried.
     EndIncomplete,
 }
 
@@ -213,10 +214,9 @@ impl<'de> Deserialize<'de> for SessionStatus {
     }
 }
 
-/// Durable state of any background or scheduled ToolRun.
+/// Durable state of one detached background tool invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolRunStatus {
-    Waiting,
     Running,
     Completed,
     Failed,
@@ -224,6 +224,75 @@ pub enum ToolRunStatus {
 }
 
 impl ToolRunStatus {
+    pub const ALL: [Self; 4] = [
+        Self::Running,
+        Self::Completed,
+        Self::Failed,
+        Self::Cancelled,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Decode persisted ToolRun state fail-closed as failed. A malformed status
+    /// must not make a ToolRun runnable or hide its history.
+    pub fn from_status_str(value: &str) -> Self {
+        match value {
+            "running" => Self::Running,
+            "completed" => Self::Completed,
+            "failed" => Self::Failed,
+            "cancelled" => Self::Cancelled,
+            other => {
+                tracing::warn!(
+                    status = "unknown",
+                    status_bytes = other.len(),
+                    "unknown ToolRun status; mapping to failed"
+                );
+                Self::Failed
+            }
+        }
+    }
+
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+
+    pub const fn is_live(self) -> bool {
+        matches!(self, Self::Running)
+    }
+
+    pub fn can_transition_to(self, next: Self) -> bool {
+        if self == next {
+            return true;
+        }
+        matches!(
+            (self, next),
+            (
+                Self::Running,
+                Self::Completed | Self::Failed | Self::Cancelled
+            )
+        )
+    }
+}
+
+/// Durable state of one occurrence created by a Schedule plan.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleRunStatus {
+    Waiting,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl ScheduleRunStatus {
     pub const ALL: [Self; 5] = [
         Self::Waiting,
         Self::Running,
@@ -242,8 +311,6 @@ impl ToolRunStatus {
         }
     }
 
-    /// Decode persisted ToolRun state fail-closed as failed. A malformed status
-    /// must not make a ToolRun runnable or hide its history.
     pub fn from_status_str(value: &str) -> Self {
         match value {
             "waiting" => Self::Waiting,
@@ -255,7 +322,7 @@ impl ToolRunStatus {
                 tracing::warn!(
                     status = "unknown",
                     status_bytes = other.len(),
-                    "unknown ToolRun status; mapping to failed"
+                    "unknown ScheduleRun status; mapping to failed"
                 );
                 Self::Failed
             }
@@ -342,12 +409,8 @@ mod tests {
 
     #[test]
     fn tool_run_transition_table_has_no_terminal_resurrection() {
-        assert!(ToolRunStatus::Waiting.can_transition_to(ToolRunStatus::Running));
-        assert!(ToolRunStatus::Waiting.can_transition_to(ToolRunStatus::Cancelled));
-        assert!(!ToolRunStatus::Waiting.can_transition_to(ToolRunStatus::Completed));
-        assert!(!ToolRunStatus::Waiting.can_transition_to(ToolRunStatus::Failed));
         assert!(ToolRunStatus::Running.can_transition_to(ToolRunStatus::Failed));
-        assert!(!ToolRunStatus::Completed.can_transition_to(ToolRunStatus::Waiting));
+        assert!(!ToolRunStatus::Completed.can_transition_to(ToolRunStatus::Running));
     }
 
     #[test]

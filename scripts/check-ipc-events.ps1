@@ -157,9 +157,8 @@ if (-not [regex]::IsMatch($recordingContract, 'payload\.is_recording\s*!==\s*tru
     throw 'recording validators must enforce channel state and confidence/duration domains'
 }
 if (-not [regex]::IsMatch($toolRunContract, "event\.event\s*===\s*'tool_run:created'[\s\S]*?wire\.status\s*===\s*undefined") -or
-    -not [regex]::IsMatch($toolRunContract, "event\.event\s*===\s*'tool_run:output'[\s\S]*?wire\.status\s*!==\s*'running'[\s\S]*?wire\.output") -or
     -not [regex]::IsMatch($toolRunContract, "event\.event\s*===\s*'tool_run:finished'[\s\S]*?completed[\s\S]*?failed[\s\S]*?cancelled")) {
-    throw 'ToolRun event validators must enforce channel-specific created/output/finished fields'
+    throw 'ToolRun event validators must enforce channel-specific created/finished fields'
 }
 
 $agentEventsPath = Join-Path $root 'crates/app-binary/src/events.rs'
@@ -242,8 +241,8 @@ if (-not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentToolCallPayload\
     throw 'Agent ToolCall and Observation tool_call_id/result fields must match the required Rust DTO shape'
 }
 
-if ($rustEvents.Count -ne 36) {
-    throw "expected 36 public IPC events, found $($rustEvents.Count)"
+if ($rustEvents.Count -ne 35) {
+    throw "expected 35 public IPC events, found $($rustEvents.Count)"
 }
 
 Write-Host "IPC event directory verified: $($rustEvents.Count) channels and AgentEvent channel/DTO pairs agree with generated Rust registries; runtime enum validators and direct emitter sites match their reviewed inventories."

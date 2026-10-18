@@ -15,6 +15,7 @@ use crate::repositories::memory_fact_extraction_store::MemoryFactExtractionStore
 use crate::repositories::memory_maintenance_store::MemoryMaintenanceStore;
 use crate::repositories::memory_outbox_store::MemoryOutboxStore;
 use crate::repositories::memory_recall_store::MemoryRecallStore;
+use crate::repositories::schedule_store::ScheduleStore;
 use crate::repositories::session_events::SessionStore;
 use crate::repositories::tool_run_store::ToolRunStore;
 
@@ -61,6 +62,11 @@ impl MemoryPersistence {
     /// Create the typed ToolRun persistence port.
     pub fn tool_run_store(&self) -> ToolRunStore {
         ToolRunStore::new(self.db.clone())
+    }
+
+    /// Create the typed Schedule plan and occurrence persistence port.
+    pub fn schedule_store(&self) -> ScheduleStore {
+        ScheduleStore::new(self.db.clone())
     }
 }
 

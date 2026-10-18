@@ -26,12 +26,12 @@ fn distribution(samples_ns: &[u128]) -> (f64, f64) {
 fn completion_payload(tool_run_id: &str, output: &str) -> ToolRunCompletionPayload {
     ToolRunCompletionPayload {
         tool_run_id: tool_run_id.to_owned(),
+        tool_name: "shell".to_owned(),
         status: ToolRunStatus::Completed,
         output: Some(output.to_owned()),
         error: None,
         error_reason: None,
         log_path: None,
-        exit_code: Some(0),
         started_at: None,
         finished_at: Some("finished".to_owned()),
         source_step_id: None,

@@ -10,6 +10,7 @@ use crate::lifecycle::ToolRunStatus;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolRunCompletionPayload {
     pub tool_run_id: String,
+    pub tool_name: String,
     pub status: ToolRunStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
@@ -19,8 +20,6 @@ pub struct ToolRunCompletionPayload {
     pub error_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

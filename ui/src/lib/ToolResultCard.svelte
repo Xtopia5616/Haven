@@ -179,8 +179,8 @@
 	let livePreview = $derived(
 		messageId ? /** @type {string|undefined} */ $toolPreviewStore : undefined,
 	);
-	// Background ToolRuns extend the originating tool card after it returns
-	// `{ execution_mode: 'background', tool_run_id }`. The session snapshot covers hydrated
+	// Background ToolRuns extend the originating toolrun.start card after it returns
+	// `{ tool_run_id, tool_name, status }`. The session snapshot covers hydrated
 	// history; toolRunStore supplies live updates. The binding clears when the
 	// terminal result has been persisted onto the message.
 	let boundToolRun = $derived(
@@ -217,8 +217,8 @@
 				(typeof boundToolRun.output === 'string' ? boundToolRun.output : '');
 			return JSON.stringify({
 				output: out,
-				execution_mode: 'background',
 				tool_run_id: toolRunId,
+				tool_name: boundToolRun.toolName,
 				status: 'running',
 			});
 		}
@@ -234,10 +234,9 @@
 			}
 			return JSON.stringify({
 				output: rawOut,
-				execution_mode: 'background',
 				tool_run_id: toolRunId,
+				tool_name: boundToolRun.toolName,
 				status: boundToolRun.status,
-				...(boundToolRun.exitCode != null ? { exit_code: boundToolRun.exitCode } : {}),
 				...(boundToolRun.error && !boundToolRun.output
 					? { error: boundToolRun.error }
 					: {}),

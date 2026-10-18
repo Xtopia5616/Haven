@@ -282,7 +282,6 @@ describe('SettingsView diagnostics export', () => {
 		const settings = createSettingsFixture();
 		settings.notification.tool_run_completed.in_app = true;
 		settings.notification.tool_run_completed.windows = true;
-		settings.context_limits.scheduled_tool_runs_due_horizon_secs = 365 * 24 * 3600;
 		invoke.mockImplementation(async (command: string) => {
 			switch (command) {
 				case 'get_settings':
@@ -505,7 +504,6 @@ describe('SettingsView diagnostics export', () => {
 			file_byte_read_max_bytes: 8 * 1024 * 1024,
 			file_write_max_bytes: 32 * 1024 * 1024,
 			mcp_max_binary_base64_bytes: 1024 * 1024,
-			max_pending_scheduled_tool_runs: 17,
 			max_running_background_tool_runs: 29,
 		});
 		settings.memory.fact_inference_enabled = false;

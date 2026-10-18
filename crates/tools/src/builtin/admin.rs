@@ -74,7 +74,7 @@ const MODEL_TOGGLEABLE_TOOL_NAMES: &[&str] = &[
     "clipboard",
     "input",
     "window",
-    "tool_runs",
+    "toolrun",
     "schedule",
 ];
 

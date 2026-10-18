@@ -430,7 +430,6 @@
 		return Object.values(toolRunsById).filter(
 			(a) =>
 				a &&
-				a.kind !== 'scheduled' &&
 				a.status === 'running' &&
 				a.sessionId === activeSessionId,
 		).length;

@@ -470,7 +470,6 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
             None,
             None,
             None,
-            Some(0),
             "2026-09-24T11:00:00Z",
         )
         .unwrap();
@@ -565,7 +564,6 @@ async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
             None,
             None,
             None,
-            Some(0),
             "2026-09-24T11:00:00Z",
         )
         .unwrap();

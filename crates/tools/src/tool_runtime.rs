@@ -104,6 +104,7 @@ pub(crate) struct ToolRuntime {
         Arc<dyn haven_platform::windows_container::execution::WindowsContainerExecutionPort>,
     platform: RwLock<Arc<PlatformRuntime>>,
     pub(crate) tool_run_service: Arc<ToolRunService>,
+    pub(crate) schedule_service: Arc<crate::ScheduleService>,
     pub(crate) live_outputs: Arc<LiveOutputHub>,
     /// Swapped only after a catalog rebuild is accepted.
     builtin_catalog: RwLock<Arc<BuiltinCatalog>>,
@@ -115,9 +116,8 @@ pub(crate) struct ToolRuntime {
 impl ToolRuntime {
     pub(crate) fn new() -> Self {
         let tool_run_service = Arc::new(ToolRunService::new());
-        let live_outputs = Arc::new(LiveOutputHub::with_tail_factory(
-            tool_run_service.output_tail_factory(),
-        ));
+        let schedule_service = Arc::new(crate::ScheduleService::new());
+        let live_outputs = Arc::new(LiveOutputHub::new());
         let default_context_limits = ContextLimitsConfig::default();
         Self {
             managed_assets: ManagedAssetRegistry::default(),
@@ -127,6 +127,7 @@ impl ToolRuntime {
                 haven_platform::windows_container::execution::new_brokered_execution_port(),
             platform: RwLock::new(Arc::new(PlatformRuntime::default())),
             tool_run_service,
+            schedule_service,
             live_outputs,
             builtin_catalog: RwLock::new(Arc::new(BuiltinCatalog::empty())),
             clipboard_history: Arc::new(crate::builtin::clipboard::ClipboardHistory::new(
@@ -198,6 +199,8 @@ impl ToolRuntime {
 pub struct StartupWiring {
     /// Durable ToolRun persistence constructed by the application composition root.
     pub tool_run_store: Option<ToolRunStore>,
+    /// Durable Schedule plan and occurrence persistence from Memory.
+    pub schedule_store: Option<haven_memory::ScheduleStore>,
     pub tool_settings: std::collections::HashMap<String, ToolConfig>,
     pub default_shell: ShellChoice,
     pub context_limits: ContextLimitsConfig,

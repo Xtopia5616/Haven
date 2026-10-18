@@ -20,7 +20,7 @@ pub mod notify;
 mod operation_contract;
 mod power;
 mod registry;
-pub mod scheduled_tool_run;
+pub mod schedule;
 pub mod session;
 pub mod shell;
 pub mod system;
@@ -98,9 +98,7 @@ pub(crate) struct MediaDeps {
     pub(crate) capabilities: media::MediaCapabilities,
 }
 
-/// Long-running action dependencies. Background processes and scheduled
-/// timers are admitted and transitioned by the same ToolRunService state
-/// machine; only their short-lived workers differ.
+/// Long-running action dependencies for detached background ToolRuns.
 pub(crate) struct ToolRunDeps {
     pub(crate) live_outputs: Arc<crate::live_output::LiveOutputHub>,
     pub(crate) service: Arc<ToolRunService>,
@@ -128,6 +126,7 @@ pub(crate) struct BuiltinContext {
     pub admin_context: Option<AdminContext>,
     pub messaging_service: Arc<haven_messaging::MessagingService>,
     pub memory_recall: MemoryRecallSlot,
+    pub schedule_service: Arc<crate::ScheduleService>,
     pub managed_assets: crate::ManagedAssetRegistry,
     pub authorization: Arc<crate::security::AuthorizationEngine>,
     pub media: MediaDeps,
@@ -153,6 +152,7 @@ pub(crate) async fn register_builtin_tools(
         admin_context,
         messaging_service,
         memory_recall,
+        schedule_service,
         managed_assets,
         authorization,
         media:
@@ -271,7 +271,6 @@ pub(crate) async fn register_builtin_tools(
         .with_managed_assets(managed_assets.clone()),
     );
     tools.push(Arc::new(shell::ShellTool {
-        tool_runs: tool_run_service.clone(),
         live_outputs,
         max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
         default_shell: default_shell.as_str().into(),
@@ -287,8 +286,8 @@ pub(crate) async fn register_builtin_tools(
         tool_runs: tool_run_service.clone(),
     });
     let input_tool: ToolHandle = Arc::new(input::InputTool);
-    let schedule_tool: ToolHandle = Arc::new(scheduled_tool_run::ScheduleTool {
-        service: tool_run_service,
+    let schedule_tool: ToolHandle = Arc::new(schedule::ScheduleTool {
+        service: schedule_service,
         // Weak registry probe so `set` can validate tool_name / risk at
         // schedule time; taken before the registry is shared with admin services.
         registry: Some(registry.probe()),
@@ -871,12 +870,8 @@ const SESSION_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("session.links", "links", "session", "link"),
 ];
 
-const ACTION_OPERATION_VIEWS: &[SplitOperationSpec] = &[split_spec!(
-    "tool_runs.cancel",
-    "cancel",
-    "tool_runs",
-    "clock"
-)];
+const ACTION_OPERATION_VIEWS: &[SplitOperationSpec] =
+    &[split_spec!("toolrun.cancel", "cancel", "toolrun", "clock")];
 
 const SCHEDULE_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("schedule.set", "set", "schedule", "bell"),
@@ -1134,6 +1129,18 @@ fn tool_run_list_schema(inspect: bool) -> Value {
     }
 }
 
+fn tool_run_start_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "tool_name": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Enabled tool to invoke in the background" },
+            "input": { "type": "object", "description": "Arguments passed unchanged to tool_name" }
+        },
+        "required": ["tool_name"]
+    })
+}
+
 fn system_display_schema() -> Value {
     serde_json::json!({
         "type": "object",
@@ -1177,8 +1184,9 @@ fn add_tool_run_views(
     _settings: &HashMap<String, haven_common::config::ToolConfig>,
 ) {
     for (name, schema) in [
-        ("tool_runs.list", tool_run_list_schema(false)),
-        ("tool_runs.inspect", tool_run_list_schema(true)),
+        ("toolrun.start", tool_run_start_schema()),
+        ("toolrun.list", tool_run_list_schema(false)),
+        ("toolrun.inspect", tool_run_list_schema(true)),
     ] {
         let text = tool_prompts::operation_text(name);
         let contract = operation_spec(
@@ -1187,7 +1195,7 @@ fn add_tool_run_views(
             text.description,
             Vec::new(),
             schema,
-            "tool_runs",
+            "toolrun",
             "clock",
             text.when_to_use,
         );
@@ -1319,8 +1327,8 @@ mod tests {
         let input = input::InputTool;
         let system = system::SystemTool::default();
         let window = window::WindowTool::new(crate::ManagedAssetRegistry::default());
-        let schedule = scheduled_tool_run::ScheduleTool {
-            service: Arc::new(ToolRunService::new()),
+        let schedule = schedule::ScheduleTool {
+            service: Arc::new(crate::ScheduleService::new()),
             registry: None,
         };
         let cases: Vec<(&dyn Tool, serde_json::Value, serde_json::Value)> = vec![

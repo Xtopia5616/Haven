@@ -286,16 +286,16 @@ export function newToolMessage({
 	};
 }
 
-/** Extract a background `tool_run_id` from a shell/tool observation payload. */
-export function toolRunIdFromObservation(observation: string | undefined | null): string | null {
+/** Extract the ToolRun identity from a `toolrun.start` observation. */
+export function toolRunIdFromObservation(
+	toolName: string | undefined | null,
+	observation: string | undefined | null,
+): string | null {
+	if (toolName !== 'toolrun.start') return null;
 	if (!observation) return null;
 	try {
 		const j = JSON.parse(observation);
-		if (
-			isRecord(j) &&
-			j.execution_mode === 'background' &&
-			isCanonicalEntityId(j.tool_run_id, 'toolrun')
-		) {
+		if (isRecord(j) && isCanonicalEntityId(j.tool_run_id, 'toolrun')) {
 			return j.tool_run_id;
 		}
 	} catch {
@@ -309,24 +309,13 @@ export function sourceToolRunIdFromObservation(
 	toolName: string | undefined | null,
 	observation: string | undefined | null,
 ): string | null {
-	const backgroundId = toolRunIdFromObservation(observation);
-	if (backgroundId) return backgroundId;
-	if (!observation || !toolName?.startsWith('schedule')) return null;
-	try {
-		const value: unknown = JSON.parse(observation);
-		if (!isRecord(value)) return null;
-		return value.operation === 'set' && isCanonicalEntityId(value.tool_run_id, 'toolrun')
-			? value.tool_run_id
-			: null;
-	} catch {
-		return null;
-	}
+	return toolRunIdFromObservation(toolName, observation);
 }
 
 /** Parse the current Rust ToolRun completion envelope for its timeline card. */
 export function parseToolRunResultInject(text: string | undefined | null): {
 	tool_run_id: string;
-	kind: 'background' | 'scheduled';
+	kind: 'background';
 	status: ToolRunStatus;
 	summary: string;
 	operation: 'result_injected';
@@ -342,7 +331,7 @@ export function parseToolRunResultInject(text: string | undefined | null): {
 		if (
 			!isRecord(value) ||
 			!isCanonicalEntityId(value.tool_run_id, 'toolrun') ||
-			(value.kind !== 'background' && value.kind !== 'scheduled') ||
+			value.kind !== 'background' ||
 			!isToolRunStatus(value.status) ||
 			typeof value.summary !== 'string'
 		) {

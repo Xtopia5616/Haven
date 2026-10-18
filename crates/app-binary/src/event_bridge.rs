@@ -54,10 +54,6 @@ pub(crate) fn project_tool_run_event(event: ToolRunLifecycleEvent) -> ToolRunEve
                 }
             },
         },
-        ToolRunLifecycleEvent::Output(payload) => ToolRunEventProjection {
-            channel: TOOL_RUN_OUTPUT_EVENT,
-            payload: ToolRunEvent::from_output_payload(payload),
-        },
         ToolRunLifecycleEvent::Finished(payload) => ToolRunEventProjection {
             channel: TOOL_RUN_FINISHED_EVENT,
             payload: ToolRunEvent::from_lifecycle_payload(payload),
@@ -520,9 +516,6 @@ impl TauriEmitter {
                         haven_agent::ToolRunNotificationSource::Background => {
                             ToolRunKindDto::Background
                         }
-                        haven_agent::ToolRunNotificationSource::Scheduled => {
-                            ToolRunKindDto::Scheduled
-                        }
                     }),
                     tool_run_id: Some(tool_run_id.clone()),
                     tool_run_status: tool_run_status.map(|status| match status {
@@ -861,31 +854,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_run_output_event_projects_only_the_bounded_preview_fields() {
-        let event = ToolRunLifecycleEvent::Output(haven_tools::ToolRunOutputPayload::new_for_test(
-            "toolrun-55555555555555555555555555555555",
-            Some("step-55555555555555555555555555555555".into()),
-            "bounded tail snapshot",
-        ));
-        let projection = project_tool_run_event(event);
-        assert_eq!(projection.channel, TOOL_RUN_OUTPUT_EVENT);
-        let wire = serde_json::to_value(projection.payload).unwrap();
-        assert_eq!(
-            wire,
-            serde_json::json!({
-                "tool_run_id": "toolrun-55555555555555555555555555555555",
-                "kind": "background",
-                "status": "running",
-                "source_step_id": "step-55555555555555555555555555555555",
-                "output": "bounded tail snapshot",
-            })
-        );
-        let serialized = wire.to_string();
-        assert!(!serialized.contains("tool_args"));
-        assert!(!serialized.contains("log_path"));
-    }
-
-    #[test]
     fn tool_run_completion_notification_is_tagged_without_changing_generic_wire() {
         let generic = AgentEvent::Notification {
             session_id: Some("ses-b10266431b94e07821b946c973a97783".into()),
@@ -899,29 +867,6 @@ mod tests {
                 "session_id": "ses-b10266431b94e07821b946c973a97783",
                 "title": "Notice",
                 "body": "Generic notice",
-            })
-        );
-
-        let tool_run_completion = AgentEvent::ToolRunCompletionNotification {
-            tool_run_kind: ToolRunNotificationSource::Scheduled,
-            tool_run_id: "toolrun-8b965b7786222161632d3437a1311290".into(),
-            session_id: None,
-            tool_run_status: None,
-            title: "任务完成".into(),
-            body: "结果".into(),
-        };
-        assert_eq!(
-            TauriEmitter::channel(&tool_run_completion),
-            NOTIFICATION_SHOW_EVENT
-        );
-        assert_eq!(
-            TauriEmitter::payload(&tool_run_completion, None),
-            serde_json::json!({
-                "title": "任务完成",
-                "body": "结果",
-                "notification_kind": "tool_run_completion",
-                "tool_run_kind": "scheduled",
-                "tool_run_id": "toolrun-8b965b7786222161632d3437a1311290",
             })
         );
 

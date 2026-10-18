@@ -21,19 +21,19 @@ pub(super) fn interaction_owner_matches_request(
             crate::interaction::InteractionDetails::Confirm { .. },
         ) => request.session_id.as_deref() == Some(session_id.as_str()),
         (
-            crate::interaction::InteractionOwner::ScheduledToolRun { tool_run_id },
+            crate::interaction::InteractionOwner::ScheduleRun { schedule_run_id },
             crate::interaction::InteractionDetails::ScheduledConfirm {
-                tool_run_id: request_tool_run_id,
+                schedule_run_id: request_schedule_run_id,
                 ..
             },
-        ) => tool_run_id == request_tool_run_id,
+        ) => schedule_run_id == request_schedule_run_id,
         _ => false,
     }
 }
 
 pub(super) fn scheduled_request_matches_route(
     request: &crate::interaction::InteractionRequest,
-    tool_run_id: &str,
+    schedule_run_id: &str,
     request_id: &haven_common::types::ConfirmId,
 ) -> bool {
     request.request_id == request_id.as_str()
@@ -41,9 +41,9 @@ pub(super) fn scheduled_request_matches_route(
         && matches!(
             &request.details,
             crate::interaction::InteractionDetails::ScheduledConfirm {
-                tool_run_id: request_tool_run_id,
+                schedule_run_id: request_schedule_run_id,
                 ..
-            } if request_tool_run_id == tool_run_id
+            } if request_schedule_run_id == schedule_run_id
         )
 }
 
@@ -72,7 +72,7 @@ pub(super) fn scheduled_confirmation_is_expired(
 }
 
 struct ScheduledConfirmSpec {
-    tool_run_id: String,
+    schedule_run_id: String,
     session_id: Option<String>,
     tool_name: String,
     tool_args: Value,
@@ -93,9 +93,9 @@ impl SessionSupervisor {
             .await
     }
 
-    /// Authorize a scheduled tool invocation through the supervisor's live
+    /// Authorize a ScheduleRun's target tool through the supervisor's live
     /// authorization service. Confirmation queuing and execution remain with
-    /// their existing scheduled ToolRun callers.
+    /// the ScheduleRun caller.
     pub(crate) async fn authorize_scheduled_tool(
         &self,
         session_id: Option<&str>,
@@ -117,14 +117,14 @@ impl SessionSupervisor {
         self.authorization.authorize(&request).await
     }
 
-    /// Queue a scheduled ToolRun confirmation without blocking the fire
+    /// Queue a ScheduleRun confirmation without blocking the fire
     /// consumer (R2). Stores the canonical interaction request and emits it
     /// through the supervisor event stream; a later owner-routed resolve or
-    /// expiry executes or skips the ToolRun. Returns `None` when the ToolRun
+    /// expiry executes or skips the target tool call. Returns `None` when the ScheduleRun
     /// already owns a pending confirmation (fail closed).
     pub async fn request_scheduled_confirm(
         self: &Arc<Self>,
-        tool_run_id: &str,
+        schedule_run_id: &str,
         session_id: Option<&str>,
         tool_name: &str,
         tool_args: Value,
@@ -132,7 +132,7 @@ impl SessionSupervisor {
         title: &str,
     ) -> Option<haven_common::types::ConfirmId> {
         self.queue_scheduled_confirm(ScheduledConfirmSpec {
-            tool_run_id: tool_run_id.to_owned(),
+            schedule_run_id: schedule_run_id.to_owned(),
             session_id: session_id.map(str::to_owned),
             tool_name: tool_name.to_owned(),
             tool_args,
@@ -145,7 +145,7 @@ impl SessionSupervisor {
 
     pub async fn request_scheduled_nested_confirm(
         self: &Arc<Self>,
-        tool_run_id: &str,
+        schedule_run_id: &str,
         session_id: Option<&str>,
         tool_name: &str,
         tool_args: Value,
@@ -154,7 +154,7 @@ impl SessionSupervisor {
     ) -> Option<haven_common::types::ConfirmId> {
         let receipt = nested.receipt.clone();
         self.queue_scheduled_confirm(ScheduledConfirmSpec {
-            tool_run_id: tool_run_id.to_owned(),
+            schedule_run_id: schedule_run_id.to_owned(),
             session_id: session_id.map(str::to_owned),
             tool_name: tool_name.to_owned(),
             tool_args,
@@ -170,7 +170,7 @@ impl SessionSupervisor {
         spec: ScheduledConfirmSpec,
     ) -> Option<haven_common::types::ConfirmId> {
         let ScheduledConfirmSpec {
-            tool_run_id,
+            schedule_run_id,
             session_id,
             tool_name,
             tool_args,
@@ -181,7 +181,7 @@ impl SessionSupervisor {
         let step_id = receipt.confirmation_id.clone();
         let request = match nested_confirmation {
             Some(nested) => crate::interaction::InteractionRequest::scheduled_confirm_nested(
-                tool_run_id.clone(),
+                schedule_run_id.clone(),
                 session_id.as_deref(),
                 tool_name.clone(),
                 tool_args,
@@ -189,7 +189,7 @@ impl SessionSupervisor {
                 title,
             ),
             None => crate::interaction::InteractionRequest::scheduled_confirm(
-                tool_run_id.clone(),
+                schedule_run_id.clone(),
                 session_id.as_deref(),
                 tool_name,
                 tool_args,
@@ -199,7 +199,7 @@ impl SessionSupervisor {
         };
         if request.validate_new_pending_permission().is_err() {
             tracing::warn!(
-                tool_run_id = %tool_run_id,
+                schedule_run_id = %schedule_run_id,
                 request_id = %step_id,
                 failure_kind = "invalid_confirmation_request",
                 "scheduled confirmation has no valid future deadline"
@@ -207,32 +207,32 @@ impl SessionSupervisor {
             return None;
         }
         let Some(expiry_delay) = confirmation_expiry_delay(request.expires_at.as_deref()) else {
-            tracing::warn!(tool_run_id = %tool_run_id, request_id = %step_id, "scheduled confirmation deadline cannot be scheduled");
+            tracing::warn!(schedule_run_id = %schedule_run_id, request_id = %step_id, "scheduled confirmation deadline cannot be scheduled");
             return None;
         };
         {
             let mut scheduled_confirms = self.scheduled_confirms.lock().await;
-            if scheduled_confirms.contains_key(&tool_run_id) {
-                tracing::warn!(%tool_run_id, "scheduled ToolRun already owns a pending confirmation");
+            if scheduled_confirms.contains_key(&schedule_run_id) {
+                tracing::warn!(%schedule_run_id, "ScheduleRun already owns a pending confirmation");
                 return None;
             }
-            scheduled_confirms.insert(tool_run_id.clone(), request.clone());
+            scheduled_confirms.insert(schedule_run_id.clone(), request.clone());
         }
         self.emit_event(SessionSupervisorEvent::InteractionRequested {
             envelope: Box::new(crate::interaction::InteractionEnvelope {
-                owner: crate::interaction::InteractionOwner::ScheduledToolRun {
-                    tool_run_id: tool_run_id.clone(),
+                owner: crate::interaction::InteractionOwner::ScheduleRun {
+                    schedule_run_id: schedule_run_id.clone(),
                 },
                 request,
             }),
         });
-        self.spawn_scheduled_confirmation_expiry(tool_run_id, step_id.clone(), expiry_delay);
+        self.spawn_scheduled_confirmation_expiry(schedule_run_id, step_id.clone(), expiry_delay);
         Some(step_id)
     }
 
     fn spawn_scheduled_confirmation_expiry(
         self: &Arc<Self>,
-        tool_run_id: String,
+        schedule_run_id: String,
         timeout_id: haven_common::types::ConfirmId,
         expiry_delay: std::time::Duration,
     ) {
@@ -242,12 +242,12 @@ impl SessionSupervisor {
         tokio::spawn(async move {
             tokio::time::sleep(expiry_delay).await;
             if executor
-                .scheduled_confirmation_request(&tool_run_id, &timeout_id)
+                .scheduled_confirmation_request(&schedule_run_id, &timeout_id)
                 .await
                 .is_some()
             {
                 tracing::warn!(
-                    tool_run_id = %tool_run_id,
+                    schedule_run_id = %schedule_run_id,
                     request_id = %timeout_id,
                     "scheduled confirmation timed out after {:?}; treating as rejected",
                     expiry_delay
@@ -255,13 +255,13 @@ impl SessionSupervisor {
                 let mut retry_delay = std::time::Duration::from_secs(1);
                 loop {
                     match executor
-                        .expire_scheduled_confirmation(&tool_run_id, &timeout_id)
+                        .expire_scheduled_confirmation(&schedule_run_id, &timeout_id)
                         .await
                     {
                         Ok(_) => break,
                         Err(error) => {
                             tracing::warn!(
-                                tool_run_id = %tool_run_id,
+                                schedule_run_id = %schedule_run_id,
                                 request_id = %timeout_id,
                                 error = %haven_common::error::sanitize_error_text(&error.to_string()),
                                 "failed to expire scheduled confirmation; retrying"
@@ -279,14 +279,14 @@ impl SessionSupervisor {
 
     pub(super) async fn scheduled_confirmation_request(
         &self,
-        tool_run_id: &str,
+        schedule_run_id: &str,
         request_id: &haven_common::types::ConfirmId,
     ) -> Option<crate::interaction::InteractionRequest> {
         self.scheduled_confirms
             .lock()
             .await
-            .get(tool_run_id)
-            .filter(|request| scheduled_request_matches_route(request, tool_run_id, request_id))
+            .get(schedule_run_id)
+            .filter(|request| scheduled_request_matches_route(request, schedule_run_id, request_id))
             .cloned()
     }
 
@@ -296,8 +296,8 @@ impl SessionSupervisor {
         request_id: &haven_common::types::ConfirmId,
     ) -> Option<haven_common::types::CapabilityScope> {
         let request = match owner {
-            crate::interaction::InteractionOwner::ScheduledToolRun { tool_run_id } => {
-                self.scheduled_confirmation_request(tool_run_id, request_id)
+            crate::interaction::InteractionOwner::ScheduleRun { schedule_run_id } => {
+                self.scheduled_confirmation_request(schedule_run_id, request_id)
                     .await?
             }
             crate::interaction::InteractionOwner::AppCommand => return None,
@@ -354,7 +354,7 @@ impl SessionSupervisor {
     /// confirmation. Resolving the interaction can wake a paused ReAct actor
     /// (or spawn a scheduled operation), so the durable decision must exist
     /// before that wake edge. The owner route selects either the session actor
-    /// or the scheduled ToolRun registry; UI-only confirmations are handled by
+    /// or the ScheduleRun registry; UI-only confirmations are handled by
     /// the app command because their typed action payload is app-owned.
     pub async fn resolve_confirmation_with_session_grant_for_owner(
         self: &Arc<Self>,
@@ -376,8 +376,8 @@ impl SessionSupervisor {
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
         let request = match expected_owner {
-            crate::interaction::InteractionOwner::ScheduledToolRun { tool_run_id } => {
-                self.scheduled_confirmation_request(tool_run_id, step_id)
+            crate::interaction::InteractionOwner::ScheduleRun { schedule_run_id } => {
+                self.scheduled_confirmation_request(schedule_run_id, step_id)
                     .await
             }
             crate::interaction::InteractionOwner::AppCommand => None,
@@ -400,15 +400,15 @@ impl SessionSupervisor {
             .map(|deadline| deadline <= chrono::Utc::now())
             .unwrap_or(true)
         {
-            if let Some(tool_run_id) = match expected_owner {
-                crate::interaction::InteractionOwner::ScheduledToolRun { tool_run_id } => {
-                    Some(tool_run_id.as_str())
+            if let Some(schedule_run_id) = match expected_owner {
+                crate::interaction::InteractionOwner::ScheduleRun { schedule_run_id } => {
+                    Some(schedule_run_id.as_str())
                 }
                 _ => None,
             } {
                 return self
                     .resolve_scheduled_confirmation_locked(
-                        tool_run_id,
+                        schedule_run_id,
                         step_id,
                         false,
                         ScheduledConfirmDeadlineDecision::Expire,
@@ -423,10 +423,10 @@ impl SessionSupervisor {
                 .resolve_confirmation_locked(session_id, step_id, false, true)
                 .await;
         }
-        let scheduled_tool_run_id = match &request.details {
-            crate::interaction::InteractionDetails::ScheduledConfirm { tool_run_id, .. } => {
-                Some(tool_run_id.clone())
-            }
+        let scheduled_run_id = match &request.details {
+            crate::interaction::InteractionDetails::ScheduledConfirm {
+                schedule_run_id, ..
+            } => Some(schedule_run_id.clone()),
             _ => None,
         };
 
@@ -481,9 +481,9 @@ impl SessionSupervisor {
                 // A stale approval must not leave its session paused forever.
                 // Consume the request as a denial (without installing a grant)
                 // before returning the validation error to the renderer.
-                if let Some(tool_run_id) = &scheduled_tool_run_id {
+                if let Some(schedule_run_id) = &scheduled_run_id {
                     self.resolve_scheduled_confirmation_locked(
-                        tool_run_id,
+                        schedule_run_id,
                         step_id,
                         false,
                         ScheduledConfirmDeadlineDecision::Expire,
@@ -501,17 +501,17 @@ impl SessionSupervisor {
                 anyhow::bail!("confirmation request can no longer be executed: {reason}");
             }
         }
-        if let Some(tool_run_id) = scheduled_tool_run_id.as_deref()
+        if let Some(schedule_run_id) = scheduled_run_id.as_deref()
             && !self
-                .tool_runs
-                .claim_scheduled_execution(tool_run_id, step_id.as_str())
+                .schedules
+                .claim_execution(schedule_run_id, step_id.as_str())
                 .await?
         {
             // Consume and dismiss the request as stale after cancellation won;
             // this path deliberately does not persist the requested session
             // grant.
             self.resolve_scheduled_confirmation_locked(
-                tool_run_id,
+                schedule_run_id,
                 step_id,
                 true,
                 ScheduledConfirmDeadlineDecision::CheckAtResolution,
@@ -523,14 +523,14 @@ impl SessionSupervisor {
             .grant_session_permission(session_id, key, target, effect)
             .await
         {
-            if let Some(tool_run_id) = scheduled_tool_run_id.as_deref()
+            if let Some(schedule_run_id) = scheduled_run_id.as_deref()
                 && let Err(release_error) = self
-                    .tool_runs
-                    .release_scheduled_execution_claim(tool_run_id, step_id.as_str())
+                    .schedules
+                    .release_execution(schedule_run_id, step_id.as_str())
                     .await
             {
                 tracing::warn!(
-                tool_run_id = %tool_run_id,
+                schedule_run_id = %schedule_run_id,
                     request_id = %step_id,
                     error = %haven_common::error::sanitize_error_text(&release_error.to_string()),
                     "failed to release scheduled confirmation claim after grant persistence failed"
@@ -540,9 +540,9 @@ impl SessionSupervisor {
         }
 
         let confirmed = matches!(effect, haven_common::types::PermissionEffect::Allow);
-        if let Some(tool_run_id) = scheduled_tool_run_id {
+        if let Some(schedule_run_id) = scheduled_run_id {
             self.resolve_scheduled_confirmation_locked(
-                &tool_run_id,
+                &schedule_run_id,
                 step_id,
                 confirmed,
                 ScheduledConfirmDeadlineDecision::AcceptedBeforeDeadline,
@@ -597,9 +597,9 @@ impl SessionSupervisor {
             return Ok(None);
         }
         match owner {
-            crate::interaction::InteractionOwner::ScheduledToolRun { tool_run_id } => {
+            crate::interaction::InteractionOwner::ScheduleRun { schedule_run_id } => {
                 self.resolve_scheduled_confirmation_locked(
-                    tool_run_id,
+                    schedule_run_id,
                     request_id,
                     confirmed,
                     if expire {
@@ -638,12 +638,12 @@ impl SessionSupervisor {
 
     pub async fn expire_scheduled_confirmation(
         self: &Arc<Self>,
-        tool_run_id: &str,
+        schedule_run_id: &str,
         request_id: &haven_common::types::ConfirmId,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
-        let owner = crate::interaction::InteractionOwner::ScheduledToolRun {
-            tool_run_id: tool_run_id.to_string(),
+        let owner = crate::interaction::InteractionOwner::ScheduleRun {
+            schedule_run_id: schedule_run_id.to_string(),
         };
         if self.owner_session_is_closing(&owner, request_id).await {
             anyhow::bail!(
@@ -651,7 +651,7 @@ impl SessionSupervisor {
             );
         }
         self.resolve_scheduled_confirmation_locked(
-            tool_run_id,
+            schedule_run_id,
             request_id,
             false,
             ScheduledConfirmDeadlineDecision::Expire,
@@ -668,8 +668,8 @@ impl SessionSupervisor {
             crate::interaction::InteractionOwner::Session { session_id } => {
                 self.is_session_closing(session_id)
             }
-            crate::interaction::InteractionOwner::ScheduledToolRun { tool_run_id } => self
-                .scheduled_confirmation_request(tool_run_id, request_id)
+            crate::interaction::InteractionOwner::ScheduleRun { schedule_run_id } => self
+                .scheduled_confirmation_request(schedule_run_id, request_id)
                 .await
                 .is_some_and(|request| self.request_session_is_closing(owner, &request)),
             crate::interaction::InteractionOwner::AppCommand => false,
@@ -688,7 +688,7 @@ impl SessionSupervisor {
             crate::interaction::InteractionOwner::Session {
                 session_id: owner_id,
             } => owner_id == session_id && self.is_session_closing(owner_id),
-            crate::interaction::InteractionOwner::ScheduledToolRun { .. } => {
+            crate::interaction::InteractionOwner::ScheduleRun { .. } => {
                 self.is_session_closing(session_id)
             }
             crate::interaction::InteractionOwner::AppCommand => false,
@@ -734,27 +734,31 @@ impl SessionSupervisor {
 
     async fn resolve_scheduled_confirmation_locked(
         self: &Arc<Self>,
-        tool_run_id: &str,
+        schedule_run_id: &str,
         request_id: &haven_common::types::ConfirmId,
         confirmed: bool,
         deadline_decision: ScheduledConfirmDeadlineDecision,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let Some(pending_request) = self
-            .scheduled_confirmation_request(tool_run_id, request_id)
+            .scheduled_confirmation_request(schedule_run_id, request_id)
             .await
         else {
             return Ok(None);
         };
-        let (request_tool_run_id, tool_name, tool_input) = match &pending_request.details {
+        let (request_schedule_run_id, tool_name, tool_input) = match &pending_request.details {
             crate::interaction::InteractionDetails::ScheduledConfirm {
-                tool_run_id,
+                schedule_run_id,
                 tool_name,
                 tool_input,
                 ..
-            } => (tool_run_id.clone(), tool_name.clone(), tool_input.clone()),
+            } => (
+                schedule_run_id.clone(),
+                tool_name.clone(),
+                tool_input.clone(),
+            ),
             _ => return Ok(None),
         };
-        if request_tool_run_id != tool_run_id {
+        if request_schedule_run_id != schedule_run_id {
             return Ok(None);
         }
         let expired = scheduled_confirmation_is_expired(&pending_request, deadline_decision);
@@ -766,27 +770,27 @@ impl SessionSupervisor {
         if confirmed
             && !expired
             && !self
-                .tool_runs
-                .claim_scheduled_execution(tool_run_id, request_id.as_str())
+                .schedules
+                .claim_execution(schedule_run_id, request_id.as_str())
                 .await?
         {
             let cancelled = {
                 let mut scheduled_confirms = self.scheduled_confirms.lock().await;
-                let Some(request) = scheduled_confirms.get(tool_run_id).filter(|request| {
-                    scheduled_request_matches_route(request, tool_run_id, request_id)
+                let Some(request) = scheduled_confirms.get(schedule_run_id).filter(|request| {
+                    scheduled_request_matches_route(request, schedule_run_id, request_id)
                 }) else {
                     return Ok(None);
                 };
                 let mut request = request.clone();
-                scheduled_confirms.remove(tool_run_id);
+                scheduled_confirms.remove(schedule_run_id);
                 request.cancel();
                 request
             };
             self.emit_event(
                 crate::session::SessionSupervisorEvent::InteractionRequested {
                     envelope: Box::new(crate::interaction::InteractionEnvelope {
-                        owner: crate::interaction::InteractionOwner::ScheduledToolRun {
-                            tool_run_id: tool_run_id.to_string(),
+                        owner: crate::interaction::InteractionOwner::ScheduleRun {
+                            schedule_run_id: schedule_run_id.to_string(),
                         },
                         request: cancelled,
                     }),
@@ -797,16 +801,19 @@ impl SessionSupervisor {
 
         let Some(mut request) = ({
             let mut scheduled_confirms = self.scheduled_confirms.lock().await;
-            if !scheduled_confirms.get(tool_run_id).is_some_and(|request| {
-                scheduled_request_matches_route(request, tool_run_id, request_id)
-            }) {
+            if !scheduled_confirms
+                .get(schedule_run_id)
+                .is_some_and(|request| {
+                    scheduled_request_matches_route(request, schedule_run_id, request_id)
+                })
+            {
                 return Ok(None);
             }
-            scheduled_confirms.remove(tool_run_id)
+            scheduled_confirms.remove(schedule_run_id)
         }) else {
             if confirmed {
-                self.tool_runs
-                    .release_scheduled_execution_claim(tool_run_id, request_id.as_str())
+                self.schedules
+                    .release_execution(schedule_run_id, request_id.as_str())
                     .await?;
             }
             return Ok(None);
@@ -820,8 +827,8 @@ impl SessionSupervisor {
         self.emit_event(
             crate::session::SessionSupervisorEvent::InteractionRequested {
                 envelope: Box::new(crate::interaction::InteractionEnvelope {
-                    owner: crate::interaction::InteractionOwner::ScheduledToolRun {
-                        tool_run_id: tool_run_id.to_string(),
+                    owner: crate::interaction::InteractionOwner::ScheduleRun {
+                        schedule_run_id: schedule_run_id.to_string(),
                     },
                     request: request.clone(),
                 }),
@@ -849,26 +856,33 @@ impl SessionSupervisor {
         expired: bool,
     ) {
         let request_id = request.request_id.clone();
-        let (tool_run_id, session_id, tool_name, tool_args, receipt, nested_confirmation, title) =
-            match request.details {
-                crate::interaction::InteractionDetails::ScheduledConfirm {
-                    tool_run_id,
-                    tool_name,
-                    tool_input,
-                    receipt,
-                    nested_confirmation,
-                    title,
-                } => (
-                    tool_run_id,
-                    request.session_id.clone(),
-                    tool_name,
-                    tool_input,
-                    receipt,
-                    nested_confirmation,
-                    title,
-                ),
-                _ => return,
-            };
+        let (
+            schedule_run_id,
+            session_id,
+            tool_name,
+            tool_args,
+            receipt,
+            nested_confirmation,
+            title,
+        ) = match request.details {
+            crate::interaction::InteractionDetails::ScheduledConfirm {
+                schedule_run_id,
+                tool_name,
+                tool_input,
+                receipt,
+                nested_confirmation,
+                title,
+            } => (
+                schedule_run_id,
+                request.session_id.clone(),
+                tool_name,
+                tool_input,
+                receipt,
+                nested_confirmation,
+                title,
+            ),
+            _ => return,
+        };
         if confirmed
             && let Some(live_session_id) = session_id.as_deref()
             && !self.session_is_live(live_session_id).await
@@ -878,11 +892,11 @@ impl SessionSupervisor {
                 tool_name
             );
             if self
-                .persist_scheduled_terminal_state(&tool_run_id, Err("关联会话已结束或不存在"))
+                .persist_scheduled_terminal_state(&schedule_run_id, Err("关联会话已结束或不存在"))
                 .await
             {
                 self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
-                    tool_run_id,
+                    schedule_run_id,
                     session_id,
                     title,
                     body,
@@ -898,7 +912,7 @@ impl SessionSupervisor {
             };
             if self
                 .persist_scheduled_terminal_state(
-                    &tool_run_id,
+                    &schedule_run_id,
                     Err(if expired {
                         "确认超时"
                     } else {
@@ -908,7 +922,7 @@ impl SessionSupervisor {
                 .await
             {
                 self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
-                    tool_run_id,
+                    schedule_run_id,
                     session_id,
                     title,
                     body: format!("Scheduled tool '{tool_name}' was NOT executed: {reason}."),
@@ -926,11 +940,11 @@ impl SessionSupervisor {
                 receipt: nested_confirmation.is_none().then_some(receipt),
                 step_id: None,
                 nested_confirmation,
-                tool_run_id: Some(&tool_run_id),
+                parent_execution_id: Some(&schedule_run_id),
             })
             .instrument(tracing::info_span!(
-                "scheduled_tool_run_confirmation_execution",
-                tool_run_id = %tool_run_id,
+                "schedule_run_confirmation_execution",
+                schedule_run_id = %schedule_run_id,
                 session_id = ?session_id
             ))
             .await;
@@ -938,23 +952,23 @@ impl SessionSupervisor {
             && let Some(nested) = execution.result.signals.nested_confirmation.clone()
         {
             if let Err(error) = self
-                .tool_runs
-                .release_scheduled_execution_claim(&tool_run_id, &request_id)
+                .schedules
+                .release_execution(&schedule_run_id, &request_id)
                 .await
             {
                 tracing::warn!(
-                    tool_run_id,
+                    schedule_run_id,
                     request_id,
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to release previous scheduled claim before nested confirmation"
                 );
                 let reason = "无法续接嵌套工具确认";
                 if self
-                    .persist_scheduled_terminal_state(&tool_run_id, Err(reason))
+                    .persist_scheduled_terminal_state(&schedule_run_id, Err(reason))
                     .await
                 {
                     self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
-                        tool_run_id,
+                        schedule_run_id,
                         session_id,
                         title,
                         body: format!("Scheduled tool '{tool_name}' failed: {reason}."),
@@ -964,7 +978,7 @@ impl SessionSupervisor {
             }
             if self
                 .request_scheduled_nested_confirm(
-                    &tool_run_id,
+                    &schedule_run_id,
                     session_id.as_deref(),
                     &tool_name,
                     scheduled_tool_input,
@@ -978,11 +992,11 @@ impl SessionSupervisor {
             }
             let reason = "无法创建嵌套工具确认";
             if self
-                .persist_scheduled_terminal_state(&tool_run_id, Err(reason))
+                .persist_scheduled_terminal_state(&schedule_run_id, Err(reason))
                 .await
             {
                 self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
-                    tool_run_id,
+                    schedule_run_id,
                     session_id,
                     title,
                     body: format!("Scheduled tool '{tool_name}' failed: {reason}."),
@@ -1010,16 +1024,16 @@ impl SessionSupervisor {
             Err(e) => format!("schedule tool '{tool_name}' failed: {e}"),
         };
         let persisted = if succeeded {
-            self.persist_scheduled_terminal_state(&tool_run_id, Ok(result_summary.as_deref()))
+            self.persist_scheduled_terminal_state(&schedule_run_id, Ok(result_summary.as_deref()))
                 .await
         } else {
             let failure_summary = crate::truncate_notification(&body, summary_chars);
-            self.persist_scheduled_terminal_state(&tool_run_id, Err(&failure_summary))
+            self.persist_scheduled_terminal_state(&schedule_run_id, Err(&failure_summary))
                 .await
         };
         if persisted {
             self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
-                tool_run_id,
+                schedule_run_id,
                 session_id,
                 title,
                 body,
@@ -1029,32 +1043,55 @@ impl SessionSupervisor {
 
     async fn persist_scheduled_terminal_state(
         &self,
-        tool_run_id: &str,
+        schedule_run_id: &str,
         outcome: Result<Option<&str>, &str>,
     ) -> bool {
         let transition = match outcome {
             Ok(Some(summary)) => {
-                self.tool_runs
-                    .complete_scheduled_with_result(tool_run_id, summary)
+                self.schedules
+                    .finish(
+                        schedule_run_id,
+                        haven_common::lifecycle::ScheduleRunStatus::Completed,
+                        Some(summary),
+                        None,
+                    )
                     .await
             }
-            Ok(None) => self.tool_runs.complete_scheduled(tool_run_id).await,
-            Err(reason) => self.tool_runs.fail_scheduled(tool_run_id, reason).await,
+            Ok(None) => {
+                self.schedules
+                    .finish(
+                        schedule_run_id,
+                        haven_common::lifecycle::ScheduleRunStatus::Completed,
+                        None,
+                        None,
+                    )
+                    .await
+            }
+            Err(reason) => {
+                self.schedules
+                    .finish(
+                        schedule_run_id,
+                        haven_common::lifecycle::ScheduleRunStatus::Failed,
+                        None,
+                        Some(reason),
+                    )
+                    .await
+            }
         };
         match transition {
             Ok(true) => true,
             Ok(false) => {
                 tracing::debug!(
-                    tool_run_id,
-                    "scheduled ToolRun terminal transition was already won"
+                    schedule_run_id,
+                    "ScheduleRun terminal transition was already won"
                 );
                 false
             }
             Err(error) => {
                 tracing::warn!(
-                    tool_run_id,
+                    schedule_run_id,
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                    "failed to persist scheduled ToolRun terminal state"
+                    "failed to persist ScheduleRun terminal state"
                 );
                 false
             }

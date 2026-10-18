@@ -9,8 +9,8 @@ use haven_common::types::{
 #[cfg(test)]
 use haven_tools::ToolsFacade;
 use haven_tools::{
-    AuthorizationDecision, AuthorizationRequest, ConfirmationReceipt, ToolRegistration, ToolResult,
-    ToolRunCompletion, ToolRunListView, ToolRunRestoreSummary,
+    AuthorizationDecision, AuthorizationRequest, ConfirmationReceipt, ScheduleRestoreSummary,
+    ToolRegistration, ToolResult, ToolRunCompletion, ToolRunListView, ToolRunRestoreSummary,
 };
 #[cfg(test)]
 use haven_tools::{ToolRunAgentCapability, ToolRunCompletionCapability, ToolRunTestSupportPort};
@@ -49,6 +49,15 @@ pub(crate) fn sandbox_output_review_matches_step(result: &ToolResult, step_id: &
 #[async_trait]
 pub trait ToolExecutionPort: Send + Sync {
     async fn execute(&self, context: ToolExecutionContext) -> anyhow::Result<ToolResult>;
+
+    /// Start a child tool invocation through the durable background ToolRun
+    /// owner. The context must carry the proof for the child tool itself.
+    async fn start_background_tool(
+        &self,
+        _context: ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        anyhow::bail!("background ToolRun execution is unavailable on this execution port")
+    }
 
     /// Execute Haven's synthetic CodeMode model tool with the Agent-owned
     /// authority for its independently checked child calls.
@@ -175,43 +184,19 @@ pub trait ToolAuthorizationPort: Send + Sync {
     async fn prompt_summary(&self) -> String;
 }
 
-/// Agent's use-case boundary for background and scheduled ToolRuns.
-///
-/// Agent coordinates session delivery and scheduled execution, while Tools
-/// retains ToolRun state, persistence, timers, and completion recovery.
+/// Agent's use-case boundary for detached background ToolRuns.
 #[async_trait]
 pub trait AgentToolRunPort: Send + Sync {
-    async fn schedule(&self, spec: haven_tools::ScheduledToolRunSpec) -> anyhow::Result<String>;
-
     async fn attach_session(&self, tool_run_id: &str, session_id: &str);
 
-    async fn claim_scheduled_execution(
+    async fn cancel_owned_background_by_session_checked(
         &self,
-        tool_run_id: &str,
-        claim_id: &str,
-    ) -> anyhow::Result<bool>;
-
-    async fn release_scheduled_execution_claim(
-        &self,
-        tool_run_id: &str,
-        claim_id: &str,
-    ) -> anyhow::Result<bool>;
-
-    async fn cancel_owned_by_session_checked(&self, session_id: &str) -> anyhow::Result<()>;
+        session_id: &str,
+    ) -> anyhow::Result<()>;
 
     async fn cancel_owned_background_by_session(&self, session_id: &str);
 
     async fn list_for_session_views(&self, session_id: &str) -> Vec<ToolRunListView>;
-
-    async fn complete_scheduled(&self, tool_run_id: &str) -> anyhow::Result<bool>;
-
-    async fn complete_scheduled_with_result(
-        &self,
-        tool_run_id: &str,
-        result: &str,
-    ) -> anyhow::Result<bool>;
-
-    async fn fail_scheduled(&self, tool_run_id: &str, reason: &str) -> anyhow::Result<bool>;
 
     async fn restore(&self) -> ToolRunRestoreSummary;
 
@@ -222,11 +207,43 @@ pub trait AgentToolRunPort: Send + Sync {
     fn take_completion_receiver(&self) -> Option<Box<dyn ToolRunCompletionReceiverPort>>;
 }
 
+/// Agent's use-case boundary for Schedule trigger execution and occurrence
+/// claims. Schedule plans and occurrence persistence remain owned by Tools.
+#[async_trait]
+pub trait AgentSchedulePort: Send + Sync {
+    async fn restore(&self) -> anyhow::Result<ScheduleRestoreSummary>;
+
+    async fn cancel_owned_by_session_checked(&self, session_id: &str) -> anyhow::Result<()>;
+
+    async fn claim_execution(&self, schedule_run_id: &str, claim_id: &str) -> anyhow::Result<bool>;
+
+    async fn release_execution(
+        &self,
+        schedule_run_id: &str,
+        claim_id: &str,
+    ) -> anyhow::Result<bool>;
+
+    async fn finish(
+        &self,
+        schedule_run_id: &str,
+        status: haven_common::lifecycle::ScheduleRunStatus,
+        result_summary: Option<&str>,
+        error_reason: Option<&str>,
+    ) -> anyhow::Result<bool>;
+
+    fn take_fired_receiver(&self) -> Option<Box<dyn ScheduleFiredReceiverPort>>;
+
+    async fn shutdown(&self);
+}
+
+#[async_trait]
+pub trait ScheduleFiredReceiverPort: Send {
+    async fn recv(&mut self) -> Option<haven_tools::ScheduleRunTriggered>;
+}
+
 /// Recovered completion stream. Recovery and outbox access stay inside Tools.
 #[async_trait]
 pub trait ToolRunCompletionReceiverPort: Send {
-    async fn recv_scheduled_with_recovery(&mut self) -> Option<ToolRunCompletion>;
-
     async fn recv_result_with_recovery(&mut self) -> Option<ToolRunCompletion>;
 }
 
@@ -523,6 +540,7 @@ pub struct SessionToolPorts {
     pub(super) authorization: Arc<dyn ToolAuthorizationPort>,
     pub(super) catalog: Arc<dyn crate::ToolCatalogPort>,
     pub(super) tool_runs: Arc<dyn AgentToolRunPort>,
+    pub(super) schedules: Arc<dyn AgentSchedulePort>,
     #[cfg(test)]
     pub(super) tool_run_test_support: Option<Arc<dyn ToolRunTestSupportPort>>,
     pub(super) session_tool_overlay: Arc<dyn SessionToolOverlayPort>,
@@ -538,6 +556,7 @@ impl SessionToolPorts {
         authorization: Arc<dyn ToolAuthorizationPort>,
         catalog: Arc<dyn crate::ToolCatalogPort>,
         tool_runs: Arc<dyn AgentToolRunPort>,
+        schedules: Arc<dyn AgentSchedulePort>,
         session_tool_overlay: Arc<dyn SessionToolOverlayPort>,
         managed_asset_leases: Arc<dyn ManagedAssetLeasePort>,
         observations: Arc<dyn ToolObservationPort>,
@@ -547,6 +566,7 @@ impl SessionToolPorts {
             authorization,
             catalog,
             tool_runs,
+            schedules,
             #[cfg(test)]
             tool_run_test_support: None,
             session_tool_overlay,
@@ -560,6 +580,9 @@ impl SessionToolPorts {
         let services = tools.share_services();
         let tool_run_test_support = Arc::clone(&services.tool_run_test_support);
         let tool_runs = Arc::clone(&services.tool_run_agent);
+        let schedules = Arc::new(ToolsFacadeScheduleAdapter::new(Arc::clone(
+            &services.schedule_agent,
+        )));
         let catalog: Arc<dyn crate::ToolCatalogPort> = Arc::new(
             crate::react::ToolsFacadeToolCatalogAdapter::new(Arc::clone(&tools)),
         );
@@ -568,6 +591,7 @@ impl SessionToolPorts {
             Arc::new(ToolsFacadeToolAuthorizationAdapter::new(Arc::clone(&tools))),
             catalog,
             Arc::new(ToolsFacadeToolRunAdapter::new(tool_runs)),
+            schedules,
             Arc::new(ToolsFacadeSessionToolOverlayAdapter::new(Arc::clone(
                 &tools,
             ))),
@@ -603,37 +627,16 @@ impl ToolsFacadeToolRunAdapter {
 #[cfg(test)]
 #[async_trait]
 impl AgentToolRunPort for ToolsFacadeToolRunAdapter {
-    async fn schedule(&self, spec: haven_tools::ScheduledToolRunSpec) -> anyhow::Result<String> {
-        self.tool_runs.schedule(spec).await
-    }
-
     async fn attach_session(&self, tool_run_id: &str, session_id: &str) {
         self.tool_runs.attach_session(tool_run_id, session_id).await;
     }
 
-    async fn claim_scheduled_execution(
+    async fn cancel_owned_background_by_session_checked(
         &self,
-        tool_run_id: &str,
-        claim_id: &str,
-    ) -> anyhow::Result<bool> {
+        session_id: &str,
+    ) -> anyhow::Result<()> {
         self.tool_runs
-            .claim_scheduled_execution(tool_run_id, claim_id)
-            .await
-    }
-
-    async fn release_scheduled_execution_claim(
-        &self,
-        tool_run_id: &str,
-        claim_id: &str,
-    ) -> anyhow::Result<bool> {
-        self.tool_runs
-            .release_scheduled_execution_claim(tool_run_id, claim_id)
-            .await
-    }
-
-    async fn cancel_owned_by_session_checked(&self, session_id: &str) -> anyhow::Result<()> {
-        self.tool_runs
-            .cancel_owned_by_session_checked(session_id)
+            .cancel_owned_background_by_session_checked(session_id)
             .await
     }
 
@@ -645,24 +648,6 @@ impl AgentToolRunPort for ToolsFacadeToolRunAdapter {
 
     async fn list_for_session_views(&self, session_id: &str) -> Vec<ToolRunListView> {
         self.tool_runs.list_for_session_views(session_id).await
-    }
-
-    async fn complete_scheduled(&self, tool_run_id: &str) -> anyhow::Result<bool> {
-        self.tool_runs.complete_scheduled(tool_run_id).await
-    }
-
-    async fn complete_scheduled_with_result(
-        &self,
-        tool_run_id: &str,
-        result: &str,
-    ) -> anyhow::Result<bool> {
-        self.tool_runs
-            .complete_scheduled_with_result(tool_run_id, result)
-            .await
-    }
-
-    async fn fail_scheduled(&self, tool_run_id: &str, reason: &str) -> anyhow::Result<bool> {
-        self.tool_runs.fail_scheduled(tool_run_id, reason).await
     }
 
     async fn restore(&self) -> ToolRunRestoreSummary {
@@ -688,6 +673,164 @@ impl AgentToolRunPort for ToolsFacadeToolRunAdapter {
 }
 
 #[cfg(test)]
+pub(super) struct ToolsFacadeScheduleAdapter {
+    schedules: Arc<dyn haven_tools::ScheduleAgentCapability>,
+}
+
+#[cfg(test)]
+impl ToolsFacadeScheduleAdapter {
+    pub(super) fn new(schedules: Arc<dyn haven_tools::ScheduleAgentCapability>) -> Self {
+        Self { schedules }
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl AgentSchedulePort for ToolsFacadeScheduleAdapter {
+    async fn restore(&self) -> anyhow::Result<ScheduleRestoreSummary> {
+        self.schedules.restore().await
+    }
+
+    async fn cancel_owned_by_session_checked(&self, session_id: &str) -> anyhow::Result<()> {
+        self.schedules
+            .cancel_owned_by_session_checked(session_id)
+            .await
+    }
+
+    async fn claim_execution(&self, schedule_run_id: &str, claim_id: &str) -> anyhow::Result<bool> {
+        self.schedules
+            .claim_execution(schedule_run_id, claim_id)
+            .await
+    }
+
+    async fn release_execution(
+        &self,
+        schedule_run_id: &str,
+        claim_id: &str,
+    ) -> anyhow::Result<bool> {
+        self.schedules
+            .release_execution(schedule_run_id, claim_id)
+            .await
+    }
+
+    async fn finish(
+        &self,
+        schedule_run_id: &str,
+        status: haven_common::lifecycle::ScheduleRunStatus,
+        result_summary: Option<&str>,
+        error_reason: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        self.schedules
+            .finish(schedule_run_id, status, result_summary, error_reason)
+            .await
+    }
+
+    fn take_fired_receiver(&self) -> Option<Box<dyn ScheduleFiredReceiverPort>> {
+        Some(Box::new(ToolsFacadeScheduleReceiverAdapter {
+            receiver: self.schedules.take_fired_receiver()?,
+        }))
+    }
+
+    async fn shutdown(&self) {
+        self.schedules.shutdown().await;
+    }
+}
+
+/// Persistence-only schedule capability for Agent unit tests. Test cases claim
+/// occurrences directly from the same in-memory database instead of starting a
+/// wall-clock scheduler worker.
+#[cfg(test)]
+pub(super) struct DatabaseScheduleAdapter {
+    store: haven_memory::ScheduleStore,
+}
+
+#[cfg(test)]
+impl DatabaseScheduleAdapter {
+    pub(super) fn new(store: haven_memory::ScheduleStore) -> Self {
+        Self { store }
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl AgentSchedulePort for DatabaseScheduleAdapter {
+    async fn restore(&self) -> anyhow::Result<ScheduleRestoreSummary> {
+        Ok(ScheduleRestoreSummary {
+            interrupted_runs_marked_failed: self
+                .store
+                .fail_interrupted(chrono::Utc::now().to_rfc3339())
+                .await?,
+        })
+    }
+
+    async fn cancel_owned_by_session_checked(&self, session_id: &str) -> anyhow::Result<()> {
+        for plan in self.store.list_for_session(session_id.to_owned()).await? {
+            self.store
+                .cancel(
+                    plan.schedule_id,
+                    session_id.to_owned(),
+                    chrono::Utc::now().to_rfc3339(),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn claim_execution(&self, schedule_run_id: &str, claim_id: &str) -> anyhow::Result<bool> {
+        self.store
+            .claim_execution(schedule_run_id.to_owned(), claim_id.to_owned())
+            .await
+    }
+
+    async fn release_execution(
+        &self,
+        schedule_run_id: &str,
+        claim_id: &str,
+    ) -> anyhow::Result<bool> {
+        self.store
+            .release_execution(schedule_run_id.to_owned(), claim_id.to_owned())
+            .await
+    }
+
+    async fn finish(
+        &self,
+        schedule_run_id: &str,
+        status: haven_common::lifecycle::ScheduleRunStatus,
+        result_summary: Option<&str>,
+        error_reason: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        self.store
+            .finish(
+                schedule_run_id.to_owned(),
+                status,
+                result_summary.map(str::to_owned),
+                error_reason.map(str::to_owned),
+                chrono::Utc::now().to_rfc3339(),
+            )
+            .await
+    }
+
+    fn take_fired_receiver(&self) -> Option<Box<dyn ScheduleFiredReceiverPort>> {
+        None
+    }
+
+    async fn shutdown(&self) {}
+}
+
+#[cfg(test)]
+struct ToolsFacadeScheduleReceiverAdapter {
+    receiver: Box<dyn haven_tools::ScheduleFiredReceiver>,
+}
+
+#[cfg(test)]
+#[async_trait]
+impl ScheduleFiredReceiverPort for ToolsFacadeScheduleReceiverAdapter {
+    async fn recv(&mut self) -> Option<haven_tools::ScheduleRunTriggered> {
+        self.receiver.recv().await
+    }
+}
+
+#[cfg(test)]
 struct ToolsFacadeToolRunCompletionAdapter {
     receiver: Box<dyn ToolRunCompletionCapability>,
 }
@@ -695,10 +838,6 @@ struct ToolsFacadeToolRunCompletionAdapter {
 #[cfg(test)]
 #[async_trait]
 impl ToolRunCompletionReceiverPort for ToolsFacadeToolRunCompletionAdapter {
-    async fn recv_scheduled_with_recovery(&mut self) -> Option<ToolRunCompletion> {
-        self.receiver.recv_scheduled_with_recovery().await
-    }
-
     async fn recv_result_with_recovery(&mut self) -> Option<ToolRunCompletion> {
         self.receiver.recv_result_with_recovery().await
     }

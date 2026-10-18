@@ -44,8 +44,8 @@ describe('SessionReducer', () => {
 		const scheduledInteraction = {
 			requestId: 'conf-00000000000000000000000000000041',
 			owner: {
-				kind: 'scheduled_tool_run' as const,
-				toolRunId: 'toolrun-00000000000000000000000000000041',
+				kind: 'schedule_run' as const,
+				scheduleRunId: 'schrun-00000000000000000000000000000041',
 			},
 			kind: 'scheduled_confirm' as const,
 			status: 'pending' as const,
@@ -221,13 +221,13 @@ describe('SessionReducer', () => {
 		expect(stale.interactions[pending.requestId]).toBeUndefined();
 	});
 
-	it('clears pending confirmations owned by a cancelled scheduled ToolRun only', () => {
+	it('clears pending confirmations owned by a cancelled ScheduleRun only', () => {
 		const scheduled = {
 			requestId: 'conf-e3dd57e72e242ef384277968ca385a88',
 			sessionId: 'ses-32f23b1e00f85571a60f75dde5588074',
 			owner: {
-				kind: 'scheduled_tool_run' as const,
-				toolRunId: 'toolrun-2113ac173bb7c669462883a7ca897832',
+				kind: 'schedule_run' as const,
+				scheduleRunId: 'schrun-2113ac173bb7c669462883a7ca897832',
 			},
 			kind: 'scheduled_confirm' as const,
 			status: 'pending' as const,
@@ -241,8 +241,8 @@ describe('SessionReducer', () => {
 			...scheduled,
 			requestId: 'conf-f6fc3107a24b02add8d010e0a7530995',
 			owner: {
-				kind: 'scheduled_tool_run' as const,
-				toolRunId: 'toolrun-bde27a06150dcf27f5eb46a0a0be6cf3',
+				kind: 'schedule_run' as const,
+				scheduleRunId: 'schrun-bde27a06150dcf27f5eb46a0a0be6cf3',
 			},
 		};
 		const sessionRequest = {
@@ -268,8 +268,8 @@ describe('SessionReducer', () => {
 		});
 
 		const next = reduceSession(initial, {
-			type: 'session/scheduled-tool-run-cancelled',
-			toolRunId: 'toolrun-2113ac173bb7c669462883a7ca897832',
+		type: 'session/schedule-run-cancelled',
+		scheduleRunId: 'schrun-2113ac173bb7c669462883a7ca897832',
 		});
 
 		expect(next.interactions[scheduled.requestId]).toBeUndefined();
@@ -321,8 +321,8 @@ describe('SessionReducer', () => {
 			requestId: 'conf-e3dd57e72e242ef384277968ca385a88',
 			sessionId: 'ses-32f23b1e00f85571a60f75dde5588074',
 			owner: {
-				kind: 'scheduled_tool_run' as const,
-				toolRunId: 'toolrun-00000000000000000000000000000001',
+				kind: 'schedule_run' as const,
+				scheduleRunId: 'schrun-00000000000000000000000000000001',
 			},
 			kind: 'scheduled_confirm' as const,
 			status: 'pending' as const,

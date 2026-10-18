@@ -11,7 +11,6 @@ const projectionOptions = {
 	sessionTitleFor: (toolRun: { sessionId?: string }) =>
 		toolRun.sessionId === 'ses-00000000000000000000000000000001' ? '研究会话' : '',
 	toolRunDuration: () => '3s',
-	scheduledToolRunCountdown: (dueAt?: string) => (dueAt ? '2分后' : ''),
 };
 
 describe('projectToolRunCard', () => {
@@ -20,6 +19,7 @@ describe('projectToolRunCard', () => {
 			{
 				toolRunId: 'toolrun-058de138a89ad8e4eef21b1dab8e5527',
 				kind: 'background',
+				toolName: 'files.write',
 			},
 			projectionOptions,
 		);
@@ -29,20 +29,17 @@ describe('projectToolRunCard', () => {
 	});
 
 	it('maps finite ToolRun states to the card tone vocabulary', () => {
-		const toneFor = (kind: 'background' | 'scheduled', status: ToolRunStatus) =>
+		const toneFor = (status: ToolRunStatus) =>
 			projectToolRunCard({
-				toolRunId:
-					kind === 'background'
-						? 'toolrun-00000000000000000000000000000001'
-						: 'toolrun-00000000000000000000000000000002',
-				kind,
+				toolRunId: 'toolrun-00000000000000000000000000000001',
+				kind: 'background',
+				toolName: 'files.write',
 				status,
 			}, projectionOptions).tone;
 
-		expect(toneFor('background', 'running')).toBe('running');
-		expect(toneFor('background', 'failed')).toBe('error');
-		expect(toneFor('background', 'cancelled')).toBe('neutral');
-		expect(toneFor('scheduled', 'waiting')).toBe('scheduled');
+		expect(toneFor('running')).toBe('running');
+		expect(toneFor('failed')).toBe('error');
+		expect(toneFor('cancelled')).toBe('neutral');
 	});
 
 	it('projects background cards with the shared fields and background details', () => {
@@ -50,13 +47,12 @@ describe('projectToolRunCard', () => {
 			{
 				toolRunId: 'toolrun-058de138a89ad8e4eef21b1dab8e5527',
 				kind: 'background',
+				toolName: 'files.write',
 				status: 'completed',
 				sessionId: 'ses-00000000000000000000000000000001',
-				command: '整理下载目录',
 				output: '已移动 3 个文件',
 				error: 'diagnostic detail',
 				errorReason: 'summary',
-				exitCode: 0,
 				preview: '当前进度',
 			},
 			projectionOptions,
@@ -67,15 +63,15 @@ describe('projectToolRunCard', () => {
 			kind: 'background',
 			status: 'completed',
 			sessionId: 'ses-00000000000000000000000000000001',
-			title: '调用工具',
-			searchText: '研究会话',
+			title: '后台调用 · files.write',
+			toolName: 'files.write',
+			searchText: '研究会话 files.write',
 			statusLabel: '已完成',
 			tone: 'success',
-			summary: '整理下载目录',
+			summary: '已移动 3 个文件',
 			context: '研究会话',
 			timing: '3s',
-			details: {
-				command: '整理下载目录',
+				details: {
 				output: '已移动 3 个文件',
 				error: 'diagnostic detail',
 				preview: '当前进度',
@@ -83,37 +79,4 @@ describe('projectToolRunCard', () => {
 		});
 	});
 
-	it('projects scheduled cards with the same structure and scheduled details', () => {
-		const card = projectToolRunCard(
-			{
-				toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9',
-				kind: 'scheduled',
-				status: 'completed',
-				sessionId: 'ses-00000000000000000000000000000001',
-				dueAt: '2026-09-27T12:00:00Z',
-				title: '稍后整理',
-				body: '整理下载目录',
-				mode: 'continue',
-			},
-			projectionOptions,
-		);
-
-		expect(card).toMatchObject({
-			toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9',
-			kind: 'scheduled',
-			status: 'completed',
-			sessionId: 'ses-00000000000000000000000000000001',
-			title: '稍后整理',
-			searchText: '继续会话',
-			statusLabel: '已完成',
-			tone: 'success',
-			summary: '整理下载目录',
-			context: '继续会话',
-			timing: '2分后',
-			details: {
-				body: '整理下载目录',
-			},
-		});
-		expect(card.details).toEqual({ body: '整理下载目录' });
-	});
 });

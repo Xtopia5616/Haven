@@ -57,13 +57,13 @@ pub(crate) fn validate_interaction_ids(request: &InteractionRequest) -> anyhow::
         (
             InteractionKind::ScheduledConfirm,
             InteractionDetails::ScheduledConfirm {
-                tool_run_id,
+                schedule_run_id,
                 receipt,
                 nested_confirmation,
                 ..
             },
         ) => {
-            require_canonical_id(tool_run_id, "toolrun", "scheduled tool run ID")?;
+            require_canonical_id(schedule_run_id, "schrun", "schedule run ID")?;
             if let Some(nested) = nested_confirmation {
                 require_canonical_id(&nested.step_id, "step", "nested confirmation step ID")?;
                 anyhow::ensure!(
@@ -131,7 +131,7 @@ pub enum InteractionDetails {
         nested_confirmation: Option<haven_tools::NestedConfirmationRequest>,
     },
     ScheduledConfirm {
-        tool_run_id: String,
+        schedule_run_id: String,
         tool_name: String,
         tool_input: Value,
         receipt: haven_tools::ConfirmationReceipt,
@@ -167,7 +167,7 @@ pub enum InteractionStatus {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InteractionOwner {
     Session { session_id: String },
-    ScheduledToolRun { tool_run_id: String },
+    ScheduleRun { schedule_run_id: String },
     AppCommand,
 }
 
@@ -380,7 +380,7 @@ impl InteractionRequest {
     }
 
     pub fn scheduled_confirm(
-        tool_run_id: String,
+        schedule_run_id: String,
         session_id: Option<&str>,
         tool_name: String,
         tool_input: Value,
@@ -394,7 +394,7 @@ impl InteractionRequest {
             kind: InteractionKind::ScheduledConfirm,
             status: InteractionStatus::Pending,
             details: InteractionDetails::ScheduledConfirm {
-                tool_run_id,
+                schedule_run_id,
                 tool_name,
                 tool_input,
                 receipt,
@@ -409,7 +409,7 @@ impl InteractionRequest {
     }
 
     pub fn scheduled_confirm_nested(
-        tool_run_id: String,
+        schedule_run_id: String,
         session_id: Option<&str>,
         tool_name: String,
         tool_input: Value,
@@ -424,7 +424,7 @@ impl InteractionRequest {
             kind: InteractionKind::ScheduledConfirm,
             status: InteractionStatus::Pending,
             details: InteractionDetails::ScheduledConfirm {
-                tool_run_id,
+                schedule_run_id,
                 tool_name,
                 tool_input,
                 receipt,
@@ -722,14 +722,14 @@ mod tests {
 
     #[test]
     fn owner_wire_is_typed_and_non_session_context_is_omitted() {
-        let owner = InteractionOwner::ScheduledToolRun {
-            tool_run_id: "toolrun-0123456789abcdef0123456789abcdef".into(),
+        let owner = InteractionOwner::ScheduleRun {
+            schedule_run_id: "schrun-0123456789abcdef0123456789abcdef".into(),
         };
         assert_eq!(
             serde_json::to_value(owner).unwrap(),
             serde_json::json!({
-                "kind": "scheduled_tool_run",
-                "tool_run_id": "toolrun-0123456789abcdef0123456789abcdef"
+                "kind": "schedule_run",
+                "schedule_run_id": "schrun-0123456789abcdef0123456789abcdef"
             })
         );
 
@@ -880,21 +880,21 @@ mod tests {
             expires_at: 1,
         };
         let request = InteractionRequest::scheduled_confirm(
-            "toolrun-short".into(),
+            "schrun-short".into(),
             Some(SESSION_ID),
             "haven.test".into(),
             Value::Null,
             receipt,
-            "Scheduled confirmation".into(),
+            "Schedule confirmation".into(),
         );
-        let malformed_tool_run = event(
+        let malformed_schedule_run = event(
             2,
             INTERACTION_REQUESTED_EVENT_TYPE,
             serde_json::to_value(request).unwrap(),
         );
-        let error = replay_session_interactions(SESSION_ID, &[malformed_tool_run])
-            .expect_err("malformed ToolRun IDs must fail replay");
-        assert!(error.to_string().contains("scheduled tool run ID"));
+        let error = replay_session_interactions(SESSION_ID, &[malformed_schedule_run])
+            .expect_err("malformed ScheduleRun IDs must fail replay");
+        assert!(error.to_string().contains("schedule run ID"));
     }
 
     #[test]

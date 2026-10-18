@@ -134,7 +134,7 @@ tracing::warn!(tool_run_id = %tool_run_id, failure_kind = "output_log_write", "f
 | `run_session` | `session_id` | `haven_agent::session`（handler `.instrument(span)`） | 整个 ReAct 循环嵌套日志 |
 | `background_tool_run` | `tool_run_id` | `haven_tools::tool_run_service`（runner `.instrument(span)`） | 后台任务运行 / 取消 / 输出写入 |
 | `tool_run_completion` | `tool_run_id`, `session_id` | `haven_agent::layer` 任务完成 consumer | 任务结果注入 / 会话唤醒 / 通知 |
-| `scheduled_tool_run_fired` | `tool_run_id`, `session_id` | `haven_agent::layer` 定时任务 consumer | 定时任务触发与会话恢复 |
+| `schedule_run_fired` | `schedule_run_id`, `session_id` | `haven_agent::layer` ScheduleRun consumer | Schedule occurrence 触发与会话恢复 |
 
 规则：
 
@@ -172,8 +172,8 @@ AgentEvent / 其它后端事件
 |---|---|---|
 | 会话生命周期（创建/完成/暂停/恢复/出错） | `+layout` 事件 handler | 是（`in_app`） |
 | permission 请求（confirm / scheduled confirm） | `interaction:requested` → `+layout` + DesktopNotifications | 是（`permission_requested` 双通道） |
-| Agent 通用通知（`notify`、预算提示等） | `notification:show`，无 `notification_kind` | 否（始终 toast；Windows 亦始终开启） |
-| 后台任务/定时任务完成通知 | `notification:show`，`notification_kind=tool_run_completion` | 是（共享 `tool_run_completed.in_app`）；后台任务保留非当前会话且 completed/failed 才 toast |
+| Agent 通用通知（`notify`、预算提示、ScheduleRun 结果等） | `notification:show`，无 `notification_kind` | 否（始终 toast；Windows 亦始终开启） |
+| 后台任务完成通知 | `notification:show`，`notification_kind=tool_run_completion` | 是（共享 `tool_run_completed.in_app`）；仅后台 ToolRun completion，当前会话不重复 toast，completed/failed 才 toast |
 | Agent 上下文压缩、媒体表示说明 | `agent:compaction` / `agent:media_plan` → `+layout` | 否（始终显示应用内 toast）；页面 controller 只维护 session/media 投影状态 |
 | 录音 / 转写 / 静音 / 热键冲突 / MCP 状态 | `+layout` 事件 handler | 否（操作反馈，无独立配置项） |
 | 用户点击触发的命令结果 | 页面 / helper 直接 `addNotification` | 否 |
@@ -226,7 +226,7 @@ reportError(e, { context: 'SettingsView', message: '操作失败', log: false })
 ### 2.4 后端事件与桌面通知
 
 - **事件命名**：`domain:action`（`session:lifecycle`、`agent:thought`、`recording:error`、`notification:show` …）。`AgentEvent` → channel 的唯一事实来源是 `TauriEmitter::channel`；新增变体必须登记并补单测。
-- **ToolRun 生命周期事件**：后台任务与定时任务共用 `tool_run:created` / `tool_run:updated` / `tool_run:output` / `tool_run:finished`。定时任务严格遵循 `Waiting → Running → Completed | Failed | Cancelled`：触发不是终态，实际工作由 Agent 确认后才收口；前端必须保留 `running` 的展示和取消入口。`haven_tools` 只产生内部状态，app shell 在唯一投影点转换为 `ToolRunEvent { tool_run_id, kind, ... }` 后再 emit；前端 `toolRunStore` 只消费 contracts 层的 camelCase DTO，并在任务页通过 `list_tool_runs` 做周期性 reconciliation，不能只依赖单次 `tool_run:finished`。完整字段、顺序与敏感字段限制见 `docs/ipc-contracts.md`。代码内部使用 ToolRun，用户文案按 `kind` 显示“后台任务”或“定时任务”。
+- **ToolRun 生命周期事件**：ToolRun 只记录可脱离当前 turn 运行的后台工具调用，由 `tool_run:created` / `tool_run:updated` / `tool_run:finished` 表达创建、关联会话和终态。Schedule 计划与 occurrence 由独立 Schedule owner 管理，不进入 ToolRun 事件或面板。前端 `toolRunStore` 只消费 contracts 层的 camelCase DTO，并通过 `list_tool_runs` / `list_tool_run_history` reconciliation。完整字段、顺序与敏感字段限制见 `docs/ipc-contracts.md`。前台调用仍由当前 ReAct turn 的 ToolCall 表达。
 - **wire 载荷**：统一 snake_case JSON；前端边界转 camelCase。敏感/内部字段不外泄（见 `payload` 对 `SessionCreated` 的投影）。
 - **桌面通知**：统一走 `DesktopNotifications::maybe_show_toast`（`notification.rs`，由 `TauriEmitter` 委托）。文案与应用内 toast 对齐（中文）：
 
@@ -238,7 +238,7 @@ reportError(e, { context: 'SettingsView', message: '操作失败', log: false })
 | `InteractionRequested` kind=`confirm` / `scheduled_confirm` status=`pending` | `permission_requested.windows` | `true` | `有一项操作等待权限确认，请打开 Haven 处理。`（通用文案） |
 | `SessionUpdated` status=`paused`（waiting reason 非 confirmation） | `session_paused.windows` | `false` | `会话已暂停: …` |
 | `SessionUpdated` status=`pending`（且上一状态为 paused/error） | `session_resumed.windows` | `false` | `会话已恢复: …` |
-| `AgentEvent::Notification` | **不读配置**，总是弹 | — | title/body 原样（设置页注明始终开启） |
+| `AgentEvent::Notification` | **不读配置**，总是弹 | — | title/body 原样；包括 ScheduleRun outcome（设置页注明始终开启） |
 | `AgentEvent::ToolRunCompletionNotification` | `tool_run_completed.windows` | `true` | title/body 原样；wire 仍走 `notification:show`，source/status 分别使用 generated `ToolRunKindDto` / `ToolRunCompletionStatusDto`，并带 `tool_run_id` 和可选真实 session 关联 |
 
 标题统一产品名 `Haven`。
@@ -321,7 +321,7 @@ try {
 | `session:lifecycle` type=`updated`, status=`paused`（waiting reason 非 confirmation） | warning：`会话已暂停: …`（3s） | `session_paused.in_app` |
 | `session:lifecycle` type=`updated`, status=`pending`（仅当上一状态为 paused/error） | info：`会话已恢复: …`（3s） | `session_resumed.in_app` |
 | `notification:show`（ToolRun completion，background） | completed/failed 且 owner session 非当前会话时显示原后台任务 toast | `tool_run_completed.in_app` |
-| `notification:show`（ToolRun completion，scheduled） | info toast（原 title/body） | `tool_run_completed.in_app` |
+| `notification:show`（ToolRun completion） | info toast（原 title/body） | `tool_run_completed.in_app` |
 
 ### 4.2 不受配置控制（操作 / 系统反馈）
 
@@ -344,7 +344,7 @@ try {
 |---|---|
 | `session:lifecycle` type=`completed` / `error` | 更新 busySessions / modelState；聊天页在该终态事件中执行一次清理 |
 | `session:lifecycle` type=`deleted` | 清理 busySessions |
-| `tool_run:created` / `tool_run:updated` / `tool_run:output` | 更新 `toolRunStore` |
+| `tool_run:created` / `tool_run:updated` / `tool_run:finished` | 更新 `toolRunStore` |
 | `agent:stream_stalled` | `updateModelState('stalled')` |
 | `llm:config_changed` | 重新探测 LLM 连通性 |
 | `skills:status_change` | 由工具页刷新，不弹 toast |
@@ -369,7 +369,7 @@ try {
 | 域 | 大小写 | 示例 |
 |---|---|---|
 | 窗口标题 / 托盘 tooltip / 系统通知标题 | 正式版 `Haven`；开发窗口 `Haven · 开发版` | `tauri.conf.json` `productName`、App 启动时的开发标题、通知与托盘文案 |
-| 通知默认标题（`notify` / `schedule` 工具） | `Haven` | `tool_contract.rs` / `notify.rs` / `scheduled_tool_run.rs` 默认 title |
+| 通知默认标题（`notify` / `schedule` 工具） | `Haven` | `tool_contract.rs` / `notify.rs` / `schedule.rs` 默认 title |
 | 前端 UI 文案（欢迎页、气泡标签、设置页） | `Haven` | `+page.svelte`、`ChatBubble.svelte`、`Logo.svelte` |
 | Windows 计划任务名（Action Scheduler 中展示） | `Haven` | `app-binary/src/autostart.rs` `ACTION_NAME` |
 | 数据目录 / 运行时临时根 / 媒体存储根 / 日志文件名 | `haven`；开发数据目录 `haven-dev` | `ConfigLoader::data_dir()`、`default_runtime_temp_root()`、`default_generated_media_root()`、`haven.log` |

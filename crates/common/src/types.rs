@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 //   - Persisted prefixes: `ses-` (sessions), `msg-` (messages and memory
 //     episodes — memory_items shares the message id space), `step-`
 //     (session_steps), `fact-` (facts), `node-` (memory_nodes), `toolrun-`
-//     (ToolRuns — background and scheduled), `sched-` (recurring session schedules),
+//     (detached background tool calls), `sched-` (recurring session schedules),
 //     `asset-` (managed media),
 //     `cred-` (Credential Manager references), and `usage-` (llm_usage).
 //   - Runtime-generated prefixes: `conf-` (confirmation request ids), `rec-`
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 //     entity ID; committed paths may be persisted as message attachment
 //     references, while `asset-*` is the media entity identity. `.file-{uuid32}.tmp`
 //     names transient staging directories. `conf-*` may be
-//     persisted by its owning interaction or scheduled ToolRun contract;
+//     persisted by its owning interaction or Schedule claim contract;
 //     `call-*` participates in durable tool-call history when a provider ID is
 //     empty or duplicated in the assistant batch.
 //   - External ids (LLM `tool_call_id`, provider model ids, MCP session ids)
@@ -128,7 +128,7 @@ macro_rules! id_newtype {
 id_newtype! {
     /// Unique identifier for a safety-gateway confirmation request
     /// (`conf-{uuid32}`). This request identity may be persisted in a durable
-    /// interaction event or scheduled ToolRun claim; active execution also
+    /// interaction event or Schedule claim; active execution also
     /// uses it to address the pending waiter.
     ConfirmId, "conf"
 }
@@ -409,7 +409,7 @@ impl From<CapabilityScope> for String {
 /// Other tools (MCP/skills/arbitrary args) use the bare tool name so a random
 /// `operation` field in args cannot fragment grants.
 const ROUTING_PARAM_TOOLS: &[&str] = &[
-    "tool_runs",
+    "toolrun",
     "files",
     "process",
     "window",
@@ -419,6 +419,7 @@ const ROUTING_PARAM_TOOLS: &[&str] = &[
     "media",
     "memory",
     "agent",
+    "session",
     "schedule",
     "haven_diagnostics",
     "haven_config",
@@ -1419,8 +1420,8 @@ mod tests {
             "schedule.set"
         );
         assert_eq!(
-            permission_key("tool_runs", &serde_json::json!({"operation": "cancel"})),
-            "tool_runs.cancel"
+            permission_key("toolrun", &serde_json::json!({"operation": "cancel"})),
+            "toolrun.cancel"
         );
         assert_eq!(
             permission_key("session", &serde_json::json!({"operation": "create"})),

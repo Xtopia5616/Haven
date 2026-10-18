@@ -18,7 +18,8 @@
 			status?: ToolRunResultStatus | null;
 			cancelled?: boolean | null;
 			tool_runs?: ToolRunSummary[];
-			exit_code?: number | null;
+			tool_name?: string | null;
+			output?: string | null;
 		};
 	}
 
@@ -29,7 +30,6 @@
 		ToolRunResultStatus,
 		'error' | 'info' | 'warning' | 'success' | 'neutral'
 	> = {
-		waiting: 'warning',
 		running: 'info',
 		completed: 'success',
 		failed: 'error',
@@ -82,13 +82,23 @@
 		<p class="tool-result-message">没有后台任务</p>
 	{/if}
 {:else if data.tool_run_id || data.status}
+	<div class="tool-result-label">
+		{data.status === 'running'
+			? '后台任务运行中'
+			: data.status === 'completed'
+				? '后台任务已完成'
+				: data.status === 'failed'
+					? '后台任务失败'
+					: data.status === 'cancelled'
+						? '后台任务已取消'
+						: '后台任务状态'}
+	</div>
 	<div class="tool-run-row">
 		<span class="tool-run-id">{data.tool_run_id || '—'}</span>
 		<StatusBadge label={toolRunStatusLabel(data.status)} tone={statusTone(data.status)} />
+		{#if data.tool_name}<span class="tool-run-target">{data.tool_name}</span>{/if}
 	</div>
-	{#if data.exit_code != null}
-		<div class="tool-result-meta tool-result-meta--compact">退出码 {data.exit_code}</div>
-	{/if}
+	{#if data.output}<p class="tool-result-message">{data.output}</p>{/if}
 {:else}
 	<div class="tool-result-meta tool-result-meta--compact">后台任务操作：{data.operation}</div>
 	<JsonView value={data} defaultDepth={1} />

@@ -778,7 +778,7 @@ async fn test_tools_facade_rebuild_catalog_registers_builtins() {
         "input.click",
         "window.list",
         "media.inspect",
-        "tool_runs.list",
+        "toolrun.list",
         "schedule.list",
         "agent.list",
     ] {

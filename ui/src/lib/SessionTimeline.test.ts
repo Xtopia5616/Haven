@@ -1,8 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import SessionTimeline from './SessionTimeline.svelte';
-import type { ToolRunPayload } from './contracts/toolRun.ts';
-import { groupSessionTimeline } from './sessionTimeline.ts';
 import welcomeSource from './SessionWelcome.svelte?raw';
 
 const welcomeStyles = welcomeSource.match(/<style>([\s\S]*?)<\/style>/)?.[1];
@@ -34,16 +32,16 @@ describe('SessionTimeline', () => {
 		expect(document.querySelector('.bubble.user')?.textContent).toContain('你好');
 	});
 
-	it('renders waiting background progress inside its source tool card', () => {
+	it('renders waiting background progress inside the toolrun.start card', () => {
 		const { container } = render(SessionTimeline, {
 			messages: [
 				{
 					id: 'step-f5ba153deb417361f0e17158c2c3924a',
 					role: 'assistant' as const,
 					content:
-						'{"execution_mode":"background","tool_run_id":"toolrun-00000000000000000000000000000001"}',
+						'{"tool_run_id":"toolrun-00000000000000000000000000000001","tool_name":"files.write"}',
 					type: 'tool' as const,
-					toolName: 'shell',
+					toolName: 'toolrun.start',
 					sourceToolRunId: 'toolrun-00000000000000000000000000000001',
 					stepNumber: 2,
 					streaming: false,
@@ -53,10 +51,10 @@ describe('SessionTimeline', () => {
 				{
 					toolRunId: 'toolrun-00000000000000000000000000000001',
 					kind: 'background',
+						toolName: 'files.write',
 					status: 'running',
 					sessionId: 'ses-00000000000000000000000000000001',
 					startedAt: '2026-10-03T03:00:00Z',
-					command: '整理下载目录',
 					preview: '扫描中',
 					output: '已移动 3 个文件',
 				},
@@ -69,7 +67,7 @@ describe('SessionTimeline', () => {
 		expect(card).toBeTruthy();
 		expect(card?.textContent).toContain('执行中');
 		expect(card?.textContent).toContain('后台任务运行中');
-		expect(card?.textContent).toContain('整理下载目录');
+		expect(card?.textContent).toContain('files.write');
 		expect(card?.textContent).toContain('扫描中');
 		expect(card?.textContent).toContain('等待后台任务结果，完成后将自动继续');
 		expect(container.querySelectorAll('.tool-run-wait-note')).toHaveLength(1);
@@ -78,78 +76,6 @@ describe('SessionTimeline', () => {
 		expect(container.querySelector('.activity-group')?.textContent).toContain(
 			'等待后台任务结果',
 		);
-	});
-
-	it('uses the shared ToolRun card for scheduled details when the transcript is empty', () => {
-		const { container } = render(SessionTimeline, {
-			messages: [],
-			sessionToolRuns: [
-				{
-					toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9',
-					kind: 'scheduled',
-					status: 'waiting',
-					sessionId: 'ses-00000000000000000000000000000001',
-					dueAt: '2026-10-03T04:00:00Z',
-					title: '稍后提醒',
-					body: '整理会议记录',
-					mode: 'continue',
-				},
-			],
-		});
-
-		const card = container.querySelector('.tool-run-timeline-card');
-		expect(card).toBeTruthy();
-		expect(card?.textContent).toContain('定时任务');
-		expect(card?.textContent).toContain('稍后提醒');
-		expect(card?.textContent).toContain('整理会议记录');
-		expect(card?.textContent).toContain('继续会话');
-		expect(card?.textContent).toContain('计划触发');
-		expect(container.querySelector('.welcome')).toBeNull();
-	});
-
-	it('keeps scheduled ToolRun order stable when a run starts', () => {
-		const messages = [
-			{
-				id: 'step-052b341c6a7d077effc2e1976c4ebdc7',
-				role: 'assistant' as const,
-				content: '计划任务',
-				type: 'tool' as const,
-				toolName: 'schedule',
-				stepNumber: 1,
-				streaming: false,
-			},
-		];
-		const waitingRuns = [
-			{
-				toolRunId: 'toolrun-309099f4d738d016c3ac91ffa860d4ed',
-				kind: 'scheduled' as const,
-				status: 'waiting' as const,
-				sourceStepId: 'step-052b341c6a7d077effc2e1976c4ebdc7',
-				dueAt: '2026-10-08T12:00:00Z',
-			},
-			{
-				toolRunId: 'toolrun-705eb9b2ff45c4397aab6ceb5bb85eab',
-				kind: 'scheduled' as const,
-				status: 'waiting' as const,
-				sourceStepId: 'step-052b341c6a7d077effc2e1976c4ebdc7',
-				dueAt: '2026-10-08T12:05:00Z',
-			},
-		];
-		const startedRuns = [
-			{
-				...waitingRuns[0],
-				status: 'running' as const,
-				startedAt: '2026-10-08T12:10:00Z',
-			},
-			waitingRuns[1],
-		];
-		const runOrder = (toolRuns: ToolRunPayload[]) =>
-			groupSessionTimeline(messages, { toolRuns })
-				.filter((item) => item.kind === 'tool_run')
-				.map((item) => (item.kind === 'tool_run' ? item.toolRun.toolRunId : ''));
-
-		expect(runOrder(waitingRuns)).toEqual(['toolrun-309099f4d738d016c3ac91ffa860d4ed', 'toolrun-705eb9b2ff45c4397aab6ceb5bb85eab']);
-		expect(runOrder(startedRuns)).toEqual(['toolrun-309099f4d738d016c3ac91ffa860d4ed', 'toolrun-705eb9b2ff45c4397aab6ceb5bb85eab']);
 	});
 
 	it('passes through the continue handler for a user-tail conversation', () => {

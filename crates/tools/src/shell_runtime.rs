@@ -20,6 +20,7 @@ static SHELL_OUTPUT_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// interpreter (cmd or powershell), with stdout/stderr piped. The process
 /// owner supplies `CREATE_NO_WINDOW` when appropriate and combines it with
 /// the suspended-process containment flag.
+#[cfg(test)]
 pub(crate) fn build_shell_command(shell: &str, command: &str) -> std::process::Command {
     build_shell_command_silent(shell, command)
 }

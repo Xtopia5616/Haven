@@ -393,9 +393,9 @@ describe('toolRunEventListeners', () => {
 			payload: {
 				tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 				kind: 'background',
+				tool_name: 'shell',
 				status: 'completed',
 				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
-				exit_code: 0,
 			},
 		} as never);
 
@@ -405,9 +405,9 @@ describe('toolRunEventListeners', () => {
 			payload: {
 				toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 				kind: 'background',
+				toolName: 'shell',
 				status: 'completed',
 				sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
-				exitCode: 0,
 			},
 		});
 	});

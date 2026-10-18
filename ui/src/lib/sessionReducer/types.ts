@@ -184,7 +184,7 @@ export type SessionAction =
 	  }
 	| { type: 'session/interactions-cleared'; sessionId: string; kind?: InteractionKind }
 	| { type: 'session/ask-resolved'; requestId: string; response: AskResponseView }
-	| { type: 'session/scheduled-tool-run-cancelled'; toolRunId: string }
+	| { type: 'session/schedule-run-cancelled'; scheduleRunId: string }
 	| {
 			type: 'session/interaction-resolution-result';
 			requestId: string;

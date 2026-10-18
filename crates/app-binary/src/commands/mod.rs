@@ -20,6 +20,7 @@ pub mod memory;
 pub mod model;
 pub(crate) mod process;
 pub mod recording;
+pub mod schedules;
 pub mod session;
 pub mod session_history;
 pub mod settings;

@@ -21,7 +21,7 @@ pub(super) async fn tool_run_completion_session_status(
 
 fn format_tool_run_result_message(
     tool_run_id: &str,
-    tool_run_kind: &str,
+    tool_name: &str,
     source_step_id: Option<&str>,
     status: haven_common::lifecycle::ToolRunStatus,
     summary: &str,
@@ -30,7 +30,8 @@ fn format_tool_run_result_message(
 ) -> String {
     let mut envelope = serde_json::json!({
         "tool_run_id": tool_run_id,
-        "kind": tool_run_kind,
+        "tool_name": tool_name,
+        "kind": "background",
         "status": status.as_str(),
         "summary": truncate_notification(summary, max_chars),
     });
@@ -76,32 +77,12 @@ pub(super) fn spawn(
                 }) else {
                     return;
                 };
-                let (
-                    tool_run_id,
-                    tool_run_result_id,
-                    tool_run_kind,
-                    session_id,
-                    status,
-                    completion_payload,
-                ) = match event {
-                    haven_tools::ToolRunCompletion::Background(comp) => (
-                        comp.tool_run_id,
-                        comp.tool_run_result_id,
-                        "background",
-                        comp.session_id,
-                        comp.status,
-                        comp.payload,
-                    ),
-                    haven_tools::ToolRunCompletion::ScheduledResult(comp) => (
-                        comp.tool_run_id,
-                        comp.tool_run_result_id,
-                        "scheduled",
-                        comp.session_id,
-                        comp.status,
-                        comp.payload,
-                    ),
-                    haven_tools::ToolRunCompletion::Scheduled(_) => continue,
-                };
+                let haven_tools::ToolRunCompletion::Background(comp) = event;
+                let tool_run_id = comp.tool_run_id;
+                let tool_run_result_id = comp.tool_run_result_id;
+                let session_id = comp.session_id;
+                let status = comp.status;
+                let completion_payload = comp.payload;
                 // Cancellation has no ToolRun-result transcript by contract.
                 if status == haven_common::lifecycle::ToolRunStatus::Cancelled {
                     tool_run_port
@@ -151,7 +132,7 @@ pub(super) fn spawn(
                 let source_step_id = completion_payload.source_step_id.as_deref();
                 let msg = format_tool_run_result_message(
                     &tool_run_id,
-                    tool_run_kind,
+                    &completion_payload.tool_name,
                     source_step_id,
                     status,
                     &reason,
@@ -277,9 +258,6 @@ pub(super) fn spawn(
                 // projected through the durable transcript path.
                 // Active push so the user never has to poll for status:
                 // a toast (in-app + Windows) announces the transition.
-                if tool_run_kind != "background" {
-                    continue;
-                }
                 let (title, status_label, notification_status) = match status {
                     haven_common::lifecycle::ToolRunStatus::Completed => (
                         "后台任务已完成".to_string(),
@@ -292,8 +270,7 @@ pub(super) fn spawn(
                         ToolRunCompletionStatus::Failed,
                     ),
                     haven_common::lifecycle::ToolRunStatus::Cancelled => continue,
-                    haven_common::lifecycle::ToolRunStatus::Waiting
-                    | haven_common::lifecycle::ToolRunStatus::Running => {
+                    haven_common::lifecycle::ToolRunStatus::Running => {
                         tracing::warn!(tool_run_id = %tool_run_id, "received non-terminal ToolRun result");
                         continue;
                     }
@@ -331,7 +308,7 @@ mod tests {
         let summary = "abcdef";
         let message = format_tool_run_result_message(
             tool_run_id,
-            "background",
+            "shell",
             Some("step-96325e1a1ea57edd930e80996fe414e9"),
             haven_common::lifecycle::ToolRunStatus::Failed,
             summary,
@@ -356,6 +333,7 @@ mod tests {
             .unwrap();
         let envelope: Value = serde_json::from_str(payload).unwrap();
         assert_eq!(envelope["tool_run_id"], tool_run_id);
+        assert_eq!(envelope["tool_name"], "shell");
         assert_eq!(
             envelope["source_step_id"],
             "step-96325e1a1ea57edd930e80996fe414e9"

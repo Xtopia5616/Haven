@@ -104,9 +104,10 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         "session.link" => ("关联会话", ToolCatalogGroup::Agent, false, None),
         "session.unlink" => ("取消会话关联", ToolCatalogGroup::Agent, false, None),
         "session.links" => ("查看关联会话", ToolCatalogGroup::Agent, true, None),
-        "tool_runs.list" => ("后台任务列表", ToolCatalogGroup::Haven, true, None),
-        "tool_runs.inspect" => ("查看后台任务", ToolCatalogGroup::Haven, true, None),
-        "tool_runs.cancel" => ("取消后台任务", ToolCatalogGroup::Haven, false, None),
+        "toolrun.start" => ("启动后台工具", ToolCatalogGroup::Haven, false, None),
+        "toolrun.list" => ("后台任务列表", ToolCatalogGroup::Haven, true, None),
+        "toolrun.inspect" => ("查看后台任务", ToolCatalogGroup::Haven, true, None),
+        "toolrun.cancel" => ("取消后台任务", ToolCatalogGroup::Haven, false, None),
         "schedule.set" => ("设置定时任务", ToolCatalogGroup::Haven, false, None),
         "schedule.list" => ("定时任务列表", ToolCatalogGroup::Haven, true, None),
         "schedule.cancel" => ("取消定时任务", ToolCatalogGroup::Haven, false, None),
@@ -246,7 +247,7 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
     let idempotency = match name {
         // Configuration toggles and lifecycle controls converge on a stable
         // state, so repeating the same request is safe.
-        "tool_runs.cancel"
+        "toolrun.cancel"
         | "schedule.cancel"
         | "haven.config.config_get"
         | "haven.config.logs_level"

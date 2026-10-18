@@ -8,14 +8,47 @@ use tokio_util::sync::CancellationToken;
 use super::canonical_entity_id_schema;
 use crate::{Tool, ToolConcurrency, ToolResult, ToolRunService};
 
-/// Explicit mutating operation supported by the unified task board.
+/// Explicit operations supported by ToolRun start and management views.
 #[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolRunsOperation {
+    Start,
+    List,
+    Inspect,
     Cancel,
 }
 
-/// Unified background/scheduled task board for the current session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolRunStart {
+    pub tool_name: String,
+    pub input: Value,
+}
+
+/// Parse the model-visible payload used by `toolrun.start`.
+pub fn parse_toolrun_start(input: &Value) -> Result<ToolRunStart, String> {
+    let tool_name = input
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && name.len() <= 128)
+        .ok_or_else(|| "toolrun.start requires a valid tool_name".to_owned())?;
+    if tool_name == "toolrun" || tool_name.starts_with("toolrun.") {
+        return Err("toolrun cannot recursively start another ToolRun".into());
+    }
+    let input = input
+        .get("input")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !input.is_object() {
+        return Err("toolrun.start input must be a JSON object".into());
+    }
+    Ok(ToolRunStart {
+        tool_name: tool_name.to_owned(),
+        input,
+    })
+}
+
+/// Background ToolRun launcher and manager for the current session.
 ///
 /// - Without `tool_run_id`: list all (optional `status` filter).
 /// - With `tool_run_id`: return that single ToolRun's status (results are also
@@ -34,10 +67,15 @@ pub struct ToolRunsParams {
     /// When set, return this single task's status instead of the board.
     #[serde(default)]
     pub tool_run_id: Option<String>,
-    /// Optional mutating operation. Listing and inspection retain their
-    /// compact list/inspect shapes; cancellation is explicit.
+    /// Operation selected by the root or injected by an operation view.
     #[serde(default)]
     pub operation: Option<ToolRunsOperation>,
+    /// Target for `start`; authorization is resolved against this tool call.
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    /// Target input for `start`.
+    #[serde(default)]
+    pub input: Option<Value>,
     /// Optional filter when listing: only tool_runs in this state.
     #[serde(default)]
     pub status: Option<ToolRunStatus>,
@@ -57,7 +95,13 @@ impl ToolRunsTool {
 
         let session_id = params
             .session_id
-            .ok_or_else(|| anyhow::anyhow!("tool_runs requires a session context"))?;
+            .ok_or_else(|| anyhow::anyhow!("toolrun requires a session context"))?;
+
+        if matches!(params.operation, Some(ToolRunsOperation::Start)) {
+            anyhow::bail!(
+                "toolrun.start must be dispatched through the Agent authorization gateway"
+            );
+        }
 
         if let Some(tool_run_id) = params.tool_run_id.as_deref() {
             crate::tool_contract::validate_entity_id(tool_run_id, "tool_run_id", "toolrun")?;
@@ -109,9 +153,7 @@ impl ToolRunsTool {
                     crate::ToolRunStatusView::Background { tool_run_id, .. } => {
                         Some(tool_run_id.clone())
                     }
-                    crate::ToolRunStatusView::NotFound { .. }
-                    | crate::ToolRunStatusView::Scheduled { .. }
-                    | crate::ToolRunStatusView::ScheduledTerminal { .. } => None,
+                    crate::ToolRunStatusView::NotFound { .. } => None,
                 })
                 .collect::<Vec<_>>();
             let mut body = haven_common::tools::background_wait_object(
@@ -131,7 +173,7 @@ impl ToolRunsTool {
 #[async_trait]
 impl Tool for ToolRunsTool {
     fn name(&self) -> String {
-        "tool_runs".into()
+        "toolrun".into()
     }
     fn description(&self) -> String {
         crate::prompts::TOOL_RUNS_DESCRIPTION.into()
@@ -147,9 +189,9 @@ impl Tool for ToolRunsTool {
 
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
         if input["operation"].as_str() == Some("cancel") {
-            ToolConcurrency::Resource("tool_runs".into())
+            ToolConcurrency::Resource("toolrun".into())
         } else {
-            ToolConcurrency::SharedResource("tool_runs".into())
+            ToolConcurrency::SharedResource("toolrun".into())
         }
     }
 
@@ -163,24 +205,41 @@ impl Tool for ToolRunsTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tool_run_id": canonical_entity_id_schema("toolrun", Some("Inspect this single background or scheduled task instead of listing")),
+                "tool_run_id": canonical_entity_id_schema("toolrun", Some("Inspect this single background ToolRun instead of listing")),
                 "operation": {
                     "type": "string",
-                    "enum": ["cancel"],
-                    "description": "Cancel a cancellable background or scheduled task owned by this session"
+                    "enum": ["start", "list", "inspect", "cancel"],
+                    "description": "Start a background tool call or manage this session's ToolRuns"
                 },
+                "tool_name": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Enabled tool to invoke in the background" },
+                "input": { "type": "object", "description": "Arguments passed unchanged to tool_name" },
                 "status": {
                     "type": "string",
-                    "enum": ["waiting", "running", "completed", "failed", "cancelled"],
-                    "description": "Optional filter when listing: only tasks in this state"
-                }
+                    "enum": ["running", "completed", "failed", "cancelled"],
+                    "description": "Optional filter when listing ToolRuns"
+                },
             },
             "oneOf": [
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "tool_run_id": canonical_entity_id_schema("toolrun", None) },
-                    "required": ["tool_run_id"]
+                    "properties": {
+                        "operation": { "const": "start" },
+                        "tool_name": { "type": "string", "minLength": 1, "maxLength": 128 },
+                        "input": { "type": "object" }
+                    },
+                    "required": ["operation", "tool_name"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "list" }, "status": { "type": "string", "enum": ["running", "completed", "failed", "cancelled"] } }
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "inspect" }, "tool_run_id": canonical_entity_id_schema("toolrun", None) },
+                    "required": ["operation", "tool_run_id"]
                 },
                 {
                     "type": "object",
@@ -194,9 +253,7 @@ impl Tool for ToolRunsTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": {
-                        "status": { "type": "string", "enum": ["waiting", "running", "completed", "failed", "cancelled"] }
-                    }
+                    "properties": { "status": { "type": "string", "enum": ["running", "completed", "failed", "cancelled"] } }
                 }
             ]
         })
@@ -205,6 +262,15 @@ impl Tool for ToolRunsTool {
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let params = crate::tool_contract::parse_tool_input::<ToolRunsParams>(&self.name(), input)?;
         self.run(params, cancel).await
+    }
+
+    fn registrations(&self, output: &Value) -> Vec<crate::ToolRegistration> {
+        output
+            .get("tool_run_id")
+            .and_then(Value::as_str)
+            .filter(|id| haven_common::types::is_canonical_id(id, "toolrun"))
+            .map(|tool_run_id| vec![crate::ToolRegistration::ToolRun(tool_run_id.to_owned())])
+            .unwrap_or_default()
     }
 }
 
@@ -215,13 +281,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_tool_runs_tool_name() {
+    fn toolrun_tool_name_is_stable() {
         assert_eq!(
             ToolRunsTool {
                 tool_runs: Arc::new(ToolRunService::new()),
             }
             .name(),
-            "tool_runs"
+            "toolrun"
         );
     }
 
@@ -244,7 +310,14 @@ mod tests {
         };
         let schema = tool.input_schema();
         assert!(schema["properties"]["tool_run_id"].is_object());
-        assert_eq!(schema["properties"]["operation"]["enum"], json!(["cancel"]));
+        assert_eq!(
+            schema["properties"]["operation"]["enum"],
+            json!(["start", "list", "inspect", "cancel"])
+        );
+        assert_eq!(
+            schema["properties"]["status"]["enum"],
+            json!(["running", "completed", "failed", "cancelled"])
+        );
         let filter = &schema["properties"]["status"]["enum"];
         assert!(filter.is_array());
     }
@@ -257,7 +330,7 @@ mod tests {
         let result = tool.execute(json!({}), CancellationToken::new()).await;
         assert!(
             result.is_err(),
-            "tool_runs without a session context must fail"
+            "toolrun without a session context must fail"
         );
     }
 
@@ -319,6 +392,8 @@ mod tests {
                     session_id: Some("ses-f6a1fdb2589b63c2ebaead556897b633".into()),
                     tool_run_id: None,
                     operation: None,
+                    tool_name: None,
+                    input: None,
                     status: None,
                 },
                 CancellationToken::new(),
@@ -359,6 +434,8 @@ mod tests {
                     session_id: Some("ses-f6a1fdb2589b63c2ebaead556897b633".into()),
                     tool_run_id: Some("toolrun-invalid".into()),
                     operation: None,
+                    tool_name: None,
+                    input: None,
                     status: None,
                 },
                 CancellationToken::new(),

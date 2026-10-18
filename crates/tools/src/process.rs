@@ -18,7 +18,7 @@ pub(crate) struct CappedStreamRead {
 /// remaining bytes are still read and discarded: closing the pipe read end
 /// early can make the child fail writes (broken pipe) and flip its exit code.
 /// When `tail` is given, every decoded chunk is also appended to the shared
-/// bounded live-output tail (for `tool_run:output` preview events).
+/// bounded live-output tail for the foreground `agent:tool_output` channel.
 pub(crate) async fn read_stream_text_capped<R>(
     stdout: Option<R>,
     max_bytes: usize,

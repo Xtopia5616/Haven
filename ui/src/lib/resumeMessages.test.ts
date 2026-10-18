@@ -247,8 +247,8 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					stepId: 'step-052b341c6a7d077effc2e1976c4ebdc7',
-					tool_name: 'scheduled_tool_run',
-					observation: '{"scheduled_tool_runs":[]}',
+					tool_name: 'legacy_unknown_tool',
+					observation: '{"legacy_result":[]}',
 					thought: null,
 					step_number: 3,
 					created_at: '2026-08-01T10:03:00Z',
@@ -258,7 +258,7 @@ describe('buildResumeMessages', () => {
 		expect(items.map((item) => item.toolName)).toEqual([
 			'file',
 			'file_search',
-			'scheduled_tool_run',
+			'legacy_unknown_tool',
 		]);
 	});
 

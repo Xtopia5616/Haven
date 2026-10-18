@@ -24,7 +24,7 @@ describe('createChatInteractionEventHandlers', () => {
 							toolName: 'scheduled_tool',
 							summary: 'Run scheduled operation',
 							permissionKey: 'tool.scheduled_tool',
-							owner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-00000000000000000000000000000001' },
+							owner: { kind: 'schedule_run', scheduleRunId: 'schrun-00000000000000000000000000000001' },
 						}
 					: kind === 'confirm'
 						? {

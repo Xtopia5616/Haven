@@ -707,25 +707,10 @@ fn validate_resource_limits(
             super::MAX_SEARCH_WINDOW_BYTES
         );
     }
-    if context.max_pending_scheduled_tool_runs > super::MAX_PENDING_SCHEDULED_TOOL_RUNS {
-        anyhow::bail!(
-            "context_limits.max_pending_scheduled_tool_runs must not exceed {}",
-            super::MAX_PENDING_SCHEDULED_TOOL_RUNS
-        );
-    }
     if context.event_chunk_batch_max_bytes > super::MAX_EVENT_CHUNK_BATCH_MAX_BYTES {
         anyhow::bail!(
             "context_limits.event_chunk_batch_max_bytes must not exceed {} bytes",
             super::MAX_EVENT_CHUNK_BATCH_MAX_BYTES
-        );
-    }
-    if context.scheduled_tool_runs_due_horizon_secs < 0
-        || context.scheduled_tool_runs_due_horizon_secs
-            > super::MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS
-    {
-        anyhow::bail!(
-            "context_limits.scheduled_tool_runs_due_horizon_secs must be within 0..={} seconds",
-            super::MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS
         );
     }
     if context.network_max_retries > super::MAX_NETWORK_RETRIES {
@@ -908,9 +893,6 @@ fn validate_config_numbers(
     validate_numeric_contract(value)?;
     validate_float_fields(llm, context, media)?;
     validate_media_timeouts(media)?;
-    if context.scheduled_tool_runs_due_horizon_secs < 0 {
-        anyhow::bail!("context_limits.scheduled_tool_runs_due_horizon_secs must be non-negative");
-    }
     Ok(())
 }
 
@@ -1803,7 +1785,7 @@ mod tests {
 
     #[test]
     fn additional_resource_caps_match_config_and_settings_contracts() {
-        let cases: [NumericConfigContractCase; 23] = [
+        let cases: [NumericConfigContractCase; 22] = [
             (
                 "context_limits.max_observation_chars",
                 0,
@@ -1907,14 +1889,6 @@ mod tests {
                 |config, value| config.context_limits.clipboard_entry_max_chars = value as usize,
             ),
             (
-                "context_limits.max_pending_scheduled_tool_runs",
-                0,
-                super::super::MAX_PENDING_SCHEDULED_TOOL_RUNS as u64,
-                |config, value| {
-                    config.context_limits.max_pending_scheduled_tool_runs = value as usize
-                },
-            ),
-            (
                 "context_limits.event_chunk_batch_max_bytes",
                 0,
                 super::super::MAX_EVENT_CHUNK_BATCH_MAX_BYTES as u64,
@@ -2011,22 +1985,6 @@ mod tests {
             );
         }
 
-        for horizon in [0, super::super::MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS] {
-            let mut config = AppConfig::default();
-            config.context_limits.scheduled_tool_runs_due_horizon_secs = horizon;
-            assert!(validate_app_config(&config).is_ok());
-            assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_ok());
-        }
-        for horizon in [
-            -1,
-            super::super::MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS + 1,
-        ] {
-            let mut config = AppConfig::default();
-            config.context_limits.scheduled_tool_runs_due_horizon_secs = horizon;
-            assert!(validate_app_config(&config).is_err());
-            assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
-        }
-
         for (retries, valid) in [
             (0, true),
             (super::super::MAX_MCP_RECONNECT_RETRIES, true),
@@ -2118,13 +2076,6 @@ mod tests {
             ..Default::default()
         });
         assert!(validate_app_config_numbers(&config).is_err());
-    }
-
-    #[test]
-    fn rejects_negative_scheduled_horizon() {
-        let mut settings = SettingsSnapshot::default();
-        settings.context_limits.scheduled_tool_runs_due_horizon_secs = -1;
-        assert!(validate_settings_numbers(&settings).is_err());
     }
 
     #[test]

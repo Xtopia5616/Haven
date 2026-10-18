@@ -733,6 +733,8 @@ pub(crate) fn run() {
             commands::tool_runs::cancel_tool_run,
             commands::tool_runs::list_tool_run_history,
             commands::tool_runs::clear_tool_run_history,
+            commands::schedules::list_schedules,
+            commands::schedules::cancel_schedule,
             commands::session::end_session,
             commands::session::interrupt_session,
             commands::session::resolve_confirmation,

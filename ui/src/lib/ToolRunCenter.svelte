@@ -6,13 +6,12 @@
 	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
-	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import CountChip from '$lib/CountChip.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import HistoryListGroup from '$lib/HistoryListGroup.svelte';
 	import { projectToolRunCard, toolRunCardBadgeTone } from '$lib/toolRunCardProjection.ts';
 	import { toolRunKindLabel } from '$lib/toolRunTerminology.ts';
-	import type { ToolRunKind, ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
+	import type { ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type {
 		ToolRunCardProjection,
 		ToolRunCardProjectionOptions,
@@ -20,25 +19,22 @@
 
 	interface Props extends Partial<ToolRunCardProjectionOptions> {
 		runningBackgroundToolRuns?: ToolRunPayload[];
-		pendingScheduledToolRuns?: ToolRunPayload[];
 		toolRunHistory?: ToolRunPayload[];
 		toolRunHistoryLoading?: boolean;
 		toolRunHistoryFailed?: boolean;
 		onOpenSession?: (sessionId: string) => void;
-		onCancel?: (toolRunId: string, kind?: ToolRunKind) => void;
+		onCancel?: (toolRunId: string) => void;
 		onRefreshTaskHistory?: () => void;
 	}
 
 	let {
 		runningBackgroundToolRuns = [],
-		pendingScheduledToolRuns = [],
 		toolRunHistory = [],
 		toolRunHistoryLoading = false,
 		toolRunHistoryFailed = false,
 		toolRunStatusLabel = (status) => status || '',
 		sessionTitleFor = () => '',
 		toolRunDuration = () => '',
-		scheduledToolRunCountdown = () => '',
 		onOpenSession = () => {},
 		onCancel = () => {},
 		onRefreshTaskHistory = () => {},
@@ -47,19 +43,16 @@
 	let selectedToolRunId = $state<string | null>(null);
 	let detailOpen = $state(false);
 	let query = $state('');
-	let filter = $state('all');
 
 	const toolRunRows = $derived.by(() => {
 		const options: ToolRunCardProjectionOptions = {
 			toolRunStatusLabel,
 			sessionTitleFor,
 			toolRunDuration,
-			scheduledToolRunCountdown,
 		};
 		const seenIds = new Set<string>();
 		const toolRuns = [
 			...runningBackgroundToolRuns.map((toolRun) => projectToolRunCard(toolRun, options)),
-			...pendingScheduledToolRuns.map((toolRun) => projectToolRunCard(toolRun, options)),
 			...toolRunHistory.map((toolRun) => projectToolRunCard(toolRun, options)),
 		];
 		return toolRuns.filter((row) => {
@@ -72,14 +65,13 @@
 	const filteredRows = $derived.by(() => {
 		const normalized = query.trim().toLocaleLowerCase();
 		return toolRunRows.filter((row) => {
-			if (filter !== 'all' && row.kind !== filter) return false;
 			if (!normalized) return true;
-			return `${row.title} ${row.searchText} ${row.sessionId || ''} ${row.details.command || ''} ${row.details.body || ''} ${row.details.preview || ''} ${row.details.output || ''} ${row.details.error || ''}`
+			return `${row.title} ${row.searchText} ${row.sessionId || ''} ${row.details.preview || ''} ${row.details.output || ''} ${row.details.error || ''}`
 				.toLocaleLowerCase()
 				.includes(normalized);
 		});
 	});
-	const hasFilters = $derived(Boolean(query.trim() || filter !== 'all'));
+	const hasFilters = $derived(Boolean(query.trim()));
 
 	const selectedRow = $derived(
 		toolRunRows.find((row) => row.toolRunId === selectedToolRunId) || null,
@@ -128,13 +120,8 @@
 		detailOpen = false;
 	}
 
-	function handleFilterChange(value: string) {
-		filter = value;
-	}
-
 	function clearFilters() {
 		query = '';
-		filter = 'all';
 	}
 </script>
 
@@ -145,23 +132,10 @@
 			<input
 				class="md-input"
 				type="search"
-				placeholder="搜索任务标题、来源或命令"
+				placeholder="搜索工具、来源会话或结果"
 				bind:value={query}
 			/>
 		</label>
-		<div class="task-filter">
-			<MaterialSelect
-				id="task-filter"
-				value={filter}
-				ariaLabel="任务类型"
-				options={[
-					{ value: 'all', label: '全部类型' },
-					{ value: 'background', label: '后台任务' },
-					{ value: 'scheduled', label: '定时任务' },
-				]}
-				onChange={handleFilterChange}
-			/>
-		</div>
 		{#if hasFilters}
 			<MaterialButton variant="text" label="清除筛选" onclick={clearFilters} />
 		{/if}
@@ -172,7 +146,7 @@
 		<AsyncState
 			state="loading"
 			title="正在加载任务历史"
-			message="正在读取已结束的后台任务和定时任务。"
+			message="正在读取已结束的后台任务。"
 		/>
 	{:else if toolRunRows.length === 0 && toolRunHistoryFailed}
 		<AsyncState
@@ -183,7 +157,7 @@
 			onAction={onRefreshTaskHistory}
 		/>
 	{:else if toolRunRows.length === 0}
-		<AsyncState title="暂无任务" message="安排后台或定时任务后，执行状态和结果会显示在这里。" />
+		<AsyncState title="暂无后台任务" message="工具调用开始后台执行后，状态和结果会显示在这里。" />
 	{:else if filteredRows.length === 0}
 		<AsyncState
 			title="没有匹配的任务"
@@ -256,25 +230,15 @@
 											>
 										</span>
 									</button>
-									{#if (row.kind === 'background' && row.status === 'running') || (row.kind === 'scheduled' && (row.status === 'waiting' || row.status === 'running'))}
-										<div class="task-card-actions workspace-item-card-actions">
-											{#if row.kind === 'background' && row.status === 'running'}
+										{#if row.status === 'running'}
+											<div class="task-card-actions workspace-item-card-actions">
 												<MaterialButton
 													variant="danger"
 													label="停止后台任务"
-													onclick={() =>
-														onCancel?.(row.toolRunId, 'background')}
+													onclick={() => onCancel?.(row.toolRunId)}
 												/>
-											{:else if row.kind === 'scheduled' && (row.status === 'waiting' || row.status === 'running')}
-												<MaterialButton
-													variant="outlined"
-													label="取消此定时任务"
-													onclick={() =>
-														onCancel?.(row.toolRunId, 'scheduled')}
-												/>
-											{/if}
-										</div>
-									{/if}
+											</div>
+										{/if}
 								</article>
 							{/each}
 						{/snippet}
@@ -333,32 +297,16 @@
 						<dt>任务编号</dt>
 						<dd><code class="task-code">{selectedRow.toolRunId}</code></dd>
 					</div>
-					{#if selectedRow.kind === 'background'}
-						<div>
-							<dt>耗时</dt>
-							<dd>{selectedRow.timing}</dd>
-						</div>
-					{/if}
-					{#if selectedRow.kind === 'background' && selectedRow.details.command}
-						<div>
-							<dt>执行命令</dt>
-							<dd><code class="task-command">{selectedRow.details.command}</code></dd>
-						</div>
-					{/if}
-					{#if selectedRow.kind === 'scheduled'}
-						<div>
-							<dt>执行时间</dt>
-							<dd>{selectedRow.timing}</dd>
-						</div>
-					{/if}
+					<div>
+						<dt>耗时</dt>
+						<dd>{selectedRow.timing}</dd>
+					</div>
+					<div>
+						<dt>工具</dt>
+						<dd><code>{selectedRow.toolName}</code></dd>
+					</div>
 				</dl>
 
-				{#if selectedRow.details.body}
-					<section class="task-dialog-section">
-						<h4>任务内容</h4>
-						<p class="task-detail-copy">{selectedRow.details.body}</p>
-					</section>
-				{/if}
 				{#if selectedRow.details.output}
 					<section class="task-dialog-section">
 						<h4>任务输出</h4>
@@ -372,18 +320,11 @@
 					</section>
 				{/if}
 				<div class="task-actions">
-					{#if selectedRow.kind === 'background' && selectedRow.status === 'running'}
+					{#if selectedRow.status === 'running'}
 						<MaterialButton
 							variant="danger"
 							label="停止任务"
-							onclick={() => onCancel?.(selectedRow.toolRunId, 'background')}
-						/>
-					{/if}
-					{#if selectedRow.kind === 'scheduled' && (selectedRow.status === 'waiting' || selectedRow.status === 'running')}
-						<MaterialButton
-							variant="danger"
-							label="取消定时任务"
-							onclick={() => onCancel?.(selectedRow.toolRunId, 'scheduled')}
+							onclick={() => onCancel?.(selectedRow.toolRunId)}
 						/>
 					{/if}
 					{#if selectedRow.sessionId}
@@ -414,10 +355,6 @@
 	}
 	.task-search {
 		flex: 1 1 var(--md-comp-settings-control-width);
-		min-width: 0;
-	}
-	.task-filter {
-		flex: 0 1 var(--md-comp-control-compact-width);
 		min-width: 0;
 	}
 	.task-list-panel {
@@ -493,8 +430,7 @@
 		line-height: var(--md-sys-typescale-body-small-line-height);
 		overflow-wrap: anywhere;
 	}
-	.task-code,
-	.task-command {
+	.task-code {
 		font-family: var(--md-sys-typescale-mono);
 		font-size: var(--md-sys-typescale-code-size);
 		line-height: var(--md-sys-typescale-code-line-height);
@@ -538,8 +474,7 @@
 			align-items: stretch;
 			flex-direction: column;
 		}
-		.task-search,
-		.task-filter {
+		.task-search {
 			width: 100%;
 			flex: 0 1 auto;
 		}
@@ -568,8 +503,7 @@
 			align-items: stretch;
 			flex-direction: column;
 		}
-		.task-search,
-		.task-filter {
+		.task-search {
 			width: 100%;
 		}
 		.task-search {

@@ -469,7 +469,7 @@ export function reduceAgent(
 					askOptions: payload.askOptions || [],
 					renderer: payload.renderer,
 					result: payload.result,
-					toolRunId: toolRunIdFromObservation(payload.observation),
+					toolRunId: toolRunIdFromObservation(payload.toolName, payload.observation),
 					sourceToolRunId: sourceToolRunIdFromObservation(
 						payload.toolName,
 						payload.observation,

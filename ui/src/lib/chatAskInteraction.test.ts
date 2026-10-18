@@ -237,7 +237,7 @@ describe('createAskInteractionController', () => {
 			{
 				requestId: 'scheduled-same',
 				sessionId: SESSION_ID,
-				owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9' },
+				owner: { kind: 'schedule_run' as const, scheduleRunId: 'schrun-921be352ed48806cc0ff8635f2c282b9' },
 				kind: 'scheduled_confirm' as const,
 				status: 'pending' as const,
 				options: [],

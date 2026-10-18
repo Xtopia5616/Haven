@@ -1,6 +1,6 @@
-//! Shared vocabulary for scheduled ToolRun persistence and execution.
+//! Shared vocabulary for Schedule persistence and execution.
 
-/// What happens when a scheduled ToolRun fires.
+/// What action a Schedule occurrence performs.
 ///
 /// This closed value is shared by the execution owner and Memory's write
 /// boundary. Persisted rows are still read as raw text so restore can quarantine
@@ -12,7 +12,7 @@ pub enum ScheduleMode {
     /// To send a message at fire time, call the `notify` tool here.
     #[default]
     Tool,
-    /// Resume the session that scheduled the ToolRun, delivering its prompt as
+    /// Resume the session that owns the Schedule, delivering its prompt as
     /// a new instruction in the same session.
     Continue,
     /// Create a fresh session and start it with the stored prompt.

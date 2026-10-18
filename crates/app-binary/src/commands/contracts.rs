@@ -41,7 +41,7 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "cancel_tool_run",
         boundary: CommandBoundary::Mutate,
-        security: "kind is enum; cancel only the selected task kind",
+        security: "only a canonical toolrun ID can cancel background tool execution",
     },
     CommandContract {
         name: "list_tool_run_history",
@@ -52,6 +52,16 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "clear_tool_run_history",
         boundary: CommandBoundary::Mutate,
         security: "delete terminal task history; preserve live work and undelivered results",
+    },
+    CommandContract {
+        name: "list_schedules",
+        boundary: CommandBoundary::Read,
+        security: "safe projection excludes dynamic arguments and continuation prompt",
+    },
+    CommandContract {
+        name: "cancel_schedule",
+        boundary: CommandBoundary::Mutate,
+        security: "canonical schedule and owner-session IDs; owner-scoped cancellation",
     },
     // external
     CommandContract {

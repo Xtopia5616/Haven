@@ -3,6 +3,7 @@ use crate::live_output::LiveOutputHub;
 #[cfg(test)]
 use crate::registry::OperationRegistry;
 use crate::skill_runner::SkillRunner;
+use futures_util::future::BoxFuture;
 use haven_mcp::{McpManager, McpPrompt, McpPromptList, McpResourceList, McpResourceRead};
 #[cfg(feature = "test-support")]
 use haven_skills::Skill;
@@ -10,6 +11,13 @@ use haven_skills::SkillRegistry;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
+
+/// A target invocation deferred into the ToolRun-owned background task.
+pub type ToolRunInvocation = Box<
+    dyn FnOnce(CancellationToken) -> BoxFuture<'static, anyhow::Result<ToolResult>>
+        + Send
+        + 'static,
+>;
 
 /// Capability for resolving and running a named Skill inside the Tools owner.
 #[async_trait::async_trait]
@@ -296,44 +304,27 @@ impl SkillCatalogPort for SharedSkillCatalogPort {
     }
 }
 
-/// Session-facing ToolRun operations used by Agent orchestration.
-///
-/// The state machine and completion recovery remain owned by Tools. This
-/// capability exposes only the operations needed to attach, execute, cancel,
-/// restore, and deliver session-owned ToolRuns.
+/// Agent-facing operations for detached background ToolRuns.
 #[async_trait::async_trait]
 pub trait ToolRunAgentCapability: Send + Sync {
-    async fn schedule(&self, spec: crate::ScheduledToolRunSpec) -> anyhow::Result<String>;
+    async fn start_background(
+        &self,
+        tool_name: String,
+        source_step_id: Option<String>,
+        admission_cancel: CancellationToken,
+        invocation: ToolRunInvocation,
+    ) -> anyhow::Result<String>;
 
     async fn attach_session(&self, tool_run_id: &str, session_id: &str);
 
-    async fn claim_scheduled_execution(
+    async fn cancel_owned_background_by_session_checked(
         &self,
-        tool_run_id: &str,
-        claim_id: &str,
-    ) -> anyhow::Result<bool>;
-
-    async fn release_scheduled_execution_claim(
-        &self,
-        tool_run_id: &str,
-        claim_id: &str,
-    ) -> anyhow::Result<bool>;
-
-    async fn cancel_owned_by_session_checked(&self, session_id: &str) -> anyhow::Result<()>;
+        session_id: &str,
+    ) -> anyhow::Result<()>;
 
     async fn cancel_owned_background_by_session(&self, session_id: &str);
 
     async fn list_for_session_views(&self, session_id: &str) -> Vec<ToolRunListView>;
-
-    async fn complete_scheduled(&self, tool_run_id: &str) -> anyhow::Result<bool>;
-
-    async fn complete_scheduled_with_result(
-        &self,
-        tool_run_id: &str,
-        result: &str,
-    ) -> anyhow::Result<bool>;
-
-    async fn fail_scheduled(&self, tool_run_id: &str, reason: &str) -> anyhow::Result<bool>;
 
     async fn restore(&self) -> ToolRunRestoreSummary;
 
@@ -347,9 +338,59 @@ pub trait ToolRunAgentCapability: Send + Sync {
 /// Completion stream with durable recovery kept inside the Tools owner.
 #[async_trait::async_trait]
 pub trait ToolRunCompletionCapability: Send {
-    async fn recv_scheduled_with_recovery(&mut self) -> Option<ToolRunCompletion>;
-
     async fn recv_result_with_recovery(&mut self) -> Option<ToolRunCompletion>;
+}
+
+/// Schedule-facing operations used by Agent's trigger executor. Schedule
+/// state and fired delivery remain owned by ScheduleService.
+#[async_trait::async_trait]
+pub trait ScheduleAgentCapability: Send + Sync {
+    async fn restore(&self) -> anyhow::Result<ScheduleRestoreSummary>;
+
+    async fn cancel_owned_by_session_checked(&self, session_id: &str) -> anyhow::Result<()>;
+
+    async fn claim_execution(&self, schedule_run_id: &str, claim_id: &str) -> anyhow::Result<bool>;
+
+    async fn release_execution(
+        &self,
+        schedule_run_id: &str,
+        claim_id: &str,
+    ) -> anyhow::Result<bool>;
+
+    async fn finish(
+        &self,
+        schedule_run_id: &str,
+        status: haven_common::lifecycle::ScheduleRunStatus,
+        result_summary: Option<&str>,
+        error_reason: Option<&str>,
+    ) -> anyhow::Result<bool>;
+
+    fn take_fired_receiver(&self) -> Option<Box<dyn ScheduleFiredReceiver>>;
+
+    async fn shutdown(&self);
+}
+
+#[async_trait::async_trait]
+pub trait ScheduleFiredReceiver: Send {
+    async fn recv(&mut self) -> Option<ScheduleRunTriggered>;
+}
+
+/// Plan operations consumed by the Schedule builtin and App schedule views.
+#[async_trait::async_trait]
+pub trait ScheduleManagementCapability: Send + Sync {
+    async fn create(
+        &self,
+        input: haven_memory::SchedulePlanInput,
+    ) -> anyhow::Result<haven_memory::SchedulePlanRow>;
+
+    async fn list_for_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<haven_memory::SchedulePlanRow>>;
+
+    async fn list_enabled(&self) -> anyhow::Result<Vec<haven_memory::SchedulePlanRow>>;
+
+    async fn cancel(&self, schedule_id: &str, session_id: &str) -> anyhow::Result<bool>;
 }
 
 /// App-facing ToolRun lifecycle and management operations.
@@ -365,7 +406,7 @@ pub trait ToolRunManagementCapability: Send + Sync {
 
     async fn list_history(&self, query: ToolRunHistoryQuery) -> anyhow::Result<Vec<ToolRunView>>;
 
-    async fn cancel_for_kind(&self, tool_run_id: &str, kind: ToolRunKind) -> bool;
+    async fn cancel(&self, tool_run_id: &str) -> bool;
 
     async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool>;
 
@@ -377,8 +418,6 @@ pub trait ToolRunManagementCapability: Send + Sync {
 #[async_trait::async_trait]
 pub trait ToolRunTestSupportPort: Send + Sync {
     async fn set_store(&self, store: Option<haven_memory::ToolRunStore>);
-
-    async fn schedule(&self, spec: ScheduledToolRunSpec) -> anyhow::Result<String>;
 
     async fn status_view(&self, tool_run_id: &str) -> ToolRunStatusView;
 
@@ -523,6 +562,8 @@ pub struct ToolServices {
     pub managed_assets: Arc<dyn ManagedAssetLifecyclePort>,
     pub tool_run_agent: Arc<dyn ToolRunAgentCapability>,
     pub tool_run_management: Arc<dyn ToolRunManagementCapability>,
+    pub schedule_agent: Arc<dyn ScheduleAgentCapability>,
+    pub schedule_management: Arc<dyn ScheduleManagementCapability>,
     #[cfg(feature = "test-support")]
     pub tool_run_test_support: Arc<dyn ToolRunTestSupportPort>,
     #[cfg(feature = "test-support")]
@@ -536,6 +577,7 @@ impl ToolServices {
         let skill_runner = Arc::clone(&coordinator.builtins.skill_runner);
         let live_outputs = Arc::clone(&coordinator.runtime.live_outputs);
         let tool_run_service = Arc::clone(&coordinator.runtime.tool_run_service);
+        let schedule_service = Arc::clone(&coordinator.runtime.schedule_service);
         let mcp_manager = coordinator.builtins.mcp_manager.clone();
         Self {
             mcp: Arc::new(SharedMcpRuntimePort {
@@ -558,6 +600,8 @@ impl ToolServices {
             tool_run_management: crate::tool_run_capabilities::management_port(Arc::clone(
                 &tool_run_service,
             )),
+            schedule_agent: crate::schedule_capabilities::agent_port(Arc::clone(&schedule_service)),
+            schedule_management: crate::schedule_capabilities::management_port(schedule_service),
             #[cfg(feature = "test-support")]
             tool_run_test_support: crate::tool_run_capabilities::test_support_port(Arc::clone(
                 &tool_run_service,

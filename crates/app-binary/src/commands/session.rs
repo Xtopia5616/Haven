@@ -137,7 +137,7 @@ async fn session_lineage_from_store(
     let parent_session_id = match &session.creation.source {
         SessionCreationSource::Session { session_id }
         | SessionCreationSource::Message { session_id, .. } => Some(session_id.clone()),
-        SessionCreationSource::None | SessionCreationSource::ToolRun { .. } => None,
+        SessionCreationSource::None | SessionCreationSource::ScheduleRun { .. } => None,
     };
     let parent = match parent_session_id.as_deref() {
         Some(parent_id) => session_store.load_session_record(parent_id).await?,
@@ -151,7 +151,7 @@ async fn session_lineage_from_store(
             let child_parent_session_id = match &child.creation.source {
                 SessionCreationSource::Session { session_id }
                 | SessionCreationSource::Message { session_id, .. } => session_id.clone(),
-                SessionCreationSource::None | SessionCreationSource::ToolRun { .. } => {
+                SessionCreationSource::None | SessionCreationSource::ScheduleRun { .. } => {
                     anyhow::bail!("session lineage child has no parent session identity")
                 }
             };
@@ -293,8 +293,8 @@ pub async fn resolve_confirmation(
             validate_command_id(session_id, "owner.session_id", "ses")
                 .map_err(|error| log_err("resolve_confirmation", error))?;
         }
-        haven_agent::InteractionOwner::ScheduledToolRun { tool_run_id } => {
-            validate_command_id(tool_run_id, "owner.tool_run_id", "toolrun")
+        haven_agent::InteractionOwner::ScheduleRun { schedule_run_id } => {
+            validate_command_id(schedule_run_id, "owner.schedule_run_id", "schrun")
                 .map_err(|error| log_err("resolve_confirmation", error))?;
         }
         haven_agent::InteractionOwner::AppCommand => {}

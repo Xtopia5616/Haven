@@ -17,7 +17,6 @@
 	} from '$lib/toolRunCompletionNotificationProjection.ts';
 	import {
 		upsertToolRun,
-		removeToolRun,
 		refreshToolRuns,
 		toolRunStore,
 		upsertSessionToolRun,
@@ -77,7 +76,7 @@
 	import type { RecordingOverlayState } from '$lib/recordingOverlayController.ts';
 	import type { NavigationTab } from '$lib/navigationTypes.ts';
 	import type { ReActExecutionPhase } from '$lib/reactExecutionPhaseStore.ts';
-	import type { ToolRunKind, ToolRunPayload } from '$lib/contracts/toolRun.ts';
+import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { ConfirmationDecision } from '$lib/confirmationTypes.ts';
 	import type { AgentNotificationPayload } from '$lib/contracts/agent.ts';
 	import type { NotificationConfigInput } from '$lib/contracts/generatedCommands.ts';
@@ -578,29 +577,13 @@
 		theme = themeStore.currentTheme;
 	}
 
-	// ToolRun registry (background and scheduled ToolRuns) mirrored from
-	// toolRunStore, kept live by the `tool_run:*` listeners above. Background
-	// ToolRuns sort newest-first; scheduled ToolRuns sort soonest-first; both
-	// share one store keyed by the normalized ToolRun id.
+	// Detached background ToolRuns mirrored from toolRunStore and kept live by
+	// the `tool_run:*` lifecycle listeners above.
 	let toolRuns = $state<Record<string, ToolRunPayload>>({});
 	$effect(() => syncStore(toolRunStore, (value) => (toolRuns = value)));
 	const toolRunEntries = $derived(Object.values(toolRuns));
-	const backgroundToolRunEntries = $derived(
-		toolRunEntries
-			.filter((toolRun) => toolRun.kind === 'background')
-			.sort((left, right) =>
-				String(right.startedAt || '').localeCompare(String(left.startedAt || '')),
-			),
-	);
-	const pendingScheduledToolRuns = $derived(
-		toolRunEntries
-			.filter((toolRun) => toolRun.kind === 'scheduled')
-			.sort((left, right) =>
-				String(left.dueAt || '').localeCompare(String(right.dueAt || '')),
-			),
-	);
 	const runningBackgroundToolRuns = $derived(
-		backgroundToolRunEntries.filter((toolRun) => toolRun.status === 'running'),
+		toolRunEntries.filter((toolRun) => toolRun.status === 'running'),
 	);
 	const runningBackgroundToolRunCount = $derived(runningBackgroundToolRuns.length);
 	const sessionsStore = createSessionSelectorStore((state) => state.sessions);
@@ -784,43 +767,23 @@
 		return `${mins}m ${secs % 60}s`;
 	}
 
-	async function handleCancelToolRun(toolRunId: string, kind: ToolRunKind = 'background') {
+	async function handleCancelToolRun(toolRunId: string) {
 		try {
-			const ok = await cancelToolRun(toolRunId, kind);
+			const ok = await cancelToolRun(toolRunId);
 			if (!ok) {
 				// False also covers a durable cancellation failure. Reconcile before
 				// changing the UI so a live waiting/running ToolRun is never presented
 				// as cancelled merely because the request returned false.
 				await refreshToolRuns();
-				addNotification(
-					kind === 'scheduled'
-						? '取消定时任务未生效，已重新同步状态'
-						: '后台任务未停止，已重新同步状态',
-					'warning',
-					2500,
-				);
+				addNotification('后台任务未停止，已重新同步状态', 'warning', 2500);
 			}
 		} catch (e) {
 			reportError(e, {
 				context: '+layout',
-				message: `${kind === 'scheduled' ? '取消定时任务' : '停止后台任务'}失败`,
+				message: '停止后台任务失败',
 				log: false,
 			});
 		}
-	}
-
-	function scheduledToolRunCountdown(dueAt?: string) {
-		const due = new Date(dueAt ?? '').getTime();
-		if (isNaN(due)) return '';
-		const diff = due - Date.now();
-		if (diff <= 0) return '已到时间';
-		const secs = Math.round(diff / 1000);
-		if (secs < 60) return `${secs}s 后`;
-		const mins = Math.floor(secs / 60);
-		if (mins < 60) return `${mins}分后`;
-		const hrs = Math.floor(mins / 60);
-		if (hrs < 24) return `${hrs}小时${mins % 60}分后`;
-		return `${Math.floor(hrs / 24)}天后`;
 	}
 
 	let eventRegistrations: { ready: Promise<void>; dispose: () => void } | null = null;
@@ -1170,28 +1133,11 @@
 						upsertToolRun(event.payload);
 						upsertSessionToolRun(event.payload);
 					},
-					'tool_run:output': (event) => {
-						upsertToolRun(event.payload);
-						upsertSessionToolRun(event.payload);
-					},
 					'tool_run:finished': (event) => {
 						const p = event.payload;
-						if (p.kind === 'background') {
-							upsertToolRun(p);
-							upsertSessionToolRun(p);
-							finalizeBackgroundToolRunMessages(p);
-						} else {
-							if (p.status === 'cancelled') {
-								appSessionReducer.dispatch({
-									type: 'session/scheduled-tool-run-cancelled',
-									toolRunId: p.toolRunId,
-								});
-							}
-							upsertSessionToolRun(p);
-							// Scheduled ToolRuns leave the pending list at terminal state;
-							// execution notifications arrive through `notification:show`.
-							removeToolRun(p.toolRunId);
-						}
+						upsertToolRun(p);
+						upsertSessionToolRun(p);
+						finalizeBackgroundToolRunMessages(p);
 					},
 				}),
 			},
@@ -1262,7 +1208,6 @@
 				: null}
 			{awaitingBackgroundActive}
 			{runningBackgroundToolRunCount}
-			pendingScheduledToolRunCount={pendingScheduledToolRuns.length}
 			onOpenTasks={() => switchTab('memory', 'tasks')}
 		/>
 	{/snippet}
@@ -1338,11 +1283,9 @@
 										isVisible={activeTab === 'memory'}
 										onNewSession={startNewSessionFromTasks}
 										{runningBackgroundToolRuns}
-										{pendingScheduledToolRuns}
 										{toolRunStatusLabel}
 										{sessionTitleFor}
 										{toolRunDuration}
-										{scheduledToolRunCountdown}
 										onOpenSession={openTaskSession}
 										onCancel={handleCancelToolRun}
 									/>

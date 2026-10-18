@@ -5,11 +5,10 @@ use haven_common::lifecycle::SessionWaitingReason;
 use haven_common::types::{
     CapabilityScope, MessageAttachment, PermissionEffect, PermissionTarget, RiskLevel,
 };
+#[cfg(test)]
+use haven_memory::Database;
 use haven_memory::Session as DbSession;
-#[cfg(test)]
-use haven_memory::{Database, ToolRunStore};
 use haven_memory::{SessionAuthorizationGrant, SessionStore};
-#[cfg(test)]
 #[cfg(test)]
 use haven_tools::ToolRunTestSupportPort;
 #[cfg(test)]
@@ -333,7 +332,7 @@ pub enum SessionSupervisorEvent {
         session_id: String,
     },
     ScheduledConfirmOutcome {
-        tool_run_id: String,
+        schedule_run_id: String,
         session_id: Option<String>,
         title: String,
         body: String,
@@ -359,11 +358,11 @@ pub struct ToolExecution {
     pub confirmed: Option<bool>,
 }
 
-/// Whether a scheduled tool execution may be recorded as completed.
+/// Whether a ScheduleRun's target tool execution may be recorded as completed.
 ///
 /// `execute_gated` can return `Ok` with a failed `ToolResult`, because a
 /// rejected or blocked operation is represented as a normal tool observation
-/// for the ReAct loop. Scheduled ToolRuns must use the result's domain status,
+/// for the ReAct loop. ScheduleRun execution must use the result's domain status,
 /// not only the outer Rust error channel.
 pub(crate) fn scheduled_tool_execution_succeeded(execution: &ToolExecution) -> bool {
     execution.confirmed != Some(false) && execution.result.success
@@ -386,6 +385,8 @@ pub struct SessionSupervisor {
     /// ToolCall lifecycle capability used for session-owned cancellation and
     /// terminal ToolRun reconciliation.
     tool_runs: Arc<dyn tool_ports::AgentToolRunPort>,
+    /// Independent Schedule trigger and occurrence lifecycle.
+    schedules: Arc<dyn tool_ports::AgentSchedulePort>,
     #[cfg(test)]
     tool_run_test_support: Option<Arc<dyn ToolRunTestSupportPort>>,
     /// Agent-owned boundary for restoring and clearing per-session tool
@@ -466,7 +467,7 @@ pub struct SessionSupervisor {
     #[cfg(test)]
     pending_session_recovery_backoff_started: Notify,
     /// Scheduled confirmations are not session state (some are headless), so
-    /// they live in an owner-local registry keyed by ToolRun ID. Resolve and
+    /// they live in an owner-local registry keyed by ScheduleRun ID. Resolve and
     /// expiry must also match the confirmation request ID stored in the entry.
     scheduled_confirms: Arc<Mutex<HashMap<String, InteractionRequest>>>,
     /// Serializes one-shot, permanent, and session-scoped resolution paths so
@@ -497,8 +498,9 @@ mod tool_runner;
 pub(crate) use dispatcher::DirectSessionRunLease;
 pub use tool_ports::SessionToolPorts;
 pub use tool_ports::{
-    AgentToolRunPort, ManagedAssetLeasePort, SessionToolOverlayPort, ToolAuthorizationPort,
-    ToolExecutionContext, ToolExecutionPort, ToolObservationPort, ToolRunCompletionReceiverPort,
+    AgentSchedulePort, AgentToolRunPort, ManagedAssetLeasePort, ScheduleFiredReceiverPort,
+    SessionToolOverlayPort, ToolAuthorizationPort, ToolExecutionContext, ToolExecutionPort,
+    ToolObservationPort, ToolRunCompletionReceiverPort,
 };
 pub(crate) use tool_runner::{ToolStepMetadata, ToolStepPersistenceError};
 
@@ -555,6 +557,7 @@ impl SessionSupervisor {
             authorization,
             catalog,
             tool_runs,
+            schedules,
             #[cfg(test)]
             tool_run_test_support,
             session_tool_overlay,
@@ -573,6 +576,7 @@ impl SessionSupervisor {
             tool_catalog: catalog,
             authorization,
             tool_runs,
+            schedules,
             #[cfg(test)]
             tool_run_test_support,
             session_tool_overlay_port: session_tool_overlay,
@@ -641,11 +645,11 @@ impl SessionSupervisor {
         tools: Arc<ToolsFacade>,
         max_concurrent: usize,
     ) -> Self {
-        let mut supervisor = Self::new(
-            SessionStore::new(db),
-            tool_ports::SessionToolPorts::from_tools_facade(tools),
-            max_concurrent,
-        );
+        let mut ports = tool_ports::SessionToolPorts::from_tools_facade(tools);
+        ports.schedules = Arc::new(tool_ports::DatabaseScheduleAdapter::new(
+            haven_memory::ScheduleStore::new(Arc::clone(&db)),
+        ));
+        let mut supervisor = Self::new(SessionStore::new(db), ports, max_concurrent);
         supervisor.isolate_messaging_transport_for_test();
         supervisor
     }
@@ -2141,46 +2145,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_all_sessions_cancels_tool_runs_for_unloaded_sessions() {
-        let db = temp_db();
-        let session = db.create_session("unloaded session to clear").unwrap();
-        let tool_run_id = "toolrun-00000000000000000000000000000005";
-        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_tool_run(
-            tool_run_id,
-            &due_at,
-            "Unloaded clear",
-            "must be cancelled",
-            haven_common::tool_run::ScheduleMode::Tool,
-            Some(&session.session_id),
-            Some("notify"),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let exec = Arc::new(SessionSupervisor::new_for_test(
-            db.clone(),
-            Arc::new(ToolsFacade::new()),
-            1,
-        ));
-        exec.tool_run_test_support()
-            .set_store(Some(ToolRunStore::new(db.clone())))
-            .await;
-
-        assert_eq!(
-            exec.delete_all_sessions().await.unwrap(),
-            vec![session.session_id.clone()]
-        );
-
-        assert!(db.get_session(&session.session_id).unwrap().is_none());
-        assert_eq!(
-            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::lifecycle::ToolRunStatus::Cancelled
-        );
-    }
-
-    #[tokio::test]
     async fn delete_cancels_direct_resume_waiting_for_capacity() {
         let exec = make_executor(1);
         let session = exec.create_session("delete waiting resume").await.unwrap();
@@ -2842,140 +2806,6 @@ mod tests {
         assert_eq!(
             exec.get_active_session_status(&session.session_id).await,
             None
-        );
-    }
-
-    #[tokio::test]
-    async fn failed_end_pauses_stuck_run_and_retry_wins_over_late_run_error() {
-        let (exec, db) = make_executor_with_db(1);
-        let session = exec
-            .create_session("failed end while run is stuck")
-            .await
-            .unwrap();
-        exec.tool_run_test_support()
-            .set_store(Some(ToolRunStore::new(db.clone())))
-            .await;
-        let tool_run_id = "toolrun-00000000000000000000000000000006";
-        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_tool_run(
-            tool_run_id,
-            &due_at,
-            "Stuck end retry",
-            "must be cancelled on retry",
-            haven_common::tool_run::ScheduleMode::Tool,
-            Some(&session.session_id),
-            Some("notify"),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        db.conn()
-            .execute_batch(&format!(
-                "CREATE TRIGGER block_stuck_end_cancel
-                 BEFORE UPDATE OF status ON tool_runs
-                 WHEN NEW.id = '{tool_run_id}' AND NEW.status = 'cancelled'
-                 BEGIN SELECT RAISE(ABORT, 'injected stuck cancellation failure'); END;"
-            ))
-            .unwrap();
-
-        let started = Arc::new(AtomicU32::new(0));
-        let cancellation_seen = Arc::new(AtomicU32::new(0));
-        let allow_exit = Arc::new(AtomicU32::new(0));
-        let exited = Arc::new(AtomicU32::new(0));
-        let started_handler = started.clone();
-        let cancellation_seen_handler = cancellation_seen.clone();
-        let allow_exit_handler = allow_exit.clone();
-        let exited_handler = exited.clone();
-        let exec_handler = exec.clone();
-        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
-            let started = started_handler.clone();
-            let cancellation_seen = cancellation_seen_handler.clone();
-            let allow_exit = allow_exit_handler.clone();
-            let exited = exited_handler.clone();
-            let exec = exec_handler.clone();
-            Box::pin(async move {
-                started.store(1, Ordering::SeqCst);
-                exec.cancellation_token(&session_id).await.cancelled().await;
-                cancellation_seen.store(1, Ordering::SeqCst);
-                while allow_exit.load(Ordering::SeqCst) == 0 {
-                    tokio::task::yield_now().await;
-                }
-                exited.store(1, Ordering::SeqCst);
-                anyhow::bail!("provider failed after end cancellation")
-            })
-        });
-        let mut events = exec.subscribe_events();
-        exec.clone().start_dispatcher(handler);
-
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while started.load(Ordering::SeqCst) == 0
-                || !exec.is_run_in_flight(&session.session_id).await
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the run should start");
-
-        let end = {
-            let exec = exec.clone();
-            let session_id = session.session_id.clone();
-            tokio::spawn(async move { exec.end_session(&session_id).await })
-        };
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while cancellation_seen.load(Ordering::SeqCst) == 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("end should cancel the active run");
-        let error = tokio::time::timeout(std::time::Duration::from_millis(500), end)
-            .await
-            .expect("failed end must not wait for a stuck provider")
-            .expect("end task should join")
-            .expect_err("durable cleanup failure must be reported");
-        assert!(format!("{error:#}").contains("injected stuck cancellation failure"));
-        assert_eq!(
-            exec.get_session_status(&session.session_id).await,
-            Some(SessionStatus::Paused)
-        );
-        assert!(exec.is_run_in_flight(&session.session_id).await);
-        assert_eq!(
-            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::lifecycle::ToolRunStatus::Waiting
-        );
-
-        allow_exit.store(1, Ordering::SeqCst);
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while exec.is_run_in_flight(&session.session_id).await {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("late run error should release its slot");
-        assert_eq!(exited.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            exec.get_session_status(&session.session_id).await,
-            Some(SessionStatus::Paused),
-            "a cancelled run error must not overwrite the accepted pause"
-        );
-        assert!(
-            !std::iter::from_fn(|| events.try_recv().ok())
-                .any(|event| matches!(event, SessionSupervisorEvent::SessionError { .. })),
-            "a late cancelled-run error must not publish a second terminal event"
-        );
-
-        db.conn()
-            .execute_batch("DROP TRIGGER block_stuck_end_cancel")
-            .unwrap();
-        assert_eq!(
-            exec.end_session(&session.session_id).await.unwrap(),
-            SessionStatus::Completed
-        );
-        assert_eq!(
-            db.get_session(&session.session_id).unwrap().unwrap().status,
-            SessionStatus::Completed
         );
     }
 
@@ -3803,336 +3633,6 @@ mod tests {
             })
             .unwrap();
         assert_eq!(attempts, 3, "status persistence retries three times");
-    }
-
-    #[tokio::test]
-    async fn end_session_persists_completed_when_actor_is_not_loaded() {
-        let db = temp_db();
-        let session = db.create_session("unloaded session").unwrap();
-        let tool_run_id = "toolrun-00000000000000000000000000000008";
-        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_tool_run(
-            tool_run_id,
-            &due_at,
-            "Actorless end",
-            "must be cancelled",
-            haven_common::tool_run::ScheduleMode::Tool,
-            Some(&session.session_id),
-            Some("notify"),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let exec = Arc::new(SessionSupervisor::new_for_test(
-            db.clone(),
-            Arc::new(ToolsFacade::new()),
-            3,
-        ));
-        exec.tool_run_test_support()
-            .set_store(Some(ToolRunStore::new(db.clone())))
-            .await;
-
-        assert_eq!(
-            exec.end_session(&session.session_id).await.unwrap(),
-            SessionStatus::Completed
-        );
-        assert_eq!(
-            db.get_session(&session.session_id).unwrap().unwrap().status,
-            SessionStatus::Completed
-        );
-        assert_eq!(
-            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::lifecycle::ToolRunStatus::Cancelled
-        );
-    }
-
-    #[tokio::test]
-    async fn actorless_end_failure_pauses_and_retry_cancels_remaining_tool_run() {
-        let db = temp_db();
-        let session = db.create_session("actorless end retry").unwrap();
-        let tool_run_id = "toolrun-00000000000000000000000000000007";
-        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_tool_run(
-            tool_run_id,
-            &due_at,
-            "Actorless end retry",
-            "must remain retryable",
-            haven_common::tool_run::ScheduleMode::Tool,
-            Some(&session.session_id),
-            Some("notify"),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let exec = Arc::new(SessionSupervisor::new_for_test(
-            db.clone(),
-            Arc::new(ToolsFacade::new()),
-            1,
-        ));
-        exec.tool_run_test_support()
-            .set_store(Some(ToolRunStore::new(db.clone())))
-            .await;
-        let mut events = exec.subscribe_events();
-        db.conn()
-            .execute_batch(&format!(
-                "CREATE TRIGGER block_end_retry_cancel
-                 BEFORE UPDATE OF status ON tool_runs
-                 WHEN NEW.id = '{tool_run_id}' AND NEW.status = 'cancelled'
-                 BEGIN SELECT RAISE(ABORT, 'injected end cancellation failure'); END;"
-            ))
-            .unwrap();
-
-        let error = exec
-            .end_session(&session.session_id)
-            .await
-            .expect_err("durable ToolRun cleanup failure must reject end");
-        assert!(format!("{error:#}").contains("injected end cancellation failure"));
-        assert_eq!(
-            db.get_session(&session.session_id).unwrap().unwrap().status,
-            SessionStatus::Paused
-        );
-        assert_eq!(
-            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::lifecycle::ToolRunStatus::Waiting
-        );
-        assert!(matches!(
-            events.try_recv(),
-            Ok(SessionSupervisorEvent::SessionEndPaused { session_id }) if session_id == session.session_id
-        ));
-
-        db.conn()
-            .execute_batch("DROP TRIGGER block_end_retry_cancel")
-            .unwrap();
-        assert_eq!(
-            exec.end_session(&session.session_id).await.unwrap(),
-            SessionStatus::Completed
-        );
-        assert_eq!(
-            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::lifecycle::ToolRunStatus::Cancelled
-        );
-    }
-
-    #[tokio::test]
-    async fn resident_end_partial_failure_keeps_paused_actor_and_retry_completes() {
-        let (exec, db) = make_executor_with_db(1);
-        let session = exec.create_session("resident end retry").await.unwrap();
-        exec.tool_run_test_support()
-            .set_store(Some(ToolRunStore::new(db.clone())))
-            .await;
-        let blocked_id = "toolrun-00000000000000000000000000000009";
-        let cancelled_id = "toolrun-0000000000000000000000000000000a";
-        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        for tool_run_id in [blocked_id, cancelled_id] {
-            db.save_scheduled_tool_run(
-                tool_run_id,
-                &due_at,
-                "Resident end retry",
-                "partial cleanup must converge",
-                haven_common::tool_run::ScheduleMode::Tool,
-                Some(&session.session_id),
-                Some("notify"),
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-        }
-        db.conn()
-            .execute_batch(&format!(
-                "CREATE TRIGGER block_resident_end_cancel
-                 BEFORE UPDATE OF status ON tool_runs
-                 WHEN NEW.id = '{blocked_id}' AND NEW.status = 'cancelled'
-                 BEGIN SELECT RAISE(ABORT, 'injected resident cancellation failure'); END;"
-            ))
-            .unwrap();
-
-        let error = exec
-            .end_session(&session.session_id)
-            .await
-            .expect_err("partial durable cleanup must leave end retryable");
-        assert!(format!("{error:#}").contains("injected resident cancellation failure"));
-        assert_eq!(
-            exec.get_session_status(&session.session_id).await,
-            Some(SessionStatus::Paused)
-        );
-        assert_eq!(
-            exec.waiting_reason(&session.session_id).await,
-            Some(SessionWaitingReason::EndIncomplete)
-        );
-        assert_eq!(
-            db.get_tool_run(blocked_id).unwrap().unwrap().status,
-            haven_common::lifecycle::ToolRunStatus::Waiting
-        );
-        assert_eq!(
-            db.get_tool_run(cancelled_id).unwrap().unwrap().status,
-            haven_common::lifecycle::ToolRunStatus::Cancelled
-        );
-
-        db.conn()
-            .execute_batch("DROP TRIGGER block_resident_end_cancel")
-            .unwrap();
-        assert_eq!(
-            exec.end_session(&session.session_id).await.unwrap(),
-            SessionStatus::Completed
-        );
-        assert!(exec.actor_for(&session.session_id).await.is_none());
-        assert_eq!(
-            db.get_tool_run(blocked_id).unwrap().unwrap().status,
-            haven_common::lifecycle::ToolRunStatus::Cancelled
-        );
-    }
-
-    #[tokio::test]
-    async fn end_status_write_failure_does_not_cancel_run_or_owned_tool_runs() {
-        let (exec, db) = make_executor_with_db(1);
-        let session = exec.create_session("end status write retry").await.unwrap();
-        exec.tool_run_test_support()
-            .set_store(Some(ToolRunStore::new(db.clone())))
-            .await;
-        let tool_run_id = "toolrun-0000000000000000000000000000000b";
-        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_tool_run(
-            tool_run_id,
-            &due_at,
-            "End status write retry",
-            "must not be cancelled before pause commits",
-            haven_common::tool_run::ScheduleMode::Tool,
-            Some(&session.session_id),
-            Some("notify"),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        db.conn()
-            .execute_batch(
-                "CREATE TRIGGER reject_end_pause
-                 BEFORE UPDATE OF status ON sessions
-                 BEGIN SELECT RAISE(ABORT, 'injected pause persistence failure'); END;",
-            )
-            .unwrap();
-        let run_token = exec.cancellation_token(&session.session_id).await;
-
-        let error = exec
-            .end_session(&session.session_id)
-            .await
-            .expect_err("end must fail before cancelling when Paused is not durable");
-        assert!(format!("{error:#}").contains("injected pause persistence failure"));
-        assert_eq!(
-            exec.get_session_status(&session.session_id).await,
-            Some(SessionStatus::Pending)
-        );
-        assert!(!run_token.is_cancelled());
-        assert_eq!(
-            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::lifecycle::ToolRunStatus::Waiting
-        );
-
-        db.conn()
-            .execute_batch("DROP TRIGGER reject_end_pause")
-            .unwrap();
-        assert_eq!(
-            exec.end_session(&session.session_id).await.unwrap(),
-            SessionStatus::Completed
-        );
-    }
-
-    #[tokio::test]
-    async fn actorless_delete_cancels_unrestored_scheduled_tool_run_before_deleting_session() {
-        let db = temp_db();
-        let session = db.create_session("unloaded delete session").unwrap();
-        let tool_run_id = "toolrun-0000000000000000000000000000000c";
-        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_tool_run(
-            tool_run_id,
-            &due_at,
-            "Actorless delete",
-            "must be cancelled before delete",
-            haven_common::tool_run::ScheduleMode::Tool,
-            Some(&session.session_id),
-            Some("notify"),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let exec = Arc::new(SessionSupervisor::new_for_test(
-            db.clone(),
-            Arc::new(ToolsFacade::new()),
-            3,
-        ));
-        exec.tool_run_test_support()
-            .set_store(Some(ToolRunStore::new(db.clone())))
-            .await;
-
-        exec.delete_session(&session.session_id).await.unwrap();
-
-        assert!(db.get_session(&session.session_id).unwrap().is_none());
-        assert_eq!(
-            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::lifecycle::ToolRunStatus::Cancelled
-        );
-    }
-
-    #[tokio::test]
-    async fn session_delete_stays_open_when_durable_tool_run_cancellation_fails() {
-        let db = temp_db();
-        let session = db.create_session("delete fail closed").unwrap();
-        let tool_run_id = "toolrun-0000000000000000000000000000000d";
-        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_tool_run(
-            tool_run_id,
-            &due_at,
-            "Delete failure",
-            "remain attached until cleanup works",
-            haven_common::tool_run::ScheduleMode::Tool,
-            Some(&session.session_id),
-            Some("notify"),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let exec = Arc::new(SessionSupervisor::new_for_test(
-            db.clone(),
-            Arc::new(ToolsFacade::new()),
-            3,
-        ));
-        exec.tool_run_test_support()
-            .set_store(Some(ToolRunStore::new(db.clone())))
-            .await;
-        db.conn()
-            .execute_batch(&format!(
-                "CREATE TRIGGER block_session_tool_run_cancel
-                 BEFORE UPDATE OF status ON tool_runs
-                 WHEN NEW.id = '{tool_run_id}' AND NEW.status = 'cancelled'
-                 BEGIN SELECT RAISE(ABORT, 'injected cancellation failure'); END;"
-            ))
-            .unwrap();
-
-        let error = exec
-            .delete_session(&session.session_id)
-            .await
-            .expect_err("a session must remain if its durable ToolRun cannot be cancelled");
-        assert!(format!("{error:#}").contains("injected cancellation failure"));
-        assert!(db.get_session(&session.session_id).unwrap().is_some());
-        assert_eq!(
-            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::lifecycle::ToolRunStatus::Waiting
-        );
-
-        db.conn()
-            .execute_batch("DROP TRIGGER block_session_tool_run_cancel")
-            .unwrap();
-        exec.delete_session(&session.session_id).await.unwrap();
-        assert!(db.get_session(&session.session_id).unwrap().is_none());
-        assert_eq!(
-            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::lifecycle::ToolRunStatus::Cancelled
-        );
     }
 
     #[tokio::test]

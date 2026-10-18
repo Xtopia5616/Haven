@@ -38,15 +38,15 @@ import {
 export type AppEventName = (typeof APP_EVENT_NAMES)[number];
 export type InteractionOwnerView =
 	| { kind: 'session'; sessionId: string }
-	| { kind: 'scheduled_tool_run'; toolRunId: string }
+	| { kind: 'schedule_run'; scheduleRunId: string }
 	| { kind: 'app_command' };
 
 export function interactionOwnerToWire(owner: InteractionOwnerView): InteractionOwnerWire {
 	switch (owner.kind) {
 		case 'session':
 			return { kind: 'session', session_id: owner.sessionId };
-		case 'scheduled_tool_run':
-			return { kind: 'scheduled_tool_run', tool_run_id: owner.toolRunId };
+		case 'schedule_run':
+			return { kind: 'schedule_run', schedule_run_id: owner.scheduleRunId };
 		case 'app_command':
 			return { kind: 'app_command' };
 	}
@@ -82,9 +82,9 @@ interface ConfirmInteractionDetails {
 	toolCallId?: string;
 }
 type SessionInteractionOwner = Extract<InteractionOwnerView, { kind: 'session' }>;
-type ScheduledToolRunInteractionOwner = Extract<
+	type ScheduleRunInteractionOwner = Extract<
 	InteractionOwnerView,
-	{ kind: 'scheduled_tool_run' }
+{ kind: 'schedule_run' }
 >;
 type AppCommandInteractionOwner = Extract<InteractionOwnerView, { kind: 'app_command' }>;
 
@@ -115,7 +115,7 @@ export type InteractionRequest =
 			})
 	| (InteractionRequestBase & {
 			kind: Extract<InteractionKind, 'scheduled_confirm'>;
-			owner: ScheduledToolRunInteractionOwner;
+			owner: ScheduleRunInteractionOwner;
 			sessionId?: string;
 			toolName: string;
 			summary: string;
@@ -135,7 +135,7 @@ export function isValidInteractionKindOwnerPair(
 	switch (owner.kind) {
 		case 'session':
 			return kind === 'ask' || kind === 'confirm';
-		case 'scheduled_tool_run':
+		case 'schedule_run':
 			return kind === 'scheduled_confirm';
 		case 'app_command':
 			return kind === 'confirm';
@@ -202,13 +202,13 @@ export function mapInteractionOwner(
 			)
 				return null;
 			return { kind: 'session', sessionId: value.session_id };
-		case 'scheduled_tool_run':
+		case 'schedule_run':
 			if (
 				Object.keys(value).length !== 2 ||
-				!isCanonicalEntityId(value.tool_run_id, 'toolrun')
+				!isCanonicalEntityId(value.schedule_run_id, 'schrun')
 			)
 				return null;
-			return { kind: 'scheduled_tool_run', toolRunId: value.tool_run_id };
+			return { kind: 'schedule_run', scheduleRunId: value.schedule_run_id };
 		case 'app_command':
 			if (Object.keys(value).length !== 1 || sessionId !== undefined) return null;
 			return { kind: 'app_command' };

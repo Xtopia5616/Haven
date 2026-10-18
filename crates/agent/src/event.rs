@@ -324,7 +324,6 @@ pub enum AgentEvent {
 #[serde(rename_all = "snake_case")]
 pub enum ToolRunNotificationSource {
     Background,
-    Scheduled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1251,9 +1250,9 @@ impl EventDispatcher {
         }
     }
 
-    /// Surface a background or scheduled ToolRun completion through the
-    /// ToolRun-specific notification policy while retaining the notification
-    /// channel and visible title/body.
+    /// Surface a background ToolRun completion through the ToolRun-specific
+    /// notification policy while retaining the notification channel and
+    /// visible title/body.
     pub async fn emit_tool_run_completion_notification(
         &self,
         tool_run_kind: ToolRunNotificationSource,

@@ -532,36 +532,12 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
 }
 
 #[test]
-fn tool_run_projection_maps_scheduled_progress_to_the_public_contract() {
-    let mut payload = haven_tools::ToolRunLifecyclePayload::new_for_test(
-        haven_tools::ToolRunKind::Scheduled,
-        "toolrun-11111111111111111111111111111111",
-        haven_tools::ToolRunLifecycleState::Running {
-            started_at: "2026-10-06T12:00:00Z".into(),
-        },
-    );
-    payload.title = Some("Reminder".into());
-    let projection = project_tool_run_event(haven_tools::ToolRunLifecycleEvent::Updated(
-        haven_tools::ToolRunLifecycleUpdate::StateChanged(Box::new(payload)),
-    ));
-    assert_eq!(projection.channel, TOOL_RUN_UPDATED_EVENT);
-    assert_eq!(
-        projection.payload.status,
-        Some(haven_common::lifecycle::ToolRunStatus::Running)
-    );
-    assert_eq!(
-        projection.payload.started_at.as_deref(),
-        Some("2026-10-06T12:00:00Z")
-    );
-    assert_eq!(projection.payload.title.as_deref(), Some("Reminder"));
-}
-
-#[test]
 fn tool_run_projection_maps_session_attachment_as_a_metadata_update() {
     let event = haven_tools::ToolRunLifecycleEvent::Updated(
         haven_tools::ToolRunLifecycleUpdate::SessionAttached(
             haven_tools::ToolRunSessionAttachedPayload::new_for_test(
                 "toolrun-22222222222222222222222222222222",
+                "files.write",
                 "ses-22222222222222222222222222222222",
                 Some("step-22222222222222222222222222222222".into()),
             ),
@@ -575,32 +551,11 @@ fn tool_run_projection_maps_session_attachment_as_a_metadata_update() {
         serde_json::json!({
             "tool_run_id": "toolrun-22222222222222222222222222222222",
             "kind": "background",
+            "tool_name": "files.write",
             "session_id": "ses-22222222222222222222222222222222",
             "source_step_id": "step-22222222222222222222222222222222",
         })
     );
-}
-
-#[test]
-fn tool_run_output_projection_uses_only_typed_preview_fields() {
-    let event = haven_tools::ToolRunLifecycleEvent::Output(
-        haven_tools::ToolRunOutputPayload::new_for_test(
-            "toolrun-33333333333333333333333333333333",
-            Some("step-33333333333333333333333333333333".into()),
-            "preview",
-        ),
-    );
-    let projection = project_tool_run_event(event);
-    assert_eq!(projection.channel, TOOL_RUN_OUTPUT_EVENT);
-    assert_eq!(
-        projection.payload.tool_run_id,
-        "toolrun-33333333333333333333333333333333"
-    );
-    assert_eq!(
-        projection.payload.source_step_id.as_deref(),
-        Some("step-33333333333333333333333333333333")
-    );
-    assert_eq!(projection.payload.output.as_deref(), Some("preview"));
 }
 
 #[test]

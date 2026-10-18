@@ -6,7 +6,7 @@
 use super::*;
 use crate::memory_inference::RouterMemoryInferencePort;
 use crate::session::{SessionRunHandler, SessionSupervisorEvent};
-use haven_common::lifecycle::SessionStatus;
+use haven_common::lifecycle::{ScheduleRunStatus, SessionStatus};
 use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -582,21 +582,11 @@ impl AgentLayer {
                     };
                     match event {
                         SessionSupervisorEvent::ScheduledConfirmOutcome {
-                            tool_run_id,
-                            session_id,
                             title,
                             body,
+                            ..
                         } => {
-                            events
-                                .emit_tool_run_completion_notification(
-                                    ToolRunNotificationSource::Scheduled,
-                                    &tool_run_id,
-                                    session_id.as_deref(),
-                                    None,
-                                    &title,
-                                    &body,
-                                )
-                                .await;
+                            events.emit_notification(&title, &body).await;
                         }
                         SessionSupervisorEvent::SessionCleanup { session_id } => {
                             memory_worker.clear_session(&session_id);
@@ -640,45 +630,42 @@ impl AgentLayer {
         }
 
         tool_run_result_delivery::spawn(self.clone(), cancellation.clone(), &self.background_tasks);
-        // Spawn a consumer for fired scheduled_tool_runs: the fire behavior is chosen
-        // by the scheduled ToolRun's mode.
-        // - `tool`: execute the scheduled tool with its stored arguments
-        //   (no LLM round-trip), then report its outcome through the dedicated
-        //   ToolRun-completion notification path.
-        // - `continue`: resume the session that scheduled the ToolRun; the
-        //   scheduled ToolRun text is injected into that session's transcript and the
+        // Consume independently persisted Schedule occurrences: the fire
+        // behavior is chosen by the plan's ScheduleMode.
+        // - `tool`: execute the scheduled target tool with its stored arguments
+        //   (no LLM round-trip), then report its outcome through the Schedule
+        //   notification path.
+        // - `continue`: resume the Schedule's associated session; the
+        //   scheduled input is injected into that session's transcript and the
         //   session is woken, so a scheduled "keep going at 3pm" continues the
-        //   same ReAct loop without anyone speaking. A continue-mode ToolRun
+        //   same ReAct loop without anyone speaking. A continue-mode ScheduleRun
         //   without a session id is an error (no fallback). Its outcome uses
-        //   the same ToolRun-completion notification path.
+        //   the same Schedule notification path.
         let agent = self.clone();
-        let tool_run_port = self.executor.tool_run_port();
-        if let Some(mut rx) = tool_run_port.take_completion_receiver() {
+        let schedule_port = self.executor.schedule_port();
+        if let Some(mut rx) = schedule_port.take_fired_receiver() {
             let cancellation = cancellation.clone();
             let task_cancellation = cancellation.clone();
-            self.background_tasks.spawn("scheduled-tool-run-completions", cancellation, async move {
+            self.background_tasks.spawn("schedule-run-consumer", cancellation, async move {
                 loop {
-                    let Some(event) = (tokio::select! {
+                    let Some(fired) = (tokio::select! {
                         _ = task_cancellation.cancelled() => return,
-                        event = rx.recv_scheduled_with_recovery() => event,
+                        event = rx.recv() => event,
                     }) else {
                         return;
                     };
-                    let haven_tools::ToolRunCompletion::Scheduled(fired) = event else {
-                        continue;
-                    };
-                    // Per-scheduled ToolRun span so fire logs carry the scheduled ToolRun and
-                    // its owning session; parallel scheduled ToolRun fires stay distinct.
+                    // The ScheduleRun identity distinguishes each occurrence;
+                    // plan identity groups recurring runs.
                     let fire_span = tracing::info_span!(
-                        "scheduled_tool_run_fired",
-                        tool_run_id = %fired.tool_run_id,
+                        "schedule_run_fired",
+                        schedule_run_id = %fired.schedule_run_id,
+                        schedule_id = %fired.schedule_id,
                         session_id = %fired.session_id.as_deref().unwrap_or("-")
                     );
                     let _fire_guard = fire_span.enter();
                     let mut deferred = false;
                     let mut result_summary = None;
                     let mut scheduled_tool_notification = None;
-                    let mut notification_session_id = fired.session_id.clone();
                     let mut created_session_id = None;
                     let scheduled_tool_name = fired
                         .tool_name
@@ -717,7 +704,7 @@ impl AgentLayer {
                                         let queued = agent
                                             .executor
                                             .request_scheduled_confirm(
-                                                &fired.tool_run_id,
+                                                &fired.schedule_run_id,
                                                 fired.session_id.as_deref(),
                                                 &tool_name,
                                                 args,
@@ -734,10 +721,10 @@ impl AgentLayer {
                                         }
                                     }
                                     haven_tools::AuthorizationDecision::AutoApproved => {
-                                        let execution_claim = tool_run_port
-                                            .claim_scheduled_execution(
-                                                &fired.tool_run_id,
-                                                &fired.tool_run_id,
+                                        let execution_claim = schedule_port
+                                            .claim_execution(
+                                                &fired.schedule_run_id,
+                                                &fired.schedule_run_id,
                                             )
                                             .await;
                                         if !matches!(execution_claim, Ok(true)) {
@@ -773,10 +760,10 @@ impl AgentLayer {
                                                         .nested_confirmation
                                                         .clone() =>
                                                 {
-                                                    let released = tool_run_port
-                                                        .release_scheduled_execution_claim(
-                                                            &fired.tool_run_id,
-                                                            &fired.tool_run_id,
+                                                    let released = schedule_port
+                                                        .release_execution(
+                                                            &fired.schedule_run_id,
+                                                            &fired.schedule_run_id,
                                                         )
                                                         .await;
                                                     if !matches!(released, Ok(true)) {
@@ -784,7 +771,7 @@ impl AgentLayer {
                                                     } else if agent
                                                         .executor
                                                         .request_scheduled_nested_confirm(
-                                                            &fired.tool_run_id,
+                                                            &fired.schedule_run_id,
                                                             fired.session_id.as_deref(),
                                                             &tool_name,
                                                             scheduled_tool_input,
@@ -830,147 +817,64 @@ impl AgentLayer {
                             }
                             }
                         },
-                        ScheduleMode::Continue => {
-                            let message = match fired
-                                .prompt
-                                .as_deref()
-                                .map(str::trim)
-                                .filter(|prompt| !prompt.is_empty())
-                            {
-                                Some(message) => message,
-                                None => {
-                                    agent
-                                        .events
-                                        .emit_tool_run_completion_notification(
-                                            ToolRunNotificationSource::Scheduled,
-                                            &fired.tool_run_id,
-                                            fired.session_id.as_deref(),
-                                            None,
-                                            &fired.title,
-                                            "定时任务未执行：继续会话缺少 prompt。",
-                                        )
-                                        .await;
-                                    if let Err(error) = tool_run_port
-                                        .fail_scheduled(&fired.tool_run_id, "继续会话缺少 prompt")
-                                        .await
-                                    {
-                                        tracing::warn!(
-                                            tool_run_id = %fired.tool_run_id,
-                                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                                            "failed to persist scheduled ToolRun failure"
-                                        );
-                                    }
-                                    continue;
-                                }
-                            };
-                            let session_id = match fired.session_id.clone() {
-                                Some(session_id) => session_id,
-                                None => {
-                                    agent
-                                        .events
-                                        .emit_tool_run_completion_notification(
-                                            ToolRunNotificationSource::Scheduled,
-                                            &fired.tool_run_id,
-                                            fired.session_id.as_deref(),
-                                            None,
-                                            &fired.title,
-                                            "定时任务无法继续：未关联会话。",
-                                        )
-                                        .await;
-                                    if let Err(error) = tool_run_port
-                                        .fail_scheduled(&fired.tool_run_id, "未关联会话")
-                                        .await
-                                    {
-                                        tracing::warn!(
-                                            tool_run_id = %fired.tool_run_id,
-                                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                                            "failed to persist scheduled ToolRun failure"
-                                        );
-                                    }
-                                    continue;
-                                }
-                            };
-                            if !agent.executor.session_is_live(&session_id).await {
-                                agent
-                                    .events
-                                    .emit_tool_run_completion_notification(
-                                        ToolRunNotificationSource::Scheduled,
-                                        &fired.tool_run_id,
-                                        fired.session_id.as_deref(),
-                                        None,
-                                        &fired.title,
-                                        "定时任务无法继续：关联会话已结束或不存在。",
-                                    )
-                                    .await;
-                                Err("关联会话已结束或不存在".into())
-                            } else {
-                                let execution_claim = tool_run_port
-                                    .claim_scheduled_execution(
-                                        &fired.tool_run_id,
-                                        &fired.tool_run_id,
-                                    )
-                                    .await;
-                                if !matches!(execution_claim, Ok(true)) {
-                                    Err(match execution_claim {
-                                        Ok(false) => "定时任务已取消，会话未继续。".to_string(),
-                                        Err(error) => {
-                                            format!("无法确认定时任务执行权：{error}")
-                                        }
-                                        Ok(true) => unreachable!(),
-                                    })
-                                } else {
-                                    match agent
-                                        .process_input_with_attachments(
-                                            message,
-                                            Some(session_id),
-                                            &[],
-                                            false,
-                                        )
-                                        .await
-                                    {
-                                        Ok(result) => {
-                                            tracing::info!(
-                                                "scheduled ToolRun {} resumed session: {:?}",
-                                                fired.tool_run_id,
-                                                result
-                                            );
-                                            agent
-                                                .events
-                                                .emit_tool_run_completion_notification(
-                                                    ToolRunNotificationSource::Scheduled,
-                                                    &fired.tool_run_id,
-                                                    fired.session_id.as_deref(),
-                                                    None,
-                                                    &fired.title,
-                                                    &fired.body,
+                        ScheduleMode::Continue => match fired
+                            .prompt
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|prompt| !prompt.is_empty())
+                        {
+                            None => Err("继续会话缺少 prompt".into()),
+                            Some(message) => match fired.session_id.clone() {
+                                None => Err("未关联会话".into()),
+                                Some(session_id) => {
+                                    if !agent.executor.session_is_live(&session_id).await {
+                                        Err("关联会话已结束或不存在".into())
+                                    } else {
+                                        let execution_claim = schedule_port
+                                            .claim_execution(
+                                                &fired.schedule_run_id,
+                                                &fired.schedule_run_id,
+                                            )
+                                            .await;
+                                        if !matches!(execution_claim, Ok(true)) {
+                                            Err(match execution_claim {
+                                                Ok(false) => "定时任务已取消，会话未继续。".to_string(),
+                                                Err(error) => format!("无法确认定时任务执行权：{error}"),
+                                                Ok(true) => unreachable!(),
+                                            })
+                                        } else {
+                                            match agent
+                                                .process_input_with_attachments(
+                                                    message,
+                                                    Some(session_id),
+                                                    &[],
+                                                    false,
                                                 )
-                                                .await;
-                                            Ok(())
-                                        }
-                                        Err(error) => {
-                                            let reason = error.to_string();
-                                            tracing::warn!(
-                                                tool_run_id = %fired.tool_run_id,
-                                                error_bytes = reason.len(),
-                                                "scheduled ToolRun failed to resume session"
-                                            );
-                                            agent
-                                                .events
-                                                .emit_tool_run_completion_notification(
-                                                    ToolRunNotificationSource::Scheduled,
-                                                    &fired.tool_run_id,
-                                                    fired.session_id.as_deref(),
-                                                    None,
-                                                    &fired.title,
-                                                    &format!("定时任务继续会话失败：{reason}"),
-                                                )
-                                                .await;
-                                            Err(reason)
+                                                .await
+                                            {
+                                                Ok(result) => {
+                                                    tracing::info!(
+                                                        schedule_run_id = %fired.schedule_run_id,
+                                                        ?result,
+                                                        "ScheduleRun resumed session"
+                                                    );
+                                                    Ok(())
+                                                }
+                                                Err(error) => {
+                                                    let reason = error.to_string();
+                                                    tracing::warn!(
+                                                        schedule_run_id = %fired.schedule_run_id,
+                                                        error_bytes = reason.len(),
+                                                        "ScheduleRun failed to resume session"
+                                                    );
+                                                    Err(reason)
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        }
+                            },
+                        },
                         ScheduleMode::NewSession => {
                             let prompt = fired
                                 .prompt
@@ -980,10 +884,10 @@ impl AgentLayer {
                             match prompt {
                                 None => Err("定时新会话缺少启动指令。".into()),
                                 Some(prompt) => {
-                                    let execution_claim = tool_run_port
-                                        .claim_scheduled_execution(
-                                            &fired.tool_run_id,
-                                            &fired.tool_run_id,
+                                    let execution_claim = schedule_port
+                                        .claim_execution(
+                                            &fired.schedule_run_id,
+                                            &fired.schedule_run_id,
                                         )
                                         .await;
                                     if !matches!(execution_claim, Ok(true)) {
@@ -1000,7 +904,7 @@ impl AgentLayer {
                                                 false,
                                                 true,
                                                 haven_memory::SessionCreation::scheduled(
-                                                    fired.tool_run_id.clone(),
+                                                    fired.schedule_run_id.clone(),
                                                 ),
                                             )
                                             .await
@@ -1009,7 +913,6 @@ impl AgentLayer {
                                                 let session_id = created.session.session_id.clone();
                                                 agent.events.emit_session_created(&created.session).await;
                                                 created_session_id = Some(session_id.clone());
-                                                notification_session_id = Some(session_id.clone());
                                                 result_summary = Some(format!("已创建会话 {session_id}，任务已启动。"));
                                                 Ok(())
                                             }
@@ -1040,17 +943,34 @@ impl AgentLayer {
                                     _ => "定时新会话未启动。".to_string(),
                                 });
                             }
-                            ScheduleMode::Continue => {}
+                            ScheduleMode::Continue => {
+                                scheduled_tool_notification = Some(match &outcome {
+                                    Ok(()) => fired.body.clone(),
+                                    Err(reason) => format!("定时任务继续会话失败：{reason}"),
+                                });
+                            }
                         }
                     }
                     if !deferred {
                         let result = if outcome.is_ok() {
                             if let Some(result) = result_summary.as_deref() {
-                                tool_run_port
-                                    .complete_scheduled_with_result(&fired.tool_run_id, result)
+                                schedule_port
+                                    .finish(
+                                        &fired.schedule_run_id,
+                                        ScheduleRunStatus::Completed,
+                                        Some(result),
+                                        None,
+                                    )
                                     .await
                             } else {
-                                tool_run_port.complete_scheduled(&fired.tool_run_id).await
+                                schedule_port
+                                    .finish(
+                                        &fired.schedule_run_id,
+                                        ScheduleRunStatus::Completed,
+                                        None,
+                                        None,
+                                    )
+                                    .await
                             }
                         } else {
                             let failure_reason = outcome
@@ -1062,25 +982,30 @@ impl AgentLayer {
                                         agent.limits().notification_summary_chars,
                                     )
                                 })
-                                .unwrap_or_else(|| "scheduled ToolRun failed".to_string());
-                            tool_run_port
-                                .fail_scheduled(&fired.tool_run_id, &failure_reason)
+                                .unwrap_or_else(|| "ScheduleRun failed".to_string());
+                            schedule_port
+                                .finish(
+                                    &fired.schedule_run_id,
+                                    ScheduleRunStatus::Failed,
+                                    None,
+                                    Some(&failure_reason),
+                                )
                                 .await
                         };
                         let persisted = match result {
                             Ok(true) => true,
                             Ok(false) => {
                                 tracing::debug!(
-                                    tool_run_id = %fired.tool_run_id,
-                                    "scheduled ToolRun terminal transition was already won"
+                                    schedule_run_id = %fired.schedule_run_id,
+                                    "ScheduleRun terminal transition was already won"
                                 );
                                 false
                             }
                             Err(error) => {
                                 tracing::warn!(
-                                    tool_run_id = %fired.tool_run_id,
+                                    schedule_run_id = %fired.schedule_run_id,
                                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                                    "failed to persist scheduled ToolRun terminal state"
+                                    "failed to persist ScheduleRun terminal state"
                                 );
                                 false
                             }
@@ -1088,47 +1013,35 @@ impl AgentLayer {
                         if persisted
                             && let Some(body) = scheduled_tool_notification.as_deref()
                         {
-                            agent
-                                .events
-                                .emit_tool_run_completion_notification(
-                                    ToolRunNotificationSource::Scheduled,
-                                    &fired.tool_run_id,
-                                    notification_session_id.as_deref(),
-                                    None,
-                                    &fired.title,
-                                    body,
-                                )
-                                .await;
+                            agent.events.emit_notification(&fired.title, body).await;
                         }
                     }
                 }
             });
         }
-        // Re-arm scheduled_tool_runs persisted by a previous run: overdue ones (the app
-        // was closed when they expired) fire immediately, future ones resume
-        // their countdown. Runs in the background; the notification consumer
-        // spawned above delivers the overdue fires. Interrupted ToolRuns are
-        // marked failed because their side effects cannot be safely replayed.
-        let tool_runs = self.executor.tool_run_port();
+        // Recover independent ScheduleRun occurrences and start the Schedule
+        // trigger worker. ToolRun recovery is wired separately below.
+        let schedules = self.executor.schedule_port();
         let cancellation = cancellation.clone();
         let task_cancellation = cancellation.clone();
         self.background_tasks
-            .spawn("tool-run-restore", cancellation, async move {
-                let restore_summary = tokio::select! {
+            .spawn("schedule-restore", cancellation, async move {
+                let restore_result = tokio::select! {
                     _ = task_cancellation.cancelled() => return,
-                    result = tool_runs.restore() => result,
+                    result = schedules.restore() => result,
                 };
-                if restore_summary.overdue_scheduled_runs > 0 {
-                    tracing::info!(
-                        "found {} overdue scheduled ToolRun(s) during restore",
-                        restore_summary.overdue_scheduled_runs
-                    );
-                }
-                if restore_summary.interrupted_runs_marked_failed > 0 {
-                    tracing::info!(
-                        "marked {} interrupted ToolRun(s) as failed",
-                        restore_summary.interrupted_runs_marked_failed
-                    );
+                match restore_result {
+                    Ok(summary) if summary.interrupted_runs_marked_failed > 0 => {
+                        tracing::info!(
+                            interrupted_runs_marked_failed = summary.interrupted_runs_marked_failed,
+                            "marked interrupted ScheduleRun occurrences as failed"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "failed to restore ScheduleRun occurrences"
+                    ),
                 }
             });
     }

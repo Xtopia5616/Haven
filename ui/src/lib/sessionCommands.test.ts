@@ -33,6 +33,7 @@ function sessionRecord(id = sessionId) {
 		status: 'completed',
 		created_at: '2026-10-12T08:00:00Z',
 		updated_at: '2026-10-12T08:01:00Z',
+		creation: { creator: 'user', method: 'new', source: { kind: 'none' } },
 	};
 }
 
@@ -100,6 +101,7 @@ function rendererSessionRecord(id = sessionId) {
 		status: 'completed',
 		created_at: '2026-10-12T08:00:00Z',
 		updated_at: '2026-10-12T08:01:00Z',
+		creation: { creator: 'user', method: 'new', source: { kind: 'none' } },
 	};
 }
 

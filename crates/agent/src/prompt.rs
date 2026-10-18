@@ -1245,10 +1245,12 @@ mod tests {
             Arc::new(MemoryService::new(db, None, 64)),
         );
         let prompt = messaging_builder.build("t", &[]).await;
-        assert!(prompt.contains("Peer agents support discovery, delegation"));
+        assert!(prompt.contains("Agent sessions support discovery, delegation"));
+        assert!(prompt.contains("session.create"));
+        assert!(prompt.contains("session.link/links"));
         assert!(prompt.contains("agent.list"));
         assert!(prompt.contains("agent.inbox"));
-        assert!(prompt.contains("spawn"));
+        assert!(!prompt.contains("agent.spawn"));
         assert!(prompt.contains("request"));
         assert!(prompt.contains("agent.wait/status/collect"));
         assert!(!prompt.contains("agent.join"));

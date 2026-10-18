@@ -15,6 +15,7 @@ describe('ToolRun command contract boundary', () => {
 			{
 				tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
 				kind: 'background',
+				tool_name: 'files.write',
 				status: 'running',
 				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				future_wire_field: 'ignored',
@@ -26,6 +27,7 @@ describe('ToolRun command contract boundary', () => {
 		await expect(listToolRunRows()).resolves.toEqual([
 			{
 				toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
+				toolName: 'files.write',
 				kind: 'background',
 				status: 'running',
 				sessionId: 'ses-0ecf371384ab79d597760ca41f2ba21c',
@@ -49,6 +51,7 @@ describe('ToolRun command contract boundary', () => {
 			{
 				tool_run_id: 'toolrun-00000000000000000000000000000020',
 				kind: 'background',
+				tool_name: 'files.write',
 				status: 'completed',
 				session_id: sessionId,
 			},
@@ -65,16 +68,16 @@ describe('ToolRun command contract boundary', () => {
 			},
 		] as never);
 
-		await expect(listToolRunHistory(undefined, 50, sessionId)).resolves.toEqual([
+		await expect(listToolRunHistory(50, sessionId)).resolves.toEqual([
 			{
 				toolRunId: 'toolrun-00000000000000000000000000000020',
+				toolName: 'files.write',
 				kind: 'background',
 				status: 'completed',
 				sessionId,
 			},
 		]);
 		expect(invokeMock).toHaveBeenCalledWith('list_tool_run_history', {
-			kind: null,
 			limit: 50,
 			sessionId,
 		});
@@ -84,7 +87,6 @@ describe('ToolRun command contract boundary', () => {
 		invokeMock.mockResolvedValue(true);
 		const request = {
 			toolRunId: 'toolrun-f7391f4e56282cae467ea5a88dc7a560',
-			kind: 'scheduled' as const,
 		};
 
 		await expect(cancelToolRunCommand(request)).resolves.toBe(true);
@@ -98,7 +100,6 @@ describe('ToolRun command contract boundary', () => {
 		await expect(
 			cancelToolRunCommand({
 				toolRunId: 'toolrun-8c538cfe87353df186d2165b761fb38b',
-				kind: 'background',
 			}),
 		).rejects.toThrow('Invalid cancel_tool_run boolean response');
 	});

@@ -1,11 +1,11 @@
 use crate::ToolRunCompletionReceiver;
-#[cfg(feature = "test-support")]
-use crate::{ScheduledToolRunSpec, ToolRunStatusView, ToolRunTestSupportPort};
 use crate::{
-    ToolRunAgentCapability, ToolRunCompletion, ToolRunCompletionCapability, ToolRunKind,
+    ToolRunAgentCapability, ToolRunCompletion, ToolRunCompletionCapability,
     ToolRunLifecycleEventSink, ToolRunListView, ToolRunManagementCapability, ToolRunRestoreSummary,
     ToolRunService, ToolRunView,
 };
+#[cfg(feature = "test-support")]
+use crate::{ToolRunStatusView, ToolRunTestSupportPort};
 use std::sync::Arc;
 
 pub(crate) fn agent_port(service: Arc<ToolRunService>) -> Arc<dyn ToolRunAgentCapability> {
@@ -28,37 +28,28 @@ struct SharedToolRunAgentCapability {
 
 #[async_trait::async_trait]
 impl ToolRunAgentCapability for SharedToolRunAgentCapability {
-    async fn schedule(&self, spec: crate::ScheduledToolRunSpec) -> anyhow::Result<String> {
-        self.service.schedule(spec).await
+    async fn start_background(
+        &self,
+        tool_name: String,
+        source_step_id: Option<String>,
+        admission_cancel: tokio_util::sync::CancellationToken,
+        invocation: crate::ToolRunInvocation,
+    ) -> anyhow::Result<String> {
+        self.service
+            .spawn_tool_invocation(tool_name, source_step_id, &admission_cancel, invocation)
+            .await
     }
 
     async fn attach_session(&self, tool_run_id: &str, session_id: &str) {
         self.service.attach_session(tool_run_id, session_id).await;
     }
 
-    async fn claim_scheduled_execution(
+    async fn cancel_owned_background_by_session_checked(
         &self,
-        tool_run_id: &str,
-        claim_id: &str,
-    ) -> anyhow::Result<bool> {
+        session_id: &str,
+    ) -> anyhow::Result<()> {
         self.service
-            .claim_scheduled_execution(tool_run_id, claim_id)
-            .await
-    }
-
-    async fn release_scheduled_execution_claim(
-        &self,
-        tool_run_id: &str,
-        claim_id: &str,
-    ) -> anyhow::Result<bool> {
-        self.service
-            .release_scheduled_execution_claim(tool_run_id, claim_id)
-            .await
-    }
-
-    async fn cancel_owned_by_session_checked(&self, session_id: &str) -> anyhow::Result<()> {
-        self.service
-            .cancel_owned_by_session_checked(session_id)
+            .cancel_owned_background_by_session_checked(session_id)
             .await
     }
 
@@ -70,24 +61,6 @@ impl ToolRunAgentCapability for SharedToolRunAgentCapability {
 
     async fn list_for_session_views(&self, session_id: &str) -> Vec<ToolRunListView> {
         self.service.list_for_session_views(session_id).await
-    }
-
-    async fn complete_scheduled(&self, tool_run_id: &str) -> anyhow::Result<bool> {
-        self.service.complete_scheduled(tool_run_id).await
-    }
-
-    async fn complete_scheduled_with_result(
-        &self,
-        tool_run_id: &str,
-        result: &str,
-    ) -> anyhow::Result<bool> {
-        self.service
-            .complete_scheduled_with_result(tool_run_id, result)
-            .await
-    }
-
-    async fn fail_scheduled(&self, tool_run_id: &str, reason: &str) -> anyhow::Result<bool> {
-        self.service.fail_scheduled(tool_run_id, reason).await
     }
 
     async fn restore(&self) -> ToolRunRestoreSummary {
@@ -121,12 +94,6 @@ struct SharedToolRunCompletionCapability {
 
 #[async_trait::async_trait]
 impl ToolRunCompletionCapability for SharedToolRunCompletionCapability {
-    async fn recv_scheduled_with_recovery(&mut self) -> Option<ToolRunCompletion> {
-        self.receiver
-            .recv_scheduled_with_recovery(&self.service)
-            .await
-    }
-
     async fn recv_result_with_recovery(&mut self) -> Option<ToolRunCompletion> {
         self.receiver
             .recv_tool_run_result_with_recovery(&self.service)
@@ -163,8 +130,8 @@ impl ToolRunManagementCapability for SharedToolRunManagementCapability {
         self.service.list_history(query).await
     }
 
-    async fn cancel_for_kind(&self, tool_run_id: &str, kind: ToolRunKind) -> bool {
-        self.service.cancel_for_kind(tool_run_id, kind).await
+    async fn cancel(&self, tool_run_id: &str) -> bool {
+        self.service.cancel(tool_run_id).await
     }
 
     async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool> {
@@ -186,10 +153,6 @@ struct SharedToolRunTestSupportPort {
 impl ToolRunTestSupportPort for SharedToolRunTestSupportPort {
     async fn set_store(&self, store: Option<haven_memory::ToolRunStore>) {
         self.service.set_tool_run_store(store).await;
-    }
-
-    async fn schedule(&self, spec: ScheduledToolRunSpec) -> anyhow::Result<String> {
-        self.service.schedule(spec).await
     }
 
     async fn status_view(&self, tool_run_id: &str) -> ToolRunStatusView {

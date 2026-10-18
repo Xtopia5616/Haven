@@ -4,17 +4,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use haven_agent::{
-    AgentToolPorts, AgentToolRunPort, ManagedAssetLeasePort, PromptCatalogContent,
-    PromptCatalogVersions, PromptRuntimeContext, PromptToolPort, SessionToolOverlayPort,
-    SessionToolPorts, ToolAuthorizationPort, ToolCatalogPort, ToolExecutionContext,
-    ToolExecutionPort, ToolObservationPort, ToolRunCompletionReceiverPort,
+    AgentSchedulePort, AgentToolPorts, AgentToolRunPort, ManagedAssetLeasePort,
+    PromptCatalogContent, PromptCatalogVersions, PromptRuntimeContext, PromptToolPort,
+    ScheduleFiredReceiverPort, SessionToolOverlayPort, SessionToolPorts, ToolAuthorizationPort,
+    ToolCatalogPort, ToolExecutionContext, ToolExecutionPort, ToolObservationPort,
+    ToolRunCompletionReceiverPort,
 };
 use haven_common::types::{MessageAttachment, RiskLevel};
 use haven_tools::{
     AuthorizationDecision, AuthorizationPort, AuthorizationRequest, ConfirmationReceipt,
-    SkillCatalogPort, ToolCatalogSnapshot, ToolRegistration, ToolResult, ToolRunAgentCapability,
-    ToolRunCompletion, ToolRunCompletionCapability, ToolRunListView, ToolRunRestoreSummary,
-    ToolsFacade,
+    ScheduleAgentCapability, ScheduleFiredReceiver, SkillCatalogPort, ToolCatalogSnapshot,
+    ToolRegistration, ToolResult, ToolRunAgentCapability, ToolRunCompletion,
+    ToolRunCompletionCapability, ToolRunListView, ToolRunRestoreSummary, ToolRunStart, ToolsFacade,
 };
 use serde_json::Value;
 
@@ -26,12 +27,14 @@ pub(crate) fn agent_tool_ports_from_capabilities(
     authorization: Arc<dyn AuthorizationPort>,
     skills: Arc<dyn SkillCatalogPort>,
     tool_runs: Arc<dyn ToolRunAgentCapability>,
+    schedules: Arc<dyn ScheduleAgentCapability>,
 ) -> AgentToolPorts {
     let adapter = Arc::new(ToolsFacadeAgentAdapter {
         tools,
         authorization,
         skills,
         tool_runs,
+        schedules,
     });
 
     let prompt: Arc<dyn PromptToolPort> = adapter.clone();
@@ -40,6 +43,7 @@ pub(crate) fn agent_tool_ports_from_capabilities(
         adapter.clone(),
         adapter.clone(),
         Arc::clone(&catalog),
+        adapter.clone(),
         adapter.clone(),
         adapter.clone(),
         adapter.clone(),
@@ -57,6 +61,7 @@ fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentToolPorts {
         services.authorization,
         services.skills,
         services.tool_run_agent,
+        services.schedule_agent,
     )
 }
 
@@ -65,6 +70,31 @@ struct ToolsFacadeAgentAdapter {
     authorization: Arc<dyn AuthorizationPort>,
     skills: Arc<dyn SkillCatalogPort>,
     tool_runs: Arc<dyn ToolRunAgentCapability>,
+    schedules: Arc<dyn ScheduleAgentCapability>,
+}
+
+impl ToolsFacadeAgentAdapter {
+    async fn validate_toolrun_target(
+        &self,
+        session_id: Option<&str>,
+        target: &ToolRunStart,
+    ) -> Result<(), String> {
+        let session_id =
+            session_id.ok_or_else(|| "toolrun.start requires a live session context".to_owned())?;
+        let catalog = self.tools.tool_catalog_snapshot(session_id).await;
+        let Some(validation) = catalog.validate_input(&target.tool_name, &target.input) else {
+            return Err(format!(
+                "toolrun.start target '{}' is not enabled in this session",
+                target.tool_name
+            ));
+        };
+        validation.map_err(|error| {
+            format!(
+                "toolrun.start target '{}' input is invalid: {error}",
+                target.tool_name
+            )
+        })
+    }
 }
 
 #[async_trait]
@@ -115,6 +145,14 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
         tool_name: &str,
         input: &Value,
     ) -> Result<RiskLevel, String> {
+        if tool_name == "toolrun.start" {
+            let target = haven_tools::parse_toolrun_start(input)?;
+            self.validate_toolrun_target(session_id, &target).await?;
+            return self
+                .tools
+                .resolve_risk_level(session_id, &target.tool_name, &target.input)
+                .await;
+        }
         self.tools
             .resolve_risk_level(session_id, tool_name, input)
             .await
@@ -126,6 +164,14 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
         tool_name: &str,
         input: &Value,
     ) -> Result<AuthorizationRequest, String> {
+        if tool_name == "toolrun.start" {
+            let target = haven_tools::parse_toolrun_start(input)?;
+            self.validate_toolrun_target(session_id, &target).await?;
+            return self
+                .tools
+                .resolve_authorization_request(session_id, &target.tool_name, &target.input)
+                .await;
+        }
         self.tools
             .resolve_authorization_request(session_id, tool_name, input)
             .await
@@ -154,6 +200,32 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
         tool_name: &str,
         input: &Value,
     ) -> Result<AuthorizationRequest, String> {
+        if tool_name == "toolrun.start" {
+            let target = haven_tools::parse_toolrun_start(input)?;
+            if catalog.get(&target.tool_name).is_none() {
+                return Err(format!(
+                    "toolrun.start target '{}' was not present in the turn catalog",
+                    target.tool_name
+                ));
+            }
+            if let Some(validation) = catalog.validate_input(&target.tool_name, &target.input) {
+                validation.map_err(|error| {
+                    format!(
+                        "toolrun.start target '{}' input is invalid: {error}",
+                        target.tool_name
+                    )
+                })?;
+            }
+            return self
+                .tools
+                .resolve_authorization_request_from_snapshot(
+                    catalog,
+                    session_id,
+                    &target.tool_name,
+                    &target.input,
+                )
+                .await;
+        }
         self.tools
             .resolve_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
             .await
@@ -268,37 +340,16 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
 
 #[async_trait]
 impl AgentToolRunPort for ToolsFacadeAgentAdapter {
-    async fn schedule(&self, spec: haven_tools::ScheduledToolRunSpec) -> anyhow::Result<String> {
-        self.tool_runs.schedule(spec).await
-    }
-
     async fn attach_session(&self, tool_run_id: &str, session_id: &str) {
         self.tool_runs.attach_session(tool_run_id, session_id).await;
     }
 
-    async fn claim_scheduled_execution(
+    async fn cancel_owned_background_by_session_checked(
         &self,
-        tool_run_id: &str,
-        claim_id: &str,
-    ) -> anyhow::Result<bool> {
+        session_id: &str,
+    ) -> anyhow::Result<()> {
         self.tool_runs
-            .claim_scheduled_execution(tool_run_id, claim_id)
-            .await
-    }
-
-    async fn release_scheduled_execution_claim(
-        &self,
-        tool_run_id: &str,
-        claim_id: &str,
-    ) -> anyhow::Result<bool> {
-        self.tool_runs
-            .release_scheduled_execution_claim(tool_run_id, claim_id)
-            .await
-    }
-
-    async fn cancel_owned_by_session_checked(&self, session_id: &str) -> anyhow::Result<()> {
-        self.tool_runs
-            .cancel_owned_by_session_checked(session_id)
+            .cancel_owned_background_by_session_checked(session_id)
             .await
     }
 
@@ -310,24 +361,6 @@ impl AgentToolRunPort for ToolsFacadeAgentAdapter {
 
     async fn list_for_session_views(&self, session_id: &str) -> Vec<ToolRunListView> {
         self.tool_runs.list_for_session_views(session_id).await
-    }
-
-    async fn complete_scheduled(&self, tool_run_id: &str) -> anyhow::Result<bool> {
-        self.tool_runs.complete_scheduled(tool_run_id).await
-    }
-
-    async fn complete_scheduled_with_result(
-        &self,
-        tool_run_id: &str,
-        result: &str,
-    ) -> anyhow::Result<bool> {
-        self.tool_runs
-            .complete_scheduled_with_result(tool_run_id, result)
-            .await
-    }
-
-    async fn fail_scheduled(&self, tool_run_id: &str, reason: &str) -> anyhow::Result<bool> {
-        self.tool_runs.fail_scheduled(tool_run_id, reason).await
     }
 
     async fn restore(&self) -> ToolRunRestoreSummary {
@@ -352,16 +385,74 @@ impl AgentToolRunPort for ToolsFacadeAgentAdapter {
     }
 }
 
+#[async_trait]
+impl AgentSchedulePort for ToolsFacadeAgentAdapter {
+    async fn restore(&self) -> anyhow::Result<haven_tools::ScheduleRestoreSummary> {
+        self.schedules.restore().await
+    }
+
+    async fn cancel_owned_by_session_checked(&self, session_id: &str) -> anyhow::Result<()> {
+        self.schedules
+            .cancel_owned_by_session_checked(session_id)
+            .await
+    }
+
+    async fn claim_execution(&self, schedule_run_id: &str, claim_id: &str) -> anyhow::Result<bool> {
+        self.schedules
+            .claim_execution(schedule_run_id, claim_id)
+            .await
+    }
+
+    async fn release_execution(
+        &self,
+        schedule_run_id: &str,
+        claim_id: &str,
+    ) -> anyhow::Result<bool> {
+        self.schedules
+            .release_execution(schedule_run_id, claim_id)
+            .await
+    }
+
+    async fn finish(
+        &self,
+        schedule_run_id: &str,
+        status: haven_common::lifecycle::ScheduleRunStatus,
+        result_summary: Option<&str>,
+        error_reason: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        self.schedules
+            .finish(schedule_run_id, status, result_summary, error_reason)
+            .await
+    }
+
+    fn take_fired_receiver(&self) -> Option<Box<dyn ScheduleFiredReceiverPort>> {
+        Some(Box::new(ToolsFacadeScheduleReceiverPortAdapter {
+            receiver: self.schedules.take_fired_receiver()?,
+        }))
+    }
+
+    async fn shutdown(&self) {
+        self.schedules.shutdown().await;
+    }
+}
+
+struct ToolsFacadeScheduleReceiverPortAdapter {
+    receiver: Box<dyn ScheduleFiredReceiver>,
+}
+
+#[async_trait]
+impl ScheduleFiredReceiverPort for ToolsFacadeScheduleReceiverPortAdapter {
+    async fn recv(&mut self) -> Option<haven_tools::ScheduleRunTriggered> {
+        self.receiver.recv().await
+    }
+}
+
 struct ToolsFacadeToolRunCompletionAdapter {
     receiver: Box<dyn ToolRunCompletionCapability>,
 }
 
 #[async_trait]
 impl ToolRunCompletionReceiverPort for ToolsFacadeToolRunCompletionAdapter {
-    async fn recv_scheduled_with_recovery(&mut self) -> Option<ToolRunCompletion> {
-        self.receiver.recv_scheduled_with_recovery().await
-    }
-
     async fn recv_result_with_recovery(&mut self) -> Option<ToolRunCompletion> {
         self.receiver.recv_result_with_recovery().await
     }
@@ -383,6 +474,60 @@ impl ToolExecutionPort for ToolsFacadeAgentAdapter {
                 proof,
             )
             .await
+    }
+
+    async fn start_background_tool(
+        &self,
+        context: ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        let proof = context.authorization_proof.ok_or_else(|| {
+            anyhow::anyhow!("background ToolRun is missing the target tool's authorization proof")
+        })?;
+        let tool_name = context.tool_name;
+        let input = context.input;
+        let session_id = context
+            .session_id
+            .ok_or_else(|| anyhow::anyhow!("background ToolRun requires an owning session"))?;
+        let source_step_id = context.step_id;
+        let execution_tools = Arc::clone(&self.tools);
+        let execution_session_id = session_id.clone();
+        let execution_tool_name = tool_name.clone();
+        let execution_input = input.clone();
+        let execution_step_id = source_step_id.clone();
+        let invocation: haven_tools::ToolRunInvocation = Box::new(move |cancel| {
+            Box::pin(async move {
+                execution_tools
+                    .execute_authorized_tool_with_step(
+                        Some(&execution_session_id),
+                        &execution_tool_name,
+                        execution_input,
+                        cancel,
+                        execution_step_id.as_deref(),
+                        proof,
+                    )
+                    .await
+            })
+        });
+        let tool_run_id = self
+            .tool_runs
+            .start_background(
+                tool_name.clone(),
+                source_step_id.clone(),
+                context.cancel,
+                invocation,
+            )
+            .await?;
+        let mut output = haven_common::tools::background_wait_object(
+            std::iter::once(tool_run_id.clone()),
+            "Background tool call started. If no independent foreground work remains, end the turn; the result will be delivered automatically.",
+        );
+        output.insert("tool_run_id".into(), serde_json::json!(tool_run_id));
+        output.insert("tool_name".into(), serde_json::json!(tool_name));
+        output.insert("status".into(), serde_json::json!("running"));
+        if let Some(source_step_id) = source_step_id {
+            output.insert("source_step_id".into(), serde_json::json!(source_step_id));
+        }
+        Ok(ToolResult::ok(Value::Object(output)))
     }
 
     async fn execute_codemode(
@@ -521,6 +666,36 @@ mod tests {
 
     struct ExecutionContextProbe;
 
+    struct EnabledShellProbe;
+
+    #[async_trait]
+    impl Tool for EnabledShellProbe {
+        fn name(&self) -> String {
+            "shell".into()
+        }
+
+        fn description(&self) -> String {
+            "test shell target schema".into()
+        }
+
+        fn risk_level(&self, _: &Value) -> RiskLevel {
+            RiskLevel::High
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": { "command": { "type": "string" } },
+                "required": ["command"],
+                "additionalProperties": false
+            })
+        }
+
+        async fn execute(&self, _: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult::ok(json!({ "ok": true })))
+        }
+    }
+
     #[async_trait]
     impl Tool for ExecutionContextProbe {
         fn name(&self) -> String {
@@ -607,6 +782,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn toolrun_start_uses_enabled_target_schema_and_authorization() {
+        let tools = Arc::new(ToolsFacade::new());
+        let services = tools.share_services();
+        let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        services
+            .tool_catalog_test_support
+            .register_session_tool(session_id, Arc::new(EnabledShellProbe))
+            .await;
+        let adapter = ToolsFacadeAgentAdapter {
+            tools: Arc::clone(&tools),
+            authorization: services.authorization,
+            skills: services.skills,
+            tool_runs: services.tool_run_agent,
+            schedules: services.schedule_agent,
+        };
+        let catalog = tools.tool_catalog_snapshot(session_id).await;
+        let input = json!({
+            "tool_name": "shell",
+            "input": {"command": "echo authorized"}
+        });
+
+        let risk = adapter
+            .risk_level(Some(session_id), "toolrun.start", &input)
+            .await
+            .unwrap();
+        assert_eq!(risk, RiskLevel::High);
+        let request = adapter
+            .authorization_request_from_catalog(&catalog, Some(session_id), "toolrun.start", &input)
+            .await
+            .unwrap();
+        assert_eq!(request.tool_name, "shell");
+        assert_eq!(request.input, json!({"command": "echo authorized"}));
+
+        let invalid = json!({"tool_name": "shell", "input": {}});
+        assert!(
+            adapter
+                .authorization_request_from_catalog(
+                    &catalog,
+                    Some(session_id),
+                    "toolrun.start",
+                    &invalid,
+                )
+                .await
+                .is_err()
+        );
+        let unavailable = json!({"tool_name": "disabled.example", "input": {}});
+        assert!(
+            adapter
+                .authorization_request_from_catalog(
+                    &catalog,
+                    Some(session_id),
+                    "toolrun.start",
+                    &unavailable,
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn composition_adapter_forwards_cancellation() {
         let tools = Arc::new(ToolsFacade::new());
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -672,6 +907,7 @@ mod tests {
             authorization: Arc::clone(&services.authorization),
             skills: Arc::clone(&services.skills),
             tool_runs: Arc::clone(&services.tool_run_agent),
+            schedules: Arc::clone(&services.schedule_agent),
         };
 
         let content = adapter.catalog_content().await;
@@ -698,6 +934,7 @@ mod tests {
             authorization: Arc::clone(&services.authorization),
             skills: Arc::clone(&services.skills),
             tool_runs: Arc::clone(&services.tool_run_agent),
+            schedules: Arc::clone(&services.schedule_agent),
         };
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let tool: ToolHandle = Arc::new(ExecutionContextProbe);

@@ -53,6 +53,7 @@ function sessionRecord(id = sessionId): Record<string, unknown> & { session_id: 
 		status: 'completed',
 		created_at: '2026-10-12T08:00:00Z',
 		updated_at: '2026-10-12T08:01:00Z',
+		creation: { creator: 'user', method: 'new', source: { kind: 'none' } },
 	};
 }
 

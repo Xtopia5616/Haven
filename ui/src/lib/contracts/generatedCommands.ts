@@ -50,14 +50,13 @@ export const SESSION_EVENT_NAMES = [
 export const TOOL_RUN_EVENT_NAMES = [
 	'tool_run:created',
 	'tool_run:updated',
-	'tool_run:output',
 	'tool_run:finished',
 ] as const;
 
 export const INTERACTION_KIND_VALUES = ['ask', 'confirm', 'scheduled_confirm'] as const;
 export type InteractionKind = (typeof INTERACTION_KIND_VALUES)[number];
-export type InteractionOwnerInput = { kind: 'session'; session_id: string } | { kind: 'scheduled_tool_run'; tool_run_id: string } | { kind: 'app_command' };
-export type InteractionOwner = { kind: 'session'; session_id: string } | { kind: 'scheduled_tool_run'; tool_run_id: string } | { kind: 'app_command' };
+export type InteractionOwnerInput = { kind: 'session'; session_id: string } | { kind: 'schedule_run'; schedule_run_id: string } | { kind: 'app_command' };
+export type InteractionOwner = { kind: 'session'; session_id: string } | { kind: 'schedule_run'; schedule_run_id: string } | { kind: 'app_command' };
 export const INTERACTION_STATUS_VALUES = ['pending', 'resolved', 'expired', 'cancelled'] as const;
 export type InteractionStatus = (typeof INTERACTION_STATUS_VALUES)[number];
 export interface CounterSnapshot { turn_starts: number; first_tokens: number; stream_chunks: number; chunk_drops: number; checkpoint_pending: number; branch_point_failures: number; event_boundary_check_failures: number; projection_failures: number; inbox_ack_failures: number; tool_run_result_retries: number; tool_run_result_duplicates: number; web_search_drops: number }
@@ -90,11 +89,12 @@ export interface MemoryRecallItem { entity_id: string; text: string; score: numb
 export interface ApiKeyStatus { models: Record<string, boolean>; providers: Record<string, boolean>; stt: boolean; ocr: boolean; ocr_secret: boolean }
 export const REASONING_EFFORT_SELECTION_INPUT_VALUES = ['low', 'medium', 'high', 'off'] as const;
 export type ReasoningEffortSelectionInput = (typeof REASONING_EFFORT_SELECTION_INPUT_VALUES)[number];
+export interface SchedulePlanDto { schedule_id: string; owner_session_id: string; schedule_type: ScheduleType; title: string; body: string; mode: ScheduleMode; due_at: string | null; watch_tool_run_id: string | null; interval_seconds: number | null; anchor_at: string | null; next_due_at: string | null; active_schedule_run_id: string | null; created_at: string; updated_at: string }
 export const CONFIRMATION_RESOLUTION_RESULT_VALUES = ['resolved', 'expired', 'stale'] as const;
 export type ConfirmationResolutionResult = (typeof CONFIRMATION_RESOLUTION_RESULT_VALUES)[number];
 export interface SessionLineageChildDto { session: SessionRecordDto; parent_session_id: string }
 export interface SessionLineageResponse { session_id: string; parent_session_id: string | null; parent: SessionRecordDto | null; children: SessionLineageChildDto[] }
-export interface SessionRecordDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; run_end_reason?: string; created_at: string; updated_at: string }
+export interface SessionRecordDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; run_end_reason?: string; created_at: string; updated_at: string; creation: SessionCreation }
 export interface SessionResumeMessageDto { message_id: string; session_id: string; role: CanonicalRole; content: string; message_type: TranscriptMessageKind | null; created_at: string; tool_call_id: string | null; attachments: MessageAttachment[]; media_inputs?: MediaInput[]; voice: boolean }
 export interface SessionResumeResponse { session: SessionRecordDto; messages: SessionResumeMessageDto[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[] }
 export interface ChatGptPlanLoginComplete { credentialRef: string; accountEmail: string | null; planUsageEnabled: boolean }
@@ -141,10 +141,8 @@ export const SKILLS_STATUS_OPERATION_VALUES = ['refresh', 'auto_refresh', 'toggl
 export type SkillsStatusOperation = (typeof SKILLS_STATUS_OPERATION_VALUES)[number];
 export const TOOL_RUN_COMPLETION_STATUS_DTO_VALUES = ['completed', 'failed'] as const;
 export type ToolRunCompletionStatusDto = (typeof TOOL_RUN_COMPLETION_STATUS_DTO_VALUES)[number];
-export interface ToolRunEvent { tool_run_id: string; kind: ToolRunKindDto; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: ScheduleMode; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
-export const TOOL_RUN_KIND_DTO_INPUT_VALUES = ['background', 'scheduled'] as const;
-export type ToolRunKindDtoInput = (typeof TOOL_RUN_KIND_DTO_INPUT_VALUES)[number];
-export const TOOL_RUN_KIND_DTO_VALUES = ['background', 'scheduled'] as const;
+export interface ToolRunEvent { tool_run_id: string; kind: ToolRunKindDto; tool_name: string; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; output?: string; error?: string; error_reason?: string; preview?: string }
+export const TOOL_RUN_KIND_DTO_VALUES = ['background'] as const;
 export type ToolRunKindDto = (typeof TOOL_RUN_KIND_DTO_VALUES)[number];
 export interface TranscriptionErrorEvent { recording_id: string; error: string }
 export interface TranscriptionResultEvent { recording_id: string; text: string; duration_ms: number; confidence?: number }
@@ -213,8 +211,8 @@ export interface SttConfigInput { provider_name?: string; mcp_server?: string | 
 export interface SttConfig { provider_name: string; mcp_server: string | null; model: string; timeout_secs: number; min_confidence: number }
 export interface TtsConfigInput { provider_name?: string; model?: string; voice?: string; timeout_secs?: number }
 export interface TtsConfig { provider_name: string; model: string; voice: string; timeout_secs: number }
-export interface ContextLimitsConfigInput { compaction_ratio?: number; compaction_reserve_tokens?: number; default_context_window?: number; response_token_floor?: number; max_observation_chars?: number; max_transcript_chars?: number; max_attachment_images?: number; max_attachment_files?: number; max_attachment_image_bytes?: number; max_attachment_file_bytes?: number; max_upload_total_bytes?: number; max_attachment_image_dim_px?: number; attachment_image_jpeg_quality?: number; file_max_full_file_bytes?: number; file_line_span?: number; file_line_max_bytes?: number; file_summary_input_chars?: number; file_max_list_entries?: number; file_byte_read_max_bytes?: number; file_write_max_bytes?: number; file_vision_max_bytes?: number; search_snippet_chars?: number; search_max_results?: number; search_max_file_size_bytes?: number; search_window_bytes?: number; notification_summary_chars?: number; tool_run_result_context_chars?: number; partial_checkpoint_min_chars?: number; partial_checkpoint_interval_secs?: number; fact_infer_interval_steps?: number; fact_extraction_min_interval_secs?: number; max_known_facts?: number; sanitize_field_max_chars?: number; file_summary_timeout_secs?: number; turn_deadline_secs?: number; incomplete_tool_args_retries?: number; stream_stall_warn_delay_ms?: number; reasoning_echo_max_chars?: number; background_tool_run_tail_max_chars?: number; background_tool_run_output_emit_interval_ms?: number; tool_run_terminal_ttl_secs?: number; mcp_max_binary_base64_bytes?: number; mcp_max_sse_buffer_bytes?: number; skills_max_md_bytes?: number; skills_max_parse_lines?: number; skills_max_line_bytes?: number; self_tool_max_instructions_bytes?: number; self_tool_max_script_bytes?: number; network_max_retries?: number; network_backoff_base_secs?: number; network_max_body_bytes?: number; clipboard_history_entries?: number; clipboard_history_max_entries?: number; clipboard_entry_max_chars?: number; max_pending_scheduled_tool_runs?: number; scheduled_tool_runs_due_horizon_secs?: number; max_running_background_tool_runs?: number; event_chunk_batch_max_bytes?: number; input_ring_buffer_secs?: number; embedding_chunk_size?: number; max_tools_per_request?: number }
-export interface ContextLimitsConfig { compaction_ratio: number; compaction_reserve_tokens: number; default_context_window: number; response_token_floor: number; max_observation_chars: number; max_transcript_chars: number; max_attachment_images: number; max_attachment_files: number; max_attachment_image_bytes: number; max_attachment_file_bytes: number; max_upload_total_bytes: number; max_attachment_image_dim_px: number; attachment_image_jpeg_quality: number; file_max_full_file_bytes: number; file_line_span: number; file_line_max_bytes: number; file_summary_input_chars: number; file_max_list_entries: number; file_byte_read_max_bytes: number; file_write_max_bytes: number; file_vision_max_bytes: number; search_snippet_chars: number; search_max_results: number; search_max_file_size_bytes: number; search_window_bytes: number; notification_summary_chars: number; tool_run_result_context_chars: number; partial_checkpoint_min_chars: number; partial_checkpoint_interval_secs: number; fact_infer_interval_steps: number; fact_extraction_min_interval_secs: number; max_known_facts: number; sanitize_field_max_chars: number; file_summary_timeout_secs: number; turn_deadline_secs: number; incomplete_tool_args_retries: number; stream_stall_warn_delay_ms: number; reasoning_echo_max_chars: number; background_tool_run_tail_max_chars: number; background_tool_run_output_emit_interval_ms: number; tool_run_terminal_ttl_secs: number; mcp_max_binary_base64_bytes: number; mcp_max_sse_buffer_bytes: number; skills_max_md_bytes: number; skills_max_parse_lines: number; skills_max_line_bytes: number; self_tool_max_instructions_bytes: number; self_tool_max_script_bytes: number; network_max_retries: number; network_backoff_base_secs: number; network_max_body_bytes: number; clipboard_history_entries: number; clipboard_history_max_entries: number; clipboard_entry_max_chars: number; max_pending_scheduled_tool_runs: number; scheduled_tool_runs_due_horizon_secs: number; max_running_background_tool_runs: number; event_chunk_batch_max_bytes: number; input_ring_buffer_secs: number; embedding_chunk_size: number; max_tools_per_request: number }
+export interface ContextLimitsConfigInput { compaction_ratio?: number; compaction_reserve_tokens?: number; default_context_window?: number; response_token_floor?: number; max_observation_chars?: number; max_transcript_chars?: number; max_attachment_images?: number; max_attachment_files?: number; max_attachment_image_bytes?: number; max_attachment_file_bytes?: number; max_upload_total_bytes?: number; max_attachment_image_dim_px?: number; attachment_image_jpeg_quality?: number; file_max_full_file_bytes?: number; file_line_span?: number; file_line_max_bytes?: number; file_summary_input_chars?: number; file_max_list_entries?: number; file_byte_read_max_bytes?: number; file_write_max_bytes?: number; file_vision_max_bytes?: number; search_snippet_chars?: number; search_max_results?: number; search_max_file_size_bytes?: number; search_window_bytes?: number; notification_summary_chars?: number; tool_run_result_context_chars?: number; partial_checkpoint_min_chars?: number; partial_checkpoint_interval_secs?: number; fact_infer_interval_steps?: number; fact_extraction_min_interval_secs?: number; max_known_facts?: number; sanitize_field_max_chars?: number; file_summary_timeout_secs?: number; turn_deadline_secs?: number; incomplete_tool_args_retries?: number; stream_stall_warn_delay_ms?: number; reasoning_echo_max_chars?: number; foreground_tool_output_tail_max_chars?: number; foreground_tool_output_emit_interval_ms?: number; tool_run_terminal_ttl_secs?: number; mcp_max_binary_base64_bytes?: number; mcp_max_sse_buffer_bytes?: number; skills_max_md_bytes?: number; skills_max_parse_lines?: number; skills_max_line_bytes?: number; self_tool_max_instructions_bytes?: number; self_tool_max_script_bytes?: number; network_max_retries?: number; network_backoff_base_secs?: number; network_max_body_bytes?: number; clipboard_history_entries?: number; clipboard_history_max_entries?: number; clipboard_entry_max_chars?: number; max_running_background_tool_runs?: number; event_chunk_batch_max_bytes?: number; input_ring_buffer_secs?: number; embedding_chunk_size?: number; max_tools_per_request?: number }
+export interface ContextLimitsConfig { compaction_ratio: number; compaction_reserve_tokens: number; default_context_window: number; response_token_floor: number; max_observation_chars: number; max_transcript_chars: number; max_attachment_images: number; max_attachment_files: number; max_attachment_image_bytes: number; max_attachment_file_bytes: number; max_upload_total_bytes: number; max_attachment_image_dim_px: number; attachment_image_jpeg_quality: number; file_max_full_file_bytes: number; file_line_span: number; file_line_max_bytes: number; file_summary_input_chars: number; file_max_list_entries: number; file_byte_read_max_bytes: number; file_write_max_bytes: number; file_vision_max_bytes: number; search_snippet_chars: number; search_max_results: number; search_max_file_size_bytes: number; search_window_bytes: number; notification_summary_chars: number; tool_run_result_context_chars: number; partial_checkpoint_min_chars: number; partial_checkpoint_interval_secs: number; fact_infer_interval_steps: number; fact_extraction_min_interval_secs: number; max_known_facts: number; sanitize_field_max_chars: number; file_summary_timeout_secs: number; turn_deadline_secs: number; incomplete_tool_args_retries: number; stream_stall_warn_delay_ms: number; reasoning_echo_max_chars: number; foreground_tool_output_tail_max_chars: number; foreground_tool_output_emit_interval_ms: number; tool_run_terminal_ttl_secs: number; mcp_max_binary_base64_bytes: number; mcp_max_sse_buffer_bytes: number; skills_max_md_bytes: number; skills_max_parse_lines: number; skills_max_line_bytes: number; self_tool_max_instructions_bytes: number; self_tool_max_script_bytes: number; network_max_retries: number; network_backoff_base_secs: number; network_max_body_bytes: number; clipboard_history_entries: number; clipboard_history_max_entries: number; clipboard_entry_max_chars: number; max_running_background_tool_runs: number; event_chunk_batch_max_bytes: number; input_ring_buffer_secs: number; embedding_chunk_size: number; max_tools_per_request: number }
 export interface HotkeyConfigInput { mode?: HotkeyModeInput; key_binding?: string; mute_hotkey?: string | null }
 export interface HotkeyConfig { mode: HotkeyMode; key_binding: string; mute_hotkey: string | null }
 export interface LogConfigInput { level?: LogLevelInput; file_enabled?: boolean; file_path?: string | null }
@@ -253,7 +251,7 @@ export const SESSION_STEP_STATUS_VALUES = ['pending', 'running', 'completed', 'f
 export type SessionStepStatus = (typeof SESSION_STEP_STATUS_VALUES)[number];
 export const SESSION_WAITING_REASON_VALUES = ['user_input', 'user_interrupt', 'ask', 'confirmation', 'scheduled_confirmation', 'background_task', 'scheduled_task', 'step_budget', 'end_incomplete'] as const;
 export type SessionWaitingReason = (typeof SESSION_WAITING_REASON_VALUES)[number];
-export const TOOL_RUN_STATUS_VALUES = ['waiting', 'running', 'completed', 'failed', 'cancelled'] as const;
+export const TOOL_RUN_STATUS_VALUES = ['running', 'completed', 'failed', 'cancelled'] as const;
 export type ToolRunStatus = (typeof TOOL_RUN_STATUS_VALUES)[number];
 export const MCP_SERVER_TRANSPORT_INPUT_VALUES = ['stdio', 'http'] as const;
 export type McpServerTransportInput = (typeof MCP_SERVER_TRANSPORT_INPUT_VALUES)[number];
@@ -412,9 +410,17 @@ export interface McpServerSnapshot { name: string; transport: McpServerTransport
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
 export const MEMORY_ENTITY_KIND_INPUT_VALUES = ['fact', 'episode'] as const;
 export type MemoryEntityKindInput = (typeof MEMORY_ENTITY_KIND_INPUT_VALUES)[number];
+export const SCHEDULE_TYPE_VALUES = ['once', 'recurring_session'] as const;
+export type ScheduleType = (typeof SCHEDULE_TYPE_VALUES)[number];
 export const SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES = ['pending', 'running', 'paused', 'completed', 'error'] as const;
 export type SessionHistoryStatusFilterInput = (typeof SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES)[number];
 export interface SessionStep { step_id: string; session_id: string; step_number: number; tool_index: number; thought: string | null; tool_name: string | null; tool_input: string | null; tool_call_id: string | null; observation: string | null; status: SessionStepStatus; is_high_risk: boolean; confirmed: boolean | null; silent: boolean; started_at: string | null; completed_at: string | null; created_at: string }
+export interface SessionCreation { creator: SessionCreator; method: SessionCreationMethod; source: SessionCreationSource }
+export const SESSION_CREATION_METHOD_VALUES = ['new', 'agent_spawn', 'fork', 'scheduled'] as const;
+export type SessionCreationMethod = (typeof SESSION_CREATION_METHOD_VALUES)[number];
+export type SessionCreationSource = { kind: 'none' } | { kind: 'session'; session_id: string } | { kind: 'message'; session_id: string; message_id: string } | { kind: 'schedule_run'; schedule_run_id: string };
+export const SESSION_CREATOR_VALUES = ['user', 'agent', 'scheduler', 'system'] as const;
+export type SessionCreator = (typeof SESSION_CREATOR_VALUES)[number];
 export interface LlmUsageRecord { usage_id: string; session_id: string; step_number: number | null; request_kind: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: CacheAccounting; cache_diagnostics?: CacheDiagnostics; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; executable: boolean; has_script: boolean; unavailable_reason: string | null; manifest_error: string | null }
@@ -1173,6 +1179,7 @@ export const APP_BOOTSTRAP_EVENT_PAYLOAD_SHAPE = {
 } as const;
 export const CANCEL_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const CANCEL_RECORDING_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const CANCEL_SCHEDULE_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const CANCEL_TOOL_RUN_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const CHECK_LLM_CONNECTION_RESPONSE_SHAPE = {
 	kind: 'object',
@@ -1355,6 +1362,79 @@ export const GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE = { kind: 'nullable', 
 					'updated_at': {
 						optional: false,
 						shape: { kind: 'string' },
+					},
+					'creation': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'creator': {
+									optional: false,
+									shape: { kind: 'enum', values: SESSION_CREATOR_VALUES },
+								},
+								'method': {
+									optional: false,
+									shape: { kind: 'enum', values: SESSION_CREATION_METHOD_VALUES },
+								},
+								'source': {
+									optional: false,
+									shape: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'none' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'session' },
+												},
+												'session_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'message' },
+												},
+												'session_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'message_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'schedule_run' },
+												},
+												'schedule_run_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										}
+									] },
+								}
+							}
+						},
 					}
 				}
 			},
@@ -2137,9 +2217,9 @@ export const GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE = { kind: 'nullable', 
 								fields: {
 									'kind': {
 										optional: false,
-										shape: { kind: 'literal', value: 'scheduled_tool_run' },
+										shape: { kind: 'literal', value: 'schedule_run' },
 									},
-									'tool_run_id': {
+									'schedule_run_id': {
 										optional: false,
 										shape: { kind: 'string' },
 									}
@@ -2586,6 +2666,79 @@ export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 					'updated_at': {
 						optional: false,
 						shape: { kind: 'string' },
+					},
+					'creation': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'creator': {
+									optional: false,
+									shape: { kind: 'enum', values: SESSION_CREATOR_VALUES },
+								},
+								'method': {
+									optional: false,
+									shape: { kind: 'enum', values: SESSION_CREATION_METHOD_VALUES },
+								},
+								'source': {
+									optional: false,
+									shape: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'none' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'session' },
+												},
+												'session_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'message' },
+												},
+												'session_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'message_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'schedule_run' },
+												},
+												'schedule_run_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										}
+									] },
+								}
+							}
+						},
 					}
 				}
 			},
@@ -3368,9 +3521,9 @@ export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 								fields: {
 									'kind': {
 										optional: false,
-										shape: { kind: 'literal', value: 'scheduled_tool_run' },
+										shape: { kind: 'literal', value: 'schedule_run' },
 									},
-									'tool_run_id': {
+									'schedule_run_id': {
 										optional: false,
 										shape: { kind: 'string' },
 									}
@@ -3483,6 +3636,79 @@ export const GET_SESSION_LINEAGE_RESPONSE_SHAPE = {
 					'updated_at': {
 						optional: false,
 						shape: { kind: 'string' },
+					},
+					'creation': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'creator': {
+									optional: false,
+									shape: { kind: 'enum', values: SESSION_CREATOR_VALUES },
+								},
+								'method': {
+									optional: false,
+									shape: { kind: 'enum', values: SESSION_CREATION_METHOD_VALUES },
+								},
+								'source': {
+									optional: false,
+									shape: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'none' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'session' },
+												},
+												'session_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'message' },
+												},
+												'session_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'message_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'schedule_run' },
+												},
+												'schedule_run_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										}
+									] },
+								}
+							}
+						},
 					}
 				}
 			} },
@@ -3524,6 +3750,79 @@ export const GET_SESSION_LINEAGE_RESPONSE_SHAPE = {
 								'updated_at': {
 									optional: false,
 									shape: { kind: 'string' },
+								},
+								'creation': {
+									optional: false,
+									shape: {
+										kind: 'object',
+										fields: {
+											'creator': {
+												optional: false,
+												shape: { kind: 'enum', values: SESSION_CREATOR_VALUES },
+											},
+											'method': {
+												optional: false,
+												shape: { kind: 'enum', values: SESSION_CREATION_METHOD_VALUES },
+											},
+											'source': {
+												optional: false,
+												shape: { kind: 'union', anyOf: [
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'none' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'session' },
+															},
+															'session_id': {
+																optional: false,
+																shape: { kind: 'string' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'message' },
+															},
+															'session_id': {
+																optional: false,
+																shape: { kind: 'string' },
+															},
+															'message_id': {
+																optional: false,
+																shape: { kind: 'string' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'schedule_run' },
+															},
+															'schedule_run_id': {
+																optional: false,
+																shape: { kind: 'string' },
+															}
+														}
+													}
+												] },
+											}
+										}
+									},
 								}
 							}
 						},
@@ -4103,11 +4402,11 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'number' },
 					},
-					'background_tool_run_tail_max_chars': {
+					'foreground_tool_output_tail_max_chars': {
 						optional: false,
 						shape: { kind: 'number' },
 					},
-					'background_tool_run_output_emit_interval_ms': {
+					'foreground_tool_output_emit_interval_ms': {
 						optional: false,
 						shape: { kind: 'number' },
 					},
@@ -4164,14 +4463,6 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 						shape: { kind: 'number' },
 					},
 					'clipboard_entry_max_chars': {
-						optional: false,
-						shape: { kind: 'number' },
-					},
-					'max_pending_scheduled_tool_runs': {
-						optional: false,
-						shape: { kind: 'number' },
-					},
-					'scheduled_tool_runs_due_horizon_secs': {
 						optional: false,
 						shape: { kind: 'number' },
 					},
@@ -4801,9 +5092,9 @@ export const INTERACTION_REQUESTED_EVENT_PAYLOAD_SHAPE = {
 					fields: {
 						'kind': {
 							optional: false,
-							shape: { kind: 'literal', value: 'scheduled_tool_run' },
+							shape: { kind: 'literal', value: 'schedule_run' },
 						},
-						'tool_run_id': {
+						'schedule_run_id': {
 							optional: false,
 							shape: { kind: 'string' },
 						}
@@ -5442,6 +5733,67 @@ export const LIST_RUNTIME_SESSIONS_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const LIST_SCHEDULES_RESPONSE_SHAPE = { kind: 'array', items: {
+	kind: 'object',
+	fields: {
+		'schedule_id': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'owner_session_id': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'schedule_type': {
+			optional: false,
+			shape: { kind: 'enum', values: SCHEDULE_TYPE_VALUES },
+		},
+		'title': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'body': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'mode': {
+			optional: false,
+			shape: { kind: 'enum', values: SCHEDULE_MODE_VALUES },
+		},
+		'due_at': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'watch_tool_run_id': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'interval_seconds': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'anchor_at': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'next_due_at': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'active_schedule_run_id': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'created_at': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'updated_at': {
+			optional: false,
+			shape: { kind: 'string' },
+		}
+	}
+} } as const;
 export const LIST_SESSION_HISTORY_RESPONSE_SHAPE = { kind: 'array', items: {
 	kind: 'object',
 	fields: {
@@ -5472,6 +5824,79 @@ export const LIST_SESSION_HISTORY_RESPONSE_SHAPE = { kind: 'array', items: {
 		'updated_at': {
 			optional: false,
 			shape: { kind: 'string' },
+		},
+		'creation': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'creator': {
+						optional: false,
+						shape: { kind: 'enum', values: SESSION_CREATOR_VALUES },
+					},
+					'method': {
+						optional: false,
+						shape: { kind: 'enum', values: SESSION_CREATION_METHOD_VALUES },
+					},
+					'source': {
+						optional: false,
+						shape: { kind: 'union', anyOf: [
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'none' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'session' },
+									},
+									'session_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'message' },
+									},
+									'session_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'message_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'schedule_run' },
+									},
+									'schedule_run_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							}
+						] },
+					}
+				}
+			},
 		}
 	}
 } } as const;
@@ -5552,6 +5977,10 @@ export const LIST_TOOL_RUNS_RESPONSE_SHAPE = { kind: 'array', items: {
 			optional: false,
 			shape: { kind: 'enum', values: TOOL_RUN_KIND_DTO_VALUES },
 		},
+		'tool_name': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
 		'status': {
 			optional: true,
 			shape: { kind: 'enum', values: TOOL_RUN_STATUS_VALUES },
@@ -5572,26 +6001,6 @@ export const LIST_TOOL_RUNS_RESPONSE_SHAPE = { kind: 'array', items: {
 			optional: true,
 			shape: { kind: 'string' },
 		},
-		'due_at': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'title': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'body': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'mode': {
-			optional: true,
-			shape: { kind: 'enum', values: SCHEDULE_MODE_VALUES },
-		},
-		'command': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
 		'output': {
 			optional: true,
 			shape: { kind: 'string' },
@@ -5603,10 +6012,6 @@ export const LIST_TOOL_RUNS_RESPONSE_SHAPE = { kind: 'array', items: {
 		'error_reason': {
 			optional: true,
 			shape: { kind: 'string' },
-		},
-		'exit_code': {
-			optional: true,
-			shape: { kind: 'number' },
 		},
 		'preview': {
 			optional: true,
@@ -5625,6 +6030,10 @@ export const LIST_TOOL_RUN_HISTORY_RESPONSE_SHAPE = { kind: 'array', items: {
 			optional: false,
 			shape: { kind: 'enum', values: TOOL_RUN_KIND_DTO_VALUES },
 		},
+		'tool_name': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
 		'status': {
 			optional: true,
 			shape: { kind: 'enum', values: TOOL_RUN_STATUS_VALUES },
@@ -5645,26 +6054,6 @@ export const LIST_TOOL_RUN_HISTORY_RESPONSE_SHAPE = { kind: 'array', items: {
 			optional: true,
 			shape: { kind: 'string' },
 		},
-		'due_at': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'title': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'body': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'mode': {
-			optional: true,
-			shape: { kind: 'enum', values: SCHEDULE_MODE_VALUES },
-		},
-		'command': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
 		'output': {
 			optional: true,
 			shape: { kind: 'string' },
@@ -5676,10 +6065,6 @@ export const LIST_TOOL_RUN_HISTORY_RESPONSE_SHAPE = { kind: 'array', items: {
 		'error_reason': {
 			optional: true,
 			shape: { kind: 'string' },
-		},
-		'exit_code': {
-			optional: true,
-			shape: { kind: 'number' },
 		},
 		'preview': {
 			optional: true,
@@ -6135,6 +6520,79 @@ export const SEARCH_SESSION_HISTORY_FILTERED_RESPONSE_SHAPE = { kind: 'array', i
 		'updated_at': {
 			optional: false,
 			shape: { kind: 'string' },
+		},
+		'creation': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'creator': {
+						optional: false,
+						shape: { kind: 'enum', values: SESSION_CREATOR_VALUES },
+					},
+					'method': {
+						optional: false,
+						shape: { kind: 'enum', values: SESSION_CREATION_METHOD_VALUES },
+					},
+					'source': {
+						optional: false,
+						shape: { kind: 'union', anyOf: [
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'none' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'session' },
+									},
+									'session_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'message' },
+									},
+									'session_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'message_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'schedule_run' },
+									},
+									'schedule_run_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							}
+						] },
+					}
+				}
+			},
 		}
 	}
 } } as const;
@@ -6309,6 +6767,79 @@ export const SESSION_LINEAGE_RESPONSE_SHAPE = {
 					'updated_at': {
 						optional: false,
 						shape: { kind: 'string' },
+					},
+					'creation': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'creator': {
+									optional: false,
+									shape: { kind: 'enum', values: SESSION_CREATOR_VALUES },
+								},
+								'method': {
+									optional: false,
+									shape: { kind: 'enum', values: SESSION_CREATION_METHOD_VALUES },
+								},
+								'source': {
+									optional: false,
+									shape: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'none' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'session' },
+												},
+												'session_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'message' },
+												},
+												'session_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'message_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'schedule_run' },
+												},
+												'schedule_run_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										}
+									] },
+								}
+							}
+						},
 					}
 				}
 			} },
@@ -6350,6 +6881,79 @@ export const SESSION_LINEAGE_RESPONSE_SHAPE = {
 								'updated_at': {
 									optional: false,
 									shape: { kind: 'string' },
+								},
+								'creation': {
+									optional: false,
+									shape: {
+										kind: 'object',
+										fields: {
+											'creator': {
+												optional: false,
+												shape: { kind: 'enum', values: SESSION_CREATOR_VALUES },
+											},
+											'method': {
+												optional: false,
+												shape: { kind: 'enum', values: SESSION_CREATION_METHOD_VALUES },
+											},
+											'source': {
+												optional: false,
+												shape: { kind: 'union', anyOf: [
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'none' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'session' },
+															},
+															'session_id': {
+																optional: false,
+																shape: { kind: 'string' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'message' },
+															},
+															'session_id': {
+																optional: false,
+																shape: { kind: 'string' },
+															},
+															'message_id': {
+																optional: false,
+																shape: { kind: 'string' },
+															}
+														}
+													},
+													{
+														kind: 'object',
+														fields: {
+															'kind': {
+																optional: false,
+																shape: { kind: 'literal', value: 'schedule_run' },
+															},
+															'schedule_run_id': {
+																optional: false,
+																shape: { kind: 'string' },
+															}
+														}
+													}
+												] },
+											}
+										}
+									},
 								}
 							}
 						},
@@ -6418,6 +7022,79 @@ export const SESSION_RECORD_RESPONSE_SHAPE = {
 		'updated_at': {
 			optional: false,
 			shape: { kind: 'string' },
+		},
+		'creation': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'creator': {
+						optional: false,
+						shape: { kind: 'enum', values: SESSION_CREATOR_VALUES },
+					},
+					'method': {
+						optional: false,
+						shape: { kind: 'enum', values: SESSION_CREATION_METHOD_VALUES },
+					},
+					'source': {
+						optional: false,
+						shape: { kind: 'union', anyOf: [
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'none' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'session' },
+									},
+									'session_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'message' },
+									},
+									'session_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'message_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'schedule_run' },
+									},
+									'schedule_run_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							}
+						] },
+					}
+				}
+			},
 		}
 	}
 } as const;
@@ -6456,6 +7133,79 @@ export const SESSION_RESUME_RESPONSE_SHAPE = {
 					'updated_at': {
 						optional: false,
 						shape: { kind: 'string' },
+					},
+					'creation': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'creator': {
+									optional: false,
+									shape: { kind: 'enum', values: SESSION_CREATOR_VALUES },
+								},
+								'method': {
+									optional: false,
+									shape: { kind: 'enum', values: SESSION_CREATION_METHOD_VALUES },
+								},
+								'source': {
+									optional: false,
+									shape: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'none' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'session' },
+												},
+												'session_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'message' },
+												},
+												'session_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'message_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'schedule_run' },
+												},
+												'schedule_run_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										}
+									] },
+								}
+							}
+						},
 					}
 				}
 			},
@@ -7238,9 +7988,9 @@ export const SESSION_RESUME_RESPONSE_SHAPE = {
 								fields: {
 									'kind': {
 										optional: false,
-										shape: { kind: 'literal', value: 'scheduled_tool_run' },
+										shape: { kind: 'literal', value: 'schedule_run' },
 									},
-									'tool_run_id': {
+									'schedule_run_id': {
 										optional: false,
 										shape: { kind: 'string' },
 									}
@@ -7876,11 +8626,11 @@ export const SETTINGS_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'number' },
 					},
-					'background_tool_run_tail_max_chars': {
+					'foreground_tool_output_tail_max_chars': {
 						optional: false,
 						shape: { kind: 'number' },
 					},
-					'background_tool_run_output_emit_interval_ms': {
+					'foreground_tool_output_emit_interval_ms': {
 						optional: false,
 						shape: { kind: 'number' },
 					},
@@ -7937,14 +8687,6 @@ export const SETTINGS_RESPONSE_SHAPE = {
 						shape: { kind: 'number' },
 					},
 					'clipboard_entry_max_chars': {
-						optional: false,
-						shape: { kind: 'number' },
-					},
-					'max_pending_scheduled_tool_runs': {
-						optional: false,
-						shape: { kind: 'number' },
-					},
-					'scheduled_tool_runs_due_horizon_secs': {
 						optional: false,
 						shape: { kind: 'number' },
 					},
@@ -8569,6 +9311,10 @@ export const TOOL_RUN_CREATED_EVENT_PAYLOAD_SHAPE = {
 			optional: false,
 			shape: { kind: 'enum', values: TOOL_RUN_KIND_DTO_VALUES },
 		},
+		'tool_name': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
 		'status': {
 			optional: true,
 			shape: { kind: 'enum', values: TOOL_RUN_STATUS_VALUES },
@@ -8589,26 +9335,6 @@ export const TOOL_RUN_CREATED_EVENT_PAYLOAD_SHAPE = {
 			optional: true,
 			shape: { kind: 'string' },
 		},
-		'due_at': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'title': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'body': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'mode': {
-			optional: true,
-			shape: { kind: 'enum', values: SCHEDULE_MODE_VALUES },
-		},
-		'command': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
 		'output': {
 			optional: true,
 			shape: { kind: 'string' },
@@ -8620,10 +9346,6 @@ export const TOOL_RUN_CREATED_EVENT_PAYLOAD_SHAPE = {
 		'error_reason': {
 			optional: true,
 			shape: { kind: 'string' },
-		},
-		'exit_code': {
-			optional: true,
-			shape: { kind: 'number' },
 		},
 		'preview': {
 			optional: true,
@@ -8642,78 +9364,9 @@ export const TOOL_RUN_FINISHED_EVENT_PAYLOAD_SHAPE = {
 			optional: false,
 			shape: { kind: 'enum', values: TOOL_RUN_KIND_DTO_VALUES },
 		},
-		'status': {
-			optional: true,
-			shape: { kind: 'enum', values: TOOL_RUN_STATUS_VALUES },
-		},
-		'session_id': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'source_step_id': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'started_at': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'finished_at': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'due_at': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'title': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'body': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'mode': {
-			optional: true,
-			shape: { kind: 'enum', values: SCHEDULE_MODE_VALUES },
-		},
-		'command': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'output': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'error': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'error_reason': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'exit_code': {
-			optional: true,
-			shape: { kind: 'number' },
-		},
-		'preview': {
-			optional: true,
-			shape: { kind: 'string' },
-		}
-	}
-} as const;
-export const TOOL_RUN_OUTPUT_EVENT_PAYLOAD_SHAPE = {
-	kind: 'object',
-	fields: {
-		'tool_run_id': {
+		'tool_name': {
 			optional: false,
 			shape: { kind: 'string' },
-		},
-		'kind': {
-			optional: false,
-			shape: { kind: 'enum', values: TOOL_RUN_KIND_DTO_VALUES },
 		},
 		'status': {
 			optional: true,
@@ -8735,26 +9388,6 @@ export const TOOL_RUN_OUTPUT_EVENT_PAYLOAD_SHAPE = {
 			optional: true,
 			shape: { kind: 'string' },
 		},
-		'due_at': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'title': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'body': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'mode': {
-			optional: true,
-			shape: { kind: 'enum', values: SCHEDULE_MODE_VALUES },
-		},
-		'command': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
 		'output': {
 			optional: true,
 			shape: { kind: 'string' },
@@ -8766,10 +9399,6 @@ export const TOOL_RUN_OUTPUT_EVENT_PAYLOAD_SHAPE = {
 		'error_reason': {
 			optional: true,
 			shape: { kind: 'string' },
-		},
-		'exit_code': {
-			optional: true,
-			shape: { kind: 'number' },
 		},
 		'preview': {
 			optional: true,
@@ -8788,6 +9417,10 @@ export const TOOL_RUN_UPDATED_EVENT_PAYLOAD_SHAPE = {
 			optional: false,
 			shape: { kind: 'enum', values: TOOL_RUN_KIND_DTO_VALUES },
 		},
+		'tool_name': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
 		'status': {
 			optional: true,
 			shape: { kind: 'enum', values: TOOL_RUN_STATUS_VALUES },
@@ -8808,26 +9441,6 @@ export const TOOL_RUN_UPDATED_EVENT_PAYLOAD_SHAPE = {
 			optional: true,
 			shape: { kind: 'string' },
 		},
-		'due_at': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'title': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'body': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
-		'mode': {
-			optional: true,
-			shape: { kind: 'enum', values: SCHEDULE_MODE_VALUES },
-		},
-		'command': {
-			optional: true,
-			shape: { kind: 'string' },
-		},
 		'output': {
 			optional: true,
 			shape: { kind: 'string' },
@@ -8839,10 +9452,6 @@ export const TOOL_RUN_UPDATED_EVENT_PAYLOAD_SHAPE = {
 		'error_reason': {
 			optional: true,
 			shape: { kind: 'string' },
-		},
-		'exit_code': {
-			optional: true,
-			shape: { kind: 'number' },
 		},
 		'preview': {
 			optional: true,
@@ -8915,6 +9524,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	add_mcp_server: ADD_MCP_SERVER_RESPONSE_SHAPE,
 	cancel_chatgpt_plan_login: CANCEL_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE,
 	cancel_recording: CANCEL_RECORDING_RESPONSE_SHAPE,
+	cancel_schedule: CANCEL_SCHEDULE_RESPONSE_SHAPE,
 	cancel_tool_run: CANCEL_TOOL_RUN_RESPONSE_SHAPE,
 	check_llm_connection: CHECK_LLM_CONNECTION_RESPONSE_SHAPE,
 	check_shell_available: CHECK_SHELL_AVAILABLE_RESPONSE_SHAPE,
@@ -8954,6 +9564,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	list_mcp_resources: LIST_MCP_RESOURCES_RESPONSE_SHAPE,
 	list_mcp_servers: LIST_MCP_SERVERS_RESPONSE_SHAPE,
 	list_runtime_sessions: LIST_RUNTIME_SESSIONS_RESPONSE_SHAPE,
+	list_schedules: LIST_SCHEDULES_RESPONSE_SHAPE,
 	list_session_history: LIST_SESSION_HISTORY_RESPONSE_SHAPE,
 	list_session_permissions: LIST_SESSION_PERMISSIONS_RESPONSE_SHAPE,
 	list_skills: LIST_SKILLS_RESPONSE_SHAPE,
@@ -9013,7 +9624,6 @@ export const IPC_EVENT_PAYLOAD_SHAPES = {
 	'transcription:error': TRANSCRIPTION_ERROR_EVENT_PAYLOAD_SHAPE,
 	'tool_run:created': TOOL_RUN_CREATED_EVENT_PAYLOAD_SHAPE,
 	'tool_run:updated': TOOL_RUN_UPDATED_EVENT_PAYLOAD_SHAPE,
-	'tool_run:output': TOOL_RUN_OUTPUT_EVENT_PAYLOAD_SHAPE,
 	'tool_run:finished': TOOL_RUN_FINISHED_EVENT_PAYLOAD_SHAPE,
 	'app:bootstrap': APP_BOOTSTRAP_EVENT_PAYLOAD_SHAPE,
 	'tray:status_changed': TRAY_STATUS_CHANGED_EVENT_PAYLOAD_SHAPE,
@@ -9052,7 +9662,6 @@ export const IPC_EVENT_PAYLOAD_DTO_TYPES = {
 	'transcription:error': "TranscriptionErrorEvent",
 	'tool_run:created': "ToolRunEvent",
 	'tool_run:updated': "ToolRunEvent",
-	'tool_run:output': "ToolRunEvent",
 	'tool_run:finished': "ToolRunEvent",
 	'app:bootstrap': "AppBootstrapEvent",
 	'tray:status_changed': "TrayStatusChangedEvent",
@@ -9089,7 +9698,8 @@ export interface TauriCommandMap {
 	add_mcp_server: { request: { config: McpServerConfigInput }; response: void };
 	cancel_chatgpt_plan_login: { request: { loginId: string }; response: void };
 	cancel_recording: { request: undefined; response: void };
-	cancel_tool_run: { request: { toolRunId: string; kind: ToolRunKindDtoInput }; response: boolean };
+	cancel_schedule: { request: { scheduleId: string; sessionId: string }; response: boolean };
+	cancel_tool_run: { request: { toolRunId: string }; response: boolean };
 	check_llm_connection: { request: undefined; response: LlmConnectionReport };
 	check_shell_available: { request: { shell: ShellChoiceInput }; response: ShellAvailability };
 	clear_facts: { request: undefined; response: number };
@@ -9128,10 +9738,11 @@ export interface TauriCommandMap {
 	list_mcp_resources: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpResourceList };
 	list_mcp_servers: { request: undefined; response: McpServerSnapshot[] };
 	list_runtime_sessions: { request: undefined; response: RuntimeSessionListResponse };
+	list_schedules: { request: undefined; response: SchedulePlanDto[] };
 	list_session_history: { request: { limit: number; offset: number }; response: SessionRecordDto[] };
 	list_session_permissions: { request: undefined; response: SessionPermissionGrant[] };
 	list_skills: { request: undefined; response: SkillInfo[] };
-	list_tool_run_history: { request: { kind?: ToolRunKindDtoInput | null; limit?: number | null; sessionId?: string | null }; response: ToolRunEvent[] };
+	list_tool_run_history: { request: { limit?: number | null; sessionId?: string | null }; response: ToolRunEvent[] };
 	list_tool_runs: { request: undefined; response: ToolRunEvent[] };
 	log_frontend_error: { request: { failureKind: FrontendFailureKindInput }; response: void };
 	open_external: { request: { target: string }; response: void };
@@ -9204,7 +9815,8 @@ export const TAURI_COMMAND_CONTRACTS = {
 	add_mcp_server: { boundary: 'execute', security: "AuthorizationPort; typed native admin operation validates and persists config" },
 	cancel_chatgpt_plan_login: { boundary: 'mutate', security: "cancels one in-memory OAuth attempt and aborts its loopback callback listener" },
 	cancel_recording: { boundary: 'execute', security: "cancel clears the in-flight recording id" },
-	cancel_tool_run: { boundary: 'mutate', security: "kind is enum; cancel only the selected task kind" },
+	cancel_schedule: { boundary: 'mutate', security: "canonical schedule and owner-session IDs; owner-scoped cancellation" },
+	cancel_tool_run: { boundary: 'mutate', security: "only a canonical toolrun ID can cancel background tool execution" },
 	check_llm_connection: { boundary: 'read', security: "status and non-sensitive reason only; no endpoint or provider payload" },
 	check_shell_available: { boundary: 'read', security: "availability boolean only" },
 	clear_facts: { boundary: 'mutate', security: "delete all saved long-term facts and invalidate derived caches" },
@@ -9243,6 +9855,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	list_mcp_resources: { boundary: 'execute', security: "explicit host discovery; enabled live target binding; bounded opaque resource metadata" },
 	list_mcp_servers: { boundary: 'read', security: "snapshot only; env values redacted; invocation remains gated" },
 	list_runtime_sessions: { boundary: 'read', security: "resident nonterminal runtime sessions only" },
+	list_schedules: { boundary: 'read', security: "safe projection excludes dynamic arguments and continuation prompt" },
 	list_session_history: { boundary: 'read', security: "read-only session projection" },
 	list_session_permissions: { boundary: 'read', security: "typed session grants with exact session, capability, target, and effect" },
 	list_skills: { boundary: 'read', security: "metadata projection" },

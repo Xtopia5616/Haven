@@ -234,7 +234,7 @@ export function reduceTranscript(
 
 /** Normalize a terminal background ToolRun into the tool-card payload. */
 export function backgroundToolRunResultContent(payload: ToolRunPayload): string | null {
-	if (payload.kind !== 'background' || !payload.toolRunId) return null;
+	if (!payload.toolRunId) return null;
 	const status = payload.status ?? 'completed';
 	const rawOutput = payload.output ?? payload.error ?? '';
 	if (typeof rawOutput === 'string' && rawOutput.trim().startsWith('{')) return rawOutput;
@@ -243,7 +243,6 @@ export function backgroundToolRunResultContent(payload: ToolRunPayload): string 
 		background: true,
 		tool_run_id: payload.toolRunId,
 		status,
-		...(payload.exitCode != null ? { exit_code: payload.exitCode } : {}),
 		...(payload.error && !payload.output ? { error: payload.error } : {}),
 	});
 }

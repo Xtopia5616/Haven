@@ -1,7 +1,6 @@
 <script lang="ts">
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import StatusDot from './StatusDot.svelte';
-	import { toolRunKindLabel } from '$lib/toolRunTerminology.ts';
 	import type { LlmConnectionStatus } from '$lib/contracts/generatedCommands.ts';
 	import type { RecordingOverlayState } from './recordingOverlayController.ts';
 	import type { ReActExecutionPhase } from './reactExecutionPhaseStore.ts';
@@ -17,7 +16,6 @@
 		llmConnectionDetail?: string | null;
 		awaitingBackgroundActive?: boolean;
 		runningBackgroundToolRunCount?: number;
-		pendingScheduledToolRunCount?: number;
 		onOpenTasks?: () => void;
 	}
 
@@ -32,7 +30,6 @@
 		llmConnectionDetail = null,
 		awaitingBackgroundActive = false,
 		runningBackgroundToolRunCount = 0,
-		pendingScheduledToolRunCount = 0,
 		onOpenTasks = () => {},
 	}: Props = $props();
 
@@ -58,7 +55,7 @@
 		if (busySessions.size > 1) return `${busySessions.size} 个会话运行中`;
 		if (activeSessionStatusLabel === '运行中' || busySessions.size > 0) return '运行中';
 		if (awaitingBackgroundActive) return '等待任务';
-		if (runningBackgroundToolRunCount > 0) return toolRunKindLabel('background');
+		if (runningBackgroundToolRunCount > 0) return '后台任务';
 		if (!bootstrapReady) return '加载中';
 		return '空闲';
 	});
@@ -96,7 +93,7 @@
 		return executionStatusLabel;
 	});
 
-	const taskCount = $derived(runningBackgroundToolRunCount + pendingScheduledToolRunCount);
+	const taskCount = $derived(runningBackgroundToolRunCount);
 	const hasTaskActivity = $derived(taskCount > 0 || awaitingBackgroundActive);
 
 	const statusColor = $derived.by(() => {
@@ -144,12 +141,7 @@
 			parts.push(modelStatusTitle);
 		}
 		if (runningBackgroundToolRunCount > 0) {
-			parts.push(
-				`${runningBackgroundToolRunCount} 个${toolRunKindLabel('background')}运行中`,
-			);
-		}
-		if (pendingScheduledToolRunCount > 0) {
-			parts.push(`${pendingScheduledToolRunCount} 条${toolRunKindLabel('scheduled')}`);
+			parts.push(`${runningBackgroundToolRunCount} 个后台任务运行中`);
 		}
 		return parts.length > 0
 			? `状态：${statusLabel}；${parts.join('；')}`
@@ -160,9 +152,6 @@
 		const parts = [];
 		if (runningBackgroundToolRunCount > 0)
 			parts.push(`${runningBackgroundToolRunCount} 个后台任务运行中`);
-		if (pendingScheduledToolRunCount > 0) {
-			parts.push(`${pendingScheduledToolRunCount} 条${toolRunKindLabel('scheduled')}`);
-		}
 		return parts.length > 0 ? `打开任务：${parts.join('，')}` : '打开任务查看详情';
 	});
 </script>

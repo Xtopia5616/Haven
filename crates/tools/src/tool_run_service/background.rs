@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(test)]
 pub(crate) struct BackgroundShellRequest<'a> {
     pub(crate) command: &'a str,
     pub(crate) shell: &'a str,
@@ -11,6 +12,168 @@ pub(crate) struct BackgroundShellRequest<'a> {
 }
 
 impl ToolRunService {
+    /// Start an authorized non-shell tool invocation as a detached background
+    /// ToolRun. The target is executed by the caller's Tools facade closure, so
+    /// schema validation, authorization proof checks, retries, and circuit
+    /// breaking remain on the ordinary tool path.
+    pub(crate) async fn spawn_tool_invocation(
+        self: &Arc<Self>,
+        tool_name: String,
+        source_step_id: Option<String>,
+        admission_cancel: &CancellationToken,
+        invocation: crate::ToolRunInvocation,
+    ) -> anyhow::Result<String> {
+        const MAX_RESULT_CHARS: usize = 100_000;
+
+        if tool_name.trim().is_empty() || tool_name.len() > 128 {
+            anyhow::bail!("background tool name is invalid");
+        }
+        if admission_cancel.is_cancelled() {
+            anyhow::bail!("background ToolRun admission was cancelled");
+        }
+        if self.shutting_down.load(Ordering::Acquire) {
+            anyhow::bail!("ToolRun service is shutting down");
+        }
+
+        let tool_run_id = haven_common::types::new_id("toolrun");
+        let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let (kill_tx, kill_rx) = oneshot::channel();
+        let terminal_ttl = *self.tool_run_terminal_ttl.read().await;
+        let max_running_background_tool_runs = *self.max_running_background_tool_runs.read().await;
+        let spawn_gate = tokio::select! {
+            biased;
+            _ = admission_cancel.cancelled() => {
+                anyhow::bail!("background ToolRun admission was cancelled");
+            }
+            guard = self.spawn_gate.clone().lock_owned() => guard,
+        };
+        if admission_cancel.is_cancelled() {
+            anyhow::bail!("background ToolRun admission was cancelled");
+        }
+        if self.shutting_down.load(Ordering::Acquire) {
+            anyhow::bail!("ToolRun service is shutting down");
+        }
+        {
+            let mut tool_runs = self.tool_runs.write().await;
+            tool_runs.retain(|_, entry| !terminal_entry_stale(entry, terminal_ttl));
+            let running = tool_runs
+                .values()
+                .filter(|entry| matches!(entry.state, ToolRunState::Running { .. }))
+                .count();
+            if running >= max_running_background_tool_runs {
+                anyhow::bail!(
+                    "too many running background tool_runs (limit {})",
+                    max_running_background_tool_runs
+                );
+            }
+        }
+
+        if let Some(store) = self.tool_run_store.read().await.clone() {
+            let persist_gate = spawn_gate;
+            let persist_tool_run_id = tool_run_id.clone();
+            let persist_tool_name = tool_name.clone();
+            let persist_started_at = started_at.clone();
+            let persist_source_step_id = source_step_id.clone();
+            let persisted = self
+                .spawn_owned_task(async move {
+                    let result = store
+                        .save_background_tool_run_with_metadata(
+                            persist_tool_run_id,
+                            persist_tool_name,
+                            None,
+                            persist_started_at,
+                            persist_source_step_id,
+                        )
+                        .await;
+                    (persist_gate, result)
+                })
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("background ToolRun persistence worker failed: {error}")
+                })?;
+            let (_gate, result) = persisted;
+            result?;
+        }
+
+        self.tool_runs.write().await.insert(
+            tool_run_id.clone(),
+            ToolRunEntry {
+                kind: ToolRunKind::Background,
+                tool_name: tool_name.clone(),
+                session_id: None,
+                source_step_id: source_step_id.clone(),
+                state: ToolRunState::Running {
+                    started_at: started_at.clone(),
+                },
+                kill: Some(kill_tx),
+                #[cfg(test)]
+                tail: None,
+                #[cfg(test)]
+                command: String::new(),
+                #[cfg(test)]
+                shell: String::new(),
+            },
+        );
+        let mut created = ToolRunLifecyclePayload::new(
+            ToolRunKind::Background,
+            tool_run_id.clone(),
+            tool_name.clone(),
+            ToolRunLifecycleState::Running {
+                started_at: started_at.clone(),
+            },
+        );
+        created.source_step_id = source_step_id.clone();
+        self.emit(ToolRunLifecycleEvent::Created(created));
+
+        let service = Arc::clone(self);
+        let task_tool_run_id = tool_run_id.clone();
+        let task_started_at = started_at.clone();
+        let task_cancel = CancellationToken::new();
+        let invoke = invocation(task_cancel.clone());
+        let shutdown_token = self.shutdown_token.clone();
+        self.spawn_owned_task(async move {
+            tokio::pin!(invoke);
+            tokio::select! {
+                biased;
+                _ = kill_rx => {
+                    task_cancel.cancel();
+                    service.mark_cancelled(&task_tool_run_id, &task_started_at).await;
+                }
+                _ = shutdown_token.cancelled() => {
+                    task_cancel.cancel();
+                    service.mark_cancelled(&task_tool_run_id, &task_started_at).await;
+                }
+                result = &mut invoke => {
+                    let (text, success) = match result {
+                        Ok(result) => {
+                            let serialized = serde_json::json!({
+                                "output": result.output,
+                                "error": result.error,
+                            }).to_string();
+                            (serialized, result.success)
+                        }
+                        Err(error) => (
+                            haven_common::error::sanitize_error_text(&error.to_string()),
+                            false,
+                        ),
+                    };
+                    let truncated = text.chars().count() > MAX_RESULT_CHARS;
+                    let combined = text.chars().take(MAX_RESULT_CHARS).collect();
+                    service
+                        .mark_finished(
+                            &task_tool_run_id,
+                            &task_started_at,
+                            combined,
+                            success,
+                            truncated,
+                        )
+                        .await;
+                }
+            }
+        });
+        Ok(tool_run_id)
+    }
+
     /// Spawn a shell command as a background ToolRun. Returns the ToolRun ID; the
     /// command keeps running after this function returns. `cwd` overrides the
     /// default Temp working directory when provided.
@@ -74,6 +237,7 @@ impl ToolRunService {
     /// again after acquisition. If admission won first, session cleanup waits
     /// for the gate and cancels the published ToolRun; if end won first, the
     /// abandoned run cannot start a new ToolRun after cleanup releases the gate.
+    #[cfg(test)]
     pub(crate) async fn spawn_shell_for_session_with_source_and_cancel(
         self: &Arc<Self>,
         request: BackgroundShellRequest<'_>,
@@ -104,7 +268,6 @@ impl ToolRunService {
         let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let (kill_tx, kill_rx) = oneshot::channel();
         let tail = self.output_port.new_tail().await;
-        let emit_interval = *self.tool_run_output_emit_interval.read().await;
         let terminal_ttl = *self.tool_run_terminal_ttl.read().await;
         let max_running_background_tool_runs = *self.max_running_background_tool_runs.read().await;
         let mut spawn_gate = tokio::select! {
@@ -190,6 +353,7 @@ impl ToolRunService {
             tool_run_id.clone(),
             ToolRunEntry {
                 kind: ToolRunKind::Background,
+                tool_name: "shell".into(),
                 session_id: session_id.map(str::to_owned),
                 source_step_id: source_step_id.map(str::to_owned),
                 state: ToolRunState::Running {
@@ -199,7 +363,6 @@ impl ToolRunService {
                 tail: Some(tail.clone()),
                 command: command.to_string(),
                 shell: shell.to_string(),
-                scheduled: None,
             },
         );
 
@@ -273,10 +436,10 @@ impl ToolRunService {
         let me = self.clone();
         let runner_tool_run_id = tool_run_id.clone();
         let shell_owned = shell.to_string();
-        let command_owned = command.to_string();
         let mut created = ToolRunLifecyclePayload::new(
             ToolRunKind::Background,
             runner_tool_run_id.clone(),
+            "shell",
             ToolRunLifecycleState::Running {
                 started_at: started_at.clone(),
             },
@@ -293,7 +456,6 @@ impl ToolRunService {
             tool_run_id = %runner_tool_run_id
         );
         let runner_tail = tail.clone();
-        let emit_tool_run_id = tool_run_id.clone();
         let shutdown_token = self.shutdown_token.clone();
         self.spawn_owned_task(
             async move {
@@ -324,9 +486,8 @@ impl ToolRunService {
                     // Strip PowerShell's NativeCommandError/CLIXML formatting so
                     // the payload carries the real message, not the noise.
                     combined = sanitize_shell_output(&combined, &shell_owned);
-                    let exit_code = status.as_ref().ok().and_then(|s| s.code());
                     let success = matches!(status, Ok(s) if s.success());
-                    (combined, success, exit_code, truncated)
+                    (combined, success, truncated)
                 };
                 let policy_revoked = async {
                     match execution_authorization {
@@ -344,15 +505,12 @@ impl ToolRunService {
                         result = &mut run => Some(result),
                     }
                 };
-                if let Some((combined, success, exit_code, truncated)) = completion {
+                if let Some((combined, success, truncated)) = completion {
                     me.mark_finished(
                         &runner_tool_run_id,
                         &started_at,
-                        &shell_owned,
-                        &command_owned,
                         combined,
                         success,
-                        exit_code,
                         truncated,
                     )
                     .await;
@@ -368,40 +526,6 @@ impl ToolRunService {
             }
             .instrument(tool_run_span),
         );
-
-        // Live-output preview: emit `tool_run:output` when the bounded tail
-        // changes (by value — length alone freezes once the window is full).
-        let emit_me = self.clone();
-        let emit_tail = tail;
-        let shutdown_token = self.shutdown_token.clone();
-        self.spawn_owned_task(async move {
-            let mut last_output = ToolRunTailSnapshot::default();
-            loop {
-                tokio::select! {
-                    _ = shutdown_token.cancelled() => return,
-                    _ = tokio::time::sleep(emit_interval) => {}
-                }
-                let source_step_id = match emit_me.status_view(&emit_tool_run_id).await {
-                    ToolRunStatusView::Background {
-                        state: ToolRunStateView::Running { .. },
-                        source_step_id,
-                        ..
-                    } => source_step_id,
-                    ToolRunStatusView::Scheduled {
-                        state: ToolRunStateView::Running { .. },
-                        ..
-                    } => None,
-                    _ => return,
-                };
-                if emit_tail.snapshot_if_changed(&mut last_output) {
-                    emit_me.emit(ToolRunLifecycleEvent::Output(ToolRunOutputPayload {
-                        tool_run_id: emit_tool_run_id.clone(),
-                        source_step_id,
-                        output: last_output.as_str().to_string(),
-                    }));
-                }
-            }
-        });
 
         drop(spawn_gate);
         Ok(tool_run_id)
@@ -454,7 +578,7 @@ impl ToolRunService {
             );
             return;
         }
-        let (terminal_state, source_step_id) = {
+        let (terminal_state, source_step_id, entry_tool_name) = {
             let mut tool_runs = self.tool_runs.write().await;
             let Some(entry) = tool_runs.get_mut(tool_run_id) else {
                 return;
@@ -466,11 +590,13 @@ impl ToolRunService {
             (
                 entry.state.is_terminal().then(|| entry.state.clone()),
                 entry.source_step_id.clone(),
+                entry.tool_name.clone(),
             )
         };
         self.emit(ToolRunLifecycleEvent::Updated(
             ToolRunLifecycleUpdate::SessionAttached(ToolRunSessionAttachedPayload {
                 tool_run_id: tool_run_id.to_string(),
+                tool_name: entry_tool_name.clone(),
                 session_id: session_id.to_string(),
                 source_step_id: source_step_id.clone(),
             }),
@@ -483,6 +609,7 @@ impl ToolRunService {
         {
             self.publish_background_completion(
                 tool_run_id,
+                entry_tool_name,
                 state,
                 Some(session_id.to_string()),
                 source_step_id,
@@ -506,10 +633,9 @@ impl ToolRunService {
 
     /// Cancel background tool_runs while the caller holds `spawn_gate`.
     ///
-    /// Explicit session cleanup owns the gate across both background and
-    /// scheduled tool_runs so an admission cannot publish an ToolRun after its
-    /// owner cleanup has already taken its snapshot. Persistence remains
-    /// best-effort for background work; terminal write failures keep using the
+    /// Session cleanup owns the gate so an admission cannot publish a
+    /// background ToolRun after its owner cleanup has taken its snapshot.
+    /// Persistence remains best-effort for background work; terminal write failures keep using the
     /// existing bounded retry path.
     pub(super) async fn cancel_owned_background_by_session_locked(
         self: &Arc<Self>,
@@ -518,7 +644,7 @@ impl ToolRunService {
         let service = Arc::clone(self);
         let owner = session_id.to_string();
         let selection = self
-            .cancel_owned_live_tool_runs(session_id, ToolRunKind::Background, move |tool_run_id| {
+            .cancel_owned_live_tool_runs(session_id, move |tool_run_id| {
                 let service = Arc::clone(&service);
                 let owner = owner.clone();
                 async move {
@@ -556,6 +682,7 @@ impl ToolRunService {
                                 row.tool_run_id.clone(),
                                 ToolRunEntry {
                                     kind: ToolRunKind::Background,
+                                    tool_name: row.tool_name.clone(),
                                     session_id: Some(session_id.to_string()),
                                     source_step_id: row.source_step_id.clone(),
                                     state: ToolRunState::Running {
@@ -565,10 +692,12 @@ impl ToolRunService {
                                             .unwrap_or_else(|| row.created_at.clone()),
                                     },
                                     kill: None,
+                                    #[cfg(test)]
                                     tail: None,
-                                    command: row.command.clone().unwrap_or_default(),
+                                    #[cfg(test)]
+                                    command: String::new(),
+                                    #[cfg(test)]
                                     shell: String::new(),
-                                    scheduled: None,
                                 },
                             );
                             true
@@ -588,16 +717,12 @@ impl ToolRunService {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn mark_finished(
         self: &Arc<Self>,
         tool_run_id: &str,
         started_at: &str,
-        shell: &str,
-        command: &str,
         combined: String,
         success: bool,
-        exit_code: Option<i32>,
         truncated: bool,
     ) {
         let next = if success {
@@ -609,7 +734,7 @@ impl ToolRunService {
             let tool_runs = self.tool_runs.read().await;
             tool_runs.get(tool_run_id).is_some_and(|entry| {
                 entry.kind == ToolRunKind::Background
-                    && can_claim_terminal(entry.state.status(), next, TerminalSource::Live)
+                    && can_claim_terminal(entry.state.status(), next)
             })
         };
         if !running {
@@ -619,7 +744,6 @@ impl ToolRunService {
             if success {
                 TerminalTimestamps::now(started_at).build(TerminalPayload::Completed {
                     output: combined.clone(),
-                    exit_code,
                     truncated,
                     // When the collected output was capped, the log file keeps
                     // the full transcript for inspection.
@@ -636,16 +760,14 @@ impl ToolRunService {
                 // likely error lines plus a Windows-trap hint when one matches.
                 // The full output always lands in a log file so the root cause
                 // is recoverable even when the summary misses it.
-                let diagnosed = append_windows_diagnostics(shell, command, &combined);
                 TerminalTimestamps::now(started_at).build(TerminalPayload::Failed {
                     error: combined.clone(),
-                    error_reason: summarize_error(&diagnosed, 1200),
+                    error_reason: summarize_error(&combined, 1200),
                     log_path: Some(
                         write_output_log("tool-run-logs", tool_run_id, &combined)
                             .to_string_lossy()
                             .into_owned(),
                     ),
-                    exit_code,
                 })
             }
         };
@@ -672,11 +794,7 @@ impl ToolRunService {
             let tool_runs = self.tool_runs.read().await;
             tool_runs.get(tool_run_id).is_some_and(|entry| {
                 entry.kind == ToolRunKind::Background
-                    && can_claim_terminal(
-                        entry.state.status(),
-                        ToolRunStatus::Cancelled,
-                        TerminalSource::Live,
-                    )
+                    && can_claim_terminal(entry.state.status(), ToolRunStatus::Cancelled)
             })
         };
         if !running {
@@ -722,8 +840,7 @@ impl ToolRunService {
                 ToolRunState::Running { started_at } => Some(started_at.clone()),
                 ToolRunState::Completed { .. }
                 | ToolRunState::Failed { .. }
-                | ToolRunState::Cancelled { .. }
-                | ToolRunState::Waiting => None,
+                | ToolRunState::Cancelled { .. } => None,
             }
         };
         let Some(started_at) = started_at else {

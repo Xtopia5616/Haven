@@ -1,16 +1,15 @@
 //! Bounded, process-local ToolRun output snapshots.
 //!
-//! `ToolRunService` owns the shared tail-size policy. Foreground tool cards and
-//! background ToolRun previews borrow this port to create bounded tails, then
-//! project snapshots through their existing, distinct UI event contracts.
+//! Foreground tool cards use bounded, process-local output snapshots and emit
+//! their own UI events. ToolRun results are delivered as terminal observations.
 
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
 const DEFAULT_TAIL_MAX_CHARS: usize = 2000;
 
-/// Internal owner of the tail-size policy shared by ToolRun output consumers.
-/// It deliberately exposes neither serialization nor a raw string buffer.
+/// Internal owner of the foreground output-tail policy. It deliberately
+/// exposes neither serialization nor a raw string buffer.
 #[derive(Clone)]
 pub(crate) struct ToolRunOutputPort {
     tail_max_chars: Arc<RwLock<usize>>,
@@ -35,25 +34,6 @@ impl ToolRunOutputPort {
 
     /// Snapshot the configured limit when a command starts, matching the
     /// existing behavior when live limits change while a child is running.
-    pub(crate) async fn new_tail(&self) -> ToolRunOutputTail {
-        ToolRunOutputTail::with_limit(*self.tail_max_chars.read().await)
-    }
-
-    pub(crate) fn tail_factory(&self) -> ToolRunTailFactory {
-        ToolRunTailFactory {
-            tail_max_chars: Arc::clone(&self.tail_max_chars),
-        }
-    }
-}
-
-/// Read-only tail constructor shared with preview consumers. Only the
-/// ToolRunService-owned port can change the configured policy.
-#[derive(Clone)]
-pub(crate) struct ToolRunTailFactory {
-    tail_max_chars: Arc<RwLock<usize>>,
-}
-
-impl ToolRunTailFactory {
     pub(crate) async fn new_tail(&self) -> ToolRunOutputTail {
         ToolRunOutputTail::with_limit(*self.tail_max_chars.read().await)
     }
@@ -107,6 +87,7 @@ impl ToolRunOutputTail {
         state.output.drain(..cut);
     }
 
+    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> ToolRunTailSnapshot {
         let state = self
             .state
@@ -140,6 +121,7 @@ impl ToolRunTailSnapshot {
         &self.0
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

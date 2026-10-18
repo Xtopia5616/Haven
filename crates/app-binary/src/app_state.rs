@@ -13,8 +13,6 @@ use haven_agent::{AgentLayer, MemoryService, PendingSessionRecovery};
 use haven_common::config::InMemoryCredentialStore;
 use haven_common::config::{ConfigLoader, ConfigService, CredentialStore, LogLevel};
 use haven_input::InputPipeline;
-#[cfg(test)]
-use haven_memory::Database;
 use haven_memory::{MemoryPersistence, SessionStore};
 use haven_platform::credentials::PlatformCredentialStore;
 use haven_tools::ToolsFacade;
@@ -255,6 +253,7 @@ impl AppState {
             Arc::clone(&tool_services.authorization),
             Arc::clone(&tool_services.skills),
             Arc::clone(&tool_services.tool_run_agent),
+            Arc::clone(&tool_services.schedule_agent),
         );
         let mcp_caller: Arc<dyn haven_llm::McpToolCaller> =
             Arc::clone(&tool_services.mcp_tool_caller);
@@ -494,6 +493,7 @@ impl AppState {
         tools
             .wire_startup(haven_tools::StartupWiring {
                 tool_run_store: Some(memory_persistence.tool_run_store()),
+                schedule_store: Some(memory_persistence.schedule_store()),
                 tool_settings: cfg.tool_settings.clone(),
                 default_shell: cfg.default_shell,
                 context_limits: context_limits_clone,
@@ -1005,7 +1005,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_shutdown_preserves_session_owned_scheduled_tool_runs() {
+    async fn runtime_shutdown_preserves_session_owned_schedule_plans() {
         let dir = tempdir().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
         let db_path = dir.path().join("test.db");
@@ -1018,36 +1018,39 @@ mod tests {
             .create_session("scheduled owner")
             .await
             .unwrap();
-        let tool_run_id = state
-            .runtime
-            .services
-            .tool_run_test_support
-            .schedule(haven_tools::ScheduledToolRunSpec {
-                due_at: None,
-                delay_secs: Some(3600),
-                watch_tool_run_id: None,
+        let services = state.runtime.tools.share_services();
+        let plan = services
+            .schedule_management
+            .create(haven_memory::SchedulePlanInput {
+                owner_session_id: session.session_id.clone(),
+                schedule_type: haven_memory::ScheduleType::Once,
                 title: "Keep after exit".into(),
                 body: "restore me".into(),
-                mode: haven_common::tool_run::ScheduleMode::Continue,
-                session_id: Some(session.session_id.clone()),
+                mode: haven_common::schedule::ScheduleMode::Continue,
+                due_at: Some(
+                    (chrono::Utc::now() + chrono::Duration::hours(1))
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                ),
+                watch_tool_run_id: None,
                 tool_name: None,
                 tool_args: None,
                 prompt: Some("continue later".into()),
+                interval_seconds: None,
             })
             .await
             .unwrap();
 
         state.runtime.shutdown().await;
 
-        let db = Database::open(&db_path).unwrap();
-        let pending = db.list_pending_scheduled_tool_runs().unwrap();
-        assert!(pending.iter().any(|row| row.tool_run_id == tool_run_id));
-        assert_eq!(
-            pending
+        let plans = services
+            .schedule_management
+            .list_for_session(&session.session_id)
+            .await
+            .unwrap();
+        assert!(
+            plans
                 .iter()
-                .find(|row| row.tool_run_id == tool_run_id)
-                .map(|row| row.status.as_str()),
-            Some("waiting")
+                .any(|row| row.schedule_id == plan.schedule_id && row.enabled)
         );
     }
 

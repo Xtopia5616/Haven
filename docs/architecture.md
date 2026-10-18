@@ -358,7 +358,7 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   `embedding_store.rs` 以窄异步 `MemoryEmbeddingStore` 提供嵌入索引生命周期
   的持久化端口，`memory_recall_store.rs` 以 `MemoryRecallStore` 提供异步 typed
   keyword/vector recall、可见事实 hydration、revision 与完整 recall 端口；
-  `tool_run_store.rs` 以异步 typed `ToolRunStore` 提供后台/定时 ToolRun 与 completion outbox
+  `tool_run_store.rs` 以异步 typed `ToolRunStore` 提供后台 ToolRun 与 completion outbox
   的窄持久化端口，并在 Memory 内调度 SQLite blocking 操作；`facts.rs`
   负责事实类型、谓词归一化策略和稳定 `Database` 外观。消息的
   `media_inputs` 是多模态 canonical 持久化投影；消息返回对象中的 `attachments` 仅是
@@ -542,85 +542,17 @@ Temp（全局约束）。
 | `input` | 键鼠 type / key / click / move / scroll | move/scroll=Low；其它=Medium |
 | `window` | 窗口 list / foreground / focus / close / screenshot / UI tree / observe / invoke / set_value / toggle / select / wait；截图后由 `media.ocr` 执行 OCR | 读/观察=Low；语义操作/focus=Medium；close=High |
 
-`ToolRunService`（`haven-tools/src/tool_run_service.rs`）是后台与定时任务的唯一运行时状态机；
-shell 进程、定时器和 ToolRun dependency 共享一个 ToolRun map、一个生命周期 sink 和一个
-completion bus。统一状态为 `waiting → running → completed | failed | cancelled`；定时任务的
-`kind` 只表示任务类型，不再作为状态值。model-facing `tool_runs.*` 和 app ToolRun board 都
-直接读取规范化 task row。background completion outbox 与 scheduled fire recovery 共用纯
-`haven_common::ToolRunLease<T>` claim core：outbox 在 `BEGIN IMMEDIATE` 事务中以
-稳定 `tool_run_result_id` 和 SQLite UTC deadline 判断 30 秒 claim，随后仍由原 SQL/CAS 写入；
-scheduled fire recovery 以 `tool_run_id` 和单调时钟使用 15 分钟进程内 lease。现有契约没有独立
-的 claimant owner token，也没有 lease renewal 操作。scheduled 终态和无 consumer 回滚会清除
-其 pending fire 与 lease；background completion lease 过期后可再次 claim，直到 transcript
-durable 后按 `tool_run_result_id` ack。ToolRunStore 仍各自拥有 outbox、scheduled trigger 的
-事务和 CAS；Tools 不持有 raw `Database` 或安排 SQLite blocking 工作。CAS 仲裁、内存 board、
-store 重试与终态持久化修复的 typed failure 分类由 crate-private ToolRun retry policies 收口，
-attempt/deadline/backoff/stop 决策复用 `haven-common::retry::RecoveryPolicy`（ADR 0447）：background/scheduled
-worker 均无 retry deadline/预算，保留 1 秒起步、指数退避、30 秒封顶；ToolRun store 的短 retry
-保留 3 次/50 ms，malformed-row repair 在短 retry 耗尽后继续按 1 秒起步、30 秒封顶恢复。
-策略不持有 clock、sleep、store 或 terminal arbitration。
-ToolRunService 继续按 kind 执行各自 CAS/outbox、内存状态、事件发布、重试等待与生命周期。当前 background
-shell 没有 ToolRun-level 执行 timeout；scheduled `due_at` 是触发时刻。AgentLayer 对 background completion
-做 durable transcript 投影/入队的 100 ms 重试决策复用 common 模型，但投影、等待与 outbox ack 仍由 AgentLayer
-持有；provider/LLM retry 和 Agent
-ReAct tool-call retry 不属于 ToolRun persistence retry（ADR 0305、0332、0334）。
-调用边界并不是一个共享的执行 owner：后台 shell 的 child process 由 `ToolRunService` 启动并回收；
-scheduled fire 由 `ToolRunService` 按 `Waiting → Running` durable CAS 后交给 AgentLayer，AgentLayer/
-tool runner 执行 scheduled tool 或继续会话，再调用 `complete_scheduled` / `fail_scheduled`。
-scheduled trigger 的输入分类和 due-time 计算由 crate-private 纯 typed policy
-`ScheduledTriggerRequest`/`ScheduledTriggerCandidate` 承担；ToolRunService 仍读取 horizon 配置并拥有
-durable admission、board insertion、timer/watch worker、fire、terminal commit/retry 与 lifecycle event。
-这只是 trigger admission 的窄边界：scheduled trigger 只区分 `At` 与 `AfterToolRun`；background shell 的直接启动仍由独立入口表达，不与 ToolRun execution 生命周期合成一个抽象；
-schedule tool 对 LLM 输入的前置验证仍保留在工具边界，App command/event adapter 仍只做 UI DTO 投影（ADR 0343）。
-ToolRunService 仍是唯一状态 owner；实现按职责放在 `tool_run_service/background.rs`（shell 启动、终态与 session 清理）、
-`tool_run_service/scheduled.rs`（timer/dependency admission、fire、终态与恢复）和
-`tool_run_service/views.rs`（task board/status typed projection 与 JSON 序列化）。这些模块只实现同一个
-`ToolRunService`，共享 ToolRun map、terminal arbitration、completion bus 和 restore coordinator，不增加执行器或状态副本。
-App board/history 都通过同一个 `ToolRunView` 投影；Memory 只把原始 `ToolRunRow` 交给 Tools，Tools 负责终态过滤、受限 history 查询和敏感字段裁剪，App 只映射 IPC DTO。history limit 在 SQLite 查询前应用，避免 App 收到持久化字段或为分页装载全部历史（ADR 0920）。
-完整 lifecycle 审计没有发现需要迁移到另一个纯 transition policy 的重复判断：status graph 与 terminal claim 已由
-`ToolRunStatus::can_transition_to` / `tool_run_terminal::can_claim_terminal` 单点定义；background admission 直接进入
-`running`，`waiting → running` 只属于 scheduled fire。提交前后的重复检查跨越 durable CAS 与内存投影/回滚边界，保留为竞态校验。
-执行副作用、outbox、retry 与 UI finished 投影继续按 kind 分流；trigger/execution、deadline/claim identity 和 restart recovery
-语义需先决策，当前不引入新的 ToolRun 状态或自动 replay（ADR 0352）。产品已确认 background 与 scheduled 的完成记录、任务卡和 transcript 投影采用统一格式，但保留类型细节；ToolRunCenter 活动卡片由 `projectToolRunCard` 统一投影，scheduled tool 的 completed/failed outcome 则已按 ADR 0393 复用 ToolRun completion outbox 与 Agent 的 ToolRunResult/X12 投影路径。创建 scheduled ToolRun 的服务动词统一为 `ToolRunService::schedule`，避免通用 `set` 与配置更新/操作名混淆。
-admission cleanup 曾移除 Running row，导致 Agent terminal callback 找不到内存 entry；ADR 0353 已将清理条件限定为
-terminal scheduled entry，并通过 completion、cancel、no-consumer recovery 和 restart 回归固定边界。Waiting/Running
-entry 保持原路径；durable Waiting schedule 仍在启动时恢复，遗留 durable Running row 仍标为 failed 且不重放。
-`ToolRunService::restore` 通过 `ToolRunRestoreSummary` 显式报告逾期 scheduled run 数与重启后标记失败的 running row 数。
+`ToolRunService`（`haven-tools/src/tool_run_service.rs`）只拥有脱离当前 turn 持续运行的后台 ToolRun；ToolRun 状态从 `running` 进入 `completed | failed | cancelled`，`kind` 固定为 `background`。ToolRun completion outbox 是其终态 transcript 交付的 durable owner。工具入口统一为 `toolrun`，包含后台调用与 list/inspect/cancel 管理；前台调用仍使用正常 ToolCall 路径。
+
+Schedule 由独立 `ScheduleService` 与 Memory `ScheduleStore` 持有。`schedules` 保存一次性/周期计划，`schedule_runs` 保存每次 occurrence，`schedule_execution_claims` 串行化执行权；状态 `waiting → running → completed | failed | cancelled` 只属于 ScheduleRun。Schedule 可按时间或被监听 ToolRun 的终态触发，随后经常规授权工具执行路径调用目标工具、向来源 session 投递 continuation，或由 SessionCreation owner 创建新 session。Schedule 计划、occurrence 与取消 UI 由 `ScheduleCenter` 管理，不读取或伪装成 ToolRun 行（ADR 1324）。
+
+Memory Store 分别拥有 ToolRun 和 Schedule 的 SQLite blocking 调度、查询与写事务；Tools 分别暴露窄的 ToolRun/Schedule capabilities。App 组合根装配两个 service、命令与事件；Agent 只消费 schedule fired 与 ToolRun completion ports。ToolRun board/history 只读后台 ToolRun，history limit 在 SQLite 查询前应用。ToolRun 重启恢复将旧进程残留的 running ToolRun 标为 failed，不自动重放副作用；ScheduleRun 按自身 owner 恢复并处理过期计划。状态图与 terminal claim 由各领域自己的生命周期类型单点定义。
 后台 ToolRun 全量输出日志位于 `tool-run-logs/<toolrun-id>.log`，由 durable ToolRun 引用、历史删除和启动孤儿对账管理（ADR 1172）。前台 Shell 失败日志没有对应 ToolRun row，使用 `shell-<uuid32>.log` 并按 7 天、128 个文件、32 MiB 总量和 1 MiB 单文件上限回收；超限保留 UTF-8 安全尾部。启动与写入前的清理只识别受控普通文件名，原子写入使用 `DirectoryCapability`；两类日志的生命周期不混用（ADR 1174）。
-ToolRun 输出 tail 的长度策略由 `ToolRunService` 持有的 crate-private `ToolRunOutputPort` 唯一配置；
-foreground shell card 与 background ToolRun 共用该 policy 生成有字符上限的 `ToolRunOutputTail`，
-consumer 仅拿不可 `Debug`/`Serialize` 的 `ToolRunTailSnapshot`。`agent:tool_output` 仍用
-`session_id/step_id`，`tool_run:output` 仍用 `tool_run_id`；App mapper 对后者只投影身份、状态和 bounded
-output。终态仍通过原 `tool_run:finished` / background completion 路径承载最终已收集输出；完成提交、取消
-或 shutdown 清理 live tail。此处统一的是活动卡片的共享字段；background/scheduled 的专属详情与执行生命周期仍按 kind 分流（ADR 0338）。
-UI ToolRun board 以 `toolRunStore` 的 tool_run_id 索引作为权威前端 registry；layout 的 `activities` 只是 Svelte
-reactive mirror，不再维护第二份 ToolRun lifecycle reducer。`list_tool_runs` 与四个 lifecycle channel 共用
-`mapToolRunPayload`。created/updated/output 统一 upsert；refresh 的请求序号与 `toolRunStateVersion`
-只阻止旧 hydration 覆盖较新状态，不是事件去重。Background finished 先 upsert 终态，再由
-`finalizeBackgroundToolRunMessages` 投影到仍绑定该 ToolRun 的工具卡；scheduled ToolRun finished 则从 board 删除，
-通知由 Agent 的 `notification:show` 提供。列表刷新会移除 terminal background history，scheduled live row
-仍由 ToolRunService board 返回。`ToolRunCenter` 使用 `projectToolRunCard` 将两种 kind 映射到共同卡片结构，并在
-kind-specific details 中保留 background command/output/error/exit code/preview 与 scheduled due time/title/body/mode；
-现有用户文案、排序、搜索、打开会话和取消行为不变。该 mapper 只收口活动卡片，不承载终态工具结果：
-scheduled finished payload 仍不含 execution result；completed/failed tool 的有界 `result_summary` 由
-ToolRunService 与 terminal outbox 一起提交，在 owner session 存在时由 Agent 复用共享 ToolRunResult envelope
-与 X12 投影，投影成功后 ack。Continue 仍走既有 session input transcript；cancelled scheduled ToolRun 不创建
-completion outbox 或 result transcript（ADR 0393）。后台 live completion、定时 completion 和 restart reconciliation
-统一使用 Common `ToolRunCompletionPayload`；Memory 只在 SQLite `status_json` TEXT 列边界序列化该值，Agent 读取
-typed fields。Tools 的 `ToolRunStatusView` 继续独立拥有 UI status/list projection（ADR 0871）。
-Rust bridge 只为 background 提供 `tool_run:output`，scheduled ToolRun 不持有 tail。没有 durable event identity，
-因此不增加独立的 UI event dedup；`toolRunStore` 继续作为唯一前端 ToolRun 生命周期 registry，background 的终态工具卡和 transcript 投影仍按 ADR 0344 原路径。
-ToolRun completion 经 `notification:show` 发布带 `notification_kind=tool_run_completion` 标记的专用事件，
-并携带 `tool_run_kind`、`tool_run_id`，background 还携带终态 `tool_run_status` 与真实 owner `session_id`；scheduled 或 AppCommand 通知没有会话关联时省略 `session_id`。UI 只对该标记
-应用 `notification.tool_run_completed.in_app` 开关；`DesktopNotifications` 只对同一类事件应用
-`notification.tool_run_completed.windows` 开关。两项配置由 background 与 scheduled ToolRun 共用且默认开启，
-配置加载完成前 UI 暂存带标记的完成提示。通用 `AgentEvent::Notification` 不带该标记，仍保持原有通知语义与
-always-on 行为。通知设置自身不承载 scheduled transcript 或 execution result；scheduled tool outcome 的
-session transcript 契约已由 ADR 0393 定义为复用 ToolRun-result/outbox 路径。
-ToolRun 管理写入口经 ADR 0373 审计：Tauri、`tool_runs`/`schedule` 工具、timer worker 与 Agent completion 共用一个
-`ToolRunService`；`ToolRunStore` 仍是生产持久化写边界。`schedule.set` 只创建新 ToolRun，没有 update-existing 或手动
-trigger command，`ToolConcurrency` 也不是跨 Tauri/worker 的互斥机制。terminal history delete 只接受终态，但其
-`spawn_gate` 不覆盖所有 terminal CAS/retry；现已由 ADR 0374 收口为 completion ack 前拒绝 history delete，并在同一 SQLite writer 边界协调 ack/delete。无 owner completion 的 ack 同时校验 ToolRun 与 outbox 均未绑定；迟到绑定会重开 outbox，带 session 的 live-output 工具则在无 step id 时也于 spawn 前绑定 owner。
+前台工具输出由 `LiveOutputHub` 按 `session_id/step_id` 管理有界实时预览；ToolRun 不保存 shell 命令、解释器或流式 tail。后台调用结果只在 terminal completion 中持久化，并由 Agent 投影到创建它的 `toolrun.start` ToolCall 卡片。
+
+UI 的 `toolRunStore` 以 `tool_run_id` 作为唯一生命周期 registry；layout 的 `activities` 只是 Svelte reactive mirror。`list_tool_runs` 和 lifecycle channels 共用 `mapToolRunPayload`。后台 ToolRun 的 `tool_name` 是必填身份字段，任务中心按目标工具名、状态、结果和关联 session 展示。terminal history 在 SQLite 查询前限制页大小；Agent 先提交 completion transcript，再 ack outbox，重启后可从 durable outbox 重建交付。ToolRun completion 通知只描述后台调用；Schedule occurrence 的结果与通知由 Schedule/Agent 路径表达。
+
+ToolRun 持久写入仍由 `ToolRunStore` 承担；并发准入由 ToolRunService 控制，终态 CAS、完成投递和历史清理在各自 SQLite writer 边界协调。ToolRun restore 将上个进程遗留的 `running` 标记为失败，不自动重放工具副作用。Schedule timer、确认、执行 claim、恢复和取消由 ScheduleService/ScheduleStore 单独持有。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影。恢复时 Agent 从 `session_events`
 replay active interaction events 并重建 Actor 内状态；该状态不写入独立的 `interactions` 表或

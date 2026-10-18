@@ -1,19 +1,20 @@
 <script lang="ts">
-	import { scheduleModeLabel, toolRunTitle } from '$lib/toolRunTerminology.ts';
+	import { scheduleModeLabel } from '$lib/toolRunTerminology.ts';
 	import ToolResultList from '$lib/ToolResultList.svelte';
-	import type { ScheduleMode } from './contracts/toolRun.ts';
+	import type { ScheduleMode } from './contracts/schedule.ts';
 	import type { ToolScheduleResultOperation } from './toolResultPresentation.ts';
 
 	interface Props {
 		data?: {
 			operation?: ToolScheduleResultOperation | null;
-			tool_run_id?: string | null;
-			scheduled_tool_runs?: Array<{
-				tool_run_id: string;
+			schedule_id?: string | null;
+			schedules?: Array<{
+				schedule_id: string;
 				title: string;
 				body: string;
 				mode: ScheduleMode;
-				due_at: string;
+				due_at?: string | null;
+				next_due_at?: string | null;
 			}>;
 			mode?: ScheduleMode | null;
 			fires_at?: string | null;
@@ -27,26 +28,21 @@
 {#if operation === 'cancel'}
 	<div class="tool-run-row">
 		<span class="scheduled-mode">已取消</span>
-		{#if data.tool_run_id}<span class="tool-run-id">#{data.tool_run_id}</span>{/if}
+		{#if data.schedule_id}<span class="tool-run-id">#{data.schedule_id}</span>{/if}
 	</div>
-{:else if Array.isArray(data.scheduled_tool_runs)}
-	<div class="tool-result-label">{data.scheduled_tool_runs.length} 条定时任务</div>
-	{#if data.scheduled_tool_runs.length > 0}
-		<ToolResultList items={data.scheduled_tool_runs}>
-			{#snippet children(visibleToolRuns)}
+{:else if Array.isArray(data.schedules)}
+	<div class="tool-result-label">{data.schedules.length} 条定时计划</div>
+	{#if data.schedules.length > 0}
+		<ToolResultList items={data.schedules}>
+			{#snippet children(visibleSchedules)}
 				<div class="tool-result-scroll-area">
-					{#each visibleToolRuns as toolRun (toolRun.tool_run_id)}
+					{#each visibleSchedules as schedule (schedule.schedule_id)}
 						<div class="scheduled-row">
-							<span class="scheduled-title"
-								>{toolRunTitle({
-									kind: 'scheduled',
-									title: toolRun.title,
-									body: toolRun.body,
-								})}</span
-							>
-							<span class="scheduled-mode">{scheduleModeLabel(toolRun.mode)}</span>
-							{#if toolRun.due_at}<span class="scheduled-time">{toolRun.due_at}</span
-								>{/if}
+							<span class="scheduled-title">{schedule.title}</span>
+							<span class="scheduled-mode">{scheduleModeLabel(schedule.mode)}</span>
+							{#if schedule.next_due_at || schedule.due_at}
+								<span class="scheduled-time">{schedule.next_due_at || schedule.due_at}</span>
+							{/if}
 						</div>
 					{/each}
 				</div>
@@ -55,9 +51,9 @@
 	{:else}
 		<p class="tool-result-message">没有待触发的定时任务</p>
 	{/if}
-{:else if operation === 'set' || (data.tool_run_id && data.mode)}
+{:else if operation === 'set' || (data.schedule_id && data.mode)}
 	<div class="tool-run-row">
-		<span class="tool-run-id">#{data.tool_run_id}</span>
+		<span class="tool-run-id">#{data.schedule_id}</span>
 		<span class="scheduled-mode">{scheduleModeLabel(data.mode)}</span>
 	</div>
 	{#if data.fires_at}

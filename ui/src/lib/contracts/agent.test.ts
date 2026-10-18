@@ -737,7 +737,7 @@ describe('agent IPC contract', () => {
 	});
 
 	it('maps marked ToolRun completions without relaxing generic session validation', () => {
-		const scheduled = mapAgentEvent({
+		const scheduled = mapAgentEventContract({
 			event: 'notification:show',
 			id: 12,
 			payload: {
@@ -748,13 +748,7 @@ describe('agent IPC contract', () => {
 				tool_run_id: 'toolrun-8edebc0faacd86958a681576386a337b',
 			},
 		});
-		expect(scheduled.payload).toEqual({
-			title: '任务完成',
-			body: '结果',
-			notificationKind: 'tool_run_completion',
-			toolRunKind: 'scheduled',
-			toolRunId: 'toolrun-8edebc0faacd86958a681576386a337b',
-		});
+		expect(scheduled).toBeNull();
 
 		const background = mapAgentEvent({
 			event: 'notification:show',

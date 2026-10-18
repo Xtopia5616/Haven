@@ -117,7 +117,7 @@
 	}
 
 	function terminalOutputAlreadyInTranscript(toolRun: ToolRunPayload): boolean {
-		if (toolRun.status === 'running' || toolRun.status === 'waiting') return false;
+		if (toolRun.status === 'running') return false;
 		return allMessages.some(
 			(message) =>
 				message.sourceToolRunId === toolRun.toolRunId &&
@@ -183,10 +183,7 @@
 					result={msg.result}
 					messageId={msg.id}
 					stepNumber={msg.stepNumber ?? null}
-					toolArgs={msg.toolArgs ??
-						(backgroundToolRun?.command
-							? { command: backgroundToolRun.command }
-							: null)}
+					toolArgs={msg.toolArgs ?? null}
 					attachments={msg.attachments || []}
 					{showFallbackIntent}
 					options={msg.options || []}

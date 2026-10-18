@@ -12,11 +12,12 @@ describe('ToolRun completion toast projection', () => {
 		);
 		const first = {
 			sessionId: '',
-			title: 'scheduled',
+			title: '后台任务已完成',
 			body: 'first',
 			notificationKind: 'tool_run_completion' as const,
-			toolRunKind: 'scheduled' as const,
+			toolRunKind: 'background' as const,
 			toolRunId: 'toolrun-00000000000000000000000000000001',
+			toolRunStatus: 'completed' as const,
 		};
 		const second = { ...first, toolRunId: 'toolrun-00000000000000000000000000000002' };
 		gate.notify(first);
@@ -36,11 +37,12 @@ describe('ToolRun completion toast projection', () => {
 		);
 		const first = {
 			sessionId: '',
-			title: 'scheduled',
+			title: '后台任务已完成',
 			body: 'result',
 			notificationKind: 'tool_run_completion' as const,
-			toolRunKind: 'scheduled' as const,
+			toolRunKind: 'background' as const,
 			toolRunId: '',
+			toolRunStatus: 'completed' as const,
 		};
 
 		for (let index = 0; index < MAX_PENDING_TOOL_RUN_COMPLETION_NOTIFICATIONS; index += 1) {
@@ -96,19 +98,4 @@ describe('ToolRun completion toast projection', () => {
 		).toBeNull();
 	});
 
-	it('projects scheduled title and body through the common notification toast', () => {
-		expect(
-			projectToolRunCompletionToast(
-				{
-					sessionId: '',
-					title: '备份计划',
-					body: '任务已执行',
-					notificationKind: 'tool_run_completion',
-					toolRunKind: 'scheduled',
-					toolRunId: 'toolrun-00000000000000000000000000000002',
-				},
-				null,
-			),
-		).toEqual({ message: '备份计划: 任务已执行', type: 'info', durationMs: 5000 });
-	});
 });

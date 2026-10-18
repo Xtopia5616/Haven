@@ -81,9 +81,7 @@ pub const MAX_MCP_MAX_BINARY_BASE64_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_MCP_HEALTH_INTERVAL_SECS: u64 = 3_600;
 pub const MAX_MCP_RECONNECT_DELAY_MS: u64 = 600_000;
 pub const MAX_MCP_RECONNECT_RETRIES: u32 = 100;
-pub const MAX_SCHEDULED_TOOL_RUNS_DUE_HORIZON_SECS: i64 = 10 * 365 * 24 * 60 * 60;
 pub const MAX_EVENT_CHUNK_BATCH_MAX_BYTES: usize = 256 * 1024;
-pub const MAX_PENDING_SCHEDULED_TOOL_RUNS: usize = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -258,12 +256,11 @@ pub struct ContextLimitsConfig {
     /// OpenAI-compatible providers; oversized reasoning keeps its tail. Was
     /// `MAX_REASONING_ECHO_CHARS = 3000` in the responses adapter.
     pub reasoning_echo_max_chars: usize,
-    // —— background ToolRun caps ——
-    /// Bounded live-output tail (chars) kept per running ToolRun for `tool_run:output`
-    /// preview events.
-    pub background_tool_run_tail_max_chars: usize,
-    /// Cadence of `tool_run:output` events while a ToolRun produces output (ms).
-    pub background_tool_run_output_emit_interval_ms: u64,
+    // —— foreground tool-output caps ——
+    /// Bounded live-output tail (chars) kept per foreground tool call.
+    pub foreground_tool_output_tail_max_chars: usize,
+    /// Cadence of foreground tool-output events while a tool produces output (ms).
+    pub foreground_tool_output_emit_interval_ms: u64,
     /// Terminal ToolRuns stay on the board this long (secs), then are reaped by
     /// the next spawn.
     pub tool_run_terminal_ttl_secs: u64,
@@ -296,10 +293,6 @@ pub struct ContextLimitsConfig {
     pub clipboard_history_max_entries: usize,
     /// Per-entry content truncation for clipboard history dumps.
     pub clipboard_entry_max_chars: usize,
-    /// Maximum number of scheduled ToolRuns whose trigger is still waiting.
-    pub max_pending_scheduled_tool_runs: usize,
-    /// Max scheduled ToolRun due horizon (secs ahead).
-    pub scheduled_tool_runs_due_horizon_secs: i64,
     /// Maximum number of background ToolRuns in the running state.
     pub max_running_background_tool_runs: usize,
     /// Max bytes batched into one `agent:chunk` event.
@@ -365,8 +358,8 @@ impl Default for ContextLimitsConfig {
             incomplete_tool_args_retries: 2,
             stream_stall_warn_delay_ms: 10_000,
             reasoning_echo_max_chars: 1200,
-            background_tool_run_tail_max_chars: 2000,
-            background_tool_run_output_emit_interval_ms: 1500,
+            foreground_tool_output_tail_max_chars: 2000,
+            foreground_tool_output_emit_interval_ms: 1500,
             tool_run_terminal_ttl_secs: 600,
             mcp_max_binary_base64_bytes: 2 * 1024 * 1024,
             mcp_max_sse_buffer_bytes: 2 * 1024 * 1024,
@@ -381,8 +374,6 @@ impl Default for ContextLimitsConfig {
             clipboard_history_entries: 10,
             clipboard_history_max_entries: 100,
             clipboard_entry_max_chars: 2_000,
-            max_pending_scheduled_tool_runs: 32,
-            scheduled_tool_runs_due_horizon_secs: 365 * 24 * 3600,
             max_running_background_tool_runs: MAX_RUNNING_BACKGROUND_TOOL_RUNS,
             event_chunk_batch_max_bytes: 8 * 1024,
             input_ring_buffer_secs: 20,

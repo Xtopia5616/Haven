@@ -9,7 +9,7 @@ type InteractionReducerAction = SessionActionOf<
 	| 'session/asks-settled'
 	| 'session/ask-resolved'
 	| 'session/interaction-resolution-result'
-	| 'session/scheduled-tool-run-cancelled'
+	| 'session/schedule-run-cancelled'
 >;
 
 export function reduceInteraction(
@@ -123,15 +123,15 @@ export function reduceInteraction(
 				},
 			};
 		}
-		case 'session/scheduled-tool-run-cancelled':
+		case 'session/schedule-run-cancelled':
 			return {
 				...state,
 				interactions: Object.fromEntries(
 					Object.entries(state.interactions).filter(
 						([, request]) =>
 							request.status !== 'pending' ||
-							request.owner.kind !== 'scheduled_tool_run' ||
-							request.owner.toolRunId !== action.toolRunId,
+							request.owner.kind !== 'schedule_run' ||
+							request.owner.scheduleRunId !== action.scheduleRunId,
 					),
 				),
 			};
@@ -147,8 +147,8 @@ function hasValidOwnerContext(request: InteractionRequest): boolean {
 	switch (request.owner.kind) {
 		case 'session':
 			return Boolean(request.sessionId) && request.sessionId === request.owner.sessionId;
-		case 'scheduled_tool_run':
-			return Boolean(request.owner.toolRunId);
+		case 'schedule_run':
+			return Boolean(request.owner.scheduleRunId);
 		case 'app_command':
 			return request.sessionId === undefined;
 	}

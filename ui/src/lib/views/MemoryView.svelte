@@ -30,6 +30,7 @@
 	} from '$lib/sessionCommands.ts';
 	import { registerSessionLifecycleListener } from '$lib/events.ts';
 	import { clearToolRunHistory, listToolRunHistory } from '$lib/toolRunCommands.ts';
+	import { cancelSchedule, listSchedules } from '$lib/scheduleCommands.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import RefreshButton from '$lib/RefreshButton.svelte';
@@ -39,6 +40,7 @@
 	import SessionHistory from './SessionHistory.svelte';
 	import MemoryCenter from './MemoryCenter.svelte';
 	import ToolRunCenter from '$lib/ToolRunCenter.svelte';
+	import ScheduleCenter from '$lib/ScheduleCenter.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
 	import type { TauriCommandRequest } from '$lib/contracts/generatedCommands.ts';
@@ -52,6 +54,7 @@
 		MemoryRecallState,
 	} from '$lib/contracts/memory.ts';
 	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
+	import type { SchedulePlanPayload } from '$lib/contracts/schedule.ts';
 	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 
@@ -66,11 +69,9 @@
 	interface Props extends Pick<
 		ComponentProps<typeof ToolRunCenter>,
 		| 'runningBackgroundToolRuns'
-		| 'pendingScheduledToolRuns'
 		| 'toolRunStatusLabel'
 		| 'sessionTitleFor'
 		| 'toolRunDuration'
-		| 'scheduledToolRunCountdown'
 		| 'onOpenSession'
 		| 'onCancel'
 	> {
@@ -82,11 +83,9 @@
 		isVisible = true,
 		onNewSession = () => {},
 		runningBackgroundToolRuns = [],
-		pendingScheduledToolRuns = [],
 		toolRunStatusLabel = (status) => status || '',
 		sessionTitleFor = () => '',
 		toolRunDuration = () => '',
-		scheduledToolRunCountdown = () => '',
 		onOpenSession = () => {},
 		onCancel = () => {},
 	}: Props = $props();
@@ -126,6 +125,9 @@
 	let toolRunHistory = $state<ToolRunPayload[]>([]);
 	let toolRunHistoryLoading = $state(false);
 	let toolRunHistoryFailed = $state(false);
+	let schedules = $state<SchedulePlanPayload[]>([]);
+	let schedulesLoading = $state(false);
+	let schedulesFailed = $state(false);
 	let memoryRecall = $state<MemoryRecallState>({
 		query: '',
 		kind: 'all',
@@ -206,15 +208,19 @@
 	});
 	$effect(() => {
 		if (activeTab !== 'tasks') return;
-		loadTaskHistory();
+		refreshTaskHistory();
 	});
+
+	async function refreshTaskHistory() {
+		await Promise.all([loadTaskHistory(), loadSchedules()]);
+	}
 
 	async function loadTaskHistory() {
 		const sequence = ++loadTaskHistorySeq;
 		toolRunHistoryLoading = true;
 		toolRunHistoryFailed = false;
 		try {
-			const rows = await listToolRunHistory(undefined, 100);
+			const rows = await listToolRunHistory(100);
 			if (sequence !== loadTaskHistorySeq) return;
 			toolRunHistory = rows;
 		} catch (e) {
@@ -224,6 +230,33 @@
 			reportError(e, { context: 'MemoryView', message: '加载任务历史失败', log: false });
 		} finally {
 			if (sequence === loadTaskHistorySeq) toolRunHistoryLoading = false;
+		}
+	}
+
+	async function loadSchedules() {
+		schedulesLoading = true;
+		schedulesFailed = false;
+		try {
+			schedules = await listSchedules();
+		} catch (e) {
+			schedules = [];
+			schedulesFailed = true;
+			reportError(e, { context: 'MemoryView', message: '加载定时任务失败', log: false });
+		} finally {
+			schedulesLoading = false;
+		}
+	}
+
+	async function handleCancelSchedule(scheduleId: string, sessionId: string) {
+		try {
+			if (!(await cancelSchedule(scheduleId, sessionId))) {
+				await loadSchedules();
+				addNotification('定时计划未取消，已重新同步状态', 'warning', 2500);
+				return;
+			}
+			await loadSchedules();
+		} catch (error) {
+			reportError(error, { context: 'MemoryView', message: '取消定时计划失败', log: false });
 		}
 	}
 
@@ -431,7 +464,7 @@
 		clearingTasks = true;
 		try {
 			const count = await clearToolRunHistory();
-			await loadTaskHistory();
+			await refreshTaskHistory();
 			addNotification(`已清空 ${count} 条任务历史`, 'success', 3000);
 		} catch (error) {
 			reportError(error, { context: 'MemoryView', message: '清空任务历史失败', log: false });
@@ -723,13 +756,13 @@
 					{:else if activeTab === 'tasks'}
 						<WorkspaceSectionHeader
 							title="任务历史"
-							description="查看后台任务和定时任务的当前状态及最近历史。"
+							description="查看后台工具调用和独立的定时计划。"
 						>
 							{#snippet children()}
 								<RefreshButton
-									loading={toolRunHistoryLoading}
+								loading={toolRunHistoryLoading || schedulesLoading}
 									disabled={clearingTasks}
-									onclick={loadTaskHistory}
+								onclick={refreshTaskHistory}
 								/>
 								<MaterialButton
 									variant="danger"
@@ -738,23 +771,30 @@
 									onclick={() => (showClearTasksDialog = true)}
 									disabled={clearingTasks ||
 										toolRunHistoryLoading ||
-										toolRunHistory.length === 0}
+										(toolRunHistory.length === 0 && runningBackgroundToolRuns.length === 0)}
 								/>
 							{/snippet}
 						</WorkspaceSectionHeader>
 						<ToolRunCenter
 							{runningBackgroundToolRuns}
-							{pendingScheduledToolRuns}
 							{toolRunHistory}
 							{toolRunHistoryLoading}
 							{toolRunHistoryFailed}
-							onRefreshTaskHistory={loadTaskHistory}
+							onRefreshTaskHistory={refreshTaskHistory}
 							{toolRunStatusLabel}
 							{sessionTitleFor}
 							{toolRunDuration}
-							{scheduledToolRunCountdown}
 							{onOpenSession}
 							{onCancel}
+						/>
+						<ScheduleCenter
+							{schedules}
+							loading={schedulesLoading}
+							failed={schedulesFailed}
+							sessionTitleFor={(sessionId) => sessionTitleFor({ sessionId })}
+							onRefresh={loadSchedules}
+							onCancel={handleCancelSchedule}
+							onOpenSession={onOpenSession}
 						/>
 					{:else}
 						<div class="memory-tools-view" aria-label="长期记忆">

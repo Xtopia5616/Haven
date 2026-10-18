@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 48;
+pub const SCHEMA_VERSION: i32 = 53;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -25,24 +25,24 @@ const SCHEMA_SQL: &[&str] = &[
         creation_method TEXT NOT NULL DEFAULT 'new'
             CHECK(creation_method IN ('new','agent_spawn','fork','scheduled')),
         source_kind TEXT NOT NULL DEFAULT 'none'
-            CHECK(source_kind IN ('none','session','message','tool_run')),
+            CHECK(source_kind IN ('none','session','message','schedule_run')),
         source_session_id TEXT,
         source_message_id TEXT,
-        source_tool_run_id TEXT,
+        source_schedule_run_id TEXT,
         CHECK((creator = 'user' AND creation_method = 'new' AND source_kind = 'none'
-                AND source_session_id IS NULL AND source_message_id IS NULL AND source_tool_run_id IS NULL)
+                AND source_session_id IS NULL AND source_message_id IS NULL AND source_schedule_run_id IS NULL)
             OR (creator = 'system' AND creation_method = 'new' AND source_kind = 'none'
-                AND source_session_id IS NULL AND source_message_id IS NULL AND source_tool_run_id IS NULL)
+                AND source_session_id IS NULL AND source_message_id IS NULL AND source_schedule_run_id IS NULL)
             OR (creator = 'agent' AND creation_method = 'agent_spawn' AND source_kind = 'session'
                 AND source_session_id IS NOT NULL AND length(trim(source_session_id)) > 0
-                AND source_message_id IS NULL AND source_tool_run_id IS NULL)
+                AND source_message_id IS NULL AND source_schedule_run_id IS NULL)
             OR (creator = 'user' AND creation_method = 'fork' AND source_kind = 'message'
                 AND source_session_id IS NOT NULL AND length(trim(source_session_id)) > 0
                 AND source_message_id IS NOT NULL AND length(trim(source_message_id)) > 0
-                AND source_tool_run_id IS NULL)
-            OR (creator = 'scheduler' AND creation_method = 'scheduled' AND source_kind = 'tool_run'
+                AND source_schedule_run_id IS NULL)
+            OR (creator = 'scheduler' AND creation_method = 'scheduled' AND source_kind = 'schedule_run'
                 AND source_session_id IS NULL AND source_message_id IS NULL
-                AND source_tool_run_id IS NOT NULL AND length(trim(source_tool_run_id)) > 0))
+                AND source_schedule_run_id IS NOT NULL AND length(trim(source_schedule_run_id)) > 0))
     )",
     // Explicit symmetric links connect independent sessions without changing
     // their creation provenance. IDs intentionally have no FK so a deleted
@@ -182,31 +182,16 @@ const SCHEMA_SQL: &[&str] = &[
     )",
     "CREATE TABLE IF NOT EXISTS tool_runs (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL DEFAULT 'scheduled'
-            CHECK(kind IN ('background','scheduled')),
-        due_at TEXT CHECK(due_at IS NULL OR due_at = '' OR (
-            length(due_at) = 24 AND
-            due_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
-            strftime('%Y-%m-%dT%H:%M:%fZ', due_at) = due_at
-        )),
-        title TEXT NOT NULL DEFAULT 'Haven',
-        body TEXT,
-        mode TEXT NOT NULL DEFAULT 'tool',
+        kind TEXT NOT NULL DEFAULT 'background' CHECK(kind = 'background'),
+        tool_name TEXT NOT NULL CHECK(length(trim(tool_name)) BETWEEN 1 AND 128),
         session_id TEXT,
         source_step_id TEXT,
-        tool_name TEXT,
-        tool_args TEXT,
-        prompt TEXT,
-        watch_tool_run_id TEXT,
-        result_summary TEXT,
-        status TEXT NOT NULL DEFAULT 'waiting'
-            CHECK(status IN ('waiting','running','completed','failed','cancelled')),
-        command TEXT,
+        status TEXT NOT NULL DEFAULT 'running'
+            CHECK(status IN ('running','completed','failed','cancelled')),
         output TEXT,
         error TEXT,
         error_reason TEXT,
         log_path TEXT,
-        exit_code INTEGER,
         started_at TEXT CHECK(started_at IS NULL OR (
             length(started_at) = 24 AND
             started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
@@ -223,25 +208,35 @@ const SCHEMA_SQL: &[&str] = &[
             strftime('%Y-%m-%dT%H:%M:%fZ', created_at) = created_at
         )
     )",
-    "CREATE TABLE IF NOT EXISTS recurring_session_tasks (
+    "CREATE TABLE IF NOT EXISTS schedules (
         id TEXT PRIMARY KEY,
-        source_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        owner_session_id TEXT NOT NULL,
+        schedule_type TEXT NOT NULL CHECK(schedule_type IN ('once','recurring_session')),
         title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 80),
         body TEXT NOT NULL CHECK(length(trim(body)) BETWEEN 1 AND 2000),
-        prompt TEXT NOT NULL CHECK(length(trim(prompt)) > 0 AND length(CAST(prompt AS BLOB)) <= 65536),
-        interval_seconds INTEGER NOT NULL CHECK(interval_seconds BETWEEN 60 AND 31536000),
-        anchor_at TEXT NOT NULL CHECK(
+        mode TEXT NOT NULL CHECK(mode IN ('tool','continue','new_session')),
+        due_at TEXT CHECK(due_at IS NULL OR (
+            length(due_at) = 24 AND
+            due_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', due_at) = due_at
+        )),
+        watch_tool_run_id TEXT,
+        tool_name TEXT,
+        tool_args TEXT CHECK(tool_args IS NULL OR json_valid(tool_args)),
+        prompt TEXT CHECK(prompt IS NULL OR length(CAST(prompt AS BLOB)) <= 65536),
+        interval_seconds INTEGER CHECK(interval_seconds IS NULL OR interval_seconds BETWEEN 60 AND 31536000),
+        anchor_at TEXT CHECK(anchor_at IS NULL OR (
             length(anchor_at) = 24 AND
             anchor_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
             strftime('%Y-%m-%dT%H:%M:%fZ', anchor_at) = anchor_at
-        ),
-        next_due_at TEXT NOT NULL CHECK(
+        )),
+        next_due_at TEXT CHECK(next_due_at IS NULL OR (
             length(next_due_at) = 24 AND
             next_due_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
             strftime('%Y-%m-%dT%H:%M:%fZ', next_due_at) = next_due_at
-        ),
+        )),
         enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
-        active_tool_run_id TEXT REFERENCES tool_runs(id) ON DELETE SET NULL,
+        active_schedule_run_id TEXT,
         created_at TEXT NOT NULL CHECK(
             length(created_at) = 24 AND
             created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
@@ -251,10 +246,54 @@ const SCHEMA_SQL: &[&str] = &[
             length(updated_at) = 24 AND
             updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
             strftime('%Y-%m-%dT%H:%M:%fZ', updated_at) = updated_at
-        )
+        ),
+        CHECK((schedule_type = 'once' AND interval_seconds IS NULL AND anchor_at IS NULL)
+            OR (schedule_type = 'recurring_session' AND mode = 'new_session'
+                AND watch_tool_run_id IS NULL AND interval_seconds IS NOT NULL
+                AND anchor_at IS NOT NULL AND next_due_at IS NOT NULL
+                AND prompt IS NOT NULL)),
+        CHECK((due_at IS NOT NULL AND watch_tool_run_id IS NULL)
+            OR (schedule_type = 'once' AND due_at IS NULL AND watch_tool_run_id IS NOT NULL))
     )",
-    "CREATE INDEX IF NOT EXISTS idx_recurring_session_tasks_due
-        ON recurring_session_tasks(enabled, next_due_at)",
+    "CREATE INDEX IF NOT EXISTS idx_schedules_due
+        ON schedules(enabled, next_due_at)",
+    "CREATE INDEX IF NOT EXISTS idx_schedules_owner
+        ON schedules(owner_session_id, enabled, next_due_at)",
+    "CREATE TABLE IF NOT EXISTS schedule_runs (
+        id TEXT PRIMARY KEY,
+        schedule_id TEXT NOT NULL,
+        owner_session_id TEXT NOT NULL,
+        due_at TEXT CHECK(due_at IS NULL OR (
+            length(due_at) = 24 AND
+            due_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', due_at) = due_at
+        )),
+        status TEXT NOT NULL CHECK(status IN ('waiting','running','completed','failed','cancelled')),
+        result_summary TEXT,
+        error_reason TEXT,
+        started_at TEXT CHECK(started_at IS NULL OR (
+            length(started_at) = 24 AND
+            started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', started_at) = started_at
+        )),
+        finished_at TEXT CHECK(finished_at IS NULL OR (
+            length(finished_at) = 24 AND
+            finished_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', finished_at) = finished_at
+        )),
+        created_at TEXT NOT NULL CHECK(
+            length(created_at) = 24 AND
+            created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', created_at) = created_at
+        ),
+        UNIQUE(schedule_id, due_at)
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_schedule_runs_owner
+        ON schedule_runs(owner_session_id, status, created_at)",
+    "CREATE TABLE IF NOT EXISTS schedule_execution_claims (
+        schedule_run_id TEXT PRIMARY KEY REFERENCES schedule_runs(id) ON DELETE CASCADE,
+        claim_id TEXT NOT NULL
+    )",
     // Durable delivery records for terminal background ToolRun results. The
     // ToolRun row is the result source; this table records whether the result
     // crossed the agent transcript boundary so a transient broadcast loss or
@@ -571,7 +610,7 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("sessions", "creator"),
     ("sessions", "creation_method"),
     ("sessions", "source_kind"),
-    ("sessions", "source_tool_run_id"),
+    ("sessions", "source_schedule_run_id"),
     ("session_links", "related_session_id"),
     ("pending_session_inputs", "disposition"),
     ("session_authorization_grants", "permission_target"),
@@ -584,13 +623,13 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("memory_items", "content"),
     ("facts", "durability"),
     ("tool_runs", "kind"),
-    ("tool_runs", "watch_tool_run_id"),
-    ("tool_runs", "result_summary"),
-    ("recurring_session_tasks", "source_session_id"),
-    ("recurring_session_tasks", "body"),
-    ("recurring_session_tasks", "prompt"),
-    ("recurring_session_tasks", "interval_seconds"),
-    ("recurring_session_tasks", "active_tool_run_id"),
+    ("tool_runs", "tool_name"),
+    ("tool_runs", "source_step_id"),
+    ("schedules", "owner_session_id"),
+    ("schedules", "active_schedule_run_id"),
+    ("schedule_runs", "schedule_id"),
+    ("schedule_runs", "status"),
+    ("schedule_execution_claims", "claim_id"),
     ("llm_usage", "call_kind"),
 ];
 
@@ -708,6 +747,9 @@ mod tests {
         for table in [
             "tool_runs",
             "tool_run_completion_outbox",
+            "schedules",
+            "schedule_runs",
+            "schedule_execution_claims",
             "embedding_lsh",
             "kv_store",
             "llm_usage",
@@ -794,14 +836,14 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_rejects_incomplete_current_tool_run_contract() {
+    fn init_schema_rejects_incomplete_current_background_tool_run_contract() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
-        conn.execute("ALTER TABLE tool_runs DROP COLUMN result_summary", [])
+        conn.execute("ALTER TABLE tool_runs DROP COLUMN source_step_id", [])
             .unwrap();
 
         let error = init_schema(&conn).unwrap_err().to_string();
-        assert!(error.contains("tool_runs.result_summary"));
+        assert!(error.contains("tool_runs.source_step_id"));
     }
 
     #[test]
@@ -812,7 +854,7 @@ mod tests {
         let tool_run_id = haven_common::types::new_id("toolrun");
         let error = conn
             .execute(
-                "INSERT INTO tool_runs (id, kind, status, created_at) VALUES (?1, 'unknown', 'waiting', '2026-09-24T10:00:00.000Z')",
+                "INSERT INTO tool_runs (id, kind, status, tool_name, created_at) VALUES (?1, 'unknown', 'running', 'test.tool', '2026-09-24T10:00:00.000Z')",
                 [&tool_run_id],
             )
             .unwrap_err();
@@ -834,7 +876,7 @@ mod tests {
             let tool_run_id = haven_common::types::new_id("toolrun");
             let error = conn
                 .execute(
-                    "INSERT INTO tool_runs (id, kind, status, created_at) VALUES (?1, 'scheduled', 'waiting', ?2)",
+                    "INSERT INTO tool_runs (id, kind, status, tool_name, created_at) VALUES (?1, 'background', 'running', 'test.tool', ?2)",
                     rusqlite::params![tool_run_id, timestamp],
                 )
                 .unwrap_err();

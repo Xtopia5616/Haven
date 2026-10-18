@@ -24,6 +24,7 @@ mod scheduled_authorization_tests {
     use super::*;
     use haven_common::types::PermissionMode;
     use haven_memory::Database;
+    use haven_memory::{SchedulePlanInput, ScheduleType};
     use haven_tools::{AuthorizationDecision, AuthorizationReasonCode};
     use serde_json::json;
     use std::sync::Arc;
@@ -280,49 +281,83 @@ mod scheduled_authorization_tests {
         ));
     }
 
-    async fn running_scheduled_tool_run(
+    struct ScheduleRunFixture {
+        schedule_run_id: String,
+        schedule_id: String,
+        owner_session_id: String,
+    }
+
+    async fn running_schedule_run(
         supervisor: &SessionSupervisor,
+        database: &Arc<Database>,
         session_id: Option<&str>,
         tool_name: &str,
-    ) -> String {
-        let _receiver = supervisor
-            .tool_run_port()
-            .take_completion_receiver()
-            .expect("scheduled receiver");
-        let tool_runs = supervisor.tool_run_test_support();
-        let tool_run_id = tool_runs
-            .schedule(haven_tools::ScheduledToolRunSpec {
-                due_at: Some((chrono::Utc::now() + chrono::Duration::seconds(3)).to_rfc3339()),
-                delay_secs: None,
-                watch_tool_run_id: None,
+    ) -> ScheduleRunFixture {
+        let owner_session_id = match session_id {
+            Some(session_id) => session_id.to_owned(),
+            None => {
+                database
+                    .create_session_with_creation(
+                        "schedule confirmation owner",
+                        haven_memory::SessionCreation::system_new(),
+                    )
+                    .unwrap()
+                    .session_id
+            }
+        };
+        let store = haven_memory::ScheduleStore::new(Arc::clone(database));
+        let plan = store
+            .create(SchedulePlanInput {
+                owner_session_id: owner_session_id.clone(),
+                schedule_type: ScheduleType::Once,
                 title: "confirmation arbitration".into(),
-                body: "test scheduled execution owner".into(),
+                body: "test ScheduleRun execution owner".into(),
                 mode: haven_tools::ScheduleMode::Tool,
-                session_id: session_id.map(str::to_owned),
+                due_at: Some(chrono::Utc::now().to_rfc3339()),
+                watch_tool_run_id: None,
                 tool_name: Some(tool_name.to_string()),
                 tool_args: Some(json!({})),
                 prompt: None,
+                interval_seconds: None,
             })
             .await
             .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(6), async {
-            loop {
-                if tool_runs.status_view(&tool_run_id).await.status()
-                    == Some(haven_common::lifecycle::ToolRunStatus::Running)
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("scheduled ToolRun should enter Running before confirmation");
-        tool_run_id
+        let fired = store
+            .claim_due(
+                (chrono::Utc::now() + chrono::Duration::seconds(1)).to_rfc3339(),
+                1,
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("due Schedule should produce a ScheduleRun");
+        assert_eq!(fired.plan.schedule_id, plan.schedule_id);
+        let schedule_run_id = fired.run.schedule_run_id;
+        assert!(
+            supervisor
+                .schedules
+                .claim_execution(&schedule_run_id, &schedule_run_id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            supervisor
+                .schedules
+                .release_execution(&schedule_run_id, &schedule_run_id)
+                .await
+                .unwrap()
+        );
+        ScheduleRunFixture {
+            schedule_run_id,
+            schedule_id: plan.schedule_id,
+            owner_session_id,
+        }
     }
 
     #[tokio::test]
     async fn scheduled_confirmation_persists_failed_tool_result_as_failed() {
-        let (supervisor, tools, _database, _directory) = test_supervisor();
+        let (supervisor, tools, database, _directory) = test_supervisor();
         let session = supervisor
             .create_session("scheduled failed result status")
             .await
@@ -358,10 +393,12 @@ mod scheduled_authorization_tests {
             AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
             decision => panic!("expected confirmation, got {decision:?}"),
         };
-        let tool_run_id =
-            running_scheduled_tool_run(&supervisor, Some(&session.session_id), tool_name).await;
+        let fixture =
+            running_schedule_run(&supervisor, &database, Some(&session.session_id), tool_name)
+                .await;
+        let schedule_run_id = fixture.schedule_run_id.clone();
         let request = crate::interaction::InteractionRequest::scheduled_confirm(
-            tool_run_id.clone(),
+            schedule_run_id.clone(),
             Some(&session.session_id),
             tool_name.into(),
             input,
@@ -375,12 +412,13 @@ mod scheduled_authorization_tests {
             .await;
 
         assert_eq!(
-            supervisor
-                .tool_run_test_support()
-                .status_view(&tool_run_id)
+            haven_memory::ScheduleStore::new(database.clone())
+                .get_run(schedule_run_id.clone())
                 .await
-                .status(),
-            Some(haven_common::lifecycle::ToolRunStatus::Failed)
+                .unwrap()
+                .unwrap()
+                .status,
+            haven_common::lifecycle::ScheduleRunStatus::Failed
         );
         assert!(matches!(
             events.try_recv(),
@@ -401,7 +439,11 @@ mod scheduled_authorization_tests {
     #[tokio::test]
     async fn scheduled_authorization_preserves_request_and_decision_behavior() {
         let (supervisor, tools, _database, _directory) = test_supervisor();
-        let session_id = "ses-00000000000000000000000000000001";
+        let session = supervisor
+            .create_session("scheduled authorization behavior")
+            .await
+            .unwrap();
+        let session_id = session.session_id.as_str();
         let tool_name = "scheduled.critical";
         let input = json!({"target": "recording"});
         tools
@@ -757,11 +799,12 @@ mod scheduled_authorization_tests {
             AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
             decision => panic!("expected confirmation, got {decision:?}"),
         };
-        let tool_run_id =
-            running_scheduled_tool_run(&supervisor, Some(&session_id), tool_name).await;
+        let fixture =
+            running_schedule_run(&supervisor, &database, Some(&session_id), tool_name).await;
+        let schedule_run_id = fixture.schedule_run_id;
         let confirmation_id = supervisor
             .request_scheduled_confirm(
-                &tool_run_id,
+                &schedule_run_id,
                 Some(&session_id),
                 tool_name,
                 input,
@@ -770,11 +813,11 @@ mod scheduled_authorization_tests {
             )
             .await
             .unwrap();
-        let owner = crate::interaction::InteractionOwner::ScheduledToolRun {
-            tool_run_id: tool_run_id.clone(),
+        let owner = crate::interaction::InteractionOwner::ScheduleRun {
+            schedule_run_id: schedule_run_id.clone(),
         };
-        let wrong_owner = crate::interaction::InteractionOwner::ScheduledToolRun {
-            tool_run_id: haven_common::types::new_id("toolrun"),
+        let wrong_owner = crate::interaction::InteractionOwner::ScheduleRun {
+            schedule_run_id: haven_common::types::new_id("schrun"),
         };
         assert!(
             supervisor
@@ -785,7 +828,7 @@ mod scheduled_authorization_tests {
         );
         assert!(
             supervisor
-                .scheduled_confirmation_request(&tool_run_id, &confirmation_id,)
+                .scheduled_confirmation_request(&schedule_run_id, &confirmation_id,)
                 .await
                 .is_some()
         );
@@ -800,7 +843,7 @@ mod scheduled_authorization_tests {
         );
         assert!(
             supervisor
-                .scheduled_confirmation_request(&tool_run_id, &confirmation_id,)
+                .scheduled_confirmation_request(&schedule_run_id, &confirmation_id,)
                 .await
                 .is_some()
         );
@@ -1110,12 +1153,13 @@ mod scheduled_authorization_tests {
 
     #[tokio::test]
     async fn scheduled_resolve_and_expiry_share_a_single_terminal_claim() {
-        let (supervisor, _tools, _database, _directory) = test_supervisor();
-        let tool_run_id = running_scheduled_tool_run(&supervisor, None, "files.write").await;
+        let (supervisor, _tools, database, _directory) = test_supervisor();
+        let fixture = running_schedule_run(&supervisor, &database, None, "files.write").await;
+        let schedule_run_id = fixture.schedule_run_id;
         let confirmation_id: haven_common::types::ConfirmId = haven_common::types::ConfirmId::new();
         supervisor
             .request_scheduled_confirm(
-                &tool_run_id,
+                &schedule_run_id,
                 None,
                 "files.write",
                 json!({"path": "notes.txt"}),
@@ -1124,8 +1168,8 @@ mod scheduled_authorization_tests {
             )
             .await
             .unwrap();
-        let owner = crate::interaction::InteractionOwner::ScheduledToolRun {
-            tool_run_id: tool_run_id.clone(),
+        let owner = crate::interaction::InteractionOwner::ScheduleRun {
+            schedule_run_id: schedule_run_id.clone(),
         };
 
         let resolve_supervisor = supervisor.clone();
@@ -1139,10 +1183,10 @@ mod scheduled_authorization_tests {
         });
         let expiry_supervisor = supervisor.clone();
         let expiry_id = confirmation_id.clone();
-        let expiry_tool_run_id = tool_run_id.clone();
+        let expiry_schedule_run_id = schedule_run_id.clone();
         let expiry = tokio::spawn(async move {
             expiry_supervisor
-                .expire_scheduled_confirmation(&expiry_tool_run_id, &expiry_id)
+                .expire_scheduled_confirmation(&expiry_schedule_run_id, &expiry_id)
                 .await
                 .unwrap()
         });
@@ -1154,7 +1198,7 @@ mod scheduled_authorization_tests {
         );
         assert!(
             supervisor
-                .scheduled_confirmation_request(&tool_run_id, &confirmation_id)
+                .scheduled_confirmation_request(&schedule_run_id, &confirmation_id)
                 .await
                 .is_none()
         );
@@ -1205,11 +1249,13 @@ mod scheduled_authorization_tests {
             AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
             decision => panic!("expected confirmation, got {decision:?}"),
         };
-        let tool_run_id =
-            running_scheduled_tool_run(&supervisor, Some(&session.session_id), tool_name).await;
+        let fixture =
+            running_schedule_run(&supervisor, &database, Some(&session.session_id), tool_name)
+                .await;
+        let schedule_run_id = fixture.schedule_run_id;
         let confirmation_id = supervisor
             .request_scheduled_confirm(
-                &tool_run_id,
+                &schedule_run_id,
                 Some(&session.session_id),
                 tool_name,
                 input,
@@ -1218,15 +1264,19 @@ mod scheduled_authorization_tests {
             )
             .await
             .unwrap();
-        let owner = crate::interaction::InteractionOwner::ScheduledToolRun {
-            tool_run_id: tool_run_id.clone(),
+        let owner = crate::interaction::InteractionOwner::ScheduleRun {
+            schedule_run_id: schedule_run_id.clone(),
         };
 
         assert!(
-            supervisor
-                .tool_run_test_support()
-                .cancel(&tool_run_id)
+            haven_memory::ScheduleStore::new(database.clone())
+                .cancel(
+                    fixture.schedule_id,
+                    fixture.owner_session_id,
+                    chrono::Utc::now().to_rfc3339(),
+                )
                 .await
+                .unwrap()
         );
         assert!(
             supervisor
@@ -1249,7 +1299,7 @@ mod scheduled_authorization_tests {
         assert!(!tool_executed.load(std::sync::atomic::Ordering::SeqCst));
         assert!(
             supervisor
-                .scheduled_confirmation_request(&tool_run_id, &confirmation_id)
+                .scheduled_confirmation_request(&schedule_run_id, &confirmation_id)
                 .await
                 .is_none()
         );
@@ -1262,10 +1312,18 @@ mod scheduled_authorization_tests {
             .create_session("serialized confirmation decisions")
             .await
             .unwrap();
+        let fixture = running_schedule_run(
+            &supervisor,
+            &database,
+            Some(&session.session_id),
+            "files.write",
+        )
+        .await;
+        let schedule_run_id = fixture.schedule_run_id;
         let confirmation_id: haven_common::types::ConfirmId = haven_common::types::ConfirmId::new();
         supervisor
             .request_scheduled_confirm(
-                "toolrun-00000000000000000000000000000002",
+                &schedule_run_id,
                 Some(&session.session_id),
                 "files.write",
                 json!({"path": "notes.txt"}),
@@ -1281,8 +1339,8 @@ mod scheduled_authorization_tests {
         // inspect or persist it.
         let gate = supervisor.confirmation_resolution_gate.clone();
         let held_gate = gate.lock().await;
-        let owner = crate::interaction::InteractionOwner::ScheduledToolRun {
-            tool_run_id: "toolrun-00000000000000000000000000000002".into(),
+        let owner = crate::interaction::InteractionOwner::ScheduleRun {
+            schedule_run_id: schedule_run_id.clone(),
         };
         let once_supervisor = supervisor.clone();
         let once_id = confirmation_id.clone();
@@ -1302,8 +1360,8 @@ mod scheduled_authorization_tests {
             let _ = session_started_tx.send(());
             session_supervisor
                 .resolve_confirmation_with_session_grant_for_owner(
-                    &crate::interaction::InteractionOwner::ScheduledToolRun {
-                        tool_run_id: "toolrun-00000000000000000000000000000002".into(),
+                    &crate::interaction::InteractionOwner::ScheduleRun {
+                        schedule_run_id: schedule_run_id.clone(),
                     },
                     &session_id_for_call,
                     haven_common::types::PermissionTarget::Operation,
@@ -1476,10 +1534,10 @@ mod interaction_owner_route_tests {
             &session_request
         ));
 
-        let tool_run_id = "toolrun-1234567890abcdef1234567890abcdef";
+        let schedule_run_id = "schrun-1234567890abcdef1234567890abcdef";
         let receipt = future_receipt("files.write");
         let scheduled_request = crate::interaction::InteractionRequest::scheduled_confirm(
-            tool_run_id.into(),
+            schedule_run_id.into(),
             Some(session_id),
             "files.write".into(),
             json!({"path": "notes.txt"}),
@@ -1487,8 +1545,8 @@ mod interaction_owner_route_tests {
             "scheduled".into(),
         );
         assert!(interaction_owner_matches_request(
-            &crate::interaction::InteractionOwner::ScheduledToolRun {
-                tool_run_id: tool_run_id.into()
+            &crate::interaction::InteractionOwner::ScheduleRun {
+                schedule_run_id: schedule_run_id.into()
             },
             &scheduled_request
         ));

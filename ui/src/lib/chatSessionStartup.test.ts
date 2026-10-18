@@ -46,6 +46,7 @@ function resume(
 			status,
 			created_at: '',
 			updated_at: '',
+			creation: { creator: 'user', method: 'new', source: { kind: 'none' } },
 		},
 		messages: [],
 		steps: [],

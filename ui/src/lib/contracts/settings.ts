@@ -64,8 +64,8 @@ const FLOAT_NONNEGATIVE_FIELDS = new Set([
 // IPC decoder would reject only after the renderer has invoked the command.
 const NUMERIC_FIELDS = new Set([
 	'attachment_image_jpeg_quality',
-	'background_tool_run_output_emit_interval_ms',
-	'background_tool_run_tail_max_chars',
+	'foreground_tool_output_emit_interval_ms',
+	'foreground_tool_output_tail_max_chars',
 	'clipboard_entry_max_chars',
 	'clipboard_history_entries',
 	'clipboard_history_max_entries',
@@ -110,7 +110,6 @@ const NUMERIC_FIELDS = new Set([
 	'max_observation_chars',
 	'max_output_chars',
 	'max_output_lines',
-	'max_pending_scheduled_tool_runs',
 	'max_retries',
 	'max_running_background_tool_runs',
 	'max_steps_per_run',
@@ -142,7 +141,6 @@ const NUMERIC_FIELDS = new Set([
 	'retry_max_retries',
 	'retry_max_secs',
 	'sanitize_field_max_chars',
-	'scheduled_tool_runs_due_horizon_secs',
 	'search_max_file_size_bytes',
 	'search_max_results',
 	'search_snippet_chars',
@@ -245,8 +243,6 @@ export const RESOURCE_LIMIT_BOUNDS = {
 	toolsPerRequest: { min: 1, max: 350 },
 	clipboardEntries: { min: 0, max: 100 },
 	clipboardEntryChars: { min: 0, max: 100_000 },
-	pendingScheduledRuns: { min: 0, max: 10_000 },
-	scheduledHorizonSecs: { min: 0, max: 10 * 365 * 24 * 60 * 60 },
 	eventChunkBatchBytes: { min: 0, max: 256 * 1024 },
 	mcpHealthIntervalSecs: { min: 1, max: 3_600 },
 	mcpReconnectDelayMs: { min: 1, max: 600_000 },
@@ -556,8 +552,6 @@ function findInvalidResourceLimits(value: unknown): string | null {
 			['clipboard_history_entries', RESOURCE_LIMIT_BOUNDS.clipboardEntries],
 			['clipboard_history_max_entries', RESOURCE_LIMIT_BOUNDS.clipboardEntries],
 			['clipboard_entry_max_chars', RESOURCE_LIMIT_BOUNDS.clipboardEntryChars],
-			['max_pending_scheduled_tool_runs', RESOURCE_LIMIT_BOUNDS.pendingScheduledRuns],
-			['scheduled_tool_runs_due_horizon_secs', RESOURCE_LIMIT_BOUNDS.scheduledHorizonSecs],
 			['event_chunk_batch_max_bytes', RESOURCE_LIMIT_BOUNDS.eventChunkBatchBytes],
 		] as const) {
 			const limit = value.context_limits[field];

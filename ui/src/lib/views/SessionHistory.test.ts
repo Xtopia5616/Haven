@@ -62,6 +62,7 @@ describe('SessionHistory actions', () => {
 			updated_at: '2026-09-06T03:00:00Z',
 			title: null,
 			input_text: '整理研究资料',
+			creation: { creator: 'user', method: 'new', source: { kind: 'none' } },
 		};
 		render(SessionHistory, {
 			...commonProps,
@@ -91,6 +92,7 @@ describe('SessionHistory actions', () => {
 			updated_at: '2026-09-06T03:00:00Z',
 			title: null,
 			input_text: '整理研究资料',
+			creation: { creator: 'user', method: 'new', source: { kind: 'none' } },
 		};
 		render(SessionHistory, { ...commonProps, sessions: [session], onResume });
 
@@ -112,6 +114,7 @@ describe('SessionHistory actions', () => {
 					updated_at: '2026-09-06T03:00:00Z',
 					title: null,
 					input_text: '',
+					creation: { creator: 'user', method: 'new', source: { kind: 'none' } },
 				},
 			],
 		});
@@ -130,6 +133,7 @@ describe('SessionHistory actions', () => {
 			updated_at: '2026-09-06T03:00:00Z',
 			title: null,
 			input_text: '',
+			creation: { creator: 'user', method: 'new', source: { kind: 'none' } },
 		};
 		render(SessionHistory, {
 			...commonProps,

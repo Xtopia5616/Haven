@@ -91,6 +91,7 @@ impl ToolBuiltins {
                 #[cfg(windows)]
                 windows_container_execution: runtime.windows_container_execution.clone(),
             },
+            schedule_service: runtime.schedule_service.clone(),
         }
     }
 }

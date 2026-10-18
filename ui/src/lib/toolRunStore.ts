@@ -2,7 +2,7 @@ import { derived, writable } from 'svelte/store';
 import logger from '$lib/logger.ts';
 import { reportError } from '$lib/errorHandling.ts';
 import { cancelToolRunCommand, listToolRunHistory, listToolRunRows } from './toolRunCommands.ts';
-import { type ToolRunKind, type ToolRunPayload } from './contracts/toolRun.ts';
+import { type ToolRunPayload } from './contracts/toolRun.ts';
 import { appSessionReducer, backgroundToolRunResultContent } from './sessionReducer.ts';
 
 interface ToolRunState {
@@ -69,11 +69,11 @@ let activeTimelineSessionId: string | null = null;
 
 /** Live board rows that must never be evicted to make room for history. */
 function isLiveToolRunRow(entry: ToolRunPayload) {
-	return entry.status === 'waiting' || entry.status === 'running';
+	return entry.status === 'running';
 }
 
 function toolRunRecency(toolRun: ToolRunPayload): string {
-	return toolRun.finishedAt || toolRun.startedAt || toolRun.dueAt || '';
+	return toolRun.finishedAt || toolRun.startedAt || '';
 }
 
 function trimLiveBoardIds(ids: string[], payloadsById: Record<string, ToolRunPayload>) {
@@ -189,7 +189,7 @@ export async function refreshSessionToolRuns(sessionId: string) {
 	sessionToolRunRefreshRequests.set(sessionId, requestId);
 	const stateVersion = sessionToolRunVersions.get(sessionId) || 0;
 	try {
-		const rows = await listToolRunHistory(undefined, SESSION_TOOL_RUN_MAX, sessionId);
+		const rows = await listToolRunHistory(SESSION_TOOL_RUN_MAX, sessionId);
 		if (sessionToolRunRefreshRequests.get(sessionId) !== requestId) return;
 		const preserveEvents = (sessionToolRunVersions.get(sessionId) || 0) !== stateVersion;
 		toolRunState.update((current) => {
@@ -293,8 +293,8 @@ export function resetToolRunStoreForTest() {
 	toolRunState.set(EMPTY_TOOL_RUN_STATE);
 }
 
-export async function cancelToolRun(toolRunId: string, kind: ToolRunKind = 'background') {
-	return cancelToolRunCommand({ toolRunId, kind });
+export async function cancelToolRun(toolRunId: string) {
+	return cancelToolRunCommand({ toolRunId });
 }
 
 /**

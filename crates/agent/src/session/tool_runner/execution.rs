@@ -8,7 +8,7 @@ pub(super) struct GatedToolExecutionRequest<'a> {
     pub(super) receipt: Option<haven_tools::ConfirmationReceipt>,
     pub(super) step_id: Option<&'a str>,
     pub(super) nested_confirmation: Option<haven_tools::NestedConfirmationRequest>,
-    pub(super) tool_run_id: Option<&'a str>,
+    pub(super) parent_execution_id: Option<&'a str>,
 }
 
 impl SessionSupervisor {
@@ -324,7 +324,7 @@ impl SessionSupervisor {
                 receipt,
                 step_id: Some(step_id),
                 nested_confirmation,
-                tool_run_id: None,
+                parent_execution_id: None,
             })
             .await
         {
@@ -503,7 +503,7 @@ impl SessionSupervisor {
             receipt,
             step_id,
             nested_confirmation: None,
-            tool_run_id: None,
+            parent_execution_id: None,
         })
         .await
     }
@@ -520,16 +520,25 @@ impl SessionSupervisor {
             receipt,
             step_id,
             nested_confirmation,
-            tool_run_id,
+            parent_execution_id,
         } = request;
+        let background_tool = if tool_name == "toolrun.start" {
+            Some(haven_tools::parse_toolrun_start(&input).map_err(anyhow::Error::msg)?)
+        } else {
+            None
+        };
+        let (authorization_tool_name, authorization_input) = background_tool
+            .as_ref()
+            .map(|target| (target.tool_name.as_str(), &target.input))
+            .unwrap_or((tool_name, &input));
         let authorization_request = self
             .authorization
-            .authorization_request(session_id, tool_name, &input)
+            .authorization_request(session_id, authorization_tool_name, authorization_input)
             .await
             .map_err(anyhow::Error::msg)?;
         let risk_level = self
             .authorization
-            .risk_level(session_id, tool_name, &input)
+            .risk_level(session_id, authorization_tool_name, authorization_input)
             .await
             .map_err(anyhow::Error::msg)?;
         let mut confirmed: Option<bool> = None;
@@ -659,7 +668,7 @@ impl SessionSupervisor {
             Some(self.codemode_subcall_port_with_resume(
                 session_id,
                 definitions.into_iter().map(|definition| definition.name),
-                tool_run_id.or(step_id),
+                parent_execution_id.or(step_id),
                 nested_confirmation.clone(),
             )?)
         } else {
@@ -667,13 +676,21 @@ impl SessionSupervisor {
         };
         let context = ToolExecutionContext {
             session_id: session_id.map(str::to_owned),
-            tool_name: tool_name.to_owned(),
-            input,
+            tool_name: background_tool
+                .as_ref()
+                .map(|target| target.tool_name.clone())
+                .unwrap_or_else(|| tool_name.to_owned()),
+            input: background_tool
+                .as_ref()
+                .map(|target| target.input.clone())
+                .unwrap_or(input),
             cancel,
             step_id: step_id.map(str::to_owned),
             authorization_proof: Some(execution_proof),
         };
-        let result = if let Some(subcalls) = codemode_subcalls {
+        let result = if background_tool.is_some() {
+            self.execution.start_background_tool(context).await?
+        } else if let Some(subcalls) = codemode_subcalls {
             self.execution.execute_codemode(context, subcalls).await?
         } else {
             self.execution.execute(context).await?

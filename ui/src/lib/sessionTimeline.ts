@@ -152,19 +152,8 @@ export interface SessionTimelineOptions {
 }
 
 function toolRunOrderTime(toolRun: ToolRunPayload): number | null {
-	// A scheduled run gains `startedAt` when it fires, but its `dueAt` remains
-	// the stable ordering key. Sorting it by `startedAt` first could move it
-	// past sibling schedules merely because its lifecycle advanced.
-	const candidates =
-		toolRun.kind === 'scheduled'
-			? [toolRun.dueAt, toolRun.startedAt]
-			: [toolRun.startedAt, toolRun.dueAt];
-	for (const candidate of candidates) {
-		if (!candidate) continue;
-		const timestamp = Date.parse(candidate);
-		if (Number.isFinite(timestamp)) return timestamp;
-	}
-	return null;
+	const timestamp = Date.parse(toolRun.startedAt ?? '');
+	return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function compareToolRuns(left: ToolRunPayload, right: ToolRunPayload): number {
@@ -193,9 +182,8 @@ export function firstWaitingBackgroundToolRunId(
 }
 
 /**
- * Place scheduled ToolRun cards after their source work item. Background
- * ToolRuns with a visible source are projected into that tool call's result
- * card; only rows without a visible source get a standalone timeline item.
+ * Background ToolRuns with a visible source are projected into that tool
+ * call's result card; only rows without a visible source get a standalone item.
  * Keep live work at the end of the timeline, then let it return to its source
  * position once it finishes. Ownership comes from validated ToolRunEvent data.
  */
@@ -211,7 +199,6 @@ export function groupSessionTimeline(
 	const orderedToolRuns = [...toolRuns].sort(compareToolRuns);
 	const firstWaitingToolRunId =
 		firstWaitingBackgroundToolRunId(orderedToolRuns, awaitingBackground) ?? undefined;
-	const insertions = new Map<number, ToolRunPayload[]>();
 	const trailing: ToolRunPayload[] = [];
 	const runningSourceIndexes = new Set<number>();
 
@@ -232,22 +219,7 @@ export function groupSessionTimeline(
 			continue;
 		}
 		if (toolRun.status === 'running') runningSourceIndexes.add(sourceIndex);
-		const timelineIndex = transcriptItems.findIndex((item) =>
-			item.kind === 'message'
-				? item.index === sourceIndex
-				: item.kind === 'activity' &&
-					item.entries.some((entry) => entry.index === sourceIndex),
-		);
-		if (timelineIndex < 0) {
-			trailing.push(toolRun);
-			continue;
-		}
-		if (toolRun.kind === 'background') {
-			continue;
-		}
-		const anchored = insertions.get(timelineIndex) || [];
-		anchored.push(toolRun);
-		insertions.set(timelineIndex, anchored);
+		// The source tool card owns the execution projection when still present.
 	}
 
 	const result: SessionTimelineItem[] = [];
@@ -265,9 +237,7 @@ export function groupSessionTimeline(
 	const toolRunItem = (toolRun: ToolRunPayload): SessionTimelineToolRunItem => {
 		const awaitingResult = toolRun.toolRunId === firstWaitingToolRunId;
 		const terminalOutputAlreadyInTranscript =
-			toolRun.kind === 'background' &&
 			toolRun.status !== 'running' &&
-			toolRun.status !== 'waiting' &&
 			messages.some(
 				(message) =>
 					message.sourceToolRunId === toolRun.toolRunId &&
@@ -284,13 +254,7 @@ export function groupSessionTimeline(
 		};
 	};
 
-	transcriptItems.forEach((item, index) => {
-		const hasLiveSource = isLiveTimelineItem(item);
-		appendTimelineItem(item);
-		for (const toolRun of insertions.get(index) || []) {
-			appendTimelineItem(toolRunItem(toolRun), hasLiveSource);
-		}
-	});
+	transcriptItems.forEach((item) => appendTimelineItem(item));
 	for (const toolRun of trailing) appendTimelineItem(toolRunItem(toolRun));
 	result.push(...activeItems);
 

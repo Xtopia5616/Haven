@@ -18,7 +18,8 @@
 | `add_mcp_server` | execute | AuthorizationPort; typed native admin operation validates and persists config |
 | `cancel_chatgpt_plan_login` | mutate | cancels one in-memory OAuth attempt and aborts its loopback callback listener |
 | `cancel_recording` | execute | cancel clears the in-flight recording id |
-| `cancel_tool_run` | mutate | kind is enum; cancel only the selected task kind |
+| `cancel_schedule` | mutate | canonical schedule and owner-session IDs; owner-scoped cancellation |
+| `cancel_tool_run` | mutate | only a canonical toolrun ID can cancel background tool execution |
 | `check_llm_connection` | read | status and non-sensitive reason only; no endpoint or provider payload |
 | `check_shell_available` | read | availability boolean only |
 | `clear_facts` | mutate | delete all saved long-term facts and invalidate derived caches |
@@ -57,6 +58,7 @@
 | `list_mcp_resources` | execute | explicit host discovery; enabled live target binding; bounded opaque resource metadata |
 | `list_mcp_servers` | read | snapshot only; env values redacted; invocation remains gated |
 | `list_runtime_sessions` | read | resident nonterminal runtime sessions only |
+| `list_schedules` | read | safe projection excludes dynamic arguments and continuation prompt |
 | `list_session_history` | read | read-only session projection |
 | `list_session_permissions` | read | typed session grants with exact session, capability, target, and effect |
 | `list_skills` | read | metadata projection |
@@ -147,13 +149,7 @@ Agent 事件由 `TauriEmitter` 映射，命令直接发送的事件也必须使�
 | `cancel_tool_run` | mutate | 取消指定任务 |
 | `list_tool_run_history` | read | 有界终态历史，可按 session 过滤 |
 
-`ToolRunEvent` 是任务面板的唯一公开记录：`{ tool_run_id, kind, status?, session_id?, source_step_id?, started_at?,
-finished_at?, due_at?, title?, body?, mode?, command?, output?, error?, error_reason?,
-exit_code?, preview? }`。`source_step_id` 仅用于将由 Agent 工具调用启动的后台任务关联回来源步骤；定时任务、旧任务和无 session 的 shell 调用可以省略。`status` 只能是 `waiting`、`running`、`completed`、`failed`、
-`cancelled`；`kind` 才区分 `background` 与 `scheduled`。它不包含动态 `tool_args`、续接 `prompt`、`tool_name` 或本地
-`log_path`；这些是执行内部字段，不能作为跨端契约或泄漏到 UI。
-
-定时任务从 `waiting` 进入 `running` 的 `tool_run:updated` 必须带 `started_at`；内部生命周期状态与时间戳由同一个 typed state 表达，App projection 展平为上述 wire DTO。等待期间取消的定时任务可以没有 `started_at`。
+`ToolRunEvent` 是后台任务面板的唯一公开记录：`{ tool_run_id, kind: 'background', tool_name, status?, session_id?, source_step_id?, started_at?, finished_at?, output?, error?, error_reason?, preview? }`。`source_step_id` 将由 Agent ToolCall 启动的后台工具调用关联回来源步骤。状态只能是 `running`、`completed`、`failed`、`cancelled`。ToolRun 不携带 Schedule 字段、Shell 命令或解释器、退出码、动态 `tool_args`、续接 `prompt` 或本地 `log_path`；目标工具名是必填字段。
 
 ## 任务事件（v1）
 
@@ -163,14 +159,13 @@ exit_code?, preview? }`。`source_step_id` 仅用于将由 Agent 工具调用启
 
 | 事件 | Rust DTO（wire） | 生产者 | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|---|
-| `tool_run:created` | `ToolRunEvent` | 后台任务创建 / 定时任务建立 | 根布局 `toolRunStore` | 在任务对用户可见前发送；按 `tool_run_id` 覆盖合并，重复安全。 |
-| `tool_run:updated` | `ToolRunEvent` | 后台任务关联会话 / 定时任务触发或回退 | 根布局 `toolRunStore` | 按 `tool_run_id` 合并；定时任务用它表达 `waiting ↔ running` 的 live 状态，重复安全。 |
-| `tool_run:output` | `ToolRunEvent` | 后台任务输出尾部变化 | 根布局 `toolRunStore` | 仅后台任务；可丢失、可重复，按 `tool_run_id` 最后写入。输出已受后端尾部上限约束。 |
-| `tool_run:finished` | `ToolRunEvent` | 后台任务终态 / 定时任务完成、失败或取消 | 根布局与聊天页 | 终态后不再期待同一任务的 `output`；后台按 `tool_run_id` 合并，定时任务从 live 列表移除。事件丢失时由 `list_tool_runs` reconciliation 修复。 |
+| `tool_run:created` | `ToolRunEvent` | 后台工具调用创建 | 根布局 `toolRunStore` | 在任务对用户可见前发送；按 `tool_run_id` 覆盖合并，重复安全。 |
+| `tool_run:updated` | `ToolRunEvent` | 后台任务关联会话 | 根布局 `toolRunStore` | 按 `tool_run_id` 合并，重复安全。 |
+| `tool_run:finished` | `ToolRunEvent` | 后台工具调用终态 | 根布局与聊天页 | 后台按 `tool_run_id` 合并；事件丢失时由 `list_tool_runs` / `list_tool_run_history` reconciliation 修复。 |
 
 wire 身份字段为 `tool_run_id`；contracts mapper 在边界将其映射为页面 DTO 的 `toolRunId`。
-页面只读取 camelCase DTO，不直接读取 snake_case wire 字段。`tool_args`、续接 `prompt`、
-`tool_name` 和本地 `log_path` 等执行内部字段不属于此 payload，也不得进入 UI。
+页面只读取 camelCase DTO，不直接读取 snake_case wire 字段。前台流式输出仍使用独立的
+`agent:tool_output`；Schedule 通过自身 DTO 与命令管理，不进入 ToolRun 事件。
 
 ## 设置诊断命令（v1）
 
@@ -231,7 +226,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `mute:changed` | `MuteChangedEvent { muted }` | 根布局、设置页 | 最新值覆盖；只含布尔状态。 |
 | `mcp:status_change` | `McpStatusChangedEvent { name, status }` | 工具视图、根布局 | 按 server name 合并；`Offline.error` 为净化错误，不含 env。 |
 | `skills:status_change` | `SkillsStatusChangedEvent { op }` | 技能视图 | refresh 通知可丢失，消费者重新读取受管 skills root。 |
-| `interaction:requested` | `InteractionRequestedEvent { request_id, owner, session_id?, kind: InteractionKind, status: InteractionStatus, options?, tool_name?, risk_level?, summary?, permission_key?, invocation_step_id?, tool_index?, tool_call_id?, created_at, expires_at? }` | 聊天页 | `kind/status` 使用 Agent Rust enum 并生成前端类型和值集合；`owner` 仍是显式运行时路由元数据：`session { session_id }`、`scheduled_tool_run { tool_run_id }` 或 `app_command`；不包含 continuation。除 `request_id`、`owner`、`kind`、`status`、`created_at` 外，以上列表中带 `?` 的字段在 wire 上可省略；renderer 再按 `kind`/`owner` 校验展示必需字段（ADR 1078）。`session_id` 仅表示可选真实关联上下文；Session owner 必须与其相同，AppCommand 不带该上下文，ScheduledToolRun 可不关联会话。resume 投影明确为 Session owner。Ask 正文只存在 transcript，事件按 `request_id` 关联状态/选项，不重复携带正文或占位 prompt。confirm 原始参数、receipt 不跨边界，renderer 只收到安全摘要，决策仍由后端校验；前端映射为 `requestId` 后按请求身份幂等覆盖。durable clear event 使用 `request_ids`，replay 兼容旧持久 payload 的 `id` / `ids`，UI 不接受旧字段（ADR 0996）。 |
+| `interaction:requested` | `InteractionRequestedEvent { request_id, owner, session_id?, kind: InteractionKind, status: InteractionStatus, options?, tool_name?, risk_level?, summary?, permission_key?, invocation_step_id?, tool_index?, tool_call_id?, created_at, expires_at? }` | 聊天页 | `kind/status` 使用 Agent Rust enum 并生成前端类型和值集合；`owner` 仍是显式运行时路由元数据：`session { session_id }`、`schedule_run { schedule_run_id }` 或 `app_command`；不包含 continuation。除 `request_id`、`owner`、`kind`、`status`、`created_at` 外，以上列表中带 `?` 的字段在 wire 上可省略；renderer 再按 `kind`/`owner` 校验展示必需字段（ADR 1078）。`session_id` 仅表示可选真实关联上下文；Session owner 必须与其相同，AppCommand 不带该上下文，ScheduleRun 可不关联会话。resume 投影明确为 Session owner。Ask 正文只存在 transcript，事件按 `request_id` 关联状态/选项，不重复携带正文或占位 prompt。confirm 原始参数、receipt 不跨边界，renderer 只收到安全摘要，决策仍由后端校验；前端映射为 `requestId` 后按请求身份幂等覆盖。durable clear event 使用 `request_ids`，replay 兼容旧持久 payload 的 `id` / `ids`，UI 不接受旧字段（ADR 0996）。 |
 | `hotkey:conflict` / `hotkey:rebind` | `HotkeyConflictEvent` / `HotkeyRebindEvent` | 根布局、设置页 | 仅报告绑定状态；不执行 renderer 传入的快捷键。 |
 | `llm:config_changed` | `()` | 设置页、模型页 | 无 payload；通知页面重新读取脱敏配置。 |
 | `agent:thought` | `AgentThoughtEvent` | 聊天页 | 按 `message_id` 归并；可选 `event_sequence` 是已提交的 `session_events.sequence`，缺失表示该事件未关联 durable event row。文本不得重复写入普通日志。 |
@@ -246,7 +241,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `agent:compaction` | `AgentCompactionEvent { summary, tokens_before, tokens_after, degraded, episode_id?, event_sequence? }` | 聊天页 | `event_sequence` 对应该条压缩摘要的 durable sequence。`degraded=true` 表示摘要请求未完成、使用了 `[older context omitted]`，UI 必须提示较早内容已省略；不发送快照内部对象。 |
 | `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 不占用 durable `event_sequence`，live 事件自带累计值。固定 token/cost/cache/context 字段；`request_kind` 字段承载 `RequestKind`；`call_kind` 与 `cache_accounting` 使用 Common 生成枚举；`cache_diagnostics` 使用 Common 的 typed `CacheDiagnostics`，其中策略、结果和来源均为闭合枚举，前端 mapper 校验完整字段；缓存率由每次调用的 accounting 合同计算，未知口径不得猜测。 |
 | `agent:tool_output` | `AgentToolOutputEvent` | 聊天页 | UI-only 的有界输出通道；未知 channel 或畸形 payload 直接丢弃并记录。 |
-| `notification:show` | `AgentNotificationEvent` | 根布局 | 通用纯文本通知可省略 session 关联；ToolRun completion 元数据使用生成的 `ToolRunKindDto` / `ToolRunCompletionStatusDto` 与 `AgentNotificationKind`；背景任务必须带真实 `session_id` 和终态，定时任务不带该状态。正文不承载密钥、完整命令输出或原始 provider 错误。 |
+| `notification:show` | `AgentNotificationEvent` | 根布局 | 通用纯文本通知可省略 session 关联；ToolRun completion 元数据使用生成的 `ToolRunKindDto` / `ToolRunCompletionStatusDto` 与 `AgentNotificationKind`；后台任务完成通知必须带真实 `session_id` 和终态。正文不承载密钥、完整工具输出或原始 provider 错误。 |
 
 前端业务代码只使用 camelCase（例如 `sessionId`、`stepNumber`、`toolCallId`）；Rust-owned
 Settings snapshot 是明确例外：Settings parser/editor 与保存 payload 保留 Rust 的 snake_case

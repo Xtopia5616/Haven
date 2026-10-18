@@ -3,8 +3,8 @@
 //! The ToolRun row remains the source of the result payload. This repository
 //! only records the delivery lifecycle so a transient completion broadcast can
 //! be rebuilt and acknowledged after the owning session has durably projected
-//! the result. Background and scheduled ToolRuns share this
-//! delivery contract; scheduled firing and execution remain owned separately.
+//! the result. Only detached background ToolRuns use this outbox; Schedule
+//! runs have an independent lifecycle.
 
 use crate::db::Database;
 use haven_common::lifecycle::ToolRunStatus;
@@ -25,24 +25,24 @@ pub struct ToolRunCompletionOutboxRow {
 #[allow(clippy::too_many_arguments)]
 fn completion_payload(
     tool_run_id: &str,
+    tool_name: &str,
     status: ToolRunStatus,
     output: Option<&str>,
     error: Option<&str>,
     error_reason: Option<&str>,
     log_path: Option<&str>,
-    exit_code: Option<i32>,
     started_at: Option<&str>,
     finished_at: Option<&str>,
     source_step_id: Option<&str>,
 ) -> ToolRunCompletionPayload {
     ToolRunCompletionPayload {
         tool_run_id: tool_run_id.to_owned(),
+        tool_name: tool_name.to_owned(),
         status,
         output: output.map(str::to_owned),
         error: error.map(str::to_owned),
         error_reason: error_reason.map(str::to_owned),
         log_path: log_path.map(str::to_owned),
-        exit_code,
         started_at: started_at.map(str::to_owned),
         finished_at: finished_at.map(str::to_owned),
         source_step_id: source_step_id.map(str::to_owned),
@@ -57,11 +57,10 @@ impl Database {
     pub(crate) fn reconcile_tool_run_completion_outbox(&self) -> anyhow::Result<()> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, kind, mode, session_id, source_step_id, status, output, result_summary,
-                    error, error_reason, log_path, exit_code, started_at, finished_at
+            "SELECT id, kind, tool_name, session_id, source_step_id, status, output,
+                    error, error_reason, log_path, started_at, finished_at
              FROM tool_runs
-             WHERE (kind = 'background' OR (kind = 'scheduled' AND mode = 'tool'))
-               AND status IN ('completed', 'failed')
+             WHERE status IN ('completed', 'failed')
              ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -77,9 +76,7 @@ impl Database {
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<String>>(9)?,
                 row.get::<_, Option<String>>(10)?,
-                row.get::<_, Option<i32>>(11)?,
-                row.get::<_, Option<String>>(12)?,
-                row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<String>>(11)?,
             ))
         })?;
         let mut terminal = Vec::new();
@@ -93,39 +90,32 @@ impl Database {
             for (
                 tool_run_id,
                 kind,
-                mode,
+                tool_name,
                 session_id,
                 source_step_id,
                 status,
                 output,
-                result_summary,
                 error,
                 error_reason,
                 log_path,
-                exit_code,
                 started_at,
                 finished_at,
             ) in terminal
             {
                 let status = ToolRunStatus::from_status_str(&status);
-                let output = if kind == "scheduled" {
-                    result_summary.as_deref()
-                } else {
-                    output.as_deref()
-                };
                 let payload = serde_json::to_string(&completion_payload(
                     &tool_run_id,
+                    &tool_name,
                     status,
-                    output,
+                    output.as_deref(),
                     error.as_deref(),
                     error_reason.as_deref(),
                     log_path.as_deref(),
-                    exit_code,
                     started_at.as_deref(),
                     finished_at.as_deref(),
                     source_step_id.as_deref(),
                 ))?;
-                debug_assert!(kind != "scheduled" || mode == "tool");
+                debug_assert_eq!(kind, "background");
                 conn.execute(
                     "INSERT OR IGNORE INTO tool_run_completion_outbox
                          (tool_run_id, tool_run_result_id, session_id, status, status_json)
@@ -157,6 +147,7 @@ impl Database {
             let row = conn
                 .query_row(
                     "SELECT outbox.tool_run_id, outbox.tool_run_result_id, tool_runs.kind,
+                            tool_runs.tool_name,
                             outbox.session_id, outbox.status, outbox.status_json,
                             claimed_until, datetime('now')
                      FROM tool_run_completion_outbox AS outbox
@@ -171,11 +162,12 @@ impl Database {
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
                             row.get::<_, String>(2)?,
-                            row.get::<_, Option<String>>(3)?,
-                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, Option<String>>(4)?,
                             row.get::<_, String>(5)?,
-                            row.get::<_, Option<String>>(6)?,
-                            row.get::<_, String>(7)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, Option<String>>(7)?,
+                            row.get::<_, String>(8)?,
                         ))
                     },
                 )
@@ -184,6 +176,7 @@ impl Database {
                 tool_run_id,
                 tool_run_result_id,
                 kind,
+                tool_name,
                 session_id,
                 status,
                 payload_json,
@@ -204,13 +197,18 @@ impl Database {
                  WHERE tool_run_id = ?1 AND delivered_at IS NULL",
                 rusqlite::params![tool_run_id, format!("+{CLAIM_LEASE_SECS} seconds")],
             )?;
+            let payload: ToolRunCompletionPayload = serde_json::from_str(&payload_json)?;
+            anyhow::ensure!(
+                payload.tool_run_id == tool_run_id && payload.tool_name == tool_name,
+                "ToolRun completion payload identity does not match its durable row"
+            );
             Ok(Some(ToolRunCompletionOutboxRow {
                 tool_run_id,
                 tool_run_result_id,
                 kind,
                 session_id,
                 status: ToolRunStatus::from_status_str(&status),
-                payload: serde_json::from_str(&payload_json)?,
+                payload,
             }))
         })();
         match result {
@@ -258,10 +256,7 @@ impl Database {
                AND EXISTS (
                    SELECT 1 FROM tool_runs
                    WHERE tool_runs.id = tool_run_completion_outbox.tool_run_id
-                     AND (
-                         tool_runs.kind = 'background'
-                         OR (tool_runs.kind = 'scheduled' AND tool_runs.mode = 'tool')
-                     )
+                     AND tool_runs.kind = 'background'
                      AND tool_runs.session_id IS NULL
                )",
             rusqlite::params![tool_run_result_id],
@@ -277,477 +272,63 @@ mod tests {
     use super::*;
     use crate::Database;
 
-    const TEST_STARTED_AT: &str = "2026-09-24T10:00:00.000Z";
-    const TEST_FINISHED_AT: &str = "2026-09-24T11:00:00.000Z";
-
-    fn save_scheduled_tool(db: &Database, id: &str, session_id: Option<&str>) {
-        db.save_scheduled_tool_run(
-            id,
-            "2026-09-29T12:00:00Z",
-            "Scheduled tool",
-            "Call the tool",
-            haven_common::tool_run::ScheduleMode::Tool,
-            session_id,
-            Some("notify"),
-            Some(r#"{"title":"hello","body":"world"}"#),
-            None,
-            None,
-        )
-        .unwrap();
-        assert!(db.start_scheduled_tool_run(id, TEST_STARTED_AT).unwrap());
-    }
+    const STARTED: &str = "2026-09-24T10:00:00.000Z";
+    const FINISHED: &str = "2026-09-24T11:00:00.000Z";
+    const TOOL_RUN_ID: &str = "toolrun-d21abf676dbf16ce90950071af56a65c";
 
     #[test]
-    fn terminal_tool_run_is_reconciled_and_acknowledged() {
+    fn terminal_background_tool_run_is_reconciled_and_acknowledged() {
         let db = Database::open_in_memory().unwrap();
         db.save_tool_run(
-            "toolrun-d21abf676dbf16ce90950071af56a65c",
+            TOOL_RUN_ID,
             Some("ses-7ae290dbf0b4468c9d2c401be649850b"),
             "echo ok",
-            TEST_STARTED_AT,
+            STARTED,
         )
         .unwrap();
         db.finish_tool_run(
-            "toolrun-d21abf676dbf16ce90950071af56a65c",
+            TOOL_RUN_ID,
             ToolRunStatus::Completed,
             Some("ok"),
             None,
             None,
             None,
-            Some(0),
-            TEST_FINISHED_AT,
+            FINISHED,
         )
         .unwrap();
-
         let row = db.claim_tool_run_completion().unwrap().unwrap();
-        assert_eq!(row.tool_run_id, "toolrun-d21abf676dbf16ce90950071af56a65c");
         assert_eq!(row.kind, "background");
-        assert_eq!(
-            row.session_id.as_deref(),
-            Some("ses-7ae290dbf0b4468c9d2c401be649850b")
-        );
         assert_eq!(row.payload.output.as_deref(), Some("ok"));
         assert!(
-            db.acknowledge_tool_run_completion("toolrun-d21abf676dbf16ce90950071af56a65c")
+            db.acknowledge_tool_run_completion(&row.tool_run_result_id)
                 .unwrap()
         );
         assert!(db.claim_tool_run_completion().unwrap().is_none());
     }
 
     #[test]
-    fn reconciled_background_completion_retains_source_step() {
+    fn unowned_completion_acknowledgement_requires_an_unowned_background_row() {
         let db = Database::open_in_memory().unwrap();
-        db.save_tool_run_with_source(
-            "toolrun-9aaff7e6f778708d51ee059267de8cfc",
-            Some("ses-0e53a23edbb118d12b6c608f990b237d"),
-            "echo source",
-            TEST_STARTED_AT,
-            Some("step-7d7e314e3e701378c1bd927c5ac0f07f"),
-        )
-        .unwrap();
-        db.finish_tool_run(
-            "toolrun-9aaff7e6f778708d51ee059267de8cfc",
-            ToolRunStatus::Completed,
-            Some("done"),
-            None,
-            None,
-            None,
-            Some(0),
-            TEST_FINISHED_AT,
-        )
-        .unwrap();
-
-        let completion = db.claim_tool_run_completion().unwrap().unwrap();
-        assert_eq!(
-            completion.payload.source_step_id.as_deref(),
-            Some("step-7d7e314e3e701378c1bd927c5ac0f07f")
-        );
-    }
-
-    #[test]
-    fn expired_completion_lease_can_be_reclaimed_and_ack_uses_result_identity() {
-        let db = Database::open_in_memory().unwrap();
-        db.save_tool_run(
-            "toolrun-07dd4014335ee6040b532bad1c3fe4e5",
-            Some("ses-7ae290dbf0b4468c9d2c401be649850b"),
-            "echo ok",
-            TEST_STARTED_AT,
-        )
-        .unwrap();
-        db.finish_tool_run(
-            "toolrun-07dd4014335ee6040b532bad1c3fe4e5",
-            ToolRunStatus::Completed,
-            Some("ok"),
-            None,
-            None,
-            None,
-            Some(0),
-            TEST_FINISHED_AT,
-        )
-        .unwrap();
-
-        let first = db.claim_tool_run_completion().unwrap().unwrap();
-        assert_eq!(
-            first.tool_run_result_id,
-            "toolrun-07dd4014335ee6040b532bad1c3fe4e5"
-        );
-        assert!(db.claim_tool_run_completion().unwrap().is_none());
-        assert!(
-            !db.acknowledge_tool_run_completion("toolrun-93e7bbc380944f67e18da7e2c19dd900")
-                .unwrap()
-        );
-
-        db.conn()
-            .execute(
-                "UPDATE tool_run_completion_outbox
-                 SET claimed_until = datetime('now', '-1 second')
-                 WHERE tool_run_result_id = ?1",
-                ["toolrun-07dd4014335ee6040b532bad1c3fe4e5"],
-            )
+        db.save_tool_run(TOOL_RUN_ID, None, "echo ok", STARTED)
             .unwrap();
-        let reclaimed = db.claim_tool_run_completion().unwrap().unwrap();
-        assert_eq!(reclaimed.tool_run_result_id, first.tool_run_result_id);
-    }
-
-    #[test]
-    fn late_owner_binding_reopens_an_acknowledged_unowned_completion() {
-        let db = Database::open_in_memory().unwrap();
-        db.save_tool_run(
-            "toolrun-e844406e862c8ae8d76da654618b3b2e",
-            None,
-            "echo late",
-            TEST_STARTED_AT,
-        )
-        .unwrap();
         db.finish_tool_run(
-            "toolrun-e844406e862c8ae8d76da654618b3b2e",
-            ToolRunStatus::Completed,
-            Some("late output"),
-            None,
-            None,
-            None,
-            Some(0),
-            TEST_FINISHED_AT,
-        )
-        .unwrap();
-
-        assert!(db.claim_tool_run_completion().unwrap().is_some());
-        assert!(
-            db.acknowledge_tool_run_completion("toolrun-e844406e862c8ae8d76da654618b3b2e")
-                .unwrap()
-        );
-        db.update_tool_run_session(
-            "toolrun-e844406e862c8ae8d76da654618b3b2e",
-            "ses-56c84cf14fde6a562a1ac0ff921a8465",
-        )
-        .unwrap();
-
-        let completion = db
-            .claim_tool_run_completion()
-            .unwrap()
-            .expect("late binding must make the completion pending again");
-        assert_eq!(
-            completion.session_id.as_deref(),
-            Some("ses-56c84cf14fde6a562a1ac0ff921a8465")
-        );
-        assert_eq!(completion.payload.output.as_deref(), Some("late output"));
-        assert!(
-            !db.delete_tool_run("toolrun-e844406e862c8ae8d76da654618b3b2e")
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn unowned_ack_is_rejected_after_owner_binding() {
-        let db = Database::open_in_memory().unwrap();
-        db.save_tool_run(
-            "toolrun-0ae56b2eeb5989c4f88283c53eb2032b",
-            None,
-            "echo owner",
-            TEST_STARTED_AT,
-        )
-        .unwrap();
-        db.finish_tool_run(
-            "toolrun-0ae56b2eeb5989c4f88283c53eb2032b",
-            ToolRunStatus::Completed,
-            Some("owned output"),
-            None,
-            None,
-            None,
-            Some(0),
-            TEST_FINISHED_AT,
-        )
-        .unwrap();
-        assert!(db.claim_tool_run_completion().unwrap().is_some());
-
-        db.update_tool_run_session(
-            "toolrun-0ae56b2eeb5989c4f88283c53eb2032b",
-            "ses-506796c05864adbcac6af51fa8a9e1a5",
-        )
-        .unwrap();
-        assert!(
-            !db.acknowledge_unowned_tool_run_completion("toolrun-0ae56b2eeb5989c4f88283c53eb2032b")
-                .unwrap()
-        );
-        assert_eq!(
-            db.claim_tool_run_completion()
-                .unwrap()
-                .unwrap()
-                .session_id
-                .as_deref(),
-            Some("ses-506796c05864adbcac6af51fa8a9e1a5")
-        );
-    }
-
-    #[test]
-    fn completion_snapshot_belongs_to_the_winning_terminal_transition() {
-        let db = Database::open_in_memory().unwrap();
-        db.save_tool_run(
-            "toolrun-9a4745acf96cffe92a4ae2e4a500aebc",
-            Some("ses-1cc8cbf92fd671cc35312beac2bffedb"),
-            "echo winner",
-            TEST_STARTED_AT,
-        )
-        .unwrap();
-
-        let winning_payload = completion_payload(
-            "toolrun-9a4745acf96cffe92a4ae2e4a500aebc",
-            ToolRunStatus::Completed,
-            Some("winning output"),
-            None,
-            None,
-            Some("winner.log"),
-            Some(0),
-            Some(TEST_STARTED_AT),
-            Some(TEST_FINISHED_AT),
-            None,
-        );
-        assert!(
-            db.finish_tool_run_with_completion(&winning_payload)
-                .unwrap()
-        );
-        let losing_payload = completion_payload(
-            "toolrun-9a4745acf96cffe92a4ae2e4a500aebc",
+            TOOL_RUN_ID,
             ToolRunStatus::Failed,
             None,
-            Some("late error"),
-            Some("late reason"),
-            Some("late.log"),
-            Some(1),
-            Some(TEST_STARTED_AT),
-            Some(TEST_FINISHED_AT),
+            Some("failed"),
+            Some("failed"),
             None,
-        );
-        assert!(!db.finish_tool_run_with_completion(&losing_payload).unwrap());
-
-        let tool_run = db
-            .get_tool_run("toolrun-9a4745acf96cffe92a4ae2e4a500aebc")
-            .unwrap()
-            .unwrap();
-        assert_eq!(tool_run.status, ToolRunStatus::Completed);
-        assert_eq!(tool_run.output.as_deref(), Some("winning output"));
-        assert_eq!(tool_run.log_path.as_deref(), Some("winner.log"));
-        assert_eq!(tool_run.finished_at.as_deref(), Some(TEST_FINISHED_AT));
-
-        let completion = db.claim_tool_run_completion().unwrap().unwrap();
-        assert_eq!(completion.status, tool_run.status);
-        assert_eq!(
-            completion.session_id.as_deref(),
-            tool_run.session_id.as_deref()
-        );
-        assert_eq!(completion.payload.status, tool_run.status);
-        assert_eq!(
-            completion.payload.output.as_deref(),
-            tool_run.output.as_deref()
-        );
-        assert_eq!(
-            completion.payload.finished_at.as_deref(),
-            tool_run.finished_at.as_deref()
-        );
-        assert!(completion.payload.error.is_none());
-    }
-
-    #[test]
-    fn scheduled_tool_completed_and_failed_rows_use_the_same_outbox() {
-        for (id, status, summary, error_reason) in [
-            (
-                "toolrun-bf82378942de863cf85062255b3b437a",
-                ToolRunStatus::Completed,
-                Some("bounded success summary"),
-                None,
-            ),
-            (
-                "toolrun-dd189aee4f6677822325baf42e266d3c",
-                ToolRunStatus::Failed,
-                None,
-                Some("bounded failure summary"),
-            ),
-        ] {
-            let db = Database::open_in_memory().unwrap();
-            save_scheduled_tool(&db, id, Some("ses-2148a6ca499bafd3fdb8080b66f0c081"));
-            assert!(
-                db.finish_scheduled_tool_run(id, status, summary, error_reason, TEST_FINISHED_AT)
-                    .unwrap()
-            );
-
-            let result = db.claim_tool_run_completion().unwrap().unwrap();
-            assert_eq!(result.tool_run_id, id);
-            assert_eq!(result.tool_run_result_id, id);
-            assert_eq!(result.kind, "scheduled");
-            assert_eq!(
-                result.session_id.as_deref(),
-                Some("ses-2148a6ca499bafd3fdb8080b66f0c081")
-            );
-            assert_eq!(result.status, status);
-            match status {
-                ToolRunStatus::Completed => {
-                    assert_eq!(
-                        result.payload.output.as_deref(),
-                        Some("bounded success summary")
-                    );
-                    assert!(result.payload.error.is_none());
-                }
-                ToolRunStatus::Failed => {
-                    assert_eq!(
-                        result.payload.error_reason.as_deref(),
-                        Some("bounded failure summary")
-                    );
-                    assert!(result.payload.output.is_none());
-                }
-                ToolRunStatus::Waiting | ToolRunStatus::Running | ToolRunStatus::Cancelled => {
-                    unreachable!()
-                }
-            }
-            assert!(!db.delete_tool_run(id).unwrap());
-            assert!(db.acknowledge_tool_run_completion(id).unwrap());
-            assert!(db.claim_tool_run_completion().unwrap().is_none());
-        }
-    }
-
-    #[test]
-    fn scheduled_tool_terminal_row_reconciles_after_a_lost_publish_or_restart() {
-        let db = Database::open_in_memory().unwrap();
-        save_scheduled_tool(
-            &db,
-            "toolrun-d55d24b7cd606d3f5db349c60a6785e8",
-            Some("ses-951503f1db001b884f7ea8c23906d7c3"),
-        );
-        // Simulate a terminal row written by an older writer or a crash window
-        // before the completion outbox was populated.
-        db.conn()
-            .execute_batch("PRAGMA ignore_check_constraints = ON;")
-            .unwrap();
-        db.conn()
-            .execute(
-                "UPDATE tool_runs SET status = 'failed', error_reason = ?2,
-                    finished_at = 'finished' WHERE id = ?1",
-                rusqlite::params![
-                    "toolrun-d55d24b7cd606d3f5db349c60a6785e8",
-                    "bounded failure summary"
-                ],
-            )
-            .unwrap();
-
-        let first = db.claim_tool_run_completion().unwrap().unwrap();
-        assert_eq!(first.kind, "scheduled");
-        assert_eq!(
-            first.tool_run_result_id,
-            "toolrun-d55d24b7cd606d3f5db349c60a6785e8"
-        );
-        assert_eq!(first.status, ToolRunStatus::Failed);
-        assert_eq!(
-            first.payload.error_reason.as_deref(),
-            Some("bounded failure summary")
-        );
-        assert!(db.claim_tool_run_completion().unwrap().is_none());
+            FINISHED,
+        )
+        .unwrap();
+        db.reconcile_tool_run_completion_outbox().unwrap();
         assert!(
-            db.acknowledge_tool_run_completion(&first.tool_run_result_id)
-                .unwrap()
-        );
-        assert!(db.claim_tool_run_completion().unwrap().is_none());
-    }
-
-    #[test]
-    fn unowned_scheduled_tool_is_ackable_and_cancelled_or_continue_rows_do_not_enqueue() {
-        let db = Database::open_in_memory().unwrap();
-        save_scheduled_tool(&db, "toolrun-813de53e7189c13a98e8163471067748", None);
-        assert!(
-            db.finish_scheduled_tool_run(
-                "toolrun-813de53e7189c13a98e8163471067748",
-                ToolRunStatus::Completed,
-                Some("summary"),
-                None,
-                TEST_FINISHED_AT,
-            )
-            .unwrap()
-        );
-        let unowned = db.claim_tool_run_completion().unwrap().unwrap();
-        assert!(unowned.session_id.is_none());
-        assert!(
-            db.acknowledge_unowned_tool_run_completion(&unowned.tool_run_result_id)
-                .unwrap()
-        );
-        assert!(db.claim_tool_run_completion().unwrap().is_none());
-
-        let cancelled = Database::open_in_memory().unwrap();
-        cancelled
-            .save_scheduled_tool_run(
-                "toolrun-62bd87f8415fe5d89b4cbe83e96a1c93",
-                "2026-09-29T12:00:00Z",
-                "Scheduled tool",
-                "Call the tool",
-                haven_common::tool_run::ScheduleMode::Tool,
-                Some("ses-5937ac2cfb6b351e52f457e20357c858"),
-                Some("notify"),
-                Some("{}"),
-                None,
-                None,
-            )
-            .unwrap();
-        assert!(
-            cancelled
-                .cancel_scheduled_tool_run(
-                    "toolrun-62bd87f8415fe5d89b4cbe83e96a1c93",
-                    TEST_FINISHED_AT
-                )
-                .unwrap()
-        );
-        assert!(cancelled.claim_tool_run_completion().unwrap().is_none());
-
-        let continue_mode = Database::open_in_memory().unwrap();
-        continue_mode
-            .save_scheduled_tool_run(
-                "toolrun-a689bd31e6d6a8255907cffe248d8f8b",
-                "2026-09-29T12:00:00Z",
-                "Scheduled continue",
-                "Continue the session",
-                haven_common::tool_run::ScheduleMode::Continue,
-                Some("ses-44d333adbd840df00645b1a5cd7a5205"),
-                None,
-                None,
-                Some("continue"),
-                None,
-            )
-            .unwrap();
-        assert!(
-            continue_mode
-                .start_scheduled_tool_run(
-                    "toolrun-a689bd31e6d6a8255907cffe248d8f8b",
-                    TEST_STARTED_AT
-                )
+            db.acknowledge_unowned_tool_run_completion(TOOL_RUN_ID)
                 .unwrap()
         );
         assert!(
-            continue_mode
-                .finish_scheduled_tool_run(
-                    "toolrun-a689bd31e6d6a8255907cffe248d8f8b",
-                    ToolRunStatus::Completed,
-                    None,
-                    None,
-                    TEST_FINISHED_AT,
-                )
+            !db.acknowledge_unowned_tool_run_completion(TOOL_RUN_ID)
                 .unwrap()
         );
-        assert!(continue_mode.claim_tool_run_completion().unwrap().is_none());
     }
 }

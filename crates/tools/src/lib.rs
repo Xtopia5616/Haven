@@ -30,6 +30,8 @@ pub(crate) mod registry;
 mod runtime_capabilities;
 #[cfg(windows)]
 mod sandbox_review;
+mod schedule_capabilities;
+mod schedule_service;
 pub(crate) mod security;
 mod shell_runtime;
 mod simulate;
@@ -49,8 +51,6 @@ mod tool_run_output;
 mod tool_run_retry_policy;
 mod tool_run_service;
 mod tool_run_terminal;
-mod tool_run_trigger_policy;
-mod tool_run_types;
 mod tool_runtime;
 mod util;
 
@@ -143,6 +143,7 @@ pub use asset_registry::{GeneratedMediaCleanupGuard, ManagedAssetLifecyclePort};
 pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
 #[cfg(not(feature = "test-support"))]
 pub(crate) use asset_registry::{ManagedAsset, ManagedAssetRegistry};
+pub use builtin::tool_runs::{ToolRunStart, parse_toolrun_start};
 pub use builtin::{
     AdminContext, AdminOperationError, AdminRequest, ConfigOperationArgs, ConfigOperationError,
     ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs, LogLevelOutput,
@@ -158,12 +159,13 @@ pub use codemode_tool::CODEMODE_RUN_TOOL_NAME;
 pub use execution::{AuthorizedCodeModeSubcallExecution, AuthorizedCodeModeToolExecution};
 pub use execution_workspace::ExecutionWorkspaceSnapshot;
 pub use facade::{
-    AdminOperationPort, McpRuntimePort, McpStatusEventReceiver, SkillCatalogPort,
-    ToolRunAgentCapability, ToolRunCompletionCapability, ToolRunManagementCapability,
+    AdminOperationPort, McpRuntimePort, McpStatusEventReceiver, ScheduleAgentCapability,
+    ScheduleFiredReceiver, ScheduleManagementCapability, SkillCatalogPort, ToolRunAgentCapability,
+    ToolRunCompletionCapability, ToolRunInvocation, ToolRunManagementCapability,
 };
 #[cfg(feature = "test-support")]
 pub use facade::{ToolCatalogTestSupportPort, ToolRunTestSupportPort};
-pub use haven_common::tool_run::ScheduleMode;
+pub use haven_common::schedule::ScheduleMode;
 #[cfg(any(test, feature = "test-support"))]
 pub use haven_mcp::McpManager;
 #[cfg(any(test, feature = "test-support"))]
@@ -192,6 +194,7 @@ pub use sandbox_review::{
     SandboxOutputPromotionResult, SandboxOutputReviewChange, SandboxOutputReviewChangeKind,
     SandboxOutputReviewManifest, SandboxOutputReviewPort, SandboxOutputReviewReservation,
 };
+pub use schedule_service::{ScheduleRestoreSummary, ScheduleRunTriggered, ScheduleService};
 #[cfg(test)]
 pub(crate) use security::AuthorizationEngine;
 pub use security::{
@@ -211,9 +214,9 @@ pub use skill_runner::SkillRunner;
 pub use tool_contract::{
     AskSignal, NotificationSignal, OperationPolicy, StructuredToolError, Tool,
     ToolAuthorizationContract, ToolCancellationPolicy, ToolConcurrency, ToolErrorMetadata,
-    ToolExecutionContext, ToolExecutionMode, ToolHandle, ToolLlmUsage, ToolOperationMetadata,
-    ToolRegistration, ToolResult, ToolSignals, TypedToolAdapter, TypedToolOperation,
-    extract_ask_signal, extract_notify_signal, is_silent_tool_call, parse_tool_input,
+    ToolExecutionContext, ToolHandle, ToolLlmUsage, ToolOperationMetadata, ToolRegistration,
+    ToolResult, ToolSignals, TypedToolAdapter, TypedToolOperation, extract_ask_signal,
+    extract_notify_signal, is_silent_tool_call, parse_tool_input,
 };
 pub(crate) use tool_contract::{
     ConfirmationRequirement, DataSensitivity, ExecutionBoundary, NetworkAccess, OperationEffect,
@@ -222,21 +225,17 @@ pub(crate) use tool_contract::{
 };
 pub use tool_run_events::{
     ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunLifecycleState, ToolRunLifecycleUpdate,
-    ToolRunOutputPayload, ToolRunSessionAttachedPayload,
+    ToolRunSessionAttachedPayload,
 };
 pub(crate) use tool_run_lifecycle::ToolRunLifecycle;
-pub(crate) use tool_run_service::BackgroundShellRequest;
 pub use tool_run_service::{
-    BackgroundToolRunCompletion, ScheduledToolRunResultCompletion, ToolRunCompletion,
-    ToolRunLifecycleEventSink,
-};
-pub use tool_run_service::{
-    ScheduledToolRunView, ToolRunHistoryQuery, ToolRunKind, ToolRunListView, ToolRunRestoreSummary,
-    ToolRunStateView, ToolRunStatusView, ToolRunView,
+    BackgroundToolRunCompletion, ToolRunCompletion, ToolRunLifecycleEventSink,
 };
 pub(crate) use tool_run_service::{ToolRunCompletionReceiver, ToolRunService};
-pub use tool_run_types::ScheduledToolRunFired;
-pub use tool_run_types::ScheduledToolRunSpec;
+pub use tool_run_service::{
+    ToolRunHistoryQuery, ToolRunKind, ToolRunListView, ToolRunRestoreSummary, ToolRunStateView,
+    ToolRunStatusView, ToolRunView,
+};
 pub(crate) use tool_runtime::MemoryRecallSlot;
 pub use tool_runtime::{
     LogLevelPort, MemoryRecallPort, RuntimeCapabilities, StartupWiring, ToolControlPort,

@@ -119,7 +119,7 @@ impl SessionSupervisor {
         cascade: bool,
         closing: &SessionClosingGuard,
     ) -> anyhow::Result<SessionStatus> {
-        // Confirmation resolution can claim a scheduled ToolRun before it
+        // Confirmation resolution can claim a ScheduleRun before it
         // consumes the owner-local request. Serialize that two-part decision
         // with lifecycle cleanup; resolution entry points also reject owners
         // whose session is marked closing while this guard is held.
@@ -485,8 +485,8 @@ impl SessionSupervisor {
 
     /// Clear the in-memory session actors during normal application shutdown.
     ///
-    /// A session-owned scheduled ToolRun is durable work, not a child process of
-    /// the actor.  It must remain `waiting` so ToolRunService can restore it on
+    /// A session-owned ScheduleRun is durable work, not a child process of
+    /// the actor. It must remain `waiting` so ScheduleService can restore it on
     /// the next startup.  Explicit session deletion/end still uses the regular
     /// quiesce path and cancels all owned tool_runs.
     pub async fn clear_session_runtime_state_for_shutdown(&self) -> anyhow::Result<()> {
@@ -1115,10 +1115,7 @@ impl SessionSupervisor {
             if !tool_run.status.is_live() {
                 continue;
             }
-            return match tool_run.kind {
-                haven_tools::ToolRunKind::Scheduled => Some(SessionWaitingReason::ScheduledTask),
-                haven_tools::ToolRunKind::Background => Some(SessionWaitingReason::BackgroundTask),
-            };
+            return Some(SessionWaitingReason::BackgroundTask);
         }
         Some(SessionWaitingReason::UserInput)
     }
@@ -1340,6 +1337,10 @@ impl SessionSupervisor {
         self.tool_runs.clone()
     }
 
+    pub(crate) fn schedule_port(&self) -> Arc<dyn crate::session::AgentSchedulePort> {
+        self.schedules.clone()
+    }
+
     #[cfg(test)]
     pub(crate) fn tool_run_test_support(&self) -> Arc<dyn ToolRunTestSupportPort> {
         self.tool_run_test_support
@@ -1356,7 +1357,7 @@ impl SessionSupervisor {
     pub async fn cancel_session_tool_runs(&self, session_id: &str) {
         if let Err(error) = self
             .tool_runs
-            .cancel_owned_by_session_checked(session_id)
+            .cancel_owned_background_by_session_checked(session_id)
             .await
         {
             tracing::warn!(
@@ -1365,13 +1366,26 @@ impl SessionSupervisor {
                 "failed to completely cancel session-owned tool_runs"
             );
         }
+        if let Err(error) = self
+            .schedules
+            .cancel_owned_by_session_checked(session_id)
+            .await
+        {
+            tracing::warn!(
+                session_id = %session_id,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "failed to completely cancel session-owned schedules"
+            );
+        }
     }
 
-    /// Fail closed for destructive lifecycle paths when a durable scheduled
-    /// cancellation cannot be confirmed. The caller must preserve the
-    /// durable session so cleanup can be retried.
+    /// Fail closed for destructive lifecycle paths when durable background
+    /// ToolRun or Schedule cancellation cannot be confirmed.
     pub async fn cancel_session_tool_runs_checked(&self, session_id: &str) -> anyhow::Result<()> {
         self.tool_runs
+            .cancel_owned_background_by_session_checked(session_id)
+            .await?;
+        self.schedules
             .cancel_owned_by_session_checked(session_id)
             .await
     }

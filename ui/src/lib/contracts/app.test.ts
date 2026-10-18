@@ -22,10 +22,10 @@ describe('app-shell IPC contract', () => {
 		],
 		[
 			{
-				kind: 'scheduled_tool_run',
-				toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
+				kind: 'schedule_run',
+				scheduleRunId: 'schrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			} as const,
-			{ kind: 'scheduled_tool_run', tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85' },
+			{ kind: 'schedule_run', schedule_run_id: 'schrun-d409f06a31c9daee6d1a4f437a1f1f85' },
 		],
 		[{ kind: 'app_command' } as const, { kind: 'app_command' }],
 	])('serializes the selected interaction owner for resolve IPC', (owner, wire) => {
@@ -182,8 +182,8 @@ describe('app-shell IPC contract', () => {
 		const scheduledConfirm = {
 			request_id: 'conf-00000000000000000000000000000032',
 			owner: {
-				kind: 'scheduled_tool_run',
-				tool_run_id: 'toolrun-00000000000000000000000000000032',
+				kind: 'schedule_run',
+				schedule_run_id: 'schrun-00000000000000000000000000000032',
 			},
 			kind: 'scheduled_confirm',
 			status: 'pending',
@@ -252,24 +252,24 @@ describe('app-shell IPC contract', () => {
 		},
 		{
 			owner: {
-				kind: 'scheduled_tool_run',
-				tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
+				kind: 'schedule_run',
+				schedule_run_id: 'schrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			},
 			expectedOwner: {
-				kind: 'scheduled_tool_run',
-				toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
+				kind: 'schedule_run',
+				scheduleRunId: 'schrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			},
 			kind: 'scheduled_confirm',
 		},
 		{
 			owner: {
-				kind: 'scheduled_tool_run',
-				tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
+				kind: 'schedule_run',
+				schedule_run_id: 'schrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			},
 			session_id: 'ses-8012a8abdcc2d6c9fe75559e9bdcca24',
 			expectedOwner: {
-				kind: 'scheduled_tool_run',
-				toolRunId: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
+				kind: 'schedule_run',
+				scheduleRunId: 'schrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			},
 			kind: 'scheduled_confirm',
 		},
@@ -317,8 +317,8 @@ describe('app-shell IPC contract', () => {
 		{
 			kind: 'confirm',
 			owner: {
-				kind: 'scheduled_tool_run',
-				tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
+				kind: 'schedule_run',
+				schedule_run_id: 'schrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			},
 		},
 		{
@@ -375,12 +375,12 @@ describe('app-shell IPC contract', () => {
 			session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 		},
 		{ owner: { kind: 'session' }, session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
-		{ owner: { kind: 'scheduled_tool_run' }, session_id: undefined },
+		{ owner: { kind: 'schedule_run' }, session_id: undefined },
 		{ owner: { kind: 'app_command' }, session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c' },
 		{
 			owner: {
 				kind: 'future_owner',
-				tool_run_id: 'toolrun-d409f06a31c9daee6d1a4f437a1f1f85',
+				schedule_run_id: 'schrun-d409f06a31c9daee6d1a4f437a1f1f85',
 			},
 			session_id: undefined,
 		},

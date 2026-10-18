@@ -14,9 +14,8 @@ pub mod memory_recall_store;
 pub mod messages;
 pub mod nodes;
 pub mod partials;
-mod scheduled_session_tasks;
+pub mod schedule_store;
 pub mod session_authorization;
-pub use scheduled_session_tasks::RecurringSessionTaskRow;
 #[cfg(test)]
 mod session_event_capacity_tests;
 pub mod session_events;

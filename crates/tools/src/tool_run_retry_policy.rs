@@ -13,7 +13,9 @@ use tokio::time::Instant;
 
 const TERMINAL_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
 const TERMINAL_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
+#[cfg(test)]
 const INLINE_STORE_RETRY_ATTEMPTS: u32 = 3;
+#[cfg(test)]
 const INLINE_STORE_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -21,6 +23,7 @@ pub(crate) struct ToolRunPersistenceRetryPolicy {
     inner: RecoveryPolicy,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ToolRunStoreRetryPolicy {
     inner: RecoveryPolicy,
@@ -76,6 +79,7 @@ impl ToolRunPersistenceRetryPolicy {
     }
 }
 
+#[cfg(test)]
 impl ToolRunStoreRetryPolicy {
     /// Short inline retries used by ToolRun store transitions. The durable
     /// recovery worker, when present, remains owned by ToolRunService.

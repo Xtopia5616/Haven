@@ -70,31 +70,21 @@ describe('sessionTimeline grouping', () => {
 		expect(isMergedSessionMessage(message('text', { type: null }))).toBe(false);
 	});
 
-	it('projects background status into its tool call and anchors scheduled cards', () => {
+	it('projects background status into its source tool call', () => {
 		const messages = [
 			message('tool-background', {
 				type: 'tool',
+				toolName: 'toolrun.start',
 				stepNumber: 3,
-				content: '{"execution_mode":"background","tool_run_id":"toolrun-058de138a89ad8e4eef21b1dab8e5527"}',
-			}),
-			message('tool-schedule', {
-				type: 'tool',
-				stepNumber: 4,
-				toolName: 'schedule.set',
-				content: '{"operation":"set","tool_run_id":"toolrun-921be352ed48806cc0ff8635f2c282b9"}',
+				content: '{"tool_run_id":"toolrun-058de138a89ad8e4eef21b1dab8e5527","tool_name":"files.write"}',
 			}),
 		];
 		const toolRuns = [
 			{
 				toolRunId: 'toolrun-058de138a89ad8e4eef21b1dab8e5527',
 				kind: 'background' as const,
+					toolName: 'files.write',
 				status: 'running' as const,
-				sessionId: 'ses-00000000000000000000000000000001',
-			},
-			{
-				toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9',
-				kind: 'scheduled' as const,
-				status: 'waiting' as const,
 				sessionId: 'ses-00000000000000000000000000000001',
 			},
 		];
@@ -104,18 +94,10 @@ describe('sessionTimeline grouping', () => {
 			awaitingBackgroundCount: 1,
 		});
 
-		expect(items.map((item) => item.kind)).toEqual(['activity', 'tool_run']);
+		expect(items.map((item) => item.kind)).toEqual(['activity']);
 		expect(items[0]).toMatchObject({
 			kind: 'activity',
-			entries: [
-				{ message: { id: 'tool-background' } },
-				{ message: { id: 'tool-schedule' } },
-			],
-		});
-		expect(items[1]).toMatchObject({
-			kind: 'tool_run',
-			toolRun: { toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9', kind: 'scheduled' },
-			awaitingBackgroundResult: false,
+			entries: [{ message: { id: 'tool-background' } }],
 		});
 	});
 
@@ -123,8 +105,9 @@ describe('sessionTimeline grouping', () => {
 		const messages = [
 			message('observation-anchor', {
 				type: 'tool',
+				toolName: 'toolrun.start',
 				stepNumber: 2,
-				content: '{"execution_mode":"background","tool_run_id":"toolrun-e98b15b1242ce675596491b57efadf2f"}',
+				content: '{"tool_run_id":"toolrun-e98b15b1242ce675596491b57efadf2f","tool_name":"files.write"}',
 			}),
 			message('message-boundary'),
 			message('stable-source-step', {
@@ -137,6 +120,7 @@ describe('sessionTimeline grouping', () => {
 			toolRuns: [{
 				toolRunId: 'toolrun-e98b15b1242ce675596491b57efadf2f',
 				kind: 'background',
+					toolName: 'files.write',
 				sourceStepId: 'stable-source-step',
 			}],
 		});
@@ -149,6 +133,7 @@ describe('sessionTimeline grouping', () => {
 		const toolRun = {
 			toolRunId: 'toolrun-2568876529a4fa57522c0a91cbed6129',
 			kind: 'background' as const,
+				toolName: 'files.write',
 			status: 'running' as const,
 			sessionId: 'ses-00000000000000000000000000000001',
 		};
@@ -179,9 +164,8 @@ describe('sessionTimeline grouping', () => {
 		expect(
 			firstWaitingBackgroundToolRunId(
 				[
-					{ toolRunId: 'toolrun-705eb9b2ff45c4397aab6ceb5bb85eab', kind: 'background', status: 'running', startedAt: '2026-10-06T11:00:00Z' },
-					{ toolRunId: 'toolrun-921be352ed48806cc0ff8635f2c282b9', kind: 'scheduled', status: 'waiting' },
-					{ toolRunId: 'toolrun-309099f4d738d016c3ac91ffa860d4ed', kind: 'background', status: 'running', startedAt: '2026-10-06T10:00:00Z' },
+					{ toolRunId: 'toolrun-705eb9b2ff45c4397aab6ceb5bb85eab', kind: 'background', toolName: 'files.write', status: 'running', startedAt: '2026-10-06T11:00:00Z' },
+					{ toolRunId: 'toolrun-309099f4d738d016c3ac91ffa860d4ed', kind: 'background', toolName: 'files.write', status: 'running', startedAt: '2026-10-06T10:00:00Z' },
 				],
 				true,
 			),
@@ -193,17 +177,19 @@ describe('sessionTimeline grouping', () => {
 		const toolRun = {
 			toolRunId: 'toolrun-c5c98b7ab76450e008c0e66f4e9b82e6',
 			kind: 'background' as const,
+				toolName: 'files.write',
 			status: 'completed' as const,
 			sessionId: 'ses-00000000000000000000000000000001',
 			output: 'same result',
 		};
 		const transcriptResult = message('tool-finished', {
 			type: 'tool',
+			toolName: 'toolrun.start',
 			toolRunId: null,
 			sourceToolRunId: toolRun.toolRunId,
 			content: JSON.stringify({
-				execution_mode: 'background',
 				tool_run_id: toolRun.toolRunId,
+				tool_name: toolRun.toolName,
 				status: 'completed',
 				output: toolRun.output,
 			}),
@@ -221,6 +207,7 @@ describe('sessionTimeline grouping', () => {
 		const toolRun = {
 			toolRunId: 'toolrun-98168450224200071aadc87a22cddc0f',
 			kind: 'background' as const,
+				toolName: 'files.write',
 			status: 'failed' as const,
 			sessionId: 'ses-00000000000000000000000000000001',
 			error: 'process failed',

@@ -277,7 +277,6 @@ fn generate(root: &Path) -> Result<(String, String), String> {
         ("transcription:error", Some("TranscriptionErrorEvent")),
         ("tool_run:created", Some("ToolRunEvent")),
         ("tool_run:updated", Some("ToolRunEvent")),
-        ("tool_run:output", Some("ToolRunEvent")),
         ("tool_run:finished", Some("ToolRunEvent")),
         ("app:bootstrap", Some("AppBootstrapEvent")),
         ("tray:status_changed", Some("TrayStatusChangedEvent")),

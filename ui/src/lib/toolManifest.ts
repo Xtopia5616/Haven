@@ -268,7 +268,10 @@ export function getToolManifest(toolName: string): ToolManifestView | null {
 }
 
 export function toolRendererName(toolName: string): string | null {
-	return getToolManifest(toolName)?.presentation.renderer ?? null;
+	return (
+		getToolManifest(toolName)?.presentation.renderer ??
+		(toolName === 'toolrun' || toolName.startsWith('toolrun.') ? 'toolrun' : null)
+	);
 }
 
 /** Tool family/group root from the current backend-owned manifest. */

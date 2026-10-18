@@ -147,7 +147,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 				}
 			}
 			if (!isCurrentGeneration(requestGeneration)) return;
-			// Lifecycle changes can reap background or scheduled ToolRuns without a
+			// Lifecycle changes can reap background ToolRuns or ScheduleRuns without a
 			// matching action-board terminal event.
 			dependencies.refreshToolRuns();
 		})().catch((error: unknown) => {

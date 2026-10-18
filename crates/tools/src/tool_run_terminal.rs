@@ -1,18 +1,14 @@
 use haven_common::lifecycle::ToolRunStatus;
 use tokio::sync::{Mutex, MutexGuard};
 
-/// Runtime state shared by background and scheduled ToolRuns. Their admission
-/// and execution paths differ while persistence and terminal publication are shared.
+/// Runtime state of one detached background tool invocation.
 #[derive(Clone, Debug)]
 pub(crate) enum ToolRunState {
-    /// A scheduled trigger is admitted but has not fired.
-    Waiting,
     Running {
         started_at: String,
     },
     Completed {
         output: String,
-        exit_code: Option<i32>,
         truncated: bool,
         /// Full-output path when the captured output was capped.
         log_path: Option<String>,
@@ -24,7 +20,6 @@ pub(crate) enum ToolRunState {
         error_reason: String,
         /// Full-output path for diagnosis.
         log_path: Option<String>,
-        exit_code: Option<i32>,
         started_at: String,
         finished_at: String,
     },
@@ -37,7 +32,6 @@ pub(crate) enum ToolRunState {
 impl ToolRunState {
     pub(crate) fn status(&self) -> ToolRunStatus {
         match self {
-            Self::Waiting => ToolRunStatus::Waiting,
             Self::Running { .. } => ToolRunStatus::Running,
             Self::Completed { .. } => ToolRunStatus::Completed,
             Self::Failed { .. } => ToolRunStatus::Failed,
@@ -45,39 +39,18 @@ impl ToolRunState {
         }
     }
 
-    pub(crate) fn is_waiting(&self) -> bool {
-        matches!(self, Self::Waiting)
-    }
-
     pub(crate) fn is_terminal(&self) -> bool {
         self.status().is_terminal()
     }
 }
 
-/// A terminal transition may start from a running ToolRun, or from any live
-/// state when cancelling a scheduled ToolRun that has not fired yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TerminalSource {
-    Running,
-    Live,
-}
-
 /// Shared in-memory transition predicate. Terminal rows cannot be claimed a
-/// second time, and completed/failed transitions cannot start from Waiting.
-pub(crate) fn can_claim_terminal(
-    current: ToolRunStatus,
-    next: ToolRunStatus,
-    source: TerminalSource,
-) -> bool {
-    next.is_terminal()
-        && match source {
-            TerminalSource::Running => current == ToolRunStatus::Running,
-            TerminalSource::Live => current.is_live(),
-        }
-        && current.can_transition_to(next)
+/// second time, and every terminal transition starts from a running invocation.
+pub(crate) fn can_claim_terminal(current: ToolRunStatus, next: ToolRunStatus) -> bool {
+    current == ToolRunStatus::Running && next.is_terminal() && current.can_transition_to(next)
 }
 
-/// One serialization boundary for terminal commits across both ToolRun kinds.
+/// One serialization boundary for terminal commits across ToolRun completion paths.
 /// Callers must re-check the in-memory state after acquiring it and keep the
 /// guard until durable commit and its in-memory projection are complete.
 #[derive(Default)]
@@ -90,7 +63,7 @@ impl TerminalTransitionGuard {
 }
 
 /// Timestamps shared by all terminal states. `started_at` is preserved exactly;
-/// an empty value is meaningful for cancellation of a waiting scheduled ToolRun.
+/// an empty value is meaningful when restore repairs a malformed legacy row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TerminalTimestamps {
     pub(crate) started_at: String,
@@ -116,12 +89,10 @@ impl TerminalTimestamps {
         match payload {
             TerminalPayload::Completed {
                 output,
-                exit_code,
                 truncated,
                 log_path,
             } => ToolRunState::Completed {
                 output,
-                exit_code,
                 truncated,
                 log_path,
                 started_at: self.started_at,
@@ -131,12 +102,10 @@ impl TerminalTimestamps {
                 error,
                 error_reason,
                 log_path,
-                exit_code,
             } => ToolRunState::Failed {
                 error,
                 error_reason,
                 log_path,
-                exit_code,
                 started_at: self.started_at,
                 finished_at: self.finished_at,
             },
@@ -151,7 +120,6 @@ impl TerminalTimestamps {
 pub(crate) enum TerminalPayload {
     Completed {
         output: String,
-        exit_code: Option<i32>,
         truncated: bool,
         log_path: Option<String>,
     },
@@ -159,23 +127,19 @@ pub(crate) enum TerminalPayload {
         error: String,
         error_reason: String,
         log_path: Option<String>,
-        exit_code: Option<i32>,
     },
     Cancelled,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        TerminalPayload, TerminalSource, TerminalTimestamps, ToolRunState, can_claim_terminal,
-    };
+    use super::{TerminalPayload, TerminalTimestamps, ToolRunState, can_claim_terminal};
     use haven_common::lifecycle::ToolRunStatus;
 
     #[test]
     fn completed_terminal_state_preserves_payload_and_timestamps() {
         let state = TerminalTimestamps::new("start", "finish").build(TerminalPayload::Completed {
             output: "out".into(),
-            exit_code: Some(0),
             truncated: true,
             log_path: Some("log.txt".into()),
         });
@@ -184,7 +148,6 @@ mod tests {
             state,
             ToolRunState::Completed {
                 output,
-                exit_code: Some(0),
                 truncated: true,
                 log_path: Some(path),
                 started_at,
@@ -199,7 +162,6 @@ mod tests {
             error: "details".into(),
             error_reason: "summary".into(),
             log_path: Some("failure.log".into()),
-            exit_code: Some(7),
         });
 
         assert!(matches!(
@@ -208,7 +170,6 @@ mod tests {
                 error,
                 error_reason,
                 log_path: Some(path),
-                exit_code: Some(7),
                 started_at,
                 finished_at,
             } if error == "details" && error_reason == "summary" && path == "failure.log" && started_at == "start" && finished_at == "finish"
@@ -216,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_terminal_state_preserves_empty_start_for_waiting_schedule() {
+    fn cancelled_terminal_state_preserves_start_and_finish_timestamps() {
         let state = TerminalTimestamps::new("", "finish").build(TerminalPayload::Cancelled);
 
         assert!(matches!(
@@ -237,8 +198,6 @@ mod tests {
     #[test]
     fn tool_run_status_transition_graph_is_exhaustive() {
         let allowed_transitions = [
-            (ToolRunStatus::Waiting, ToolRunStatus::Running),
-            (ToolRunStatus::Waiting, ToolRunStatus::Cancelled),
             (ToolRunStatus::Running, ToolRunStatus::Completed),
             (ToolRunStatus::Running, ToolRunStatus::Failed),
             (ToolRunStatus::Running, ToolRunStatus::Cancelled),
@@ -262,31 +221,14 @@ mod tests {
     fn terminal_claim_policy_covers_every_status_and_source_pair() {
         for current in ToolRunStatus::ALL {
             for target in ToolRunStatus::ALL {
-                for source in [TerminalSource::Running, TerminalSource::Live] {
-                    let expected = matches!(
-                        (source, current, target),
-                        (
-                            TerminalSource::Running | TerminalSource::Live,
-                            ToolRunStatus::Running,
-                            ToolRunStatus::Completed
-                                | ToolRunStatus::Failed
-                                | ToolRunStatus::Cancelled
-                        ) | (
-                            TerminalSource::Live,
-                            ToolRunStatus::Waiting,
-                            ToolRunStatus::Cancelled
-                        )
-                    );
-
-                    assert_eq!(
-                        can_claim_terminal(current, target, source),
-                        expected,
-                        "unexpected terminal claim: {:?} {:?} -> {:?}",
-                        source,
-                        current,
-                        target
-                    );
-                }
+                let expected = current == ToolRunStatus::Running && target.is_terminal();
+                assert_eq!(
+                    can_claim_terminal(current, target),
+                    expected,
+                    "unexpected terminal claim: {:?} -> {:?}",
+                    current,
+                    target
+                );
             }
         }
     }

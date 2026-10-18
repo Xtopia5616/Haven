@@ -51,6 +51,7 @@ impl ToolRuntimeCoordinator {
     pub(crate) async fn wire_startup(&self, wiring: StartupWiring) -> anyhow::Result<()> {
         let StartupWiring {
             tool_run_store,
+            schedule_store,
             tool_settings,
             default_shell,
             context_limits,
@@ -81,10 +82,7 @@ impl ToolRuntimeCoordinator {
             .tool_run_service
             .set_limits(&context_limits)
             .await;
-        self.runtime
-            .live_outputs
-            .set_emit_interval(&context_limits)
-            .await;
+        self.runtime.live_outputs.set_limits(&context_limits).await;
         if let Err(error) = self.core.authorization.apply_security(&security).await {
             tracing::error!(%error, "configured execution workspace unavailable at startup; relative file access is disabled");
         }
@@ -114,6 +112,10 @@ impl ToolRuntimeCoordinator {
         self.runtime
             .tool_run_service
             .set_tool_run_store(tool_run_store)
+            .await;
+        self.runtime
+            .schedule_service
+            .set_store(schedule_store)
             .await;
         self.runtime
             .clipboard_history
@@ -256,7 +258,7 @@ impl ToolRuntimeCoordinator {
         self.builtins.mcp_manager.set_limits(&limits).await;
         self.builtins.skill_registry.set_limits(&limits).await;
         self.runtime.tool_run_service.set_limits(&limits).await;
-        self.runtime.live_outputs.set_emit_interval(&limits).await;
+        self.runtime.live_outputs.set_limits(&limits).await;
         self.runtime
             .update_platform(|current| {
                 let mut next = current.clone();
@@ -472,6 +474,7 @@ mod tests {
     fn startup_wiring() -> StartupWiring {
         StartupWiring {
             tool_run_store: None,
+            schedule_store: None,
             tool_settings: HashMap::new(),
             default_shell: ShellChoice::default(),
             context_limits: ContextLimitsConfig::default(),

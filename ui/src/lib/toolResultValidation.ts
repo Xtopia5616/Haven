@@ -8,13 +8,13 @@ import {
 } from './contracts/valueGuards.ts';
 import { isMediaRepresentationKind } from './contracts/media.ts';
 import { isSessionStatus } from './contracts/session.ts';
-import { isScheduleMode, isToolRunStatus } from './contracts/toolRun.ts';
+import { isScheduleMode } from './contracts/schedule.ts';
 import { isCanonicalEntityId } from './contracts/wireGuards.ts';
+import { isToolRunStatus } from './contracts/toolRun.ts';
 import {
 	isToolAgentPresenceStatus,
 	isToolAcPowerState,
 	isToolBatteryState,
-	isToolExecutionMode,
 	isToolFileOperation,
 	isToolFileSearchMode,
 	isToolFileSymbolKind,
@@ -512,13 +512,13 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 						isToolAgentPresenceStatus(row.status),
 				)
 			);
-		case 'tool_runs':
+		case 'toolrun':
 			return (
 				hasValidOptionalFields(data, {
 					operation: isToolRunsResultOperation,
 					status: isToolRunResultStatus,
 					...booleanFields('cancelled'),
-					exit_code: isFiniteNumber,
+					...stringFields('tool_name', 'output'),
 				}) &&
 				hasValidOptionalCanonicalId(data, 'tool_run_id', 'toolrun') &&
 				hasValidRecordArray(
@@ -535,15 +535,19 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					mode: isScheduleMode,
 				}) &&
 				hasValidOptionalCanonicalId(data, 'tool_run_id', 'toolrun') &&
+				hasValidOptionalCanonicalId(data, 'schedule_id', 'sched') &&
 				hasValidRecordArray(
 					data,
-					'scheduled_tool_runs',
+					'schedules',
 					(row) =>
-						isCanonicalToolRunId(row.tool_run_id) &&
+						isCanonicalEntityId(row.schedule_id, 'sched') &&
 						isString(row.title) &&
 						isString(row.body) &&
 						isScheduleMode(row.mode) &&
-						isString(row.due_at),
+						((row.due_at === undefined || row.due_at === null || isString(row.due_at)) &&
+							(row.next_due_at === undefined ||
+								row.next_due_at === null ||
+								isString(row.next_due_at))),
 				)
 			);
 		case 'admin':
@@ -613,10 +617,9 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 			return (
 				hasValidOptionalFields(data, {
 					truncated: isBoolean,
-					execution_mode: isToolExecutionMode,
-					status: isToolRunStatus,
 					exit_code: isFiniteNumber,
-				}) && hasValidOptionalCanonicalId(data, 'tool_run_id', 'toolrun')
+					output: isString,
+				})
 			);
 		default:
 			return true;

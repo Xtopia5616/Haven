@@ -77,7 +77,10 @@ export function getToolResultRenderer(
 		else if (selectedRenderer === 'clipboard') renderer = ToolClipboardResult;
 		else if (selectedRenderer === 'input') renderer = ToolInputResult;
 		else if (selectedRenderer === 'window') renderer = ToolWindowResult;
-		else if (selectedRenderer === 'tool_runs') renderer = ToolRunsResult;
+		else if (selectedRenderer === 'toolrun') {
+			renderer = ToolRunsResult;
+			contractName = 'toolrun';
+		}
 		else if (selectedRenderer === 'schedule') renderer = ToolScheduleResult;
 		else if (selectedRenderer === 'files') {
 			if (data && 'media' in data) {

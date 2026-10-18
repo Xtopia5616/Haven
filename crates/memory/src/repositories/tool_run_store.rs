@@ -1,4 +1,4 @@
-//! Typed asynchronous persistence boundary for background and scheduled tool_runs.
+//! Typed asynchronous persistence boundary for background ToolRuns.
 //!
 //! ToolRunService owns ToolRun admission, live state, retry policy, and event
 //! publication. This store owns SQLite blocking-pool scheduling and delegates
@@ -8,16 +8,12 @@
 use std::sync::Arc;
 
 use crate::Database;
-use crate::repositories::scheduled_session_tasks::RecurringSessionTaskRow;
 use crate::repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
-use crate::repositories::tool_runs::{
-    ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow, normalize_tool_run_timestamp,
-};
+use crate::repositories::tool_runs::{ToolRunRow, normalize_tool_run_timestamp};
 use anyhow::Context;
 use chrono::{DateTime, SecondsFormat, Utc};
 use haven_common::ToolRunCompletionPayload;
 use haven_common::lifecycle::ToolRunStatus;
-use haven_common::tool_run::ScheduleMode;
 use haven_common::types::is_canonical_id;
 
 const MAX_TOOL_RUN_HISTORY_PAGE_SIZE: usize = 200;
@@ -55,27 +51,6 @@ fn normalize_optional_persisted_tool_run_timestamp(
         .transpose()
 }
 
-fn normalize_stored_due_at(value: &mut String) {
-    if !value.trim().is_empty()
-        && let Ok(timestamp) = normalize_tool_run_timestamp(value, "due_at")
-    {
-        *value = timestamp;
-    }
-    // Invalid waiting due_at values remain readable so the service can move
-    // them to terminal history with a quarantine reason.
-}
-
-fn normalize_scheduled_due_at(
-    due_at: &str,
-    watch_tool_run_id: Option<&str>,
-) -> anyhow::Result<String> {
-    match (due_at.trim().is_empty(), watch_tool_run_id.is_some()) {
-        (true, true) => Ok(String::new()),
-        (false, false) => normalize_tool_run_timestamp(due_at, "due_at"),
-        _ => anyhow::bail!("scheduled ToolRun requires exactly one of due_at or watch_tool_run_id"),
-    }
-}
-
 fn validate_id(id: &str, prefix: &str, field: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         is_canonical_id(id, prefix),
@@ -88,18 +63,6 @@ fn validate_optional_id(id: Option<&str>, prefix: &str, field: &str) -> anyhow::
     if let Some(id) = id {
         validate_id(id, prefix, field)?;
     }
-    Ok(())
-}
-
-fn validate_execution_claim_id(claim_id: &str, tool_run_id: &str) -> anyhow::Result<()> {
-    if is_canonical_id(claim_id, "conf") {
-        return Ok(());
-    }
-
-    anyhow::ensure!(
-        claim_id == tool_run_id && is_canonical_id(claim_id, "toolrun"),
-        "invalid claim_id: expected canonical conf- ID or the claimed toolrun- ID"
-    );
     Ok(())
 }
 
@@ -118,9 +81,6 @@ fn validate_tool_run_rows(rows: &[ToolRunRow]) -> anyhow::Result<()> {
 
 fn normalize_tool_run_row(row: &mut ToolRunRow) -> anyhow::Result<()> {
     validate_tool_run_row(row)?;
-    if let Some(due_at) = &mut row.due_at {
-        normalize_stored_due_at(due_at);
-    }
     row.started_at =
         normalize_optional_persisted_tool_run_timestamp(row.started_at.take(), "started_at")?;
     row.finished_at =
@@ -133,23 +93,6 @@ fn normalize_tool_run_rows(rows: &mut [ToolRunRow]) -> anyhow::Result<()> {
     for row in rows {
         normalize_tool_run_row(row)?;
     }
-    Ok(())
-}
-
-fn validate_scheduled_tool_run_row(row: &ScheduledToolRunRow) -> anyhow::Result<()> {
-    validate_id(&row.tool_run_id, "toolrun", "tool_run_id")?;
-    validate_optional_id(row.session_id.as_deref(), "ses", "session_id")?;
-    validate_optional_id(
-        row.watch_tool_run_id.as_deref(),
-        "toolrun",
-        "watch_tool_run_id",
-    )
-}
-
-fn normalize_scheduled_tool_run_row(row: &mut ScheduledToolRunRow) -> anyhow::Result<()> {
-    validate_scheduled_tool_run_row(row)?;
-    normalize_stored_due_at(&mut row.due_at);
-    row.created_at = normalize_persisted_tool_run_timestamp(&row.created_at, "created_at")?;
     Ok(())
 }
 
@@ -305,7 +248,7 @@ impl ToolRunStore {
             .await
     }
 
-    /// Read one persisted ToolRun of either kind.
+    /// Read one persisted background ToolRun.
     pub async fn get_tool_run(&self, tool_run_id: String) -> anyhow::Result<Option<ToolRunRow>> {
         validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
         self.db
@@ -319,19 +262,7 @@ impl ToolRunStore {
             .await
     }
 
-    /// Read only the producer status/result needed by a dependent scheduled
-    /// ToolRun. This private projection is not used by UI/history commands.
-    pub async fn get_tool_run_dependency(
-        &self,
-        tool_run_id: String,
-    ) -> anyhow::Result<Option<ToolRunDependencyRow>> {
-        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        self.db
-            .run_blocking(move |db| db.get_tool_run_dependency(&tool_run_id))
-            .await
-    }
-
-    /// Remove a persisted ToolRun of either kind.
+    /// Remove a persisted background ToolRun.
     pub async fn delete_tool_run(&self, tool_run_id: String) -> anyhow::Result<bool> {
         validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
         self.db
@@ -351,22 +282,6 @@ impl ToolRunStore {
                     validate_id(tool_run_id, "toolrun", "tool_run_id")?;
                 }
                 Ok(deleted)
-            })
-            .await
-    }
-
-    /// Move a malformed waiting scheduled row into terminal history.
-    pub async fn quarantine_waiting_scheduled_tool_run(
-        &self,
-        tool_run_id: String,
-        error_reason: String,
-        finished_at: String,
-    ) -> anyhow::Result<bool> {
-        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        let finished_at = normalize_tool_run_timestamp(&finished_at, "finished_at")?;
-        self.db
-            .run_blocking(move |db| {
-                db.fail_waiting_scheduled_tool_run(&tool_run_id, &error_reason, &finished_at)
             })
             .await
     }
@@ -402,20 +317,43 @@ impl ToolRunStore {
         &self,
         tool_run_id: String,
         session_id: Option<String>,
-        command: String,
+        _command: String,
+        started_at: String,
+        source_step_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        self.save_background_tool_run_with_metadata(
+            tool_run_id,
+            "shell".into(),
+            session_id,
+            started_at,
+            source_step_id,
+        )
+        .await
+    }
+
+    /// Persist a newly spawned invocation of any registered tool.
+    pub async fn save_background_tool_run_with_metadata(
+        &self,
+        tool_run_id: String,
+        tool_name: String,
+        session_id: Option<String>,
         started_at: String,
         source_step_id: Option<String>,
     ) -> anyhow::Result<()> {
         validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
+        anyhow::ensure!(
+            !tool_name.trim().is_empty() && tool_name.len() <= 128,
+            "invalid ToolRun tool_name"
+        );
         validate_optional_id(session_id.as_deref(), "ses", "session_id")?;
         validate_optional_id(source_step_id.as_deref(), "step", "source_step_id")?;
         let started_at = normalize_tool_run_timestamp(&started_at, "started_at")?;
         self.db
             .run_blocking(move |db| {
-                db.save_tool_run_with_source(
+                db.save_tool_run_with_metadata(
                     &tool_run_id,
+                    &tool_name,
                     session_id.as_deref(),
-                    &command,
                     &started_at,
                     source_step_id.as_deref(),
                 )
@@ -449,7 +387,6 @@ impl ToolRunStore {
         error: Option<String>,
         error_reason: Option<String>,
         log_path: Option<String>,
-        exit_code: Option<i32>,
         finished_at: String,
     ) -> anyhow::Result<bool> {
         validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
@@ -463,7 +400,6 @@ impl ToolRunStore {
                     error.as_deref(),
                     error_reason.as_deref(),
                     log_path.as_deref(),
-                    exit_code,
                     &finished_at,
                 )
             })
@@ -491,6 +427,10 @@ impl ToolRunStore {
         mut payload: ToolRunCompletionPayload,
     ) -> anyhow::Result<bool> {
         validate_id(&payload.tool_run_id, "toolrun", "tool_run_id")?;
+        anyhow::ensure!(
+            !payload.tool_name.trim().is_empty() && payload.tool_name.len() <= 128,
+            "invalid background ToolRun tool_name"
+        );
         validate_optional_id(payload.source_step_id.as_deref(), "step", "source_step_id")?;
         payload.started_at =
             normalize_optional_tool_run_timestamp(payload.started_at, "started_at")?;
@@ -505,223 +445,6 @@ impl ToolRunStore {
             .run_blocking(move |db| db.finish_tool_run_with_completion(&payload))
             .await
     }
-
-    /// Persist a newly scheduled ToolRun and its durable timer or dependency
-    /// trigger relation.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn save_scheduled_tool_run(
-        &self,
-        tool_run_id: String,
-        due_at: String,
-        title: String,
-        body: String,
-        mode: ScheduleMode,
-        session_id: Option<String>,
-        tool_name: Option<String>,
-        tool_args: Option<String>,
-        prompt: Option<String>,
-        watch_tool_run_id: Option<String>,
-    ) -> anyhow::Result<()> {
-        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        validate_optional_id(session_id.as_deref(), "ses", "session_id")?;
-        validate_optional_id(watch_tool_run_id.as_deref(), "toolrun", "watch_tool_run_id")?;
-        let due_at = normalize_scheduled_due_at(&due_at, watch_tool_run_id.as_deref())?;
-        self.db
-            .run_blocking(move |db| {
-                db.save_scheduled_tool_run(
-                    &tool_run_id,
-                    &due_at,
-                    &title,
-                    &body,
-                    mode,
-                    session_id.as_deref(),
-                    tool_name.as_deref(),
-                    tool_args.as_deref(),
-                    prompt.as_deref(),
-                    watch_tool_run_id.as_deref(),
-                )
-            })
-            .await
-    }
-
-    /// List waiting scheduled tool_runs ordered by due time.
-    pub async fn list_pending_scheduled_tool_runs(
-        &self,
-    ) -> anyhow::Result<Vec<ScheduledToolRunRow>> {
-        self.db
-            .run_blocking(|db| {
-                let mut rows = db.list_pending_scheduled_tool_runs()?;
-                for row in &mut rows {
-                    normalize_scheduled_tool_run_row(row)?;
-                }
-                Ok(rows)
-            })
-            .await
-    }
-
-    /// List scheduled rows that have not reached a terminal state, including
-    /// triggers already started by another ToolRunService instance.
-    pub async fn list_live_scheduled_tool_runs(&self) -> anyhow::Result<Vec<ScheduledToolRunRow>> {
-        self.db
-            .run_blocking(|db| {
-                let mut rows = db.list_live_scheduled_tool_runs()?;
-                for row in &mut rows {
-                    normalize_scheduled_tool_run_row(row)?;
-                }
-                Ok(rows)
-            })
-            .await
-    }
-
-    pub async fn create_recurring_session_task(
-        &self,
-        source_session_id: String,
-        title: String,
-        body: String,
-        prompt: String,
-        interval_seconds: u64,
-        anchor_at: String,
-    ) -> anyhow::Result<RecurringSessionTaskRow> {
-        validate_id(&source_session_id, "ses", "source_session_id")?;
-        let anchor_at = normalize_tool_run_timestamp(&anchor_at, "anchor_at")?;
-        self.db
-            .run_blocking(move |db| {
-                db.create_recurring_session_task(
-                    &source_session_id,
-                    &title,
-                    &body,
-                    &prompt,
-                    interval_seconds,
-                    &anchor_at,
-                )
-            })
-            .await
-    }
-
-    pub async fn list_recurring_session_tasks(
-        &self,
-        source_session_id: String,
-    ) -> anyhow::Result<Vec<RecurringSessionTaskRow>> {
-        validate_id(&source_session_id, "ses", "source_session_id")?;
-        self.db
-            .run_blocking(move |db| db.list_recurring_session_tasks(&source_session_id))
-            .await
-    }
-
-    pub async fn delete_recurring_session_task(
-        &self,
-        schedule_id: String,
-        source_session_id: String,
-    ) -> anyhow::Result<(bool, Option<String>)> {
-        validate_id(&schedule_id, "sched", "schedule_id")?;
-        validate_id(&source_session_id, "ses", "source_session_id")?;
-        self.db
-            .run_blocking(move |db| {
-                db.delete_recurring_session_task(&schedule_id, &source_session_id)
-            })
-            .await
-    }
-
-    pub async fn claim_due_recurring_session_tasks(
-        &self,
-        now: String,
-        limit: usize,
-    ) -> anyhow::Result<Vec<ScheduledToolRunRow>> {
-        let now = normalize_tool_run_timestamp(&now, "now")?;
-        self.db
-            .run_blocking(move |db| db.claim_due_recurring_session_tasks(&now, limit))
-            .await
-    }
-
-    /// Claim a waiting scheduled trigger with a waiting-to-running CAS.
-    pub async fn start_scheduled_tool_run(
-        &self,
-        tool_run_id: String,
-        started_at: String,
-    ) -> anyhow::Result<bool> {
-        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        let started_at = normalize_tool_run_timestamp(&started_at, "started_at")?;
-        self.db
-            .run_blocking(move |db| db.start_scheduled_tool_run(&tool_run_id, &started_at))
-            .await
-    }
-
-    /// Return an undelivered scheduled fire to its waiting state.
-    pub async fn requeue_scheduled_tool_run(&self, tool_run_id: String) -> anyhow::Result<bool> {
-        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        self.db
-            .run_blocking(move |db| db.requeue_scheduled_tool_run(&tool_run_id))
-            .await
-    }
-
-    /// Persist a running scheduled ToolRun's terminal transition and, for
-    /// completed/failed tool mode, its durable ToolRun-result delivery record.
-    pub async fn finish_scheduled_tool_run(
-        &self,
-        tool_run_id: String,
-        status: ToolRunStatus,
-        result_summary: Option<String>,
-        error_reason: Option<String>,
-        finished_at: String,
-    ) -> anyhow::Result<bool> {
-        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        let finished_at = normalize_tool_run_timestamp(&finished_at, "finished_at")?;
-        self.db
-            .run_blocking(move |db| {
-                db.finish_scheduled_tool_run(
-                    &tool_run_id,
-                    status,
-                    result_summary.as_deref(),
-                    error_reason.as_deref(),
-                    &finished_at,
-                )
-            })
-            .await
-    }
-
-    /// Claim execution for a pending scheduled ToolRun. A confirmation uses
-    /// its `conf-*` request ID; an auto-approved operation uses the ToolRun's
-    /// own ID. Repeating with the same claim ID is idempotent, so callers can
-    /// retry an approval after a grant write failure without reopening races.
-    pub async fn claim_scheduled_tool_run_execution(
-        &self,
-        tool_run_id: String,
-        claim_id: String,
-    ) -> anyhow::Result<bool> {
-        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        validate_execution_claim_id(&claim_id, &tool_run_id)?;
-        self.db
-            .run_blocking(move |db| db.claim_scheduled_tool_run_execution(&tool_run_id, &claim_id))
-            .await
-    }
-
-    /// Release an execution claim when a later retryable approval step fails.
-    pub async fn release_scheduled_tool_run_execution_claim(
-        &self,
-        tool_run_id: String,
-        claim_id: String,
-    ) -> anyhow::Result<bool> {
-        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        validate_execution_claim_id(&claim_id, &tool_run_id)?;
-        self.db
-            .run_blocking(move |db| {
-                db.release_scheduled_tool_run_execution_claim(&tool_run_id, &claim_id)
-            })
-            .await
-    }
-
-    /// Cancel a waiting or running scheduled ToolRun.
-    pub async fn cancel_scheduled_tool_run(
-        &self,
-        tool_run_id: String,
-        finished_at: String,
-    ) -> anyhow::Result<bool> {
-        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
-        let finished_at = normalize_tool_run_timestamp(&finished_at, "finished_at")?;
-        self.db
-            .run_blocking(move |db| db.cancel_scheduled_tool_run(&tool_run_id, &finished_at))
-            .await
-    }
 }
 
 #[cfg(test)]
@@ -732,7 +455,6 @@ mod tests {
 
     const STARTED_AT: &str = "2026-09-24T10:00:00.000Z";
     const FINISHED_AT: &str = "2026-09-24T11:00:00.000Z";
-    const LATE_AT: &str = "2026-09-24T11:01:00.000Z";
 
     fn store() -> (Arc<Database>, ToolRunStore) {
         let db = Arc::new(Database::open_in_memory().unwrap());
@@ -740,32 +462,8 @@ mod tests {
         (db, store)
     }
 
-    fn completion_payload(
-        tool_run_id: &str,
-        status: ToolRunStatus,
-        output: Option<&str>,
-        error: Option<&str>,
-        error_reason: Option<&str>,
-        exit_code: Option<i32>,
-        finished_at: &str,
-    ) -> ToolRunCompletionPayload {
-        ToolRunCompletionPayload {
-            tool_run_id: tool_run_id.to_owned(),
-            status,
-            output: output.map(str::to_owned),
-            error: error.map(str::to_owned),
-            error_reason: error_reason.map(str::to_owned),
-            log_path: None,
-            exit_code,
-            started_at: Some(STARTED_AT.to_owned()),
-            finished_at: Some(finished_at.to_owned()),
-            source_step_id: None,
-            truncated: false,
-        }
-    }
-
     #[tokio::test]
-    async fn background_source_step_survives_store_roundtrip() {
+    async fn background_tool_run_roundtrips_with_canonical_ids_and_times() {
         let (_db, store) = store();
         let tool_run_id = new_id("toolrun");
         let session_id = new_id("ses");
@@ -773,595 +471,85 @@ mod tests {
         store
             .save_background_tool_run_with_source(
                 tool_run_id.clone(),
-                Some(session_id),
-                "echo source".into(),
-                STARTED_AT.into(),
+                Some(session_id.clone()),
+                "echo ok".into(),
+                "2026-09-24T12:00:00+02:00".into(),
                 Some(source_step_id.clone()),
             )
             .await
             .unwrap();
-
         let row = store.get_tool_run(tool_run_id).await.unwrap().unwrap();
+        assert_eq!(row.kind, "background");
+        assert_eq!(row.session_id.as_deref(), Some(session_id.as_str()));
         assert_eq!(row.source_step_id.as_deref(), Some(source_step_id.as_str()));
+        assert_eq!(row.started_at.as_deref(), Some(STARTED_AT));
+        assert_eq!(row.tool_name, "shell");
     }
 
     #[tokio::test]
-    async fn normalizes_tool_run_timestamps_to_utc_before_persistence() {
-        let (_db, store) = store();
-        let background_id = new_id("toolrun");
-        store
-            .save_background_tool_run(
-                background_id.clone(),
-                None,
-                "echo normalize".into(),
-                "2026-09-24T12:00:00+02:00".into(),
-            )
-            .await
-            .unwrap();
-        store
-            .finish_background_tool_run(
-                background_id.clone(),
-                ToolRunStatus::Completed,
-                None,
-                None,
-                None,
-                None,
-                Some(0),
-                "2026-09-24T13:00:00+02:00".into(),
-            )
-            .await
-            .unwrap();
-
-        let row = store.get_tool_run(background_id).await.unwrap().unwrap();
-        assert_eq!(row.started_at.as_deref(), Some("2026-09-24T10:00:00.000Z"));
-        assert_eq!(row.finished_at.as_deref(), Some("2026-09-24T11:00:00.000Z"));
-        assert!(DateTime::parse_from_rfc3339(&row.created_at).is_ok());
-
-        let scheduled_id = new_id("toolrun");
-        store
-            .save_scheduled_tool_run(
-                scheduled_id.clone(),
-                "2026-09-25T12:00:00+02:00".into(),
-                "Reminder".into(),
-                "body".into(),
-                ScheduleMode::Tool,
-                None,
-                Some("test_tool".into()),
-                None,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-        let due_at = store
-            .list_pending_scheduled_tool_runs()
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|row| row.tool_run_id == scheduled_id)
-            .unwrap()
-            .due_at;
-        assert_eq!(due_at, "2026-09-25T10:00:00.000Z");
-    }
-
-    #[tokio::test]
-    async fn rejects_invalid_tool_run_timestamps_and_normalizes_watch_due_at() {
-        let (db, store) = store();
-        let background_id = new_id("toolrun");
-        assert!(
-            store
-                .save_background_tool_run(
-                    background_id,
-                    None,
-                    "echo invalid timestamp".into(),
-                    "not a timestamp".into(),
-                )
-                .await
-                .is_err()
-        );
-        assert!(db.list_tool_runs(None).unwrap().is_empty());
-
-        let scheduled_id = new_id("toolrun");
-        assert!(
-            store
-                .save_scheduled_tool_run(
-                    scheduled_id.clone(),
-                    "not a timestamp".into(),
-                    "Reminder".into(),
-                    "body".into(),
-                    ScheduleMode::Tool,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await
-                .is_err()
-        );
-        assert!(db.list_tool_runs(None).unwrap().is_empty());
-
-        let watched_id = new_id("toolrun");
-        store
-            .save_scheduled_tool_run(
-                watched_id.clone(),
-                "  ".into(),
-                "Follow up".into(),
-                "body".into(),
-                haven_common::tool_run::ScheduleMode::Continue,
-                None,
-                None,
-                None,
-                Some("prompt".into()),
-                Some(new_id("toolrun")),
-            )
-            .await
-            .unwrap();
-        let watched = store
-            .list_pending_scheduled_tool_runs()
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|row| row.tool_run_id == watched_id)
-            .unwrap();
-        assert_eq!(watched.due_at, "");
-    }
-
-    #[tokio::test]
-    async fn rejects_legacy_sqlite_timestamps_when_reading_tool_runs() {
-        let (db, store) = store();
-        let tool_run_id = new_id("toolrun");
-        db.save_tool_run(&tool_run_id, None, "echo legacy", STARTED_AT)
-            .unwrap();
-        db.conn()
-            .execute_batch("PRAGMA ignore_check_constraints = ON;")
-            .unwrap();
-        db.conn()
-            .execute(
-                "UPDATE tool_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3",
-                rusqlite::params!["2026-09-24 10:00:00", "2026-09-24 11:00:00", tool_run_id],
-            )
-            .unwrap();
-
-        assert!(store.get_tool_run(tool_run_id).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn terminal_history_page_size_is_bounded_by_memory_store() {
-        let (db, store) = store();
-        for index in 0..(MAX_TOOL_RUN_HISTORY_PAGE_SIZE + 5) {
-            let tool_run_id = new_id("toolrun");
-            let started_at = format!("2026-09-24T10:{:02}:00.000Z", index % 60);
-            db.save_tool_run(&tool_run_id, None, "echo history", &started_at)
-                .unwrap();
-            db.finish_tool_run(
-                &tool_run_id,
-                ToolRunStatus::Completed,
-                Some("done"),
-                None,
-                None,
-                None,
-                Some(0),
-                "2026-09-24T11:00:00.000Z",
-            )
-            .unwrap();
-        }
-
-        let rows = store
-            .list_terminal_tool_runs(None, None, usize::MAX)
-            .await
-            .unwrap();
-
-        assert_eq!(rows.len(), MAX_TOOL_RUN_HISTORY_PAGE_SIZE);
-    }
-
-    #[tokio::test]
-    async fn completion_claim_and_ack_preserve_durable_delivery_boundary() {
+    async fn completion_is_acknowledged_only_after_durable_result_claim() {
         let (_db, store) = store();
         let tool_run_id = new_id("toolrun");
-        let session_id = new_id("ses");
         store
             .save_background_tool_run(
                 tool_run_id.clone(),
-                Some(session_id.clone()),
-                "echo result".into(),
+                None,
+                "echo ok".into(),
                 STARTED_AT.into(),
             )
             .await
             .unwrap();
-
-        let mut payload = completion_payload(
-            &tool_run_id,
-            ToolRunStatus::Completed,
-            Some("durable result"),
-            None,
-            None,
-            Some(0),
-            "2026-09-24T13:00:00+02:00",
-        );
-        payload.started_at = Some("2026-09-24T12:00:00+02:00".into());
+        let payload = ToolRunCompletionPayload {
+            tool_run_id: tool_run_id.clone(),
+            tool_name: "shell".into(),
+            status: ToolRunStatus::Completed,
+            output: Some("ok".into()),
+            error: None,
+            error_reason: None,
+            log_path: None,
+            started_at: Some(STARTED_AT.into()),
+            finished_at: Some(FINISHED_AT.into()),
+            source_step_id: None,
+            truncated: false,
+        };
         assert!(
             store
                 .finish_background_tool_run_with_completion(payload)
                 .await
                 .unwrap()
         );
-
-        let claimed = store.claim_pending_completion().await.unwrap().unwrap();
-        assert_eq!(claimed.tool_run_id, tool_run_id);
-        assert_eq!(claimed.session_id.as_deref(), Some(session_id.as_str()));
-        assert_eq!(claimed.payload.output.as_deref(), Some("durable result"));
-        assert_eq!(
-            claimed.payload.started_at.as_deref(),
-            Some("2026-09-24T10:00:00.000Z")
-        );
-        assert_eq!(
-            claimed.payload.finished_at.as_deref(),
-            Some("2026-09-24T11:00:00.000Z")
-        );
-        // The unexpired claim prevents another consumer from claiming it.
-        assert!(store.claim_pending_completion().await.unwrap().is_none());
-        assert!(
-            store
-                .acknowledge_completion(claimed.tool_run_result_id)
-                .await
-                .unwrap()
-        );
-        assert!(store.claim_pending_completion().await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn background_terminal_cas_enqueues_only_the_winning_snapshot() {
-        let (_db, store) = store();
-        let tool_run_id = new_id("toolrun");
-        store
-            .save_background_tool_run(
-                tool_run_id.clone(),
-                None,
-                "echo winner".into(),
-                STARTED_AT.into(),
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            store
-                .finish_background_tool_run_with_completion(completion_payload(
-                    &tool_run_id,
-                    ToolRunStatus::Completed,
-                    Some("winner"),
-                    None,
-                    None,
-                    Some(0),
-                    FINISHED_AT,
-                ),)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !store
-                .finish_background_tool_run_with_completion(completion_payload(
-                    &tool_run_id,
-                    ToolRunStatus::Failed,
-                    None,
-                    Some("late"),
-                    Some("late"),
-                    Some(1),
-                    LATE_AT,
-                ),)
-                .await
-                .unwrap()
-        );
-
-        let row = store.get_tool_run(tool_run_id).await.unwrap().unwrap();
-        assert_eq!(row.status, ToolRunStatus::Completed);
-        assert_eq!(row.output.as_deref(), Some("winner"));
         let completion = store.claim_pending_completion().await.unwrap().unwrap();
-        assert_eq!(completion.status, row.status);
-        assert_eq!(completion.payload.output.as_deref(), Some("winner"));
+        assert_eq!(completion.tool_run_id, tool_run_id);
+        assert!(
+            store
+                .acknowledge_unowned_completion(completion.tool_run_result_id.clone())
+                .await
+                .unwrap()
+        );
+        assert!(store.claim_pending_completion().await.unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn scheduled_claim_terminal_and_quarantine_are_conditional() {
-        let (db, store) = store();
-        let tool_run_id = new_id("toolrun");
-        store
-            .save_scheduled_tool_run(
-                tool_run_id.clone(),
-                "2026-09-25T10:00:00Z".into(),
-                "Reminder".into(),
-                "body".into(),
-                ScheduleMode::Tool,
-                None,
-                Some("test_tool".into()),
-                None,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-        assert!(
-            store
-                .start_scheduled_tool_run(tool_run_id.clone(), STARTED_AT.into())
-                .await
-                .unwrap()
-        );
-        assert!(
-            !store
-                .start_scheduled_tool_run(tool_run_id.clone(), LATE_AT.into())
-                .await
-                .unwrap()
-        );
-        assert!(
-            store
-                .finish_scheduled_tool_run(
-                    tool_run_id.clone(),
-                    ToolRunStatus::Completed,
-                    Some("tool result".into()),
-                    None,
-                    FINISHED_AT.into(),
-                )
-                .await
-                .unwrap()
-        );
-        assert!(
-            !store
-                .finish_scheduled_tool_run(
-                    tool_run_id.clone(),
-                    ToolRunStatus::Failed,
-                    None,
-                    Some("late".into()),
-                    LATE_AT.into(),
-                )
-                .await
-                .unwrap()
-        );
-        assert!(
-            store
-                .list_pending_scheduled_tool_runs()
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(
-            store
-                .get_tool_run(tool_run_id.clone())
-                .await
-                .unwrap()
-                .unwrap()
-                .status,
-            ToolRunStatus::Completed
-        );
-        let dependency = store
-            .get_tool_run_dependency(tool_run_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(dependency.status, ToolRunStatus::Completed);
-        assert_eq!(dependency.result.as_deref(), Some("tool result"));
-
-        let invalid_tool_run_id = new_id("toolrun");
-        db.conn()
-            .execute_batch("PRAGMA ignore_check_constraints = ON;")
-            .unwrap();
-        db.conn()
-            .execute(
-                "INSERT INTO tool_runs (id, kind, due_at, title, body, mode, status, created_at)
-                 VALUES (?1, 'scheduled', 'invalid', 'Reminder', 'bad', 'tool', 'waiting', ?2)",
-                rusqlite::params![invalid_tool_run_id, "2026-09-24T10:00:00.000Z"],
-            )
-            .unwrap();
-        assert!(
-            store
-                .quarantine_waiting_scheduled_tool_run(
-                    invalid_tool_run_id.clone(),
-                    "invalid due_at".into(),
-                    FINISHED_AT.into(),
-                )
-                .await
-                .unwrap()
-        );
-        assert!(
-            !store
-                .quarantine_waiting_scheduled_tool_run(
-                    invalid_tool_run_id.clone(),
-                    "late quarantine".into(),
-                    LATE_AT.into(),
-                )
-                .await
-                .unwrap()
-        );
-        assert_eq!(
-            store
-                .get_tool_run(invalid_tool_run_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .error_reason
-                .as_deref(),
-            Some("invalid due_at")
-        );
-    }
-
-    #[tokio::test]
-    async fn rejects_noncanonical_tool_run_write_ids_before_persistence() {
+    async fn rejects_noncanonical_ids_and_invalid_timestamps() {
         let (db, store) = store();
         assert!(
             store
                 .save_background_tool_run(
-                    "toolrun-short".into(),
+                    "toolrun-invalid".into(),
                     None,
-                    "echo invalid".into(),
-                    STARTED_AT.into(),
+                    "echo".into(),
+                    STARTED_AT.into()
                 )
                 .await
                 .is_err()
         );
-
-        let tool_run_id = new_id("toolrun");
+        let valid_id = new_id("toolrun");
         assert!(
             store
-                .save_background_tool_run_with_source(
-                    tool_run_id.clone(),
-                    Some("ses-short".into()),
-                    "echo invalid".into(),
-                    STARTED_AT.into(),
-                    Some("step-short".into()),
-                )
+                .save_background_tool_run(valid_id, None, "echo".into(), "not-a-timestamp".into())
                 .await
                 .is_err()
         );
-        assert!(
-            store
-                .save_scheduled_tool_run(
-                    tool_run_id,
-                    "due".into(),
-                    "title".into(),
-                    "body".into(),
-                    haven_common::tool_run::ScheduleMode::Continue,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some("toolrun-watch".into()),
-                )
-                .await
-                .is_err()
-        );
-        assert_eq!(db.list_tool_runs(None).unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn rejects_invalid_claim_ids_and_malformed_read_rows() {
-        let (db, store) = store();
-        let tool_run_id = new_id("toolrun");
-        db.save_tool_run(&tool_run_id, Some("ses-short"), "echo", STARTED_AT)
-            .unwrap();
-        assert!(store.get_tool_run(tool_run_id.clone()).await.is_err());
-
-        let scheduled_id = new_id("toolrun");
-        db.save_scheduled_tool_run(
-            &scheduled_id,
-            "",
-            "title",
-            "body",
-            haven_common::tool_run::ScheduleMode::Continue,
-            None,
-            None,
-            None,
-            Some("prompt"),
-            Some("toolrun-short"),
-        )
-        .unwrap();
-        assert!(store.list_pending_scheduled_tool_runs().await.is_err());
-
-        assert!(
-            store
-                .claim_scheduled_tool_run_execution(new_id("toolrun"), "claim-short".into())
-                .await
-                .is_err()
-        );
-        assert!(
-            store
-                .claim_scheduled_tool_run_execution(new_id("toolrun"), new_id("toolrun"))
-                .await
-                .is_err()
-        );
-        assert!(
-            !store
-                .claim_scheduled_tool_run_execution(new_id("toolrun"), new_id("conf"))
-                .await
-                .unwrap()
-        );
-    }
-
-    #[tokio::test]
-    async fn scheduled_execution_claim_accepts_only_its_own_tool_run_id_for_auto_approval() {
-        let (db, store) = store();
-        let tool_run_id = new_id("toolrun");
-        store
-            .save_scheduled_tool_run(
-                tool_run_id.clone(),
-                "2026-09-25T10:00:00Z".into(),
-                "Reminder".into(),
-                "body".into(),
-                ScheduleMode::Tool,
-                None,
-                Some("test_tool".into()),
-                None,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-        assert!(
-            store
-                .start_scheduled_tool_run(tool_run_id.clone(), STARTED_AT.into())
-                .await
-                .unwrap()
-        );
-
-        assert!(
-            store
-                .claim_scheduled_tool_run_execution(tool_run_id.clone(), new_id("toolrun"))
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            db.get_kv(&format!("scheduled_execution_claim.{tool_run_id}"))
-                .unwrap(),
-            None
-        );
-
-        assert!(
-            store
-                .claim_scheduled_tool_run_execution(tool_run_id.clone(), tool_run_id.clone())
-                .await
-                .unwrap()
-        );
-        assert_eq!(
-            db.get_kv(&format!("scheduled_execution_claim.{tool_run_id}"))
-                .unwrap()
-                .as_deref(),
-            Some(tool_run_id.as_str())
-        );
-    }
-
-    #[tokio::test]
-    async fn rejects_completion_payload_identity_mismatch_before_delivery() {
-        let (db, store) = store();
-        let tool_run_id = new_id("toolrun");
-        db.save_tool_run(&tool_run_id, None, "echo", STARTED_AT)
-            .unwrap();
-        assert!(
-            db.finish_tool_run_with_completion(&completion_payload(
-                &tool_run_id,
-                ToolRunStatus::Completed,
-                Some("done"),
-                None,
-                None,
-                Some(0),
-                FINISHED_AT,
-            ))
-            .unwrap()
-        );
-        let mismatched_payload = serde_json::to_string(&completion_payload(
-            &new_id("toolrun"),
-            ToolRunStatus::Completed,
-            Some("done"),
-            None,
-            None,
-            Some(0),
-            FINISHED_AT,
-        ))
-        .unwrap();
-        db.conn()
-            .execute(
-                "UPDATE tool_run_completion_outbox SET status_json = ?1 WHERE tool_run_id = ?2",
-                rusqlite::params![mismatched_payload, tool_run_id],
-            )
-            .unwrap();
-
-        assert!(store.claim_pending_completion().await.is_err());
+        assert!(db.list_tool_runs(None).unwrap().is_empty());
     }
 }

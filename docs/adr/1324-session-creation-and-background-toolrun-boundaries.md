@@ -1,7 +1,7 @@
 # 1324：统一 Session 创建来源并收窄 ToolRun
 
-日期：2026-10-18
-状态：已采纳，分片实施中；本 ADR 取代 ADR 1323 中让 scheduled occurrence 使用 ToolRun 生命周期的决定，保留其调度行为契约。
+日期：2026-10-19
+状态：已采纳，实施完成；本 ADR 取代 ADR 1323 中让 scheduled occurrence 使用 ToolRun 生命周期的决定，保留其调度行为契约。
 范围：Session 创建与关系、Agent peer、前台 ToolCall、后台 ToolRun、Schedule、Memory schema、模型工具目录、IPC 与 UI
 
 ## 背景
@@ -17,7 +17,7 @@ ToolRunService 同时拥有后台进程和定时计划/触发。`shell` 通过 `
 3. **Session 关联独立持久化。** 增加对称的 `related` session link store，任一端都可查询和解除关联；创建元数据继续表达 AgentSpawn 与 fork 的来源/父子关系，peer 在线状态、角色、能力和 mailbox 仍由 Messaging registry 拥有。关联查询保留被删除端的 canonical identity，不以父行外键级联丢失历史。
 4. **Session 工具拥有创建和关联入口。** 新的 `session` model tool 承载 Agent 创建子 session 与建立/读取关系；`agent` tool 保留 peer discovery、消息与协作控制，不再负责创建 session。用户 UI、Agent、fork 与 scheduler 均调用统一 SessionCreation owner，不直接并行维护 session 创建流程。
 5. **ToolCall 与 ToolRun 按同步/后台执行方式成对。** 前台工具调用是当前 ReAct ToolCall；ToolRun 只表示可脱离当前 turn 持续、可取消且持久记录的后台工具调用。新增 `toolrun` model tool 作为明确的后台调用入口；Shell 的普通 `shell` 调用只走前台 ToolCall，不再接受 `execution_mode`。ToolRun runtime kind 收敛为 `background`。`tool_runs` 既有管理入口并入 `toolrun` 工具的 list/inspect/cancel operations。
-6. **Schedule 是独立生命周期。** `schedule` 继续拥有时间/ToolRun-completion trigger、一次性计划、周期 session 计划、确认、恢复与取消；计划和 occurrence 使用 Schedule-owned ID、存储、状态事件及 UI projection，不再创建 `kind=scheduled` ToolRun。触发时调用正常前台工具路径、向既有 session 投递输入，或经 SessionCreation owner 创建新 session。周期计划仍不重叠，错过 tick 仍跳过。
+6. **Schedule 是独立生命周期。** `schedule` 继续拥有时间/ToolRun-completion trigger、一次性计划、周期 session 计划、确认、恢复与取消；计划和 occurrence 使用 Schedule-owned ID、存储、状态事件及 UI projection，不再创建 `kind=scheduled` ToolRun。触发时经常规授权工具执行路径调用目标工具、向既有 session 投递输入，或经 SessionCreation owner 创建新 session；这类 ScheduleRun 目标调用自身不属于 ToolCall 或 ToolRun。周期计划仍不重叠，错过 tick 仍跳过。
 7. **关联写入按来源 owner 验证。** 创建/关联输入在边界验证 canonical IDs 与 source entity ownership；不能由模型提供或伪造 creator。跨 session 关联必须由当前 session capability 授权。工具结果、确认、取消、恢复和事件的 durable identity 分别按 ToolCall、ToolRun、ScheduleRun 与 Session 契约生成。
 8. **契约破坏按测试版本重置。** 更新数据库 schema、实体 ID 规范、生成的 IPC contracts、模型工具 schema、通知与 UI。旧 schema、`scheduled` ToolRun rows、旧工具名/参数和旧 ToolRun kind 不提供运行时兼容；按 `docs/release-and-reset.md` 备份后重置数据库。
 
@@ -30,7 +30,7 @@ ToolRunService 同时拥有后台进程和定时计划/触发。`shell` 通过 `
 5. 收窄 ToolRun 数据库、服务、completion outbox、IPC、UI 与限制配置到 background；增加 `toolrun` 后台调用/管理工具，移除 Shell 的前后台二义参数。
 6. 更新生成 contracts、用户可见 session/toolrun/schedule 导航、架构文档与测试；按跨 crate/跨端/持久化门禁验收并分目的提交。
 
-每一切片必须独立可编译、可测试和可回退；不在中间状态提交旧/新双真源。
+每一切片必须独立可编译、可测试和可回退；不在中间状态提交旧/新双真源。实现已完成，验证记录见本 ADR 的“验证与回滚”及当前路线图。
 
 ## 后果与未采用方案
 
@@ -41,4 +41,4 @@ ToolRunService 同时拥有后台进程和定时计划/触发。`shell` 通过 `
 
 ## 验证与回滚
 
-每个分片按其影响运行必要的 Rust/UI、IPC 生成和 schema 测试；全部切片完成后运行 workspace Rust 与 UI 完整门禁。记录任何 Windows/HCS 环境限制。回滚代码必须同时恢复对应数据库 schema 与模型工具/IPC 契约；schema v48 及以上数据库按 reset policy 重建，不交给旧二进制打开。
+每个分片按其影响运行必要的 Rust/UI、IPC 生成和 schema 测试；全部切片完成后运行 workspace Rust 与 UI 完整门禁。2026-10-19 完成 workspace Rust tests/clippy、UI typecheck/tests/build 与 IPC contract/event checks；Windows/HCS 发布验收仍由路线图 §5.1 独立跟踪。回滚代码必须同时恢复对应数据库 schema 与模型工具/IPC 契约；schema v48 及以上数据库按 reset policy 重建，不交给旧二进制打开。

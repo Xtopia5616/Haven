@@ -83,7 +83,7 @@
 - **Tool result section label 只有一个样式 owner**：渲染器标题和计数统一使用 `.tool-result-label`，由 `ui/src/app.css` 定义。原 `.tool-card-count` 不只表示计数，不再用含义过窄的 card/count 名称或重复组件 CSS（ADR 0706）。
 - **Tool result 正文预览共用样式**：文本/JSON 内容使用 `.tool-result-preview` 全局样式；renderer 只通过 `--tool-result-preview-max-height` 和 `--tool-result-preview-line-height` 表达确有差异的布局，不重复定义预览外观（ADR 0707）。
 - **Tool result search row 共用样式**：Clipboard、FileSearch 与 WebSearch 的路径行、路径链接和次级说明统一使用 `.tool-result-search-row`、`.tool-result-search-path` 与 `.tool-result-search-detail`，由 `ui/src/app.css` 拥有视觉样式；领域字段与 row 内容仍由对应 renderer 拥有（ADR 0708）。
-- **ToolRun 状态行共用布局**：后台 ToolRun 与定时 ToolRun renderer 复用 `.tool-run-row` 和 `.tool-run-id` 的基础布局/排版；仅后台 ID 因长度不定在本地追加 ellipsis（ADR 0710）。
+- **ToolRun 状态行共用布局**：ToolRun renderer 使用 `.tool-run-row` 和 `.tool-run-id` 基础布局；ID 因长度不定在本地追加 ellipsis（ADR 0710，历史布局决定）。Schedule 使用独立的 ScheduleCenter。
 - **Tool result 状态摘要行统一命名**：Agent 与 HTTP renderer 共用 `.tool-result-status-row` 的 flex/字号样式；各自的状态字段、badge 与关联信息仍归领域 renderer（ADR 0711）。
 - **Tool result 窗口行基础样式统一**：系统显示器与窗口结果复用 `.tool-result-window-row`、`.tool-result-window-primary` 和 `.tool-result-secondary-value`；内容名分别使用 `display-name`、`window-title`，分辨率与窗口元信息分别使用 `display-resolution`、`window-meta`，不将分辨率或 condition/control type 称为 PID（ADR 0712）。
 - **ExpandableContextCard header metadata 共用排版**：Builtin Tool、Tool root、MCP server 与 Skill 卡片使用 `.expandable-context-card-meta` 的 flex、间距、字号和换行规则；徽标与状态内容仍由各卡片 renderer 拥有，区别于 `.workspace-item-card-meta` 的卡片底部布局（ADR 0713）。
@@ -132,19 +132,20 @@ ReAct 按领域品牌大小写书写：类型与 enum variant 用 `ReAct`（如 
 
 ToolRun completion lease 的 `lease_subject_id` 标识被租用的 ToolRun 或 completion result，不标识领取它的 consumer；跨 Tools runtime 与 ToolRun persistence 共用 `ToolRunLease`。不得将此稳定实体身份称为 `claim_token`（ADR 1096，取代 ADR 0676 的旧命名决定）。
 
-后台与定时 ToolRun 的终态交付统一使用 Common `ToolRunCompletionPayload`；Memory 在持久化列边界序列化，Tools 的 `ToolRunStatusView` 保持 UI 查询投影 owner，Agent 直接读取具名字段。不要把完成事件 payload 命名为 `status_json`，也不要让 UI status renderer 承担 completion 交付（ADR 0871）。
+后台 ToolRun 的终态交付使用 Common `ToolRunCompletionPayload`；Memory 在持久化列边界序列化，Tools 的 `ToolRunStatusView` 保持 UI 查询投影 owner，Agent 直接读取具名字段。ScheduleRun 使用自己的状态与结果契约。不要把完成事件 payload 命名为 `status_json`，也不要让 UI status renderer 承担 completion 交付（ADR 0871）。
 
 | 术语 | 含义 | UI 文案 / 代码边界 |
 |---|---|---|
 | 工具调用（ToolCall） | Agent/模型发起的一次工具调用；前台调用等待结果并进入当前 transcript | provider 的 `tool_call_id` 是不透明字符串并逐字保留；缺失或同一 batch 重复时使用持久 `call-*` fallback；流式参数预览使用进程内 `preview-*` |
-| 会话（session） | 用户与 Agent 的对话及其前台 ReAct 运行上下文 | UI 直接称“会话”；前台工具调用在会话内呈现 |
+| 会话（Session） | 持久对话及其 ReAct/transcript 生命周期 | 统一经 SessionCreation 创建；`creator`、`creation_method` 与 typed `source` 分别说明创建者、创建方式和来源；子 Agent 是带关联关系的 Session |
 | 录音（recording） | 一次麦克风采集及其关联转写；实体 ID 为 `rec-*`，跨层字段统一为 `recording_id` / `recordingId` | 使用 `RecordingId`；`session_id` 只指对话，不用于录音身份 |
 | 会话步骤状态（`SessionStepStatus`） | 持久 `session_steps.status` 与 live `StepInfo.status` 共用的闭合生命周期值：pending、running、completed、failed、cancelled、unknown | Common 定义并生成给 UI；SQLite 列仍存 snake_case 字符串，Memory 读入时严格解析。`ToolStepOutcome` 是 finish 操作的终态输入，不替代完整状态（ADR 0725） |
 | 会话运行（SessionRun） | 由 `SessionSupervisor` dispatcher 唯一准入的一次会话执行；Agent 内部 `SessionRunEngine` 运行完整 ReAct 循环 | 跨 crate 生产启动只经 `AgentLayer::start_after_memory_ready`；dispatcher 启动方法与 `SessionRunHandler` 为 Agent crate 内部契约；handler、admission、permit 和 actor claim 均显式标注 `SessionRun`；生产不暴露 direct-run 准入；direct-run lease/waiter 只作为 `cfg(test)` 生命周期夹具，不构成生产领域名词；ReAct loop 的输入、重放、输出以 `ReActRun*` 标名（ADR 0917、1005） |
-| 工具运行（ToolRun） | 脱离当前 turn 持久运行、可取消并产生生命周期事件的工具执行 | 后端/IPC/数据库使用 `tool_run`、`tool_runs`；ID 前缀为 `toolrun-`。状态查询由 `ToolRunStateView`/`ToolRunStatusView` 提供投影；终态交付使用 `ToolRunCompletionPayload`，由 Agent 消费 typed contract（ADR 0700、0871） |
+| 前台工具调用（ToolCall） | 当前 ReAct turn 中由 Agent 发起并返回观察结果的一次调用 | 使用正常工具调用路径；执行完成属于当前 turn |
+| 后台工具运行（ToolRun） | 由 `toolrun.start` 启动、可脱离当前 turn 持久运行且可取消的工具调用 | `ToolRun.kind` 固定为 `background`；后端/IPC/数据库使用 `tool_run`、`tool_runs`，ID 前缀为 `toolrun-`。状态查询由 `ToolRunStatusView` 提供投影；终态交付使用 `ToolRunCompletionPayload`（ADR 0700、0871、1324） |
 | 工具结果（ToolResult） | 一次工具调用的成功/失败输出及执行元数据 | `ToolResult.truncated` 属于结果级元数据；正文中的 `truncated` 属于具体工具输出 shape。正文标记为 true 时两层必须同步；正文没有该字段时允许只保留结果级标记（ADR 0701）。Agent observation 的执行 outcome 只由 `ToolResultEnvelope.outcome` 承载；UI 在展示边界映射成卡片状态。历史 `session_steps.status` 是恢复时的持久投影，不是第二个 event outcome 来源（ADR 0719） |
-| 后台工具运行（background ToolRun） | 工具调用选择后台执行后启动的持久运行 | 通过 `ToolExecutionMode::Background` 启动；UI 显示“后台任务” |
-| 定时工具运行（scheduled ToolRun） | 由时间或依赖触发的工具运行 | 仍由 `schedule` 工具负责设置触发条件；UI 显示“定时任务” |
+| Schedule | 一次性/周期计划与其触发条件 | 由独立 Schedule owner 管理；UI 显示“定时任务” |
+| ScheduleRun（计划触发） | Schedule 的一次触发 occurrence | 由独立 Schedule owner 管理；触发后经常规授权工具执行路径调用目标工具、向既有 Session 投递输入或经 SessionCreation 创建 Session；自身不是 ToolCall 或 ToolRun；UI 显示“定时任务” |
 | Memory live consumer handoff | 把已准备的 Memory event receiver future 一次性交给 ApplicationRuntime task registry 的阶段值；注册成功后才产出 `MemoryReady` | 类型为 `MemoryLiveConsumerHandoff`；由 `MemoryStartup::prepare_live_consumer` 创建，通过 `register_consumer_with` 注册，不代表 `ToolRun` 或已运行的 JoinHandle |
 | 音频输入管线（`InputPipeline`） | `haven-input` 对麦克风采集、VAD 与采集循环的唯一 owner；不拥有转写、provider fallback 或 App 的录音 UI 状态 | 常规采集用 `start_capture` / `stop_capture` / `cancel_capture`；固定时长采集用 `capture_for`；回调契约为 `InputEventHandler`。App 与 Tools 的字段统一叫 `input_pipeline`。`AudioConfig` 只配置录音时长、静音超时和 VAD 阈值；输入设备格式由运行时选择，输出固定为 16 kHz、单声道、16-bit PCM，不保留无效的格式设置字段（ADR 1063） |
 | 快捷键解析（`KeyCombo`） | `haven-input` 将用户配置的快捷键文本解析成平台中立按键与修饰键组合 | 跨 crate 只经根导出使用；modifier 用 `KeyModifier`，内部 bit flags 不进入消费者 API；组合仅由 `KeyCombo::parse` 创建（ADR 0926） |
@@ -165,11 +166,11 @@ Session reducer 中的 `waitingReason` state/action 字段引用 generated `Sess
 
 `SessionSummary` 是 Session rail/switcher/reducer 使用的 UI projection，仅声明 `id`、`status`、`title`、`input`、`inputText` 与 `waitingReason`；runtime list、history 和 lineage 各自从 generated DTO 映射，不把蛇形 wire 字段或未消费字段整行 spread 进 reducer（ADR 0767）。
 
-定时工具运行的 `mode` 由 Common `ScheduleMode` 闭合枚举统一定义；Memory 同步与异步写入只接收该类型，SQLite 读取仍保留原始字符串，以便 restore 隔离未知历史值。UI 使用生成的相同枚举。`tool` 显示“调用工具”，`continue` 显示“继续会话”。运行状态统一显示“待执行 / 运行中 / 已完成 / 失败 / 已取消”；原始枚举值只留在 wire、日志或调试详情中（ADR 1126）。
+Schedule 触发动作的 `mode` 由 Common `ScheduleMode` 闭合枚举统一定义；Memory 同步与异步写入只接收该类型，SQLite 读取仍保留原始字符串，以便恢复时隔离未知值。UI 使用生成的相同枚举。`tool` 显示“调用工具”，`continue` 显示“继续会话”。ScheduleRun 状态统一显示“待执行 / 运行中 / 已完成 / 失败 / 已取消”；原始枚举值只留在 wire、日志或调试详情中（ADR 1126、1324）。
 
 `SessionRun` 是 SessionSupervisor 的会话执行/准入单位；`ToolRun` 是可脱离当前 turn 持久运行的工具工作单元，二者不共享身份或生命周期。`ReActRunInput`、`ReActRunReplay`、`ReActRunOutput` 是 ReActEngine 一次循环的调用数据，不新增持久 run 实体。准入计数器、RAII permit、直接运行 lease 与 actor claim 有不同释放点，保持独立结构并按 owner 命名（ADR 0635）。
 
-`ToolExecutionMode::Foreground/Background` 表示调用执行方式；持久 `ToolRunKind` 只有 `Background/Scheduled`。会话是对话实体，不是 `ToolRunKind`，不得把“会话”塞进任务类型映射。
+前台 ToolCall 与后台 ToolRun 使用不同入口表达执行位置；ToolRun 持久 kind 只有 `Background`。Schedule 与 ScheduleRun 分别表达计划及 occurrence，不进入 ToolRun 类型映射。会话是对话实体，不是任务类型。
 
 代码中，**session** 用于指向持久会话实体及其运行状态；**conversation** 仅在描述自然语言交流内容、历史文本或模型上下文时使用，不用来命名会话实体的状态和 UI 组件。UI 的 `SessionMessage` 是当前会话 reducer 的消息形状；controller 直接消费 `getMessages()` 返回的 `SessionMessage[]`，不再声明私有子集并强制 cast。`sessionTimeline.ts` 接收该类型并投影为 `SessionTimelineItem`，不得再声明一份宽松的平行消息结构。只有字段约束或展示职责确实不同的组件专有输入（如允许文件路径的 `ChatBubbleAttachment`）才在组件内保留，并用组件/视图角色命名。纯 renderer 投影的输入类型归投影函数模块所有，并只声明函数实际读取的字段；例如 `SessionResumeResponse` 保持在 session-history command contract 中，`ResumeTranscriptProjectionInput` 由 `resumeMessages.ts` 拥有，只含其消费的 `messages` 与 `steps`（ADR 0760）。
 
@@ -223,7 +224,7 @@ Tauri command 名与 request/response 类型由 `generatedCommands.ts` 从 Rust 
 
 跨 crate 的同字段 DTO 先按 owner 和用途判断是否合并：Memory `SessionMessageText` 是存储查询返回的纯文本消息行；Agent 私有 `SessionPromptMessage` 是组装首次 session prompt 的输入。两者都用 `message_id` 表示消息身份，通过显式字段映射跨边界；不应让 Memory 依赖 Agent，也不应让 Agent 的 prompt 类型成为 Memory 的规范类型（ADR 0998）。
 
-同一领域类型跨 runtime 与 wire 边界时，只有序列化格式、字段策略或演进 owner 确实不同才保留两个类型，并在名称中标出边界角色。当前 Tools `ToolRunKind` 是执行运行时分类；App `ToolRunKindDto` 是 IPC/event DTO 枚举，二者值相同但 owner、Serde 与向前演进责任不同。
+同一领域类型跨 runtime 与 wire 边界时，只有序列化格式、字段策略或演进 owner 确实不同才保留两个类型，并在名称中标出边界角色。ToolRun 持久/runtime 分类固定为后台调用；App `ToolRunKindDto` 只承担 IPC/event 通知来源的 wire 分类。
 
 导航组件消费 `NavigationTab` 列表时，共用 `navigationTypes.ts::NavigationTabsProps` 表达 tabs、active tab 与 navigation callback；ID 类型从 `NavigationTab['id']` 派生。`MaterialTabs` 可在此基础上添加 ARIA、样式和面板选项，`AppShell` 可组合其它 shell props。
 
@@ -330,7 +331,7 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 ## 1. 后端 Rust
 
 ### 文件名 / 模块名
-- **snake_case**，如 `stt.rs`、`openai_responses.rs`、`scheduled_tool_run.rs`。
+- **snake_case**，如 `stt.rs`、`openai_responses.rs`、`schedule.rs`。
 - 目录即模块：`crates/tools/src/builtin/`、`crates/memory/src/repositories/`。
 - crate 统一 `haven-{name}`：`haven-agent`、`haven-common`、`haven-memory`、`haven-tools`、`haven-llm`、`haven-input`、`haven-mcp`、`haven-skills`。
 
@@ -365,7 +366,7 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
   - 例外：`asr` 是用户输入的关键词（意图识别 vocabulary，与 `ocr` 相邻），属于**输入信号**，不是 provider 模块名，不并入 `stt` 词汇表。二者语义不同，各归其位。
 
 ### ID 规范
-实体 ID 统一 `{prefix}-{uuid32}`，一律用 `haven_common::types::new_id(prefix)` 生成，并用 `haven_common::types::is_canonical_id(id, prefix)` 校验；校验函数的 `prefix` 参数不带连字符，禁止各 crate 重复实现格式检查。Tauri 命令、模型可调用的 Tools 入口、Messaging service 与 JSONL transport 都在副作用或存储前校验 Haven 实体 ID；Tools 的轻量错误包装器仍委托 Common 校验器。Agent 工具的 session 与 message 参数分别使用 `ses`、`msg` ID 空间，广播标记 `*` 是唯一接收方例外。定时 ToolRun 的持久执行权 claim 使用来源身份：确认请求用对应 `conf-*`，无需确认时只能复用同一 ToolRun 的 `toolrun-*`；Memory 校验两者并拒绝其他 ToolRun ID（ADR 1016）。消息 inbox 只向模型暴露稳定 `message_ids`，进程内 `MessageClaim` 对象不生成或返回独立 ID（ADR 1044）。消息投影共享 `step-*` 身份时只允许 assistant role；普通消息行使用 `msg-*`（ADR 1087）。配置凭据引用复用同一校验器；provider ID、模型配置 ID 和运行代次等非实体标识按各自领域契约处理。完整前缀表见 `AGENTS.md`.
+实体 ID 统一 `{prefix}-{uuid32}`，一律用 `haven_common::types::new_id(prefix)` 生成，并用 `haven_common::types::is_canonical_id(id, prefix)` 校验；校验函数的 `prefix` 参数不带连字符，禁止各 crate 重复实现格式检查。Tauri 命令、模型可调用的 Tools 入口、Messaging service 与 JSONL transport 都在副作用或存储前校验 Haven 实体 ID；Tools 的轻量错误包装器仍委托 Common 校验器。Agent 工具的 session 与 message 参数分别使用 `ses`、`msg` ID 空间，广播标记 `*` 是唯一接收方例外。ScheduleRun 的持久执行权 claim 使用来源身份：确认请求用对应 `conf-*`，无需确认时复用当前 `schrun-*`；Memory 校验 owner 与 claim identity（ADR 1016、1324）。消息 inbox 只向模型暴露稳定 `message_ids`，进程内 `MessageClaim` 对象不生成或返回独立 ID（ADR 1044）。消息投影共享 `step-*` 身份时只允许 assistant role；普通消息行使用 `msg-*`（ADR 1087）。配置凭据引用复用同一校验器；provider ID、模型配置 ID 和运行代次等非实体标识按各自领域契约处理。完整前缀表见 `AGENTS.md`.
 
 Rust/DB/event 领域字段与 Tauri DTO 中，实体身份字段使用实体名限定的 `xxx_id`（如 `session_id`、`step_id`、`message_id`、`tool_run_id`）；UI 自有模型可在边界映射为 `xxxId`。数据库既有物理主键列（如 `sessions.id`）保持原名，由 Repository 映射为领域字段。尚未迁移的存量 DTO 按实体归属逐步收敛，不以结构体上下文作为省略实体名的理由；外部 provider 标识按各自协议保留；Tauri renderer listener envelope 的 `event.id` 是本地事件序号，不是 Haven 实体 ID。
 
@@ -467,7 +468,7 @@ Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalT
 - 仓库 / 表名按所管理实体的复数命名，与其承载集合一致：`sessions.rs`、`messages.rs`、`facts.rs`、`session_steps`。
 - 不可数名词文件（`usage.rs`、`media_audio.rs`、`text.rs`、`schema.rs`、`memory.rs`）保持单数。
 
-> 该漂移已对齐：`scheduled_tool_run.rs`↔`ScheduleTool`、`env.rs`↔`EnvTool`（原 `env_var.rs`）、`system.rs`↔`SystemTool`（原 `SystemInfoTool`）。新代码避免再制造 `Xxx` 与文件名不同词的情况。
+> 该漂移已对齐：`schedule.rs`↔`ScheduleTool`、`env.rs`↔`EnvTool`（原 `env_var.rs`）、`system.rs`↔`SystemTool`（原 `SystemInfoTool`）。新代码避免再制造 `Xxx` 与文件名不同词的情况。
 
 ---
 
@@ -481,6 +482,6 @@ Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalT
 - [ ] 跨层只在边界转换 snake↔camel
 - [ ] 会话恢复用语统一 `resume`，不用 `review`
 - [ ] 运行态会话集合与持久会话历史使用不同名称；全量删除与运行态清理动词明确
-- [ ] 工具调用、会话、ToolRun、后台工具运行、定时工具运行按本节口径使用
+- [ ] 工具调用、Session、ToolRun、ScheduleRun 按本节口径使用
 - [ ] 集合用复数、单元素用单数、派生集合不用裸形容词（`selected`→`selectedSessions`）
 - [ ] 文件名与结构体/实体单复数一致（`file.rs`→`files.rs` 对应 `FilesTool`；仓库随表复数）

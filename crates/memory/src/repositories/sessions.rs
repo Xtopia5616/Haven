@@ -125,9 +125,10 @@ impl SessionCreator {
 }
 
 /// Operation that created the durable session record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionCreationMethod {
+    #[default]
     New,
     AgentSpawn,
     Fork,
@@ -169,8 +170,8 @@ pub enum SessionCreationSource {
         session_id: String,
         message_id: String,
     },
-    ToolRun {
-        tool_run_id: String,
+    ScheduleRun {
+        schedule_run_id: String,
     },
 }
 
@@ -183,12 +184,6 @@ pub struct SessionCreation {
     pub method: SessionCreationMethod,
     #[serde(default)]
     pub source: SessionCreationSource,
-}
-
-impl Default for SessionCreationMethod {
-    fn default() -> Self {
-        Self::New
-    }
 }
 
 impl SessionCreation {
@@ -227,12 +222,12 @@ impl SessionCreation {
         }
     }
 
-    pub fn scheduled(tool_run_id: impl Into<String>) -> Self {
+    pub fn scheduled(schedule_run_id: impl Into<String>) -> Self {
         Self {
             creator: SessionCreator::Scheduler,
             method: SessionCreationMethod::Scheduled,
-            source: SessionCreationSource::ToolRun {
-                tool_run_id: tool_run_id.into(),
+            source: SessionCreationSource::ScheduleRun {
+                schedule_run_id: schedule_run_id.into(),
             },
         }
     }
@@ -274,9 +269,9 @@ impl SessionCreation {
                     "invalid source message id"
                 );
             }
-            SessionCreationSource::ToolRun { tool_run_id } => anyhow::ensure!(
-                is_canonical_id(tool_run_id, "toolrun"),
-                "invalid source tool_run_id"
+            SessionCreationSource::ScheduleRun { schedule_run_id } => anyhow::ensure!(
+                is_canonical_id(schedule_run_id, "schrun"),
+                "invalid source schedule_run_id"
             ),
         }
         Ok(())
@@ -288,7 +283,7 @@ impl SessionCreation {
         source_kind: String,
         source_session_id: Option<String>,
         source_message_id: Option<String>,
-        source_tool_run_id: Option<String>,
+        source_schedule_run_id: Option<String>,
     ) -> rusqlite::Result<Self> {
         let Some(creator) = SessionCreator::parse(&creator) else {
             return Err(invalid_session_creation_row(6));
@@ -300,7 +295,7 @@ impl SessionCreation {
             source_kind.as_str(),
             source_session_id,
             source_message_id,
-            source_tool_run_id,
+            source_schedule_run_id,
         ) {
             ("none", None, None, None) => SessionCreationSource::None,
             ("session", Some(session_id), None, None) if is_canonical_id(&session_id, "ses") => {
@@ -314,10 +309,10 @@ impl SessionCreation {
                     message_id,
                 }
             }
-            ("tool_run", None, None, Some(tool_run_id))
-                if is_canonical_id(&tool_run_id, "toolrun") =>
+            ("schedule_run", None, None, Some(schedule_run_id))
+                if is_canonical_id(&schedule_run_id, "schrun") =>
             {
-                SessionCreationSource::ToolRun { tool_run_id }
+                SessionCreationSource::ScheduleRun { schedule_run_id }
             }
             _ => return Err(invalid_session_creation_row(8)),
         };
@@ -354,7 +349,7 @@ impl SessionCreation {
             ) | (
                 SessionCreator::Scheduler,
                 SessionCreationMethod::Scheduled,
-                SessionCreationSource::ToolRun { .. }
+                SessionCreationSource::ScheduleRun { .. }
             )
         )
     }
@@ -397,13 +392,13 @@ impl SessionCreation {
                 Some(message_id),
                 None,
             ),
-            SessionCreationSource::ToolRun { tool_run_id } => (
+            SessionCreationSource::ScheduleRun { schedule_run_id } => (
                 self.creator.as_str(),
                 self.method.as_str(),
-                "tool_run",
+                "schedule_run",
                 None,
                 None,
-                Some(tool_run_id),
+                Some(schedule_run_id),
             ),
         }
     }
@@ -452,7 +447,7 @@ impl Database {
             source_kind,
             source_session_id,
             source_message_id,
-            source_tool_run_id,
+            source_schedule_run_id,
         ) = creation.storage_parts();
         let session_id = haven_common::types::new_id("ses");
         let now = Utc::now().to_rfc3339();
@@ -486,23 +481,23 @@ impl Database {
                     source_message_id
                 );
             }
-            if let Some(source_tool_run_id) = source_tool_run_id {
+            if let Some(source_schedule_run_id) = source_schedule_run_id {
                 let source_exists: bool = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM tool_runs WHERE id = ?1)",
-                    rusqlite::params![source_tool_run_id],
+                    "SELECT EXISTS(SELECT 1 FROM schedule_runs WHERE id = ?1)",
+                    rusqlite::params![source_schedule_run_id],
                     |row| row.get(0),
                 )?;
                 anyhow::ensure!(
                     source_exists,
-                    "source tool_run '{}' not found",
-                    source_tool_run_id
+                    "source ScheduleRun '{}' not found",
+                    source_schedule_run_id
                 );
             }
             conn.execute(
                 "INSERT INTO sessions (
                     id, input_text, status, created_at, updated_at, creator,
                     creation_method, source_kind, source_session_id, source_message_id,
-                    source_tool_run_id
+                    source_schedule_run_id
                  ) VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
                     session_id,
@@ -514,7 +509,7 @@ impl Database {
                     source_kind,
                     source_session_id,
                     source_message_id,
-                    source_tool_run_id
+                    source_schedule_run_id
                 ],
             )?;
             Ok(())
@@ -547,7 +542,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
             creator, creation_method, source_kind, source_session_id,
-            source_message_id, source_tool_run_id, run_end_reason
+            source_message_id, source_schedule_run_id, run_end_reason
              FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![session_id])?;
@@ -687,7 +682,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     creator, creation_method, source_kind, source_session_id,
-                    source_message_id, source_tool_run_id, run_end_reason
+                    source_message_id, source_schedule_run_id, run_end_reason
              FROM sessions ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit, offset], map_session_list_row)?;
@@ -707,7 +702,7 @@ impl Database {
         let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     creator, creation_method, source_kind, source_session_id,
-                    source_message_id, source_tool_run_id, run_end_reason
+                    source_message_id, source_schedule_run_id, run_end_reason
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT 50",
         ))?;
@@ -746,7 +741,7 @@ impl Database {
         let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     creator, creation_method, source_kind, source_session_id,
-                    source_message_id, source_tool_run_id, run_end_reason
+                    source_message_id, source_schedule_run_id, run_end_reason
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
         ))?;
@@ -773,7 +768,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     creator, creation_method, source_kind, source_session_id,
-                    source_message_id, source_tool_run_id, run_end_reason
+                    source_message_id, source_schedule_run_id, run_end_reason
              FROM sessions
              WHERE source_session_id = ?1 AND creation_method IN ('agent_spawn', 'fork')
              ORDER BY created_at DESC, id ASC LIMIT ?2 OFFSET ?3",
@@ -1182,7 +1177,7 @@ impl Database {
         let sql = format!(
             "SELECT id, input_text, title, status, created_at, updated_at, \
                     creator, creation_method, source_kind, source_session_id, \
-                    source_message_id, source_tool_run_id, run_end_reason \
+                    source_message_id, source_schedule_run_id, run_end_reason \
              FROM sessions {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
 
@@ -1213,10 +1208,11 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::SessionCreation;
+    use super::{SessionCreation, SessionCreationSource};
     use crate::Database;
     use chrono::{Local, Utc};
     use haven_common::lifecycle::SessionStatus;
+    use std::sync::Arc;
 
     fn create_db() -> Database {
         Database::open_in_memory().unwrap()
@@ -1260,6 +1256,60 @@ mod tests {
                 .creation,
             SessionCreation::system_new()
         );
+    }
+
+    #[tokio::test]
+    async fn scheduled_session_creation_records_schedule_run_source() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let owner = db.create_session("schedule owner").unwrap();
+        let schedules = crate::ScheduleStore::new(Arc::clone(&db));
+        let plan = schedules
+            .create(crate::SchedulePlanInput {
+                owner_session_id: owner.session_id.clone(),
+                schedule_type: crate::ScheduleType::Once,
+                title: "create a session".into(),
+                body: "test schedule source".into(),
+                mode: haven_common::schedule::ScheduleMode::NewSession,
+                due_at: Some(chrono::Utc::now().to_rfc3339()),
+                watch_tool_run_id: None,
+                tool_name: None,
+                tool_args: None,
+                prompt: Some("start".into()),
+                interval_seconds: None,
+            })
+            .await
+            .unwrap();
+        let fired = schedules
+            .claim_due(
+                (chrono::Utc::now() + chrono::Duration::seconds(1)).to_rfc3339(),
+                1,
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+
+        let created = db
+            .create_session_with_creation(
+                "start",
+                SessionCreation::scheduled(fired.run.schedule_run_id.clone()),
+            )
+            .unwrap();
+        assert_eq!(
+            created.creation.source,
+            SessionCreationSource::ScheduleRun {
+                schedule_run_id: fired.run.schedule_run_id
+            }
+        );
+        assert!(
+            db.create_session_with_creation(
+                "invalid scheduled source",
+                SessionCreation::scheduled(haven_common::types::new_id("toolrun")),
+            )
+            .is_err()
+        );
+        assert_eq!(plan.schedule_type, crate::ScheduleType::Once);
     }
 
     #[test]

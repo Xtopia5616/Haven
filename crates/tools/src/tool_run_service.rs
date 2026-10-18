@@ -9,57 +9,55 @@ use std::time::Duration;
 use tokio::sync::{RwLock, oneshot};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
+#[cfg(test)]
 use tracing::Instrument;
 
 use crate::tool_run_completion::ToolRunCompletionBus;
 pub use crate::tool_run_completion::{
-    BackgroundToolRunCompletion, ScheduledToolRunResultCompletion, ToolRunCompletion,
-    ToolRunCompletionReceiver,
+    BackgroundToolRunCompletion, ToolRunCompletion, ToolRunCompletionReceiver,
 };
-use crate::tool_run_output::{
-    ToolRunOutputPort, ToolRunOutputTail, ToolRunTailFactory, ToolRunTailSnapshot,
-};
-use crate::tool_run_retry_policy::{
-    RetryDecision, RetrySignal, ToolRunPersistenceRetryPolicy, ToolRunStoreRetryPolicy,
-};
+#[cfg(test)]
+use crate::tool_run_output::ToolRunOutputPort;
+#[cfg(test)]
+use crate::tool_run_output::ToolRunOutputTail;
+#[cfg(test)]
+#[cfg(test)]
+use crate::tool_run_retry_policy::ToolRunStoreRetryPolicy;
+use crate::tool_run_retry_policy::{RetryDecision, RetrySignal, ToolRunPersistenceRetryPolicy};
 use crate::tool_run_terminal::{
-    TerminalPayload, TerminalSource, TerminalTimestamps, TerminalTransitionGuard, ToolRunState,
-    can_claim_terminal,
+    TerminalPayload, TerminalTimestamps, TerminalTransitionGuard, ToolRunState, can_claim_terminal,
 };
-use crate::tool_run_trigger_policy::{ScheduledTrigger, ScheduledTriggerRequest};
-use crate::tool_run_types::{ScheduledToolRunFired, ScheduledToolRunSpec};
 use crate::{
     ToolRunLifecycle, ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunLifecycleState,
-    ToolRunLifecycleUpdate, ToolRunOutputPayload, ToolRunSessionAttachedPayload,
+    ToolRunLifecycleUpdate, ToolRunSessionAttachedPayload,
 };
-use haven_common::tool_run::ScheduleMode;
 use haven_memory::{ToolRunCompletionOutboxRow, ToolRunStore};
 
-use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
+#[cfg(test)]
+use crate::output::sanitize_shell_output;
+use crate::output::summarize_error;
+#[cfg(test)]
 use crate::process::read_stream_text_capped;
 #[cfg(not(test))]
 use crate::shell_runtime::cleanup_shell_output_logs_after_restart;
+#[cfg(test)]
+use crate::shell_runtime::{build_shell_command, collect_byte_cap};
 use crate::shell_runtime::{
-    build_shell_command, collect_byte_cap, remove_orphaned_tool_run_output_logs,
-    remove_tool_run_output_log, write_output_log,
+    remove_orphaned_tool_run_output_logs, remove_tool_run_output_log, write_output_log,
 };
 
 mod background;
-mod scheduled;
 mod views;
 
+#[cfg(test)]
 pub(crate) use background::BackgroundShellRequest;
 
-#[cfg(test)]
-use scheduled::tool_run_finished_prompt;
 pub use views::{
-    ScheduledToolRunView, ToolRunHistoryQuery, ToolRunListView, ToolRunStateView,
-    ToolRunStatusView, ToolRunView,
+    ToolRunHistoryQuery, ToolRunListView, ToolRunStateView, ToolRunStatusView, ToolRunView,
 };
 use views::{
     list_view_started_at, project_background_completion_payload, project_board_tool_run,
-    project_completion_payload, project_persisted_background_board_row, project_persisted_tool_run,
-    scheduled_lifecycle_payload, scheduled_tool_run_view, tool_run_lifecycle_state,
+    project_persisted_background_board_row, project_persisted_tool_run, tool_run_lifecycle_state,
 };
 
 /// Optional typed sink for the closed ToolRun lifecycle event contract.
@@ -68,151 +66,39 @@ pub use crate::tool_run_lifecycle::ToolRunLifecycleEventSink;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolRunKind {
     Background,
-    Scheduled,
 }
 
 impl ToolRunKind {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Background => "background",
-            Self::Scheduled => "scheduled",
-        }
-    }
-
-    fn from_storage(value: &str) -> Option<Self> {
-        match value {
-            "background" => Some(Self::Background),
-            "scheduled" => Some(Self::Scheduled),
-            _ => None,
         }
     }
 }
 
-/// Counts produced by restoring process-local ToolRun state after startup.
-/// The first field counts overdue scheduled rows passed to the fire path;
-/// the second counts previous-process running rows marked failed.
+/// Counts previous-process background ToolRuns marked failed during restore.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ToolRunRestoreSummary {
-    pub overdue_scheduled_runs: usize,
     pub interrupted_runs_marked_failed: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DependencyStatus {
-    Waiting,
-    Running,
-    Completed(Option<String>),
-    Failed(Option<String>),
-    Cancelled,
-    NotFound,
-}
-
-impl DependencyStatus {
-    fn from_state(state: &ToolRunState) -> Self {
-        match state {
-            ToolRunState::Waiting => Self::Waiting,
-            ToolRunState::Running { .. } => Self::Running,
-            ToolRunState::Completed { output, .. } => {
-                Self::Completed(non_empty_result(Some(output.as_str())))
-            }
-            ToolRunState::Failed {
-                error,
-                error_reason,
-                ..
-            } => Self::Failed(non_empty_result(Some(if error_reason.is_empty() {
-                error
-            } else {
-                error_reason
-            }))),
-            ToolRunState::Cancelled { .. } => Self::Cancelled,
-        }
-    }
-
-    fn from_durable(row: haven_memory::ToolRunDependencyRow) -> Self {
-        match row.status {
-            ToolRunStatus::Waiting => Self::Waiting,
-            ToolRunStatus::Running => Self::Running,
-            ToolRunStatus::Completed => Self::Completed(non_empty_result(row.result.as_deref())),
-            ToolRunStatus::Failed => Self::Failed(non_empty_result(row.result.as_deref())),
-            ToolRunStatus::Cancelled => Self::Cancelled,
-        }
-    }
-}
-
-fn non_empty_result(result: Option<&str>) -> Option<String> {
-    result
-        .map(str::trim)
-        .filter(|result| !result.is_empty())
-        .map(str::to_string)
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ScheduledToolRunEntry {
-    pub(crate) title: String,
-    pub(crate) body: String,
-    pub(crate) due_at: String,
-    pub(crate) mode: ScheduleMode,
-    pub(crate) tool_name: Option<String>,
-    pub(crate) tool_args: Option<Value>,
-    pub(crate) prompt: Option<String>,
-    pub(crate) watch_tool_run_id: Option<String>,
-}
-
-struct ScheduledTerminalRetry {
-    tool_run_id: String,
-    schedule: ScheduledToolRunEntry,
-    started_at: String,
-    status: ToolRunStatus,
-    result_summary: Option<String>,
-    error_reason: Option<String>,
-    finished_at: String,
-}
-
-fn scheduled_terminal_state(
-    status: ToolRunStatus,
-    result_summary: Option<&str>,
-    error_reason: Option<&str>,
-    timestamps: TerminalTimestamps,
-) -> Option<ToolRunState> {
-    let payload = match status {
-        ToolRunStatus::Completed => TerminalPayload::Completed {
-            output: result_summary.unwrap_or_default().to_string(),
-            exit_code: None,
-            truncated: false,
-            log_path: None,
-        },
-        ToolRunStatus::Failed => {
-            let reason = error_reason.unwrap_or_default().to_string();
-            TerminalPayload::Failed {
-                error: reason.clone(),
-                error_reason: reason,
-                log_path: None,
-                exit_code: None,
-            }
-        }
-        ToolRunStatus::Waiting | ToolRunStatus::Running | ToolRunStatus::Cancelled => return None,
-    };
-    Some(timestamps.build(payload))
 }
 
 struct ToolRunEntry {
     kind: ToolRunKind,
+    tool_name: String,
     session_id: Option<String>,
     source_step_id: Option<String>,
     state: ToolRunState,
-    /// Kill signal for the running child process.
+    /// Cancels the detached tool invocation.
     kill: Option<oneshot::Sender<()>>,
-    /// Bounded tail of the combined live output, for `tool_run:output` preview
-    /// events while the ToolRun runs. `None` for terminal entries.
+    /// Test-only output tail used by the shell lifecycle fixture.
+    #[cfg(test)]
     tail: Option<ToolRunOutputTail>,
-    /// The shell command this ToolRun is executing (surfaced in running status so
-    /// the agent can see what the ToolRun is doing right now).
+    #[cfg(test)]
+    #[allow(dead_code)]
     command: String,
-    /// Interpreter the command runs under ("cmd", "powershell", "bash", ...).
+    #[cfg(test)]
+    #[allow(dead_code)]
     shell: String,
-    /// Timer/dependency spec for scheduled ToolRuns. Background and scheduled
-    /// ToolRuns share this map; only their worker-specific spec differs.
-    scheduled: Option<ScheduledToolRunEntry>,
 }
 
 #[derive(Default)]
@@ -229,7 +115,7 @@ fn terminal_entry_stale(entry: &ToolRunEntry, ttl: Duration) -> bool {
         ToolRunState::Completed { finished_at, .. }
         | ToolRunState::Failed { finished_at, .. }
         | ToolRunState::Cancelled { finished_at, .. } => finished_at,
-        ToolRunState::Running { .. } | ToolRunState::Waiting => return false,
+        ToolRunState::Running { .. } => return false,
     };
     let finished_ts = match chrono::DateTime::parse_from_rfc3339(finished) {
         Ok(t) => t.with_timezone(&chrono::Utc),
@@ -247,12 +133,10 @@ fn terminal_entry_stale(entry: &ToolRunEntry, ttl: Duration) -> bool {
     chrono::Utc::now() - finished_ts > ttl
 }
 
-/// Unified state machine and runtime registry for every ToolRun kind.
+/// State machine and runtime registry for detached background ToolRuns.
 ///
-/// A process ToolRun is spawned with `spawn_shell`, runs detached from the ReAct
-/// loop, and is polled with `status`. Timer-triggered and dependency-triggered ToolRuns enter the
-/// same map in `Waiting`, then use the same cancellation, ownership, lifecycle
-/// and completion paths.
+/// A background ToolRun invokes one already-authorized tool through the Tools
+/// execution facade and continues independently of the ReAct loop.
 ///
 /// When a ToolRun reaches a terminal state, its typed completion is sent on the
 /// unified completion bus so the agent layer can auto-inject the result into
@@ -263,41 +147,25 @@ pub struct ToolRunService {
     /// visible to cancellation until its `running` row is durable, avoiding
     /// orphaned DB rows or processes across the spawn failure window.
     spawn_gate: Arc<tokio::sync::Mutex<()>>,
-    /// Serializes terminal arbitration for both ToolRun kinds. The database CAS
+    /// Serializes terminal arbitration for background ToolRuns. The database CAS
     /// remains authoritative across service instances; this gate makes
     /// in-memory transitions first-wins while a durable transition is in flight.
     terminal_transition: TerminalTransitionGuard,
-    /// Accepted ScheduledToolRun execution claims. This fast in-memory view is
-    /// paired with the durable `scheduled_execution_claim.<tool_run_id>` kv row
-    /// so cancellation and approval also arbitrate across service instances.
-    scheduled_execution_claims: RwLock<HashMap<String, String>>,
-    /// Transient completion transport and scheduled-fire recovery claims.
+    /// Transient completion transport for delivered background results.
     completion_bus: ToolRunCompletionBus,
-    /// At most one retry worker is allowed for each scheduled ToolRun whose
-    /// terminal DB write failed. The worker is cancelled with the service and
-    /// stops once the durable transition succeeds.
-    terminal_persistence_retries: RwLock<HashSet<String>>,
     /// At most one retry worker per background ToolRun whose terminal commit
     /// failed. The worker retains the complete candidate until the durable CAS
     /// commits or another terminal state wins.
     background_terminal_retries: RwLock<HashSet<String>>,
-    /// At most one quarantine retry task is allowed per malformed ToolRun row.
-    quarantine_persistence_retries: RwLock<HashSet<String>>,
     /// Maximum background ToolRuns in the running state.
     max_running_background_tool_runs: RwLock<usize>,
     /// Unique owner of bounded ToolRun-output tail policy for lifecycle and
     /// foreground tool-card previews.
+    #[cfg(test)]
     output_port: ToolRunOutputPort,
-    /// Cadence of `tool_run:output` events while a ToolRun produces output (from
-    /// `context_limits.background_tool_run_output_emit_interval_ms`).
-    tool_run_output_emit_interval: RwLock<Duration>,
     /// Terminal ToolRuns stay on the board this long, then are reaped (from
     /// `context_limits.tool_run_terminal_ttl_secs`).
     tool_run_terminal_ttl: RwLock<Duration>,
-    /// Maximum scheduled ToolRuns whose trigger is still waiting.
-    max_pending_scheduled_tool_runs: RwLock<usize>,
-    /// Upper bound for absolute timer schedules.
-    max_due_horizon_secs: RwLock<i64>,
     /// Optional UI sink for ToolRun lifecycle events. Wired by the desktop
     /// shell to forward lifecycle events as Tauri events.
     lifecycle_events: ToolRunLifecycle,
@@ -306,9 +174,7 @@ pub struct ToolRunService {
     /// reaps them according to `tool_run_terminal_ttl_secs`, so results survive
     /// app restarts.
     tool_run_store: RwLock<Option<ToolRunStore>>,
-    /// Starts the recurring-session dispatcher once the shared durable store is attached.
-    recurring_scheduler_started: AtomicBool,
-    /// Cancels process runners, output preview loops and scheduled timers
+    /// Cancels detached tool invocations
     /// during application teardown. Every service-owned task is tracked here
     /// so shutdown can wait until its future and destructor have completed.
     task_tracker: TaskTracker,
@@ -330,20 +196,14 @@ impl ToolRunService {
             tool_runs: RwLock::new(HashMap::new()),
             spawn_gate: Arc::new(tokio::sync::Mutex::new(())),
             terminal_transition: TerminalTransitionGuard::default(),
-            scheduled_execution_claims: RwLock::new(HashMap::new()),
             completion_bus: ToolRunCompletionBus::new(),
-            terminal_persistence_retries: RwLock::new(HashSet::new()),
             background_terminal_retries: RwLock::new(HashSet::new()),
-            quarantine_persistence_retries: RwLock::new(HashSet::new()),
             max_running_background_tool_runs: RwLock::new(64),
+            #[cfg(test)]
             output_port: ToolRunOutputPort::new(),
-            tool_run_output_emit_interval: RwLock::new(Duration::from_millis(1500)),
             tool_run_terminal_ttl: RwLock::new(Duration::from_secs(600)),
-            max_pending_scheduled_tool_runs: RwLock::new(32),
-            max_due_horizon_secs: RwLock::new(365 * 24 * 3600),
             lifecycle_events: ToolRunLifecycle::default(),
             tool_run_store: RwLock::new(None),
-            recurring_scheduler_started: AtomicBool::new(false),
             task_tracker: TaskTracker::new(),
             shutdown_gate: tokio::sync::Mutex::new(()),
             shutdown_token: CancellationToken::new(),
@@ -367,14 +227,6 @@ impl ToolRunService {
         Some(self.completion_bus.subscribe())
     }
 
-    pub(crate) fn output_tail_factory(&self) -> ToolRunTailFactory {
-        self.output_port.tail_factory()
-    }
-
-    pub(crate) async fn pending_scheduled_fire(&self) -> Option<ScheduledToolRunFired> {
-        self.completion_bus.pending_scheduled_fire().await
-    }
-
     pub(crate) async fn claim_pending_tool_run_result(&self) -> Option<ToolRunCompletion> {
         let store = self.tool_run_store.read().await.clone()?;
         match store.claim_pending_completion().await {
@@ -385,28 +237,19 @@ impl ToolRunService {
                 session_id,
                 status,
                 payload,
-            })) => match kind.as_str() {
-                "background" => Some(ToolRunCompletion::Background(BackgroundToolRunCompletion {
+            })) if kind == "background" => {
+                Some(ToolRunCompletion::Background(BackgroundToolRunCompletion {
                     tool_run_id,
                     tool_run_result_id,
                     session_id,
                     status,
                     payload,
-                })),
-                "scheduled" => Some(ToolRunCompletion::ScheduledResult(
-                    ScheduledToolRunResultCompletion {
-                        tool_run_id,
-                        tool_run_result_id,
-                        session_id,
-                        status,
-                        payload,
-                    },
-                )),
-                _ => {
-                    tracing::warn!(tool_run_id, "ignoring ToolRun result with unknown kind");
-                    None
-                }
-            },
+                }))
+            }
+            Ok(Some(row)) => {
+                tracing::warn!(tool_run_id = %row.tool_run_id, "ignoring ToolRun result with unknown kind");
+                None
+            }
             Ok(None) => None,
             Err(error) => {
                 tracing::debug!(
@@ -466,100 +309,18 @@ impl ToolRunService {
         self.lifecycle_events.emit(event);
     }
 
-    /// Replace the unified context limits (background ToolRun concurrency cap,
-    /// live-output tail size, output-event cadence, terminal ToolRun TTL).
+    /// Replace the context limits for background ToolRun concurrency and
+    /// terminal ToolRun retention.
     pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
         *self.max_running_background_tool_runs.write().await =
             limits.max_running_background_tool_runs;
-        self.output_port
-            .set_tail_max_chars(limits.background_tool_run_tail_max_chars)
-            .await;
-        *self.tool_run_output_emit_interval.write().await =
-            Duration::from_millis(limits.background_tool_run_output_emit_interval_ms);
         *self.tool_run_terminal_ttl.write().await =
             Duration::from_secs(limits.tool_run_terminal_ttl_secs);
-        *self.max_pending_scheduled_tool_runs.write().await =
-            limits.max_pending_scheduled_tool_runs;
-        *self.max_due_horizon_secs.write().await = limits.scheduled_tool_runs_due_horizon_secs;
     }
 
     /// Attach the ToolRun persistence port. Headless/test builds leave it unset.
-    pub async fn set_tool_run_store(self: &Arc<Self>, tool_run_store: Option<ToolRunStore>) {
-        *self.tool_run_store.write().await = tool_run_store.clone();
-        if tool_run_store.is_none()
-            || self
-                .recurring_scheduler_started
-                .swap(true, Ordering::AcqRel)
-        {
-            return;
-        }
-        let service = self.clone();
-        let shutdown = self.shutdown_token.clone();
-        self.spawn_owned_task(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs(2));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                tokio::select! {
-                    _ = shutdown.cancelled() => break,
-                    _ = ticker.tick() => {
-                        let Some(store) = service.tool_run_store.read().await.clone() else {
-                            continue;
-                        };
-                        let _admission = service.spawn_gate.lock().await;
-                        if service.shutting_down.load(Ordering::Acquire) {
-                            continue;
-                        }
-                        let pending = match store.list_pending_scheduled_tool_runs().await {
-                            Ok(rows) => rows.len(),
-                            Err(error) => {
-                                tracing::warn!(
-                                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                                    "recurring scheduled-session admission check failed"
-                                );
-                                continue;
-                            }
-                        };
-                        let max_pending = *service.max_pending_scheduled_tool_runs.read().await;
-                        let limit = max_pending.saturating_sub(pending);
-                        if limit == 0 {
-                            continue;
-                        }
-                        let now = chrono::Utc::now()
-                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-                        let mut created_occurrences = false;
-                        match store.claim_due_recurring_session_tasks(now, limit).await {
-                            Ok(occurrences) if !occurrences.is_empty() => {
-                                let count = occurrences.len();
-                                created_occurrences = true;
-                                for row in occurrences {
-                                    let mut event = ToolRunLifecyclePayload::new(
-                                        ToolRunKind::Scheduled,
-                                        row.tool_run_id,
-                                        ToolRunLifecycleState::Waiting,
-                                    );
-                                    event.session_id = row.session_id;
-                                    event.title = Some(row.title);
-                                    event.body = Some(row.body);
-                                    event.mode = ScheduleMode::parse(&row.mode);
-                                    event.due_at = Some(row.due_at);
-                                    service.emit(ToolRunLifecycleEvent::Created(event));
-                                }
-                                tracing::debug!(count, "created recurring scheduled-session occurrences");
-                            }
-                            Ok(_) => {}
-                            Err(error) => tracing::warn!(
-                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                                "recurring scheduled-session dispatch failed"
-                            ),
-                        }
-                        drop(_admission);
-                        if created_occurrences {
-                            service.restore_pending().await;
-                        }
-                    }
-                }
-            }
-        });
+    pub async fn set_tool_run_store(&self, tool_run_store: Option<ToolRunStore>) {
+        *self.tool_run_store.write().await = tool_run_store;
     }
 
     /// Load terminal background history for board hydration and project it into
@@ -603,117 +364,7 @@ impl ToolRunService {
             .collect()
     }
 
-    /// Try to move a malformed persisted waiting row to terminal history.
-    /// Returns `Ok(false)` when another path already removed it from the
-    /// waiting set. Restore must never leave a row that the pending query
-    /// returns but the runtime cannot parse.
-    async fn try_quarantine_invalid_scheduled_row(
-        &self,
-        tool_run_id: &str,
-        reason: &str,
-        finished_at: &str,
-    ) -> anyhow::Result<bool> {
-        let Some(store) = self.tool_run_store.read().await.clone() else {
-            return Ok(true);
-        };
-        let mut last_error = None;
-        let retry_policy = ToolRunStoreRetryPolicy::inline_store();
-        for attempt in 1..=retry_policy.max_attempts() {
-            match store
-                .quarantine_waiting_scheduled_tool_run(
-                    tool_run_id.to_string(),
-                    reason.to_string(),
-                    finished_at.to_string(),
-                )
-                .await
-            {
-                Ok(changed) => return Ok(changed),
-                Err(error) => {
-                    last_error = Some(error);
-                    match retry_policy.decide(attempt, true) {
-                        RetryDecision::Retry { delay, .. } => tokio::time::sleep(delay).await,
-                        RetryDecision::Stop { .. } => break,
-                    }
-                }
-            }
-        }
-        Err(last_error
-            .unwrap_or_else(|| anyhow::anyhow!("malformed scheduled ToolRun quarantine failed")))
-    }
-
-    /// Move a malformed row out of the pending set. If the short inline retry
-    /// budget is exhausted, retain a single per-row background retry with
-    /// exponential backoff. This prevents a transient DB outage from turning
-    /// a durable `waiting` row into a permanently invisible ToolRun.
-    async fn quarantine_invalid_scheduled_row(self: &Arc<Self>, tool_run_id: &str, reason: &str) {
-        let finished_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        match self
-            .try_quarantine_invalid_scheduled_row(tool_run_id, reason, &finished_at)
-            .await
-        {
-            Ok(_) => return,
-            Err(error) => {
-                tracing::warn!(
-                    tool_run_id = %tool_run_id,
-                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                    "failed to quarantine malformed scheduled ToolRun; scheduling retry"
-                );
-            }
-        }
-
-        if !self
-            .quarantine_persistence_retries
-            .write()
-            .await
-            .insert(tool_run_id.to_string())
-        {
-            return;
-        }
-        let service = Arc::clone(self);
-        let tool_run_id = tool_run_id.to_string();
-        let reason = reason.to_string();
-        self.spawn_owned_task(async move {
-            let retry_policy = ToolRunPersistenceRetryPolicy::terminal_persistence();
-            let mut completed_attempts = 1;
-            while let RetryDecision::Retry {
-                next_attempt,
-                delay,
-            } = retry_policy.decide(
-                completed_attempts,
-                RetrySignal::Failure { retryable: true },
-                tokio::time::Instant::now(),
-            ) {
-                tokio::select! {
-                    _ = service.shutdown_token.cancelled() => break,
-                    _ = tokio::time::sleep(delay) => {}
-                }
-                completed_attempts = next_attempt;
-                match service
-                    .try_quarantine_invalid_scheduled_row(&tool_run_id, &reason, &finished_at)
-                    .await
-                {
-                    Ok(_) => break,
-                    Err(error) => {
-                        tracing::warn!(
-                            tool_run_id = %tool_run_id,
-                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                            "malformed scheduled ToolRun quarantine retry failed"
-                        );
-                    }
-                }
-            }
-            service
-                .quarantine_persistence_retries
-                .write()
-                .await
-                .remove(&tool_run_id);
-        });
-    }
-
-    async fn clear_scheduled_fire_claim(&self, tool_run_id: &str) {
-        self.completion_bus.clear_scheduled_fire(tool_run_id).await;
-    }
-
+    #[cfg(test)]
     async fn rollback_background_registration(&self, tool_run_id: &str) {
         let Some(store) = self.tool_run_store.read().await.clone() else {
             self.tool_runs.write().await.remove(tool_run_id);
@@ -761,7 +412,6 @@ impl ToolRunService {
                     Some(reason.to_string()),
                     Some(reason.to_string()),
                     None,
-                    None,
                     finished_at.clone(),
                 )
                 .await
@@ -791,7 +441,10 @@ impl ToolRunService {
         let mut tool_runs = self.tool_runs.write().await;
         if let Some(entry) = tool_runs.get_mut(&tool_run_id) {
             entry.kill = None;
-            entry.tail = None;
+            #[cfg(test)]
+            {
+                entry.tail = None;
+            }
             let started_at = match &entry.state {
                 ToolRunState::Running { started_at } => started_at.clone(),
                 _ => finished_at.clone(),
@@ -801,7 +454,6 @@ impl ToolRunService {
                     error: reason.to_string(),
                     error_reason: reason.to_string(),
                     log_path: None,
-                    exit_code: None,
                 });
         }
     }
@@ -809,9 +461,7 @@ impl ToolRunService {
     /// Stop ToolRun workers owned by the application.
     ///
     /// Running background processes are cancelled and become terminal so the
-    /// ToolRun board cannot retain a ghost `running` row. Pending schedules and
-    /// Pending schedules remain durable. Running scheduled work with an
-    /// accepted execution claim may finish while the service shuts down.
+    /// ToolRun board cannot retain a ghost `running` row.
     pub async fn shutdown(&self) {
         let _shutdown = self.shutdown_gate.lock().await;
         if self.task_tracker.is_closed() && self.task_tracker.is_empty() {
@@ -829,15 +479,7 @@ impl ToolRunService {
             let tool_runs = self.tool_runs.read().await;
             tool_runs
                 .iter()
-                .filter(|(_, entry)| {
-                    matches!(
-                        (entry.kind, &entry.state),
-                        (
-                            ToolRunKind::Background | ToolRunKind::Scheduled,
-                            ToolRunState::Running { .. }
-                        )
-                    )
-                })
+                .filter(|(_, entry)| matches!(entry.state, ToolRunState::Running { .. }))
                 .map(|(id, _)| id.clone())
                 .collect::<Vec<_>>()
         };
@@ -916,7 +558,7 @@ impl ToolRunService {
                     )
                     .await
             }
-            ToolRunStatus::Waiting | ToolRunStatus::Running => {
+            ToolRunStatus::Running => {
                 anyhow::bail!("cannot persist non-terminal background ToolRun status")
             }
         }
@@ -936,27 +578,33 @@ impl ToolRunService {
         }
 
         let _terminal = self.terminal_transition.lock().await;
-        let session_id = {
+        let terminal_owner = {
             let tool_runs = self.tool_runs.read().await;
             tool_runs.get(tool_run_id).and_then(|entry| {
                 (entry.kind == ToolRunKind::Background
-                    && can_claim_terminal(
-                        entry.state.status(),
-                        state.status(),
-                        TerminalSource::Live,
-                    ))
-                .then(|| (entry.session_id.clone(), entry.source_step_id.clone()))
+                    && can_claim_terminal(entry.state.status(), state.status()))
+                .then(|| {
+                    (
+                        entry.session_id.clone(),
+                        entry.source_step_id.clone(),
+                        entry.tool_name.clone(),
+                    )
+                })
             })
         };
-        let Some((session_id, source_step_id)) = session_id else {
+        let Some((session_id, source_step_id, tool_name)) = terminal_owner else {
             if remove_after_commit {
                 self.tool_runs.write().await.remove(tool_run_id);
             }
             return Ok(false);
         };
 
-        let payload =
-            project_background_completion_payload(tool_run_id, state, source_step_id.as_deref());
+        let payload = project_background_completion_payload(
+            tool_run_id,
+            &tool_name,
+            state,
+            source_step_id.as_deref(),
+        );
         match self.persist_terminal(&payload).await {
             Ok(true) => {
                 {
@@ -965,7 +613,10 @@ impl ToolRunService {
                         && entry.kind == ToolRunKind::Background
                     {
                         entry.kill = None;
-                        entry.tail = None;
+                        #[cfg(test)]
+                        {
+                            entry.tail = None;
+                        }
                         entry.state = state.clone();
                     }
                 }
@@ -974,7 +625,8 @@ impl ToolRunService {
                     state.clone(),
                     session_id,
                     source_step_id,
-                );
+                )
+                .await;
                 if remove_after_commit {
                     self.tool_runs.write().await.remove(tool_run_id);
                 }
@@ -1019,7 +671,6 @@ impl ToolRunService {
         let state = match row.status {
             ToolRunStatus::Completed => timestamps.clone().build(TerminalPayload::Completed {
                 output: row.output.unwrap_or_default(),
-                exit_code: row.exit_code,
                 truncated: row.log_path.is_some(),
                 log_path: row.log_path,
             }),
@@ -1027,17 +678,19 @@ impl ToolRunService {
                 error: row.error.unwrap_or_default(),
                 error_reason: row.error_reason.unwrap_or_default(),
                 log_path: row.log_path,
-                exit_code: row.exit_code,
             }),
             ToolRunStatus::Cancelled => timestamps.build(TerminalPayload::Cancelled),
-            ToolRunStatus::Waiting | ToolRunStatus::Running => return,
+            ToolRunStatus::Running => return,
         };
         let mut tool_runs = self.tool_runs.write().await;
         if let Some(entry) = tool_runs.get_mut(tool_run_id)
             && entry.kind == ToolRunKind::Background
         {
             entry.kill = None;
-            entry.tail = None;
+            #[cfg(test)]
+            {
+                entry.tail = None;
+            }
             entry.state = state;
         }
     }
@@ -1108,7 +761,7 @@ impl ToolRunService {
 
     /// Publish only after the matching terminal write has committed. A failed
     /// transient broadcast is recoverable from the durable completion outbox.
-    fn publish_committed_terminal(
+    async fn publish_committed_terminal(
         &self,
         tool_run_id: &str,
         state: ToolRunState,
@@ -1116,41 +769,57 @@ impl ToolRunService {
         source_step_id: Option<String>,
     ) {
         debug_assert!(state.is_terminal());
+        let Some(tool_name) = self
+            .tool_runs
+            .read()
+            .await
+            .get(tool_run_id)
+            .map(|entry| entry.tool_name.clone())
+        else {
+            tracing::warn!(
+                tool_run_id,
+                "cannot publish ToolRun completion without its target tool identity"
+            );
+            return;
+        };
         let mut event = ToolRunLifecyclePayload::new(
             ToolRunKind::Background,
             tool_run_id,
+            tool_name.clone(),
             tool_run_lifecycle_state(&state),
         );
         event.source_step_id = source_step_id.clone();
         match &state {
-            ToolRunState::Completed {
-                output, exit_code, ..
-            } => {
+            ToolRunState::Completed { output, .. } => {
                 event.output = Some(output.clone());
-                event.exit_code = *exit_code;
             }
             ToolRunState::Failed {
                 error,
                 error_reason,
-                exit_code,
                 ..
             } => {
                 event.error = Some(error.clone());
                 event.error_reason = Some(error_reason.clone());
-                event.exit_code = *exit_code;
             }
             ToolRunState::Cancelled { .. } => {}
-            ToolRunState::Waiting | ToolRunState::Running { .. } => {
+            ToolRunState::Running { .. } => {
                 unreachable!("terminal publication requires a terminal ToolRun state")
             }
         }
         self.emit(ToolRunLifecycleEvent::Finished(event));
-        self.publish_background_completion(tool_run_id, state, session_id, source_step_id);
+        self.publish_background_completion(
+            tool_run_id,
+            tool_name,
+            state,
+            session_id,
+            source_step_id,
+        );
     }
 
     fn publish_background_completion(
         &self,
         tool_run_id: &str,
+        tool_name: String,
         state: ToolRunState,
         session_id: Option<String>,
         source_step_id: Option<String>,
@@ -1159,10 +828,14 @@ impl ToolRunService {
             ToolRunState::Completed { .. } => ToolRunStatus::Completed,
             ToolRunState::Failed { .. } => ToolRunStatus::Failed,
             ToolRunState::Cancelled { .. } => ToolRunStatus::Cancelled,
-            ToolRunState::Running { .. } | ToolRunState::Waiting => return,
+            ToolRunState::Running { .. } => return,
         };
-        let payload =
-            project_background_completion_payload(tool_run_id, &state, source_step_id.as_deref());
+        let payload = project_background_completion_payload(
+            tool_run_id,
+            &tool_name,
+            &state,
+            source_step_id.as_deref(),
+        );
         if let Err(error) =
             self.completion_bus
                 .send(ToolRunCompletion::Background(BackgroundToolRunCompletion {
@@ -1189,17 +862,7 @@ impl ToolRunService {
         let tool_runs = self.tool_runs.read().await;
         let mut rows = Vec::new();
         for (id, entry) in tool_runs.iter() {
-            match entry.kind {
-                ToolRunKind::Background => {
-                    rows.push(project_board_tool_run(id, entry));
-                }
-                ToolRunKind::Scheduled
-                    if entry.state.status().is_live() && entry.scheduled.is_some() =>
-                {
-                    rows.push(project_board_tool_run(id, entry));
-                }
-                ToolRunKind::Scheduled => {}
-            }
+            rows.push(project_board_tool_run(id, entry));
         }
         rows.sort_by(|a: &ToolRunView, b: &ToolRunView| {
             a.started_at.as_deref().cmp(&b.started_at.as_deref())
@@ -1213,43 +876,13 @@ impl ToolRunService {
         let tool_runs = self.tool_runs.read().await;
         let mut rows = Vec::new();
         for (id, entry) in tool_runs.iter() {
-            if entry.kind != ToolRunKind::Background {
-                if let Some(schedule) = &entry.scheduled
-                    && entry.state.status().is_live()
-                    && entry.session_id.as_deref() == Some(session_id)
-                {
-                    let state = ToolRunStateView::from_entry(entry);
-                    let projection = ToolRunStatusView::Scheduled {
-                        tool_run_id: id.clone(),
-                        session_id: entry.session_id.clone(),
-                        schedule: Box::new(ScheduledToolRunView {
-                            title: schedule.title.clone(),
-                            body: schedule.body.clone(),
-                            due_at: schedule.due_at.clone(),
-                            mode: schedule.mode,
-                            tool_name: schedule.tool_name.clone(),
-                            tool_args: schedule.tool_args.clone(),
-                            prompt: schedule.prompt.clone(),
-                            watch_tool_run_id: schedule.watch_tool_run_id.clone(),
-                        }),
-                        state,
-                    };
-                    rows.push(ToolRunListView {
-                        status: projection.status().expect("scheduled view has status"),
-                        projection,
-                        kind: ToolRunKind::Scheduled,
-                        session_id: entry.session_id.clone(),
-                        preview: String::new(),
-                    });
-                }
-                continue;
-            }
             if entry.session_id.as_deref() != Some(session_id) {
                 continue;
             }
             let state = ToolRunStateView::from_entry(entry);
             let projection = ToolRunStatusView::Background {
                 tool_run_id: id.clone(),
+                tool_name: entry.tool_name.clone(),
                 source_step_id: entry.source_step_id.clone(),
                 state: state.clone(),
             };
@@ -1257,6 +890,7 @@ impl ToolRunService {
                 status: state.status(),
                 projection,
                 kind: ToolRunKind::Background,
+                tool_name: entry.tool_name.clone(),
                 session_id: entry.session_id.clone(),
                 preview: state.preview(),
             });
@@ -1266,6 +900,7 @@ impl ToolRunService {
     }
 
     /// Typed unscoped status projection.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn status_view(&self, tool_run_id: &str) -> ToolRunStatusView {
         let tool_runs = self.tool_runs.read().await;
         let Some(entry) = tool_runs.get(tool_run_id) else {
@@ -1273,50 +908,12 @@ impl ToolRunService {
                 tool_run_id: tool_run_id.to_string(),
             };
         };
-        if entry.kind == ToolRunKind::Scheduled {
-            let Some(schedule) = entry.scheduled.as_ref() else {
-                return ToolRunStatusView::NotFound {
-                    tool_run_id: tool_run_id.to_string(),
-                };
-            };
-            if !entry.state.is_waiting() {
-                return ToolRunStatusView::ScheduledTerminal {
-                    tool_run_id: tool_run_id.to_string(),
-                    status: entry.state.status(),
-                };
-            }
-            return ToolRunStatusView::Scheduled {
-                tool_run_id: tool_run_id.to_string(),
-                session_id: entry.session_id.clone(),
-                schedule: Box::new(scheduled_tool_run_view(schedule)),
-                state: ToolRunStateView::from_entry(entry),
-            };
-        }
         ToolRunStatusView::Background {
             tool_run_id: tool_run_id.to_string(),
+            tool_name: entry.tool_name.clone(),
             source_step_id: entry.source_step_id.clone(),
             state: ToolRunStateView::from_entry(entry),
         }
-    }
-
-    async fn dependency_status(&self, tool_run_id: &str) -> anyhow::Result<DependencyStatus> {
-        let state = self
-            .tool_runs
-            .read()
-            .await
-            .get(tool_run_id)
-            .map(|entry| entry.state.clone());
-        if let Some(state) = state {
-            return Ok(DependencyStatus::from_state(&state));
-        }
-        let Some(store) = self.tool_run_store.read().await.clone() else {
-            return Ok(DependencyStatus::NotFound);
-        };
-        Ok(store
-            .get_tool_run_dependency(tool_run_id.to_string())
-            .await?
-            .map(DependencyStatus::from_durable)
-            .unwrap_or(DependencyStatus::NotFound))
     }
 
     /// Typed status lookup scoped to the owning session.
@@ -1331,24 +928,6 @@ impl ToolRunService {
                 tool_run_id: tool_run_id.to_string(),
             };
         };
-        if entry.kind == ToolRunKind::Scheduled {
-            let Some(schedule) = entry.scheduled.as_ref() else {
-                return ToolRunStatusView::NotFound {
-                    tool_run_id: tool_run_id.to_string(),
-                };
-            };
-            if entry.session_id.as_deref() != Some(session_id) || !entry.state.status().is_live() {
-                return ToolRunStatusView::NotFound {
-                    tool_run_id: tool_run_id.to_string(),
-                };
-            }
-            return ToolRunStatusView::Scheduled {
-                tool_run_id: tool_run_id.to_string(),
-                session_id: entry.session_id.clone(),
-                schedule: Box::new(scheduled_tool_run_view(schedule)),
-                state: ToolRunStateView::from_entry(entry),
-            };
-        }
         if entry.session_id.as_deref() != Some(session_id) {
             return ToolRunStatusView::NotFound {
                 tool_run_id: tool_run_id.to_string(),
@@ -1356,25 +935,18 @@ impl ToolRunService {
         }
         ToolRunStatusView::Background {
             tool_run_id: tool_run_id.to_string(),
+            tool_name: entry.tool_name.clone(),
             source_step_id: entry.source_step_id.clone(),
             state: ToolRunStateView::from_entry(entry),
         }
     }
 
-    /// Request cancellation of a live ToolRun (kept for inspection afterwards).
-    /// Scheduled ToolRuns can normally be cancelled only before execution is
-    /// claimed. A durable execution claim means the side effect may already be
-    /// in progress, so cancellation must not report success.
-    /// Background tool_runs retain their process-signal behavior.
+    /// Request cancellation of a live background ToolRun (kept for inspection afterwards).
     pub async fn cancel(&self, tool_run_id: &str) -> bool {
         let mut tool_runs = self.tool_runs.write().await;
         let Some(entry) = tool_runs.get_mut(tool_run_id) else {
             return false;
         };
-        if entry.kind == ToolRunKind::Scheduled {
-            drop(tool_runs);
-            return self.cancel_scheduled(tool_run_id, None).await;
-        }
         if !matches!(entry.state, ToolRunState::Running { .. }) {
             return false;
         }
@@ -1385,16 +957,11 @@ impl ToolRunService {
     }
 
     /// Request cancellation only when the ToolRun belongs to `session_id`.
-    /// Scheduled ToolRuns follow the same claim rule as [`Self::cancel`].
     pub async fn cancel_for_session(&self, tool_run_id: &str, session_id: &str) -> bool {
         let mut tool_runs = self.tool_runs.write().await;
         let Some(entry) = tool_runs.get_mut(tool_run_id) else {
             return false;
         };
-        if entry.kind == ToolRunKind::Scheduled {
-            drop(tool_runs);
-            return self.cancel_scheduled(tool_run_id, Some(session_id)).await;
-        }
         if entry.session_id.as_deref() != Some(session_id)
             || !matches!(entry.state, ToolRunState::Running { .. })
         {
@@ -1406,29 +973,14 @@ impl ToolRunService {
         true
     }
 
-    /// Cancel only when the caller's kind discriminator matches the owned
-    /// ToolRun. The app IPC layer must not be able to cancel a scheduled row by
-    /// presenting it as a background ToolRun (or vice versa).
-    pub async fn cancel_for_kind(&self, tool_run_id: &str, expected: ToolRunKind) -> bool {
-        let matches = self
-            .tool_runs
-            .read()
-            .await
-            .get(tool_run_id)
-            .is_some_and(|entry| entry.kind == expected);
-        matches && self.cancel(tool_run_id).await
-    }
-
     /// Delete terminal ToolRun history through the same owner that controls
-    /// live ToolRun state. Waiting/running rows, kind mismatches and absent rows
-    /// are all rejected and return `false`.
-    async fn delete(&self, tool_run_id: &str, expected_kind: ToolRunKind) -> anyhow::Result<bool> {
+    /// live ToolRun state. Waiting/running rows and absent rows are rejected.
+    async fn delete(&self, tool_run_id: &str) -> anyhow::Result<bool> {
         let _mutation = self.spawn_gate.lock().await;
         let memory_terminal = {
             let tool_runs = self.tool_runs.read().await;
             match tool_runs.get(tool_run_id) {
-                Some(entry) if entry.kind == expected_kind => entry.state.is_terminal(),
-                Some(_) => return Ok(false),
+                Some(entry) => entry.state.is_terminal(),
                 None => false,
             }
         };
@@ -1438,7 +990,7 @@ impl ToolRunService {
                 let Some(row) = row else {
                     return Ok(false);
                 };
-                if row.kind != expected_kind.as_str() || !row.status.is_terminal() {
+                if row.kind != ToolRunKind::Background.as_str() || !row.status.is_terminal() {
                     return Ok(false);
                 }
                 if !store.delete_tool_run(tool_run_id.to_string()).await? {
@@ -1450,7 +1002,7 @@ impl ToolRunService {
         } else if let Some(store) = self.tool_run_store.read().await.clone()
             && let Some(row) = store.get_tool_run(tool_run_id.to_string()).await?
         {
-            if row.kind != expected_kind.as_str() || !row.status.is_terminal() {
+            if row.kind != ToolRunKind::Background.as_str() || !row.status.is_terminal() {
                 return Ok(false);
             }
             if !store.delete_tool_run(tool_run_id.to_string()).await? {
@@ -1462,16 +1014,10 @@ impl ToolRunService {
         Ok(true)
     }
 
-    /// Delete terminal history when the IPC surface does not need to expose a
-    /// kind discriminator. The actual persisted/runtime kind is resolved first
-    /// and then passed through the guarded kind-aware delete path.
+    /// Delete terminal background ToolRun history.
     pub async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool> {
-        let memory_kind = {
-            let tool_runs = self.tool_runs.read().await;
-            tool_runs.get(tool_run_id).map(|entry| entry.kind)
-        };
-        if let Some(expected_kind) = memory_kind {
-            return self.delete(tool_run_id, expected_kind).await;
+        if self.tool_runs.read().await.contains_key(tool_run_id) {
+            return self.delete(tool_run_id).await;
         }
         let Some(store) = self.tool_run_store.read().await.clone() else {
             return Ok(false);
@@ -1479,10 +1025,10 @@ impl ToolRunService {
         let Some(row) = store.get_tool_run(tool_run_id.to_string()).await? else {
             return Ok(false);
         };
-        let Some(expected_kind) = ToolRunKind::from_storage(&row.kind) else {
+        if row.kind != ToolRunKind::Background.as_str() {
             return Ok(false);
-        };
-        self.delete(tool_run_id, expected_kind).await
+        }
+        self.delete(tool_run_id).await
     }
 
     /// Clear persisted terminal ToolRun history without touching waiting or
@@ -1507,122 +1053,19 @@ impl ToolRunService {
         Ok(deleted_ids.len() as u64)
     }
 
-    /// Cancel session-owned ToolRuns and return scheduled durable query/cancel
-    /// failures so a destructive session lifecycle can leave the durable
-    /// session in place for retry. Background cancellation remains best-effort
-    /// and uses its bounded terminal-write retry. A scheduled execution claim
-    /// that already won remains a legitimate first-wins outcome and is not an
-    /// error.
-    pub async fn cancel_owned_by_session_checked(
+    /// Cancel session-owned background ToolRuns. Schedule cancellation belongs
+    /// to ScheduleService and is coordinated by the Agent session lifecycle.
+    pub async fn cancel_owned_background_by_session_checked(
         self: &Arc<Self>,
         session_id: &str,
     ) -> anyhow::Result<()> {
-        // Serialize both ToolRun kinds with admission. Background admission
-        // must finish publishing its durable row and board entry before this
-        // snapshot; scheduled admission already uses the same gate through its
-        // durable write. Keep the established background-then-scheduled order.
         let _mutation = self.spawn_gate.lock().await;
         if self.shutting_down.load(Ordering::Acquire) {
             return Ok(());
         }
         self.cancel_owned_background_by_session_locked(session_id)
             .await;
-        self.cancel_owned_scheduled_by_session_checked_locked(session_id)
-            .await
-    }
-}
-
-impl ToolRunService {
-    async fn cancel_owned_scheduled_by_session_checked_locked(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<()> {
-        let live_tool_run_ids = {
-            let tool_runs = self.tool_runs.read().await;
-            tool_runs
-                .iter()
-                .filter(|(_, entry)| {
-                    entry.kind == ToolRunKind::Scheduled
-                        && entry.session_id.as_deref() == Some(session_id)
-                        && entry.state.status().is_live()
-                        && entry.scheduled.is_some()
-                })
-                .map(|(tool_run_id, _)| tool_run_id.clone())
-                .collect::<HashSet<_>>()
-        };
-
-        let mut first_error = None;
-        for tool_run_id in &live_tool_run_ids {
-            if let Err(error) = self
-                .cancel_scheduled_locked(tool_run_id, Some(session_id))
-                .await
-            {
-                first_error.get_or_insert_with(|| {
-                    error.context(format!("failed to cancel scheduled ToolRun {tool_run_id}"))
-                });
-            }
-        }
-
-        if let Some(store) = self.tool_run_store.read().await.clone() {
-            match store.list_live_scheduled_tool_runs().await {
-                Ok(rows) => {
-                    for row in rows.into_iter().filter(|row| {
-                        row.session_id.as_deref() == Some(session_id)
-                            && !live_tool_run_ids.contains(&row.tool_run_id)
-                    }) {
-                        if let Err(error) = self
-                            .cancel_untracked_scheduled_row(&store, &row.tool_run_id)
-                            .await
-                        {
-                            first_error.get_or_insert_with(|| {
-                                error.context(format!(
-                                    "failed to cancel untracked scheduled ToolRun {}",
-                                    row.tool_run_id
-                                ))
-                            });
-                        }
-                    }
-                }
-                Err(error) => {
-                    first_error.get_or_insert_with(|| {
-                        error.context("failed to list durable session-owned scheduled tool_runs")
-                    });
-                }
-            }
-        }
-
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
-    }
-
-    async fn cancel_untracked_scheduled_row(
-        &self,
-        store: &ToolRunStore,
-        tool_run_id: &str,
-    ) -> anyhow::Result<()> {
-        let _terminal = self.terminal_transition.lock().await;
-        let finished_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        let retry_policy = ToolRunStoreRetryPolicy::inline_store();
-        let mut last_error = None;
-        for attempt in 1..=retry_policy.max_attempts() {
-            match store
-                .cancel_scheduled_tool_run(tool_run_id.to_string(), finished_at.clone())
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(error) => {
-                    last_error = Some(error);
-                    match retry_policy.decide(attempt, true) {
-                        RetryDecision::Retry { delay, .. } => tokio::time::sleep(delay).await,
-                        RetryDecision::Stop { .. } => break,
-                    }
-                }
-            }
-        }
-        Err(last_error
-            .unwrap_or_else(|| anyhow::anyhow!("scheduled ToolRun cancellation did not complete")))
+        Ok(())
     }
 
     /// Select once, then visit matching live owned ToolRuns sequentially without
@@ -1634,7 +1077,6 @@ impl ToolRunService {
     async fn cancel_owned_live_tool_runs<F, Fut, R>(
         &self,
         session_id: &str,
-        kind: ToolRunKind,
         mut cancel: F,
     ) -> OwnedToolRunSelection
     where
@@ -1645,13 +1087,11 @@ impl ToolRunService {
             let tool_runs = self.tool_runs.read().await;
             let mut selection = OwnedToolRunSelection::default();
             for (id, entry) in tool_runs.iter() {
-                if entry.kind != kind || entry.session_id.as_deref() != Some(session_id) {
+                if entry.session_id.as_deref() != Some(session_id) {
                     continue;
                 }
                 if entry.state.status().is_live() {
-                    if kind != ToolRunKind::Scheduled || entry.scheduled.is_some() {
-                        selection.live_ids.push(id.clone());
-                    }
+                    selection.live_ids.push(id.clone());
                 } else if entry.state.is_terminal() {
                     selection.terminal_ids.push(id.clone());
                 }
@@ -1665,193 +1105,12 @@ impl ToolRunService {
         selection
     }
 
-    /// Restore every persisted ToolRun kind through one entry point.
+    /// Restore process-local background ToolRun state after application start.
     pub async fn restore(self: &Arc<Self>) -> ToolRunRestoreSummary {
         let interrupted_runs_marked_failed = self.restore_after_restart().await;
-        let overdue_scheduled_runs = Arc::clone(self).restore_pending().await;
         ToolRunRestoreSummary {
-            overdue_scheduled_runs,
             interrupted_runs_marked_failed,
         }
-    }
-
-    /// Re-arm persisted timers and dependency watchers after interrupted rows
-    /// have been classified by [`restore_after_restart`]. Recovery stays in
-    /// this service rather than introducing a separate ToolRun registry.
-    pub async fn restore_pending(self: &Arc<Self>) -> usize {
-        let Some(store) = self.tool_run_store.read().await.clone() else {
-            return 0;
-        };
-        let _mutation = self.spawn_gate.lock().await;
-        if self.shutting_down.load(Ordering::Acquire) {
-            return 0;
-        }
-        let rows = match store.list_pending_scheduled_tool_runs().await {
-            Ok(rows) => rows,
-            Err(error) => {
-                tracing::warn!(
-                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                    "restore_pending: failed to load scheduled tool_runs"
-                );
-                return 0;
-            }
-        };
-        let now = chrono::Utc::now();
-        let mut overdue_tool_run_ids = Vec::new();
-        for row in rows {
-            if self.tool_runs.read().await.contains_key(&row.tool_run_id) {
-                continue;
-            }
-            let watch_tool_run_id = row
-                .watch_tool_run_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string);
-            if row.watch_tool_run_id.is_some() && watch_tool_run_id.is_none() {
-                tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with empty dependency id");
-                self.quarantine_invalid_scheduled_row(
-                    &row.tool_run_id,
-                    "定时任务依赖 ID 无效，已隔离为失败",
-                )
-                .await;
-                continue;
-            }
-            let due = if watch_tool_run_id.is_some() {
-                if !row.due_at.trim().is_empty() {
-                    tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with both timer and dependency triggers");
-                    self.quarantine_invalid_scheduled_row(
-                        &row.tool_run_id,
-                        "定时任务触发器配置冲突，已隔离为失败",
-                    )
-                    .await;
-                    continue;
-                }
-                None
-            } else {
-                match chrono::DateTime::parse_from_rfc3339(&row.due_at) {
-                    Ok(value) => Some(value.with_timezone(&chrono::Utc)),
-                    Err(_error) => {
-                        tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with invalid due_at");
-                        self.quarantine_invalid_scheduled_row(
-                            &row.tool_run_id,
-                            "定时任务 due_at 无效，已隔离为失败",
-                        )
-                        .await;
-                        continue;
-                    }
-                }
-            };
-            let Some(mode) = ScheduleMode::parse(&row.mode) else {
-                tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with invalid mode");
-                self.quarantine_invalid_scheduled_row(
-                    &row.tool_run_id,
-                    "定时任务 mode 无效，已隔离为失败",
-                )
-                .await;
-                continue;
-            };
-            let tool_args = match row.tool_args.as_deref() {
-                Some(value) => match serde_json::from_str(value) {
-                    Ok(value) => Some(value),
-                    Err(_error) => {
-                        tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with invalid tool_args");
-                        self.quarantine_invalid_scheduled_row(
-                            &row.tool_run_id,
-                            "定时任务 tool_args 无效，已隔离为失败",
-                        )
-                        .await;
-                        continue;
-                    }
-                },
-                None => None,
-            };
-            let valid_payload = match mode {
-                ScheduleMode::Tool => {
-                    watch_tool_run_id.is_none()
-                        && row
-                            .tool_name
-                            .as_deref()
-                            .is_some_and(|value| !value.trim().is_empty())
-                }
-                ScheduleMode::Continue => {
-                    row.session_id
-                        .as_deref()
-                        .is_some_and(|value| !value.trim().is_empty())
-                        && (watch_tool_run_id.is_some()
-                            || row
-                                .prompt
-                                .as_deref()
-                                .is_some_and(|value| !value.trim().is_empty()))
-                }
-                ScheduleMode::NewSession => {
-                    watch_tool_run_id.is_none()
-                        && row
-                            .session_id
-                            .as_deref()
-                            .is_some_and(|value| !value.trim().is_empty())
-                        && row
-                            .prompt
-                            .as_deref()
-                            .is_some_and(|value| !value.trim().is_empty())
-                }
-            };
-            if !valid_payload {
-                tracing::warn!(
-                    tool_run_id = %row.tool_run_id,
-                    "skipping scheduled ToolRun with missing mode-specific payload"
-                );
-                self.quarantine_invalid_scheduled_row(
-                    &row.tool_run_id,
-                    "定时任务缺少 mode 所需载荷，已隔离为失败",
-                )
-                .await;
-                continue;
-            }
-            let entry = ScheduledToolRunEntry {
-                title: row.title,
-                body: row.body,
-                due_at: row.due_at,
-                mode,
-                tool_name: row.tool_name,
-                tool_args,
-                prompt: row.prompt,
-                watch_tool_run_id: watch_tool_run_id.clone(),
-            };
-            let timer_entry = entry.clone();
-            let tool_run_id = row.tool_run_id;
-            let session_id = row.session_id;
-            self.tool_runs.write().await.insert(
-                tool_run_id.clone(),
-                ToolRunEntry {
-                    kind: ToolRunKind::Scheduled,
-                    session_id,
-                    source_step_id: None,
-                    state: ToolRunState::Waiting,
-                    kill: None,
-                    tail: None,
-                    command: String::new(),
-                    shell: String::new(),
-                    scheduled: Some(entry),
-                },
-            );
-            if watch_tool_run_id.is_some() {
-                self.arm_scheduled_worker(tool_run_id, &timer_entry);
-            } else {
-                let remaining = (due.expect("timer trigger has due time") - now).num_seconds();
-                if remaining <= 0 {
-                    overdue_tool_run_ids.push(tool_run_id);
-                } else {
-                    self.arm_scheduled_worker(tool_run_id, &timer_entry);
-                }
-            }
-        }
-        drop(_mutation);
-        let overdue = overdue_tool_run_ids.len();
-        for tool_run_id in overdue_tool_run_ids {
-            self.fire_scheduled(&tool_run_id).await;
-        }
-        overdue
     }
 }
 

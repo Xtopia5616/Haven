@@ -886,14 +886,18 @@ export function mapAgentEvent(
 				)
 					return null;
 				if (
+					toolRunKind !== undefined &&
+					!isOneOf(toolRunKind, TOOL_RUN_KIND_DTO_VALUES)
+				)
+					return null;
+				if (
 					sessionId === null ||
 					title === null ||
 					body === null ||
-					!isOneOf(toolRunKind, TOOL_RUN_KIND_DTO_VALUES) ||
+					toolRunKind !== 'background' ||
 					toolRunId === null ||
-					(toolRunKind === 'background' &&
-						(sessionId === undefined || toolRunStatus === undefined)) ||
-					(toolRunKind === 'scheduled' && toolRunStatus !== undefined)
+					sessionId === undefined ||
+					toolRunStatus === undefined
 				)
 					return null;
 				return {

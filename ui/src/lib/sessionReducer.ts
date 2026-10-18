@@ -145,7 +145,7 @@ export function reduceSession(
 		case 'session/interactions-cleared':
 		case 'session/ask-resolved':
 		case 'session/interaction-resolution-result':
-		case 'session/scheduled-tool-run-cancelled':
+		case 'session/schedule-run-cancelled':
 			return reduceInteraction(inputState, action);
 
 		case 'agent/chunks':

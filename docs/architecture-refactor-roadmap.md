@@ -1,7 +1,7 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8、§5.8 与第二轮 Slice 1–9 已完成；当前 Active 为 Session 创建来源 / Session 关系 / ToolRun 与 Schedule 领域分界（ADR 1324，按实施顺序推进）。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
-> 更新日期：2026-10-18
+> 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
+> 更新日期：2026-10-19
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
 本文件只记录当前阶段、仍未完成的工作和验收条件。历史实现切片与决定见对应 ADR；提交历史用于追踪实现过程。
@@ -58,7 +58,7 @@
 
 ### 阶段 7：统一 Job 生命周期与 MemoryRuntime（P2）
 
-**已完成。** MemoryRuntime 由应用管理；scheduled dependency 恢复和终态 transcript 投影复用既有 outbox。通用 Job executor、统一 ToolRun deadline、owner token/续租和自动 replay 不在当前设计范围。见 ADR 0367、0392、0393。
+**已完成。** MemoryRuntime 由应用管理；历史实现曾由 ToolRun outbox 承担定时依赖恢复和终态 transcript 投影，现已按 ADR 1324 移交独立 Schedule owner。通用 Job executor、统一 ToolRun deadline、owner token/续租和自动 replay 不在当前设计范围。见 ADR 0367、0392、0393、1324。
 
 ### 阶段 8：IPC 单源生成与 UI 编排收口（P2）
 
@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active** | 按[ADR 1324](adr/1324-session-creation-and-background-toolrun-boundaries.md)顺序统一 Session 创建元数据/关系与创建 owner，随后把 Schedule 生命周期移出 ToolRun，并将 ToolRun 收窄到后台工具调用。每个分片独立验证、提交；中间不保留双真源。 |
+| **Active** | 无。ADR 1324 的实现与验证已完成；后续结构目标按 §5.5 重新审计后再立项。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -91,7 +91,7 @@
 
 ### 5.2 交互生命周期所有权（行为已收口；恢复覆盖纳入新一轮）
 
-Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 request identity 路由；Session grant、resolve event/status 与 actor 唤醒顺序有明确的持久化和失败契约。交互 replay 失败保持 fail-closed，pending session 恢复有界并可取消地重试。当前行为契约与逐项验证见 ADR 0423/0424、0507–0522。2026-10-17 源码审计当时发现 AppCommand pending 状态、入队/过期和 resolve continuation 分散于 `app_state.rs`、`commands/mod.rs`、`commands/session.rs`；该 owner 已按 ADR 1302 收拢，且未重定义既有交互契约。
+Session、ScheduleRun 与 AppCommand 确认均由各自 owner 和稳定 request identity 路由；Session grant、resolve event/status 与 actor 唤醒顺序有明确的持久化和失败契约。交互 replay 失败保持 fail-closed，pending session 恢复有界并可取消地重试。当前行为契约与逐项验证见 ADR 0423/0424、0507–0522。2026-10-17 源码审计当时发现 AppCommand pending 状态、入队/过期和 resolve continuation 分散于 `app_state.rs`、`commands/mod.rs`、`commands/session.rs`；该 owner 已按 ADR 1302 收拢，且未重定义既有交互契约。
 
 源码复核修正了该边界：grant 写入后，Session confirmation resolution 与 `end_session` 由 `confirmation_resolution_gate` 串行；Actor 先 append `interaction_resolved`，成功后才移除 pending/唤醒 session，append 失败保留 paused pending。已有失败注入测试覆盖同一 actor 内重试且 grant upsert 不重复。进程崩溃会清除进程内 expiry task；启动恢复只自动载入 `status = pending` 的 session，因此该 paused session 要等显式 reopen 才会重建 actor、replay durable request/grant 并重新安排 expiry（过期时 delay 为零）。UI 打开历史会话前会调用 `reopen_session`；resolve IPC 对未加载 actor 返回 stale。新一轮验收明确覆盖此路径与 UI 行为，不将旧“未定义”结论当作事实，也不隐含承诺 unloaded paused session 在后台自动到期。session grant 的持久 owner 与 Agent/Memory 事务边界不变。
 
@@ -108,7 +108,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | **已完成（2026-10-17，ADR 1301）** | App composition root 曾将 Tools 提供的 ToolRun/live-output capability 再包成无行为转发 adapter；UI live board 与 session history 各自保有完整 ToolRun payload；命令安全 metadata 只按命令名校验；AgentEvent channel 与 DTO 分别选择。 | App 直接持有窄 capability；UI payload 收敛到单一 map、两个有界 ID 索引；Rust `COMMAND_CONTRACTS` 生成并逐字段校验 TS 与文档 metadata；AgentEvent 在同一 exhaustive projection 中绑定 channel+payload，事件 checker 对照生成 DTO registry。完整门禁见 ADR 1301。 |
 | **已完成（2026-10-17，ADR 1302）** | AppCommand pending map、入队/超时、仲裁/授权/continuation 曾分散于 `app_state.rs`、`commands/mod.rs` 与 `commands/session.rs`；admin adapter 也混在通用命令模块。 | 私有 `AppConfirmationOwner` 管理 pending 状态与生命周期；`resolve_confirmation` 保留为跨 owner router；native admin authorization、执行与 UI 收尾移入独立 adapter。Session grant durable/append-failure/reopen 语义仍由既有 Agent owner 保持。App crate 测试、strict Clippy 与 IPC contract 检查见 ADR 1302。 |
 | **已完成（ADR 1307–1311）** | `tools/security.rs` 同时实现授权 engine 与有序执行边界检查。 | prompt/矩阵、路径入口、授权 contract、执行 permit、MCP/Skill 两种 process-start adapter、FileRead/FileWrite policy/path helper 与唯一 engine 均进入私有模块；三个授权入口共用按固定优先级执行的硬边界检查。`security.rs` 保持稳定 facade，授权/revoke 状态仍只有一个 owner。Windows workspace tests、strict Clippy 与格式检查通过；并发子进程测试波动和单线程完整门禁结果见 ADR 1311。 |
-| **已完成（ADR 1312）** | `agent/session/tool_runner.rs` 同时实现 step persistence、execution routing 与 confirmation/scheduled ToolRun lifecycle。 | 三类实现已迁入私有子模块；保留唯一 `SessionSupervisor`、既有 step identity 与 confirmation/claim owner。Agent 与 workspace 门禁、格式和 ADR index 检查通过。 |
+| **已完成（ADR 1312）** | `agent/session/tool_runner.rs` 同时实现 step persistence、execution routing 与 confirmation/ScheduleRun lifecycle。 | 三类实现已迁入私有子模块；保留唯一 `SessionSupervisor`、既有 step identity 与 confirmation/claim owner。Agent 与 workspace 门禁、格式和 ADR index 检查通过。 |
 | **已完成（ADR 1313）** | `tools/document.rs` 同时包含 PDF 与 OpenXML 解析。 | 输入、页游标和输出策略留在 facade；格式解析器与各自限制进入私有模块；11 项相关测试、strict Clippy 和格式检查通过。 |
 | **已完成（ADR 1314）/复核后保留** | `app-binary/commands/contracts.rs` 曾混合 command security metadata 与 Memory、Skills、Tools 响应 DTO；`external` 与 `open_skills_dir` 各自 guarded spawn；AppState/bootstrap/cleanup 候选已复核。 | DTO 已归入唯一消费它们的 command owner，IPC Serde 投影不变；detached host process spawn 共用 App command helper，调用方保留 authorization、path/URL policy 与参数；AppState/runtime 和 Tauri bootstrap 保持单一依赖顺序与生命周期 owner，拆 helper 不会形成新 owner。 |
 
@@ -185,10 +185,10 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 ### 5.8 Agent capability surface 与执行边界（原范围实现完成）
 
-CodeMode 与 MCP exposure 的目标契约见 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。周期新会话计划已按 ADR 1323 实现；其中“scheduled occurrence 使用 ToolRun”的归属正在按 [ADR 1324](adr/1324-session-creation-and-background-toolrun-boundaries.md) 迁出，调度功能与触发行为保持。
+CodeMode 与 MCP exposure 的目标契约见 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。周期新会话计划已按 ADR 1323 建立；ADR 1324 已将 Schedule 计划与 occurrence 移入独立 owner，Schedule 触发不再创建 ToolRun occurrence。
 
 - **工具暴露与执行模式：**`direct`、`model_only`、`deferred`、`codemode`、`hidden` 由同一确定性 resolver 驱动目录、加载、provider surface 与执行校验；MCP server 可切换 Legacy/CodeMode，并配置 per-tool overrides。CodeMode 使用无宿主 API 的 QuickJS 与有界子调用；每个子调用仍经 Tools 的实时授权、target、sandbox/network 和结果上限校验。隐藏或已撤权的旧调用 fail closed。见 [ADR 1183](adr/1183-add-mcp-model-only-exposure.md) 与 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。
-- **MCP resources/prompts 与周期新会话：**资源和 prompt 由用户浏览、预览和选择，读取有类型与预算限制，不进入模型可调用工具面。现有后台与定时执行共用 ToolRun；`tool` 和 `continue` 支持单次计划，`new_session` 支持单次或按 UTC 固定间隔重复创建独立 ReAct 会话。周期计划只存标题、可见摘要、提示词、来源会话、间隔锚点与下次触发时间；每个触发当前创建 scheduled ToolRun occurrence，同一计划不重叠，错过的 tick 跳过。Schedule 与 ToolRun 的 owner 分离按 ADR 1324 推进。见 [ADR 1164](adr/1164-mcp-resources-and-user-selected-prompts.md)、[ADR 1323](adr/1323-recurring-session-schedules-on-toolruns.md) 与 [ADR 1324](adr/1324-session-creation-and-background-toolrun-boundaries.md)。
+- **MCP resources/prompts 与周期新会话：**资源和 prompt 由用户浏览、预览和选择，读取有类型与预算限制，不进入模型可调用工具面。后台工具调用由 ToolRun 管理；Schedule 单独拥有单次触发、周期新会话计划与 occurrence。计划按 UTC 固定间隔触发，不重叠执行，错过的 tick 跳过；新会话由统一 SessionCreation owner 建立。见 [ADR 1164](adr/1164-mcp-resources-and-user-selected-prompts.md)、[ADR 1323](adr/1323-recurring-session-schedules-on-toolruns.md) 与 [ADR 1324](adr/1324-session-creation-and-background-toolrun-boundaries.md)。
 - **权限、workspace 与隔离：**`ExecutionWorkspace`、目录 capability、授权 proof、policy revision/workspace generation 和实时撤销由各自 owner 管理；文件副作用仍通过 Tools policy。隔离输出先进入有界 review owner，再经现有授权逐项晋升。Shell、模型 Skill 与受管 MCP 的 `WorkspaceWrite` 路径使用固定 HCS profile/broker 与配额证明；MCP 每次调用只读挂载有界 workspace snapshot。见 [ADR 1195](adr/1195-separate-execution-and-sandbox-workspaces.md)、[ADR 1209](adr/1209-require-os-enforced-sandbox-storage-quota.md)、[ADR 1268](adr/1268-wire-brokered-skills-to-live-authorization.md)、[ADR 1286](adr/1286-connect-managed-mcp-to-container-broker.md) 与 [ADR 1287](adr/1287-isolate-workspace-bound-mcp-invocations.md)。
 - **受管 MCP package 证明：**catalog v6 的 `tree_sha256` 覆盖 package 普通文件树；扫描拒绝 reparse point、未证明的模块搜索目录和 NTFS 命名 alternate data streams。管理员摘要工具与启动 probe 共用扫描器。见 [ADR 1288](adr/1288-verify-managed-mcp-package-trees.md) 与 [ADR 1289](adr/1289-reject-mcp-package-alternate-data-streams.md)。
 

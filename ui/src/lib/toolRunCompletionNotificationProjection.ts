@@ -55,14 +55,5 @@ export function projectToolRunCompletionToast(
 			durationMs: 4000,
 		};
 	}
-	if (payload.toolRunKind === 'scheduled') {
-		const title = payload.title || 'Haven';
-		const body = payload.body || '新通知';
-		return {
-			message: title === 'Haven' ? body : `${title}: ${body}`,
-			type: 'info',
-			durationMs: 5000,
-		};
-	}
 	return null;
 }

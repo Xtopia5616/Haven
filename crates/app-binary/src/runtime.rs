@@ -15,11 +15,10 @@ use haven_common::config::ConfigService;
 use haven_common::error::sanitize_error_text;
 use haven_input::InputPipeline;
 use haven_memory::{MemoryFactStore, SessionStore};
-#[cfg(test)]
-use haven_tools::ToolRunTestSupportPort;
 use haven_tools::{
     AuthorizationPort, LiveOutputSinkPort, ManagedAssetLifecyclePort, McpRuntimePort,
-    SkillCatalogPort, SkillExecutionPort, ToolRunManagementCapability, ToolServices, ToolsFacade,
+    ScheduleAgentCapability, ScheduleManagementCapability, SkillCatalogPort, SkillExecutionPort,
+    ToolRunManagementCapability, ToolServices, ToolsFacade,
 };
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -88,9 +87,9 @@ pub(crate) struct AppServices {
     #[cfg(windows)]
     pub(crate) sandbox_output_reviews: Arc<dyn haven_tools::SandboxOutputReviewPort>,
     pub(crate) tool_runs: Arc<dyn ToolRunManagementCapability>,
+    pub(crate) schedules: Arc<dyn ScheduleAgentCapability>,
+    pub(crate) schedule_management: Arc<dyn ScheduleManagementCapability>,
     pub(crate) live_output: Arc<dyn LiveOutputSinkPort>,
-    #[cfg(test)]
-    pub(crate) tool_run_test_support: Arc<dyn ToolRunTestSupportPort>,
     pub(crate) managed_assets: Arc<dyn ManagedAssetLifecyclePort>,
 }
 
@@ -106,9 +105,9 @@ impl ApplicationRuntime {
             #[cfg(windows)]
             sandbox_output_reviews: tool_services.sandbox_output_reviews,
             tool_runs: tool_services.tool_run_management,
+            schedules: tool_services.schedule_agent,
+            schedule_management: tool_services.schedule_management,
             live_output: tool_services.live_output,
-            #[cfg(test)]
-            tool_run_test_support: tool_services.tool_run_test_support,
             managed_assets: tool_services.managed_assets,
         };
         let config_apply_gate = runtime_services.config_apply_gate;
@@ -341,6 +340,7 @@ impl ApplicationRuntime {
         // Stop the shared memory worker after the cancellation boundary so it
         // cannot acknowledge unfinished durable jobs during teardown.
         self.memory_startup.shutdown_background_workers();
+        self.services().schedules.shutdown().await;
 
         // Stop producers before consumers and resource owners. In particular,
         // this prevents a final recording or session run from starting while

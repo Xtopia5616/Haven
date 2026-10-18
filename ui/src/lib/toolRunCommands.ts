@@ -5,7 +5,6 @@ import type { TauriCommandRequest } from './contracts/generatedCommands.ts';
 import {
 	mapToolRunCommandRow,
 	type ToolRunCommandRow,
-	type ToolRunKind,
 } from './contracts/toolRun.ts';
 
 /**
@@ -20,12 +19,10 @@ export async function listToolRunRows(): Promise<Array<ToolRunCommandRow | null>
 
 /** Load terminal ToolRun records, optionally restricted to one session. */
 export async function listToolRunHistory(
-	kind?: ToolRunKind,
 	limit = 50,
 	sessionId?: string,
 ): Promise<ToolRunCommandRow[]> {
 	const rows: unknown = await invoke('list_tool_run_history', {
-		kind: kind ?? null,
 		limit,
 		sessionId: sessionId ?? null,
 	});

@@ -57,15 +57,16 @@ pub use prompt_context::{
 pub(crate) use react::ReActEngine;
 pub use react::{METRICS_PHASE_COUNT, MetricsSnapshot, ToolCatalogPort, UiMetricsSnapshot};
 pub use session::{
-    AgentToolRunPort, ConfirmResolution, ManagedAssetLeasePort, RecordedConfirmationDecision,
-    SessionInfo, SessionSupervisor, SessionSupervisorEvent, SessionToolOverlayPort,
-    SessionToolPorts, StepInfo, ToolAuthorizationPort, ToolExecution, ToolExecutionContext,
-    ToolExecutionPort, ToolObservationPort, ToolRunCompletionReceiverPort,
+    AgentSchedulePort, AgentToolRunPort, ConfirmResolution, ManagedAssetLeasePort,
+    RecordedConfirmationDecision, ScheduleFiredReceiverPort, SessionInfo, SessionSupervisor,
+    SessionSupervisorEvent, SessionToolOverlayPort, SessionToolPorts, StepInfo,
+    ToolAuthorizationPort, ToolExecution, ToolExecutionContext, ToolExecutionPort,
+    ToolObservationPort, ToolRunCompletionReceiverPort,
 };
 pub use storage_error::sqlite_storage_failure_message;
 
 use haven_common::config::ContextLimitsConfig;
-use haven_common::tool_run::ScheduleMode;
+use haven_common::schedule::ScheduleMode;
 use haven_common::types::MessageAttachment;
 use haven_llm::LlmRouter;
 #[cfg(test)]

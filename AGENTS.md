@@ -79,8 +79,9 @@ corepack pnpm run check
 | `step-` | 步骤 session_steps.id | `haven_memory` |
 | `fact-` | 事实 facts.id（SPO 图谱行） | `haven_memory` |
 | `node-` | 记忆节点 memory_nodes.id | `haven_memory` |
-| `toolrun-` | 工具运行 tool_runs.id（后台任务 kind=`background` + 定时任务 kind=`scheduled`） | `haven_tools` |
-| `sched-` | 周期新会话计划 recurring_session_tasks.id | `haven_memory` / `haven_tools` |
+| `toolrun-` | 后台工具调用 tool_runs.id（仅 kind=`background`） | `haven_tools` |
+| `sched-` | Schedule 计划 schedules.id（一次性或周期计划） | `haven_memory` / `haven_tools` |
+| `schrun-` | Schedule occurrence schedule_runs.id | `haven_memory` / `haven_tools` |
 | `asset-` | 受管媒体资产 MediaAsset.asset_id | `haven_common` |
 | `cred-` | Credential Manager 凭据引用（仅引用，不是密钥值） | `haven_common` / `haven_platform` |
 | `usage-` | 单次 LLM 调用用量明细 llm_usage.id | `haven_memory` |
@@ -90,7 +91,7 @@ corepack pnpm run check
 
 | 前缀 | 实体 | 位置 |
 |---|---|---|
-| `conf-` | 安全确认请求（request ID 可按 ADR 写入 durable interaction event 或 scheduled ToolRun claim） | `haven_agent` |
+| `conf-` | 安全确认请求（request ID 可按 ADR 写入 durable interaction event 或 ScheduleRun claim） | `haven_agent` |
 | `rec-` | 录音（一次录音一个 id，`recording:started`/`transcription:*` 事件共用） | `haven_app` |
 | `call-` | provider tool_call_id 缺失或同一 batch 重复时生成的 durable transcript 调用关联 fallback | `haven_agent` |
 | `preview-` | 流式工具调用参数预览身份 | `haven_agent` |
@@ -107,12 +108,12 @@ corepack pnpm run check
 - **resume 恢复补充输入按时间不按内容**：有 `session_events` 时按 sequence replay，且不读取 transcript 投影补历史；没有事件流就没有可恢复 transcript，不得从 snapshot 导入。无事件流时 fresh-run 只允许首条用户消息投影与带 pending marker 的待投递输入；其它消息投影必须 fail closed。pending marker 消息不进入 prompt history，恢复时仅当 executor 队列为空（崩溃/重启）才重新排队；禁止再引入内容比对去重。前端 `submitTranscript` 使用 in-flight lane 串行；只有复用同一显式 `submissionToken` 的同一请求共享 promise，无 token 的提交即使内容相同也独立排队；后端不对用户输入做内容去重。
 - **Rollback 双时钟**：`BranchPoint.event_cursor` 截断 append-only events；历史字段 `last_msg_at` 是 `messages`、`session_steps`、`llm_usage` 共用的投影 cutoff。三类行必须在写事务内经 Memory 共享投影时钟生成严格递增的 UTC 毫秒时间戳；branch cursor 读取三表的最大规范化时间戳。`partial_messages` 是 scratch，不参加该水位。
 - Rust/DB/事件字段统一 snake_case `xxx_id`（`session_id` 专指对话、`recording_id` 专指录音、`tool_run_id`、`message_id`…）；前端在边界转 camelCase `xxxId`。
-- 术语：**session** = 对话（ReAct 主实体）；**tool call** = Agent/模型发起的一次工具调用；**tool run** = 可脱离当前 turn 持久运行的工具工作单元（后台运行/定时运行由 `tool_runs.kind` 区分）。执行方式使用 `ToolExecutionMode::{Foreground, Background}`；定时触发仍是 `schedule` 工具的职责。UI 文案使用「会话」「任务」「后台任务」「定时任务」。
+- 术语：**session** = 对话（ReAct 主实体）；**ToolCall** = Agent/模型在当前 ReAct turn 中前台调用工具；**ToolRun** = 可脱离当前 turn 持久运行的后台工具调用；**Schedule** = 独立的计划与 occurrence 生命周期，负责时间或 ToolRun 完成触发。`ToolRun.kind` 固定为 `background`，不表达计划来源或触发方式；执行方式由 `ToolCall` / `toolrun.start` 入口区分，不通过 shell 参数切换。UI 文案使用「会话」「任务」「后台任务」「定时任务」。
 - 实体 ID newtype 集中在 `haven_common::types`（`id_newtype!` 宏生成，`struct X(pub String)`，serde 按普通字符串序列化）：目前只有 `ConfirmId`/`RecordingId` 在运行时被使用，其余实体继续用 `String`；新增真正需要类型隔离的实体 ID 时再补 newtype，不要提前定义未使用的类型。
 - 序号类字段（u64 代次，非持久实体）：`run_id`（run 实例）、`gen_id`（流式代次）、MCP JSON-RPC `next_id`，保持现有命名并加文档说明。
 - 外部 ID（LLM `tool_call_id`、模型 ID、MCP `Mcp-Session-Id`）保持 provider 格式，不套用本规范；`tool_call_id` 按不透明字符串逐字保留。provider ID 为空或同一 batch 重复时，Agent 生成并持久化 `call-*` fallback，以维持 transcript、确认和恢复后的 provider history 关联；流式预览另用进程内 `preview-*`。
 - kv_store key 用 `domain.key` 风格（如 `fact_extraction.{session_id}`、`fact_extraction_pending.{session_id}`），内嵌的实体 ID 必须是规范格式。
-- 定时 ToolRun 的持久执行权 claim value 表示执行来源身份：确认路径使用对应 `conf-*` request ID；无需确认的 auto-approved 路径复用当前 `tool_run_id` 作为 claim ID。持久边界只接受规范 `conf-*`，或与 `tool_run_id` 完全相同的规范 `toolrun-*`。Messaging inbox 确认直接使用稳定的 `message_id`，不生成独立领取 ID（ADR 1044）。
+- ScheduleRun 的持久执行权 claim value 表示执行来源身份：确认路径使用对应 `conf-*` request ID；无需确认的 auto-approved 路径复用当前 `schedule_run_id` 作为 claim ID。持久边界只接受规范 `conf-*`，或与 `schedule_run_id` 完全相同的规范 `schrun-*`。Messaging inbox 确认直接使用稳定的 `message_id`，不生成独立领取 ID（ADR 1044）。
 - 步骤计数统一叫 `step_number`（事件/UI/DB 列名一致）。
 - 数据库 schema 由 `haven_memory::schema::init_schema` 管理：当前 `SCHEMA_SQL` 幂等建表并写入 `SCHEMA_VERSION`；旧版本数据库不做运行时迁移，直接按 `docs/release-and-reset.md` 重置。`user_version` 高于或不同于本二进制支持版本时拒绝打开。当前架构阶段与剩余工作见 `docs/architecture-refactor-roadmap.md`。
 

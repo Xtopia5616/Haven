@@ -38,16 +38,6 @@ pub(crate) use haven_common::tools::{
     ToolPresentation, ToolPrompt, ToolRootPresentation, ToolSource,
 };
 
-/// Requested execution style for tools that can either finish inline or
-/// detach into a durable ToolRun.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolExecutionMode {
-    #[default]
-    Foreground,
-    Background,
-}
-
 /// Complete machine-readable policy for a tool failure. The diagnostic text
 /// remains user/model-facing context; recovery code must consume this value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1204,7 +1194,7 @@ pub(crate) fn default_tool_label(name: &str) -> String {
         "clipboard" => "剪贴板",
         "input" => "输入控制",
         "window" => "窗口与屏幕",
-        "tool_runs" => "后台任务",
+        "toolrun" => "后台任务",
         "schedule" => "定时任务",
         "web_search" => "联网搜索",
         "web_search_api" => "独立联网搜索",
@@ -1232,7 +1222,7 @@ pub(crate) fn default_root_presentation(
             "window" => ("窗口与屏幕", "monitor"),
             "memory" => ("记忆", "memory"),
             "agent" => ("Agent 协作", "users"),
-            "tool_runs" => ("后台任务", "clock"),
+            "toolrun" => ("后台任务", "clock"),
             "schedule" => ("定时任务", "bell"),
             "web_search_api" => ("联网搜索", "search"),
             "haven" => ("Haven", "settings"),

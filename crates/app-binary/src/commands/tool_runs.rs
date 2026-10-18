@@ -1,15 +1,14 @@
 use crate::app_state::AppState;
 use crate::commands::{log_err, validate_command_id};
-use crate::events::{ToolRunEvent, ToolRunKindDto};
-use haven_tools::{ToolRunHistoryQuery, ToolRunKind};
+use crate::events::ToolRunEvent;
+use haven_tools::ToolRunHistoryQuery;
 use std::sync::Arc;
 use tauri::State;
 
-/// Board view of every task (background + pending scheduled ToolRuns), for
+/// Board view of every detached background ToolRun, for
 /// the UI's ToolRun panel. Mirrors the `tool_run:created` / `tool_run:updated`
-/// / `tool_run:finished` / `tool_run:output` events so the panel can hydrate
-/// on mount / navigation. Both ToolRun kinds use the same named DTO and
-/// explicit `tool_run_id` field, matching the `tool_runs` entity.
+/// / `tool_run:finished` events so the panel can hydrate
+/// on mount / navigation.
 ///
 /// Live tasks come from the unified in-memory board (with output preview); terminal
 /// ToolRun rows that already aged out of the board's TTL are merged back in from
@@ -41,23 +40,15 @@ pub async fn list_tool_runs(state: State<'_, Arc<AppState>>) -> Result<Vec<ToolR
     Ok(rows)
 }
 
-/// Cancel a running ToolRun from the UI (a background ToolRun or a pending
-/// scheduled ToolRun, selected via `kind`). Returns false when the ToolRun does not
-/// exist, is not cancellable, or its durable cancellation could not be committed.
+/// Cancel a running background ToolRun from the UI.
 #[tauri::command]
 pub async fn cancel_tool_run(
     state: State<'_, Arc<AppState>>,
     tool_run_id: String,
-    kind: ToolRunKindDto,
 ) -> Result<bool, String> {
     validate_command_id(&tool_run_id, "tool_run_id", "toolrun")
         .map_err(|error| log_err("cancel_tool_run", error))?;
-    let cancelled = state
-        .runtime
-        .services
-        .tool_runs
-        .cancel_for_kind(&tool_run_id, kind.into())
-        .await;
+    let cancelled = state.runtime.services.tool_runs.cancel(&tool_run_id).await;
     if !cancelled {
         tracing::warn!(
             "cancel_tool_run: not found or not cancellable: {}",
@@ -67,13 +58,11 @@ pub async fn cancel_tool_run(
     Ok(cancelled)
 }
 
-/// Terminal ToolRun history (including scheduled history and background rows
-/// past the in-memory TTL), newest first, for the ToolRun panel's history tab.
+/// Terminal background ToolRun history past the in-memory TTL, newest first.
 /// Tools owns the terminal filter, safe projection, and maximum page size.
 #[tauri::command]
 pub async fn list_tool_run_history(
     state: State<'_, Arc<AppState>>,
-    kind: Option<ToolRunKindDto>,
     limit: Option<usize>,
     session_id: Option<String>,
 ) -> Result<Vec<ToolRunEvent>, String> {
@@ -82,12 +71,11 @@ pub async fn list_tool_run_history(
             .map_err(|error| log_err("list_tool_run_history", error))?;
     }
     let limit = limit.unwrap_or(50);
-    let kind = kind.map(ToolRunKind::from);
     state
         .runtime
         .services
         .tool_runs
-        .list_history(ToolRunHistoryQuery::new(kind, session_id, limit))
+        .list_history(ToolRunHistoryQuery::new(None, session_id, limit))
         .await
         .map(|rows| rows.into_iter().map(ToolRunEvent::from).collect())
         .map_err(|e| log_err("list_tool_run_history", e))
