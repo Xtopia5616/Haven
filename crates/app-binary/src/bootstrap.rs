@@ -159,6 +159,9 @@ pub(crate) fn run() {
     // Build the window first, then finish AppState inside setup. That lets the
     // WebView start navigating while (or right as) backend init runs, instead
     // of serializing: AppState → then first window paint.
+    let ui_assets = crate::ui_assets::ResourceUiAssets::default();
+    let context = tauri::generate_context!(assets = ui_assets.clone());
+    let ui_assets_for_setup = ui_assets.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
@@ -180,6 +183,13 @@ pub(crate) fn run() {
             }
         })
         .setup(move |app| {
+            if !tauri::is_dev() && !ui_assets_for_setup.is_ready() {
+                return Err(std::io::Error::other(
+                    "Haven UI resources are missing from the application bundle",
+                )
+                .into());
+            }
+
             app.manage(Arc::clone(&startup_ui));
             #[cfg(windows)]
             startup_ui.start_driver(app.handle().clone());
@@ -746,7 +756,7 @@ pub(crate) fn run() {
             commands::log::log_frontend_error,
             commands::diagnostics::get_performance_metrics,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .unwrap_or_else(|error| {
             tracing::error!(
                 error = %sanitize_error_text(&error.to_string()),

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "node ../scripts/dev-vite.ts",
-    "build": "vite build",
+    "build": "vite build && node scripts/writeCspManifest.mjs",
     "preview": "vite preview",
     "check": "svelte-check --tsgo",
     "test": "vitest",

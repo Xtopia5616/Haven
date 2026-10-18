@@ -1303,3 +1303,4 @@
 - [1312：拆分 Agent tool runner 私有职责](1312-split-agent-tool-runner.md)
 - [1313：拆分 PDF 与 OpenXML 文档解析器](1313-split-document-parsers.md)
 - [1314：收拢 App command DTO 与 detached process helper](1314-finish-app-command-boundaries.md)
+- [1315：将 Tauri 前端资源移出 Rust 可执行文件](1315-externalize-tauri-ui-assets.md)

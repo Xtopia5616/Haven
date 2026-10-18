@@ -1,5 +1,7 @@
 # ADR 0687：缩短 Release 构建时间并保留内嵌 UI
 
+> UI 资源内嵌决定后续由 [ADR 1315](1315-externalize-tauri-ui-assets.md) 替代；ThinLTO 与 codegen-units 决定继续有效。
+
 ## 状态
 
 已采纳并实施。

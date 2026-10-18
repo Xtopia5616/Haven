@@ -20,6 +20,7 @@ mod runtime;
 mod startup;
 #[cfg(windows)]
 mod startup_splash;
+mod ui_assets;
 #[cfg(windows)]
 mod window_resize;
 

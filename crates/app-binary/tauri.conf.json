@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.haven.app",
   "build": {
-    "frontendDist": "../../ui/build",
+    "frontendDist": "http://tauri.localhost",
     "devUrl": "http://localhost:4721",
     "beforeDevCommand": "corepack pnpm --dir ui run dev",
     "beforeBuildCommand": "corepack pnpm --dir ui run build"
@@ -32,6 +32,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../../ui/build/": "ui"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
