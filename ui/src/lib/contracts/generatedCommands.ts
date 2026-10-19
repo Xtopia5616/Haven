@@ -397,6 +397,16 @@ export const WEB_SEARCH_PHASE_VALUES = ['in_progress', 'searching', 'completed']
 export type WebSearchPhase = (typeof WEB_SEARCH_PHASE_VALUES)[number];
 export const MCP_CACHE_SCOPE_VALUES = ['public', 'private'] as const;
 export type McpCacheScope = (typeof MCP_CACHE_SCOPE_VALUES)[number];
+export const MCP_ELICITATION_ACTION_INPUT_VALUES = ['accept', 'decline'] as const;
+export type McpElicitationActionInput = (typeof MCP_ELICITATION_ACTION_INPUT_VALUES)[number];
+export interface McpElicitationAnswerInput { action: McpElicitationActionInput; content?: Record<string, unknown> }
+export interface McpElicitationField { name: string; title: string | null; description: string | null; fieldType: McpElicitationFieldType; required: boolean; options: string[]; minimum: number | null; maximum: number | null; minLength: number | null; maxLength: number | null }
+export const MCP_ELICITATION_FIELD_TYPE_VALUES = ['string', 'number', 'integer', 'boolean'] as const;
+export type McpElicitationFieldType = (typeof MCP_ELICITATION_FIELD_TYPE_VALUES)[number];
+export interface McpElicitationRequest { key: string; message: string; fields: McpElicitationField[] }
+export interface McpFeatureCallOutcome { status: McpFeatureCallStatus; resourceRead: McpResourceRead | null; prompt: McpPrompt | null; requestId: number | null; round: number | null; requests: McpElicitationRequest[] }
+export const MCP_FEATURE_CALL_STATUS_VALUES = ['complete', 'input_required'] as const;
+export type McpFeatureCallStatus = (typeof MCP_FEATURE_CALL_STATUS_VALUES)[number];
 export interface McpPrompt { description: string | null; messages: McpPromptMessage[]; ttlMs: number | null; cacheScope: McpCacheScope }
 export interface McpPromptArgument { name: string; title?: string; description?: string; required: boolean }
 export type McpPromptContent = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string } | { type: 'audio'; data: string; mimeType: string } | { type: 'resource_link'; uri: string; name: string; title?: string | null; description?: string | null; mimeType?: string | null; size?: number | null } | { type: 'resource'; resource: McpResourceContent };
@@ -1182,6 +1192,7 @@ export const APP_BOOTSTRAP_EVENT_PAYLOAD_SHAPE = {
 	}
 } as const;
 export const CANCEL_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const CANCEL_MCP_FEATURE_INPUT_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const CANCEL_RECORDING_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const CANCEL_SCHEDULE_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const CANCEL_TOOL_RUN_RESPONSE_SHAPE = { kind: 'boolean' } as const;
@@ -2313,147 +2324,271 @@ export const GET_LOG_INFO_RESPONSE_SHAPE = {
 export const GET_MCP_PROMPT_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
-		'description': {
+		'status': {
 			optional: false,
-			shape: { kind: 'nullable', inner: { kind: 'string' } },
+			shape: { kind: 'enum', values: MCP_FEATURE_CALL_STATUS_VALUES },
 		},
-		'messages': {
+		'resourceRead': {
 			optional: false,
-			shape: { kind: 'array', items: {
+			shape: { kind: 'nullable', inner: {
 				kind: 'object',
 				fields: {
-					'role': {
+					'contents': {
 						optional: false,
-						shape: { kind: 'string' },
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'uri': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'mimeType': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'text': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'blob': {
+									optional: true,
+									shape: { kind: 'string' },
+								}
+							}
+						} },
 					},
-					'content': {
+					'ttlMs': {
 						optional: false,
-						shape: { kind: 'union', anyOf: [
-							{
-								kind: 'object',
-								fields: {
-									'type': {
-										optional: false,
-										shape: { kind: 'literal', value: 'text' },
-									},
-									'text': {
-										optional: false,
-										shape: { kind: 'string' },
-									}
-								}
-							},
-							{
-								kind: 'object',
-								fields: {
-									'type': {
-										optional: false,
-										shape: { kind: 'literal', value: 'image' },
-									},
-									'data': {
-										optional: false,
-										shape: { kind: 'string' },
-									},
-									'mimeType': {
-										optional: false,
-										shape: { kind: 'string' },
-									}
-								}
-							},
-							{
-								kind: 'object',
-								fields: {
-									'type': {
-										optional: false,
-										shape: { kind: 'literal', value: 'audio' },
-									},
-									'data': {
-										optional: false,
-										shape: { kind: 'string' },
-									},
-									'mimeType': {
-										optional: false,
-										shape: { kind: 'string' },
-									}
-								}
-							},
-							{
-								kind: 'object',
-								fields: {
-									'type': {
-										optional: false,
-										shape: { kind: 'literal', value: 'resource_link' },
-									},
-									'uri': {
-										optional: false,
-										shape: { kind: 'string' },
-									},
-									'name': {
-										optional: false,
-										shape: { kind: 'string' },
-									},
-									'title': {
-										optional: true,
-										shape: { kind: 'string' },
-									},
-									'description': {
-										optional: true,
-										shape: { kind: 'string' },
-									},
-									'mimeType': {
-										optional: true,
-										shape: { kind: 'string' },
-									},
-									'size': {
-										optional: true,
-										shape: { kind: 'number' },
-									}
-								}
-							},
-							{
-								kind: 'object',
-								fields: {
-									'type': {
-										optional: false,
-										shape: { kind: 'literal', value: 'resource' },
-									},
-									'resource': {
-										optional: false,
-										shape: {
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					},
+					'cacheScope': {
+						optional: false,
+						shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
+					}
+				}
+			} },
+		},
+		'prompt': {
+			optional: false,
+			shape: { kind: 'nullable', inner: {
+				kind: 'object',
+				fields: {
+					'description': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'messages': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'role': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'content': {
+									optional: false,
+									shape: { kind: 'union', anyOf: [
+										{
 											kind: 'object',
 											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'text' },
+												},
+												'text': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'image' },
+												},
+												'data': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'mimeType': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'audio' },
+												},
+												'data': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'mimeType': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'resource_link' },
+												},
 												'uri': {
 													optional: false,
+													shape: { kind: 'string' },
+												},
+												'name': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'title': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'description': {
+													optional: true,
 													shape: { kind: 'string' },
 												},
 												'mimeType': {
 													optional: true,
 													shape: { kind: 'string' },
 												},
-												'text': {
+												'size': {
 													optional: true,
-													shape: { kind: 'string' },
-												},
-												'blob': {
-													optional: true,
-													shape: { kind: 'string' },
+													shape: { kind: 'number' },
 												}
 											}
 										},
-									}
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'resource' },
+												},
+												'resource': {
+													optional: false,
+													shape: {
+														kind: 'object',
+														fields: {
+															'uri': {
+																optional: false,
+																shape: { kind: 'string' },
+															},
+															'mimeType': {
+																optional: true,
+																shape: { kind: 'string' },
+															},
+															'text': {
+																optional: true,
+																shape: { kind: 'string' },
+															},
+															'blob': {
+																optional: true,
+																shape: { kind: 'string' },
+															}
+														}
+													},
+												}
+											}
+										}
+									] },
 								}
 							}
-						] },
+						} },
+					},
+					'ttlMs': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					},
+					'cacheScope': {
+						optional: false,
+						shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
 					}
 				}
 			} },
 		},
-		'ttlMs': {
+		'requestId': {
 			optional: false,
 			shape: { kind: 'nullable', inner: { kind: 'number' } },
 		},
-		'cacheScope': {
+		'round': {
 			optional: false,
-			shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'requests': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'key': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'message': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'fields': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'name': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'title': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								},
+								'description': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								},
+								'fieldType': {
+									optional: false,
+									shape: { kind: 'enum', values: MCP_ELICITATION_FIELD_TYPE_VALUES },
+								},
+								'required': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'options': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'minimum': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'number' } },
+								},
+								'maximum': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'number' } },
+								},
+								'minLength': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'number' } },
+								},
+								'maxLength': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'number' } },
+								}
+							}
+						} },
+					}
+				}
+			} },
 		}
 	}
 } as const;
@@ -6362,37 +6497,271 @@ export const READ_LOG_TAIL_RESPONSE_SHAPE = {
 export const READ_MCP_RESOURCE_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
-		'contents': {
+		'status': {
 			optional: false,
-			shape: { kind: 'array', items: {
+			shape: { kind: 'enum', values: MCP_FEATURE_CALL_STATUS_VALUES },
+		},
+		'resourceRead': {
+			optional: false,
+			shape: { kind: 'nullable', inner: {
 				kind: 'object',
 				fields: {
-					'uri': {
+					'contents': {
 						optional: false,
-						shape: { kind: 'string' },
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'uri': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'mimeType': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'text': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'blob': {
+									optional: true,
+									shape: { kind: 'string' },
+								}
+							}
+						} },
 					},
-					'mimeType': {
-						optional: true,
-						shape: { kind: 'string' },
+					'ttlMs': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
 					},
-					'text': {
-						optional: true,
-						shape: { kind: 'string' },
-					},
-					'blob': {
-						optional: true,
-						shape: { kind: 'string' },
+					'cacheScope': {
+						optional: false,
+						shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
 					}
 				}
 			} },
 		},
-		'ttlMs': {
+		'prompt': {
+			optional: false,
+			shape: { kind: 'nullable', inner: {
+				kind: 'object',
+				fields: {
+					'description': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'messages': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'role': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'content': {
+									optional: false,
+									shape: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'text' },
+												},
+												'text': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'image' },
+												},
+												'data': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'mimeType': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'audio' },
+												},
+												'data': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'mimeType': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'resource_link' },
+												},
+												'uri': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'name': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'title': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'description': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'mimeType': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'size': {
+													optional: true,
+													shape: { kind: 'number' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'resource' },
+												},
+												'resource': {
+													optional: false,
+													shape: {
+														kind: 'object',
+														fields: {
+															'uri': {
+																optional: false,
+																shape: { kind: 'string' },
+															},
+															'mimeType': {
+																optional: true,
+																shape: { kind: 'string' },
+															},
+															'text': {
+																optional: true,
+																shape: { kind: 'string' },
+															},
+															'blob': {
+																optional: true,
+																shape: { kind: 'string' },
+															}
+														}
+													},
+												}
+											}
+										}
+									] },
+								}
+							}
+						} },
+					},
+					'ttlMs': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					},
+					'cacheScope': {
+						optional: false,
+						shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
+					}
+				}
+			} },
+		},
+		'requestId': {
 			optional: false,
 			shape: { kind: 'nullable', inner: { kind: 'number' } },
 		},
-		'cacheScope': {
+		'round': {
 			optional: false,
-			shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'requests': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'key': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'message': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'fields': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'name': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'title': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								},
+								'description': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								},
+								'fieldType': {
+									optional: false,
+									shape: { kind: 'enum', values: MCP_ELICITATION_FIELD_TYPE_VALUES },
+								},
+								'required': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'options': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'minimum': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'number' } },
+								},
+								'maximum': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'number' } },
+								},
+								'minLength': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'number' } },
+								},
+								'maxLength': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'number' } },
+								}
+							}
+						} },
+					}
+				}
+			} },
 		}
 	}
 } as const;
@@ -6515,6 +6884,277 @@ export const RESET_PERMISSIONS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const RESET_SESSION_PERMISSIONS_RESPONSE_SHAPE = { kind: 'number' } as const;
 export const RESET_TOOL_CIRCUITS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const RESOLVE_CONFIRMATION_RESPONSE_SHAPE = { kind: 'enum', values: CONFIRMATION_RESOLUTION_RESULT_VALUES } as const;
+export const RESPOND_MCP_FEATURE_INPUT_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'status': {
+			optional: false,
+			shape: { kind: 'enum', values: MCP_FEATURE_CALL_STATUS_VALUES },
+		},
+		'resourceRead': {
+			optional: false,
+			shape: { kind: 'nullable', inner: {
+				kind: 'object',
+				fields: {
+					'contents': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'uri': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'mimeType': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'text': {
+									optional: true,
+									shape: { kind: 'string' },
+								},
+								'blob': {
+									optional: true,
+									shape: { kind: 'string' },
+								}
+							}
+						} },
+					},
+					'ttlMs': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					},
+					'cacheScope': {
+						optional: false,
+						shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
+					}
+				}
+			} },
+		},
+		'prompt': {
+			optional: false,
+			shape: { kind: 'nullable', inner: {
+				kind: 'object',
+				fields: {
+					'description': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'messages': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'role': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'content': {
+									optional: false,
+									shape: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'text' },
+												},
+												'text': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'image' },
+												},
+												'data': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'mimeType': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'audio' },
+												},
+												'data': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'mimeType': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'resource_link' },
+												},
+												'uri': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'name': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'title': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'description': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'mimeType': {
+													optional: true,
+													shape: { kind: 'string' },
+												},
+												'size': {
+													optional: true,
+													shape: { kind: 'number' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'type': {
+													optional: false,
+													shape: { kind: 'literal', value: 'resource' },
+												},
+												'resource': {
+													optional: false,
+													shape: {
+														kind: 'object',
+														fields: {
+															'uri': {
+																optional: false,
+																shape: { kind: 'string' },
+															},
+															'mimeType': {
+																optional: true,
+																shape: { kind: 'string' },
+															},
+															'text': {
+																optional: true,
+																shape: { kind: 'string' },
+															},
+															'blob': {
+																optional: true,
+																shape: { kind: 'string' },
+															}
+														}
+													},
+												}
+											}
+										}
+									] },
+								}
+							}
+						} },
+					},
+					'ttlMs': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'number' } },
+					},
+					'cacheScope': {
+						optional: false,
+						shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
+					}
+				}
+			} },
+		},
+		'requestId': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'round': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'requests': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'key': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'message': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'fields': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'name': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'title': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								},
+								'description': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								},
+								'fieldType': {
+									optional: false,
+									shape: { kind: 'enum', values: MCP_ELICITATION_FIELD_TYPE_VALUES },
+								},
+								'required': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'options': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'minimum': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'number' } },
+								},
+								'maximum': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'number' } },
+								},
+								'minLength': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'number' } },
+								},
+								'maxLength': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'number' } },
+								}
+							}
+						} },
+					}
+				}
+			} },
+		}
+	}
+} as const;
 export const REVOKE_PERMISSION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const REVOKE_SESSION_PERMISSION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const ROLLBACK_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -9587,6 +10227,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	add_fact: ADD_FACT_RESPONSE_SHAPE,
 	add_mcp_server: ADD_MCP_SERVER_RESPONSE_SHAPE,
 	cancel_chatgpt_plan_login: CANCEL_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE,
+	cancel_mcp_feature_input: CANCEL_MCP_FEATURE_INPUT_RESPONSE_SHAPE,
 	cancel_recording: CANCEL_RECORDING_RESPONSE_SHAPE,
 	cancel_schedule: CANCEL_SCHEDULE_RESPONSE_SHAPE,
 	cancel_tool_run: CANCEL_TOOL_RUN_RESPONSE_SHAPE,
@@ -9655,6 +10296,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	reset_session_permissions: RESET_SESSION_PERMISSIONS_RESPONSE_SHAPE,
 	reset_tool_circuits: RESET_TOOL_CIRCUITS_RESPONSE_SHAPE,
 	resolve_confirmation: RESOLVE_CONFIRMATION_RESPONSE_SHAPE,
+	respond_mcp_feature_input: RESPOND_MCP_FEATURE_INPUT_RESPONSE_SHAPE,
 	revoke_permission: REVOKE_PERMISSION_RESPONSE_SHAPE,
 	revoke_session_permission: REVOKE_SESSION_PERMISSION_RESPONSE_SHAPE,
 	rollback_session: ROLLBACK_SESSION_RESPONSE_SHAPE,
@@ -9766,6 +10408,7 @@ export interface TauriCommandMap {
 	add_fact: { request: { subject: string; predicate: string; object: string; tags?: string[] | null }; response: MemoryFactResponse };
 	add_mcp_server: { request: { config: McpServerConfigInput }; response: void };
 	cancel_chatgpt_plan_login: { request: { loginId: string }; response: void };
+	cancel_mcp_feature_input: { request: { name: string; targetBinding: string; requestId: number }; response: boolean };
 	cancel_recording: { request: undefined; response: void };
 	cancel_schedule: { request: { scheduleId: string; sessionId: string }; response: boolean };
 	cancel_tool_run: { request: { toolRunId: string }; response: boolean };
@@ -9793,7 +10436,7 @@ export interface TauriCommandMap {
 	get_bootstrap_status: { request: undefined; response: BootstrapStatus };
 	get_latest_session_for_resume: { request: undefined; response: SessionResumeResponse | null };
 	get_log_info: { request: undefined; response: LogInfo };
-	get_mcp_prompt: { request: { name: string; targetBinding: string; promptName: string; arguments: Record<string, string> }; response: McpPrompt };
+	get_mcp_prompt: { request: { name: string; targetBinding: string; promptName: string; arguments: Record<string, string> }; response: McpFeatureCallOutcome };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };
 	get_sandbox_output_review: { request: { sessionId: string; sourceStepId: string }; response: SandboxOutputReviewManifestDto | null };
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
@@ -9822,7 +10465,7 @@ export interface TauriCommandMap {
 	process_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingId?: string | null; deliveryMode?: InputDeliveryModeInput | null }; response: ProcessResult };
 	promote_sandbox_output: { request: { sessionId: string; sourceStepId: string; changeIndex: number; destination: string }; response: void };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
-	read_mcp_resource: { request: { name: string; targetBinding: string; uri: string; forceRefresh: boolean }; response: McpResourceRead };
+	read_mcp_resource: { request: { name: string; targetBinding: string; uri: string; forceRefresh: boolean }; response: McpFeatureCallOutcome };
 	reassign_staged_chatgpt_plan_credential: { request: { credentialRef: string; providerName: string }; response: void };
 	recall_memory: { request: { query: string; kind?: MemoryEntityKindInput | null; limit?: number | null }; response: MemoryRecallItem[] };
 	reconnect_mcp_server: { request: { name: string }; response: void };
@@ -9834,6 +10477,7 @@ export interface TauriCommandMap {
 	reset_session_permissions: { request: undefined; response: number };
 	reset_tool_circuits: { request: undefined; response: void };
 	resolve_confirmation: { request: { owner: InteractionOwnerInput; requestId: string; effect: PermissionEffectInput; scope: PermissionScopeInput; target: PermissionTargetInput }; response: ConfirmationResolutionResult };
+	respond_mcp_feature_input: { request: { name: string; targetBinding: string; requestId: number; answers: Record<string, McpElicitationAnswerInput> }; response: McpFeatureCallOutcome };
 	revoke_permission: { request: { key: string }; response: void };
 	revoke_session_permission: { request: { sessionId: string; capability: string }; response: void };
 	rollback_session: { request: { sessionId: string; targetStep: number; pause?: boolean | null; targetMessageId?: string | null }; response: void };
@@ -9886,6 +10530,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	add_fact: { boundary: 'mutate', security: "credential-like predicates and values rejected" },
 	add_mcp_server: { boundary: 'execute', security: "AuthorizationPort; typed native admin operation validates and persists config" },
 	cancel_chatgpt_plan_login: { boundary: 'mutate', security: "cancels one in-memory OAuth attempt and aborts its loopback callback listener" },
+	cancel_mcp_feature_input: { boundary: 'execute', security: "explicit UI cancellation of one pending selected resource or prompt interaction" },
 	cancel_recording: { boundary: 'execute', security: "cancel clears the in-flight recording id" },
 	cancel_schedule: { boundary: 'mutate', security: "canonical schedule and owner-session IDs; owner-scoped cancellation" },
 	cancel_tool_run: { boundary: 'mutate', security: "only a canonical toolrun ID can cancel background tool execution" },
@@ -9954,6 +10599,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	reset_session_permissions: { boundary: 'mutate', security: "clears durable session grants only; keeps permanent rules" },
 	reset_tool_circuits: { boundary: 'mutate', security: "clears local circuit state only" },
 	resolve_confirmation: { boundary: 'mutate', security: "owner/request id selects one registry; receipt, effect, scope, target and expiry are revalidated; retryable failures keep pending" },
+	respond_mcp_feature_input: { boundary: 'execute', security: "explicit user response to a bounded form request; enabled live target binding; schema-validated answers" },
 	revoke_permission: { boundary: 'mutate', security: "non-empty exact permanent key; session grants are retained" },
 	revoke_session_permission: { boundary: 'mutate', security: "non-empty session id and capability; removes one session grant" },
 	rollback_session: { boundary: 'mutate', security: "event cursor and projection clock rollback" },

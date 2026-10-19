@@ -681,6 +681,7 @@ pub struct McpClient {
     resource_read_cache: Mutex<HashMap<String, McpResourceReadCacheEntry>>,
     resource_subscriptions: Mutex<HashMap<String, ResourceSubscription>>,
     resource_subscription_acks: Mutex<HashMap<u64, (String, tokio::sync::oneshot::Sender<bool>)>>,
+    pending_feature_inputs: Mutex<HashMap<u64, feature_runtime::PendingFeatureRequest>>,
     prompt_list_cache: Mutex<Option<McpPromptListSnapshot>>,
     prompt_list_refresh: Mutex<()>,
     pub(crate) last_error: Arc<Mutex<Option<String>>>,
@@ -1115,6 +1116,7 @@ impl McpClient {
             resource_read_cache: Mutex::new(HashMap::new()),
             resource_subscriptions: Mutex::new(HashMap::new()),
             resource_subscription_acks: Mutex::new(HashMap::new()),
+            pending_feature_inputs: Mutex::new(HashMap::new()),
             prompt_list_cache: Mutex::new(None),
             prompt_list_refresh: Mutex::new(()),
             last_error: Arc::new(Mutex::new(None)),
@@ -1703,6 +1705,10 @@ impl McpClient {
         // Cancel the client's own token first so any in-flight `call_tool`
         // (which selects on this token) aborts and releases the `inner` lock.
         self.cancel_token.lock().await.cancel();
+        let pending_inputs = std::mem::take(&mut *self.pending_feature_inputs.lock().await);
+        for (_, pending) in pending_inputs {
+            pending.cancel.cancel();
+        }
         self.stop_resource_subscriptions().await;
         if stop_notification_listener {
             self.notification_cancel.cancel();
@@ -2533,6 +2539,7 @@ mod tool_list_identity_tests {
 #[cfg(test)]
 mod modern_tool_list_tests {
     use super::*;
+    use crate::features::{McpElicitationAction, McpElicitationAnswer, McpFeatureCallStatus};
     use crate::transport::HttpInner;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{TcpListener, TcpStream};
@@ -2983,8 +2990,10 @@ mod modern_tool_list_tests {
 
         let uri = "file:///opaque/resource?key=1";
         let resource = client
-            .read_resource(uri, false, CancellationToken::new())
+            .read_resource_with_mrtr(uri, false, CancellationToken::new())
             .await
+            .unwrap()
+            .resource_read
             .unwrap();
         assert_eq!(resource.contents.len(), 2);
         assert_eq!(
@@ -2994,8 +3003,10 @@ mod modern_tool_list_tests {
         assert_eq!(resource.contents[1].blob.as_deref(), Some("aGVsbG8="));
         assert_eq!(
             client
-                .read_resource(uri, false, CancellationToken::new())
+                .read_resource_with_mrtr(uri, false, CancellationToken::new())
                 .await
+                .unwrap()
+                .resource_read
                 .unwrap()
                 .contents,
             resource.contents
@@ -3007,12 +3018,14 @@ mod modern_tool_list_tests {
             .unwrap();
         assert_eq!(prompts.prompts[0].name, "review");
         let rendered = client
-            .get_prompt(
+            .get_prompt_with_mrtr(
                 "review",
                 HashMap::from([("source".into(), "fn main() {}".into())]),
                 CancellationToken::new(),
             )
             .await
+            .unwrap()
+            .prompt
             .unwrap();
         assert_eq!(rendered.messages.len(), 1);
         assert_eq!(rendered.ttl_ms, Some(15_000));
@@ -3092,33 +3105,355 @@ mod modern_tool_list_tests {
     }
 
     #[tokio::test]
-    async fn resource_read_rejects_mrtr_without_retry_or_state_echo() {
+    async fn resource_read_exposes_bounded_form_input_to_its_ui_owner() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let (writer, request) = read_http_jsonrpc_request(stream).await;
             assert_eq!(request["method"], "resources/read");
+            assert_eq!(
+                request["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"]["elicitation"]
+                    ["form"],
+                serde_json::json!({})
+            );
             respond_jsonrpc(
                 writer,
                 request["id"].clone(),
                 serde_json::json!({
                     "resultType": "input_required",
                     "requestState": "sensitive opaque state",
-                    "inputRequests": {"user": {"method": "elicitation/create"}}
+                    "inputRequests": {"user": {
+                        "method": "elicitation/create",
+                        "params": {
+                            "mode": "form",
+                            "message": "Provide a name",
+                            "requestedSchema": {
+                                "type": "object",
+                                "properties": {"name": {"type": "string"}},
+                                "required": ["name"]
+                            }
+                        }
+                    }}
                 }),
             )
             .await;
         });
 
         let client = modern_http_client(address, true, false).await;
-        let error = client
-            .read_resource("mcp://demo/private", false, CancellationToken::new())
+        let outcome = client
+            .read_resource_with_mrtr("mcp://demo/private", false, CancellationToken::new())
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("requires additional interaction"));
-        assert!(!error.contains("sensitive opaque state"));
+            .unwrap();
+        assert_eq!(outcome.status, McpFeatureCallStatus::InputRequired);
+        assert_eq!(outcome.round, Some(1));
+        assert_eq!(outcome.requests[0].message, "Provide a name");
+        let request_id = outcome.request_id.unwrap();
+        assert!(client.cancel_feature_input(request_id).await);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resource_read_resumes_state_only_round_without_answers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, first) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(first["method"], "resources/read");
+            let first_id = first["id"].clone();
+            respond_jsonrpc(
+                writer,
+                first_id.clone(),
+                serde_json::json!({
+                    "resultType": "input_required",
+                    "requestState": "opaque processing checkpoint"
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, resumed) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(resumed["method"], "resources/read");
+            assert_ne!(resumed["id"], first_id);
+            assert_eq!(resumed["params"]["uri"], "mcp://demo/private");
+            assert_eq!(
+                resumed["params"]["requestState"],
+                "opaque processing checkpoint"
+            );
+            assert!(resumed["params"].get("inputResponses").is_none());
+            respond_jsonrpc(
+                writer,
+                resumed["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "contents": [{"uri": "mcp://demo/private", "text": "finished"}]
+                }),
+            )
+            .await;
+        });
+
+        let client = modern_http_client(address, true, false).await;
+        let first = client
+            .read_resource_with_mrtr("mcp://demo/private", false, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(first.status, McpFeatureCallStatus::InputRequired);
+        assert!(first.requests.is_empty());
+        let request_id = first.request_id.unwrap();
+        assert!(first.round.is_some());
+
+        let complete = client
+            .respond_to_feature_input(request_id, HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(complete.status, McpFeatureCallStatus::Complete);
+        assert_eq!(
+            complete.resource_read.unwrap().contents[0].text.as_deref(),
+            Some("finished")
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resource_mrtr_echoes_opaque_state_and_uses_fresh_ids_per_round() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, first) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(first["method"], "resources/read");
+            let first_id = first["id"].clone();
+            respond_jsonrpc(
+                writer,
+                first_id.clone(),
+                serde_json::json!({
+                    "resultType": "input_required",
+                    "requestState": "opaque checkpoint one",
+                    "inputRequests": {"topic-request": {
+                        "method": "elicitation/create",
+                        "params": {
+                            "mode": "form",
+                            "message": "Choose a topic",
+                            "requestedSchema": {
+                                "type": "object",
+                                "properties": {"topic": {"type": "string", "enum": ["rust", "mcp"]}},
+                                "required": ["topic"]
+                            }
+                        }
+                    }}
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, second) = read_http_jsonrpc_request(stream).await;
+            assert_ne!(second["id"], first_id);
+            assert_eq!(second["params"]["requestState"], "opaque checkpoint one");
+            assert_eq!(
+                second["params"]["inputResponses"]["topic-request"]["action"],
+                "accept"
+            );
+            assert_eq!(
+                second["params"]["inputResponses"]["topic-request"]["content"]["topic"],
+                "rust"
+            );
+            assert_eq!(
+                second["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"]["elicitation"]
+                    ["form"],
+                serde_json::json!({})
+            );
+            let second_id = second["id"].clone();
+            respond_jsonrpc(
+                writer,
+                second_id.clone(),
+                serde_json::json!({
+                    "resultType": "input_required",
+                    "requestState": "opaque checkpoint two",
+                    "inputRequests": {"confirm-request": {
+                        "method": "elicitation/create",
+                        "params": {
+                            "mode": "form",
+                            "message": "Confirm",
+                            "requestedSchema": {
+                                "type": "object",
+                                "properties": {"confirmed": {"type": "boolean"}},
+                                "required": ["confirmed"]
+                            }
+                        }
+                    }}
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, third) = read_http_jsonrpc_request(stream).await;
+            assert_ne!(third["id"], second_id);
+            assert_eq!(third["params"]["requestState"], "opaque checkpoint two");
+            assert!(
+                third["params"]["inputResponses"]
+                    .get("topic-request")
+                    .is_none()
+            );
+            assert_eq!(
+                third["params"]["inputResponses"]["confirm-request"]["content"]["confirmed"],
+                true
+            );
+            respond_jsonrpc(
+                writer,
+                third["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "contents": [{"uri": "mcp://demo/private", "text": "finished"}],
+                    "ttlMs": 0,
+                    "cacheScope": "private"
+                }),
+            )
+            .await;
+        });
+
+        let client = modern_http_client(address, true, false).await;
+        let first = client
+            .read_resource_with_mrtr("mcp://demo/private", false, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(first.status, McpFeatureCallStatus::InputRequired);
+        let request_id = first.request_id.unwrap();
+        let second = client
+            .respond_to_feature_input(
+                request_id,
+                HashMap::from([(
+                    "topic-request".into(),
+                    McpElicitationAnswer {
+                        action: McpElicitationAction::Accept,
+                        content: HashMap::from([("topic".into(), Value::String("rust".into()))]),
+                    },
+                )]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.status, McpFeatureCallStatus::InputRequired);
+        assert_eq!(second.round, Some(2));
+        assert_eq!(second.request_id, Some(request_id));
+        let complete = client
+            .respond_to_feature_input(
+                request_id,
+                HashMap::from([(
+                    "confirm-request".into(),
+                    McpElicitationAnswer {
+                        action: McpElicitationAction::Accept,
+                        content: HashMap::from([("confirmed".into(), Value::Bool(true))]),
+                    },
+                )]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(complete.status, McpFeatureCallStatus::Complete);
+        assert_eq!(
+            complete.resource_read.unwrap().contents[0].text.as_deref(),
+            Some("finished")
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn selected_prompt_mrtr_returns_the_completed_prompt_after_user_input() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, prompt_list) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(prompt_list["method"], "prompts/list");
+            respond_jsonrpc(
+                writer,
+                prompt_list["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "prompts": [{"name": "review", "arguments": [{"name": "topic", "required": true}]}]
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, first) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(first["method"], "prompts/get");
+            assert_eq!(first["params"]["name"], "review");
+            assert_eq!(first["params"]["arguments"]["topic"], "MCP");
+            assert_eq!(
+                first["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"]["elicitation"]
+                    ["form"],
+                serde_json::json!({})
+            );
+            let first_id = first["id"].clone();
+            respond_jsonrpc(
+                writer,
+                first_id.clone(),
+                serde_json::json!({
+                    "resultType": "input_required",
+                    "requestState": "prompt state",
+                    "inputRequests": {"audience": {
+                        "method": "elicitation/create",
+                        "params": {
+                            "mode": "form",
+                            "message": "Who is this for?",
+                            "requestedSchema": {
+                                "type": "object",
+                                "properties": {"reader": {"type": "string"}},
+                                "required": ["reader"]
+                            }
+                        }
+                    }}
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, second) = read_http_jsonrpc_request(stream).await;
+            assert_ne!(second["id"], first_id);
+            assert_eq!(second["params"]["requestState"], "prompt state");
+            assert_eq!(
+                second["params"]["inputResponses"]["audience"]["content"]["reader"],
+                "a developer"
+            );
+            respond_jsonrpc(
+                writer,
+                second["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "description": "A prompt",
+                    "messages": [{"role": "user", "content": {"type": "text", "text": "Review this."}}]
+                }),
+            )
+            .await;
+        });
+
+        let client = modern_http_client(address, false, true).await;
+        let first = client
+            .get_prompt_with_mrtr(
+                "review",
+                HashMap::from([("topic".into(), "MCP".into())]),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let complete = client
+            .respond_to_feature_input(
+                first.request_id.unwrap(),
+                HashMap::from([(
+                    "audience".into(),
+                    McpElicitationAnswer {
+                        action: McpElicitationAction::Accept,
+                        content: HashMap::from([(
+                            "reader".into(),
+                            Value::String("a developer".into()),
+                        )]),
+                    },
+                )]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(complete.status, McpFeatureCallStatus::Complete);
+        assert_eq!(complete.prompt.unwrap().messages.len(), 1);
         server.await.unwrap();
     }
 
@@ -3246,8 +3581,10 @@ mod modern_tool_list_tests {
             .unwrap();
         assert_eq!(resources.resources[0].name, "fresh");
         let resource = client
-            .read_resource("mcp://demo/expired", false, CancellationToken::new())
+            .read_resource_with_mrtr("mcp://demo/expired", false, CancellationToken::new())
             .await
+            .unwrap()
+            .resource_read
             .unwrap();
         assert_eq!(resource.contents[0].text.as_deref(), Some("fresh content"));
         let prompts = client

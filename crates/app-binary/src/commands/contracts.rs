@@ -144,6 +144,16 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "explicit UI cancellation; enabled live target binding; cancels only the selected resource stream",
     },
     CommandContract {
+        name: "respond_mcp_feature_input",
+        boundary: CommandBoundary::Execute,
+        security: "explicit user response to a bounded form request; enabled live target binding; schema-validated answers",
+    },
+    CommandContract {
+        name: "cancel_mcp_feature_input",
+        boundary: CommandBoundary::Execute,
+        security: "explicit UI cancellation of one pending selected resource or prompt interaction",
+    },
+    CommandContract {
         name: "list_mcp_prompts",
         boundary: CommandBoundary::Execute,
         security: "user-driven prompt discovery; enabled live target binding; no model callable surface",

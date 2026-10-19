@@ -2,6 +2,7 @@ use crate::McpStdioProcess;
 use crate::protocol::{
     MODERN_PROTOCOL_VERSION, McpHttpStatusError, McpRpcError, REQUEST_TIMEOUT_SECS,
     encode_mcp_header_value, jsonrpc_notification, jsonrpc_request, params_with_protocol_meta,
+    params_with_protocol_meta_and_capabilities,
 };
 use crate::sse::SseParser;
 use futures_util::StreamExt;
@@ -612,7 +613,29 @@ impl McpClientInner {
         params: Option<Value>,
         parameter_headers: &[(String, String)],
     ) -> anyhow::Result<Value> {
-        let params = Some(params_with_protocol_meta(params, MODERN_PROTOCOL_VERSION));
+        self.request_with_client_capabilities(
+            id,
+            method,
+            params,
+            parameter_headers,
+            serde_json::json!({}),
+        )
+        .await
+    }
+
+    pub(crate) async fn request_with_client_capabilities(
+        &mut self,
+        id: u64,
+        method: &str,
+        params: Option<Value>,
+        parameter_headers: &[(String, String)],
+        client_capabilities: Value,
+    ) -> anyhow::Result<Value> {
+        let params = Some(params_with_protocol_meta_and_capabilities(
+            params,
+            MODERN_PROTOCOL_VERSION,
+            client_capabilities,
+        ));
         match self {
             McpClientInner::Stdio(s) => s.request(id, method, params).await,
             McpClientInner::Http(h) => h.request(id, method, params, parameter_headers).await,

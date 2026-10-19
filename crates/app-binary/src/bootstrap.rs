@@ -790,6 +790,8 @@ pub(crate) fn run() {
             commands::mcp::read_mcp_resource,
             commands::mcp::subscribe_mcp_resource,
             commands::mcp::unsubscribe_mcp_resource,
+            commands::mcp::respond_mcp_feature_input,
+            commands::mcp::cancel_mcp_feature_input,
             commands::mcp::list_mcp_prompts,
             commands::mcp::get_mcp_prompt,
             commands::mcp::reconnect_mcp_server,

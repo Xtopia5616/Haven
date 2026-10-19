@@ -3,7 +3,10 @@ use crate::protocol::{
     McpCallOutput, McpClientStatus, McpManagedCallOutput, McpResourceChangeEvent,
     McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
-use crate::{McpPrompt, McpPromptList, McpResourceList, McpResourceRead, McpResourceTemplateList};
+use crate::{
+    McpElicitationAnswer, McpFeatureCallOutcome, McpPromptList, McpResourceList,
+    McpResourceTemplateList,
+};
 use futures_util::FutureExt;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -1650,11 +1653,37 @@ impl McpManager {
         uri: &str,
         force_refresh: bool,
         cancel: CancellationToken,
-    ) -> anyhow::Result<McpResourceRead> {
+    ) -> anyhow::Result<McpFeatureCallOutcome> {
         self.client_at_target_binding(client_name, expected_binding)
             .await?
-            .read_resource(uri, force_refresh, cancel)
+            .read_resource_with_mrtr(uri, force_refresh, cancel)
             .await
+    }
+
+    pub async fn respond_to_feature_input_at_target_binding(
+        &self,
+        client_name: &str,
+        expected_binding: &str,
+        request_id: u64,
+        answers: HashMap<String, McpElicitationAnswer>,
+    ) -> anyhow::Result<McpFeatureCallOutcome> {
+        self.client_at_target_binding(client_name, expected_binding)
+            .await?
+            .respond_to_feature_input(request_id, answers)
+            .await
+    }
+
+    pub async fn cancel_feature_input_at_target_binding(
+        &self,
+        client_name: &str,
+        expected_binding: &str,
+        request_id: u64,
+    ) -> anyhow::Result<bool> {
+        Ok(self
+            .client_at_target_binding(client_name, expected_binding)
+            .await?
+            .cancel_feature_input(request_id)
+            .await)
     }
 
     pub async fn subscribe_resource_at_target_binding(
@@ -1706,10 +1735,10 @@ impl McpManager {
         name: &str,
         arguments: HashMap<String, String>,
         cancel: CancellationToken,
-    ) -> anyhow::Result<McpPrompt> {
+    ) -> anyhow::Result<McpFeatureCallOutcome> {
         self.client_at_target_binding(client_name, expected_binding)
             .await?
-            .get_prompt(name, arguments, cancel)
+            .get_prompt_with_mrtr(name, arguments, cancel)
             .await
     }
 

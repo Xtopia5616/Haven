@@ -13,6 +13,14 @@ const MCP_META_PREFIX: &str = "io.modelcontextprotocol/";
 /// Modern MCP carries client identity, capabilities, and protocol version on
 /// every request. This helper is also used for the `server/discover` probe.
 pub(crate) fn params_with_protocol_meta(params: Option<Value>, version: &str) -> Value {
+    params_with_protocol_meta_and_capabilities(params, version, serde_json::json!({}))
+}
+
+pub(crate) fn params_with_protocol_meta_and_capabilities(
+    params: Option<Value>,
+    version: &str,
+    client_capabilities: Value,
+) -> Value {
     let mut params = match params {
         Some(Value::Object(params)) => params,
         Some(_) | None => serde_json::Map::new(),
@@ -25,7 +33,7 @@ pub(crate) fn params_with_protocol_meta(params: Option<Value>, version: &str) ->
                 "name": "Haven",
                 "version": env!("CARGO_PKG_VERSION"),
             },
-            format!("{MCP_META_PREFIX}clientCapabilities"): {},
+            format!("{MCP_META_PREFIX}clientCapabilities"): client_capabilities,
         }),
     );
     Value::Object(params)

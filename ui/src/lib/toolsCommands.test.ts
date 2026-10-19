@@ -12,6 +12,8 @@ import {
 	openSkillsDir,
 	getMcpPrompt,
 	readMcpResource,
+	respondMcpFeatureInput,
+	cancelMcpFeatureInput,
 	subscribeMcpResource,
 	unsubscribeMcpResource,
 	reconnectMcpServer,
@@ -72,6 +74,17 @@ function makeSkillInfo(overrides: Record<string, unknown> = {}) {
 		unavailable_reason: null,
 		manifest_error: null,
 		...overrides,
+	};
+}
+
+function completeFeatureOutcome(payload: { resourceRead?: unknown; prompt?: unknown }) {
+	return {
+		status: 'complete',
+		resourceRead: payload.resourceRead ?? null,
+		prompt: payload.prompt ?? null,
+		requestId: null,
+		round: null,
+		requests: [],
 	};
 }
 
@@ -163,16 +176,35 @@ describe('ToolsView command boundary', () => {
 		invoke
 			.mockResolvedValueOnce({ resources: [], ttlMs: null, cacheScope: 'private' })
 			.mockResolvedValueOnce({ resourceTemplates: [], ttlMs: null, cacheScope: 'private' })
-			.mockResolvedValueOnce({ contents: [], ttlMs: null, cacheScope: 'private' })
+			.mockResolvedValueOnce(
+				completeFeatureOutcome({
+					resourceRead: { contents: [], ttlMs: null, cacheScope: 'private' },
+				}),
+			)
 			.mockResolvedValueOnce(true)
 			.mockResolvedValueOnce(true)
 			.mockResolvedValueOnce({ prompts: [], ttlMs: null, cacheScope: 'private' })
-			.mockResolvedValueOnce({
-				description: null,
-				messages: [{ role: 'user', content: { type: 'text', text: 'Hello' } }],
-				ttlMs: null,
-				cacheScope: 'private',
-			});
+			.mockResolvedValueOnce(
+				completeFeatureOutcome({
+					prompt: {
+						description: null,
+						messages: [{ role: 'user', content: { type: 'text', text: 'Hello' } }],
+						ttlMs: null,
+						cacheScope: 'private',
+					},
+				}),
+			)
+			.mockResolvedValueOnce(
+				completeFeatureOutcome({
+					prompt: {
+						description: null,
+						messages: [{ role: 'user', content: { type: 'text', text: 'Done' } }],
+						ttlMs: null,
+						cacheScope: 'private',
+					},
+				}),
+			)
+			.mockResolvedValueOnce(true);
 
 		expect(await listMcpResources({ ...target, forceRefresh: false })).toMatchObject({
 			resources: [],
@@ -182,7 +214,7 @@ describe('ToolsView command boundary', () => {
 		});
 		expect(
 			await readMcpResource({ ...target, uri: 'mcp://selected/doc', forceRefresh: false }),
-		).toMatchObject({ contents: [] });
+		).toMatchObject({ status: 'complete', resourceRead: { contents: [] } });
 		expect(await subscribeMcpResource({ ...target, uri: 'mcp://selected/doc' })).toBe(true);
 		expect(await unsubscribeMcpResource({ ...target, uri: 'mcp://selected/doc' })).toBe(true);
 		expect(await listMcpPrompts({ ...target, forceRefresh: false })).toMatchObject({
@@ -194,7 +226,18 @@ describe('ToolsView command boundary', () => {
 				promptName: 'review',
 				arguments: { topic: 'selected by user' },
 			}),
-		).toMatchObject({ description: null, messages: [{ role: 'user' }] });
+		).toMatchObject({
+			status: 'complete',
+			prompt: { description: null, messages: [{ role: 'user' }] },
+		});
+		const answerRequest = {
+			...target,
+			requestId: 5,
+			answers: { ask: { action: 'accept' as const, content: { topic: 'MCP' } } },
+		};
+		expect(await respondMcpFeatureInput(answerRequest)).toMatchObject({ status: 'complete' });
+		const cancelRequest = { ...target, requestId: 5 };
+		expect(await cancelMcpFeatureInput(cancelRequest)).toBe(true);
 		expect(invoke.mock.calls).toEqual([
 			['list_mcp_resources', { ...target, forceRefresh: false }],
 			['list_mcp_resource_templates', { ...target, forceRefresh: false }],
@@ -206,6 +249,8 @@ describe('ToolsView command boundary', () => {
 				'get_mcp_prompt',
 				{ ...target, promptName: 'review', arguments: { topic: 'selected by user' } },
 			],
+			['respond_mcp_feature_input', answerRequest],
+			['cancel_mcp_feature_input', cancelRequest],
 		]);
 	});
 

@@ -4,7 +4,7 @@ use crate::events::{MCP_STATUS_CHANGED_EVENT, McpStatusChangedEvent};
 use haven_common::config::McpServerConfig;
 use haven_common::error::sanitize_error_text;
 use haven_tools::{
-    McpClientStatus, McpPrompt, McpPromptList, McpResourceList, McpResourceRead,
+    McpClientStatus, McpElicitationAnswer, McpFeatureCallOutcome, McpPromptList, McpResourceList,
     McpResourceTemplateList, McpServerSnapshot,
 };
 use std::collections::HashMap;
@@ -123,7 +123,7 @@ pub async fn read_mcp_resource(
     target_binding: String,
     uri: String,
     force_refresh: bool,
-) -> Result<McpResourceRead, String> {
+) -> Result<McpFeatureCallOutcome, String> {
     state
         .runtime
         .services
@@ -177,6 +177,39 @@ pub async fn unsubscribe_mcp_resource(
 }
 
 #[tauri::command]
+pub async fn respond_mcp_feature_input(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    target_binding: String,
+    request_id: u64,
+    answers: HashMap<String, McpElicitationAnswer>,
+) -> Result<McpFeatureCallOutcome, String> {
+    state
+        .runtime
+        .services
+        .mcp
+        .respond_to_feature_input_at_target_binding(&name, &target_binding, request_id, answers)
+        .await
+        .map_err(|error| log_err("respond_mcp_feature_input", error))
+}
+
+#[tauri::command]
+pub async fn cancel_mcp_feature_input(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    target_binding: String,
+    request_id: u64,
+) -> Result<bool, String> {
+    state
+        .runtime
+        .services
+        .mcp
+        .cancel_feature_input_at_target_binding(&name, &target_binding, request_id)
+        .await
+        .map_err(|error| log_err("cancel_mcp_feature_input", error))
+}
+
+#[tauri::command]
 pub async fn list_mcp_prompts(
     state: State<'_, Arc<AppState>>,
     name: String,
@@ -204,7 +237,7 @@ pub async fn get_mcp_prompt(
     target_binding: String,
     prompt_name: String,
     arguments: HashMap<String, String>,
-) -> Result<McpPrompt, String> {
+) -> Result<McpFeatureCallOutcome, String> {
     state
         .runtime
         .services

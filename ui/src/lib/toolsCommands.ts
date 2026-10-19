@@ -2,18 +2,17 @@ import { invoke } from '$lib/tauri.ts';
 import { parseMcpRefreshResult, parseMcpServerSnapshots } from './contracts/mcp.ts';
 import type { McpRefreshResultView, McpServerSnapshotView } from './contracts/mcp.ts';
 import {
-	parseMcpPrompt,
 	parseMcpPromptList,
 	parseMcpResourceList,
 	parseMcpResourceTemplateList,
-	parseMcpResourceRead,
+	parseMcpFeatureCallOutcome,
 } from './contracts/mcpFeatures.ts';
 import type {
 	McpPromptListView,
-	McpPromptView,
 	McpResourceListView,
 	McpResourceTemplateListView,
-	McpResourceReadView,
+	McpFeatureCallOutcomeView,
+	McpElicitationAnswerView,
 } from './contracts/mcpFeatures.ts';
 import { parseSkillExecutionResponse, parseSkillInfoList } from './contracts/skills.ts';
 import { parseBooleanResponse } from './contracts/boolean.ts';
@@ -53,7 +52,9 @@ export function listMcpResources(request: {
 	targetBinding: string;
 	forceRefresh: boolean;
 }): Promise<McpResourceListView> {
-	return invoke('list_mcp_resources', request).then((value: unknown) => parseMcpResourceList(value));
+	return invoke('list_mcp_resources', request).then((value: unknown) =>
+		parseMcpResourceList(value),
+	);
 }
 
 /** Discover parameterized resource templates for explicit user selection. */
@@ -73,8 +74,10 @@ export function readMcpResource(request: {
 	targetBinding: string;
 	uri: string;
 	forceRefresh: boolean;
-}): Promise<McpResourceReadView> {
-	return invoke('read_mcp_resource', request).then((value: unknown) => parseMcpResourceRead(value));
+}): Promise<McpFeatureCallOutcomeView> {
+	return invoke('read_mcp_resource', request).then((value: unknown) =>
+		parseMcpFeatureCallOutcome(value),
+	);
 }
 
 /** Watch updates for one resource explicitly selected from the current server list. */
@@ -84,7 +87,8 @@ export function subscribeMcpResource(request: {
 	uri: string;
 }): Promise<boolean> {
 	return invoke('subscribe_mcp_resource', request).then((value: unknown) => {
-		if (typeof value !== 'boolean') throw new Error('Invalid MCP resource subscription response');
+		if (typeof value !== 'boolean')
+			throw new Error('Invalid MCP resource subscription response');
 		return value;
 	});
 }
@@ -96,9 +100,33 @@ export function unsubscribeMcpResource(request: {
 	uri: string;
 }): Promise<boolean> {
 	return invoke('unsubscribe_mcp_resource', request).then((value: unknown) => {
-		if (typeof value !== 'boolean') throw new Error('Invalid MCP resource unsubscribe response');
+		if (typeof value !== 'boolean')
+			throw new Error('Invalid MCP resource unsubscribe response');
 		return value;
 	});
+}
+
+/** Continue a selected resource read or prompt after explicit user input. */
+export function respondMcpFeatureInput(request: {
+	name: string;
+	targetBinding: string;
+	requestId: number;
+	answers: Record<string, McpElicitationAnswerView>;
+}): Promise<McpFeatureCallOutcomeView> {
+	return invoke('respond_mcp_feature_input', request).then((value: unknown) =>
+		parseMcpFeatureCallOutcome(value),
+	);
+}
+
+/** Cancel one pending interaction owned by the current MCP feature dialog. */
+export function cancelMcpFeatureInput(request: {
+	name: string;
+	targetBinding: string;
+	requestId: number;
+}): Promise<boolean> {
+	return invoke('cancel_mcp_feature_input', request).then((value: unknown) =>
+		parseBooleanResponse(value, 'cancel_mcp_feature_input'),
+	);
 }
 
 /** Discover prompts for explicit user selection. */
@@ -116,8 +144,10 @@ export function getMcpPrompt(request: {
 	targetBinding: string;
 	promptName: string;
 	arguments: Record<string, string>;
-}): Promise<McpPromptView> {
-	return invoke('get_mcp_prompt', request).then((value: unknown) => parseMcpPrompt(value));
+}): Promise<McpFeatureCallOutcomeView> {
+	return invoke('get_mcp_prompt', request).then((value: unknown) =>
+		parseMcpFeatureCallOutcome(value),
+	);
 }
 
 /** Read the current Skill metadata projection. */

@@ -17,6 +17,7 @@
 | `add_fact` | mutate | credential-like predicates and values rejected |
 | `add_mcp_server` | execute | AuthorizationPort; typed native admin operation validates and persists config |
 | `cancel_chatgpt_plan_login` | mutate | cancels one in-memory OAuth attempt and aborts its loopback callback listener |
+| `cancel_mcp_feature_input` | execute | explicit UI cancellation of one pending selected resource or prompt interaction |
 | `cancel_recording` | execute | cancel clears the in-flight recording id |
 | `cancel_schedule` | mutate | canonical schedule and owner-session IDs; owner-scoped cancellation |
 | `cancel_tool_run` | mutate | only a canonical toolrun ID can cancel background tool execution |
@@ -85,6 +86,7 @@
 | `reset_session_permissions` | mutate | clears durable session grants only; keeps permanent rules |
 | `reset_tool_circuits` | mutate | clears local circuit state only |
 | `resolve_confirmation` | mutate | owner/request id selects one registry; receipt, effect, scope, target and expiry are revalidated; retryable failures keep pending |
+| `respond_mcp_feature_input` | execute | explicit user response to a bounded form request; enabled live target binding; schema-validated answers |
 | `revoke_permission` | mutate | non-empty exact permanent key; session grants are retained |
 | `revoke_session_permission` | mutate | non-empty session id and capability; removes one session grant |
 | `rollback_session` | mutate | event cursor and projection clock rollback |

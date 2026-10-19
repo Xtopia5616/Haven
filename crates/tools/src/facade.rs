@@ -5,8 +5,8 @@ use crate::registry::OperationRegistry;
 use crate::skill_runner::SkillRunner;
 use futures_util::future::BoxFuture;
 use haven_mcp::{
-    McpManager, McpPrompt, McpPromptList, McpResourceChangeEvent, McpResourceList, McpResourceRead,
-    McpResourceTemplateList,
+    McpElicitationAnswer, McpFeatureCallOutcome, McpManager, McpPromptList, McpResourceChangeEvent,
+    McpResourceList, McpResourceTemplateList,
 };
 #[cfg(feature = "test-support")]
 use haven_skills::Skill;
@@ -74,7 +74,22 @@ pub trait McpRuntimePort: Send + Sync {
         uri: &str,
         force_refresh: bool,
         cancel: CancellationToken,
-    ) -> anyhow::Result<McpResourceRead>;
+    ) -> anyhow::Result<McpFeatureCallOutcome>;
+
+    async fn respond_to_feature_input_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        request_id: u64,
+        answers: HashMap<String, McpElicitationAnswer>,
+    ) -> anyhow::Result<McpFeatureCallOutcome>;
+
+    async fn cancel_feature_input_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        request_id: u64,
+    ) -> anyhow::Result<bool>;
 
     async fn subscribe_resource_at_target_binding(
         &self,
@@ -106,7 +121,7 @@ pub trait McpRuntimePort: Send + Sync {
         name: &str,
         arguments: HashMap<String, String>,
         cancel: CancellationToken,
-    ) -> anyhow::Result<McpPrompt>;
+    ) -> anyhow::Result<McpFeatureCallOutcome>;
 
     async fn has_client(&self, name: &str) -> bool;
 
@@ -189,7 +204,7 @@ impl McpRuntimePort for SharedMcpRuntimePort {
         uri: &str,
         force_refresh: bool,
         cancel: CancellationToken,
-    ) -> anyhow::Result<McpResourceRead> {
+    ) -> anyhow::Result<McpFeatureCallOutcome> {
         self.manager
             .read_resource_at_target_binding(
                 client_name,
@@ -198,6 +213,34 @@ impl McpRuntimePort for SharedMcpRuntimePort {
                 force_refresh,
                 cancel,
             )
+            .await
+    }
+
+    async fn respond_to_feature_input_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        request_id: u64,
+        answers: HashMap<String, McpElicitationAnswer>,
+    ) -> anyhow::Result<McpFeatureCallOutcome> {
+        self.manager
+            .respond_to_feature_input_at_target_binding(
+                client_name,
+                target_binding,
+                request_id,
+                answers,
+            )
+            .await
+    }
+
+    async fn cancel_feature_input_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        request_id: u64,
+    ) -> anyhow::Result<bool> {
+        self.manager
+            .cancel_feature_input_at_target_binding(client_name, target_binding, request_id)
             .await
     }
 
@@ -243,7 +286,7 @@ impl McpRuntimePort for SharedMcpRuntimePort {
         name: &str,
         arguments: HashMap<String, String>,
         cancel: CancellationToken,
-    ) -> anyhow::Result<McpPrompt> {
+    ) -> anyhow::Result<McpFeatureCallOutcome> {
         self.manager
             .get_prompt_at_target_binding(client_name, target_binding, name, arguments, cancel)
             .await

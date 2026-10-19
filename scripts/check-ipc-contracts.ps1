@@ -152,11 +152,12 @@ foreach ($command in $countCommands) {
 }
 $booleanContract = Get-Source 'ui/src/lib/contracts/boolean.ts'
 Assert-Contains $booleanContract 'typeof value !== ''boolean''' 'scalar boolean responses require an actual boolean value'
-$booleanCommands = @('cancel_schedule', 'cancel_tool_run', 'discard_sandbox_output_review', 'is_autostart_enabled', 'subscribe_mcp_resource', 'unsubscribe_mcp_resource')
+$booleanCommands = @('cancel_mcp_feature_input', 'cancel_schedule', 'cancel_tool_run', 'discard_sandbox_output_review', 'is_autostart_enabled', 'subscribe_mcp_resource', 'unsubscribe_mcp_resource')
 $booleanResponses = Get-Matches $generated '(?m)^\s{1,2}([a-z][a-z0-9_]*):\s*\{[^\r\n]*response:\s*boolean(?:;|\s*\})'
 Assert-SetEqual 'boolean scalar command responses vs reviewed boolean commands' $booleanResponses $booleanCommands
 Assert-Contains (Get-Source 'ui/src/lib/toolRunCommands.ts') "invoke\('cancel_tool_run'[\s\S]{0,180}?parseBooleanResponse\(value,\s*'cancel_tool_run'\)" 'cancel_tool_run response uses boolean validation'
 Assert-Contains (Get-Source 'ui/src/lib/scheduleCommands.ts') "invoke\('cancel_schedule'[\s\S]{0,180}?parseBooleanResponse\(value,\s*'cancel_schedule'\)" 'cancel_schedule response uses boolean validation'
+Assert-Contains $toolsCommands "invoke\('cancel_mcp_feature_input',\s*request\)[\s\S]{0,180}?parseBooleanResponse\(value,\s*'cancel_mcp_feature_input'\)" 'cancel_mcp_feature_input response uses boolean validation'
 Assert-Contains (Get-Source 'ui/src/lib/settingsCommands.ts') "invoke\('is_autostart_enabled'\)[\s\S]{0,180}?parseBooleanResponse\(value,\s*'is_autostart_enabled'\)" 'is_autostart_enabled response uses boolean validation'
 function Assert-MetricsFieldCoverage([string] $contractType, [string] $validatorConstant) {
     $contractMatch = [regex]::Match($generated, "(?s)export interface $([regex]::Escape($contractType))\s*\{([^}]*)\}")
@@ -218,10 +219,10 @@ $recordingOverlayController = Get-Source 'ui/src/lib/recordingOverlayController.
 Assert-Contains $recordingOverlayController "type RecordingCommandName = Extract<\s*TauriCommandName,\s*'start_recording'\s*\|\s*'stop_recording'\s*\|\s*'cancel_recording'\s*>" 'recording controller narrows its dynamic invoke port to the recording lifecycle'
 Assert-Contains $recordingOverlayController 'invoke:\s*\(command:\s*RecordingCommandName\)\s*=>\s*invoke\(command\)' 'recording controller is the sole dynamic invoke owner'
 $submit = Get-Source 'ui/src/lib/submit.ts'
-Assert-Contains $submit 'processTranscript\(request\)' 'submit coordinator uses the session command adapter'
+Assert-Contains $submit 'submitTranscript\(request\)' 'submit coordinator uses the session command adapter'
 $sessionCommands = Get-Source 'ui/src/lib/sessionCommands.ts'
-Assert-Contains $sessionCommands "invoke\('process_transcript',\s*request\)" 'session command adapter owns transcript processing'
-Assert-Contains $sessionCommands 'parseProcessResult\(value,\s*request\.activeSessionId\)' 'process transcript response identity is validated against the active session request'
+Assert-Contains $sessionCommands "invoke\('submit_transcript',\s*request\)" 'session command adapter owns transcript processing'
+Assert-Contains $sessionCommands 'parseTranscriptSubmissionResult\(value,\s*request\.activeSessionId\)' 'transcript submission result identity is validated against the active session request'
 $errorHandling = Get-Source 'ui/src/lib/errorHandling.ts'
 Assert-Contains $errorHandling "invoke\('log_frontend_error',\s*\{\s*failureKind:\s*options\.failureKind\s*\?\?\s*'operation_failure',?\s*\}\)" 'error handling sends only a stable frontend failure category'
 $externalRef = Get-Source 'ui/src/lib/externalRef.ts'
@@ -243,9 +244,9 @@ $ownedCommands = @{
     'recordingOverlayController.ts' = @('start_recording', 'stop_recording', 'cancel_recording')
     'scheduleCommands.ts' = @('list_schedules', 'cancel_schedule')
     'toolRunCommands.ts' = @('list_tool_runs', 'list_tool_run_history', 'clear_tool_run_history', 'cancel_tool_run')
-    'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource', 'subscribe_mcp_resource', 'unsubscribe_mcp_resource', 'list_mcp_prompts', 'get_mcp_prompt', 'list_skills', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill', 'get_sandbox_output_review', 'discard_sandbox_output_review', 'pick_sandbox_output_destination', 'promote_sandbox_output')
+    'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource', 'subscribe_mcp_resource', 'unsubscribe_mcp_resource', 'respond_mcp_feature_input', 'cancel_mcp_feature_input', 'list_mcp_prompts', 'get_mcp_prompt', 'list_skills', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill', 'get_sandbox_output_review', 'discard_sandbox_output_review', 'pick_sandbox_output_destination', 'promote_sandbox_output')
     'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'clear_facts', 'recall_memory')
-    'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'count_session_history', 'count_session_history_search', 'get_session_for_resume', 'get_latest_session_for_resume', 'process_transcript', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'fork_session_from_message', 'end_session', 'interrupt_session', 'continue_session')
+    'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'count_session_history', 'count_session_history_search', 'get_session_for_resume', 'get_latest_session_for_resume', 'submit_transcript', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'fork_session_from_message', 'end_session', 'interrupt_session', 'continue_session')
     'modelDiscoveryCommands.ts' = @('discover_models')
     'diagnosticsCommands.ts' = @('get_log_info', 'read_log_tail', 'check_shell_available', 'get_api_key_status', 'get_performance_metrics')
     'settingsCommands.ts' = @('get_settings', 'pick_execution_workspace_directory', 'discard_staged_credentials', 'list_session_permissions', 'is_autostart_enabled', 'run_memory_maintenance', 'revoke_permission', 'revoke_session_permission', 'reset_permissions', 'reset_session_permissions', 'set_hotkey_capture_active', 'stage_provider_credential', 'start_chatgpt_plan_login', 'complete_chatgpt_plan_login', 'cancel_chatgpt_plan_login', 'discard_staged_chatgpt_plan_credential', 'reassign_staged_chatgpt_plan_credential', 'stage_independent_search_credential', 'stage_ocr_credential', 'update_settings', 'enable_autostart', 'disable_autostart')

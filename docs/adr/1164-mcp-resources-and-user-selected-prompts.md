@@ -15,13 +15,13 @@ Haven 当前 MCP client 只协商并缓存 `tools` capability。MCP 2026-07-28 �
 3. **分页和响应使用硬上限。** List API 校验 cursor 非空、长度有界且不循环；限制页数和聚合条目数。资源读取限制内容条数、URI/MIME 长度、文本字节、Base64 字节和总响应大小；prompt 列表、参数定义、消息条数、文本和二进制内容也有总预算。越界结果整体拒绝，不截成可被误认作完整内容的片段。
 4. **按连接代次缓存且服从 server hint。** `ttlMs` 决定条目过期时间，`cacheScope` 保留在 typed result 并禁止跨 server/client 共享。缓存只存在于当前 `McpClient` 连接代次的进程内；target 变化、reconnect、显式刷新或过期使其失效。仅用户显式订阅的 URI 收到匹配更新通知后，立即失效该 URI 的读取缓存；资源列表和 prompt 列表仍靠 TTL 或显式刷新。不得把资源正文写进 Memory、配置、日志或通用持久缓存。
 5. **URI 是不透明的外部身份。** Haven 只把 URI 传给被选中的、仍符合配置和 target binding 的 MCP server；不得将 `file://` 解释为本地文件、不得将 `https://` 自动转成 Haven 的 HTTP fetch，也不得从资源描述推导 sandbox/workspace 路径。响应正文属于不可信 server 内容，UI 显示来源 server、URI 和 MIME。
-6. **交互请求先 fail closed。** 在 Haven 建立可取消、可恢复且有明确 UI owner 的 MRTR 生命周期前，收到 `input_required` 时返回结构化的“需要额外交互，当前未执行”错误；不丢弃 request state 后重试，不猜测或自动补值。该行为对现代和旧协议版本一致。
+6. **MRTR 交互由当前 feature dialog 独占。** 用户选中的 `resources/read` 与 `prompts/get` 可以处理 `input_required` 中声明的 form-mode `elicitation/create`。界面逐项展示服务器提供的消息与受限字段，用户明确提交或拒绝后才继续；每轮只发送该轮 `inputResponses`，opaque `requestState` 仅按协议原样传回，不解析、不记录、不持久化。每次重试使用新的 JSON-RPC ID，最多 8 轮；仅有 `requestState` 的轮次由对话框 owner 每 250ms 限速续跑，等待期间用户仍可取消。对话框关闭、用户取消、连接关闭、无效答案或不支持的请求类型都会停止并 fail closed。URL elicitation、sampling、roots 和没有 UI owner 的其它 RPC 不通告 form elicitation capability，也不支持 MRTR。
 7. **Prompt 内容须由用户启动。** `prompts/list` 只供 UI 发现。`prompts/get` 结果经过 typed parse 与大小检查后，由用户预览并显式加入聊天草稿；Composer 保持编辑权，只有之后普通的用户发送操作才会进入会话。服务端 prompt 文本、资源和多模态块都视为不可信输入；不自动执行工具、脚本或资源读取。首期只有 Haven 能完整表示且在预算内的内容可以加入草稿；未知类型和超限内容整体 fail closed。
 8. **不改变既有 transcript 权威。** 用户提交的 prompt 内容或资源摘录按普通用户提交进入现有 ingress 和 `session_events` 路径；MCP list/read/get 的过程状态不额外造 transcript 气泡或数据库表。持久化后仍按 X12 和 rollback 双时钟规则处理。
 
 ## 安全与失败语义
 
-- 未声明 capability 的 server 不会收到相应 RPC；disabled server、断开的连接、target binding 变化、无效 URI、非法 cursor、未知结果类型、`input_required`、非法 content shape 和预算超限均显式失败。
+- 未声明 capability 的 server 不会收到相应 RPC；disabled server、断开的连接、target binding 变化、无效 URI、非法 cursor、未知结果类型、无法由 feature dialog 支持的 `input_required` 请求、非法 content shape 和预算超限均显式失败。
 - list/read/get 通过同一连接的 `McpClientInner::request`，沿用既有请求超时、网络策略、cancel、敏感错误脱敏和 HTTP 路由限制。资源订阅使用同一 target-bound `McpClient` 上独立的 `subscriptions/listen` 流；stdio 发送 `notifications/cancelled`，HTTP 关闭对应 SSE 响应体。
 - `cacheScope: public` 不授权跨 Haven server 配置共享缓存。两个配置即使指向相同 URL，也有独立 client、凭据和生命周期。
 - 这项能力不提供本地 filesystem sandbox；MCP server 内部如何解析 URI 仍由 server 负责，但客户端不会替它读取本机路径。
@@ -31,7 +31,7 @@ Haven 当前 MCP client 只协商并缓存 `tools` capability。MCP 2026-07-28 �
 1. 增加 modern/legacy Resources 与 Prompts capability snapshot、typed DTO、分页/内容校验、缓存与 target-bound Manager API。
 2. 增加用户可见的资源浏览/读取和 prompt 选择/预览/提交路径；命令仅接受当前 server 名、URI 或 prompt 名及参数，不接受任意 URL 或路径执行指令。
 3. 完成协议正反例、能力缺失、target 替换、分页循环、缓存过期、输入交互 fail-closed、内容预算及 IPC/UI 端到端验收。
-4. 之后再评估 MRTR 生命周期。只有证明需要跨用户交互或进程重启时才接入既有 durable interaction/session event 机制；不另建 prompt job、cache database 或恢复 owner。
+4. MRTR 只在当前 MCP 连接和显式打开的 feature dialog 中保留短期状态，不跨会话、连接或进程恢复；本功能没有需要持久化的用户答复，因此不接入 transcript、durable interaction 或新的恢复 owner。
 
 ## 首期实现边界
 
@@ -39,7 +39,8 @@ Haven 当前 MCP client 只协商并缓存 `tools` capability。MCP 2026-07-28 �
 - `resources/templates/list` 已按相同的分页、总量、TTL/cacheScope 与 target-binding 规则接通；工具页允许用户选择模板、填写 RFC 6570 字符串变量、预览展开后的 URI，再由用户发起 `resources/read`。展开逻辑支持 RFC 6570 字符串变量、操作符与前缀修饰；模板名/URI 均保持为不透明的 MCP server 数据。
 - `resources.subscribe=true` 时，用户可以对当前资源列表中的 URI 开启或取消 `subscriptions/listen` 订阅。每个流必须确认包含同一 URI 的 acknowledgment；最多 64 个并发资源订阅。只有匹配活动 `subscriptionId` 和 URI 的更新才驱逐对应读取缓存并通知 UI；UI 标记资源已更新，等待用户手动重新读取。关闭浏览对话框或连接关闭时取消流；订阅状态仅在连接内有效，不持久化，也不跨重连恢复。服务端不接受过滤项时返回失败，不回退到未过滤监听。
 - UI 只对启用且连接中的服务器显示浏览入口。资源正文和 prompt 结果以纯文本预览；二进制内容只显示类型与大小信息，非纯用户文本不能加入聊天草稿。资源/prompt 都不作为模型工具或 CodeMode 子调用公开。
-- 本切片不实现 MRTR，也不自动订阅资源列表或 prompts 变化通知；这些能力不得被 UI 或模型假定为可用。MRTR 仍需独立的可取消且有明确 UI owner 的生命周期。
+- `resources/read` 与 `prompts/get` 支持 bounded form-mode MRTR：每次最多 8 个输入请求、每个 schema 最多 32 个字段、每轮回答及 request state 有字节上限、总共最多 8 轮。只有该 feature dialog 的显式用户请求会通告 `elicitation.form`；表单拒绝按协议发送 `action=decline`，取消、target binding 失效或连接关闭会取消该 pending interaction。request state 只留在内存并在完成/取消/连接 shutdown 时清除；URL elicitation、sampling、roots 和其它 RPC 的 MRTR 仍 fail closed。
+- 不自动订阅资源列表或 prompts 变化通知；模型不可用订阅、resource/prompt 读取或 MRTR 的工具入口。
 - Resources 与 Prompts 不持久化。资源文本或 prompt 用户消息仅在用户显式加入草稿并随后发送后，才经过普通 ingress 和既有 transcript/event owner。
 
 ## 拒绝的方案
@@ -54,9 +55,9 @@ Haven 当前 MCP client 只协商并缓存 `tools` capability。MCP 2026-07-28 �
 
 - modern/legacy 按 capability 独立识别；缺失 capability 时无 RPC。
 - `resources/list`、`prompts/list` 多页读取正常；重复、空、超长 cursor 和页数/总量超限被拒绝。
-- `resources/read` 验证 complete/text/blob、多内容响应、URI 与所有字节上限；`input_required` 和未知类型 fail closed。
+- `resources/read` 验证 complete/text/blob、多内容响应、URI 与所有字节上限；form-mode MRTR 校验 capability、schema、字段与用户回答，验证 requestState 原样往返、每轮使用新 ID、8 轮上限、state-only 对话框限速续跑与等待期间取消、拒绝及不支持类型 fail closed。
 - 资源订阅只允许对已声明 `subscribe` capability 且当前资源列表中的 URI 开放；acknowledgment 必须接受精确 URI，更新通知必须匹配活动 `subscriptionId`，取消会结束对应 stdio/HTTP 流，超出并发上限时拒绝。
-- `prompts/get` 验证 required arguments、角色、text/image/audio/resource/resource_link 内容、聚合字节上限和 `input_required`。
+- `prompts/get` 验证 required arguments、角色、text/image/audio/resource/resource_link 内容、聚合字节上限；prompt MRTR 复用同一表单交互与取消策略。
 - cache TTL/public-private hint、显式刷新、reconnect/target replacement 和过期失效均有测试；资源更新订阅仅作用于用户选择的 URI，资源列表/prompts 的 list-changed 通知仍未开放。
 - IPC/UI 只读取当前 enabled server，并对 resource 与 prompt 内容展示来源；提交后的内容经过普通用户 ingress。
 - 无数据库或配置持久化变更，不需要重置既有用户数据。

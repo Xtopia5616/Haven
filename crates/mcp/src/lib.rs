@@ -37,9 +37,11 @@ mod tests;
 #[cfg(feature = "test-support")]
 pub use client::McpClient;
 pub use features::{
-    McpCacheScope, McpPrompt, McpPromptArgument, McpPromptContent, McpPromptInfo, McpPromptList,
-    McpPromptMessage, McpResourceContent, McpResourceInfo, McpResourceList, McpResourceRead,
-    McpResourceTemplate, McpResourceTemplateList,
+    McpCacheScope, McpElicitationAction, McpElicitationAnswer, McpElicitationField,
+    McpElicitationFieldType, McpElicitationRequest, McpFeatureCallOutcome, McpFeatureCallStatus,
+    McpPrompt, McpPromptArgument, McpPromptContent, McpPromptInfo, McpPromptList, McpPromptMessage,
+    McpResourceContent, McpResourceInfo, McpResourceList, McpResourceRead, McpResourceTemplate,
+    McpResourceTemplateList,
 };
 pub use manager::{McpManager, McpReconcile, McpTargetChanged};
 pub use protocol::{
