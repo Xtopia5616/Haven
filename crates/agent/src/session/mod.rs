@@ -2217,6 +2217,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn management_tool_run_requires_an_idle_paused_session_and_restores_it() {
+        let exec = make_executor(1);
+        let session = exec.create_session("managed Skill preview").await.unwrap();
+        assert!(
+            exec.begin_managed_tool_step_run(&session.session_id)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            exec.get_active_session_status(&session.session_id).await,
+            Some(SessionStatus::Pending)
+        );
+
+        exec.update_session_status(&session.session_id, SessionStatus::Paused)
+            .await
+            .unwrap();
+        let mut lease = exec
+            .begin_managed_tool_step_run(&session.session_id)
+            .await
+            .expect("idle paused session should admit one management tool run");
+        assert_eq!(
+            exec.get_active_session_status(&session.session_id).await,
+            Some(SessionStatus::Running)
+        );
+        assert!(exec.is_run_in_flight(&session.session_id).await);
+        assert!(
+            exec.begin_managed_tool_step_run(&session.session_id)
+                .await
+                .is_err()
+        );
+
+        assert_eq!(lease.finish().await.unwrap(), SessionStatus::Paused);
+        assert_eq!(
+            exec.get_active_session_status(&session.session_id).await,
+            Some(SessionStatus::Paused)
+        );
+        assert!(!exec.is_run_in_flight(&session.session_id).await);
+    }
+
+    #[tokio::test]
     async fn cancelled_direct_session_run_admission_unregisters_waiter() {
         let exec = make_executor(1);
         let occupying = exec.create_session("occupying direct run").await.unwrap();

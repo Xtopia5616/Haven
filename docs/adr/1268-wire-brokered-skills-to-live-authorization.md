@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳并实现 Tools、App IPC 与 UI 调用链。该实现不表示真实 HCS、guest 配额或目标 Windows 支持矩阵已验收；这些仍是独立发布 Gate。
+已采纳并实现 Tools、App IPC 与 UI 调用链。管理页 fail-closed 例外已由 [ADR 1326](1326-run-management-skill-previews-as-session-steps.md) 后续决策取代。该实现不表示真实 HCS、guest 配额或目标 Windows 支持矩阵已验收；这些仍是独立发布 Gate。
 
 ## 背景
 

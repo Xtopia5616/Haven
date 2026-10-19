@@ -104,7 +104,7 @@ function skillInfo(name: string, enabled = false, hasScript = false) {
 		version: null,
 		language: 'markdown',
 		enabled,
-		executable: false,
+		executable: enabled && hasScript,
 		root: `C:\\skills\\${name}`,
 		has_script: hasScript,
 		unavailable_reason: null,
@@ -224,6 +224,59 @@ describe('ToolsView toolbar actions', () => {
 		for (const button of [...mcpToolbarButtons, ...skillToolbarButtons]) {
 			expect(button.classList.contains('md-btn')).toBe(true);
 		}
+	});
+
+	it('runs a Skill against the active session and binds output review to its returned step', async () => {
+		const sessionId = 'ses-00000000000000000000000000000001';
+		const stepId = 'step-00000000000000000000000000000002';
+		const review = {
+			sessionId,
+			sourceStepId: stepId,
+			expiresAtUnixMs: Date.now() + 60_000,
+			storageChargeBytes: 128,
+			changes: [
+				{
+					changeIndex: 0,
+					relativePath: 'report.txt',
+					change: 'created',
+					beforeBytes: null,
+					afterBytes: 12,
+					beforeSha256: null,
+					afterSha256: 'a'.repeat(64),
+					promoted: false,
+				},
+			],
+		};
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'list_builtin_tool_manifests') return { tools: [] };
+			if (command === 'list_mcp_servers') return [];
+			if (command === 'list_skills') return [skillInfo('docs', true, true)];
+			if (command === 'execute_skill') {
+				return { success: true, output: { ok: true }, error: null, stepId };
+			}
+			if (command === 'get_sandbox_output_review') return review;
+			return undefined;
+		});
+
+		render(ToolsView, { activeSessionId: sessionId });
+		await fireEvent.click(await screen.findByRole('tab', { name: '技能' }));
+		await screen.findByText('docs');
+		await fireEvent.click(screen.getByText('docs').closest('[role="button"]')!);
+		await fireEvent.click(screen.getByRole('button', { name: '运行' }));
+
+		await waitFor(() =>
+			expect(invoke).toHaveBeenCalledWith('execute_skill', {
+				name: 'docs',
+				params: {},
+				sessionId,
+			}),
+		);
+		await screen.findByTestId('sandbox-output-review');
+		expect(invoke).toHaveBeenCalledWith('get_sandbox_output_review', {
+			sessionId,
+			sourceStepId: stepId,
+		});
+		expect(screen.getByText('report.txt')).toBeTruthy();
 	});
 
 	it('serializes skill toggles and reconciles the latest failed intent from the backend', async () => {

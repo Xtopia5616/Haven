@@ -4,7 +4,7 @@ import type {
 	SkillInfo as GeneratedSkillInfo,
 } from './generatedCommands.ts';
 import { isRecord } from './objectGuards.ts';
-import { hasOwnWireField } from './wireGuards.ts';
+import { hasOwnWireField, isCanonicalEntityId } from './wireGuards.ts';
 import { isBoolean, isNonEmptyString, isString } from './valueGuards.ts';
 
 export interface SkillInfoView {
@@ -73,10 +73,16 @@ export function parseSkillExecutionResponse(value: unknown): GeneratedSkillExecu
 		!isRecord(value) ||
 		!isBoolean(value.success) ||
 		!hasOwnWireField(value, 'output') ||
-		!isNullableString(value.error)
+		!isNullableString(value.error) ||
+		!(value.stepId === null || isCanonicalEntityId(value.stepId, 'step'))
 	) {
 		throw new Error('Invalid Skill execution response');
 	}
 
-	return { success: value.success, output: value.output, error: value.error };
+	return {
+		success: value.success,
+		output: value.output,
+		error: value.error,
+		stepId: value.stepId,
+	};
 }

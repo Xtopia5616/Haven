@@ -1246,7 +1246,10 @@ import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
 										finishTabEntry(tab.id, event)}
 								>
-									<TabComponent isVisible={activeTab === 'tools'} />
+									<TabComponent
+										isVisible={activeTab === 'tools'}
+										activeSessionId={activeSessionId}
+									/>
 								</WorkspaceSurface>
 							{:else if lazyViewStates.tools === 'error'}
 								<WorkspaceSurface

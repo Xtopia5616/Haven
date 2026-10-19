@@ -192,7 +192,7 @@ CodeMode 与 MCP exposure 的目标契约见 [ADR 1163](adr/1163-tool-exposure-c
 - **权限、workspace 与隔离：**`ExecutionWorkspace`、目录 capability、授权 proof、policy revision/workspace generation 和实时撤销由各自 owner 管理；文件副作用仍通过 Tools policy。隔离输出先进入有界 review owner，再经现有授权逐项晋升。Shell、模型 Skill 与受管 MCP 的 `WorkspaceWrite` 路径使用固定 HCS profile/broker 与配额证明；MCP 每次调用只读挂载有界 workspace snapshot。见 [ADR 1195](adr/1195-separate-execution-and-sandbox-workspaces.md)、[ADR 1209](adr/1209-require-os-enforced-sandbox-storage-quota.md)、[ADR 1268](adr/1268-wire-brokered-skills-to-live-authorization.md)、[ADR 1286](adr/1286-connect-managed-mcp-to-container-broker.md) 与 [ADR 1287](adr/1287-isolate-workspace-bound-mcp-invocations.md)。
 - **受管 MCP package 证明：**catalog v6 的 `tree_sha256` 覆盖 package 普通文件树；扫描拒绝 reparse point、未证明的模块搜索目录和 NTFS 命名 alternate data streams。管理员摘要工具与启动 probe 共用扫描器。见 [ADR 1288](adr/1288-verify-managed-mcp-package-trees.md) 与 [ADR 1289](adr/1289-reject-mcp-package-alternate-data-streams.md)。
 
-**保留的安全边界与发布验收：**`FullAccess` 下获准的宿主进程仍继承当前 Windows 用户的 OS 文件/网络权限；Haven 的工具授权不等于系统级进程隔离。没有可用且通过配额 attestation 的 HCS backend 时，受限执行 fail closed。管理页直接运行 Skill 在 `WorkspaceWrite` 下仍拒绝，因为该入口没有会话步骤身份与输出审阅生命周期。真实 HCS guest 超额写入、支持的 Windows build、broker token、固定镜像与安装包验收仍属于 §5.1 Open Gate；本仓库已实现的启动 probe 不能替代目标环境验收。
+**保留的安全边界与发布验收：**`FullAccess` 下获准的宿主进程仍继承当前 Windows 用户的 OS 文件/网络权限；Haven 的工具授权不等于系统级进程隔离。没有可用且通过配额 attestation 的 HCS backend 时，受限执行 fail closed。管理页 Skill 预览只在静止 Paused 会话中作为真实会话步骤执行；没有活动会话时 WorkspaceWrite 仍 fail closed。真实 HCS guest 超额写入、支持的 Windows build、broker token、固定镜像与安装包验收仍属于 §5.1 Open Gate；本仓库已实现的启动 probe 不能替代目标环境验收。见 [ADR 1326](adr/1326-run-management-skill-previews-as-session-steps.md)。
 
 ## 6. 更新规则
 

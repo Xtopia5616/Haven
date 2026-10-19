@@ -15,10 +15,12 @@ use tauri::AppHandle;
 use tauri::State;
 
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillExecutionResponse {
     pub success: bool,
     pub output: serde_json::Value,
     pub error: Option<String>,
+    pub step_id: Option<String>,
 }
 
 #[tauri::command]
@@ -179,6 +181,7 @@ pub async fn execute_skill(
     app: tauri::AppHandle,
     name: String,
     params: serde_json::Value,
+    session_id: Option<String>,
 ) -> Result<SkillExecutionResponse, String> {
     let skill_info = state
         .runtime
@@ -193,6 +196,21 @@ pub async fn execute_skill(
             "execute_skill",
             format!("skill '{}' is not executable", name),
         ));
+    }
+
+    if let Some(session_id) = session_id {
+        let (step_id, result) = state
+            .runtime
+            .agent
+            .execute_managed_skill_preview(&session_id, &name, &params)
+            .await
+            .map_err(|e| log_err("execute_skill session preview", e))?;
+        return Ok(SkillExecutionResponse {
+            success: result.success,
+            output: result.output,
+            error: result.error,
+            step_id: Some(step_id),
+        });
     }
 
     // Always run the authorization port — UI input must not bypass permanent deny /
@@ -245,6 +263,7 @@ pub async fn execute_skill(
         success: result.success,
         output: result.output,
         error: result.error,
+        step_id: None,
     })
 }
 
@@ -258,6 +277,7 @@ mod tests {
             success: false,
             output: serde_json::json!(null),
             error: Some("blocked".into()),
+            step_id: None,
         })
         .unwrap();
         assert_eq!(skill["error"], "blocked");

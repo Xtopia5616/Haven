@@ -188,9 +188,11 @@ pub(crate) enum ActorCommand {
     ClaimSessionRun {
         reply: oneshot::Sender<anyhow::Result<SessionRunClaim>>,
     },
-    #[cfg(test)]
-    TryMarkDirectRunActive {
+    ClaimManagedToolRun {
         reply: oneshot::Sender<bool>,
+    },
+    FinishManagedToolRun {
+        reply: oneshot::Sender<anyhow::Result<SessionStatus>>,
     },
     FinishRun {
         reply: oneshot::Sender<()>,
@@ -394,11 +396,10 @@ impl SessionActorHandle {
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped run claim", self.session_id))?
     }
 
-    #[cfg(test)]
-    pub(crate) async fn try_mark_direct_run_active(&self) -> bool {
+    pub(crate) async fn claim_managed_tool_run(&self) -> bool {
         let (reply, rx) = oneshot::channel();
         if self
-            .send(ActorCommand::TryMarkDirectRunActive { reply })
+            .send(ActorCommand::ClaimManagedToolRun { reply })
             .await
             .is_err()
         {
@@ -407,10 +408,27 @@ impl SessionActorHandle {
         rx.await.unwrap_or(false)
     }
 
+    #[cfg(test)]
+    pub(crate) async fn try_mark_direct_run_active(&self) -> bool {
+        self.claim_managed_tool_run().await
+    }
+
     pub(crate) async fn finish_run(&self) -> Option<()> {
         let (reply, rx) = oneshot::channel();
         self.send(ActorCommand::FinishRun { reply }).await.ok()?;
         rx.await.ok()
+    }
+
+    pub(crate) async fn finish_managed_tool_run(&self) -> anyhow::Result<SessionStatus> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::FinishManagedToolRun { reply })
+            .await?;
+        rx.await.map_err(|_| {
+            anyhow::anyhow!(
+                "session actor '{}' dropped managed tool-run completion",
+                self.session_id
+            )
+        })?
     }
 
     #[cfg(test)]
@@ -1206,8 +1224,7 @@ pub(crate) fn spawn(
                     }
                     let _ = reply.send(result);
                 }
-                #[cfg(test)]
-                ActorCommand::TryMarkDirectRunActive { reply } => {
+                ActorCommand::ClaimManagedToolRun { reply } => {
                     let accepted = !state.running && !state.info.status.is_terminal();
                     if accepted {
                         current_run_cancellation = actor_lifetime.child_token();
@@ -1216,6 +1233,35 @@ pub(crate) fn spawn(
                         let _ = run_state.send(true);
                     }
                     let _ = reply.send(accepted);
+                }
+                ActorCommand::FinishManagedToolRun { reply } => {
+                    state.running = false;
+                    match state.react_run.as_mut() {
+                        Some(ActiveReActRun::Running { claimed, .. }) => *claimed = false,
+                        Some(ActiveReActRun::Claimed) => state.react_run = None,
+                        None => {}
+                    }
+                    let _ = run_state.send(false);
+                    let next_status = if state.info.status == SessionStatus::Running {
+                        if !state.follow_up_queue.is_empty()
+                            || !state.steering_queue.is_empty()
+                            || !state.tool_run_results.is_empty()
+                        {
+                            SessionStatus::Pending
+                        } else {
+                            SessionStatus::Paused
+                        }
+                    } else {
+                        state.info.status
+                    };
+                    let result = if next_status == state.info.status {
+                        Ok(next_status)
+                    } else {
+                        transition(&store, &mut state, &status, next_status, true)
+                            .await
+                            .map(|_| next_status)
+                    };
+                    let _ = reply.send(result);
                 }
                 ActorCommand::FinishRun { reply } => {
                     state.running = false;

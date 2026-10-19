@@ -38,6 +38,7 @@ mod hooks;
 pub(crate) mod identity;
 mod inject;
 mod r#loop;
+mod managed_tool;
 mod metrics;
 mod request_context;
 #[cfg(test)]

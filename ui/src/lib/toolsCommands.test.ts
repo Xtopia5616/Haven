@@ -475,7 +475,12 @@ describe('ToolsView command boundary', () => {
 
 	it('executes Skills through the typed command boundary and preserves confirmation errors', async () => {
 		const request = { name: 'meeting-notes', params: { topic: 'planning' } };
-		const response = { success: true, output: { summary: 'ready' }, error: null };
+		const response = {
+			success: true,
+			output: { summary: 'ready' },
+			error: null,
+			stepId: null,
+		};
 		invoke.mockResolvedValueOnce(response);
 
 		expect(await executeSkill(request)).toEqual(response);

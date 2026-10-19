@@ -101,7 +101,7 @@ export interface SessionResumeResponse { session: SessionRecordDto; messages: Se
 export interface ChatGptPlanLoginComplete { credentialRef: string; accountEmail: string | null; planUsageEnabled: boolean }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect }
 export interface ShellAvailability { available: boolean }
-export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
+export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null; stepId: string | null }
 export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
 export interface SandboxOutputReviewChangeDto { changeIndex: number; relativePath: string; change: SandboxOutputReviewChangeKindDto; beforeBytes: number | null; afterBytes: number | null; beforeSha256: string | null; afterSha256: string | null; promoted: boolean }
 export const SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES = ['created', 'modified', 'deleted', 'type_changed'] as const;
@@ -1310,6 +1310,10 @@ export const EXECUTE_SKILL_RESPONSE_SHAPE = {
 			shape: { kind: 'unknown' },
 		},
 		'error': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'stepId': {
 			optional: false,
 			shape: { kind: 'nullable', inner: { kind: 'string' } },
 		}
@@ -10430,7 +10434,7 @@ export interface TauriCommandMap {
 	discover_models: { request: { baseUrl: string; apiKey: string; providerName?: string | null; requestKind?: RequestKindInput | null; authHeaderName?: string | null; authHeaderPrefix?: string | null; skipAuth?: boolean | null; proxyUrl?: string | null; noProxy?: string | null }; response: ModelInfo[] };
 	enable_autostart: { request: undefined; response: void };
 	end_session: { request: { sessionId: string }; response: void };
-	execute_skill: { request: { name: string; params: unknown }; response: SkillExecutionResponse };
+	execute_skill: { request: { name: string; params: unknown; sessionId?: string | null }; response: SkillExecutionResponse };
 	fork_session_from_message: { request: { sessionId: string; messageId: string }; response: string };
 	get_api_key_status: { request: undefined; response: ApiKeyStatus };
 	get_bootstrap_status: { request: undefined; response: BootstrapStatus };
