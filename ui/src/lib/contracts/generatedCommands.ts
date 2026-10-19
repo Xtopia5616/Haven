@@ -310,7 +310,7 @@ export type OperationEffect = (typeof OPERATION_EFFECT_VALUES)[number];
 export const OPERATION_IDEMPOTENCY_VALUES = ['idempotent', 'non_idempotent', 'unknown'] as const;
 export type OperationIdempotency = (typeof OPERATION_IDEMPOTENCY_VALUES)[number];
 export interface ToolAvailability { enabled: boolean; available: boolean; availability_reason?: string; requires_connection: boolean; requires_permission: boolean }
-export const TOOL_CATALOG_GROUP_VALUES = ['haven', 'agent', 'files', 'desktop', 'system', 'media', 'network', 'shell', 'skills', 'mcp', 'other'] as const;
+export const TOOL_CATALOG_GROUP_VALUES = ['haven', 'workflow', 'files', 'desktop', 'system', 'media', 'network', 'shell', 'skills', 'mcp', 'other'] as const;
 export type ToolCatalogGroup = (typeof TOOL_CATALOG_GROUP_VALUES)[number];
 export const TOOL_CONCURRENCY_MODE_VALUES = ['read_only', 'shared_resource', 'resource', 'exclusive'] as const;
 export type ToolConcurrencyMode = (typeof TOOL_CONCURRENCY_MODE_VALUES)[number];

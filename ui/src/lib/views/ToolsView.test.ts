@@ -444,11 +444,11 @@ describe('ToolsView toolbar actions', () => {
 
 		await waitFor(() => expect(screen.getByText('共 3 个操作')).toBeTruthy());
 		expect(document.querySelectorAll('[data-card-kind="builtin-family"]')).toHaveLength(2);
-		expect(screen.getByText('文件与工作区')).toBeTruthy();
+		expect(screen.getByText('文件系统')).toBeTruthy();
 		expect(screen.getByText('命令行')).toBeTruthy();
 		expect(screen.queryByText('files.read')).toBeNull();
 
-		await fireEvent.click(screen.getByRole('button', { name: /文件与工作区/ }));
+		await fireEvent.click(screen.getByRole('button', { name: /文件系统/ }));
 		expect(document.querySelectorAll('[data-card-kind="builtin-root"]')).toHaveLength(1);
 		expect(screen.getByRole('button', { name: /files/ })).toBeTruthy();
 		expect(screen.queryByText('files.read')).toBeNull();

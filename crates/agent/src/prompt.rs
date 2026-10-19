@@ -956,7 +956,7 @@ impl SystemPromptBuilder {
                 .as_ref()
                 .map(|manifest| manifest.identity.catalog_group)
                 .unwrap_or(def.catalog_group)
-                == ToolCatalogGroup::Agent
+                == ToolCatalogGroup::Workflow
         }) {
             built_in.push_str(CROSS_SESSION_MESSAGING_NOTES);
         }
@@ -1228,14 +1228,14 @@ mod tests {
             "guidance must not appear when the tools are absent"
         );
 
-        // An Agent catalog entry brings the guidance along.
+        // A Workflow catalog entry brings the cross-session guidance along.
         let messaging_tool = ToolDef::new(
             "agent.inbox",
             "dummy",
             json!({"type": "object"}),
             RiskLevel::Safe,
         )
-        .with_catalog_group(ToolCatalogGroup::Agent);
+        .with_catalog_group(ToolCatalogGroup::Workflow);
         let messaging_builder = SystemPromptBuilder::with_memory_service(
             Arc::new(FixedPromptToolPort {
                 builtin_tool_definitions: vec![messaging_tool],
@@ -1951,7 +1951,7 @@ mod tests {
             Arc::new(MemoryService::new(db, None, 64)),
         );
         let prompt = builder
-            .build_for_session_without_memory("run a shell command", &[])
+            .build_for_session_without_memory("read a file", &[])
             .await;
         assert!(
             !prompt.contains("input_schema"),
@@ -1964,7 +1964,7 @@ mod tests {
             before
                 .provider_definitions()
                 .iter()
-                .all(|definition| definition.name != "shell")
+                .all(|definition| definition.name != "files.read")
         );
 
         let result = tools
@@ -1974,7 +1974,7 @@ mod tests {
                 json!({
                     "action": "load",
                     "source": "builtin",
-                    "operations": ["shell"]
+                    "operations": ["files.read"]
                 }),
                 tokio_util::sync::CancellationToken::new(),
             )
@@ -1983,12 +1983,12 @@ mod tests {
         assert!(result.success, "loader failed: {:?}", result.error);
 
         let after = tools.tool_catalog_snapshot(session_id).await;
-        let shell = after
+        let files_read = after
             .provider_definitions()
             .iter()
-            .find(|definition| definition.name == "shell")
+            .find(|definition| definition.name == "files.read")
             .expect("the next session catalog should expose the loaded operation");
-        assert!(shell.input_schema["properties"]["command"].is_object());
+        assert!(files_read.input_schema["properties"]["path"].is_object());
         assert!(
             !prompt.contains("input_schema"),
             "loading an operation should not expand the canonical prompt"

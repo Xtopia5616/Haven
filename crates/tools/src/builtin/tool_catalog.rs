@@ -1077,7 +1077,7 @@ fn family_for_def(def: &ToolDef, source: CatalogSource) -> String {
 fn family_description(family: &str) -> String {
     let group = match family {
         "system" => ToolCatalogGroup::System,
-        "agent" => ToolCatalogGroup::Agent,
+        "workflow" => ToolCatalogGroup::Workflow,
         "haven" => ToolCatalogGroup::Haven,
         "files" => ToolCatalogGroup::Files,
         "desktop" => ToolCatalogGroup::Desktop,
@@ -1129,7 +1129,7 @@ mod tests {
     fn family_descriptions_share_the_catalog_group_summary() {
         for group in [
             ToolCatalogGroup::Haven,
-            ToolCatalogGroup::Agent,
+            ToolCatalogGroup::Workflow,
             ToolCatalogGroup::Files,
             ToolCatalogGroup::Desktop,
             ToolCatalogGroup::System,

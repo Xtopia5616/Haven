@@ -1319,3 +1319,4 @@
 - [1328：隔离并恢复单条超限 Messaging inbox 行](1328-quarantine-oversized-messaging-inbox-rows.md)
 - [1329：按用户任务重分类内置工具目录](1329-reclassify-builtin-tool-catalog.md)
 - [1330：收敛 ReAct turn 准备、安全准入与边界 owner](1330-converge-react-turn-and-boundary-owners.md)
+- [1331：重分类内置工具直调面与工作流目录](1331-reclassify-builtin-provider-surface-and-workflow-group.md)

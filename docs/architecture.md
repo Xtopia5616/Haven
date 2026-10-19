@@ -175,15 +175,18 @@ view，不把聚合根作为模型入口。
 Builtin 的模型目录统一按点号 operation view 暴露：例如 `files.read`、`files.outline`、
 `files.summary`、`files.search`、`system.info`、`system.env.get`、`haven.config.config_get`
 和 `media.inspect`。`files`、`system`、`haven`、`media` 以及其它聚合模块仍作为 native/Tauri
-和内部执行边界；模型只接收对应的窄 schema。provider-facing surface 分层维护：提示词只常驻
-第一层 family/root 摘要（例如 `system`、`agent`、`haven`），`tool_catalog` 按需提供第二层
-root 和第三层 operation 的名称、描述与精确 schema；未选中的 builtin operation 保留在
-host-owned deferred catalog，由 `tool_catalog` 的 `action=load` 按 operation/root 原子加载到当前 session；
+和内部执行边界；模型只接收对应的窄 schema。provider-facing surface 分层维护：`ask`、`notify`、
+`shell`、`http`、`system.info`、`tool_catalog`、`load_skill` 与 `load_mcp` 每轮直接提供；
+其中 `tool_catalog` 按需提供第二层 root 和第三层 operation 的名称、描述与精确 schema。其它未选中的
+builtin operation 保留在 host-owned deferred catalog，由 `tool_catalog` 的 `action=load` 按
+operation/root 原子加载到当前 session。提示词索引按 `ToolCatalogGroup` 展示，Agent、Session、
+Schedule 与 ToolRun 管理操作归入 `workflow`；Haven、文件系统、Desktop、System、Media、Network
+与 Shell 保持独立分类。目录可见性只影响模型路由，不改变工具名、授权、确认、sandbox 或执行策略。
 启用 Skill 只进入紧凑索引，由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`，并在成功加载结果中返回完整 `SKILL.md` 正文作为任务指引；若正文超出有效工具观察预算（全局观察上限与单工具输出上限中较小者）则拒绝激活，避免模型收到截断指令；
 MCP 服务器索引保持紧凑，仍由 `load_mcp` 按服务器加载并注册到 `SessionToolOverlay`
-（ADR 0127、0131、0137、0145、0148、0816）。provider 常驻工具只保留澄清、通知和目录/加载入口；
-`files.read`、`files.outline`、`files.search`、`system.info` 等 operation 由模型按需加载。内置 `load`
-请求不设固定 operation 数量上限，批次仍受 `context_limits.max_tools_per_request` 的原子准入预算约束。
+（ADR 0127、0131、0137、0145、0148、0816、1331）。Builtin 的 `toolrun.*` 是后台 ToolRun 操作；
+ToolCall 表示 ReAct 前台调用路径，没有独立的 `toolcall.*` 工具根。内置 `load` 请求不设固定
+operation 数量上限，批次仍受 `context_limits.max_tools_per_request` 的原子准入预算约束。
 
 MCP exposure 按 tool 生效：`direct` 与 `model_only` 进入 provider-native 工具列表；`model_only`
 不得成为 CodeMode 的嵌套 capability。`deferred` 经目录显式加载后走 Legacy 原生调用，

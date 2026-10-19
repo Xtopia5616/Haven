@@ -40,7 +40,7 @@ pub enum ToolRetrySafety {
 #[serde(rename_all = "snake_case")]
 pub enum ToolCatalogGroup {
     Haven,
-    Agent,
+    Workflow,
     Files,
     Desktop,
     System,
@@ -57,7 +57,7 @@ impl ToolCatalogGroup {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Haven => "haven",
-            Self::Agent => "agent",
+            Self::Workflow => "workflow",
             Self::Files => "files",
             Self::Desktop => "desktop",
             Self::System => "system",
@@ -74,7 +74,9 @@ impl ToolCatalogGroup {
     pub const fn summary(self) -> &'static str {
         match self {
             Self::Haven => "Haven sessions, memory, tasks, and settings.",
-            Self::Agent => "Peer-agent discovery, session coordination, and messages.",
+            Self::Workflow => {
+                "Coordinate agents and sessions, foreground tool calls, background ToolRuns, and schedules."
+            }
             Self::Files => {
                 "Read, search, inspect, create, and edit files in the authorized workspace."
             }
@@ -628,8 +630,8 @@ mod tests {
                 "Run commands in the authorized execution workspace.",
             ),
             (
-                ToolCatalogGroup::Agent,
-                "Peer-agent discovery, session coordination, and messages.",
+                ToolCatalogGroup::Workflow,
+                "Coordinate agents and sessions, foreground tool calls, background ToolRuns, and schedules.",
             ),
             (
                 ToolCatalogGroup::Skills,

@@ -108,7 +108,7 @@ export function groupBuiltinTools(tools: BuiltinToolEntry[]): BuiltinToolCard[] 
 function categoryOrder(category: ToolCatalogGroup): number {
 	return {
 		haven: 0,
-		agent: 1,
+		workflow: 1,
 		files: 2,
 		desktop: 3,
 		system: 4,
@@ -124,8 +124,8 @@ function categoryOrder(category: ToolCatalogGroup): number {
 function categoryLabel(category: ToolCatalogGroup): string {
 	return {
 		haven: 'Haven',
-		agent: 'Agent 协作',
-		files: '文件与工作区',
+		workflow: '工作流',
+		files: '文件系统',
 		desktop: '桌面操作',
 		system: '系统与设备',
 		media: '媒体与语音',

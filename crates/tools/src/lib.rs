@@ -100,11 +100,19 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
         .unwrap_or(true)
 }
 
-/// The always-visible provider surface is deliberately small. These tools
-/// support clarification, notification, and activation/discovery of deeper
-/// capability layers; built-in operations and Skills are loaded into a
-/// session only when requested by the model.
-const CORE_MODEL_TOOLS: &[&str] = &["ask", "notify", "tool_catalog", "load_skill", "load_mcp"];
+/// Builtins exposed on every provider request. The loaders keep deeper builtin,
+/// Skill, and MCP capabilities available without placing all schemas on the
+/// provider surface at once.
+const CORE_MODEL_TOOLS: &[&str] = &[
+    "ask",
+    "notify",
+    "shell",
+    "http",
+    "system.info",
+    "tool_catalog",
+    "load_skill",
+    "load_mcp",
+];
 
 fn is_core_model_tool(name: &str) -> bool {
     CORE_MODEL_TOOLS.contains(&name)

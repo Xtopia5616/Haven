@@ -744,7 +744,7 @@ async fn test_tools_facade_rebuild_catalog_registers_builtins() {
         ("http", "network"),
         ("files.read", "files"),
         ("clipboard.history", "desktop"),
-        ("agent.list", "agent"),
+        ("agent.list", "workflow"),
     ] {
         let listed = builtin_tools
             .iter()
@@ -864,10 +864,16 @@ async fn stable_core_tools_are_registered_without_optional_providers() {
             .all(|tool| is_core_model_tool(&tool.name())),
         "default rebuild must keep deferred builtins out of the global provider registry"
     );
-    for name in ["files.read", "files.outline", "files.search", "system.info"] {
+    for name in ["files.read", "files.outline", "files.search"] {
         assert!(
             mgr.registry().get(name).await.is_none(),
             "convenience operation {name} must be loaded on demand"
+        );
+    }
+    for name in ["shell", "http", "system.info"] {
+        assert!(
+            mgr.registry().get(name).await.is_some(),
+            "direct builtin {name} must be provider-visible"
         );
     }
 }
@@ -888,7 +894,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
         .await
         .unwrap();
     let family_items = families.output["items"].as_array().unwrap();
-    for family in ["agent", "haven", "system"] {
+    for family in ["workflow", "haven", "system"] {
         assert!(
             family_items.iter().any(|item| item["name"] == family),
             "layer 1 should expose the {family} family"
@@ -1898,17 +1904,18 @@ async fn test_rebuild_catalog_does_not_register_mcp_tools() {
 }
 
 #[tokio::test]
-async fn test_builtin_loader_keeps_deferred_tools_out_of_provider_surface() {
+async fn direct_tools_stay_on_provider_surface_while_deferred_builtins_load_on_demand() {
     let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
 
-    assert!(mgr.registry().get("shell").await.is_none());
-    assert!(mgr.get_tool("shell").await.is_some());
+    assert!(mgr.registry().get("shell").await.is_some());
+    assert!(mgr.registry().get("http").await.is_some());
+    assert!(mgr.registry().get("system.info").await.is_some());
     assert!(
         mgr.list_tool_definitions_for_session("ses-334aafdac2a2c6de43c6daf3805f41d5")
             .await
             .iter()
-            .all(|def| def.name != "shell")
+            .any(|def| def.name == "shell")
     );
 
     let result = mgr
@@ -1918,7 +1925,7 @@ async fn test_builtin_loader_keeps_deferred_tools_out_of_provider_surface() {
             serde_json::json!({
                 "action": "load",
                 "source": "builtin",
-                "operations": ["shell"]
+                "operations": ["files.read"]
             }),
             CancellationToken::new(),
         )
@@ -1931,7 +1938,8 @@ async fn test_builtin_loader_keeps_deferred_tools_out_of_provider_surface() {
     let loaded = mgr
         .list_tool_definitions_for_session("ses-334aafdac2a2c6de43c6daf3805f41d5")
         .await;
-    assert!(loaded.iter().any(|def| def.name == "shell"));
+    assert!(loaded.iter().any(|def| def.name == "files.read"));
+    assert!(loaded.iter().any(|def| def.name == "system.info"));
 }
 
 #[tokio::test]
