@@ -383,7 +383,7 @@ impl ReActEngine {
                 )
             }
             Some(status) if status.is_paused() => ReActRunBoundary::Exit(
-                self.exit_external_pause(session_id, state, step_number, emitter, run_id)
+                self.exit_external_pause(session_id, state, step_number, run_id)
                     .await,
             ),
             _ => ReActRunBoundary::Continue,

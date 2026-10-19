@@ -213,14 +213,19 @@ impl ReActEngine {
             deadline.ensure_remaining("context injection")?;
         }
 
-        let before_step = self
-            .hooks
-            .before_step(self, &ctx, state, cancel.clone())
-            .instrument(tracing::info_span!("before_step", session_id, step_number))
+        let prepared_turn = self
+            .turn_preparation
+            .prepare(self, &ctx, state, cancel.clone())
+            .instrument(tracing::info_span!("turn_prepare", session_id, step_number))
             .await?;
-        deadline.ensure_remaining("before-step hooks")?;
+        deadline.ensure_remaining("turn preparation")?;
 
-        if let Some(memory_trigger) = before_step.memory_trigger {
+        let super::PreparedTurn {
+            tool_catalog: catalog,
+            tools: prepared_tools,
+            memory_trigger,
+        } = prepared_turn;
+        if let Some(memory_trigger) = memory_trigger {
             crate::memory_trigger::append_memory_trigger_nonfatal(
                 self.event_store.clone(),
                 session_id,
@@ -264,19 +269,6 @@ impl ReActEngine {
             );
         }
 
-        let catalog = match before_step.tool_catalog {
-            Some(catalog) => catalog,
-            None => self.build_tool_catalog_for_session(session_id).await,
-        };
-        let prepared_tools = match before_step.tool_definitions {
-            Some(definitions) => super::sidecars::PreparedToolDefinitions {
-                token_estimate: before_step
-                    .tool_token_estimate
-                    .unwrap_or_else(|| crate::token_budget::estimate_tool_tokens(&definitions)),
-                definitions,
-            },
-            None => self.prepare_tool_definitions(session_id, &catalog),
-        };
         let tools = prepared_tools.definitions;
         let tool_token_estimate = prepared_tools.token_estimate;
         let router = self.router();

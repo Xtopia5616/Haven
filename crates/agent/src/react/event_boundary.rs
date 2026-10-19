@@ -339,21 +339,8 @@ impl ReActEngine {
                 )
                 .await?;
             }
-            let ctx = StepCtx {
-                session_id: session_id.to_string(),
-                step_number: boundary_step,
-                run_id,
-                emitter: emitter.clone(),
-            };
-            if let Some(memory_trigger) = self.hooks.on_pause(self, &ctx, reason).await {
-                crate::memory_trigger::append_memory_trigger_nonfatal(
-                    self.event_store.clone(),
-                    session_id,
-                    memory_trigger,
-                    CancellationToken::new(),
-                )
+            self.append_pause_memory_trigger(session_id, run_id, boundary_step, reason)
                 .await;
-            }
             Ok(())
         }
         .instrument(tracing::info_span!(
@@ -412,25 +399,13 @@ impl ReActEngine {
                     body: BUDGET_EXHAUSTED_BODY.into(),
                 })
                 .await;
-            let ctx = StepCtx {
-                session_id: session_id.to_string(),
-                step_number: boundary_step,
+            self.append_pause_memory_trigger(
+                session_id,
                 run_id,
-                emitter: emitter.clone(),
-            };
-            if let Some(memory_trigger) = self
-                .hooks
-                .on_pause(self, &ctx, PauseReason::Budget)
-                .await
-            {
-                crate::memory_trigger::append_memory_trigger_nonfatal(
-                    self.event_store.clone(),
-                    session_id,
-                    memory_trigger,
-                    CancellationToken::new(),
-                )
-                .await;
-            }
+                boundary_step,
+                PauseReason::Budget,
+            )
+            .await;
             Ok(())
         }
         .instrument(tracing::info_span!(
@@ -511,7 +486,6 @@ impl ReActEngine {
         session_id: &str,
         state: &ReActState,
         step_number: u32,
-        emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
     ) -> LoopExit {
         if !self
@@ -523,24 +497,30 @@ impl ReActEngine {
                 session_id
             ));
         }
-        let ctx = StepCtx {
-            session_id: session_id.to_string(),
-            step_number,
-            run_id,
-            emitter: emitter.clone(),
-        };
-        if let Some(memory_trigger) = self.hooks.on_pause(self, &ctx, PauseReason::External).await {
-            crate::memory_trigger::append_memory_trigger_nonfatal(
-                self.event_store.clone(),
-                session_id,
-                memory_trigger,
-                CancellationToken::new(),
-            )
+        self.append_pause_memory_trigger(session_id, run_id, step_number, PauseReason::External)
             .await;
-        }
         LoopExit::Paused {
             reason: PauseReason::External,
         }
+    }
+
+    /// Pause triggers are part of this durable boundary owner: only append
+    /// them after the event cursor has been verified and lifecycle state set.
+    async fn append_pause_memory_trigger(
+        &self,
+        session_id: &str,
+        run_id: u64,
+        step_number: u32,
+        reason: PauseReason,
+    ) {
+        let memory_trigger = pause_memory_trigger_payload(run_id, step_number, reason);
+        crate::memory_trigger::append_memory_trigger_nonfatal(
+            self.event_store.clone(),
+            session_id,
+            memory_trigger,
+            CancellationToken::new(),
+        )
+        .await;
     }
 
     /// Verify the event stream and projection clocks, including rollback points.
@@ -959,6 +939,21 @@ impl ReActEngine {
         state.branch_points.insert(step_number, branch_point);
         Ok(())
     }
+}
+
+fn pause_memory_trigger_payload(
+    run_id: u64,
+    step_number: u32,
+    reason: PauseReason,
+) -> crate::memory_trigger::MemoryTriggerPayload {
+    let pause_reason = match reason {
+        PauseReason::TurnEnd => "turn_end",
+        PauseReason::Ask => "ask",
+        PauseReason::Confirm => "confirm",
+        PauseReason::Budget => "budget",
+        PauseReason::External => "external",
+    };
+    crate::memory_trigger::MemoryTriggerPayload::pause(run_id, step_number, pause_reason)
 }
 
 #[cfg(test)]

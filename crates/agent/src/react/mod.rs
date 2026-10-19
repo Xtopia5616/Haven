@@ -33,8 +33,6 @@ mod compaction_summary_tests;
 mod context;
 mod effects;
 mod event_boundary;
-mod hook_policy;
-mod hooks;
 pub(crate) mod identity;
 mod inject;
 mod r#loop;
@@ -48,6 +46,8 @@ mod response_policy;
 pub(crate) mod sidecars;
 mod state;
 pub(crate) mod stream_step;
+mod tool_admission;
+mod tool_admission_policy;
 mod tool_batch;
 mod tool_batch_execute;
 pub(crate) mod tool_batch_plan;
@@ -56,12 +56,11 @@ mod tool_ports;
 mod transcript;
 mod turn;
 mod turn_end;
+mod turn_preparation;
 mod usage;
 
 use context::ContextSource;
 pub(crate) use context::tool_run_result_message_id;
-use hooks::{LoopHooksHandle, default_hooks};
-pub(crate) use hooks::{MemoryPatchHandle, default_hooks_with_patch};
 pub(crate) use r#loop::{LoopExit, PauseReason};
 pub(crate) use r#loop::{ReActRunInput, ReActRunReplay};
 use metrics::{Counter as MetricsCounter, Phase as MetricsPhase, ReActMetrics};
@@ -69,10 +68,16 @@ pub use metrics::{METRICS_PHASE_COUNT, MetricsSnapshot, UiMetricsSnapshot};
 pub(crate) use request_context::RequestContext;
 use sidecars::{ContextWindowCache, PreparedToolDefinitions, ToolDefCache};
 pub(crate) use state::{ReActState, RetryNudge};
+use tool_admission::ToolAdmissionHandle;
+use tool_admission_policy::default_tool_admission;
 pub use tool_ports::ToolCatalogPort;
 #[cfg(test)]
 pub(crate) use tool_ports::ToolsFacadeToolCatalogAdapter;
 use transcript::{ObservationCard, TranscriptWrite};
+pub(crate) use turn_preparation::{
+    MemoryPatchHandle, PreparedTurn, TurnPreparationHandle, default_turn_preparation,
+    default_turn_preparation_with_patch,
+};
 use usage::{UsageRuntime, UsageUpdate};
 
 fn runtime_setting_lock<'a, T>(
@@ -390,9 +395,11 @@ pub(crate) struct ReActEngine {
     /// Per-session provider definitions and serialized schema cost, keyed by
     /// the immutable global/session catalog version.
     tool_definitions: ToolDefCache,
-    /// Domain side effects (inbox / compact / infer). Thin loop only calls
-    /// `hooks.before_step` / `on_pause` (Phase 3 / G1).
-    hooks: LoopHooksHandle,
+    /// Complete provider tool surface and canonical context preparation for
+    /// one turn. Runs after context injection and before request projection.
+    turn_preparation: TurnPreparationHandle,
+    /// Required safety gate for every foreground tool call.
+    tool_admission: ToolAdmissionHandle,
     /// Optional fact engine for compaction-summary extraction (M3).
     memory_worker: Option<Arc<crate::MemoryWorker>>,
     /// Fixed-size, in-process ReAct baseline metrics. Updates are atomic and
@@ -462,7 +469,8 @@ impl ReActEngine {
             context_source,
             context_windows: ContextWindowCache::new(),
             tool_definitions: ToolDefCache::new(),
-            hooks: default_hooks(),
+            turn_preparation: default_turn_preparation(),
+            tool_admission: default_tool_admission(),
             memory_worker: None,
             metrics,
             committed_ui: Arc::new(committed_ui::CommittedUiPublisher::new()),
@@ -497,10 +505,10 @@ impl ReActEngine {
         self.metrics.increment(MetricsCounter::ToolRunResultRetries);
     }
 
-    /// Replace loop hooks (production: `default_hooks_with_patch`; tests:
-    /// `hooks::NoopHooks` to skip inbox/memory maintenance).
-    pub(crate) fn with_hooks(mut self, hooks: LoopHooksHandle) -> Self {
-        self.hooks = hooks;
+    /// Replace the turn preparation collaborator (production may attach the
+    /// shared MEMORY patcher; tests can use an inert preparation).
+    pub(crate) fn with_turn_preparation(mut self, preparation: TurnPreparationHandle) -> Self {
+        self.turn_preparation = preparation;
         self
     }
 

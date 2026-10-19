@@ -4,7 +4,9 @@
 //! turn result. This module retries only structurally incomplete tool calls;
 //! empty or abnormally terminated responses become recoverable session errors.
 
-use super::response_policy::{ResponsePolicyDecision, ResponsePolicyState};
+use super::response_policy::{
+    ResponsePolicy, ResponsePolicyDecision, ResponsePolicyInput, ResponsePolicyState,
+};
 use super::stream_step::StreamSession;
 use super::{AgentToolCall, ReActEngine, ReActState, RequestContext, StepCtx};
 use haven_llm::LlmResponse;
@@ -51,23 +53,16 @@ impl ReActEngine {
         let limits = self.limits();
 
         loop {
-            let decision = self
-                .hooks
-                .after_llm(
-                    self,
-                    ctx,
-                    super::response_policy::ResponsePolicyInput {
-                        thought: &thought,
-                        tool_calls: &tool_calls,
-                        response: &response,
-                        state: ResponsePolicyState {
-                            incomplete_tool_args_retries_used: *incomplete_tool_args_retries,
-                            incomplete_tool_args_retries_max: limits.incomplete_tool_args_retries,
-                            pending_ask,
-                        },
-                    },
-                )
-                .await;
+            let decision = ResponsePolicy::classify(&ResponsePolicyInput {
+                thought: &thought,
+                tool_calls: &tool_calls,
+                response: &response,
+                state: ResponsePolicyState {
+                    incomplete_tool_args_retries_used: *incomplete_tool_args_retries,
+                    incomplete_tool_args_retries_max: limits.incomplete_tool_args_retries,
+                    pending_ask,
+                },
+            });
 
             match decision {
                 ResponsePolicyDecision::Accept => {

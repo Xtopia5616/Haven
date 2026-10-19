@@ -24,6 +24,22 @@ fn test_engine(db: Arc<Database>) -> ReActEngine {
     )
 }
 
+#[test]
+fn pause_memory_trigger_payload_uses_the_event_boundary_reason() {
+    for (reason, wire_reason) in [
+        (PauseReason::TurnEnd, "turn_end"),
+        (PauseReason::Ask, "ask"),
+        (PauseReason::Confirm, "confirm"),
+        (PauseReason::Budget, "budget"),
+        (PauseReason::External, "external"),
+    ] {
+        assert_eq!(
+            pause_memory_trigger_payload(7, 25, reason),
+            crate::memory_trigger::MemoryTriggerPayload::pause(7, 25, wire_reason)
+        );
+    }
+}
+
 #[tokio::test]
 async fn event_boundary_cursor_read_succeeds_without_changing_the_event_log() {
     let db = Arc::new(Database::open_in_memory().unwrap());

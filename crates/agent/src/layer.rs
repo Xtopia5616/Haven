@@ -244,7 +244,9 @@ impl AgentLayer {
                 max_steps_per_run,
                 context_limits.clone(),
             )
-            .with_hooks(crate::react::default_hooks_with_patch(memory_patch))
+            .with_turn_preparation(crate::react::default_turn_preparation_with_patch(
+                memory_patch,
+            ))
             .with_memory_worker(memory_worker.clone()),
         );
         // Title generator is always available: it routes through the shared

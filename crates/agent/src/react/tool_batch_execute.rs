@@ -6,7 +6,7 @@
 //! `tool_batch.rs`; failure policy lives in `tool_batch_policy.rs`.
 
 use super::effects::RunControl;
-use super::hooks::{BeforeToolCallDecision, BeforeToolRequest, ToolCallIdentity};
+use super::tool_admission::{BeforeToolCallDecision, BeforeToolRequest, ToolCallIdentity};
 use super::tool_batch::{
     CompletedTool, MAX_CONCURRENT_TOOL_CALLS, MAX_RUNTIME_TOOL_CALLS_PER_BATCH, ToolBatchGate,
     ToolBatchResults, ToolBatchState, ToolExecutionRequest, execute_tool_call, tool_step_metadata,
@@ -163,7 +163,7 @@ impl ReActEngine {
             return admission;
         }
 
-        // The production pre-tool hook only reads the pending interaction and
+        // Production admission only reads the pending interaction and
         // evaluates the current authorization policy. Bound these independent
         // checks like execution, while `buffered` keeps their outputs in plan
         // order. Collect every decision before returning: the caller starts no
@@ -195,7 +195,7 @@ impl ReActEngine {
                 return Box::pin(async move { Err((plan_index, error)) }) as AdmissionCheckFuture;
             }
 
-            let gate = self.hooks.before_tool(BeforeToolRequest {
+            let gate = self.tool_admission.admit_tool(BeforeToolRequest {
                 executor: Arc::clone(&self.executor),
                 session_id: gate_ctx.session_id.clone(),
                 catalog: catalog.clone(),
@@ -834,7 +834,7 @@ impl ReActEngine {
         match session_state {
             Some(s) if s.is_paused() => {
                 return Ok(RunControl::Exit(
-                    self.exit_external_pause(session_id, state, step_number, emitter, run_id)
+                    self.exit_external_pause(session_id, state, step_number, run_id)
                         .await,
                 ));
             }

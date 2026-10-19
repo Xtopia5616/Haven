@@ -1503,30 +1503,6 @@ mod tests {
         async fn emit(&self, _event: AgentEvent) {}
     }
 
-    struct ResponsePolicyHooks;
-
-    #[async_trait]
-    impl super::super::hooks::LoopHooks for ResponsePolicyHooks {
-        async fn before_step(
-            &self,
-            _engine: &ReActEngine,
-            _ctx: &StepCtx,
-            _state: &mut ReActState,
-            _cancel: CancellationToken,
-        ) -> anyhow::Result<super::super::hooks::BeforeStepOutput> {
-            Ok(super::super::hooks::BeforeStepOutput::default())
-        }
-
-        async fn after_llm(
-            &self,
-            _engine: &ReActEngine,
-            _ctx: &StepCtx,
-            input: super::super::response_policy::ResponsePolicyInput<'_>,
-        ) -> super::super::response_policy::ResponsePolicyDecision {
-            super::super::response_policy::ResponsePolicy::classify(&input)
-        }
-    }
-
     enum ProbeResponse {
         Error(LlmError),
         Chunk(Box<StreamChunk>),
@@ -1709,7 +1685,9 @@ mod tests {
             8,
             ContextLimitsConfig::default(),
         )
-        .with_hooks(Arc::new(ResponsePolicyHooks));
+        .with_turn_preparation(Arc::new(
+            super::super::turn_preparation::NoopTurnPreparation,
+        ));
 
         let old_context = format!("pre-compaction-only-marker {}", "context ".repeat(110_000));
         let mut image_message = image_message();

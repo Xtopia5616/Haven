@@ -87,21 +87,21 @@ impl LlmClient for PreparationClient {
     }
 }
 
-struct PreparationHooks {
+struct PreparationProbe {
     items: usize,
     cancel: bool,
     calls: AtomicUsize,
 }
 
 #[async_trait]
-impl hooks::LoopHooks for PreparationHooks {
-    async fn before_step(
+impl super::turn_preparation::TurnPreparation for PreparationProbe {
+    async fn prepare(
         &self,
         engine: &ReActEngine,
         ctx: &StepCtx,
         _: &mut ReActState,
         cancel: CancellationToken,
-    ) -> anyhow::Result<hooks::BeforeStepOutput> {
+    ) -> anyhow::Result<super::turn_preparation::PreparedTurn> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         // Deterministically model input accepted during an awaited prologue.
         for index in 0..self.items {
@@ -117,7 +117,13 @@ impl hooks::LoopHooks for PreparationHooks {
         if self.cancel {
             cancel.cancel();
         }
-        Ok(hooks::BeforeStepOutput::default())
+        let catalog = engine.build_tool_catalog_for_session(&ctx.session_id).await;
+        Ok(super::turn_preparation::PreparedTurn::from_catalog(
+            engine,
+            &ctx.session_id,
+            catalog,
+            None,
+        ))
     }
 }
 
@@ -131,7 +137,7 @@ async fn run_preparation_case(
     items: usize,
     compact: bool,
     cancel: bool,
-) -> (Arc<PreparationClient>, Arc<PreparationHooks>, ReActState) {
+) -> (Arc<PreparationClient>, Arc<PreparationProbe>, ReActState) {
     let directory = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(&directory.path().join("preparation.db")).unwrap());
     let executor = Arc::new(SessionSupervisor::new_for_test(
@@ -156,7 +162,7 @@ async fn run_preparation_case(
         client.clone(),
         client.clone(),
     ));
-    let hook = Arc::new(PreparationHooks {
+    let hook = Arc::new(PreparationProbe {
         items,
         cancel,
         calls: AtomicUsize::new(0),
@@ -172,7 +178,7 @@ async fn run_preparation_case(
             ..Default::default()
         },
     )
-    .with_hooks(hook.clone());
+    .with_turn_preparation(hook.clone());
     let canonical = if compact {
         (0..12)
             .map(|index| {

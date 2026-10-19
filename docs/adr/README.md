@@ -1318,3 +1318,4 @@
 - [1327：恢复 Session grant 与 resolve event 分离提交](1327-recover-session-grant-after-resolve-append-failure.md)
 - [1328：隔离并恢复单条超限 Messaging inbox 行](1328-quarantine-oversized-messaging-inbox-rows.md)
 - [1329：按用户任务重分类内置工具目录](1329-reclassify-builtin-tool-catalog.md)
+- [1330：收敛 ReAct turn 准备、安全准入与边界 owner](1330-converge-react-turn-and-boundary-owners.md)
