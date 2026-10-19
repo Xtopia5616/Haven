@@ -93,7 +93,7 @@
 
 Session、ScheduleRun 与 AppCommand 确认均由各自 owner 和稳定 request identity 路由；Session grant、resolve event/status 与 actor 唤醒顺序有明确的持久化和失败契约。交互 replay 失败保持 fail-closed，pending session 恢复有界并可取消地重试。当前行为契约与逐项验证见 ADR 0423/0424、0507–0522。2026-10-17 源码审计当时发现 AppCommand pending 状态、入队/过期和 resolve continuation 分散于 `app_state.rs`、`commands/mod.rs`、`commands/session.rs`；该 owner 已按 ADR 1302 收拢，且未重定义既有交互契约。
 
-源码复核修正了该边界：grant 写入后，Session confirmation resolution 与 `end_session` 由 `confirmation_resolution_gate` 串行；Actor 先 append `interaction_resolved`，成功后才移除 pending/唤醒 session，append 失败保留 paused pending。已有失败注入测试覆盖同一 actor 内重试且 grant upsert 不重复。进程崩溃会清除进程内 expiry task；启动恢复只自动载入 `status = pending` 的 session，因此该 paused session 要等显式 reopen 才会重建 actor、replay durable request/grant 并重新安排 expiry（过期时 delay 为零）。UI 打开历史会话前会调用 `reopen_session`；resolve IPC 对未加载 actor 返回 stale。新一轮验收明确覆盖此路径与 UI 行为，不将旧“未定义”结论当作事实，也不隐含承诺 unloaded paused session 在后台自动到期。session grant 的持久 owner 与 Agent/Memory 事务边界不变。
+源码复核修正了该边界：grant 写入后，Session confirmation resolution 与 `end_session` 由 `confirmation_resolution_gate` 串行；Actor 先 append `interaction_resolved`，成功后才移除 pending/唤醒 session，append 失败保留 paused pending。ADR 0519 覆盖同一 actor 内重试；actor 退出后的补偿、重试与期限收敛由 [ADR 1327](adr/1327-recover-session-grant-after-resolve-append-failure.md) 明确：已提交 grant 不补偿删除；未载入 actor 的 resolve 返回 stale 且不改 durable state；显式 reopen 按原 request ID 和绝对 deadline 恢复，deadline 已过时立即追加 Expired，不执行该 ToolCall continuation。Startup 只自动载入 `status = pending` 的 session，故 unloaded paused session 不承诺后台自动到期。UI 自动恢复先显示 transcript，等 `reopen_session` 成功后再呈现 pending confirmation；其他历史打开路径同样先 reopen 再读取 resume snapshot。Session grant 的持久 owner 与 Agent/Memory 事务边界不变。
 
 ### 5.3 内部模块与 crate 边界（按证据复核）
 

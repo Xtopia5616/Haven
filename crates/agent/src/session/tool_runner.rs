@@ -1152,6 +1152,415 @@ mod scheduled_authorization_tests {
     }
 
     #[tokio::test]
+    async fn session_grant_resolve_failure_replays_and_retries_after_actor_replacement() {
+        let (supervisor, tools, database, _directory) = test_supervisor();
+        let session = supervisor
+            .create_session("session grant resolve append actor replacement")
+            .await
+            .unwrap();
+        let tool_name = "files.write";
+        let input = json!({"path": "notes.txt"});
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                &session.session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::High,
+                    on_execute: None,
+                    result: None,
+                }),
+            )
+            .await;
+
+        let authorization_request = supervisor
+            .scheduled_authorization_request(Some(&session.session_id), tool_name, &input)
+            .await
+            .unwrap();
+        let receipt = match supervisor
+            .authorization
+            .authorize(&authorization_request)
+            .await
+        {
+            AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
+            decision => panic!("expected confirmation, got {decision:?}"),
+        };
+        let request_id = receipt.confirmation_id.clone();
+        let request = crate::interaction::InteractionRequest::confirm(
+            &session.session_id,
+            1,
+            tool_name.into(),
+            input.clone(),
+            "call-grant-resolve-actor-replacement".into(),
+            format!("step-{}", "b".repeat(32)),
+            0,
+            RiskLevel::High,
+            Some(receipt),
+        );
+        supervisor
+            .request_confirm_batch(&session.session_id, vec![request])
+            .await
+            .unwrap();
+
+        database
+            .conn()
+            .execute_batch(
+                "CREATE TRIGGER reject_confirmation_resolve_event_after_actor_exit
+                 BEFORE INSERT ON session_events
+                 WHEN NEW.event_type = 'interaction_resolved'
+                 BEGIN SELECT RAISE(ABORT, 'test confirmation resolve append failure'); END;",
+            )
+            .unwrap();
+        let owner = crate::interaction::InteractionOwner::Session {
+            session_id: session.session_id.clone(),
+        };
+        assert!(
+            supervisor
+                .resolve_confirmation_with_session_grant_for_owner(
+                    &owner,
+                    &request_id,
+                    haven_common::types::PermissionTarget::Operation,
+                    PermissionEffect::Allow,
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            database
+                .session_authorization_grants(&session.session_id)
+                .unwrap()
+                .len(),
+            1,
+            "the accepted grant is durable before the actor exits"
+        );
+
+        let stopped_actor = {
+            let _lifecycle = supervisor.lifecycle_guard().await;
+            supervisor
+                .remove_actor_locked(&session.session_id)
+                .await
+                .expect("the test must remove the original actor")
+        };
+        drop(stopped_actor);
+        assert!(
+            supervisor
+                .resolve_confirmation_with_session_grant_for_owner(
+                    &owner,
+                    &request_id,
+                    haven_common::types::PermissionTarget::Operation,
+                    PermissionEffect::Allow,
+                )
+                .await
+                .unwrap()
+                .is_none(),
+            "a request with no loaded owner is stale"
+        );
+
+        database
+            .conn()
+            .execute_batch("DROP TRIGGER reject_confirmation_resolve_event_after_actor_exit;")
+            .unwrap();
+
+        // A fresh executor represents a later explicit reopen. Its live trust
+        // map starts empty and must be rebuilt from durable grant rows.
+        let reopened_tools = Arc::new(haven_tools::ToolsFacade::new());
+        reopened_tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                &session.session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::High,
+                    on_execute: None,
+                    result: None,
+                }),
+            )
+            .await;
+        let reopened = Arc::new(SessionSupervisor::new_for_test(
+            database.clone(),
+            reopened_tools,
+            1,
+        ));
+        assert!(
+            reopened
+                .resolve_confirmation_with_session_grant_for_owner(
+                    &owner,
+                    &request_id,
+                    haven_common::types::PermissionTarget::Operation,
+                    PermissionEffect::Allow,
+                )
+                .await
+                .unwrap()
+                .is_none(),
+            "reopen must install the durable owner before retry"
+        );
+        reopened
+            .ensure_session_loaded(&session.session_id)
+            .await
+            .unwrap();
+        assert!(
+            reopened
+                .pending_session_confirmation_request(&session.session_id, &request_id)
+                .await
+                .is_some(),
+            "replay restores the original pending request identity"
+        );
+        assert!(
+            matches!(
+                reopened
+                    .authorization
+                    .authorize(&authorization_request)
+                    .await,
+                AuthorizationDecision::AutoApproved
+            ),
+            "reopen restores the already accepted durable grant"
+        );
+
+        assert!(
+            reopened
+                .resolve_confirmation_with_session_grant_for_owner(
+                    &owner,
+                    &request_id,
+                    haven_common::types::PermissionTarget::Operation,
+                    PermissionEffect::Allow,
+                )
+                .await
+                .unwrap()
+                .is_some(),
+            "the same request can retry while its original deadline is live"
+        );
+        assert_eq!(
+            database
+                .session_authorization_grants(&session.session_id)
+                .unwrap()
+                .len(),
+            1,
+            "replaying and retrying must not duplicate the grant"
+        );
+        let events = reopened
+            .store
+            .read_active_domain_events_async(&session.session_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == haven_memory::INTERACTION_RESOLVED_EVENT_TYPE)
+                .count(),
+            1,
+            "the retry appends one terminal decision event"
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_replayed_confirmation_keeps_accepted_session_grant() {
+        use std::time::Duration;
+
+        let (supervisor, tools, database, _directory) = test_supervisor();
+        let session = supervisor
+            .create_session("expired session grant resolve append")
+            .await
+            .unwrap();
+        let tool_name = "files.write";
+        let input = json!({"path": "notes.txt"});
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                &session.session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::High,
+                    on_execute: None,
+                    result: None,
+                }),
+            )
+            .await;
+
+        let authorization_request = supervisor
+            .scheduled_authorization_request(Some(&session.session_id), tool_name, &input)
+            .await
+            .unwrap();
+        let mut receipt = match supervisor
+            .authorization
+            .authorize(&authorization_request)
+            .await
+        {
+            AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
+            decision => panic!("expected confirmation, got {decision:?}"),
+        };
+        receipt.expires_at = chrono::Utc::now().timestamp().max(0) as u64 + 3;
+        let request_id = receipt.confirmation_id.clone();
+        let request = crate::interaction::InteractionRequest::confirm(
+            &session.session_id,
+            1,
+            tool_name.into(),
+            input.clone(),
+            "call-grant-resolve-expiry".into(),
+            format!("step-{}", "c".repeat(32)),
+            0,
+            RiskLevel::High,
+            Some(receipt.clone()),
+        );
+        let deadline = request.pending_permission_deadline().unwrap();
+        supervisor
+            .request_confirm_batch(&session.session_id, vec![request])
+            .await
+            .unwrap();
+
+        database
+            .conn()
+            .execute_batch(
+                "CREATE TRIGGER reject_confirmation_expiry_event_until_reopen
+                 BEFORE INSERT ON session_events
+                 WHEN NEW.event_type = 'interaction_resolved'
+                 BEGIN SELECT RAISE(ABORT, 'test confirmation resolve append failure'); END;",
+            )
+            .unwrap();
+        let owner = crate::interaction::InteractionOwner::Session {
+            session_id: session.session_id.clone(),
+        };
+        assert!(
+            supervisor
+                .resolve_confirmation_with_session_grant_for_owner(
+                    &owner,
+                    &request_id,
+                    haven_common::types::PermissionTarget::Operation,
+                    PermissionEffect::Allow,
+                )
+                .await
+                .is_err()
+        );
+        let stopped_actor = {
+            let _lifecycle = supervisor.lifecycle_guard().await;
+            supervisor
+                .remove_actor_locked(&session.session_id)
+                .await
+                .expect("the test must remove the original actor")
+        };
+        drop(stopped_actor);
+
+        let until_deadline = (deadline - chrono::Utc::now())
+            .to_std()
+            .unwrap_or_default()
+            .saturating_add(Duration::from_millis(150));
+        tokio::time::sleep(until_deadline).await;
+        let before_reopen = supervisor
+            .store
+            .read_active_domain_events_async(&session.session_id)
+            .await
+            .unwrap();
+        assert!(
+            before_reopen
+                .iter()
+                .all(|event| event.event_type != haven_memory::INTERACTION_RESOLVED_EVENT_TYPE),
+            "the unloaded paused session has no process-local expiry owner"
+        );
+        assert!(
+            supervisor
+                .resolve_confirmation_with_session_grant_for_owner(
+                    &owner,
+                    &request_id,
+                    haven_common::types::PermissionTarget::Operation,
+                    PermissionEffect::Allow,
+                )
+                .await
+                .unwrap()
+                .is_none(),
+            "a stale click cannot resolve an unloaded owner"
+        );
+        database
+            .conn()
+            .execute_batch("DROP TRIGGER reject_confirmation_expiry_event_until_reopen;")
+            .unwrap();
+
+        let reopened_tools = Arc::new(haven_tools::ToolsFacade::new());
+        reopened_tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                &session.session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::High,
+                    on_execute: None,
+                    result: None,
+                }),
+            )
+            .await;
+        let reopened = Arc::new(SessionSupervisor::new_for_test(
+            database.clone(),
+            reopened_tools,
+            1,
+        ));
+        reopened
+            .ensure_session_loaded(&session.session_id)
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                reopened
+                    .authorization
+                    .authorize(&authorization_request)
+                    .await,
+                AuthorizationDecision::AutoApproved
+            ),
+            "the durable grant remains effective after the request deadline"
+        );
+
+        let events = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let events = reopened
+                    .store
+                    .read_active_domain_events_async(&session.session_id)
+                    .await
+                    .unwrap();
+                if events
+                    .iter()
+                    .any(|event| event.event_type == haven_memory::INTERACTION_RESOLVED_EVENT_TYPE)
+                {
+                    break events;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("reopen must schedule immediate expiry for an elapsed request");
+        let expired = events
+            .iter()
+            .find(|event| event.event_type == haven_memory::INTERACTION_RESOLVED_EVENT_TYPE)
+            .and_then(|event| {
+                serde_json::from_str::<crate::interaction::InteractionRequest>(&event.payload).ok()
+            })
+            .expect("expiry event must contain the terminal interaction");
+        assert_eq!(expired.request_id, request_id.as_str());
+        assert_eq!(
+            expired.status,
+            crate::interaction::InteractionStatus::Expired,
+            "an elapsed request expires without replaying its tool continuation"
+        );
+        assert!(
+            matches!(
+                reopened
+                    .authorization
+                    .authorize(&authorization_request)
+                    .await,
+                AuthorizationDecision::AutoApproved
+            ),
+            "expiry does not compensate the separately accepted grant"
+        );
+        assert_eq!(
+            database
+                .session_authorization_grants(&session.session_id)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn scheduled_resolve_and_expiry_share_a_single_terminal_claim() {
         let (supervisor, _tools, database, _directory) = test_supervisor();
         let fixture = running_schedule_run(&supervisor, &database, None, "files.write").await;

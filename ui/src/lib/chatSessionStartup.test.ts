@@ -7,6 +7,7 @@ import type {
 	RuntimeSessionListResponse,
 	SessionResumeResponse,
 } from './contracts/sessionHistory.ts';
+import type { InteractionRequest } from './contracts/app.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
 import type { SessionResumeTarget } from './sessionIntentStore.ts';
 
@@ -53,6 +54,25 @@ function resume(
 		usage: null,
 		llm_usage: [],
 		interactions: [],
+	};
+}
+
+function pendingConfirmation(): InteractionRequest {
+	return {
+		requestId: 'conf-00000000000000000000000000000001',
+		sessionId: SESSION_ID,
+		owner: { kind: 'session', sessionId: SESSION_ID },
+		kind: 'confirm',
+		status: 'pending',
+		options: [],
+		toolName: 'files.write',
+		riskLevel: 'high',
+		summary: '写入 notes.txt',
+		toolIndex: 0,
+		permissionKey: 'files.write',
+		invocationStepId: 'step-00000000000000000000000000000001',
+		createdAt: '2026-10-19T00:00:00Z',
+		expiresAt: '2026-10-19T00:05:00Z',
 	};
 }
 
@@ -213,6 +233,63 @@ describe('createChatSessionStartup', () => {
 		expect(harness.reopened).toEqual([]);
 		expect(harness.initialLoadingChanges).toEqual([false]);
 		expect(harness.sessionListCalls).toBe(2);
+	});
+
+	it('hydrates replayed confirmations only after auto-resume loads their actor owner', async () => {
+		const reopen = deferred<void>();
+		const latest = resume();
+		const request = pendingConfirmation();
+		latest.interactions = [request];
+		const harness = createHarness({
+			getLatestSessionForResume: async () => latest,
+			reopenSession: () => reopen.promise,
+		});
+
+		const loading = harness.startup.loadInitialSessions(null);
+		await vi.waitFor(() => expect(harness.reopened).toEqual([SESSION_ID]));
+		expect(harness.reducer.snapshot().activeSessionId).toBe(SESSION_ID);
+		expect(harness.reducer.snapshot().messages[SESSION_ID]).toEqual([]);
+		expect(harness.reducer.snapshot().interactions[request.requestId]).toBeUndefined();
+		expect(
+			harness.actions.some((action) => action.type === 'session/interactions-hydrated'),
+		).toBe(false);
+
+		reopen.resolve();
+		await loading;
+
+		expect(harness.reducer.snapshot().interactions[request.requestId]).toEqual(request);
+		const reopenAction = harness.actions.findIndex(
+			(action) => action.type === 'session/interactions-hydrated',
+		);
+		expect(reopenAction).toBeGreaterThan(
+			harness.actions.findIndex((action) => action.type === 'session/messages/resume-loaded'),
+		);
+		expect(harness.actions[reopenAction]).toMatchObject({
+			type: 'session/interactions-hydrated',
+			sessionId: SESSION_ID,
+			requests: [request],
+		});
+	});
+
+	it('keeps replayed confirmations hidden when auto-resume cannot load their actor owner', async () => {
+		const latest = resume();
+		const request = pendingConfirmation();
+		latest.interactions = [request];
+		const harness = createHarness({
+			getLatestSessionForResume: async () => latest,
+			reopenSession: async () => {
+				throw new Error('actor restore failed');
+			},
+		});
+
+		await harness.startup.loadInitialSessions(null);
+
+		expect(harness.reducer.snapshot().activeSessionId).toBe(SESSION_ID);
+		expect(harness.reducer.snapshot().interactions[request.requestId]).toBeUndefined();
+		expect(
+			harness.actions.some((action) => action.type === 'session/interactions-hydrated'),
+		).toBe(false);
+		expect(harness.warnings).toContain('reopen_session error');
 	});
 
 	it('ignores a session-list response and loading callback after disposal', async () => {

@@ -218,14 +218,18 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		const wasError = isErrorStatus(latestSession.session.status);
 		const runEndStatus: SessionRunEndStatus | undefined =
 			latestSession.session.status === 'paused' ? 'paused' : wasError ? 'error' : undefined;
+		const preserveRequestIds = dependencies.getPendingInteractionRequestIds(
+			latestSession.session.sessionId,
+		);
 		dependencies.dispatch({
 			type: 'session/messages/resume-loaded',
 			sessionId: latestSession.session.sessionId,
 			messages: buildResumeMessages(latestSession),
-			interactions: latestSession.interactions,
-			preserveRequestIds: dependencies.getPendingInteractionRequestIds(
-				latestSession.session.sessionId,
-			),
+			// A recovered confirmation is actionable only after reopen has
+			// installed its SessionActor owner. Keep transcript rendering fast,
+			// then hydrate interactions once that owner is ready.
+			interactions: wasError ? latestSession.interactions : [],
+			preserveRequestIds: wasError ? preserveRequestIds : [],
 			usage: latestSession.usage,
 			llmUsage: latestSession.llm_usage,
 		});
@@ -251,15 +255,27 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 				});
 			}
 		}
+		let actorReady = false;
 		try {
 			if (!wasError) {
 				await dependencies.reopenSession({ sessionId: latestSession.session.sessionId });
+				actorReady = true;
 			}
 		} catch {
 			if (!isCurrentGeneration(requestGeneration)) return;
 			dependencies.warn('reopen_session error');
 		}
 		if (!isCurrentGeneration(requestGeneration)) return;
+		if (actorReady) {
+			dependencies.dispatch({
+				type: 'session/interactions-hydrated',
+				sessionId: latestSession.session.sessionId,
+				requests: latestSession.interactions,
+				preserveRequestIds: dependencies.getPendingInteractionRequestIds(
+					latestSession.session.sessionId,
+				),
+			});
+		}
 		await loadSessions();
 	}
 

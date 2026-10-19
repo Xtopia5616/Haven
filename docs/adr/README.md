@@ -1314,3 +1314,4 @@
 - [1323：基于 ToolRun 的周期新会话计划](1323-recurring-session-schedules-on-toolruns.md)
 - [1324：统一 Session 创建来源并收窄 ToolRun](1324-session-creation-and-background-toolrun-boundaries.md)
 - [1325：统一领域动作动词与分阶段入口命名](1325-unify-domain-action-verbs.md)
+- [1327：恢复 Session grant 与 resolve event 分离提交](1327-recover-session-grant-after-resolve-append-failure.md)
