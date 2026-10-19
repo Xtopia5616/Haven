@@ -538,12 +538,7 @@ impl AgentLayer {
         let executor = self.executor.clone();
         let handler: SessionRunHandler = Arc::new(move |session_id: String| {
             let agent = agent.clone();
-            Box::pin(async move {
-                agent
-                    .run_session_from_dispatcher(&session_id)
-                    .await
-                    .map(|_| ())
-            })
+            Box::pin(async move { agent.run_session_from_dispatcher(&session_id).await })
         });
         match recovery {
             PendingSessionRecovery::RecoverImmediately => {

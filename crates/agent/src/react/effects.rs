@@ -6,7 +6,6 @@
 //! turn after those effects have been applied.
 
 use super::event_boundary::PauseTurnInput;
-use super::tool_batch::ToolBatchOutcome;
 use super::tool_batch_policy::ToolRetryBudget;
 use super::transcript::TranscriptEvent;
 use super::{AgentEvent, LoopExit, PauseReason, ReActEngine, ReActState, StepCtx};
@@ -30,7 +29,7 @@ pub(super) enum TurnEffect {
 
 /// The action that resolves a turn after its ordered projection effects.
 ///
-/// These are plans, not results: applying one produces a [`TurnControl`],
+/// These are plans, not results: applying one produces a [`RunControl`],
 /// which is the single result consumed by the run loop. Keeping conditional
 /// turn-end behavior here prevents it from silently overriding another
 /// control result halfway through an effects list.
@@ -86,28 +85,10 @@ pub(super) struct EffectBatch {
     directive: TurnDirective,
 }
 
-/// Control returned after applying a turn plan and consumed by the run loop.
-pub(super) enum TurnControl {
+/// Control returned after applying a turn plan or tool batch and consumed by the run loop.
+pub(super) enum RunControl {
     Continue,
     Done(LoopExit),
-}
-
-impl From<TurnControl> for ToolBatchOutcome {
-    fn from(control: TurnControl) -> Self {
-        match control {
-            TurnControl::Continue => Self::Continue,
-            TurnControl::Done(exit) => Self::Done(exit),
-        }
-    }
-}
-
-impl From<ToolBatchOutcome> for TurnControl {
-    fn from(outcome: ToolBatchOutcome) -> Self {
-        match outcome {
-            ToolBatchOutcome::Continue => Self::Continue,
-            ToolBatchOutcome::Done(exit) => Self::Done(exit),
-        }
-    }
 }
 
 impl EffectBatch {
@@ -219,7 +200,7 @@ impl EffectBatch {
         ctx: &StepCtx,
         state: &mut ReActState,
         tool_retry_budget: &mut ToolRetryBudget,
-    ) -> anyhow::Result<TurnControl> {
+    ) -> anyhow::Result<RunControl> {
         self.apply_with_tool_budget(engine, ctx, state, Some(tool_retry_budget))
             .await
     }
@@ -230,7 +211,7 @@ impl EffectBatch {
         ctx: &StepCtx,
         state: &mut ReActState,
         tool_retry_budget: Option<&mut ToolRetryBudget>,
-    ) -> anyhow::Result<TurnControl> {
+    ) -> anyhow::Result<RunControl> {
         // Each operation commits before the next starts. An error stops the
         // sequence but does not undo completed transcript/lifecycle writes.
         for effect in self.effects {
@@ -265,7 +246,7 @@ impl EffectBatch {
                         tool_retry_budget,
                     )
                     .await?;
-                Ok(outcome.into())
+                Ok(outcome)
             }
             directive => apply_committed_directive(engine, ctx, state, directive).await,
         }
@@ -280,15 +261,15 @@ async fn apply_committed_directive(
     ctx: &StepCtx,
     state: &mut ReActState,
     directive: TurnDirective,
-) -> anyhow::Result<TurnControl> {
+) -> anyhow::Result<RunControl> {
     match directive {
-        TurnDirective::Continue => Ok(TurnControl::Continue),
-        TurnDirective::Exit(exit) => Ok(TurnControl::Done(exit)),
+        TurnDirective::Continue => Ok(RunControl::Continue),
+        TurnDirective::Exit(exit) => Ok(RunControl::Done(exit)),
         TurnDirective::ExitAtBoundary { exit } => {
             let exit = engine
                 .exit_at_boundary(&ctx.session_id, state, ctx.step_number, exit)
                 .await;
-            Ok(TurnControl::Done(exit))
+            Ok(RunControl::Done(exit))
         }
         TurnDirective::Pause {
             boundary_step,
@@ -310,14 +291,14 @@ async fn apply_committed_directive(
                     reason,
                 })
                 .await?;
-            Ok(TurnControl::Done(LoopExit::Paused { reason }))
+            Ok(RunControl::Done(LoopExit::Paused { reason }))
         }
         TurnDirective::TurnEnd { step_number } => {
             if engine.inject_turn_end_context(ctx, state).await? {
                 engine
                     .save_branch_point(&ctx.session_id, state, step_number)
                     .await?;
-                return Ok(TurnControl::Continue);
+                return Ok(RunControl::Continue);
             }
             engine
                 .pause_turn(PauseTurnInput {
@@ -332,7 +313,7 @@ async fn apply_committed_directive(
                     reason: PauseReason::TurnEnd,
                 })
                 .await?;
-            Ok(TurnControl::Done(LoopExit::Paused {
+            Ok(RunControl::Done(LoopExit::Paused {
                 reason: PauseReason::TurnEnd,
             }))
         }
@@ -351,7 +332,7 @@ async fn apply_committed_directive(
             if hard {
                 return Err(anyhow::anyhow!(message));
             }
-            Ok(TurnControl::Done(LoopExit::Error(message)))
+            Ok(RunControl::Done(LoopExit::Error(message)))
         }
         TurnDirective::ExecuteToolBatch { .. } => {
             anyhow::bail!("committed effect batch cannot execute tools")
@@ -388,7 +369,7 @@ impl ReActEngine {
         state: &mut ReActState,
         batch: EffectBatch,
         tool_retry_budget: &mut ToolRetryBudget,
-    ) -> anyhow::Result<TurnControl> {
+    ) -> anyhow::Result<RunControl> {
         batch.apply(self, ctx, state, tool_retry_budget).await
     }
 
@@ -400,7 +381,7 @@ impl ReActEngine {
         ctx: &StepCtx,
         state: &mut ReActState,
         batch: EffectBatch,
-    ) -> anyhow::Result<TurnControl> {
+    ) -> anyhow::Result<RunControl> {
         for effect in batch.effects {
             apply_projection_effect(self, ctx, state, effect).await?;
         }

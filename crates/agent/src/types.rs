@@ -6,7 +6,8 @@ use haven_common::types::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// One tool invocation within a [`ReActRound`] (parallel tools are siblings).
+/// One tool invocation within a test-only [`ReActRound`] projection.
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct ToolRecord {
     pub tool_call: ToolCall,
@@ -15,8 +16,8 @@ pub(crate) struct ToolRecord {
     pub step_id: String,
 }
 
-/// One LLM step; parallel tools share `step_number` as siblings in `tools`
-/// (no fake step inflation — Phase 8 / B2).
+/// Test view of one LLM step; parallel tools share `step_number` as siblings.
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct ReActRound {
     pub step_number: u32,
@@ -25,7 +26,7 @@ pub(crate) struct ReActRound {
 }
 
 /// Append-only transcript record — payload stored in `session_events`.
-/// Projected to canonical + [`ReActRound`] via [`project_transcript`].
+/// Production replay projects this into the provider-facing canonical transcript.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum TranscriptRecord {
@@ -207,12 +208,13 @@ pub(crate) struct BranchPoint {
     pub last_msg_at: Option<String>,
 }
 
-/// Read-only views derived together from the durable transcript event log.
+/// Provider-facing view derived from the durable transcript event log.
 #[derive(Debug, Clone)]
 pub(crate) struct TranscriptProjection {
     /// Provider-neutral conversation passed to the model.
     pub canonical_messages: Vec<CanonicalMessage>,
-    /// Agent step history used by resume and per-session tool restoration.
+    /// Test-only view for asserting round grouping and parallel tool ordering.
+    #[cfg(test)]
     pub react_rounds: Vec<ReActRound>,
 }
 
@@ -229,7 +231,6 @@ pub(crate) fn project_transcript_with_strategy(
     strategy: MediaInputStrategy,
 ) -> TranscriptProjection {
     let mut canonical: Vec<CanonicalMessage> = Vec::new();
-    let mut rounds: Vec<ReActRound> = Vec::new();
     let mut pending_tool_results = Vec::new();
 
     for ev in events {
@@ -237,19 +238,11 @@ pub(crate) fn project_transcript_with_strategy(
             pending_tool_results.push(ev);
             continue;
         }
-        project_pending_tool_results(&mut pending_tool_results, &mut canonical, &mut rounds);
+        project_pending_tool_results(&mut pending_tool_results, &mut canonical);
         match ev {
-            TranscriptRecord::Thought {
-                step_number, text, ..
-            } => {
-                rounds.push(ReActRound {
-                    step_number: *step_number,
-                    thought: Some(text.clone()),
-                    tools: Vec::new(),
-                });
-            }
+            TranscriptRecord::Thought { .. } => {}
             TranscriptRecord::Reasoning { .. } => {
-                // Chat projection only — not part of LLM canonical / rounds.
+                // Chat projection only — not part of the LLM canonical transcript.
             }
             TranscriptRecord::ToolCall {
                 text,
@@ -294,20 +287,81 @@ pub(crate) fn project_transcript_with_strategy(
         }
     }
 
-    project_pending_tool_results(&mut pending_tool_results, &mut canonical, &mut rounds);
-    for round in &mut rounds {
-        round.tools.sort_by_key(|tool| tool.tool_index);
-    }
+    project_pending_tool_results(&mut pending_tool_results, &mut canonical);
 
     TranscriptProjection {
         canonical_messages: canonical,
-        react_rounds: rounds,
+        #[cfg(test)]
+        react_rounds: project_react_rounds(events),
     }
 }
 
 fn project_pending_tool_results(
     pending: &mut Vec<&TranscriptRecord>,
     canonical: &mut Vec<CanonicalMessage>,
+) {
+    pending.sort_by_key(|record| match record {
+        TranscriptRecord::ToolResult {
+            step_number,
+            tool_index,
+            ..
+        } => (*step_number, *tool_index),
+        _ => unreachable!("pending tool results only contain ToolResult records"),
+    });
+    for record in pending.drain(..) {
+        let TranscriptRecord::ToolResult {
+            canonical_observation,
+            tool_call_id,
+            tool_call,
+            ..
+        } = record
+        else {
+            unreachable!("pending tool results only contain ToolResult records")
+        };
+        // final_answer has no model-facing tool response; the assistant text
+        // is pushed separately via finish_turn_end.
+        if !tool_call.is_final && tool_call.tool_name != "final_answer" {
+            canonical.push(CanonicalMessage::tool(
+                vec![ContentPart::text(canonical_observation.clone())],
+                tool_call_id.clone(),
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn project_react_rounds(events: &[TranscriptRecord]) -> Vec<ReActRound> {
+    let mut rounds: Vec<ReActRound> = Vec::new();
+    let mut pending_tool_results = Vec::new();
+
+    for event in events {
+        if matches!(event, TranscriptRecord::ToolResult { .. }) {
+            pending_tool_results.push(event);
+            continue;
+        }
+        project_pending_round_results(&mut pending_tool_results, &mut rounds);
+        if let TranscriptRecord::Thought {
+            step_number, text, ..
+        } = event
+        {
+            rounds.push(ReActRound {
+                step_number: *step_number,
+                thought: Some(text.clone()),
+                tools: Vec::new(),
+            });
+        }
+    }
+
+    project_pending_round_results(&mut pending_tool_results, &mut rounds);
+    for round in &mut rounds {
+        round.tools.sort_by_key(|tool| tool.tool_index);
+    }
+    rounds
+}
+
+#[cfg(test)]
+fn project_pending_round_results(
+    pending: &mut Vec<&TranscriptRecord>,
     rounds: &mut Vec<ReActRound>,
 ) {
     pending.sort_by_key(|record| match record {
@@ -323,22 +377,13 @@ fn project_pending_tool_results(
             step_number,
             tool_index,
             step_id,
-            canonical_observation,
             history_observation,
-            tool_call_id,
             tool_call,
+            ..
         } = record
         else {
             unreachable!("pending tool results only contain ToolResult records")
         };
-        // final_answer is rounds-only (mirrors pre-B1 history mutation; the
-        // assistant text is pushed separately via finish_turn_end).
-        if !tool_call.is_final && tool_call.tool_name != "final_answer" {
-            canonical.push(CanonicalMessage::tool(
-                vec![ContentPart::text(canonical_observation.clone())],
-                tool_call_id.clone(),
-            ));
-        }
         if let Some(round) = rounds
             .iter_mut()
             .rev()
@@ -363,6 +408,31 @@ fn project_pending_tool_results(
             });
         }
     }
+}
+
+/// Return completed tool invocations in deterministic transcript order. This
+/// is the minimal input needed to rebuild a session's runtime tool overlay;
+/// an uncompleted ToolCall must not activate tools.
+pub(crate) fn tool_calls_for_session_overlay_restore(
+    events: &[TranscriptRecord],
+) -> Vec<&ToolCall> {
+    let mut completed_calls = events
+        .iter()
+        .filter_map(|event| match event {
+            TranscriptRecord::ToolResult {
+                step_number,
+                tool_index,
+                tool_call,
+                ..
+            } => Some((*step_number, *tool_index, tool_call)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    completed_calls.sort_by_key(|(step_number, tool_index, _)| (*step_number, *tool_index));
+    completed_calls
+        .into_iter()
+        .map(|(_, _, tool_call)| tool_call)
+        .collect()
 }
 
 pub(crate) fn append_media_projection(

@@ -378,14 +378,13 @@ async fn interrupt_then_continue_on_same_actor_uses_a_fresh_run_token() {
         "dispatcher should claim the continued session"
     );
 
-    let history = tokio::time::timeout(
+    tokio::time::timeout(
         std::time::Duration::from_secs(2),
         agent.run_session_from_dispatcher(&session.session_id),
     )
     .await
     .expect("continued run should not inherit the previous cancellation")
-    .unwrap();
-    assert!(!history.is_empty());
+    .expect("continued run should succeed");
     continued_actor
         .finish_run()
         .await

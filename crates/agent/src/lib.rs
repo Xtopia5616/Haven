@@ -76,8 +76,7 @@ pub(crate) use react::ParsedAgentResponse;
 pub use types::ProcessResult;
 #[cfg(test)]
 pub(crate) use types::{
-    BranchPoint, ReActRound, ToolCall, ToolRecord, TranscriptRecord, project_transcript,
-    seed_events_from_canonical,
+    BranchPoint, ToolCall, TranscriptRecord, project_transcript, seed_events_from_canonical,
 };
 
 use crate::title::TitleGenerator;

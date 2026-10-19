@@ -5,10 +5,9 @@
 //! is planned by [`super::turn::TurnEngine`]; this driver applies the
 //! resulting [`super::effects::EffectBatch`] under the same turn deadline.
 //! This mirrors the useful shape shared by Codex and Pi: a small outer run,
-//! a turn loop, and explicit tool-batch outcomes.
+//! a turn loop, and one explicit control result for turn and tool-batch work.
 
-use super::effects::TurnControl;
-use super::tool_batch::ToolBatchOutcome;
+use super::effects::RunControl;
 use super::tool_batch_policy::ToolRetryBudget;
 use super::turn::TurnInput;
 use super::*;
@@ -210,8 +209,8 @@ impl ReActEngine {
             })??;
             deadline.ensure_remaining("confirmation batch")?;
             match confirm_outcome {
-                ToolBatchOutcome::Continue => {}
-                ToolBatchOutcome::Done(exit) => return Ok(exit),
+                RunControl::Continue => {}
+                RunControl::Done(exit) => return Ok(exit),
             }
         }
 
@@ -345,8 +344,8 @@ impl ReActEngine {
                 }
             };
             match outcome {
-                TurnControl::Continue => {}
-                TurnControl::Done(exit) => return Ok(exit),
+                RunControl::Continue => {}
+                RunControl::Done(exit) => return Ok(exit),
             }
         }
 

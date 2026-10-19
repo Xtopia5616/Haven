@@ -4,6 +4,7 @@
 //! publish as tools finish while the model-facing projection remains ordered
 //! by the assistant's tool-call list.
 
+use super::effects::RunControl;
 #[cfg(test)]
 use super::tool_batch_policy::{FailureKind, failure_kind};
 use super::tool_batch_policy::{
@@ -361,13 +362,6 @@ impl ToolBatchResults {
     }
 }
 
-/// Outcome of one tool batch: continue the step loop, or exit the run with
-/// an explicit [`LoopExit`] (Phase 2 / C2).
-pub(super) enum ToolBatchOutcome {
-    Continue,
-    Done(LoopExit),
-}
-
 /// Normalized output of one tool execution before its transcript commit.
 pub(super) struct CompletedTool {
     tool_call: ToolCall,
@@ -704,7 +698,7 @@ impl ReActEngine {
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
         pending: crate::interaction::InteractionRequest,
-    ) -> anyhow::Result<ToolBatchOutcome> {
+    ) -> anyhow::Result<RunControl> {
         let has_answer = self.executor.prepare_queued_ask_answer(session_id).await;
         let status = if has_answer {
             // Keep the Ask gate pending until the queued answer is committed
@@ -730,10 +724,7 @@ impl ReActEngine {
             None,
             PauseReason::Ask,
         );
-        Ok(self
-            .apply_committed_batch(&ctx, state, effects)
-            .await?
-            .into())
+        self.apply_committed_batch(&ctx, state, effects).await
     }
 }
 
@@ -779,9 +770,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_batch_outcome_variants_exist() {
-        let _ = ToolBatchOutcome::Continue;
-        let _ = ToolBatchOutcome::Done(LoopExit::Cancelled);
+    fn run_control_variants_exist() {
+        let _ = RunControl::Continue;
+        let _ = RunControl::Done(LoopExit::Cancelled);
     }
 
     #[test]

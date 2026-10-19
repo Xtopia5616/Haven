@@ -7,8 +7,8 @@
 //! ## Resume authority
 //!
 //! - **Session event stream present** → single authority. [`run_session_resumed`]
-//!   replays it (canonical + rounds are projected); checkpoint metadata and RAM
-//!   queues are caches only.
+//!   replays it into the provider-facing canonical transcript; checkpoint
+//!   metadata and RAM queues are caches only.
 //! - **Event stream missing** → fresh-session startup for a session that has
 //!   not entered the ReAct loop yet.
 //!
@@ -29,8 +29,11 @@ use crate::resume_support::{
 
 #[cfg(test)]
 use crate::session::DirectSessionRunLease;
+#[cfg(test)]
+use crate::types::{ReActRound, project_react_rounds};
 use crate::types::{
-    ReActRound, TranscriptRecord, project_transcript_with_strategy, seed_events_from_canonical,
+    TranscriptRecord, project_transcript_with_strategy, seed_events_from_canonical,
+    tool_calls_for_session_overlay_restore,
 };
 use haven_common::lifecycle::SessionStatus;
 use haven_common::media::MediaInput;
@@ -251,32 +254,32 @@ impl AgentLayer {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<ReActRound>> {
-        self.run_session_from_id_with_error_owner(
-            session_id,
-            TerminalErrorEventOwner::AgentEventBus,
-        )
-        .await
+        let events = self
+            .run_session_from_id_with_error_owner(
+                session_id,
+                TerminalErrorEventOwner::AgentEventBus,
+            )
+            .await?;
+        Ok(project_react_rounds(&events))
     }
 
     /// Dispatcher-only entrypoint. The supervisor reports a failed run on
     /// its typed lifecycle stream, so suppress the matching ReAct error event
     /// while preserving all other Agent events and the returned error.
-    pub(crate) async fn run_session_from_dispatcher(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<Vec<ReActRound>> {
+    pub(crate) async fn run_session_from_dispatcher(&self, session_id: &str) -> anyhow::Result<()> {
         self.run_session_from_id_with_error_owner(
             session_id,
             TerminalErrorEventOwner::SessionSupervisor,
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     async fn run_session_from_id_with_error_owner(
         &self,
         session_id: &str,
         terminal_error_owner: TerminalErrorEventOwner,
-    ) -> anyhow::Result<Vec<ReActRound>> {
+    ) -> anyhow::Result<Vec<TranscriptRecord>> {
         tracing::debug!("run_session_from_id: session_id={}", session_id);
         let session = self
             .executor
@@ -378,13 +381,9 @@ impl AgentLayer {
                     session_id,
                     replay.events.len()
                 );
-                // Re-register per-session tools (skills/MCP) from projected
-                // rounds, since in-memory registrations are lost on restart.
-                let projection = project_transcript_with_strategy(
-                    &replay.events,
-                    self.react_engine.media_strategy(),
-                );
-                self.restore_per_session_tools(session_id, &projection.react_rounds)
+                // Rebuild only registrations represented by completed tool
+                // results; canonical projection happens when the run starts.
+                self.restore_per_session_tools(session_id, &replay.events)
                     .await;
                 let interactions = self.executor.interaction_requests(session_id).await;
                 let has_pending_ask = interactions.iter().any(|request| {
@@ -523,7 +522,7 @@ impl AgentLayer {
         run_id: u64,
         description: &str,
         terminal_error_owner: TerminalErrorEventOwner,
-    ) -> anyhow::Result<Vec<ReActRound>> {
+    ) -> anyhow::Result<Vec<TranscriptRecord>> {
         let events = replay.events;
         let mut canonical =
             project_transcript_with_strategy(&events, self.react_engine.media_strategy())
@@ -567,11 +566,7 @@ impl AgentLayer {
         let emitter_arc = match self.run_emitter(terminal_error_owner) {
             Some(e) => e,
             None => {
-                return Ok(project_transcript_with_strategy(
-                    &events,
-                    self.react_engine.media_strategy(),
-                )
-                .react_rounds);
+                return Ok(events);
             }
         };
         let actor = self.executor.actor_for(session_id).await.ok_or_else(|| {
@@ -600,63 +595,61 @@ impl AgentLayer {
             crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
             crate::react::LoopExit::Paused { .. }
             | crate::react::LoopExit::Cancelled
-            | crate::react::LoopExit::Completed => Ok(project_transcript_with_strategy(
-                &result.events,
-                self.react_engine.media_strategy(),
-            )
-            .react_rounds),
+            | crate::react::LoopExit::Completed => Ok(result.events),
         }
     }
 
-    /// Rebuild per-session skill/MCP registrations from the restored rounds.
+    /// Rebuild per-session skill/MCP registrations from completed tool results.
     ///
     /// Registrations are runtime state, not transcript state. Resume and
-    /// rollback both call this after projecting the authoritative event log so
-    /// tools loaded after a branch point cannot leak into the restored run.
-    pub(crate) async fn restore_per_session_tools(&self, session_id: &str, rounds: &[ReActRound]) {
+    /// rollback call this with the authoritative event prefix so tools loaded
+    /// after a branch point cannot leak into the restored run.
+    pub(crate) async fn restore_per_session_tools(
+        &self,
+        session_id: &str,
+        events: &[TranscriptRecord],
+    ) {
         self.executor
             .unregister_session_tool_overlay(session_id)
             .await;
-        for round in rounds {
-            for tool in &round.tools {
-                if tool.tool_call.tool_name.as_str() == "load_mcp"
-                    && let Some(name) = tool.tool_call.tool_input["server_name"].as_str()
-                {
-                    let tool_names = load_mcp_tool_names(&tool.tool_call.tool_input);
-                    let _ = self
-                        .executor
-                        .register_mcp_tool_overlay(session_id, name, tool_names.as_deref())
-                        .await;
-                } else if tool.tool_call.tool_name.as_str() == "tool_catalog"
-                    && tool.tool_call.tool_input["action"].as_str() == Some("load")
-                {
-                    let selection = decode_builtin_tool_selection(&tool.tool_call.tool_input);
-                    if selection
-                        .operations
+        for tool_call in tool_calls_for_session_overlay_restore(events) {
+            if tool_call.tool_name.as_str() == "load_mcp"
+                && let Some(name) = tool_call.tool_input["server_name"].as_str()
+            {
+                let tool_names = load_mcp_tool_names(&tool_call.tool_input);
+                let _ = self
+                    .executor
+                    .register_mcp_tool_overlay(session_id, name, tool_names.as_deref())
+                    .await;
+            } else if tool_call.tool_name.as_str() == "tool_catalog"
+                && tool_call.tool_input["action"].as_str() == Some("load")
+            {
+                let selection = decode_builtin_tool_selection(&tool_call.tool_input);
+                if selection
+                    .operations
+                    .as_ref()
+                    .is_some_and(|values| !values.is_empty())
+                    || selection
+                        .roots
                         .as_ref()
                         .is_some_and(|values| !values.is_empty())
-                        || selection
-                            .roots
-                            .as_ref()
-                            .is_some_and(|values| !values.is_empty())
-                    {
-                        let _ = self
-                            .executor
-                            .load_builtin_operations_tool_overlay(
-                                session_id,
-                                selection.operations,
-                                selection.roots,
-                            )
-                            .await;
-                    }
-                } else if tool.tool_call.tool_name.as_str() == "load_skill" {
-                    let names = load_skill_names(&tool.tool_call.tool_input);
-                    if !names.is_empty() {
-                        let _ = self
-                            .executor
-                            .load_skill_tool_overlay(session_id, names)
-                            .await;
-                    }
+                {
+                    let _ = self
+                        .executor
+                        .load_builtin_operations_tool_overlay(
+                            session_id,
+                            selection.operations,
+                            selection.roots,
+                        )
+                        .await;
+                }
+            } else if tool_call.tool_name.as_str() == "load_skill" {
+                let names = load_skill_names(&tool_call.tool_input);
+                if !names.is_empty() {
+                    let _ = self
+                        .executor
+                        .load_skill_tool_overlay(session_id, names)
+                        .await;
                 }
             }
         }
@@ -670,7 +663,7 @@ impl AgentLayer {
         session_prompt_history: &[SessionPromptMessage],
         initial: InitialUserInput<'_>,
         terminal_error_owner: TerminalErrorEventOwner,
-    ) -> anyhow::Result<Vec<ReActRound>> {
+    ) -> anyhow::Result<Vec<TranscriptRecord>> {
         self.executor
             .register_managed_assets_for_session(session_id, initial.attachments);
         tracing::debug!(
@@ -747,7 +740,7 @@ impl AgentLayer {
         let emitter_arc = match self.run_emitter(terminal_error_owner) {
             Some(e) => e,
             None => {
-                return Ok(project_transcript_with_strategy(&events, media_strategy).react_rounds);
+                return Ok(events);
             }
         };
         let run_id = self.react_engine.next_run_id();
@@ -774,9 +767,7 @@ impl AgentLayer {
             crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
             crate::react::LoopExit::Paused { .. }
             | crate::react::LoopExit::Cancelled
-            | crate::react::LoopExit::Completed => {
-                Ok(project_transcript_with_strategy(&result.events, media_strategy).react_rounds)
-            }
+            | crate::react::LoopExit::Completed => Ok(result.events),
         }
     }
 

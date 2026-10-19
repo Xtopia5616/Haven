@@ -64,17 +64,25 @@ impl SessionToolOverlayPort for RecordingSessionToolOverlay {
     }
 }
 
-fn overlay_restore_tool(tool_name: &str, tool_input: serde_json::Value) -> ToolRecord {
-    ToolRecord {
+fn overlay_restore_tool(
+    step_number: u32,
+    tool_index: u32,
+    tool_name: &str,
+    tool_input: serde_json::Value,
+) -> TranscriptRecord {
+    TranscriptRecord::ToolResult {
+        step_number,
+        tool_index,
+        step_id: haven_common::types::new_id("step"),
+        canonical_observation: "completed".into(),
+        history_observation: "completed".into(),
+        tool_call_id: None,
         tool_call: ToolCall {
             tool_name: tool_name.to_string(),
             tool_input,
             is_final: false,
             tool_call_id: None,
         },
-        observation: None,
-        tool_index: 0,
-        step_id: "step-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
     }
 }
 
@@ -109,35 +117,53 @@ async fn resume_restores_tool_overlay_cleanly_in_round_order_and_best_effort() {
         context_limits,
     )
     .agent;
-    let rounds = vec![
-        ReActRound {
-            step_number: 1,
-            thought: None,
-            tools: vec![
-                overlay_restore_tool("load_mcp", serde_json::json!({"server_name": "alpha"})),
-                overlay_restore_tool("load_skill", serde_json::json!({"skill_names": ["echo"]})),
-                overlay_restore_tool(
-                    "tool_catalog",
-                    serde_json::json!({
-                        "action": "load",
-                        "operations": ["files.list"],
-                        "roots": []
-                    }),
-                ),
-            ],
+    let events = vec![
+        TranscriptRecord::ToolCall {
+            step_number: 3,
+            text: String::new(),
+            tool_calls: vec![haven_common::types::CanonicalToolCall {
+                tool_call_id: "provider-pending".into(),
+                name: "load_skill".into(),
+                arguments: serde_json::json!({"skill_names": ["must-not-load"]}),
+            }],
+            message_id: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         },
-        ReActRound {
-            step_number: 2,
-            thought: None,
-            tools: vec![overlay_restore_tool(
-                "load_mcp",
-                serde_json::json!({"server_name": "beta", "tool_names": []}),
-            )],
-        },
+        // Persisted completion order can differ from the original batch order.
+        overlay_restore_tool(
+            2,
+            0,
+            "load_mcp",
+            serde_json::json!({"server_name": "beta", "tool_names": []}),
+        ),
+        overlay_restore_tool(
+            1,
+            2,
+            "tool_catalog",
+            serde_json::json!({
+                "action": "load",
+                "operations": ["files.list"],
+                "roots": []
+            }),
+        ),
+        overlay_restore_tool(
+            1,
+            1,
+            "load_skill",
+            serde_json::json!({"skill_names": ["echo"]}),
+        ),
+        overlay_restore_tool(
+            1,
+            0,
+            "load_mcp",
+            serde_json::json!({"server_name": "alpha"}),
+        ),
     ];
 
     agent
-        .restore_per_session_tools("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &rounds)
+        .restore_per_session_tools("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &events)
         .await;
 
     assert_eq!(
@@ -243,7 +269,7 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
 
     // Enabled skills remain host-owned deferred adapters. They are available
     // to the loader, but resume must not silently activate them in a session.
-    let rounds = Vec::new();
+    let events = Vec::new();
     assert!(tools.get_tool("skill__echo").await.is_some());
     let before = tools
         .list_schemas_for_session("ses-ebf7891451d2d7f9e5c1bf89d169e552")
@@ -255,7 +281,7 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
     assert!(!other_before.iter().any(|s| s["name"] == "skill__echo"));
 
     agent
-        .restore_per_session_tools("ses-ebf7891451d2d7f9e5c1bf89d169e552", &rounds)
+        .restore_per_session_tools("ses-ebf7891451d2d7f9e5c1bf89d169e552", &events)
         .await;
 
     // The resume path must not activate or duplicate the deferred skill.

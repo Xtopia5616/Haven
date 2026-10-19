@@ -11,7 +11,7 @@ use crate::lifecycle::{LifecycleOp, LifecycleWindow, decide};
 use crate::react::DurableEventState;
 use crate::resume_support::infer_resume_step;
 use crate::rollback_support::truncate_at_user_message;
-use crate::types::{BranchPoint, TranscriptRecord, project_transcript_with_strategy};
+use crate::types::{BranchPoint, TranscriptRecord};
 use haven_common::lifecycle::SessionStatus;
 use haven_memory::{RollbackProjectionBoundary, RollbackRequest};
 
@@ -310,13 +310,9 @@ impl AgentLayer {
         self.react_engine
             .invalidate_usage_after_truncate(session_id);
 
-        // Rebuild per-session tool registrations from the restored rounds so
-        // that tools loaded after the rollback point are dropped, and tools
-        // loaded before it remain available.
-        // Cursor-aware project (equivalent to project() after truncate).
-        let projection =
-            project_transcript_with_strategy(&replay.events, self.react_engine.media_strategy());
-        self.restore_per_session_tools(session_id, &projection.react_rounds)
+        // Rebuild registrations represented by completed results in the
+        // restored event prefix, dropping tools loaded after the rollback.
+        self.restore_per_session_tools(session_id, &replay.events)
             .await;
 
         // Reload the session into executor memory (it may have been removed if we

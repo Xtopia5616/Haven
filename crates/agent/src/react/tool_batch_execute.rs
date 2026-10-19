@@ -5,11 +5,11 @@
 //! result commit. Result slots and observation projection live in
 //! `tool_batch.rs`; failure policy lives in `tool_batch_policy.rs`.
 
+use super::effects::RunControl;
 use super::hooks::{BeforeToolCallDecision, BeforeToolRequest, ToolCallIdentity};
 use super::tool_batch::{
     CompletedTool, MAX_CONCURRENT_TOOL_CALLS, MAX_RUNTIME_TOOL_CALLS_PER_BATCH, ToolBatchGate,
-    ToolBatchOutcome, ToolBatchResults, ToolBatchState, ToolCallRequest, execute_tool_call,
-    tool_step_metadata,
+    ToolBatchResults, ToolBatchState, ToolCallRequest, execute_tool_call, tool_step_metadata,
 };
 use super::tool_batch_plan::ToolBatchPlan;
 use super::tool_batch_policy::ToolRetryBudget;
@@ -563,7 +563,7 @@ impl ReActEngine {
         cancel_res: &tokio_util::sync::CancellationToken,
         allow_tool_retry: bool,
         tool_retry_budget: &mut ToolRetryBudget,
-    ) -> anyhow::Result<ToolBatchOutcome> {
+    ) -> anyhow::Result<RunControl> {
         // Build the plan first. Every later identity/index lookup is derived
         // from it; validation only reports tool-schema failures against the
         // plan's tool_call indexes and never mints a parallel identity map.
@@ -699,7 +699,7 @@ impl ReActEngine {
             // A rollback that lands mid-batch must find the DB row at the
             // pre-batch branch point (the response and partial tool results
             // are discarded by the exit).
-            return Ok(ToolBatchOutcome::Done(
+            return Ok(RunControl::Done(
                 self.exit_cancelled(session_id, state, step_number).await,
             ));
         }
@@ -806,10 +806,7 @@ impl ReActEngine {
                 None,
                 PauseReason::Confirm,
             );
-            return Ok(self
-                .apply_committed_batch(&step_ctx, state, pause)
-                .await?
-                .into());
+            return self.apply_committed_batch(&step_ctx, state, pause).await;
         }
 
         // The agent asked the human a question: pause so the user can
@@ -836,13 +833,13 @@ impl ReActEngine {
         let session_state = self.executor.get_active_session_status(session_id).await;
         match session_state {
             Some(s) if s.is_paused() => {
-                return Ok(ToolBatchOutcome::Done(
+                return Ok(RunControl::Done(
                     self.exit_external_pause(session_id, state, step_number, emitter, run_id)
                         .await,
                 ));
             }
             Some(SessionStatus::Error) => {
-                return Ok(ToolBatchOutcome::Done(
+                return Ok(RunControl::Done(
                     self.exit_at_boundary(
                         session_id,
                         state,
@@ -854,7 +851,7 @@ impl ReActEngine {
             }
             // Session gone (end_session/terminal cleanup) or completed: exit.
             None | Some(SessionStatus::Completed) => {
-                return Ok(ToolBatchOutcome::Done(
+                return Ok(RunControl::Done(
                     self.exit_at_boundary(session_id, state, step_number, LoopExit::Completed)
                         .await,
                 ));
@@ -862,7 +859,7 @@ impl ReActEngine {
             _ => {}
         }
 
-        Ok(ToolBatchOutcome::Continue)
+        Ok(RunControl::Continue)
     }
 
     /// Resume a confirmation batch using the original plan identities. The
@@ -877,7 +874,7 @@ impl ReActEngine {
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> anyhow::Result<ToolBatchOutcome> {
+    ) -> anyhow::Result<RunControl> {
         let pending = self
             .executor
             .interaction_requests(session_id)
@@ -886,7 +883,7 @@ impl ReActEngine {
             .filter(|request| request.kind == crate::interaction::InteractionKind::Confirm)
             .collect::<Vec<_>>();
         if pending.is_empty() {
-            return Ok(ToolBatchOutcome::Continue);
+            return Ok(RunControl::Continue);
         }
         let active_events = self
             .event_store
@@ -970,7 +967,7 @@ impl ReActEngine {
                         plan_index,
                         "confirm batch resumed before every decision was recorded"
                     );
-                    return Ok(ToolBatchOutcome::Continue);
+                    return Ok(RunControl::Continue);
                 };
                 decision
             } else {
@@ -1096,7 +1093,7 @@ impl ReActEngine {
             .await?;
         if let Some((tool_index, nested)) = batch_state.nested_confirmation() {
             if execution.cancelled {
-                return Ok(ToolBatchOutcome::Done(
+                return Ok(RunControl::Done(
                     self.exit_cancelled(session_id, state, step_number).await,
                 ));
             }
@@ -1139,10 +1136,7 @@ impl ReActEngine {
                 None,
                 PauseReason::Confirm,
             );
-            return Ok(self
-                .apply_committed_batch(&proj_ctx, state, pause)
-                .await?
-                .into());
+            return self.apply_committed_batch(&proj_ctx, state, pause).await;
         }
         batch_state
             .project_ordered_results(self, &proj_ctx, execution.results, state)
@@ -1152,7 +1146,7 @@ impl ReActEngine {
             .await?;
 
         if execution.cancelled {
-            return Ok(ToolBatchOutcome::Done(
+            return Ok(RunControl::Done(
                 self.exit_cancelled(session_id, state, step_number).await,
             ));
         }
@@ -1188,7 +1182,7 @@ impl ReActEngine {
                 .await;
         }
 
-        Ok(ToolBatchOutcome::Continue)
+        Ok(RunControl::Continue)
     }
 }
 
