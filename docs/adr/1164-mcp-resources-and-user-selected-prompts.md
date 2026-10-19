@@ -36,8 +36,9 @@ Haven 当前 MCP client 只协商并缓存 `tools` capability。MCP 2026-07-28 �
 ## 首期实现边界
 
 - 已接通 modern/legacy capability 协商、分页 `resources/list` / `prompts/list`、用户选中的 `resources/read` / `prompts/get`、连接内 hint-aware cache 和 target-binding IPC。缓存留在单个 client 连接代次内，只有显式刷新、TTL 到期或连接关闭才失效；当前 MCP client 不订阅资源或提示词变化通知。
+- `resources/templates/list` 已按相同的分页、总量、TTL/cacheScope 与 target-binding 规则接通；工具页允许用户选择模板、填写 RFC 6570 字符串变量、预览展开后的 URI，再由用户发起 `resources/read`。展开逻辑支持 RFC 6570 字符串变量、操作符与前缀修饰；模板名/URI 均保持为不透明的 MCP server 数据。
 - UI 只对启用且连接中的服务器显示浏览入口。资源正文和 prompt 结果以纯文本预览；二进制内容只显示类型与大小信息，非纯用户文本不能加入聊天草稿。资源/prompt 都不作为模型工具或 CodeMode 子调用公开。
-- 本切片不实现 `resources/templates/list`、资源订阅/取消订阅和 MRTR；这些能力不得被 UI 或模型假定为可用。后续只有形成明确用户交互和生命周期 owner 后再单独设计。
+- 本切片不实现资源订阅/取消订阅和 MRTR；这些能力不得被 UI 或模型假定为可用。后续只有形成明确用户交互和生命周期 owner 后再单独设计。
 - Resources 与 Prompts 不持久化。资源文本或 prompt 用户消息仅在用户显式加入草稿并随后发送后，才经过普通 ingress 和既有 transcript/event owner。
 
 ## 拒绝的方案

@@ -39,6 +39,7 @@ pub use client::McpClient;
 pub use features::{
     McpCacheScope, McpPrompt, McpPromptArgument, McpPromptContent, McpPromptInfo, McpPromptList,
     McpPromptMessage, McpResourceContent, McpResourceInfo, McpResourceList, McpResourceRead,
+    McpResourceTemplate, McpResourceTemplateList,
 };
 pub use manager::{McpManager, McpReconcile, McpTargetChanged};
 pub use protocol::{

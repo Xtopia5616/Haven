@@ -55,6 +55,7 @@
 | `list_builtin_tool_manifests` | read | builtin manifest projection; schemas are dynamic extension data |
 | `list_facts` | read | read-only fact projection |
 | `list_mcp_prompts` | execute | user-driven prompt discovery; enabled live target binding; no model callable surface |
+| `list_mcp_resource_templates` | execute | user-driven template discovery; enabled live target binding; bounded opaque URI templates |
 | `list_mcp_resources` | execute | explicit host discovery; enabled live target binding; bounded opaque resource metadata |
 | `list_mcp_servers` | read | snapshot only; env values redacted; invocation remains gated |
 | `list_runtime_sessions` | read | resident nonterminal runtime sessions only |

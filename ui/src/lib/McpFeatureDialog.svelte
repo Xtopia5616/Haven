@@ -5,12 +5,20 @@
 	import MaterialField from '$lib/MaterialField.svelte';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { offerMcpDraft } from '$lib/mcpDraftBridge.ts';
-	import { getMcpPrompt, listMcpPrompts, listMcpResources, readMcpResource } from '$lib/toolsCommands.ts';
+	import {
+		getMcpPrompt,
+		listMcpPrompts,
+		listMcpResources,
+		listMcpResourceTemplates,
+		readMcpResource,
+	} from '$lib/toolsCommands.ts';
+	import { expandMcpResourceTemplate, parseMcpResourceTemplate } from '$lib/mcpResourceTemplates.ts';
 	import type { McpServerSnapshotView } from '$lib/contracts/mcp.ts';
 	import type {
 		McpPromptInfoView,
 		McpPromptView,
 		McpResourceInfoView,
+		McpResourceTemplateView,
 		McpResourceReadView,
 	} from '$lib/contracts/mcpFeatures.ts';
 
@@ -20,19 +28,27 @@
 	}
 
 	let { server, onClose }: Props = $props();
-	let activeTab = $state<'resources' | 'prompts'>('resources');
+	let activeTab = $state<'resources' | 'templates' | 'prompts'>('resources');
 	let resources = $state<McpResourceInfoView[]>([]);
 	let selectedResourceUri = $state('');
 	let resourceRead = $state<McpResourceReadView | null>(null);
+	let resourceTemplates = $state<McpResourceTemplateView[]>([]);
+	let selectedTemplateUri = $state('');
+	let templateArguments = $state<Record<string, string>>({});
+	let templateResourceRead = $state<McpResourceReadView | null>(null);
+	let expandedTemplateUri = $state('');
 	let prompts = $state<McpPromptInfoView[]>([]);
 	let selectedPromptName = $state('');
 	let promptArguments = $state<Record<string, string>>({});
 	let renderedPrompt = $state<McpPromptView | null>(null);
 	let loadingResources = $state(false);
 	let loadingResource = $state(false);
+	let loadingTemplates = $state(false);
+	let loadingTemplateResource = $state(false);
 	let loadingPrompts = $state(false);
 	let renderingPrompt = $state(false);
 	let errorMessage = $state('');
+	let templateErrorMessage = $state('');
 
 	const targetBinding = $derived(server.targetBinding ?? '');
 	const selectedResource = $derived(
@@ -41,7 +57,11 @@
 	const selectedPrompt = $derived(
 		prompts.find((prompt) => prompt.name === selectedPromptName) ?? null,
 	);
+	const selectedTemplate = $derived(
+		resourceTemplates.find((template) => template.uriTemplate === selectedTemplateUri) ?? null,
+	);
 	const resourceText = $derived(resourceDraftText(resourceRead));
+	const templateResourceText = $derived(resourceDraftText(templateResourceRead));
 	const promptText = $derived(promptDraftText(renderedPrompt));
 
 	onMount(() => {
@@ -51,6 +71,7 @@
 			return;
 		}
 		if (server.supportsResources) void loadResources(false);
+		if (server.supportsResources) void loadResourceTemplates(false);
 		if (server.supportsPrompts) void loadPrompts(false);
 	});
 
@@ -73,6 +94,65 @@
 			errorMessage = safeError(error, '加载资源列表失败，连接可能已变化。');
 		} finally {
 			loadingResources = false;
+		}
+	}
+
+	async function loadResourceTemplates(forceRefresh: boolean) {
+		if (!targetBinding || loadingTemplates) return;
+		loadingTemplates = true;
+		templateErrorMessage = '';
+		try {
+			const result = await listMcpResourceTemplates({
+				name: server.name,
+				targetBinding,
+				forceRefresh,
+			});
+			resourceTemplates = result.resourceTemplates;
+			if (!resourceTemplates.some((template) => template.uriTemplate === selectedTemplateUri)) {
+				selectedTemplateUri = '';
+				templateArguments = {};
+				templateResourceRead = null;
+				expandedTemplateUri = '';
+			}
+		} catch (error) {
+			templateErrorMessage = safeError(error, '加载资源模板失败，连接可能已变化。');
+		} finally {
+			loadingTemplates = false;
+		}
+	}
+
+	function selectTemplate(template: McpResourceTemplateView) {
+		selectedTemplateUri = template.uriTemplate;
+		templateArguments = Object.fromEntries(
+			parseMcpResourceTemplate(template.uriTemplate).variableNames.map((name) => [name, '']),
+		);
+		templateResourceRead = null;
+		expandedTemplateUri = '';
+		templateErrorMessage = '';
+	}
+
+	async function readSelectedTemplate() {
+		if (!selectedTemplate || loadingTemplateResource) return;
+		loadingTemplateResource = true;
+		templateErrorMessage = '';
+		templateResourceRead = null;
+		try {
+			expandedTemplateUri = expandMcpResourceTemplate(
+				selectedTemplate.uriTemplate,
+				Object.fromEntries(
+					Object.entries(templateArguments).filter(([, value]) => value !== ''),
+				),
+			);
+			templateResourceRead = await readMcpResource({
+				name: server.name,
+				targetBinding,
+				uri: expandedTemplateUri,
+				forceRefresh: false,
+			});
+		} catch (error) {
+			templateErrorMessage = safeError(error, '展开或读取资源模板失败，请检查参数和连接状态。');
+		} finally {
+			loadingTemplateResource = false;
 		}
 	}
 
@@ -210,6 +290,12 @@
 				ariaPressed={activeTab === 'resources'}
 				onclick={() => (activeTab = 'resources')}
 			/>
+			<MaterialButton
+				variant={activeTab === 'templates' ? 'tonal' : 'text'}
+				label="模板"
+				ariaPressed={activeTab === 'templates'}
+				onclick={() => (activeTab = 'templates')}
+			/>
 		{/if}
 		{#if server.supportsPrompts}
 			<MaterialButton
@@ -281,6 +367,79 @@
 						disabled={!resourceText}
 						title={!resourceText ? '该资源包含二进制内容，当前不能加入文本草稿' : ''}
 						onclick={insertResourceText}
+					/>
+				{/if}
+			</section>
+		{/if}
+	{:else if activeTab === 'templates' && server.supportsResources}
+		{#if templateErrorMessage}
+			<p class="feature-error" role="alert">{templateErrorMessage}</p>
+		{/if}
+		<div class="feature-actions">
+			<p>选择模板并填写 URI 参数后，Haven 才会通过该 MCP 连接读取资源。</p>
+			<MaterialButton
+				variant="outlined"
+				label={loadingTemplates ? '刷新中…' : '刷新模板列表'}
+				disabled={loadingTemplates}
+				onclick={() => loadResourceTemplates(true)}
+			/>
+		</div>
+		<div class="feature-list" aria-label="MCP 资源模板列表">
+			{#if loadingTemplates && resourceTemplates.length === 0}
+				<p>正在读取资源模板…</p>
+			{:else if resourceTemplates.length === 0}
+				<p>服务器没有公开可选资源模板。</p>
+			{:else}
+				{#each resourceTemplates as template (template.uriTemplate)}
+					<button
+						class="feature-list-item"
+						class:selected={selectedTemplateUri === template.uriTemplate}
+						aria-pressed={selectedTemplateUri === template.uriTemplate}
+						onclick={() => selectTemplate(template)}
+					>
+						<strong>{template.title || template.name}</strong>
+						<span>{template.uriTemplate}</span>
+						{#if template.description}<span>{template.description}</span>{/if}
+						{#if template.mimeType}<small>{template.mimeType}</small>{/if}
+					</button>
+				{/each}
+			{/if}
+		</div>
+		{#if selectedTemplate}
+			<section class="feature-preview" aria-label="资源模板参数">
+				<h4>{selectedTemplate.title || selectedTemplate.name}</h4>
+				<p class="feature-source">URI 模板：{selectedTemplate.uriTemplate}</p>
+				{#each Object.keys(templateArguments) as variableName (variableName)}
+					<MaterialField label={variableName}>
+						<input
+							class="md-input"
+							value={templateArguments[variableName] ?? ''}
+							oninput={(event) => (templateArguments[variableName] = event.currentTarget.value)}
+						/>
+					</MaterialField>
+				{/each}
+				<MaterialButton
+					variant="outlined"
+					label={loadingTemplateResource ? '读取中…' : '展开并读取模板'}
+					disabled={loadingTemplateResource}
+					onclick={readSelectedTemplate}
+				/>
+				{#if expandedTemplateUri}<p class="feature-source">读取 URI：{expandedTemplateUri}</p>{/if}
+				{#if loadingTemplateResource}
+					<p>正在读取资源…</p>
+				{:else if templateResourceRead}
+					{#each templateResourceRead.contents as content, index (`${content.uri}-${index}`)}
+						<div class="resource-content">
+							<p>{content.uri}{content.mimeType ? ` · ${content.mimeType}` : ''}</p>
+							{#if content.text !== undefined}<pre>{content.text}</pre>{:else}<p>二进制内容 · Base64 {content.blob?.length ?? 0} 字符</p>{/if}
+						</div>
+					{/each}
+					<MaterialButton
+						variant="filled"
+						label="将文本加入聊天草稿"
+						disabled={!templateResourceText}
+						title={!templateResourceText ? '该资源包含二进制内容，当前不能加入文本草稿' : ''}
+						onclick={() => templateResourceText && insertIntoChatDraft(templateResourceText)}
 					/>
 				{/if}
 			</section>

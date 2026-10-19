@@ -124,6 +124,11 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "explicit host discovery; enabled live target binding; bounded opaque resource metadata",
     },
     CommandContract {
+        name: "list_mcp_resource_templates",
+        boundary: CommandBoundary::Execute,
+        security: "user-driven template discovery; enabled live target binding; bounded opaque URI templates",
+    },
+    CommandContract {
         name: "read_mcp_resource",
         boundary: CommandBoundary::Execute,
         security: "explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content",

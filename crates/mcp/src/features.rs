@@ -82,6 +82,27 @@ pub struct McpResourceList {
     pub cache_scope: McpCacheScope,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpResourceTemplate {
+    pub uri_template: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpResourceTemplateList {
+    pub resource_templates: Vec<McpResourceTemplate>,
+    pub ttl_ms: Option<u64>,
+    pub cache_scope: McpCacheScope,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpResourceContent {
@@ -199,6 +220,18 @@ pub(crate) struct McpResourceListPage {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct McpResourceTemplateListPage {
+    pub(crate) resource_templates: Vec<McpResourceTemplate>,
+    #[serde(default)]
+    pub(crate) next_cursor: Option<String>,
+    #[serde(default)]
+    pub(crate) ttl_ms: Option<u64>,
+    #[serde(default)]
+    pub(crate) cache_scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct McpPromptListPage {
     pub(crate) prompts: Vec<McpPromptInfo>,
     #[serde(default)]
@@ -256,6 +289,35 @@ pub(crate) fn validate_resource_info(resource: &McpResourceInfo) -> Result<(), S
     validate_optional_text(
         "resource MIME type",
         resource.mime_type.as_deref(),
+        MAX_FEATURE_MIME_BYTES,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn validate_resource_template(template: &McpResourceTemplate) -> Result<(), String> {
+    validate_identity(
+        "resource URI template",
+        &template.uri_template,
+        MAX_FEATURE_URI_BYTES,
+    )?;
+    validate_identity(
+        "resource template name",
+        &template.name,
+        MAX_FEATURE_NAME_BYTES,
+    )?;
+    validate_optional_text(
+        "resource template title",
+        template.title.as_deref(),
+        MAX_FEATURE_NAME_BYTES,
+    )?;
+    validate_optional_text(
+        "resource template description",
+        template.description.as_deref(),
+        MAX_FEATURE_DESCRIPTION_BYTES,
+    )?;
+    validate_optional_text(
+        "resource template MIME type",
+        template.mime_type.as_deref(),
         MAX_FEATURE_MIME_BYTES,
     )?;
     Ok(())
@@ -575,6 +637,27 @@ mod tests {
             blob: Some("not-base64".into()),
         };
         assert!(validate_resource_contents(&[malformed]).is_err());
+    }
+
+    #[test]
+    fn resource_templates_require_bounded_opaque_templates_and_metadata() {
+        let valid = McpResourceTemplate {
+            uri_template: "mcp://server/items/{item_id}{?limit}".into(),
+            name: "Items".into(),
+            title: Some("Select an item".into()),
+            description: None,
+            mime_type: Some("application/json".into()),
+        };
+        assert!(validate_resource_template(&valid).is_ok());
+
+        let invalid = McpResourceTemplate {
+            uri_template: "".into(),
+            name: "Items".into(),
+            title: None,
+            description: None,
+            mime_type: None,
+        };
+        assert!(validate_resource_template(&invalid).is_err());
     }
 
     #[test]

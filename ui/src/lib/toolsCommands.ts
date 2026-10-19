@@ -5,12 +5,14 @@ import {
 	parseMcpPrompt,
 	parseMcpPromptList,
 	parseMcpResourceList,
+	parseMcpResourceTemplateList,
 	parseMcpResourceRead,
 } from './contracts/mcpFeatures.ts';
 import type {
 	McpPromptListView,
 	McpPromptView,
 	McpResourceListView,
+	McpResourceTemplateListView,
 	McpResourceReadView,
 } from './contracts/mcpFeatures.ts';
 import { parseSkillExecutionResponse, parseSkillInfoList } from './contracts/skills.ts';
@@ -52,6 +54,17 @@ export function listMcpResources(request: {
 	forceRefresh: boolean;
 }): Promise<McpResourceListView> {
 	return invoke('list_mcp_resources', request).then((value: unknown) => parseMcpResourceList(value));
+}
+
+/** Discover parameterized resource templates for explicit user selection. */
+export function listMcpResourceTemplates(request: {
+	name: string;
+	targetBinding: string;
+	forceRefresh: boolean;
+}): Promise<McpResourceTemplateListView> {
+	return invoke('list_mcp_resource_templates', request).then((value: unknown) =>
+		parseMcpResourceTemplateList(value),
+	);
 }
 
 /** Read only the exact opaque URI selected by the user from its live target. */

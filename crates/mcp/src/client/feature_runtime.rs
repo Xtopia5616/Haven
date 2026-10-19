@@ -1,11 +1,15 @@
-use super::{McpClient, McpPromptListSnapshot, McpResourceListSnapshot, McpResourceReadCacheEntry};
+use super::{
+    McpClient, McpPromptListSnapshot, McpResourceListSnapshot, McpResourceReadCacheEntry,
+    McpResourceTemplateListSnapshot,
+};
 use crate::features::{
     MAX_FEATURE_CACHE_TTL, MAX_FEATURE_LIST_BYTES, MAX_FEATURE_LIST_ITEMS, MAX_FEATURE_LIST_PAGES,
     MAX_FEATURE_NAME_BYTES, MAX_PROMPT_ARGUMENT_BYTES, McpPrompt, McpPromptList, McpPromptListPage,
     McpPromptResponse, McpResourceList, McpResourceListPage, McpResourceRead,
-    McpResourceReadResponse, validate_complete_result, validate_cursor, validate_identity,
-    validate_prompt, validate_prompt_arguments, validate_prompt_info, validate_resource_contents,
-    validate_resource_info, validate_uri,
+    McpResourceReadResponse, McpResourceTemplateList, McpResourceTemplateListPage,
+    validate_complete_result, validate_cursor, validate_identity, validate_prompt,
+    validate_prompt_arguments, validate_prompt_info, validate_resource_contents,
+    validate_resource_info, validate_resource_template, validate_uri,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -14,6 +18,125 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 impl McpClient {
+    pub(crate) async fn list_resource_templates(
+        &self,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpResourceTemplateList> {
+        if !self.server_capabilities.lock().await.resources {
+            anyhow::bail!("MCP server does not advertise resources capability");
+        }
+        if !force_refresh
+            && let Some(snapshot) = self.resource_template_list_cache.lock().await.as_ref()
+            && snapshot
+                .expires_at
+                .is_some_and(|expires_at| Instant::now() < expires_at)
+        {
+            return Ok(snapshot.result.clone());
+        }
+
+        let _refresh = self.resource_template_list_refresh.lock().await;
+        if force_refresh {
+            *self.resource_template_list_cache.lock().await = None;
+        }
+        if !force_refresh
+            && let Some(snapshot) = self.resource_template_list_cache.lock().await.as_ref()
+            && snapshot
+                .expires_at
+                .is_some_and(|expires_at| Instant::now() < expires_at)
+        {
+            return Ok(snapshot.result.clone());
+        }
+
+        let snapshot = self.fetch_resource_template_list(cancel).await?;
+        let result = snapshot.result.clone();
+        *self.resource_template_list_cache.lock().await = Some(snapshot);
+        Ok(result)
+    }
+
+    async fn fetch_resource_template_list(
+        &self,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpResourceTemplateListSnapshot> {
+        let fetched_at = Instant::now();
+        let mut resource_templates = Vec::new();
+        let mut cursor = None::<String>;
+        let mut seen_cursors = HashSet::new();
+        let mut templates = HashSet::new();
+        let mut aggregate_bytes = 0usize;
+        let mut pages = 0usize;
+        let mut ttl_ms = None::<u64>;
+        let mut cache_scope = crate::features::McpCacheScope::Public;
+        loop {
+            pages += 1;
+            if pages > MAX_FEATURE_LIST_PAGES {
+                anyhow::bail!("MCP resources/templates/list exceeded the page limit");
+            }
+            let params = cursor
+                .as_ref()
+                .map(|value| serde_json::json!({"cursor": value}));
+            let result = self
+                .request_with_cancel("resources/templates/list", params, &cancel)
+                .await?;
+            validate_complete_result(&result, "resources/templates/list")
+                .map_err(anyhow::Error::msg)?;
+            let page: McpResourceTemplateListPage =
+                serde_json::from_value(result).map_err(|_| {
+                    anyhow::anyhow!("MCP resources/templates/list returned an invalid page")
+                })?;
+            let page_ttl = page.ttl_ms.unwrap_or(0);
+            ttl_ms = Some(ttl_ms.map_or(page_ttl, |current| current.min(page_ttl)));
+            if crate::features::McpCacheScope::from_hint(page.cache_scope.as_deref())
+                == crate::features::McpCacheScope::Private
+            {
+                cache_scope = crate::features::McpCacheScope::Private;
+            }
+            if resource_templates
+                .len()
+                .saturating_add(page.resource_templates.len())
+                > MAX_FEATURE_LIST_ITEMS
+            {
+                anyhow::bail!("MCP resources/templates/list exceeded the item limit");
+            }
+            aggregate_bytes = aggregate_bytes.saturating_add(
+                serde_json::to_vec(&page.resource_templates)
+                    .map_err(|_| {
+                        anyhow::anyhow!("MCP resources/templates/list page could not be measured")
+                    })?
+                    .len(),
+            );
+            if aggregate_bytes > MAX_FEATURE_LIST_BYTES {
+                anyhow::bail!("MCP resources/templates/list exceeded the aggregate byte limit");
+            }
+            for template in &page.resource_templates {
+                validate_resource_template(template).map_err(anyhow::Error::msg)?;
+                if !templates.insert(template.uri_template.clone()) {
+                    anyhow::bail!("MCP resources/templates/list returned duplicate URI templates");
+                }
+            }
+            resource_templates.extend(page.resource_templates);
+            cursor = page.next_cursor;
+            validate_cursor(cursor.as_deref()).map_err(anyhow::Error::msg)?;
+            let Some(next_cursor) = cursor.as_ref() else {
+                break;
+            };
+            if !seen_cursors.insert(next_cursor.clone()) {
+                anyhow::bail!("MCP resources/templates/list repeated a pagination cursor");
+            }
+        }
+
+        let expires_at =
+            ttl_ms.map(|ttl| fetched_at + Duration::from_millis(ttl).min(MAX_FEATURE_CACHE_TTL));
+        Ok(McpResourceTemplateListSnapshot {
+            result: McpResourceTemplateList {
+                resource_templates,
+                ttl_ms,
+                cache_scope,
+            },
+            expires_at,
+        })
+    }
+
     pub(crate) async fn list_resources(
         &self,
         force_refresh: bool,

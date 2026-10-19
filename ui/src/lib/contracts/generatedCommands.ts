@@ -405,6 +405,8 @@ export interface McpResourceContent { uri: string; mimeType?: string; text?: str
 export interface McpResourceInfo { uri: string; name: string; title?: string; description?: string; mimeType?: string; size?: number }
 export interface McpResourceList { resources: McpResourceInfo[]; ttlMs: number | null; cacheScope: McpCacheScope }
 export interface McpResourceRead { contents: McpResourceContent[]; ttlMs: number | null; cacheScope: McpCacheScope }
+export interface McpResourceTemplate { uriTemplate: string; name: string; title?: string; description?: string; mimeType?: string }
+export interface McpResourceTemplateList { resourceTemplates: McpResourceTemplate[]; ttlMs: number | null; cacheScope: McpCacheScope }
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };
 export interface McpServerSnapshot { name: string; transport: McpServerTransport; stdio_execution: McpStdioExecution; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; target_binding: string | null; supports_resources: boolean; supports_prompts: boolean; exposure: McpExposureConfig; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
@@ -5551,6 +5553,47 @@ export const LIST_MCP_RESOURCES_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const LIST_MCP_RESOURCE_TEMPLATES_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'resourceTemplates': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'uriTemplate': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'name': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'title': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'description': {
+						optional: true,
+						shape: { kind: 'string' },
+					},
+					'mimeType': {
+						optional: true,
+						shape: { kind: 'string' },
+					}
+				}
+			} },
+		},
+		'ttlMs': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'cacheScope': {
+			optional: false,
+			shape: { kind: 'enum', values: MCP_CACHE_SCOPE_VALUES },
+		}
+	}
+} as const;
 export const LIST_MCP_SERVERS_RESPONSE_SHAPE = { kind: 'array', items: {
 	kind: 'object',
 	fields: {
@@ -9561,6 +9604,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	list_builtin_tool_manifests: LIST_BUILTIN_TOOL_MANIFESTS_RESPONSE_SHAPE,
 	list_facts: LIST_FACTS_RESPONSE_SHAPE,
 	list_mcp_prompts: LIST_MCP_PROMPTS_RESPONSE_SHAPE,
+	list_mcp_resource_templates: LIST_MCP_RESOURCE_TEMPLATES_RESPONSE_SHAPE,
 	list_mcp_resources: LIST_MCP_RESOURCES_RESPONSE_SHAPE,
 	list_mcp_servers: LIST_MCP_SERVERS_RESPONSE_SHAPE,
 	list_runtime_sessions: LIST_RUNTIME_SESSIONS_RESPONSE_SHAPE,
@@ -9735,6 +9779,7 @@ export interface TauriCommandMap {
 	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
 	list_facts: { request: { source?: MemoryFactSourceInput | null; cursor?: MemoryFactCursorInput | null; limit?: number | null }; response: MemoryFactPageResponse };
 	list_mcp_prompts: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpPromptList };
+	list_mcp_resource_templates: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpResourceTemplateList };
 	list_mcp_resources: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpResourceList };
 	list_mcp_servers: { request: undefined; response: McpServerSnapshot[] };
 	list_runtime_sessions: { request: undefined; response: RuntimeSessionListResponse };
@@ -9852,6 +9897,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	list_builtin_tool_manifests: { boundary: 'read', security: "builtin manifest projection; schemas are dynamic extension data" },
 	list_facts: { boundary: 'read', security: "read-only fact projection" },
 	list_mcp_prompts: { boundary: 'execute', security: "user-driven prompt discovery; enabled live target binding; no model callable surface" },
+	list_mcp_resource_templates: { boundary: 'execute', security: "user-driven template discovery; enabled live target binding; bounded opaque URI templates" },
 	list_mcp_resources: { boundary: 'execute', security: "explicit host discovery; enabled live target binding; bounded opaque resource metadata" },
 	list_mcp_servers: { boundary: 'read', security: "snapshot only; env values redacted; invocation remains gated" },
 	list_runtime_sessions: { boundary: 'read', security: "resident nonterminal runtime sessions only" },

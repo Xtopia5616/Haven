@@ -622,6 +622,12 @@ struct McpResourceListSnapshot {
 }
 
 #[derive(Debug, Clone)]
+struct McpResourceTemplateListSnapshot {
+    result: crate::features::McpResourceTemplateList,
+    expires_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
 struct McpResourceReadCacheEntry {
     result: McpResourceRead,
     expires_at: Option<Instant>,
@@ -663,6 +669,8 @@ pub struct McpClient {
     tool_list_refresh: Mutex<()>,
     resource_list_cache: Mutex<Option<McpResourceListSnapshot>>,
     resource_list_refresh: Mutex<()>,
+    resource_template_list_cache: Mutex<Option<McpResourceTemplateListSnapshot>>,
+    resource_template_list_refresh: Mutex<()>,
     resource_read_cache: Mutex<HashMap<String, McpResourceReadCacheEntry>>,
     prompt_list_cache: Mutex<Option<McpPromptListSnapshot>>,
     prompt_list_refresh: Mutex<()>,
@@ -1093,6 +1101,8 @@ impl McpClient {
             tool_list_refresh: Mutex::new(()),
             resource_list_cache: Mutex::new(None),
             resource_list_refresh: Mutex::new(()),
+            resource_template_list_cache: Mutex::new(None),
+            resource_template_list_refresh: Mutex::new(()),
             resource_read_cache: Mutex::new(HashMap::new()),
             prompt_list_cache: Mutex::new(None),
             prompt_list_refresh: Mutex::new(()),
@@ -1775,6 +1785,7 @@ impl McpClient {
         *guard = None;
         *self.server_capabilities.lock().await = McpServerCapabilities::default();
         *self.resource_list_cache.lock().await = None;
+        *self.resource_template_list_cache.lock().await = None;
         self.resource_read_cache.lock().await.clear();
         *self.prompt_list_cache.lock().await = None;
         *self.status.lock().await = McpClientStatus::Disconnected;
@@ -2986,6 +2997,74 @@ mod modern_tool_list_tests {
         assert_eq!(
             rendered.cache_scope,
             crate::features::McpCacheScope::Private
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resource_template_lists_follow_pagination_hints_and_connection_cache() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "resources/templates/list");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "resourceTemplates": [{
+                        "uriTemplate": "mcp://demo/items/{item_id}",
+                        "name": "Item"
+                    }],
+                    "nextCursor": "next-page",
+                    "ttlMs": 30_000,
+                    "cacheScope": "public"
+                }),
+            )
+            .await;
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let (writer, request) = read_http_jsonrpc_request(stream).await;
+            assert_eq!(request["method"], "resources/templates/list");
+            assert_eq!(request["params"]["cursor"], "next-page");
+            respond_jsonrpc(
+                writer,
+                request["id"].clone(),
+                serde_json::json!({
+                    "resultType": "complete",
+                    "resourceTemplates": [{
+                        "uriTemplate": "mcp://demo/groups{/group_id}/items{?limit}",
+                        "name": "Group items",
+                        "mimeType": "application/json"
+                    }],
+                    "ttlMs": 15_000,
+                    "cacheScope": "private"
+                }),
+            )
+            .await;
+        });
+
+        let client = modern_http_client(address, true, false).await;
+        let templates = client
+            .list_resource_templates(false, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(templates.resource_templates.len(), 2);
+        assert_eq!(templates.ttl_ms, Some(15_000));
+        assert_eq!(
+            templates.cache_scope,
+            crate::features::McpCacheScope::Private
+        );
+        assert_eq!(
+            client
+                .list_resource_templates(false, CancellationToken::new())
+                .await
+                .unwrap()
+                .resource_templates
+                .len(),
+            2
         );
         server.await.unwrap();
     }

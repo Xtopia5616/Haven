@@ -4,7 +4,8 @@ use crate::events::{MCP_STATUS_CHANGED_EVENT, McpStatusChangedEvent};
 use haven_common::config::McpServerConfig;
 use haven_common::error::sanitize_error_text;
 use haven_tools::{
-    McpClientStatus, McpPrompt, McpPromptList, McpResourceList, McpResourceRead, McpServerSnapshot,
+    McpClientStatus, McpPrompt, McpPromptList, McpResourceList, McpResourceRead,
+    McpResourceTemplateList, McpServerSnapshot,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -91,6 +92,27 @@ pub async fn list_mcp_resources(
         )
         .await
         .map_err(|error| log_err("list_mcp_resources", error))
+}
+
+#[tauri::command]
+pub async fn list_mcp_resource_templates(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    target_binding: String,
+    force_refresh: bool,
+) -> Result<McpResourceTemplateList, String> {
+    state
+        .runtime
+        .services
+        .mcp
+        .list_resource_templates_at_target_binding(
+            &name,
+            &target_binding,
+            force_refresh,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .map_err(|error| log_err("list_mcp_resource_templates", error))
 }
 
 #[tauri::command]

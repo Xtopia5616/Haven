@@ -756,6 +756,7 @@ pub(crate) fn run() {
             commands::memory::recall_memory,
             commands::mcp::list_mcp_servers,
             commands::mcp::list_mcp_resources,
+            commands::mcp::list_mcp_resource_templates,
             commands::mcp::read_mcp_resource,
             commands::mcp::list_mcp_prompts,
             commands::mcp::get_mcp_prompt,

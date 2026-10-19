@@ -4,7 +4,9 @@ use crate::live_output::LiveOutputHub;
 use crate::registry::OperationRegistry;
 use crate::skill_runner::SkillRunner;
 use futures_util::future::BoxFuture;
-use haven_mcp::{McpManager, McpPrompt, McpPromptList, McpResourceList, McpResourceRead};
+use haven_mcp::{
+    McpManager, McpPrompt, McpPromptList, McpResourceList, McpResourceRead, McpResourceTemplateList,
+};
 #[cfg(feature = "test-support")]
 use haven_skills::Skill;
 use haven_skills::SkillRegistry;
@@ -55,6 +57,14 @@ pub trait McpRuntimePort: Send + Sync {
         force_refresh: bool,
         cancel: CancellationToken,
     ) -> anyhow::Result<McpResourceList>;
+
+    async fn list_resource_templates_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpResourceTemplateList>;
 
     async fn read_resource_at_target_binding(
         &self,
@@ -129,6 +139,23 @@ impl McpRuntimePort for SharedMcpRuntimePort {
     ) -> anyhow::Result<McpResourceList> {
         self.manager
             .list_resources_at_target_binding(client_name, target_binding, force_refresh, cancel)
+            .await
+    }
+
+    async fn list_resource_templates_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpResourceTemplateList> {
+        self.manager
+            .list_resource_templates_at_target_binding(
+                client_name,
+                target_binding,
+                force_refresh,
+                cancel,
+            )
             .await
     }
 

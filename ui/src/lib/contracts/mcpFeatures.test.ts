@@ -3,6 +3,7 @@ import {
 	parseMcpPrompt,
 	parseMcpPromptList,
 	parseMcpResourceList,
+	parseMcpResourceTemplateList,
 	parseMcpResourceRead,
 } from './mcpFeatures.ts';
 
@@ -22,6 +23,25 @@ describe('MCP resource and prompt response contracts', () => {
 				cacheScope: 'public',
 			}),
 		).toMatchObject({ contents: [{ text: 'hello' }], ttlMs: 1000 });
+	});
+
+	it('accepts bounded user-selectable resource templates', () => {
+		expect(
+			parseMcpResourceTemplateList({
+				resourceTemplates: [
+					{ uriTemplate: 'mcp://docs/{doc_id}', name: 'Document' },
+				],
+				ttlMs: null,
+				cacheScope: 'private',
+			}),
+		).toMatchObject({ resourceTemplates: [{ name: 'Document' }] });
+		expect(() =>
+			parseMcpResourceTemplateList({
+				resourceTemplates: [{ uriTemplate: 'mcp://docs/{doc_id', name: 'Document' }],
+				ttlMs: null,
+				cacheScope: 'private',
+			}),
+		).toThrow('Invalid MCP resource template list');
 	});
 
 	it('accepts prompt descriptions serialized as null and preserves typed message content', () => {

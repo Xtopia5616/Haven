@@ -3,7 +3,7 @@ use crate::protocol::{
     McpCallOutput, McpClientStatus, McpManagedCallOutput, McpServerSnapshot, McpStatusChangeEvent,
     McpToolInfo,
 };
-use crate::{McpPrompt, McpPromptList, McpResourceList, McpResourceRead};
+use crate::{McpPrompt, McpPromptList, McpResourceList, McpResourceRead, McpResourceTemplateList};
 use futures_util::FutureExt;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -1606,6 +1606,21 @@ impl McpManager {
         self.client_at_target_binding(client_name, expected_binding)
             .await?
             .list_resources(force_refresh, cancel)
+            .await
+    }
+
+    /// List parameterized resource templates through the selected live
+    /// connection. Template expansion remains a user-selected UI operation.
+    pub async fn list_resource_templates_at_target_binding(
+        &self,
+        client_name: &str,
+        expected_binding: &str,
+        force_refresh: bool,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpResourceTemplateList> {
+        self.client_at_target_binding(client_name, expected_binding)
+            .await?
+            .list_resource_templates(force_refresh, cancel)
             .await
     }
 

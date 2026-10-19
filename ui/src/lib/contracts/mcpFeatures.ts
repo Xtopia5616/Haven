@@ -1,5 +1,6 @@
 import { isRecord } from './objectGuards.ts';
 import { isBoolean, isSafeInteger, isString } from './valueGuards.ts';
+import { parseMcpResourceTemplate } from '$lib/mcpResourceTemplates.ts';
 
 export type McpCacheScopeView = 'public' | 'private';
 
@@ -21,6 +22,20 @@ export interface McpResourceContentView {
 
 export interface McpResourceListView {
 	resources: McpResourceInfoView[];
+	ttlMs: number | null;
+	cacheScope: McpCacheScopeView;
+}
+
+export interface McpResourceTemplateView {
+	uriTemplate: string;
+	name: string;
+	title?: string;
+	description?: string;
+	mimeType?: string;
+}
+
+export interface McpResourceTemplateListView {
+	resourceTemplates: McpResourceTemplateView[];
 	ttlMs: number | null;
 	cacheScope: McpCacheScopeView;
 }
@@ -144,6 +159,42 @@ function isResourceList(value: unknown): value is McpResourceListView {
 
 export function parseMcpResourceList(value: unknown): McpResourceListView {
 	if (!isResourceList(value)) throw new Error('Invalid MCP resource list');
+	return value;
+}
+
+function isResourceTemplate(value: unknown): value is McpResourceTemplateView {
+	if (
+		!isRecord(value) ||
+		!boundedText(value.uriTemplate, 8192, false) ||
+		!boundedText(value.name, 1024, false) ||
+		!optionalString(value, 'title', 1024) ||
+		!optionalString(value, 'description', 16 * 1024) ||
+		!optionalString(value, 'mimeType', 512)
+	) return false;
+	try {
+		parseMcpResourceTemplate(value.uriTemplate);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function isResourceTemplateList(value: unknown): value is McpResourceTemplateListView {
+	return (
+		isRecord(value) &&
+		Array.isArray(value.resourceTemplates) &&
+		value.resourceTemplates.length <= 10_000 &&
+		value.resourceTemplates.every(isResourceTemplate) &&
+		new Set(value.resourceTemplates.map((template) => template.uriTemplate)).size ===
+			value.resourceTemplates.length &&
+		serializedBytesWithin(value.resourceTemplates, 4 * 1024 * 1024) &&
+		isTtl(value.ttlMs) &&
+		isCacheScope(value.cacheScope)
+	);
+}
+
+export function parseMcpResourceTemplateList(value: unknown): McpResourceTemplateListView {
+	if (!isResourceTemplateList(value)) throw new Error('Invalid MCP resource template list');
 	return value;
 }
 

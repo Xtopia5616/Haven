@@ -6,6 +6,7 @@ import {
 	listBuiltinToolManifests,
 	listMcpPrompts,
 	listMcpResources,
+	listMcpResourceTemplates,
 	listMcpServers,
 	listSkills,
 	openSkillsDir,
@@ -157,6 +158,7 @@ describe('ToolsView command boundary', () => {
 		};
 		invoke
 			.mockResolvedValueOnce({ resources: [], ttlMs: null, cacheScope: 'private' })
+			.mockResolvedValueOnce({ resourceTemplates: [], ttlMs: null, cacheScope: 'private' })
 			.mockResolvedValueOnce({ contents: [], ttlMs: null, cacheScope: 'private' })
 			.mockResolvedValueOnce({ prompts: [], ttlMs: null, cacheScope: 'private' })
 			.mockResolvedValueOnce({
@@ -168,6 +170,9 @@ describe('ToolsView command boundary', () => {
 
 		expect(await listMcpResources({ ...target, forceRefresh: false })).toMatchObject({
 			resources: [],
+		});
+		expect(await listMcpResourceTemplates({ ...target, forceRefresh: false })).toMatchObject({
+			resourceTemplates: [],
 		});
 		expect(
 			await readMcpResource({ ...target, uri: 'mcp://selected/doc', forceRefresh: false }),
@@ -184,6 +189,7 @@ describe('ToolsView command boundary', () => {
 		).toMatchObject({ description: null, messages: [{ role: 'user' }] });
 		expect(invoke.mock.calls).toEqual([
 			['list_mcp_resources', { ...target, forceRefresh: false }],
+			['list_mcp_resource_templates', { ...target, forceRefresh: false }],
 			['read_mcp_resource', { ...target, uri: 'mcp://selected/doc', forceRefresh: false }],
 			['list_mcp_prompts', { ...target, forceRefresh: false }],
 			[
