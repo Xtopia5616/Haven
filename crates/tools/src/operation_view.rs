@@ -642,7 +642,7 @@ mod tests {
                     execution_boundary: crate::ExecutionBoundary::InProcess,
                 },
                 policy_rule: None,
-                catalog_group: ToolCatalogGroup::System,
+                catalog_group: ToolCatalogGroup::Files,
                 presentation: ToolPresentation {
                     label: "读取文件".into(),
                     renderer: "files".into(),

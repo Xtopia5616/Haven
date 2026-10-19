@@ -595,7 +595,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 execution_boundary: crate::ExecutionBoundary::InProcess,
             },
             policy_rule: None,
-            catalog_group: ToolCatalogGroup::System,
+            catalog_group: ToolCatalogGroup::Files,
             presentation: ToolPresentation {
                 label: operation_contract("files.read").label.into(),
                 renderer: "files".into(),
@@ -631,7 +631,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 execution_boundary: crate::ExecutionBoundary::InProcess,
             },
             policy_rule: None,
-            catalog_group: ToolCatalogGroup::System,
+            catalog_group: ToolCatalogGroup::Files,
             presentation: ToolPresentation {
                 label: operation_contract("files.outline").label.into(),
                 renderer: "files".into(),
@@ -667,7 +667,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 execution_boundary: crate::ExecutionBoundary::InProcess,
             },
             policy_rule: None,
-            catalog_group: ToolCatalogGroup::System,
+            catalog_group: ToolCatalogGroup::Files,
             presentation: ToolPresentation {
                 label: operation_contract("files.summary").label.into(),
                 renderer: "files".into(),
@@ -703,7 +703,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 execution_boundary: crate::ExecutionBoundary::InProcess,
             },
             policy_rule: Some(OperationPolicyRule::ContentSearchMedium),
-            catalog_group: ToolCatalogGroup::System,
+            catalog_group: ToolCatalogGroup::Files,
             presentation: ToolPresentation {
                 label: operation_contract("files.search").label.into(),
                 renderer: "files.search".into(),

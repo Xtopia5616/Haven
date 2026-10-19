@@ -658,7 +658,7 @@ impl Tool for ShellTool {
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {
-        ToolCatalogGroup::System
+        ToolCatalogGroup::Shell
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -674,7 +674,7 @@ impl Tool for ShellTool {
             crate::OperationIdempotency::Unknown,
             crate::ToolOperationScope::Session,
             crate::ToolConcurrency::Exclusive,
-            ToolCatalogGroup::System,
+            ToolCatalogGroup::Shell,
             None,
         );
         spec.policy.execution_boundary = if cfg!(windows) {

@@ -39,11 +39,17 @@ vi.mock('$lib/errorHandling.ts', async (importOriginal) => ({
 	reportError,
 }));
 
-function manifest(name: string, root: string, label: string, enabled = true) {
+function manifest(
+	name: string,
+	root: string,
+	label: string,
+	enabled = true,
+	catalogGroup = 'system',
+) {
 	return {
 		identity: {
 			source: 'builtin',
-			catalog_group: 'system',
+			catalog_group: catalogGroup,
 			root,
 			operation: name.includes('.') ? name.split('.').at(-1) : null,
 			stable_name: name,
@@ -389,7 +395,10 @@ describe('ToolsView toolbar actions', () => {
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'list_builtin_tool_manifests') {
 				return {
-					tools: [manifest('files', 'files', '文件'), manifest('shell', 'shell', '终端')],
+					tools: [
+						manifest('files', 'files', '文件', true, 'files'),
+						manifest('shell', 'shell', '终端', true, 'shell'),
+					],
 				};
 			}
 			if (command === 'list_mcp_servers') {
@@ -420,9 +429,9 @@ describe('ToolsView toolbar actions', () => {
 			if (command === 'list_builtin_tool_manifests') {
 				return {
 					tools: [
-						manifest('files.read', 'files', '读取文件'),
-						manifest('files.search', 'files', '搜索文件', false),
-						manifest('shell', 'shell', '终端'),
+						manifest('files.read', 'files', '读取文件', true, 'files'),
+						manifest('files.search', 'files', '搜索文件', false, 'files'),
+						manifest('shell', 'shell', '终端', true, 'shell'),
 					],
 				};
 			}
@@ -434,12 +443,13 @@ describe('ToolsView toolbar actions', () => {
 		render(ToolsView);
 
 		await waitFor(() => expect(screen.getByText('共 3 个操作')).toBeTruthy());
-		expect(document.querySelectorAll('[data-card-kind="builtin-family"]')).toHaveLength(1);
-		expect(screen.getByText('System')).toBeTruthy();
+		expect(document.querySelectorAll('[data-card-kind="builtin-family"]')).toHaveLength(2);
+		expect(screen.getByText('文件与工作区')).toBeTruthy();
+		expect(screen.getByText('命令行')).toBeTruthy();
 		expect(screen.queryByText('files.read')).toBeNull();
 
-		await fireEvent.click(screen.getByRole('button', { name: /System/ }));
-		expect(document.querySelectorAll('[data-card-kind="builtin-root"]')).toHaveLength(2);
+		await fireEvent.click(screen.getByRole('button', { name: /文件与工作区/ }));
+		expect(document.querySelectorAll('[data-card-kind="builtin-root"]')).toHaveLength(1);
 		expect(screen.getByRole('button', { name: /files/ })).toBeTruthy();
 		expect(screen.queryByText('files.read')).toBeNull();
 

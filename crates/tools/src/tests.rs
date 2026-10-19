@@ -740,9 +740,10 @@ async fn test_tools_facade_rebuild_catalog_registers_builtins() {
     for (name, group) in [
         ("ask", "haven"),
         ("notify", "system"),
-        ("shell", "system"),
-        ("http", "system"),
-        ("files.read", "system"),
+        ("shell", "shell"),
+        ("http", "network"),
+        ("files.read", "files"),
+        ("clipboard.history", "desktop"),
         ("agent.list", "agent"),
     ] {
         let listed = builtin_tools

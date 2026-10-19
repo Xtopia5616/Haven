@@ -127,7 +127,7 @@ impl Tool for WebSearchTool {
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {
-        ToolCatalogGroup::System
+        ToolCatalogGroup::Network
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -191,7 +191,7 @@ pub fn typed_adapter(router: Arc<haven_llm::LlmRouter>) -> crate::TypedToolAdapt
         OperationIdempotency::Idempotent,
         ToolOperationScope::Session,
         ToolConcurrency::ReadOnly,
-        ToolCatalogGroup::System,
+        ToolCatalogGroup::Network,
         None,
     );
     spec.presentation.label = "独立联网搜索".into();

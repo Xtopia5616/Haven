@@ -1510,7 +1510,7 @@ mod tests {
                 when_not_to_use: "Do not use for edits".into(),
                 key_operations: vec!["files.read".into()],
             })
-            .with_catalog_group(ToolCatalogGroup::System),
+            .with_catalog_group(ToolCatalogGroup::Files),
             ToolDef::new(
                 "files.write",
                 "Write text",
@@ -1522,12 +1522,12 @@ mod tests {
                 when_not_to_use: "Do not use without an explicit write request".into(),
                 key_operations: vec!["files.write".into()],
             })
-            .with_catalog_group(ToolCatalogGroup::System),
+            .with_catalog_group(ToolCatalogGroup::Files),
         ];
 
         let index = render_tool_index(&defs);
-        assert_eq!(index.matches("- system:").count(), 1);
-        assert!(index.contains(&format!("- system: {}", ToolCatalogGroup::System.summary())));
+        assert_eq!(index.matches("- files:").count(), 1);
+        assert!(index.contains(&format!("- files: {}", ToolCatalogGroup::Files.summary())));
         assert!(index.contains("roots: files(2 operations)"));
         assert!(index.contains("examples: files.read, files.write"));
         assert!(!index.contains("when not to use"));
@@ -1561,7 +1561,7 @@ mod tests {
                     json!({"type": "object"}),
                     RiskLevel::Low,
                 )
-                .with_catalog_group(ToolCatalogGroup::System)
+                .with_catalog_group(ToolCatalogGroup::Files)
                 .with_prompt(ToolPrompt {
                     when_to_use: "use it".into(),
                     when_not_to_use: "do not misuse it".into(),

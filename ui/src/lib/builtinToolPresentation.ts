@@ -106,17 +106,34 @@ export function groupBuiltinTools(tools: BuiltinToolEntry[]): BuiltinToolCard[] 
 }
 
 function categoryOrder(category: ToolCatalogGroup): number {
-	return { haven: 0, system: 1, agent: 2, skills: 3, mcp: 4, other: 5 }[category];
+	return {
+		haven: 0,
+		agent: 1,
+		files: 2,
+		desktop: 3,
+		system: 4,
+		media: 5,
+		network: 6,
+		shell: 7,
+		skills: 8,
+		mcp: 9,
+		other: 10,
+	}[category];
 }
 
 function categoryLabel(category: ToolCatalogGroup): string {
 	return {
 		haven: 'Haven',
-		system: 'System',
-		agent: 'Agent',
-		skills: 'Skills',
+		agent: 'Agent 协作',
+		files: '文件与工作区',
+		desktop: '桌面操作',
+		system: '系统与设备',
+		media: '媒体与语音',
+		network: '网络与搜索',
+		shell: '命令行',
+		skills: '技能',
 		mcp: 'MCP',
-		other: 'Other',
+		other: '其他',
 	}[category];
 }
 

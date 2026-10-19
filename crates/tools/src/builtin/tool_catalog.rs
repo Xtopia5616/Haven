@@ -1079,8 +1079,14 @@ fn family_description(family: &str) -> String {
         "system" => ToolCatalogGroup::System,
         "agent" => ToolCatalogGroup::Agent,
         "haven" => ToolCatalogGroup::Haven,
+        "files" => ToolCatalogGroup::Files,
+        "desktop" => ToolCatalogGroup::Desktop,
+        "media" => ToolCatalogGroup::Media,
+        "network" => ToolCatalogGroup::Network,
+        "shell" => ToolCatalogGroup::Shell,
         "skills" => ToolCatalogGroup::Skills,
         "mcp" => ToolCatalogGroup::Mcp,
+        "other" => ToolCatalogGroup::Other,
         _ => return format!("Additional capabilities in the {family} family."),
     };
     group.summary().into()
@@ -1121,10 +1127,21 @@ mod tests {
 
     #[test]
     fn family_descriptions_share_the_catalog_group_summary() {
-        assert_eq!(
-            family_description("system"),
-            ToolCatalogGroup::System.summary()
-        );
+        for group in [
+            ToolCatalogGroup::Haven,
+            ToolCatalogGroup::Agent,
+            ToolCatalogGroup::Files,
+            ToolCatalogGroup::Desktop,
+            ToolCatalogGroup::System,
+            ToolCatalogGroup::Media,
+            ToolCatalogGroup::Network,
+            ToolCatalogGroup::Shell,
+            ToolCatalogGroup::Skills,
+            ToolCatalogGroup::Mcp,
+            ToolCatalogGroup::Other,
+        ] {
+            assert_eq!(family_description(group.as_str()), group.summary());
+        }
         assert_eq!(
             family_description("skills"),
             ToolCatalogGroup::Skills.summary()

@@ -40,8 +40,13 @@ pub enum ToolRetrySafety {
 #[serde(rename_all = "snake_case")]
 pub enum ToolCatalogGroup {
     Haven,
-    System,
     Agent,
+    Files,
+    Desktop,
+    System,
+    Media,
+    Network,
+    Shell,
     Skills,
     Mcp,
     #[default]
@@ -52,8 +57,13 @@ impl ToolCatalogGroup {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Haven => "haven",
-            Self::System => "system",
             Self::Agent => "agent",
+            Self::Files => "files",
+            Self::Desktop => "desktop",
+            Self::System => "system",
+            Self::Media => "media",
+            Self::Network => "network",
+            Self::Shell => "shell",
             Self::Skills => "skills",
             Self::Mcp => "mcp",
             Self::Other => "other",
@@ -64,10 +74,17 @@ impl ToolCatalogGroup {
     pub const fn summary(self) -> &'static str {
         match self {
             Self::Haven => "Haven sessions, memory, tasks, and settings.",
-            Self::System => {
-                "PC and workspace tools: files, shell, windows, input, media, network, and notifications."
-            }
             Self::Agent => "Peer-agent discovery, session coordination, and messages.",
+            Self::Files => {
+                "Read, search, inspect, create, and edit files in the authorized workspace."
+            }
+            Self::Desktop => "Observe and control Windows apps, windows, input, and clipboard.",
+            Self::System => "Read system status and manage supported device and power settings.",
+            Self::Media => {
+                "Inspect, transform, generate, record, and play media; use speech and audio controls."
+            }
+            Self::Network => "Search the web and access approved HTTP endpoints.",
+            Self::Shell => "Run commands in the authorized execution workspace.",
             Self::Skills => "User-configured Skills for specialized, task-specific workflows.",
             Self::Mcp => "User-configured MCP servers for additional integrations.",
             Self::Other => "Additional capabilities for the task.",
@@ -587,8 +604,28 @@ mod tests {
                 "Haven sessions, memory, tasks, and settings.",
             ),
             (
+                ToolCatalogGroup::Files,
+                "Read, search, inspect, create, and edit files in the authorized workspace.",
+            ),
+            (
+                ToolCatalogGroup::Desktop,
+                "Observe and control Windows apps, windows, input, and clipboard.",
+            ),
+            (
                 ToolCatalogGroup::System,
-                "PC and workspace tools: files, shell, windows, input, media, network, and notifications.",
+                "Read system status and manage supported device and power settings.",
+            ),
+            (
+                ToolCatalogGroup::Media,
+                "Inspect, transform, generate, record, and play media; use speech and audio controls.",
+            ),
+            (
+                ToolCatalogGroup::Network,
+                "Search the web and access approved HTTP endpoints.",
+            ),
+            (
+                ToolCatalogGroup::Shell,
+                "Run commands in the authorized execution workspace.",
             ),
             (
                 ToolCatalogGroup::Agent,

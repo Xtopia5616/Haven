@@ -12,7 +12,7 @@ function tool(name: string, overrides: Partial<BuiltinToolEntry> = {}): BuiltinT
 		label: name,
 		desc: `${name} description`,
 		risk: 'safe',
-		category: 'system',
+		category: overrides.category ?? 'system',
 		root: name.split('.')[0],
 		rootLabel: name.split('.')[0],
 		rootDescription: `${name.split('.')[0]} capabilities`,
@@ -25,7 +25,7 @@ function tool(name: string, overrides: Partial<BuiltinToolEntry> = {}): BuiltinT
 		manifest: {
 			identity: {
 				source: 'builtin',
-				catalogGroup: 'system',
+				catalogGroup: overrides.category ?? 'system',
 				root: name.split('.')[0],
 				operation: null,
 				stableName: name,
@@ -64,14 +64,15 @@ function tool(name: string, overrides: Partial<BuiltinToolEntry> = {}): BuiltinT
 
 describe('builtin tool presentation', () => {
 	it('groups builtins by the shared catalog category', () => {
-		const filesRead = tool('files.read');
-		const shell = tool('shell');
-		const filesSearch = tool('files.search', { enabled: false });
+		const filesRead = tool('files.read', { category: 'files' });
+		const shell = tool('shell', { category: 'shell' });
+		const filesSearch = tool('files.search', { enabled: false, category: 'files' });
 		const ask = tool('ask', { category: 'haven' });
+		const web = tool('web_search_api', { category: 'network' });
 
-		const cards = groupBuiltinTools([filesRead, shell, filesSearch, ask]);
+		const cards = groupBuiltinTools([filesRead, shell, filesSearch, ask, web]);
 
-		expect(cards).toHaveLength(2);
+		expect(cards).toHaveLength(4);
 		expect(cards[0]).toMatchObject({
 			kind: 'family-group',
 			name: 'haven',
@@ -80,12 +81,21 @@ describe('builtin tool presentation', () => {
 		});
 		expect(cards[1]).toMatchObject({
 			kind: 'family-group',
-			name: 'system',
-			label: 'System',
-			roots: [
-				{ name: 'files', operations: [filesRead, filesSearch] },
-				{ name: 'shell', operations: [shell] },
-			],
+			name: 'files',
+			label: '文件与工作区',
+			roots: [{ name: 'files', operations: [filesRead, filesSearch] }],
+		});
+		expect(cards[2]).toMatchObject({
+			kind: 'family-group',
+			name: 'network',
+			label: '网络与搜索',
+			roots: [{ name: 'web_search_api', operations: [web] }],
+		});
+		expect(cards[3]).toMatchObject({
+			kind: 'family-group',
+			name: 'shell',
+			label: '命令行',
+			roots: [{ name: 'shell', operations: [shell] }],
 		});
 	});
 

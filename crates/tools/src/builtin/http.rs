@@ -202,7 +202,7 @@ impl Tool for HttpTool {
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {
-        ToolCatalogGroup::System
+        ToolCatalogGroup::Network
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -218,7 +218,7 @@ impl Tool for HttpTool {
             OperationIdempotency::Idempotent,
             crate::ToolOperationScope::Session,
             ToolConcurrency::SharedResource("http".into()),
-            ToolCatalogGroup::System,
+            ToolCatalogGroup::Network,
             Some(crate::operation_view::OperationPolicyRule::HttpVerb),
         ))
     }

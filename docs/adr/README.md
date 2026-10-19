@@ -1317,3 +1317,4 @@
 - [1326：将管理页 Skill 预览作为会话步骤运行](1326-run-management-skill-previews-as-session-steps.md)
 - [1327：恢复 Session grant 与 resolve event 分离提交](1327-recover-session-grant-after-resolve-append-failure.md)
 - [1328：隔离并恢复单条超限 Messaging inbox 行](1328-quarantine-oversized-messaging-inbox-rows.md)
+- [1329：按用户任务重分类内置工具目录](1329-reclassify-builtin-tool-catalog.md)
