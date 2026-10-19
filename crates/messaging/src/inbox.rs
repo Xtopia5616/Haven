@@ -1,7 +1,7 @@
 //! Private JSONL storage adapter for cross-session messaging.
 //!
-//! Zero external dependencies: one shared directory (`<data_dir>/inbox`) with a registry file and one
-//! JSONL mailbox per agent.
+//! File transport: one shared directory (`<data_dir>/inbox`) with a registry file and one JSONL
+//! mailbox per agent.
 //!
 //! Layout:
 //! - `agents.json` — registry: agent session_id → metadata (`last_seen` heartbeat)
@@ -12,6 +12,8 @@
 //! - `<session_id>.jsonl.processing` — at most one bounded, unacked claim batch
 //! - `<session_id>.archive.jsonl` — bounded delivery audit copies, appended
 //!   when a claim observes messages and therefore not proof of acknowledgement
+//! - `<session_id>.jsonl.quarantine.<offset>.<sha256>.row` — operator-isolated
+//!   oversized source rows, retained until the session or inbox is deleted
 //! - `.lock` — cross-process file mutex (Windows-safe)
 //!
 //! Concurrency model: every mutation (append, claim/ack, registry
@@ -42,6 +44,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, SecondsFormat};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 use haven_common::types::new_id;
@@ -78,6 +81,11 @@ const MAX_CLAIM_BATCH_BYTES: u64 = 1024 * 1024;
 const MAX_PROCESSING_BYTES: usize = MAX_CLAIM_BATCH_BYTES as usize + 1024;
 /// JSONL readers allow the canonical serialized envelope plus its newline.
 const MAX_ENVELOPE_LINE_BYTES: usize = MAX_MESSAGE_ENVELOPE_BYTES + 1;
+/// A quarantined source row is copied in bounded chunks and may not exceed a
+/// recipient's normal logical pending budget.
+const MAX_QUARANTINED_ROW_BYTES: u64 = MAX_PENDING_BYTES;
+/// Keep operator quarantine evidence bounded across the shared inbox.
+const MAX_QUARANTINE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_BACKLOG_STATE_BYTES: usize = 4 * 1024;
 /// Bound the durable lineage map so recovery never promotes or parses an
 /// unbounded tombstone file. The cap still allows hundreds of thousands of
@@ -316,6 +324,22 @@ pub struct SendOutcome {
     pub status: AgentStatus,
 }
 
+/// Metadata for the next oversized row blocking one recipient's backlog.
+/// The digest covers the exact source bytes, including a trailing newline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OversizedInboxRow {
+    pub offset_bytes: u64,
+    pub row_bytes: u64,
+    pub sha256: String,
+}
+
+/// Durable result of moving a blocking row into operator quarantine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuarantinedInboxRow {
+    pub row: OversizedInboxRow,
+    pub quarantine_file: PathBuf,
+}
+
 /// The shared message bus. All operations are synchronous file I/O under the
 /// `.lock` mutex; async callers should wrap them in `spawn_blocking`.
 #[derive(Debug, Clone)]
@@ -373,6 +397,18 @@ impl InboxBus {
 
     fn archive_tmp(&self, session_id: &str) -> PathBuf {
         self.root.join(format!("{session_id}.archive.jsonl.tmp"))
+    }
+
+    fn quarantine_row(&self, session_id: &str, row: &OversizedInboxRow) -> PathBuf {
+        self.root.join(format!(
+            "{session_id}.jsonl.quarantine.{}.{}.row",
+            row.offset_bytes, row.sha256
+        ))
+    }
+
+    fn quarantine_row_tmp(&self, session_id: &str, row: &OversizedInboxRow) -> PathBuf {
+        self.quarantine_row(session_id, row)
+            .with_extension("row.tmp")
     }
 
     fn deleted_sessions(&self) -> PathBuf {
@@ -1203,6 +1239,207 @@ impl InboxBus {
         Ok(entries)
     }
 
+    fn prepare_recovery_state_unlocked(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<BacklogState>> {
+        self.ensure_dir()?;
+        self.ensure_session_not_deleted_unlocked(session_id, "recover messages for")?;
+        self.recover_mailbox_tmp_unlocked(session_id)?;
+        self.recover_processing_tmp_unlocked(session_id)?;
+        self.recover_backlog_state_unlocked(session_id)?;
+        self.ensure_backlog_ready_unlocked(session_id)
+    }
+
+    fn recovery_target_unlocked(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<(BacklogState, OversizedInboxRow)>> {
+        let Some(state) = self.prepare_recovery_state_unlocked(session_id)? else {
+            return Ok(None);
+        };
+        if state.active_end_bytes.is_some() || file_len_or_zero(&self.processing(session_id))? > 0 {
+            anyhow::bail!(
+                "the inbox has an unacknowledged bounded batch; finish its normal delivery and acknowledgement before quarantining the next row"
+            )
+        }
+        let Some(row) = inspect_oversized_row(&self.backlog(session_id), state.cursor_bytes)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some((state, row)))
+    }
+
+    /// Inspect only the next row at the durable cursor, which is the row that
+    /// blocks forward progress. It does not parse or return message content.
+    fn inspect_next_oversized_row(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<OversizedInboxRow>> {
+        validate_session_id(session_id)?;
+        let _lock = LockGuard::acquire(&self.root)?;
+        Ok(self
+            .recovery_target_unlocked(session_id)?
+            .map(|(_, row)| row))
+    }
+
+    /// Copy the exact oversized row to a bounded evidence file, then advance
+    /// the durable cursor. The expected offset and digest make stale or
+    /// accidental targets fail closed. Repeating the same request after a
+    /// crash is idempotent.
+    fn quarantine_next_oversized_row(
+        &self,
+        session_id: &str,
+        expected_offset_bytes: u64,
+        expected_sha256: &str,
+    ) -> anyhow::Result<QuarantinedInboxRow> {
+        validate_session_id(session_id)?;
+        validate_sha256(expected_sha256)?;
+        let _lock = LockGuard::acquire(&self.root)?;
+        let existing =
+            self.existing_quarantine_row(session_id, expected_offset_bytes, expected_sha256)?;
+        let Some(mut state) = self.prepare_recovery_state_unlocked(session_id)? else {
+            return existing.ok_or_else(|| {
+                anyhow::anyhow!("there is no oversized row at the current inbox cursor")
+            });
+        };
+        if state.cursor_bytes > expected_offset_bytes {
+            return existing.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "the inbox cursor has moved past this row but its quarantine evidence is missing"
+                )
+            });
+        }
+        if state.cursor_bytes < expected_offset_bytes {
+            anyhow::bail!(
+                "the inbox cursor has not reached this row; inspect the current cursor before retrying"
+            )
+        }
+        if state.active_end_bytes.is_some() || file_len_or_zero(&self.processing(session_id))? > 0 {
+            anyhow::bail!(
+                "the inbox has an unacknowledged bounded batch; finish its normal delivery and acknowledgement before quarantining the next row"
+            )
+        }
+        let row = inspect_oversized_row(&self.backlog(session_id), state.cursor_bytes)?
+            .ok_or_else(|| {
+                anyhow::anyhow!("there is no oversized row at the current inbox cursor")
+            })?;
+        if row.offset_bytes != expected_offset_bytes || row.sha256 != expected_sha256 {
+            anyhow::bail!(
+                "the inbox row changed since inspection; inspect the current cursor again before retrying"
+            )
+        }
+        let quarantine_file = self.quarantine_row(session_id, &row);
+        self.persist_quarantine_row(session_id, &row, &quarantine_file)?;
+        self.advance_backlog_cursor_unlocked(
+            session_id,
+            &mut state,
+            row.offset_bytes.saturating_add(row.row_bytes),
+        )?;
+        Ok(QuarantinedInboxRow {
+            row,
+            quarantine_file,
+        })
+    }
+
+    fn existing_quarantine_row(
+        &self,
+        session_id: &str,
+        offset_bytes: u64,
+        sha256: &str,
+    ) -> anyhow::Result<Option<QuarantinedInboxRow>> {
+        let row = OversizedInboxRow {
+            offset_bytes,
+            row_bytes: 0,
+            sha256: sha256.to_string(),
+        };
+        let quarantine_file = self.quarantine_row(session_id, &row);
+        let metadata = match std::fs::symlink_metadata(&quarantine_file) {
+            Ok(metadata) if metadata.file_type().is_file() => metadata,
+            Ok(_) => anyhow::bail!("inbox quarantine evidence is not a regular file"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let row = OversizedInboxRow {
+            row_bytes: metadata.len(),
+            ..row
+        };
+        if row.row_bytes <= MAX_ENVELOPE_LINE_BYTES as u64 {
+            anyhow::bail!("existing inbox quarantine evidence has an invalid byte length")
+        }
+        verify_file_digest(&quarantine_file, row.row_bytes, sha256)?;
+        Ok(Some(QuarantinedInboxRow {
+            row,
+            quarantine_file,
+        }))
+    }
+
+    fn persist_quarantine_row(
+        &self,
+        session_id: &str,
+        row: &OversizedInboxRow,
+        quarantine_file: &Path,
+    ) -> anyhow::Result<()> {
+        if quarantine_file.exists() {
+            verify_file_digest(quarantine_file, row.row_bytes, &row.sha256)?;
+            return Ok(());
+        }
+        let tmp = self.quarantine_row_tmp(session_id, row);
+        remove_if_exists(&tmp)?;
+        self.remove_quarantine_temps_unlocked()?;
+        let current_bytes = quarantine_bytes_in_root(&self.root)?;
+        if current_bytes.saturating_add(row.row_bytes) > MAX_QUARANTINE_BYTES {
+            anyhow::bail!(
+                "Messaging quarantine evidence would exceed its {MAX_QUARANTINE_BYTES}-byte inbox budget; back up and reset the inbox to recover this row"
+            )
+        }
+        let source = self.backlog(session_id);
+        let mut input = File::open(source)?;
+        input.seek(SeekFrom::Start(row.offset_bytes))?;
+        let mut output = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        let copied_digest = match copy_row_bounded(
+            &mut input,
+            &mut output,
+            row.row_bytes,
+            MAX_QUARANTINED_ROW_BYTES,
+        ) {
+            Ok(digest) => digest,
+            Err(error) => {
+                drop(output);
+                remove_if_exists(&tmp)?;
+                return Err(error);
+            }
+        };
+        if copied_digest != row.sha256 {
+            drop(output);
+            remove_if_exists(&tmp)?;
+            anyhow::bail!(
+                "the source row changed while it was being quarantined; the backlog cursor was not advanced"
+            )
+        }
+        output.flush()?;
+        output.sync_all()?;
+        drop(output);
+        std::fs::rename(&tmp, quarantine_file)?;
+        Ok(())
+    }
+
+    fn remove_quarantine_temps_unlocked(&self) -> anyhow::Result<()> {
+        for entry in std::fs::read_dir(&self.root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if quarantine_file_parts(&name).is_some_and(|(_, _, _, is_tmp)| is_tmp) {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+        Ok(())
+    }
+
     fn read_registry_unlocked(&self) -> anyhow::Result<HashMap<String, AgentEntry>> {
         let path = self.root.join("agents.json");
         match std::fs::read_to_string(&path) {
@@ -1314,7 +1551,29 @@ impl InboxBus {
                 Err(error) => return Err(error.into()),
             }
         }
+        for path in self.quarantine_rows_for_session(session_id)? {
+            std::fs::remove_file(path)?;
+        }
         Ok(())
+    }
+
+    fn quarantine_rows_for_session(&self, session_id: &str) -> anyhow::Result<Vec<PathBuf>> {
+        let mut paths = Vec::new();
+        for entry in std::fs::read_dir(&self.root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if quarantine_file_parts(&name)
+                .is_some_and(|(candidate, _, _, _)| candidate == session_id)
+            {
+                paths.push(entry.path());
+            }
+        }
+        Ok(paths)
     }
 
     fn recover_deleted_sessions_tmp_unlocked(&self) -> anyhow::Result<()> {
@@ -1868,6 +2127,197 @@ impl InboxBus {
     }
 }
 
+/// Explicit operator-only recovery facade. This is intentionally separate
+/// from the model-facing `agent` tool, because quarantine advances a durable
+/// inbox cursor and must require a reviewed row fingerprint.
+#[derive(Debug, Clone)]
+pub struct InboxRecovery {
+    bus: InboxBus,
+}
+
+impl InboxRecovery {
+    /// Open recovery operations against Haven's configured inbox directory.
+    pub fn default_root() -> Self {
+        Self {
+            bus: InboxBus::default_root(),
+        }
+    }
+
+    /// Return metadata for the next oversized pending row, if one blocks the
+    /// recipient's current backlog cursor.
+    pub fn inspect_next_oversized_row(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<OversizedInboxRow>> {
+        self.bus.inspect_next_oversized_row(session_id)
+    }
+
+    /// Preserve the exact reviewed row in quarantine and move the durable
+    /// backlog cursor past it.
+    pub fn quarantine_next_oversized_row(
+        &self,
+        session_id: &str,
+        expected_offset_bytes: u64,
+        expected_sha256: &str,
+    ) -> anyhow::Result<QuarantinedInboxRow> {
+        self.bus
+            .quarantine_next_oversized_row(session_id, expected_offset_bytes, expected_sha256)
+    }
+}
+
+fn inspect_oversized_row(
+    path: &Path,
+    offset_bytes: u64,
+) -> anyhow::Result<Option<OversizedInboxRow>> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if offset_bytes >= file.metadata()?.len() {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(offset_bytes))?;
+    let mut hasher = Sha256::new();
+    let mut row_bytes = 0u64;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let remaining = MAX_QUARANTINED_ROW_BYTES
+            .saturating_add(1)
+            .saturating_sub(row_bytes);
+        if remaining == 0 {
+            anyhow::bail!(
+                "the blocking inbox row exceeds the {MAX_QUARANTINED_ROW_BYTES}-byte quarantine row limit; back up and reset the inbox to recover it"
+            )
+        }
+        let read_limit = buffer.len().min(remaining as usize);
+        let count = file.read(&mut buffer[..read_limit])?;
+        if count == 0 {
+            break;
+        }
+        let newline = buffer[..count].iter().position(|byte| *byte == b'\n');
+        let through_newline = newline.map_or(count, |index| index + 1);
+        hasher.update(&buffer[..through_newline]);
+        row_bytes = row_bytes.saturating_add(through_newline as u64);
+        if row_bytes > MAX_QUARANTINED_ROW_BYTES {
+            anyhow::bail!(
+                "the blocking inbox row exceeds the {MAX_QUARANTINED_ROW_BYTES}-byte quarantine row limit; back up and reset the inbox to recover it"
+            )
+        }
+        if newline.is_some() {
+            break;
+        }
+    }
+    if row_bytes == 0 || row_bytes <= MAX_ENVELOPE_LINE_BYTES as u64 {
+        return Ok(None);
+    }
+    Ok(Some(OversizedInboxRow {
+        offset_bytes,
+        row_bytes,
+        sha256: format!("{:x}", hasher.finalize()),
+    }))
+}
+
+fn copy_row_bounded(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    row_bytes: u64,
+    maximum_bytes: u64,
+) -> anyhow::Result<String> {
+    if row_bytes > maximum_bytes {
+        anyhow::bail!("inbox quarantine row exceeds its bounded copy limit")
+    }
+    let mut hasher = Sha256::new();
+    let mut remaining = row_bytes;
+    let mut buffer = [0u8; 8192];
+    while remaining > 0 {
+        let read_limit = buffer.len().min(remaining as usize);
+        let count = input.read(&mut buffer[..read_limit])?;
+        if count == 0 {
+            anyhow::bail!("inbox source row ended before its inspected byte length")
+        }
+        output.write_all(&buffer[..count])?;
+        hasher.update(&buffer[..count]);
+        remaining -= count as u64;
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn verify_file_digest(
+    path: &Path,
+    expected_bytes: u64,
+    expected_sha256: &str,
+) -> anyhow::Result<()> {
+    let mut file = File::open(path)?;
+    if file.metadata()?.len() != expected_bytes || expected_bytes > MAX_QUARANTINED_ROW_BYTES {
+        anyhow::bail!("existing inbox quarantine evidence has an invalid byte length")
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected_sha256 {
+        anyhow::bail!("existing inbox quarantine evidence failed its SHA-256 check")
+    }
+    Ok(())
+}
+
+fn quarantine_bytes_in_root(root: &Path) -> anyhow::Result<u64> {
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if quarantine_file_parts(&name).is_some() {
+            total = total.saturating_add(entry.metadata()?.len());
+        }
+    }
+    Ok(total)
+}
+
+fn validate_sha256(value: &str) -> anyhow::Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        anyhow::bail!("sha256 must be 64 lowercase hexadecimal characters")
+    }
+    Ok(())
+}
+
+fn quarantine_file_parts(file_name: &str) -> Option<(String, u64, String, bool)> {
+    let (session_id, suffix) = file_name.split_once(".jsonl.quarantine.")?;
+    validate_session_id(session_id).ok()?;
+    let (suffix, is_tmp) = suffix
+        .strip_suffix(".tmp")
+        .map_or((suffix, false), |suffix| (suffix, true));
+    let suffix = suffix.strip_suffix(".row")?;
+    let (offset, sha256) = suffix.split_once('.')?;
+    if offset.is_empty() || !offset.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let offset = offset.parse().ok()?;
+    if sha256.len() != 64
+        || !sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    Some((session_id.to_string(), offset, sha256.to_string(), is_tmp))
+}
+
 fn parse_deleted_sessions(contents: &str) -> anyhow::Result<HashMap<String, DeletedSessionEntry>> {
     let deleted: HashMap<String, DeletedSessionEntry> = serde_json::from_str(contents)
         .map_err(|error| anyhow::anyhow!("corrupt deleted_sessions.json: {error}"))?;
@@ -1927,7 +2377,7 @@ fn session_id_from_inbox_file_name(file_name: &str) -> Option<String> {
             return Some(session_id.to_string());
         }
     }
-    None
+    quarantine_file_parts(file_name).map(|(session_id, _, _, _)| session_id)
 }
 
 fn append_history_source(
@@ -2096,7 +2546,7 @@ fn read_bounded_line(reader: &mut impl BufRead) -> anyhow::Result<Option<Vec<u8>
             .map_or(available.len(), |index| index + 1);
         if line.len().saturating_add(take) > MAX_ENVELOPE_LINE_BYTES {
             anyhow::bail!(
-                "messaging JSONL row exceeds the bounded read limit of {MAX_ENVELOPE_LINE_BYTES} bytes; the source row is preserved"
+                "messaging JSONL row exceeds the bounded read limit of {MAX_ENVELOPE_LINE_BYTES} bytes; the source row is preserved; inspect it with `haven-inbox-recovery inspect <session_id>`"
             )
         }
         let has_newline = available[take - 1] == b'\n';
@@ -3165,6 +3615,161 @@ mod tests {
                 .unwrap();
         assert_eq!(state.cursor_bytes, 0);
         assert_eq!(state.active_end_bytes, None);
+    }
+
+    #[test]
+    fn oversized_jsonl_row_can_be_quarantined_by_reviewed_offset_and_digest() {
+        let (_dir, bus) = test_bus();
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(recipient, &[]).unwrap();
+        let mut oversized = env_from(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            recipient,
+            "oversized",
+        );
+        oversized.text = "x".repeat(MAX_MESSAGE_ENVELOPE_BYTES + 1);
+        let following = env_from(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            recipient,
+            "deliver after quarantine",
+        );
+        write_mailbox(&bus, recipient, &[oversized, following.clone()]);
+        let original = std::fs::read(bus.mailbox(recipient)).unwrap();
+
+        let inspected = bus.inspect_next_oversized_row(recipient).unwrap().unwrap();
+        assert_eq!(inspected.offset_bytes, 0);
+        assert!(inspected.row_bytes > MAX_ENVELOPE_LINE_BYTES as u64);
+
+        let stale = bus
+            .quarantine_next_oversized_row(recipient, inspected.offset_bytes, &"0".repeat(64))
+            .unwrap_err();
+        assert!(stale.to_string().contains("row changed since inspection"));
+        let state: BacklogState =
+            serde_json::from_str(&std::fs::read_to_string(bus.backlog_state(recipient)).unwrap())
+                .unwrap();
+        assert_eq!(state.cursor_bytes, 0);
+
+        let quarantined = bus
+            .quarantine_next_oversized_row(recipient, inspected.offset_bytes, &inspected.sha256)
+            .unwrap();
+        assert_eq!(quarantined.row, inspected);
+        assert_eq!(
+            bus.quarantine_next_oversized_row(recipient, inspected.offset_bytes, &inspected.sha256)
+                .unwrap(),
+            quarantined,
+            "repeating a completed quarantine request must be a no-op success"
+        );
+        assert_eq!(
+            std::fs::read(&quarantined.quarantine_file).unwrap(),
+            original[..inspected.row_bytes as usize]
+        );
+        let state: BacklogState =
+            serde_json::from_str(&std::fs::read_to_string(bus.backlog_state(recipient)).unwrap())
+                .unwrap();
+        assert_eq!(state.cursor_bytes, inspected.row_bytes);
+
+        let claim = bus.claim_and_archive(recipient).unwrap();
+        assert_eq!(claim.len(), 1);
+        assert_eq!(claim[0].message_id, following.message_id);
+        bus.ack_claimed(recipient, &[following.message_id]).unwrap();
+        assert!(quarantined.quarantine_file.exists());
+
+        bus.delete_sessions(&[recipient.to_string()]).unwrap();
+        assert!(!quarantined.quarantine_file.exists());
+    }
+
+    #[test]
+    fn quarantine_retry_finishes_when_evidence_was_committed_before_the_cursor() {
+        let (_dir, bus) = test_bus();
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(recipient, &[]).unwrap();
+        let mut oversized = env_from(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            recipient,
+            "oversized",
+        );
+        oversized.text = "x".repeat(MAX_MESSAGE_ENVELOPE_BYTES + 1);
+        write_mailbox(&bus, recipient, &[oversized]);
+        let inspected = bus.inspect_next_oversized_row(recipient).unwrap().unwrap();
+
+        // Simulate a crash after the evidence rename but before the cursor
+        // sidecar commit. The retry verifies the committed copy and advances.
+        let evidence = bus.quarantine_row(recipient, &inspected);
+        let source = std::fs::read(bus.backlog(recipient)).unwrap();
+        std::fs::write(&evidence, &source[..inspected.row_bytes as usize]).unwrap();
+        let result = bus
+            .quarantine_next_oversized_row(recipient, inspected.offset_bytes, &inspected.sha256)
+            .unwrap();
+
+        assert_eq!(result.row, inspected);
+        assert!(
+            !bus.backlog_state(recipient).exists(),
+            "a fully drained backlog should remove its completed cursor state"
+        );
+        assert_eq!(std::fs::read(evidence).unwrap(), source);
+    }
+
+    #[test]
+    fn inbox_recovery_refuses_to_skip_a_valid_or_active_row() {
+        let (_dir, bus) = test_bus();
+        let recipient = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        bus.register(recipient, &[]).unwrap();
+        let valid = env_from(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            recipient,
+            "valid row",
+        );
+        write_mailbox(&bus, recipient, &[valid]);
+        assert!(bus.inspect_next_oversized_row(recipient).unwrap().is_none());
+
+        bus.claim_and_archive(recipient).unwrap();
+        let error = bus
+            .quarantine_next_oversized_row(recipient, 0, &"0".repeat(64))
+            .unwrap_err();
+        assert!(error.to_string().contains("unacknowledged bounded batch"));
+    }
+
+    #[test]
+    fn inbox_session_enumeration_recognizes_quarantine_evidence() {
+        let session_id = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let name = format!(
+            "{session_id}.jsonl.quarantine.12.{}.row.tmp",
+            "a".repeat(64)
+        );
+        assert_eq!(
+            session_id_from_inbox_file_name(&name).as_deref(),
+            Some(session_id)
+        );
+        assert!(
+            session_id_from_inbox_file_name(&format!(
+                "{session_id}.jsonl.quarantine.12.{}.row",
+                "A".repeat(64)
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn inbox_recovery_bounds_the_row_scan_before_copying() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oversized.jsonl");
+        let mut file = File::create(&path).unwrap();
+        let chunk = [b'x'; 8192];
+        let mut remaining = MAX_QUARANTINED_ROW_BYTES as usize + 1;
+        while remaining > 0 {
+            let count = remaining.min(chunk.len());
+            file.write_all(&chunk[..count]).unwrap();
+            remaining -= count;
+        }
+        file.write_all(b"\n").unwrap();
+        file.flush().unwrap();
+        drop(file);
+        let original_len = std::fs::metadata(&path).unwrap().len();
+
+        let error = inspect_oversized_row(&path, 0).unwrap_err();
+
+        assert!(error.to_string().contains("quarantine row limit"));
+        assert_eq!(std::fs::metadata(path).unwrap().len(), original_len);
     }
 
     #[test]

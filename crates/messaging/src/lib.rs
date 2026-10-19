@@ -13,7 +13,10 @@ pub use contract::{
     MAX_MESSAGE_SUBJECT_BYTES, MAX_MESSAGE_TEXT_BYTES, MAX_MESSAGE_TIMESTAMP_BYTES, is_expired,
     validate_message_payload_size,
 };
-pub use inbox::{AgentInfo, AgentStatus, Envelope, MessageType, SendOutcome};
+pub use inbox::{
+    AgentInfo, AgentStatus, Envelope, InboxRecovery, MessageType, OversizedInboxRow,
+    QuarantinedInboxRow, SendOutcome,
+};
 
 pub use messaging_service::{
     AgentControlOperation, AgentControlRequest, AgentControlResult, AgentSpawnRequest,

@@ -100,7 +100,20 @@ Windows 正式版默认数据根目录是 `%APPDATA%\haven`。其中包括：
 
 `.lock` 是持久的 OS 文件锁载体，正常运行时文件会保留；不要单独删除。若有进程仍持有该文件，删除整个 inbox 后启动的新进程可能锁住新的文件对象，因此执行重置前必须退出所有共享该目录的 Haven 进程。
 
-Messaging 只接受当前规范 envelope、registry 与 backlog cursor 形状，并以 envelope 序列化上限约束每一条 JSONL 记录。旧格式及超限行不会导入、迁移或在线跳过；source 文件会在读失败时保留。没有针对单条坏行的在线跳过或 quarantine 工具。升级切换必须按上方步骤完整备份并重置整个 inbox；这会影响所有 peer 并清除 deletion tombstone。执行前应确认所有旧 Haven 进程均已退出。若要保留旧消息状态，应停留在兼容该 inbox 的旧版本，等待专门恢复工具，不要手工改写 backlog/cursor sidecar。
+Messaging 只接受当前规范 envelope、registry 与 backlog cursor 形状，并以 envelope 序列化上限约束每一条 JSONL 记录。旧格式不会导入或迁移；格式切换仍必须按上方步骤完整备份并重置整个 inbox。这会影响所有 peer 并清除 deletion tombstone。
+
+### 隔离一条超限 pending 行
+
+单条 JSONL 行超过 1 MiB 时，正常读取仍 fail closed 并保留 backlog 与 cursor。对于当前格式且状态文件有效的 inbox，可以用 operator-only recovery binary 隔离当前 cursor 上阻塞读取的那一行：
+
+```powershell
+cargo run --locked -p haven-messaging --bin haven-inbox-recovery -- inspect ses-<32位小写hex>
+cargo run --locked -p haven-messaging --bin haven-inbox-recovery -- quarantine ses-<32位小写hex> <offset_bytes> <sha256>
+```
+
+`inspect` 只返回 session ID、偏移、字节数和整行 SHA-256；确认目标后，将输出的偏移和摘要原样传给 `quarantine`。工具在 inbox 锁内再次验证当前 cursor、行大小和摘要，先将原始行逐字节写入同目录 quarantine 证据文件并同步，再原子推进 cursor；崩溃后以相同 offset 和摘要重试是幂等的。然后可重复检查并隔离下一条超限行。操作会跳过该消息的投递，但原始行留在 `.jsonl.quarantine.*.row`，直到对应 session 删除或 inbox 被重置。证据内容可能包含消息隐私，需按 inbox 备份同等保管。
+
+每行最多隔离 16 MiB，所有 quarantine 证据共用 64 MiB 上限。超过这些边界、backlog/cursor 状态损坏或旧格式不兼容时，仍应备份并完整重置 inbox。为了避免隔离后后台消费者立即继续投递，运行工具前应退出所有共享该数据目录的 Haven 进程。命令使用 `ConfigLoader::data_dir()` 选择 inbox；若目标是开发版数据目录，请将 `HAVEN_DATA_DIR` 指向该数据根目录。
 
 ### 完整重置数据根目录
 
