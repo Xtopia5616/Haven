@@ -101,8 +101,10 @@
 | `start_chatgpt_plan_login` | execute | starts a state- and PKCE-bound loopback OAuth callback and returns only the official authorization URL |
 | `start_recording` | execute | input pipeline owns capture lifecycle |
 | `stop_recording` | execute | capture stops before asynchronous transcription |
+| `subscribe_mcp_resource` | execute | explicit UI selection from current resource list; enabled live target binding; bounded acknowledged subscription |
 | `switch_model` | mutate | requestKind selects the route; modelConfigId is an assigned, capability-compatible Haven ModelConfig identity, not a Provider service model ID |
 | `toggle_mcp_server` | execute | AuthorizationPort; typed native admin operation connects before enabling |
+| `unsubscribe_mcp_resource` | execute | explicit UI cancellation; enabled live target binding; cancels only the selected resource stream |
 | `update_mcp_server` | execute | AuthorizationPort; typed native admin operation validates and reconnects safely |
 | `update_session_title` | mutate | trimmed non-empty title only |
 | `update_settings` | mutate | rejects inline secrets; shared loader preserves credential refs, tool sections, and permission rules |

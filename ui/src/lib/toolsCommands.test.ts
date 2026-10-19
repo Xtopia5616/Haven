@@ -12,6 +12,8 @@ import {
 	openSkillsDir,
 	getMcpPrompt,
 	readMcpResource,
+	subscribeMcpResource,
+	unsubscribeMcpResource,
 	reconnectMcpServer,
 	refreshMcpServers,
 	refreshSkills,
@@ -40,6 +42,7 @@ function makeMcpServerSnapshot(overrides: Record<string, unknown> = {}) {
 		enabled: true,
 		target_binding: 'mcp-target:0123456789abcdef:fedcba9876543210',
 		supports_resources: false,
+		supports_resource_subscriptions: false,
 		supports_prompts: false,
 		exposure: { default: 'deferred', tools: {} },
 		status: 'Disconnected',
@@ -132,6 +135,7 @@ describe('ToolsView command boundary', () => {
 				enabled: true,
 				targetBinding: 'mcp-target:0123456789abcdef:fedcba9876543210',
 				supportsResources: false,
+				supportsResourceSubscriptions: false,
 				supportsPrompts: false,
 				exposure: { default: 'deferred', tools: {} },
 				status: { Offline: { error: 'server unavailable' } },
@@ -160,6 +164,8 @@ describe('ToolsView command boundary', () => {
 			.mockResolvedValueOnce({ resources: [], ttlMs: null, cacheScope: 'private' })
 			.mockResolvedValueOnce({ resourceTemplates: [], ttlMs: null, cacheScope: 'private' })
 			.mockResolvedValueOnce({ contents: [], ttlMs: null, cacheScope: 'private' })
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(true)
 			.mockResolvedValueOnce({ prompts: [], ttlMs: null, cacheScope: 'private' })
 			.mockResolvedValueOnce({
 				description: null,
@@ -177,6 +183,8 @@ describe('ToolsView command boundary', () => {
 		expect(
 			await readMcpResource({ ...target, uri: 'mcp://selected/doc', forceRefresh: false }),
 		).toMatchObject({ contents: [] });
+		expect(await subscribeMcpResource({ ...target, uri: 'mcp://selected/doc' })).toBe(true);
+		expect(await unsubscribeMcpResource({ ...target, uri: 'mcp://selected/doc' })).toBe(true);
 		expect(await listMcpPrompts({ ...target, forceRefresh: false })).toMatchObject({
 			prompts: [],
 		});
@@ -191,6 +199,8 @@ describe('ToolsView command boundary', () => {
 			['list_mcp_resources', { ...target, forceRefresh: false }],
 			['list_mcp_resource_templates', { ...target, forceRefresh: false }],
 			['read_mcp_resource', { ...target, uri: 'mcp://selected/doc', forceRefresh: false }],
+			['subscribe_mcp_resource', { ...target, uri: 'mcp://selected/doc' }],
+			['unsubscribe_mcp_resource', { ...target, uri: 'mcp://selected/doc' }],
 			['list_mcp_prompts', { ...target, forceRefresh: false }],
 			[
 				'get_mcp_prompt',

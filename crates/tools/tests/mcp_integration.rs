@@ -462,9 +462,12 @@ async fn tools_list_changed_refreshes_cache_end_to_end() {
         .await;
     let callback_count = Arc::new(AtomicUsize::new(0));
     let callback_count_clone = callback_count.clone();
-    let notification_listener = client.clone().start_notification_listener(move |_| {
-        callback_count_clone.fetch_add(1, Ordering::Relaxed);
-    });
+    let notification_listener = client.clone().start_notification_listener(
+        move |_| {
+            callback_count_clone.fetch_add(1, Ordering::Relaxed);
+        },
+        |_, _| {},
+    );
     client.connect().await.unwrap();
     assert_eq!(client.tools_cache().await[0].name, "old_tool");
 

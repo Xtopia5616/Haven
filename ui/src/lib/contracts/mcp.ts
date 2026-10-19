@@ -43,6 +43,7 @@ export interface McpServerSnapshotView {
 	enabled: boolean;
 	targetBinding: string | null;
 	supportsResources: boolean;
+	supportsResourceSubscriptions: boolean;
 	supportsPrompts: boolean;
 	exposure: McpExposureConfigView;
 	status: GeneratedMcpServerSnapshot['status'];
@@ -135,6 +136,7 @@ function isMcpServerSnapshot(value: unknown): value is ValidatedMcpServerSnapsho
 		isBoolean(value.enabled) &&
 		isNullableMcpTargetBinding(value.target_binding) &&
 		isBoolean(value.supports_resources) &&
+		isBoolean(value.supports_resource_subscriptions) &&
 		isBoolean(value.supports_prompts) &&
 		isMcpExposureConfig(value.exposure) &&
 		isMcpClientStatus(value.status) &&
@@ -160,6 +162,7 @@ function toMcpServerSnapshotView(snapshot: ValidatedMcpServerSnapshot): McpServe
 		enabled: snapshot.enabled,
 		targetBinding: snapshot.target_binding,
 		supportsResources: snapshot.supports_resources,
+		supportsResourceSubscriptions: snapshot.supports_resource_subscriptions,
 		supportsPrompts: snapshot.supports_prompts,
 		exposure: snapshot.exposure,
 		status: snapshot.status,

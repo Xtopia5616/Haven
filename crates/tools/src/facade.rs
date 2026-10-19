@@ -5,7 +5,8 @@ use crate::registry::OperationRegistry;
 use crate::skill_runner::SkillRunner;
 use futures_util::future::BoxFuture;
 use haven_mcp::{
-    McpManager, McpPrompt, McpPromptList, McpResourceList, McpResourceRead, McpResourceTemplateList,
+    McpManager, McpPrompt, McpPromptList, McpResourceChangeEvent, McpResourceList, McpResourceRead,
+    McpResourceTemplateList,
 };
 #[cfg(feature = "test-support")]
 use haven_skills::Skill;
@@ -75,6 +76,21 @@ pub trait McpRuntimePort: Send + Sync {
         cancel: CancellationToken,
     ) -> anyhow::Result<McpResourceRead>;
 
+    async fn subscribe_resource_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        uri: &str,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<bool>;
+
+    async fn unsubscribe_resource_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        uri: &str,
+    ) -> anyhow::Result<bool>;
+
     async fn list_prompts_at_target_binding(
         &self,
         client_name: &str,
@@ -103,6 +119,8 @@ pub trait McpRuntimePort: Send + Sync {
     ) -> McpRefreshPlan;
 
     fn subscribe_status_events(&self) -> Box<dyn McpStatusEventReceiver>;
+
+    fn subscribe_resource_change_events(&self) -> Box<dyn McpResourceChangeEventReceiver>;
 }
 
 /// Cancellable-by-drop receiver for MCP status changes without exposing the
@@ -110,6 +128,11 @@ pub trait McpRuntimePort: Send + Sync {
 #[async_trait::async_trait]
 pub trait McpStatusEventReceiver: Send {
     async fn recv(&mut self) -> Option<McpStatusChangeEvent>;
+}
+
+#[async_trait::async_trait]
+pub trait McpResourceChangeEventReceiver: Send {
+    async fn recv(&mut self) -> Option<McpResourceChangeEvent>;
 }
 
 struct SharedMcpRuntimePort {
@@ -178,6 +201,29 @@ impl McpRuntimePort for SharedMcpRuntimePort {
             .await
     }
 
+    async fn subscribe_resource_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        uri: &str,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<bool> {
+        self.manager
+            .subscribe_resource_at_target_binding(client_name, target_binding, uri, cancel)
+            .await
+    }
+
+    async fn unsubscribe_resource_at_target_binding(
+        &self,
+        client_name: &str,
+        target_binding: &str,
+        uri: &str,
+    ) -> anyhow::Result<bool> {
+        self.manager
+            .unsubscribe_resource_at_target_binding(client_name, target_binding, uri)
+            .await
+    }
+
     async fn list_prompts_at_target_binding(
         &self,
         client_name: &str,
@@ -225,6 +271,12 @@ impl McpRuntimePort for SharedMcpRuntimePort {
             receiver: self.manager.subscribe(),
         })
     }
+
+    fn subscribe_resource_change_events(&self) -> Box<dyn McpResourceChangeEventReceiver> {
+        Box::new(BroadcastMcpResourceChangeEventReceiver {
+            receiver: self.manager.subscribe_resource_changes(),
+        })
+    }
 }
 
 struct BroadcastMcpStatusEventReceiver {
@@ -234,6 +286,23 @@ struct BroadcastMcpStatusEventReceiver {
 #[async_trait::async_trait]
 impl McpStatusEventReceiver for BroadcastMcpStatusEventReceiver {
     async fn recv(&mut self) -> Option<McpStatusChangeEvent> {
+        loop {
+            match self.receiver.recv().await {
+                Ok(event) => return Some(event),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+}
+
+struct BroadcastMcpResourceChangeEventReceiver {
+    receiver: tokio::sync::broadcast::Receiver<McpResourceChangeEvent>,
+}
+
+#[async_trait::async_trait]
+impl McpResourceChangeEventReceiver for BroadcastMcpResourceChangeEventReceiver {
+    async fn recv(&mut self) -> Option<McpResourceChangeEvent> {
         loop {
             match self.receiver.recv().await {
                 Ok(event) => return Some(event),

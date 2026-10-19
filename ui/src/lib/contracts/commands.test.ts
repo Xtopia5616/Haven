@@ -30,6 +30,8 @@ describe('Tauri command boundary directory', () => {
 				'process_transcript',
 				'open_skills_dir',
 				'list_mcp_resources',
+				'subscribe_mcp_resource',
+				'unsubscribe_mcp_resource',
 				'read_mcp_resource',
 				'list_mcp_prompts',
 				'get_mcp_prompt',

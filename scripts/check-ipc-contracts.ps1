@@ -152,7 +152,7 @@ foreach ($command in $countCommands) {
 }
 $booleanContract = Get-Source 'ui/src/lib/contracts/boolean.ts'
 Assert-Contains $booleanContract 'typeof value !== ''boolean''' 'scalar boolean responses require an actual boolean value'
-$booleanCommands = @('cancel_schedule', 'cancel_tool_run', 'discard_sandbox_output_review', 'is_autostart_enabled')
+$booleanCommands = @('cancel_schedule', 'cancel_tool_run', 'discard_sandbox_output_review', 'is_autostart_enabled', 'subscribe_mcp_resource', 'unsubscribe_mcp_resource')
 $booleanResponses = Get-Matches $generated '(?m)^\s{1,2}([a-z][a-z0-9_]*):\s*\{[^\r\n]*response:\s*boolean(?:;|\s*\})'
 Assert-SetEqual 'boolean scalar command responses vs reviewed boolean commands' $booleanResponses $booleanCommands
 Assert-Contains (Get-Source 'ui/src/lib/toolRunCommands.ts') "invoke\('cancel_tool_run'[\s\S]{0,180}?parseBooleanResponse\(value,\s*'cancel_tool_run'\)" 'cancel_tool_run response uses boolean validation'
@@ -243,7 +243,7 @@ $ownedCommands = @{
     'recordingOverlayController.ts' = @('start_recording', 'stop_recording', 'cancel_recording')
     'scheduleCommands.ts' = @('list_schedules', 'cancel_schedule')
     'toolRunCommands.ts' = @('list_tool_runs', 'list_tool_run_history', 'clear_tool_run_history', 'cancel_tool_run')
-    'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource', 'list_mcp_prompts', 'get_mcp_prompt', 'list_skills', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill', 'get_sandbox_output_review', 'discard_sandbox_output_review', 'pick_sandbox_output_destination', 'promote_sandbox_output')
+    'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource', 'subscribe_mcp_resource', 'unsubscribe_mcp_resource', 'list_mcp_prompts', 'get_mcp_prompt', 'list_skills', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill', 'get_sandbox_output_review', 'discard_sandbox_output_review', 'pick_sandbox_output_destination', 'promote_sandbox_output')
     'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'clear_facts', 'recall_memory')
     'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'count_session_history', 'count_session_history_search', 'get_session_for_resume', 'get_latest_session_for_resume', 'process_transcript', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'fork_session_from_message', 'end_session', 'interrupt_session', 'continue_session')
     'modelDiscoveryCommands.ts' = @('discover_models')

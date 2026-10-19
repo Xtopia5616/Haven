@@ -336,6 +336,36 @@ pub(crate) fn run() {
                     });
             }
 
+            {
+                let emit_handle = handle.clone();
+                let mut rx = state.runtime.services.mcp.subscribe_resource_change_events();
+                state.runtime.spawn_with_child_token(
+                    "mcp-resource-change-forwarder",
+                    move |cancel| async move {
+                        loop {
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                result = rx.recv() => match result {
+                                    Some(ev) => {
+                                        log_ignored_result!(
+                                            "event.mcp_resource_changed",
+                                            emit_handle.emit(
+                                                MCP_RESOURCE_CHANGED_EVENT,
+                                                McpResourceChangedEvent {
+                                                    name: ev.name,
+                                                    uri: ev.uri,
+                                                },
+                                            )
+                                        );
+                                    }
+                                    None => break,
+                                }
+                            }
+                        }
+                    },
+                );
+            }
+
             // Auto-refresh skills when the skills folder changes on disk
             // (and once at startup, so a UI that opened before the initial
             // scan finished still catches up). Newly added / modified /
@@ -758,6 +788,8 @@ pub(crate) fn run() {
             commands::mcp::list_mcp_resources,
             commands::mcp::list_mcp_resource_templates,
             commands::mcp::read_mcp_resource,
+            commands::mcp::subscribe_mcp_resource,
+            commands::mcp::unsubscribe_mcp_resource,
             commands::mcp::list_mcp_prompts,
             commands::mcp::get_mcp_prompt,
             commands::mcp::reconnect_mcp_server,

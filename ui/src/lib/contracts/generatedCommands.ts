@@ -26,6 +26,7 @@ export const APP_EVENT_NAMES = [
 	'tray:status_changed',
 	'mute:changed',
 	'mcp:status_change',
+	'mcp:resource_changed',
 	'skills:status_change',
 	'interaction:requested',
 	'hotkey:conflict',
@@ -127,6 +128,7 @@ export interface AppBootstrapEvent { status: BootstrapStatus }
 export interface HotkeyConflictEvent { binding: string; error: string }
 export interface HotkeyRebindEvent { old_binding: string; new_binding: string }
 export interface InteractionRequestedEvent { request_id: string; session_id?: string; owner: InteractionOwner; kind: InteractionKind; status: InteractionStatus; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; invocation_step_id?: string; tool_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
+export interface McpResourceChangedEvent { name: string; uri: string | null }
 export interface McpStatusChangedEvent { name: string; status: McpClientStatus }
 export interface MuteChangedEvent { muted: boolean }
 export interface RecordingErrorEvent { recording_id: string; error: string }
@@ -408,7 +410,7 @@ export interface McpResourceRead { contents: McpResourceContent[]; ttlMs: number
 export interface McpResourceTemplate { uriTemplate: string; name: string; title?: string; description?: string; mimeType?: string }
 export interface McpResourceTemplateList { resourceTemplates: McpResourceTemplate[]; ttlMs: number | null; cacheScope: McpCacheScope }
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };
-export interface McpServerSnapshot { name: string; transport: McpServerTransport; stdio_execution: McpStdioExecution; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; target_binding: string | null; supports_resources: boolean; supports_prompts: boolean; exposure: McpExposureConfig; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
+export interface McpServerSnapshot { name: string; transport: McpServerTransport; stdio_execution: McpStdioExecution; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; target_binding: string | null; supports_resources: boolean; supports_resource_subscriptions: boolean; supports_prompts: boolean; exposure: McpExposureConfig; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
 export const MEMORY_ENTITY_KIND_INPUT_VALUES = ['fact', 'episode'] as const;
 export type MemoryEntityKindInput = (typeof MEMORY_ENTITY_KIND_INPUT_VALUES)[number];
@@ -5664,6 +5666,10 @@ export const LIST_MCP_SERVERS_RESPONSE_SHAPE = { kind: 'array', items: {
 			optional: false,
 			shape: { kind: 'boolean' },
 		},
+		'supports_resource_subscriptions': {
+			optional: false,
+			shape: { kind: 'boolean' },
+		},
 		'supports_prompts': {
 			optional: false,
 			shape: { kind: 'boolean' },
@@ -6116,6 +6122,19 @@ export const LIST_TOOL_RUN_HISTORY_RESPONSE_SHAPE = { kind: 'array', items: {
 	}
 } } as const;
 export const LOG_FRONTEND_ERROR_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const MCP_RESOURCE_CHANGED_EVENT_PAYLOAD_SHAPE = {
+	kind: 'object',
+	fields: {
+		'name': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'uri': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		}
+	}
+} as const;
 export const MCP_STATUS_CHANGE_EVENT_PAYLOAD_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -9341,6 +9360,7 @@ export const START_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE = {
 } as const;
 export const START_RECORDING_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const STOP_RECORDING_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const SUBSCRIBE_MCP_RESOURCE_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const SWITCH_MODEL_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const TOGGLE_MCP_SERVER_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const TOOL_RUN_CREATED_EVENT_PAYLOAD_SHAPE = {
@@ -9558,6 +9578,7 @@ export const TRAY_STATUS_CHANGED_EVENT_PAYLOAD_SHAPE = {
 		}
 	}
 } as const;
+export const UNSUBSCRIBE_MCP_RESOURCE_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const UPDATE_MCP_SERVER_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const UPDATE_SESSION_TITLE_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const UPDATE_SETTINGS_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -9650,8 +9671,10 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	start_chatgpt_plan_login: START_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE,
 	start_recording: START_RECORDING_RESPONSE_SHAPE,
 	stop_recording: STOP_RECORDING_RESPONSE_SHAPE,
+	subscribe_mcp_resource: SUBSCRIBE_MCP_RESOURCE_RESPONSE_SHAPE,
 	switch_model: SWITCH_MODEL_RESPONSE_SHAPE,
 	toggle_mcp_server: TOGGLE_MCP_SERVER_RESPONSE_SHAPE,
+	unsubscribe_mcp_resource: UNSUBSCRIBE_MCP_RESOURCE_RESPONSE_SHAPE,
 	update_mcp_server: UPDATE_MCP_SERVER_RESPONSE_SHAPE,
 	update_session_title: UPDATE_SESSION_TITLE_RESPONSE_SHAPE,
 	update_settings: UPDATE_SETTINGS_RESPONSE_SHAPE,
@@ -9673,6 +9696,7 @@ export const IPC_EVENT_PAYLOAD_SHAPES = {
 	'tray:status_changed': TRAY_STATUS_CHANGED_EVENT_PAYLOAD_SHAPE,
 	'mute:changed': MUTE_CHANGED_EVENT_PAYLOAD_SHAPE,
 	'mcp:status_change': MCP_STATUS_CHANGE_EVENT_PAYLOAD_SHAPE,
+	'mcp:resource_changed': MCP_RESOURCE_CHANGED_EVENT_PAYLOAD_SHAPE,
 	'skills:status_change': SKILLS_STATUS_CHANGE_EVENT_PAYLOAD_SHAPE,
 	'interaction:requested': INTERACTION_REQUESTED_EVENT_PAYLOAD_SHAPE,
 	'hotkey:conflict': HOTKEY_CONFLICT_EVENT_PAYLOAD_SHAPE,
@@ -9711,6 +9735,7 @@ export const IPC_EVENT_PAYLOAD_DTO_TYPES = {
 	'tray:status_changed': "TrayStatusChangedEvent",
 	'mute:changed': "MuteChangedEvent",
 	'mcp:status_change': "McpStatusChangedEvent",
+	'mcp:resource_changed': "McpResourceChangedEvent",
 	'skills:status_change': "SkillsStatusChangedEvent",
 	'interaction:requested': "InteractionRequestedEvent",
 	'hotkey:conflict': "HotkeyConflictEvent",
@@ -9825,8 +9850,10 @@ export interface TauriCommandMap {
 	start_chatgpt_plan_login: { request: { providerName: string }; response: LoginStart };
 	start_recording: { request: undefined; response: void };
 	stop_recording: { request: undefined; response: void };
+	subscribe_mcp_resource: { request: { name: string; targetBinding: string; uri: string }; response: boolean };
 	switch_model: { request: { requestKind: RequestKindInput; modelConfigId: string }; response: void };
 	toggle_mcp_server: { request: { name: string; enabled: boolean }; response: void };
+	unsubscribe_mcp_resource: { request: { name: string; targetBinding: string; uri: string }; response: boolean };
 	update_mcp_server: { request: { name: string; config: McpServerConfigInput }; response: void };
 	update_session_title: { request: { sessionId: string; title: string }; response: void };
 	update_settings: { request: { settings: SettingsPatchInput }; response: void };
@@ -9943,8 +9970,10 @@ export const TAURI_COMMAND_CONTRACTS = {
 	start_chatgpt_plan_login: { boundary: 'execute', security: "starts a state- and PKCE-bound loopback OAuth callback and returns only the official authorization URL" },
 	start_recording: { boundary: 'execute', security: "input pipeline owns capture lifecycle" },
 	stop_recording: { boundary: 'execute', security: "capture stops before asynchronous transcription" },
+	subscribe_mcp_resource: { boundary: 'execute', security: "explicit UI selection from current resource list; enabled live target binding; bounded acknowledged subscription" },
 	switch_model: { boundary: 'mutate', security: "requestKind selects the route; modelConfigId is an assigned, capability-compatible Haven ModelConfig identity, not a Provider service model ID" },
 	toggle_mcp_server: { boundary: 'execute', security: "AuthorizationPort; typed native admin operation connects before enabling" },
+	unsubscribe_mcp_resource: { boundary: 'execute', security: "explicit UI cancellation; enabled live target binding; cancels only the selected resource stream" },
 	update_mcp_server: { boundary: 'execute', security: "AuthorizationPort; typed native admin operation validates and reconnects safely" },
 	update_session_title: { boundary: 'mutate', security: "trimmed non-empty title only" },
 	update_settings: { boundary: 'mutate', security: "rejects inline secrets; shared loader preserves credential refs, tool sections, and permission rules" },

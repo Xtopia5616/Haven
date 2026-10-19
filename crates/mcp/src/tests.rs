@@ -196,6 +196,7 @@ fn mcp_server_snapshot_roundtrip() {
         enabled: true,
         target_binding: Some("mcp-target:0000000000000001:0000000000000002".into()),
         supports_resources: true,
+        supports_resource_subscriptions: false,
         supports_prompts: false,
         exposure: Default::default(),
         status: McpClientStatus::Connected,

@@ -51,6 +51,7 @@ pub async fn list_mcp_servers(
                 enabled: config.enabled,
                 target_binding: None,
                 supports_resources: false,
+                supports_resource_subscriptions: false,
                 supports_prompts: false,
                 exposure: config.exposure.clone(),
                 status: McpClientStatus::Disconnected,
@@ -136,6 +137,43 @@ pub async fn read_mcp_resource(
         )
         .await
         .map_err(|error| log_err("read_mcp_resource", error))
+}
+
+#[tauri::command]
+pub async fn subscribe_mcp_resource(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    target_binding: String,
+    uri: String,
+) -> Result<bool, String> {
+    state
+        .runtime
+        .services
+        .mcp
+        .subscribe_resource_at_target_binding(
+            &name,
+            &target_binding,
+            &uri,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .map_err(|error| log_err("subscribe_mcp_resource", error))
+}
+
+#[tauri::command]
+pub async fn unsubscribe_mcp_resource(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    target_binding: String,
+    uri: String,
+) -> Result<bool, String> {
+    state
+        .runtime
+        .services
+        .mcp
+        .unsubscribe_resource_at_target_binding(&name, &target_binding, &uri)
+        .await
+        .map_err(|error| log_err("unsubscribe_mcp_resource", error))
 }
 
 #[tauri::command]
@@ -528,6 +566,7 @@ mod tests {
             enabled: true,
             target_binding: None,
             supports_resources: false,
+            supports_resource_subscriptions: false,
             supports_prompts: false,
             exposure: Default::default(),
             status: McpClientStatus::Disconnected,

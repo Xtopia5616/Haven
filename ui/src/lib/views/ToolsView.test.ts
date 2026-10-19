@@ -86,6 +86,7 @@ function mcpServer(name: string, status: string) {
 		enabled: true,
 		target_binding: null,
 		supports_resources: false,
+		supports_resource_subscriptions: false,
 		supports_prompts: false,
 		exposure: { default: 'deferred', tools: {} },
 		status,

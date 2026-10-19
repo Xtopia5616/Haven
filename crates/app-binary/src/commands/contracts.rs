@@ -134,6 +134,16 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content",
     },
     CommandContract {
+        name: "subscribe_mcp_resource",
+        boundary: CommandBoundary::Execute,
+        security: "explicit UI selection from current resource list; enabled live target binding; bounded acknowledged subscription",
+    },
+    CommandContract {
+        name: "unsubscribe_mcp_resource",
+        boundary: CommandBoundary::Execute,
+        security: "explicit UI cancellation; enabled live target binding; cancels only the selected resource stream",
+    },
+    CommandContract {
         name: "list_mcp_prompts",
         boundary: CommandBoundary::Execute,
         security: "user-driven prompt discovery; enabled live target binding; no model callable surface",

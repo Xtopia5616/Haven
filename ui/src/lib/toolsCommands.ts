@@ -77,6 +77,30 @@ export function readMcpResource(request: {
 	return invoke('read_mcp_resource', request).then((value: unknown) => parseMcpResourceRead(value));
 }
 
+/** Watch updates for one resource explicitly selected from the current server list. */
+export function subscribeMcpResource(request: {
+	name: string;
+	targetBinding: string;
+	uri: string;
+}): Promise<boolean> {
+	return invoke('subscribe_mcp_resource', request).then((value: unknown) => {
+		if (typeof value !== 'boolean') throw new Error('Invalid MCP resource subscription response');
+		return value;
+	});
+}
+
+/** Stop watching one resource on the selected live connection. */
+export function unsubscribeMcpResource(request: {
+	name: string;
+	targetBinding: string;
+	uri: string;
+}): Promise<boolean> {
+	return invoke('unsubscribe_mcp_resource', request).then((value: unknown) => {
+		if (typeof value !== 'boolean') throw new Error('Invalid MCP resource unsubscribe response');
+		return value;
+	});
+}
+
 /** Discover prompts for explicit user selection. */
 export function listMcpPrompts(request: {
 	name: string;

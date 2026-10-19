@@ -29,6 +29,7 @@ import {
 	type InteractionStatus,
 	type ConfirmationResolutionResult,
 	type McpStatusChangedEvent as GeneratedMcpStatusChangedEvent,
+	type McpResourceChangedEvent as GeneratedMcpResourceChangedEvent,
 	type MuteChangedEvent as GeneratedMuteChangedEvent,
 	type RiskLevel,
 	type SkillsStatusChangedEvent as GeneratedSkillsStatusChangedEvent,
@@ -157,6 +158,7 @@ export interface AppEventPayloadMap {
 	'tray:status_changed': GeneratedTrayStatusChangedEvent;
 	'mute:changed': GeneratedMuteChangedEvent;
 	'mcp:status_change': GeneratedMcpStatusChangedEvent;
+	'mcp:resource_changed': GeneratedMcpResourceChangedEvent;
 	'skills:status_change': GeneratedSkillsStatusChangedEvent;
 	'interaction:requested': InteractionRequest;
 	'hotkey:conflict': GeneratedHotkeyConflictEvent;
@@ -345,6 +347,9 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 		case 'mcp:status_change':
 			if (!isString(p.name) || !isMcpClientStatus(p.status)) return null;
 			return { ...tauriEvent, payload: { name: p.name, status: p.status } };
+		case 'mcp:resource_changed':
+			if (!isString(p.name) || !(p.uri === null || isString(p.uri))) return null;
+			return { ...tauriEvent, payload: { name: p.name, uri: p.uri } };
 		case 'skills:status_change':
 			if (!isOneOf(p.op, SKILLS_STATUS_OPERATION_VALUES)) return null;
 			return {

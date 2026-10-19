@@ -2,6 +2,22 @@ import { describe, expect, it } from 'vitest';
 import { interactionOwnerToWire, mapAppEvent, parseConfirmationResolutionResult } from './app.ts';
 
 describe('app-shell IPC contract', () => {
+	it('maps MCP resource update events and rejects malformed URIs', () => {
+		const event = mapAppEvent({
+			event: 'mcp:resource_changed',
+			id: 1,
+			payload: { name: 'files', uri: 'mcp://files/notes.txt' },
+		});
+		expect(event?.payload).toEqual({ name: 'files', uri: 'mcp://files/notes.txt' });
+		expect(
+			mapAppEvent({
+				event: 'mcp:resource_changed',
+				id: 2,
+				payload: { name: 'files', uri: 42 },
+			}),
+		).toBeNull();
+	});
+
 	it.each(['resolved', 'expired', 'stale'])('accepts confirmation result %s', (result) => {
 		expect(parseConfirmationResolutionResult(result)).toBe(result);
 	});

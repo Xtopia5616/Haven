@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { registerAppListener } from '$lib/events.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialField from '$lib/MaterialField.svelte';
@@ -11,6 +12,8 @@
 		listMcpResources,
 		listMcpResourceTemplates,
 		readMcpResource,
+		subscribeMcpResource,
+		unsubscribeMcpResource,
 	} from '$lib/toolsCommands.ts';
 	import { expandMcpResourceTemplate, parseMcpResourceTemplate } from '$lib/mcpResourceTemplates.ts';
 	import type { McpServerSnapshotView } from '$lib/contracts/mcp.ts';
@@ -32,6 +35,11 @@
 	let resources = $state<McpResourceInfoView[]>([]);
 	let selectedResourceUri = $state('');
 	let resourceRead = $state<McpResourceReadView | null>(null);
+	let subscribedResourceUris = $state<string[]>([]);
+	let pendingSubscriptionUris = $state<string[]>([]);
+	let resourceSubscriptionBusy = $state(false);
+	let resourceUpdateAvailable = $state(false);
+	let dialogDisposed = false;
 	let resourceTemplates = $state<McpResourceTemplateView[]>([]);
 	let selectedTemplateUri = $state('');
 	let templateArguments = $state<Record<string, string>>({});
@@ -54,6 +62,9 @@
 	const selectedResource = $derived(
 		resources.find((resource) => resource.uri === selectedResourceUri) ?? null,
 	);
+	const selectedResourceSubscribed = $derived(
+		subscribedResourceUris.includes(selectedResourceUri),
+	);
 	const selectedPrompt = $derived(
 		prompts.find((prompt) => prompt.name === selectedPromptName) ?? null,
 	);
@@ -65,14 +76,45 @@
 	const promptText = $derived(promptDraftText(renderedPrompt));
 
 	onMount(() => {
+		dialogDisposed = false;
 		activeTab = server.supportsResources ? 'resources' : 'prompts';
 		if (!server.enabled || server.status !== 'Connected' || !targetBinding) {
 			errorMessage = '服务器当前没有可用的连接，请刷新状态后重试。';
 			return;
 		}
+		let resourceListener: { dispose: () => void } | null = null;
+		let statusListener: { dispose: () => void } | null = null;
+		void registerAppListener('mcp:resource_changed', (event) => {
+			if (event.payload.name !== server.name) return;
+			if (event.payload.uri === null) {
+				void loadResources(true);
+			} else if (event.payload.uri === selectedResourceUri) {
+				resourceUpdateAvailable = true;
+			}
+		}).then((registration) => {
+			if (dialogDisposed) registration.dispose();
+			else resourceListener = registration;
+		});
+		void registerAppListener('mcp:status_change', (event) => {
+			if (event.payload.name === server.name && event.payload.status !== 'Connected') {
+				subscribedResourceUris = [];
+				pendingSubscriptionUris = [];
+			}
+		}).then((registration) => {
+			if (dialogDisposed) registration.dispose();
+			else statusListener = registration;
+		});
 		if (server.supportsResources) void loadResources(false);
 		if (server.supportsResources) void loadResourceTemplates(false);
 		if (server.supportsPrompts) void loadPrompts(false);
+		return () => {
+			dialogDisposed = true;
+			resourceListener?.dispose();
+			statusListener?.dispose();
+			for (const uri of new Set([...subscribedResourceUris, ...pendingSubscriptionUris])) {
+				void unsubscribeMcpResource({ name: server.name, targetBinding, uri });
+			}
+		};
 	});
 
 	async function loadResources(forceRefresh: boolean) {
@@ -181,6 +223,7 @@
 	async function selectResource(resource: McpResourceInfoView, forceRefresh = false) {
 		selectedResourceUri = resource.uri;
 		resourceRead = null;
+		resourceUpdateAvailable = false;
 		loadingResource = true;
 		errorMessage = '';
 		try {
@@ -194,6 +237,37 @@
 			errorMessage = safeError(error, '读取资源失败，连接可能已变化。');
 		} finally {
 			loadingResource = false;
+		}
+	}
+
+	async function toggleResourceSubscription() {
+		if (!selectedResource || resourceSubscriptionBusy) return;
+		const uri = selectedResource.uri;
+		resourceSubscriptionBusy = true;
+		errorMessage = '';
+		try {
+			if (subscribedResourceUris.includes(uri)) {
+				await unsubscribeMcpResource({ name: server.name, targetBinding, uri });
+				subscribedResourceUris = subscribedResourceUris.filter((value) => value !== uri);
+				return;
+			}
+			pendingSubscriptionUris = [...new Set([...pendingSubscriptionUris, uri])];
+			const accepted = await subscribeMcpResource({ name: server.name, targetBinding, uri });
+			pendingSubscriptionUris = pendingSubscriptionUris.filter((value) => value !== uri);
+			if (dialogDisposed) {
+				if (accepted) await unsubscribeMcpResource({ name: server.name, targetBinding, uri });
+				return;
+			}
+			if (accepted) {
+				subscribedResourceUris = [...new Set([...subscribedResourceUris, uri])];
+			} else {
+				errorMessage = 'MCP 服务器没有确认该资源的更新订阅。';
+			}
+		} catch (error) {
+			pendingSubscriptionUris = pendingSubscriptionUris.filter((value) => value !== uri);
+			errorMessage = safeError(error, '订阅资源更新失败，连接可能已变化。');
+		} finally {
+			resourceSubscriptionBusy = false;
 		}
 	}
 
@@ -348,10 +422,19 @@
 				<p class="feature-source">来源：{server.name} · {selectedResource.uri}</p>
 				<MaterialButton
 					variant="outlined"
-					label={loadingResource ? '读取中…' : '重新读取资源'}
+					label={loadingResource ? '读取中…' : resourceUpdateAvailable ? '重新读取已更新资源' : '重新读取资源'}
 					disabled={loadingResource}
 					onclick={() => selectResource(selectedResource, true)}
 				/>
+				{#if server.supportsResourceSubscriptions}
+					<MaterialButton
+						variant={selectedResourceSubscribed ? 'tonal' : 'outlined'}
+						label={resourceSubscriptionBusy ? '处理中…' : selectedResourceSubscribed ? '取消更新订阅' : '订阅更新'}
+						disabled={resourceSubscriptionBusy || pendingSubscriptionUris.includes(selectedResource.uri)}
+						onclick={toggleResourceSubscription}
+					/>
+				{/if}
+				{#if resourceUpdateAvailable}<p role="status">该资源已更新，可以重新读取。</p>{/if}
 				{#if loadingResource}
 					<p>正在读取资源…</p>
 				{:else if resourceRead}

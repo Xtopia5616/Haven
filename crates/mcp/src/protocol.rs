@@ -559,6 +559,7 @@ pub struct McpServerSnapshot {
     pub target_binding: Option<String>,
     /// Negotiated server capabilities used to enable explicit host-side UI.
     pub supports_resources: bool,
+    pub supports_resource_subscriptions: bool,
     pub supports_prompts: bool,
     /// Haven-side model exposure policy for this configured server.
     pub exposure: McpExposureConfig,
@@ -581,6 +582,12 @@ pub const MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC: &str = "Not connected; the MCP to
 pub struct McpStatusChangeEvent {
     pub name: String,
     pub status: McpClientStatus,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct McpResourceChangeEvent {
+    pub name: String,
+    pub uri: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

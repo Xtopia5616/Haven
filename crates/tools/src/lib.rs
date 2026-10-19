@@ -173,8 +173,8 @@ pub use haven_mcp::McpToolInfo;
 pub use haven_mcp::{
     MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpCacheScope, McpClientStatus, McpPrompt,
     McpPromptArgument, McpPromptContent, McpPromptInfo, McpPromptList, McpPromptMessage,
-    McpResourceContent, McpResourceInfo, McpResourceList, McpResourceRead, McpResourceTemplate,
-    McpResourceTemplateList, McpServerSnapshot, McpStatusChangeEvent,
+    McpResourceChangeEvent, McpResourceContent, McpResourceInfo, McpResourceList, McpResourceRead,
+    McpResourceTemplate, McpResourceTemplateList, McpServerSnapshot, McpStatusChangeEvent,
 };
 pub use haven_skills::SkillInfo;
 #[cfg(feature = "test-support")]

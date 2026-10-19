@@ -1,4 +1,5 @@
 mod feature_runtime;
+mod subscriptions;
 
 use crate::features::{McpPromptList, McpResourceList, McpResourceRead, McpServerCapabilities};
 use crate::protocol::{
@@ -633,6 +634,12 @@ struct McpResourceReadCacheEntry {
     expires_at: Option<Instant>,
 }
 
+struct ResourceSubscription {
+    subscription_id: u64,
+    cancel: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+}
+
 #[derive(Debug, Clone)]
 struct McpPromptListSnapshot {
     result: McpPromptList,
@@ -672,6 +679,8 @@ pub struct McpClient {
     resource_template_list_cache: Mutex<Option<McpResourceTemplateListSnapshot>>,
     resource_template_list_refresh: Mutex<()>,
     resource_read_cache: Mutex<HashMap<String, McpResourceReadCacheEntry>>,
+    resource_subscriptions: Mutex<HashMap<String, ResourceSubscription>>,
+    resource_subscription_acks: Mutex<HashMap<u64, (String, tokio::sync::oneshot::Sender<bool>)>>,
     prompt_list_cache: Mutex<Option<McpPromptListSnapshot>>,
     prompt_list_refresh: Mutex<()>,
     pub(crate) last_error: Arc<Mutex<Option<String>>>,
@@ -1104,6 +1113,8 @@ impl McpClient {
             resource_template_list_cache: Mutex::new(None),
             resource_template_list_refresh: Mutex::new(()),
             resource_read_cache: Mutex::new(HashMap::new()),
+            resource_subscriptions: Mutex::new(HashMap::new()),
+            resource_subscription_acks: Mutex::new(HashMap::new()),
             prompt_list_cache: Mutex::new(None),
             prompt_list_refresh: Mutex::new(()),
             last_error: Arc::new(Mutex::new(None)),
@@ -1287,6 +1298,7 @@ impl McpClient {
             enabled: self.enabled(),
             target_binding: None,
             supports_resources: capabilities.resources,
+            supports_resource_subscriptions: capabilities.resource_subscribe,
             supports_prompts: capabilities.prompts,
             exposure: haven_common::config::McpExposureConfig::default(),
             status: self.status.lock().await.clone(),
@@ -1691,6 +1703,7 @@ impl McpClient {
         // Cancel the client's own token first so any in-flight `call_tool`
         // (which selects on this token) aborts and releases the `inner` lock.
         self.cancel_token.lock().await.cancel();
+        self.stop_resource_subscriptions().await;
         if stop_notification_listener {
             self.notification_cancel.cancel();
         }
@@ -1938,9 +1951,11 @@ impl McpClient {
     pub fn start_notification_listener(
         self: Arc<McpClient>,
         on_tool_list_changed: impl Fn(&str) + Send + Sync + 'static,
+        on_resource_changed: impl Fn(&str, Option<&str>) + Send + Sync + 'static,
     ) -> tokio::task::JoinHandle<()> {
         let notification_cancel = self.notification_cancel.clone();
         tokio::spawn(async move {
+            let on_resource_changed = Arc::new(on_resource_changed);
             enum Notification {
                 ListChanged,
                 Message(Option<Value>),
@@ -1997,6 +2012,12 @@ impl McpClient {
                         let method = msg["method"].as_str();
                         if method == Some("notifications/tools/list_changed") {
                             self.tools_list_changed.request();
+                        } else if method == Some("notifications/subscriptions/acknowledged") {
+                            self.acknowledge_resource_subscription(&msg).await;
+                        } else if method == Some("notifications/resources/updated")
+                            && let Some(uri) = self.accept_resource_update(&msg).await
+                        {
+                            on_resource_changed(&self.name, Some(&uri));
                         }
                     }
                     Notification::Message(None) => {
@@ -2570,6 +2591,7 @@ mod modern_tool_list_tests {
         *client.server_capabilities.lock().await = McpServerCapabilities {
             tools: false,
             resources,
+            resource_subscribe: false,
             prompts,
         };
         *client.status.lock().await = McpClientStatus::Connected;

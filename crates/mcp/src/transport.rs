@@ -186,6 +186,16 @@ impl StdioInner {
     ) -> JoinHandle<()> {
         spawn_stdio_tools_subscription(name, self.io.clone(), next_id)
     }
+
+    pub(crate) fn spawn_resource_subscription(
+        &self,
+        name: String,
+        id: u64,
+        uri: String,
+        cancel: CancellationToken,
+    ) -> JoinHandle<()> {
+        spawn_stdio_resource_subscription(name, self.io.clone(), id, uri, cancel)
+    }
 }
 
 impl Drop for StdioInner {
@@ -202,6 +212,17 @@ impl Drop for StdioInner {
 
 impl StdioIo {
     async fn request(&self, id: u64, method: &str, params: Option<Value>) -> anyhow::Result<Value> {
+        self.request_with_cancel(id, method, params, &self.cancel)
+            .await
+    }
+
+    async fn request_with_cancel(
+        &self,
+        id: u64,
+        method: &str,
+        params: Option<Value>,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<Value> {
         if self.reader_failed.load(Ordering::Acquire) {
             anyhow::bail!("MCP stdio response reader has stopped");
         }
@@ -223,7 +244,7 @@ impl StdioIo {
                 self.remove_subscription(id);
                 anyhow::bail!("MCP stdio stdin has been closed");
             };
-            write_stdio_line(&mut **stdin, &line, method, &self.cancel).await
+            write_stdio_line(&mut **stdin, &line, method, cancel).await
         };
         if let Err(error) = write_result {
             self.pending.lock().await.remove(&id);
@@ -233,7 +254,7 @@ impl StdioIo {
 
         let response = if method == "subscriptions/listen" {
             tokio::select! {
-                _ = self.cancel.cancelled() => Err(anyhow::anyhow!("MCP stdio subscription cancelled")),
+                _ = cancel.cancelled() => Err(anyhow::anyhow!("MCP stdio subscription cancelled")),
                 result = response_rx => match result {
                     Err(_) => Err(anyhow::anyhow!("MCP stdio response reader stopped")),
                     Ok(Err(error)) => Err(anyhow::anyhow!("{error}")),
@@ -242,7 +263,7 @@ impl StdioIo {
             }
         } else {
             tokio::select! {
-                _ = self.cancel.cancelled() => Err(anyhow::anyhow!("MCP stdio request '{}' cancelled", method)),
+                _ = cancel.cancelled() => Err(anyhow::anyhow!("MCP stdio request '{}' cancelled", method)),
                 result = tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), response_rx) => {
                     match result {
                         Err(_) => Err(anyhow::anyhow!("MCP request '{}' timed out", method)),
@@ -312,7 +333,13 @@ impl StdioIo {
     }
 
     fn accepts_notification(&self, value: &Value) -> bool {
-        if value.get("method").and_then(Value::as_str) != Some("notifications/tools/list_changed") {
+        let method = value.get("method").and_then(Value::as_str);
+        if !matches!(
+            method,
+            Some("notifications/tools/list_changed")
+                | Some("notifications/resources/updated")
+                | Some("notifications/subscriptions/acknowledged")
+        ) {
             return true;
         }
         let Some(subscription_id) =
@@ -401,6 +428,39 @@ fn spawn_stdio_tools_subscription(
                 _ = tokio::time::sleep(backoff) => {}
             }
             backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+        }
+    })
+}
+
+fn spawn_stdio_resource_subscription(
+    name: String,
+    io: Arc<StdioIo>,
+    id: u64,
+    uri: String,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let params = params_with_protocol_meta(
+            Some(serde_json::json!({
+                "notifications": {"resourceSubscriptions": [uri]}
+            })),
+            MODERN_PROTOCOL_VERSION,
+        );
+        if let Err(error) = io
+            .request_with_cancel(id, "subscriptions/listen", Some(params), &cancel)
+            .await
+        {
+            if cancel.is_cancelled() {
+                if io.notify_cancelled_request(id).await.is_err() {
+                    tracing::debug!(server = %name, "MCP stdio resource subscription cancellation could not be sent");
+                }
+            } else {
+                tracing::debug!(
+                    server = %name,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "MCP stdio resource subscription ended"
+                );
+            }
         }
     })
 }
@@ -576,6 +636,28 @@ impl McpClientInner {
             ),
         }
     }
+
+    pub(crate) fn spawn_resource_subscription(
+        &self,
+        name: String,
+        id: u64,
+        uri: String,
+        cancel: CancellationToken,
+    ) -> JoinHandle<()> {
+        match self {
+            McpClientInner::Stdio(stdio) => {
+                stdio.spawn_resource_subscription(name, id, uri, cancel)
+            }
+            McpClientInner::Http(http) => spawn_http_resource_subscription(
+                name,
+                http.shared.clone(),
+                http.notification_tx.clone(),
+                http.max_sse_buffer,
+                http.tools_list_changed.clone(),
+                HttpResourceSubscription { id, uri, cancel },
+            ),
+        }
+    }
 }
 
 /// Read an SSE streamed response body until the JSON-RPC response matching
@@ -705,7 +787,7 @@ fn spawn_http_tools_subscription(
                         .and_then(|value| value.to_str().ok())
                         .is_some_and(|content_type| content_type.contains("text/event-stream"));
                     if is_sse {
-                        read_tools_subscription_stream(
+                        read_subscription_stream(
                             response,
                             id,
                             &notification_tx,
@@ -749,7 +831,90 @@ fn spawn_http_tools_subscription(
     })
 }
 
-async fn read_tools_subscription_stream(
+fn spawn_http_resource_subscription(
+    name: String,
+    shared: Arc<HttpShared>,
+    notification_tx: tokio::sync::mpsc::Sender<Value>,
+    max_sse_buffer: usize,
+    tools_list_changed: Arc<ToolsListChangedSignal>,
+    subscription: HttpResourceSubscription,
+) -> JoinHandle<()> {
+    let HttpResourceSubscription { id, uri, cancel } = subscription;
+    tokio::spawn(async move {
+        let params = params_with_protocol_meta(
+            Some(serde_json::json!({
+                "notifications": {"resourceSubscriptions": [uri]}
+            })),
+            MODERN_PROTOCOL_VERSION,
+        );
+        let request = jsonrpc_request(id, "subscriptions/listen", Some(params));
+        let builder = shared
+            .http
+            .post(&shared.url)
+            .json(&request)
+            .header("Accept", "application/json, text/event-stream");
+        let builder =
+            apply_http_request_headers(builder, &shared, "subscriptions/listen", &request, &[]);
+        let response = tokio::select! {
+            _ = shared.cancel.cancelled() => return,
+            _ = cancel.cancelled() => return,
+            result = tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), builder.send()) => {
+                match result {
+                    Err(_) => Err(anyhow::anyhow!("MCP resource subscription request timed out")),
+                    Ok(Err(error)) => Err(anyhow::Error::from(error)),
+                    Ok(Ok(response)) => Ok(response),
+                }
+            }
+        };
+        let result = match response {
+            Ok(response) if response.status().is_success() => {
+                let is_sse = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|content_type| content_type.contains("text/event-stream"));
+                if is_sse {
+                    read_subscription_stream(
+                        response,
+                        id,
+                        &notification_tx,
+                        max_sse_buffer,
+                        &cancel,
+                        &tools_list_changed,
+                    )
+                    .await
+                } else {
+                    Err(anyhow::anyhow!(
+                        "MCP resource subscription did not return an SSE stream"
+                    ))
+                }
+            }
+            Ok(response) => Err(anyhow::anyhow!(
+                "MCP resource subscription returned HTTP status {}",
+                response.status().as_u16()
+            )),
+            Err(error) => Err(error),
+        };
+        if !cancel.is_cancelled()
+            && !shared.cancel.is_cancelled()
+            && let Err(error) = result
+        {
+            tracing::debug!(
+                server = %name,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "MCP HTTP resource subscription ended"
+            );
+        }
+    })
+}
+
+struct HttpResourceSubscription {
+    id: u64,
+    uri: String,
+    cancel: CancellationToken,
+}
+
+async fn read_subscription_stream(
     response: reqwest::Response,
     subscription_id: u64,
     notification_tx: &tokio::sync::mpsc::Sender<Value>,
@@ -1451,6 +1616,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stdio_resource_subscription_sends_uri_filter_and_scoped_cancellation() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let (client_read, client_write) = tokio::io::split(client_stream);
+        let (server_read, _server_write) = tokio::io::split(server_stream);
+        let (notification_tx, _notification_rx) = tokio::sync::mpsc::channel(4);
+        let connection_cancel = CancellationToken::new();
+        let io = Arc::new(StdioIo {
+            stdin: AsyncMutex::new(Some(Box::new(client_write))),
+            pending: AsyncMutex::new(HashMap::new()),
+            active_subscriptions: std::sync::Mutex::new(HashSet::new()),
+            reader_failed: AtomicBool::new(false),
+            notification_tx,
+            tools_list_changed: Arc::new(ToolsListChangedSignal::new()),
+            cancel: connection_cancel,
+        });
+        let reader_task =
+            tokio::spawn(read_stdio_messages(BufReader::new(client_read), io.clone()));
+        let subscription_cancel = CancellationToken::new();
+        let subscription = spawn_stdio_resource_subscription(
+            "resource-test".into(),
+            io.clone(),
+            17,
+            "mcp://server/notes".into(),
+            subscription_cancel.clone(),
+        );
+
+        let mut server_reader = BufReader::new(server_read);
+        let mut line = String::new();
+        server_reader.read_line(&mut line).await.unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["method"], "subscriptions/listen");
+        assert_eq!(
+            request["params"]["notifications"]["resourceSubscriptions"],
+            serde_json::json!(["mcp://server/notes"])
+        );
+        assert!(io.accepts_notification(&serde_json::json!({
+            "method": "notifications/subscriptions/acknowledged",
+            "params": {"_meta": {"io.modelcontextprotocol/subscriptionId": 17}}
+        })));
+        assert!(!io.accepts_notification(&serde_json::json!({
+            "method": "notifications/resources/updated",
+            "params": {"_meta": {"io.modelcontextprotocol/subscriptionId": 18}}
+        })));
+
+        subscription_cancel.cancel();
+        line.clear();
+        tokio::time::timeout(Duration::from_secs(1), server_reader.read_line(&mut line))
+            .await
+            .expect("scoped cancellation should be sent promptly")
+            .unwrap();
+        let cancellation: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(cancellation["method"], "notifications/cancelled");
+        assert_eq!(cancellation["params"]["requestId"], 17);
+        tokio::time::timeout(Duration::from_secs(1), subscription)
+            .await
+            .expect("resource subscription should end after cancellation")
+            .unwrap();
+        reader_task.abort();
+    }
+
+    #[tokio::test]
     async fn modern_http_subscription_routes_only_correlated_tool_changes() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1553,6 +1779,112 @@ mod tests {
             .expect("subscription task should stop on cancellation")
             .expect("subscription task should not panic");
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn modern_http_resource_subscription_uses_uri_filter_and_routes_updates() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let connection_cancel = CancellationToken::new();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let mut content_length = 0usize;
+            loop {
+                line.clear();
+                reader.read_line(&mut line).await.unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    content_length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body).await.unwrap();
+            let request: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(request["method"], "subscriptions/listen");
+            assert_eq!(
+                request["params"]["notifications"]["resourceSubscriptions"],
+                serde_json::json!(["mcp://server/notes"])
+            );
+            write_half
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            for event in [
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/subscriptions/acknowledged",
+                    "params": {
+                        "_meta": {"io.modelcontextprotocol/subscriptionId": 33},
+                        "notifications": {"resourceSubscriptions": ["mcp://server/notes"]}
+                    }
+                }),
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/resources/updated",
+                    "params": {
+                        "_meta": {"io.modelcontextprotocol/subscriptionId": 33},
+                        "uri": "mcp://server/notes"
+                    }
+                }),
+            ] {
+                let data = format!("data: {}\n\n", event);
+                let chunk = format!("{:X}\r\n{}\r\n", data.len(), data);
+                write_half.write_all(chunk.as_bytes()).await.unwrap();
+                write_half.flush().await.unwrap();
+            }
+            let mut byte = [0; 1];
+            let _ = reader.read(&mut byte).await;
+        });
+
+        let (notification_tx, mut notification_rx) = tokio::sync::mpsc::channel(4);
+        let shared = Arc::new(HttpShared {
+            http: reqwest::Client::builder().no_proxy().build().unwrap(),
+            url: format!("http://{address}/mcp"),
+            headers: Vec::new(),
+            cancel: connection_cancel,
+        });
+        let subscription_cancel = CancellationToken::new();
+        let task = spawn_http_resource_subscription(
+            "resource-test".into(),
+            shared,
+            notification_tx,
+            1024,
+            Arc::new(ToolsListChangedSignal::new()),
+            HttpResourceSubscription {
+                id: 33,
+                uri: "mcp://server/notes".into(),
+                cancel: subscription_cancel.clone(),
+            },
+        );
+        for expected_method in [
+            "notifications/subscriptions/acknowledged",
+            "notifications/resources/updated",
+        ] {
+            let notification = tokio::time::timeout(Duration::from_secs(2), notification_rx.recv())
+                .await
+                .expect("resource stream notification should be routed")
+                .expect("notification queue should remain open");
+            assert_eq!(notification["method"], expected_method);
+        }
+        subscription_cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("resource subscription should stop when its owner cancels")
+            .expect("resource subscription task should not panic");
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("closing the resource stream should release the peer")
+            .unwrap();
     }
 
     #[test]

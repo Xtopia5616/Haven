@@ -22,6 +22,7 @@ function server(tools: McpToolInfoView[]): McpServerSnapshotView {
 		lastSeenAt: null,
 		targetBinding: 'mcp-target:0123456789abcdef:fedcba9876543210',
 		supportsResources: false,
+		supportsResourceSubscriptions: false,
 		supportsPrompts: false,
 	};
 }

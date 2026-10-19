@@ -11,6 +11,7 @@ pub(crate) const MAX_RESOURCE_CONTENTS: usize = 64;
 pub(crate) const MAX_RESOURCE_TEXT_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_RESOURCE_BLOB_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const MAX_RESOURCE_RESPONSE_BYTES: usize = 3 * 1024 * 1024;
+pub(crate) const MAX_RESOURCE_SUBSCRIPTIONS: usize = 64;
 pub(crate) const MAX_PROMPT_MESSAGES: usize = 128;
 pub(crate) const MAX_PROMPT_CONTENT_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_PROMPT_ARGUMENTS: usize = 128;
@@ -42,16 +43,20 @@ impl McpCacheScope {
 pub(crate) struct McpServerCapabilities {
     pub(crate) tools: bool,
     pub(crate) resources: bool,
+    pub(crate) resource_subscribe: bool,
     pub(crate) prompts: bool,
 }
 
 impl McpServerCapabilities {
     pub(crate) fn from_wire_capabilities(value: Option<&Value>) -> Self {
+        let resources = value.and_then(|caps| caps.get("resources"));
         Self {
             tools: value.and_then(|caps| caps.get("tools")).is_some(),
-            resources: value
-                .and_then(|caps| caps.get("resources"))
-                .is_some_and(Value::is_object),
+            resources: resources.is_some_and(Value::is_object),
+            resource_subscribe: resources
+                .and_then(|caps| caps.get("subscribe"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             prompts: value
                 .and_then(|caps| caps.get("prompts"))
                 .is_some_and(Value::is_object),
@@ -599,11 +604,12 @@ mod tests {
     #[test]
     fn current_capabilities_are_detected_from_discovery() {
         let modern = McpServerCapabilities::from_wire_capabilities(Some(&serde_json::json!({
-            "resources": {"listChanged": true},
+            "resources": {"listChanged": true, "subscribe": true},
             "prompts": {}
         })));
         assert!(!modern.tools);
         assert!(modern.resources);
+        assert!(modern.resource_subscribe);
         assert!(modern.prompts);
 
         assert_eq!(

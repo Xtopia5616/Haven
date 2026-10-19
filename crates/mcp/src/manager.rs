@@ -1,7 +1,7 @@
 use crate::client::McpClient;
 use crate::protocol::{
-    McpCallOutput, McpClientStatus, McpManagedCallOutput, McpServerSnapshot, McpStatusChangeEvent,
-    McpToolInfo,
+    McpCallOutput, McpClientStatus, McpManagedCallOutput, McpResourceChangeEvent,
+    McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
 use crate::{McpPrompt, McpPromptList, McpResourceList, McpResourceRead, McpResourceTemplateList};
 use futures_util::FutureExt;
@@ -171,6 +171,7 @@ pub struct McpManager {
     panic_next_connection: Arc<AtomicBool>,
     connection_slots: Arc<Semaphore>,
     status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
+    resource_change_tx: tokio::sync::broadcast::Sender<McpResourceChangeEvent>,
     discovery_config: Arc<tokio::sync::RwLock<haven_common::config::McpDiscoveryConfig>>,
     limits: Arc<tokio::sync::RwLock<haven_common::config::ContextLimitsConfig>>,
     network_policy: Arc<tokio::sync::RwLock<haven_common::types::NetworkPolicy>>,
@@ -205,6 +206,7 @@ impl Clone for McpManager {
             panic_next_connection: self.panic_next_connection.clone(),
             connection_slots: self.connection_slots.clone(),
             status_tx: self.status_tx.clone(),
+            resource_change_tx: self.resource_change_tx.clone(),
             discovery_config: self.discovery_config.clone(),
             limits: self.limits.clone(),
             network_policy: self.network_policy.clone(),
@@ -226,6 +228,7 @@ impl McpManager {
     /// different network boundary.
     fn new_with_network_policy(network_policy: haven_common::types::NetworkPolicy) -> Self {
         let (status_tx, _) = tokio::sync::broadcast::channel(256);
+        let (resource_change_tx, _) = tokio::sync::broadcast::channel(256);
         Self {
             manager_id: NEXT_MANAGER_ID.fetch_add(1, Ordering::SeqCst),
             clients: Arc::new(Mutex::new(HashMap::new())),
@@ -241,6 +244,7 @@ impl McpManager {
             panic_next_connection: Arc::new(AtomicBool::new(false)),
             connection_slots: Arc::new(Semaphore::new(crate::MCP_MAX_PARALLEL_CONNECTIONS)),
             status_tx,
+            resource_change_tx,
             discovery_config: Arc::new(tokio::sync::RwLock::new(
                 haven_common::config::McpDiscoveryConfig::default(),
             )),
@@ -273,18 +277,25 @@ impl McpManager {
         self.catalog_version.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Install the tools/list_changed listener for every connection path.
+    /// Install the connection's tools and resource notification listener.
     /// Startup and progressive `load_mcp` connections must invalidate the same
     /// catalog clock; otherwise a paged capability discovery can keep using a
     /// cursor created before the server changed its tools.
     async fn start_catalog_listener(&self, client: Arc<McpClient>) {
         let catalog_version = self.catalog_version.clone();
-        let task = client
-            .clone()
-            .start_notification_listener(move |server_name: &str| {
+        let resource_change_tx = self.resource_change_tx.clone();
+        let task = client.clone().start_notification_listener(
+            move |server_name: &str| {
                 tracing::info!("MCP server '{}' pushed tools/list_changed", server_name);
                 catalog_version.fetch_add(1, Ordering::Relaxed);
-            });
+            },
+            move |server_name: &str, uri: Option<&str>| {
+                let _ = resource_change_tx.send(McpResourceChangeEvent {
+                    name: server_name.to_string(),
+                    uri: uri.map(str::to_string),
+                });
+            },
+        );
         let key = Arc::as_ptr(&client) as usize;
         let previous = self
             .notification_listeners
@@ -807,6 +818,12 @@ impl McpManager {
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<McpStatusChangeEvent> {
         self.status_tx.subscribe()
+    }
+
+    pub fn subscribe_resource_changes(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<McpResourceChangeEvent> {
+        self.resource_change_tx.subscribe()
     }
 
     #[cfg(test)]
@@ -1637,6 +1654,31 @@ impl McpManager {
         self.client_at_target_binding(client_name, expected_binding)
             .await?
             .read_resource(uri, force_refresh, cancel)
+            .await
+    }
+
+    pub async fn subscribe_resource_at_target_binding(
+        &self,
+        client_name: &str,
+        expected_binding: &str,
+        uri: &str,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<bool> {
+        self.client_at_target_binding(client_name, expected_binding)
+            .await?
+            .subscribe_resource(uri, cancel)
+            .await
+    }
+
+    pub async fn unsubscribe_resource_at_target_binding(
+        &self,
+        client_name: &str,
+        expected_binding: &str,
+        uri: &str,
+    ) -> anyhow::Result<bool> {
+        self.client_at_target_binding(client_name, expected_binding)
+            .await?
+            .unsubscribe_resource(uri)
             .await
     }
 

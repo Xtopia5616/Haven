@@ -44,7 +44,7 @@ pub use features::{
 pub use manager::{McpManager, McpReconcile, McpTargetChanged};
 pub use protocol::{
     MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpCallOutput, McpClientStatus, McpManagedCallOutput,
-    McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
+    McpResourceChangeEvent, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
 pub use stdio_process::{
     McpStdioLaunchSpec, McpStdioProcess, McpStdioProcessLauncher, McpStdioReader, McpStdioWriter,

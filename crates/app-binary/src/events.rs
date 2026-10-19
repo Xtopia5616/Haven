@@ -34,6 +34,7 @@ pub(crate) const APP_BOOTSTRAP_EVENT: &str = "app:bootstrap";
 pub(crate) const TRAY_STATUS_CHANGED_EVENT: &str = "tray:status_changed";
 pub(crate) const MUTE_CHANGED_EVENT: &str = "mute:changed";
 pub(crate) const MCP_STATUS_CHANGED_EVENT: &str = "mcp:status_change";
+pub(crate) const MCP_RESOURCE_CHANGED_EVENT: &str = "mcp:resource_changed";
 pub(crate) const SKILLS_STATUS_CHANGED_EVENT: &str = "skills:status_change";
 pub(crate) const INTERACTION_REQUESTED_EVENT: &str = "interaction:requested";
 pub(crate) const HOTKEY_CONFLICT_EVENT: &str = "hotkey:conflict";
@@ -351,6 +352,12 @@ pub(crate) struct MuteChangedEvent {
 pub(crate) struct McpStatusChangedEvent {
     pub name: String,
     pub status: haven_tools::McpClientStatus,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct McpResourceChangedEvent {
+    pub name: String,
+    pub uri: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
