@@ -88,6 +88,7 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import SessionTimeline from '$lib/SessionTimeline.svelte';
+	import SessionWorkingDocument from '$lib/SessionWorkingDocument.svelte';
 	import Composer from '$lib/Composer.svelte';
 	import PendingInteractionsMenu from '$lib/PendingInteractionsMenu.svelte';
 	import { requestConfirmationOpen } from '$lib/interactionPresentationStore.ts';
@@ -157,6 +158,9 @@
 		const sessionId = state.activeSessionId || DRAFT_SESSION_ID;
 		return state.messages[sessionId] ?? emptySessionMessages;
 	});
+	const activeSessionWorkingDocumentStore = createSessionSelectorStore((state) =>
+		state.activeSessionId ? state.workingDocuments[state.activeSessionId] || '' : '',
+	);
 	const activeSessionTokenStatsStore = createSessionSelectorStore((state) =>
 		state.activeSessionId ? (state.tokenStats[state.activeSessionId] ?? null) : null,
 	);
@@ -174,6 +178,11 @@
 		currentReducerState.messages[currentReducerState.activeSessionId || DRAFT_SESSION_ID] ??
 			emptySessionMessages,
 	);
+	let activeSessionWorkingDocument = $state(
+		currentReducerState.activeSessionId
+			? currentReducerState.workingDocuments[currentReducerState.activeSessionId] || ''
+			: '',
+	);
 	let sessionRunEndNotice = $state(currentReducerState.runEndNotice);
 
 	function dispatchSession(action: SessionAction) {
@@ -184,6 +193,12 @@
 	$effect(() => syncStore(activeSessionIdStore, (next) => (activeSessionId = next)));
 	$effect(() => syncStore(interactionsStore, (next) => (interactionDict = next)));
 	$effect(() => syncStore(activeSessionMessagesStore, (next) => (activeSessionMessages = next)));
+	$effect(() =>
+		syncStore(
+			activeSessionWorkingDocumentStore,
+			(next) => (activeSessionWorkingDocument = next),
+		),
+	);
 	$effect(() => syncStore(sessionRunEndNoticeStore, (next) => (sessionRunEndNotice = next)));
 	// Interaction requests are shared by the ask cards and confirmation modal.
 	// The modal keeps only its current presentation id; pending requests remain
@@ -428,10 +443,7 @@
 	const awaitingBackgroundCount = $derived.by(() => {
 		if (!awaitingBackground || !activeSessionId) return 0;
 		return Object.values(toolRunsById).filter(
-			(a) =>
-				a &&
-				a.status === 'running' &&
-				a.sessionId === activeSessionId,
+			(a) => a && a.status === 'running' && a.sessionId === activeSessionId,
 		).length;
 	});
 
@@ -1301,6 +1313,9 @@
 				onwheel={chatViewController.cancelJumpToBottom}
 				use:dragScroll={{ axis: 'y', preserveTextSelection: true }}
 			>
+				{#if activeSessionWorkingDocument}
+					<SessionWorkingDocument markdown={activeSessionWorkingDocument} />
+				{/if}
 				<SessionTimeline
 					sessionId={activeSessionId}
 					{messages}

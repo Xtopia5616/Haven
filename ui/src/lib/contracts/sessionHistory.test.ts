@@ -43,6 +43,9 @@ type ResumeFixture = Record<string, unknown> & {
 	steps: Array<Record<string, unknown> & { step_id: string; session_id: string }>;
 	llm_usage: Array<Record<string, unknown> & { usage_id: string; session_id: string }>;
 	interactions: Array<Record<string, unknown> & { request_id: string }>;
+	working_document: string | null;
+	working_document_sequence: number | null;
+	event_sequence_watermark: number;
 };
 
 function sessionRecord(id = sessionId): Record<string, unknown> & { session_id: string } {
@@ -195,6 +198,9 @@ function resumeResponse(): ResumeFixture {
 				expires_at: '2026-10-12T08:01:04Z',
 			},
 		],
+		working_document: '# Current plan\n- inspect',
+		working_document_sequence: 17,
+		event_sequence_watermark: 21,
 	} as ResumeFixture;
 }
 
@@ -285,6 +291,19 @@ function sessionLineage() {
 }
 
 describe('session history and resume contracts', () => {
+	it('validates and maps the session working document and durable sequence', () => {
+		const response = resumeResponse();
+		const parsed = parseSessionResumeResponse(response);
+		expect(parsed.workingDocument).toBe('# Current plan\n- inspect');
+		expect(parsed.workingDocumentSequence).toBe(17);
+		expect(parsed.eventSequenceWatermark).toBe(21);
+
+		const oversized = { ...response, working_document: 'x'.repeat(32 * 1024 + 1) };
+		expect(() => parseSessionResumeResponse(oversized)).toThrow(
+			'Invalid resumed working document',
+		);
+	});
+
 	it('validates the runtime session allowlist, closed enums, and canonical IDs', () => {
 		const leakedFields = runtimeSession();
 		leakedFields.summary = 'private Agent summary';

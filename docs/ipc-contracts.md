@@ -122,8 +122,8 @@ repository source 值后显式投影字段，repository 新增字段不会自动
 |---|---|---|
 | `list_runtime_sessions` | read | 当前进程中驻留且未终结的会话列表；Rust `session_id` / `input_text` / `waiting_reason` 在 renderer 边界映射为 `sessionId` / `inputText` / `waitingReason`；响应仅包含会话切换器所需字段 |
 | `get_session_lineage` | read | 当前会话的父会话和直接子会话 |
-| `get_session_for_resume` | read | 恢复指定会话所需的持久化投影 |
-| `get_latest_session_for_resume` | read | 最近持久化会话 |
+| `get_session_for_resume` | read | 恢复指定会话所需的持久化投影，包含当前工作文档、其活动 sequence 与同一事件快照的 append-only `event_sequence_watermark` |
+| `get_latest_session_for_resume` | read | 最近持久化会话及恢复投影（含当前工作文档与事件水位） |
 | `reopen_session` / `continue_session` / `end_session` / `interrupt_session` | mutate | 会话生命周期控制；中断保留会话 |
 | `rollback_session` | mutate | 回滚分支并同步截断事件和投影 |
 | `fork_session_from_message` | mutate | 按精确用户消息身份创建独立子会话；从消息处重放，可能再次触发工具 |
@@ -222,7 +222,7 @@ Rust DTO 定义在 `crates/app-binary/src/events.rs`，前端唯一转换边界�
 DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 `ui/src/lib/contracts/app.ts`、`ui/src/lib/contracts/agent.ts`，只能通过
 `appEventListeners` / `agentEventListeners` 进入路由。`scripts/check-ipc-events.ps1`
-会比较两侧的全部 36 个 channel，防止新增事件只改一侧。
+会比较两侧的全部 37 个 channel，防止新增事件只改一侧。
 
 | 事件 | Rust DTO（wire） | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|
@@ -246,6 +246,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `agent:compaction` | `AgentCompactionEvent { summary, tokens_before, tokens_after, degraded, episode_id?, event_sequence? }` | 聊天页 | `event_sequence` 对应该条压缩摘要的 durable sequence。`degraded=true` 表示摘要请求未完成、使用了 `[older context omitted]`，UI 必须提示较早内容已省略；不发送快照内部对象。 |
 | `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 不占用 durable `event_sequence`，live 事件自带累计值。固定 token/cost/cache/context 字段；`request_kind` 字段承载 `RequestKind`；`call_kind` 与 `cache_accounting` 使用 Common 生成枚举；`cache_diagnostics` 使用 Common 的 typed `CacheDiagnostics`，其中策略、结果和来源均为闭合枚举，前端 mapper 校验完整字段；缓存率由每次调用的 accounting 合同计算，未知口径不得猜测。 |
 | `agent:tool_output` | `AgentToolOutputEvent` | 聊天页 | UI-only 的有界输出通道；未知 channel 或畸形 payload 直接丢弃并记录。 |
+| `agent:working_document` | `AgentWorkingDocumentEvent { session_id, markdown, event_sequence }` | 聊天页 | 仅发布已追加的当前 Session 工作文档；按 durable sequence 忽略旧更新，resume snapshot、当前值 sequence 与 append-only `event_sequence_watermark` 一起处理分支回退和延迟事件。Markdown 使用 HTML 禁用的 renderer；内容是过程笔记，不是执行证明或授权，不写普通日志或跨 Session Memory。 |
 | `notification:show` | `AgentNotificationEvent` | 根布局 | 通用纯文本通知可省略 session 关联；ToolRun completion 元数据使用生成的 `ToolRunKindDto` / `ToolRunCompletionStatusDto` 与 `AgentNotificationKind`；后台任务完成通知必须带真实 `session_id` 和终态。正文不承载密钥、完整工具输出或原始 provider 错误。 |
 
 前端业务代码只使用 camelCase（例如 `sessionId`、`stepNumber`、`toolCallId`）；Rust-owned

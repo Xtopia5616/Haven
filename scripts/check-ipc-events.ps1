@@ -65,7 +65,7 @@ Assert-SetEqual 'AgentEvent channel/DTO projections vs generated event shape reg
 # add their source file and count here, then remain covered by the channel and
 # DTO ownership checks below.
 $emitSiteInventory = @{
-    'crates/app-binary/src/bootstrap.rs' = 6
+    'crates/app-binary/src/bootstrap.rs' = 7
     'crates/app-binary/src/commands/confirmation.rs' = 1
     'crates/app-binary/src/commands/mcp.rs' = 1
     'crates/app-binary/src/commands/mod.rs' = 1
@@ -241,8 +241,8 @@ if (-not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentToolCallPayload\
     throw 'Agent ToolCall and Observation tool_call_id/result fields must match the required Rust DTO shape'
 }
 
-if ($rustEvents.Count -ne 35) {
-    throw "expected 35 public IPC events, found $($rustEvents.Count)"
+if ($rustEvents.Count -ne 37) {
+    throw "expected 37 public IPC events, found $($rustEvents.Count)"
 }
 
 Write-Host "IPC event directory verified: $($rustEvents.Count) channels and AgentEvent channel/DTO pairs agree with generated Rust registries; runtime enum validators and direct emitter sites match their reviewed inventories."

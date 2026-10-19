@@ -54,6 +54,9 @@ function resume(
 		usage: null,
 		llm_usage: [],
 		interactions: [],
+		workingDocument: null,
+		workingDocumentSequence: null,
+		eventSequenceWatermark: 0,
 	};
 }
 
@@ -224,7 +227,9 @@ describe('createChatSessionStartup', () => {
 			'session/retained-error',
 			'sessions/loaded',
 		]);
-		expect(harness.actions[1]).toMatchObject({ preserveRequestIds: ['step-fa7d9da560291aec4d4fd57e8812de10'] });
+		expect(harness.actions[1]).toMatchObject({
+			preserveRequestIds: ['step-fa7d9da560291aec4d4fd57e8812de10'],
+		});
 		expect(harness.actions[3]).toMatchObject({
 			type: 'session/run-ended',
 			status: 'error',

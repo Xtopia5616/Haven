@@ -56,6 +56,7 @@ pub(crate) const AGENT_SUPPLEMENT_EVENT: &str = "agent:supplement";
 pub(crate) const AGENT_COMPACTION_EVENT: &str = "agent:compaction";
 pub(crate) const AGENT_USAGE_EVENT: &str = "agent:usage";
 pub(crate) const AGENT_TOOL_OUTPUT_EVENT: &str = "agent:tool_output";
+pub(crate) const AGENT_WORKING_DOCUMENT_EVENT: &str = "agent:working_document";
 pub(crate) const NOTIFICATION_SHOW_EVENT: &str = "notification:show";
 
 /// App-owned wire DTO category. Keep this separate from `haven_tools::ToolRunKind`:
@@ -630,6 +631,13 @@ pub(crate) struct AgentToolOutputEvent {
     pub session_id: String,
     pub step_id: String,
     pub output: String,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct AgentWorkingDocumentEvent {
+    pub session_id: String,
+    pub markdown: String,
+    pub event_sequence: u64,
 }
 
 #[cfg(test)]

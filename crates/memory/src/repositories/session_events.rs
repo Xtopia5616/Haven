@@ -277,8 +277,9 @@ pub enum SqliteStorageWriteFailure {
 
 /// Existing read models needed to build the App's session-resume response.
 ///
-/// The projection groups the current queries behind one SessionStore port;
-/// its fields do not imply a shared database snapshot or transaction.
+/// The transcript/read-model fields do not imply a shared database snapshot.
+/// `active_events` and `event_sequence_watermark` are captured together so the
+/// frontend can reject late events from a branch that has since been rolled back.
 #[derive(Debug, Clone)]
 pub struct SessionResumeProjection {
     pub messages: Vec<Message>,
@@ -288,6 +289,8 @@ pub struct SessionResumeProjection {
     /// Active append-only event stream used by Agent-owned resume reducers.
     pub active_events: Vec<SessionEvent>,
     pub active_domain_events: Vec<SessionEvent>,
+    /// Highest durable sequence observed in the same snapshot as active events.
+    pub event_sequence_watermark: i64,
 }
 
 /// Agent-prepared prefix used to create an independent child session.
@@ -937,6 +940,7 @@ mod tests {
         assert_eq!(projection.messages[0].message_id, message.message_id);
         assert_eq!(projection.steps[0].step_id, step.step_id);
         assert_eq!(projection.llm_usage[0].usage_id, usage.usage_id);
+        assert_eq!(projection.event_sequence_watermark, domain_event.sequence);
         assert!(
             projection
                 .active_domain_events

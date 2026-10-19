@@ -18,6 +18,7 @@ export const AGENT_EVENT_NAMES = [
 	'agent:compaction',
 	'agent:usage',
 	'agent:tool_output',
+	'agent:working_document',
 	'notification:show',
 ] as const;
 
@@ -97,7 +98,7 @@ export interface SessionLineageChildDto { session: SessionRecordDto; parent_sess
 export interface SessionLineageResponse { session_id: string; parent_session_id: string | null; parent: SessionRecordDto | null; children: SessionLineageChildDto[] }
 export interface SessionRecordDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; run_end_reason?: string; created_at: string; updated_at: string; creation: SessionCreation }
 export interface SessionResumeMessageDto { message_id: string; session_id: string; role: CanonicalRole; content: string; message_type: TranscriptMessageKind | null; created_at: string; tool_call_id: string | null; attachments: MessageAttachment[]; media_inputs?: MediaInput[]; voice: boolean }
-export interface SessionResumeResponse { session: SessionRecordDto; messages: SessionResumeMessageDto[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[] }
+export interface SessionResumeResponse { session: SessionRecordDto; messages: SessionResumeMessageDto[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[]; working_document: string | null; working_document_sequence: number | null; event_sequence_watermark: number }
 export interface ChatGptPlanLoginComplete { credentialRef: string; accountEmail: string | null; planUsageEnabled: boolean }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect }
 export interface ShellAvailability { available: boolean }
@@ -124,6 +125,7 @@ export interface AgentToolCallEvent { session_id: string; tool_name: string; inp
 export interface AgentToolOutputEvent { session_id: string; step_id: string; output: string }
 export interface AgentUsageEvent { session_id: string; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; cache_exclusive: boolean; cache_accounting: CacheAccounting; cost_usd: number | null; model: string | null; cumulative_prompt_tokens: number; cumulative_completion_tokens: number; cumulative_total_tokens: number; cumulative_cached_tokens: number; cumulative_cache_creation_tokens: number; cumulative_cache_miss_tokens: number; cache_diagnostics?: CacheDiagnostics; cumulative_cost_usd: number | null; context_window: number | null; step_number?: number; duration_ms?: number; request_kind?: RequestKind; call_kind: LlmCallKind; has_cost: boolean }
 export interface AgentWebSearchEvent { session_id: string; phase: WebSearchPhase; step_number: number; run_id: number; call_id?: string; call_index?: number; action?: string; result?: unknown }
+export interface AgentWorkingDocumentEvent { session_id: string; markdown: string; event_sequence: number }
 export interface AppBootstrapEvent { status: BootstrapStatus }
 export interface HotkeyConflictEvent { binding: string; error: string }
 export interface HotkeyRebindEvent { old_binding: string; new_binding: string }
@@ -1179,6 +1181,23 @@ export const AGENT_WEB_SEARCH_EVENT_PAYLOAD_SHAPE = {
 		'result': {
 			optional: true,
 			shape: { kind: 'unknown' },
+		}
+	}
+} as const;
+export const AGENT_WORKING_DOCUMENT_EVENT_PAYLOAD_SHAPE = {
+	kind: 'object',
+	fields: {
+		'session_id': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'markdown': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'event_sequence': {
+			optional: false,
+			shape: { kind: 'number' },
 		}
 	}
 } as const;
@@ -2305,6 +2324,18 @@ export const GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE = { kind: 'nullable', 
 					}
 				}
 			} },
+		},
+		'working_document': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'working_document_sequence': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'event_sequence_watermark': {
+			optional: false,
+			shape: { kind: 'number' },
 		}
 	}
 } } as const;
@@ -3733,6 +3764,18 @@ export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 					}
 				}
 			} },
+		},
+		'working_document': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'working_document_sequence': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'event_sequence_watermark': {
+			optional: false,
+			shape: { kind: 'number' },
 		}
 	}
 } as const;
@@ -8719,6 +8762,18 @@ export const SESSION_RESUME_RESPONSE_SHAPE = {
 					}
 				}
 			} },
+		},
+		'working_document': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'working_document_sequence': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'number' } },
+		},
+		'event_sequence_watermark': {
+			optional: false,
+			shape: { kind: 'number' },
 		}
 	}
 } as const;
@@ -10362,6 +10417,7 @@ export const IPC_EVENT_PAYLOAD_SHAPES = {
 	'agent:compaction': AGENT_COMPACTION_EVENT_PAYLOAD_SHAPE,
 	'agent:usage': AGENT_USAGE_EVENT_PAYLOAD_SHAPE,
 	'agent:tool_output': AGENT_TOOL_OUTPUT_EVENT_PAYLOAD_SHAPE,
+	'agent:working_document': AGENT_WORKING_DOCUMENT_EVENT_PAYLOAD_SHAPE,
 	'notification:show': NOTIFICATION_SHOW_EVENT_PAYLOAD_SHAPE,
 } as const;
 
@@ -10401,6 +10457,7 @@ export const IPC_EVENT_PAYLOAD_DTO_TYPES = {
 	'agent:compaction': "AgentCompactionEvent",
 	'agent:usage': "AgentUsageEvent",
 	'agent:tool_output': "AgentToolOutputEvent",
+	'agent:working_document': "AgentWorkingDocumentEvent",
 	'notification:show': "AgentNotificationEvent",
 } as const;
 

@@ -616,6 +616,11 @@ pub struct SessionResumeResponse {
     pub llm_usage: Vec<haven_memory::LlmUsageRecord>,
     /// Renderer-safe projections of the persisted interaction registry.
     pub interactions: Vec<InteractionRequestedEvent>,
+    /// Latest active session working document and its durable event sequence.
+    pub working_document: Option<String>,
+    pub working_document_sequence: Option<u64>,
+    /// Append-only event high-water mark from the same snapshot as the active document.
+    pub event_sequence_watermark: u64,
 }
 
 /// Load the session's messages and steps into a resume response.
@@ -646,6 +651,18 @@ async fn resume_response_for_session(
             )
         })
         .collect();
+    let working_document =
+        haven_agent::session_working_document_from_events(&projection.active_domain_events)
+            .map_err(|error| log_err("resume_response_for_session", error))?;
+    let working_document_sequence = projection
+        .active_domain_events
+        .iter()
+        .filter(|event| event.event_type == haven_agent::SESSION_WORKING_DOCUMENT_EVENT_TYPE)
+        .map(|event| event.sequence)
+        .max()
+        .and_then(|sequence| u64::try_from(sequence).ok());
+    let event_sequence_watermark = u64::try_from(projection.event_sequence_watermark)
+        .map_err(|error| log_err("resume_response_for_session", error))?;
     Ok(SessionResumeResponse {
         session: SessionRecordDto::from(session),
         messages: projection.messages.into_iter().map(Into::into).collect(),
@@ -653,6 +670,9 @@ async fn resume_response_for_session(
         usage: projection.usage,
         llm_usage: projection.llm_usage,
         interactions,
+        working_document,
+        working_document_sequence,
+        event_sequence_watermark,
     })
 }
 
@@ -939,7 +959,7 @@ mod tests {
 
         let value = serde_json::to_value(response).unwrap();
         let fields = value.as_object().unwrap();
-        assert_eq!(fields.len(), 6);
+        assert_eq!(fields.len(), 9);
         for field in [
             "session",
             "messages",
@@ -947,10 +967,55 @@ mod tests {
             "usage",
             "llm_usage",
             "interactions",
+            "working_document",
+            "working_document_sequence",
+            "event_sequence_watermark",
         ] {
             assert!(fields.contains_key(field), "missing IPC field {field}");
         }
+        assert!(fields["working_document"].is_null());
+        assert!(fields["working_document_sequence"].is_null());
+        assert_eq!(fields["event_sequence_watermark"], 0);
         assert!(!fields.contains_key("active_domain_events"));
+    }
+
+    #[tokio::test]
+    async fn resume_response_rewinds_working_document_and_keeps_append_only_watermark() {
+        let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
+        let session = db.create_session("working document rollback").unwrap();
+        let store = haven_memory::SessionStore::new(db);
+        store
+            .append_domain_event(
+                &session.session_id,
+                haven_agent::SESSION_WORKING_DOCUMENT_EVENT_TYPE,
+                &serde_json::json!({ "markdown": "# Earlier plan" }).to_string(),
+            )
+            .await
+            .unwrap();
+        store
+            .append_domain_event(
+                &session.session_id,
+                haven_agent::SESSION_WORKING_DOCUMENT_EVENT_TYPE,
+                &serde_json::json!({ "markdown": "# Abandoned plan" }).to_string(),
+            )
+            .await
+            .unwrap();
+        store
+            .append_domain_event(
+                &session.session_id,
+                haven_memory::TIMELINE_ROLLBACK_EVENT_TYPE,
+                r#"{"to_sequence":1}"#,
+            )
+            .await
+            .unwrap();
+
+        let response = resume_session_from_store(store, &session.session_id)
+            .await
+            .unwrap();
+
+        assert_eq!(response.working_document.as_deref(), Some("# Earlier plan"));
+        assert_eq!(response.working_document_sequence, Some(1));
+        assert_eq!(response.event_sequence_watermark, 3);
     }
 
     #[tokio::test]

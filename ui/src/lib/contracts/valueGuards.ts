@@ -4,6 +4,11 @@ export function isString(value: unknown): value is string {
 	return typeof value === 'string';
 }
 
+/** Accept UTF-8 text only when its encoded byte length fits the storage contract. */
+export function isUtf8StringWithinBytes(value: unknown, maxBytes: number): value is string {
+	return typeof value === 'string' && new TextEncoder().encode(value).byteLength <= maxBytes;
+}
+
 export function isBoolean(value: unknown): value is boolean {
 	return typeof value === 'boolean';
 }

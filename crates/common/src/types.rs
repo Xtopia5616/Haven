@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+/// Maximum UTF-8 payload size for the session-local Markdown working document.
+pub const MAX_SESSION_WORKING_DOCUMENT_BYTES: usize = 32 * 1024;
+
 // ---------------------------------------------------------------------------
 // Entity identifiers
 // ---------------------------------------------------------------------------

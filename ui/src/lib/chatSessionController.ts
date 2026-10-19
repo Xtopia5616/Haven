@@ -366,6 +366,9 @@ export class ChatSessionController {
 			preserveRequestIds: this.pendingInteractionRequestIdsForSession(sessionId),
 			usage: result.usage,
 			llmUsage: result.llm_usage,
+			workingDocument: result.workingDocument,
+			workingDocumentSequence: result.workingDocumentSequence,
+			eventSequenceWatermark: result.eventSequenceWatermark,
 			...(options.preserveStreamingOnly ? { preserveStreamingOnly: true } : {}),
 			...(options.excludeMessageIds ? { excludeMessageIds: options.excludeMessageIds } : {}),
 		});

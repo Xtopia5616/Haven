@@ -303,6 +303,7 @@ fn generate(root: &Path) -> Result<(String, String), String> {
         ("agent:compaction", Some("AgentCompactionEvent")),
         ("agent:usage", Some("AgentUsageEvent")),
         ("agent:tool_output", Some("AgentToolOutputEvent")),
+        ("agent:working_document", Some("AgentWorkingDocumentEvent")),
         ("notification:show", Some("AgentNotificationEvent")),
     ];
     let declared_event_channels = event_channels

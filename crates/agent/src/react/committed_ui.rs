@@ -172,7 +172,7 @@ impl CommittedUiPublisher {
     ) {
         let mut state = self.gate.lock().await;
         for event in events {
-            if event.sequence <= 0 || event.event_type != TRANSCRIPT_EVENT_TYPE {
+            if event.sequence <= 0 {
                 continue;
             }
             let key = (event.session_id.clone(), event.sequence);
@@ -286,7 +286,41 @@ fn remember_published(state: &mut PublishState, key: (String, i64)) {
 }
 
 pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEvent> {
-    if event.event_type != TRANSCRIPT_EVENT_TYPE || event.sequence <= 0 {
+    if event.sequence <= 0 {
+        return Vec::new();
+    }
+    if event.event_type == crate::SESSION_WORKING_DOCUMENT_EVENT_TYPE {
+        let payload: crate::SessionWorkingDocumentEvent = match serde_json::from_str(&event.payload)
+        {
+            Ok(payload) => payload,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %event.session_id,
+                    sequence = event.sequence,
+                    error = %error,
+                    "committed working document payload is invalid; skipping UI publish"
+                );
+                return Vec::new();
+            }
+        };
+        if crate::validate_session_working_document(&payload.markdown).is_err() {
+            tracing::warn!(
+                session_id = %event.session_id,
+                sequence = event.sequence,
+                "committed working document exceeds its size limit; skipping UI publish"
+            );
+            return Vec::new();
+        }
+        let Ok(event_sequence) = u64::try_from(event.sequence) else {
+            return Vec::new();
+        };
+        return vec![AgentEvent::WorkingDocumentUpdated {
+            session_id: event.session_id.clone(),
+            markdown: payload.markdown,
+            event_sequence,
+        }];
+    }
+    if event.event_type != TRANSCRIPT_EVENT_TYPE {
         return Vec::new();
     }
     let value: Value = match serde_json::from_str(&event.payload) {
@@ -505,6 +539,46 @@ mod tests {
             run_id: Some(4),
             step_number: Some(2),
         }
+    }
+
+    fn working_document_event(sequence: i64, markdown: &str) -> SessionEvent {
+        SessionEvent {
+            session_id: "ses-7ae290dbf0b4468c9d2c401be649850b".into(),
+            sequence,
+            event_type: crate::SESSION_WORKING_DOCUMENT_EVENT_TYPE.into(),
+            payload: serde_json::to_string(&crate::SessionWorkingDocumentEvent {
+                markdown: markdown.into(),
+            })
+            .unwrap(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            run_id: None,
+            step_number: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_bridges_committed_working_document_once_by_sequence() {
+        let publisher = CommittedUiPublisher::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let emitter: Arc<dyn AgentEventEmitter> = Arc::new(RecordingEmitter {
+            events: seen.clone(),
+        });
+        let event = working_document_event(12, "# Current plan");
+        publisher
+            .publish(&emitter, std::slice::from_ref(&event))
+            .await;
+        publisher
+            .publish(&emitter, std::slice::from_ref(&event))
+            .await;
+
+        assert!(matches!(
+            seen.lock().unwrap().as_slice(),
+            [AgentEvent::WorkingDocumentUpdated {
+                markdown,
+                event_sequence: 12,
+                ..
+            }] if markdown == "# Current plan"
+        ));
     }
 
     fn tool_call_event(sequence: i64) -> SessionEvent {

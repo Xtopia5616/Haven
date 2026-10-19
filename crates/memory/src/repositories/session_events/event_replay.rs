@@ -19,7 +19,8 @@ impl SessionStore {
                 let steps = db.list_session_steps(&session_id)?;
                 let usage = db.get_session_usage(&session_id)?;
                 let llm_usage = db.list_session_llm_usage(&session_id)?;
-                let active_events = store.read_active(&session_id)?;
+                let (active_events, event_sequence_watermark) =
+                    store.read_active_with_watermark(&session_id)?;
                 let active_domain_events = active_events
                     .iter()
                     .filter(|event| event.event_type != TRANSCRIPT_EVENT_TYPE)
@@ -32,9 +33,42 @@ impl SessionStore {
                     llm_usage,
                     active_events,
                     active_domain_events,
+                    event_sequence_watermark,
                 })
             })
             .await
+    }
+
+    /// Read the active timeline and append-only high-water mark from one
+    /// SQLite snapshot. The high-water mark lets clients reject a committed
+    /// event delivered late after a rollback has already rewound the active
+    /// projection.
+    fn read_active_with_watermark(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<(Vec<SessionEvent>, i64)> {
+        ensure_session_id(session_id)?;
+        let connection = self.db.conn();
+        connection.execute_batch("BEGIN DEFERRED")?;
+        let result = (|| {
+            let active_events = Self::read_active_in_connection(&connection, session_id)?;
+            let watermark = connection.query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get::<_, i64>(0),
+            )?;
+            Ok((active_events, watermark))
+        })();
+        match result {
+            Ok(snapshot) => {
+                connection.execute_batch("COMMIT")?;
+                Ok(snapshot)
+            }
+            Err(error) => {
+                let _ = connection.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     pub(super) fn load_replay_state(

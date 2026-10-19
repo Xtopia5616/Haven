@@ -17,7 +17,15 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_TASK_BYTES: usize = 16 * 1024;
 const MAX_CHILDREN_PER_PARENT: usize = 8;
-const OPERATIONS: &[&str] = &["create", "link", "unlink", "links"];
+const OPERATIONS: &[&str] = &[
+    "create",
+    "link",
+    "unlink",
+    "links",
+    "working_document_read",
+    "working_document_replace",
+];
+const MAX_WORKING_DOCUMENT_BYTES: usize = haven_common::types::MAX_SESSION_WORKING_DOCUMENT_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +34,8 @@ enum SessionOperation {
     Link,
     Unlink,
     Links,
+    WorkingDocumentRead,
+    WorkingDocumentReplace,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,12 +55,22 @@ struct SessionParams {
     role: Option<String>,
     #[serde(default)]
     capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    markdown: Option<String>,
+}
+
+/// Narrow app-owned capability for the current session's working document.
+#[async_trait]
+pub trait SessionWorkingDocumentPort: Send + Sync {
+    async fn read(&self, session_id: &str) -> anyhow::Result<Option<String>>;
+    async fn replace(&self, session_id: &str, markdown: &str) -> anyhow::Result<i64>;
 }
 
 /// Create Agent-owned child sessions and manage explicit session links.
 pub struct SessionTool {
     messaging: Arc<MessagingService>,
     session_store: Option<SessionStore>,
+    working_document: Option<Arc<dyn SessionWorkingDocumentPort>>,
 }
 
 impl SessionTool {
@@ -58,7 +78,16 @@ impl SessionTool {
         Self {
             messaging,
             session_store,
+            working_document: None,
         }
+    }
+
+    pub fn with_working_document_port(
+        mut self,
+        port: Option<Arc<dyn SessionWorkingDocumentPort>>,
+    ) -> Self {
+        self.working_document = port;
+        self
     }
 
     async fn run(
@@ -73,7 +102,52 @@ impl SessionTool {
             SessionOperation::Link => self.link(params, session_id).await,
             SessionOperation::Unlink => self.unlink(params, session_id).await,
             SessionOperation::Links => self.list_links(session_id).await,
+            SessionOperation::WorkingDocumentRead => self.read_working_document(session_id).await,
+            SessionOperation::WorkingDocumentReplace => {
+                self.replace_working_document(params, session_id).await
+            }
         }
+    }
+
+    async fn read_working_document(&self, session_id: String) -> anyhow::Result<ToolResult> {
+        let markdown = self
+            .working_document
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("session working document is unavailable"))?
+            .read(&session_id)
+            .await?
+            .unwrap_or_default();
+        Ok(ToolResult::ok(json!({
+            "ok": true,
+            "session_id": session_id,
+            "markdown": markdown,
+        })))
+    }
+
+    async fn replace_working_document(
+        &self,
+        params: SessionParams,
+        session_id: String,
+    ) -> anyhow::Result<ToolResult> {
+        let markdown = params
+            .markdown
+            .ok_or_else(|| anyhow::anyhow!("markdown is required"))?;
+        anyhow::ensure!(
+            markdown.len() <= MAX_WORKING_DOCUMENT_BYTES,
+            "working document exceeds the {MAX_WORKING_DOCUMENT_BYTES}-byte limit"
+        );
+        let event_sequence = self
+            .working_document
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("session working document is unavailable"))?
+            .replace(&session_id, &markdown)
+            .await?;
+        Ok(ToolResult::ok(json!({
+            "ok": true,
+            "session_id": session_id,
+            "cleared": markdown.is_empty(),
+            "event_sequence": event_sequence,
+        })))
     }
 
     async fn create_child(
@@ -251,7 +325,11 @@ impl Tool for SessionTool {
 
     fn idempotency(&self, input: &Value) -> OperationIdempotency {
         match input.get("operation").and_then(Value::as_str) {
-            Some("links") | Some("link") | Some("unlink") => OperationIdempotency::Idempotent,
+            Some("links")
+            | Some("link")
+            | Some("unlink")
+            | Some("working_document_read")
+            | Some("working_document_replace") => OperationIdempotency::Idempotent,
             Some("create") => OperationIdempotency::NonIdempotent,
             _ => OperationIdempotency::Unknown,
         }
@@ -278,7 +356,8 @@ impl Tool for SessionTool {
                 "title": { "type": "string", "minLength": 1, "maxLength": MAX_TITLE_BYTES, "description": "Optional short child-session title" },
                 "role": { "type": "string", "minLength": 1, "maxLength": MAX_ROLE_BYTES, "description": "Optional role for peer discovery" },
                 "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES } },
-                "related_session_id": canonical_entity_id_schema("ses", Some("Session to link or unlink with the current session"))
+                "related_session_id": canonical_entity_id_schema("ses", Some("Session to link or unlink with the current session")),
+                "markdown": { "type": "string", "maxLength": MAX_WORKING_DOCUMENT_BYTES, "description": "Complete replacement Markdown; use an empty string to clear" }
             },
             "required": ["operation"],
             "oneOf": [
@@ -299,7 +378,14 @@ impl Tool for SessionTool {
                 }, "required": ["operation", "related_session_id"] },
                 { "type": "object", "additionalProperties": false, "properties": {
                     "operation": { "const": "links" }
-                }, "required": ["operation"] }
+                }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": {
+                    "operation": { "const": "working_document_read" }
+                }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": {
+                    "operation": { "const": "working_document_replace" },
+                    "markdown": { "type": "string", "maxLength": MAX_WORKING_DOCUMENT_BYTES }
+                }, "required": ["operation", "markdown"] }
             ]
         })
     }
@@ -317,7 +403,26 @@ mod tests {
         AgentControlOperation, AgentControlRequest, AgentControlResult, AgentSpawnResult,
         MessageTransport, MessagingRuntime,
     };
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct WorkingDocumentMemory {
+        markdown: Mutex<Option<String>>,
+        sequence: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl SessionWorkingDocumentPort for WorkingDocumentMemory {
+        async fn read(&self, _session_id: &str) -> anyhow::Result<Option<String>> {
+            Ok(self.markdown.lock().unwrap().clone())
+        }
+
+        async fn replace(&self, _session_id: &str, markdown: &str) -> anyhow::Result<i64> {
+            *self.markdown.lock().unwrap() = (!markdown.is_empty()).then(|| markdown.to_owned());
+            Ok(self.sequence.fetch_add(1, Ordering::Relaxed) as i64 + 1)
+        }
+    }
 
     struct TestRuntime {
         transport: Arc<dyn MessageTransport>,
@@ -414,6 +519,68 @@ mod tests {
                 .as_deref(),
             Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
+    }
+
+    #[tokio::test]
+    async fn working_document_can_be_read_replaced_and_cleared() {
+        let (_temp, tool, _transport, _runtime) = session_tool(None);
+        let memory = Arc::new(WorkingDocumentMemory::default());
+        let tool = tool.with_working_document_port(Some(memory));
+        let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        let replaced = tool
+            .execute(
+                json!({
+                    "operation": "working_document_replace",
+                    "_session_id": session_id,
+                    "markdown": "# Goal\n- next action"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replaced.output["event_sequence"], 1);
+
+        let read = tool
+            .execute(
+                json!({"operation": "working_document_read", "_session_id": session_id}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.output["markdown"], "# Goal\n- next action");
+
+        let cleared = tool
+            .execute(
+                json!({
+                    "operation": "working_document_replace",
+                    "_session_id": session_id,
+                    "markdown": ""
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared.output["cleared"], true);
+    }
+
+    #[tokio::test]
+    async fn working_document_rejects_oversized_replacement_before_writing() {
+        let (_temp, tool, _transport, _runtime) = session_tool(None);
+        let memory = Arc::new(WorkingDocumentMemory::default());
+        let tool = tool.with_working_document_port(Some(memory.clone()));
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "working_document_replace",
+                    "_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "markdown": "x".repeat(MAX_WORKING_DOCUMENT_BYTES + 1)
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(*memory.markdown.lock().unwrap(), None);
     }
 
     #[tokio::test]

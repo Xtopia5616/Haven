@@ -232,6 +232,9 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			preserveRequestIds: wasError ? preserveRequestIds : [],
 			usage: latestSession.usage,
 			llmUsage: latestSession.llm_usage,
+			workingDocument: latestSession.workingDocument,
+			workingDocumentSequence: latestSession.workingDocumentSequence,
+			eventSequenceWatermark: latestSession.eventSequenceWatermark,
 		});
 		dependencies.dispatch({
 			type: 'session/selected',

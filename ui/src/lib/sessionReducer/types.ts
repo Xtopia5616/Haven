@@ -98,6 +98,9 @@ export interface SessionReducerState {
 	interactions: Record<string, InteractionRequest>;
 	tokenStats: Record<string, SessionTokenStats>;
 	llmUsage: Record<string, SessionLlmUsage[]>;
+	workingDocuments: Record<string, string>;
+	workingDocumentSequences: Record<string, number>;
+	workingDocumentEventWatermarks: Record<string, number>;
 	replay: SessionReplayState;
 	pendingMessageOwners: Record<string, PendingMessageOwner>;
 }
@@ -167,8 +170,17 @@ export type SessionAction =
 			preserveRequestIds?: string[];
 			usage?: ResumeUsage | null;
 			llmUsage?: SessionLlmUsage[];
+			workingDocument?: string | null;
+			workingDocumentSequence?: number | null;
+			eventSequenceWatermark?: number;
 			preserveStreamingOnly?: boolean;
 			excludeMessageIds?: string[];
+	  }
+	| {
+			type: 'session/working-document-updated';
+			sessionId: string;
+			markdown: string;
+			eventSequence: number;
 	  }
 	| { type: 'session/messages/truncated'; sessionId: string; targetStep: number }
 	| { type: 'session/memory-cleared'; sessionId: string }
@@ -226,6 +238,9 @@ export const initialSessionState: SessionReducerState = {
 	interactions: {},
 	tokenStats: {},
 	llmUsage: {},
+	workingDocuments: {},
+	workingDocumentSequences: {},
+	workingDocumentEventWatermarks: {},
 	replay: { eventSequenceBySession: {}, chunkSeqByMessage: {}, blockIdsBySession: {} },
 	pendingMessageOwners: {},
 };

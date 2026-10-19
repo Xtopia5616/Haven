@@ -32,6 +32,7 @@ mod test_support;
 mod title;
 mod token_budget;
 mod types;
+mod working_document;
 
 pub(crate) use canonical::{is_dangling_boundary, sanitize_canonical};
 
@@ -64,6 +65,11 @@ pub use session::{
     ToolObservationPort, ToolRunCompletionReceiverPort,
 };
 pub use storage_error::sqlite_storage_failure_message;
+pub use working_document::{
+    MAX_SESSION_WORKING_DOCUMENT_BYTES, SESSION_WORKING_DOCUMENT_EVENT_TYPE,
+    SessionWorkingDocumentEvent, session_working_document_from_events,
+    validate_session_working_document,
+};
 
 use haven_common::config::ContextLimitsConfig;
 use haven_common::schedule::ScheduleMode;

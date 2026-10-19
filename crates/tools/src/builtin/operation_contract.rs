@@ -104,6 +104,12 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         "session.link" => ("关联会话", ToolCatalogGroup::Workflow, false, None),
         "session.unlink" => ("取消会话关联", ToolCatalogGroup::Workflow, false, None),
         "session.links" => ("查看关联会话", ToolCatalogGroup::Workflow, true, None),
+        "session.working_document_read" => {
+            ("读取会话工作文档", ToolCatalogGroup::Workflow, true, None)
+        }
+        "session.working_document_replace" => {
+            ("更新会话工作文档", ToolCatalogGroup::Workflow, false, None)
+        }
         "toolrun.start" => ("启动后台工具", ToolCatalogGroup::Workflow, false, None),
         "toolrun.list" => ("后台任务列表", ToolCatalogGroup::Workflow, true, None),
         "toolrun.inspect" => ("查看后台任务", ToolCatalogGroup::Workflow, true, None),
@@ -260,7 +266,10 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         | "haven.mcp.mcp_connect"
         | "haven.mcp.mcp_disconnect"
         | "haven.mcp.mcp_toggle" => OperationIdempotency::Idempotent,
-        "session.link" | "session.unlink" => OperationIdempotency::Idempotent,
+        "session.link"
+        | "session.unlink"
+        | "session.working_document_read"
+        | "session.working_document_replace" => OperationIdempotency::Idempotent,
         // Creation and replacement/removal requests must be verified before
         // replay because their first attempt may already have changed state.
         "haven.skills.skill_create"
@@ -337,6 +346,14 @@ mod tests {
         assert_eq!(
             operation_contract("haven.mcp.mcp_list").network_access_override,
             Some(NetworkAccess::None)
+        );
+
+        assert!(operation_contract("session.working_document_read").read_only);
+        let working_document_replace = operation_contract("session.working_document_replace");
+        assert!(!working_document_replace.read_only);
+        assert_eq!(
+            working_document_replace.idempotency,
+            OperationIdempotency::Idempotent
         );
 
         for name in [

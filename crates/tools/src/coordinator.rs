@@ -462,6 +462,7 @@ mod tests {
             config_service: None,
             config_apply_gate: None,
             session_store: None,
+            session_working_document: None,
             memory_facts: None,
             router: None,
             log_path: None,

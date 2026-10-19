@@ -55,6 +55,9 @@ function resumeResponse(id = sessionId) {
 		usage: null,
 		llm_usage: [],
 		interactions: [],
+		working_document: null,
+		working_document_sequence: null,
+		event_sequence_watermark: 0,
 	};
 }
 
@@ -113,6 +116,9 @@ function rendererResumeResponse(id = sessionId) {
 		usage: null,
 		llm_usage: [],
 		interactions: [],
+		workingDocument: null,
+		workingDocumentSequence: null,
+		eventSequenceWatermark: 0,
 	};
 }
 
@@ -272,12 +278,10 @@ describe('session history command boundary', () => {
 		const resume = { ...resumeResponse(request.sessionId), future_field: { retained: true } };
 		invokeMock.mockResolvedValueOnce(resume as never).mockResolvedValueOnce(null);
 
-		await expect(getSessionForResume(request)).resolves.toEqual(
-			{
-				...rendererResumeResponse(request.sessionId),
-				future_field: { retained: true },
-			},
-		);
+		await expect(getSessionForResume(request)).resolves.toEqual({
+			...rendererResumeResponse(request.sessionId),
+			future_field: { retained: true },
+		});
 		await expect(getLatestSessionForResume()).resolves.toBeNull();
 		expect(invokeMock.mock.calls).toEqual([
 			['get_session_for_resume', request],

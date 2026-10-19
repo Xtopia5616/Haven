@@ -34,6 +34,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use super::session::SessionWorkingDocumentPort;
 pub(crate) use admin_services::sanitize_diagnostic;
 use admin_services::{
     AdminServices, DiagnosticsStatus, ErrorsOutput, LogsTailOutput, McpAddOutput,
@@ -50,6 +51,8 @@ pub struct AdminContext {
     /// stale runtime generation while a Settings/model apply is in progress.
     pub config_apply_gate: Option<Arc<tokio::sync::Mutex<()>>>,
     pub session_store: Option<SessionStore>,
+    /// Agent-owned append-only event capability for the current session's working document.
+    pub session_working_document: Option<Arc<dyn SessionWorkingDocumentPort>>,
     pub memory_facts: Option<MemoryFactStore>,
     pub router: Option<Arc<LlmRouter>>,
     /// Configured base path. `file_logging_enabled` determines whether it may
@@ -1864,6 +1867,7 @@ mod tests {
             config_service: Some(Arc::new(test_config_service(loader))),
             config_apply_gate: Some(Arc::new(tokio::sync::Mutex::new(()))),
             session_store,
+            session_working_document: None,
             memory_facts,
             router: None,
             log_path: Some(dir.path().join("logs").join("haven.log")),
@@ -1893,6 +1897,7 @@ mod tests {
             config_service: Some(service),
             config_apply_gate: None,
             session_store: None,
+            session_working_document: None,
             memory_facts: None,
             router: None,
             log_path: None,
@@ -3466,6 +3471,7 @@ mod tests {
             config_service: Some(config_service),
             config_apply_gate: None,
             session_store: None,
+            session_working_document: None,
             memory_facts: None,
             router: None,
             log_path: None,
@@ -3948,6 +3954,7 @@ mod tests {
             config_service: Some(service.clone()),
             config_apply_gate: Some(Arc::new(tokio::sync::Mutex::new(()))),
             session_store: None,
+            session_working_document: None,
             memory_facts: None,
             router: None,
             log_path: Some(dir.path().join("logs").join("haven.log")),

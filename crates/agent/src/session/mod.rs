@@ -623,6 +623,46 @@ impl SessionSupervisor {
         }
     }
 
+    /// Read the latest active session working document from the durable event stream.
+    pub async fn read_session_working_document(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        crate::working_document::validate_session_id(session_id)?;
+        let events = self
+            .store
+            .read_active_domain_events_async(session_id)
+            .await?;
+        crate::session_working_document_from_events(&events)
+    }
+
+    /// Append a replacement event through the store that feeds the committed UI bridge.
+    pub async fn replace_session_working_document(
+        &self,
+        session_id: &str,
+        markdown: &str,
+    ) -> anyhow::Result<i64> {
+        crate::working_document::validate_session_id(session_id)?;
+        crate::validate_session_working_document(markdown)?;
+        let _lifecycle = self.lifecycle_guard().await;
+        anyhow::ensure!(
+            !self.is_session_closing(session_id),
+            "session is closing; working document cannot be changed"
+        );
+        let payload = serde_json::to_string(&crate::SessionWorkingDocumentEvent {
+            markdown: markdown.to_owned(),
+        })?;
+        let event = self
+            .store
+            .append_domain_event(
+                session_id,
+                crate::SESSION_WORKING_DOCUMENT_EVENT_TYPE,
+                &payload,
+            )
+            .await?;
+        Ok(event.sequence)
+    }
+
     #[cfg(test)]
     pub(crate) fn new_with_session_tool_overlay_port(
         store: SessionStore,
@@ -1081,6 +1121,42 @@ mod tests {
 
         assert_eq!(persisted.session_id, session.session_id);
         assert_eq!(persisted.input_text, "typed constructor");
+    }
+
+    #[tokio::test]
+    async fn session_working_document_replaces_and_restores_from_events() {
+        let (executor, _db) = make_executor_with_db(1);
+        let session = executor.create_session("working document").await.unwrap();
+
+        let first_sequence = executor
+            .replace_session_working_document(&session.session_id, "# Goal\n- inspect")
+            .await
+            .unwrap();
+        let second_sequence = executor
+            .replace_session_working_document(&session.session_id, "# Updated\n- implement")
+            .await
+            .unwrap();
+
+        assert!(second_sequence > first_sequence);
+        assert_eq!(
+            executor
+                .read_session_working_document(&session.session_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("# Updated\n- implement")
+        );
+        executor
+            .replace_session_working_document(&session.session_id, "")
+            .await
+            .unwrap();
+        assert_eq!(
+            executor
+                .read_session_working_document(&session.session_id)
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     fn high_risk_session_request(session_id: &str) -> haven_tools::AuthorizationRequest {

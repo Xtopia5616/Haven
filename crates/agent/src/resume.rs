@@ -535,9 +535,17 @@ impl AgentLayer {
         // cannot delay the first resumed model request.
         self.memory_worker
             .prefetch_prompt_memory(session_id, description);
+        let working_document = self
+            .executor
+            .read_session_working_document(session_id)
+            .await?;
         self.prompt_builder
             .rebuild_canonical_system_without_memory(description, &mut canonical)
             .await;
+        crate::prompt::append_session_working_document_to_canonical(
+            &mut canonical,
+            working_document.as_deref(),
+        );
 
         // Phase 7 / D2 — pending-input recovery (durability ≠ RAM queues):
         //
@@ -698,6 +706,14 @@ impl AgentLayer {
             .prompt_builder
             .build_for_session_without_memory(description, &history_lines)
             .await;
+        let working_document = self
+            .executor
+            .read_session_working_document(session_id)
+            .await?;
+        let system_prompt = crate::prompt::append_session_working_document(
+            &system_prompt,
+            working_document.as_deref(),
+        );
         tracing::debug!("run_session: system_prompt_bytes={}", system_prompt.len());
 
         let mut initial_content = vec![ContentPart::text(context.to_string())];

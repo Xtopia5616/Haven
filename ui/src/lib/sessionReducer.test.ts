@@ -20,6 +20,74 @@ const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState =
 });
 
 describe('SessionReducer', () => {
+	it('restores the latest working document and ignores stale live updates', () => {
+		const sessionId = 'ses-00000000000000000000000000000061';
+		let state = reduceSession(initialSessionState, {
+			type: 'session/messages/resume-loaded',
+			sessionId,
+			messages: [],
+			workingDocument: '# Restored',
+			workingDocumentSequence: 8,
+			eventSequenceWatermark: 8,
+		});
+		state = reduceSession(state, {
+			type: 'session/working-document-updated',
+			sessionId,
+			markdown: '# Newer',
+			eventSequence: 9,
+		});
+		state = reduceSession(state, {
+			type: 'session/working-document-updated',
+			sessionId,
+			markdown: '# Stale',
+			eventSequence: 8,
+		});
+		state = reduceSession(state, {
+			type: 'session/messages/resume-loaded',
+			sessionId,
+			messages: [],
+			workingDocument: '# Late snapshot',
+			workingDocumentSequence: null,
+			eventSequenceWatermark: 8,
+		});
+		expect(state.workingDocuments[sessionId]).toBe('# Newer');
+		expect(state.workingDocumentSequences[sessionId]).toBe(9);
+	});
+
+	it('rewinds a resume snapshot after rollback and rejects late events from the old branch', () => {
+		const sessionId = 'ses-00000000000000000000000000000062';
+		let state = reduceSession(initialSessionState, {
+			type: 'session/working-document-updated',
+			sessionId,
+			markdown: '# Abandoned branch',
+			eventSequence: 20,
+		});
+		state = reduceSession(state, {
+			type: 'session/messages/resume-loaded',
+			sessionId,
+			messages: [],
+			workingDocument: '# Restored branch',
+			workingDocumentSequence: 7,
+			eventSequenceWatermark: 24,
+		});
+		state = reduceSession(state, {
+			type: 'session/working-document-updated',
+			sessionId,
+			markdown: '# Late abandoned update',
+			eventSequence: 20,
+		});
+		state = reduceSession(state, {
+			type: 'session/working-document-updated',
+			sessionId,
+			markdown: '# New active update',
+			eventSequence: 25,
+		});
+
+		expect(state.workingDocuments[sessionId]).toBe('# New active update');
+		expect(state.workingDocumentSequences[sessionId]).toBe(25);
+		expect(state.workingDocumentEventWatermarks[sessionId]).toBe(25);
+	});
+
 	it('clears session projections while preserving the draft and non-session interactions', () => {
 		const sessionId = 'ses-00000000000000000000000000000041';
 		const sessionMessage = {
@@ -268,8 +336,8 @@ describe('SessionReducer', () => {
 		});
 
 		const next = reduceSession(initial, {
-		type: 'session/schedule-run-cancelled',
-		scheduleRunId: 'schrun-2113ac173bb7c669462883a7ca897832',
+			type: 'session/schedule-run-cancelled',
+			scheduleRunId: 'schrun-2113ac173bb7c669462883a7ca897832',
 		});
 
 		expect(next.interactions[scheduled.requestId]).toBeUndefined();

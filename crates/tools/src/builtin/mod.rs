@@ -333,10 +333,14 @@ pub(crate) async fn register_builtin_tools(
     let session_store = admin_context
         .as_ref()
         .and_then(|context| context.session_store.clone());
-    let session_tool: ToolHandle = Arc::new(session::SessionTool::new(
-        messaging_service.clone(),
-        session_store,
-    ));
+    let session_tool: ToolHandle = Arc::new(
+        session::SessionTool::new(messaging_service.clone(), session_store)
+            .with_working_document_port(
+                admin_context
+                    .as_ref()
+                    .and_then(|context| context.session_working_document.clone()),
+            ),
+    );
     add_operation_views(tools, session_tool, settings, SESSION_OPERATION_VIEWS);
     let agent_tool: ToolHandle = Arc::new(messaging::AgentTool::new(messaging_service));
     add_operation_views(tools, agent_tool, settings, AGENT_OPERATION_VIEWS);
@@ -868,6 +872,18 @@ const SESSION_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("session.link", "link", "session", "link"),
     split_spec!("session.unlink", "unlink", "session", "link"),
     split_spec!("session.links", "links", "session", "link"),
+    split_spec!(
+        "session.working_document_read",
+        "working_document_read",
+        "session",
+        "fileText"
+    ),
+    split_spec!(
+        "session.working_document_replace",
+        "working_document_replace",
+        "session",
+        "fileText"
+    ),
 ];
 
 const ACTION_OPERATION_VIEWS: &[SplitOperationSpec] =

@@ -86,7 +86,63 @@ function resumeSession(
 			llmUsage: action.llmUsage,
 		});
 	}
+	const currentWorkingDocumentWatermark =
+		next.workingDocumentEventWatermarks[action.sessionId] ?? -1;
+	const snapshotEventWatermark =
+		action.eventSequenceWatermark ?? action.workingDocumentSequence ?? -1;
+	const canApplyWorkingDocumentSnapshot =
+		snapshotEventWatermark >= currentWorkingDocumentWatermark;
+	if (
+		Object.prototype.hasOwnProperty.call(action, 'workingDocument') &&
+		canApplyWorkingDocumentSnapshot
+	) {
+		const workingDocuments = { ...next.workingDocuments };
+		if (action.workingDocument) workingDocuments[action.sessionId] = action.workingDocument;
+		else delete workingDocuments[action.sessionId];
+		const workingDocumentSequences = { ...next.workingDocumentSequences };
+		if (action.workingDocumentSequence != null) {
+			workingDocumentSequences[action.sessionId] = action.workingDocumentSequence;
+		} else {
+			delete workingDocumentSequences[action.sessionId];
+		}
+		const workingDocumentEventWatermarks = { ...next.workingDocumentEventWatermarks };
+		if (snapshotEventWatermark >= 0) {
+			workingDocumentEventWatermarks[action.sessionId] = snapshotEventWatermark;
+		}
+		next = {
+			...next,
+			workingDocuments,
+			workingDocumentSequences,
+			workingDocumentEventWatermarks,
+		};
+	}
 	return next;
+}
+
+function updateWorkingDocument(
+	state: SessionReducerState,
+	action: Extract<SessionAction, { type: 'session/working-document-updated' }>,
+): SessionReducerState {
+	if (
+		action.eventSequence <=
+		(state.workingDocumentEventWatermarks[action.sessionId] ?? -1)
+	)
+		return state;
+	const workingDocuments = { ...state.workingDocuments };
+	if (action.markdown) workingDocuments[action.sessionId] = action.markdown;
+	else delete workingDocuments[action.sessionId];
+	return {
+		...state,
+		workingDocuments,
+		workingDocumentSequences: {
+			...state.workingDocumentSequences,
+			[action.sessionId]: action.eventSequence,
+		},
+		workingDocumentEventWatermarks: {
+			...state.workingDocumentEventWatermarks,
+			[action.sessionId]: action.eventSequence,
+		},
+	};
 }
 
 /** Route the public action union to its private domain transition. */
@@ -112,12 +168,33 @@ export function reduceSession(
 			const withoutTranscript = reduceTranscript(inputState, action);
 			const withoutInteractions = reduceInteraction(withoutTranscript, action);
 			const withoutUsage = reduceUsage(withoutInteractions, action);
-			return reduceLifecycle(withoutUsage, action);
+			const withoutWorkingDocuments = {
+				...withoutUsage,
+				workingDocuments: {},
+				workingDocumentSequences: {},
+				workingDocumentEventWatermarks: {},
+			};
+			return reduceLifecycle(withoutWorkingDocuments, action);
 		}
 
 		case 'session/deleted':
 			if (!action.sessionId) return reduceSession(inputState, { type: 'sessions/cleared' });
-			return reduceLifecycle(clearSessionMessages(inputState, action.sessionId), action);
+			const cleared = clearSessionMessages(inputState, action.sessionId);
+			const workingDocuments = { ...cleared.workingDocuments };
+			const workingDocumentSequences = { ...cleared.workingDocumentSequences };
+			const workingDocumentEventWatermarks = { ...cleared.workingDocumentEventWatermarks };
+			delete workingDocuments[action.sessionId];
+			delete workingDocumentSequences[action.sessionId];
+			delete workingDocumentEventWatermarks[action.sessionId];
+			return reduceLifecycle(
+				{
+					...cleared,
+					workingDocuments,
+					workingDocumentSequences,
+					workingDocumentEventWatermarks,
+				},
+				action,
+			);
 
 		case 'session/messages/cleared':
 		case 'session/memory-cleared':
@@ -128,6 +205,9 @@ export function reduceSession(
 
 		case 'session/messages/resume-loaded':
 			return resumeSession(inputState, action);
+
+		case 'session/working-document-updated':
+			return updateWorkingDocument(inputState, action);
 
 		case 'session/messages/optimistic-added':
 		case 'session/messages/accepted':

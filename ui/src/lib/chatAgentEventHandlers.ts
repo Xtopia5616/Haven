@@ -71,6 +71,15 @@ export function createChatAgentEventHandlers({
 			// button/collapsible input while a tool is running.
 			setToolOutputPreview(data.stepId, data.output || '', data.sessionId);
 		},
+		'agent:working_document': (event) => {
+			const data = event.payload;
+			dispatchSession({
+				type: 'session/working-document-updated',
+				sessionId: data.sessionId,
+				markdown: data.markdown,
+				eventSequence: data.eventSequence,
+			});
+		},
 		'agent:observation': (event) => {
 			const data = event.payload;
 			flushChunksNow();

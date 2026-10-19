@@ -81,6 +81,7 @@ describe('createChatEventController', () => {
 				'agent:observation',
 				'agent:usage',
 				'agent:media_plan',
+				'agent:working_document',
 			].sort(),
 		);
 		expect(listen).not.toHaveBeenCalled();

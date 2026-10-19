@@ -102,6 +102,12 @@ pub enum AgentEvent {
         /// `None` means every persisted session was removed.
         session_id: Option<String>,
     },
+    /// Latest session-local Markdown working document after its replacement event committed.
+    WorkingDocumentUpdated {
+        session_id: String,
+        markdown: String,
+        event_sequence: u64,
+    },
     ThoughtChunk {
         session_id: String,
         delta: String,

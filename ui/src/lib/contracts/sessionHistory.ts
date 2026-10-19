@@ -34,6 +34,7 @@ import {
 	isOneOf,
 	isSafeUnsignedInteger,
 	isU32,
+	isUtf8StringWithinBytes,
 } from './valueGuards.ts';
 import { isCanonicalEntityId } from './wireGuards.ts';
 
@@ -111,13 +112,23 @@ export type SessionLlmUsage = Omit<
 /** Validated resume response with entity IDs mapped to the renderer contract. */
 export type SessionResumeResponse = Omit<
 	GeneratedSessionResumeResponse,
-	'session' | 'messages' | 'steps' | 'interactions' | 'llm_usage'
+	| 'session'
+	| 'messages'
+	| 'steps'
+	| 'interactions'
+	| 'llm_usage'
+	| 'working_document'
+	| 'working_document_sequence'
+	| 'event_sequence_watermark'
 > & {
 	session: SessionHistoryRow;
 	messages: SessionResumeMessage[];
 	steps: SessionResumeStep[];
 	interactions: InteractionRequest[];
 	llm_usage: SessionLlmUsage[];
+	workingDocument: string | null;
+	workingDocumentSequence: number | null;
+	eventSequenceWatermark: number;
 };
 
 function hasSessionIdentity(
@@ -127,10 +138,7 @@ function hasSessionIdentity(
 }
 
 function hasRuntimeSessionIdentity(value: unknown): boolean {
-	return (
-		isRecord(value) &&
-		isCanonicalEntityId(value.session_id, 'ses')
-	);
+	return isRecord(value) && isCanonicalEntityId(value.session_id, 'ses');
 }
 
 function requireWireShape(
@@ -617,6 +625,20 @@ export function parseSessionResumeResponse(
 	) {
 		throw new Error('Invalid resumed interaction identity');
 	}
+	if (
+		!(
+			value.working_document === null ||
+			isUtf8StringWithinBytes(value.working_document, 32 * 1024)
+		) ||
+		!(
+			value.working_document_sequence === null ||
+			(isSafeUnsignedInteger(value.working_document_sequence) &&
+				value.working_document_sequence > 0)
+		) ||
+		!isSafeUnsignedInteger(value.event_sequence_watermark)
+	) {
+		throw new Error('Invalid resumed working document');
+	}
 	requireWireShape(value, SESSION_RESUME_RESPONSE_SHAPE, 'session resume');
 	if (!hasValidResumeNumericValues(value)) {
 		throw new Error('Invalid resumed numeric value');
@@ -634,6 +656,9 @@ export function parseSessionResumeResponse(
 		usage,
 		llm_usage,
 		interactions: _interactions,
+		working_document,
+		working_document_sequence,
+		event_sequence_watermark,
 		...rest
 	} = wire;
 	return {
@@ -644,5 +669,8 @@ export function parseSessionResumeResponse(
 		usage,
 		llm_usage: llm_usage.map(mapLlmUsage),
 		interactions,
+		workingDocument: working_document,
+		workingDocumentSequence: working_document_sequence,
+		eventSequenceWatermark: event_sequence_watermark,
 	};
 }

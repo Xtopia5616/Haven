@@ -54,6 +54,7 @@ import {
 	isString,
 	isStringArray,
 	isU32,
+	isUtf8StringWithinBytes,
 } from './valueGuards.ts';
 import {
 	canonicalIdField,
@@ -244,6 +245,12 @@ export interface AgentToolOutputPayload {
 	output: string;
 }
 
+export interface AgentWorkingDocumentPayload {
+	sessionId: string;
+	markdown: string;
+	eventSequence: number;
+}
+
 export interface AgentEventPayloadMap {
 	'agent:thought': AgentThoughtPayload;
 	'agent:tool_call': AgentToolCallPayload;
@@ -259,6 +266,7 @@ export interface AgentEventPayloadMap {
 	'agent:compaction': AgentCompactionPayload;
 	'agent:usage': AgentUsagePayload;
 	'agent:tool_output': AgentToolOutputPayload;
+	'agent:working_document': AgentWorkingDocumentPayload;
 	'notification:show': AgentNotificationPayload;
 }
 
@@ -779,6 +787,22 @@ export function mapAgentEvent(
 				},
 			};
 		}
+		case 'agent:working_document': {
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
+			const markdown = readStringField(payload, 'markdown');
+			const eventSequence = requiredSafeUnsignedInteger(payload, 'event_sequence');
+			if (
+				sessionId === null ||
+				!isUtf8StringWithinBytes(markdown, 32 * 1024) ||
+				eventSequence === null ||
+				eventSequence === 0
+			)
+				return null;
+			return {
+				...tauriEvent,
+				payload: { sessionId, markdown, eventSequence },
+			};
+		}
 		case 'agent:usage': {
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const cacheAccounting = payload.cache_accounting;
@@ -885,10 +909,7 @@ export function mapAgentEvent(
 					!isOneOf(toolRunStatus, TOOL_RUN_COMPLETION_STATUS_DTO_VALUES)
 				)
 					return null;
-				if (
-					toolRunKind !== undefined &&
-					!isOneOf(toolRunKind, TOOL_RUN_KIND_DTO_VALUES)
-				)
+				if (toolRunKind !== undefined && !isOneOf(toolRunKind, TOOL_RUN_KIND_DTO_VALUES))
 					return null;
 				if (
 					sessionId === null ||

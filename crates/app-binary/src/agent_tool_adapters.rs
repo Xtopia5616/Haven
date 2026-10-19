@@ -13,10 +13,35 @@ use haven_agent::{
 use haven_common::types::{MessageAttachment, RiskLevel};
 use haven_tools::{
     AuthorizationDecision, AuthorizationPort, AuthorizationRequest, ConfirmationReceipt,
-    ScheduleAgentCapability, ScheduleFiredReceiver, SkillCatalogPort, ToolCatalogSnapshot,
-    ToolRegistration, ToolResult, ToolRunAgentCapability, ToolRunCompletion,
+    ScheduleAgentCapability, ScheduleFiredReceiver, SessionWorkingDocumentPort, SkillCatalogPort,
+    ToolCatalogSnapshot, ToolRegistration, ToolResult, ToolRunAgentCapability, ToolRunCompletion,
     ToolRunCompletionCapability, ToolRunListView, ToolRunRestoreSummary, ToolRunStart, ToolsFacade,
 };
+
+struct SupervisorSessionWorkingDocumentPort {
+    supervisor: Arc<haven_agent::SessionSupervisor>,
+}
+
+#[async_trait]
+impl SessionWorkingDocumentPort for SupervisorSessionWorkingDocumentPort {
+    async fn read(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+        self.supervisor
+            .read_session_working_document(session_id)
+            .await
+    }
+
+    async fn replace(&self, session_id: &str, markdown: &str) -> anyhow::Result<i64> {
+        self.supervisor
+            .replace_session_working_document(session_id, markdown)
+            .await
+    }
+}
+
+pub(crate) fn session_working_document_port(
+    supervisor: Arc<haven_agent::SessionSupervisor>,
+) -> Arc<dyn SessionWorkingDocumentPort> {
+    Arc::new(SupervisorSessionWorkingDocumentPort { supervisor })
+}
 use serde_json::Value;
 
 /// Assemble the one shared ToolsFacade into the narrow capabilities consumed

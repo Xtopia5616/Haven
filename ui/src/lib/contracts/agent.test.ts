@@ -72,6 +72,31 @@ function makeThoughtEvent(
 }
 
 describe('agent IPC contract', () => {
+	it('maps bounded working document updates and rejects oversized payloads', () => {
+		const payload = {
+			session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+			markdown: '# Goal\n- implement',
+			event_sequence: 12,
+		};
+		const mapped = mapAgentEventContract({
+			event: 'agent:working_document',
+			id: 101,
+			payload,
+		});
+		expect(mapped?.payload).toEqual({
+			sessionId: payload.session_id,
+			markdown: payload.markdown,
+			eventSequence: 12,
+		});
+		expect(
+			mapAgentEventContract({
+				event: 'agent:working_document',
+				id: 102,
+				payload: { ...payload, markdown: 'x'.repeat(32 * 1024 + 1) },
+			}),
+		).toBeNull();
+	});
+
 	it('accepts exact unsigned integer boundaries for Rust event counters', () => {
 		const mapped = mapAgentEventContract(
 			makeThoughtEvent({ step_number: 0xffff_ffff, run_id: Number.MAX_SAFE_INTEGER }),

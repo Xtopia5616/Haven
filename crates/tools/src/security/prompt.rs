@@ -111,6 +111,16 @@ pub(crate) const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("session.link", "session.link", Low),
     security_case!("session.unlink", "session.unlink", Low),
     security_case!("session.links", "session.links", Safe),
+    security_case!(
+        "session.working_document_read",
+        "session.working_document_read",
+        Safe
+    ),
+    security_case!(
+        "session.working_document_replace",
+        "session.working_document_replace",
+        Safe
+    ),
     security_case!("agent.status", "agent.status", Safe),
     security_case!("agent.wait", "agent.wait", Safe),
     security_case!("agent.stop", "agent.stop", High),

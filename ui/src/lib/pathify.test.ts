@@ -81,6 +81,13 @@ describe('pathifyChildren', () => {
 });
 
 describe('renderMarkdown pathify integration', () => {
+	it('renders raw HTML as text for session-authored Markdown', async () => {
+		await getMarkdownRenderer();
+		const html = renderMarkdown('<script>alert(1)</script>');
+		expect(html).not.toContain('<script>');
+		expect(html).toContain('&lt;script&gt;');
+	});
+
 	it('wraps Windows paths after text_join', async () => {
 		await getMarkdownRenderer();
 		const html = renderMarkdown('open D:\\Workspace\\Haven\\README.md now');

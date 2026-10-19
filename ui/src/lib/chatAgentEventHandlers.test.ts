@@ -8,6 +8,28 @@ import {
 import { reactExecutionPhaseStore } from './reactExecutionPhaseStore.ts';
 
 describe('chat agent live tool output', () => {
+	it('routes committed working document updates into the session reducer', () => {
+		const dispatchSession = vi.fn();
+		const handlers = createChatAgentEventHandlers({
+			chunkHandler: vi.fn(),
+			flushChunksNow: vi.fn(),
+			dispatchSession,
+		});
+		handlers['agent:working_document']({
+			payload: {
+				sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a',
+				markdown: '# Current plan',
+				eventSequence: 7,
+			},
+		} as never);
+		expect(dispatchSession).toHaveBeenCalledWith({
+			type: 'session/working-document-updated',
+			sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a',
+			markdown: '# Current plan',
+			eventSequence: 7,
+		});
+	});
+
 	it('shows waiting for a tool result, then generation after the observation', () => {
 		const handlers = createChatAgentEventHandlers({
 			chunkHandler: vi.fn(),
@@ -16,7 +38,9 @@ describe('chat agent live tool output', () => {
 		});
 
 		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
-		handlers['agent:tool_call']({ payload: { sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a' } } as never);
+		handlers['agent:tool_call']({
+			payload: { sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a' },
+		} as never);
 		expect(get(reactExecutionPhaseStore)).toMatchObject({
 			sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a',
 			phase: 'waiting_result',
@@ -49,11 +73,17 @@ describe('chat agent live tool output', () => {
 		clearToolOutputPreviewsForSession(null);
 
 		handlers['agent:tool_output']({
-			payload: { sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a', stepId: 'step-b1ff030bcda172afbbad69aa787379d5', output: 'line 1' },
+			payload: {
+				sessionId: 'ses-d628ca764938045bf3f3194d0ff8893a',
+				stepId: 'step-b1ff030bcda172afbbad69aa787379d5',
+				output: 'line 1',
+			},
 		} as never);
 
 		expect(dispatchSession).not.toHaveBeenCalled();
-		expect(get(getToolOutputPreviewStore('step-b1ff030bcda172afbbad69aa787379d5'))).toBe('line 1');
+		expect(get(getToolOutputPreviewStore('step-b1ff030bcda172afbbad69aa787379d5'))).toBe(
+			'line 1',
+		);
 	});
 
 	it('clears the side-channel when the canonical observation arrives', () => {
@@ -76,6 +106,8 @@ describe('chat agent live tool output', () => {
 			},
 		} as never);
 
-		expect(get(getToolOutputPreviewStore('step-b1ff030bcda172afbbad69aa787379d5'))).toBeUndefined();
+		expect(
+			get(getToolOutputPreviewStore('step-b1ff030bcda172afbbad69aa787379d5')),
+		).toBeUndefined();
 	});
 });

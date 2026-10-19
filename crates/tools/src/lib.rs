@@ -151,6 +151,7 @@ pub use asset_registry::{GeneratedMediaCleanupGuard, ManagedAssetLifecyclePort};
 pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
 #[cfg(not(feature = "test-support"))]
 pub(crate) use asset_registry::{ManagedAsset, ManagedAssetRegistry};
+pub use builtin::session::SessionWorkingDocumentPort;
 pub use builtin::tool_runs::{ToolRunStart, parse_toolrun_start};
 pub use builtin::{
     AdminContext, AdminOperationError, AdminRequest, ConfigOperationArgs, ConfigOperationError,

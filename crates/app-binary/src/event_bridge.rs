@@ -150,6 +150,18 @@ impl TauriEmitter {
                     event_sequence: *event_sequence,
                 }),
             ),
+            AgentEvent::WorkingDocumentUpdated {
+                session_id,
+                markdown,
+                event_sequence,
+            } => project(
+                AGENT_WORKING_DOCUMENT_EVENT,
+                serialize(AgentWorkingDocumentEvent {
+                    session_id: session_id.clone(),
+                    markdown: markdown.clone(),
+                    event_sequence: *event_sequence,
+                }),
+            ),
             AgentEvent::ToolCall {
                 session_id,
                 tool_name,
@@ -730,6 +742,24 @@ impl TauriEmitter {
 mod tests {
     use super::*;
     use haven_agent::{ToolRunCompletionStatus, ToolRunNotificationSource};
+
+    #[test]
+    fn working_document_agent_event_maps_to_its_durable_wire_payload() {
+        let event = AgentEvent::WorkingDocumentUpdated {
+            session_id: "ses-55555555555555555555555555555555".into(),
+            markdown: "# Current plan".into(),
+            event_sequence: 23,
+        };
+        assert_eq!(TauriEmitter::channel(&event), AGENT_WORKING_DOCUMENT_EVENT);
+        assert_eq!(
+            TauriEmitter::payload(&event, None),
+            serde_json::json!({
+                "session_id": "ses-55555555555555555555555555555555",
+                "markdown": "# Current plan",
+                "event_sequence": 23,
+            })
+        );
+    }
 
     #[test]
     fn agent_event_logs_redact_tool_names_and_label_text_lengths() {

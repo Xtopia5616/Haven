@@ -477,6 +477,9 @@ impl AppState {
             config_service: Some(config_service.clone()),
             config_apply_gate: Some(config_apply_gate),
             session_store: Some(session_store),
+            session_working_document: Some(
+                crate::agent_tool_adapters::session_working_document_port(executor.clone()),
+            ),
             memory_facts: Some(memory_fact_store),
             router: Some(router.clone()),
             log_path,
