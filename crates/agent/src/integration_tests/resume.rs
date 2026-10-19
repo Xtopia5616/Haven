@@ -77,7 +77,7 @@ fn overlay_restore_tool(
         canonical_observation: "completed".into(),
         history_observation: "completed".into(),
         tool_call_id: None,
-        tool_call: ToolCall {
+        tool_call: AgentToolCall {
             tool_name: tool_name.to_string(),
             tool_input,
             is_final: false,

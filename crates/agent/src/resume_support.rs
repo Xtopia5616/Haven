@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 #[cfg(test)]
-use crate::types::ToolCall;
+use crate::types::AgentToolCall;
 use crate::types::TranscriptRecord;
 
 /// Infer the next step from the durable event tail. A completed tool result
@@ -141,7 +141,7 @@ mod tests {
                 canonical_observation: "ok".into(),
                 history_observation: "ok".into(),
                 tool_call_id: Some("call-tool".into()),
-                tool_call: ToolCall {
+                tool_call: AgentToolCall {
                     tool_name: "read".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,

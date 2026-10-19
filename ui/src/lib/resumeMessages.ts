@@ -225,8 +225,8 @@ export function mergeLiveStreaming(
 
 /**
  * Rebuild chat bubbles from DB projections (`messages` + `session_steps`).
- * X12: these tables are materialized views of `TranscriptEvent` / execution
- * status — live UI still uses AgentEvent; this path is history/reload only.
+ * X12: these tables materialize durable transcript records and execution
+ * status. Live UI still uses AgentEvent; this path is history/reload only.
  */
 export function buildResumeMessages<T extends ResumeTranscriptProjectionInput>(
 	data: T,

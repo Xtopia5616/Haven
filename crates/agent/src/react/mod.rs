@@ -25,7 +25,7 @@ use crate::compactor::ContextCompactor;
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
 #[cfg(test)]
 use crate::types::TranscriptRecord;
-use crate::types::{ToolCall, media_inputs_from_events};
+use crate::types::{AgentToolCall, media_inputs_from_events};
 
 mod committed_ui;
 #[cfg(test)]
@@ -71,7 +71,7 @@ pub(crate) use state::{ReActState, RetryNudge};
 pub use tool_ports::ToolCatalogPort;
 #[cfg(test)]
 pub(crate) use tool_ports::ToolsFacadeToolCatalogAdapter;
-use transcript::{ObservationCard, TranscriptEvent};
+use transcript::{ObservationCard, TranscriptWrite};
 use usage::{UsageRuntime, UsageUpdate};
 
 fn runtime_setting_lock<'a, T>(
@@ -357,7 +357,7 @@ impl ToolInputValidationFailure {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ParsedAgentResponse {
     pub thought: Option<String>,
-    pub tool_calls: Vec<ToolCall>,
+    pub tool_calls: Vec<AgentToolCall>,
 }
 
 pub(crate) struct ReActEngine {
@@ -641,7 +641,7 @@ impl ReActEngine {
     pub(crate) async fn validate_tool_inputs(
         &self,
         session_id: &str,
-        tool_calls: &[ToolCall],
+        tool_calls: &[AgentToolCall],
     ) -> Vec<ToolInputValidationFailure> {
         let catalog = self.tool_catalog.catalog_snapshot(session_id).await;
         self.validate_tool_inputs_from_catalog(&catalog, tool_calls)
@@ -650,7 +650,7 @@ impl ReActEngine {
     pub(crate) fn validate_tool_inputs_from_catalog(
         &self,
         catalog: &haven_tools::ToolCatalogSnapshot,
-        tool_calls: &[ToolCall],
+        tool_calls: &[AgentToolCall],
     ) -> Vec<ToolInputValidationFailure> {
         self.validate_indexed_tool_inputs_from_catalog(
             catalog,
@@ -664,7 +664,7 @@ impl ReActEngine {
     pub(crate) fn validate_indexed_tool_inputs_from_catalog<'a>(
         &self,
         catalog: &haven_tools::ToolCatalogSnapshot,
-        tool_calls: impl IntoIterator<Item = (u32, &'a ToolCall)>,
+        tool_calls: impl IntoIterator<Item = (u32, &'a AgentToolCall)>,
     ) -> Vec<ToolInputValidationFailure> {
         let mut failures = Vec::new();
         for (tool_index, tool_call) in tool_calls {
@@ -710,7 +710,7 @@ impl ReActEngine {
             Some(text.clone())
         };
 
-        let tool_calls: Vec<ToolCall> = if !response.tool_calls.is_empty() {
+        let tool_calls: Vec<AgentToolCall> = if !response.tool_calls.is_empty() {
             let mut seen_tool_call_ids = HashSet::new();
             response
                 .tool_calls
@@ -735,7 +735,7 @@ impl ReActEngine {
                     } else {
                         provider_id.clone()
                     };
-                    ToolCall {
+                    AgentToolCall {
                         tool_name: tc.name.clone(),
                         tool_input: args,
                         is_final,
@@ -747,7 +747,7 @@ impl ReActEngine {
             && response.finish_reason == Some(FinishReason::Stop)
             && step_number > 0
         {
-            vec![ToolCall {
+            vec![AgentToolCall {
                 tool_name: "final_answer".into(),
                 tool_input: serde_json::Value::Null,
                 is_final: true,
@@ -1211,7 +1211,7 @@ impl ReActEngine {
     /// Returns `true` when a compaction actually ran (the caller re-checks
     /// the image flag afterwards, since summarizing away the last image
     /// changes the endpoint routing). Compaction goes through
-    /// [`TranscriptEvent::CompactSummary`] (Phase 6.1).
+    /// [`TranscriptWrite::CompactSummary`] (Phase 6.1).
     pub(crate) async fn maybe_compact(
         &self,
         ctx: &StepCtx,
@@ -1264,9 +1264,9 @@ impl ReActEngine {
                     degraded = result.degraded,
                     "compaction completed"
                 );
-                self.apply_transcript(
+                self.apply_transcript_write(
                     ctx,
-                    TranscriptEvent::CompactSummary {
+                    TranscriptWrite::CompactSummary {
                         compacted: result.compacted,
                         media_inputs: media_inputs_from_events(&state.events),
                         summary: result.summary,

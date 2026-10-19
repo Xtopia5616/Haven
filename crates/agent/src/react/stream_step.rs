@@ -1176,9 +1176,9 @@ impl ReActEngine {
                         );
                         // Phase 6.1: CompactSummary via apply (emit + persist + replace).
                         if let Err(error) = self
-                            .apply_transcript(
+                            .apply_transcript_write(
                                 ctx,
-                                TranscriptEvent::CompactSummary {
+                                TranscriptWrite::CompactSummary {
                                     compacted: result.compacted,
                                     media_inputs: media_inputs_from_events(&state.events),
                                     summary: result.summary,

@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use super::effects::EffectBatch;
 use super::identity::StreamBlockIdentity;
-use super::transcript::TranscriptEvent;
+use super::transcript::TranscriptWrite;
 use super::*;
 
 /// Inputs for the shared turn-end path used by both text-only responses and
@@ -38,7 +38,7 @@ impl ReActEngine {
     /// the batch, so the final transcript commits before local injects.
     ///
     /// X12 remains authoritative at apply time: final content goes through
-    /// [`ReActEngine::apply_transcript`], and `pause_turn` only records the
+    /// [`ReActEngine::apply_transcript_write`], and `pause_turn` only records the
     /// resulting state/boundary.
     pub(super) async fn finish_turn_end(
         &self,
@@ -74,7 +74,7 @@ impl ReActEngine {
 
         let mut effects = EffectBatch::continue_batch();
         if !already_pushed {
-            effects.transcript(TranscriptEvent::ToolCall {
+            effects.transcript_write(TranscriptWrite::ToolCall {
                 text: final_text.to_string(),
                 tool_calls: Vec::new(),
                 reasoning,

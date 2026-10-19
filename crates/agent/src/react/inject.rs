@@ -4,7 +4,7 @@
 //! Split from `react.rs` (Phase 1 mechanical extract). Phase 6 / B3: inject
 //! origin is structured [`InjectSource`]; prefixes render via
 //! `InjectSource::render_prefix`. Phase 6 / H1: user injects go through
-//! [`ReActEngine::apply_transcript`]. Turn-end orchestration lives in
+//! [`ReActEngine::apply_transcript_writes`]. Turn-end orchestration lives in
 //! [`super::turn_end`] so this module remains the context projection adapter.
 
 use super::context::PendingContextBatch;
@@ -86,7 +86,7 @@ impl ReActEngine {
             inbox_claim,
         }: PendingContextBatch,
     ) -> anyhow::Result<bool> {
-        let mut pending_events = Vec::with_capacity(items.len());
+        let mut pending_writes = Vec::with_capacity(items.len());
         let mut pending_message_ids = std::collections::HashSet::new();
         let mut tool_run_result_ids = Vec::new();
         for item in items {
@@ -106,7 +106,7 @@ impl ReActEngine {
                 tool_run_result_ids.push(tool_run_result_id);
             }
             if !already_applied {
-                pending_events.push(TranscriptEvent::UserInject {
+                pending_writes.push(TranscriptWrite::UserInject {
                     source: item.source,
                     text: item.text,
                     attachments: item.attachments,
@@ -114,8 +114,8 @@ impl ReActEngine {
                 });
             }
         }
-        let injected = !pending_events.is_empty();
-        self.apply_transcript_batch(ctx, pending_events, state)
+        let injected = !pending_writes.is_empty();
+        self.apply_transcript_writes(ctx, pending_writes, state)
             .await?;
 
         // Queue admission is deliberately not an acknowledgement: terminal

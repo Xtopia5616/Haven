@@ -771,7 +771,7 @@ mod tests {
             canonical_observation: "done".into(),
             history_observation: "done".into(),
             tool_call_id: Some("provider/call-id".into()),
-            tool_call: crate::types::ToolCall {
+            tool_call: crate::types::AgentToolCall {
                 tool_name: "media".into(),
                 tool_input: serde_json::json!({}),
                 is_final: false,

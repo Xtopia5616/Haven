@@ -6,7 +6,7 @@
 
 use super::response_policy::{ResponsePolicyDecision, ResponsePolicyState};
 use super::stream_step::StreamSession;
-use super::{ReActEngine, ReActState, RequestContext, StepCtx, ToolCall};
+use super::{AgentToolCall, ReActEngine, ReActState, RequestContext, StepCtx};
 use haven_llm::LlmResponse;
 use tokio_util::sync::CancellationToken;
 
@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) struct AcceptedResponse {
     pub(super) response: LlmResponse,
     pub(super) thought: Option<String>,
-    pub(super) tool_calls: Vec<ToolCall>,
+    pub(super) tool_calls: Vec<AgentToolCall>,
 }
 
 pub(super) enum ResponseCycleOutcome {
@@ -43,7 +43,7 @@ impl ReActEngine {
         request_context: &RequestContext,
         mut response: LlmResponse,
         mut thought: Option<String>,
-        mut tool_calls: Vec<ToolCall>,
+        mut tool_calls: Vec<AgentToolCall>,
         cancel: &CancellationToken,
         incomplete_tool_args_retries: &mut u32,
         pending_ask: bool,

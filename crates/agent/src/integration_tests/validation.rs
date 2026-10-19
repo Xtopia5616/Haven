@@ -16,7 +16,7 @@ async fn invalid_tool_inputs_are_reported_without_repairing_arguments() {
 
     // Missing required fields is reported; validation never invents
     // side-effecting values.
-    let tool_calls = vec![ToolCall {
+    let tool_calls = vec![AgentToolCall {
         tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({}),
         is_final: false,
@@ -46,7 +46,7 @@ async fn valid_tool_inputs_and_final_tool_calls_have_no_validation_failures() {
     let session = executor.create_session("do it").await.unwrap();
 
     // Complete call: no validation failure.
-    let tool_calls = vec![ToolCall {
+    let tool_calls = vec![AgentToolCall {
         tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({"action": "stop", "query": "hi"}),
         is_final: false,
@@ -59,7 +59,7 @@ async fn valid_tool_inputs_and_final_tool_calls_have_no_validation_failures() {
     assert_eq!(repaired.len(), 0);
 
     // Final tool_calls are not validated in the tool batch.
-    let tool_calls = vec![ToolCall {
+    let tool_calls = vec![AgentToolCall {
         tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({}),
         is_final: true,
@@ -88,7 +88,7 @@ async fn null_tool_input_is_reported_without_repairing_arguments() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let tool_calls = vec![ToolCall {
+    let tool_calls = vec![AgentToolCall {
         tool_name: "tool_run_required".into(),
         tool_input: serde_json::Value::Null,
         is_final: false,
@@ -118,7 +118,7 @@ async fn null_valued_tool_fields_are_reported_without_repairing_arguments() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let tool_calls = vec![ToolCall {
+    let tool_calls = vec![AgentToolCall {
         tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({"action": null, "query": null}),
         is_final: false,
@@ -148,7 +148,7 @@ async fn missing_enum_field_is_reported_without_guessing_a_value() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let tool_calls = vec![ToolCall {
+    let tool_calls = vec![AgentToolCall {
         tool_name: "enum_required".into(),
         tool_input: serde_json::json!({}),
         is_final: false,
@@ -182,7 +182,7 @@ async fn invalid_enum_value_is_reported_without_repairing_arguments() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let tool_calls = vec![ToolCall {
+    let tool_calls = vec![AgentToolCall {
         tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({"action": "bogus", "query": "hi"}),
         is_final: false,
@@ -214,7 +214,7 @@ async fn wrong_type_tool_value_is_reported_without_repairing_arguments() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let tool_calls = vec![ToolCall {
+    let tool_calls = vec![AgentToolCall {
         tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({"action": 42, "query": "hi"}),
         is_final: false,
@@ -246,7 +246,7 @@ async fn valid_enum_values_have_no_validation_failures() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let tool_calls = vec![ToolCall {
+    let tool_calls = vec![AgentToolCall {
         tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({"action": "stop", "query": "hi"}),
         is_final: false,
@@ -276,7 +276,7 @@ async fn invalid_optional_field_is_reported_without_repairing_arguments() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let tool_calls = vec![ToolCall {
+    let tool_calls = vec![AgentToolCall {
         tool_name: "enum_with_optional".into(),
         tool_input: serde_json::json!({"operation": "type", "optional": "nope"}),
         is_final: false,

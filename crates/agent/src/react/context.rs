@@ -2,7 +2,7 @@
 //!
 //! This module owns queue and inbox reads only. It returns owned context
 //! values; projection into events, messages and the canonical transcript stays
-//! in `inject.rs` through `apply_transcript`.
+//! in `inject.rs` through `apply_transcript_writes`.
 
 use std::sync::Arc;
 

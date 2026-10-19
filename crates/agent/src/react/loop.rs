@@ -210,7 +210,7 @@ impl ReActEngine {
             deadline.ensure_remaining("confirmation batch")?;
             match confirm_outcome {
                 RunControl::Continue => {}
-                RunControl::Done(exit) => return Ok(exit),
+                RunControl::Exit(exit) => return Ok(exit),
             }
         }
 
@@ -228,7 +228,7 @@ impl ReActEngine {
                 .run_state_boundary(session_id, state, step_number, &emitter, run_id)
                 .await
             {
-                ReActRunBoundary::Run => {}
+                ReActRunBoundary::Continue => {}
                 ReActRunBoundary::Exit(exit) => return Ok(exit),
             }
 
@@ -345,7 +345,7 @@ impl ReActEngine {
             };
             match outcome {
                 RunControl::Continue => {}
-                RunControl::Done(exit) => return Ok(exit),
+                RunControl::Exit(exit) => return Ok(exit),
             }
         }
 
@@ -386,7 +386,7 @@ impl ReActEngine {
                 self.exit_external_pause(session_id, state, step_number, emitter, run_id)
                     .await,
             ),
-            _ => ReActRunBoundary::Run,
+            _ => ReActRunBoundary::Continue,
         }
     }
 }
@@ -396,7 +396,7 @@ fn deadline_cancel_at(deadline: TurnDeadline) -> tokio::time::Instant {
 }
 
 enum ReActRunBoundary {
-    Run,
+    Continue,
     Exit(LoopExit),
 }
 

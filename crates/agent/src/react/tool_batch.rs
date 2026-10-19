@@ -12,7 +12,7 @@ use super::tool_batch_policy::{
 };
 use super::*;
 use crate::session::{ToolStepMetadata, ToolStepPersistenceError};
-use crate::types::ToolCall;
+use crate::types::AgentToolCall;
 use futures_util::FutureExt;
 use haven_common::tools::{
     OperationIdempotency, ToolErrorClass, ToolExecutionOutcome, ToolOperationScope,
@@ -135,7 +135,7 @@ impl ToolBatchState {
         &mut self,
         ctx: &StepCtx,
         result: CompletedTool,
-    ) -> anyhow::Result<TranscriptEvent> {
+    ) -> anyhow::Result<TranscriptWrite> {
         let CompletedTool {
             tool_call,
             tool_name,
@@ -223,7 +223,7 @@ impl ToolBatchState {
         } else {
             step_result.clone()
         };
-        Ok(TranscriptEvent::ToolResult {
+        Ok(TranscriptWrite::ToolResult {
             canonical_observation: step_result,
             history_observation: display_observation,
             tool_call_id: tool_call_id.clone(),
@@ -251,7 +251,7 @@ impl ToolBatchState {
         ctx: &StepCtx,
         result: CompletedTool,
         state: &mut ReActState,
-    ) -> anyhow::Result<TranscriptEvent> {
+    ) -> anyhow::Result<TranscriptWrite> {
         let tool_index = result.tool_index;
         let clear_confirmation_ids = self
             .confirmation_completion
@@ -279,7 +279,7 @@ pub(super) struct ToolBatchResults {
 enum ToolBatchResult {
     Completed(Box<CompletedTool>),
     Committing,
-    Committed(Box<TranscriptEvent>),
+    Committed(Box<TranscriptWrite>),
 }
 
 impl ToolBatchResults {
@@ -297,14 +297,14 @@ impl ToolBatchResults {
         }
     }
 
-    pub(super) fn set_committed(&mut self, index: usize, event: TranscriptEvent) {
+    pub(super) fn set_committed(&mut self, index: usize, write: TranscriptWrite) {
         debug_assert!(index < self.slots.len(), "tool result index out of bounds");
         if let Some(slot) = self.slots.get_mut(index) {
             debug_assert!(
                 matches!(slot, Some(ToolBatchResult::Committing)),
                 "only a completed tool result can be committed"
             );
-            *slot = Some(ToolBatchResult::Committed(Box::new(event)));
+            *slot = Some(ToolBatchResult::Committed(Box::new(write)));
         }
     }
 
@@ -315,8 +315,8 @@ impl ToolBatchResults {
                 *slot = Some(ToolBatchResult::Committing);
                 Some(*result)
             }
-            ToolBatchResult::Committed(event) => {
-                *slot = Some(ToolBatchResult::Committed(event));
+            ToolBatchResult::Committed(write) => {
+                *slot = Some(ToolBatchResult::Committed(write));
                 None
             }
             ToolBatchResult::Committing => {
@@ -345,7 +345,7 @@ impl ToolBatchResults {
         self.slots.iter().take_while(|slot| slot.is_some()).count()
     }
 
-    pub(super) fn into_ordered(self) -> Vec<TranscriptEvent> {
+    pub(super) fn into_ordered(self) -> Vec<TranscriptWrite> {
         assert!(
             self.is_complete(),
             "tool batch result slots must be committed before canonical projection"
@@ -353,7 +353,7 @@ impl ToolBatchResults {
         self.slots
             .into_iter()
             .map(|slot| match slot.expect("complete tool result slot") {
-                ToolBatchResult::Committed(event) => *event,
+                ToolBatchResult::Committed(write) => *write,
                 ToolBatchResult::Completed(_) | ToolBatchResult::Committing => {
                     unreachable!("all results are committed")
                 }
@@ -364,7 +364,7 @@ impl ToolBatchResults {
 
 /// Normalized output of one tool execution before its transcript commit.
 pub(super) struct CompletedTool {
-    tool_call: ToolCall,
+    tool_call: AgentToolCall,
     tool_name: String,
     step_result: String,
     is_error: bool,
@@ -387,7 +387,7 @@ pub(super) struct CompletedTool {
 
 impl CompletedTool {
     pub(super) fn from_observation(
-        tool_call: ToolCall,
+        tool_call: AgentToolCall,
         step_id: String,
         tool_index: u32,
         step_result: String,
@@ -432,11 +432,11 @@ impl CompletedTool {
 /// batch representation. Both the normal batch and the post-confirm resume
 /// path use this helper so observation truncation and tool-owned signals
 /// cannot drift between the two paths.
-pub(super) struct ToolCallRequest {
+pub(super) struct ToolExecutionRequest {
     pub executor: Arc<SessionSupervisor>,
     pub catalog: Arc<haven_tools::ToolCatalogSnapshot>,
     pub session_id: String,
-    pub tool_call: ToolCall,
+    pub agent_tool_call: AgentToolCall,
     pub step_number: u32,
     pub tool_index: u32,
     pub step_id: String,
@@ -445,12 +445,12 @@ pub(super) struct ToolCallRequest {
     pub cancel: tokio_util::sync::CancellationToken,
 }
 
-pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool {
-    let ToolCallRequest {
+pub(super) async fn execute_tool_call(request: ToolExecutionRequest) -> CompletedTool {
+    let ToolExecutionRequest {
         executor,
         catalog,
         session_id,
-        tool_call,
+        agent_tool_call,
         step_number,
         tool_index,
         step_id,
@@ -458,8 +458,8 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
         nested_confirmation,
         cancel,
     } = request;
-    let tool_name = tool_call.tool_name.clone();
-    let tool_input = tool_call.tool_input.clone();
+    let tool_name = agent_tool_call.tool_name.clone();
+    let tool_input = agent_tool_call.tool_input.clone();
     let idempotency = catalog
         .operation_policy(&tool_name, &tool_input)
         .idempotency;
@@ -493,7 +493,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
                     tool_input,
                     step_number,
                     tool_index,
-                    tool_call.tool_call_id.as_deref(),
+                    agent_tool_call.tool_call_id.as_deref(),
                     &step_id,
                     receipt,
                     nested_confirmation,
@@ -509,7 +509,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
                     tool_input,
                     step_number,
                     tool_index,
-                    tool_call.tool_call_id.as_deref(),
+                    agent_tool_call.tool_call_id.as_deref(),
                     &step_id,
                     tool_step_metadata,
                     cancel,
@@ -607,7 +607,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
         }
     };
 
-    let policy = catalog.operation_policy(&tool_name, &tool_call.tool_input);
+    let policy = catalog.operation_policy(&tool_name, &agent_tool_call.tool_input);
     let idempotency = policy.idempotency;
     let operation_scope = policy.scope;
     let renderer = catalog
@@ -619,7 +619,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
     });
 
     CompletedTool {
-        tool_call,
+        tool_call: agent_tool_call,
         tool_name,
         step_result,
         is_error,
@@ -770,9 +770,9 @@ mod tests {
     }
 
     #[test]
-    fn run_control_variants_exist() {
+    fn run_control_has_continue_and_exit_variants() {
         let _ = RunControl::Continue;
-        let _ = RunControl::Done(LoopExit::Cancelled);
+        let _ = RunControl::Exit(LoopExit::Cancelled);
     }
 
     #[test]
@@ -926,7 +926,7 @@ mod tests {
         results.set(
             1,
             CompletedTool::from_observation(
-                ToolCall {
+                AgentToolCall {
                     tool_name: "second".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
@@ -941,7 +941,7 @@ mod tests {
         results.set(
             0,
             CompletedTool::from_observation(
-                ToolCall {
+                AgentToolCall {
                     tool_name: "first".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
@@ -970,7 +970,7 @@ mod tests {
         results.set(
             0,
             CompletedTool::from_observation(
-                ToolCall {
+                AgentToolCall {
                     tool_name: "first".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
@@ -985,7 +985,7 @@ mod tests {
         results.set(
             2,
             CompletedTool::from_observation(
-                ToolCall {
+                AgentToolCall {
                     tool_name: "third".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
@@ -1005,7 +1005,7 @@ mod tests {
     #[test]
     fn completed_tool_preserves_unknown_execution_outcome() {
         let result = CompletedTool::from_observation(
-            ToolCall {
+            AgentToolCall {
                 tool_name: "send".into(),
                 tool_input: serde_json::json!({}),
                 is_final: false,

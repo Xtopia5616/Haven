@@ -288,7 +288,7 @@ impl ReActEngine {
     /// durable event boundary, then mark the session with the given status and notify the
     /// frontend + memory worker.
     ///
-    /// X12: chat content must already be projected via `apply_transcript`
+    /// X12: chat content must already be projected via `apply_transcript_write`
     /// before this call. The pause path only verifies the durable event
     /// boundary and changes the
     /// lifecycle; it never writes a second assistant message.

@@ -112,7 +112,7 @@ impl ReActEngine {
         state: &ReActState,
         response: &LlmResponse,
         thought: &Option<String>,
-        tool_calls: &[ToolCall],
+        tool_calls: &[AgentToolCall],
         effects: &mut EffectBatch,
     ) -> anyhow::Result<SearchContextOutcome> {
         if response.web_search_calls.is_empty() {
@@ -146,7 +146,7 @@ impl ReActEngine {
         // Thought already projected the messages row when present. When a
         // synthesized final has no Thought, make this owning commit project
         // the same synthetic final text turn-end would otherwise materialize.
-        effects.transcript(TranscriptEvent::ToolCall {
+        effects.transcript_write(TranscriptWrite::ToolCall {
             text: push_text.to_string(),
             tool_calls: Vec::new(),
             reasoning,
@@ -287,7 +287,7 @@ impl ReActEngine {
         );
         deadline.ensure_remaining("request preparation")?;
         if cancel.is_cancelled() {
-            return Ok(EffectBatch::done(LoopExit::Cancelled));
+            return Ok(EffectBatch::exit(LoopExit::Cancelled));
         }
         // Exactly one bounded poll: steering received during compaction or
         // catalog/routing preparation should reach this provider request.
@@ -304,7 +304,7 @@ impl ReActEngine {
             .await?;
             deadline.ensure_remaining("late steering preparation")?;
             if cancel.is_cancelled() {
-                return Ok(EffectBatch::done(LoopExit::Cancelled));
+                return Ok(EffectBatch::exit(LoopExit::Cancelled));
             }
             let cached_message_tokens = state.estimate_canonical_tokens();
             let refreshed = RequestContext::from_state_with_estimate(
@@ -377,7 +377,7 @@ impl ReActEngine {
                     // and any partial scratch output. Keep this as a soft exit so
                     // the outer loop does not overwrite that recovery event
                     // boundary with a generic turn-error path.
-                    return Ok(EffectBatch::done(LoopExit::Error(message)));
+                    return Ok(EffectBatch::exit(LoopExit::Error(message)));
                 }
             }
         };
@@ -459,7 +459,7 @@ impl ReActEngine {
             let reasoning_id = state.stream_block_message_id_or_new(
                 StreamBlockIdentity::reasoning(step_number, ctx.run_id),
             );
-            effects.transcript(TranscriptEvent::Reasoning {
+            effects.transcript_write(TranscriptWrite::Reasoning {
                 text: reasoning.clone(),
                 message_id: reasoning_id.clone(),
             });
@@ -500,7 +500,7 @@ impl ReActEngine {
                 step_number,
                 ctx.run_id,
             ));
-            effects.transcript(TranscriptEvent::Thought { text, message_id });
+            effects.transcript_write(TranscriptWrite::Thought { text, message_id });
         }
 
         let search_pushed = match Self::prepare_search_context(
@@ -622,7 +622,7 @@ mod search_context_tests {
             web_search_calls: vec![json!({"type": "web_search_call", "id": "search-1"})],
             ..Default::default()
         };
-        let final_tool_call = ToolCall {
+        let final_tool_call = AgentToolCall {
             tool_name: "final_answer".into(),
             tool_input: json!({}),
             is_final: true,
@@ -648,7 +648,7 @@ mod search_context_tests {
         );
         let queued = effects.into_effects();
         let [
-            TurnEffect::Transcript(TranscriptEvent::ToolCall {
+            TurnEffect::TranscriptWrite(TranscriptWrite::ToolCall {
                 text,
                 web_search_calls,
                 persist_text_id,

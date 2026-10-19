@@ -8,7 +8,7 @@
 
 use super::transcript::ToolCallCard;
 use crate::interaction::{InteractionDetails, InteractionRequest};
-use crate::types::ToolCall;
+use crate::types::AgentToolCall;
 use haven_common::types::CanonicalToolCall;
 use haven_tools::{ToolCatalogSnapshot, is_silent_tool_call};
 
@@ -275,7 +275,7 @@ impl ConfirmationBatchPlan {
 /// One non-final call admitted by the turn coordinator.
 #[derive(Debug, Clone)]
 pub(super) struct PlannedTool {
-    pub(super) tool_call: ToolCall,
+    pub(super) tool_call: AgentToolCall,
     pub(super) step_id: String,
     pub(super) tool_index: u32,
 }
@@ -289,7 +289,7 @@ pub(super) struct ToolBatchPlan {
 }
 
 impl ToolBatchPlan {
-    pub(super) fn from_tool_calls(tool_calls: &[ToolCall]) -> Self {
+    pub(super) fn from_tool_calls(tool_calls: &[AgentToolCall]) -> Self {
         let tools = tool_calls
             .iter()
             .enumerate()
@@ -319,7 +319,7 @@ impl ToolBatchPlan {
                     tool_index,
                     ..
                 } => Some(PlannedTool {
-                    tool_call: ToolCall {
+                    tool_call: AgentToolCall {
                         tool_name: tool_name.clone(),
                         tool_input: tool_input.clone(),
                         is_final: false,
@@ -352,7 +352,7 @@ impl ToolBatchPlan {
                     "confirmation batch tool identity does not match its transcript call"
                 );
                 Ok(PlannedTool {
-                    tool_call: ToolCall {
+                    tool_call: AgentToolCall {
                         tool_name: call.name.clone(),
                         tool_input: call.arguments.clone(),
                         is_final: false,
@@ -382,7 +382,7 @@ impl ToolBatchPlan {
         self.tools.iter()
     }
 
-    pub(super) fn indexed_tool_calls(&self) -> impl Iterator<Item = (u32, &ToolCall)> {
+    pub(super) fn indexed_tool_calls(&self) -> impl Iterator<Item = (u32, &AgentToolCall)> {
         self.tools
             .iter()
             .map(|planned| (planned.tool_index, &planned.tool_call))
@@ -442,8 +442,8 @@ impl ToolBatchPlan {
 mod tests {
     use super::*;
 
-    fn tool_call(name: &str, is_final: bool) -> ToolCall {
-        ToolCall {
+    fn tool_call(name: &str, is_final: bool) -> AgentToolCall {
+        AgentToolCall {
             tool_name: name.into(),
             tool_input: serde_json::json!({"name": name}),
             is_final,

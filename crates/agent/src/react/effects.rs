@@ -7,9 +7,9 @@
 
 use super::event_boundary::PauseTurnInput;
 use super::tool_batch_policy::ToolRetryBudget;
-use super::transcript::TranscriptEvent;
+use super::transcript::TranscriptWrite;
 use super::{AgentEvent, LoopExit, PauseReason, ReActEngine, ReActState, StepCtx};
-use crate::types::ToolCall;
+use crate::types::AgentToolCall;
 use haven_common::lifecycle::SessionStatus;
 use haven_llm::LlmResponse;
 use haven_tools::ToolCatalogSnapshot;
@@ -18,8 +18,8 @@ use tokio_util::sync::CancellationToken;
 
 /// One side-effect intent emitted by a turn.
 pub(super) enum TurnEffect {
-    /// Append and project one canonical transcript event.
-    Transcript(TranscriptEvent),
+    /// Append and project one transcript write.
+    TranscriptWrite(TranscriptWrite),
     /// Persist the branch marker after a search-only round. The marker is a
     /// durable effect because it must be ordered after the transcript event.
     SaveBranchPoint { step_number: u32 },
@@ -67,7 +67,7 @@ pub(super) enum TurnDirective {
     /// Tool execution is runtime work; its outcome decides whether the run
     /// continues or exits.
     ExecuteToolBatch {
-        tool_calls: Vec<ToolCall>,
+        tool_calls: Vec<AgentToolCall>,
         thought: Option<String>,
         response: Box<LlmResponse>,
         catalog: Arc<ToolCatalogSnapshot>,
@@ -88,7 +88,7 @@ pub(super) struct EffectBatch {
 /// Control returned after applying a turn plan or tool batch and consumed by the run loop.
 pub(super) enum RunControl {
     Continue,
-    Done(LoopExit),
+    Exit(LoopExit),
 }
 
 impl EffectBatch {
@@ -99,7 +99,7 @@ impl EffectBatch {
         }
     }
 
-    pub(super) fn done(exit: LoopExit) -> Self {
+    pub(super) fn exit(exit: LoopExit) -> Self {
         Self {
             effects: Vec::new(),
             directive: TurnDirective::Exit(exit),
@@ -124,8 +124,8 @@ impl EffectBatch {
         self.effects = prefix.effects;
     }
 
-    pub(super) fn transcript(&mut self, event: TranscriptEvent) {
-        self.push(TurnEffect::Transcript(event));
+    pub(super) fn transcript_write(&mut self, write: TranscriptWrite) {
+        self.push(TurnEffect::TranscriptWrite(write));
     }
 
     pub(super) fn pause(
@@ -169,7 +169,7 @@ impl EffectBatch {
 
     pub(super) fn execute_tool_batch(
         &mut self,
-        tool_calls: Vec<ToolCall>,
+        tool_calls: Vec<AgentToolCall>,
         thought: Option<String>,
         response: LlmResponse,
         catalog: Arc<ToolCatalogSnapshot>,
@@ -264,12 +264,12 @@ async fn apply_committed_directive(
 ) -> anyhow::Result<RunControl> {
     match directive {
         TurnDirective::Continue => Ok(RunControl::Continue),
-        TurnDirective::Exit(exit) => Ok(RunControl::Done(exit)),
+        TurnDirective::Exit(exit) => Ok(RunControl::Exit(exit)),
         TurnDirective::ExitAtBoundary { exit } => {
             let exit = engine
                 .exit_at_boundary(&ctx.session_id, state, ctx.step_number, exit)
                 .await;
-            Ok(RunControl::Done(exit))
+            Ok(RunControl::Exit(exit))
         }
         TurnDirective::Pause {
             boundary_step,
@@ -291,7 +291,7 @@ async fn apply_committed_directive(
                     reason,
                 })
                 .await?;
-            Ok(RunControl::Done(LoopExit::Paused { reason }))
+            Ok(RunControl::Exit(LoopExit::Paused { reason }))
         }
         TurnDirective::TurnEnd { step_number } => {
             if engine.inject_turn_end_context(ctx, state).await? {
@@ -313,7 +313,7 @@ async fn apply_committed_directive(
                     reason: PauseReason::TurnEnd,
                 })
                 .await?;
-            Ok(RunControl::Done(LoopExit::Paused {
+            Ok(RunControl::Exit(LoopExit::Paused {
                 reason: PauseReason::TurnEnd,
             }))
         }
@@ -332,7 +332,7 @@ async fn apply_committed_directive(
             if hard {
                 return Err(anyhow::anyhow!(message));
             }
-            Ok(RunControl::Done(LoopExit::Error(message)))
+            Ok(RunControl::Exit(LoopExit::Error(message)))
         }
         TurnDirective::ExecuteToolBatch { .. } => {
             anyhow::bail!("committed effect batch cannot execute tools")
@@ -350,7 +350,9 @@ async fn apply_projection_effect(
     effect: TurnEffect,
 ) -> anyhow::Result<()> {
     match effect {
-        TurnEffect::Transcript(event) => engine.apply_transcript(ctx, event, state).await?,
+        TurnEffect::TranscriptWrite(write) => {
+            engine.apply_transcript_write(ctx, write, state).await?
+        }
         TurnEffect::SaveBranchPoint { step_number } => {
             engine
                 .save_branch_point(&ctx.session_id, state, step_number)
@@ -400,7 +402,7 @@ mod tests {
             TurnDirective::Continue
         ));
         assert!(matches!(
-            EffectBatch::done(LoopExit::Cancelled).directive,
+            EffectBatch::exit(LoopExit::Cancelled).directive,
             TurnDirective::Exit(LoopExit::Cancelled)
         ));
     }
@@ -408,23 +410,23 @@ mod tests {
     #[test]
     fn effects_are_appended_in_declaration_order() {
         let mut batch = EffectBatch::continue_batch();
-        batch.transcript(TranscriptEvent::Thought {
+        batch.transcript_write(TranscriptWrite::Thought {
             text: "one".into(),
             message_id: "step-f9430084054c5002eb0d7715a0ec20cd".into(),
         });
         assert_eq!(batch.effects.len(), 1);
-        assert!(matches!(batch.effects[0], TurnEffect::Transcript(_)));
+        assert!(matches!(batch.effects[0], TurnEffect::TranscriptWrite(_)));
     }
 
     #[test]
     fn prepend_keeps_prefix_effects_before_end_directive() {
         let mut prefix = EffectBatch::continue_batch();
-        prefix.transcript(TranscriptEvent::Thought {
+        prefix.transcript_write(TranscriptWrite::Thought {
             text: "thought".into(),
             message_id: "step-f9430084054c5002eb0d7715a0ec20cd".into(),
         });
         let mut end = EffectBatch::continue_batch();
-        end.transcript(TranscriptEvent::ToolCall {
+        end.transcript_write(TranscriptWrite::ToolCall {
             text: "final".into(),
             tool_calls: Vec::new(),
             reasoning: None,
@@ -436,8 +438,8 @@ mod tests {
         end.turn_end(1);
         end.prepend(prefix);
 
-        assert!(matches!(end.effects[0], TurnEffect::Transcript(_)));
-        assert!(matches!(end.effects[1], TurnEffect::Transcript(_)));
+        assert!(matches!(end.effects[0], TurnEffect::TranscriptWrite(_)));
+        assert!(matches!(end.effects[1], TurnEffect::TranscriptWrite(_)));
         assert!(matches!(
             end.directive,
             TurnDirective::TurnEnd { step_number: 1 }

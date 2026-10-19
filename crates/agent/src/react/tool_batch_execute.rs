@@ -9,12 +9,12 @@ use super::effects::RunControl;
 use super::hooks::{BeforeToolCallDecision, BeforeToolRequest, ToolCallIdentity};
 use super::tool_batch::{
     CompletedTool, MAX_CONCURRENT_TOOL_CALLS, MAX_RUNTIME_TOOL_CALLS_PER_BATCH, ToolBatchGate,
-    ToolBatchResults, ToolBatchState, ToolCallRequest, execute_tool_call, tool_step_metadata,
+    ToolBatchResults, ToolBatchState, ToolExecutionRequest, execute_tool_call, tool_step_metadata,
 };
 use super::tool_batch_plan::ToolBatchPlan;
 use super::tool_batch_policy::ToolRetryBudget;
 use super::*;
-use crate::types::{ToolCall, TranscriptRecord};
+use crate::types::{AgentToolCall, TranscriptRecord};
 use futures_util::StreamExt;
 use haven_common::tools::ToolExecutionOutcome;
 use haven_memory::ToolStepOutcome;
@@ -389,11 +389,11 @@ impl ReActEngine {
                         run_id,
                         step_number,
                     );
-                    let result = execute_tool_call(ToolCallRequest {
+                    let result = execute_tool_call(ToolExecutionRequest {
                         executor,
                         catalog,
                         session_id,
-                        tool_call,
+                        agent_tool_call: tool_call,
                         step_number,
                         tool_index,
                         step_id,
@@ -556,7 +556,7 @@ impl ReActEngine {
         step_number: u32,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
-        tool_calls: &[ToolCall],
+        tool_calls: &[AgentToolCall],
         thought: &Option<String>,
         response: &haven_llm::LlmResponse,
         catalog: Arc<haven_tools::ToolCatalogSnapshot>,
@@ -609,7 +609,7 @@ impl ReActEngine {
             // Thought already projected the messages row — no persist_text_id.
             let tool_call_cards =
                 plan.tool_call_cards_with_catalog(suppress_streamed_thought, catalog.as_ref());
-            commit.transcript(TranscriptEvent::ToolCall {
+            commit.transcript_write(TranscriptWrite::ToolCall {
                 text: push_text.to_string(),
                 tool_calls,
                 reasoning: if response.thinking_blocks.is_empty() {
@@ -699,7 +699,7 @@ impl ReActEngine {
             // A rollback that lands mid-batch must find the DB row at the
             // pre-batch branch point (the response and partial tool results
             // are discarded by the exit).
-            return Ok(RunControl::Done(
+            return Ok(RunControl::Exit(
                 self.exit_cancelled(session_id, state, step_number).await,
             ));
         }
@@ -833,13 +833,13 @@ impl ReActEngine {
         let session_state = self.executor.get_active_session_status(session_id).await;
         match session_state {
             Some(s) if s.is_paused() => {
-                return Ok(RunControl::Done(
+                return Ok(RunControl::Exit(
                     self.exit_external_pause(session_id, state, step_number, emitter, run_id)
                         .await,
                 ));
             }
             Some(SessionStatus::Error) => {
-                return Ok(RunControl::Done(
+                return Ok(RunControl::Exit(
                     self.exit_at_boundary(
                         session_id,
                         state,
@@ -851,7 +851,7 @@ impl ReActEngine {
             }
             // Session gone (end_session/terminal cleanup) or completed: exit.
             None | Some(SessionStatus::Completed) => {
-                return Ok(RunControl::Done(
+                return Ok(RunControl::Exit(
                     self.exit_at_boundary(session_id, state, step_number, LoopExit::Completed)
                         .await,
                 ));
@@ -1093,7 +1093,7 @@ impl ReActEngine {
             .await?;
         if let Some((tool_index, nested)) = batch_state.nested_confirmation() {
             if execution.cancelled {
-                return Ok(RunControl::Done(
+                return Ok(RunControl::Exit(
                     self.exit_cancelled(session_id, state, step_number).await,
                 ));
             }
@@ -1146,7 +1146,7 @@ impl ReActEngine {
             .await?;
 
         if execution.cancelled {
-            return Ok(RunControl::Done(
+            return Ok(RunControl::Exit(
                 self.exit_cancelled(session_id, state, step_number).await,
             ));
         }
@@ -1194,7 +1194,7 @@ mod tests {
 
     fn planned_tool() -> super::super::tool_batch_plan::PlannedTool {
         super::super::tool_batch_plan::PlannedTool {
-            tool_call: ToolCall {
+            tool_call: AgentToolCall {
                 tool_name: "write".into(),
                 tool_input: serde_json::json!({"path": "a.txt"}),
                 is_final: false,

@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.190 | 日期: 2026-10-13
+> 版本: v1.191 | 日期: 2026-10-19
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -142,6 +142,9 @@ ToolRun completion lease 的 `lease_subject_id` 标识被租用的 ToolRun 或 c
 | 会话步骤状态（`SessionStepStatus`） | 持久 `session_steps.status` 与 live `StepInfo.status` 共用的闭合生命周期值：pending、running、completed、failed、cancelled、unknown | Common 定义并生成给 UI；SQLite 列仍存 snake_case 字符串，Memory 读入时严格解析。`ToolStepOutcome` 是 finish 操作的终态输入，不替代完整状态（ADR 0725） |
 | 会话运行（SessionRun） | 由 `SessionSupervisor` dispatcher 唯一准入的一次会话执行；Agent 内部 `SessionRunEngine` 运行完整 ReAct 循环 | 跨 crate 生产启动只经 `AgentLayer::start_after_memory_ready`；dispatcher 启动方法与 `SessionRunHandler` 为 Agent crate 内部契约；handler、admission、permit 和 actor claim 均显式标注 `SessionRun`；生产不暴露 direct-run 准入；direct-run lease/waiter 只作为 `cfg(test)` 生命周期夹具，不构成生产领域名词；ReAct loop 的输入、重放、输出以 `ReActRun*` 标名（ADR 0917、1005） |
 | 前台工具调用（ToolCall） | 当前 ReAct turn 中由 Agent 发起并返回观察结果的一次调用 | 使用正常工具调用路径；执行完成属于当前 turn |
+| Agent 归一化调用（`AgentToolCall`） | Agent 使用的工具调用数据，包含注册名、输入、最终回答标记与调用身份 | Common `CanonicalToolCall` 表示 provider-neutral 的消息调用 shape；`AgentToolCall` 表示进入 ReAct 执行与 transcript 的 Agent 形状 |
+| 工具执行请求（`ToolExecutionRequest`） | 已准入的一次工具执行及其 session、catalog、授权 receipt、取消令牌等依赖 | 请求中的调用数据使用 `AgentToolCall`；带阶段限制的请求使用 `AdmittedToolExecutionRequest` 等阶段限定名 |
+| ReAct 控制（`RunControl`） | 一轮处理后的循环决策 | 结果统一为 `Continue` 或 `Exit(LoopExit)`；`TurnDirective` 是产生该结果的计划，`ReActRunBoundary` 使用相同选择词；`ExitAtBoundary` 额外要求持久边界校验，保持为独立操作 |
 | 后台工具运行（ToolRun） | 由 `toolrun.start` 启动、可脱离当前 turn 持久运行且可取消的工具调用 | `ToolRun.kind` 固定为 `background`；后端/IPC/数据库使用 `tool_run`、`tool_runs`，ID 前缀为 `toolrun-`。状态查询由 `ToolRunStatusView` 提供投影；终态交付使用 `ToolRunCompletionPayload`（ADR 0700、0871、1324） |
 | 工具结果（ToolResult） | 一次工具调用的成功/失败输出及执行元数据 | `ToolResult.truncated` 属于结果级元数据；正文中的 `truncated` 属于具体工具输出 shape。正文标记为 true 时两层必须同步；正文没有该字段时允许只保留结果级标记（ADR 0701）。Agent observation 的执行 outcome 只由 `ToolResultEnvelope.outcome` 承载；UI 在展示边界映射成卡片状态。历史 `session_steps.status` 是恢复时的持久投影，不是第二个 event outcome 来源（ADR 0719） |
 | Schedule | 一次性/周期计划与其触发条件 | 由独立 Schedule owner 管理；UI 显示“定时任务” |
@@ -152,9 +155,9 @@ ToolRun completion lease 的 `lease_subject_id` 标识被租用的 ToolRun 或 c
 | VAD 回调值（`VadSignal` / `VadState`） | `haven-input` 的采集生命周期回调契约 | 根导出只提供 signal/state 值；`vad` 模块、模型 engine 和状态 detector 是私有实现（ADR 0926） |
 | VAD 状态事件 | App 的 `VadStatusEvent` 是 `recording:vad_status` 的唯一 wire DTO；`signal` / `state` 使用 `VadSignalDto` / `VadStateDto` 闭枚举 | IPC 生成器导出 Rust DTO 与允许值；UI `VadStatusPayload` 直接引用生成类型，`mapRecordingEvent` 校验 envelope、payload 和枚举值，未知值失败关闭（ADR 1018；取代 ADR 0694 的开放字符串决定） |
 | 录音结果（`RecordingResult`） | `haven-input` 拥有的固定格式采集结果：16 kHz 单声道 PCM、停止原因、时长和采集错误 | 通过 `RecordingResult::encode_wav()` 编码；它与 Tools 持有的 `RecordedAudio`（已登记 WAV 资产结果）不是同一层结果 |
-| 持久会话事件（`SessionEvent`） | `session_events` 中 append-only 的恢复与回滚权威记录 | Memory 持有 event row、sequence 与存储；`TranscriptRecord` 是其版本化 payload，不是第二条日志 |
+| 持久会话事件（`SessionEvent`） | `session_events` 中 append-only 的恢复与回滚权威记录 | Memory 持有 event row、sequence 与存储；Agent 的 `TranscriptWrite` 转换为 `TranscriptRecord`，后者是 `SessionEvent` 的版本化 payload，不是第二条日志 |
 | 会话消息（`Message`） | 从已提交 transcript 投影出的持久消息行，不是恢复来源 | UI reducer 的 `SessionMessage` 是独立 renderer shape；`TranscriptProjection` 是从事件流派生的读取视图，含 `canonical_messages` 与 `react_rounds` |
-| 运行事件（`AgentEvent` / `SessionSupervisorEvent`） | 进程内的 Agent 输出或 Supervisor 生命周期通知，不作为 durable transcript | durable 写入仍使用 `SessionEvent`；UI `session:lifecycle` 是 App 投影契约 |
+| 运行事件（`AgentEvent` / `SessionSupervisorEvent`） | 进程内的 Agent 输出或 Supervisor 生命周期通知，不作为 durable transcript | `AgentEvent` 是实时 UI 输出；durable 写入使用 `TranscriptWrite` → `TranscriptRecord` → `SessionEvent` 路径；UI `session:lifecycle` 是 App 投影契约 |
 | 交互请求（`InteractionRequest`） | Agent 内用于 Ask/Confirm/ScheduledConfirm 的状态与继续执行数据；统一用 `request_id`，Ask 复用 `step-*`，确认请求使用 `conf-*`；可包含不应发送到 UI 的工具输入和授权 receipt | `InteractionOwner` 只负责进程内 owner routing；durable event 与生成的 `InteractionRequestedEvent` 使用 `request_id`，清除事件使用 `request_ids`；前端映射为 `requestId` 并拒绝旧 UI 字段 `id`。durable replay 为读取历史 payload 接受 `id` / `ids`，新事件只写 canonical 字段（ADR 0996） |
 | 工具实现、定义与清单 | `ToolHandle` 是单个共享可执行实现；Common `ToolDef` 是 provider-neutral 的模型调用定义；LLM `LlmToolDefinition` 是转换后的 `{type, function}` 请求中间形状；`ToolManifest` 是 Tauri/UI 的 identity、policy 与 presentation projection | `ToolDef → LlmToolDefinition → provider adapter wire`；`ToolRegistry` 持有可执行实现；`ToolCatalogSnapshot` / `OperationCatalog` 是模型可见目录投影；`OperationRegistry` 管已安装、deferred 与 session operations。目录可见不等同于授权 |
 

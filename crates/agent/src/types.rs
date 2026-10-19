@@ -10,7 +10,7 @@ use serde_json::Value;
 #[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct ToolRecord {
-    pub tool_call: ToolCall,
+    pub tool_call: AgentToolCall,
     pub observation: Option<String>,
     pub tool_index: u32,
     pub step_id: String,
@@ -65,7 +65,7 @@ pub(crate) enum TranscriptRecord {
         history_observation: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_call_id: Option<String>,
-        tool_call: ToolCall,
+        tool_call: AgentToolCall,
     },
     UserInject {
         step_number: u32,
@@ -415,7 +415,7 @@ fn project_pending_round_results(
 /// an uncompleted ToolCall must not activate tools.
 pub(crate) fn tool_calls_for_session_overlay_restore(
     events: &[TranscriptRecord],
-) -> Vec<&ToolCall> {
+) -> Vec<&AgentToolCall> {
     let mut completed_calls = events
         .iter()
         .filter_map(|event| match event {
@@ -664,7 +664,7 @@ pub(crate) fn seed_events_from_canonical(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ToolCall {
+pub struct AgentToolCall {
     pub tool_name: String,
     pub tool_input: Value,
     pub is_final: bool,
@@ -780,7 +780,7 @@ mod tests {
                 canonical_observation: "done".into(),
                 history_observation: "done".into(),
                 tool_call_id: Some("provider/call-id".into()),
-                tool_call: ToolCall {
+                tool_call: AgentToolCall {
                     tool_name: "example".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
@@ -928,15 +928,15 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_serde_roundtrip() {
-        let tool_call = ToolCall {
+    fn agent_tool_call_serde_roundtrip() {
+        let tool_call = AgentToolCall {
             tool_name: "files".into(),
             tool_input: serde_json::json!({"path": "C:/tmp/a.txt"}),
             is_final: false,
             tool_call_id: Some("call_1".into()),
         };
         let json = serde_json::to_string(&tool_call).unwrap();
-        let back: ToolCall = serde_json::from_str(&json).unwrap();
+        let back: AgentToolCall = serde_json::from_str(&json).unwrap();
         assert_eq!(back.tool_name, "files");
         assert_eq!(back.tool_input, serde_json::json!({"path": "C:/tmp/a.txt"}));
         assert!(!back.is_final);
@@ -944,9 +944,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_missing_tool_call_id_defaults_to_none() {
+    fn agent_tool_call_missing_tool_call_id_defaults_to_none() {
         let json = r#"{"tool_name":"shell","tool_input":{"cmd":"dir"},"is_final":true}"#;
-        let tool_call: ToolCall = serde_json::from_str(json).unwrap();
+        let tool_call: AgentToolCall = serde_json::from_str(json).unwrap();
         assert!(tool_call.is_final);
         assert_eq!(tool_call.tool_call_id, None);
     }
@@ -986,7 +986,7 @@ mod tests {
                 canonical_observation: "rb".into(),
                 history_observation: "rb".into(),
                 tool_call_id: Some("c2".into()),
-                tool_call: ToolCall {
+                tool_call: AgentToolCall {
                     tool_name: "b".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
@@ -1000,7 +1000,7 @@ mod tests {
                 canonical_observation: "ra".into(),
                 history_observation: "ra".into(),
                 tool_call_id: Some("c1".into()),
-                tool_call: ToolCall {
+                tool_call: AgentToolCall {
                     tool_name: "a".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,

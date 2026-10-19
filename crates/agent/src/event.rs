@@ -1300,7 +1300,7 @@ impl EventDispatcher {
         // transcript path. The message row has already been persisted by the
         // recovery protocol; persist its shared-ID step projection before
         // publishing the transient, unsequenced UI event. Ordinary ReAct
-        // Thought rows use apply_transcript and CommittedUiPublisher.
+        // Thought rows use apply_transcript_write and CommittedUiPublisher.
         store
             .create_thought_step(session_id, step_number, message_id)
             .await?;

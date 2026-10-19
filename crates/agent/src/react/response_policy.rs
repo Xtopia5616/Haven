@@ -71,7 +71,7 @@ impl ResponsePolicy {
         ResponsePolicyDecision::Accept
     }
 
-    fn has_normal_finish(response: &LlmResponse, tool_calls: &[ToolCall]) -> bool {
+    fn has_normal_finish(response: &LlmResponse, tool_calls: &[AgentToolCall]) -> bool {
         match response.finish_reason {
             Some(FinishReason::Stop) => true,
             Some(FinishReason::ToolCalls | FinishReason::FunctionCall) => !tool_calls.is_empty(),
@@ -92,7 +92,7 @@ impl ResponsePolicy {
 /// Parsed values and loop state that determine how a model response is handled.
 pub(crate) struct ResponsePolicyInput<'a> {
     pub thought: &'a Option<String>,
-    pub tool_calls: &'a [ToolCall],
+    pub tool_calls: &'a [AgentToolCall],
     pub response: &'a LlmResponse,
     pub state: ResponsePolicyState,
 }
@@ -125,7 +125,7 @@ mod tests {
 
     fn classify_response(
         thought: &Option<String>,
-        tool_calls: &[ToolCall],
+        tool_calls: &[AgentToolCall],
         response: &LlmResponse,
         state: ResponsePolicyState,
     ) -> ResponsePolicyDecision {
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn incomplete_tool_args_retry_only_within_budget() {
-        let tool_calls = [ToolCall {
+        let tool_calls = [AgentToolCall {
             tool_name: "files".into(),
             tool_input: serde_json::Value::Null,
             is_final: false,
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn complete_tool_calls_accept_provider_tool_finish_reasons() {
-        let tool_call = ToolCall {
+        let tool_call = AgentToolCall {
             tool_name: "files".into(),
             tool_input: serde_json::json!({"path":"a.txt"}),
             is_final: false,
