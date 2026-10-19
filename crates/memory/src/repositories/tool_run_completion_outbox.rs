@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn terminal_background_tool_run_is_reconciled_and_acknowledged() {
         let db = Database::open_in_memory().unwrap();
-        db.save_tool_run(
+        db.persist_tool_run(
             TOOL_RUN_ID,
             Some("ses-7ae290dbf0b4468c9d2c401be649850b"),
             "echo ok",
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn unowned_completion_acknowledgement_requires_an_unowned_background_row() {
         let db = Database::open_in_memory().unwrap();
-        db.save_tool_run(TOOL_RUN_ID, None, "echo ok", STARTED)
+        db.persist_tool_run(TOOL_RUN_ID, None, "echo ok", STARTED)
             .unwrap();
         db.finish_tool_run(
             TOOL_RUN_ID,

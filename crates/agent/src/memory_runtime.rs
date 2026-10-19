@@ -147,8 +147,8 @@ impl MemoryRuntime {
 
     /// Process a live event, filling any sequence gap from bounded durable
     /// replay before retrying the received event. Duplicate overlap is
-    /// delegated to `process_event`'s durable cursor check.
-    async fn process_live_event(
+    /// delegated to `consume_session_event`'s durable cursor check.
+    async fn consume_live_event(
         &self,
         target_session_id: &str,
         event: &SessionEvent,
@@ -156,7 +156,7 @@ impl MemoryRuntime {
     ) -> anyhow::Result<MemoryEventProcessOutcome> {
         if event.session_id != target_session_id {
             return self
-                .process_event(target_session_id, event, cancellation)
+                .consume_session_event(target_session_id, event, cancellation)
                 .await;
         }
         let cursor = self
@@ -169,7 +169,7 @@ impl MemoryRuntime {
                 .await
                 .context("recover memory event sequence gap")?;
         }
-        self.process_event(target_session_id, event, cancellation)
+        self.consume_session_event(target_session_id, event, cancellation)
             .await
     }
 
@@ -221,9 +221,9 @@ impl MemoryRuntime {
                 if event.sequence > through_sequence {
                     break;
                 }
-                self.process_event(session_id, &event, cancellation)
+                self.consume_session_event(session_id, &event, cancellation)
                     .await
-                    .context("process replayed memory event")?;
+                    .context("consume replayed memory event")?;
                 let next_cursor = self
                     .session_store
                     .memory_event_cursor_cancellable(session_id, cancellation.clone())
@@ -349,7 +349,7 @@ impl MemoryRuntime {
                 received = live.recv() => match received {
                     Ok(event) => {
                         if let Err(error) = self
-                            .process_live_event(&event.session_id, &event, cancellation)
+                            .consume_live_event(&event.session_id, &event, cancellation)
                             .await
                         {
                             if cancellation.is_cancelled() {
@@ -400,17 +400,17 @@ impl MemoryRuntime {
     /// SQLite cursor reads and writes run on the blocking pool and observe
     /// cancellation. A trigger's durable outbox write always completes before
     /// its event cursor checkpoint begins.
-    pub async fn process_event(
+    pub async fn consume_session_event(
         &self,
         target_session_id: &str,
         event: &SessionEvent,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<MemoryEventProcessOutcome> {
-        self.process_event_after_enqueue(target_session_id, event, cancellation, || {})
+        self.consume_session_event_after_enqueue(target_session_id, event, cancellation, || {})
             .await
     }
 
-    async fn process_event_after_enqueue<F>(
+    async fn consume_session_event_after_enqueue<F>(
         &self,
         target_session_id: &str,
         event: &SessionEvent,
@@ -757,7 +757,7 @@ mod tests {
 
         assert_eq!(
             runtime
-                .process_event(&session_id, &event, &cancellation())
+                .consume_session_event(&session_id, &event, &cancellation())
                 .await
                 .unwrap(),
             MemoryEventProcessOutcome::Checkpointed { enqueued: true }
@@ -812,7 +812,7 @@ mod tests {
         assert_eq!(received, event);
         assert_eq!(
             runtime
-                .process_live_event(&received.session_id, &received, &cancellation())
+                .consume_live_event(&received.session_id, &received, &cancellation())
                 .await
                 .unwrap(),
             MemoryEventProcessOutcome::Checkpointed { enqueued: true }
@@ -944,7 +944,7 @@ mod tests {
 
         assert_eq!(
             runtime
-                .process_live_event(&session_id, &current_event, &cancellation())
+                .consume_live_event(&session_id, &current_event, &cancellation())
                 .await
                 .unwrap(),
             MemoryEventProcessOutcome::Checkpointed { enqueued: false }
@@ -980,7 +980,7 @@ mod tests {
         );
         assert_eq!(
             runtime
-                .process_live_event(&session_id, &trigger_event, &cancellation())
+                .consume_live_event(&session_id, &trigger_event, &cancellation())
                 .await
                 .unwrap(),
             MemoryEventProcessOutcome::AlreadyProcessed
@@ -1001,7 +1001,7 @@ mod tests {
 
         assert_eq!(
             runtime
-                .process_event(&session_id, &event, &cancellation())
+                .consume_session_event(&session_id, &event, &cancellation())
                 .await
                 .unwrap(),
             MemoryEventProcessOutcome::Checkpointed { enqueued: false }
@@ -1022,7 +1022,7 @@ mod tests {
 
         assert_eq!(
             runtime
-                .process_event(&session_id, &event, &cancellation())
+                .consume_session_event(&session_id, &event, &cancellation())
                 .await
                 .unwrap(),
             MemoryEventProcessOutcome::Checkpointed { enqueued: true }
@@ -1047,7 +1047,7 @@ mod tests {
             trigger("step_interval", false),
         );
         runtime
-            .process_event(&session_id, &event, &cancellation())
+            .consume_session_event(&session_id, &event, &cancellation())
             .await
             .unwrap();
 
@@ -1066,7 +1066,7 @@ mod tests {
 
         assert_eq!(
             runtime
-                .process_event(&session_id, &event, &cancellation())
+                .consume_session_event(&session_id, &event, &cancellation())
                 .await
                 .unwrap(),
             MemoryEventProcessOutcome::AlreadyProcessed
@@ -1091,7 +1091,7 @@ mod tests {
                 trigger(kind, bypass),
             );
             runtime
-                .process_event(&session_id, &event, &cancellation())
+                .consume_session_event(&session_id, &event, &cancellation())
                 .await
                 .unwrap();
         }
@@ -1117,7 +1117,7 @@ mod tests {
                 trigger("pause", true),
             );
             runtime
-                .process_event(&session_id, &event, &cancellation())
+                .consume_session_event(&session_id, &event, &cancellation())
                 .await
                 .unwrap();
         }
@@ -1157,7 +1157,7 @@ mod tests {
 
         assert!(
             runtime
-                .process_event(&session_id, &event, &cancellation())
+                .consume_session_event(&session_id, &event, &cancellation())
                 .await
                 .is_err()
         );
@@ -1195,7 +1195,7 @@ mod tests {
 
         assert!(
             runtime
-                .process_event(&session_id, &event, &cancellation())
+                .consume_session_event(&session_id, &event, &cancellation())
                 .await
                 .is_err()
         );
@@ -1233,7 +1233,7 @@ mod tests {
 
         assert!(
             runtime
-                .process_event(&session_id, &event, &cancellation())
+                .consume_session_event(&session_id, &event, &cancellation())
                 .await
                 .is_err()
         );
@@ -1252,7 +1252,7 @@ mod tests {
         );
 
         let error = runtime
-            .process_event(&session_id, &event, &cancellation())
+            .consume_session_event(&session_id, &event, &cancellation())
             .await
             .unwrap_err();
         assert!(error.to_string().contains("sequence gap"));
@@ -1273,7 +1273,7 @@ mod tests {
 
         assert_eq!(
             runtime
-                .process_event(&target_id, &event, &cancellation())
+                .consume_session_event(&target_id, &event, &cancellation())
                 .await
                 .unwrap(),
             MemoryEventProcessOutcome::IgnoredOtherSession
@@ -1296,7 +1296,7 @@ mod tests {
         let cancel_after_enqueue = cancellation.clone();
 
         let result = runtime
-            .process_event_after_enqueue(&session_id, &event, &cancellation, move || {
+            .consume_session_event_after_enqueue(&session_id, &event, &cancellation, move || {
                 cancel_after_enqueue.cancel();
             })
             .await;

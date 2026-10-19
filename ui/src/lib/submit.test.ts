@@ -52,7 +52,7 @@ describe('submitTranscript', () => {
 		select(SESSION_A);
 		await submitTranscript('afterwards', { deliveryMode: 'follow_up' });
 		expect(invoke).toHaveBeenCalledWith(
-			'process_transcript',
+			'submit_transcript',
 			expect.objectContaining({ deliveryMode: 'follow_up' }),
 		);
 	});
@@ -62,7 +62,7 @@ describe('submitTranscript', () => {
 		select(SESSION_A);
 		await submitTranscript('hello', { voice: false });
 
-		expect(invoke).toHaveBeenCalledWith('process_transcript', {
+		expect(invoke).toHaveBeenCalledWith('submit_transcript', {
 			transcript: 'hello',
 			activeSessionId: SESSION_A,
 			attachments: null,
@@ -102,7 +102,7 @@ describe('submitTranscript', () => {
 		);
 		const pending = submitTranscript('orphan', { voice: true });
 
-		expect(invoke).toHaveBeenCalledWith('process_transcript', {
+		expect(invoke).toHaveBeenCalledWith('submit_transcript', {
 			transcript: 'orphan',
 			activeSessionId: null,
 			attachments: null,
@@ -157,7 +157,7 @@ describe('submitTranscript', () => {
 			recordingId: 'rec-00000000000000000000000000000000',
 		});
 
-		expect(invoke).toHaveBeenCalledWith('process_transcript', {
+		expect(invoke).toHaveBeenCalledWith('submit_transcript', {
 			transcript: 'voice text',
 			activeSessionId: null,
 			attachments: null,
@@ -166,13 +166,13 @@ describe('submitTranscript', () => {
 		});
 	});
 
-	it('passes images through to process_transcript and tags the optimistic bubble', async () => {
+	it('passes images through to submit_transcript and tags the optimistic bubble', async () => {
 		invokeMock.mockResolvedValue(supplemented(SESSION_IMG));
 		select(SESSION_IMG);
 		const images = [{ media_type: 'image/png', data: 'abc' }];
 		await submitTranscript('see pic', { images });
 
-		expect(invoke).toHaveBeenCalledWith('process_transcript', {
+		expect(invoke).toHaveBeenCalledWith('submit_transcript', {
 			transcript: 'see pic',
 			activeSessionId: SESSION_IMG,
 			attachments: images,
@@ -190,7 +190,7 @@ describe('submitTranscript', () => {
 		const files = [{ media_type: 'application/pdf', data: 'cGVvcGxl', filename: 'doc.pdf' }];
 		await submitTranscript('read these', { images, files });
 
-		expect(invoke).toHaveBeenCalledWith('process_transcript', {
+		expect(invoke).toHaveBeenCalledWith('submit_transcript', {
 			transcript: 'read these',
 			activeSessionId: SESSION_MIX,
 			attachments: [...images, ...files],
@@ -206,7 +206,7 @@ describe('submitTranscript', () => {
 		await submitTranscript('text only', { images: [] });
 
 		expect(invoke).toHaveBeenCalledWith(
-			'process_transcript',
+			'submit_transcript',
 			expect.objectContaining({ attachments: null }),
 		);
 		const list = messagesFor(SESSION_EMPTY);
@@ -636,7 +636,7 @@ describe('submitTranscript', () => {
 		invokeMock.mockResolvedValue({ SessionCreated: { session_id: 'ses-short' } });
 
 		await expect(submitTranscript('bad response')).rejects.toThrow(
-			'Invalid process transcript identity',
+			'Invalid transcript submission identity',
 		);
 		expect(messagesFor('_draft')).toEqual([]);
 	});

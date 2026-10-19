@@ -787,7 +787,7 @@
 	// react to later history clicks. Subscribing via syncStore runs the callback
 	// on every store change (and synchronously once with the current value).
 	$effect(() =>
-		syncStore(sessionResumeTargetStore, (value) => sessionStartup.processResumeTarget(value)),
+		syncStore(sessionResumeTargetStore, (value) => sessionStartup.applyResumeTarget(value)),
 	);
 
 	// Measure the composer overlay and reserve the same clearance under messages.
@@ -807,7 +807,7 @@
 		// Process resume target first so loadSessions won't overwrite
 		// activeSessionId with a stale paused session whose messages are gone.
 		const initialSessionResumeTarget = get(sessionResumeTargetStore);
-		sessionStartup.processResumeTarget(initialSessionResumeTarget);
+		sessionStartup.applyResumeTarget(initialSessionResumeTarget);
 
 		// Register listeners BEFORE any async data load so session/streaming
 		// events arriving while the page initializes are never missed.

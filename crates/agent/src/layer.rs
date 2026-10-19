@@ -839,7 +839,7 @@ impl AgentLayer {
                                             })
                                         } else {
                                             match agent
-                                                .process_input_with_attachments(
+                                                .ingest_user_input_with_attachments(
                                                     message,
                                                     Some(session_id),
                                                     &[],

@@ -71,7 +71,6 @@
 | `open_skills_dir` | execute | AuthorizationPort; queues AppCommand confirmation; configured skills root only |
 | `pick_execution_workspace_directory` | read | user-selected local directory candidate only; validates but grants no file access |
 | `pick_sandbox_output_destination` | read | native save picker; returns a user-selected candidate only and grants no filesystem access |
-| `process_transcript` | execute | attachment limits and file persistence are enforced |
 | `promote_sandbox_output` | execute | Windows only; owner-held change index; exact session request; required one-time confirmation; current Files capability and live execution proof |
 | `read_log_tail` | read | bounded tail; file logging must be enabled |
 | `read_mcp_resource` | execute | explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content |
@@ -103,6 +102,7 @@
 | `start_chatgpt_plan_login` | execute | starts a state- and PKCE-bound loopback OAuth callback and returns only the official authorization URL |
 | `start_recording` | execute | input pipeline owns capture lifecycle |
 | `stop_recording` | execute | capture stops before asynchronous transcription |
+| `submit_transcript` | execute | attachment limits and file persistence are enforced |
 | `subscribe_mcp_resource` | execute | explicit UI selection from current resource list; enabled live target binding; bounded acknowledged subscription |
 | `switch_model` | mutate | requestKind selects the route; modelConfigId is an assigned, capability-compatible Haven ModelConfig identity, not a Provider service model ID |
 | `toggle_mcp_server` | execute | AuthorizationPort; typed native admin operation connects before enabling |
@@ -200,7 +200,7 @@ provider 名称；两者都是明确扩展点，value 始终为布尔值。其�
 |---|---|---|
 | `set_hotkey_capture_active` | mutate | 快捷键录入期间抑制录音触发，结束录入时恢复。 |
 | `start_recording` / `stop_recording` / `cancel_recording` | execute | 采集与转写生命周期由下列事件报告。 |
-| `process_transcript` | execute | 提交文本与附件进入会话；语音输入可携带 `recordingId`，仅用于关联该次录音，不作为会话身份 |
+| `submit_transcript` | execute | 提交文本与附件进入会话；语音输入可携带 `recordingId`，仅用于关联该次录音，不作为会话身份 |
 
 Rust DTO 定义在 `crates/app-binary/src/events.rs`，前端唯一转换边界是
 `ui/src/lib/contracts/recording.ts` 与 `recordingEventListeners`。`rec-*` 为单次录音 ID，

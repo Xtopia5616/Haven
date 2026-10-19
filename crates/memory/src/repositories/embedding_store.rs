@@ -23,7 +23,7 @@ pub struct MemoryEmbeddingVector {
 /// A failed individual vector save. Other rows in the same batch are still
 /// attempted, matching the existing best-effort persistence behavior.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoryEmbeddingSaveFailure {
+pub struct MemoryEmbeddingPersistFailure {
     pub entity: MemoryEntityKind,
     pub entity_id: String,
     pub error: String,
@@ -31,9 +31,9 @@ pub struct MemoryEmbeddingSaveFailure {
 
 /// Result of attempting all vectors in one provider batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoryEmbeddingSaveReport {
+pub struct MemoryEmbeddingPersistReport {
     pub attempted: usize,
-    pub failures: Vec<MemoryEmbeddingSaveFailure>,
+    pub failures: Vec<MemoryEmbeddingPersistFailure>,
 }
 
 /// Async persistence port for Agent-owned embedding lifecycle orchestration.
@@ -122,31 +122,31 @@ impl MemoryEmbeddingStore {
     /// Save a provider batch. A stale or invalid row does not prevent other
     /// rows from being saved; callers retain the existing per-row warning
     /// behavior through the returned typed report.
-    pub async fn save_batch(
+    pub async fn persist_batch(
         &self,
         model: String,
         vectors: Vec<MemoryEmbeddingVector>,
-    ) -> anyhow::Result<MemoryEmbeddingSaveReport> {
+    ) -> anyhow::Result<MemoryEmbeddingPersistReport> {
         self.db
             .run_blocking(move |db| {
                 let attempted = vectors.len();
                 let mut failures = Vec::new();
                 for item in vectors {
-                    if let Err(error) = db.save_embedding(
+                    if let Err(error) = db.persist_embedding(
                         item.entity.entity_type(),
                         &item.entity_id,
                         &model,
                         &item.vector,
                         &item.text,
                     ) {
-                        failures.push(MemoryEmbeddingSaveFailure {
+                        failures.push(MemoryEmbeddingPersistFailure {
                             entity: item.entity,
                             entity_id: item.entity_id,
                             error: error.to_string(),
                         });
                     }
                 }
-                Ok(MemoryEmbeddingSaveReport {
+                Ok(MemoryEmbeddingPersistReport {
                     attempted,
                     failures,
                 })
@@ -243,7 +243,10 @@ mod tests {
             })
             .collect();
 
-        let report = store.save_batch("model-a".into(), vectors).await.unwrap();
+        let report = store
+            .persist_batch("model-a".into(), vectors)
+            .await
+            .unwrap();
         assert_eq!(report.attempted, 1);
         assert!(report.failures.is_empty());
         assert_eq!(store.list_models().await.unwrap(), ["model-a"]);
@@ -270,7 +273,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_batch_reports_row_failures_and_continues() {
+    async fn persist_batch_reports_row_failures_and_continues() {
         let (db, store) = store();
         let first = db
             .insert_fact("user", "likes", "Rust", "inferred", 0.8, &[])
@@ -282,7 +285,7 @@ mod tests {
         assert_eq!(pending.len(), 2);
 
         let report = store
-            .save_batch(
+            .persist_batch(
                 "model-a".into(),
                 vec![
                     MemoryEmbeddingVector {

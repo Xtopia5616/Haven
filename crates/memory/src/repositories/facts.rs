@@ -439,8 +439,8 @@ impl Database {
     /// cannot mass-demote historical edges into the subsequent
     /// `flush_low_confidence` delete window. Older residuals still surface via
     /// [`Self::list_ambiguous_contradictions`] for optional LLM arbitration.
-    pub fn resolve_contradictions(&self) -> anyhow::Result<u64> {
-        self.with_fact_write(|| FactMaintenance::new(self).resolve_contradictions())
+    pub fn demote_obvious_contradictions(&self) -> anyhow::Result<u64> {
+        self.with_fact_write(|| FactMaintenance::new(self).demote_obvious_contradictions())
     }
 
     /// Remaining live conflict groups for optional LLM arbitration (X5).
@@ -1947,7 +1947,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_contradictions_polarity_user_beats_inferred() {
+    fn test_demote_obvious_contradictions_polarity_user_beats_inferred() {
         let db = create_db();
         // Bypass upsert demotion: insert_fact stores both sides raw (X5 catch-up).
         let like_ref = FactSourceRef {
@@ -1980,7 +1980,7 @@ mod tests {
             1.0,
         )
         .unwrap();
-        let demoted = db.resolve_contradictions().unwrap();
+        let demoted = db.demote_obvious_contradictions().unwrap();
         assert_eq!(demoted, 1);
         let facts = db.list_facts_by_subject("user").unwrap();
         let likes = facts.iter().find(|f| f.predicate == "likes").unwrap();
@@ -2000,7 +2000,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_contradictions_single_valued_keeps_user() {
+    fn test_demote_obvious_contradictions_single_valued_keeps_user() {
         let db = create_db();
         db.insert_fact(
             "user",
@@ -2020,7 +2020,7 @@ mod tests {
             &["workspace"],
         )
         .unwrap();
-        let demoted = db.resolve_contradictions().unwrap();
+        let demoted = db.demote_obvious_contradictions().unwrap();
         assert_eq!(demoted, 1);
         let facts = db.list_facts_by_subject("user").unwrap();
         let old = facts.iter().find(|f| f.object == "/old/path").unwrap();
@@ -2037,7 +2037,7 @@ mod tests {
             .unwrap();
         db.insert_fact("user", "works_at", "BetaCorp", "inferred", 0.92, &["work"])
             .unwrap();
-        let demoted = db.resolve_contradictions().unwrap();
+        let demoted = db.demote_obvious_contradictions().unwrap();
         assert_eq!(demoted, 1);
         let ambiguous = db.list_ambiguous_contradictions().unwrap();
         assert!(
@@ -2049,18 +2049,18 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_contradictions_noop_when_clean() {
+    fn test_demote_obvious_contradictions_noop_when_clean() {
         let db = create_db();
         db.insert_fact("user", "likes", "Rust", "inferred", 0.9, &[])
             .unwrap();
         db.insert_fact("user", "likes", "Go", "inferred", 0.8, &[])
             .unwrap();
-        assert_eq!(db.resolve_contradictions().unwrap(), 0);
+        assert_eq!(db.demote_obvious_contradictions().unwrap(), 0);
         assert!(db.list_ambiguous_contradictions().unwrap().is_empty());
     }
 
     #[test]
-    fn test_resolve_contradictions_skips_losers_older_than_age_cap() {
+    fn test_demote_obvious_contradictions_skips_losers_older_than_age_cap() {
         let db = create_db();
         db.insert_fact("user", "likes", "Rust", "inferred", 0.9, &["preference"])
             .unwrap();
@@ -2075,7 +2075,7 @@ mod tests {
             )
             .unwrap();
         }
-        assert_eq!(db.resolve_contradictions().unwrap(), 0);
+        assert_eq!(db.demote_obvious_contradictions().unwrap(), 0);
         let likes = db
             .list_facts_by_subject("user")
             .unwrap()

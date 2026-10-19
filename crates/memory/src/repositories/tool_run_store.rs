@@ -294,14 +294,14 @@ impl ToolRunStore {
     }
 
     /// Persist a newly spawned background ToolRun.
-    pub async fn save_background_tool_run(
+    pub async fn persist_background_tool_run(
         &self,
         tool_run_id: String,
         session_id: Option<String>,
         command: String,
         started_at: String,
     ) -> anyhow::Result<()> {
-        self.save_background_tool_run_with_source(
+        self.persist_background_tool_run_with_source(
             tool_run_id,
             session_id,
             command,
@@ -313,7 +313,7 @@ impl ToolRunStore {
 
     /// Persist a newly spawned background ToolRun with its originating Agent
     /// tool step, if the ToolRun came from a session tool invocation.
-    pub async fn save_background_tool_run_with_source(
+    pub async fn persist_background_tool_run_with_source(
         &self,
         tool_run_id: String,
         session_id: Option<String>,
@@ -321,7 +321,7 @@ impl ToolRunStore {
         started_at: String,
         source_step_id: Option<String>,
     ) -> anyhow::Result<()> {
-        self.save_background_tool_run_with_metadata(
+        self.persist_background_tool_run_with_metadata(
             tool_run_id,
             "shell".into(),
             session_id,
@@ -332,7 +332,7 @@ impl ToolRunStore {
     }
 
     /// Persist a newly spawned invocation of any registered tool.
-    pub async fn save_background_tool_run_with_metadata(
+    pub async fn persist_background_tool_run_with_metadata(
         &self,
         tool_run_id: String,
         tool_name: String,
@@ -350,7 +350,7 @@ impl ToolRunStore {
         let started_at = normalize_tool_run_timestamp(&started_at, "started_at")?;
         self.db
             .run_blocking(move |db| {
-                db.save_tool_run_with_metadata(
+                db.persist_tool_run_with_metadata(
                     &tool_run_id,
                     &tool_name,
                     session_id.as_deref(),
@@ -469,7 +469,7 @@ mod tests {
         let session_id = new_id("ses");
         let source_step_id = new_id("step");
         store
-            .save_background_tool_run_with_source(
+            .persist_background_tool_run_with_source(
                 tool_run_id.clone(),
                 Some(session_id.clone()),
                 "echo ok".into(),
@@ -491,7 +491,7 @@ mod tests {
         let (_db, store) = store();
         let tool_run_id = new_id("toolrun");
         store
-            .save_background_tool_run(
+            .persist_background_tool_run(
                 tool_run_id.clone(),
                 None,
                 "echo ok".into(),
@@ -534,7 +534,7 @@ mod tests {
         let (db, store) = store();
         assert!(
             store
-                .save_background_tool_run(
+                .persist_background_tool_run(
                     "toolrun-invalid".into(),
                     None,
                     "echo".into(),
@@ -546,7 +546,12 @@ mod tests {
         let valid_id = new_id("toolrun");
         assert!(
             store
-                .save_background_tool_run(valid_id, None, "echo".into(), "not-a-timestamp".into())
+                .persist_background_tool_run(
+                    valid_id,
+                    None,
+                    "echo".into(),
+                    "not-a-timestamp".into()
+                )
                 .await
                 .is_err()
         );

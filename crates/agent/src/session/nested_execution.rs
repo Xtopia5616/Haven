@@ -158,7 +158,7 @@ impl NestedExecutionJournal {
         Ok(())
     }
 
-    pub(super) async fn complete_call(
+    pub(super) async fn finish_call(
         &self,
         completion: NestedCallCompletion<'_>,
     ) -> Result<(), String> {
@@ -315,7 +315,7 @@ mod tests {
 
         let result = ToolResult::ok(json!({"title": "Note"}));
         journal
-            .complete_call(NestedCallCompletion {
+            .finish_call(NestedCallCompletion {
                 call_index: 0,
                 child_step_id,
                 tool_name,

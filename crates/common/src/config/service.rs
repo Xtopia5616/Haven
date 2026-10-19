@@ -588,7 +588,7 @@ impl ConfigService {
                     None,
                 )
             } else {
-                if let Err(error) = state.loader.save() {
+                if let Err(error) = state.loader.persist() {
                     *state.loader.config_mut() = before;
                     return Err(error);
                 }

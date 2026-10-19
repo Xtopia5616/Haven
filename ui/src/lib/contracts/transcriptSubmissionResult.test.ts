@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { parseProcessResult } from './processResult.ts';
+import { parseTranscriptSubmissionResult } from './transcriptSubmissionResult.ts';
 
 const sessionId = 'ses-00000000000000000000000000000001';
 const messageId = 'msg-00000000000000000000000000000002';
 
-describe('process transcript response identity contract', () => {
+describe('transcript submission response identity contract', () => {
 	it('accepts canonical session and optional message identities', () => {
 		const created = { SessionCreated: { session_id: sessionId, message_id: messageId } };
 		const supplemented = { Supplemented: { session_id: sessionId, message_id: null } };
-		expect(parseProcessResult(created)).toEqual({
+		expect(parseTranscriptSubmissionResult(created)).toEqual({
 			kind: 'session_created',
 			sessionId,
 			messageId,
 		});
-		expect(parseProcessResult(created)).not.toBe(created);
-		expect(parseProcessResult(created)).not.toHaveProperty('SessionCreated');
-		expect(parseProcessResult(supplemented, sessionId)).toEqual({
+		expect(parseTranscriptSubmissionResult(created)).not.toBe(created);
+		expect(parseTranscriptSubmissionResult(created)).not.toHaveProperty('SessionCreated');
+		expect(parseTranscriptSubmissionResult(supplemented, sessionId)).toEqual({
 			kind: 'supplemented',
 			sessionId,
 			messageId: null,
@@ -35,7 +35,9 @@ describe('process transcript response identity contract', () => {
 			{ Supplemented: { session_id: sessionId, message_id: 'msg-short' } },
 			{ SessionCreated: { session_id: sessionId }, Supplemented: {} },
 		]) {
-			expect(() => parseProcessResult(value)).toThrow('Invalid process transcript identity');
+			expect(() => parseTranscriptSubmissionResult(value)).toThrow(
+				'Invalid transcript submission identity',
+			);
 		}
 	});
 
@@ -46,11 +48,11 @@ describe('process transcript response identity contract', () => {
 				message_id: messageId,
 			},
 		};
-		expect(() => parseProcessResult(supplemented, sessionId)).toThrow(
-			'Invalid process transcript identity',
+		expect(() => parseTranscriptSubmissionResult(supplemented, sessionId)).toThrow(
+			'Invalid transcript submission identity',
 		);
-		expect(() => parseProcessResult(supplemented, null)).toThrow(
-			'Invalid process transcript identity',
+		expect(() => parseTranscriptSubmissionResult(supplemented, null)).toThrow(
+			'Invalid transcript submission identity',
 		);
 	});
 });

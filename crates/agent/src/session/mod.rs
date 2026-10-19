@@ -700,7 +700,7 @@ impl SessionSupervisor {
         }
         let grant = SessionAuthorizationGrant::session(capability, target, effect);
         self.store
-            .save_session_authorization_grant(session_id, grant.clone())
+            .persist_session_authorization_grant(session_id, grant.clone())
             .await?;
         self.authorization
             .grant(
@@ -3299,9 +3299,9 @@ mod tests {
             PermissionTarget::Operation,
             PermissionEffect::Allow,
         );
-        db.save_session_authorization_grant(&healthy.session_id, &grant)
+        db.persist_session_authorization_grant(&healthy.session_id, &grant)
             .unwrap();
-        db.save_session_authorization_grant(&broken.session_id, &grant)
+        db.persist_session_authorization_grant(&broken.session_id, &grant)
             .unwrap();
         SessionStore::new(db.clone())
             .append_domain_event(&broken.session_id, INTERACTION_REQUESTED_EVENT_TYPE, "{}")
@@ -4488,7 +4488,7 @@ mod tests {
             Some(SessionStatus::Paused)
         );
         // And from Paused the session resumes via the normal Paused → Pending
-        // path (e.g. process_input / continue flow).
+        // path (e.g. ingest_user_input / continue flow).
         exec.update_session_status(&session.session_id, SessionStatus::Pending)
             .await
             .unwrap();

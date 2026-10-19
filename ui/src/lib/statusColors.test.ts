@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getStatusColorTokens, getStatusDotColor, resolveStatusTone } from './statusColors.ts';
+import { getStatusColorTokens, getStatusDotColor, normalizeStatusTone } from './statusColors.ts';
 
 describe('statusColors', () => {
 	it('keeps the status vocabulary semantic and theme-aware', () => {
@@ -11,7 +11,7 @@ describe('statusColors', () => {
 	});
 
 	it('uses neutral for unknown values', () => {
-		expect(resolveStatusTone('unknown')).toBe('neutral');
+		expect(normalizeStatusTone('unknown')).toBe('neutral');
 		expect(getStatusColorTokens('error').background).toBe(
 			'var(--md-sys-color-error-container)',
 		);

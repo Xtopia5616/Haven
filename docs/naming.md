@@ -299,15 +299,25 @@ ToolRun lifecycle payload mapper 可保留稀疏字段；`list_tool_runs` 与 `l
 | `read` / `fetch` / `query` | 从本地资源或 owner 读取内容/当前投影 / 执行跨边界 I/O 读取 / 对本地或持久数据执行有条件查询。 |
 | `load` / `restore` / `resume` | 读入运行态 / 从持久来源重建运行态 / 从保存的会话位置继续执行。 |
 | `build` / `create` / `new` | 纯装配派生值 / 建立具有业务身份的实体或资源 / 普通构造函数。 |
+| `select` / `choose` | 从候选项中选出一个作为本次有效动作或目标。 |
 | `prepare` / `apply` / `publish` | 生成未生效候选 / 对 owner 应用变更 / 将已提交版本暴露给消费者。 |
-| `append` / `commit` / `persist` | 向追加式日志写入 / 原子提交一组变更 / 将状态写入持久存储。 |
+| `append` / `commit` / `persist` / `write` / `save` | 向追加式日志写入 / 原子提交一组变更 / 将领域状态写入持久存储 / 写入底层字节或文件 / 表达用户可见的保存意图。Memory、配置等后端持久化 API 使用 `persist`；`write` 留给底层 I/O；`save` 不用于替代存储边界动作。 |
 | `register` / `activate` / `enable` | 加入注册表 / 纳入当前执行作用域 / 允许既有能力使用；三者不能互代。 |
-| `update` / `replace` / `clear` / `delete` / `remove` | 局部修改 / 整体替换 / 清空集合 / 删除持久实体 / 从某个运行集合移除。 |
+| `set` / `update` / `replace` / `clear` / `delete` / `remove` | 赋予字段或配置明确值 / 局部修改 / 整体替换 / 清空集合 / 删除持久实体 / 从某个运行集合移除。 |
 | `drain` / `pop` / `take` | 取出并清空队列或集合 / 移除并返回一个队头元素 / 转移或清空某个可选 owner 的值。 |
-| `execute` / `run` / `handle` / `process` | 执行一次具名操作 / 推进一次流程或后台任务 / 接收并路由入口 / 消费或转换输入。 |
-| `resolve` / `authorize` | 按 owner 与输入解析目标/契约 / 由安全 owner 作出允许、拒绝或确认决策。 |
+| `submit` / `ingest` / `consume` / `process` | 接收用户提交并返回接纳结果 / 领域 owner 接纳、持久化并路由输入 / 消费已提交事件或队列项并推进游标 / 转换输入但不承担更具体的提交、准入或消费职责。公开入口优先使用前三个有阶段含义的动词。 |
+| `execute` / `run` / `handle` | 执行一次具名操作 / 推进一次流程或后台任务 / 接收并路由入口。 |
+| `resolve` / `reconcile` / `demote` / `authorize` | 按上下文解析目标、契约或待答交互 / 协调同一领域中的冲突状态 / 降低实体等级或有效性 / 由安全 owner 作出允许、拒绝或确认决策。只做部分降级的操作不能命名为完整 `resolve`。 |
+| `start` / `stop` / `cancel` | 进入活动生命周期 / 正常停止并保留该流程的后续完成语义 / 放弃进行中的操作并跳过正常完成语义。 |
+| `finish` / `complete` | 将生命周期置于任一终态（成功、失败、取消或未知） / 只表达成功完成。接受失败或取消结果的 API 使用 `finish`，并传入具名 outcome。 |
 | `emit` / `publish` / `send` | 发出事件 / 发布已提交状态 / 向外部端点或收件人发送消息。 |
 | `map` / `project` / `normalize` / `parse` | 结构转换 / 从权威源派生视图 / 将宽松输入规整为契约 / 解析文本或 wire 格式。 |
+
+一条用户输入链按阶段命名为 Tauri `submit_transcript` → UI 命令 adapter `submitTranscriptCommand` → Agent `ingest_user_input`；submit coordinator 的 `submitTranscript` 表示完整 UI 提交流程。Memory 对已经提交的事件使用 `consume_session_event`。这些动作作用于同一输入链，但 owner 和副作用阶段不同，因此保留阶段动词。录音 `stop` 会继续转录，`cancel` 会丢弃录音且不转录，必须使用不同动作名。工具步骤统一由 `finish_tool_step(step_id, observation, outcome)` 进入终态，不用布尔值包装出另一个 `complete_*` API。
+
+冲突事实维护只对确定的冲突 loser 做置信度降级，保留待进一步裁决的冲突组，因此使用 `demote_obvious_contradictions`；`resolve` 不用于暗示整个领域冲突已被消除。根据状态选择 UI 动作使用 `select`（如 `selectSettingsSaveAction`），宽松输入折叠到封闭值使用 `normalize`（如 `normalizeStatusTone`）。
+
+上述动词规则约束动作函数与命令；持久事件的枚举 variant 属于已存储数据格式，不因方法改名而机械改写，若要改名需单独处理数据契约。
 
 Hotkey 领域中，`KeyCombo::has_modifier` 表示修饰键位掩码判断；`KeyCode::display_name` 表示面向用户的显示标签，区别于输入字符串 parser 与稳定键身份。
 
@@ -451,7 +461,7 @@ Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalT
 - `step_number` 的 Rust/SQLite/IPC/UI 数值域统一为非负 `u32`（SQLite `INTEGER` 承载该范围）；`tool_index` 是独立的有符号 `i32` 字段，不随步骤计数一并转换。
 - 消息实体引用在 Rust 内部叫 `message_id`，前端叫 `messageId`；禁止缩写成 `msg_id` / `msgId`。
 - **前端只在边界转换**（invoke 调用 / 事件监听处），内部统一 camelCase。
-- `process_transcript` 的 Rust `ProcessResult` externally-tagged snake_case response 由 `sessionCommands` 校验并投影为 `ProcessResultView`（`kind`、`sessionId`、`messageId`）；submit coordinator 只消费该 renderer view，不直接读取 generated wire union（ADR 1059）。
+- `submit_transcript` 的 Rust `TranscriptSubmissionResult` externally-tagged snake_case response 由 `sessionCommands.submitTranscriptCommand` 校验并投影为 `TranscriptSubmissionResultView`（`kind`、`sessionId`、`messageId`）；submit coordinator 只消费该 renderer view，不直接读取 generated wire union（ADR 1059）。
 - **Rust-owned Settings snapshot 是边界例外**：`get_settings` / `update_settings` 透传同一全量 `Settings` shape，UI 的 Settings parser、编辑态和保存 payload 保留 Rust-owned snake_case 字段；不为局部 camelCase 改名而重建或复制完整配置结构。只有 Rust 与 UI 同时迁移到新的显式 DTO/mapper 后，才可更改此契约（ADR 0341）。
 - **Reactive / 数据字段**（如 DB 行字段、测试 fixture）允许保留后端 snake_case，不强行改前端内部就 camelCase 化。
 - 不要在调用链深处出现重复的手工 snake↔camel 转换；将来集中收敛到命令/事件封装层。

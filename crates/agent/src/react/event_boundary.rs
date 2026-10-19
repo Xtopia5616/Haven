@@ -313,7 +313,7 @@ impl ReActEngine {
                 status_label
             );
             if let Some(step) = branch_point_step {
-                self.save_branch_point(session_id, state, step).await?;
+                self.persist_branch_point(session_id, state, step).await?;
             }
             if !self
                 .ensure_event_boundary(session_id, state, boundary_step)
@@ -730,7 +730,7 @@ impl ReActEngine {
         // rows while preserving the durable events that precede the failed call.
         // The failed LLM response was never appended, so replay retries cleanly.
         let branch_point = self
-            .save_branch_point(&ctx.session_id, state, ctx.step_number)
+            .persist_branch_point(&ctx.session_id, state, ctx.step_number)
             .await
             .is_ok();
 
@@ -927,7 +927,7 @@ impl ReActEngine {
     ///
     /// Append the durable branch marker before updating the actor's cache.
     /// The event cursor and message cutoff are captured on every call.
-    pub(super) async fn save_branch_point(
+    pub(super) async fn persist_branch_point(
         &self,
         session_id: &str,
         state: &mut ReActState,

@@ -66,7 +66,7 @@ export interface MetricsSnapshot { phases: PhaseSnapshot[]; counters: CounterSna
 export interface PhaseSnapshot { count: number; total_ms: number; p50_ms: number; p95_ms: number }
 export interface UiMetricsSnapshotInput { frames: number; chunks: number; drops: number }
 export interface UiMetricsSnapshot { frames: number; chunks: number; drops: number }
-export type ProcessResult = { 'SessionCreated': { session_id: string; message_id?: string | null } } | { 'Supplemented': { session_id: string; message_id?: string | null } };
+export type TranscriptSubmissionResult = { 'SessionCreated': { session_id: string; message_id?: string | null } } | { 'Supplemented': { session_id: string; message_id?: string | null } };
 export const BOOTSTRAP_STATUS_VALUES = ['loading', 'ready'] as const;
 export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];
 export interface LoginStart { loginId: string; authorizationUrl: string; accountEmail: string | null; planUsageEnabled: boolean }
@@ -6436,50 +6436,6 @@ export const OPEN_EXTERNAL_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const OPEN_SKILLS_DIR_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const PICK_EXECUTION_WORKSPACE_DIRECTORY_RESPONSE_SHAPE = { kind: 'nullable', inner: { kind: 'string' } } as const;
 export const PICK_SANDBOX_OUTPUT_DESTINATION_RESPONSE_SHAPE = { kind: 'nullable', inner: { kind: 'string' } } as const;
-export const PROCESS_TRANSCRIPT_RESPONSE_SHAPE = { kind: 'union', anyOf: [
-	{
-		kind: 'object',
-		fields: {
-			'SessionCreated': {
-				optional: false,
-				shape: {
-					kind: 'object',
-					fields: {
-						'session_id': {
-							optional: false,
-							shape: { kind: 'string' },
-						},
-						'message_id': {
-							optional: true,
-							shape: { kind: 'string' },
-						}
-					}
-				},
-			}
-		}
-	},
-	{
-		kind: 'object',
-		fields: {
-			'Supplemented': {
-				optional: false,
-				shape: {
-					kind: 'object',
-					fields: {
-						'session_id': {
-							optional: false,
-							shape: { kind: 'string' },
-						},
-						'message_id': {
-							optional: true,
-							shape: { kind: 'string' },
-						}
-					}
-				},
-			}
-		}
-	}
-] } as const;
 export const PROMOTE_SANDBOX_OUTPUT_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const READ_LOG_TAIL_RESPONSE_SHAPE = {
 	kind: 'object',
@@ -10000,6 +9956,50 @@ export const START_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE = {
 } as const;
 export const START_RECORDING_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const STOP_RECORDING_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const SUBMIT_TRANSCRIPT_RESPONSE_SHAPE = { kind: 'union', anyOf: [
+	{
+		kind: 'object',
+		fields: {
+			'SessionCreated': {
+				optional: false,
+				shape: {
+					kind: 'object',
+					fields: {
+						'session_id': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'message_id': {
+							optional: true,
+							shape: { kind: 'string' },
+						}
+					}
+				},
+			}
+		}
+	},
+	{
+		kind: 'object',
+		fields: {
+			'Supplemented': {
+				optional: false,
+				shape: {
+					kind: 'object',
+					fields: {
+						'session_id': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'message_id': {
+							optional: true,
+							shape: { kind: 'string' },
+						}
+					}
+				},
+			}
+		}
+	}
+] } as const;
 export const SUBSCRIBE_MCP_RESOURCE_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const SWITCH_MODEL_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const TOGGLE_MCP_SERVER_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -10281,7 +10281,6 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	open_skills_dir: OPEN_SKILLS_DIR_RESPONSE_SHAPE,
 	pick_execution_workspace_directory: PICK_EXECUTION_WORKSPACE_DIRECTORY_RESPONSE_SHAPE,
 	pick_sandbox_output_destination: PICK_SANDBOX_OUTPUT_DESTINATION_RESPONSE_SHAPE,
-	process_transcript: PROCESS_TRANSCRIPT_RESPONSE_SHAPE,
 	promote_sandbox_output: PROMOTE_SANDBOX_OUTPUT_RESPONSE_SHAPE,
 	read_log_tail: READ_LOG_TAIL_RESPONSE_SHAPE,
 	read_mcp_resource: READ_MCP_RESOURCE_RESPONSE_SHAPE,
@@ -10313,6 +10312,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	start_chatgpt_plan_login: START_CHATGPT_PLAN_LOGIN_RESPONSE_SHAPE,
 	start_recording: START_RECORDING_RESPONSE_SHAPE,
 	stop_recording: STOP_RECORDING_RESPONSE_SHAPE,
+	submit_transcript: SUBMIT_TRANSCRIPT_RESPONSE_SHAPE,
 	subscribe_mcp_resource: SUBSCRIBE_MCP_RESOURCE_RESPONSE_SHAPE,
 	switch_model: SWITCH_MODEL_RESPONSE_SHAPE,
 	toggle_mcp_server: TOGGLE_MCP_SERVER_RESPONSE_SHAPE,
@@ -10462,7 +10462,6 @@ export interface TauriCommandMap {
 	open_skills_dir: { request: undefined; response: void };
 	pick_execution_workspace_directory: { request: undefined; response: string | null };
 	pick_sandbox_output_destination: { request: { suggestedName: string }; response: string | null };
-	process_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingId?: string | null; deliveryMode?: InputDeliveryModeInput | null }; response: ProcessResult };
 	promote_sandbox_output: { request: { sessionId: string; sourceStepId: string; changeIndex: number; destination: string }; response: void };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
 	read_mcp_resource: { request: { name: string; targetBinding: string; uri: string; forceRefresh: boolean }; response: McpFeatureCallOutcome };
@@ -10494,6 +10493,7 @@ export interface TauriCommandMap {
 	start_chatgpt_plan_login: { request: { providerName: string }; response: LoginStart };
 	start_recording: { request: undefined; response: void };
 	stop_recording: { request: undefined; response: void };
+	submit_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingId?: string | null; deliveryMode?: InputDeliveryModeInput | null }; response: TranscriptSubmissionResult };
 	subscribe_mcp_resource: { request: { name: string; targetBinding: string; uri: string }; response: boolean };
 	switch_model: { request: { requestKind: RequestKindInput; modelConfigId: string }; response: void };
 	toggle_mcp_server: { request: { name: string; enabled: boolean }; response: void };
@@ -10584,7 +10584,6 @@ export const TAURI_COMMAND_CONTRACTS = {
 	open_skills_dir: { boundary: 'execute', security: "AuthorizationPort; queues AppCommand confirmation; configured skills root only" },
 	pick_execution_workspace_directory: { boundary: 'read', security: "user-selected local directory candidate only; validates but grants no file access" },
 	pick_sandbox_output_destination: { boundary: 'read', security: "native save picker; returns a user-selected candidate only and grants no filesystem access" },
-	process_transcript: { boundary: 'execute', security: "attachment limits and file persistence are enforced" },
 	promote_sandbox_output: { boundary: 'execute', security: "Windows only; owner-held change index; exact session request; required one-time confirmation; current Files capability and live execution proof" },
 	read_log_tail: { boundary: 'read', security: "bounded tail; file logging must be enabled" },
 	read_mcp_resource: { boundary: 'execute', security: "explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content" },
@@ -10616,6 +10615,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	start_chatgpt_plan_login: { boundary: 'execute', security: "starts a state- and PKCE-bound loopback OAuth callback and returns only the official authorization URL" },
 	start_recording: { boundary: 'execute', security: "input pipeline owns capture lifecycle" },
 	stop_recording: { boundary: 'execute', security: "capture stops before asynchronous transcription" },
+	submit_transcript: { boundary: 'execute', security: "attachment limits and file persistence are enforced" },
 	subscribe_mcp_resource: { boundary: 'execute', security: "explicit UI selection from current resource list; enabled live target binding; bounded acknowledged subscription" },
 	switch_model: { boundary: 'mutate', security: "requestKind selects the route; modelConfigId is an assigned, capability-compatible Haven ModelConfig identity, not a Provider service model ID" },
 	toggle_mcp_server: { boundary: 'execute', security: "AuthorizationPort; typed native admin operation connects before enabling" },

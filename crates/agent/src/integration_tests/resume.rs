@@ -502,7 +502,7 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
     // Confirm has precedence when ingress freezes this route, so it is a
     // FollowUp even though an Ask is also pending.
     agent
-        .process_input(
+        .ingest_user_input(
             "accepted during confirmation",
             Some(session.session_id.clone()),
         )
@@ -1125,7 +1125,12 @@ async fn run_session_from_id_keeps_later_media_as_managed_reference() {
     // attached to the initial user turn.
     let (att, asset_dir) = managed_test_image();
     agent
-        .process_input_with_attachments("补充看图", Some(session.session_id.clone()), &[att], false)
+        .ingest_user_input_with_attachments(
+            "补充看图",
+            Some(session.session_id.clone()),
+            &[att],
+            false,
+        )
         .await
         .unwrap();
     agent

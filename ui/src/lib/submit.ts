@@ -9,9 +9,9 @@ import {
 import { newMessage } from './messageFactory.ts';
 import { newSessionIntentStore, NEW_SESSION_INTENT_STORAGE_KEY } from './sessionIntentStore.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
-import { processTranscript } from './sessionCommands.ts';
+import { submitTranscriptCommand } from './sessionCommands.ts';
 import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachmentTypes.ts';
-import type { ProcessResultView } from './contracts/processResult.ts';
+import type { TranscriptSubmissionResultView } from './contracts/transcriptSubmissionResult.ts';
 import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 
 /** True when a send should be treated as mid-turn steering (keep agent UI above it). */
@@ -60,7 +60,7 @@ function isMidTurnSubmit(sessionId: string, reducer: SessionReducer): boolean {
 interface InflightSubmission {
 	/** Explicit identity for another invocation of this same logical request. */
 	submissionToken?: string;
-	promise: Promise<ProcessResultView>;
+	promise: Promise<TranscriptSubmissionResultView>;
 }
 
 interface SubmitPayload extends SubmitOptions {
@@ -76,7 +76,7 @@ interface SubmitPayload extends SubmitOptions {
 /** A queued submission awaiting the in-flight one to settle. */
 interface PendingSubmission {
 	payload: SubmitPayload;
-	resolve: (value: ProcessResultView) => void;
+	resolve: (value: TranscriptSubmissionResultView) => void;
 	reject: (reason: unknown) => void;
 }
 
@@ -137,7 +137,7 @@ function startSubmission(lane: SubmissionLane, payload: SubmitPayload) {
 	const promise = doSubmit(payload)
 		.then((result) => {
 			if (lane.key === DRAFT_LANE_KEY && payload.pinnedSessionId == null) {
-				lane.adoptionTarget = processResultSessionId(result);
+				lane.adoptionTarget = transcriptSubmissionResultSessionId(result);
 			}
 			return result;
 		})
@@ -190,7 +190,7 @@ function drainQueue(lane: SubmissionLane) {
 
 /**
  * Deliver a user submission (typed input or voice transcript) to the
- * backend through the same `process_transcript` path so voice input
+ * backend through the same `submit_transcript` path so voice input
  * continues the currently open session instead of starting a new one.
  *
  * The optimistic message is appended first under the active session id, or
@@ -234,7 +234,7 @@ export async function submitTranscript(
 		submissionToken,
 		reducer,
 	}: SubmitOptions,
-): Promise<ProcessResultView> {
+): Promise<TranscriptSubmissionResultView> {
 	const payload: SubmitPayload = {
 		text,
 		images,
@@ -261,12 +261,12 @@ export async function submitTranscript(
 		// it — the
 		// optimistic bubble is added when it actually dispatches. Session
 		// targeting was snapshotted above so a later switch cannot retarget it.
-		return new Promise<ProcessResultView>((resolve, reject) => {
+		return new Promise<TranscriptSubmissionResultView>((resolve, reject) => {
 			lane.pendingQueue.push({ payload, resolve, reject });
 		});
 	}
 	if (lane.pendingQueue.length > 0) {
-		return new Promise<ProcessResultView>((resolve, reject) => {
+		return new Promise<TranscriptSubmissionResultView>((resolve, reject) => {
 			lane.pendingQueue.push({ payload, resolve, reject });
 		});
 	}
@@ -284,7 +284,7 @@ async function doSubmit({
 	freshStartAtEnqueue,
 	userSelectionVersion,
 	reducer,
-}: SubmitPayload): Promise<ProcessResultView> {
+}: SubmitPayload): Promise<TranscriptSubmissionResultView> {
 	const hasImages = Array.isArray(images) && images.length > 0;
 	const hasFiles = Array.isArray(files) && files.length > 0;
 	const hasAttachments = hasImages || hasFiles;
@@ -322,9 +322,9 @@ async function doSubmit({
 			...(recordingId ? { recordingId } : {}),
 			...(deliveryMode ? { deliveryMode } : {}),
 		};
-		const result = await processTranscript(request);
-		const createdId = processResultSessionId(result);
-		const dbMessageId = processResultMessageId(result);
+		const result = await submitTranscriptCommand(request);
+		const createdId = transcriptSubmissionResultSessionId(result);
+		const dbMessageId = transcriptSubmissionResultMessageId(result);
 		// Prefer the destination session after a SessionCreated migrate so the
 		// id rewrite lands on the bubble that was just moved.
 		let targetSessionId = sessionId;
@@ -371,8 +371,8 @@ async function doSubmit({
 }
 
 /** Session created by this submission, if it was a fresh-session result. */
-export function processResultSessionId(
-	result: ProcessResultView | null | undefined,
+export function transcriptSubmissionResultSessionId(
+	result: TranscriptSubmissionResultView | null | undefined,
 ): string | null {
 	if (result?.kind !== 'session_created') return null;
 	const sessionId = result.sessionId;
@@ -380,9 +380,9 @@ export function processResultSessionId(
 	return null;
 }
 
-/** Persisted user-message id from either ProcessResult variant. */
-export function processResultMessageId(
-	result: ProcessResultView | null | undefined,
+/** Persisted user-message id from either TranscriptSubmissionResult variant. */
+export function transcriptSubmissionResultMessageId(
+	result: TranscriptSubmissionResultView | null | undefined,
 ): string | null {
 	const messageId = result?.messageId;
 	return isCanonicalEntityId(messageId, 'msg') ? messageId : null;

@@ -379,26 +379,6 @@ impl Database {
         )
     }
 
-    /// Complete an action step by recording its observation.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn complete_tool_step(
-        &self,
-        step_id: &str,
-        observation: &str,
-        success: bool,
-    ) -> anyhow::Result<()> {
-        self.finish_tool_step(
-            step_id,
-            observation,
-            if success {
-                ToolStepOutcome::Completed
-            } else {
-                ToolStepOutcome::Failed
-            },
-        )?;
-        Ok(())
-    }
-
     /// Mark a pending action as running. The update is idempotent for an
     /// already-running row and refuses to revive a terminal row.
     pub fn start_tool_step(&self, step_id: &str) -> anyhow::Result<bool> {
@@ -722,14 +702,18 @@ mod tests {
     }
 
     #[test]
-    fn complete_tool_step_sets_observation() {
+    fn finish_tool_step_records_observation() {
         let db = test_db();
         let session_id = seed_session(&db);
         let step = db
             .create_tool_step(&session_id, 0, "read_file", "{}", false, false, None, None)
             .unwrap();
-        db.complete_tool_step(&step.step_id, "file content here", true)
-            .unwrap();
+        db.finish_tool_step(
+            &step.step_id,
+            "file content here",
+            ToolStepOutcome::Completed,
+        )
+        .unwrap();
         let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps[0].observation.as_deref(), Some("file content here"));
         assert_eq!(steps[0].status, SessionStepStatus::Completed);
@@ -833,7 +817,8 @@ mod tests {
         let done = db
             .create_tool_step(&session_id, 1, "shell", "{}", false, false, None, None)
             .unwrap();
-        db.complete_tool_step(&done.step_id, "ok", true).unwrap();
+        db.finish_tool_step(&done.step_id, "ok", ToolStepOutcome::Completed)
+            .unwrap();
         let n = db
             .fail_pending_tool_run_steps(&session_id, "Session ended before tool finished")
             .unwrap();

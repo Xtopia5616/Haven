@@ -19,7 +19,7 @@ pub use recall::{
     MemoryRecallSourceStatus, MemoryRecallSuggestion, normalize_memory_query,
 };
 pub use repositories::embedding_store::{
-    MemoryEmbeddingSaveFailure, MemoryEmbeddingSaveReport, MemoryEmbeddingStore,
+    MemoryEmbeddingPersistFailure, MemoryEmbeddingPersistReport, MemoryEmbeddingStore,
     MemoryEmbeddingVector, PendingMemoryEmbedding,
 };
 pub use repositories::fact_store::{

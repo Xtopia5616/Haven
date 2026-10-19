@@ -5,7 +5,7 @@ import {
 } from './chatSessionController.ts';
 import type { InteractionRequest } from './contracts/app.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
-import type { ProcessResultView } from './contracts/processResult.ts';
+import type { TranscriptSubmissionResultView } from './contracts/transcriptSubmissionResult.ts';
 import type { CanonicalRole } from './contracts/generatedCommands.ts';
 import type { SessionResumeResponse } from './contracts/sessionHistory.ts';
 import type { SessionMessagePresentationType } from './streaming.ts';
@@ -34,7 +34,7 @@ function makeHarness(
 		submit?: (
 			text: string,
 			args: Parameters<ChatSessionControllerDependencies['submitTranscript']>[1],
-		) => ProcessResultView | Promise<ProcessResultView>;
+		) => TranscriptSubmissionResultView | Promise<TranscriptSubmissionResultView>;
 	} = {},
 ) {
 	const reducer = new SessionReducer();
@@ -467,7 +467,7 @@ describe('ChatSessionController session guards', () => {
 	});
 
 	it('does not let an older pending submit override a newer session selection', async () => {
-		let resolveSubmit!: (result: ProcessResultView) => void;
+		let resolveSubmit!: (result: TranscriptSubmissionResultView) => void;
 		const harness = makeHarness({
 			submit: () =>
 				new Promise((resolve) => {

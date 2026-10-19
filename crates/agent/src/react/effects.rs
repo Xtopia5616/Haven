@@ -296,7 +296,7 @@ async fn apply_committed_directive(
         TurnDirective::TurnEnd { step_number } => {
             if engine.inject_turn_end_context(ctx, state).await? {
                 engine
-                    .save_branch_point(&ctx.session_id, state, step_number)
+                    .persist_branch_point(&ctx.session_id, state, step_number)
                     .await?;
                 return Ok(RunControl::Continue);
             }
@@ -355,7 +355,7 @@ async fn apply_projection_effect(
         }
         TurnEffect::SaveBranchPoint { step_number } => {
             engine
-                .save_branch_point(&ctx.session_id, state, step_number)
+                .persist_branch_point(&ctx.session_id, state, step_number)
                 .await?;
         }
         TurnEffect::Emit(event) => ctx.emitter.emit(event).await,

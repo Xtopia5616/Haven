@@ -91,14 +91,14 @@ impl<'a> MemoryMaintenancePass<'a> {
         // the same pass.
         let contradictions = self
             .maintenance_store
-            .resolve_contradictions(cancellation)
+            .demote_obvious_contradictions(cancellation)
             .await;
         ensure_memory_maintenance_active(cancellation)?;
         match contradictions {
             Ok(count) => {
                 if count > 0 {
                     tracing::info!(
-                        "memory maintenance: resolved {} contradictory fact(s)",
+                        "memory maintenance: demoted {} obvious contradictory fact(s)",
                         count
                     );
                 }
@@ -107,9 +107,9 @@ impl<'a> MemoryMaintenancePass<'a> {
             Err(error) => {
                 tracing::warn!(
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                    "memory maintenance: resolve_contradictions failed"
+                    "memory maintenance: demote_obvious_contradictions failed"
                 );
-                failures.push(format!("resolve_contradictions: {error}"));
+                failures.push(format!("demote_obvious_contradictions: {error}"));
             }
         }
 
@@ -191,10 +191,10 @@ impl<'a> MemoryMaintenancePass<'a> {
         // Alias merges can create new single-valued multi-object conflicts;
         // re-run the rule keeper before LLM arbitration so merge-created
         // pairs get the same user>inferred / confidence treatment.
-        let resolved_after_merge = if merged > 0 {
+        let demoted_after_merge = if merged > 0 {
             match self
                 .maintenance_store
-                .resolve_contradictions(cancellation)
+                .demote_obvious_contradictions(cancellation)
                 .await
             {
                 Ok(count) => count,
@@ -204,7 +204,7 @@ impl<'a> MemoryMaintenancePass<'a> {
                 Err(error) => {
                     tracing::warn!(
                         error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                        "memory maintenance: post-merge resolve_contradictions failed"
+                        "memory maintenance: post-merge demote_obvious_contradictions failed"
                     );
                     0
                 }
@@ -227,7 +227,7 @@ impl<'a> MemoryMaintenancePass<'a> {
         ensure_memory_maintenance_active(cancellation)?;
         Ok(cleaned
             .saturating_add(merged)
-            .saturating_add(resolved_after_merge)
+            .saturating_add(demoted_after_merge)
             .saturating_add(arbitrated))
     }
 

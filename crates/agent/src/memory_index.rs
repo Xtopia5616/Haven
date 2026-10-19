@@ -229,7 +229,7 @@ impl MemoryEmbeddingIndex {
             let row_count = vectors.len();
             match self
                 .store
-                .save_batch(identity.storage_model.clone(), vectors)
+                .persist_batch(identity.storage_model.clone(), vectors)
                 .await
             {
                 Ok(report) => {
@@ -238,7 +238,7 @@ impl MemoryEmbeddingIndex {
                             entity_type = failure.entity.entity_type(),
                             entity_id = %failure.entity_id,
                             error = %haven_common::error::sanitize_error_text(&failure.error),
-                            "save_embedding failed"
+                            "persist_embedding failed"
                         );
                     }
                     if !report.failures.is_empty() {
@@ -427,7 +427,7 @@ mod tests {
         let fact = db
             .insert_fact("user", "likes", "Rust", "inferred", 0.8, &[])
             .unwrap();
-        db.save_embedding(
+        db.persist_embedding(
             haven_memory::MemoryEntityKind::Fact.entity_type(),
             &fact.fact_id,
             "previous-vector-space",

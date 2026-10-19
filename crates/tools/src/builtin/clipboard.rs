@@ -415,7 +415,7 @@ impl ClipboardTool {
                         let registry = self.managed_assets.clone();
                         let cancel_for_save = cancel.clone();
                         let asset = tokio::task::spawn_blocking(move || {
-                            save_image_asset(&registry, &write_guard, image, &cancel_for_save)
+                            persist_image_asset(&registry, &write_guard, image, &cancel_for_save)
                         })
                         .await??;
                         Ok(ToolResult::ok(serde_json::json!({
@@ -693,7 +693,7 @@ fn write_text_clipboard(text: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn save_image_asset(
+fn persist_image_asset(
     registry: &ManagedAssetRegistry,
     _write_guard: &GeneratedMediaWriteGuard,
     image: arboard::ImageData<'static>,

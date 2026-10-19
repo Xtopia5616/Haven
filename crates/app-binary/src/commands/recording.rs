@@ -125,7 +125,7 @@ pub(crate) fn emit_recording_error(
 ///
 /// The transcript is **not** submitted to the agent here: the frontend
 /// listens for `transcription:result` and delivers the text through the same
-/// `process_transcript` path as a typed message, so voice input continues the
+/// `submit_transcript` path as a typed message, so voice input continues the
 /// currently open session instead of always starting a new one.
 pub(crate) async fn finalize_transcription(
     state: &Arc<AppState>,
@@ -598,7 +598,7 @@ pub async fn cancel_recording(
 }
 
 #[tauri::command]
-pub async fn process_transcript(
+pub async fn submit_transcript(
     state: State<'_, Arc<AppState>>,
     transcript: String,
     active_session_id: Option<String>,
@@ -606,25 +606,25 @@ pub async fn process_transcript(
     voice: Option<bool>,
     recording_id: Option<String>,
     delivery_mode: Option<haven_common::types::InputDeliveryMode>,
-) -> Result<haven_agent::ProcessResult, String> {
+) -> Result<haven_agent::TranscriptSubmissionResult, String> {
     if let Some(session_id) = active_session_id.as_deref() {
         validate_command_id(session_id, "active_session_id", "ses")
-            .map_err(|error| log_err("process_transcript", error))?;
+            .map_err(|error| log_err("submit_transcript", error))?;
     }
     if let Some(recording_id) = recording_id.as_deref() {
         validate_command_id(recording_id, "recording_id", "rec")
-            .map_err(|error| log_err("process_transcript", error))?;
+            .map_err(|error| log_err("submit_transcript", error))?;
     }
     let limits = state
         .runtime
         .config_service
         .snapshot()
-        .map_err(|e| log_err("process_transcript", e))?
+        .map_err(|e| log_err("submit_transcript", e))?
         .config
         .context_limits
         .clone();
     let attachments = validate_attachments(attachments.unwrap_or_default(), &limits)
-        .map_err(|e| log_err("process_transcript", e))?;
+        .map_err(|e| log_err("submit_transcript", e))?;
     let assets = Arc::clone(&state.runtime.services.managed_assets);
     let attachments = crate::commands::managed_media::persist_file_attachments(
         attachments,
@@ -633,19 +633,19 @@ pub async fn process_transcript(
         active_session_id.clone(),
     )
     .await
-    .map_err(|e| log_err("process_transcript", e))?;
+    .map_err(|e| log_err("submit_transcript", e))?;
     let voice = voice.unwrap_or(false);
     tracing::debug!(
         transcript_chars = transcript.chars().count(),
         active_session_id = active_session_id.as_deref().unwrap_or("new"),
         attachments = attachments.len(),
         voice,
-        "process_transcript called"
+        "submit_transcript called"
     );
     let result = match state
         .runtime
         .agent
-        .process_input_with_delivery(
+        .ingest_user_input_with_delivery(
             &transcript,
             active_session_id.clone(),
             &attachments,
@@ -662,23 +662,26 @@ pub async fn process_transcript(
                     .tools
                     .release_pending_managed_assets(&attachments);
             }
-            return Err(log_storage_err("process_transcript", error));
+            return Err(log_storage_err("submit_transcript", error));
         }
     };
     match (&result, active_session_id.as_deref()) {
-        (haven_agent::ProcessResult::SessionCreated { session_id, .. }, Some(previous_id)) => {
+        (
+            haven_agent::TranscriptSubmissionResult::SessionCreated { session_id, .. },
+            Some(previous_id),
+        ) => {
             state.runtime.tools.transfer_managed_assets_to_session(
                 previous_id,
                 session_id,
                 &attachments,
             );
         }
-        (haven_agent::ProcessResult::SessionCreated { session_id, .. }, None) => state
+        (haven_agent::TranscriptSubmissionResult::SessionCreated { session_id, .. }, None) => state
             .runtime
             .tools
             .bind_pending_managed_assets_to_session(session_id, &attachments),
-        (haven_agent::ProcessResult::Supplemented { .. }, Some(_)) => {}
-        (haven_agent::ProcessResult::Supplemented { .. }, None) => {
+        (haven_agent::TranscriptSubmissionResult::Supplemented { .. }, Some(_)) => {}
+        (haven_agent::TranscriptSubmissionResult::Supplemented { .. }, None) => {
             state
                 .runtime
                 .tools
@@ -697,7 +700,7 @@ pub async fn process_transcript(
         // disappears, so prefer the actual SessionCreated owner when one is
         // returned. The recording's `rec-*` id never becomes a DB session id.
         let target_session_id = match &result {
-            haven_agent::ProcessResult::SessionCreated { session_id, .. } => {
+            haven_agent::TranscriptSubmissionResult::SessionCreated { session_id, .. } => {
                 Some(session_id.as_str())
             }
             _ => active_session_id.as_deref(),
@@ -716,15 +719,15 @@ pub async fn process_transcript(
         }
     }
     match &result {
-        haven_agent::ProcessResult::SessionCreated { session_id, .. } => {
+        haven_agent::TranscriptSubmissionResult::SessionCreated { session_id, .. } => {
             tracing::debug!(
                 session_id,
                 outcome = "session_created",
-                "process_transcript completed"
+                "submit_transcript completed"
             );
         }
-        haven_agent::ProcessResult::Supplemented { .. } => {
-            tracing::debug!(outcome = "supplemented", "process_transcript completed");
+        haven_agent::TranscriptSubmissionResult::Supplemented { .. } => {
+            tracing::debug!(outcome = "supplemented", "submit_transcript completed");
         }
     }
     Ok(result)

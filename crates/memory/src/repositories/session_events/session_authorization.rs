@@ -7,7 +7,7 @@ impl SessionStore {
     /// Persist one session-scoped authorization decision. This typed session
     /// boundary ensures grants share the session row's deletion and retention
     /// lifecycle rather than becoming global config.
-    pub async fn save_session_authorization_grant(
+    pub async fn persist_session_authorization_grant(
         &self,
         session_id: &str,
         grant: SessionAuthorizationGrant,
@@ -15,7 +15,7 @@ impl SessionStore {
         ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
-            .run_blocking(move |db| db.save_session_authorization_grant(&session_id, &grant))
+            .run_blocking(move |db| db.persist_session_authorization_grant(&session_id, &grant))
             .await
     }
 

@@ -73,7 +73,7 @@ use haven_llm::LlmRouter;
 use haven_memory::Database;
 #[cfg(test)]
 pub(crate) use react::ParsedAgentResponse;
-pub use types::ProcessResult;
+pub use types::TranscriptSubmissionResult;
 #[cfg(test)]
 pub(crate) use types::{
     AgentToolCall, BranchPoint, TranscriptRecord, project_transcript, seed_events_from_canonical,

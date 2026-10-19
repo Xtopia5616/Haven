@@ -1,38 +1,38 @@
-//! User-turn ingress for [`AgentLayer`]: `process_input` routing (D1),
+//! User-turn ingress for [`AgentLayer`]: `ingest_user_input` routing (D1),
 //! attachment persistence and user-turn routing.
 //!
 //! Split out of `layer.rs` so the facade stays focused on wiring; these
 //! methods operate on the same fields via `impl AgentLayer` blocks.
 
 use crate::AgentLayer;
-use crate::types::ProcessResult;
+use crate::types::TranscriptSubmissionResult;
 use haven_common::lifecycle::SessionStatus;
 use haven_common::types::MessageAttachment;
 
 impl AgentLayer {
-    pub async fn process_input(
+    pub async fn ingest_user_input(
         &self,
         transcript: &str,
         active_session_id: Option<String>,
-    ) -> anyhow::Result<ProcessResult> {
-        self.process_input_with_attachments(transcript, active_session_id, &[], false)
+    ) -> anyhow::Result<TranscriptSubmissionResult> {
+        self.ingest_user_input_with_attachments(transcript, active_session_id, &[], false)
             .await
     }
 
-    /// Like `process_input`, but attaches binary payloads (images and
+    /// Like `ingest_user_input`, but attaches binary payloads (images and
     /// user-uploaded files) to the user message. Attachments are persisted
     /// with the message; images are injected into the ReAct context as image
     /// parts, while file attachments (which carry a `path`) surface as a text
     /// reference the agent resolves with the file tool. `voice` marks messages
     /// transcribed from audio so the UI can keep the mic style across reloads.
-    pub async fn process_input_with_attachments(
+    pub async fn ingest_user_input_with_attachments(
         &self,
         transcript: &str,
         active_session_id: Option<String>,
         attachments: &[MessageAttachment],
         voice: bool,
-    ) -> anyhow::Result<ProcessResult> {
-        self.process_input_with_delivery(
+    ) -> anyhow::Result<TranscriptSubmissionResult> {
+        self.ingest_user_input_with_delivery(
             transcript,
             active_session_id,
             attachments,
@@ -43,14 +43,14 @@ impl AgentLayer {
     }
 
     /// Freeze explicit steering/follow-up intent before enqueue.
-    pub async fn process_input_with_delivery(
+    pub async fn ingest_user_input_with_delivery(
         &self,
         transcript: &str,
         active_session_id: Option<String>,
         attachments: &[MessageAttachment],
         voice: bool,
         delivery_mode: haven_common::types::InputDeliveryMode,
-    ) -> anyhow::Result<ProcessResult> {
+    ) -> anyhow::Result<TranscriptSubmissionResult> {
         use haven_common::types::InputDeliveryMode;
         use haven_memory::PendingInputDisposition;
         tracing::debug!(
@@ -58,7 +58,7 @@ impl AgentLayer {
             transcript_bytes = transcript.len(),
             attachments = attachments.len(),
             voice,
-            "process_input"
+            "ingest_user_input"
         );
 
         // For an existing session, keep the lifecycle gate for the whole
@@ -153,7 +153,7 @@ impl AgentLayer {
                     Ok(()) => true,
                     Err(e) => {
                         tracing::warn!(
-                            "process_input: steering failed for session {} ({}); falling back to supplement path",
+                            "ingest_user_input: steering failed for session {} ({}); falling back to supplement path",
                             session_id,
                             e
                         );
@@ -207,7 +207,7 @@ impl AgentLayer {
                         self.events
                             .emit_session_created(&created_session.session)
                             .await;
-                        return Ok(ProcessResult::session_created(
+                        return Ok(TranscriptSubmissionResult::session_created(
                             created_session.session.session_id,
                             Some(created_session.first_user_message_id),
                         ));
@@ -226,7 +226,7 @@ impl AgentLayer {
                         .is_some_and(|status| status.is_terminal())
                     {
                         tracing::warn!(
-                            "process_input: session {} is terminal ({:?}) despite active_session_id; dropping supplement to avoid resurrection",
+                            "ingest_user_input: session {} is terminal ({:?}) despite active_session_id; dropping supplement to avoid resurrection",
                             session_id,
                             fresh_state
                         );
@@ -246,7 +246,7 @@ impl AgentLayer {
                                 message_id = %message_id,
                                 session_id = %tid,
                                 error = %haven_common::error::sanitize_error_text(&e.to_string()),
-                                "process_input: failed to remove ghost user message"
+                                "ingest_user_input: failed to remove ghost user message"
                                     );
                                 if let Err(marker_error) = self
                                     .executor
@@ -258,7 +258,7 @@ impl AgentLayer {
                                     message_id = %message_id,
                                     session_id = %tid,
                                     error = %haven_common::error::sanitize_error_text(&marker_error.to_string()),
-                                    "process_input: failed to clear recovery marker for rejected user message"
+                                    "ingest_user_input: failed to clear recovery marker for rejected user message"
                                     );
                                 }
                             }
@@ -274,7 +274,10 @@ impl AgentLayer {
                         // set — it was ended and should not be dispatchable.
                         drop(lifecycle);
                         self.executor.remove_session(session_id).await?;
-                        return Ok(ProcessResult::supplemented(session_id.clone(), None));
+                        return Ok(TranscriptSubmissionResult::supplemented(
+                            session_id.clone(),
+                            None,
+                        ));
                     } else {
                         if is_steering {
                             self.executor
@@ -323,7 +326,10 @@ impl AgentLayer {
                             .await?;
                         }
                     }
-                    return Ok(ProcessResult::supplemented(session_id.clone(), message_id));
+                    return Ok(TranscriptSubmissionResult::supplemented(
+                        session_id.clone(),
+                        message_id,
+                    ));
                 }
             }
             let confirm_blocked = self
@@ -341,7 +347,7 @@ impl AgentLayer {
                 )
                 .await?;
             }
-            Ok(ProcessResult::supplemented(
+            Ok(TranscriptSubmissionResult::supplemented(
                 session_id.clone(),
                 persisted_msg.as_ref().map(|m| m.message_id.clone()),
             ))
@@ -350,13 +356,13 @@ impl AgentLayer {
                 .create_session_with_first_message(transcript, attachments, voice)
                 .await?;
             tracing::info!(
-                "process_input created session: id={:?}",
+                "ingest_user_input created session: id={:?}",
                 created_session.session.session_id
             );
             self.events
                 .emit_session_created(&created_session.session)
                 .await;
-            Ok(ProcessResult::session_created(
+            Ok(TranscriptSubmissionResult::session_created(
                 created_session.session.session_id,
                 Some(created_session.first_user_message_id),
             ))

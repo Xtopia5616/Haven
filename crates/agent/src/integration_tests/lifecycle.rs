@@ -454,7 +454,7 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
     let tool_run_id = "toolrun-00000000000000000000000000000002";
     agent
         .db
-        .save_tool_run(
+        .persist_tool_run(
             tool_run_id,
             Some(&session.session_id),
             "echo race",
@@ -553,7 +553,7 @@ async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
     let tool_run_id = "toolrun-00000000000000000000000000000003";
     agent
         .db
-        .save_tool_run(tool_run_id, None, "echo unowned", "2026-09-24T10:00:00Z")
+        .persist_tool_run(tool_run_id, None, "echo unowned", "2026-09-24T10:00:00Z")
         .unwrap();
     agent
         .db
@@ -743,7 +743,7 @@ fn parse_default_model_response_final_answer_tool_call() {
 /// Terminal sessions are only reactivated explicitly via `reopen_session`
 /// (Completed/Error ??Paused) in the resume flow.
 #[tokio::test]
-async fn process_input_does_not_resurrect_ended_session() {
+async fn ingest_user_input_does_not_resurrect_ended_session() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("original").await.unwrap();
     executor.end_session(&session.session_id).await.unwrap();
@@ -756,10 +756,13 @@ async fn process_input_does_not_resurrect_ended_session() {
     );
 
     let result = agent
-        .process_input("more context", Some(session.session_id.clone()))
+        .ingest_user_input("more context", Some(session.session_id.clone()))
         .await
         .unwrap();
-    assert!(matches!(result, ProcessResult::Supplemented { .. }));
+    assert!(matches!(
+        result,
+        TranscriptSubmissionResult::Supplemented { .. }
+    ));
     // Session is not reloaded into the working set and never becomes Pending.
     assert_eq!(
         executor
@@ -777,7 +780,7 @@ async fn process_input_does_not_resurrect_ended_session() {
 }
 
 #[tokio::test]
-async fn process_input_deletes_terminal_ghost_message_through_session_store() {
+async fn ingest_user_input_deletes_terminal_ghost_message_through_session_store() {
     let (agent, executor, db) = make_in_memory_agent();
     let session = executor.create_session("original").await.unwrap();
     executor.end_session(&session.session_id).await.unwrap();
@@ -790,13 +793,13 @@ async fn process_input_deletes_terminal_ghost_message_through_session_store() {
         .await;
 
     let result = agent
-        .process_input("more context", Some(session.session_id.clone()))
+        .ingest_user_input("more context", Some(session.session_id.clone()))
         .await
         .unwrap();
 
     assert_eq!(
         result,
-        ProcessResult::Supplemented {
+        TranscriptSubmissionResult::Supplemented {
             session_id: session.session_id.clone(),
             message_id: None,
         }
@@ -818,7 +821,7 @@ async fn process_input_deletes_terminal_ghost_message_through_session_store() {
 }
 
 #[tokio::test]
-async fn process_input_continues_when_terminal_ghost_delete_fails() {
+async fn ingest_user_input_continues_when_terminal_ghost_delete_fails() {
     let (agent, executor, db) = make_in_memory_agent();
     let session = executor.create_session("original").await.unwrap();
     executor.end_session(&session.session_id).await.unwrap();
@@ -841,13 +844,13 @@ async fn process_input_continues_when_terminal_ghost_delete_fails() {
         .await;
 
     let result = agent
-        .process_input("more context", Some(session.session_id.clone()))
+        .ingest_user_input("more context", Some(session.session_id.clone()))
         .await
         .unwrap();
 
     assert_eq!(
         result,
-        ProcessResult::Supplemented {
+        TranscriptSubmissionResult::Supplemented {
             session_id: session.session_id.clone(),
             message_id: None,
         }
@@ -877,7 +880,7 @@ async fn process_input_continues_when_terminal_ghost_delete_fails() {
 }
 
 #[tokio::test]
-async fn process_input_reactivates_paused_session() {
+async fn ingest_user_input_reactivates_paused_session() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("original").await.unwrap();
     executor
@@ -886,10 +889,13 @@ async fn process_input_reactivates_paused_session() {
         .unwrap();
 
     let result = agent
-        .process_input("more context", Some(session.session_id.clone()))
+        .ingest_user_input("more context", Some(session.session_id.clone()))
         .await
         .unwrap();
-    assert!(matches!(result, ProcessResult::Supplemented { .. }));
+    assert!(matches!(
+        result,
+        TranscriptSubmissionResult::Supplemented { .. }
+    ));
     assert_eq!(
         executor
             .get_active_session_status(&session.session_id)
@@ -907,7 +913,7 @@ async fn process_input_reactivates_paused_session() {
 }
 
 #[tokio::test]
-async fn process_input_reserves_one_ask_answer_until_user_inject() {
+async fn ingest_user_input_reserves_one_ask_answer_until_user_inject() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("original").await.unwrap();
     executor
@@ -923,16 +929,19 @@ async fn process_input_reserves_one_ask_answer_until_user_inject() {
         .await
         .unwrap();
     let result = agent
-        .process_input("the answer", Some(session.session_id.clone()))
+        .ingest_user_input("the answer", Some(session.session_id.clone()))
         .await
         .unwrap();
-    assert!(matches!(result, ProcessResult::Supplemented { .. }));
+    assert!(matches!(
+        result,
+        TranscriptSubmissionResult::Supplemented { .. }
+    ));
 
     // The Ask gate remains pending until UserInject commits. A second input
     // received before that acknowledgement is a follow-up, even though the
     // interaction registry still contains the Ask.
     agent
-        .process_input("later input", Some(session.session_id.clone()))
+        .ingest_user_input("later input", Some(session.session_id.clone()))
         .await
         .unwrap();
     assert_eq!(
@@ -986,7 +995,7 @@ async fn process_input_reserves_one_ask_answer_until_user_inject() {
 }
 
 #[tokio::test]
-async fn process_input_paused_without_ask_is_plain_supplement() {
+async fn ingest_user_input_paused_without_ask_is_plain_supplement() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("original").await.unwrap();
     executor
@@ -995,10 +1004,13 @@ async fn process_input_paused_without_ask_is_plain_supplement() {
         .unwrap();
 
     let result = agent
-        .process_input("follow up", Some(session.session_id.clone()))
+        .ingest_user_input("follow up", Some(session.session_id.clone()))
         .await
         .unwrap();
-    assert!(matches!(result, ProcessResult::Supplemented { .. }));
+    assert!(matches!(
+        result,
+        TranscriptSubmissionResult::Supplemented { .. }
+    ));
     let supps = executor
         .drain_react_context(&session.session_id)
         .await
@@ -1011,7 +1023,7 @@ async fn process_input_paused_without_ask_is_plain_supplement() {
 }
 
 #[tokio::test]
-async fn process_input_with_attachments_queues_and_persists_attachments() {
+async fn ingest_user_input_with_attachments_queues_and_persists_attachments() {
     let (agent, executor) = make_test_agent();
     let session = executor
         .create_session_with_summary("original", "original")
@@ -1024,7 +1036,7 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
 
     let att = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
     let result = agent
-        .process_input_with_attachments(
+        .ingest_user_input_with_attachments(
             "看图",
             Some(session.session_id.clone()),
             std::slice::from_ref(&att),
@@ -1032,7 +1044,10 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
         )
         .await
         .unwrap();
-    assert!(matches!(result, ProcessResult::Supplemented { .. }));
+    assert!(matches!(
+        result,
+        TranscriptSubmissionResult::Supplemented { .. }
+    ));
     assert_eq!(
         executor
             .get_active_session_status(&session.session_id)
@@ -1066,11 +1081,11 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
 }
 
 #[tokio::test]
-async fn process_input_creates_new_session() {
+async fn ingest_user_input_creates_new_session() {
     let (agent, executor) = make_test_agent();
-    let result = agent.process_input("open notepad", None).await.unwrap();
+    let result = agent.ingest_user_input("open notepad", None).await.unwrap();
     match result {
-        ProcessResult::SessionCreated {
+        TranscriptSubmissionResult::SessionCreated {
             session_id,
             message_id,
         } => {
@@ -1084,7 +1099,7 @@ async fn process_input_creates_new_session() {
             let state = executor.get_active_session_status(&session_id).await;
             assert_eq!(state, Some(SessionStatus::Pending));
         }
-        ProcessResult::Supplemented { .. } => panic!("expected SessionCreated"),
+        TranscriptSubmissionResult::Supplemented { .. } => panic!("expected SessionCreated"),
     }
 }
 
@@ -1111,7 +1126,13 @@ async fn explicit_delivery_preserves_intent_across_turn_boundaries_and_recovery(
         ("adjust", InputDeliveryMode::Steering),
     ] {
         agent
-            .process_input_with_delivery(text, Some(session.session_id.clone()), &[], false, mode)
+            .ingest_user_input_with_delivery(
+                text,
+                Some(session.session_id.clone()),
+                &[],
+                false,
+                mode,
+            )
             .await
             .unwrap();
     }
@@ -1190,7 +1211,7 @@ async fn deferred_follow_up_does_not_answer_or_wake_an_ask() {
         .await
         .unwrap();
     agent
-        .process_input_with_delivery(
+        .ingest_user_input_with_delivery(
             "afterwards",
             Some(session.session_id.clone()),
             &[],
@@ -1211,7 +1232,7 @@ async fn deferred_follow_up_does_not_answer_or_wake_an_ask() {
             .await
     );
     agent
-        .process_input("answer", Some(session.session_id.clone()))
+        .ingest_user_input("answer", Some(session.session_id.clone()))
         .await
         .unwrap();
     let batch = executor

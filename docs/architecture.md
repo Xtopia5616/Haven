@@ -861,7 +861,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 ### 3.4 依赖方向的守则
 
 - `agent` 不依赖 `app-binary`；provider 不依赖业务 crate；`input` 不依赖 `agent`。
-- 两端组件（agent 与 input）的接缝（录音结果 → `process_transcript` → agent）统一在
+- 两端组件（agent 与 input）的接缝（录音结果 → `submit_transcript` → agent）统一在
   `app-binary` 编排，不通过 crate 依赖互相调用。
 
 ---

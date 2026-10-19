@@ -1164,8 +1164,12 @@ mod tests {
         let completed = db
             .create_tool_step(&session_id, 2, "shell", "{}", false, false, None, None)
             .unwrap();
-        db.complete_tool_step(&completed.step_id, "already finished", true)
-            .unwrap();
+        db.finish_tool_step(
+            &completed.step_id,
+            "already finished",
+            ToolStepOutcome::Completed,
+        )
+        .unwrap();
         let other_pending = db
             .create_tool_step(
                 &other_session.session_id,

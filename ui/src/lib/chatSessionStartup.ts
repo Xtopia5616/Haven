@@ -67,7 +67,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		}
 	}
 
-	function processResumeTarget(resumeTarget: SessionResumeTarget | null) {
+	function applyResumeTarget(resumeTarget: SessionResumeTarget | null) {
 		if (!disposed && resumeTarget?.sessionId) {
 			// An explicit history choice cancels a pending fresh-start intent.
 			dependencies.setFreshSessionIntent(false);
@@ -288,7 +288,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		hydrateFreshSessionIntent,
 		loadInitialSessions,
 		loadSessions,
-		processResumeTarget,
+		applyResumeTarget,
 		scheduleLoadSessions,
 	};
 }

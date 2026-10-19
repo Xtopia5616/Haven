@@ -649,7 +649,7 @@ async fn cleanup_cancels_durable_background_admission_without_board_entry() {
         .await;
     let session_id = "ses-a865b5f239cd7498542e1f90f3f00a37";
     let tool_run_id = haven_common::types::new_id("toolrun");
-    db.save_tool_run_with_source(
+    db.persist_tool_run_with_source(
         &tool_run_id,
         Some(session_id),
         "echo admission worker completed after caller cancellation",
@@ -784,7 +784,7 @@ async fn test_background_completion_reconciles_after_broadcast_loss() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("reconcile.db")).unwrap());
     db.create_session("durable completion").unwrap();
-    db.save_tool_run(
+    db.persist_tool_run(
         "toolrun-0000000000000000000000000000000b",
         Some("ses-fe54dfaa28bbc2e34df6b1bb5b110224"),
         "echo durable",
@@ -1183,7 +1183,7 @@ async fn delete_terminal_rejects_unknown_persisted_tool_run_kind() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let tool_run_id = haven_common::types::new_id("toolrun");
     let now = chrono::Utc::now().to_rfc3339();
-    db.save_tool_run(&tool_run_id, None, "echo terminal-test", &now)
+    db.persist_tool_run(&tool_run_id, None, "echo terminal-test", &now)
         .unwrap();
     assert!(db.cancel_background_tool_run(&tool_run_id, &now).unwrap());
     let connection = db.conn();
@@ -1221,10 +1221,10 @@ async fn clear_terminal_history_removes_only_terminal_persisted_rows() {
     let terminal_id = haven_common::types::new_id("toolrun");
     let running_id = haven_common::types::new_id("toolrun");
     let now = "2026-10-06T00:00:00Z";
-    db.save_tool_run(&terminal_id, None, "echo done", now)
+    db.persist_tool_run(&terminal_id, None, "echo done", now)
         .unwrap();
     assert!(db.cancel_background_tool_run(&terminal_id, now).unwrap());
-    db.save_tool_run(&running_id, None, "echo running", now)
+    db.persist_tool_run(&running_id, None, "echo running", now)
         .unwrap();
 
     assert_eq!(service.clear_terminal_history().await.unwrap(), 1);
@@ -1411,7 +1411,7 @@ async fn insert_running_background(
     session_id: Option<&str>,
 ) {
     let started_at = chrono::Utc::now().to_rfc3339();
-    db.save_tool_run(tool_run_id, session_id, "echo terminal-test", &started_at)
+    db.persist_tool_run(tool_run_id, session_id, "echo terminal-test", &started_at)
         .unwrap();
     service.tool_runs.write().await.insert(
         tool_run_id.to_string(),
@@ -1666,7 +1666,7 @@ async fn background_status_wait_feedback_carries_durable_provenance() {
 async fn committed_background_completion_keeps_source_step_identity() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("source.db")).unwrap());
-    db.save_tool_run_with_source(
+    db.persist_tool_run_with_source(
         "toolrun-00000000000000000000000000000005",
         Some("ses-a30354858b393b4ae5d0f5481880c3a3"),
         "echo committed",
@@ -1744,7 +1744,7 @@ async fn session_cleanup_leaves_non_owner_running_and_terminal_history_unchanged
         .await;
     let session_id = "ses-cf613f1e85e966dcae4e908f7754b2f9";
     let terminal_id = "toolrun-00000000000000000000000000000017";
-    db.save_tool_run(
+    db.persist_tool_run(
         terminal_id,
         Some(session_id),
         "echo terminal",
@@ -1778,7 +1778,7 @@ async fn session_cleanup_leaves_non_owner_running_and_terminal_history_unchanged
     );
 
     let non_owner_id = "toolrun-00000000000000000000000000000009";
-    db.save_tool_run(
+    db.persist_tool_run(
         non_owner_id,
         Some("ses-b94f7e9be86c8c5069c9e5dce8b0834b"),
         "echo other",
@@ -1832,7 +1832,7 @@ async fn test_background_registration_rollback_removes_durable_row() {
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
     let tool_run_id = haven_common::types::new_id("toolrun");
-    db.save_tool_run(
+    db.persist_tool_run(
         &tool_run_id,
         Some("ses-2bc2cb1b18f43fcb787d84f06a06a1e8"),
         "echo rollback",

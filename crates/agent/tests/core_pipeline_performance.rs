@@ -101,7 +101,7 @@ async fn tool_run_completion_outbox_latency_depth_and_throughput_profile() {
 
     let warmup_id = new_id("toolrun");
     store
-        .save_background_tool_run(
+        .persist_background_tool_run(
             warmup_id.clone(),
             Some(session_id.clone()),
             "profile warmup".into(),
@@ -127,7 +127,7 @@ async fn tool_run_completion_outbox_latency_depth_and_throughput_profile() {
     for _ in 0..SAMPLE_COUNT {
         let tool_run_id = new_id("toolrun");
         store
-            .save_background_tool_run(
+            .persist_background_tool_run(
                 tool_run_id.clone(),
                 Some(session_id.clone()),
                 "profile ToolRun".into(),

@@ -342,7 +342,7 @@ impl AgentLayer {
 
         // Multimodal: carry the first user message's image attachments into
         // the initial canonical user message so the model sees them from the
-        // first turn (they were persisted by process_input_with_attachments).
+        // first turn (they were persisted by ingest_user_input_with_attachments).
         // The FIRST user message is always the session's own input; later image
         // follow-ups are supplements (injected by the ReAct loop at step
         // start) and must NOT be attached to the initial turn or they would

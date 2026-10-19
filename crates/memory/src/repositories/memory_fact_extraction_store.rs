@@ -147,8 +147,12 @@ mod tests {
                 None,
             )
             .unwrap();
-        db.complete_tool_step(&step.step_id, "C:/Workspace/Haven", true)
-            .unwrap();
+        db.finish_tool_step(
+            &step.step_id,
+            "C:/Workspace/Haven",
+            crate::repositories::session_steps::ToolStepOutcome::Completed,
+        )
+        .unwrap();
 
         let projection = MemoryFactExtractionStore::new(db)
             .load_ordinary_projection(&session.session_id)

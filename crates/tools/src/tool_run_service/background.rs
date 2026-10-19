@@ -77,7 +77,7 @@ impl ToolRunService {
             let persisted = self
                 .spawn_owned_task(async move {
                     let result = store
-                        .save_background_tool_run_with_metadata(
+                        .persist_background_tool_run_with_metadata(
                             persist_tool_run_id,
                             persist_tool_name,
                             None,
@@ -323,7 +323,7 @@ impl ToolRunService {
             let persisted = self
                 .spawn_owned_task(async move {
                     let result = store
-                        .save_background_tool_run_with_source(
+                        .persist_background_tool_run_with_source(
                             persist_tool_run_id,
                             persist_session_id,
                             persist_command,

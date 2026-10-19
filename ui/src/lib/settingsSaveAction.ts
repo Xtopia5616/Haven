@@ -1,7 +1,7 @@
 export type SettingsSaveAction = 'loading' | 'empty' | 'save';
 
-/** Resolve the user-visible action for the settings save affordance. */
-export function resolveSettingsSaveAction(
+/** Select the user-visible action for the settings save affordance. */
+export function selectSettingsSaveAction(
 	settingsLoaded: boolean,
 	settingsDirty: boolean,
 ): SettingsSaveAction {

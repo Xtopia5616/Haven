@@ -671,11 +671,11 @@ pub struct AgentToolCall {
     pub tool_call_id: Option<String>,
 }
 
-/// Result of [`crate::AgentLayer::process_input`]. Carries the persisted
+/// Result of [`crate::AgentLayer::ingest_user_input`]. Carries the persisted
 /// user-message id so the UI can replace its optimistic temp id with the
 /// canonical `msg-*` without content/timestamp guessing.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ProcessResult {
+pub enum TranscriptSubmissionResult {
     SessionCreated {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -688,7 +688,7 @@ pub enum ProcessResult {
     },
 }
 
-impl ProcessResult {
+impl TranscriptSubmissionResult {
     pub fn session_created(session_id: impl Into<String>, message_id: Option<String>) -> Self {
         Self::SessionCreated {
             session_id: session_id.into(),
@@ -1182,21 +1182,24 @@ mod tests {
     }
 
     #[test]
-    fn process_result_variants_roundtrip() {
+    fn transcript_submission_result_variants_roundtrip() {
         for result in [
-            ProcessResult::session_created(
+            TranscriptSubmissionResult::session_created(
                 "ses-7ae290dbf0b4468c9d2c401be649850b",
                 Some("msg-44bd9ed03bcbd23e6c23074d50f1faf8".into()),
             ),
-            ProcessResult::session_created("ses-0d64523ce8dd6152d96419b5fce658eb", None),
-            ProcessResult::supplemented(
+            TranscriptSubmissionResult::session_created(
+                "ses-0d64523ce8dd6152d96419b5fce658eb",
+                None,
+            ),
+            TranscriptSubmissionResult::supplemented(
                 "ses-00000000000000000000000000000001",
                 Some("msg-5a480fcd11648372633c8969567f6e32".into()),
             ),
-            ProcessResult::supplemented("ses-00000000000000000000000000000002", None),
+            TranscriptSubmissionResult::supplemented("ses-00000000000000000000000000000002", None),
         ] {
             let json = serde_json::to_string(&result).unwrap();
-            let back: ProcessResult = serde_json::from_str(&json).unwrap();
+            let back: TranscriptSubmissionResult = serde_json::from_str(&json).unwrap();
             assert_eq!(back, result);
         }
     }

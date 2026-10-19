@@ -521,7 +521,7 @@ impl McpClient {
             }
         };
         let outcome = self
-            .process_feature_result(
+            .handle_feature_result(
                 request_id,
                 result,
                 pending.method.clone(),
@@ -563,7 +563,7 @@ impl McpClient {
                 &caller_cancel,
             )
             .await?;
-        self.process_feature_result(
+        self.handle_feature_result(
             pending_id,
             result,
             method.to_string(),
@@ -577,7 +577,7 @@ impl McpClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn process_feature_result(
+    async fn handle_feature_result(
         &self,
         pending_id: u64,
         result: Value,
@@ -588,63 +588,61 @@ impl McpClient {
         mut previous_state: Option<String>,
         pending_cancel: CancellationToken,
     ) -> anyhow::Result<McpFeatureCallOutcome> {
-        loop {
-            if result.get("resultType").and_then(Value::as_str) == Some("input_required") {
-                round = round.saturating_add(1);
-                if round > MAX_MCP_MRTR_ROUNDS {
-                    anyhow::bail!("MCP input_required exceeded the round limit");
-                }
-                let parsed = parse_input_required(&result).map_err(anyhow::Error::msg)?;
-                if parsed.request_state.is_some() {
-                    previous_state = parsed.request_state;
-                }
-                let is_resuming = self
-                    .pending_feature_inputs
-                    .lock()
-                    .await
-                    .contains_key(&pending_id);
-                let mut interactions = self.pending_feature_inputs.lock().await;
-                if pending_cancel.is_cancelled() {
-                    anyhow::bail!("MCP input request was cancelled");
-                }
-                if !is_resuming && interactions.len() >= MAX_PENDING_MCP_FEATURE_INPUTS {
-                    anyhow::bail!("Haven has too many MCP input requests awaiting the user");
-                }
-                interactions.insert(
-                    pending_id,
-                    PendingFeatureRequest {
-                        method,
-                        params: base_params,
-                        operation,
-                        request_state: previous_state,
-                        requests: parsed.requests.clone(),
-                        round,
-                        cancel: pending_cancel,
-                        in_flight: false,
-                    },
-                );
-                return Ok(McpFeatureCallOutcome {
-                    status: McpFeatureCallStatus::InputRequired,
-                    resource_read: None,
-                    prompt: None,
-                    request_id: Some(pending_id),
-                    round: Some(round),
-                    requests: parsed.requests,
-                });
+        if result.get("resultType").and_then(Value::as_str) == Some("input_required") {
+            round = round.saturating_add(1);
+            if round > MAX_MCP_MRTR_ROUNDS {
+                anyhow::bail!("MCP input_required exceeded the round limit");
             }
+            let parsed = parse_input_required(&result).map_err(anyhow::Error::msg)?;
+            if parsed.request_state.is_some() {
+                previous_state = parsed.request_state;
+            }
+            let is_resuming = self
+                .pending_feature_inputs
+                .lock()
+                .await
+                .contains_key(&pending_id);
+            let mut interactions = self.pending_feature_inputs.lock().await;
+            if pending_cancel.is_cancelled() {
+                anyhow::bail!("MCP input request was cancelled");
+            }
+            if !is_resuming && interactions.len() >= MAX_PENDING_MCP_FEATURE_INPUTS {
+                anyhow::bail!("Haven has too many MCP input requests awaiting the user");
+            }
+            interactions.insert(
+                pending_id,
+                PendingFeatureRequest {
+                    method,
+                    params: base_params,
+                    operation,
+                    request_state: previous_state,
+                    requests: parsed.requests.clone(),
+                    round,
+                    cancel: pending_cancel,
+                    in_flight: false,
+                },
+            );
+            return Ok(McpFeatureCallOutcome {
+                status: McpFeatureCallStatus::InputRequired,
+                resource_read: None,
+                prompt: None,
+                request_id: Some(pending_id),
+                round: Some(round),
+                requests: parsed.requests,
+            });
+        }
 
-            validate_complete_result(&result, &method).map_err(anyhow::Error::msg)?;
-            self.pending_feature_inputs.lock().await.remove(&pending_id);
-            return match operation {
-                PendingFeatureOperation::ResourceRead { uri } => {
-                    let read = self.parse_and_cache_resource_read(&uri, result).await?;
-                    Ok(complete_resource_read(read))
-                }
-                PendingFeatureOperation::PromptGet => {
-                    let prompt = parse_prompt_result(result)?;
-                    Ok(complete_prompt(prompt))
-                }
-            };
+        validate_complete_result(&result, &method).map_err(anyhow::Error::msg)?;
+        self.pending_feature_inputs.lock().await.remove(&pending_id);
+        match operation {
+            PendingFeatureOperation::ResourceRead { uri } => {
+                let read = self.parse_and_cache_resource_read(&uri, result).await?;
+                Ok(complete_resource_read(read))
+            }
+            PendingFeatureOperation::PromptGet => {
+                let prompt = parse_prompt_result(result)?;
+                Ok(complete_prompt(prompt))
+            }
         }
     }
 

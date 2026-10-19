@@ -490,7 +490,7 @@ mod tests {
         let secret = db
             .insert_fact("user", "api_key", "super-secret", "inferred", 0.8, &[])
             .unwrap();
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             &safe.fact_id,
             "model-a",
@@ -498,7 +498,7 @@ mod tests {
             "likes Rust",
         )
         .unwrap();
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             &secret.fact_id,
             "model-a",

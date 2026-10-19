@@ -127,7 +127,7 @@ impl From<&SettingsSnapshot> for SettingsPatch {
 /// ```compile_fail
 /// use haven_common::config::ConfigLoader;
 /// let mut loader = ConfigLoader::load().unwrap();
-/// loader.save().unwrap();
+/// loader.persist().unwrap();
 /// ```
 ///
 /// ```compile_fail
@@ -267,7 +267,7 @@ fn prune_timestamped_backups(config_path: &Path) {
 }
 
 fn backup_unparsable_config(path: &Path, content: &[u8], failure_kind: &'static str) {
-    // Never silently start with defaults: the next save() would overwrite the
+    // Never silently start with defaults: the next persist() would overwrite the
     // user's config (MCP servers, API keys, skills) with defaults. Back up the
     // unparsable file so it can be recovered, then continue with defaults.
     let backup = timestamped_backup_path(path);
@@ -421,7 +421,7 @@ impl ConfigLoader {
     /// replace the configured path only after the complete TOML write succeeds.
     /// A successful return confirms the replacement call succeeded; it does
     /// not guarantee survival across an OS crash or sudden power loss.
-    pub(crate) fn save(&mut self) -> anyhow::Result<()> {
+    pub(crate) fn persist(&mut self) -> anyhow::Result<()> {
         self.ensure_writable()?;
         super::validate_app_config(&self.config)?;
         super::credentials::validate_config_references(&self.config)?;
@@ -430,13 +430,13 @@ impl ConfigLoader {
             toml_str.len() <= MAX_CONFIG_FILE_BYTES,
             "serialized config exceeds the {MAX_CONFIG_FILE_BYTES}-byte limit"
         );
-        static SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static PERSIST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let file_name = self
             .path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("config.toml");
-        let serial = SAVE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let serial = PERSIST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tmp_path = self.path.with_file_name(format!(
             ".{file_name}.tmp.{}.{}",
             std::process::id(),
@@ -1922,19 +1922,19 @@ model = "nova-3"
     }
 
     #[test]
-    fn save_persists_changes() {
+    fn persist_writes_changes() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         let path = dir.join("config.toml");
         let mut loader = ConfigLoader::load_from(&path).unwrap();
         loader.config_mut().session.max_concurrent = 7;
-        loader.save().unwrap();
+        loader.persist().unwrap();
         let reloaded = ConfigLoader::load_from(&path).unwrap();
         assert_eq!(reloaded.config().session.max_concurrent, 7);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn save_rejects_the_same_semantic_contract_as_load() {
+    fn persist_rejects_the_same_semantic_contract_as_load() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         let path = dir.join("config.toml");
         let mut loader = ConfigLoader::load_from(&path).unwrap();
@@ -1945,13 +1945,13 @@ model = "nova-3"
             ..Default::default()
         });
 
-        assert!(loader.save().is_err());
+        assert!(loader.persist().is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn save_rejects_oversized_serialized_config_without_replacing_source() {
+    fn persist_rejects_oversized_serialized_config_without_replacing_source() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         let path = dir.join("config.toml");
         let mut loader = ConfigLoader::load_from(&path).unwrap();
@@ -1962,7 +1962,7 @@ model = "nova-3"
             ..Default::default()
         });
 
-        let error = loader.save().unwrap_err();
+        let error = loader.persist().unwrap_err();
 
         assert!(error.to_string().contains("serialized config exceeds"));
         assert_eq!(std::fs::read(&path).unwrap(), original);
@@ -1975,7 +1975,7 @@ model = "nova-3"
     }
 
     #[test]
-    fn save_checks_external_source_fingerprint_with_a_bounded_read() {
+    fn persist_checks_external_source_fingerprint_with_a_bounded_read() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         let path = dir.join("config.toml");
         let mut loader = ConfigLoader::load_from(&path).unwrap();
@@ -1983,7 +1983,7 @@ model = "nova-3"
         let external = vec![b'x'; MAX_CONFIG_FILE_BYTES + 1];
         std::fs::write(&path, &external).unwrap();
 
-        let error = loader.save().unwrap_err();
+        let error = loader.persist().unwrap_err();
 
         assert!(error.to_string().contains("exceeds the 4194304-byte limit"));
         assert_eq!(std::fs::read(&path).unwrap(), external);

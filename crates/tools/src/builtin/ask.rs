@@ -19,7 +19,7 @@ const MAX_OPTION_CHARS: usize = 120;
 ///
 /// When this tool runs, the ReAct loop pauses the session and surfaces the
 /// question to the user as a chat observation. The user's next message arrives
-/// as a supplement (see `process_input` → `add_supplement` → Paused→Pending)
+/// as a supplement (see `ingest_user_input` → `add_supplement` → Paused→Pending)
 /// and is injected into context on resume, so the model sees both the question
 /// it asked and the user's answer, then continues.
 pub struct AskTool;

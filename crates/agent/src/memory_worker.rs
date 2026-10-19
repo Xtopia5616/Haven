@@ -2018,8 +2018,12 @@ mod tests {
                 Some(&step_id),
             )
             .unwrap();
-        db.complete_tool_step(&step.step_id, "C:/Workspace/Haven", true)
-            .unwrap();
+        db.finish_tool_step(
+            &step.step_id,
+            "C:/Workspace/Haven",
+            haven_memory::ToolStepOutcome::Completed,
+        )
+        .unwrap();
         db.conn()
             .execute(
                 "UPDATE session_steps

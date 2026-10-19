@@ -277,7 +277,7 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "cancel clears the in-flight recording id",
     },
     CommandContract {
-        name: "process_transcript",
+        name: "submit_transcript",
         boundary: CommandBoundary::Execute,
         security: "attachment limits and file persistence are enforced",
     },

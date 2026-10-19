@@ -134,7 +134,7 @@ impl AgentLayer {
         }
 
         // If no branch_point exists at the target step, the step likely
-        // failed before save_branch_point was called (e.g. LLM error
+        // failed before persist_branch_point was called (e.g. LLM error
         // mid-stream). In that case the current replay projection is already
         // the pre-step state — use its event cursor directly.
         let bp = if let Some(bp) = replay.branch_points.get(&target_step).cloned() {

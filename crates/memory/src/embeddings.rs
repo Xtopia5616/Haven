@@ -286,7 +286,7 @@ impl Database {
     /// Insert or replace the embedding for an (entity_type, entity_id) under
     /// the given model. Re-embedding the same entity updates the vector and
     /// surface text in place.
-    pub fn save_embedding(
+    pub fn persist_embedding(
         &self,
         entity_type: &str,
         entity_id: &str,
@@ -1388,10 +1388,10 @@ mod tests {
     }
 
     #[test]
-    fn save_and_get_embedding() {
+    fn persist_and_get_embedding() {
         let db = db();
         insert_fact_with_id(&db, FACT_ID_1);
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             FACT_ID_1,
             "test-emb",
@@ -1409,12 +1409,12 @@ mod tests {
     }
 
     #[test]
-    fn save_replaces_existing() {
+    fn persist_replaces_existing() {
         let db = db();
         insert_fact_with_id(&db, FACT_ID_1);
-        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "a")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "a")
             .unwrap();
-        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[2.0, 3.0], "b")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[2.0, 3.0], "b")
             .unwrap();
         let got = db
             .get_embedding(entity_kind::FACT, FACT_ID_1)
@@ -1429,9 +1429,9 @@ mod tests {
         let db = db();
         insert_fact_with_id(&db, FACT_ID_1);
         insert_fact_with_id(&db, FACT_ID_2);
-        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "a")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "a")
             .unwrap();
-        db.save_embedding(entity_kind::FACT, FACT_ID_2, "m", &[0.0, 1.0], "b")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_2, "m", &[0.0, 1.0], "b")
             .unwrap();
         let hits = db
             .search_embeddings(entity_kind::FACT, &[1.0, 0.0], 10, "m")
@@ -1446,9 +1446,9 @@ mod tests {
         let db = db();
         insert_fact_with_id(&db, FACT_ID_1);
         let episode_id = insert_episode(&db);
-        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "a")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "a")
             .unwrap();
-        db.save_embedding(entity_kind::EPISODE, &episode_id, "m", &[1.0, 0.0], "b")
+        db.persist_embedding(entity_kind::EPISODE, &episode_id, "m", &[1.0, 0.0], "b")
             .unwrap();
         let hits = db
             .search_embeddings(entity_kind::FACT, &[1.0, 0.0], 1, "m")
@@ -1466,7 +1466,7 @@ mod tests {
         let other = db
             .insert_fact("alice", "likes", "Go", "user", 0.9, &[])
             .unwrap();
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             &user.fact_id,
             "m",
@@ -1474,7 +1474,7 @@ mod tests {
             "user rust",
         )
         .unwrap();
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             &other.fact_id,
             "m",
@@ -1498,9 +1498,9 @@ mod tests {
             .add_episode(&current.session_id, "current summary")
             .unwrap();
         let oth_ep = db.add_episode(&other.session_id, "other summary").unwrap();
-        db.save_embedding(entity_kind::EPISODE, &cur_ep, "m", &[1.0, 0.0], "current")
+        db.persist_embedding(entity_kind::EPISODE, &cur_ep, "m", &[1.0, 0.0], "current")
             .unwrap();
-        db.save_embedding(entity_kind::EPISODE, &oth_ep, "m", &[1.0, 0.0], "other")
+        db.persist_embedding(entity_kind::EPISODE, &oth_ep, "m", &[1.0, 0.0], "other")
             .unwrap();
         let hits = db
             .search_embeddings_filtered(
@@ -1521,9 +1521,9 @@ mod tests {
         let db = db();
         insert_fact_with_id(&db, FACT_ID_1);
         insert_fact_with_id(&db, FACT_ID_2);
-        db.save_embedding(entity_kind::FACT, FACT_ID_1, "old-m", &[1.0, 0.0], "a")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_1, "old-m", &[1.0, 0.0], "a")
             .unwrap();
-        db.save_embedding(entity_kind::FACT, FACT_ID_2, "new-m", &[1.0, 0.0], "b")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_2, "new-m", &[1.0, 0.0], "b")
             .unwrap();
         let hits = db
             .search_embeddings(entity_kind::FACT, &[1.0, 0.0], 10, "new-m")
@@ -1546,7 +1546,7 @@ mod tests {
         let f = db
             .insert_fact("user", "likes", "Go", "user", 0.8, &["preference"])
             .unwrap();
-        db.save_embedding(entity_kind::FACT, &f.fact_id, "m", &[1.0], "x")
+        db.persist_embedding(entity_kind::FACT, &f.fact_id, "m", &[1.0], "x")
             .unwrap();
         let missing = db.missing_embedding_ids(entity_kind::FACT, "m").unwrap();
         assert_eq!(missing.len(), 1);
@@ -1561,7 +1561,7 @@ mod tests {
     fn embedding_entity_ids_are_canonical_at_write_and_read_boundaries() {
         let db = db();
         assert!(
-            db.save_embedding(entity_kind::FACT, "fact-short", "m", &[1.0], "text")
+            db.persist_embedding(entity_kind::FACT, "fact-short", "m", &[1.0], "text")
                 .is_err()
         );
 
@@ -1579,7 +1579,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_embedding_save_does_not_resurrect_stale_fact() {
+    fn pending_embedding_persist_does_not_resurrect_stale_fact() {
         let db = db();
         let fact = db
             .insert_fact("user", "likes", "Rust", "inferred", 0.9, &[])
@@ -1598,7 +1598,7 @@ mod tests {
             .unwrap();
         }
 
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             &fact.fact_id,
             "model-a",
@@ -1630,7 +1630,7 @@ mod tests {
             vec![fact.fact_id.clone()]
         );
 
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             &fact.fact_id,
             "model-a",
@@ -1644,7 +1644,7 @@ mod tests {
                 .is_none()
         );
 
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             &fact.fact_id,
             "model-b",
@@ -1669,7 +1669,7 @@ mod tests {
         let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
         assert_eq!(missing.len(), 1);
         assert!(missing.contains(&ep));
-        db.save_embedding(entity_kind::EPISODE, &ep, "m", &[1.0], "hello world")
+        db.persist_embedding(entity_kind::EPISODE, &ep, "m", &[1.0], "hello world")
             .unwrap();
         let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
         assert_eq!(missing.len(), 0);
@@ -1723,10 +1723,10 @@ mod tests {
         let db = db();
         let session = db.create_session("t").unwrap();
         let ep = db.add_episode(&session.session_id, "hello").unwrap();
-        db.save_embedding(entity_kind::EPISODE, &ep, "m", &[1.0], "hello")
+        db.persist_embedding(entity_kind::EPISODE, &ep, "m", &[1.0], "hello")
             .unwrap();
         assert!(
-            db.save_embedding(
+            db.persist_embedding(
                 entity_kind::EPISODE,
                 MISSING_EPISODE_ID,
                 "m",
@@ -1736,7 +1736,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            db.save_embedding(entity_kind::FACT, MISSING_FACT_ID, "m", &[1.0], "gone")
+            db.persist_embedding(entity_kind::FACT, MISSING_FACT_ID, "m", &[1.0], "gone")
                 .is_err()
         );
         let deleted = db.prune_orphaned_embeddings().unwrap();
@@ -1754,11 +1754,11 @@ mod tests {
         insert_fact_with_id(&db, FACT_ID_1);
         insert_fact_with_id(&db, FACT_ID_2);
         let episode_id = insert_episode(&db);
-        db.save_embedding(entity_kind::FACT, FACT_ID_1, "model-a", &[1.0], "x")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_1, "model-a", &[1.0], "x")
             .unwrap();
-        db.save_embedding(entity_kind::FACT, FACT_ID_2, "model-a", &[1.0], "y")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_2, "model-a", &[1.0], "y")
             .unwrap();
-        db.save_embedding(entity_kind::EPISODE, &episode_id, "model-b", &[1.0], "z")
+        db.persist_embedding(entity_kind::EPISODE, &episode_id, "model-b", &[1.0], "z")
             .unwrap();
         let models = db.list_embedding_models().unwrap();
         assert_eq!(models.len(), 2);
@@ -1767,14 +1767,14 @@ mod tests {
     }
 
     #[test]
-    fn save_embedding_rejects_mixed_dimensions_within_model() {
+    fn persist_embedding_rejects_mixed_dimensions_within_model() {
         let db = db();
         insert_fact_with_id(&db, FACT_ID_1);
         insert_fact_with_id(&db, FACT_ID_2);
-        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "x")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "x")
             .unwrap();
         assert!(
-            db.save_embedding(entity_kind::FACT, FACT_ID_2, "m", &[1.0, 0.0, 0.0], "y")
+            db.persist_embedding(entity_kind::FACT, FACT_ID_2, "m", &[1.0, 0.0, 0.0], "y")
                 .is_err()
         );
         assert_eq!(db.list_embedding_dimensions("m").unwrap(), vec![2]);
@@ -1785,9 +1785,9 @@ mod tests {
         let db = db();
         insert_fact_with_id(&db, FACT_ID_1);
         let episode_id = insert_episode(&db);
-        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0], "x")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0], "x")
             .unwrap();
-        db.save_embedding(entity_kind::EPISODE, &episode_id, "m", &[1.0], "y")
+        db.persist_embedding(entity_kind::EPISODE, &episode_id, "m", &[1.0], "y")
             .unwrap();
         let cleared = db.clear_embeddings().unwrap();
         assert_eq!(cleared, 2);
@@ -1868,7 +1868,7 @@ mod tests {
             .unwrap();
         assert!(hits.iter().any(|h| h.text.contains("dark theme")));
 
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::EPISODE,
             &ep,
             "m",
@@ -1911,7 +1911,7 @@ mod tests {
         // First read caches; second read hits the cache (still correct).
         assert!(db.list_embeddings(entity_kind::FACT).unwrap().is_empty());
         // A write invalidates the cache so the next read sees the new row.
-        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0], "x")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0], "x")
             .unwrap();
         let all = db.list_embeddings(entity_kind::FACT).unwrap();
         assert_eq!(all.len(), 1);
@@ -1934,7 +1934,7 @@ mod tests {
                 &["preference"],
             )
             .unwrap();
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             &fact.fact_id,
             "m",
@@ -1977,7 +1977,7 @@ mod tests {
             "SPO UPDATE must drop the embedding"
         );
         // Re-embed, then DELETE drops it again.
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             &fact.fact_id,
             "m",
@@ -2000,7 +2000,7 @@ mod tests {
         let fact = db
             .insert_fact("user", "likes", "Rust", "inferred", 0.9, &["preference"])
             .unwrap();
-        db.save_embedding(entity_kind::FACT, &fact.fact_id, "m", &[1.0], "x")
+        db.persist_embedding(entity_kind::FACT, &fact.fact_id, "m", &[1.0], "x")
             .unwrap();
         // Warm the embeddings list cache.
         assert_eq!(db.list_embeddings(entity_kind::FACT).unwrap().len(), 1);
@@ -2022,10 +2022,10 @@ mod tests {
     }
 
     #[test]
-    fn save_embedding_writes_lsh_bucket() {
+    fn persist_embedding_writes_lsh_bucket() {
         let db = db();
         insert_fact_with_id(&db, FACT_ID_1);
-        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0, 0.5], "a")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0, 0.5], "a")
             .unwrap();
         let bucket: i64 = db
             .conn()
@@ -2054,9 +2054,9 @@ mod tests {
         insert_fact_with_id(&db, FACT_ID_3);
         insert_fact_with_id(&db, FACT_ID_4);
         let target = vec![1.0f32, 0.0, 0.0, 0.0];
-        db.save_embedding(entity_kind::FACT, FACT_ID_3, "m", &target, "near")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_3, "m", &target, "near")
             .unwrap();
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             FACT_ID_4,
             "m",
@@ -2082,7 +2082,7 @@ mod tests {
     fn rebuild_embedding_lsh_refills_side_table() {
         let db = db();
         insert_fact_with_id(&db, FACT_ID_1);
-        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[0.25, 0.75], "x")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[0.25, 0.75], "x")
             .unwrap();
         db.conn().execute("DELETE FROM embedding_lsh", []).unwrap();
         let n = db.rebuild_embedding_lsh("m").unwrap();
@@ -2102,7 +2102,7 @@ mod tests {
     fn lsh_lagging_ignores_orphan_side_rows() {
         let db = db();
         insert_fact_with_id(&db, FACT_ID_1);
-        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "x")
+        db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "x")
             .unwrap();
         db.conn().execute("DELETE FROM embedding_lsh", []).unwrap();
         db.conn()

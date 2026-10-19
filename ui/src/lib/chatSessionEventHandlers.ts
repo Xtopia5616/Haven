@@ -64,7 +64,7 @@ export function createChatSessionEventHandler({
 					// Voice input appends to the draft before the backend session exists.
 					// Move it before any response can land in the new session.
 					const adoptedDraft = adoptDraftMessages(sessionId);
-					// A fast response can complete before process_transcript resolves, so
+					// A fast response can complete before submit_transcript resolves, so
 					// the session that adopts the pending draft must be selected now.
 					dispatchSession({
 						type: 'session/created',

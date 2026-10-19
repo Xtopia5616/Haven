@@ -44,7 +44,7 @@ impl Database {
     /// Save or replace one exact session capability decision. The foreign key
     /// rejects grants for missing sessions; a failed write never becomes a
     /// live in-memory authorization decision.
-    pub fn save_session_authorization_grant(
+    pub fn persist_session_authorization_grant(
         &self,
         session_id: &str,
         grant: &SessionAuthorizationGrant,
@@ -238,16 +238,16 @@ mod tests {
             PermissionTarget::Group,
             PermissionEffect::Allow,
         );
-        db.save_session_authorization_grant(&session.session_id, &first)
+        db.persist_session_authorization_grant(&session.session_id, &first)
             .unwrap();
         let replacement = grant(
             "system.power",
             PermissionTarget::Group,
             PermissionEffect::Deny,
         );
-        db.save_session_authorization_grant(&session.session_id, &replacement)
+        db.persist_session_authorization_grant(&session.session_id, &replacement)
             .unwrap();
-        db.save_session_authorization_grant(
+        db.persist_session_authorization_grant(
             &session.session_id,
             &grant(
                 "files.read",
@@ -282,7 +282,7 @@ mod tests {
         wrong_scope.scope = PermissionScope::Always;
         let missing_session_id = haven_common::types::new_id("ses");
         assert!(
-            db.save_session_authorization_grant(&missing_session_id, &wrong_scope)
+            db.persist_session_authorization_grant(&missing_session_id, &wrong_scope)
                 .is_err()
         );
 
@@ -292,7 +292,7 @@ mod tests {
             PermissionEffect::Allow,
         );
         assert!(
-            db.save_session_authorization_grant(&missing_session_id, &valid)
+            db.persist_session_authorization_grant(&missing_session_id, &valid)
                 .is_err()
         );
         assert!(db.session_authorization_grants("bad-session-id").is_err());
@@ -317,11 +317,11 @@ mod tests {
             PermissionTarget::Group,
             PermissionEffect::Deny,
         );
-        db.save_session_authorization_grant(&old.session_id, &files)
+        db.persist_session_authorization_grant(&old.session_id, &files)
             .unwrap();
-        db.save_session_authorization_grant(&retained.session_id, &files)
+        db.persist_session_authorization_grant(&retained.session_id, &files)
             .unwrap();
-        db.save_session_authorization_grant(&retained.session_id, &system)
+        db.persist_session_authorization_grant(&retained.session_id, &system)
             .unwrap();
 
         db.revoke_session_authorization_grant(&retained.session_id, &files.capability)
@@ -350,9 +350,9 @@ mod tests {
         );
 
         let reset = db.create_session("reset authorization session").unwrap();
-        db.save_session_authorization_grant(&reset.session_id, &files)
+        db.persist_session_authorization_grant(&reset.session_id, &files)
             .unwrap();
-        db.save_session_authorization_grant(&reset.session_id, &system)
+        db.persist_session_authorization_grant(&reset.session_id, &system)
             .unwrap();
         assert_eq!(db.clear_session_authorization_grants().unwrap(), 2);
         assert!(
@@ -366,7 +366,7 @@ mod tests {
     fn all_grants_rejects_noncanonical_stored_session_identity() {
         let db = Database::open_in_memory().unwrap();
         let session = db.create_session("corrupt authorization owner").unwrap();
-        db.save_session_authorization_grant(
+        db.persist_session_authorization_grant(
             &session.session_id,
             &grant(
                 "files.read",

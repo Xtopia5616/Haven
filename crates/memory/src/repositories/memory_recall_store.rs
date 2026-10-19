@@ -129,7 +129,7 @@ mod tests {
         let hidden = db
             .insert_fact("user", "api_key", "sk-hidden", "inferred", 1.0, &[])
             .unwrap();
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             &safe.fact_id,
             "model-a",
@@ -139,7 +139,7 @@ mod tests {
         .unwrap();
         // Include a sensitive embedding row to prove retrieval enforces the
         // visibility filter even when such a row is already present.
-        db.save_embedding(
+        db.persist_embedding(
             entity_kind::FACT,
             &hidden.fact_id,
             "model-a",

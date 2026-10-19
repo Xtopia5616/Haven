@@ -1,6 +1,6 @@
 import { invoke } from './tauri.ts';
 import type { TauriCommandRequest } from './contracts/generatedCommands.ts';
-import { parseProcessResult, type ProcessResultView } from './contracts/processResult.ts';
+import { parseTranscriptSubmissionResult, type TranscriptSubmissionResultView } from './contracts/transcriptSubmissionResult.ts';
 import { parseCountResponse } from './contracts/count.ts';
 import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 import type {
@@ -61,11 +61,11 @@ export async function getLatestSessionForResume(): Promise<SessionResumeResponse
 }
 
 /** Submit transcript text and attachments through the canonical Session ingress. */
-export async function processTranscript(
-	request: TauriCommandRequest<'process_transcript'>,
-): Promise<ProcessResultView> {
-	const value: unknown = await invoke('process_transcript', request);
-	return parseProcessResult(value, request.activeSessionId);
+export async function submitTranscriptCommand(
+	request: TauriCommandRequest<'submit_transcript'>,
+): Promise<TranscriptSubmissionResultView> {
+	const value: unknown = await invoke('submit_transcript', request);
+	return parseTranscriptSubmissionResult(value, request.activeSessionId);
 }
 
 /** Reopen one persisted session for follow-up input. */

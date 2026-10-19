@@ -28,7 +28,7 @@
 	} from '$lib/settingsSaveFailure.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
-	import { resolveSettingsSaveAction } from '$lib/settingsSaveAction.ts';
+	import { selectSettingsSaveAction } from '$lib/settingsSaveAction.ts';
 	import {
 		disableAutostart,
 		discardStagedCredentials,
@@ -1321,7 +1321,7 @@
 	}
 
 	async function handleSaveClick() {
-		const action = resolveSettingsSaveAction(settingsLoaded, settingsDirty);
+		const action = selectSettingsSaveAction(settingsLoaded, settingsDirty);
 		if (action === 'loading') {
 			addNotification('设置仍在加载，请稍候', 'info', 2500);
 			return;

@@ -46,8 +46,8 @@ export const STATUS_COLORS: Record<StatusTone, StatusColorTokens> = {
 	},
 };
 
-/** Resolve a semantic status tone; unknown values are neutral by contract. */
-export function resolveStatusTone(value: string | undefined | null): StatusTone {
+/** Normalize a semantic status tone; unknown values are neutral by contract. */
+export function normalizeStatusTone(value: string | undefined | null): StatusTone {
 	const normalized = value?.toLowerCase();
 	if (normalized && normalized in STATUS_COLORS) {
 		return normalized as StatusTone;
@@ -56,7 +56,7 @@ export function resolveStatusTone(value: string | undefined | null): StatusTone 
 }
 
 export function getStatusColorTokens(value: string | undefined | null): StatusColorTokens {
-	return STATUS_COLORS[resolveStatusTone(value)];
+	return STATUS_COLORS[normalizeStatusTone(value)];
 }
 
 export function getStatusDotColor(value: string | undefined | null): string {

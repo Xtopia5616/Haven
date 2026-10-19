@@ -27,7 +27,7 @@ describe('Tauri command boundary directory', () => {
 			expect.arrayContaining([
 				'open_external',
 				'execute_skill',
-				'process_transcript',
+				'submit_transcript',
 				'open_skills_dir',
 				'list_mcp_resources',
 				'subscribe_mcp_resource',

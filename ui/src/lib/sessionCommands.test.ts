@@ -10,7 +10,7 @@ import {
 	interruptSession,
 	listRuntimeSessions,
 	listSessionHistory,
-	processTranscript,
+	submitTranscriptCommand,
 	rollbackSession,
 	reopenSession,
 	searchSessionHistoryFiltered,
@@ -134,19 +134,19 @@ describe('session history command boundary', () => {
 		};
 		invokeMock.mockResolvedValueOnce(response as never);
 
-		await expect(processTranscript(request)).resolves.toEqual({
+		await expect(submitTranscriptCommand(request)).resolves.toEqual({
 			kind: 'session_created',
 			sessionId: 'ses-0000000000000000000000000000000a',
 			messageId: 'msg-0000000000000000000000000000000b',
 		});
 		expect(invokeMock).toHaveBeenCalledOnce();
-		expect(invokeMock).toHaveBeenCalledWith('process_transcript', request);
+		expect(invokeMock).toHaveBeenCalledWith('submit_transcript', request);
 
 		invokeMock.mockResolvedValueOnce({
 			SessionCreated: { session_id: 'ses-short' },
 		} as never);
-		await expect(processTranscript(request)).rejects.toThrow(
-			'Invalid process transcript identity',
+		await expect(submitTranscriptCommand(request)).rejects.toThrow(
+			'Invalid transcript submission identity',
 		);
 
 		const supplementRequest = {
@@ -160,7 +160,7 @@ describe('session history command boundary', () => {
 			},
 		};
 		invokeMock.mockResolvedValueOnce(supplementResponse as never);
-		await expect(processTranscript(supplementRequest)).resolves.toEqual({
+		await expect(submitTranscriptCommand(supplementRequest)).resolves.toEqual({
 			kind: 'supplemented',
 			sessionId: supplementRequest.activeSessionId,
 			messageId: 'msg-0000000000000000000000000000000d',
@@ -172,8 +172,8 @@ describe('session history command boundary', () => {
 				message_id: 'msg-0000000000000000000000000000000f',
 			},
 		} as never);
-		await expect(processTranscript(supplementRequest)).rejects.toThrow(
-			'Invalid process transcript identity',
+		await expect(submitTranscriptCommand(supplementRequest)).rejects.toThrow(
+			'Invalid transcript submission identity',
 		);
 	});
 

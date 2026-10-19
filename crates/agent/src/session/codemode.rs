@@ -235,7 +235,7 @@ impl CodeModeSubcallPort for AuthorizedCodeModeSubcallPort {
 
         if let Some(journal) = &self.journal {
             journal
-                .complete_call(NestedCallCompletion {
+                .finish_call(NestedCallCompletion {
                     call_index,
                     child_step_id: &step_id,
                     tool_name,

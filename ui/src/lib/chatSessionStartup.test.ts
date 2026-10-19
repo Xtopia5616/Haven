@@ -265,7 +265,7 @@ describe('createChatSessionStartup', () => {
 		harness.setPersistedIntent(true);
 
 		harness.startup.hydrateFreshSessionIntent();
-		harness.startup.processResumeTarget({
+		harness.startup.applyResumeTarget({
 			sessionId: OTHER_SESSION_ID,
 			wasError: true,
 			inputText: '首条输入',

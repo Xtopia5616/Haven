@@ -9,10 +9,10 @@ import {
 	type ContinueStrategy,
 } from './continueSession.ts';
 import { isErrorStatus } from './sessionStatus.ts';
-import { processResultSessionId } from './submit.ts';
+import { transcriptSubmissionResultSessionId } from './submit.ts';
 import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachmentTypes.ts';
 import type { CanonicalRole } from './contracts/generatedCommands.ts';
-import type { ProcessResultView } from './contracts/processResult.ts';
+import type { TranscriptSubmissionResultView } from './contracts/transcriptSubmissionResult.ts';
 import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 import type { SessionAction, SessionReducer, SessionSummary } from './sessionReducer.ts';
 
@@ -42,7 +42,7 @@ export interface ChatSessionControllerDependencies {
 			submissionToken?: string;
 			deliveryMode?: InputDeliveryModeInput;
 		},
-	) => Promise<ProcessResultView>;
+	) => Promise<TranscriptSubmissionResultView>;
 	reducer: SessionReducer;
 	dispatch: (action: SessionAction) => void;
 	getActiveSessionId: () => string | null;
@@ -326,7 +326,7 @@ export class ChatSessionController {
 				submissionToken,
 				...(deliveryMode ? { deliveryMode } : {}),
 			});
-			const createdSessionId = processResultSessionId(result);
+			const createdSessionId = transcriptSubmissionResultSessionId(result);
 			if (
 				createdSessionId &&
 				this.dependencies.reducer.isUserSelectionCurrent(userSelectionVersion) &&

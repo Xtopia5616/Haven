@@ -75,11 +75,11 @@ impl MemoryMaintenanceStore {
 
     /// Apply the deterministic rule-based contradiction keeper before stale
     /// low-confidence facts are flushed.
-    pub async fn resolve_contradictions(
+    pub async fn demote_obvious_contradictions(
         &self,
         cancellation: Option<&CancellationToken>,
     ) -> anyhow::Result<u64> {
-        self.run_blocking_operation(cancellation, |db| db.resolve_contradictions())
+        self.run_blocking_operation(cancellation, |db| db.demote_obvious_contradictions())
             .await
     }
 
@@ -208,7 +208,7 @@ mod tests {
 
         assert_eq!(store.dedup_facts(None).await.unwrap(), 1);
         assert_eq!(store.delete_sensitive_facts(None).await.unwrap(), 1);
-        assert_eq!(store.resolve_contradictions(None).await.unwrap(), 1);
+        assert_eq!(store.demote_obvious_contradictions(None).await.unwrap(), 1);
         assert_eq!(store.flush_low_confidence(0.3, None).await.unwrap(), 1);
         assert_eq!(store.cleanup_orphan_source_refs(None).await.unwrap(), 1);
     }

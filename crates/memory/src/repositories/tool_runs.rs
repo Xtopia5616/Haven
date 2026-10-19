@@ -55,19 +55,19 @@ fn row_to_tool_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolRunRow> {
 impl Database {
     /// Persist a newly spawned background ToolRun (status `running`).
     #[cfg(any(test, feature = "test-support"))]
-    pub fn save_tool_run(
+    pub fn persist_tool_run(
         &self,
         tool_run_id: &str,
         session_id: Option<&str>,
         command: &str,
         started_at: &str,
     ) -> anyhow::Result<()> {
-        self.save_tool_run_with_source(tool_run_id, session_id, command, started_at, None)
+        self.persist_tool_run_with_source(tool_run_id, session_id, command, started_at, None)
     }
 
     /// Persist a background ToolRun with its originating Agent tool step.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn save_tool_run_with_source(
+    pub fn persist_tool_run_with_source(
         &self,
         tool_run_id: &str,
         session_id: Option<&str>,
@@ -75,7 +75,7 @@ impl Database {
         started_at: &str,
         source_step_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        self.save_tool_run_with_metadata(
+        self.persist_tool_run_with_metadata(
             tool_run_id,
             "shell",
             session_id,
@@ -85,7 +85,7 @@ impl Database {
     }
 
     /// Persist a detached background invocation of one registered tool.
-    pub fn save_tool_run_with_metadata(
+    pub fn persist_tool_run_with_metadata(
         &self,
         tool_run_id: &str,
         tool_name: &str,
@@ -368,7 +368,7 @@ mod tests {
     fn background_tool_run_roundtrips_and_rejects_second_terminal_transition() {
         let db = Database::open_in_memory().unwrap();
         let id = new_id("toolrun");
-        db.save_tool_run(&id, None, "echo ok", STARTED).unwrap();
+        db.persist_tool_run(&id, None, "echo ok", STARTED).unwrap();
         assert!(
             db.finish_tool_run(
                 &id,
@@ -404,7 +404,7 @@ mod tests {
     fn completion_outbox_is_atomic_with_background_result_and_replayable() {
         let db = Database::open_in_memory().unwrap();
         let id = new_id("toolrun");
-        db.save_tool_run(&id, None, "echo ok", STARTED).unwrap();
+        db.persist_tool_run(&id, None, "echo ok", STARTED).unwrap();
         let payload = ToolRunCompletionPayload {
             tool_run_id: id.clone(),
             tool_name: "shell".into(),

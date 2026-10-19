@@ -94,7 +94,7 @@ impl desktop::ShellHandler for HavenShellHandler {
         let state = self.app_h.state::<Arc<AppState>>();
         let app_state = state.inner().clone();
         let lifecycle = state.recording_lifecycle.lock().await;
-        complete_shell_recording_stop(
+        finish_shell_recording_stop(
             app_state,
             self.app_h.clone(),
             self.shell_arc.clone(),
@@ -145,7 +145,7 @@ impl desktop::ShellHandler for HavenShellHandler {
     }
 }
 
-async fn complete_shell_recording_stop(
+async fn finish_shell_recording_stop(
     state: Arc<AppState>,
     app: tauri::AppHandle,
     shell: Arc<desktop::DesktopShell>,
@@ -299,7 +299,7 @@ impl haven_input::InputEventHandler for HavenInputEventHandler {
         let Some(stop_context) = self.shell_arc.claim_recording_stop().await else {
             return;
         };
-        complete_shell_recording_stop(
+        finish_shell_recording_stop(
             app_state,
             self.app_h.clone(),
             self.shell_arc.clone(),

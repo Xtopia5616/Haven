@@ -32,7 +32,7 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
     let tool_run_id = "toolrun-00000000000000000000000000000004";
     agent
         .db
-        .save_tool_run(
+        .persist_tool_run(
             tool_run_id,
             Some(&session.session_id),
             "echo rollback closing",
@@ -156,7 +156,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
         .unwrap();
     // Branch point at step 1: canonical ends at the user message, but
     // last_msg_at points at the thought that was persisted AFTER it (the
-    // realistic shape saved by save_branch_point).
+    // realistic shape saved by persist_branch_point).
     let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     let hello_id = msgs
         .iter()
@@ -235,7 +235,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
 #[tokio::test]
 async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_message() {
     // Regression: rollback to a step that has NO branch point (e.g. the
-    // step failed before save_branch_point ran) falls back to a cutoff
+    // step failed before persist_branch_point ran) falls back to a cutoff
     // derived from session messages. With pause=true the user message
     // itself must be removed too — and because the clicked message's
     // live-view id never matches a DB id, the backend can only guess the
@@ -299,7 +299,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         .message_id
         .clone();
     // Snapshot with a branch point ONLY at step 1; the target step 2 has
-    // no branch point (realistic: step 2's save_branch_point never ran).
+    // no branch point (realistic: step 2's persist_branch_point never ran).
     let canonical = vec![CanonicalMessage {
         role: CanonicalRole::System,
         content: vec![ContentPart::text("sys")],

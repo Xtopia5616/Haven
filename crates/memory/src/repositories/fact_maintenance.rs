@@ -247,7 +247,7 @@ impl<'db> FactMaintenance<'db> {
 
     /// Scan and demote recent contradiction losers while leaving old rows as
     /// evidence for optional LLM arbitration.
-    pub(crate) fn resolve_contradictions(&self) -> anyhow::Result<u64> {
+    pub(crate) fn demote_obvious_contradictions(&self) -> anyhow::Result<u64> {
         let now = Utc::now();
         let mut demote_ids: HashSet<String> = HashSet::new();
         for group in self.collect_contradiction_groups()? {
