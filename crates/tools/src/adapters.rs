@@ -87,7 +87,7 @@ fn mcp_operation_spec(
             McpServerTransport::Http => crate::ExecutionBoundary::InProcess,
         }),
         policy_rule: None,
-        catalog_group: ToolCatalogGroup::Mcp,
+        catalog_group: ToolCatalogGroup::Extensions,
         presentation: ToolPresentation {
             label: name.to_string(),
             // Keep server identity in root; renderer is only a UI dispatch key.
@@ -146,7 +146,7 @@ fn skill_operation_spec(name: &str, description: &str, schema: Value) -> Operati
             RiskLevel::High,
         ),
         policy_rule: None,
-        catalog_group: ToolCatalogGroup::Skills,
+        catalog_group: ToolCatalogGroup::Extensions,
         presentation: ToolPresentation {
             label: crate::tool_contract::default_tool_label(name),
             renderer: root.clone(),
@@ -405,7 +405,7 @@ impl Tool for McpToolAdapter {
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {
-        ToolCatalogGroup::Mcp
+        ToolCatalogGroup::Extensions
     }
 
     fn operation_spec(&self) -> Option<OperationSpec> {
@@ -689,6 +689,7 @@ mod tests {
         assert_eq!(adapter.name(), "mcp__test-server__greet");
         assert_eq!(adapter.description(), "Greets the user");
         assert_eq!(adapter.risk_level(&Value::Null), RiskLevel::High);
+        assert_eq!(adapter.catalog_group(), ToolCatalogGroup::Extensions);
     }
 
     #[test]
@@ -716,6 +717,7 @@ mod tests {
         assert_eq!(adapter.name(), "skill__echo");
         assert_eq!(adapter.description(), "Echoes input");
         assert_eq!(adapter.risk_level(&Value::Null), RiskLevel::High);
+        assert_eq!(adapter.catalog_group(), ToolCatalogGroup::Extensions);
     }
 
     #[test]

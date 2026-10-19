@@ -108,15 +108,15 @@ export function groupBuiltinTools(tools: BuiltinToolEntry[]): BuiltinToolCard[] 
 function categoryOrder(category: ToolCatalogGroup): number {
 	return {
 		haven: 0,
-		workflow: 1,
-		files: 2,
-		desktop: 3,
-		system: 4,
-		media: 5,
-		network: 6,
-		shell: 7,
-		skills: 8,
-		mcp: 9,
+		interaction: 1,
+		workflow: 2,
+		files: 3,
+		desktop: 4,
+		system: 5,
+		media: 6,
+		network: 7,
+		shell: 8,
+		extensions: 9,
 		other: 10,
 	}[category];
 }
@@ -124,6 +124,7 @@ function categoryOrder(category: ToolCatalogGroup): number {
 function categoryLabel(category: ToolCatalogGroup): string {
 	return {
 		haven: 'Haven',
+		interaction: '用户交互',
 		workflow: '工作流',
 		files: '文件系统',
 		desktop: '桌面操作',
@@ -131,8 +132,7 @@ function categoryLabel(category: ToolCatalogGroup): string {
 		media: '媒体与语音',
 		network: '网络与搜索',
 		shell: '命令行',
-		skills: '技能',
-		mcp: 'MCP',
+		extensions: '工具与扩展',
 		other: '其他',
 	}[category];
 }

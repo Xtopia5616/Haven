@@ -393,7 +393,7 @@ impl Tool for SkillToolAdapter {
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {
-        ToolCatalogGroup::Skills
+        ToolCatalogGroup::Extensions
     }
 
     fn represented_source(&self) -> ToolSource {

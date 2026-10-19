@@ -68,16 +68,17 @@ describe('builtin tool presentation', () => {
 		const workflow = tool('agent.list', { category: 'workflow' });
 		const shell = tool('shell', { category: 'shell' });
 		const filesSearch = tool('files.search', { enabled: false, category: 'files' });
-		const ask = tool('ask', { category: 'haven' });
+		const ask = tool('ask', { category: 'interaction' });
 		const web = tool('web_search_api', { category: 'network' });
+		const mcp = tool('mcp__calendar__list', { category: 'extensions' });
 
-		const cards = groupBuiltinTools([filesRead, workflow, shell, filesSearch, ask, web]);
+		const cards = groupBuiltinTools([filesRead, workflow, shell, filesSearch, ask, web, mcp]);
 
-		expect(cards).toHaveLength(5);
+		expect(cards).toHaveLength(6);
 		expect(cards[0]).toMatchObject({
 			kind: 'family-group',
-			name: 'haven',
-			label: 'Haven',
+			name: 'interaction',
+			label: '用户交互',
 			roots: [{ name: 'ask', operations: [ask] }],
 		});
 		expect(cards[1]).toMatchObject({
@@ -103,6 +104,12 @@ describe('builtin tool presentation', () => {
 			name: 'shell',
 			label: '命令行',
 			roots: [{ name: 'shell', operations: [shell] }],
+		});
+		expect(cards[5]).toMatchObject({
+			kind: 'family-group',
+			name: 'extensions',
+			label: '工具与扩展',
+			roots: [{ name: 'mcp__calendar__list', operations: [mcp] }],
 		});
 	});
 

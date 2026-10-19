@@ -147,7 +147,7 @@ pub fn typed_adapter() -> crate::TypedToolAdapter<NotifyTool> {
         crate::OperationIdempotency::Unknown,
         ToolOperationScope::Session,
         ToolConcurrency::Exclusive,
-        ToolCatalogGroup::System,
+        ToolCatalogGroup::Interaction,
         None,
     );
     crate::TypedToolAdapter::new("notify", DESCRIPTION, NotifyTool).with_operation_spec(spec)
@@ -164,7 +164,7 @@ impl Tool for NotifyTool {
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {
-        ToolCatalogGroup::System
+        ToolCatalogGroup::Interaction
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

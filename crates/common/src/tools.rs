@@ -40,6 +40,7 @@ pub enum ToolRetrySafety {
 #[serde(rename_all = "snake_case")]
 pub enum ToolCatalogGroup {
     Haven,
+    Interaction,
     Workflow,
     Files,
     Desktop,
@@ -47,8 +48,7 @@ pub enum ToolCatalogGroup {
     Media,
     Network,
     Shell,
-    Skills,
-    Mcp,
+    Extensions,
     #[default]
     Other,
 }
@@ -57,6 +57,7 @@ impl ToolCatalogGroup {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Haven => "haven",
+            Self::Interaction => "interaction",
             Self::Workflow => "workflow",
             Self::Files => "files",
             Self::Desktop => "desktop",
@@ -64,8 +65,7 @@ impl ToolCatalogGroup {
             Self::Media => "media",
             Self::Network => "network",
             Self::Shell => "shell",
-            Self::Skills => "skills",
-            Self::Mcp => "mcp",
+            Self::Extensions => "extensions",
             Self::Other => "other",
         }
     }
@@ -73,7 +73,8 @@ impl ToolCatalogGroup {
     /// Short routing summary shared by the Agent prompt and tool catalog.
     pub const fn summary(self) -> &'static str {
         match self {
-            Self::Haven => "Haven sessions, memory, tasks, and settings.",
+            Self::Haven => "Haven memory, diagnostics, configuration, and management tools.",
+            Self::Interaction => "Ask the user for input and send notifications.",
             Self::Workflow => {
                 "Coordinate agents and sessions, foreground tool calls, background ToolRuns, and schedules."
             }
@@ -81,14 +82,17 @@ impl ToolCatalogGroup {
                 "Read, search, inspect, create, and edit files in the authorized workspace."
             }
             Self::Desktop => "Observe and control Windows apps, windows, input, and clipboard.",
-            Self::System => "Read system status and manage supported device and power settings.",
+            Self::System => {
+                "Read system status and manage supported device, power, and environment settings."
+            }
             Self::Media => {
                 "Inspect, transform, generate, record, and play media; use speech and audio controls."
             }
             Self::Network => "Search the web and access approved HTTP endpoints.",
             Self::Shell => "Run commands in the authorized execution workspace.",
-            Self::Skills => "User-configured Skills for specialized, task-specific workflows.",
-            Self::Mcp => "User-configured MCP servers for additional integrations.",
+            Self::Extensions => {
+                "Discover, load, and use additional builtin operations, Skills, and MCP tools."
+            }
             Self::Other => "Additional capabilities for the task.",
         }
     }
@@ -603,7 +607,11 @@ mod tests {
         let summaries = [
             (
                 ToolCatalogGroup::Haven,
-                "Haven sessions, memory, tasks, and settings.",
+                "Haven memory, diagnostics, configuration, and management tools.",
+            ),
+            (
+                ToolCatalogGroup::Interaction,
+                "Ask the user for input and send notifications.",
             ),
             (
                 ToolCatalogGroup::Files,
@@ -615,7 +623,7 @@ mod tests {
             ),
             (
                 ToolCatalogGroup::System,
-                "Read system status and manage supported device and power settings.",
+                "Read system status and manage supported device, power, and environment settings.",
             ),
             (
                 ToolCatalogGroup::Media,
@@ -634,12 +642,8 @@ mod tests {
                 "Coordinate agents and sessions, foreground tool calls, background ToolRuns, and schedules.",
             ),
             (
-                ToolCatalogGroup::Skills,
-                "User-configured Skills for specialized, task-specific workflows.",
-            ),
-            (
-                ToolCatalogGroup::Mcp,
-                "User-configured MCP servers for additional integrations.",
+                ToolCatalogGroup::Extensions,
+                "Discover, load, and use additional builtin operations, Skills, and MCP tools.",
             ),
             (
                 ToolCatalogGroup::Other,

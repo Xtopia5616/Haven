@@ -646,6 +646,7 @@ impl ToolCatalogTool {
         Ok(families
             .into_iter()
             .map(|(family, items)| {
+                let source = Self::family_source(&items, source);
                 let mut roots = items
                     .iter()
                     .filter_map(|item| item.metadata["root"].as_str())
@@ -655,11 +656,7 @@ impl ToolCatalogTool {
                 roots.dedup();
                 CatalogItem {
                     name: family.clone(),
-                    source: match family.as_str() {
-                        "skills" => CatalogSource::Skill,
-                        "mcp" => CatalogSource::Mcp,
-                        _ => CatalogSource::Builtin,
-                    },
+                    source,
                     kind: "family",
                     description: compact_text(&family_description(&family), 320),
                     loaded: items.iter().all(|item| item.loaded),
@@ -670,6 +667,17 @@ impl ToolCatalogTool {
                 }
             })
             .collect())
+    }
+
+    fn family_source(items: &[CatalogItem], fallback: CatalogSource) -> CatalogSource {
+        let Some(source) = items.first().map(|item| item.source) else {
+            return fallback;
+        };
+        if items.iter().all(|item| item.source == source) {
+            source
+        } else {
+            CatalogSource::All
+        }
     }
 
     async fn describe_mcp_server(&self, name: &str) -> anyhow::Result<Option<Value>> {
@@ -735,7 +743,7 @@ impl Tool for ToolCatalogTool {
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {
-        ToolCatalogGroup::Haven
+        ToolCatalogGroup::Extensions
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -751,7 +759,7 @@ impl Tool for ToolCatalogTool {
             crate::OperationIdempotency::Unknown,
             crate::ToolOperationScope::Session,
             crate::ToolConcurrency::Exclusive,
-            ToolCatalogGroup::Haven,
+            ToolCatalogGroup::Extensions,
             None,
         ))
     }
@@ -925,7 +933,7 @@ fn tool_item(def: &ToolDef, source: CatalogSource, loaded: bool) -> CatalogItem 
         loaded,
         metadata: serde_json::json!({
             "root": root,
-            "family": family_for_def(def, source),
+            "family": family_for_def(def),
         }),
     }
 }
@@ -1061,22 +1069,17 @@ fn mcp_tool_detail(
     detail
 }
 
-fn family_for_def(def: &ToolDef, source: CatalogSource) -> String {
-    match source {
-        CatalogSource::Skill => "skills".into(),
-        CatalogSource::Mcp => "mcp".into(),
-        CatalogSource::All => def.catalog_group.as_str().into(),
-        CatalogSource::Builtin => def
-            .manifest
-            .as_ref()
-            .map(|manifest| manifest.identity.catalog_group.as_str().to_string())
-            .unwrap_or_else(|| def.catalog_group.as_str().into()),
-    }
+fn family_for_def(def: &ToolDef) -> String {
+    def.manifest
+        .as_ref()
+        .map(|manifest| manifest.identity.catalog_group.as_str().to_string())
+        .unwrap_or_else(|| def.catalog_group.as_str().into())
 }
 
 fn family_description(family: &str) -> String {
     let group = match family {
         "system" => ToolCatalogGroup::System,
+        "interaction" => ToolCatalogGroup::Interaction,
         "workflow" => ToolCatalogGroup::Workflow,
         "haven" => ToolCatalogGroup::Haven,
         "files" => ToolCatalogGroup::Files,
@@ -1084,8 +1087,7 @@ fn family_description(family: &str) -> String {
         "media" => ToolCatalogGroup::Media,
         "network" => ToolCatalogGroup::Network,
         "shell" => ToolCatalogGroup::Shell,
-        "skills" => ToolCatalogGroup::Skills,
-        "mcp" => ToolCatalogGroup::Mcp,
+        "extensions" => ToolCatalogGroup::Extensions,
         "other" => ToolCatalogGroup::Other,
         _ => return format!("Additional capabilities in the {family} family."),
     };
@@ -1129,6 +1131,7 @@ mod tests {
     fn family_descriptions_share_the_catalog_group_summary() {
         for group in [
             ToolCatalogGroup::Haven,
+            ToolCatalogGroup::Interaction,
             ToolCatalogGroup::Workflow,
             ToolCatalogGroup::Files,
             ToolCatalogGroup::Desktop,
@@ -1136,17 +1139,39 @@ mod tests {
             ToolCatalogGroup::Media,
             ToolCatalogGroup::Network,
             ToolCatalogGroup::Shell,
-            ToolCatalogGroup::Skills,
-            ToolCatalogGroup::Mcp,
+            ToolCatalogGroup::Extensions,
             ToolCatalogGroup::Other,
         ] {
             assert_eq!(family_description(group.as_str()), group.summary());
         }
         assert_eq!(
-            family_description("skills"),
-            ToolCatalogGroup::Skills.summary()
+            family_description("extensions"),
+            ToolCatalogGroup::Extensions.summary()
         );
-        assert_eq!(family_description("mcp"), ToolCatalogGroup::Mcp.summary());
+    }
+
+    #[test]
+    fn family_source_preserves_source_filters_and_marks_mixed_families_as_all() {
+        let item = |source| CatalogItem {
+            name: "tool".into(),
+            source,
+            kind: "tool",
+            description: String::new(),
+            loaded: false,
+            metadata: serde_json::json!({}),
+        };
+
+        assert_eq!(
+            ToolCatalogTool::family_source(&[item(CatalogSource::Skill)], CatalogSource::All),
+            CatalogSource::Skill
+        );
+        assert_eq!(
+            ToolCatalogTool::family_source(
+                &[item(CatalogSource::Builtin), item(CatalogSource::Mcp)],
+                CatalogSource::All
+            ),
+            CatalogSource::All
+        );
     }
 
     #[test]

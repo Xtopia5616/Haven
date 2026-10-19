@@ -179,9 +179,11 @@ Builtin 的模型目录统一按点号 operation view 暴露：例如 `files.rea
 `shell`、`http`、`system.info`、`tool_catalog`、`load_skill` 与 `load_mcp` 每轮直接提供；
 其中 `tool_catalog` 按需提供第二层 root 和第三层 operation 的名称、描述与精确 schema。其它未选中的
 builtin operation 保留在 host-owned deferred catalog，由 `tool_catalog` 的 `action=load` 按
-operation/root 原子加载到当前 session。提示词索引按 `ToolCatalogGroup` 展示，Agent、Session、
-Schedule 与 ToolRun 管理操作归入 `workflow`；Haven、文件系统、Desktop、System、Media、Network
-与 Shell 保持独立分类。目录可见性只影响模型路由，不改变工具名、授权、确认、sandbox 或执行策略。
+operation/root 原子加载到当前 session。提示词索引按 `ToolCatalogGroup` 展示：Agent、Session、
+Schedule 与 ToolRun 管理操作归入 `workflow`；`ask` 与 `notify` 归入 `interaction`；工具目录、
+Skill/MCP 加载器及外部扩展工具归入 `extensions`。Haven、文件系统、Desktop、System、Media、
+Network 与 Shell 保持独立能力分类。Skill/MCP 的 `ToolSource` 仍表达执行来源与安全边界，不再作为
+能力类别（ADR 1331、1332）。目录可见性只影响模型路由，不改变工具名、授权、确认、sandbox 或执行策略。
 启用 Skill 只进入紧凑索引，由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`，并在成功加载结果中返回完整 `SKILL.md` 正文作为任务指引；若正文超出有效工具观察预算（全局观察上限与单工具输出上限中较小者）则拒绝激活，避免模型收到截断指令；
 MCP 服务器索引保持紧凑，仍由 `load_mcp` 按服务器加载并注册到 `SessionToolOverlay`
 （ADR 0127、0131、0137、0145、0148、0816、1331）。Builtin 的 `toolrun.*` 是后台 ToolRun 操作；

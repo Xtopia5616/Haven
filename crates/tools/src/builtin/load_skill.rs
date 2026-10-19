@@ -179,7 +179,7 @@ impl Tool for LoadSkillTool {
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {
-        ToolCatalogGroup::Haven
+        ToolCatalogGroup::Extensions
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -195,7 +195,7 @@ impl Tool for LoadSkillTool {
             crate::OperationIdempotency::Unknown,
             crate::ToolOperationScope::Session,
             crate::ToolConcurrency::Exclusive,
-            ToolCatalogGroup::Haven,
+            ToolCatalogGroup::Extensions,
             None,
         ))
     }

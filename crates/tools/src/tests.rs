@@ -738,8 +738,8 @@ async fn test_tools_facade_rebuild_catalog_registers_builtins() {
     );
 
     for (name, group) in [
-        ("ask", "haven"),
-        ("notify", "system"),
+        ("ask", "interaction"),
+        ("notify", "interaction"),
         ("shell", "shell"),
         ("http", "network"),
         ("files.read", "files"),
@@ -762,6 +762,18 @@ async fn test_tools_facade_rebuild_catalog_registers_builtins() {
             "manifest root drift for {name}"
         );
         assert!(listed["manifest"]["presentation"]["renderer"].is_string());
+    }
+
+    for name in ["tool_catalog", "load_skill", "load_mcp"] {
+        let listed = builtin_tools
+            .iter()
+            .find(|tool| tool["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("builtin tool {name} should be listed"));
+        assert_eq!(
+            listed["catalog_group"].as_str(),
+            Some("extensions"),
+            "{name}"
+        );
     }
 
     assert!(mgr.get_tool("files").await.is_none());
@@ -894,7 +906,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
         .await
         .unwrap();
     let family_items = families.output["items"].as_array().unwrap();
-    for family in ["workflow", "haven", "system"] {
+    for family in ["workflow", "interaction", "system", "extensions"] {
         assert!(
             family_items.iter().any(|item| item["name"] == family),
             "layer 1 should expose the {family} family"
@@ -2094,6 +2106,7 @@ async fn registered_operation_manifest_matches_runtime_policy() {
         "notify",
         "shell",
         "http",
+        "system.info",
         "tool_catalog",
         "load_skill",
         "load_mcp",
@@ -2102,6 +2115,33 @@ async fn registered_operation_manifest_matches_runtime_policy() {
         "agent.inbox",
     ] {
         assert!(find(name).operation_spec().is_some(), "{name} spec");
+    }
+
+    for (name, group) in [
+        ("ask", haven_common::tools::ToolCatalogGroup::Interaction),
+        ("notify", haven_common::tools::ToolCatalogGroup::Interaction),
+        ("shell", haven_common::tools::ToolCatalogGroup::Shell),
+        ("http", haven_common::tools::ToolCatalogGroup::Network),
+        ("system.info", haven_common::tools::ToolCatalogGroup::System),
+        (
+            "tool_catalog",
+            haven_common::tools::ToolCatalogGroup::Extensions,
+        ),
+        (
+            "load_skill",
+            haven_common::tools::ToolCatalogGroup::Extensions,
+        ),
+        (
+            "load_mcp",
+            haven_common::tools::ToolCatalogGroup::Extensions,
+        ),
+        ("files.read", haven_common::tools::ToolCatalogGroup::Files),
+        (
+            "agent.inbox",
+            haven_common::tools::ToolCatalogGroup::Workflow,
+        ),
+    ] {
+        assert_eq!(find(name).catalog_group(), group, "{name}");
     }
 
     for tool in &tools {

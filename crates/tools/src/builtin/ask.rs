@@ -171,7 +171,7 @@ pub fn typed_adapter() -> crate::TypedToolAdapter<AskTool> {
         crate::OperationIdempotency::Unknown,
         ToolOperationScope::Session,
         ToolConcurrency::Exclusive,
-        ToolCatalogGroup::Haven,
+        ToolCatalogGroup::Interaction,
         None,
     );
     crate::TypedToolAdapter::new("ask", DESCRIPTION, AskTool).with_operation_spec(spec)
@@ -188,7 +188,7 @@ impl Tool for AskTool {
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {
-        ToolCatalogGroup::Haven
+        ToolCatalogGroup::Interaction
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
