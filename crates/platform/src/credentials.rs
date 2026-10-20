@@ -109,6 +109,9 @@ impl CredentialStore for PlatformCredentialStore {
 #[cfg(any(windows, test))]
 fn credential_chunk_ranges(value: &str, max_bytes: usize) -> Vec<Range<usize>> {
     assert!(max_bytes > 0, "credential chunk size must be non-zero");
+    if value.is_empty() {
+        return std::iter::once(0..0).collect();
+    }
     let mut ranges = Vec::new();
     let mut start = 0;
     while start < value.len() {
@@ -173,10 +176,7 @@ fn read_stored_value(
     let root_text = std::str::from_utf8(&root.0)
         .context("Windows Credential Manager returned non-UTF-8 credential data")?;
     let Some(manifest) = parse_chunk_manifest(root_text) else {
-        if root_text.starts_with(CHUNK_MANIFEST_PREFIX) {
-            anyhow::bail!("Windows Credential Manager credential manifest is invalid");
-        }
-        return Ok(Some(root_text.to_string()));
+        anyhow::bail!("Windows Credential Manager credential manifest is invalid");
     };
 
     let mut assembled = SecretBuffer(Vec::new());
@@ -213,16 +213,6 @@ fn write_stored_value(
 
     let base_target = target_name(reference);
     let previous_manifest = read_manifest(store, &base_target)?;
-    if value.len() <= WINDOWS_CREDENTIAL_BLOB_MAX_BYTES {
-        store.write_blob(&base_target, value.as_bytes())?;
-        if previous_manifest.is_some() {
-            for slot in ['a', 'b'] {
-                warn_on_chunk_cleanup_failure(cleanup_chunk_slot(store, reference, slot));
-            }
-        }
-        return Ok(());
-    }
-
     let ranges = credential_chunk_ranges(value, CREDENTIAL_CHUNK_BYTES);
     if ranges.is_empty() || ranges.len() > MAX_CREDENTIAL_CHUNKS {
         anyhow::bail!("credential exceeds the supported Windows secure-storage size");
@@ -284,7 +274,7 @@ fn read_manifest(
             anyhow::anyhow!("Windows Credential Manager credential manifest is invalid")
         });
     }
-    Ok(None)
+    anyhow::bail!("Windows Credential Manager credential manifest is invalid");
 }
 
 #[cfg(any(windows, test))]
@@ -591,14 +581,28 @@ mod tests {
     }
 
     #[test]
-    fn reads_legacy_single_blob_credentials() {
+    fn rejects_unversioned_single_blob_credentials() {
         let store = FakeCredentialTargetStore::default();
         store.seed(&target_name(REFERENCE), br#"{"refresh_token":"legacy"}"#);
 
-        assert_eq!(
-            read_stored_value(&store, REFERENCE).unwrap().as_deref(),
-            Some(r#"{"refresh_token":"legacy"}"#)
-        );
+        assert!(read_stored_value(&store, REFERENCE).is_err());
+        assert!(write_stored_value(&store, REFERENCE, "replacement").is_err());
+    }
+
+    #[test]
+    fn small_and_empty_credentials_use_the_versioned_chunk_format() {
+        let store = FakeCredentialTargetStore::default();
+        for value in ["short-token", ""] {
+            write_stored_value(&store, REFERENCE, value).unwrap();
+            let root = store.read_blob(&target_name(REFERENCE)).unwrap().unwrap();
+            let root_text = std::str::from_utf8(&root.0).unwrap();
+            let manifest = parse_chunk_manifest(root_text).unwrap();
+            assert_eq!(manifest.chunk_count, 1);
+            assert_eq!(
+                read_stored_value(&store, REFERENCE).unwrap().as_deref(),
+                Some(value)
+            );
+        }
     }
 
     #[test]
@@ -637,6 +641,16 @@ mod tests {
         let previous = "previous-token";
         let replacement = "replacement-token🙂".repeat(500);
         write_stored_value(&store, REFERENCE, previous).unwrap();
+        let previous_manifest = parse_chunk_manifest(
+            std::str::from_utf8(&store.read_blob(&target_name(REFERENCE)).unwrap().unwrap().0)
+                .unwrap(),
+        )
+        .unwrap();
+        let failed_slot = if previous_manifest.active_slot == 'a' {
+            'b'
+        } else {
+            'a'
+        };
         store.fail_next_write_to(&target_name(REFERENCE));
 
         assert!(write_stored_value(&store, REFERENCE, &replacement).is_err());
@@ -644,7 +658,12 @@ mod tests {
             read_stored_value(&store, REFERENCE).unwrap().as_deref(),
             Some(previous)
         );
-        assert!(!store.contains(&chunk_target_name(REFERENCE, 'a', 0)));
+        assert!(store.contains(&chunk_target_name(
+            REFERENCE,
+            previous_manifest.active_slot,
+            0
+        )));
+        assert!(!store.contains(&chunk_target_name(REFERENCE, failed_slot, 0)));
     }
 
     #[test]
@@ -683,7 +702,7 @@ mod tests {
             Some("short-token")
         );
         assert!(!store.contains(&chunk_target_name(REFERENCE, 'a', 0)));
-        assert!(!store.contains(&chunk_target_name(REFERENCE, 'b', 0)));
+        assert!(store.contains(&chunk_target_name(REFERENCE, 'b', 0)));
     }
 
     #[test]
