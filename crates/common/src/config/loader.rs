@@ -8,11 +8,15 @@ macro_rules! config_snapshot_pair {
     ($settings:ident; $(
         $(#[$field_doc:meta])*
         $field:ident: $ty:ty
-    ),* $(,)?; $($sanitize:tt)*) => {
+    ),* $(,)?; config_only { $(
+        $(#[$private_field_doc:meta])*
+        $private_field:ident: $private_ty:ty
+    ),* $(,)? } ; $($sanitize:tt)*) => {
         #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
         #[serde(default, deny_unknown_fields)]
         pub struct AppConfig {
             $( $(#[$field_doc])* pub $field: $ty, )*
+            $( $(#[$private_field_doc])* pub $private_field: $private_ty, )*
         }
 
         #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -35,6 +39,7 @@ macro_rules! config_snapshot_pair {
             fn from(settings: &SettingsSnapshot) -> Self {
                 Self {
                     $( $field: settings.$field.clone(), )*
+                    $( $private_field: Default::default(), )*
                 }
             }
         }
@@ -62,7 +67,12 @@ config_snapshot_pair! {
     notification: NotificationConfig,
     log: LogConfig,
     tool_settings: HashMap<String, ToolConfig>,
-    ;
+    ; config_only {
+        /// Local language servers available to code intelligence operations.
+        /// This executable configuration is managed in config.toml and is never
+        /// exposed through Settings IPC.
+        lsp_servers: Vec<LspServerConfig>,
+    } ;
     for p in settings.llm.providers.iter_mut() {
         p.api_key = String::new();
     }
@@ -1160,6 +1170,41 @@ mod tests {
         let settings = SettingsSnapshot::from(&cfg);
         assert!(settings.media.ocr.api_key.is_empty());
         assert!(settings.media.ocr.api_secret.is_empty());
+    }
+
+    #[test]
+    fn lsp_servers_round_trip_in_config_without_entering_settings_ipc() {
+        let config: AppConfig = toml::from_str(
+            r#"
+                [[lsp_servers]]
+                name = "rust-analyzer"
+                command = "rust-analyzer"
+                args = ["--log-file", "server.log"]
+                extensions = [".rs"]
+                language_id = "rust"
+                enabled = true
+            "#,
+        )
+        .unwrap();
+
+        let round_trip: AppConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(round_trip.lsp_servers, config.lsp_servers);
+
+        let settings = SettingsSnapshot::from(&config);
+        let settings_json = serde_json::to_value(&settings).unwrap();
+        assert!(settings_json.get("lsp_servers").is_none());
+
+        // Settings writes use a sparse patch and therefore cannot erase the
+        // executable configuration owned by config.toml.
+        let mut loader = ConfigLoader {
+            path: PathBuf::from("unused"),
+            config,
+            source_fingerprint: None,
+            recovery_required: false,
+        };
+        loader.apply_settings(&SettingsPatch::from(&settings));
+        assert_eq!(loader.config().lsp_servers.len(), 1);
+        assert_eq!(loader.config().lsp_servers[0].command, "rust-analyzer");
     }
 
     #[test]

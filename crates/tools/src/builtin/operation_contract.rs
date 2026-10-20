@@ -46,6 +46,36 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         "files.move" => ("移动文件", ToolCatalogGroup::Files, false, None),
         "files.delete" => ("删除文件", ToolCatalogGroup::Files, false, None),
         "files.list" => ("列出文件", ToolCatalogGroup::Files, true, None),
+        "lsp.definition" => (
+            "代码定义",
+            ToolCatalogGroup::Files,
+            false,
+            Some(RiskLevel::High),
+        ),
+        "lsp.references" => (
+            "代码引用",
+            ToolCatalogGroup::Files,
+            false,
+            Some(RiskLevel::High),
+        ),
+        "lsp.hover" => (
+            "代码悬停信息",
+            ToolCatalogGroup::Files,
+            false,
+            Some(RiskLevel::High),
+        ),
+        "lsp.document_symbols" => (
+            "文档符号",
+            ToolCatalogGroup::Files,
+            false,
+            Some(RiskLevel::High),
+        ),
+        "lsp.diagnostics" => (
+            "代码诊断",
+            ToolCatalogGroup::Files,
+            false,
+            Some(RiskLevel::High),
+        ),
         "clipboard.read" => ("读取剪贴板", ToolCatalogGroup::Desktop, true, None),
         "clipboard.write" => ("写入剪贴板", ToolCatalogGroup::Desktop, false, None),
         "clipboard.history" => ("剪贴板历史", ToolCatalogGroup::Desktop, true, None),
@@ -262,6 +292,7 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         | "haven.mcp.mcp_connect"
         | "haven.mcp.mcp_disconnect"
         | "haven.mcp.mcp_toggle" => OperationIdempotency::Idempotent,
+        name if name.starts_with("lsp.") => OperationIdempotency::NonIdempotent,
         "session.link" | "session.unlink" | "session.read_notes" | "session.replace_notes" => {
             OperationIdempotency::Idempotent
         }
@@ -298,6 +329,11 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
             "haven.mcp.mcp_list" | "haven.mcp.mcp_disconnect" | "haven.mcp.mcp_remove" => {
                 Some(NetworkAccess::None)
             }
+            "lsp.definition"
+            | "lsp.references"
+            | "lsp.hover"
+            | "lsp.document_symbols"
+            | "lsp.diagnostics" => Some(NetworkAccess::Opaque),
             _ => None,
         },
         risk_override,

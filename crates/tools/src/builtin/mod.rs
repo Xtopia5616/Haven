@@ -11,6 +11,7 @@ pub mod http;
 pub mod input;
 pub(crate) mod load_mcp;
 pub(crate) mod load_skill;
+mod lsp;
 pub mod media;
 mod media_audio;
 pub mod memory;
@@ -116,6 +117,7 @@ pub(crate) struct BuiltinContext {
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub mcp_manager: Arc<McpManager>,
     pub mcp_server_config_source: crate::McpServerConfigSource,
+    pub lsp_server_config_source: crate::lsp_server_config::LspServerConfigSource,
     pub registry: ToolRegistry,
     pub session_tool_overlay: SessionToolOverlay,
     pub deferred_catalog: DeferredToolCatalog,
@@ -142,6 +144,7 @@ pub(crate) async fn register_builtin_tools(
         skill_runner,
         mcp_manager,
         mcp_server_config_source,
+        lsp_server_config_source,
         registry,
         session_tool_overlay,
         deferred_catalog,
@@ -260,6 +263,15 @@ pub(crate) async fn register_builtin_tools(
         tools.push(OperationViewTool::new(files_tool.clone(), contract));
     }
     add_operation_views(tools, files_tool.clone(), settings, FILE_OPERATION_VIEWS);
+    let lsp_tool: ToolHandle = Arc::new(lsp::LspTool::new(
+        lsp_server_config_source,
+        authorization.clone(),
+    ));
+    for contract in operation_specs(limits.search_max_results) {
+        if contract.name.starts_with("lsp.") {
+            tools.push(OperationViewTool::new(lsp_tool.clone(), contract));
+        }
+    }
     let clipboard_tool: ToolHandle = Arc::new(
         clipboard::ClipboardTool::new(
             clipboard_history,
@@ -578,7 +590,7 @@ fn operation_policy_attributes(
 /// The operation-view catalog is the backend source of truth for the model
 /// schema, execution policy and the cross-boundary UI/prompt identifiers.
 fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
-    vec![
+    let mut specs = vec![
         OperationSpec {
             name: "files.read".into(),
             description: tool_prompts::operation_text("files.read")
@@ -759,7 +771,9 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             },
             identity: None,
         },
-    ]
+    ];
+    specs.extend(lsp::operation_specs());
+    specs
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1411,7 +1425,12 @@ mod tests {
                 "files.outline",
                 "files.summary",
                 "files.search",
-                "system.info"
+                "system.info",
+                "lsp.definition",
+                "lsp.references",
+                "lsp.hover",
+                "lsp.document_symbols",
+                "lsp.diagnostics"
             ]
         );
         for contract in contracts {

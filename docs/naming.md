@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.191 | 日期: 2026-10-19
+> 版本: v1.192 | 日期: 2026-10-20
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -11,6 +11,7 @@
 - **跨层数字校验匹配 Rust primitive**：UI wire mapper 对 Rust `i32` 校验有符号 32 位范围，对 `u32` 校验非负整数及 32 位上限；Rust `u64` 以 JSON number 表达时只接受 JavaScript 安全整数范围。浮点字段只执行有限数值校验（ADR 0980、1022）。
 - **事件序号标出序列域**：流式分片在 Rust 与 UI 均使用 `seq`；从 `session_events.sequence` 投影到 UI event 的顺序使用 `event_sequence` / `eventSequence`，不能让两种不同序列域共享 `seq` 短名（ADR 1033）。
 - **一眼可辨**：命名应能区分「类型」「值」「常量」「组件」「模块」，见各层细则。
+- **LSP 缩写按语言惯例映射大小写**：协议、prompt 与工具操作使用 `LSP` / `lsp.*`；Rust 模块和配置字段使用 `lsp` / `lsp_servers`，类型使用 `LspServerConfig`，不把首字母缩写全大写后写成 `LSPServerConfig`。
 - **边界语义不撞名**：不同 crate/边界中的类型即使位于不同命名空间，也要能从类型名看出领域或 wire 角色；同名但不同状态空间时用领域限定词，不要求合并状态 owner。例如 Memory durable `SessionEvent` 与 Agent process-local `SessionSupervisorEvent` 各自保留 owner。
 - **Serde alias 只表示明确的 wire 名称差异**：字段默认 Serde 名已等于 alias 时删除重复 alias；只保留外部协议确实发送的其它字段拼法，例如 Gemini 的 `finishReason`。Haven 自有配置或 UI payload 不隐式接受旧名；append-only durable event 的 replay-only alias 必须由 ADR 点名旧字段、保留仅反序列化兼容，并确保新写入只发 canonical 字段（ADR 0662、0995、0996、0998）。
 - **同域不同形状标明角色**：同一领域中的完整 runtime state、稀疏 view 输入或 wire projection 即使字段重叠，也使用能标出约束/角色的不同类型名，不用可选字段数量来猜其含义。

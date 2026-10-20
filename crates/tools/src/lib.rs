@@ -16,6 +16,7 @@ mod execution;
 mod execution_workspace;
 mod facade;
 mod live_output;
+mod lsp_server_config;
 #[cfg(test)]
 mod mcp_exposure_tests;
 mod mcp_llm_adapter;

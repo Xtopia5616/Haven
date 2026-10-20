@@ -1327,3 +1327,5 @@
 - [1336：区分已完成轮次与暂停会话](1336-distinguish-completed-turn-from-paused-session.md)
 - [1337：对话切换列表只保留可继续会话](1337-keep-resumable-sessions-in-chat-switcher.md)
 - [1338：Session grant 不设基于时间的自动到期](1338-keep-session-grants-without-time-based-expiry.md)
+- [1339：保存执行工作区快捷项](1339-saved-execution-workspaces.md)
+- [1340：通过授权的本机 LSP 提供代码智能](1340-authorize-local-language-servers.md)

@@ -30,6 +30,8 @@ pub const MAX_TOOL_RETRIES: u32 = 10;
 pub const MAX_TOOL_RETRY_BACKOFF_SECS: u64 = 60;
 pub const MAX_MCP_TOOL_EXPOSURE_OVERRIDES: usize = 256;
 pub const MAX_MCP_TOOL_EXPOSURE_PATTERN_CHARS: usize = 256;
+pub const MAX_LSP_SERVERS: usize = 32;
+pub const MAX_LSP_SERVER_ARGS: usize = 64;
 /// A zero background ToolRun limit intentionally disables background launches.
 pub const MAX_RUNNING_BACKGROUND_TOOL_RUNS: usize = 64;
 /// Maximum number of entries returned by one files.list operation.
@@ -878,6 +880,164 @@ impl Default for McpServerConfig {
             enabled: true,
             exposure: McpExposureConfig::default(),
         }
+    }
+}
+
+/// A local Language Server Protocol implementation configured by the user.
+/// Commands run directly (without a shell) in the active execution workspace.
+/// This configuration is persisted in `config.toml` and is not exposed through
+/// the Settings IPC snapshot.
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct LspServerConfig {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub extensions: Vec<String>,
+    pub language_id: String,
+    pub enabled: bool,
+}
+
+impl std::fmt::Debug for LspServerConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LspServerConfig")
+            .field("name", &self.name)
+            .field(
+                "command",
+                &(!self.command.is_empty()).then_some("[CONFIGURED]"),
+            )
+            .field("args", &(!self.args.is_empty()).then_some("[REDACTED]"))
+            .field("extensions", &self.extensions)
+            .field("language_id", &self.language_id)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
+}
+
+impl Default for LspServerConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            command: String::new(),
+            args: Vec::new(),
+            extensions: Vec::new(),
+            language_id: String::new(),
+            enabled: true,
+        }
+    }
+}
+
+pub fn is_valid_lsp_server_name(name: &str) -> bool {
+    (1..=128).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+pub(super) fn validate_lsp_servers(servers: &[LspServerConfig]) -> anyhow::Result<()> {
+    use std::collections::HashSet;
+
+    if servers.len() > MAX_LSP_SERVERS {
+        anyhow::bail!("lsp_servers may contain at most {MAX_LSP_SERVERS} entries");
+    }
+    let mut names = HashSet::with_capacity(servers.len());
+    let mut extensions = HashSet::new();
+    for (index, server) in servers.iter().enumerate() {
+        if !is_valid_lsp_server_name(&server.name) {
+            anyhow::bail!(
+                "lsp_servers[{index}].name must use 1-128 ASCII letters, digits, '-' or '_'"
+            );
+        }
+        if !names.insert(server.name.as_str()) {
+            anyhow::bail!("lsp server names must be unique");
+        }
+        if server.command.trim().is_empty()
+            || server.command.chars().count() > 32_767
+            || server.command.chars().any(char::is_control)
+        {
+            anyhow::bail!("lsp_servers[{index}].command must be a non-empty local command path");
+        }
+        if server.args.len() > MAX_LSP_SERVER_ARGS
+            || server
+                .args
+                .iter()
+                .any(|argument| argument.len() > 4096 || argument.chars().any(char::is_control))
+        {
+            anyhow::bail!(
+                "lsp_servers[{index}].args may contain at most {MAX_LSP_SERVER_ARGS} arguments of at most 4096 bytes without control characters"
+            );
+        }
+        if server.language_id.is_empty()
+            || server.language_id.len() > 64
+            || !server.language_id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'+' | b'.')
+            })
+        {
+            anyhow::bail!("lsp_servers[{index}].language_id has an invalid shape");
+        }
+        if server.extensions.is_empty() || server.extensions.len() > 32 {
+            anyhow::bail!("lsp_servers[{index}].extensions must contain 1-32 extensions");
+        }
+        for extension in &server.extensions {
+            let valid = extension.len() >= 2
+                && extension.len() <= 32
+                && extension.starts_with('.')
+                && extension.as_bytes()[1..]
+                    .iter()
+                    .any(u8::is_ascii_alphanumeric)
+                && extension.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-')
+                });
+            if !valid {
+                anyhow::bail!(
+                    "lsp_servers[{index}].extensions must use dot-prefixed ASCII extensions"
+                );
+            }
+            let normalized = extension.to_ascii_lowercase();
+            if !extensions.insert(normalized) {
+                anyhow::bail!("lsp server extensions must not overlap");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod lsp_server_tests {
+    use super::{LspServerConfig, is_valid_lsp_server_name, validate_lsp_servers};
+
+    fn server(name: &str, extension: &str) -> LspServerConfig {
+        LspServerConfig {
+            name: name.into(),
+            command: "language-server".into(),
+            extensions: vec![extension.into()],
+            language_id: "rust".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn validates_server_names_extensions_and_conflicts() {
+        assert!(is_valid_lsp_server_name("rust-analyzer_1"));
+        assert!(!is_valid_lsp_server_name("../rust"));
+        assert!(validate_lsp_servers(&[server("rust", ".rs")]).is_ok());
+        assert!(validate_lsp_servers(&[server("rust", ".")]).is_err());
+        assert!(validate_lsp_servers(&[server("rust", ".Rs"), server("other", ".rs")]).is_err());
+        assert!(validate_lsp_servers(&[server("same", ".rs"), server("same", ".ts")]).is_err());
+    }
+
+    #[test]
+    fn config_debug_redacts_commands_and_arguments() {
+        let config = LspServerConfig {
+            args: vec!["--token=secret-value".into()],
+            command: "C:\\private\\language-server.exe".into(),
+            ..server("rust", ".rs")
+        };
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("private"));
+        assert!(!debug.contains("secret-value"));
+        assert!(debug.contains("[REDACTED]"));
     }
 }
 

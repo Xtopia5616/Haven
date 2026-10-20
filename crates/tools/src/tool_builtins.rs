@@ -5,6 +5,7 @@
 //! second service locator for MCP and Skills.
 
 use crate::builtin::{BuiltinContext, MediaDeps, ToolRunDeps};
+use crate::lsp_server_config::LspServerConfigSource;
 use crate::mcp_server_config::McpServerConfigSource;
 use crate::runtime_capabilities::ToolCapabilitySnapshot;
 use crate::skill_runner::SkillRunner;
@@ -19,6 +20,7 @@ use tokio::sync::RwLock;
 pub(crate) struct ToolBuiltins {
     pub(crate) mcp_manager: McpManager,
     pub(crate) mcp_server_config_source: McpServerConfigSource,
+    pub(crate) lsp_server_config_source: LspServerConfigSource,
     pub(crate) skill_registry: SkillRegistry,
     pub(crate) skill_runner: Arc<RwLock<SkillRunner>>,
 }
@@ -28,6 +30,7 @@ impl ToolBuiltins {
         Self {
             mcp_manager: McpManager::new(),
             mcp_server_config_source: McpServerConfigSource::default(),
+            lsp_server_config_source: LspServerConfigSource::default(),
             skill_registry: SkillRegistry::new(),
             skill_runner: Arc::new(RwLock::new(SkillRunner::new(
                 VenvManager::new(exec_config.venv_root.clone()),
@@ -62,6 +65,7 @@ impl ToolBuiltins {
             skill_runner: self.skill_runner.clone(),
             mcp_manager: Arc::new(self.mcp_manager.clone()),
             mcp_server_config_source: self.mcp_server_config_source.clone(),
+            lsp_server_config_source: self.lsp_server_config_source.clone(),
             registry: core.operations.installed.clone(),
             session_tool_overlay: core.operations.session_tool_overlay.clone(),
             deferred_catalog: core.operations.deferred.clone(),

@@ -289,7 +289,8 @@ pub(crate) fn operation_attributes(
         name if name.starts_with("files.")
             || name.starts_with("media.")
             || name.starts_with("window.")
-            || name.starts_with("memory.") =>
+            || name.starts_with("memory.")
+            || name.starts_with("lsp.") =>
         {
             DataSensitivity::UserData
         }
@@ -318,6 +319,7 @@ pub(crate) fn operation_attributes(
         {
             ExecutionBoundary::HostProcess
         }
+        name if name.starts_with("lsp.") => ExecutionBoundary::HostProcess,
         _ => ExecutionBoundary::InProcess,
     };
     OperationAttributes {
@@ -1777,6 +1779,15 @@ impl ToolExecutionContext {
             Some(authorization) => authorization.acquire().await.map(Some),
             None => Ok(None),
         }
+    }
+
+    pub(crate) async fn acquire_lsp_process_start_permit(
+        &self,
+    ) -> Result<crate::security::ExecutionPolicyPermit, String> {
+        let authorization = self.execution_authorization.as_ref().ok_or_else(|| {
+            "LSP server process requires proof-derived execution authorization".to_string()
+        })?;
+        authorization.acquire_lsp_process_start_permit().await
     }
 
     pub(crate) fn clone_execution_authorization(

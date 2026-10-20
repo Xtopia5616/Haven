@@ -83,6 +83,41 @@ impl ExecutionPolicyAuthorization {
         Ok(ExecutionPolicyPermit { _config: config })
     }
 
+    /// LSP servers are user-configured host executables and may read workspace
+    /// files or perform their own network requests. Do not treat Job Object
+    /// containment as a filesystem or network sandbox: only start them from a
+    /// proof-bound call in FullAccess mode, with network policy handled by
+    /// the operation's opaque-network authorization.
+    pub(crate) async fn acquire_lsp_process_start_permit(
+        &self,
+    ) -> Result<ExecutionPolicyPermit, String> {
+        if confirmation_now() >= self.expires_at {
+            return Err("LSP execution proof expired before process start".into());
+        }
+        let config = Arc::clone(&self.authorization.config).read_owned().await;
+        if confirmation_now() >= self.expires_at {
+            return Err("LSP execution proof expired before process start".into());
+        }
+        if config.policy_revision != self.policy_revision {
+            return Err("execution policy changed before LSP process start".into());
+        }
+        if config.execution_workspace.generation() != self.execution_workspace_generation {
+            return Err("execution workspace changed before LSP process start".into());
+        }
+        if config.sandbox_mode != SandboxMode::FullAccess {
+            return Err("configured LSP servers require the Full Access sandbox".into());
+        }
+        if matches!(
+            config.network_policy,
+            NetworkPolicy::Deny | NetworkPolicy::Restricted
+        ) {
+            return Err(
+                "configured LSP servers require Open or user-approved network access".into(),
+            );
+        }
+        Ok(ExecutionPolicyPermit { _config: config })
+    }
+
     /// Wait until a global policy mutation or this tool's settings revoke the
     /// running process. Grants do not revoke already-running work.
     pub(crate) async fn wait_for_policy_revocation(&self) {
@@ -223,5 +258,82 @@ impl haven_skills::ProcessStartAuthorization for ExecutionPolicyAuthorization {
             .await
             .map_err(execution_policy_denied)?;
         Ok(Box::new(permit))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExecutionPolicyAuthorization;
+    use haven_common::types::{NetworkPolicy, SandboxMode};
+
+    #[tokio::test]
+    async fn lsp_start_permit_requires_full_access_and_permitted_network_policy() {
+        let (authorization, _engine) =
+            ExecutionPolicyAuthorization::for_test_with_engine_and_sandbox_mode(
+                SandboxMode::WorkspaceWrite,
+            );
+        assert!(
+            authorization
+                .acquire_lsp_process_start_permit()
+                .await
+                .err()
+                .expect("workspace-write must be denied")
+                .contains("Full Access")
+        );
+
+        let (authorization, engine) =
+            ExecutionPolicyAuthorization::for_test_with_engine_and_sandbox_mode(
+                SandboxMode::FullAccess,
+            );
+        for network_policy in [NetworkPolicy::Ask, NetworkPolicy::Open] {
+            engine
+                .config
+                .try_write()
+                .expect("test authorization config must be idle")
+                .network_policy = network_policy;
+            assert!(
+                authorization
+                    .acquire_lsp_process_start_permit()
+                    .await
+                    .is_ok()
+            );
+        }
+
+        let (authorization, engine) =
+            ExecutionPolicyAuthorization::for_test_with_engine_and_sandbox_mode(
+                SandboxMode::FullAccess,
+            );
+        for network_policy in [NetworkPolicy::Restricted, NetworkPolicy::Deny] {
+            engine
+                .config
+                .try_write()
+                .expect("test authorization config must be idle")
+                .network_policy = network_policy;
+            assert!(
+                authorization
+                    .acquire_lsp_process_start_permit()
+                    .await
+                    .err()
+                    .expect("restricted network must be denied")
+                    .contains("network access")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn lsp_start_permit_rejects_a_stale_execution_proof() {
+        let (mut authorization, _engine) =
+            ExecutionPolicyAuthorization::for_test_with_engine_and_sandbox_mode(
+                SandboxMode::FullAccess,
+            );
+        authorization.policy_revision += 1;
+        assert!(
+            authorization
+                .acquire_lsp_process_start_permit()
+                .await
+                .err()
+                .expect("stale proof must be denied")
+                .contains("policy changed")
+        );
     }
 }

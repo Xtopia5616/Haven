@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.31 | 日期: 2026-10-19
+> 版本: v1.32 | 日期: 2026-10-20
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -163,6 +163,15 @@ compact `media` reference 回到工具 observation，后续调用可以复用同
 `llm_usage.call_kind=media` 与 `call_kind=tool` 单独保留，不污染 Agent 主循环的累计
 cache rate（ADR 0124）。原始附件的 MediaPlan 投影同时留下短的 asset→representation
 notice，避免模型重复派生或猜测资产是否已经进入上下文（ADR 0129）。
+
+`builtin/lsp.rs` 为活动执行工作区提供 `lsp.definition`、`lsp.references`、`lsp.hover`、
+`lsp.document_symbols` 与 `lsp.diagnostics`。语言服务器通过 `config.toml` 的 `lsp_servers`
+配置，按最长文件扩展名后缀选择；工具只向服务器打开工作区内的 UTF-8 文档，配置更新后需重启 Haven。服务以受管本机子进程
+启动，每次调用创建一次短期 LSP 会话，限制为两个并发服务、单文档 1 MiB、消息 16 MiB、结果
+2 MiB。由于服务器是用户配置的可执行程序且可能自行读取文件或联网，操作属于 High risk，
+需要工具授权与确认，只允许 Full Access sandbox；Workspace Write、Restricted Network 与
+Deny Network 下不会启动进程。Host-process containment 回收进程树，但不被视为文件或网络
+sandbox。可执行配置不进入 Settings IPC snapshot（ADR 1340）。
 
 媒体工具的公共契约与实现按职责拆分：`media.rs` 只保留 `MediaTool`、operation/schema、
 安全元数据和统一调度；`media_reference.rs` 负责模态分类与模型媒体引用，
