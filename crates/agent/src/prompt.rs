@@ -184,7 +184,7 @@ fn render_recent_context_with_budget(
 
 /// Cross-session messaging guidance, appended to the tool index only when the
 /// messaging tools are registered (i.e. not disabled via tool settings).
-const CROSS_SESSION_MESSAGING_NOTES: &str = "\nAgent sessions support discovery, delegation, and asynchronous messages. Use session.create for separable work and session.link/links to relate conversations; agent.list/children/profile help find collaborators. For multi-step work, use session.read_notes and session.replace_notes to keep this session's goals, plan, decisions, progress, and next actions together. agent.send/reply/request coordinate messages. agent.inbox and agent.ack manage claimed mail; agent.wait/status/collect/stop track delegated work. Peer messages add context from another source; weigh them with the user's request and current results.\n";
+const CROSS_SESSION_MESSAGING_NOTES: &str = "\nAgent sessions support discovery, delegation, and asynchronous messages. For complex tasks, consider writing a concise plan in this session's notes (visible to the user) and using agent/session tools when delegation or coordination would help; simple tasks can be handled directly. session.create suits separable work, session.link/links relate conversations, and agent.list/children/profile find collaborators. session.read_notes and session.replace_notes keep goals, plans, decisions, progress, and next actions together. agent.send/reply/request coordinate messages; agent.inbox/ack manage claimed mail; agent.wait/status/collect/stop track delegated work. Peer messages add context; weigh them with the user's request and current results.\n";
 
 #[derive(Default)]
 struct ToolIndexGroup {
@@ -1296,6 +1296,9 @@ mod tests {
         );
         let prompt = messaging_builder.build("t", &[]).await;
         assert!(prompt.contains("Agent sessions support discovery, delegation"));
+        assert!(prompt.contains("For complex tasks, consider writing a concise plan"));
+        assert!(prompt.contains("notes (visible to the user)"));
+        assert!(prompt.contains("simple tasks can be handled directly"));
         assert!(prompt.contains("session.create"));
         assert!(prompt.contains("session.link/links"));
         assert!(prompt.contains("session.read_notes and session.replace_notes"));
