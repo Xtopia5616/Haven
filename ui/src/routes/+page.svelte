@@ -21,7 +21,11 @@
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import * as chatModelCommands from '$lib/chatModelCommands.ts';
 	import { buildSessionSwitcherOptions } from '$lib/sessionSwitcher.ts';
-	import { loadSettings } from '$lib/settingsCommands.ts';
+	import {
+		loadSettings,
+		pickExecutionWorkspaceDirectory,
+		updateSettings,
+	} from '$lib/settingsCommands.ts';
 	import { createChatModelOperations } from '$lib/chatModelOperations.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import { registerPerformanceMetricsProvider } from '$lib/performanceMetrics.ts';
@@ -145,6 +149,9 @@
 		maxFileBytes: 20 * 1024 * 1024,
 	});
 	let initialLoading = $state(true);
+	let executionWorkspaceRoot = $state<string | null>(null);
+	let executionWorkspaceSwitching = $state(false);
+	let executionWorkspaceSettingsRevision = 0;
 	let deleteTarget = $state<{ sessionId: string; title: string } | null>(null);
 	let deletingSession = $state(false);
 	const sessionReducer = appSessionReducer;
@@ -876,9 +883,13 @@
 		// Load configured Chat profiles and the current route primary for the
 		// toolbar. Fire-and-forget so loading settings never delays chat
 		// rendering.
+		const settingsRevisionAtStart = executionWorkspaceSettingsRevision;
 		loadSettings()
 			.then((s) => {
 				applyDefaultModelFromSettings(s);
+				if (executionWorkspaceSettingsRevision === settingsRevisionAtStart) {
+					executionWorkspaceRoot = s?.security?.execution_root ?? null;
+				}
 				if (s?.hotkey?.key_binding) {
 					hotkeyBinding = s.hotkey.key_binding;
 				}
@@ -1182,6 +1193,23 @@
 	const sessionHeaderTitle = $derived(
 		String(activeSession?.title || activeSession?.inputText || '新会话'),
 	);
+	async function switchExecutionWorkspace() {
+		if (executionWorkspaceSwitching) return;
+		executionWorkspaceSwitching = true;
+		try {
+			const selectedRoot = await pickExecutionWorkspaceDirectory();
+			if (selectedRoot === null) return;
+
+			await updateSettings({ settings: { security: { execution_root: selectedRoot } } });
+			executionWorkspaceSettingsRevision += 1;
+			executionWorkspaceRoot = selectedRoot;
+			addNotification('执行工作区已切换；已开始的调用继续使用原工作区', 'success', 3000);
+		} catch (error) {
+			reportError(error, { context: '+page', message: '切换执行工作区失败' });
+		} finally {
+			executionWorkspaceSwitching = false;
+		}
+	}
 	const activeSessionStatusLabel = $derived(
 		activeSessionRunEndNotice?.outcome === 'turn_completed'
 			? '本轮已完成'
@@ -1283,6 +1311,9 @@
 			title={sessionHeaderTitle}
 			hasSession={!!activeSessionId}
 			canEndSession={activeSessionStatus !== 'completed'}
+			{executionWorkspaceRoot}
+			{executionWorkspaceSwitching}
+			onSwitchExecutionWorkspace={switchExecutionWorkspace}
 			onNew={newSession}
 			onDelete={requestDeleteSession}
 			onEnd={endSession}

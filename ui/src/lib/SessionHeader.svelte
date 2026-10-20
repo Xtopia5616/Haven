@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import MaterialButton from './MaterialButton.svelte';
+	import Icon from './Icon.svelte';
 
 	interface Props {
 		title?: string;
@@ -9,6 +10,9 @@
 		onNew?: () => void;
 		onDelete?: () => void;
 		onEnd?: () => void;
+		executionWorkspaceRoot?: string | null;
+		executionWorkspaceSwitching?: boolean;
+		onSwitchExecutionWorkspace?: () => void;
 		children?: Snippet;
 	}
 
@@ -23,14 +27,38 @@
 		onNew,
 		onDelete,
 		onEnd,
+		executionWorkspaceRoot = null,
+		executionWorkspaceSwitching = false,
+		onSwitchExecutionWorkspace,
 		children,
 	}: Props = $props();
+	let executionWorkspaceLabel = $derived.by(() => {
+		if (!executionWorkspaceRoot) return '自动检测';
+		const normalizedRoot = executionWorkspaceRoot.replace(/[\\/]+$/, '');
+		return normalizedRoot.split(/[\\/]/).pop() || executionWorkspaceRoot;
+	});
+	let executionWorkspaceButtonLabel = $derived(
+		executionWorkspaceSwitching ? '切换中…' : `工作区 · ${executionWorkspaceLabel}`,
+	);
 </script>
 
 <header class="session-header">
 	<div class="session-header__identity">
 		<div class="session-header__title-row">
 			<h1>{title}</h1>
+			<MaterialButton
+				width="content"
+				variant="outlined"
+				className="session-header__workspace"
+				ariaLabel={`切换执行工作区，当前为 ${executionWorkspaceRoot || '自动检测'}`}
+				ariaBusy={executionWorkspaceSwitching}
+				disabled={executionWorkspaceSwitching || !onSwitchExecutionWorkspace}
+				title={`执行工作区：${executionWorkspaceRoot || '自动检测'}`}
+				onclick={() => onSwitchExecutionWorkspace?.()}
+			>
+				<Icon name="folder" size={16} />
+				<span class="session-header__workspace-name">{executionWorkspaceButtonLabel}</span>
+			</MaterialButton>
 		</div>
 	</div>
 	<div class="session-header__actions">
@@ -113,6 +141,16 @@
 		font-weight: 700;
 		letter-spacing: 0;
 		line-height: var(--md-sys-typescale-title-large-line-height);
+	}
+	:global(.session-header__workspace) {
+		min-width: 0;
+		flex: 0 1 auto;
+	}
+	.session-header__workspace-name {
+		max-width: min(24vw, 24ch);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.session-header__actions {
 		display: flex;

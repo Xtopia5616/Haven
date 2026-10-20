@@ -728,13 +728,15 @@ ready + 用户修改 → dirty → saving → saved | error
 | `WorkspaceNav` | 一级入口、当前工作区、窄窗折叠 | 具体页面数据请求 |
 | `WorkspaceSurface` | 次级工作区的统一外框、主题背景、边框和入场动效 | 页面数据、筛选器、列表和详情内容 |
 | `SessionRail` | 新建、搜索、切换、会话级操作 | 生成循环、消息持久化 |
-| `SessionHeader` | 标题、模型、会话状态、停止/结束等会话动作 | 任务列表和全局通知 |
+| `SessionHeader` | 标题、执行工作区入口、模型、会话状态、停止/结束等会话动作 | 任务列表和全局通知 |
 | `SessionMessageTimeline` | 消息、思考、工具调用、确认、结果的展示编排 | 领域命令调用 |
 | `Composer` | 文字、语音、附件、发送/停止交互 | 决定后端任务状态 |
 | `ToolRunCenter` / `ToolRunTimelineCard` | 会话、后台任务、定时任务的统一展示和操作 | 修改消息时间线内部数据 |
 | `AsyncState` / `EmptyState` / `ErrorState` | 统一加载、空、未配置、错误反馈 | 领域数据获取 |
 | `SettingsNav` / `SettingsSection` / `SettingsActionBar` | 设置分组、分组校验、保存/放弃动作 | 直接读取其它页面业务状态 |
 | `ResourceList` / `ResourceDetail` | 工具、技能、MCP 等资源的列表/详情模式 | 为每种资源复制一套视觉系统 |
+
+对话标题区的执行工作区入口显示当前目录名，悬停可查看完整路径；选择新目录后复用安全设置更新流程立即应用并持久保存。
 
 状态所有权必须沿着“领域编排 → 容器组件 → 纯展示组件”单向流动。一个状态只能有一个权威来源；组件不得通过复制 prop、重复订阅或页面级 CSS 覆盖制造第二份状态。提取组件前先用 `rg` 搜索相同结构、类名、token 和事件处理，确认是否应该复用现有实现。
 
