@@ -432,11 +432,6 @@
 	}
 	:global(.fact-dialog) {
 		width: min(640px, calc(100vw - var(--md-sys-space-2xl)));
-		max-height: calc(100vh - var(--md-sys-space-2xl));
-		overflow: hidden;
-	}
-	:global(.fact-dialog .md-dialog-body) {
-		overflow-y: auto;
 	}
 	@media (max-width: 540px) {
 		.fact-facts {
@@ -444,7 +439,6 @@
 		}
 		:global(.fact-dialog) {
 			width: calc(100vw - var(--md-sys-space-lg));
-			max-height: calc(100vh - var(--md-sys-space-lg));
 		}
 	}
 	@media (max-width: 455px) {

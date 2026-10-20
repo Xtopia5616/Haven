@@ -424,7 +424,7 @@
 		border-radius: var(--md-sys-shape-large);
 		box-shadow: var(--md-sys-elevation-4);
 		width: 360px;
-		max-width: 90vw;
+		max-width: 100%;
 		overflow: hidden;
 		border: 0;
 	}

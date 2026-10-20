@@ -968,9 +968,6 @@
 <style>
 	:global(.mcp-feature-dialog) {
 		width: min(900px, 94vw);
-		max-height: 88vh;
-		display: flex;
-		flex-direction: column;
 	}
 	.feature-tabs,
 	.feature-actions {

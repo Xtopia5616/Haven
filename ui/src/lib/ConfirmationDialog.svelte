@@ -425,11 +425,22 @@
 
 	:global(.md-dialog.permission-confirmation-dialog) {
 		width: min(560px, 100%);
-		max-height: min(720px, calc(100vh - 2 * var(--md-sys-space-xl)));
-		overflow: auto;
+		max-height: min(
+			720px,
+			calc(100vh - var(--md-dialog-viewport-inset) - var(--md-dialog-viewport-inset))
+		);
 		border-radius: var(--md-sys-shape-extra-large);
 		box-shadow: var(--md-sys-elevation-5);
 		outline: none;
+	}
+
+	@supports (height: 100dvh) {
+		:global(.md-dialog.permission-confirmation-dialog) {
+			max-height: min(
+				720px,
+				calc(100dvh - var(--md-dialog-viewport-inset) - var(--md-dialog-viewport-inset))
+			);
+		}
 	}
 
 	:global(.md-dialog.permission-confirmation-dialog .md-dialog-body) {
@@ -835,7 +846,6 @@
 		}
 
 		:global(.md-dialog.permission-confirmation-dialog) {
-			max-height: calc(100vh - var(--md-sys-space-md));
 			border-radius: var(--md-sys-shape-extra-large) var(--md-sys-shape-extra-large)
 				var(--md-sys-shape-large) var(--md-sys-shape-large);
 		}

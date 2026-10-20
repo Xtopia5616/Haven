@@ -463,11 +463,6 @@
 	}
 	:global(.task-dialog) {
 		width: min(640px, calc(100vw - var(--md-sys-space-2xl)));
-		max-height: calc(100vh - var(--md-sys-space-2xl));
-		overflow: hidden;
-	}
-	:global(.task-dialog .md-dialog-body) {
-		overflow-y: auto;
 	}
 	@container (max-width: 520px) {
 		.task-toolbar {
@@ -495,7 +490,6 @@
 		}
 		:global(.task-dialog) {
 			width: calc(100vw - var(--md-sys-space-lg));
-			max-height: calc(100vh - var(--md-sys-space-lg));
 		}
 	}
 	@media (max-width: 455px) {

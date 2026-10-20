@@ -114,6 +114,10 @@
 	.md-dialog-overlay {
 		position: fixed;
 		inset: 0;
+		--md-dialog-viewport-inset: var(--md-sys-space-xl);
+		padding: var(--md-dialog-viewport-inset);
+		overflow-y: auto;
+		overscroll-behavior: contain;
 		background: color-mix(in srgb, var(--md-sys-color-scrim) 60%, transparent);
 		backdrop-filter: blur(6px);
 		display: flex;
@@ -127,11 +131,19 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
 		width: 480px;
-		max-width: 90vw;
+		max-width: 100%;
+		max-height: calc(
+			100vh - var(--md-dialog-viewport-inset) - var(--md-dialog-viewport-inset)
+		);
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: auto;
 		box-shadow: var(--md-sys-elevation-4);
 	}
 	.md-dialog-header {
 		display: flex;
+		flex: 0 0 auto;
 		justify-content: space-between;
 		align-items: center;
 		padding: var(--md-sys-space-lg) var(--md-sys-space-xl);
@@ -156,13 +168,32 @@
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
 	}
 	.md-dialog-body {
+		flex: 0 1 auto;
+		min-height: 0;
+		overflow-y: auto;
+		overscroll-behavior-y: contain;
 		padding: var(--md-sys-space-lg) var(--md-sys-space-xl);
 	}
 	.md-dialog-footer {
 		display: flex;
+		flex: 0 0 auto;
 		justify-content: flex-end;
 		gap: var(--md-sys-space-sm);
 		padding: var(--md-sys-space-md) var(--md-sys-space-xl);
 		border-top: 1px solid var(--md-sys-color-outline-variant);
+	}
+
+	@media (max-width: 620px) {
+		.md-dialog-overlay {
+			--md-dialog-viewport-inset: var(--md-sys-space-sm);
+		}
+	}
+
+	@supports (height: 100dvh) {
+		.md-dialog {
+			max-height: calc(
+				100dvh - var(--md-dialog-viewport-inset) - var(--md-dialog-viewport-inset)
+			);
+		}
 	}
 </style>
