@@ -18,3 +18,18 @@ describe('ProviderList responsive layout', () => {
 		expect(providerListSource).toContain('@container settings-content (max-width: 455px)');
 	});
 });
+
+describe('ProviderList provider actions', () => {
+	it('uses text buttons consistently for the provider action group', () => {
+		const actions = providerListSource.match(
+			/<div(?=[^>]*class="provider-actions")[^>]*>[\s\S]*?<\/div>/,
+		)?.[0];
+
+		expect(actions).toBeDefined();
+		expect(actions).not.toMatch(/MaterialIconButton|iconOnly/);
+		expect(actions).toContain('label="刷新目录"');
+		expect(actions).toContain('label="编辑"');
+		expect(actions).toContain('label="删除"');
+		expect(actions?.match(/width="compact"/g)).toHaveLength(3);
+	});
+});

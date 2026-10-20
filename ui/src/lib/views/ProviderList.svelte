@@ -2,7 +2,6 @@
 	import AsyncState from '$lib/AsyncState.svelte';
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
-	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import RefreshButton from '$lib/RefreshButton.svelte';
 	import SettingsTable from '$lib/SettingsTable.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
@@ -133,21 +132,23 @@
 							{/if}
 						</div>
 					</div>
-					<div class="provider-actions" aria-label={`${provider.name} 操作`}>
+					<div
+						class="provider-actions"
+						role="group"
+						aria-label={`${provider.name} 操作`}
+					>
 						<RefreshButton
-							iconOnly
-							size="dense"
-							label={`刷新 Provider ${provider.name} 的模型目录`}
-							loadingLabel={`正在刷新 Provider ${provider.name} 的模型目录`}
+							width="compact"
+							label="刷新目录"
+							loadingLabel="刷新中…"
 							loading={refreshingAll || !!modelFetching[provider.name]}
-							title={`刷新 Provider ${provider.name} 的模型目录`}
 							onclick={() => onRefreshProvider(provider.name)}
 						/>
-						<MaterialIconButton
-							size="dense"
-							icon="edit"
-							label={`编辑 Provider ${provider.name}`}
-							title={`编辑 Provider ${provider.name}`}
+						<MaterialButton
+							width="compact"
+							variant="text"
+							label="编辑"
+							ariaLabel={`编辑 Provider ${provider.name}`}
 							onclick={() => onEditProvider(idx)}
 						/>
 						<MaterialButton
