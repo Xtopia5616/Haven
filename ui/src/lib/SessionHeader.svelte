@@ -1,7 +1,11 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import MaterialButton from './MaterialButton.svelte';
+	import MaterialIconButton from './MaterialIconButton.svelte';
+	import MaterialSelect from './MaterialSelect.svelte';
 	import Icon from './Icon.svelte';
+	import { sameExecutionWorkspacePath } from './executionWorkspaceStore.ts';
+	import type { SelectOption } from './selectOption.ts';
 
 	interface Props {
 		title?: string;
@@ -12,7 +16,10 @@
 		onEnd?: () => void;
 		executionWorkspaceRoot?: string | null;
 		executionWorkspaceSwitching?: boolean;
-		onSwitchExecutionWorkspace?: () => void;
+		savedExecutionWorkspaces?: string[];
+		onSelectExecutionWorkspace?: (root: string | null) => void;
+		onAddExecutionWorkspace?: () => void;
+		onRemoveExecutionWorkspace?: (root: string) => void;
 		children?: Snippet;
 	}
 
@@ -29,16 +36,47 @@
 		onEnd,
 		executionWorkspaceRoot = null,
 		executionWorkspaceSwitching = false,
-		onSwitchExecutionWorkspace,
+		savedExecutionWorkspaces = [],
+		onSelectExecutionWorkspace,
+		onAddExecutionWorkspace,
+		onRemoveExecutionWorkspace,
 		children,
 	}: Props = $props();
-	let executionWorkspaceLabel = $derived.by(() => {
-		if (!executionWorkspaceRoot) return '自动检测';
-		const normalizedRoot = executionWorkspaceRoot.replace(/[\\/]+$/, '');
-		return normalizedRoot.split(/[\\/]/).pop() || executionWorkspaceRoot;
+	let executionWorkspaceOptions = $derived.by(() => {
+		const options: SelectOption[] = [{ value: '', label: '自动检测', group: '执行工作区' }];
+		if (
+			executionWorkspaceRoot &&
+			!savedExecutionWorkspaces.some((root) =>
+				sameExecutionWorkspacePath(root, executionWorkspaceRoot),
+			)
+		) {
+			options.push({
+				value: executionWorkspaceRoot,
+				label: `当前：${executionWorkspaceRoot}`,
+				group: '当前工作区',
+			});
+		}
+		options.push(
+			...savedExecutionWorkspaces.map((root) => ({
+				value: root,
+				label: root,
+				group: '已保存工作区',
+			})),
+		);
+		return options;
 	});
-	let executionWorkspaceButtonLabel = $derived(
-		executionWorkspaceSwitching ? '切换中…' : `工作区 · ${executionWorkspaceLabel}`,
+	let selectedWorkspaceIsSaved = $derived(
+		!!executionWorkspaceRoot &&
+			savedExecutionWorkspaces.some((root) =>
+				sameExecutionWorkspacePath(root, executionWorkspaceRoot),
+			),
+	);
+	let selectedWorkspaceValue = $derived(
+		executionWorkspaceRoot
+			? (savedExecutionWorkspaces.find((root) =>
+					sameExecutionWorkspacePath(root, executionWorkspaceRoot),
+				) ?? executionWorkspaceRoot)
+			: '',
 	);
 </script>
 
@@ -46,19 +84,40 @@
 	<div class="session-header__identity">
 		<div class="session-header__title-row">
 			<h1>{title}</h1>
-			<MaterialButton
-				width="content"
-				variant="outlined"
-				className="session-header__workspace"
-				ariaLabel={`切换执行工作区，当前为 ${executionWorkspaceRoot || '自动检测'}`}
-				ariaBusy={executionWorkspaceSwitching}
-				disabled={executionWorkspaceSwitching || !onSwitchExecutionWorkspace}
-				title={`执行工作区：${executionWorkspaceRoot || '自动检测'}`}
-				onclick={() => onSwitchExecutionWorkspace?.()}
-			>
-				<Icon name="folder" size={16} />
-				<span class="session-header__workspace-name">{executionWorkspaceButtonLabel}</span>
-			</MaterialButton>
+			<div class="session-header__workspace-controls" role="group" aria-label="执行工作区">
+				<MaterialSelect
+					id="session-execution-workspace"
+					ariaLabel="执行工作区"
+					width="compact"
+					value={selectedWorkspaceValue}
+					options={executionWorkspaceOptions}
+					disabled={executionWorkspaceSwitching}
+					onChange={(root) => onSelectExecutionWorkspace?.(root || null)}
+				/>
+				<MaterialIconButton
+					icon="delete"
+					variant="danger"
+					label={`从快捷列表移除 ${executionWorkspaceRoot || '当前工作区'}`}
+					title="从快捷列表移除，不会删除磁盘目录"
+					disabled={executionWorkspaceSwitching || !selectedWorkspaceIsSaved}
+					onclick={() => {
+						if (executionWorkspaceRoot) onRemoveExecutionWorkspace?.(executionWorkspaceRoot);
+					}}
+				/>
+				<MaterialButton
+					width="compact"
+					variant="outlined"
+					className="session-header__workspace-add"
+					ariaLabel="选择目录并保存为工作区"
+					ariaBusy={executionWorkspaceSwitching}
+					disabled={executionWorkspaceSwitching || !onAddExecutionWorkspace}
+					title="选择目录并保存为工作区"
+					onclick={() => onAddExecutionWorkspace?.()}
+				>
+					<Icon name="folder" size={16} />
+					<span>添加工作区</span>
+				</MaterialButton>
+			</div>
 		</div>
 	</div>
 	<div class="session-header__actions">
@@ -142,15 +201,18 @@
 		letter-spacing: 0;
 		line-height: var(--md-sys-typescale-title-large-line-height);
 	}
-	:global(.session-header__workspace) {
+	.session-header__workspace-controls {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
 		min-width: 0;
-		flex: 0 1 auto;
 	}
-	.session-header__workspace-name {
-		max-width: min(24vw, 24ch);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+	:global(.session-header__workspace-controls .md-select-container) {
+		flex: 0 1 220px;
+		min-width: 140px;
+	}
+	:global(.session-header__workspace-add) {
+		flex: 0 0 auto;
 	}
 	.session-header__actions {
 		display: flex;
@@ -183,6 +245,7 @@
 		.session-header__title-row {
 			align-items: center;
 			flex-direction: row;
+			flex-wrap: wrap;
 			gap: var(--md-sys-space-sm);
 		}
 		.session-header h1 {

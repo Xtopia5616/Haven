@@ -42,4 +42,32 @@ describe('SessionHeader', () => {
 
 		expect(screen.queryByRole('button', { name: '删除会话' })).toBeNull();
 	});
+
+	it('selects a saved workspace and removes the selected shortcut on request', async () => {
+		const onSelectExecutionWorkspace = vi.fn();
+		const onRemoveExecutionWorkspace = vi.fn();
+		render(SessionHeader as any, {
+			executionWorkspaceRoot: 'C:\\Projects\\Haven',
+			savedExecutionWorkspaces: ['C:\\Projects\\Haven', 'D:\\Shared'],
+			onSelectExecutionWorkspace,
+			onRemoveExecutionWorkspace,
+		});
+
+		await fireEvent.click(screen.getByRole('button', { name: '执行工作区' }));
+		await fireEvent.click(screen.getByRole('option', { name: 'D:\\Shared' }));
+		expect(onSelectExecutionWorkspace).toHaveBeenCalledWith('D:\\Shared');
+
+		await fireEvent.click(
+			screen.getByRole('button', { name: '从快捷列表移除 C:\\Projects\\Haven' }),
+		);
+		expect(onRemoveExecutionWorkspace).toHaveBeenCalledWith('C:\\Projects\\Haven');
+	});
+
+	it('opens the native directory picker through the add workspace action', async () => {
+		const onAddExecutionWorkspace = vi.fn();
+		render(SessionHeader as any, { onAddExecutionWorkspace });
+
+		await fireEvent.click(screen.getByRole('button', { name: '选择目录并保存为工作区' }));
+		expect(onAddExecutionWorkspace).toHaveBeenCalledOnce();
+	});
 });

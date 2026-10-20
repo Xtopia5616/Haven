@@ -76,6 +76,7 @@
 		setActiveSessionToolRun,
 	} from '$lib/toolRunStore.ts';
 	import { mediaPlanStore } from '$lib/mediaPlanStore.ts';
+	import { executionWorkspaceStore } from '$lib/executionWorkspaceStore.ts';
 	import { syncStore } from '$lib/syncStore.ts';
 	import { dragScroll } from '$lib/dragScroll.ts';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
@@ -813,6 +814,7 @@
 	$effect(() => chatViewController.observeComposerClearance(chatPageEl, browser));
 
 	onMount(async () => {
+		executionWorkspaceStore.refresh();
 		unsubscribeMcpDraft = subscribeMcpDraft((text) => composerRef?.appendDraft(text));
 		// Hydrate the fresh-start intent from localStorage BEFORE any data
 		// load: the store is in-memory only, but the intent survives app
@@ -1193,19 +1195,33 @@
 	const sessionHeaderTitle = $derived(
 		String(activeSession?.title || activeSession?.inputText || '新会话'),
 	);
-	async function switchExecutionWorkspace() {
+	async function persistExecutionWorkspace(selectedRoot: string | null) {
+		await updateSettings({ settings: { security: { execution_root: selectedRoot } } });
+		executionWorkspaceSettingsRevision += 1;
+		executionWorkspaceRoot = selectedRoot;
+		if (selectedRoot) executionWorkspaceStore.add(selectedRoot);
+		addNotification('执行工作区已切换；已开始的调用继续使用原工作区', 'success', 3000);
+	}
+	async function selectExecutionWorkspace(selectedRoot: string | null) {
+		if (executionWorkspaceSwitching) return;
+		executionWorkspaceSwitching = true;
+		try {
+			await persistExecutionWorkspace(selectedRoot);
+		} catch (error) {
+			reportError(error, { context: '+page', message: '切换执行工作区失败' });
+		} finally {
+			executionWorkspaceSwitching = false;
+		}
+	}
+	async function addExecutionWorkspace() {
 		if (executionWorkspaceSwitching) return;
 		executionWorkspaceSwitching = true;
 		try {
 			const selectedRoot = await pickExecutionWorkspaceDirectory();
 			if (selectedRoot === null) return;
-
-			await updateSettings({ settings: { security: { execution_root: selectedRoot } } });
-			executionWorkspaceSettingsRevision += 1;
-			executionWorkspaceRoot = selectedRoot;
-			addNotification('执行工作区已切换；已开始的调用继续使用原工作区', 'success', 3000);
+			await persistExecutionWorkspace(selectedRoot);
 		} catch (error) {
-			reportError(error, { context: '+page', message: '切换执行工作区失败' });
+			reportError(error, { context: '+page', message: '选择执行工作区失败' });
 		} finally {
 			executionWorkspaceSwitching = false;
 		}
@@ -1313,7 +1329,10 @@
 			canEndSession={activeSessionStatus !== 'completed'}
 			{executionWorkspaceRoot}
 			{executionWorkspaceSwitching}
-			onSwitchExecutionWorkspace={switchExecutionWorkspace}
+			savedExecutionWorkspaces={$executionWorkspaceStore}
+			onSelectExecutionWorkspace={selectExecutionWorkspace}
+			onAddExecutionWorkspace={addExecutionWorkspace}
+			onRemoveExecutionWorkspace={executionWorkspaceStore.remove}
 			onNew={newSession}
 			onDelete={requestDeleteSession}
 			onEnd={endSession}

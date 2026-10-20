@@ -19,6 +19,7 @@
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import LoadingState from '$lib/LoadingState.svelte';
 	import { addNotification } from '$lib/notificationStore.ts';
+	import { executionWorkspaceStore } from '$lib/executionWorkspaceStore.ts';
 	import { publishNotificationSettingsChanged } from '$lib/notificationSettingsEvents.ts';
 	import { validateSettingsModelDrafts } from '$lib/settingsModelValidation.ts';
 	import { formatError } from '$lib/formatError.ts';
@@ -850,6 +851,7 @@
 	});
 
 	onMount(async () => {
+		executionWorkspaceStore.refresh();
 		registerSettingsLeaveGuard({ isDirty, confirmLeave });
 		eventRegistrations = registerListeners(
 			appEventListeners({
@@ -994,7 +996,9 @@
 	}
 	async function pickExecutionWorkspace(): Promise<string | null> {
 		try {
-			return await pickExecutionWorkspaceDirectoryCommand();
+			const selected = await pickExecutionWorkspaceDirectoryCommand();
+			if (selected !== null) executionWorkspaceStore.add(selected);
+			return selected;
 		} catch (error) {
 			reportError(error, {
 				context: 'SettingsView',
