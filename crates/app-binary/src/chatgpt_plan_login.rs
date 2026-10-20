@@ -322,25 +322,122 @@ fn parse_callback(request: &str, expected_state: &str) -> Result<Callback, Strin
     Ok(Callback { code, client_id })
 }
 
-async fn reply(stream: &mut TcpStream, accepted: bool) -> std::io::Result<()> {
-    let (status, title, detail) = if accepted {
-        (
-            "200 OK",
-            "Sign-in received",
-            "Return to Haven to finish connecting ChatGPT.",
-        )
-    } else {
-        (
-            "400 Bad Request",
-            "Sign-in not completed",
-            "Return to Haven and try again.",
-        )
-    };
+const CALLBACK_PAGE_STYLE: &str = r#"
+	:root { color-scheme: light dark; font-family: Inter, "Segoe UI", system-ui, sans-serif; }
+	* { box-sizing: border-box; }
+	body {
+		margin: 0;
+		min-height: 100vh;
+		background: radial-gradient(ellipse at 18% 8%, rgba(73, 153, 255, .13), transparent 42%),
+		            radial-gradient(ellipse at 88% 92%, rgba(74, 199, 164, .13), transparent 38%),
+		            #f4f7fb;
+		color: #182230;
+	}
+	.shell { min-height: 100vh; display: grid; place-items: center; padding: 28px; }
+	.card {
+		width: min(100%, 520px);
+		padding: 34px 38px 28px;
+		border: 1px solid rgba(130, 148, 171, .22);
+		border-radius: 24px;
+		background: rgba(255, 255, 255, .9);
+		box-shadow: 0 24px 72px rgba(32, 53, 78, .12);
+		backdrop-filter: blur(16px);
+	}
+	.brand { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 700; letter-spacing: .01em; }
+	.brand-mark {
+		width: 32px; height: 32px; display: grid; place-items: center; border-radius: 10px;
+		background: linear-gradient(145deg, #3178d3, #37a98e); color: white; font-size: 17px;
+	}
+	.status-icon {
+		width: 58px; height: 58px; display: grid; place-items: center; margin-top: 34px;
+		border-radius: 50%; background: #e6f5ee; color: #188455;
+	}
+	.card--failure .status-icon { background: #fff2e7; color: #b85b1b; }
+	.status-icon svg { width: 30px; height: 30px; }
+	.eyebrow { margin: 22px 0 8px; color: #52708e; font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+	h1 { margin: 0; font-size: clamp(25px, 6vw, 32px); line-height: 1.18; letter-spacing: -.035em; }
+	.description { margin: 14px 0 0; color: #526173; font-size: 15px; line-height: 1.65; }
+	.next-step {
+		display: flex; align-items: flex-start; gap: 13px; margin-top: 28px; padding: 16px;
+		border: 1px solid #e3eaf1; border-radius: 15px; background: #f8fafc;
+	}
+	.step-number { flex: 0 0 25px; height: 25px; display: grid; place-items: center; border-radius: 50%; background: #e5eef8; color: #315c85; font-size: 12px; font-weight: 700; }
+	.next-step strong { display: block; margin: 1px 0 4px; font-size: 13px; }
+	.next-step p { margin: 0; color: #526173; font-size: 13px; line-height: 1.5; }
+	.footnote { margin: 21px 0 0; color: #728094; font-size: 12px; line-height: 1.5; }
+	@media (max-width: 480px) { .shell { padding: 16px; } .card { padding: 28px 23px 23px; border-radius: 20px; } }
+	@media (prefers-color-scheme: dark) {
+		body { background-color: #111923; color: #edf3f8; }
+		.card { border-color: rgba(177, 196, 216, .14); background: rgba(27, 39, 52, .92); box-shadow: 0 24px 72px rgba(0, 0, 0, .32); }
+		.status-icon { background: #173d33; color: #78d5ac; }
+		.card--failure .status-icon { background: #49301f; color: #ffc28d; }
+		.eyebrow, .description, .next-step p { color: #afbdcc; }
+		.next-step { border-color: #344354; background: #202d3b; }
+		.step-number { background: #31485e; color: #d3e5f8; }
+		.footnote { color: #91a2b5; }
+	}
+"#;
+
+fn callback_page(accepted: bool) -> (&'static str, String) {
+    let (status, state_class, eyebrow, title, description, next_title, next_detail, icon) =
+        if accepted {
+            (
+                "200 OK",
+                "success",
+                "AUTHORIZATION RECEIVED",
+                "You’re almost there",
+                "ChatGPT returned the authorization to Haven. The app will now verify the sign-in and save your account securely.",
+                "Return to Haven",
+                "Keep Haven open while it finishes connecting your account.",
+                r#"<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.2 4.2L19 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
+            )
+        } else {
+            (
+                "400 Bad Request",
+                "failure",
+                "SIGN-IN NOT COMPLETED",
+                "Authorization could not be verified",
+                "Haven did not receive a valid authorization response. You can safely close this tab and start again from the app.",
+                "Try again in Haven",
+                "Return to the provider settings and start a new sign-in.",
+                r#"<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8v5m0 3.5h.01M10.3 3.8 2.5 17.3A2 2 0 0 0 4.2 20h15.6a2 2 0 0 0 1.7-2.7L13.7 3.8a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
+            )
+        };
     let body = format!(
-        "<!doctype html><html><meta charset=\"utf-8\"><title>{title}</title><body><h1>{title}</h1><p>{detail}</p></body></html>"
+        r#"<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="color-scheme" content="light dark">
+	<title>{title} · Haven</title>
+	<style>{CALLBACK_PAGE_STYLE}</style>
+</head>
+<body>
+	<main class="shell">
+		<article class="card card--{state_class}" aria-labelledby="page-title">
+			<div class="brand"><span class="brand-mark" aria-hidden="true">H</span><span>Haven</span></div>
+			<div class="status-icon">{icon}</div>
+			<p class="eyebrow">{eyebrow}</p>
+			<h1 id="page-title">{title}</h1>
+			<p class="description">{description}</p>
+			<div class="next-step">
+				<span class="step-number">1</span>
+				<div><strong>{next_title}</strong><p>{next_detail}</p></div>
+			</div>
+			<p class="footnote">This page does not contain your account credentials. You may close this tab after returning to Haven.</p>
+		</article>
+	</main>
+</body>
+</html>"#
     );
+    (status, body)
+}
+
+async fn reply(stream: &mut TcpStream, accepted: bool) -> std::io::Result<()> {
+    let (status, body) = callback_page(accepted);
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(response.as_bytes()).await?;
@@ -348,13 +445,8 @@ async fn reply(stream: &mut TcpStream, accepted: bool) -> std::io::Result<()> {
 }
 
 pub(crate) fn serialize_credential(credential: &ChatGptPlanCredential) -> Result<String, String> {
-    const CREDENTIAL_BLOB_MAX_BYTES: usize = 5 * 512;
-    let serialized = serde_json::to_string(credential)
-        .map_err(|_| "ChatGPT account credentials could not be saved".to_string())?;
-    if serialized.len() > CREDENTIAL_BLOB_MAX_BYTES {
-        return Err("ChatGPT account credentials exceed the Windows secure-storage limit".into());
-    }
-    Ok(serialized)
+    serde_json::to_string(credential)
+        .map_err(|_| "ChatGPT account credentials could not be saved".to_string())
 }
 
 #[cfg(test)]
@@ -414,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_credentials_larger_than_windows_secure_storage_limit() {
+    fn serializes_credentials_larger_than_a_single_windows_credential_blob() {
         let credential = ChatGptPlanCredential {
             client_id: "client".into(),
             ext_agent_host_id: "urn:uuid:123e4567-e89b-42d3-a456-426614174000".into(),
@@ -425,11 +517,23 @@ mod tests {
             expires_at: 1,
             scopes: vec!["chatgpt.tokens.use.direct".into()],
         };
-        assert!(
-            serialize_credential(&credential)
-                .unwrap_err()
-                .contains("secure-storage limit")
-        );
+        let serialized = serialize_credential(&credential).unwrap();
+        assert!(serialized.len() > 5 * 512);
+    }
+
+    #[test]
+    fn callback_pages_explain_success_and_failure_without_external_assets() {
+        let (success_status, success) = callback_page(true);
+        assert_eq!(success_status, "200 OK");
+        assert!(success.contains("AUTHORIZATION RECEIVED"));
+        assert!(success.contains("Return to Haven"));
+        assert!(!success.contains("<script"));
+        assert!(!success.contains("https://"));
+
+        let (failure_status, failure) = callback_page(false);
+        assert_eq!(failure_status, "400 Bad Request");
+        assert!(failure.contains("Authorization could not be verified"));
+        assert!(failure.contains("Try again in Haven"));
     }
 
     #[tokio::test]

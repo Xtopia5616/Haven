@@ -1323,3 +1323,4 @@
 - [1332：统一工具目录的能力分类](1332-use-a-single-capability-tool-taxonomy.md)
 - [1333：Session 级 Markdown 工作文档](1333-session-working-document.md)
 - [1334：将文件沙箱约束限定到工作区写入操作](1334-limit-filesystem-sandbox-to-workspace-writes.md)
+- [1335：在 Windows Credential Manager 中分块存储超限凭据](1335-chunk-oversized-windows-credentials.md)
