@@ -639,8 +639,8 @@
 					<MaterialIconButton
 						icon="close"
 						className="file-preview-remove"
-						label="移除文件"
-						title="移除文件"
+						label={`移除附件 ${file.filename}`}
+						title={`移除附件 ${file.filename}`}
 						onclick={() => removePendingFile(file.previewKey)}
 					/>
 				</div>
@@ -649,13 +649,13 @@
 	{/if}
 	{#if pendingImages.length > 0}
 		<div class="image-preview-row">
-			{#each pendingImages as img (img.previewKey)}
+			{#each pendingImages as img, index (img.previewKey)}
 				<div class="image-preview">
 					<img src={mediaDataUrl(img)} alt="待发送图片" />
 					<MaterialIconButton
 						icon="close"
 						className="image-preview-remove"
-						label="移除图片"
+						label={`移除第 ${index + 1} 张待发送图片`}
 						onclick={() => removePendingImage(img.previewKey)}
 					/>
 				</div>

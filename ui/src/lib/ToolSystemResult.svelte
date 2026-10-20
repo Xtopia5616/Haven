@@ -423,8 +423,8 @@
 								<MaterialIconButton
 									icon="copy"
 									className="env-copy"
-									label="复制值"
-									title="复制值"
+									label={`复制 ${variable.name} 的值`}
+									title={`复制 ${variable.name} 的值`}
 									onclick={() => copyEnvValue(variable.value ?? '')}
 								/>
 							{/if}

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import MaterialIconButton from './MaterialIconButton.svelte';
+	import MaterialButton from './MaterialButton.svelte';
 
 	interface Props {
 		title?: string;
@@ -38,33 +38,27 @@
 			{@render children?.()}
 		</div>
 		<div class="session-header__lifecycle">
-			<MaterialIconButton
-				size="toolbar"
-				variant="default"
+			<MaterialButton
+				width="compact"
+				variant="filled"
 				className="session-header__new"
 				label="新建会话"
-				title="新建会话"
-				icon="plus"
 				onclick={() => onNew?.()}
 			/>
 			{#if hasSession}
-				<MaterialIconButton
-					size="toolbar"
-					variant="danger-outline"
+				<MaterialButton
+					width="compact"
+					variant="danger"
 					className="session-header__delete"
 					label="删除会话"
-					title="删除会话"
-					icon="delete"
 					onclick={() => onDelete?.()}
 				/>
 				{#if canEndSession}
-					<MaterialIconButton
-						size="toolbar"
-						variant="success-outline"
+					<MaterialButton
+						width="compact"
+						variant="outlined"
 						className="session-header__end"
 						label="完成会话"
-						title="完成会话"
-						icon="check"
 						onclick={() => onEnd?.()}
 					/>
 				{/if}

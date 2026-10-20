@@ -431,7 +431,7 @@
 				{#if awaiting}
 					<MaterialIconButton
 						icon="close"
-						label="收起问题"
+						label="收起当前问题"
 						title="收起问题，之后可从待操作中重新打开"
 						className="ask-dismiss"
 						onclick={() => onAskDismiss?.(messageId)}

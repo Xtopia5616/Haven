@@ -1089,7 +1089,7 @@ describe('ToolResultCard ask', () => {
 		});
 
 		expect(container.querySelector('[data-interaction-id="ask-dismiss"]')).toBeTruthy();
-		await fireEvent.click(screen.getByRole('button', { name: '收起问题' }));
+		await fireEvent.click(screen.getByRole('button', { name: '收起当前问题' }));
 		expect(onAskDismiss).toHaveBeenCalledWith('ask-dismiss');
 		expect(onIgnore).not.toHaveBeenCalled();
 		expect(onAskSubmit).not.toHaveBeenCalled();
@@ -2249,7 +2249,7 @@ describe('ToolResultCard system env', () => {
 			content: JSON.stringify({ variables: [{ name: 'API_KEY', value: 'secret-value' }] }),
 		});
 		await expandToolCard(container);
-		await fireEvent.click(screen.getByTitle('复制值'));
+		await fireEvent.click(screen.getByRole('button', { name: '复制 API_KEY 的值' }));
 		expect(writeText).toHaveBeenCalledWith('secret-value');
 	});
 });

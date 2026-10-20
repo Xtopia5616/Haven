@@ -118,12 +118,11 @@
 				ariaExpanded={editorOpen}
 				onclick={() => (editorOpen = !editorOpen)}
 			/>
-			<MaterialIconButton
-				icon="delete"
-				variant="danger-outline"
-				label={`移除模型 ${model.id}`}
-				title="移除模型配置"
-				size="dense"
+			<MaterialButton
+				variant="danger"
+				width="compact"
+				label="移除"
+				ariaLabel={`移除模型 ${model.id}`}
 				onclick={() => onRemoveModel(model)}
 			/>
 		</div>
@@ -179,8 +178,12 @@
 								/>
 								<MaterialIconButton
 									icon="refresh"
-									label={`刷新 ${model.providerName} 的模型目录`}
-									title="刷新模型目录"
+									label={model.providerName
+										? `刷新 Provider ${model.providerName} 的模型目录`
+										: '选择 Provider 后刷新模型目录'}
+									title={model.providerName
+										? `刷新 Provider ${model.providerName} 的模型目录`
+										: '选择 Provider 后刷新模型目录'}
 									size="dense"
 									ariaBusy={loading}
 									disabled={!model.providerName || loading}

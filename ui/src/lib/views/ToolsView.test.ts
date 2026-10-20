@@ -546,14 +546,13 @@ describe('ToolsView toolbar actions', () => {
 		render(ToolsView);
 		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
 		await waitFor(() => expect(screen.getByText('docs-server')).toBeTruthy());
-		const refreshButtons = screen.getAllByRole('button', { name: '刷新' });
-		await fireEvent.click(refreshButtons[1]);
+		const reconnectButton = screen.getByRole('button', {
+			name: '重新连接 MCP 服务器 docs-server',
+		});
+		await fireEvent.click(reconnectButton);
 
 		await waitFor(() =>
-			expect(screen.getAllByRole('button', { name: '刷新' })[1]).toHaveProperty(
-				'disabled',
-				false,
-			),
+			expect(reconnectButton).toHaveProperty('disabled', false),
 		);
 		expect(addNotification).not.toHaveBeenCalled();
 		expect(reportError).not.toHaveBeenCalled();
@@ -627,7 +626,9 @@ describe('ToolsView toolbar actions', () => {
 		render(ToolsView);
 		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
 		await waitFor(() => expect(screen.getByText('docs-server')).toBeTruthy());
-		await fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+		await fireEvent.click(
+			screen.getByRole('button', { name: '编辑 MCP 服务器 docs-server' }),
+		);
 		await fireEvent.click(screen.getByRole('button', { name: 'Update' }));
 
 		await waitFor(() =>
@@ -651,7 +652,9 @@ describe('ToolsView toolbar actions', () => {
 		render(ToolsView);
 		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
 		await waitFor(() => expect(screen.getByText('docs-server')).toBeTruthy());
-		await fireEvent.click(screen.getByRole('button', { name: '移除' }));
+		await fireEvent.click(
+			screen.getByRole('button', { name: '移除 MCP 服务器 docs-server' }),
+		);
 
 		await waitFor(() =>
 			expect(reportError).toHaveBeenCalledWith(new Error('remove failed'), {
@@ -674,7 +677,9 @@ describe('ToolsView toolbar actions', () => {
 		render(ToolsView);
 		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
 		await waitFor(() => expect(screen.getByText('docs-server')).toBeTruthy());
-		await fireEvent.click(screen.getAllByRole('button', { name: '刷新' })[1]);
+		await fireEvent.click(
+			screen.getByRole('button', { name: '重新连接 MCP 服务器 docs-server' }),
+		);
 
 		await waitFor(() =>
 			expect(reportError).toHaveBeenCalledWith(new Error('reconnect failed'), {

@@ -137,22 +137,24 @@
 						<RefreshButton
 							iconOnly
 							size="dense"
+							label={`刷新 Provider ${provider.name} 的模型目录`}
+							loadingLabel={`正在刷新 Provider ${provider.name} 的模型目录`}
 							loading={refreshingAll || !!modelFetching[provider.name]}
-							title="刷新模型目录"
+							title={`刷新 Provider ${provider.name} 的模型目录`}
 							onclick={() => onRefreshProvider(provider.name)}
 						/>
 						<MaterialIconButton
 							size="dense"
 							icon="edit"
 							label={`编辑 Provider ${provider.name}`}
-							title="编辑 Provider"
+							title={`编辑 Provider ${provider.name}`}
 							onclick={() => onEditProvider(idx)}
 						/>
-						<MaterialIconButton
-							size="dense"
-							variant="danger-outline"
-							icon="delete"
-							label={`删除 Provider ${provider.name}`}
+						<MaterialButton
+							width="compact"
+							variant="danger"
+							label="删除"
+							ariaLabel={`删除 Provider ${provider.name}`}
 							title={providerModels.length
 								? '请先移除该 Provider 下的模型'
 								: '删除 Provider'}

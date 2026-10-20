@@ -196,7 +196,7 @@ describe('Composer attachment intake', () => {
 			);
 
 			const remainingPreview = container.querySelectorAll('.file-preview')[1];
-			await fireEvent.click(screen.getAllByRole('button', { name: '移除文件' })[0]);
+			await fireEvent.click(screen.getAllByRole('button', { name: /移除附件 same\.txt/ })[0]);
 			expect(container.querySelector('.file-preview')).toBe(remainingPreview);
 
 			await fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -245,7 +245,9 @@ describe('Composer attachment intake', () => {
 			);
 
 			const remainingPreview = container.querySelectorAll('.image-preview')[1];
-			await fireEvent.click(screen.getAllByRole('button', { name: '移除图片' })[0]);
+			await fireEvent.click(
+				screen.getByRole('button', { name: '移除第 1 张待发送图片' }),
+			);
 			expect(container.querySelector('.image-preview')).toBe(remainingPreview);
 
 			await fireEvent.click(screen.getByRole('button', { name: '发送' }));

@@ -92,7 +92,7 @@
 					<h3 id="md-dialog-title">{title}</h3>
 					<MaterialIconButton
 						icon="close"
-						label="关闭"
+						label={`关闭${title}`}
 						className="md-dialog-close"
 						onclick={onClose}
 					/>

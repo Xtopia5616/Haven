@@ -166,7 +166,7 @@
 			<MaterialIconButton
 				size="toolbar"
 				variant="ghost"
-				label="打开任务"
+				label="打开任务中心"
 				title={toolRunTitle}
 				icon="listTodo"
 				onclick={() => onOpenTasks?.()}

@@ -234,7 +234,7 @@
 					class="md-datepicker-header-year"
 					onclick={goToYearView}
 					type="button"
-					aria-label="Switch to year view"
+					aria-label="切换到年份选择"
 				>
 					{headerYear()}
 				</button>
@@ -246,7 +246,7 @@
 						class="md-datepicker-nav-btn"
 						onclick={prevMonth}
 						type="button"
-						aria-label="Previous month"
+						aria-label="上个月"
 					>
 						<Icon name="chevronLeft" size={20} />
 					</button>
@@ -254,7 +254,7 @@
 						class="md-datepicker-nav-label"
 						onclick={goToYearView}
 						type="button"
-						aria-label="Switch to year view"
+						aria-label="切换到年份选择"
 					>
 						{MONTHS[viewMonth]}
 						{viewYear}
@@ -263,7 +263,7 @@
 						class="md-datepicker-nav-btn"
 						onclick={nextMonth}
 						type="button"
-						aria-label="Next month"
+						aria-label="下个月"
 					>
 						<Icon name="chevronRight" size={20} />
 					</button>
@@ -316,7 +316,7 @@
 						class="md-datepicker-nav-btn"
 						onclick={prevYearPage}
 						type="button"
-						aria-label="Previous year range"
+						aria-label="上一组年份"
 					>
 						<Icon name="chevronLeft" size={20} />
 					</button>
@@ -327,7 +327,7 @@
 						class="md-datepicker-nav-btn"
 						onclick={nextYearPage}
 						type="button"
-						aria-label="Next year range"
+						aria-label="下一组年份"
 					>
 						<Icon name="chevronRight" size={20} />
 					</button>

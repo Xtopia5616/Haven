@@ -129,7 +129,7 @@ describe('WorkspaceStatus', () => {
 		});
 
 		expect(screen.getByRole('status', { name: '状态：后台任务' })).toBeTruthy();
-		expect(screen.getByRole('button', { name: '打开任务' })).toBeTruthy();
+		expect(screen.getByRole('button', { name: '打开任务中心' })).toBeTruthy();
 		expect(document.querySelector('.status-badge')?.textContent).toBe('2');
 	});
 });

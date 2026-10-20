@@ -1,4 +1,5 @@
 <script lang="ts">
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import RefreshButton from '$lib/RefreshButton.svelte';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
@@ -158,32 +159,33 @@
 		/>
 		<RefreshButton
 			iconOnly
-			label="刷新"
-			loadingLabel="刷新中…"
+			label={`重新连接 MCP 服务器 ${server.name}`}
+			loadingLabel={`正在重新连接 MCP 服务器 ${server.name}`}
 			loading={refreshing}
-			title="刷新 MCP 连接"
+			title={`重新连接 MCP 服务器 ${server.name}`}
 			onclick={handleReconnect}
 		/>
 		{#if server.supportsResources || server.supportsPrompts}
-			<MaterialIconButton
-				icon="fileSearch"
-				label="浏览资源与提示词"
-				title="浏览此 MCP 服务器的资源与提示词"
+			<MaterialButton
+				variant="text"
+				width="compact"
+				label="浏览资源"
+				ariaLabel={`浏览 MCP 服务器 ${server.name} 的资源与提示词`}
 				disabled={!server.enabled || !isConnected() || !server.targetBinding}
 				onclick={() => onBrowseFeatures?.(server)}
 			/>
 		{/if}
 		<MaterialIconButton
 			icon="edit"
-			label="编辑"
-			title="编辑 MCP 服务器"
+			label={`编辑 MCP 服务器 ${server.name}`}
+			title={`编辑 MCP 服务器 ${server.name}`}
 			onclick={() => onEdit?.(server)}
 		/>
-		<MaterialIconButton
+		<MaterialButton
 			variant="danger"
-			icon="delete"
+			width="compact"
 			label="移除"
-			title="移除 MCP 服务器"
+			ariaLabel={`移除 MCP 服务器 ${server.name}`}
 			onclick={() => onRemove?.(server.name)}
 		/>
 	{/snippet}

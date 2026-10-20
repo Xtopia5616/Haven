@@ -59,7 +59,7 @@
 		size="toolbar"
 		variant="ghost"
 		onclick={() => onToggleTheme?.()}
-		label="切换主题"
+		label={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
 		title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
 	>
 		{#snippet children()}

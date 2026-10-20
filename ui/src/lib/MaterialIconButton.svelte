@@ -4,7 +4,7 @@
 	import type { Snippet } from 'svelte';
 
 	interface Props {
-		label?: string;
+		label: string;
 		variant?:
 			| 'default'
 			| 'ghost'
@@ -28,7 +28,7 @@
 	 * Material Icon Button — reusable icon button with compact and toolbar sizes.
 	 */
 	let {
-		label = '',
+		label,
 		variant = 'default',
 		size = 'default',
 		icon = undefined,

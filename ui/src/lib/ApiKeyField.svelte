@@ -90,8 +90,8 @@
 			icon={showKey ? 'eyeOff' : 'eye'}
 			variant="ghost"
 			className="api-key-icon-btn"
-			label={showKey ? 'Hide API key' : 'Show API key'}
-			title={showKey ? 'Hide API key' : 'Show API key'}
+			label={showKey ? '隐藏 API Key' : '显示 API Key'}
+			title={showKey ? '隐藏 API Key' : '显示 API Key'}
 			{disabled}
 			onclick={() => (showKey = !showKey)}
 		/>
