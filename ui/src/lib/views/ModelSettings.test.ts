@@ -288,7 +288,7 @@ describe('ModelSettings provider surface', () => {
 		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
 
 		expect(screen.getByText('需要修复的模型')).toBeTruthy();
-		await fireEvent.click(screen.getByRole('button', { name: /assistant Provider 不存在/ }));
+		await fireEvent.click(screen.getByRole('button', { name: '编辑模型 assistant' }));
 		const providerSelect = screen.getByRole('button', {
 			name: '为模型 assistant 选择 Provider',
 		});
@@ -322,7 +322,7 @@ describe('ModelSettings provider surface', () => {
 		};
 		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
 
-		await fireEvent.click(screen.getByRole('button', { name: /assistant primary/ }));
+		await fireEvent.click(screen.getByRole('button', { name: '编辑模型 assistant' }));
 		await fireEvent.click(
 			screen.getByRole('button', { name: '为模型 assistant 选择 Provider' }),
 		);

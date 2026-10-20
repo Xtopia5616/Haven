@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsView from './SettingsView.svelte';
 import { createSettingsFixture } from '$lib/contracts/settingsFixture.ts';
@@ -186,7 +186,11 @@ describe('SettingsView diagnostics export', () => {
 			expect(container.querySelector('.policy-table-row')?.textContent).toContain('chat'),
 		);
 		expect(screen.getByRole('table', { name: '请求路由策略' })).toBeDefined();
-		expect(screen.getByRole('columnheader', { name: '模型配置 ID' })).toBeDefined();
+		expect(
+			within(screen.getByRole('table', { name: '请求路由策略' })).getByRole('columnheader', {
+				name: '模型配置 ID',
+			}),
+		).toBeDefined();
 		expect(screen.getByRole('button', { name: 'chat 的模型配置 ID' }).textContent).toContain(
 			'chat-slot · primary / gpt-test',
 		);

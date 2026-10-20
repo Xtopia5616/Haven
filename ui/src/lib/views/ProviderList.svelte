@@ -4,6 +4,7 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import RefreshButton from '$lib/RefreshButton.svelte';
+	import SettingsTable from '$lib/SettingsTable.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import type { CapabilityInput } from '$lib/contracts/generatedCommands.ts';
 	import type { DiscoveredModelsByProviderName } from '$lib/contracts/model.ts';
@@ -27,7 +28,11 @@
 		onSetModel: (model: ModelDraft, modelId: string) => void;
 		onSetModelProvider: (model: ModelDraft, provider: string) => void;
 		onSetCapability: (model: ModelDraft, capability: CapabilityInput, checked: boolean) => void;
-		onUpdateOverride: (model: ModelDraft, field: ModelOverrideField, value: number | null) => void;
+		onUpdateOverride: (
+			model: ModelDraft,
+			field: ModelOverrideField,
+			value: number | null,
+		) => void;
 		onRemoveModel: (model: ModelDraft) => void;
 		onEditProvider: (index?: number) => void;
 		onDeleteProvider: (index: number) => void;
@@ -62,6 +67,8 @@
 		const providerNames = new Set(providers.map((provider) => provider.name));
 		return models.filter((model) => !providerNames.has(model.providerName));
 	});
+	const modelTableColumns =
+		'minmax(8rem, 0.9fr) minmax(10rem, 1.2fr) minmax(8rem, 1fr) minmax(7rem, auto) auto';
 </script>
 
 <div class="provider-toolbar">
@@ -158,7 +165,10 @@
 					<div class="provider-models-heading">
 						<div>
 							<h5>模型</h5>
-							<p>模型配置 ID 是 Haven 内部路由标识；服务模型 ID 对应 Provider 目录并会发送到 API。</p>
+							<p>
+								模型配置 ID 是 Haven 内部路由标识；服务模型 ID 对应 Provider
+								目录并会发送到 API。
+							</p>
 						</div>
 						<MaterialButton
 							variant="outlined"
@@ -167,24 +177,36 @@
 						/>
 					</div>
 					{#if providerModels.length}
-						<div class="provider-model-list">
-							{#each providerModels as model (model.id)}
-								<ModelConfigCard
-									{model}
-									{providers}
-									options={modelOptions(provider.name)}
-									loading={!!modelFetching[provider.name]}
-									hasDiscoveredModels={catalogLoaded}
-									{onRefreshProvider}
-									{onRenameModel}
-									{onSetModel}
-									{onSetModelProvider}
-									{onSetCapability}
-									{onUpdateOverride}
-									{onRemoveModel}
-								/>
-							{/each}
-						</div>
+						<SettingsTable
+							ariaLabel={`${provider.name} 的模型配置`}
+							columns={modelTableColumns}
+						>
+							{#snippet header()}
+								<span role="columnheader">模型配置 ID</span>
+								<span role="columnheader">服务模型 ID</span>
+								<span role="columnheader">模型能力</span>
+								<span role="columnheader">状态</span>
+								<span role="columnheader">操作</span>
+							{/snippet}
+							{#snippet children()}
+								{#each providerModels as model (model.id)}
+									<ModelConfigCard
+										{model}
+										{providers}
+										options={modelOptions(provider.name)}
+										loading={!!modelFetching[provider.name]}
+										hasDiscoveredModels={catalogLoaded}
+										{onRefreshProvider}
+										{onRenameModel}
+										{onSetModel}
+										{onSetModelProvider}
+										{onSetCapability}
+										{onUpdateOverride}
+										{onRemoveModel}
+									/>
+								{/each}
+							{/snippet}
+						</SettingsTable>
 					{:else}
 						<p class="provider-note">
 							还没有模型配置。点击「添加模型配置」，再选择目录中的模型 ID。
@@ -205,24 +227,33 @@
 			</div>
 			<StatusBadge label={`${unboundModels.length} 个待修复`} tone="warning" />
 		</div>
-		<div class="provider-model-list">
-			{#each unboundModels as model (model.id)}
-				<ModelConfigCard
-					{model}
-					{providers}
-					options={modelOptions(model.providerName)}
-					loading={!!modelFetching[model.providerName]}
-					hasDiscoveredModels={Array.isArray(modelsByProvider[model.providerName])}
-					{onRefreshProvider}
-					{onRenameModel}
-					{onSetModel}
-					{onSetModelProvider}
-					{onSetCapability}
-					{onUpdateOverride}
-					{onRemoveModel}
-				/>
-			{/each}
-		</div>
+		<SettingsTable ariaLabel="待修复模型配置" columns={modelTableColumns}>
+			{#snippet header()}
+				<span role="columnheader">模型配置 ID</span>
+				<span role="columnheader">服务模型 ID</span>
+				<span role="columnheader">模型能力</span>
+				<span role="columnheader">状态</span>
+				<span role="columnheader">操作</span>
+			{/snippet}
+			{#snippet children()}
+				{#each unboundModels as model (model.id)}
+					<ModelConfigCard
+						{model}
+						{providers}
+						options={modelOptions(model.providerName)}
+						loading={!!modelFetching[model.providerName]}
+						hasDiscoveredModels={Array.isArray(modelsByProvider[model.providerName])}
+						{onRefreshProvider}
+						{onRenameModel}
+						{onSetModel}
+						{onSetModelProvider}
+						{onSetCapability}
+						{onUpdateOverride}
+						{onRemoveModel}
+					/>
+				{/each}
+			{/snippet}
+		</SettingsTable>
 	</section>
 {/if}
 
@@ -379,11 +410,6 @@
 	.provider-models-heading p {
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.provider-model-list {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-sm);
 	}
 	.provider-note {
 		margin: 0;

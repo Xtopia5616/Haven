@@ -8,6 +8,7 @@
 	import ProviderList from './ProviderList.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
+	import SettingsTable from '$lib/SettingsTable.svelte';
 	import SettingsField from '$lib/SettingsField.svelte';
 	import {
 		createModelDiscovery,
@@ -322,8 +323,8 @@
 			);
 		}
 		if (stagedCredentialRef && !credentialIsInDraft) {
-			void discardStagedChatGptPlanCredential({ credentialRef: stagedCredentialRef }).catch(() =>
-				addNotification('无法清理未保存的 ChatGPT 凭据', 'error', 3000),
+			void discardStagedChatGptPlanCredential({ credentialRef: stagedCredentialRef }).catch(
+				() => addNotification('无法清理未保存的 ChatGPT 凭据', 'error', 3000),
 			);
 		}
 	}
@@ -359,7 +360,9 @@
 				providerName,
 			});
 			if (providerDialog?.form !== form) {
-				await discardStagedChatGptPlanCredential({ credentialRef: connected.credentialRef });
+				await discardStagedChatGptPlanCredential({
+					credentialRef: connected.credentialRef,
+				});
 				return;
 			}
 			form.api_key_ref = connected.credentialRef;
@@ -452,7 +455,7 @@
 			default_timeout_secs:
 				previous?.default_timeout_secs ?? (isSttOnlyStyle(form.api_style) ? 30 : null),
 			default_timeout_streaming_secs: previous?.default_timeout_streaming_secs ?? null,
-			default_web_search: isChatGptPlan ? 'off' : previous?.default_web_search ?? null,
+			default_web_search: isChatGptPlan ? 'off' : (previous?.default_web_search ?? null),
 		};
 		if (previous && !isSameModelDiscoveryTarget(previous, provider)) {
 			discovery.invalidateProviderCatalog(previous.name);
@@ -524,8 +527,8 @@
 		const previousCredentialRef = form.api_key_ref;
 		applyProviderPreset(form, style);
 		if (previousIsChatGptPlan && !nextIsChatGptPlan && previousCredentialRef) {
-			void discardStagedChatGptPlanCredential({ credentialRef: previousCredentialRef }).catch(() =>
-				addNotification('无法清理未使用的 ChatGPT 凭据', 'error', 3000),
+			void discardStagedChatGptPlanCredential({ credentialRef: previousCredentialRef }).catch(
+				() => addNotification('无法清理未使用的 ChatGPT 凭据', 'error', 3000),
 			);
 		}
 	}
@@ -617,17 +620,24 @@
 			</div>
 			<div class="policy-list">
 				{#if (llmConfig.request_policies || []).length}
-					<div class="policy-table" role="table" aria-label="请求路由策略">
-						<div class="policy-table-header" role="row">
+					<SettingsTable
+						ariaLabel="请求路由策略"
+						columns="minmax(0, 0.8fr) minmax(0, 1.2fr) auto"
+					>
+						{#snippet header()}
 							<span role="columnheader">请求类型</span>
 							<span role="columnheader">模型配置 ID</span>
 							<span role="columnheader">操作</span>
-						</div>
-						<div class="policy-table-body" role="rowgroup">
+						{/snippet}
+						{#snippet children()}
 							{#each llmConfig.request_policies || [] as policy (policy.request)}
-								<div class="policy-table-row" role="row">
-									<div class="policy-cell" role="cell" aria-label="请求类型">
-										<span class="policy-cell-label" aria-hidden="true"
+								<div class="settings-table-row policy-table-row" role="row">
+									<div
+										class="settings-table-cell"
+										role="cell"
+										aria-label="请求类型"
+									>
+										<span class="settings-table-cell-label" aria-hidden="true"
 											>请求类型</span
 										>
 										<MaterialSelect
@@ -640,8 +650,12 @@
 											)}
 										/>
 									</div>
-									<div class="policy-cell" role="cell" aria-label="模型配置 ID">
-										<span class="policy-cell-label" aria-hidden="true"
+									<div
+										class="settings-table-cell"
+										role="cell"
+										aria-label="模型配置 ID"
+									>
+										<span class="settings-table-cell-label" aria-hidden="true"
 											>模型配置 ID</span
 										>
 										<MaterialSelect
@@ -655,11 +669,11 @@
 										/>
 									</div>
 									<div
-										class="policy-cell policy-actions-cell"
+										class="settings-table-cell settings-table-actions"
 										role="cell"
 										aria-label="操作"
 									>
-										<span class="policy-cell-label" aria-hidden="true"
+										<span class="settings-table-cell-label" aria-hidden="true"
 											>操作</span
 										>
 										<MaterialButton
@@ -671,8 +685,8 @@
 									</div>
 								</div>
 							{/each}
-						</div>
-					</div>
+						{/snippet}
+					</SettingsTable>
 				{:else}
 					<div class="policy-empty">
 						<strong>还没有请求路由</strong>
@@ -731,57 +745,7 @@
 	.policy-list {
 		margin-top: var(--md-sys-space-md);
 	}
-	.policy-table {
-		position: relative;
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-surface-container-lowest);
-	}
-	.policy-table-header,
-	:global(.policy-table-row) {
-		display: grid;
-		grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) auto;
-		align-items: center;
-		gap: var(--md-sys-space-md);
-	}
-	.policy-table-header {
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		border-bottom: 1px solid var(--md-sys-color-outline-variant);
-		background: var(--md-sys-color-surface-container-low);
-		border-radius: var(--md-sys-shape-medium) var(--md-sys-shape-medium) 0 0;
-		font-size: var(--md-sys-typescale-label-medium-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.policy-table-header > :last-child {
-		text-align: right;
-	}
-	.policy-table-body {
-		display: flex;
-		flex-direction: column;
-	}
-	:global(.policy-table-row) {
-		min-width: 0;
-		border: 0;
-		border-radius: 0;
-		background: transparent;
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-	}
-	:global(.policy-table-row + .policy-table-row) {
-		border-top: 1px solid var(--md-sys-color-outline-variant);
-	}
-	.policy-cell {
-		min-width: 0;
-	}
-	.policy-cell-label {
-		display: none;
-	}
-	.policy-actions-cell {
-		display: flex;
-		justify-content: flex-end;
-	}
-	:global(.policy-actions-cell > .md-btn) {
+	:global(.settings-table-actions > .md-btn) {
 		white-space: nowrap;
 	}
 	.section-actions {
@@ -814,35 +778,6 @@
 		.policy-section-heading {
 			align-items: flex-start;
 			flex-direction: column;
-		}
-		.policy-table-header {
-			position: absolute;
-			top: 0;
-			left: 0;
-			width: 1px;
-			height: 1px;
-			padding: 0;
-			margin: -1px;
-			overflow: hidden;
-			clip-path: inset(50%);
-			white-space: nowrap;
-			border: 0;
-		}
-		:global(.policy-table-row) {
-			grid-template-columns: 1fr;
-			align-items: stretch;
-			gap: var(--md-sys-space-sm);
-		}
-		.policy-cell-label {
-			display: block;
-			margin-bottom: var(--md-sys-space-xs);
-			font-size: var(--md-sys-typescale-label-small-size);
-			font-weight: 600;
-			line-height: var(--md-sys-typescale-label-small-line-height);
-			color: var(--md-sys-color-on-surface-variant);
-		}
-		.policy-actions-cell {
-			justify-content: flex-start;
 		}
 	}
 </style>

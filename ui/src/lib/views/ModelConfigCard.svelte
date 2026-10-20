@@ -1,5 +1,6 @@
 <script lang="ts">
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
@@ -73,40 +74,64 @@
 	let editorOpen = $state(false);
 </script>
 
-<article class="model-card" class:needs-binding={needsProviderBinding}>
-	<div class="model-card-heading">
-		<MaterialCollapsible lazy bind:open={editorOpen}>
-			{#snippet header()}
-				<span class="model-summary">
-					<span class="model-summary-main">
-						<strong class="model-config-id">{model.id}</strong>
-						<span class="model-provider-name">
-							{#if needsProviderBinding}
-								{model.providerName
-									? `Provider 不存在：${model.providerName}`
-									: '尚未绑定 Provider'}
-							{:else}
-								{model.providerName} · {model.model || '尚未选择服务模型'}
-							{/if}
-						</span>
-					</span>
-					<span class="model-summary-meta">
-						<StatusBadge
-							label={assigned ? '可用于路由' : '配置未完成'}
-							tone={assigned ? 'success' : 'warning'}
-						/>
-						{#if configuredCapabilities.length}
-							<span class="summary-capabilities">
-								{configuredCapabilities.map((item) => item.label).join(' · ')}
-							</span>
-						{:else}
-							<span class="summary-capabilities">未声明能力</span>
-						{/if}
-					</span>
+<article class="model-card" class:needs-binding={needsProviderBinding} role="presentation">
+	<div class="settings-table-row model-summary-row" role="row">
+		<div class="settings-table-cell" role="cell" aria-label="模型配置 ID">
+			<span class="settings-table-cell-label" aria-hidden="true">模型配置 ID</span>
+			<strong class="model-config-id">{model.id}</strong>
+		</div>
+		<div class="settings-table-cell model-service-summary" role="cell" aria-label="服务模型 ID">
+			<span class="settings-table-cell-label" aria-hidden="true">服务模型 ID</span>
+			<span class="model-provider-name" title={model.model || '尚未选择服务模型'}>
+				{model.model || '尚未选择服务模型'}
+			</span>
+			{#if needsProviderBinding}
+				<span class="binding-hint">
+					{model.providerName
+						? `Provider 不存在：${model.providerName}`
+						: '尚未绑定 Provider'}
 				</span>
-			{/snippet}
-			{#snippet children()}
-				<div class="model-editor">
+			{/if}
+		</div>
+		<div class="settings-table-cell" role="cell" aria-label="模型能力">
+			<span class="settings-table-cell-label" aria-hidden="true">模型能力</span>
+			<span class="summary-capabilities">
+				{configuredCapabilities.length
+					? configuredCapabilities.map((item) => item.label).join(' · ')
+					: '未声明能力'}
+			</span>
+		</div>
+		<div class="settings-table-cell model-status-cell" role="cell" aria-label="状态">
+			<span class="settings-table-cell-label" aria-hidden="true">状态</span>
+			<StatusBadge
+				label={assigned ? '可用于路由' : '配置未完成'}
+				tone={assigned ? 'success' : 'warning'}
+			/>
+		</div>
+		<div class="settings-table-cell settings-table-actions" role="cell" aria-label="操作">
+			<span class="settings-table-cell-label" aria-hidden="true">操作</span>
+			<MaterialButton
+				variant="text"
+				width="compact"
+				label={editorOpen ? '收起' : '编辑'}
+				ariaLabel={`${editorOpen ? '收起' : '编辑'}模型 ${model.id}`}
+				ariaExpanded={editorOpen}
+				onclick={() => (editorOpen = !editorOpen)}
+			/>
+			<MaterialIconButton
+				icon="delete"
+				variant="danger-outline"
+				label={`移除模型 ${model.id}`}
+				title="移除模型配置"
+				size="dense"
+				onclick={() => onRemoveModel(model)}
+			/>
+		</div>
+	</div>
+	{#if editorOpen}
+		<div class="settings-table-row model-editor-panel" role="row">
+			<div class="settings-table-cell model-editor-cell" role="cell" aria-colspan="5">
+				<div class="model-editor" role="region" aria-label={`编辑模型 ${model.id}`}>
 					<div class="model-fields">
 						<div class="model-field settings-field-layout model-id-field">
 							<label class="field-label" for="{fieldId}-id">模型配置 ID</label>
@@ -164,7 +189,7 @@
 							</div>
 						</div>
 					</div>
-					<IndependentSearchSettings model={model} provider={selectedProvider} />
+					<IndependentSearchSettings {model} provider={selectedProvider} />
 
 					<fieldset class="capability-fieldset">
 						<legend class="field-label">模型能力</legend>
@@ -317,62 +342,52 @@
 						{/snippet}
 					</MaterialCollapsible>
 				</div>
-			{/snippet}
-		</MaterialCollapsible>
-		<MaterialIconButton
-			icon="delete"
-			variant="danger-outline"
-			label={`移除模型 ${model.id}`}
-			title="移除模型配置"
-			size="dense"
-			onclick={() => onRemoveModel(model)}
-		/>
-	</div>
+			</div>
+		</div>
+	{/if}
 </article>
 
 <style>
 	.model-card {
 		min-width: 0;
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-surface-container-lowest);
 	}
-	.model-card.needs-binding {
-		border-color: var(--md-sys-color-warning);
-		background: var(--md-sys-color-warning-container);
-	}
-	.model-card-heading {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
-		align-items: start;
-		gap: var(--md-sys-space-sm);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-	}
-	.model-card-heading :global(.md-collapsible) {
-		min-width: 0;
-	}
-	.model-card-heading :global(.md-collapsible-header) {
+	.model-summary-row {
 		min-height: var(--md-comp-button-touch-height);
 	}
-	.model-card-heading :global(.md-collapsible-body) {
-		margin-top: var(--md-sys-space-md);
+	.model-card.needs-binding .model-summary-row {
+		background: var(--md-sys-color-warning-container);
 	}
-	.model-summary {
+	.model-service-summary {
 		display: flex;
 		flex-direction: column;
-		gap: var(--md-sys-space-xs);
-		min-width: 0;
-		width: 100%;
+		gap: var(--md-sys-space-2xs, 2px);
 	}
-	.model-summary-main,
-	.model-summary-meta {
+	.model-provider-name,
+	.summary-capabilities {
+		min-width: 0;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.model-provider-name {
+		color: var(--md-sys-color-on-surface);
+	}
+	.binding-hint {
+		color: var(--md-sys-color-on-warning-container);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.model-status-cell {
 		display: flex;
 		align-items: center;
-		gap: var(--md-sys-space-sm);
-		min-width: 0;
 	}
-	.model-summary-main {
-		flex-wrap: wrap;
+	@container settings-content (max-width: 640px) {
+		.model-status-cell {
+			display: block;
+		}
 	}
 	.model-config-id {
 		font-size: var(--md-sys-typescale-body-medium-size);
@@ -380,24 +395,17 @@
 		line-height: var(--md-sys-typescale-body-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
-	.model-provider-name,
-	.summary-capabilities {
-		min-width: 0;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+	.model-editor-panel {
+		background: var(--md-sys-color-surface-container-low);
 	}
-	.summary-capabilities {
-		flex: 1;
+	.model-editor-cell {
+		grid-column: 1 / -1;
+		padding: var(--md-sys-space-md);
 	}
 	.model-editor {
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-lg);
-		padding: 0 0 var(--md-sys-space-sm);
 	}
 	.model-fields,
 	.advanced-fields {
@@ -529,6 +537,11 @@
 		padding-top: var(--md-sys-space-sm);
 		border-top: 1px solid var(--md-sys-color-outline-variant);
 	}
+	@container settings-content (min-width: 700px) {
+		.model-fields {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+	}
 	.advanced-heading {
 		font-size: var(--md-sys-typescale-body-small-size);
 		font-weight: 600;
@@ -537,15 +550,5 @@
 	.advanced-hint {
 		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	@media (max-width: 455px) {
-		.model-card-heading {
-			padding: var(--md-sys-space-sm);
-		}
-		.model-summary-meta {
-			align-items: flex-start;
-			flex-direction: column;
-			gap: var(--md-sys-space-xs);
-		}
 	}
 </style>
