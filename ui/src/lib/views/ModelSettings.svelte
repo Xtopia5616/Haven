@@ -18,6 +18,7 @@
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
 	import { openExternalTarget } from '$lib/externalCommands.ts';
 	import { isAuthorizationConfirmationPending } from '$lib/formatError.ts';
+	import { reportError } from '$lib/errorHandling.ts';
 	import {
 		cancelChatGptPlanLogin,
 		completeChatGptPlanLogin,
@@ -334,7 +335,6 @@
 			addNotification('请先填写 Provider 名称', 'error', 3000);
 			return;
 		}
-		form.chatgpt_plan_login_error = null;
 		form.chatgpt_plan_connecting = true;
 		let loginId: string | null = null;
 		try {
@@ -365,11 +365,13 @@
 			form.api_key_ref = connected.credentialRef;
 			form.chatgpt_plan_account_email = connected.accountEmail;
 			form.chatgpt_plan_plan_usage_enabled = connected.planUsageEnabled;
-			form.chatgpt_plan_login_error = null;
 			addNotification('ChatGPT 账户已连接；保存设置后生效', 'success', 3000);
-		} catch {
-			form.chatgpt_plan_login_error = 'ChatGPT 登录未完成，请重试';
-			addNotification(form.chatgpt_plan_login_error, 'error', 3500);
+		} catch (error) {
+			reportError(error, {
+				context: 'settings',
+				message: 'ChatGPT 登录未完成，请重试',
+				includeDetail: false,
+			});
 			if (loginId) {
 				void cancelChatGptPlanLogin({ loginId }).catch(() => undefined);
 			}
@@ -520,7 +522,6 @@
 		const previousIsChatGptPlan = providerPreset(form.preset).provider === 'chatgpt-plan';
 		const nextIsChatGptPlan = providerPreset(style).provider === 'chatgpt-plan';
 		const previousCredentialRef = form.api_key_ref;
-		form.chatgpt_plan_login_error = null;
 		applyProviderPreset(form, style);
 		if (previousIsChatGptPlan && !nextIsChatGptPlan && previousCredentialRef) {
 			void discardStagedChatGptPlanCredential({ credentialRef: previousCredentialRef }).catch(() =>

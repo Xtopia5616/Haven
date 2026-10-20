@@ -62,7 +62,6 @@ export interface ProviderDialogForm {
 	chatgpt_plan_account_email?: string | null;
 	chatgpt_plan_plan_usage_enabled?: boolean | null;
 	chatgpt_plan_login_id?: string | null;
-	chatgpt_plan_login_error?: string | null;
 	chatgpt_plan_connecting?: boolean;
 	chatgpt_plan_saving?: boolean;
 	proxy_mode: 'system' | 'direct' | 'custom';
