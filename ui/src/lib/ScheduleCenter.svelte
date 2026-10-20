@@ -63,7 +63,7 @@
 	{:else}
 		<ul class="schedule-list">
 			{#each schedules as plan (plan.scheduleId)}
-				<li class="schedule-card">
+				<li class="schedule-card motion-list-item">
 					<div class="schedule-copy">
 						<div class="schedule-title-row">
 							<h3>{plan.title}</h3>

@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { cubicOut } from 'svelte/easing';
+	import { fly } from 'svelte/transition';
 	import type { InputDeliveryModeInput } from '$lib/contracts/generatedCommands.ts';
 	import { tick, untrack } from 'svelte';
 	import type { Snippet } from 'svelte';
@@ -606,7 +608,7 @@
 	{#if pendingFiles.length > 0}
 		<div class="file-preview-row">
 			{#each pendingFiles as file (file.previewKey)}
-				<div class="file-preview">
+				<div class="file-preview" in:fly={{ y: 4, duration: 180, easing: cubicOut }}>
 					{#if (file.media_type || '').startsWith('video/') && file.data}
 						<video
 							class="file-preview-video"
@@ -650,7 +652,7 @@
 	{#if pendingImages.length > 0}
 		<div class="image-preview-row">
 			{#each pendingImages as img, index (img.previewKey)}
-				<div class="image-preview">
+				<div class="image-preview" in:fly={{ y: 4, duration: 180, easing: cubicOut }}>
 					<img src={mediaDataUrl(img)} alt="待发送图片" />
 					<MaterialIconButton
 						icon="close"

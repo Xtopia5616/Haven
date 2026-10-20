@@ -92,7 +92,12 @@
 		{/snippet}
 	</MaterialButton>
 	{#if modelMenuOpen}
-		<div class="model-menu" role="dialog" aria-label="选择模型" aria-busy={switchingModel}>
+		<div
+			class="model-menu motion-menu-enter"
+			role="dialog"
+			aria-label="选择模型"
+			aria-busy={switchingModel}
+		>
 			<div class="model-menu-title">选择模型</div>
 			{#if switchingModel}
 				<div class="model-menu-loading" role="status">正在切换模型…</div>
@@ -108,7 +113,7 @@
 						bind:value={modelFilter}
 					/>
 				{/if}
-				<div class="model-option-list" role="menu" aria-label="可选模型">
+				<div class="model-option-list motion-list" role="menu" aria-label="可选模型">
 					{#each filteredModelOptions as model}
 						<MenuItem
 							className="model-item"

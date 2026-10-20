@@ -98,9 +98,10 @@
 |---|---|---|
 | `--md-sys-motion-easing-standard` | `cubic-bezier(0.2, 0, 0, 1)` | 通用过渡 |
 | `--md-sys-motion-easing-emphasized` | `cubic-bezier(0.3, 0, 0, 1)` | 弹窗、菜单 |
-| `--md-sys-motion-duration-fast` | 100ms | 颜色变化、状态层 |
-| `--md-sys-motion-duration-short` | 200ms | 通用过渡 |
-| `--md-sys-motion-duration-medium` | 300ms | 布局变化 |
+| `--md-sys-motion-duration-fast` | 150ms | 颜色变化、状态层 |
+| `--md-sys-motion-duration-short` | 300ms | 通用过渡 |
+| `--md-sys-motion-duration-medium` | 450ms | 布局变化 |
+| `--md-sys-motion-duration-long` | 700ms | 较长的强调动效 |
 
 ### 1.6 阴影层级
 
@@ -321,6 +322,8 @@
  to { opacity: 1; transform: translateY(0); }
 }
 ```
+
+动态列表项使用全局 `.motion-list-item` 类；整组列表可在容器上使用 `.motion-list`，其直接子项共享淡入效果。会话消息、附件预览和浮层可使用 Svelte transition。全局 CSS 必须遵守 `prefers-reduced-motion: reduce`，工作区脚本触发的 Web Animations 也必须跳过该偏好下的动效。
 
 ---
 

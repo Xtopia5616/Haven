@@ -767,6 +767,12 @@ samp {
 		var(--md-sys-motion-easing-decelerated) both;
 }
 
+.motion-list > *,
+.motion-list .tool-result-scroll-area > * {
+	animation: haven-list-item-enter var(--md-sys-motion-duration-short)
+		var(--md-sys-motion-easing-decelerated) both;
+}
+
 .motion-menu-enter {
 	animation: haven-menu-enter var(--md-sys-motion-duration-fast)
 		var(--md-sys-motion-easing-emphasized) both;
@@ -1937,6 +1943,21 @@ select.md-select {
 		display: inline-flex;
 		width: var(--md-sys-icon-size);
 		height: var(--md-sys-icon-size);
+	}
+}
+
+/* Keep every CSS motion path, including Svelte-generated transitions and
+ * looping status indicators, within the user's reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-delay: 0ms !important;
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		scroll-behavior: auto !important;
+		transition-delay: 0ms !important;
+		transition-duration: 0.01ms !important;
 	}
 }
 

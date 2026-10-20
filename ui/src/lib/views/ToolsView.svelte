@@ -601,7 +601,7 @@
 							message="换一个关键词或清除状态筛选。"
 						/>
 					{:else}
-						<div class="resource-list resource-list--builtin">
+						<div class="resource-list resource-list--builtin motion-list">
 							{#each visibleBuiltinTools as tool (tool.name)}
 								<BuiltinToolCard {tool} onToggle={handleToolToggle} />
 							{/each}
@@ -643,7 +643,7 @@
 							message="换一个关键词或清除状态筛选。"
 						/>
 					{:else}
-						<div class="resource-list resource-list--managed">
+						<div class="resource-list resource-list--managed motion-list">
 							{#each visibleMcpServers as server (server.name)}
 								<McpServerCard
 									{server}
@@ -690,7 +690,7 @@
 					{:else if visibleSkills.length === 0}
 						<AsyncState title="没有匹配的技能" message="换一个关键词或清除状态筛选。" />
 					{:else}
-						<div class="resource-list resource-list--managed">
+						<div class="resource-list resource-list--managed motion-list">
 							{#each visibleSkills as skill (skill.name)}
 								<SkillCard
 									{skill}

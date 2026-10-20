@@ -74,7 +74,11 @@
 	let editorOpen = $state(false);
 </script>
 
-<article class="model-card" class:needs-binding={needsProviderBinding} role="presentation">
+<article
+	class="model-card motion-list-item"
+	class:needs-binding={needsProviderBinding}
+	role="presentation"
+>
 	<div class="settings-table-row model-summary-row" role="row">
 		<div class="settings-table-cell" role="cell" aria-label="模型配置 ID">
 			<span class="settings-table-cell-label" aria-hidden="true">模型配置 ID</span>
@@ -128,7 +132,7 @@
 		</div>
 	</div>
 	{#if editorOpen}
-		<div class="settings-table-row model-editor-panel" role="row">
+		<div class="settings-table-row model-editor-panel motion-surface-enter" role="row">
 			<div class="settings-table-cell model-editor-cell" role="cell" aria-colspan="5">
 				<div class="model-editor" role="region" aria-label={`编辑模型 ${model.id}`}>
 					<div class="model-fields">

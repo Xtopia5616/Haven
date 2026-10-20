@@ -50,7 +50,7 @@
 </script>
 
 <section
-	class="session-run-end-banner"
+	class="session-run-end-banner motion-surface-enter"
 	data-status={status}
 	data-outcome={outcome || undefined}
 	role={isError ? 'alert' : 'status'}

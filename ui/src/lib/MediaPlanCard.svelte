@@ -13,7 +13,7 @@
 	let title = $derived(plan.notices.length > 0 ? '附件已调整' : '附件表示选择');
 </script>
 
-<section class="media-plan-card" aria-label="附件表示计划">
+<section class="media-plan-card motion-list-item" aria-label="附件表示计划">
 	<div class="media-plan-head">
 		<span class="media-plan-title">{title}</span>
 		<span class="media-plan-step">第 {plan.stepNumber} 步</span>

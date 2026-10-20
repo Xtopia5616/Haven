@@ -144,9 +144,9 @@
 				{/if}
 			</button>
 			{#if expanded && count > 0}
-				<div class="jv-children">
+				<div class="jv-children motion-list">
 					{#if isArray}
-						<ToolResultList items={arrayValue}>
+						<ToolResultList items={arrayValue} motion={false}>
 							{#snippet children(visibleItems = [])}
 								{#each visibleItems as item, i (i)}
 									<JsonView
@@ -161,7 +161,7 @@
 							{/snippet}
 						</ToolResultList>
 					{:else}
-						<ToolResultList items={objectEntries}>
+						<ToolResultList items={objectEntries} motion={false}>
 							{#snippet children(visibleEntries = [])}
 								{#each visibleEntries as [k, v] (k)}
 									<JsonView

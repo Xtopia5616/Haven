@@ -441,7 +441,7 @@
 			<div class="perm-list" role="list" aria-label="已保存的权限规则">
 				{#each permissions as perm (perm.key)}
 					{@const meta = permissionRuleMeta(perm.key)}
-					<div class="perm-row" role="listitem">
+					<div class="perm-row motion-list-item" role="listitem">
 						<div
 							class="perm-indicator"
 							class:deny={perm.effect === 'deny'}
@@ -498,7 +498,7 @@
 				{#each storedSessionPermissions as grant (`${grant.sessionId}:${grant.capability}`)}
 					{@const meta = permissionRuleMeta(grant.capability)}
 					{@const grantId = `${grant.sessionId}:${grant.capability}`}
-					<div class="perm-row" role="listitem">
+					<div class="perm-row motion-list-item" role="listitem">
 						<div
 							class="perm-indicator"
 							class:deny={grant.effect === 'deny'}

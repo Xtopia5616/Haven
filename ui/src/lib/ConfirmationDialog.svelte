@@ -341,7 +341,7 @@
 								onclick={() => (showAllowMenu = !showAllowMenu)}
 							/>
 							{#if showAllowMenu}
-								<div class="allow-menu" role="menu">
+								<div class="allow-menu motion-menu-enter motion-list" role="menu">
 									{#if allowSessionScope}
 										<div class="menu-section-label">本会话</div>
 										{#each targetOptions.slice(1) as option (option.target)}
@@ -381,7 +381,7 @@
 					>
 						{#snippet children()}
 							{#if showDenyMenu}
-								<div class="deny-menu" role="menu">
+								<div class="deny-menu motion-menu-enter motion-list" role="menu">
 									{#if allowSessionScope}
 										<MenuItem
 											label="本会话拒绝"

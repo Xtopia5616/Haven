@@ -62,7 +62,7 @@
 		{#if switchableSessions.length > 0}
 			<ul class="session-rail__list">
 				{#each switchableSessions as session (session.sessionId)}
-					<li>
+					<li class="motion-list-item">
 						<button
 							type="button"
 							class="session-rail__item"

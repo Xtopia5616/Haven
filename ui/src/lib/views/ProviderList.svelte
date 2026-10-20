@@ -102,7 +102,7 @@
 {/if}
 
 {#if providers.length > 0}
-	<div class="providers-list">
+	<div class="providers-list motion-list">
 		{#each providers as provider, idx (provider.name)}
 			{@const providerModels = modelsForProvider(provider.name)}
 			{@const catalogLoaded = Array.isArray(modelsByProvider[provider.name])}
@@ -224,7 +224,7 @@
 {/if}
 
 {#if unboundModels.length > 0}
-	<section class="unbound-section" aria-labelledby="unbound-models-heading">
+	<section class="unbound-section motion-list-item" aria-labelledby="unbound-models-heading">
 		<div class="unbound-heading">
 			<div>
 				<h4 id="unbound-models-heading">需要修复的模型</h4>

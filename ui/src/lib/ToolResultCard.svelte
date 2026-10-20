@@ -46,6 +46,7 @@
 		sessionId?: string;
 		type?: 'tool' | 'ask';
 		embedded?: boolean;
+		className?: string;
 		toolName?: string;
 		outcome?: ToolResultPresentationOutcome | null;
 		renderer?: string | null;
@@ -77,6 +78,7 @@
 		sessionId,
 		type = 'tool',
 		embedded = false,
+		className = '',
 		toolName = '',
 		outcome = null,
 		renderer = null,
@@ -408,7 +410,7 @@
 
 {#if type === 'ask'}
 	<div
-		class="tool-card tool-card--ask"
+		class="tool-card tool-card--ask {className}"
 		class:embedded
 		data-interaction-id={messageId}
 		data-state={awaiting ? 'waiting' : resolved ? 'resolved' : 'completed'}
@@ -504,7 +506,7 @@
 	</div>
 {:else}
 	<div
-		class="tool-card"
+		class="tool-card {className}"
 		class:embedded
 		data-state={toolState}
 		role="status"

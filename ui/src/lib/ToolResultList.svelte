@@ -5,10 +5,11 @@
 	interface Props<T> {
 		items?: T[];
 		children?: Snippet<[T[]]>;
+		motion?: boolean;
 	}
 
 	const PAGE_SIZE = 15;
-	let { items = [], children }: Props<T> = $props();
+	let { items = [], children, motion = true }: Props<T> = $props();
 	let itemList = $derived(items);
 	let visibleLimit = $state(PAGE_SIZE);
 	let visibleItems = $derived(itemList.slice(0, visibleLimit));
@@ -19,7 +20,13 @@
 	}
 </script>
 
-{@render children?.(visibleItems)}
+{#if motion}
+	<div class="tool-result-list motion-list">
+		{@render children?.(visibleItems)}
+	</div>
+{:else}
+	{@render children?.(visibleItems)}
+{/if}
 {#if remainingCount > 0}
 	<MaterialButton
 		variant="text"
@@ -31,6 +38,10 @@
 {/if}
 
 <style>
+	.tool-result-list {
+		display: contents;
+	}
+
 	:global(.md-btn.tool-result-more-btn) {
 		width: 100%;
 		box-sizing: border-box;

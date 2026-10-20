@@ -211,8 +211,14 @@
 	const tabEntryAnimations = new WeakMap<Element, Animation>();
 
 	function playEntryAnimation(element: HTMLElement, keyframes: Keyframe[]) {
-		if (typeof element.animate !== 'function') return;
 		tabEntryAnimations.get(element)?.cancel();
+		tabEntryAnimations.delete(element);
+		if (
+			typeof element.animate !== 'function' ||
+			window.matchMedia('(prefers-reduced-motion: reduce)').matches
+		) {
+			return;
+		}
 		const animation = element.animate(keyframes, {
 			duration: 300,
 			easing: 'cubic-bezier(0, 0, 0, 1)',

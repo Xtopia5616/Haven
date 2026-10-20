@@ -29,6 +29,7 @@
 </script>
 
 	<ToolResultCard
+		className="motion-list-item"
 		type="tool"
 		toolName="toolrun.start"
 		outcome={toolRun?.status ?? 'running'}
