@@ -52,6 +52,24 @@ function clearSessionMessages(state: SessionReducerState, sessionId: string): Se
 	});
 }
 
+function clearSessionWorkingDocument(
+	state: SessionReducerState,
+	sessionId: string,
+): SessionReducerState {
+	const workingDocuments = { ...state.workingDocuments };
+	const workingDocumentSequences = { ...state.workingDocumentSequences };
+	const workingDocumentEventWatermarks = { ...state.workingDocumentEventWatermarks };
+	delete workingDocuments[sessionId];
+	delete workingDocumentSequences[sessionId];
+	delete workingDocumentEventWatermarks[sessionId];
+	return {
+		...state,
+		workingDocuments,
+		workingDocumentSequences,
+		workingDocumentEventWatermarks,
+	};
+}
+
 function resumeSession(
 	state: SessionReducerState,
 	action: Extract<SessionAction, { type: 'session/messages/resume-loaded' }>,
@@ -179,26 +197,22 @@ export function reduceSession(
 
 		case 'session/deleted':
 			if (!action.sessionId) return reduceSession(inputState, { type: 'sessions/cleared' });
-			const cleared = clearSessionMessages(inputState, action.sessionId);
-			const workingDocuments = { ...cleared.workingDocuments };
-			const workingDocumentSequences = { ...cleared.workingDocumentSequences };
-			const workingDocumentEventWatermarks = { ...cleared.workingDocumentEventWatermarks };
-			delete workingDocuments[action.sessionId];
-			delete workingDocumentSequences[action.sessionId];
-			delete workingDocumentEventWatermarks[action.sessionId];
 			return reduceLifecycle(
-				{
-					...cleared,
-					workingDocuments,
-					workingDocumentSequences,
-					workingDocumentEventWatermarks,
-				},
+				clearSessionWorkingDocument(
+					clearSessionMessages(inputState, action.sessionId),
+					action.sessionId,
+				),
 				action,
 			);
 
 		case 'session/messages/cleared':
-		case 'session/memory-cleared':
 			return clearSessionMessages(inputState, action.sessionId);
+
+		case 'session/memory-cleared':
+			return clearSessionWorkingDocument(
+				clearSessionMessages(inputState, action.sessionId),
+				action.sessionId,
+			);
 
 		case 'session/asks-settled':
 			return reduceInteraction(reduceTranscript(inputState, action), action);

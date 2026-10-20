@@ -88,6 +88,25 @@ describe('SessionReducer', () => {
 		expect(state.workingDocumentEventWatermarks[sessionId]).toBe(25);
 	});
 
+	it('evicts a terminal session working document and its sequence caches', () => {
+		const sessionId = 'ses-00000000000000000000000000000063';
+		const otherSessionId = 'ses-00000000000000000000000000000064';
+		const state = stateWith({
+			workingDocuments: {
+				[sessionId]: '# Finished',
+				[otherSessionId]: '# Still active',
+			},
+			workingDocumentSequences: { [sessionId]: 8, [otherSessionId]: 12 },
+			workingDocumentEventWatermarks: { [sessionId]: 10, [otherSessionId]: 14 },
+		});
+
+		const cleared = reduceSession(state, { type: 'session/memory-cleared', sessionId });
+
+		expect(cleared.workingDocuments).toEqual({ [otherSessionId]: '# Still active' });
+		expect(cleared.workingDocumentSequences).toEqual({ [otherSessionId]: 12 });
+		expect(cleared.workingDocumentEventWatermarks).toEqual({ [otherSessionId]: 14 });
+	});
+
 	it('clears session projections while preserving the draft and non-session interactions', () => {
 		const sessionId = 'ses-00000000000000000000000000000041';
 		const sessionMessage = {
