@@ -174,6 +174,9 @@
 						disabled={form.chatgpt_plan_connecting || form.chatgpt_plan_saving || !form.name.trim()}
 							onclick={onConnectChatGptPlan}
 						/>
+						{#if form.chatgpt_plan_login_error}
+							<p class="model-login-error" role="alert">{form.chatgpt_plan_login_error}</p>
+						{/if}
 						<p class="model-hint">
 							预览限制：Responses 请求必须流式且不保存服务端状态，Haven 在本机执行工具。
 						</p>
@@ -309,6 +312,12 @@
 	.model-hint {
 		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
+		margin: 0;
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.model-login-error {
+		font-size: var(--md-sys-typescale-label-small-size);
+		color: var(--md-sys-color-error);
 		margin: 0;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
