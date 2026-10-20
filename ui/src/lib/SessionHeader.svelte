@@ -56,7 +56,7 @@
 				{#if canEndSession}
 					<MaterialButton
 						width="compact"
-						variant="outlined"
+						variant="success"
 						className="session-header__end"
 						label="完成会话"
 						onclick={() => onEnd?.()}

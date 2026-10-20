@@ -146,7 +146,7 @@
 								onclick={() => selectFact(fact)}
 							/>
 							<MaterialButton
-								variant="text"
+								variant="danger-text"
 								className="fact-delete"
 								label="删除"
 								onclick={() => onDeleteFact?.(fact.factId)}
@@ -265,7 +265,8 @@
 				<div class="fact-actions">
 					<MaterialButton
 						variant="danger"
-						label="删除这条记忆"
+						label="删除"
+						ariaLabel="删除这条记忆"
 						onclick={deleteSelectedFact}
 					/>
 				</div>
@@ -361,9 +362,6 @@
 	.fact-card-meta-separator {
 		flex: 0 0 auto;
 		color: var(--md-sys-color-outline);
-	}
-	.fact-card-actions :global(.fact-delete) {
-		color: var(--md-sys-color-error);
 	}
 	.fact-dialog-content {
 		min-width: 0;

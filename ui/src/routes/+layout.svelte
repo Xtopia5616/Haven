@@ -76,7 +76,7 @@
 	import type { RecordingOverlayState } from '$lib/recordingOverlayController.ts';
 	import type { NavigationTab } from '$lib/navigationTypes.ts';
 	import type { ReActExecutionPhase } from '$lib/reactExecutionPhaseStore.ts';
-import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
+	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { ConfirmationDecision } from '$lib/confirmationTypes.ts';
 	import type { AgentNotificationPayload } from '$lib/contracts/agent.ts';
 	import type { NotificationConfigInput } from '$lib/contracts/generatedCommands.ts';
@@ -1253,7 +1253,7 @@ import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 								>
 									<TabComponent
 										isVisible={activeTab === 'tools'}
-										activeSessionId={activeSessionId}
+										{activeSessionId}
 									/>
 								</WorkspaceSurface>
 							{:else if lazyViewStates.tools === 'error'}

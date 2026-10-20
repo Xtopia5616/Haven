@@ -987,6 +987,28 @@ samp {
 	padding: 0 var(--md-sys-space-md);
 }
 
+/* — Success (filled semantic action) — */
+.md-btn--success {
+	--_btn-bg: var(--md-sys-color-success-container);
+	--_btn-fg: var(--md-sys-color-on-success-container);
+	--_btn-border: 1px solid var(--md-sys-color-success);
+	--_btn-state: var(--md-sys-color-on-success-container);
+}
+.md-btn--success:hover {
+	box-shadow: var(--md-sys-elevation-1);
+}
+
+/* — Warning (filled attention action) — */
+.md-btn--warning {
+	--_btn-bg: var(--md-sys-color-warning-container);
+	--_btn-fg: var(--md-sys-color-on-warning-container);
+	--_btn-border: 1px solid var(--md-sys-color-warning);
+	--_btn-state: var(--md-sys-color-on-warning-container);
+}
+.md-btn--warning:hover {
+	box-shadow: var(--md-sys-elevation-1);
+}
+
 /* — Danger (filled variant using error) — */
 .md-btn--danger {
 	--_btn-bg: var(--md-sys-color-error);
@@ -995,6 +1017,14 @@ samp {
 }
 .md-btn--danger:hover {
 	box-shadow: var(--md-sys-elevation-1);
+}
+
+/* — Danger text (compact destructive action) — */
+.md-btn--danger-text {
+	--_btn-bg: transparent;
+	--_btn-fg: var(--md-sys-color-error);
+	--_btn-state: var(--md-sys-color-error);
+	padding: 0 var(--md-sys-space-md);
 }
 
 /* Extra small variant (24dp icon, 32dp height) */
@@ -1177,12 +1207,12 @@ select.md-select {
 	transform: translateY(-1px);
 }
 :where(
-	.selected,
-	[aria-selected='true'],
-	[aria-checked='true'],
-	[aria-pressed='true'],
-	[aria-current='page']
-):not(:focus-visible) {
+		.selected,
+		[aria-selected='true'],
+		[aria-checked='true'],
+		[aria-pressed='true'],
+		[aria-current='page']
+	):not(:focus-visible):not(button):not([role='button']) {
 	outline: var(--md-sys-selection-outline-width) solid var(--md-sys-selection-outline-color);
 	outline-offset: var(--md-sys-selection-outline-offset);
 }
@@ -1200,6 +1230,18 @@ select.md-select {
 	.effort-row .md-choice-chip.selected
 ):not(:focus-visible) {
 	outline-color: var(--md-sys-color-on-primary);
+}
+/* Keep selected controls the same size with a subtle, theme-aware inset ring. */
+:where(
+		.selected,
+		[aria-selected='true'],
+		[aria-checked='true'],
+		[aria-pressed='true'],
+		[aria-current='page']
+	):not(:focus-visible):is(button, [role='button']) {
+	border-color: transparent !important;
+	outline: 1px solid color-mix(in srgb, currentColor 35%, var(--md-sys-color-outline) 65%);
+	outline-offset: -1px;
 }
 .workspace-item-card:hover::after {
 	opacity: var(--md-sys-state-hover-opacity);

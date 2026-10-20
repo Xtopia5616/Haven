@@ -690,14 +690,16 @@
 					/>
 					<MaterialButton
 						variant="filled"
-						label={submittingFeatureInput ? '提交中…' : '提交回答'}
+						label={submittingFeatureInput ? '提交中…' : '提交'}
+						ariaLabel="提交回答"
 						disabled={submittingFeatureInput}
 						onclick={() => submitFeatureInput(false)}
 					/>
 				{/if}
 				<MaterialButton
 					variant="text"
-					label="取消本次操作"
+					label="取消"
+					ariaLabel="取消本次操作"
 					onclick={cancelPendingFeatureInput}
 				/>
 			</div>
@@ -713,7 +715,8 @@
 			<p>选择资源后由 Haven 通过该 MCP 连接读取；URI 不会解释为本机文件路径。</p>
 			<MaterialButton
 				variant="outlined"
-				label={loadingResources ? '刷新中…' : '刷新资源列表'}
+				label={loadingResources ? '刷新中…' : '刷新资源'}
+				ariaLabel="刷新资源列表"
 				disabled={loadingResources || pendingFeatureInput !== null}
 				onclick={() => loadResources(true)}
 			/>
@@ -746,11 +749,13 @@
 				<p class="feature-source">来源：{server.name} · {selectedResource.uri}</p>
 				<MaterialButton
 					variant="outlined"
-					label={loadingResource
-						? '读取中…'
+					label={loadingResource ? '读取中…' : '重新读取'}
+					ariaLabel={loadingResource
+						? '正在重新读取资源'
 						: resourceUpdateAvailable
 							? '重新读取已更新资源'
 							: '重新读取资源'}
+					ariaBusy={loadingResource}
 					disabled={loadingResource || pendingFeatureInput !== null}
 					onclick={() => selectResource(selectedResource, true)}
 				/>
@@ -760,8 +765,14 @@
 						label={resourceSubscriptionBusy
 							? '处理中…'
 							: selectedResourceSubscribed
+								? '取消订阅'
+								: '订阅更新'}
+						ariaLabel={resourceSubscriptionBusy
+							? '正在处理更新订阅'
+							: selectedResourceSubscribed
 								? '取消更新订阅'
 								: '订阅更新'}
+						ariaBusy={resourceSubscriptionBusy}
 						disabled={resourceSubscriptionBusy ||
 							pendingSubscriptionUris.includes(selectedResource.uri) ||
 							pendingFeatureInput !== null}
@@ -782,7 +793,8 @@
 					{/each}
 					<MaterialButton
 						variant="filled"
-						label="将文本加入聊天草稿"
+						label="加入草稿"
+						ariaLabel="将文本加入聊天草稿"
 						disabled={!resourceText}
 						title={!resourceText ? '该资源包含二进制内容，当前不能加入文本草稿' : ''}
 						onclick={insertResourceText}
@@ -798,7 +810,8 @@
 			<p>选择模板并填写 URI 参数后，Haven 才会通过该 MCP 连接读取资源。</p>
 			<MaterialButton
 				variant="outlined"
-				label={loadingTemplates ? '刷新中…' : '刷新模板列表'}
+				label={loadingTemplates ? '刷新中…' : '刷新模板'}
+				ariaLabel="刷新模板列表"
 				disabled={loadingTemplates || pendingFeatureInput !== null}
 				onclick={() => loadResourceTemplates(true)}
 			/>
@@ -841,7 +854,8 @@
 				{/each}
 				<MaterialButton
 					variant="outlined"
-					label={loadingTemplateResource ? '读取中…' : '展开并读取模板'}
+					label={loadingTemplateResource ? '读取中…' : '读取资源'}
+					ariaLabel="展开并读取模板"
 					disabled={loadingTemplateResource || pendingFeatureInput !== null}
 					onclick={readSelectedTemplate}
 				/>
@@ -861,7 +875,8 @@
 					{/each}
 					<MaterialButton
 						variant="filled"
-						label="将文本加入聊天草稿"
+						label="加入草稿"
+						ariaLabel="将文本加入聊天草稿"
 						disabled={!templateResourceText}
 						title={!templateResourceText
 							? '该资源包含二进制内容，当前不能加入文本草稿'
@@ -877,7 +892,8 @@
 			<p>提示词由你选择并预览；只有纯文本用户消息可以加入当前聊天草稿。</p>
 			<MaterialButton
 				variant="outlined"
-				label={loadingPrompts ? '刷新中…' : '刷新提示词列表'}
+				label={loadingPrompts ? '刷新中…' : '刷新提示词'}
+				ariaLabel="刷新提示词列表"
 				disabled={loadingPrompts || pendingFeatureInput !== null}
 				onclick={() => loadPrompts(true)}
 			/>
@@ -921,7 +937,8 @@
 				{/each}
 				<MaterialButton
 					variant="outlined"
-					label={renderingPrompt ? '生成中…' : '生成并预览'}
+					label={renderingPrompt ? '生成中…' : '生成预览'}
+					ariaLabel="生成并预览"
 					disabled={renderingPrompt || pendingFeatureInput !== null}
 					onclick={renderSelectedPrompt}
 				/>
@@ -952,7 +969,8 @@
 					{/each}
 					<MaterialButton
 						variant="filled"
-						label="将文本加入聊天草稿"
+						label="加入草稿"
+						ariaLabel="将文本加入聊天草稿"
 						disabled={!promptText}
 						title={!promptText
 							? '该提示词包含非用户文本内容，当前不能加入文本草稿'

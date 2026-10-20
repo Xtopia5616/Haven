@@ -605,7 +605,7 @@ describe('SettingsView diagnostics export', () => {
 		render(SettingsView);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
 		await fireEvent.click(screen.getByRole('tab', { name: /模型与连接/ }));
-		await fireEvent.click(await screen.findByRole('button', { name: '添加 Provider' }));
+		await fireEvent.click(await screen.findByRole('button', { name: '添加 Provider 配置' }));
 		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
 			target: { value: 'primary' },
 		});

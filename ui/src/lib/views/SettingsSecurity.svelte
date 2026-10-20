@@ -320,7 +320,10 @@
 		<div class="subsection-heading">
 			<div>
 				<h3>安全边界</h3>
-				<p>这些策略由 Haven 授权网关执行；它们不会为允许启动的子进程建立独立的 Windows 文件或网络沙箱。</p>
+				<p>
+					这些策略由 Haven 授权网关执行；它们不会为允许启动的子进程建立独立的 Windows
+					文件或网络沙箱。
+				</p>
 			</div>
 		</div>
 		<div class="boundary-grid">
@@ -455,7 +458,7 @@
 							{perm.effect === 'deny' ? '始终拒绝' : '始终允许'}
 						</span>
 						<MaterialButton
-							variant="text"
+							variant="danger-text"
 							className="perm-revoke"
 							label={pendingRule === perm.key ? '撤销中…' : '撤销'}
 							disabled={pendingRule !== ''}
@@ -466,7 +469,7 @@
 				{/each}
 			</div>
 			<MaterialButton
-				variant="text"
+				variant="danger-text"
 				className="permission-reset"
 				label={`清除 ${permissions.length} 条永久规则`}
 				onclick={() => openResetDialog('permanent')}
@@ -513,7 +516,7 @@
 							{grant.effect === 'deny' ? '本会话拒绝' : '本会话允许'}
 						</span>
 						<MaterialButton
-							variant="text"
+							variant="danger-text"
 							className="perm-revoke"
 							label={pendingRule === grantId ? '撤销中…' : '撤销'}
 							disabled={pendingRule !== ''}
@@ -531,7 +534,7 @@
 				{/each}
 			</div>
 			<MaterialButton
-				variant="text"
+				variant="danger-text"
 				className="permission-reset"
 				label={`清除 ${storedSessionPermissions.length} 条会话授权`}
 				onclick={() => openResetDialog('session')}
@@ -829,14 +832,9 @@
 	}
 	:global(.md-btn.perm-revoke) {
 		flex-shrink: 0;
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	:global(.md-btn.perm-revoke:hover) {
-		color: var(--md-sys-color-error);
 	}
 	:global(.md-btn.permission-reset) {
 		margin-top: var(--md-sys-space-sm);
-		color: var(--md-sys-color-error);
 	}
 	.empty-rules {
 		padding: var(--md-sys-space-lg);

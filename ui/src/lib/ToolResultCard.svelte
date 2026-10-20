@@ -479,7 +479,8 @@
 						<MaterialButton
 							variant="filled"
 							className="ask-submit"
-							label="提交回答"
+							label="提交"
+							ariaLabel="提交回答"
 							disabled={selectedOptions.length === 0}
 							onclick={() => onAskSubmit?.(messageId)}
 						/>

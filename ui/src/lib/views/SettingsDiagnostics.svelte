@@ -134,7 +134,8 @@
 		<SettingsField label="最近日志" description="读取本机日志文件的最近 300 行。">
 			<MaterialButton
 				variant="outlined"
-				label={logView.loading ? '读取中…' : '查看日志'}
+				label={logView.loading ? '读取中…' : '查看'}
+				ariaLabel="查看日志"
 				onclick={openLogViewer}
 				disabled={logView.loading || !log.file_enabled}
 			/>
@@ -148,7 +149,8 @@
 		<SettingsField label="性能指标">
 			<MaterialButton
 				variant="outlined"
-				label={performanceMetricsLoading ? '导出中…' : '导出性能指标'}
+				label={performanceMetricsLoading ? '导出中…' : '导出'}
+				ariaLabel="导出性能指标"
 				onclick={exportPerformanceSnapshot}
 				disabled={performanceMetricsLoading}
 			/>

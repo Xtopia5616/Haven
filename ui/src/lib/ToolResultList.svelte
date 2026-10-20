@@ -24,7 +24,8 @@
 	<MaterialButton
 		variant="text"
 		className="tool-result-more-btn"
-		label={`显示更多（剩余 ${remainingCount} 条）`}
+		label={`加载更多（剩余 ${remainingCount} 条）`}
+		ariaLabel={`显示更多（剩余 ${remainingCount} 条）`}
 		onclick={showMore}
 	/>
 {/if}

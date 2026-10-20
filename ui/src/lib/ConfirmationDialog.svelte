@@ -307,7 +307,8 @@
 					</div>
 					<MaterialButton
 						variant="danger"
-						label="确认永久允许"
+						label="永久允许"
+						ariaLabel="确认永久允许"
 						onclick={() =>
 							decide('allow', 'always', pendingPersistentTarget || 'operation')}
 					/>
@@ -325,7 +326,8 @@
 						<MaterialButton
 							variant="tonal"
 							className="btn-session"
-							label="本会话允许此操作"
+							label="本会话允许"
+							ariaLabel="本会话允许此操作"
 							onclick={() => decide('allow', 'session', 'operation')}
 						/>
 					{/if}
@@ -382,7 +384,8 @@
 								<div class="deny-menu" role="menu">
 									{#if allowSessionScope}
 										<MenuItem
-											label="本会话拒绝此操作"
+											label="本会话拒绝"
+											ariaLabel="本会话拒绝此操作"
 											danger
 											onSelect={() => decide('deny', 'session', 'operation')}
 										/>
@@ -396,7 +399,8 @@
 										{/each}
 									{/if}
 									<MenuItem
-										label="始终拒绝此操作"
+										label="始终拒绝"
+										ariaLabel="始终拒绝此操作"
 										danger
 										onSelect={() => decide('deny', 'always', 'operation')}
 									/>

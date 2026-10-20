@@ -177,7 +177,7 @@
 			message={loading
 				? '会话记录加载完成后会显示在这里。'
 				: '开始一段对话后，会话记录会自动保存在这里。'}
-			actionLabel={loading ? '' : '开始新会话'}
+			actionLabel={loading ? '' : '新建会话'}
 			onAction={onNewSession}
 		/>
 	{:else}
@@ -221,7 +221,7 @@
 											/>
 										</div>
 										<div class="session-title-row">
-										{#if editingTitle === session.sessionId}
+											{#if editingTitle === session.sessionId}
 												<!-- svelte-ignore a11y_autofocus -->
 												<input
 													type="text"
@@ -232,9 +232,9 @@
 															event.currentTarget.value,
 														)}
 													onkeydown={(event) =>
-													onRenameKeydown(event, session.sessionId)}
+														onRenameKeydown(event, session.sessionId)}
 													onclick={(event) => event.stopPropagation()}
-												onblur={() => onSaveTitle(session.sessionId)}
+													onblur={() => onSaveTitle(session.sessionId)}
 													autofocus
 													autocomplete="off"
 												/>
@@ -279,7 +279,7 @@
 									</div>
 									<div class="session-actions workspace-item-card-actions">
 										<MaterialButton
-											variant="text"
+											variant="danger-text"
 											className="delete-btn-meta"
 											label="删除"
 											onclick={(event) => {

@@ -18,7 +18,7 @@ describe('SessionHeader', () => {
 			expect(button.getAttribute('data-width')).toBe('compact');
 		}
 		expect(deleteButton.classList.contains('md-btn--danger')).toBe(true);
-		expect(endButton.classList.contains('md-btn--outlined')).toBe(true);
+		expect(endButton.classList.contains('md-btn--success')).toBe(true);
 
 		await fireEvent.click(newButton);
 		expect(onNew).toHaveBeenCalledTimes(1);
@@ -28,12 +28,12 @@ describe('SessionHeader', () => {
 		expect(onEnd).toHaveBeenCalledTimes(1);
 	});
 
-	it('uses an outlined text action for completing an active conversation', () => {
+	it('uses a success action for completing an active conversation', () => {
 		render(SessionHeader as any, { hasSession: true });
 
-		expect(screen.getByRole('button', { name: '完成会话' }).classList.contains('md-btn--outlined')).toBe(
-			true,
-		);
+		expect(
+			screen.getByRole('button', { name: '完成会话' }).classList.contains('md-btn--success'),
+		).toBe(true);
 		expect(screen.queryByRole('button', { name: '删除会话' })).toBeTruthy();
 	});
 

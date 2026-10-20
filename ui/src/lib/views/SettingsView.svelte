@@ -1144,102 +1144,102 @@
 			await stageSettingsCredentials();
 			skipNextChatModelSync = true;
 			const settingsValues = {
-						default_shell: defaultShell,
-						llm: settingsLlmInputFromState(llmConfig),
-						hotkey: {
-							key_binding: hotkeyBinding,
-							mode: hotkeyMode,
-							mute_hotkey: muteHotkey,
-						},
-						session: {
-							max_concurrent: session.max_concurrent,
-							prompt_history_limit: session.prompt_history_limit,
-							max_steps_per_run: session.max_steps_per_run,
-							history_retention_days: session.history_retention_days,
-							max_steps_per_session: session.max_steps_per_session ?? null,
-						},
-						memory: {
-							fact_inference_enabled: memory.fact_inference_enabled,
-						},
-						security: {
-							permission_mode: security.permission_mode,
-							sandbox_mode: security.sandbox_mode,
-							network_policy: security.network_policy,
-							execution_root: security.execution_root,
-							writable_roots: security.writable_roots,
-							permissions: security.permissions,
-						},
-						context_limits: contextLimits,
-						media: {
-							input_strategy: mediaInputStrategy,
-							audio: {
-								max_duration_secs: audio.max_duration_secs,
-								silence_timeout_ms: audio.silence_timeout_ms,
-								vad_threshold: audio.vad_threshold,
-							},
-							stt: {
-								provider_name: stt.providerName,
-								mcp_server: stt.mcp_server || null,
-								model: stt.model,
-								timeout_secs: stt.timeout_secs,
-								min_confidence: stt.min_confidence,
-							},
-							ocr: {
-								provider: ocr.provider,
-								api_key_ref: ocr.api_key_ref,
-								api_secret_ref: ocr.api_secret_ref,
-								base_url: ocr.base_url,
-								timeout_secs: ocr.timeout_secs,
-								min_confidence: ocr.min_confidence,
-							},
-							tts: {
-								provider_name: tts.providerName,
-								model: tts.model,
-								voice: tts.voice,
-								timeout_secs: tts.timeout_secs,
-							},
-							image_gen: {
-								provider_name: imageGen.providerName,
-								model: imageGen.model,
-								timeout_secs: imageGen.timeout_secs,
-							},
-						},
-						notification: {
-							session_created: {
-								in_app: notification.session_created.in_app,
-								windows: notification.session_created.windows,
-							},
-							session_completed: {
-								in_app: notification.session_completed.in_app,
-								windows: notification.session_completed.windows,
-							},
-							session_paused: {
-								in_app: notification.session_paused.in_app,
-								windows: notification.session_paused.windows,
-							},
-							session_resumed: {
-								in_app: notification.session_resumed.in_app,
-								windows: notification.session_resumed.windows,
-							},
-							session_error: {
-								in_app: notification.session_error.in_app,
-								windows: notification.session_error.windows,
-							},
-							permission_requested: {
-								in_app: notification.permission_requested.in_app,
-								windows: notification.permission_requested.windows,
-							},
-							tool_run_completed: {
-								in_app: notification.tool_run_completed.in_app,
-								windows: notification.tool_run_completed.windows,
-							},
-						},
-						log: {
-							level: log.level,
-							file_enabled: log.file_enabled,
-							file_path: log.file_path ?? null,
-						},
-					};
+				default_shell: defaultShell,
+				llm: settingsLlmInputFromState(llmConfig),
+				hotkey: {
+					key_binding: hotkeyBinding,
+					mode: hotkeyMode,
+					mute_hotkey: muteHotkey,
+				},
+				session: {
+					max_concurrent: session.max_concurrent,
+					prompt_history_limit: session.prompt_history_limit,
+					max_steps_per_run: session.max_steps_per_run,
+					history_retention_days: session.history_retention_days,
+					max_steps_per_session: session.max_steps_per_session ?? null,
+				},
+				memory: {
+					fact_inference_enabled: memory.fact_inference_enabled,
+				},
+				security: {
+					permission_mode: security.permission_mode,
+					sandbox_mode: security.sandbox_mode,
+					network_policy: security.network_policy,
+					execution_root: security.execution_root,
+					writable_roots: security.writable_roots,
+					permissions: security.permissions,
+				},
+				context_limits: contextLimits,
+				media: {
+					input_strategy: mediaInputStrategy,
+					audio: {
+						max_duration_secs: audio.max_duration_secs,
+						silence_timeout_ms: audio.silence_timeout_ms,
+						vad_threshold: audio.vad_threshold,
+					},
+					stt: {
+						provider_name: stt.providerName,
+						mcp_server: stt.mcp_server || null,
+						model: stt.model,
+						timeout_secs: stt.timeout_secs,
+						min_confidence: stt.min_confidence,
+					},
+					ocr: {
+						provider: ocr.provider,
+						api_key_ref: ocr.api_key_ref,
+						api_secret_ref: ocr.api_secret_ref,
+						base_url: ocr.base_url,
+						timeout_secs: ocr.timeout_secs,
+						min_confidence: ocr.min_confidence,
+					},
+					tts: {
+						provider_name: tts.providerName,
+						model: tts.model,
+						voice: tts.voice,
+						timeout_secs: tts.timeout_secs,
+					},
+					image_gen: {
+						provider_name: imageGen.providerName,
+						model: imageGen.model,
+						timeout_secs: imageGen.timeout_secs,
+					},
+				},
+				notification: {
+					session_created: {
+						in_app: notification.session_created.in_app,
+						windows: notification.session_created.windows,
+					},
+					session_completed: {
+						in_app: notification.session_completed.in_app,
+						windows: notification.session_completed.windows,
+					},
+					session_paused: {
+						in_app: notification.session_paused.in_app,
+						windows: notification.session_paused.windows,
+					},
+					session_resumed: {
+						in_app: notification.session_resumed.in_app,
+						windows: notification.session_resumed.windows,
+					},
+					session_error: {
+						in_app: notification.session_error.in_app,
+						windows: notification.session_error.windows,
+					},
+					permission_requested: {
+						in_app: notification.permission_requested.in_app,
+						windows: notification.permission_requested.windows,
+					},
+					tool_run_completed: {
+						in_app: notification.tool_run_completed.in_app,
+						windows: notification.tool_run_completed.windows,
+					},
+				},
+				log: {
+					level: log.level,
+					file_enabled: log.file_enabled,
+					file_path: log.file_path ?? null,
+				},
+			};
 			const baseline = JSON.parse(savedSnapshot) as Record<string, unknown>;
 			const settingsPatch = Object.fromEntries(
 				Object.entries(settingsValues).filter(
@@ -1516,13 +1516,15 @@
 	{#snippet footer()}
 		<MaterialButton
 			variant="text"
-			label="放弃并离开"
+			label="放弃"
+			ariaLabel="放弃更改并离开"
 			onclick={leaveWithoutSaving}
 			disabled={leaveSaving}
 		/>
 		<MaterialButton
 			variant="filled"
-			label={leaveSaving ? '保存中…' : '保存并离开'}
+			label={leaveSaving ? '保存中…' : '保存'}
+			ariaLabel="保存并离开"
 			onclick={leaveWithSaving}
 			disabled={leaveSaving}
 		/>

@@ -49,6 +49,7 @@
 				aria-live={item.type === 'error' ? 'assertive' : 'polite'}
 				aria-label={`${getToastLabel(item.type)}：${item.msg}`}
 				in:fly={{ x: 24, y: 8, duration: 280, easing: cubicOut }}
+				out:fly={{ x: 24, y: 8, duration: 180, easing: cubicOut }}
 			>
 				<span class="toast-icon">
 					<Icon

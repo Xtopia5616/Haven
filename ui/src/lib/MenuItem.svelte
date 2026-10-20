@@ -8,6 +8,7 @@
 		role?: 'menuitem' | 'menuitemradio';
 		ariaChecked?: boolean;
 		label?: string;
+		ariaLabel?: string;
 		className?: string;
 		onSelect?: (event: MouseEvent) => void;
 		children?: Snippet;
@@ -23,6 +24,7 @@
 		role = 'menuitem',
 		ariaChecked = undefined,
 		label = '',
+		ariaLabel = '',
 		className = '',
 		onSelect = () => {},
 		children = undefined,
@@ -36,6 +38,7 @@
 	class:danger
 	{disabled}
 	{role}
+	aria-label={ariaLabel || undefined}
 	aria-checked={ariaChecked === undefined ? undefined : ariaChecked}
 	onclick={(event) => {
 		event.stopPropagation();

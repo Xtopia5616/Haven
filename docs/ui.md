@@ -119,7 +119,7 @@
 
 | 类名 | 用途 | 变体 |
 |---|---|---|
-| `.md-btn` | 按钮 | `--filled`, `--tonal`, `--elevated`, `--outlined`, `--text`, `--danger`, `--xs` |
+| `.md-btn` | 按钮 | `--filled`, `--tonal`, `--elevated`, `--outlined`, `--text`, `--success`, `--warning`, `--danger`, `--danger-text`, `--xs` |
 | `.md-icon-btn` | 图标按钮 | `data-variant`、`data-size` |
 | `.md-toolbar` | 统一工具栏的对齐与间距 | — |
 | `.md-input` | 文本输入框 | - |
@@ -219,7 +219,7 @@
 
 | 组件 | 统一的交互 | 使用边界 |
 |---|---|---|
-| `MaterialButton` | filled / tonal / outlined / text / danger 按钮、加载态、展开态和 toggle 状态 | 文字动作和组合按钮的主动作 |
+| `MaterialButton` | filled / tonal / outlined / text / success / warning / danger / danger-text 按钮、加载态、展开态和 toggle 状态 | 文字动作和组合按钮的主动作 |
 | `MaterialIconButton` | 关闭、复制、编辑、显隐、刷新等图标动作 | 仅用于符合下方选择规则的纯图标动作，必须提供 `label` |
 | `MaterialChoiceChip` | 可选择的紧凑选项 | 选项集合；支持键盘回车提交等页面回调 |
 | `CountChip` | 工作区筛选栏和资源列表的数量提示 | 统一展示“共 X …”计数，不承载操作 |
@@ -693,7 +693,7 @@ ready + 用户修改 → dirty → saving → saved | error
 
 - 基础按钮、输入框、Tab、徽章和卡片使用第 1 节的唯一 token；禁止在局部重新发明圆角、内边距、控件高度或下划线。
 - 同一行的按钮和输入控件使用同一控件高度；主要内容区、标题栏、状态栏和底部动作栏按同一垂直节奏对齐，不能出现“顶部过窄、底部过高”的视觉失衡。
-- 主按钮只保留一个明确的视觉重点；停止、结束、删除等危险动作使用危险变体，不靠位置或颜色猜测含义。
+- 主按钮只保留一个明确的视觉重点；删除、清空、撤销等危险动作使用红色 danger 变体，列表中的轻量删除使用 danger-text；完成类动作使用绿色 success，待处理或需关注入口使用黄色 warning。颜色辅助识别，按钮文案仍须说明动作含义。
 - 短图标动作使用统一方形命中区域和 `aria-label`；带完整动作语句的 CTA 才使用宽按钮。
 - Tab 激活态由 `MaterialTabs` 与工作区导航共享选中容器、文字色和蓝色滑动指示条；水平布局将指示条放在底部，侧栏布局放在左侧。指示条随选中项平滑移动；颜色、尺寸和间距统一使用 token，页面不得另造局部选中态。
 - 所有持久选中语义（`.selected`、`aria-selected`、`aria-checked`、`aria-pressed`、`aria-current="page"`）统一使用 `app.css` 中的 `--md-sys-selection-outline-*` token；主色填充的选项使用 `on-primary` 保证边缘对比。控件键盘焦点统一使用 `--md-sys-focus-ring`，文本输入焦点边框使用主色；各组件原有的选中底色和 Tab 指示器继续表达各自语义。

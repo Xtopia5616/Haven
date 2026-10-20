@@ -82,7 +82,12 @@
 			onclick={onRefreshAll}
 			disabled={providers.length === 0}
 		/>
-		<MaterialButton variant="filled" label="添加 Provider" onclick={() => onEditProvider()} />
+		<MaterialButton
+			variant="filled"
+			label="添加 Provider"
+			ariaLabel="添加 Provider 配置"
+			onclick={() => onEditProvider()}
+		/>
 	</div>
 </div>
 
@@ -91,7 +96,7 @@
 		state="unconfigured"
 		title="尚未配置 Provider"
 		message="添加 API 地址和凭据后，可以刷新服务目录并配置模型。"
-		actionLabel="添加第一个 Provider"
+		actionLabel="添加 Provider"
 		onAction={() => onEditProvider()}
 	/>
 {/if}
@@ -132,11 +137,7 @@
 							{/if}
 						</div>
 					</div>
-					<div
-						class="provider-actions"
-						role="group"
-						aria-label={`${provider.name} 操作`}
-					>
+					<div class="provider-actions" role="group" aria-label={`${provider.name} 操作`}>
 						<RefreshButton
 							width="compact"
 							label="刷新目录"
@@ -175,7 +176,8 @@
 						</div>
 						<MaterialButton
 							variant="outlined"
-							label="添加模型配置"
+							label="添加模型"
+							ariaLabel="添加模型配置"
 							onclick={() => onAddModel(provider.name)}
 						/>
 					</div>
@@ -212,7 +214,7 @@
 						</SettingsTable>
 					{:else}
 						<p class="provider-note">
-							还没有模型配置。点击「添加模型配置」，再选择目录中的模型 ID。
+							还没有模型配置。点击「添加模型」，再选择目录中的模型 ID。
 						</p>
 					{/if}
 				</div>

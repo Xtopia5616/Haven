@@ -47,7 +47,7 @@ describe('SessionHistory actions', () => {
 		render(SessionHistory, { ...commonProps, onNewSession });
 
 		expect(screen.getByRole('heading', { name: '暂无会话' })).toBeTruthy();
-		await fireEvent.click(screen.getByRole('button', { name: '开始新会话' }));
+		await fireEvent.click(screen.getByRole('button', { name: '新建会话' }));
 		expect(onNewSession).toHaveBeenCalledTimes(1);
 	});
 

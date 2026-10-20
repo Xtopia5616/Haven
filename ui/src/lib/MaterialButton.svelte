@@ -3,7 +3,16 @@
 	import type { ControlWidth } from './controlWidth.ts';
 
 	interface Props {
-		variant?: 'filled' | 'tonal' | 'elevated' | 'outlined' | 'text' | 'danger';
+		variant?:
+			| 'filled'
+			| 'tonal'
+			| 'elevated'
+			| 'outlined'
+			| 'text'
+			| 'success'
+			| 'warning'
+			| 'danger'
+			| 'danger-text';
 		width?: ControlWidth;
 		label?: string;
 		onclick?: (event: MouseEvent) => void;

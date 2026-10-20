@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import type { StatusTone } from './statusColors.ts';
+import logger from './logger.ts';
 
 export type NotificationType = Extract<StatusTone, 'info' | 'success' | 'warning' | 'error'>;
 
@@ -34,6 +35,7 @@ export function addNotification(
 		return [...current, { id, msg, type }];
 	});
 	if (id !== null) {
+		logger.info('notification', `toast enqueued type=${type}`);
 		setTimeout(() => {
 			notificationStore.update((current) => current.filter((item) => item.id !== id));
 		}, duration);

@@ -210,7 +210,7 @@ AgentEvent / 其它后端事件
 | `error` | 4000–5000 | 上限 5s；需长时间阅读也不超过 5s |
 
 - **文案语言**：与 UI 一致使用**中文**；变量用模板字符串拼接。专有名词（`MCP`、产品名 `Haven`）可保留英文。
-- `addNotification` 只负责队列去重、时长和展示，不写日志，也不调用后端。异常反馈统一走 `reportError`，默认协调日志、toast 和 Rust 固定类别记录；静默后台错误可关闭通知和日志，调用方不再重复记日志。
+- `addNotification` 负责队列去重、时长和展示；新 toast 入队时通过 `logger.info('notification', ...)` 记录固定摘要及通知类型，不记录通知正文，也不调用后端。重复通知被去重时不重复记日志。异常反馈统一走 `reportError`，默认协调日志、toast 和 Rust 固定类别记录；静默后台错误可关闭通知和日志，调用方不再重复记日志。
 - 默认时长固定为 info 3s、success 3s、warning 4s、error 5s；错误上报统一使用 error 5s。
 - `NotificationToast` 统一使用语义色板、错误 `alert` 语义、内容驱动高度和可换行文本；单行通知不额外占用多行通知的高度。
 

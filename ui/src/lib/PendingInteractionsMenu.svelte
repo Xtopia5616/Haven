@@ -27,7 +27,7 @@
 {#if items.length > 0}
 	<div class="pending-interactions">
 		<MaterialButton
-			variant="outlined"
+			variant="warning"
 			className="pending-interactions-toggle"
 			label={`待操作 ${items.length}`}
 			ariaExpanded={open}
@@ -66,8 +66,6 @@
 	:global(.md-btn.pending-interactions-toggle) {
 		min-height: var(--md-comp-button-small-height);
 		padding-inline: var(--md-sys-space-md);
-		border-color: var(--md-sys-color-warning);
-		color: var(--md-sys-color-on-warning-container);
 		font-size: var(--md-sys-typescale-label-medium-size);
 	}
 

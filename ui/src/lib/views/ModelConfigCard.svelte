@@ -133,10 +133,12 @@
 				<div class="model-editor" role="region" aria-label={`编辑模型 ${model.id}`}>
 					<div class="model-fields">
 						<div class="model-field settings-field-layout model-id-field">
-							<label class="field-label" for="{fieldId}-id">模型配置 ID</label>
-							<span class="advanced-hint"
-								>Haven 内部路由标识，不会发送给 Provider</span
-							>
+							<div class="model-field-copy">
+								<label class="field-label" for="{fieldId}-id">模型配置 ID</label>
+								<span class="advanced-hint"
+									>Haven 内部路由标识，不会发送给 Provider</span
+								>
+							</div>
 							<input
 								id="{fieldId}-id"
 								class="md-input model-id-input"
@@ -159,10 +161,12 @@
 							/>
 						</div>
 						<div class="model-field settings-field-layout model-service-field">
-							<label class="field-label" for="{fieldId}-name">服务模型 ID</label>
-							<span class="advanced-hint"
-								>此值会作为 API 请求中的 model 参数发送给 Provider</span
-							>
+							<div class="model-field-copy">
+								<label class="field-label" for="{fieldId}-name">服务模型 ID</label>
+								<span class="advanced-hint"
+									>此值会作为 API 请求中的 model 参数发送给 Provider</span
+								>
+							</div>
 							<div class="service-model-control">
 								<MaterialAutocomplete
 									id="{fieldId}-name"
@@ -243,9 +247,15 @@
 									/>
 								</div>
 								<div class="model-field settings-field-layout">
-									<label class="field-label" for="{fieldId}-context-window"
-										>上下文窗口</label
-									>
+									<div class="model-field-copy">
+										<label class="field-label" for="{fieldId}-context-window"
+											>上下文窗口</label
+										>
+										<span class="advanced-hint">
+											0 使用 Provider 上报值或默认窗口；显式值范围为 1K–2,000K
+											tokens。
+										</span>
+									</div>
 									<MaterialNumberFieldWithUnit
 										id="{fieldId}-context-window"
 										value={model.context_window != null &&
@@ -264,10 +274,6 @@
 											),
 										)}
 									/>
-									<p class="model-hint">
-										0 使用 Provider 上报值或默认窗口；显式值范围为 1K–2,000K
-										tokens。
-									</p>
 								</div>
 								<div class="model-field settings-field-layout">
 									<label class="field-label" for="{fieldId}-cost-in"
@@ -418,6 +424,13 @@
 		align-items: stretch;
 	}
 	.model-field {
+		min-width: 0;
+	}
+	.model-field-copy {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: var(--md-sys-space-xs);
 		min-width: 0;
 	}
 	.field-label {

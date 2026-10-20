@@ -677,8 +677,8 @@
 											>操作</span
 										>
 										<MaterialButton
-											variant="text"
-											label="移除策略"
+											variant="danger-text"
+											label="移除"
 											ariaLabel={`移除${REQUEST_POLICY_OPTIONS.find((option) => option.value === policy.request)?.label || policy.request}路由`}
 											onclick={() => removePolicy(policy)}
 										/>
@@ -694,7 +694,12 @@
 					</div>
 				{/if}
 				<div class="section-actions">
-					<MaterialButton variant="outlined" label="添加请求路由" onclick={addPolicy} />
+					<MaterialButton
+						variant="outlined"
+						label="添加路由"
+						ariaLabel="添加请求路由"
+						onclick={addPolicy}
+					/>
 				</div>
 			</div>
 			<p class="cost-hint">

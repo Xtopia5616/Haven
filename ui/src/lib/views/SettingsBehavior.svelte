@@ -198,7 +198,8 @@
 			<div class="maintenance-actions">
 				<MaterialButton
 					variant="outlined"
-					label={memoryMaintenance.running ? '维护中…' : '立即维护'}
+					label={memoryMaintenance.running ? '维护中…' : '维护'}
+					ariaLabel="立即维护"
 					onclick={() => onRunMaintenance()}
 					disabled={memoryMaintenance.running}
 				/>

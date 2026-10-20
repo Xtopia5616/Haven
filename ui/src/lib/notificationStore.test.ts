@@ -62,7 +62,7 @@ describe('addNotification', () => {
 		spy.mockRestore();
 	});
 
-	it('does not log or mirror informational notifications', () => {
+	it('does not mirror informational notifications to the backend', () => {
 		addNotification('正在加载…', 'info');
 
 		expect(invoke).not.toHaveBeenCalled();

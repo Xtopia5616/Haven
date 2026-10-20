@@ -70,7 +70,7 @@ describe('ModelSettings provider surface', () => {
 		const config = { providers: [], models: [], request_policies: [] };
 		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
 
-		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
+		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider 配置' }));
 		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
 			target: { value: 'local' },
 		});
@@ -94,7 +94,7 @@ describe('ModelSettings provider surface', () => {
 		const config = { providers: [], models: [], request_policies: [] };
 		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
 
-		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
+		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider 配置' }));
 		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
 			target: { value: 'deepseek-main' },
 		});
@@ -117,7 +117,7 @@ describe('ModelSettings provider surface', () => {
 		const config = { providers: [], models: [], request_policies: [] };
 		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
 
-		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
+		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider 配置' }));
 		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
 			target: { value: 'direct' },
 		});
@@ -143,7 +143,7 @@ describe('ModelSettings provider surface', () => {
 		const config = { providers: [], models: [], request_policies: [] };
 		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
 
-		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
+		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider 配置' }));
 		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
 			target: { value: 'proxied' },
 		});
@@ -195,7 +195,7 @@ describe('ModelSettings provider surface', () => {
 			onProviderDiscoveryFailure,
 		});
 
-		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
+		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider 配置' }));
 		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
 			target: { value: 'primary' },
 		});
@@ -226,7 +226,7 @@ describe('ModelSettings provider surface', () => {
 			onProviderDiscoveryFailure,
 		});
 
-		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
+		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider 配置' }));
 		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
 			target: { value: 'primary' },
 		});

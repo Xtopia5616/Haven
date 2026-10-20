@@ -634,7 +634,7 @@
 							state="unconfigured"
 							title="尚未配置 MCP 服务器"
 							message="添加 MCP 服务器，为 Agent 扩展外部工具与资源。"
-							actionLabel="添加 MCP 服务器"
+							actionLabel="添加服务器"
 							onAction={openAddDialog}
 						/>
 					{:else if visibleMcpServers.length === 0}
@@ -647,7 +647,7 @@
 							{#each visibleMcpServers as server (server.name)}
 								<McpServerCard
 									{server}
-										onBrowseFeatures={openMcpFeatures}
+									onBrowseFeatures={openMcpFeatures}
 									onEdit={openEditDialog}
 									onRemove={handleRemove}
 									onReconnect={handleReconnect}
@@ -672,7 +672,8 @@
 							<MaterialButton
 								variant="outlined"
 								width="equal"
-								label="打开技能文件夹"
+								label="打开文件夹"
+								ariaLabel="打开技能文件夹"
 								onclick={openFolder}
 							/>
 						{/snippet}
@@ -683,7 +684,7 @@
 							state="unconfigured"
 							title="暂无技能"
 							message="将 SKILL.md 文件放入技能文件夹，然后点击刷新。"
-							actionLabel="打开技能文件夹"
+							actionLabel="打开文件夹"
 							onAction={openFolder}
 						/>
 					{:else if visibleSkills.length === 0}

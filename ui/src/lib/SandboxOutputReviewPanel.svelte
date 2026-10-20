@@ -55,7 +55,9 @@
 			if (isStale()) return;
 			manifest = next;
 			if (pendingChangeIndex !== null) {
-				const current = next?.changes.find((change) => change.changeIndex === pendingChangeIndex);
+				const current = next?.changes.find(
+					(change) => change.changeIndex === pendingChangeIndex,
+				);
 				statusMessage = current?.promoted
 					? '文件已创建到你选择的位置。'
 					: '此文件尚未保存；你可以重新选择位置并请求一次授权。';
@@ -135,7 +137,11 @@
 </script>
 
 {#if loading || manifest || errorMessage || statusMessage}
-	<section class="sandbox-review" aria-label="隔离执行输出审阅" data-testid="sandbox-output-review">
+	<section
+		class="sandbox-review"
+		aria-label="隔离执行输出审阅"
+		data-testid="sandbox-output-review"
+	>
 		{#if manifest}
 			<header>
 				<div>
@@ -158,9 +164,10 @@
 							<small>
 								{change.beforeBytes == null
 									? ''
-									: `原 ${fileSize(change.beforeBytes)} · `}{change.afterBytes == null
-								? '没有新文件内容'
-								: `后 ${fileSize(change.afterBytes)}`}
+									: `原 ${fileSize(change.beforeBytes)} · `}{change.afterBytes ==
+								null
+									? '没有新文件内容'
+									: `后 ${fileSize(change.afterBytes)}`}
 							</small>
 						</div>
 						{#if change.promoted}
@@ -168,7 +175,8 @@
 						{:else if change.change === 'created'}
 							<MaterialButton
 								variant="filled"
-								label="选择位置并保存"
+								label="另存为…"
+								ariaLabel="选择位置并保存"
 								disabled={busy || pendingChangeIndex !== null}
 								onclick={() => promote(change)}
 							/>
@@ -182,7 +190,8 @@
 				<span>审阅会在 15 分钟后自动清理</span>
 				<MaterialButton
 					variant="danger"
-					label="丢弃全部审阅数据"
+					label="丢弃全部"
+					ariaLabel="丢弃全部审阅数据"
 					disabled={busy || pendingChangeIndex !== null}
 					onclick={discard}
 				/>

@@ -143,11 +143,7 @@
 	</div>
 
 	{#if toolRunRows.length === 0 && toolRunHistoryLoading}
-		<AsyncState
-			state="loading"
-			title="正在加载任务历史"
-			message="正在读取已结束的后台任务。"
-		/>
+		<AsyncState state="loading" title="正在加载任务历史" message="正在读取已结束的后台任务。" />
 	{:else if toolRunRows.length === 0 && toolRunHistoryFailed}
 		<AsyncState
 			state="error"
@@ -157,7 +153,10 @@
 			onAction={onRefreshTaskHistory}
 		/>
 	{:else if toolRunRows.length === 0}
-		<AsyncState title="暂无后台任务" message="工具调用开始后台执行后，状态和结果会显示在这里。" />
+		<AsyncState
+			title="暂无后台任务"
+			message="工具调用开始后台执行后，状态和结果会显示在这里。"
+		/>
 	{:else if filteredRows.length === 0}
 		<AsyncState
 			title="没有匹配的任务"
@@ -230,15 +229,16 @@
 											>
 										</span>
 									</button>
-										{#if row.status === 'running'}
-											<div class="task-card-actions workspace-item-card-actions">
-												<MaterialButton
-													variant="danger"
-													label="停止后台任务"
-													onclick={() => onCancel?.(row.toolRunId)}
-												/>
-											</div>
-										{/if}
+									{#if row.status === 'running'}
+										<div class="task-card-actions workspace-item-card-actions">
+											<MaterialButton
+												variant="danger"
+												label="停止"
+												ariaLabel="停止后台任务"
+												onclick={() => onCancel?.(row.toolRunId)}
+											/>
+										</div>
+									{/if}
 								</article>
 							{/each}
 						{/snippet}
@@ -323,14 +323,16 @@
 					{#if selectedRow.status === 'running'}
 						<MaterialButton
 							variant="danger"
-							label="停止任务"
+							label="停止"
+							ariaLabel="停止任务"
 							onclick={() => onCancel?.(selectedRow.toolRunId)}
 						/>
 					{/if}
 					{#if selectedRow.sessionId}
 						<MaterialButton
 							variant="outlined"
-							label="打开来源会话"
+							label="打开会话"
+							ariaLabel="打开来源会话"
 							onclick={() => {
 								const sessionId = selectedRow.sessionId;
 								if (sessionId) onOpenSession?.(sessionId);

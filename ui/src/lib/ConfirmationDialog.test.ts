@@ -34,7 +34,7 @@ describe('ConfirmationDialog', () => {
 		const allowButtonLabels = Array.from(container.querySelectorAll('.allow-group button')).map(
 			(button) => button.textContent?.trim() || button.getAttribute('aria-label'),
 		);
-		expect(allowButtonLabels).toEqual(['本次允许', '本会话允许此操作', '更多允许']);
+		expect(allowButtonLabels).toEqual(['本次允许', '本会话允许', '更多允许']);
 		expect(
 			container
 				.querySelector('.actions')
