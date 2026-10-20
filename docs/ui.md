@@ -323,7 +323,7 @@
 }
 ```
 
-动态列表项使用全局 `.motion-list-item` 类；整组列表可在容器上使用 `.motion-list`，其直接子项共享淡入效果。会话消息、附件预览和浮层可使用 Svelte transition。全局 CSS 必须遵守 `prefers-reduced-motion: reduce`，工作区脚本触发的 Web Animations 也必须跳过该偏好下的动效。
+动态列表项使用全局 `.motion-list-item` 类；整组列表可在容器上使用 `.motion-list`，其直接子项共享淡入效果。会话消息、附件预览和浮层可使用 Svelte transition。
 
 ---
 

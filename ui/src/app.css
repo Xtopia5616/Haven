@@ -1946,21 +1946,6 @@ select.md-select {
 	}
 }
 
-/* Keep every CSS motion path, including Svelte-generated transitions and
- * looping status indicators, within the user's reduced-motion preference. */
-@media (prefers-reduced-motion: reduce) {
-	*,
-	*::before,
-	*::after {
-		animation-delay: 0ms !important;
-		animation-duration: 0.01ms !important;
-		animation-iteration-count: 1 !important;
-		scroll-behavior: auto !important;
-		transition-delay: 0ms !important;
-		transition-duration: 0.01ms !important;
-	}
-}
-
 @media (max-width: 640px) {
 	.md-tabs {
 		padding-inline: var(--md-sys-space-md);
