@@ -9,7 +9,7 @@
 
 ## 决定
 
-- 每个 Session 有一份可选的自由格式 Markdown 工作文档，由 Agent 通过 `session.working_document_read` 和 `session.working_document_replace` 读取、整体替换或清空。
+- 每个 Session 有一份可选的自由格式 Markdown 工作文档，由 Agent 通过 `session.read_notes` 和 `session.replace_notes` 读取、整体替换或清空。这两个操作保留在 deferred catalog，由 Agent 按需发现并加载；提示词使用直白的 notes 命名说明其用途，避免把它误解为执行记录或长期 Memory。
 - 每次替换追加 `session_working_document_replaced` domain event；活动事件流中的最新 sequence 是当前值。UI 和模型看到当前内容，不展示历史版本。服务端不提供编辑历史或专门的溯源 UX。
 - 文档上限为 32 KiB UTF-8。恢复时从活动 domain events 取最新值，并把最多 4096 个 Unicode 字符的 Markdown 快照作为标注为不可信笔记的 prompt context；需要完整文本时模型可调用读取工具。
 - Fork 只复制 transcript 前缀；工作文档属于单个 Session，不随 Fork 继承，新建的 child session 从空工作文档开始。
@@ -27,7 +27,7 @@
 
 ## 影响
 
-增加 Agent domain event 约定、Tools capability port、AgentEvent/Tauri IPC DTO、resume DTO 与聊天面板。每次替换只增加一条事件；没有应用层可编辑的历史视图。32 KiB 上限限制单个 payload，UI 只保留当前文档。事件版本数没有上限或清理策略，因此高频替换会持续增加 append-only 事件流占用；这是当前设计接受的存储特性。
+增加 Agent domain event 约定、Tools capability port、AgentEvent/Tauri IPC DTO、resume DTO 与聊天面板。每次替换只增加一条事件；没有应用层可编辑的历史视图。32 KiB 上限限制单个 payload，UI 只保留当前文档。事件版本数没有上限或清理策略，因此高频替换会持续增加 append-only 事件流占用；这是当前设计接受的存储特性。工具重命名不做配置兼容迁移；使用旧工具名的 `tool_settings` 条目和永久权限 key 不再匹配新操作，用户需自行删除或改为新名称。数据库无需重置。
 
 ## 验证
 

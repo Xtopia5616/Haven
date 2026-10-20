@@ -873,13 +873,13 @@ const SESSION_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("session.unlink", "unlink", "session", "link"),
     split_spec!("session.links", "links", "session", "link"),
     split_spec!(
-        "session.working_document_read",
+        "session.read_notes",
         "working_document_read",
         "session",
         "fileText"
     ),
     split_spec!(
-        "session.working_document_replace",
+        "session.replace_notes",
         "working_document_replace",
         "session",
         "fileText"

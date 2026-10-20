@@ -352,13 +352,13 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
             description: "List the sessions linked to the current session.",
             when_to_use: "Use for a one-shot lookup of related sessions.",
         },
-        "session.working_document_read" => OperationText {
-            description: "Read the current session's freeform Markdown working document.",
-            when_to_use: "Use to recover current goals, plan, decisions, and next actions; this document is session-local notes, not proof that an action was executed.",
+        "session.read_notes" => OperationText {
+            description: "Read the current session's notes, including its goals, plan, decisions, and progress.",
+            when_to_use: "Use to recover this session's current goals, plan, decisions, and next actions; notes are not proof that an action was executed.",
         },
-        "session.working_document_replace" => OperationText {
-            description: "Replace or clear the current session's Markdown working document.",
-            when_to_use: "Keep concise notes that help this session continue, and use an empty Markdown string to clear it. Record intentions separately from completed actions; this document does not authorize tool side effects.",
+        "session.replace_notes" => OperationText {
+            description: "Replace or clear the current session's Markdown notes.",
+            when_to_use: "Keep concise notes that help this session continue, and use an empty Markdown string to clear them. Record intentions separately from completed actions; notes do not authorize tool side effects.",
         },
         "agent.status" => OperationText {
             description: "Read the real lifecycle status of this agent or one of its descendants.",
@@ -629,8 +629,8 @@ mod tests {
             "session.link",
             "session.unlink",
             "session.links",
-            "session.working_document_read",
-            "session.working_document_replace",
+            "session.read_notes",
+            "session.replace_notes",
             "agent.list",
             "agent.children",
             "agent.history",

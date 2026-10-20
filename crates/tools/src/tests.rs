@@ -891,6 +891,74 @@ async fn stable_core_tools_are_registered_without_optional_providers() {
 }
 
 #[tokio::test]
+async fn session_notes_operations_are_discoverable_and_loaded_on_demand() {
+    let mgr = ToolsFacade::new();
+    mgr.rebuild_catalog().await.unwrap();
+    let session_id = "ses-0123456789abcdef0123456789abcdef";
+    let operation_names = ["session.read_notes", "session.replace_notes"];
+    let provider_tools = mgr.list_tool_definitions_for_session(session_id).await;
+
+    for name in operation_names {
+        assert!(mgr.registry().get(name).await.is_none());
+        assert!(
+            !provider_tools.iter().any(|tool| tool.name == name),
+            "deferred session notes operation {name} must not be provider-visible before loading"
+        );
+    }
+
+    let listed = mgr
+        .execute_tool(
+            Some(session_id),
+            "tool_catalog",
+            json!({
+                "action": "list",
+                "source": "builtin",
+                "level": "operations",
+                "root": "session",
+                "limit": 32
+            }),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let items = listed.output["items"].as_array().unwrap();
+    for name in operation_names {
+        let item = items
+            .iter()
+            .find(|item| item["name"] == name)
+            .unwrap_or_else(|| panic!("tool catalog should expose {name}"));
+        assert_eq!(item["loaded"], false);
+    }
+    assert!(!items.iter().any(|item| {
+        item["name"] == "session.working_document_read"
+            || item["name"] == "session.working_document_replace"
+    }));
+
+    let loaded = mgr
+        .execute_tool(
+            Some(session_id),
+            "tool_catalog",
+            json!({
+                "action": "load",
+                "source": "builtin",
+                "operations": operation_names
+            }),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(loaded.output["status"], "loaded");
+
+    let provider_tools = mgr.list_tool_definitions_for_session(session_id).await;
+    for name in operation_names {
+        assert!(
+            provider_tools.iter().any(|tool| tool.name == name),
+            "loaded session notes operation {name} must enter the Agent's provider tool list"
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools() {
     let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
