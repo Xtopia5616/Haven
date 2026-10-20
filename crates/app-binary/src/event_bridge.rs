@@ -251,6 +251,7 @@ impl TauriEmitter {
                 status,
                 waiting_reason,
                 reason,
+                run_end_kind,
             } => {
                 let title = display_title.clone().unwrap_or_else(|| session_id.clone());
                 match status {
@@ -284,6 +285,7 @@ impl TauriEmitter {
                             waiting_reason: None,
                             title,
                             reason: reason.as_deref().map(sanitize_error_text),
+                            run_end_kind: None,
                         }),
                     ),
                     haven_common::lifecycle::SessionStatus::Running => project(
@@ -294,6 +296,7 @@ impl TauriEmitter {
                             waiting_reason: None,
                             title,
                             reason: reason.as_deref().map(sanitize_error_text),
+                            run_end_kind: None,
                         }),
                     ),
                     haven_common::lifecycle::SessionStatus::Paused => project(
@@ -304,6 +307,7 @@ impl TauriEmitter {
                             waiting_reason: *waiting_reason,
                             title,
                             reason: reason.as_deref().map(sanitize_error_text),
+                            run_end_kind: *run_end_kind,
                         }),
                     ),
                 }

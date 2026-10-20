@@ -27,6 +27,7 @@
 		awaitingBackground?: boolean;
 		awaitingBackgroundCount?: number;
 		runEndStatus?: SessionRunEndStatus | null;
+		runEndOutcome?: 'turn_completed' | null;
 		runEndReason?: string;
 		showContinueButton?: boolean;
 		continueDisabled?: boolean;
@@ -49,6 +50,7 @@
 		awaitingBackground = false,
 		awaitingBackgroundCount = 0,
 		runEndStatus = null,
+		runEndOutcome = null,
 		runEndReason = '',
 		showContinueButton = false,
 		continueDisabled = false,
@@ -152,7 +154,7 @@
 		{/each}
 	</div>
 	{#if runEndStatus}
-		<SessionRunEndBanner status={runEndStatus} reason={runEndReason} />
+		<SessionRunEndBanner status={runEndStatus} outcome={runEndOutcome} reason={runEndReason} />
 	{/if}
 	{#if showContinueButton && !continueDisabled}
 		<div class="continue-action" in:fly={{ y: 6, duration: 240 }}>

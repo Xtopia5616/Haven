@@ -142,7 +142,7 @@ Agent 事件由 `TauriEmitter` 映射，命令直接发送的事件也必须使�
 
 | 事件 | Rust DTO（wire） | 生产者 | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|---|
-| `session:lifecycle` | `SessionLifecycleEvent`, `type`: `created`, `updated`, `completed`, `error`, `title_updated`, `deleted` | Agent 生命周期事件、`update_session_title`、删除命令 | 聊天页、根布局、记忆视图 | 只有一个事件事实和一个 payload。`updated.status` 限于 `pending`/`running`/`paused`；终态分别使用 `completed` 与 `error`，同 payload 必须携带已净化的 `reason` 或 `error`，不再发 secondary event，也不需要 `occurrence_id`。`waiting_reason` 仅用于 paused；完成后同 run 不再有流式事件。创建在首个流式事件前；标题按 `session_id` 覆盖；`deleted.session_id = null` 表示全量清空。不得发送原始输入、摘要、凭据或完整 provider 响应。 |
+| `session:lifecycle` | `SessionLifecycleEvent`, `type`: `created`, `updated`, `completed`, `error`, `title_updated`, `deleted` | Agent 生命周期事件、`update_session_title`、删除命令 | 聊天页、根布局、记忆视图 | 只有一个事件事实和一个 payload。`updated.status` 限于 `pending`/`running`/`paused`；终态分别使用 `completed` 与 `error`，同 payload 必须携带已净化的 `reason` 或 `error`，不再发 secondary event，也不需要 `occurrence_id`。`waiting_reason` 仅用于 paused；`run_end_kind=turn_completed` 标记正常 ReAct 轮次结束，会话仍为可继续的 paused；其它暂停不带该字段。完成后同 run 不再有流式事件。创建在首个流式事件前；标题按 `session_id` 覆盖；`deleted.session_id = null` 表示全量清空。不得发送原始输入、摘要、凭据或完整 provider 响应。 |
 
 前端内部对应为 `sessionId`、`targetMessageId` 等 camelCase 字段；只允许监听边界进行转换。
 

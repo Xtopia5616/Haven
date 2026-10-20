@@ -88,6 +88,14 @@ pub enum SessionWaitingReason {
     EndIncomplete,
 }
 
+/// Outcome attached to a live SessionRun end event. The session can remain
+/// `Paused` after this outcome so another user turn can continue the dialog.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionRunEndKind {
+    TurnCompleted,
+}
+
 impl SessionWaitingReason {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -367,7 +375,9 @@ impl<'de> Deserialize<'de> for ToolRunStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionStatus, SessionStepStatus, SessionWaitingReason, ToolRunStatus};
+    use super::{
+        SessionRunEndKind, SessionStatus, SessionStepStatus, SessionWaitingReason, ToolRunStatus,
+    };
 
     #[test]
     fn session_step_status_uses_closed_snake_case_vocabulary() {
@@ -397,6 +407,19 @@ mod tests {
             "\"end_incomplete\""
         );
         assert!(serde_json::from_str::<SessionWaitingReason>("\"bogus\"").is_err());
+    }
+
+    #[test]
+    fn run_end_kind_serializes_as_a_closed_snake_case_value() {
+        assert_eq!(
+            serde_json::to_string(&SessionRunEndKind::TurnCompleted).unwrap(),
+            "\"turn_completed\""
+        );
+        assert_eq!(
+            serde_json::from_str::<SessionRunEndKind>("\"turn_completed\"").unwrap(),
+            SessionRunEndKind::TurnCompleted
+        );
+        assert!(serde_json::from_str::<SessionRunEndKind>("\"paused\"").is_err());
     }
 
     #[test]

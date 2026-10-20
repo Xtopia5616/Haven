@@ -208,6 +208,8 @@ pub(crate) enum SessionLifecycleEvent {
         title: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        run_end_kind: Option<haven_common::lifecycle::SessionRunEndKind>,
     },
     Completed {
         session_id: String,
@@ -731,6 +733,7 @@ mod tests {
             waiting_reason: Some(SessionWaitingReason::UserInterrupt),
             title: "Plan migration".into(),
             reason: Some("用户主动打断输出".into()),
+            run_end_kind: None,
         };
         assert_eq!(
             serde_json::to_value(event).unwrap(),
@@ -756,6 +759,26 @@ mod tests {
                 "session_id": "ses-0d64523ce8dd6152d96419b5fce658eb",
                 "title": "Build",
                 "error": "provider unavailable",
+            })
+        );
+
+        let turn_completed = SessionLifecycleEvent::Updated {
+            session_id: "ses-7ae290dbf0b4468c9d2c401be649850b".into(),
+            status: SessionUpdateStatus::Paused,
+            waiting_reason: Some(SessionWaitingReason::UserInput),
+            title: "Plan migration".into(),
+            reason: None,
+            run_end_kind: Some(haven_common::lifecycle::SessionRunEndKind::TurnCompleted),
+        };
+        assert_eq!(
+            serde_json::to_value(turn_completed).unwrap(),
+            serde_json::json!({
+                "type": "updated",
+                "session_id": "ses-7ae290dbf0b4468c9d2c401be649850b",
+                "status": "paused",
+                "title": "Plan migration",
+                "waiting_reason": "user_input",
+                "run_end_kind": "turn_completed",
             })
         );
     }

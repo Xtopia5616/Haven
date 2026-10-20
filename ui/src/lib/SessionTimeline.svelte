@@ -21,6 +21,7 @@
 		awaitingBackground = false,
 		loading = false,
 		runEndStatus = null,
+		runEndOutcome = null,
 		runEndReason = '',
 		...restProps
 	}: Props = $props();
@@ -29,7 +30,7 @@
 {#if loading}
 	<LoadingState label="正在加载 Haven…" detail="正在准备你的工作区" />
 {:else if messages.length === 0 && runEndStatus}
-	<SessionRunEndBanner status={runEndStatus} reason={runEndReason} />
+	<SessionRunEndBanner status={runEndStatus} outcome={runEndOutcome} reason={runEndReason} />
 {:else if messages.length === 0 && sessionToolRuns.length === 0 && !awaitingBackground}
 	<SessionWelcome hotkeyBinding={restProps.hotkeyBinding} />
 {:else}
@@ -39,6 +40,7 @@
 		{sessionToolRuns}
 		{awaitingBackground}
 		{runEndStatus}
+		{runEndOutcome}
 		{runEndReason}
 		{...restProps}
 	/>

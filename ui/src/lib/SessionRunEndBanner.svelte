@@ -5,39 +5,54 @@
 
 	interface Props {
 		status?: SessionRunEndStatus;
+		outcome?: 'turn_completed' | null;
 		reason?: string;
 	}
 
 	/**
 	 * SessionRunEndBanner — explains why the current session run ended.
 	 */
-	let { status = 'error', reason = '' }: Props = $props();
+	let { status = 'error', outcome = null, reason = '' }: Props = $props();
 	let isError = $derived(status === 'error');
-	let isPaused = $derived(status === 'paused');
+	let isTurnCompleted = $derived(outcome === 'turn_completed');
+	let isPaused = $derived(status === 'paused' && !isTurnCompleted);
 	let displayReason = $derived(
 		reason.trim() ||
 			(isError
 				? '本轮因错误停止，暂未收到更具体的原因。'
 				: isPaused
 					? '本轮已暂停，暂未收到更具体的原因。'
-					: '会话已结束。'),
+					: isTurnCompleted
+						? '本轮已正常结束。'
+						: '会话已结束。'),
 	);
 	let heading = $derived(
-		isError ? '本轮因错误停止' : isPaused ? '本轮已暂停' : '会话已结束',
+		isError
+			? '本轮因错误停止'
+			: isTurnCompleted
+				? '本轮已正常结束'
+				: isPaused
+					? '本轮已暂停'
+					: '会话已结束',
 	);
-	let badge = $derived(isError ? '错误' : isPaused ? '已暂停' : '已结束');
+	let badge = $derived(
+		isError ? '错误' : isTurnCompleted ? '本轮完成' : isPaused ? '已暂停' : '已结束',
+	);
 	let hint = $derived(
 		isError
 			? '已提交的内容仍可恢复；失败的这一步可以使用下方“继续生成”重试。'
 			: isPaused
 				? '已保留当前输出，可以继续生成或发送新的消息。'
-				: '会话内容已保留，可以新建会话继续工作。',
+				: isTurnCompleted
+					? '回答已保留，可以继续发送消息。'
+					: '会话内容已保留，可以新建会话继续工作。',
 	);
 </script>
 
 <section
 	class="session-run-end-banner"
 	data-status={status}
+	data-outcome={outcome || undefined}
 	role={isError ? 'alert' : 'status'}
 	aria-live={isError ? 'assertive' : 'polite'}
 >
@@ -93,7 +108,7 @@
 			var(--md-sys-color-surface-container-low)
 		);
 	}
-	.session-run-end-banner[data-status='paused'] {
+	.session-run-end-banner[data-status='paused']:not([data-outcome='turn_completed']) {
 		border-color: color-mix(
 			in srgb,
 			var(--md-sys-color-warning) 32%,
@@ -120,7 +135,8 @@
 		background: var(--md-sys-color-error-container);
 		color: var(--md-sys-color-on-error-container);
 	}
-	.session-run-end-banner[data-status='paused'] .session-run-end-banner__icon {
+	.session-run-end-banner[data-status='paused']:not([data-outcome='turn_completed'])
+		.session-run-end-banner__icon {
 		background: var(--md-sys-color-warning-container);
 		color: var(--md-sys-color-on-warning-container);
 	}

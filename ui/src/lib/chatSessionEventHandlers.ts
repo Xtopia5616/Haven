@@ -86,7 +86,17 @@ export function createChatSessionEventHandler({
 				// pause itself is reported as paused and must not clear the indicator.
 				if (isActive && data.status === 'pending') clearAskAwaiting(data.sessionId);
 
-				if (data.status === 'paused' && data.reason?.trim()) {
+				if (data.status === 'paused' && data.runEndKind === 'turn_completed') {
+					dispatchSession({
+						type: 'session/run-ended',
+						sessionId: data.sessionId,
+						status: data.status,
+						outcome: 'turn_completed',
+						reason: data.reason?.trim() || '本轮已正常结束。',
+						title: data.title,
+						waitingReason: data.waitingReason,
+					});
+				} else if (data.status === 'paused' && data.reason?.trim()) {
 					dispatchSession({
 						type: 'session/run-ended',
 						sessionId: data.sessionId,

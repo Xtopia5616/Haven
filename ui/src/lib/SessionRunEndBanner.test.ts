@@ -3,6 +3,19 @@ import { describe, expect, it } from 'vitest';
 import SessionRunEndBanner from './SessionRunEndBanner.svelte';
 
 describe('SessionRunEndBanner', () => {
+	it('clearly marks a normally completed turn as successful and resumable', () => {
+		render(SessionRunEndBanner, {
+			status: 'paused',
+			outcome: 'turn_completed',
+			reason: '本轮已正常结束。',
+		});
+
+		expect(screen.getByRole('status').getAttribute('data-status')).toBe('paused');
+		expect(screen.getByText('本轮已正常结束')).toBeTruthy();
+		expect(screen.getByText('本轮完成')).toBeTruthy();
+		expect(screen.getByText('回答已保留，可以继续发送消息。')).toBeTruthy();
+	});
+
 	it('shows the error reason and distinguishes saved content from the failed part', () => {
 		render(SessionRunEndBanner, { status: 'error', reason: '响应头等待超过 60 秒' });
 

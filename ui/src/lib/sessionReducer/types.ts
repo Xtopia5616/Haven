@@ -38,6 +38,8 @@ export interface SessionRunEndNotice {
 	sessionId: string;
 	status: SessionRunEndStatus;
 	reason: string;
+	/** A successful turn boundary; the session itself remains paused for follow-up. */
+	outcome?: 'turn_completed';
 }
 
 /** One renderer message, including the explicit dynamic tool extension points. */
@@ -134,6 +136,7 @@ export type SessionAction =
 			type: 'session/run-ended';
 			sessionId: string;
 			status: SessionRunEndStatus;
+			outcome?: 'turn_completed';
 			reason: string;
 			title?: string | null;
 			waitingReason?: SessionWaitingReason | null;

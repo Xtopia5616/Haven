@@ -70,7 +70,7 @@ pub(crate) async fn set_status_and_emit(
     session_id: &str,
     status: SessionStatus,
 ) -> anyhow::Result<()> {
-    set_status_and_emit_with_waiting_reason(executor, emitter, session_id, status, None).await
+    set_status_and_emit_with_waiting_reason(executor, emitter, session_id, status, None, None).await
 }
 
 /// Update a session and publish the derived paused reason in the same event.
@@ -82,6 +82,7 @@ pub(crate) async fn set_status_and_emit_with_waiting_reason(
     session_id: &str,
     status: SessionStatus,
     explicit_reason: Option<haven_common::lifecycle::SessionWaitingReason>,
+    run_end_kind: Option<haven_common::lifecycle::SessionRunEndKind>,
 ) -> anyhow::Result<()> {
     tracing::debug!("session {} status -> {}", session_id, status.as_str());
     if executor.update_session_status(session_id, status).await? {
@@ -98,10 +99,18 @@ pub(crate) async fn set_status_and_emit_with_waiting_reason(
                 status,
                 waiting_reason,
                 reason: None,
+                run_end_kind,
             })
             .await;
     }
     Ok(())
+}
+
+fn run_end_kind_for_pause(
+    reason: PauseReason,
+) -> Option<haven_common::lifecycle::SessionRunEndKind> {
+    (reason == PauseReason::TurnEnd)
+        .then_some(haven_common::lifecycle::SessionRunEndKind::TurnCompleted)
 }
 
 /// Interval (in ReAct steps) at which long-running sessions re-run fact
@@ -336,6 +345,7 @@ impl ReActEngine {
                     session_id,
                     status,
                     waiting_reason,
+                    run_end_kind_for_pause(reason),
                 )
                 .await?;
             }
@@ -390,6 +400,7 @@ impl ReActEngine {
                 session_id,
                 SessionStatus::Paused,
                 Some(haven_common::lifecycle::SessionWaitingReason::StepBudget),
+                None,
             )
             .await?;
             emitter

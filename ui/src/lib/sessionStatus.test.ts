@@ -119,6 +119,9 @@ describe('sessionStatusLabel', () => {
 		expect(sessionStatusLabel({ status: 'pending' })).toBe('排队中');
 		expect(sessionStatusLabel({ status: 'running' })).toBe('运行中');
 		expect(sessionStatusLabel({ status: 'paused' })).toBe('已暂停');
+		expect(sessionStatusLabel({ status: 'paused', waitingReason: 'user_input' })).toBe(
+			'等待操作',
+		);
 		expect(sessionStatusLabel({ status: 'paused', waitingReason: 'background_task' })).toBe(
 			'等待任务',
 		);

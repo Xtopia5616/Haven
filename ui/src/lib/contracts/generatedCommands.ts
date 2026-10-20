@@ -137,7 +137,7 @@ export interface RecordingErrorEvent { recording_id: string; error: string }
 export interface RecordingEvent { is_recording: boolean; recording_id?: string; reason?: RecordingStopReasonDto; duration_ms?: number }
 export const RECORDING_STOP_REASON_DTO_VALUES = ['manual', 'silence', 'max_duration', 'cancel'] as const;
 export type RecordingStopReasonDto = (typeof RECORDING_STOP_REASON_DTO_VALUES)[number];
-export type SessionLifecycleEvent = { type: 'created'; session_id: string; status: SessionStatus; waiting_reason?: SessionWaitingReason | null; title: string | null } | { type: 'updated'; session_id: string; status: SessionUpdateStatus; waiting_reason?: SessionWaitingReason | null; title: string; reason?: string | null } | { type: 'completed'; session_id: string; title: string; reason: string } | { type: 'error'; session_id: string; title: string; error: string } | { type: 'title_updated'; session_id: string; title: string } | { type: 'deleted'; session_id: string | null };
+export type SessionLifecycleEvent = { type: 'created'; session_id: string; status: SessionStatus; waiting_reason?: SessionWaitingReason | null; title: string | null } | { type: 'updated'; session_id: string; status: SessionUpdateStatus; waiting_reason?: SessionWaitingReason | null; title: string; reason?: string | null; run_end_kind?: SessionRunEndKind | null } | { type: 'completed'; session_id: string; title: string; reason: string } | { type: 'error'; session_id: string; title: string; error: string } | { type: 'title_updated'; session_id: string; title: string } | { type: 'deleted'; session_id: string | null };
 export const SESSION_UPDATE_STATUS_VALUES = ['pending', 'running', 'paused'] as const;
 export type SessionUpdateStatus = (typeof SESSION_UPDATE_STATUS_VALUES)[number];
 export interface SkillsStatusChangedEvent { op: SkillsStatusOperation }
@@ -249,6 +249,8 @@ export interface SkillsExecConfig { venv_root: string; work_dir: string; timeout
 export interface StoredPermissionInput { key: string; effect: PermissionEffectInput }
 export interface StoredPermission { key: string; effect: PermissionEffect }
 export interface ToolConfig { enabled: boolean; timeout_secs?: number; max_output_chars?: number; max_retries?: number; retry_backoff_secs?: number; allowed_paths: string[]; allowed_domains: string[]; disabled_operations: string[]; risk_override: RiskLevel | null }
+export const SESSION_RUN_END_KIND_VALUES = ['turn_completed'] as const;
+export type SessionRunEndKind = (typeof SESSION_RUN_END_KIND_VALUES)[number];
 export const SESSION_STATUS_VALUES = ['pending', 'running', 'paused', 'completed', 'error'] as const;
 export type SessionStatus = (typeof SESSION_STATUS_VALUES)[number];
 export const SESSION_STEP_STATUS_VALUES = ['pending', 'running', 'completed', 'failed', 'cancelled', 'unknown'] as const;
@@ -7353,6 +7355,10 @@ export const SESSION_LIFECYCLE_EVENT_PAYLOAD_SHAPE = { kind: 'union', anyOf: [
 			'reason': {
 				optional: true,
 				shape: { kind: 'string' },
+			},
+			'run_end_kind': {
+				optional: true,
+				shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
 			}
 		}
 	},

@@ -14,9 +14,10 @@ describe('mapSessionEvent', () => {
 				type: 'updated',
 				session_id: 'ses-eda8e43e587f1b8c84315e90d5fe4bb7',
 				status: 'paused',
-				waiting_reason: 'ask',
+				waiting_reason: 'user_input',
 				title: 'A title',
 				reason: 'Waiting for input',
+				run_end_kind: 'turn_completed',
 			},
 			{
 				type: 'completed',
@@ -54,9 +55,10 @@ describe('mapSessionEvent', () => {
 				type: 'updated',
 				sessionId: 'ses-eda8e43e587f1b8c84315e90d5fe4bb7',
 				status: 'paused',
-				waitingReason: 'ask',
+				waitingReason: 'user_input',
 				title: 'A title',
 				reason: 'Waiting for input',
+				runEndKind: 'turn_completed',
 			},
 			{
 				type: 'completed',
@@ -77,6 +79,29 @@ describe('mapSessionEvent', () => {
 			},
 			{ type: 'deleted', sessionId: null },
 		]);
+	});
+
+	it('accepts earlier lifecycle updates without a run-end kind', () => {
+		const mapped = mapSessionEvent({
+			event: 'session:lifecycle',
+			id: 2,
+			payload: {
+				type: 'updated',
+				session_id: 'ses-eda8e43e587f1b8c84315e90d5fe4bb7',
+				status: 'paused',
+				title: 'A title',
+			},
+		});
+
+		expect(mapped?.payload).toEqual({
+			type: 'updated',
+			sessionId: 'ses-eda8e43e587f1b8c84315e90d5fe4bb7',
+			status: 'paused',
+			waitingReason: null,
+			title: 'A title',
+			reason: null,
+			runEndKind: null,
+		});
 	});
 
 	it('rejects an old channel even when the payload is otherwise valid', () => {
@@ -170,6 +195,13 @@ describe('mapSessionEvent', () => {
 				type: 'updated',
 				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
 				status: 'paused',
+				title: '',
+				run_end_kind: 'future',
+			},
+			{
+				type: 'updated',
+				session_id: 'ses-0ecf371384ab79d597760ca41f2ba21c',
+				status: 'paused',
 				waiting_reason: 'future',
 				title: '',
 			},
@@ -198,6 +230,7 @@ describe('mapSessionEvent', () => {
 			waitingReason: null,
 			title: '',
 			reason: null,
+			runEndKind: null,
 		});
 		expect(event?.payload).not.toHaveProperty('future_field');
 	});

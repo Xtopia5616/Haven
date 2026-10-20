@@ -73,7 +73,9 @@ export function reduceLifecycle(
 			};
 		}
 		case 'session/created': {
-			const sessions = state.sessions.some((session) => session.sessionId === action.sessionId)
+			const sessions = state.sessions.some(
+				(session) => session.sessionId === action.sessionId,
+			)
 				? state.sessions.map((session) =>
 						session.sessionId === action.sessionId
 							? {
@@ -136,7 +138,7 @@ export function reduceLifecycle(
 			if (!sessionChanged && !runEndNoticeInvalidated) return base;
 			const sessions = sessionChanged
 				? base.sessions.map((session) =>
-					session.sessionId === action.sessionId
+						session.sessionId === action.sessionId
 							? {
 									...session,
 									status: action.status,
@@ -193,11 +195,12 @@ export function reduceLifecycle(
 				isActive &&
 				(base.runEndNotice?.sessionId !== action.sessionId ||
 					base.runEndNotice.status !== action.status ||
+					base.runEndNotice.outcome !== action.outcome ||
 					base.runEndNotice.reason !== action.reason);
 			if (!sessionChanged && !noticeChanged) return base;
 			const sessions = sessionChanged
 				? base.sessions.map((session) =>
-					session.sessionId === action.sessionId
+						session.sessionId === action.sessionId
 							? {
 									...session,
 									status: action.status,
@@ -218,6 +221,7 @@ export function reduceLifecycle(
 								sessionId: action.sessionId,
 								status: action.status,
 								reason: action.reason,
+								...(action.outcome ? { outcome: action.outcome } : {}),
 							},
 						}
 					: {}),
@@ -241,7 +245,9 @@ export function reduceLifecycle(
 			return {
 				...state,
 				sessions: state.sessions.map((session) =>
-					session.sessionId === action.sessionId ? { ...session, title: action.title } : session,
+					session.sessionId === action.sessionId
+						? { ...session, title: action.title }
+						: session,
 				),
 			};
 		case 'session/deleted': {
@@ -250,7 +256,9 @@ export function reduceLifecycle(
 			delete sessionErrorReasons[action.sessionId];
 			return {
 				...state,
-				sessions: state.sessions.filter((session) => session.sessionId !== action.sessionId),
+				sessions: state.sessions.filter(
+					(session) => session.sessionId !== action.sessionId,
+				),
 				sessionErrorReasons,
 				activeSessionId:
 					state.activeSessionId === action.sessionId ? null : state.activeSessionId,

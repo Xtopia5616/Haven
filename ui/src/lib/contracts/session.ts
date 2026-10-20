@@ -7,10 +7,12 @@
 
 import {
 	SESSION_EVENT_NAMES,
+	SESSION_RUN_END_KIND_VALUES,
 	SESSION_STATUS_VALUES,
 	SESSION_UPDATE_STATUS_VALUES,
 	SESSION_WAITING_REASON_VALUES,
 	type SessionLifecycleEvent as GeneratedSessionLifecycleEvent,
+	type SessionRunEndKind,
 	type SessionStatus,
 	type SessionUpdateStatus,
 	type SessionWaitingReason,
@@ -52,6 +54,7 @@ export type SessionLifecyclePayload =
 			waitingReason: SessionWaitingReason | null;
 			title: string;
 			reason: string | null;
+			runEndKind: SessionRunEndKind | null;
 	  }
 	| { type: 'completed'; sessionId: string; title: string; reason: string }
 	| { type: 'error'; sessionId: string; title: string; error: string }
@@ -100,18 +103,21 @@ export function mapSessionEvent(
 			const waitingReason = mapWaitingReason(payload.waiting_reason);
 			const title = readStringField(payload, 'title');
 			const reason = optionalStringField(payload, 'reason');
+			const runEndKind = mapRunEndKind(payload.run_end_kind);
 			if (
 				sessionId === null ||
 				status === null ||
 				waitingReason === undefined ||
 				title === null ||
 				reason === undefined ||
-				(waitingReason !== null && status !== 'paused')
+				runEndKind === undefined ||
+				(waitingReason !== null && status !== 'paused') ||
+				(runEndKind !== null && status !== 'paused')
 			)
 				return null;
 			return {
 				...event,
-				payload: { type, sessionId, status, waitingReason, title, reason },
+				payload: { type, sessionId, status, waitingReason, title, reason, runEndKind },
 			};
 		}
 		case 'completed': {
@@ -163,6 +169,11 @@ function mapUpdateStatus(value: unknown): SessionUpdateStatus | null {
 function mapWaitingReason(value: unknown): SessionWaitingReason | null | undefined {
 	if (value === undefined) return null;
 	return isOneOf(value, SESSION_WAITING_REASON_VALUES) ? value : undefined;
+}
+
+function mapRunEndKind(value: unknown): SessionRunEndKind | null | undefined {
+	if (value === undefined || value === null) return null;
+	return isOneOf(value, SESSION_RUN_END_KIND_VALUES) ? value : undefined;
 }
 
 function requiredNullableStringField(

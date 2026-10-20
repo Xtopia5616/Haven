@@ -101,6 +101,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 status: haven_common::lifecycle::SessionStatus::Paused,
                 waiting_reason: None,
                 reason: None,
+                run_end_kind: None,
             },
             "session:lifecycle",
         ),
@@ -498,11 +499,31 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
         })
     );
 
+    let paused_with_reason = AgentEvent::SessionUpdated {
+        session_id: "ses-00000000000000000000000000000001".into(),
+        status: haven_common::lifecycle::SessionStatus::Paused,
+        waiting_reason: Some(haven_common::lifecycle::SessionWaitingReason::UserInterrupt),
+        reason: Some("用户主动打断输出".into()),
+        run_end_kind: None,
+    };
+    assert_eq!(
+        TauriEmitter::payload(&paused_with_reason, None),
+        json!({
+            "type": "updated",
+            "session_id": "ses-00000000000000000000000000000001",
+            "status": "paused",
+            "title": "ses-00000000000000000000000000000001",
+            "waiting_reason": "user_interrupt",
+            "reason": "用户主动打断输出"
+        })
+    );
+
     let updated = AgentEvent::SessionUpdated {
         session_id: "ses-00000000000000000000000000000001".into(),
         status: haven_common::lifecycle::SessionStatus::Paused,
-        waiting_reason: None,
-        reason: Some("用户主动打断输出".into()),
+        waiting_reason: Some(haven_common::lifecycle::SessionWaitingReason::UserInput),
+        reason: None,
+        run_end_kind: Some(haven_common::lifecycle::SessionRunEndKind::TurnCompleted),
     };
     let payload = TauriEmitter::payload(&updated, None);
     assert_eq!(
@@ -512,7 +533,8 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
             "session_id": "ses-00000000000000000000000000000001",
             "status": "paused",
             "title": "ses-00000000000000000000000000000001",
-            "reason": "用户主动打断输出"
+            "waiting_reason": "user_input",
+            "run_end_kind": "turn_completed"
         })
     );
 

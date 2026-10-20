@@ -123,6 +123,7 @@ describe('sessionEventListeners', () => {
 				waitingReason: 'user_input',
 				title: 'A title',
 				reason: 'Waiting for input',
+				runEndKind: null,
 			},
 		});
 	});

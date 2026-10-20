@@ -231,6 +231,10 @@ pub enum AgentEvent {
         /// history can restore the explanation after an app restart.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// Typed outcome for a successful ReAct turn boundary. This does not
+        /// make the reusable session terminal; it remains paused for follow-up.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_end_kind: Option<haven_common::lifecycle::SessionRunEndKind>,
     },
     Compaction {
         session_id: String,
@@ -1224,6 +1228,7 @@ impl EventDispatcher {
                     status,
                     waiting_reason,
                     reason: reason.map(str::to_owned),
+                    run_end_kind: None,
                 })
                 .await;
         }
@@ -1829,6 +1834,7 @@ mod tests {
                     status: SessionStatus::Running,
                     waiting_reason: None,
                     reason: None,
+                    run_end_kind: None,
                 })
                 .await;
         }

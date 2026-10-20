@@ -40,6 +40,22 @@ fn pause_memory_trigger_payload_uses_the_event_boundary_reason() {
     }
 }
 
+#[test]
+fn only_a_normal_turn_end_has_a_completed_run_kind() {
+    assert_eq!(
+        run_end_kind_for_pause(PauseReason::TurnEnd),
+        Some(haven_common::lifecycle::SessionRunEndKind::TurnCompleted)
+    );
+    for reason in [
+        PauseReason::Ask,
+        PauseReason::Confirm,
+        PauseReason::Budget,
+        PauseReason::External,
+    ] {
+        assert_eq!(run_end_kind_for_pause(reason), None);
+    }
+}
+
 #[tokio::test]
 async fn event_boundary_cursor_read_succeeds_without_changing_the_event_log() {
     let db = Arc::new(Database::open_in_memory().unwrap());

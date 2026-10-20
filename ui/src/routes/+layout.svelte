@@ -588,15 +588,20 @@ import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	const runningBackgroundToolRunCount = $derived(runningBackgroundToolRuns.length);
 	const sessionsStore = createSessionSelectorStore((state) => state.sessions);
 	const activeSessionIdStore = createSessionSelectorStore((state) => state.activeSessionId);
+	const runEndNoticeStore = createSessionSelectorStore((state) => state.runEndNotice);
 	const interactionsStore = createSessionSelectorStore((state) => state.interactions);
 	let sessions = $state(appSessionReducer.snapshot().sessions);
 	let activeSessionId = $state(appSessionReducer.snapshot().activeSessionId);
+	let runEndNotice = $state(appSessionReducer.snapshot().runEndNotice);
 	let interactionDict = $state(appSessionReducer.snapshot().interactions);
 	$effect(() => syncStore(sessionsStore, (v) => (sessions = v)));
 	$effect(() => syncStore(activeSessionIdStore, (v) => (activeSessionId = v)));
+	$effect(() => syncStore(runEndNoticeStore, (v) => (runEndNotice = v)));
 	$effect(() => syncStore(interactionsStore, (v) => (interactionDict = v)));
 	const activeSessionStatusLabel = $derived(
-		sessionStatusLabel(sessions.find((session) => session.sessionId === activeSessionId)),
+		runEndNotice?.sessionId === activeSessionId && runEndNotice?.outcome === 'turn_completed'
+			? '本轮已完成'
+			: sessionStatusLabel(sessions.find((session) => session.sessionId === activeSessionId)),
 	);
 	// Session lifecycle events expose the derived pause reason directly. The
 	// ToolRun registry remains available for the task panel and counts, but it

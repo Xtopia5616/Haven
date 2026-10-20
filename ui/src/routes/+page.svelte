@@ -1182,7 +1182,11 @@
 		String(activeSession?.title || activeSession?.inputText || '新会话'),
 	);
 	const activeSessionStatusLabel = $derived(
-		activeSession ? sessionStatusLabel(activeSession) : '空闲',
+		activeSessionRunEndNotice?.outcome === 'turn_completed'
+			? '本轮已完成'
+			: activeSession
+				? sessionStatusLabel(activeSession)
+				: '空闲',
 	);
 </script>
 
@@ -1326,6 +1330,7 @@
 					{awaitingBackground}
 					{awaitingBackgroundCount}
 					runEndStatus={activeSessionRunEndNotice?.status || null}
+					runEndOutcome={activeSessionRunEndNotice?.outcome || null}
 					runEndReason={activeSessionRunEndNotice?.reason || ''}
 					{showContinueButton}
 					{continueDisabled}
