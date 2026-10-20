@@ -7,8 +7,8 @@ Haven 是一个面向 Windows 的本机语音助手。后端使用 Rust/Tauri 2�
 ## 开发环境
 
 - Windows 10/11（桌面应用的运行与打包目标）
-- Rust 1.98.0，由 `rust-toolchain.toml` 固定；需包含 `clippy`、`rustfmt`
-- Node.js 24.20.0 与 pnpm 11.24.0；版本分别由 `.node-version` 和 `ui/package.json` 固定
+- Rust 1.99.0，由 `rust-toolchain.toml` 固定；需包含 `clippy`、`rustfmt`
+- Node.js 24.21.0 与 pnpm 12.12.1；版本分别由 `.node-version` 和 `ui/package.json` 固定
 - UI 类型检查使用 TypeScript 7.0.2 原生编译器；Svelte 兼容层保留 TypeScript 6.0.3
 - Tauri 的 Windows 前置依赖：Microsoft C++ Build Tools 和 WebView2 Runtime
 
