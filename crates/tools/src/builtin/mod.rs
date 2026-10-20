@@ -1427,9 +1427,12 @@ mod tests {
                 "files.search",
                 "system.info",
                 "lsp.definition",
+                "lsp.implementation",
+                "lsp.type_definition",
                 "lsp.references",
                 "lsp.hover",
                 "lsp.document_symbols",
+                "lsp.workspace_symbols",
                 "lsp.diagnostics"
             ]
         );

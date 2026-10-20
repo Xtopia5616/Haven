@@ -52,6 +52,18 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
             false,
             Some(RiskLevel::High),
         ),
+        "lsp.implementation" => (
+            "代码实现",
+            ToolCatalogGroup::Files,
+            false,
+            Some(RiskLevel::High),
+        ),
+        "lsp.type_definition" => (
+            "类型定义",
+            ToolCatalogGroup::Files,
+            false,
+            Some(RiskLevel::High),
+        ),
         "lsp.references" => (
             "代码引用",
             ToolCatalogGroup::Files,
@@ -66,6 +78,12 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         ),
         "lsp.document_symbols" => (
             "文档符号",
+            ToolCatalogGroup::Files,
+            false,
+            Some(RiskLevel::High),
+        ),
+        "lsp.workspace_symbols" => (
+            "工作区符号搜索",
             ToolCatalogGroup::Files,
             false,
             Some(RiskLevel::High),
@@ -330,9 +348,12 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
                 Some(NetworkAccess::None)
             }
             "lsp.definition"
+            | "lsp.implementation"
+            | "lsp.type_definition"
             | "lsp.references"
             | "lsp.hover"
             | "lsp.document_symbols"
+            | "lsp.workspace_symbols"
             | "lsp.diagnostics" => Some(NetworkAccess::Opaque),
             _ => None,
         },

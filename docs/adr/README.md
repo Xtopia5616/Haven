@@ -1329,3 +1329,4 @@
 - [1338：Session grant 不设基于时间的自动到期](1338-keep-session-grants-without-time-based-expiry.md)
 - [1339：保存执行工作区快捷项](1339-saved-execution-workspaces.md)
 - [1340：通过授权的本机 LSP 提供代码智能](1340-authorize-local-language-servers.md)
+- [1341：扩展 LSP 符号导航](1341-expand-lsp-navigation.md)

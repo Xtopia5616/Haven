@@ -81,6 +81,7 @@ Rust 测试应使用内存数据库或唯一临时目录，不能读写真实用
 ## 文档入口
 
 - [架构与 crate 边界](docs/architecture.md)
+- [Agent 的 LSP 配置与使用](docs/lsp.md)
 - [开发与架构治理规范](docs/development-standards.md)
 - [命名规范](docs/naming.md)
 - [日志、通知与错误处理](docs/conventions.md)

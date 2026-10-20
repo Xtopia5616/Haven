@@ -60,6 +60,37 @@ fn lsp_server_selection_matches_case_insensitively_and_prefers_compound_extensio
 }
 
 #[test]
+fn workspace_symbol_server_selection_uses_only_enabled_named_servers() {
+    let servers = vec![
+        LspServerConfig {
+            name: "rust-analyzer".into(),
+            command: "rust-analyzer".into(),
+            extensions: vec![".rs".into()],
+            language_id: "rust".into(),
+            enabled: true,
+            args: Vec::new(),
+        },
+        LspServerConfig {
+            name: "disabled".into(),
+            command: "unused".into(),
+            extensions: vec![".go".into()],
+            language_id: "go".into(),
+            enabled: false,
+            args: Vec::new(),
+        },
+    ];
+
+    assert_eq!(
+        super::select_lsp_server_by_name(servers.clone(), "RUST-ANALYZER")
+            .unwrap()
+            .language_id,
+        "rust"
+    );
+    assert!(super::select_lsp_server_by_name(servers.clone(), "disabled").is_none());
+    assert!(super::select_lsp_server_by_name(servers, "missing").is_none());
+}
+
+#[test]
 fn lsp_results_use_workspace_relative_uris_and_redact_external_file_uris() {
     let workspace = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
@@ -102,4 +133,39 @@ fn lsp_specs_declare_host_execution_and_opaque_network_policy() {
     }
     assert_eq!(LspOperation::parse("hover").unwrap(), LspOperation::Hover);
     assert!(LspOperation::parse("formatting").is_err());
+}
+
+#[test]
+fn workspace_symbol_queries_need_no_document_position() {
+    let operation = LspOperation::parse("workspace_symbols").unwrap();
+    let params = operation
+        .params(&json!({"query":"SessionActor"}), None, None)
+        .unwrap();
+
+    assert_eq!(operation.method(), "workspace/symbol");
+    assert_eq!(params, json!({"query":"SessionActor"}));
+}
+
+#[test]
+fn implementation_and_type_definition_use_standard_lsp_methods() {
+    let uri = "file:///workspace/src/lib.rs";
+    let position = Some((2, 5));
+
+    let implementation = LspOperation::parse("implementation").unwrap();
+    assert_eq!(implementation.method(), "textDocument/implementation");
+    assert_eq!(
+        implementation
+            .params(&json!({}), Some(uri), position)
+            .unwrap(),
+        json!({"textDocument":{"uri":uri},"position":{"line":2,"character":5}})
+    );
+
+    let type_definition = LspOperation::parse("type_definition").unwrap();
+    assert_eq!(type_definition.method(), "textDocument/typeDefinition");
+    assert_eq!(
+        type_definition
+            .params(&json!({}), Some(uri), position)
+            .unwrap(),
+        json!({"textDocument":{"uri":uri},"position":{"line":2,"character":5}})
+    );
 }

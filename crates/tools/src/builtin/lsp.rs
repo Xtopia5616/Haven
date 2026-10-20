@@ -1,16 +1,14 @@
 //! Agent-facing LSP operations and the one-shot local server lifecycle.
 
+mod operations;
 mod protocol;
 
+pub(super) use operations::operation_specs;
+
 use crate::security::{AuthorizationEngine, FileReadPolicy};
-use crate::{
-    ConfirmationRequirement, DataSensitivity, ExecutionBoundary, NetworkAccess, OperationEffect,
-    OperationIdempotency, OperationPolicy, OperationSpec, Tool, ToolConcurrency,
-    ToolExecutionContext, ToolOperationScope, ToolResult,
-};
+use crate::{OperationIdempotency, Tool, ToolConcurrency, ToolExecutionContext, ToolResult};
 use haven_common::config::{LspServerConfig, MAX_FILE_OPERATION_BYTES};
-use haven_common::tools::{ToolCatalogGroup, ToolPresentation, ToolPrompt, ToolSource};
-use haven_common::types::{CapabilityScope, RiskLevel};
+use haven_common::types::RiskLevel;
 use protocol::LspConnection;
 use serde_json::{Value, json};
 use std::io::Read;
@@ -62,10 +60,6 @@ impl LspTool {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("LSP operation is required"))?,
         )?;
-        let path_input = input
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("path is required"))?;
         let workspace = context
             .execution_workspace
             .as_ref()
@@ -78,40 +72,74 @@ impl LspTool {
             .directory()
             .ok_or_else(|| anyhow::anyhow!("LSP execution workspace is unavailable"))?;
 
-        let path = resolve_lsp_path(path_input, &workspace_root)?;
-        let file_read_policy = self.authorization.file_read_policy("lsp").await;
-        let LspDocument {
-            canonical_path: document_path,
-            relative_path: relative_document_path,
-            text: document_text,
-        } = read_lsp_document(
-            &file_read_policy,
-            &workspace_directory,
-            &workspace_root,
-            &path,
-        )
-        .await?;
-        let server = select_lsp_server(self.config_source.list()?, &document_path)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no enabled LSP server matches this document; add an entry to lsp_servers in config.toml"
-                )
-            })?;
+        if operation == LspOperation::WorkspaceSymbols {
+            let query = input
+                .get("query")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("query is required"))?;
+            anyhow::ensure!(!query.trim().is_empty(), "query must not be empty");
+        }
+
+        let (server, document) = if operation == LspOperation::WorkspaceSymbols {
+            let server_name = input
+                .get("server")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("server is required"))?;
+            let server = select_lsp_server_by_name(self.config_source.list()?, server_name)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no enabled LSP server has that name; check the lsp_servers entries in config.toml"
+                    )
+                })?;
+            (server, None)
+        } else {
+            let path_input = input
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("path is required"))?;
+            let path = resolve_lsp_path(path_input, &workspace_root)?;
+            let file_read_policy = self.authorization.file_read_policy("lsp").await;
+            let document = read_lsp_document(
+                &file_read_policy,
+                &workspace_directory,
+                &workspace_root,
+                &path,
+            )
+            .await?;
+            let server = select_lsp_server(self.config_source.list()?, &document.canonical_path)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no enabled LSP server matches this document; add an entry to lsp_servers in config.toml"
+                    )
+                })?;
+            (server, Some(document))
+        };
+        let relative_document_path = document
+            .as_ref()
+            .map(|document| document.relative_path.clone());
+        let document_uri = document
+            .as_ref()
+            .map(|document| {
+                url::Url::from_file_path(&document.canonical_path)
+                    .map(|uri| uri.to_string())
+                    .map_err(|_| {
+                        anyhow::anyhow!("document path cannot be represented as a file URI")
+                    })
+            })
+            .transpose()?;
+        let document_text = document.as_ref().map(|document| document.text.as_str());
 
         let line = input.get("line").and_then(Value::as_u64);
         let character = input.get("character").and_then(Value::as_u64);
         let position = if operation.needs_position() {
             Some(document_position(
-                &document_text,
+                document_text.ok_or_else(|| anyhow::anyhow!("source document is required"))?,
                 line.ok_or_else(|| anyhow::anyhow!("line is required"))?,
                 character.ok_or_else(|| anyhow::anyhow!("character is required"))?,
             )?)
         } else {
             None
         };
-        let document_uri = url::Url::from_file_path(&document_path)
-            .map_err(|_| anyhow::anyhow!("document path cannot be represented as a file URI"))?
-            .to_string();
         let workspace_uri = url::Url::from_directory_path(&workspace_root)
             .map_err(|_| anyhow::anyhow!("workspace path cannot be represented as a file URI"))?
             .to_string();
@@ -146,7 +174,9 @@ impl LspTool {
                 .ok_or_else(|| anyhow::anyhow!("LSP server stdin is unavailable"))?,
             workspace_uri.clone(),
         );
-        connection.set_document_uri(document_uri.clone());
+        if let Some(document_uri) = &document_uri {
+            connection.set_document_uri(document_uri.clone());
+        }
         let initialize = connection
             .request(
                 "initialize",
@@ -158,10 +188,17 @@ impl LspTool {
                     "capabilities": {
                         "workspace": {
                             "configuration": true,
+                            "symbol": {"dynamicRegistration": false},
                             "workspaceFolders": {"supported": true}
                         },
                         "textDocument": {
-                            "synchronization": {"didOpen": true, "didClose": true},
+                            "definition": {"dynamicRegistration": false, "linkSupport": true},
+                            "implementation": {"dynamicRegistration": false, "linkSupport": true},
+                            "typeDefinition": {"dynamicRegistration": false, "linkSupport": true},
+                            "references": {"dynamicRegistration": false},
+                            "hover": {"dynamicRegistration": false, "contentFormat": ["markdown", "plaintext"]},
+                            "documentSymbol": {"dynamicRegistration": false, "hierarchicalDocumentSymbolSupport": true},
+                            "synchronization": {"dynamicRegistration": false, "didOpen": true, "didClose": true},
                             "diagnostic": {"dynamicRegistration": false, "relatedDocumentSupport": true},
                             "publishDiagnostics": {"relatedInformation": true}
                         }
@@ -176,21 +213,23 @@ impl LspTool {
             );
         }
         connection.notify("initialized", json!({})).await?;
-        connection
-            .notify(
-                "textDocument/didOpen",
-                json!({
-                    "textDocument": {
-                        "uri": document_uri,
-                        "languageId": server.language_id,
-                        "version": 1,
-                        "text": document_text
-                    }
-                }),
-            )
-            .await?;
+        if let Some(document_uri) = &document_uri {
+            connection
+                .notify(
+                    "textDocument/didOpen",
+                    json!({
+                        "textDocument": {
+                            "uri": document_uri,
+                            "languageId": server.language_id,
+                            "version": 1,
+                            "text": document_text.unwrap_or_default()
+                        }
+                    }),
+                )
+                .await?;
+        }
 
-        let params = operation.params(&input, &document_uri, position);
+        let params = operation.params(&input, document_uri.as_deref(), position)?;
         let (result, source) = if matches!(operation, LspOperation::Diagnostics) {
             self.diagnostics(&mut connection, params).await?
         } else {
@@ -236,7 +275,7 @@ impl LspTool {
             "operation": operation.as_str(),
             "server": server.name,
             "language_id": server.language_id,
-            "path": relative_document_path.to_string_lossy(),
+            "path": relative_document_path.map(|path| path.to_string_lossy().into_owned()),
             "source": source,
             "result": result
         })))
@@ -289,9 +328,12 @@ impl LspTool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LspOperation {
     Definition,
+    Implementation,
+    TypeDefinition,
     References,
     Hover,
     DocumentSymbols,
+    WorkspaceSymbols,
     Diagnostics,
 }
 
@@ -299,9 +341,12 @@ impl LspOperation {
     fn parse(value: &str) -> anyhow::Result<Self> {
         match value {
             "definition" => Ok(Self::Definition),
+            "implementation" => Ok(Self::Implementation),
+            "type_definition" => Ok(Self::TypeDefinition),
             "references" => Ok(Self::References),
             "hover" => Ok(Self::Hover),
             "document_symbols" => Ok(Self::DocumentSymbols),
+            "workspace_symbols" => Ok(Self::WorkspaceSymbols),
             "diagnostics" => Ok(Self::Diagnostics),
             _ => anyhow::bail!("unsupported LSP operation"),
         }
@@ -310,9 +355,12 @@ impl LspOperation {
     fn as_str(self) -> &'static str {
         match self {
             Self::Definition => "definition",
+            Self::Implementation => "implementation",
+            Self::TypeDefinition => "type_definition",
             Self::References => "references",
             Self::Hover => "hover",
             Self::DocumentSymbols => "document_symbols",
+            Self::WorkspaceSymbols => "workspace_symbols",
             Self::Diagnostics => "diagnostics",
         }
     }
@@ -320,32 +368,58 @@ impl LspOperation {
     fn method(self) -> &'static str {
         match self {
             Self::Definition => "textDocument/definition",
+            Self::Implementation => "textDocument/implementation",
+            Self::TypeDefinition => "textDocument/typeDefinition",
             Self::References => "textDocument/references",
             Self::Hover => "textDocument/hover",
             Self::DocumentSymbols => "textDocument/documentSymbol",
+            Self::WorkspaceSymbols => "workspace/symbol",
             Self::Diagnostics => "textDocument/diagnostic",
         }
     }
 
     fn needs_position(self) -> bool {
-        matches!(self, Self::Definition | Self::References | Self::Hover)
+        matches!(
+            self,
+            Self::Definition
+                | Self::Implementation
+                | Self::TypeDefinition
+                | Self::References
+                | Self::Hover
+        )
     }
 
-    fn params(self, input: &Value, uri: &str, position: Option<(u64, u64)>) -> Value {
-        match self {
-            Self::Definition | Self::Hover => json!({
-                "textDocument":{"uri":uri},
-                "position":{"line":position.map(|position| position.0).unwrap_or_default(),"character":position.map(|position| position.1).unwrap_or_default()}
+    fn params(
+        self,
+        input: &Value,
+        uri: Option<&str>,
+        position: Option<(u64, u64)>,
+    ) -> anyhow::Result<Value> {
+        let document_uri = || {
+            uri.ok_or_else(|| anyhow::anyhow!("source document is required for this LSP operation"))
+        };
+        let lsp_position = || {
+            position.ok_or_else(|| {
+                anyhow::anyhow!("source position is required for this LSP operation")
+            })
+        };
+        Ok(match self {
+            Self::Definition | Self::Implementation | Self::TypeDefinition | Self::Hover => json!({
+                "textDocument":{"uri":document_uri()?},
+                "position":{"line":lsp_position()?.0,"character":lsp_position()?.1}
             }),
             Self::References => json!({
-                "textDocument":{"uri":uri},
-                "position":{"line":position.map(|position| position.0).unwrap_or_default(),"character":position.map(|position| position.1).unwrap_or_default()},
+                "textDocument":{"uri":document_uri()?},
+                "position":{"line":lsp_position()?.0,"character":lsp_position()?.1},
                 "context":{"includeDeclaration":input.get("include_declaration").and_then(Value::as_bool).unwrap_or(true)}
             }),
             Self::DocumentSymbols | Self::Diagnostics => {
-                json!({"textDocument":{"uri":uri}})
+                json!({"textDocument":{"uri":document_uri()?}})
             }
-        }
+            Self::WorkspaceSymbols => json!({
+                "query": input.get("query").and_then(Value::as_str).unwrap_or_default()
+            }),
+        })
     }
 }
 
@@ -412,97 +486,6 @@ impl Tool for LspTool {
     }
 }
 
-pub(super) fn operation_specs() -> Vec<OperationSpec> {
-    [
-        (
-            "lsp.definition",
-            "definition",
-            position_schema(false),
-            "代码定义",
-        ),
-        (
-            "lsp.references",
-            "references",
-            position_schema(true),
-            "代码引用",
-        ),
-        ("lsp.hover", "hover", position_schema(false), "代码悬停信息"),
-        (
-            "lsp.document_symbols",
-            "document_symbols",
-            document_schema(),
-            "文档符号",
-        ),
-        (
-            "lsp.diagnostics",
-            "diagnostics",
-            document_schema(),
-            "代码诊断",
-        ),
-    ]
-    .into_iter()
-    .map(|(name, operation, schema, label)| {
-        let contract = super::operation_contract(name);
-        let capability = CapabilityScope::try_new(name).expect("LSP operation name is canonical");
-        OperationSpec {
-            name: name.into(),
-            description: crate::prompts::operation_text(name).description.into(),
-            fixed: vec![("operation".into(), json!(operation))],
-            schema,
-            policy: OperationPolicy {
-                risk_level: contract.risk_override.unwrap_or(RiskLevel::High),
-                capability,
-                confirmation: ConfirmationRequirement::SecurityPolicy,
-                idempotency: OperationIdempotency::NonIdempotent,
-                scope: ToolOperationScope::Session,
-                concurrency: ToolConcurrency::Exclusive,
-                effect: OperationEffect::ExternalEffect,
-                data_sensitivity: DataSensitivity::UserData,
-                network_access: NetworkAccess::Opaque,
-                execution_boundary: ExecutionBoundary::HostProcess,
-            },
-            policy_rule: None,
-            catalog_group: ToolCatalogGroup::Files,
-            presentation: ToolPresentation {
-                label: label.into(),
-                renderer: "lsp".into(),
-                icon: "code".into(),
-                represented_source: ToolSource::Builtin,
-            },
-            prompt: ToolPrompt {
-                when_to_use: crate::prompts::operation_text(name).when_to_use.into(),
-                when_not_to_use: String::new(),
-                key_operations: vec![name.into()],
-            },
-            identity: None,
-        }
-    })
-    .collect()
-}
-
-fn document_schema() -> Value {
-    json!({
-        "type":"object",
-        "additionalProperties":false,
-        "properties":{"path":{"type":"string","minLength":1,"description":"Workspace-relative source file path; absolute paths are limited to the active execution workspace"}},
-        "required":["path"]
-    })
-}
-
-fn position_schema(include_declaration: bool) -> Value {
-    let mut properties = serde_json::Map::new();
-    properties.insert("path".into(), json!({"type":"string","minLength":1,"description":"Workspace-relative source file path; absolute paths are limited to the active execution workspace"}));
-    properties.insert(
-        "line".into(),
-        json!({"type":"integer","minimum":1,"description":"1-based source line"}),
-    );
-    properties.insert("character".into(), json!({"type":"integer","minimum":1,"description":"1-based UTF-16 code-unit column, as used by LSP position fields"}));
-    if include_declaration {
-        properties.insert("include_declaration".into(), json!({"type":"boolean","default":true,"description":"Whether reference results include the declaration"}));
-    }
-    json!({"type":"object","additionalProperties":false,"properties":properties,"required":["path","line","character"]})
-}
-
 fn resolve_lsp_path(path: &str, workspace_root: &Path) -> anyhow::Result<PathBuf> {
     anyhow::ensure!(!path.trim().is_empty(), "path is required");
     let input = Path::new(path);
@@ -540,6 +523,15 @@ fn select_lsp_server(
         })
         .max_by_key(|(_, extension_length)| *extension_length)
         .map(|(server, _)| server)
+}
+
+fn select_lsp_server_by_name(
+    servers: Vec<LspServerConfig>,
+    requested_name: &str,
+) -> Option<LspServerConfig> {
+    servers
+        .into_iter()
+        .find(|server| server.enabled && server.name.eq_ignore_ascii_case(requested_name))
 }
 
 struct LspDocument {
