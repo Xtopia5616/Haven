@@ -323,89 +323,99 @@ fn parse_callback(request: &str, expected_state: &str) -> Result<Callback, Strin
 }
 
 const CALLBACK_PAGE_STYLE: &str = r#"
-	:root { color-scheme: light dark; font-family: Inter, "Segoe UI", system-ui, sans-serif; }
+	:root {
+		color-scheme: light dark;
+		font-family: "Roboto", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+		--primary: #3378d6;
+		--surface: #f7f8fc;
+		--card: #ffffff;
+		--on-surface: #1a1b22;
+		--on-surface-variant: #46464f;
+		--outline: #c3c9d5;
+		--container: #f1f3f8;
+		--success: #006548;
+		--success-container: #cef5e3;
+		--error: #ba1a1a;
+		--error-container: #ffdad6;
+	}
 	* { box-sizing: border-box; }
 	body {
 		margin: 0;
 		min-height: 100vh;
-		background: radial-gradient(ellipse at 18% 8%, rgba(73, 153, 255, .13), transparent 42%),
-		            radial-gradient(ellipse at 88% 92%, rgba(74, 199, 164, .13), transparent 38%),
-		            #f4f7fb;
-		color: #182230;
+		background: var(--surface);
+		color: var(--on-surface);
 	}
-	.shell { min-height: 100vh; display: grid; place-items: center; padding: 28px; }
+	.shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
 	.card {
-		width: min(100%, 520px);
-		padding: 34px 38px 28px;
-		border: 1px solid rgba(130, 148, 171, .22);
-		border-radius: 24px;
-		background: rgba(255, 255, 255, .9);
-		box-shadow: 0 24px 72px rgba(32, 53, 78, .12);
-		backdrop-filter: blur(16px);
+		width: min(100%, 440px);
+		padding: 28px;
+		border: 1px solid var(--outline);
+		border-radius: 28px;
+		background: var(--card);
+		box-shadow: 0 2px 8px rgba(26, 27, 34, .08);
 	}
-	.brand { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 700; letter-spacing: .01em; }
-	.brand-mark {
-		width: 32px; height: 32px; display: grid; place-items: center; border-radius: 10px;
-		background: linear-gradient(145deg, #3178d3, #37a98e); color: white; font-size: 17px;
-	}
+	.brand { display: flex; align-items: center; gap: 9px; color: var(--primary); font-size: 15px; font-weight: 700; }
+	.brand-mark { width: 30px; height: 30px; flex: 0 0 auto; }
 	.status-icon {
-		width: 58px; height: 58px; display: grid; place-items: center; margin-top: 34px;
-		border-radius: 50%; background: #e6f5ee; color: #188455;
+		width: 52px; height: 52px; display: grid; place-items: center; margin: 30px auto 20px;
+		border-radius: 50%; background: var(--success-container); color: var(--success);
 	}
-	.card--failure .status-icon { background: #fff2e7; color: #b85b1b; }
-	.status-icon svg { width: 30px; height: 30px; }
-	.eyebrow { margin: 22px 0 8px; color: #52708e; font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
-	h1 { margin: 0; font-size: clamp(25px, 6vw, 32px); line-height: 1.18; letter-spacing: -.035em; }
-	.description { margin: 14px 0 0; color: #526173; font-size: 15px; line-height: 1.65; }
+	.card--failure .status-icon { background: var(--error-container); color: var(--error); }
+	.status-icon svg { width: 26px; height: 26px; }
+	h1 { margin: 0; text-align: center; font-size: 24px; line-height: 1.35; letter-spacing: -.02em; }
+	.description { margin: 10px auto 0; max-width: 34em; color: var(--on-surface-variant); text-align: center; font-size: 14px; line-height: 1.65; }
 	.next-step {
-		display: flex; align-items: flex-start; gap: 13px; margin-top: 28px; padding: 16px;
-		border: 1px solid #e3eaf1; border-radius: 15px; background: #f8fafc;
+		display: flex; align-items: flex-start; gap: 12px; margin-top: 24px; padding: 15px;
+		border-radius: 16px; background: var(--container);
 	}
-	.step-number { flex: 0 0 25px; height: 25px; display: grid; place-items: center; border-radius: 50%; background: #e5eef8; color: #315c85; font-size: 12px; font-weight: 700; }
-	.next-step strong { display: block; margin: 1px 0 4px; font-size: 13px; }
-	.next-step p { margin: 0; color: #526173; font-size: 13px; line-height: 1.5; }
-	.footnote { margin: 21px 0 0; color: #728094; font-size: 12px; line-height: 1.5; }
-	@media (max-width: 480px) { .shell { padding: 16px; } .card { padding: 28px 23px 23px; border-radius: 20px; } }
+	.step-mark { flex: 0 0 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--primary) 15%, transparent); color: var(--primary); font-size: 12px; font-weight: 700; }
+	.next-step strong { display: block; margin: 0 0 3px; font-size: 13px; }
+	.next-step p { margin: 0; color: var(--on-surface-variant); font-size: 13px; line-height: 1.5; }
+	.footnote { margin: 18px 0 0; color: var(--on-surface-variant); text-align: center; font-size: 12px; line-height: 1.5; }
+	@media (max-width: 480px) { .shell { padding: 16px; } .card { padding: 24px 20px 20px; border-radius: 24px; } }
 	@media (prefers-color-scheme: dark) {
-		body { background-color: #111923; color: #edf3f8; }
-		.card { border-color: rgba(177, 196, 216, .14); background: rgba(27, 39, 52, .92); box-shadow: 0 24px 72px rgba(0, 0, 0, .32); }
-		.status-icon { background: #173d33; color: #78d5ac; }
-		.card--failure .status-icon { background: #49301f; color: #ffc28d; }
-		.eyebrow, .description, .next-step p { color: #afbdcc; }
-		.next-step { border-color: #344354; background: #202d3b; }
-		.step-number { background: #31485e; color: #d3e5f8; }
-		.footnote { color: #91a2b5; }
+		:root {
+			--primary: #a5c8ff;
+			--surface: #181b24;
+			--card: #222631;
+			--on-surface: #e3e2e9;
+			--on-surface-variant: #c7c5d0;
+			--outline: #414754;
+			--container: #292e3b;
+			--success: #73d9af;
+			--success-container: #004d34;
+			--error: #ffb4ab;
+			--error-container: #93000a;
+		}
+		.card { box-shadow: 0 2px 12px rgba(0, 0, 0, .24); }
 	}
 "#;
 
 fn callback_page(accepted: bool) -> (&'static str, String) {
-    let (status, state_class, eyebrow, title, description, next_title, next_detail, icon) =
-        if accepted {
-            (
-                "200 OK",
-                "success",
-                "AUTHORIZATION RECEIVED",
-                "You’re almost there",
-                "ChatGPT returned the authorization to Haven. The app will now verify the sign-in and save your account securely.",
-                "Return to Haven",
-                "Keep Haven open while it finishes connecting your account.",
-                r#"<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.2 4.2L19 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
-            )
-        } else {
-            (
-                "400 Bad Request",
-                "failure",
-                "SIGN-IN NOT COMPLETED",
-                "Authorization could not be verified",
-                "Haven did not receive a valid authorization response. You can safely close this tab and start again from the app.",
-                "Try again in Haven",
-                "Return to the provider settings and start a new sign-in.",
-                r#"<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8v5m0 3.5h.01M10.3 3.8 2.5 17.3A2 2 0 0 0 4.2 20h15.6a2 2 0 0 0 1.7-2.7L13.7 3.8a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
-            )
-        };
+    let (status, state_class, title, description, next_title, next_detail, icon) = if accepted {
+        (
+            "200 OK",
+            "success",
+            "授权已返回 Haven",
+            "请切回 Haven。应用正在验证登录并安全保存账户。",
+            "回到 Haven",
+            "保持应用打开，等待连接完成。",
+            r#"<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.2 4.2L19 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
+        )
+    } else {
+        (
+            "400 Bad Request",
+            "failure",
+            "授权未完成",
+            "Haven 无法验证此次授权。请关闭此页面，回到设置重新登录。",
+            "重新连接 ChatGPT",
+            "在 Haven 的模型设置中重新开始登录。",
+            r#"<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8v5m0 3.5h.01M10.3 3.8 2.5 17.3A2 2 0 0 0 4.2 20h15.6a2 2 0 0 0 1.7-2.7L13.7 3.8a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
+        )
+    };
     let body = format!(
         r#"<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
@@ -416,16 +426,25 @@ fn callback_page(accepted: bool) -> (&'static str, String) {
 <body>
 	<main class="shell">
 		<article class="card card--{state_class}" aria-labelledby="page-title">
-			<div class="brand"><span class="brand-mark" aria-hidden="true">H</span><span>Haven</span></div>
+			<div class="brand">
+				<svg class="brand-mark" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+					<path d="M18 15h28c5.523 0 10 4.477 10 10v11c0 5.523-4.477 10-10 10H32L21 54v-8h-3c-5.523 0-10-4.477-10-10V25c0-5.523 4.477-10 10-10Z" fill="var(--primary)" />
+					<g fill="var(--card)">
+						<rect x="24" y="24.5" width="5" height="12" rx="2.5" />
+						<rect x="29.5" y="21.5" width="5" height="18" rx="2.5" />
+						<rect x="35" y="24.5" width="5" height="12" rx="2.5" />
+					</g>
+				</svg>
+				<span>Haven</span>
+			</div>
 			<div class="status-icon">{icon}</div>
-			<p class="eyebrow">{eyebrow}</p>
 			<h1 id="page-title">{title}</h1>
 			<p class="description">{description}</p>
 			<div class="next-step">
-				<span class="step-number">1</span>
+				<span class="step-mark" aria-hidden="true">›</span>
 				<div><strong>{next_title}</strong><p>{next_detail}</p></div>
 			</div>
-			<p class="footnote">This page does not contain your account credentials. You may close this tab after returning to Haven.</p>
+			<p class="footnote">此页面不会显示或保存您的账户凭据。</p>
 		</article>
 	</main>
 </body>
@@ -525,15 +544,15 @@ mod tests {
     fn callback_pages_explain_success_and_failure_without_external_assets() {
         let (success_status, success) = callback_page(true);
         assert_eq!(success_status, "200 OK");
-        assert!(success.contains("AUTHORIZATION RECEIVED"));
-        assert!(success.contains("Return to Haven"));
+        assert!(success.contains("授权已返回 Haven"));
+        assert!(success.contains("回到 Haven"));
         assert!(!success.contains("<script"));
         assert!(!success.contains("https://"));
 
         let (failure_status, failure) = callback_page(false);
         assert_eq!(failure_status, "400 Bad Request");
-        assert!(failure.contains("Authorization could not be verified"));
-        assert!(failure.contains("Try again in Haven"));
+        assert!(failure.contains("授权未完成"));
+        assert!(failure.contains("重新连接 ChatGPT"));
     }
 
     #[tokio::test]
