@@ -174,7 +174,7 @@
 	}
 
 	// Copy buttons inside rendered markdown code fences (md-code-copy), plus
-	// `.ext-ref` URL/path links (click = copy, Ctrl+click = open). Click
+	// `.ext-ref` URL/path links (click = open, contextmenu = copy). Click
 	// delegation survives re-renders of {@html} content and works during
 	// streaming. The whole text of the code block is copied, matching what is
 	// highlighted, without any trailing newline.

@@ -1,6 +1,6 @@
 /**
  * Detect absolute filesystem paths inside markdown-it text tokens so they can
- * be rendered as `.ext-ref` links (copy / Ctrl+open).
+ * be rendered as `.ext-ref` links (single-click open / contextmenu copy).
  *
  * Patterns (absolute only — relative/UNC are never auto-linked, because
  * `open_external` rejects them for safety and CWD correctness):

@@ -118,7 +118,8 @@ export function getMarkdownRenderer(): Promise<MarkdownItInstance> {
 		// Bare filesystem paths → `.ext-ref` anchors (same interaction as URLs).
 		pathifyPlugin(instance);
 
-		// All links (markdown, linkify, pathify) share copy / Ctrl+open behavior.
+		// All links (markdown, linkify, pathify) share single-click open and
+		// contextmenu-copy behavior.
 		const defaultLinkOpen =
 			instance.renderer.rules.link_open ||
 			((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
@@ -131,8 +132,8 @@ export function getMarkdownRenderer(): Promise<MarkdownItInstance> {
 			}
 			// Neutralize the live href so middle-click / auxclick / other
 			// browser activations cannot invoke OS URI handlers (ms-msdt:,
-			// search-ms:, …) and bypass open_external allowlisting. Copy /
-			// Ctrl+open read data-target instead.
+			// search-ms:, …) and bypass open_external allowlisting. Click-to-open
+			// and contextmenu-copy handling read data-target instead.
 			token.attrSet('href', '#');
 			token.attrJoin(
 				'class',

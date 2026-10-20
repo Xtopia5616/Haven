@@ -14,8 +14,6 @@
 		// Re-use the mouse handler shape: synthesize a click-like event target.
 		handleExtRefEvent({
 			type: 'click',
-			ctrlKey: e.ctrlKey,
-			metaKey: e.metaKey,
 			target: e.currentTarget,
 			preventDefault() {},
 			stopPropagation() {},

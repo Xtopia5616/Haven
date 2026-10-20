@@ -5,7 +5,7 @@ import { addNotification } from '$lib/notificationStore.ts';
 import { reportError } from '$lib/errorHandling.ts';
 
 /** Native tooltip shown on every external ref (URL or filesystem path). */
-export const EXT_REF_TITLE = '单击复制 · 按住 Ctrl 再点击打开';
+export const EXT_REF_TITLE = '单击打开 · 右键复制';
 
 /** CSS class applied to interactive URL/path anchors. */
 export const EXT_REF_CLASS = 'ext-ref';
@@ -43,14 +43,14 @@ export async function openExternal(target: string): Promise<boolean> {
 
 /**
  * Click / contextmenu handler for `.ext-ref` elements.
- * - Left or right click → copy
- * - Ctrl/Meta + click → open in browser / file manager
+ * - Left click or keyboard activation → open in browser / file manager
+ * - Right click → copy
  * Returns true when the event targeted an ext-ref (caller should stop bubble menus).
  */
 export function handleExtRefEvent(
 	e: Pick<
 		MouseEvent,
-		'type' | 'ctrlKey' | 'metaKey' | 'target' | 'preventDefault' | 'stopPropagation'
+		'type' | 'target' | 'preventDefault' | 'stopPropagation'
 	>,
 ): boolean {
 	const el = e.target instanceof Element ? e.target.closest(`.${EXT_REF_CLASS}`) : null;
@@ -62,14 +62,13 @@ export function handleExtRefEvent(
 	const target = extRefTarget(el);
 	if (!target) return true;
 
-	const open = e.ctrlKey || e.metaKey;
-	if (open && e.type === 'click') {
+	if (e.type === 'click') {
 		void openExternal(target);
 		return true;
 	}
 
-	// Right-click and plain left-click both copy. Ctrl+contextmenu still copies
-	// (open is reserved for left-click with modifier).
+	// Opening is reserved for explicit left-click / keyboard activation;
+	// contextmenu keeps the native target from becoming active and copies it.
 	const label = looksLikeUrl(target) ? '链接' : '路径';
 	void copyText(target, label);
 	return true;

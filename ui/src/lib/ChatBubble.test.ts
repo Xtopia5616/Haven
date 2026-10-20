@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
+import { openExternalTarget } from './externalCommands.ts';
 import ChatBubble from './ChatBubble.svelte';
+
+vi.mock('$lib/externalCommands.ts', () => ({
+	openExternalTarget: vi.fn().mockResolvedValue(undefined),
+}));
 
 async function expandToolCard(container: HTMLElement) {
 	const header = container.querySelector('.md-collapsible-header');
@@ -687,6 +692,7 @@ describe('ChatBubble markdown tables', () => {
 describe('ChatBubble markdown links and paths', () => {
 	let clipboardMock: any;
 	beforeEach(() => {
+		vi.mocked(openExternalTarget).mockClear();
 		clipboardMock = vi.fn().mockResolvedValue(undefined);
 		Object.defineProperty(navigator, 'clipboard', {
 			value: { writeText: clipboardMock },
@@ -694,7 +700,7 @@ describe('ChatBubble markdown links and paths', () => {
 		});
 	});
 
-	it('renders URLs as ext-ref with Ctrl-open tooltip', async () => {
+	it('renders URLs as ext-ref with click-to-open tooltip', async () => {
 		const { container } = render(ChatBubble, {
 			role: 'assistant' as const,
 			content: 'see https://example.com/docs please',
@@ -704,7 +710,7 @@ describe('ChatBubble markdown links and paths', () => {
 		await waitFor(() => expect(container.querySelector('a.ext-ref')).toBeTruthy());
 		const a = container.querySelector('a.ext-ref') as HTMLAnchorElement;
 		expect(a.classList.contains('ext-ref-url')).toBe(true);
-		expect(a.title).toContain('Ctrl');
+		expect(a.title).toContain('单击打开');
 		expect(a.getAttribute('data-target')).toContain('https://example.com/docs');
 		// Live href is neutralized so middle-click cannot invoke OS handlers.
 		expect(a.getAttribute('href')).toBe('#');
@@ -721,10 +727,10 @@ describe('ChatBubble markdown links and paths', () => {
 		const a = container.querySelector('a.ext-ref-path') as HTMLAnchorElement;
 		expect(a.getAttribute('data-target')).toBe('D:\\Workspace\\Haven\\README.md');
 		expect(a.getAttribute('href')).toBe('#');
-		expect(a.title).toContain('Ctrl');
+		expect(a.title).toContain('单击打开');
 	});
 
-	it('copies the link target on plain click', async () => {
+	it('opens the rendered URL on plain click', async () => {
 		const { container } = render(ChatBubble, {
 			role: 'assistant' as const,
 			content: 'https://example.com/x',
@@ -733,7 +739,25 @@ describe('ChatBubble markdown links and paths', () => {
 		});
 		await waitFor(() => expect(container.querySelector('a.ext-ref')).toBeTruthy());
 		await fireEvent.click(container.querySelector('a.ext-ref')!);
-		await waitFor(() => expect(clipboardMock).toHaveBeenCalled());
-		expect(clipboardMock.mock.calls[0][0]).toContain('https://example.com/x');
+		await waitFor(() =>
+			expect(openExternalTarget).toHaveBeenCalledWith({ target: 'https://example.com/x' }),
+		);
+		expect(clipboardMock).not.toHaveBeenCalled();
+	});
+
+	it('opens a rendered local path on plain click', async () => {
+		const { container } = render(ChatBubble, {
+			role: 'assistant' as const,
+			content: 'open D:\\Workspace\\Haven\\README.md',
+			type: null,
+			time: null,
+		});
+		await waitFor(() => expect(container.querySelector('a.ext-ref-path')).toBeTruthy());
+		await fireEvent.click(container.querySelector('a.ext-ref-path')!);
+		await waitFor(() =>
+			expect(openExternalTarget).toHaveBeenCalledWith({
+				target: 'D:\\Workspace\\Haven\\README.md',
+			}),
+		);
 	});
 });

@@ -52,13 +52,22 @@ describe('handleExtRefEvent', () => {
 		return a;
 	}
 
-	it('copies on plain left click', () => {
+	it('opens a URL on plain left click', () => {
 		const a = makeLink('https://example.com/x');
 		const e = new MouseEvent('click', { bubbles: true, cancelable: true });
 		Object.defineProperty(e, 'target', { value: a });
 		expect(handleExtRefEvent(e)).toBe(true);
-		expect(copyText).toHaveBeenCalledWith('https://example.com/x', '链接');
-		expect(openExternalTarget).not.toHaveBeenCalled();
+		expect(openExternalTarget).toHaveBeenCalledWith({ target: 'https://example.com/x' });
+		expect(copyText).not.toHaveBeenCalled();
+	});
+
+	it('opens a local path on plain left click', () => {
+		const a = makeLink('D:\\Workspace\\Haven\\README.md');
+		const e = new MouseEvent('click', { bubbles: true, cancelable: true });
+		Object.defineProperty(e, 'target', { value: a });
+		expect(handleExtRefEvent(e)).toBe(true);
+		expect(openExternalTarget).toHaveBeenCalledWith({ target: 'D:\\Workspace\\Haven\\README.md' });
+		expect(copyText).not.toHaveBeenCalled();
 	});
 
 	it('copies on right click', () => {
@@ -69,7 +78,7 @@ describe('handleExtRefEvent', () => {
 		expect(copyText).toHaveBeenCalledWith('D:\\Workspace\\Haven\\a.rs', '路径');
 	});
 
-	it('opens on Ctrl+click', () => {
+	it('also opens on modified click', () => {
 		const a = makeLink('https://example.com');
 		const e = new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true });
 		Object.defineProperty(e, 'target', { value: a });

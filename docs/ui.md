@@ -427,6 +427,8 @@ onDestroy(unsubscribe);
 - 调用时使用可选链：`onConfirm?.(result)`
 - 回调参数尽量简洁：`onChange(v)` 而非 `onChange({ value: v })`
 
+聊天 Markdown 中的 HTTP(S) 链接和绝对本地路径渲染为统一可交互链接。单击或键盘激活时通过 `open_external` 打开，右键复制目标；渲染出的锚点不直接暴露外部 `href`，打开请求仍由后端安全策略校验。
+
 ---
 
 ## 6. Tauri 桥接
