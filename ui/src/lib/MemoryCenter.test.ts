@@ -43,7 +43,7 @@ describe('MemoryCenter', () => {
 			onRunRecall,
 		});
 
-		await fireEvent.click(screen.getByRole('button', { name: '记忆范围' }));
+		await fireEvent.click(screen.getByRole('combobox', { name: '记忆范围' }));
 		await fireEvent.click(screen.getByRole('option', { name: '过去的对话' }));
 
 		expect(onRecallKindChange).toHaveBeenCalledWith('episode');

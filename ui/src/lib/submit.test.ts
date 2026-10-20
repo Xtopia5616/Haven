@@ -55,6 +55,21 @@ describe('submitTranscript', () => {
 			'submit_transcript',
 			expect.objectContaining({ deliveryMode: 'follow_up' }),
 		);
+		expect(messagesFor(SESSION_A)[0]).toMatchObject({
+			content: 'afterwards',
+			deliveryMode: 'follow_up',
+			deliveryAccepted: true,
+		});
+	});
+
+	it('preserves explicit steering mode through the submission lane', async () => {
+		invokeMock.mockResolvedValue(supplemented(SESSION_A));
+		select(SESSION_A);
+		await submitTranscript('change direction now', { deliveryMode: 'steering' });
+		expect(invoke).toHaveBeenCalledWith(
+			'submit_transcript',
+			expect.objectContaining({ deliveryMode: 'steering' }),
+		);
 	});
 
 	it('appends an optimistic user message under the active session id', async () => {

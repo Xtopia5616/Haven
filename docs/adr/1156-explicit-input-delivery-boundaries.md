@@ -9,7 +9,8 @@
 
 ## 决定与不变量
 
-- `InputDeliveryMode` 为 `auto` / `steering` / `follow_up`。IPC 可显式选择；省略时继续使用 Auto，适用于语音和 Ask。运行中输入框提供「立即调整」「完成后追加」，Ask 等待时仍按答案提交。
+- `InputDeliveryMode` 为 `auto` / `steering` / `follow_up`。IPC 可显式选择；省略时继续使用 Auto，适用于语音和 Ask。运行中输入框提供安全边界调整与完成后追加，Ask 等待时默认按答案提交。
+- Composer 在会话排队、生成、工具执行期间使用共享 `MaterialSelect` 显示 delivery mode，并将明确选择传给提交入口；Ask 等待时选择器默认「回答当前问题」，也允许显式选择 follow-up。Follow-up 保留为排队输入，不得合并进 Ask 答案，也不得回答或唤醒 Ask。
 - Steering 在下一个安全 turn 边界注入，不取消当前模型请求或工具。Follow-up 等到模型自然完成（普通文本完成或 final_answer）才注入并开始下一段工作；工具续轮、重试、Ask/确认暂停、预算耗尽、错误或取消都不是工作完成。
 - Actor 的 `ContextBoundary` 区分 `Turn` 和 `WorkComplete`，保留 steering 优先级、原有容量上限和 FIFO 批次预算。普通边界允许 Ask 答案绕过尚未到期的 follow-up；显式 follow-up 不得被改写为答案，也不得单独唤醒 Ask。
 - Ask batch 收尾通过 actor 原子地准备早到的 steering 答案并读取答案资格，不再用「存在任意 pending context」判断可否恢复；follow-up 和后台结果都不构成 Ask 答案。
@@ -34,5 +35,7 @@ actor 与 session facade 的既有大文件继续分别持有队列热状态和�
 新增端到端工具续轮测试、显式模式/恢复、Ask 阻塞与 Ask 收尾资格测试，以及输入框与 submission lane 测试。旧 Ask 恢复测试改用显式 answer API，不再将 follow-up 当作答案。
 
 验证通过：`cargo fmt --all -- --check`、Rust workspace check、严格 Clippy 和 workspace tests；UI check、全量测试（1285 项）与生产构建；IPC 事件/生成契约检查（81 个 handler）及 `git diff --check`。覆盖显式投递、恢复、Ask 阻塞与收尾资格、工具续轮和 submission lane。
+
+2026-10-20 UI 补完：Composer 的共享投递方式选择器覆盖安全边界调整、follow-up 选择和提交；Ask 等待默认提交答案，也可显式排队 follow-up。提示按生成、工具执行、交互等待、暂停和终态展示实际时机；显式投递路由的用户气泡按“正在提交 → 排队等待 → 已送达/开始追加”更新。Ask controller 保留显式 follow-up，提交 lane 分别保留 steering/follow-up 枚举。MaterialSelect 的键盘导航使用统一 combobox/listbox 契约。
 
 回滚代码后也须重置 SQLite（v43 与旧二进制不兼容）；无需重置配置或 inbox。

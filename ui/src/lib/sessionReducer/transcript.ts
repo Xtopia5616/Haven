@@ -88,20 +88,23 @@ export function reduceTranscript(
 				action.toSessionId,
 				new Set([action.optimisticMessageId]),
 			);
-			if (
-				action.persistedMessageId &&
-				action.persistedMessageId !== action.optimisticMessageId
-			) {
-				next = withMessages(next, action.toSessionId, (messages) => {
-					const index = messages.findIndex(
-						(message) => message.id === action.optimisticMessageId,
-					);
-					if (index < 0) return messages;
-					const result = messages.slice();
-					result[index] = { ...result[index], id: action.persistedMessageId as string };
-					return result;
-				});
-			}
+			next = withMessages(next, action.toSessionId, (messages) => {
+				const index = messages.findIndex(
+					(message) => message.id === action.optimisticMessageId,
+				);
+				if (index < 0) return messages;
+				const result = messages.slice();
+				const message = result[index];
+				result[index] = {
+					...message,
+					...(message.deliveryMode ? { deliveryAccepted: true } : {}),
+					...(action.persistedMessageId &&
+					action.persistedMessageId !== action.optimisticMessageId
+						? { id: action.persistedMessageId }
+						: {}),
+				};
+				return result;
+			});
 			const pendingMessageOwners = { ...next.pendingMessageOwners };
 			delete pendingMessageOwners[action.optimisticMessageId];
 			return { ...next, pendingMessageOwners };

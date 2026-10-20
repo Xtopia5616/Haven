@@ -15,6 +15,7 @@
 	import type { AskResponseView } from '$lib/contracts/app.ts';
 	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { CanonicalRole } from '$lib/contracts/generatedCommands.ts';
+	import type { InputDeliveryModeInput } from '$lib/contracts/generatedCommands.ts';
 	import type {
 		AskMessageHandler,
 		AskSelectionChangeHandler,
@@ -54,6 +55,8 @@
 		options?: string[];
 		awaiting?: boolean;
 		received?: boolean;
+		deliveryMode?: Exclude<InputDeliveryModeInput, 'auto'>;
+		deliveryAccepted?: boolean;
 		resolved?: AskResponseView | null;
 		toolRunId?: string | null;
 		toolRunData?: ToolRunPayload | null;
@@ -91,6 +94,8 @@
 		options = [],
 		awaiting = false,
 		received = false,
+		deliveryMode = undefined,
+		deliveryAccepted = false,
 		resolved = null,
 		toolRunId = null,
 		toolRunData = null,
@@ -105,6 +110,29 @@
 		onAskDismiss = null,
 		selectedAskOptions = [],
 	}: Props = $props();
+
+	const deliveryStatusLabel = $derived.by(() => {
+		if (!deliveryMode) return null;
+		if (received) return deliveryMode === 'follow_up' ? '开始追加' : '已送达';
+		if (!deliveryAccepted) return '正在提交';
+		return deliveryMode === 'follow_up' ? '本轮完成后' : '待安全边界';
+	});
+	const deliveryStatusTitle = $derived.by(() => {
+		if (!deliveryMode) return undefined;
+		if (received) {
+			return deliveryMode === 'follow_up'
+				? '当前工作已完成，Agent 已开始处理这条追加消息'
+				: 'Agent 已收到，将从后续模型请求中应用这条调整';
+		}
+		if (!deliveryAccepted) {
+			return deliveryMode === 'follow_up'
+				? '正在提交；提交成功后会等待当前工作自然完成再追加'
+				: '正在提交；提交成功后会在下一个安全边界送达，不会中断当前请求或工具';
+		}
+		return deliveryMode === 'follow_up'
+			? '已排队，等待当前工作自然完成；工具续轮、确认和 Ask 等待不算完成'
+			: '已排队，将在下一个安全边界生效；不会中断当前模型请求或工具';
+	});
 
 	// Local open state for the collapsible reasoning block. The block
 	// expands while streaming so live output is visible, and auto-collapses
@@ -489,7 +517,18 @@
 				{#if voice}<span class="mic-icon" title="Voice input">&#127908;</span>{/if}
 				{#if role === 'user' && !isPeerKickoff && received}<span
 						class="received-tag"
-						title="Agent 已收到">✓</span
+						title={deliveryStatusTitle ?? 'Agent 已收到'}
+						aria-hidden={deliveryMode ? 'true' : undefined}
+						aria-label={deliveryStatusTitle ?? 'Agent 已收到'}>✓</span
+					>{/if}
+				{#if role === 'user' && !isPeerKickoff && deliveryStatusLabel}<span
+						class="delivery-status"
+						data-mode={deliveryMode}
+						data-accepted={deliveryAccepted}
+						role="status"
+						aria-live="polite"
+						aria-label={deliveryStatusTitle}
+						title={deliveryStatusTitle}>{deliveryStatusLabel}</span
 					>{/if}
 			</span>
 			{#if time}
@@ -768,10 +807,16 @@
 	.received-tag {
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: color-mix(in srgb, var(--md-sys-color-on-primary) 80%, var(--md-sys-color-primary));
 	}
-	.bubble.user .received-tag {
-		color: color-mix(in srgb, var(--md-sys-color-on-primary) 82%, var(--md-sys-color-primary));
+	.delivery-status {
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+		font-weight: 600;
+		padding: 1px var(--md-sys-space-xs);
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-primary-container);
+		color: var(--md-sys-color-on-primary-container);
+		white-space: nowrap;
 	}
 	.bubble-time {
 		font-size: var(--md-sys-typescale-label-small-size);

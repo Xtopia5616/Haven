@@ -53,14 +53,21 @@ describe('SessionHeader', () => {
 			onRemoveExecutionWorkspace,
 		});
 
-		await fireEvent.click(screen.getByRole('button', { name: '执行工作区' }));
+		await fireEvent.click(screen.getByRole('combobox', { name: '执行工作区' }));
 		await fireEvent.click(screen.getByRole('option', { name: 'D:\\Shared' }));
 		expect(onSelectExecutionWorkspace).toHaveBeenCalledWith('D:\\Shared');
 
 		await fireEvent.click(
-			screen.getByRole('button', { name: '从快捷列表移除 C:\\Projects\\Haven' }),
+			screen.getByRole('button', { name: '从工作区快捷列表移除 C:\\Projects\\Haven' }),
 		);
 		expect(onRemoveExecutionWorkspace).toHaveBeenCalledWith('C:\\Projects\\Haven');
+		expect(
+			screen
+				.getByRole('button', {
+					name: '从工作区快捷列表移除 C:\\Projects\\Haven',
+				})
+				.getAttribute('data-variant'),
+		).toBe('danger-text');
 	});
 
 	it('opens the native directory picker through the add workspace action', async () => {

@@ -121,7 +121,7 @@ describe('ModelSettings provider surface', () => {
 		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
 			target: { value: 'direct' },
 		});
-		await fireEvent.click(screen.getByRole('button', { name: '代理路由' }));
+		await fireEvent.click(screen.getByRole('combobox', { name: '代理路由' }));
 		await fireEvent.click(screen.getByRole('option', { name: '直连（忽略环境代理）' }));
 		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
 
@@ -150,7 +150,7 @@ describe('ModelSettings provider surface', () => {
 		await fireEvent.input(screen.getByPlaceholderText('sk-...'), {
 			target: { value: 'test-key' },
 		});
-		await fireEvent.click(screen.getByRole('button', { name: '代理路由' }));
+		await fireEvent.click(screen.getByRole('combobox', { name: '代理路由' }));
 		await fireEvent.click(screen.getByRole('option', { name: '指定代理' }));
 		await fireEvent.input(screen.getByPlaceholderText('http://127.0.0.1:7890'), {
 			target: { value: 'http://127.0.0.1:7890' },
@@ -289,7 +289,7 @@ describe('ModelSettings provider surface', () => {
 
 		expect(screen.getByText('需要修复的模型')).toBeTruthy();
 		await fireEvent.click(screen.getByRole('button', { name: '编辑模型 assistant' }));
-		const providerSelect = screen.getByRole('button', {
+		const providerSelect = screen.getByRole('combobox', {
 			name: '为模型 assistant 选择 Provider',
 		});
 		await fireEvent.click(providerSelect);
@@ -324,7 +324,7 @@ describe('ModelSettings provider surface', () => {
 
 		await fireEvent.click(screen.getByRole('button', { name: '编辑模型 assistant' }));
 		await fireEvent.click(
-			screen.getByRole('button', { name: '为模型 assistant 选择 Provider' }),
+			screen.getByRole('combobox', { name: '为模型 assistant 选择 Provider' }),
 		);
 		await fireEvent.click(screen.getByRole('option', { name: 'backup' }));
 

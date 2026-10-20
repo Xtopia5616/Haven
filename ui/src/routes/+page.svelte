@@ -219,6 +219,9 @@
 	const pendingAskInteractions = $derived(
 		pendingInteractions.filter((request) => request.kind === 'ask'),
 	);
+	const activePendingAskInteractions = $derived(
+		pendingAskInteractions.filter((request) => request.sessionId === activeSessionId),
+	);
 	$effect(() => {
 		const retained = retainPendingDismissedRequestIds(
 			dismissedAskIds,
@@ -253,9 +256,14 @@
 				};
 			}),
 	);
-	const askAwaiting = $derived(pendingAskInteractions.length > 0);
+	const askAwaiting = $derived(activePendingAskInteractions.length > 0);
 	const askHasOptions = $derived(
-		pendingAskInteractions.some((request) => request.options.length > 0),
+		activePendingAskInteractions.some((request) => request.options.length > 0),
+	);
+	const confirmationAwaiting = $derived(
+		pendingInteractions.some(
+			(request) => request.kind === 'confirm' && request.sessionId === activeSessionId,
+		),
 	);
 	let rollbackDialog = $state<{
 		open: boolean;
@@ -1416,9 +1424,14 @@
 			{hotkeyBinding}
 			{isGenerating}
 			{sessionRunning}
+			executionPhase={activeSessionPhase}
+			sessionStatus={activeSession?.status}
+			sessionStatusLabel={activeSessionStatusLabel}
+			sessionWaitingReason={activeSession?.waitingReason}
 			interrupting={interruptPending}
 			{askAwaiting}
 			{askHasOptions}
+			{confirmationAwaiting}
 			allowEmptySubmit={askSelectionsReady}
 			{...inputLimits}
 			onsubmit={askInteraction.handleInputSubmit}

@@ -156,7 +156,7 @@ describe('SettingsSecurity', () => {
 		const security = createSecurity();
 		render(SettingsSecurity, { security });
 
-		await fireEvent.click(screen.getByRole('button', { name: '网络策略' }));
+		await fireEvent.click(screen.getByRole('combobox', { name: '网络策略' }));
 		await fireEvent.click(screen.getByRole('option', { name: '请求确认' }));
 		expect(security.network_policy).toBe('ask');
 	});

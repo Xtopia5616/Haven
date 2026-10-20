@@ -198,6 +198,26 @@ describe('createAskInteractionController', () => {
 		expect(setAutoFollow).toHaveBeenCalledOnce();
 	});
 
+	it('keeps an explicit follow-up queued separately from a pending ask', () => {
+		loadAskMessages(createRequest('ask-1', '当前问题', ['A']));
+		const { controller, submitMessage } = createController();
+
+		controller.handleInputSubmit({
+			text: '等当前工作完成后再处理',
+			images: [],
+			files: [],
+			deliveryMode: 'follow_up',
+		});
+
+		expect(submitMessage).toHaveBeenCalledWith(
+			'等当前工作完成后再处理',
+			[],
+			[],
+			'follow_up',
+		);
+		expect(reducer.snapshot().interactions?.['ask-1']).toMatchObject({ status: 'pending' });
+	});
+
 	it('clears awaiting and locally resolved ask state when a session resumes', () => {
 		loadAskMessages(createRequest('ask-1', '问题'));
 		const { controller } = createController();

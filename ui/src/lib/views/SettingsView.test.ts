@@ -191,7 +191,7 @@ describe('SettingsView diagnostics export', () => {
 				name: '模型配置 ID',
 			}),
 		).toBeDefined();
-		expect(screen.getByRole('button', { name: 'chat 的模型配置 ID' }).textContent).toContain(
+		expect(screen.getByRole('combobox', { name: 'chat 的模型配置 ID' }).textContent).toContain(
 			'chat-slot · primary / gpt-test',
 		);
 	});

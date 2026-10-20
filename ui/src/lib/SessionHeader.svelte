@@ -91,14 +91,15 @@
 					width="compact"
 					value={selectedWorkspaceValue}
 					options={executionWorkspaceOptions}
+					title={selectedWorkspaceValue || '自动检测'}
 					disabled={executionWorkspaceSwitching}
 					onChange={(root) => onSelectExecutionWorkspace?.(root || null)}
 				/>
 				<MaterialIconButton
 					icon="delete"
-					variant="danger"
-					label={`从快捷列表移除 ${executionWorkspaceRoot || '当前工作区'}`}
-					title="从快捷列表移除，不会删除磁盘目录"
+					variant="danger-text"
+					label={`从工作区快捷列表移除 ${executionWorkspaceRoot || '当前工作区'}`}
+					title="仅移除工作区快捷项，不会删除磁盘目录"
 					disabled={executionWorkspaceSwitching || !selectedWorkspaceIsSaved}
 					onclick={() => {
 						if (executionWorkspaceRoot) onRemoveExecutionWorkspace?.(executionWorkspaceRoot);

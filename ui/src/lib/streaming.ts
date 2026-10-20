@@ -18,6 +18,7 @@
 import type { AgentToolResultEnvelope } from './contracts/agent.ts';
 import type {
 	CanonicalRole,
+	InputDeliveryModeInput,
 	SessionStepStatus,
 	ToolExecutionOutcome,
 	ToolRunStatus,
@@ -64,6 +65,10 @@ export interface StreamMessage {
 	options?: string[];
 	/** Mid-turn user steer/queue: keep continuing agent output above this bubble. */
 	steering?: boolean;
+	/** Live-only route/status label for an explicitly queued composer input. */
+	deliveryMode?: Exclude<InputDeliveryModeInput, 'auto'>;
+	/** Backend accepted the explicit route; it remains live-only presentation state. */
+	deliveryAccepted?: boolean;
 	received?: boolean;
 	result?: AgentToolResultEnvelope;
 	toolArgs?: unknown;

@@ -311,6 +311,7 @@ async function doSubmit({
 			...(hasAttachments ? { attachments, idPrefix: 'u' } : {}),
 		}),
 		...(steering ? { steering: true } : {}),
+		...(deliveryMode === 'steering' || deliveryMode === 'follow_up' ? { deliveryMode } : {}),
 	};
 	reducer.dispatch({ type: 'session/messages/optimistic-added', sessionId, message: msg });
 	try {

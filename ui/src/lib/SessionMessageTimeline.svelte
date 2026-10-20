@@ -142,6 +142,8 @@
 					selectedAskOptions={getAskSelection(msg.id)}
 					awaiting={msg.awaiting ?? false}
 					received={msg.received ?? false}
+					deliveryMode={msg.deliveryMode}
+					deliveryAccepted={msg.deliveryAccepted ?? false}
 					resolved={msg.resolved ?? null}
 					toolRunId={msg.toolRunId ?? null}
 					{onContextMenu}

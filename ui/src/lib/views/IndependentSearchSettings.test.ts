@@ -53,7 +53,7 @@ describe('IndependentSearchSettings', () => {
 			search_before_date_filter: null,
 		});
 		expect(screen.getByLabelText('最多结果数')).toBeTruthy();
-		expect(screen.getByRole('button', { name: 'Perplexity 搜索类型' })).toBeTruthy();
+		expect(screen.getByRole('combobox', { name: 'Perplexity 搜索类型' })).toBeTruthy();
 	});
 
 	it('shows the Alibaba direct search endpoint and separate key controls for DashScope', async () => {

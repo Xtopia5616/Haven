@@ -36,7 +36,7 @@ describe('SessionHistory actions', () => {
 			onStatusFilterChange,
 		});
 
-		await fireEvent.click(screen.getByRole('button', { name: '会话状态' }));
+		await fireEvent.click(screen.getByRole('combobox', { name: '会话状态' }));
 		await fireEvent.click(screen.getByRole('option', { name: '已完成' }));
 
 		expect(onStatusFilterChange).toHaveBeenCalledWith('completed');

@@ -47,6 +47,57 @@ describe('ChatBubble', () => {
 		expect(assistant.querySelector('.received-tag')).toBeNull();
 	});
 
+	it('shows the queued delivery timing and advances it when the agent receives the message', () => {
+		const { container, rerender } = render(
+			ChatBubble,
+			base({ role: 'user' as const, content: 'later', deliveryMode: 'follow_up' }),
+		);
+		const submittingStatus = container.querySelector('.delivery-status');
+		expect(submittingStatus?.textContent).toBe('正在提交');
+		expect(submittingStatus?.getAttribute('title')).toContain('提交成功后');
+
+		rerender(
+			base({
+				role: 'user' as const,
+				content: 'later',
+				deliveryMode: 'follow_up',
+				deliveryAccepted: true,
+			}),
+		);
+		const queuedStatus = container.querySelector('.delivery-status');
+		expect(queuedStatus?.textContent).toBe('本轮完成后');
+		expect(queuedStatus?.getAttribute('title')).toContain('工具续轮、确认和 Ask 等待不算完成');
+
+		rerender(
+			base({
+				role: 'user' as const,
+				content: 'later',
+				deliveryMode: 'follow_up',
+				deliveryAccepted: true,
+				received: true,
+			}),
+		);
+		expect(container.querySelector('.delivery-status')?.textContent).toBe('开始追加');
+		expect(container.querySelector('.received-tag')?.getAttribute('aria-label')).toContain(
+			'Agent 已开始处理',
+		);
+	});
+
+	it('shows that steering is waiting for a safe boundary without interrupting current work', () => {
+		const { container } = render(
+			ChatBubble,
+			base({
+				role: 'user' as const,
+				content: 'adjust',
+				deliveryMode: 'steering',
+				deliveryAccepted: true,
+			}),
+		);
+		const queuedStatus = container.querySelector('.delivery-status');
+		expect(queuedStatus?.textContent).toBe('待安全边界');
+		expect(queuedStatus?.getAttribute('title')).toContain('不会中断当前模型请求或工具');
+	});
+
 	it('renders image attachments on user messages', () => {
 		const { container } = render(
 			ChatBubble,

@@ -1,7 +1,11 @@
 <script lang="ts">
 	import { cubicOut } from 'svelte/easing';
 	import { fly } from 'svelte/transition';
-	import type { InputDeliveryModeInput } from '$lib/contracts/generatedCommands.ts';
+	import type {
+		InputDeliveryModeInput,
+		SessionStatus,
+		SessionWaitingReason,
+	} from '$lib/contracts/generatedCommands.ts';
 	import { tick, untrack } from 'svelte';
 	import type { Snippet } from 'svelte';
 	import logger from '$lib/logger.ts';
@@ -13,11 +17,23 @@
 	import { syncStore } from '$lib/syncStore.ts';
 	import { openContextMenu } from '$lib/contextMenuStore.ts';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
+	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import type { SelectOption } from '$lib/selectOption.ts';
+	import type { ReActExecutionPhase } from '$lib/reactExecutionPhaseStore.ts';
 	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 	import type { ChatAttachmentPayload, ChatFileAttachment } from '$lib/chatAttachmentTypes.ts';
 	import { DRAFT_SESSION_ID } from '$lib/sessionReducer.ts';
+
+	const DELIVERY_MODE_OPTIONS: SelectOption[] = [
+		{ value: 'steering', label: '安全边界调整' },
+		{ value: 'follow_up', label: '完成后追加' },
+	];
+	const ASK_DELIVERY_MODE_OPTIONS: SelectOption[] = [
+		{ value: 'auto', label: '回答当前问题' },
+		{ value: 'follow_up', label: '完成后追加' },
+	];
 
 	interface PendingChatImageAttachment extends ChatAttachmentPayload {
 		previewKey: string;
@@ -46,9 +62,14 @@
 		hotkeyBinding?: string;
 		isGenerating?: boolean;
 		sessionRunning?: boolean;
+		executionPhase?: ReActExecutionPhase;
+		sessionStatus?: SessionStatus | null;
+		sessionStatusLabel?: string;
+		sessionWaitingReason?: SessionWaitingReason | null;
 		interrupting?: boolean;
 		askAwaiting?: boolean;
 		askHasOptions?: boolean;
+		confirmationAwaiting?: boolean;
 		allowEmptySubmit?: boolean;
 		onsubmit?: (payload: ComposerSubmitPayload) => void;
 		onstop?: () => void;
@@ -67,10 +88,15 @@
 		hotkeyBinding = 'Ctrl+Shift+Space',
 		isGenerating = false,
 		sessionRunning = false,
+		executionPhase = 'idle',
+		sessionStatus = null,
+		sessionStatusLabel = '空闲',
+		sessionWaitingReason = null,
 		interrupting = false,
 		// While an ask card is waiting, guide the user from the input itself.
 		askAwaiting = false,
 		askHasOptions = false,
+		confirmationAwaiting = false,
 		// When true, Enter may submit even with an empty draft (e.g. ask option
 		// chips are selected and the page will compose the answer).
 		allowEmptySubmit = false,
@@ -120,7 +146,80 @@
 		}),
 	);
 
-	let deliveryMode = $state<InputDeliveryModeInput>('steering');
+	let deliveryMode = $state<Exclude<InputDeliveryModeInput, 'auto'>>('steering');
+	let askDeliveryMode = $state<'auto' | 'follow_up'>('auto');
+	let previousAskSessionId = $state<string | null>(null);
+	$effect(() => {
+		if (!askAwaiting) {
+			previousAskSessionId = null;
+			return;
+		}
+		if (previousAskSessionId !== activeSessionId) {
+			previousAskSessionId = activeSessionId;
+			askDeliveryMode = 'auto';
+		}
+	});
+	let deliveryModeAvailable = $derived(sessionRunning || isGenerating || askAwaiting);
+	let deliveryModeOptions = $derived(
+		askAwaiting ? ASK_DELIVERY_MODE_OPTIONS : DELIVERY_MODE_OPTIONS,
+	);
+	let selectedDeliveryMode = $derived(askAwaiting ? askDeliveryMode : deliveryMode);
+	let allowEmptyMessageSubmit = $derived(
+		allowEmptySubmit && (!askAwaiting || askDeliveryMode === 'auto'),
+	);
+	let deliveryHint = $derived.by(() => {
+		if (interrupting) return '正在停止当前输出；停止完成后再发送新消息。';
+		if (askAwaiting) {
+			return askDeliveryMode === 'follow_up'
+				? '此消息会排队，不会回答或唤醒当前问题；当前所选答案选项也不会提交。请先回答问题，后续消息才会处理。'
+				: '正在等待你的回答；发送内容和已选选项会作为当前问题的答案。';
+		}
+		if (confirmationAwaiting) {
+			return '工具正在等待权限确认；此处发送的消息只会排队，确认前不会开始处理。';
+		}
+		if (sessionStatus === 'paused') {
+			if (sessionStatusLabel === '本轮已完成') {
+				return '当前工作已自然完成；发送消息会作为下一轮追加并继续会话。';
+			}
+			if (sessionWaitingReason === 'end_incomplete') {
+				return '上一轮未完整结束；发送普通消息会排入后续并尝试恢复会话。';
+			}
+			if (sessionWaitingReason === 'step_budget') {
+				return '本轮步骤预算已耗尽；发送普通消息会排入后续并恢复会话。';
+			}
+			if (sessionWaitingReason === 'user_interrupt') {
+				return '会话已被中断；发送普通消息会排入后续并继续会话。';
+			}
+			return '会话已暂停；发送普通消息会排入后续，并尝试恢复会话。';
+		}
+		if (sessionStatus === 'completed' || sessionStatus === 'error') {
+			return '此会话已结束；发送新消息会开始新的会话。';
+		}
+		if (!deliveryModeAvailable) return '';
+
+		if (executionPhase === 'queued' || sessionStatus === 'pending') {
+			return deliveryMode === 'follow_up'
+				? '会话排队中；本条消息会在当前工作自然完成后追加。'
+				: '会话排队中；本条消息会在会话启动后的安全边界接入。';
+		}
+		if (executionPhase === 'waiting_result') {
+			return deliveryMode === 'follow_up'
+				? '工具仍在执行；完成后追加会等整个工作自然结束，不会中断工具。'
+				: '工具仍在执行；安全边界调整会等工具返回后接入，不会中断工具。';
+		}
+		if (executionPhase === 'waiting_response') {
+			return deliveryMode === 'follow_up'
+				? '当前交互尚未结束；完成后追加会继续等待，不会替代确认或问题回答。'
+				: '当前交互尚未结束；安全边界调整会等待交互处理后再接入。';
+		}
+		if (deliveryMode === 'follow_up') {
+			return '等待当前工作自然完成后追加；工具续轮、确认和 Ask 等待都不算完成。';
+		}
+		if (executionPhase === 'requesting' || executionPhase === 'generating') {
+			return '当前模型请求结束后，在下一个安全边界接入；不会中断当前生成。';
+		}
+		return '将在下一个安全边界接入当前工作；不会中断正在执行的请求或工具。';
+	});
 	let transcriptInput = $state('');
 	let transcriptDraftSessionId = DRAFT_SESSION_ID;
 	const cachedDrafts = new Map<string, string>();
@@ -158,22 +257,36 @@
 	const hasDraft = $derived(
 		transcriptInput.trim().length > 0 || pendingImages.length > 0 || pendingFiles.length > 0,
 	);
-	// Treat selected ask chips (allowEmptySubmit) as submit-ready input so the
-	// send button stays enabled and does not flip into stop mode.
-	const hasInput = $derived(hasDraft || allowEmptySubmit);
-	// While the agent is generating, a sent message is delivered immediately
-	// to the backend: the agent injects it in the gap between tool calls and
-	// the final content, so it can steer the answer instead of waiting for
-	// the whole turn to finish.
+	// Treat selected Ask chips as submit-ready only while the input is routed
+	// as an answer. A follow-up must contain its own content.
+	const hasInput = $derived(hasDraft || allowEmptyMessageSubmit);
+	// Steering becomes eligible at the next safe turn boundary. The active
+	// model request or tool is never interrupted by this input route.
 	// The merged send button becomes "interrupt output" only when there is no input
 	// and the agent is actively working (generating output, a running/pending
 	// session). With fresh input present, it always stays a send button.
 	const stopMode = $derived(!hasInput && (interrupting || isGenerating || sessionRunning));
 	const chatInputPlaceholder = $derived.by(() => {
 		if (askAwaiting) {
+			if (askDeliveryMode === 'follow_up') {
+				return askHasOptions
+					? '输入会排队为后续消息；不会提交为当前问题答案'
+					: '输入后续消息；当前问题仍等待回答';
+			}
 			return askHasOptions
 				? '从上方的选项中选择，或者在此处输入答案或补充，Enter 提交'
 				: '在此处输入答案或补充，Enter 提交';
+		}
+		if (interrupting) return '当前正在停止；稍后可继续发送消息';
+		if (confirmationAwaiting) return '工具等待权限确认；消息会排队至确认完成';
+		if (sessionStatus === 'paused') {
+			if (sessionStatusLabel === '本轮已完成') return '本轮已完成；输入消息开始下一轮';
+			if (sessionWaitingReason === 'step_budget') return '步骤预算已耗尽；输入消息后继续会话';
+			if (sessionWaitingReason === 'user_interrupt') return '会话已中断；输入消息后继续会话';
+			return '会话已暂停；输入后将排队并尝试恢复';
+		}
+		if (sessionStatus === 'completed' || sessionStatus === 'error') {
+			return '输入指令以开始新的会话';
 		}
 		return activeSessionId
 			? `追加指令，Enter 发送，Shift+Enter 换行；按 ${hotkeyBinding} 录音`
@@ -423,7 +536,16 @@
 			data,
 			filename,
 		}));
-		if (!text && images.length === 0 && files.length === 0 && !allowEmptySubmit) return;
+		if (!text && images.length === 0 && files.length === 0 && !allowEmptyMessageSubmit) return;
+		const submittedDeliveryMode = askAwaiting
+			? askDeliveryMode === 'follow_up'
+				? 'follow_up'
+				: undefined
+			: confirmationAwaiting || sessionStatus === 'paused'
+				? 'follow_up'
+				: deliveryModeAvailable
+					? deliveryMode
+					: undefined;
 		cachedDrafts.delete(transcriptDraftSessionId);
 		transcriptInput = '';
 		pendingImages = [];
@@ -432,7 +554,7 @@
 			text,
 			images,
 			files,
-			...(sessionRunning && !askAwaiting ? { deliveryMode } : {}),
+			...(submittedDeliveryMode ? { deliveryMode: submittedDeliveryMode } : {}),
 		});
 	}
 
@@ -678,22 +800,37 @@
 			class="md-input chat-input"
 			autocomplete="off"></textarea>
 	</div>
+	{#if deliveryHint}
+		<p class="delivery-hint" role="status" aria-live="polite">{deliveryHint}</p>
+	{/if}
 	<div class="toolbar-row md-toolbar">
 		<div class="toolbar-left">
 			{@render toolbarLeft?.()}
 		</div>
 		<div class="toolbar-right">
-			{#if sessionRunning && !askAwaiting}
-				<select
-					aria-label="消息投递方式"
-					bind:value={deliveryMode}
-					title={deliveryMode === 'follow_up'
-						? '等待当前工作完成后追加'
-						: '在下一个安全边界调整当前工作'}
-				>
-					<option value="steering">立即调整</option>
-					<option value="follow_up">完成后追加</option>
-				</select>
+			{#if deliveryModeAvailable && (!confirmationAwaiting || askAwaiting)}
+				<MaterialSelect
+					id="chat-delivery-mode"
+					ariaLabel={askAwaiting ? '问题回复方式' : '消息投递方式'}
+					width="compact"
+					value={selectedDeliveryMode}
+					options={deliveryModeOptions}
+					disabled={interrupting}
+					title={askAwaiting
+						? askDeliveryMode === 'follow_up'
+							? '排队等待当前工作结束；不会回答或唤醒 Ask'
+							: '将输入和已选选项作为当前问题的答案'
+						: deliveryMode === 'follow_up'
+							? '等待当前工作自然完成后追加'
+							: '在下一个安全边界调整当前工作，不中断当前请求或工具'}
+					onChange={(value) => {
+						if (askAwaiting) {
+							if (value === 'auto' || value === 'follow_up') askDeliveryMode = value;
+						} else if (value === 'steering' || value === 'follow_up') {
+							deliveryMode = value;
+						}
+					}}
+				/>
 			{/if}
 			<MaterialIconButton
 				size="toolbar"
@@ -926,6 +1063,14 @@
 		padding-inline: 0;
 		padding-top: var(--md-sys-space-xs);
 		border-top: 1px solid var(--md-sys-color-outline-variant);
+	}
+	.delivery-hint {
+		margin: 0;
+		padding-inline: var(--md-sys-space-xs);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
+		text-wrap: pretty;
 	}
 	.toolbar-left {
 		flex: 0 0 auto;

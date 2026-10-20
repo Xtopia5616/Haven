@@ -15,9 +15,10 @@ describe('Composer context menu', () => {
 	it('submits the selected delivery mode while work is running', async () => {
 		const onsubmit = vi.fn();
 		render(Composer, { sessionRunning: true, onsubmit });
-		await fireEvent.change(screen.getByRole('combobox', { name: '消息投递方式' }), {
-			target: { value: 'follow_up' },
-		});
+		const deliveryMode = screen.getByRole('combobox', { name: '消息投递方式' });
+		expect(deliveryMode.parentElement?.getAttribute('data-width')).toBe('compact');
+		await fireEvent.click(deliveryMode);
+		await fireEvent.click(screen.getByRole('option', { name: '完成后追加' }));
 		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
 			target: { value: 'later' },
 		});
@@ -25,6 +26,202 @@ describe('Composer context menu', () => {
 		expect(onsubmit).toHaveBeenCalledWith(
 			expect.objectContaining({ text: 'later', deliveryMode: 'follow_up' }),
 		);
+	});
+
+	it('defaults to steering while work is active and includes it in submission', async () => {
+		const onsubmit = vi.fn();
+		render(Composer, { sessionRunning: true, onsubmit });
+
+		expect(screen.getByRole('combobox', { name: '消息投递方式' }).textContent).toContain(
+			'安全边界调整',
+		);
+		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
+			target: { value: 'change direction' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+		expect(onsubmit).toHaveBeenCalledWith(
+			expect.objectContaining({ text: 'change direction', deliveryMode: 'steering' }),
+		);
+	});
+
+	it('keeps the delivery mode available during active generation before status refresh', async () => {
+		const onsubmit = vi.fn();
+		render(Composer, { isGenerating: true, onsubmit });
+
+		const deliveryMode = screen.getByRole('combobox', { name: '消息投递方式' });
+		await fireEvent.click(deliveryMode);
+		await fireEvent.click(screen.getByRole('option', { name: '完成后追加' }));
+		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
+			target: { value: 'wait for natural completion' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+		expect(onsubmit).toHaveBeenCalledWith(
+			expect.objectContaining({ deliveryMode: 'follow_up' }),
+		);
+	});
+
+	it('explains queue timing before a pending session starts', () => {
+		render(Composer, {
+			sessionRunning: true,
+			sessionStatus: 'pending',
+			executionPhase: 'queued',
+			onsubmit: vi.fn(),
+		});
+		expect(screen.getByText('会话排队中；本条消息会在会话启动后的安全边界接入。')).toBeTruthy();
+	});
+
+	it('shows answer and follow-up routing while Ask is waiting', async () => {
+		const onsubmit = vi.fn();
+		render(Composer, { askAwaiting: true, askHasOptions: true, onsubmit });
+
+		const deliveryMode = screen.getByRole('combobox', { name: '问题回复方式' });
+		expect(deliveryMode.textContent).toContain('回答当前问题');
+		expect(
+			screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder'),
+		).toContain('输入答案或补充');
+		expect(
+			screen.getByText('正在等待你的回答；发送内容和已选选项会作为当前问题的答案。'),
+		).toBeTruthy();
+		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
+			target: { value: 'the answer' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+		expect(onsubmit).toHaveBeenCalledWith({ text: 'the answer', images: [], files: [] });
+	});
+
+	it('keeps an explicit follow-up queued instead of submitting it as an Ask answer', async () => {
+		const onsubmit = vi.fn();
+		render(Composer, { askAwaiting: true, sessionStatus: 'paused', onsubmit });
+
+		await fireEvent.click(screen.getByRole('combobox', { name: '问题回复方式' }));
+		await fireEvent.click(screen.getByRole('option', { name: '完成后追加' }));
+		expect(
+			screen.getByText(
+				'此消息会排队，不会回答或唤醒当前问题；当前所选答案选项也不会提交。请先回答问题，后续消息才会处理。',
+			),
+		).toBeTruthy();
+		expect(
+			screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder'),
+		).toContain('输入后续消息');
+		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
+			target: { value: 'after the current question' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+		expect(onsubmit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				text: 'after the current question',
+				deliveryMode: 'follow_up',
+			}),
+		);
+	});
+
+	it('does not submit selected Ask chips as an empty follow-up', async () => {
+		const onsubmit = vi.fn();
+		render(Composer, { askAwaiting: true, allowEmptySubmit: true, onsubmit });
+
+		await fireEvent.click(screen.getByRole('combobox', { name: '问题回复方式' }));
+		await fireEvent.click(screen.getByRole('option', { name: '完成后追加' }));
+		expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', true);
+		expect(onsubmit).not.toHaveBeenCalled();
+	});
+
+	it('explains that steering waits for a tool boundary and never interrupts it', async () => {
+		render(Composer, {
+			sessionRunning: true,
+			executionPhase: 'waiting_result',
+			onsubmit: vi.fn(),
+		});
+
+		expect(
+			screen.getByText('工具仍在执行；安全边界调整会等工具返回后接入，不会中断工具。'),
+		).toBeTruthy();
+		await fireEvent.click(screen.getByRole('combobox', { name: '消息投递方式' }));
+		await fireEvent.click(screen.getByRole('option', { name: '完成后追加' }));
+		expect(
+			screen.getByText('工具仍在执行；完成后追加会等整个工作自然结束，不会中断工具。'),
+		).toBeTruthy();
+	});
+
+	it('shows pause and confirmation waiting states and queues their submissions', async () => {
+		const pausedSubmit = vi.fn();
+		const paused = render(Composer, {
+			activeSessionId: 'ses-00000000000000000000000000000001',
+			sessionStatus: 'paused',
+			sessionWaitingReason: 'step_budget',
+			onsubmit: pausedSubmit,
+		});
+		expect(
+			screen.getByText('本轮步骤预算已耗尽；发送普通消息会排入后续并恢复会话。'),
+		).toBeTruthy();
+		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
+			target: { value: 'resume with this' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+		expect(pausedSubmit).toHaveBeenCalledWith(
+			expect.objectContaining({ text: 'resume with this', deliveryMode: 'follow_up' }),
+		);
+		paused.unmount();
+
+		const confirmationSubmit = vi.fn();
+		render(Composer, {
+			activeSessionId: 'ses-00000000000000000000000000000001',
+			confirmationAwaiting: true,
+			onsubmit: confirmationSubmit,
+		});
+		expect(
+			screen.getByText('工具正在等待权限确认；此处发送的消息只会排队，确认前不会开始处理。'),
+		).toBeTruthy();
+		expect(screen.queryByRole('combobox', { name: '消息投递方式' })).toBeNull();
+		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
+			target: { value: 'after confirmation' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+		expect(confirmationSubmit).toHaveBeenCalledWith(
+			expect.objectContaining({ text: 'after confirmation', deliveryMode: 'follow_up' }),
+		);
+	});
+
+	it('shows a completed turn as the next-turn boundary', () => {
+		render(Composer, {
+			activeSessionId: 'ses-00000000000000000000000000000001',
+			sessionStatus: 'paused',
+			sessionStatusLabel: '本轮已完成',
+			onsubmit: vi.fn(),
+		});
+		expect(
+			screen.getByText('当前工作已自然完成；发送消息会作为下一轮追加并继续会话。'),
+		).toBeTruthy();
+		expect(
+			screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder'),
+		).toBe('本轮已完成；输入消息开始下一轮');
+	});
+
+	it('shows stop progress and disables delivery changes while interruption is pending', () => {
+		render(Composer, {
+			sessionRunning: true,
+			isGenerating: true,
+			interrupting: true,
+			onsubmit: vi.fn(),
+		});
+		expect(screen.getByText('正在停止当前输出；停止完成后再发送新消息。')).toBeTruthy();
+		expect(screen.getByRole('combobox', { name: '消息投递方式' })).toHaveProperty(
+			'disabled',
+			true,
+		);
+		expect(screen.getByRole('button', { name: '中断输出' })).toHaveProperty('disabled', true);
+	});
+
+	it.each(['completed', 'error'] as const)('explains the %s terminal state', (sessionStatus) => {
+		render(Composer, {
+			activeSessionId: 'ses-00000000000000000000000000000001',
+			sessionStatus,
+			onsubmit: vi.fn(),
+		});
+		expect(screen.getByText('此会话已结束；发送新消息会开始新的会话。')).toBeTruthy();
 	});
 
 	it('uses the shared toolbar control for attachment, recording, and send actions', () => {
@@ -245,9 +442,7 @@ describe('Composer attachment intake', () => {
 			);
 
 			const remainingPreview = container.querySelectorAll('.image-preview')[1];
-			await fireEvent.click(
-				screen.getByRole('button', { name: '移除第 1 张待发送图片' }),
-			);
+			await fireEvent.click(screen.getByRole('button', { name: '移除第 1 张待发送图片' }));
 			expect(container.querySelector('.image-preview')).toBe(remainingPreview);
 
 			await fireEvent.click(screen.getByRole('button', { name: '发送' }));

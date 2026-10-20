@@ -10,6 +10,7 @@
 			| 'ghost'
 			| 'danger'
 			| 'danger-outline'
+			| 'danger-text'
 			| 'primary'
 			| 'success-outline'
 			| 'tonal';
@@ -176,6 +177,16 @@
 	.md-icon-btn[data-variant='danger-outline']:hover {
 		background: var(--md-sys-color-error-container);
 		border-color: var(--md-sys-color-error);
+		color: var(--md-sys-color-on-error-container);
+	}
+	.md-icon-btn[data-variant='danger-text'] {
+		background: transparent;
+		border-color: transparent;
+		color: var(--md-sys-color-error);
+	}
+	.md-icon-btn[data-variant='danger-text']:hover {
+		background: var(--md-sys-color-error-container);
+		border-color: transparent;
 		color: var(--md-sys-color-on-error-container);
 	}
 	.md-icon-btn[data-variant='success-outline'] {

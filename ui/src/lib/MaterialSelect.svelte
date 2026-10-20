@@ -6,7 +6,8 @@
 	import type { SelectOption } from './selectOption.ts';
 
 	type MenuRow =
-		{ kind: 'group'; label: string } | { kind: 'option'; label: string; value: string };
+		| { kind: 'group'; label: string }
+		| { kind: 'option'; label: string; value: string; id: string; index: number };
 
 	interface Props {
 		value?: string;
@@ -14,6 +15,7 @@
 		onChange?: (value: string) => void;
 		id?: string;
 		ariaLabel?: string;
+		title?: string;
 		width?: ControlWidth;
 		disabled?: boolean;
 	}
@@ -24,32 +26,60 @@
 		onChange,
 		id = undefined,
 		ariaLabel = '',
+		title = '',
 		width = 'fill',
 		disabled = false,
 	}: Props = $props();
+	const generatedId = $props.id();
+	let controlId = $derived(id ?? generatedId);
+	let listboxId = $derived(`${controlId}-listbox`);
 
 	let open = $state(false);
 	let selectedLabel = $derived(options.find((o) => o.value === value)?.label || value);
 	let dropdownRef: HTMLDivElement | null = null;
+	let activeOptionIndex = $state(0);
 
 	/** Flatten options into rows with optional group headers. */
 	let menuRows = $derived.by(() => {
 		const rows: MenuRow[] = [];
 		let lastGroup: string | null = null;
+		let optionIndex = 0;
 		for (const opt of options) {
 			const group = opt.group || null;
 			if (group && group !== lastGroup) {
 				rows.push({ kind: 'group', label: group });
 				lastGroup = group;
 			}
-			rows.push({ kind: 'option', label: opt.label, value: opt.value });
+			rows.push({
+				kind: 'option',
+				label: opt.label,
+				value: opt.value,
+				id: `${listboxId}-option-${optionIndex}`,
+				index: optionIndex,
+			});
+			optionIndex += 1;
 		}
 		return rows;
 	});
+	let optionRows = $derived(
+		menuRows.filter((row): row is Extract<MenuRow, { kind: 'option' }> => row.kind === 'option'),
+	);
+	let activeOptionId = $derived(optionRows[activeOptionIndex]?.id);
+
+	function selectedOptionIndex(): number {
+		return optionRows.findIndex((row) => row.value === value);
+	}
+
+	function openMenu(index = selectedOptionIndex()): void {
+		if (disabled || optionRows.length === 0) return;
+		activeOptionIndex = index >= 0 ? index : 0;
+		open = true;
+	}
 
 	function toggle(): void {
 		if (disabled) return;
-		open = !open;
+		if (open) open = false;
+		else openMenu();
 	}
 
 	function select(selectedValue: string): void {
@@ -59,7 +89,50 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent): void {
-		if (event.key === 'Escape') open = false;
+		if (disabled) return;
+		if (optionRows.length === 0) {
+			open = false;
+			return;
+		}
+		if (event.key === 'Escape') {
+			if (open) {
+				event.preventDefault();
+				open = false;
+			}
+			return;
+		}
+
+		if (!open) {
+			if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+				event.preventDefault();
+				const selected = selectedOptionIndex();
+				openMenu(
+					selected >= 0
+						? selected
+						: event.key === 'ArrowDown'
+							? 0
+							: optionRows.length - 1,
+				);
+			} else if (event.key === 'Enter' || event.key === ' ') {
+				event.preventDefault();
+				openMenu();
+			}
+			return;
+		}
+
+		if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+			event.preventDefault();
+			const offset = event.key === 'ArrowDown' ? 1 : -1;
+			activeOptionIndex =
+				(activeOptionIndex + offset + optionRows.length) % optionRows.length;
+		} else if (event.key === 'Home' || event.key === 'End') {
+			event.preventDefault();
+			activeOptionIndex = event.key === 'Home' ? 0 : optionRows.length - 1;
+		} else if (event.key === 'Enter' || event.key === ' ') {
+			event.preventDefault();
+			const activeOption = optionRows[activeOptionIndex];
+			if (activeOption) select(activeOption.value);
+		}
 	}
 
 	function handleBlur(event: FocusEvent): void {
@@ -79,21 +152,26 @@
 	}
 </script>
 
-<svelte:window onkeydown={handleKeydown} onpointerdown={handleWindowPointerdown} />
+<svelte:window onpointerdown={handleWindowPointerdown} />
 
 <div class="md-select-container" data-width={width} bind:this={dropdownRef}>
 	<button
-		{id}
+		id={controlId}
 		class="md-select-trigger"
 		class:open
 		class:disabled
 		disabled={disabled}
 		aria-label={ariaLabel || undefined}
+		role="combobox"
+		aria-controls={open ? listboxId : undefined}
+		aria-activedescendant={open ? activeOptionId : undefined}
 		onclick={toggle}
+		onkeydown={handleKeydown}
 		onblur={handleBlur}
 		type="button"
 		aria-haspopup="listbox"
 		aria-expanded={open}
+		{title}
 	>
 		<span class="md-select-value">{selectedLabel}</span>
 		<Icon name="chevronDown" size={20} className="md-select-arrow" />
@@ -101,8 +179,10 @@
 
 	{#if open}
 		<div
+			id={listboxId}
 			class="md-select-menu"
 			role="listbox"
+			aria-label={ariaLabel || undefined}
 			in:fly={{ y: -4, duration: 300, easing: cubicOut }}
 		>
 			{#each menuRows as row}
@@ -110,15 +190,19 @@
 					<div class="md-select-group" role="presentation">{row.label}</div>
 				{:else}
 					<button
+						id={row.id}
+						tabindex="-1"
 						class="md-select-option"
 						class:selected={row.value === value}
+						class:active={row.index === activeOptionIndex}
 						role="option"
 						aria-selected={row.value === value}
 						onclick={() => select(row.value)}
+						onpointermove={() => (activeOptionIndex = row.index)}
 						onmousedown={(e) => e.preventDefault()}
 						type="button"
 					>
-						{row.label}
+						<span class="md-select-option-label">{row.label}</span>
 					</button>
 				{/if}
 			{/each}
@@ -164,7 +248,7 @@
 		opacity: 0.5;
 	}
 	.md-select-trigger.open,
-	.md-select-trigger:focus {
+	.md-select-trigger:focus-visible {
 		border-color: var(--md-sys-color-primary);
 		border-width: 2px;
 		padding: 0 calc(var(--md-sys-space-lg) - 1px);
@@ -222,11 +306,21 @@
 		border: none;
 		cursor: pointer;
 		text-align: left;
+		min-width: 0;
 		transition: background-color var(--md-sys-motion-duration-fast)
 			var(--md-sys-motion-easing-standard);
 		position: relative;
 	}
+	.md-select-option-label {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
 	.md-select-option:hover {
+		background: var(--md-sys-color-surface-container-high);
+	}
+	.md-select-option.active {
 		background: var(--md-sys-color-surface-container-high);
 	}
 	.md-select-option:active {
@@ -235,5 +329,8 @@
 	.md-select-option.selected {
 		background: var(--md-sys-color-primary-container);
 		color: var(--md-sys-color-on-primary-container);
+		outline: var(--md-sys-selection-outline-width) solid
+			var(--md-sys-selection-outline-color);
+		outline-offset: var(--md-sys-selection-outline-offset);
 	}
 </style>

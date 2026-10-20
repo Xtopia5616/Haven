@@ -221,7 +221,8 @@
 | 组件 | 统一的交互 | 使用边界 |
 |---|---|---|
 | `MaterialButton` | filled / tonal / outlined / text / success / warning / danger / danger-text 按钮、加载态、展开态和 toggle 状态 | 文字动作和组合按钮的主动作 |
-| `MaterialIconButton` | 关闭、复制、编辑、显隐、刷新等图标动作 | 仅用于符合下方选择规则的纯图标动作，必须提供 `label` |
+| `MaterialIconButton` | 关闭、复制、编辑、显隐、刷新等图标动作；紧凑行内删除可用 `danger-text` | 仅用于符合下方选择规则的纯图标动作，必须提供 `label` |
+| `MaterialSelect` | 具名的选择型 combobox、分组 listbox、鼠标和键盘选择 | 设置、筛选及其它有限选项集合 |
 | `MaterialChoiceChip` | 可选择的紧凑选项 | 选项集合；支持键盘回车提交等页面回调 |
 | `CountChip` | 工作区筛选栏和资源列表的数量提示 | 统一展示“共 X …”计数，不承载操作 |
 | `MaterialTabs` | 工作区和设置页 Tab 导航 | 统一 tablist、选中态和指示器 |
@@ -490,8 +491,8 @@ onMount(() => {
 | 图标按钮 | `aria-label` 描述操作 |
 | 复选框 | 隐式 `<label>` 包裹或 `aria-label`/`aria-labelledby` |
 | 弹窗 | `role="dialog"` + `aria-modal="true"` |
-| 状态区域 | `aria-live="assertive"` + `role="status"` |
-| 列表 | `role="listbox"` + `role="option"` + `aria-selected` |
+| 状态区域 | `role="status"`；普通进度用 `aria-live="polite"`，需要立即处理的错误用 `aria-live="assertive"` |
+| 下拉选择 | 具名 `role="combobox"` 控制 `role="listbox"`，以 `aria-activedescendant` 表达活动选项；方向键与 Home/End 导航，Enter/Space 选择，Escape 关闭 |
 | 展开控件 | `aria-expanded` + `aria-haspopup` |
 
 ---
@@ -812,4 +813,4 @@ ready + 用户修改 → dirty → saving → saved | error
 
 ## 运行中输入的投递方式
 
-运行中的聊天输入框提供「立即调整」与「完成后追加」（ADR 1156）。立即调整在下一个安全 turn 边界影响当前工作，不中止当前工具；完成后追加等待模型自然完成当前工作后再开始处理。工具续轮、确认/Ask 等待与步骤预算暂停不表示完成。Ask 等待时输入框提交答案；语音继续使用后端 Auto 路由。
+运行中或正在生成的聊天输入框通过共享 `MaterialSelect` 提供「安全边界调整」与「完成后追加」（ADR 1156），并将选择的 `deliveryMode` 随文本与附件提交。安全边界调整会等当前模型请求或工具结束后接入，不会中断正在执行的调用；完成后追加等待模型自然完成当前工作后再开始处理。工具续轮、确认/Ask 等待与步骤预算暂停不表示完成。界面按当前会话展示排队、生成、工具执行、交互等待、暂停和终态提示；显式选择投递方式的消息会依次显示提交中、待安全边界/本轮完成后、送达/开始追加。Ask 等待时选择器默认「回答当前问题」，也允许显式选「完成后追加」；后者只会排队，不会回答或唤醒 Ask。权限确认等待时普通输入会排队，确认前不会执行。选择器支持方向键、Home/End、Enter/Space 和 Escape。语音继续使用后端 Auto 路由。

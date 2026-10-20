@@ -78,7 +78,7 @@ async function openMemoryTab() {
 }
 
 async function selectRecallKind(label: string) {
-	await fireEvent.click(screen.getByRole('button', { name: '记忆范围' }));
+	await fireEvent.click(screen.getByRole('combobox', { name: '记忆范围' }));
 	await fireEvent.click(screen.getByRole('option', { name: label }));
 }
 
@@ -139,7 +139,7 @@ describe('MemoryView recall request lifecycle', () => {
 			limit: 50,
 		});
 
-		await fireEvent.click(screen.getByRole('button', { name: '事实来源' }));
+		await fireEvent.click(screen.getByRole('combobox', { name: '事实来源' }));
 		await fireEvent.click(screen.getByRole('option', { name: '推断' }));
 		await waitFor(() => expect(listFacts).toHaveBeenCalledTimes(3));
 		expect(listFacts).toHaveBeenNthCalledWith(3, {
