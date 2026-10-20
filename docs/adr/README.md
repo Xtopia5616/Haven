@@ -1326,3 +1326,4 @@
 - [1335：在 Windows Credential Manager 中分块存储超限凭据](1335-chunk-oversized-windows-credentials.md)
 - [1336：区分已完成轮次与暂停会话](1336-distinguish-completed-turn-from-paused-session.md)
 - [1337：对话切换列表只保留可继续会话](1337-keep-resumable-sessions-in-chat-switcher.md)
+- [1338：Session grant 不设基于时间的自动到期](1338-keep-session-grants-without-time-based-expiry.md)

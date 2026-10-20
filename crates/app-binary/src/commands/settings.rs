@@ -684,6 +684,13 @@ pub async fn update_settings(
     let state = app.state::<Arc<AppState>>();
     let state = Arc::clone(&*state);
     let _apply_guard = state.runtime.config_runtime_coordinator.lock().await;
+    if let Some(security) = settings.security.as_ref() {
+        state
+            .runtime
+            .tools
+            .validate_writable_roots(&security.writable_roots)
+            .map_err(|error| log_err("update_settings writable roots", error))?;
+    }
     let current_execution_root = state
         .runtime
         .config_service

@@ -299,6 +299,8 @@ impl AuthorizationEngine {
             .iter()
             .map(PathBuf::from)
             .collect::<Vec<_>>();
+        let writable_roots_validation =
+            open_directory_roots(&writable_roots, "security.writable_roots").map(|_| ());
         let process_boundaries_changed = cfg.sandbox_mode != security.sandbox_mode
             || cfg.writable_roots != writable_roots
             || cfg.network_policy != security.network_policy
@@ -327,6 +329,10 @@ impl AuthorizationEngine {
             self.bump_process_boundary_revision(&mut cfg);
         }
         self.bump_global_policy_revision(&mut cfg);
+        if let Err(error) = writable_roots_validation {
+            tracing::warn!(error, "writable roots configuration could not be applied");
+            return Err(error);
+        }
         if let Some(error) = workspace_error {
             tracing::warn!(
                 error,
@@ -455,7 +461,10 @@ impl AuthorizationEngine {
                     false
                 }
                 SandboxMode::WorkspaceWrite => {
-                    root_constraints.push(open_directory_roots(&cfg.writable_roots));
+                    root_constraints.push(open_directory_roots(
+                        &cfg.writable_roots,
+                        "security.writable_roots",
+                    )?);
                     false
                 }
                 SandboxMode::FullAccess => true,
@@ -470,7 +479,7 @@ impl AuthorizationEngine {
                     .iter()
                     .map(PathBuf::from)
                     .collect::<Vec<_>>();
-                root_constraints.push(open_directory_roots(&roots));
+                root_constraints.push(open_directory_roots(&roots, "tool allowed_paths")?);
             }
 
             Some(FileWritePolicy {
@@ -2290,6 +2299,36 @@ mod tests {
             .await
             .expect("already-unavailable workspace does not block other security updates");
         assert_eq!(engine.execution_workspace_snapshot().await.root, None);
+    }
+
+    #[tokio::test]
+    async fn invalid_writable_roots_are_reported_and_kept_fail_closed() {
+        let initial_root = tempfile::tempdir().unwrap();
+        let valid_root = tempfile::tempdir().unwrap();
+        let missing_root = initial_root.path().join("missing-writable-root");
+        let engine = AuthorizationEngine::new_with_workspace(
+            ExecutionWorkspace::from_root(initial_root.path()).unwrap(),
+        );
+        let security = SecurityConfig {
+            writable_roots: vec![
+                valid_root.path().to_string_lossy().into_owned(),
+                missing_root.to_string_lossy().into_owned(),
+            ],
+            ..SecurityConfig::default()
+        };
+
+        let error = engine
+            .apply_security(&security)
+            .await
+            .expect_err("every configured writable root must open safely");
+        assert!(error.contains("security.writable_roots[1]"));
+
+        let config = engine.config.read().await;
+        assert_eq!(
+            config.writable_roots,
+            vec![valid_root.path().to_path_buf(), missing_root]
+        );
+        assert!(open_directory_roots(&config.writable_roots, "security.writable_roots").is_err());
     }
 
     #[tokio::test]

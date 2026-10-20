@@ -412,14 +412,17 @@ pub struct StoredPermission {
 pub struct SecurityConfig {
     /// Single source of truth for when an agent action needs approval.
     pub permission_mode: PermissionMode,
-    /// File-system boundary evaluated independently from prompting mode.
+    /// Local file-write boundary evaluated independently from prompting and
+    /// network policy. Other effects follow their declared execution boundary
+    /// and network, risk, permission, or confirmation rules.
     pub sandbox_mode: SandboxMode,
     /// Optional persisted root for Files-relative paths, default Shell `cwd`,
     /// and the implicit WorkspaceWrite boundary. `None` uses startup discovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_root: Option<PathBuf>,
-    /// Optional absolute roots that writable operations must remain inside.
-    /// Empty uses the active execution workspace and per-tool path policy.
+    /// Optional absolute roots that WorkspaceWrite operations must remain
+    /// inside. Empty uses the active execution workspace and per-tool path
+    /// policy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub writable_roots: Vec<String>,
     /// Network boundary evaluated before a network-capable tool executes.

@@ -7,6 +7,10 @@
 	import SettingsField from '$lib/SettingsField.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import { inputElementValue, withStringValue } from '$lib/typedCallbacks.ts';
+	import {
+		describePermissionRuleImpact,
+		permissionTargetLabel,
+	} from '$lib/permissionRuleDescription.ts';
 	import type { SecurityConfigInput } from '$lib/contracts/generatedCommands.ts';
 	import type { SessionPermissionGrant } from '$lib/contracts/settings.ts';
 
@@ -84,12 +88,12 @@
 		{
 			value: 'read_only',
 			label: '只读模式',
-			detail: 'Haven 在授权网关中拒绝写入和外部副作用操作；这不会为其它进程创建 Windows 文件沙箱。',
+			detail: '拒绝本地文件写入；不会仅因只读模式而一概拒绝网络请求、打开外链等外部效果，它们仍按网络策略、操作风险与确认规则处理。无法保证只读的工具或子进程仍可能按执行边界规则拒绝。',
 		},
 		{
 			value: 'workspace_write',
 			label: '工作区可写',
-			detail: '只允许受约束的文件能力修改工作区；Haven 无法把命令、MCP 与技能子进程的文件访问限制到该根，因此会拒绝启动这些子进程。',
+			detail: '本地文件写操作受工作区范围约束；不会仅因目标不在可写根内而拒绝其它外部效果，它们仍按网络策略、操作风险与确认规则处理。无法由执行边界约束文件访问的子进程仍会被拒绝。',
 		},
 		{
 			value: 'full_access',
@@ -174,6 +178,9 @@
 	let storedSessionPermissions = $derived(
 		Array.isArray(sessionPermissions) ? sessionPermissions : [],
 	);
+	let writableRoots = $derived(
+		Array.isArray(security?.writable_roots) ? security.writable_roots.filter(Boolean) : [],
+	);
 	let securitySummaryStatus = $derived(
 		securityDirty
 			? '未保存'
@@ -207,21 +214,16 @@
 			.filter(Boolean);
 		const rootLabel = RULE_LABELS[parts[0]] || parts[0] || '未知能力';
 		if (parts.length <= 1) {
-			return { label: rootLabel, scope: '覆盖此能力下的全部操作' };
+			return { label: rootLabel };
 		}
 
 		const operation = parts.at(-1) || '';
 		const operationLabel = OPERATION_LABELS[operation] || operation;
 		if (parts.length === 2) {
-			return { label: `${rootLabel} · ${operationLabel}`, scope: '仅此操作' };
+			return { label: `${rootLabel} · ${operationLabel}` };
 		}
 
-		const group = parts.at(-2) || '';
-		const groupLabel = OPERATION_LABELS[group] || group;
-		return {
-			label: `${rootLabel} · ${operationLabel}`,
-			scope: `功能组：${groupLabel}`,
-		};
+		return { label: `${rootLabel} · ${operationLabel}` };
 	}
 
 	function openResetDialog(scope: 'permanent' | 'session') {
@@ -321,8 +323,8 @@
 			<div>
 				<h3>安全边界</h3>
 				<p>
-					这些策略由 Haven 授权网关执行；它们不会为允许启动的子进程建立独立的 Windows
-					文件或网络沙箱。
+					这些策略由 Haven 授权网关执行；不会替其它进程设置 Windows
+					文件或网络限制，受管子进程还会遵守各自的执行边界。
 				</p>
 			</div>
 		</div>
@@ -367,10 +369,11 @@
 				<div>
 					<h3>执行工作区</h3>
 					<p>
-						Files 的相对路径、默认 Shell
-						工作目录和未单独配置写入目录时的工作区写入范围共用此根。留空使用启动时发现的仓库根。
-						已开始的调用继续使用旧工作区；这不会限制 Shell、技能或 MCP
-						子进程访问其他系统路径。
+						Files 的相对路径和默认 Shell 工作目录使用此根。工作区可写模式下，只有
+						writable_roots
+						留空时它才是默认写入范围；自定义可写目录非空时会覆盖此默认范围。Files
+						工具配置的 allowed_paths 还会进一步收窄写入范围。
+						已开始的调用继续使用旧工作区；子进程是否隔离由各自的执行边界决定。
 					</p>
 				</div>
 			</div>
@@ -409,7 +412,10 @@
 					<small>{security.writable_roots?.length || 0} 个目录</small>
 				{/snippet}
 				<div class="advanced-boundary__body">
-					<p>留空则使用各工具自己的路径边界。每行填写一个绝对路径。</p>
+					<p>
+						每行填写一个已存在、可安全打开的本地绝对目录。非空时，这些目录覆盖执行工作区的默认写入范围；为空时使用当前执行工作区。Files
+						工具配置的 allowed_paths 会与写入基准取交集。
+					</p>
 					<textarea
 						id="security-writable-roots"
 						class="md-textarea md-textarea--code security-roots"
@@ -422,6 +428,32 @@
 								.map((value) => value.trim())
 								.filter(Boolean);
 						}}></textarea>
+					<div class="effective-write-scope" aria-live="polite">
+						<strong>工作区可写模式的写入基准</strong>
+						{#if security.sandbox_mode === 'read_only'}
+							<p>
+								当前只读模式会拒绝文件修改；切换为工作区可写模式后，以下基准范围生效。
+							</p>
+						{:else if security.sandbox_mode === 'full_access'}
+							<p>
+								当前完整用户权限模式不使用工作区写入边界；Files 工具的 allowed_paths
+								仍按各自配置生效。
+							</p>
+						{:else}
+							<p>当前工作区写入范围还会与 Files 工具的 allowed_paths 取交集。</p>
+						{/if}
+						{#if writableRoots.length > 0}
+							<ul aria-label="当前自定义写入基准">
+								{#each writableRoots as root (root)}
+									<li><code>{root}</code></li>
+								{/each}
+							</ul>
+						{:else}
+							<p class="effective-write-scope__root">
+								{security.execution_root || '启动时发现的执行工作区'}
+							</p>
+						{/if}
+					</div>
 				</div>
 			</MaterialCollapsible>
 		</div>
@@ -451,7 +483,9 @@
 						</div>
 						<div class="perm-copy">
 							<strong>{meta.label}</strong>
-							<span class="perm-scope">{meta.scope}</span>
+							<span class="perm-impact">
+								{describePermissionRuleImpact(perm.key, perm.effect)}
+							</span>
 							<code class="perm-key">{perm.key}</code>
 						</div>
 						<span class="perm-effect" class:deny={perm.effect === 'deny'}>
@@ -487,7 +521,9 @@
 		<div class="subsection-heading rules-heading">
 			<div>
 				<h3>会话授权</h3>
-				<p>只对列出的会话生效。允许和拒绝决定都保存在本机，可逐条或整组撤销。</p>
+				<p>
+					只对列出的会话生效。允许和拒绝决定都保存在本机，不会按时间自动到期；会话重新打开时仍会恢复。逐条撤销、整组清除或删除会话（含保留期清理）后移除。
+				</p>
 			</div>
 			{#if storedSessionPermissions.length > 0}
 				<span class="rules-count">{storedSessionPermissions.length} 条</span>
@@ -508,7 +544,12 @@
 						</div>
 						<div class="perm-copy">
 							<strong>{meta.label}</strong>
-							<span class="perm-scope">{meta.scope} · {grant.target}</span>
+							<span class="perm-scope"
+								>目标层级：{permissionTargetLabel(grant.target)}</span
+							>
+							<span class="perm-impact">
+								{describePermissionRuleImpact(grant.capability, grant.effect)}
+							</span>
 							<span class="perm-scope">{grant.session_title || grant.sessionId}</span>
 							<code class="perm-key">{grant.sessionId} · {grant.capability}</code>
 						</div>
@@ -657,6 +698,7 @@
 	.subsection-heading p,
 	.boundary-detail,
 	.advanced-boundary__body p,
+	.effective-write-scope p,
 	.empty-rules p,
 	.reset-dialog-copy {
 		margin: var(--md-sys-space-xs) 0 0;
@@ -752,6 +794,33 @@
 	.security-roots {
 		margin-top: var(--md-sys-space-sm);
 	}
+	.effective-write-scope {
+		display: grid;
+		gap: var(--md-sys-space-2xs);
+		margin-top: var(--md-sys-space-md);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-surface-container);
+	}
+	.effective-write-scope strong {
+		color: var(--md-sys-color-on-surface);
+		font-size: var(--md-sys-typescale-body-small-size);
+	}
+	.effective-write-scope ul {
+		display: grid;
+		gap: var(--md-sys-space-2xs);
+		margin: var(--md-sys-space-2xs) 0 0;
+		padding-left: var(--md-sys-space-lg);
+	}
+	.effective-write-scope li,
+	.effective-write-scope code {
+		color: var(--md-sys-color-on-surface);
+		font-size: var(--md-sys-typescale-label-small-size);
+		overflow-wrap: anywhere;
+	}
+	.effective-write-scope__root {
+		font-family: var(--md-sys-typescale-body-small-font);
+	}
 	.execution-workspace-input {
 		display: flex;
 		align-items: flex-start;
@@ -810,6 +879,11 @@
 	.perm-scope {
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
+	}
+	.perm-impact {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.perm-key {
 		max-width: 100%;

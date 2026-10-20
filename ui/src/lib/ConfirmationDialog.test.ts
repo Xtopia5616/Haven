@@ -28,6 +28,9 @@ describe('ConfirmationDialog', () => {
 		expect(moreAllowButton.classList.contains('md-btn--text')).toBe(true);
 		expect(moreAllowButton.getAttribute('aria-haspopup')).toBe('menu');
 		expect(
+			screen.getByText('本会话授权不会按时间自动到期；撤销、清除授权或删除会话后失效'),
+		).toBeTruthy();
+		expect(
 			screen.getByRole('button', { name: '更多拒绝选项' }).getAttribute('data-variant'),
 		).toBe('danger');
 
@@ -46,9 +49,11 @@ describe('ConfirmationDialog', () => {
 
 		await fireEvent.click(moreAllowButton);
 		expect(screen.getByRole('menuitem', { name: '永久允许此操作' })).toBeTruthy();
+		expect(screen.getByText(/功能组和工具规则会匹配对应权限键及其所有下级操作/)).toBeTruthy();
 		expect(moreAllowButton.getAttribute('aria-expanded')).toBe('true');
 
 		await fireEvent.click(screen.getByRole('button', { name: '更多拒绝选项' }));
+		expect(screen.getByText(/拒绝会阻止对应权限键及其所有下级操作/)).toBeTruthy();
 		expect(
 			Array.from(container.querySelectorAll('.deny-menu .menu-item')).every((item) =>
 				item.classList.contains('danger'),
@@ -63,6 +68,28 @@ describe('ConfirmationDialog', () => {
 			scope: 'once',
 			target: 'operation',
 		});
+	});
+
+	it('explains a broad persistent grant and deny precedence before final confirmation', async () => {
+		render(ConfirmationDialog as any, {
+			...deadlineProps(),
+			requestId: 'conf-44c0d5bc635784cc9b4504c8b21185dc',
+			toolName: 'system.power.lock',
+			sessionId: 'ses-f598facda111677e0871bdc09d391332',
+			permissionKey: 'system.power.lock',
+			onConfirm: vi.fn(),
+		});
+
+		await fireEvent.click(screen.getByRole('button', { name: '更多允许' }));
+		await fireEvent.click(screen.getByRole('menuitem', { name: /永久允许此功能组/ }));
+
+		expect(screen.getByText(/即将永久允许此功能组（system.power）/)).toBeTruthy();
+		expect(
+			screen.getByText(
+				/匹配“system.power”本身及所有以“system.power.”开头的下级操作或工具能力/,
+			),
+		).toBeTruthy();
+		expect(screen.getByText(/任何匹配的拒绝规则仍会阻止操作/)).toBeTruthy();
 	});
 
 	it('closes without deciding and can be shown again while the request stays pending', async () => {
@@ -136,6 +163,7 @@ describe('ConfirmationDialog', () => {
 		});
 
 		expect(screen.queryByRole('button', { name: '本会话允许此操作' })).toBeNull();
+		expect(screen.getByText('永久授权跨会话生效，关键操作仍可能继续要求确认')).toBeTruthy();
 		await fireEvent.click(screen.getByRole('button', { name: '更多允许' }));
 		expect(screen.queryByText('本会话')).toBeNull();
 		expect(screen.getByRole('menuitem', { name: '永久允许此操作' })).toBeTruthy();

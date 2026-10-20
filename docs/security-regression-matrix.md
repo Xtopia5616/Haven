@@ -7,6 +7,12 @@
 `root.operation`，聚合实现仅是 native/内部执行边界。矩阵中的“拒绝”是 fail-closed，
 不得降级为确认或依赖前端传入的 `confirmed`。
 
+`ReadOnly` / `WorkspaceWrite` 的文件路径边界只作用于声明为
+`OperationEffect::WorkspaceWrite` 的本地文件写操作；其它 `ExternalEffect` 仍按各自的执行边界、
+网络策略、风险、权限和确认规则处理。`WorkspaceWrite` 对无法约束文件访问的宿主子进程仍单独
+fail closed。回归覆盖外链目标位于 writable roots 之外、`NetworkPolicy::Ask` 时，ReadOnly 与
+WorkspaceWrite 都进入确认流程；本地文件写入仍分别受只读拒绝与工作区根限制。
+
 ## 风险与入口矩阵
 
 | 工具 | 低风险/只读操作 | 需确认或更高风险操作 | 授权 key | 路径/外部边界 | 取消与重试 |

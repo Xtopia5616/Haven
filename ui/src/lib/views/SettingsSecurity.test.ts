@@ -29,11 +29,33 @@ describe('SettingsSecurity', () => {
 
 		expect(security.execution_root).toBe('C:\\Projects\\demo');
 		expect(security.writable_roots).toEqual([]);
-		expect(screen.getByText(/不会限制 Shell、技能或 MCP 子进程/)).toBeTruthy();
+		expect(screen.getByText(/子进程是否隔离由各自的执行边界决定/)).toBeTruthy();
 
 		await fireEvent.click(screen.getByRole('button', { name: '选择目录' }));
 		expect(onPickExecutionRoot).toHaveBeenCalledOnce();
 		expect(security.execution_root).toBe('C:\\Projects\\selected');
+	});
+
+	it('shows custom writable roots as the effective workspace-write base', () => {
+		const security = createSecurity();
+		security.execution_root = 'C:\\Projects\\workspace';
+		security.writable_roots = ['C:\\Projects\\write-a', 'D:\\Shared\\write-b'];
+		render(SettingsSecurity, { security });
+
+		expect(screen.getByText('工作区可写模式的写入基准')).toBeTruthy();
+		expect(screen.getByText('C:\\Projects\\write-a')).toBeTruthy();
+		expect(screen.getByText('D:\\Shared\\write-b')).toBeTruthy();
+		expect(screen.getByText(/allowed_paths 取交集/)).toBeTruthy();
+		expect(screen.queryByText('C:\\Projects\\workspace')).toBeNull();
+	});
+
+	it('shows the execution workspace as the write base when custom roots are empty', () => {
+		const security = createSecurity();
+		security.execution_root = 'C:\\Projects\\workspace';
+		render(SettingsSecurity, { security });
+
+		expect(screen.getByText('C:\\Projects\\workspace')).toBeTruthy();
+		expect(screen.getByText('工作区可写模式的写入基准')).toBeTruthy();
 	});
 
 	it('keeps the execution workspace draft when the native picker is cancelled', async () => {
@@ -56,7 +78,12 @@ describe('SettingsSecurity', () => {
 		});
 
 		expect(screen.getByText('文件操作 · 删除')).toBeTruthy();
-		expect(screen.getByText('仅此操作')).toBeTruthy();
+		expect(
+			screen.getByText(
+				/匹配“files.delete”本身及所有以“files.delete.”开头的下级操作或工具能力/,
+			),
+		).toBeTruthy();
+		expect(screen.getByText(/拒绝优先于任何匹配的允许规则/)).toBeTruthy();
 
 		await fireEvent.click(screen.getByRole('button', { name: '清除 1 条永久规则' }));
 		expect(screen.getByRole('dialog')).toBeTruthy();
@@ -82,7 +109,14 @@ describe('SettingsSecurity', () => {
 		});
 
 		expect(screen.getByRole('list', { name: '已保存的会话授权' })).toBeTruthy();
+		expect(
+			screen.getByText(
+				'只对列出的会话生效。允许和拒绝决定都保存在本机，不会按时间自动到期；会话重新打开时仍会恢复。逐条撤销、整组清除或删除会话（含保留期清理）后移除。',
+			),
+		).toBeTruthy();
 		expect(screen.getByText('本会话拒绝')).toBeTruthy();
+		expect(screen.getByText('目标层级：单项操作')).toBeTruthy();
+		expect(screen.getAllByText(/拒绝优先于任何匹配的允许规则/)).toHaveLength(2);
 		expect(screen.getByText('测试对话')).toBeTruthy();
 		await fireEvent.click(screen.getAllByRole('button', { name: '撤销' })[1]);
 		expect(onRevokeSessionPermission).toHaveBeenCalledWith(grant);
@@ -175,13 +209,30 @@ describe('SettingsSecurity', () => {
 		render(SettingsSecurity, { security: createSecurity() });
 
 		expect(screen.getByText('文件访问模式')).toBeTruthy();
-		expect(
-			screen.getByText(/不会为允许启动的子进程建立独立的 Windows 文件或网络沙箱/),
-		).toBeTruthy();
-		expect(
-			screen.getByText(/因此会拒绝启动这些子进程/),
-		).toBeTruthy();
+		expect(screen.getByText(/不会替其它进程设置 Windows 文件或网络限制/)).toBeTruthy();
+		expect(screen.getByText(/无法由执行边界约束文件访问的子进程仍会被拒绝/)).toBeTruthy();
 	});
+
+	it.each([
+		{
+			sandboxMode: 'read_only',
+			explanation: /不会仅因只读模式而一概拒绝网络请求、打开外链等外部效果/,
+		},
+		{
+			sandboxMode: 'workspace_write',
+			explanation: /不会仅因目标不在可写根内而拒绝其它外部效果/,
+		},
+	] as const)(
+		'$sandboxMode keeps external effects on their own authorization path',
+		({ sandboxMode, explanation }) => {
+			const security = createSecurity();
+			security.sandbox_mode = sandboxMode;
+			render(SettingsSecurity, { security });
+
+			expect(screen.getByText(explanation)).toBeTruthy();
+			expect(screen.getByText(/网络策略、操作风险与确认规则处理/)).toBeTruthy();
+		},
+	);
 
 	it('shows the disk and live security policy state after a partial apply failure', () => {
 		render(SettingsSecurity, {

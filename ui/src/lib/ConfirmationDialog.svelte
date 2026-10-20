@@ -6,6 +6,7 @@
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialSplitButton from './MaterialSplitButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
+	import { describePermissionRuleImpact } from './permissionRuleDescription.ts';
 	import type {
 		PermissionEffectInput,
 		PermissionScopeInput,
@@ -101,6 +102,10 @@
 	let pendingTargetLabel = $derived(
 		targetOptions.find((option) => option.target === pendingPersistentTarget)?.label ||
 			'此操作',
+	);
+	let pendingTargetKey = $derived(
+		targetOptions.find((option) => option.target === pendingPersistentTarget)?.key ||
+			String(permissionKey || ''),
 	);
 	let persistentNeedsWarning = $derived(
 		pendingPersistentTarget !== null &&
@@ -291,7 +296,9 @@
 				<span class="action-hint">
 					{onceOnly
 						? '此授权不会保存为会话规则或永久规则'
-						: '范围越大、期限越长，后续询问越少'}
+						: allowSessionScope
+							? '本会话授权不会按时间自动到期；撤销、清除授权或删除会话后失效'
+							: '永久授权跨会话生效，关键操作仍可能继续要求确认'}
 				</span>
 			</div>
 			{#if pendingPersistentTarget}
@@ -299,7 +306,10 @@
 					<Icon name="alertTriangle" size={16} />
 					<div class="warning-copy">
 						<span
-							>即将永久允许{pendingTargetLabel}。这会跨会话生效；关键操作仍可能继续要求确认。</span
+							>即将永久允许{pendingTargetLabel}。{describePermissionRuleImpact(
+								pendingTargetKey,
+								'allow',
+							)} 这会跨会话生效；关键操作仍可能继续要求确认。</span
 						>
 						{#if persistentNeedsWarning}
 							<small>请确认你确实希望扩大授权范围或减少高风险操作的询问。</small>
@@ -342,6 +352,9 @@
 							/>
 							{#if showAllowMenu}
 								<div class="allow-menu motion-menu-enter motion-list" role="menu">
+									<p class="scope-impact-note">
+										功能组和工具规则会匹配对应权限键及其所有下级操作；任何匹配的拒绝规则仍优先。
+									</p>
 									{#if allowSessionScope}
 										<div class="menu-section-label">本会话</div>
 										{#each targetOptions.slice(1) as option (option.target)}
@@ -382,6 +395,9 @@
 						{#snippet children()}
 							{#if showDenyMenu}
 								<div class="deny-menu motion-menu-enter motion-list" role="menu">
+									<p class="scope-impact-note scope-impact-note--deny">
+										功能组和工具拒绝会阻止对应权限键及其所有下级操作，并优先于匹配的允许规则。
+									</p>
 									{#if allowSessionScope}
 										<MenuItem
 											label="本会话拒绝"
@@ -841,6 +857,21 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 700;
+	}
+
+	.scope-impact-note {
+		margin: var(--md-sys-space-xs) var(--md-sys-space-sm) var(--md-sys-space-sm);
+		padding: var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-secondary-container);
+		color: var(--md-sys-color-on-secondary-container);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+
+	.scope-impact-note--deny {
+		background: var(--md-sys-color-error-container);
+		color: var(--md-sys-color-on-error-container);
 	}
 
 	@media (max-width: 620px) {

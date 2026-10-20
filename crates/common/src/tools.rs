@@ -321,7 +321,11 @@ pub enum ToolConcurrencyMode {
     Exclusive,
 }
 
-/// Runtime effect class, independent from concurrency.
+/// Runtime effect class, independent from concurrency, risk, and network access.
+/// `WorkspaceWrite` marks local file mutations and is the only effect scoped by
+/// the `ReadOnly` / `WorkspaceWrite` file-path boundary. `ExternalEffect`
+/// operations follow their own execution-boundary, network, risk, permission,
+/// and confirmation rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationEffect {

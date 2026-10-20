@@ -12,6 +12,7 @@ ADR 1170 增加了进程内 workspace 切换，但重启后仍从启动目录重
 
 - `SecurityConfig.execution_root: Option<PathBuf>` 是执行根配置的唯一持久来源，与 `writable_roots` 分开。`None` 表示沿用启动仓库发现；显式目录影响 Files 相对路径、默认 Shell `cwd`，并在 `writable_roots` 为空时成为 `workspace_write` 的默认写入根。
 - 安全设置页编辑该路径，随完整 `Settings` 经既有 IPC 保存。保存前 app 通过 `ToolsFacade` 试开本地目录 capability；Common 配置校验还要求路径绝对。它不接受 renderer 导航状态作为权限根，也不添加接受任意路径的 Tauri 命令。
+- `security.writable_roots` 的每项在 Common 边界必须是本地绝对路径，并在设置保存前由 Tools 逐项试开目录 capability；任何一项不存在、不是目录、包含 reparse point 或无法安全打开时，整份设置 patch 在持久化前拒绝。运行时应用也报告该错误，文件写入按整组 roots fail closed，不静默丢弃无效项。
 - 原生目录选择器只允许用户选一个本地目录；Rust command 通过 Tools 打开并规范化所选目录，然后将候选字符串回填到设置草稿。取消不改草稿。该 command 不持久化、不为 renderer 授予文件访问；最终保存仍经 `update_settings` 再校验和应用。
 - 设置应用时 `AuthorizationEngine` 在同一 owner 写锁内替换 workspace、策略与 grant 快照。切换 workspace 会增加 generation；策略 revision 变化使旧 proof 失效。已开始的 attempt 保留其捕获的旧 workspace；新 attempt 使用新 generation。
 - 若启动时持久化的目录已经不存在或不能安全打开，应用继续启动并应用其余安全设置，但将 workspace 置为 unavailable、记录错误，Files 相对路径和 workspace 默认写入失败关闭；不回退到仓库根或 cwd。设置页保存时对同类问题提前拒绝。
@@ -30,9 +31,12 @@ ADR 1170 增加了进程内 workspace 切换，但重启后仍从启动目录重
 
 显式 `writable_roots` 仍独立限定 workspace write；当列表为空时，以 ExecutionWorkspace 作为默认范围。`full_access` 的显式语义不变。切换应用后旧授权 proof 失效，已有运行尝试不会被重定向或回滚。
 
+安全设置页显示 workspace-write 模式的有效基准：非空 `writable_roots` 覆盖 ExecutionWorkspace 的默认写入范围；为空时使用当前执行工作区。Files 工具的 `allowed_paths` 仍与该基准取交集。执行工作区仍单独决定 Files 相对路径和默认 Shell `cwd`。只读和完整用户权限模式的实际写入语义分别明确展示。
+
 ## 验证
 
-- Common 校验拒绝相对执行根。
+- Common 校验拒绝相对执行根和非本地绝对 writable root。
 - Tools 测试覆盖配置根切换增加 generation、清空配置恢复启动发现，以及配置根失效时 workspace 变为 unavailable。
-- Settings command 在提交设置前试开目标目录；原生选择只产生已验证的候选路径；UI 测试覆盖手工编辑、选择器回填与 writable roots 独立。
+- Settings command 在提交设置前逐项安全打开 writable roots；原生选择只产生已验证的候选路径；UI 测试覆盖手工编辑、选择器回填、覆盖关系和有效范围展示。
+- 授权应用与每次 Files 写入都拒绝无效 root 组，不能静默过滤无法打开的目录。
 - `cargo check/test/clippy`、IPC contract generation、UI check/test/build 按跨 crate 与 Rust/UI IPC 门禁执行；Windows 系统隔离验收仍属于路线图后续工作。

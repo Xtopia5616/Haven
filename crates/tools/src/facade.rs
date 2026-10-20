@@ -1346,6 +1346,13 @@ impl ToolsFacade {
             .ok_or_else(|| "workspace root is not an available local directory".to_string())
     }
 
+    /// Validate every configured writable root without changing active policy.
+    /// Settings commands call this before committing the configuration patch.
+    pub fn validate_writable_roots(&self, roots: &[String]) -> Result<(), String> {
+        let paths = roots.iter().map(PathBuf::from).collect::<Vec<_>>();
+        crate::security::open_directory_roots(&paths, "security.writable_roots").map(|_| ())
+    }
+
     /// Replace the active backend execution workspace after validating and
     /// opening its local directory. A successful change increments the
     /// workspace generation and invalidates outstanding execution proofs.
@@ -1568,6 +1575,31 @@ mod capability_tests {
                 .validate_execution_workspace(&selected.path().join("missing"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn writable_root_validation_checks_every_root() {
+        let valid = tempfile::tempdir().unwrap();
+        let second_valid = tempfile::tempdir().unwrap();
+        let tools = ToolsFacade::new();
+
+        assert!(
+            tools
+                .validate_writable_roots(&[
+                    valid.path().to_string_lossy().into_owned(),
+                    second_valid.path().to_string_lossy().into_owned(),
+                ])
+                .is_ok()
+        );
+
+        let missing = valid.path().join("missing");
+        let error = tools
+            .validate_writable_roots(&[
+                valid.path().to_string_lossy().into_owned(),
+                missing.to_string_lossy().into_owned(),
+            ])
+            .unwrap_err();
+        assert!(error.contains("security.writable_roots[1]"));
     }
 
     #[tokio::test]

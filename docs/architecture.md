@@ -603,11 +603,16 @@ Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具�
 操作 view 的 `OperationPolicy.permission_key` 是权威身份；契约另外声明 `effect`、`data_sensitivity`、
 `network_access` 和执行并发，不能由风险等级、并发属性或前端字段推断。`SecurityConfig` 另外保存
 `sandbox_mode`（`read_only` / `workspace_write` / `full_access`，可选 `writable_roots`）与
-`network_policy`（`deny` / `ask` / `restricted` / `open`，默认为 `ask`）；opaque capability 在 `workspace_write` 下始终硬拒绝，`FullAccess + ask` 才进入普通确认流程，
-`deny` / 不可验证目的地的 `restricted` 仍直接拒绝，`open + workspace_write` 也拒绝无法约束的 opaque 子进程，
-Windows 子进程通过 Job Object 回收进程树；受限网络只允许经过 SSRF/DNS 校验并固定地址的 HTTP/MCP
-目的地，禁止跨源重定向。`ask` 与 `restricted` 共用可验证目的地边界，但默认将网络操作交给确认流程，
-不会因为默认配置而静默拒绝普通公网请求。
+`network_policy`（`deny` / `ask` / `restricted` / `open`，默认为 `ask`）。ReadOnly 和 WorkspaceWrite
+的文件路径边界只作用于声明为 `OperationEffect::WorkspaceWrite` 的本地文件写操作；其它
+`ExternalEffect` 不会仅因只读模式或目标位于可写根之外而被拒绝，而是继续按执行边界、网络策略、
+操作风险、权限规则和确认流程处理；无法保证只读效果的工具仍可按各自执行边界被拒绝。
+WorkspaceWrite 仍会单独拒绝无法约束文件访问的宿主子进程，因为执行工作区与可写根不是 OS 文件沙箱；
+受管隔离执行则由其自身边界控制。`deny` / 不可验证
+目的地的 `restricted` 仍直接拒绝对应网络能力；`ask` 将符合执行边界的网络操作交给确认流程，
+`open` 不添加全局网络限制。Windows 子进程通过 Job Object 回收进程树；受限网络只允许经过
+SSRF/DNS 校验并固定地址的 HTTP/MCP 目的地，禁止跨源重定向。`ask` 与 `restricted` 共用可验证
+目的地边界，但默认将普通公网请求交给确认流程，不会因为默认配置而静默拒绝。
 
 当前 `ExecutionWorkspaceSnapshot` 携带后端根和进程内 generation；安全设置提供可编辑路径和受限的原生目录选择器，并通过完整 Settings IPC 持久化。选择器只返回经 Tools 验证的本地目录候选，不授予 renderer 文件访问；空值使用启动发现，保存前再次验证，启动时若持久化根已失效则记录错误并 fail closed。新 attempt 捕获工作区快照；已开始的 attempt 保留其旧 generation 并可完成已授权副作用。`writable_roots` 为空时，`workspace_write` 对带路径的内建写操作默认限制到此根；显式 roots 覆盖这一默认根集合。Files 变更已由授权 proof/policy revision 绑定的目录句柄锚定（ADR 1169），但该策略仍不是 OS 级隔离。scratch 生命周期与 Shell/Skill/MCP 子进程的本机文件访问边界仍按独立切片收敛（ADR 1167/1171）。
 

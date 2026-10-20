@@ -44,6 +44,15 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
     {
         anyhow::bail!("security.execution_root must be an absolute local directory path");
     }
+    if let Some((index, _)) = config
+        .security
+        .writable_roots
+        .iter()
+        .enumerate()
+        .find(|(_, root)| !crate::path::is_absolute_local_path(std::path::Path::new(root)))
+    {
+        anyhow::bail!("security.writable_roots[{index}] must be an absolute local directory path");
+    }
     validate_session_step_budgets(
         config.session.max_steps_per_run,
         config.session.max_steps_per_session,
@@ -1151,6 +1160,28 @@ mod tests {
         let error = validate_app_config(&config).unwrap_err();
         assert!(error.to_string().contains("security.execution_root"));
         assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
+    }
+
+    #[test]
+    fn configured_writable_roots_must_be_absolute_local_paths() {
+        let mut config = AppConfig::default();
+        config.security.writable_roots = vec!["relative/project".into()];
+
+        let error = validate_app_config(&config).unwrap_err();
+        assert!(error.to_string().contains("security.writable_roots[0]"));
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn configured_writable_roots_reject_unc_and_device_paths() {
+        for path in [r"\\server\share\projects", r"\\?\C:\projects"] {
+            let mut config = AppConfig::default();
+            config.security.writable_roots = vec![path.into()];
+
+            let error = validate_app_config(&config).unwrap_err();
+            assert!(error.to_string().contains("security.writable_roots[0]"));
+        }
     }
 
     #[test]

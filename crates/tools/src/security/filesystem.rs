@@ -46,7 +46,7 @@ impl FileWritePolicy {
     #[cfg(test)]
     pub(crate) fn for_test_roots(roots: &[PathBuf]) -> Self {
         Self {
-            root_constraints: vec![open_directory_roots(roots)],
+            root_constraints: vec![open_directory_roots(roots, "test roots").unwrap()],
             ambient: false,
         }
     }
@@ -164,10 +164,20 @@ pub(super) fn path_is_allowed(path: &Path, allowed: &[PathBuf]) -> bool {
     resolved_path_is_allowed(&canon, allowed)
 }
 
-pub(super) fn open_directory_roots(paths: &[PathBuf]) -> Vec<DirectoryCapability> {
+pub(crate) fn open_directory_roots(
+    paths: &[PathBuf],
+    setting: &str,
+) -> Result<Vec<DirectoryCapability>, String> {
     paths
         .iter()
-        .filter_map(|path| DirectoryCapability::open(path).ok())
+        .enumerate()
+        .map(|(index, path)| {
+            DirectoryCapability::open(path).map_err(|_| {
+                format!(
+                    "{setting}[{index}] must be an available local directory that can be safely opened"
+                )
+            })
+        })
         .collect()
 }
 

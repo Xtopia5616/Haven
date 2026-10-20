@@ -211,21 +211,25 @@ pub enum PermissionMode {
     Autonomous,
 }
 
-/// File and side-effect authorization mode applied by Haven's authorization
-/// gateway. This does not create a Windows OS file-system or network sandbox;
-/// an allowed child process retains the current user's OS permissions.
+/// Local file-write boundary applied by Haven's authorization gateway. This
+/// does not create a Windows OS file-system or network sandbox; an allowed
+/// child process retains the current user's OS permissions. Other effects are
+/// evaluated by their execution boundary, network policy, risk, and permission
+/// or confirmation rules.
 ///
-/// `WorkspaceWrite` scopes Haven-managed path-bearing operations to configured
-/// roots and rejects opaque child processes because Job Objects do not
-/// constrain their file-system or network access. `FullAccess` removes that
-/// Haven-managed path scope; it does not elevate the process beyond the current
-/// user's Windows permissions. Network access remains controlled separately by
-/// [`NetworkPolicy`].
+/// `WorkspaceWrite` scopes Haven-managed local file writes to configured roots
+/// and rejects child execution whose host-process boundary cannot constrain
+/// file-system access. Isolated child execution follows its own boundary.
+/// `FullAccess` removes the Haven-managed file-path scope; it does not elevate
+/// the process beyond the current user's Windows permissions. Network access
+/// remains controlled separately by [`NetworkPolicy`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxMode {
-    /// Mutating and external-effect operations are rejected by the
-    /// authorization gateway.
+    /// The file-path boundary rejects operations declared as local workspace
+    /// writes. Other external effects follow their own execution-boundary,
+    /// network, risk, and permission or confirmation rules; a tool can still
+    /// reject execution when it cannot guarantee read-only behavior.
     ReadOnly,
     /// Writes are allowed only where the configured tool/workspace roots
     /// permit them.
