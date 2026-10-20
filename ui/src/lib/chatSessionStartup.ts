@@ -88,7 +88,15 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			}
 			const runEndStatus: SessionRunEndStatus | undefined =
 				resumeTarget.runEndStatus || (resumeTarget.wasError ? 'error' : undefined);
-			if (runEndStatus) {
+			if (runEndStatus === 'completed') {
+				// Memory history reopens completed sessions before handing off here.
+				// Their new persisted state is Paused, so don't restore the old terminal
+				// notice or let it override the refreshed runtime summary.
+				dependencies.dispatch({
+					type: 'session/run-end-notice-cleared',
+					sessionId: resumeTarget.sessionId,
+				});
+			} else if (runEndStatus) {
 				dependencies.dispatch({
 					type: 'session/run-ended',
 					sessionId: resumeTarget.sessionId,

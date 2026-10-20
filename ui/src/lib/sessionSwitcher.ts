@@ -1,20 +1,25 @@
-import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
+import { isErrorStatus } from './sessionStatus.ts';
 import type { SessionHistoryRow } from './contracts/sessionHistory.ts';
 import type { SessionSummary } from './sessionReducer/types.ts';
 
-/** Combine live sessions with recent persisted history for the compact switcher. */
+/** Show open runtime sessions plus resumable paused/error history in the compact switcher. */
 export function buildSessionSwitcherOptions(
 	sessions: SessionSummary[],
 	history: SessionHistoryRow[],
 ): SessionSummary[] {
-	const liveSessions = sessions.filter(
-		(session) => isBusyStatus(session.status) || isPausedStatus(session.status),
-	);
-	const liveIds = new Set(liveSessions.map((session) => session.sessionId));
+	const openSessions = sessions.filter((session) => session.status !== 'completed');
+	// Current reducer state wins over a potentially stale history snapshot. In
+	// particular, a completed lifecycle event must hide the matching history row
+	// immediately, before the next history refresh.
+	const knownSessionIds = new Set(sessions.map((session) => session.sessionId));
 	return [
-		...liveSessions,
+		...openSessions,
 		...history
-			.filter((session) => !liveIds.has(session.sessionId))
+			.filter(
+				(session) =>
+					!knownSessionIds.has(session.sessionId) &&
+					(session.status === 'paused' || isErrorStatus(session.status)),
+			)
 			.map((session) => ({
 				sessionId: session.sessionId,
 				status: session.status,

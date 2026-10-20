@@ -497,12 +497,27 @@ impl AgentLayer {
         self.executor.ensure_session_loaded(session_id).await?;
         let state = self.executor.get_session_status(session_id).await;
         if state == Some(SessionStatus::Completed) || state == Some(SessionStatus::Error) {
-            // History viewing must not persist a terminal session as active;
-            // the memory-only transition only enables a later user action in
-            // this process.
-            self.executor
-                .update_session_status_memory_only(session_id, SessionStatus::Paused)
-                .await?;
+            // Explicitly reopening terminal history makes it resumable across
+            // application restarts, while keeping it out of the dispatcher
+            // until the user sends a follow-up or presses Continue.
+            if self
+                .executor
+                .update_session_status(session_id, SessionStatus::Paused)
+                .await?
+            {
+                let waiting_reason = self.executor.waiting_reason(session_id).await;
+                self.executor
+                    .set_waiting_reason(session_id, waiting_reason)
+                    .await?;
+                self.events
+                    .emit_session_updated_with_reason_and_waiting_reason(
+                        session_id,
+                        SessionStatus::Paused,
+                        waiting_reason,
+                        None,
+                    )
+                    .await;
+            }
         }
         let restored = self.restore_pending_user_inputs(session_id).await?;
         if restored > 0 {

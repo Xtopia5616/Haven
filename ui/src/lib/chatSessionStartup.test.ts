@@ -371,6 +371,38 @@ describe('createChatSessionStartup', () => {
 		expect(harness.deferredTargetClears).toEqual([0]);
 	});
 
+	it('clears a completed notice when history has reopened the session as paused', async () => {
+		const harness = createHarness({ listRuntimeSessions: async () => list(SESSION_ID) });
+		harness.reducer.dispatch({
+			type: 'sessions/loaded',
+			sessions: [{ sessionId: SESSION_ID, status: 'completed' }],
+		});
+		harness.reducer.dispatch({ type: 'session/selected', sessionId: SESSION_ID });
+		harness.reducer.dispatch({
+			type: 'session/run-ended',
+			sessionId: SESSION_ID,
+			status: 'completed',
+			reason: '用户主动结束会话',
+		});
+
+		harness.startup.applyResumeTarget({
+			sessionId: SESSION_ID,
+			runEndStatus: 'completed',
+			wasError: false,
+		});
+
+		await vi.waitFor(() =>
+			expect(harness.reducer.snapshot().sessions).toContainEqual(
+				expect.objectContaining({ sessionId: SESSION_ID, status: 'paused' }),
+			),
+		);
+		expect(harness.reducer.snapshot().runEndNotice).toBeNull();
+		expect(harness.actions).toContainEqual({
+			type: 'session/run-end-notice-cleared',
+			sessionId: SESSION_ID,
+		});
+	});
+
 	it('does not overwrite a session selected while auto-resume is in flight', async () => {
 		let finishResume: ((value: SessionResumeResponse | null) => void) | undefined;
 		const resumePromise = new Promise<SessionResumeResponse | null>((resolve) => {

@@ -583,7 +583,13 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
 
 #[tokio::test]
 async fn reopen_session_without_pending_inputs_stays_paused() {
-    let (agent, executor) = make_test_agent();
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let (agent, executor) = make_test_agent_with_db(
+        db.clone(),
+        Arc::new(FinalAnswerMock),
+        Arc::new(ToolsFacade::new()),
+        ContextLimitsConfig::default(),
+    );
     let session = executor.create_session("input text").await.unwrap();
     agent
         .persist_message_parts(
@@ -609,6 +615,11 @@ async fn reopen_session_without_pending_inputs_stays_paused() {
             .get_active_session_status(&session.session_id)
             .await,
         Some(SessionStatus::Paused)
+    );
+    assert_eq!(
+        db.get_session(&session.session_id).unwrap().unwrap().status,
+        SessionStatus::Paused,
+        "reopening terminal history must persist the resumable paused status"
     );
     assert!(
         executor

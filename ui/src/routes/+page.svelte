@@ -1030,7 +1030,7 @@
 			.snapshot()
 			.sessions.some((session) => session.sessionId === sessionId);
 		const historical = recentHistorySessions.find((session) => session.sessionId === sessionId);
-		if (!alreadyLoaded && historical) {
+		if (historical && (!alreadyLoaded || historical.status === 'completed')) {
 			if (isErrorStatus(historical.status)) {
 				dispatchSession({
 					type: 'session/retained-error',
@@ -1047,6 +1047,9 @@
 					if (!chatSessionController.isUserSessionSelectionCurrent(selectionVersion))
 						return;
 					await loadSessions();
+					if (historical.status === 'completed') {
+						dispatchSession({ type: 'session/run-end-notice-cleared', sessionId });
+					}
 					if (!chatSessionController.isUserSessionSelectionCurrent(selectionVersion))
 						return;
 				} catch (error) {
@@ -1066,11 +1069,9 @@
 		const historicalRunEndStatus: SessionRunEndStatus | undefined =
 			historical?.status === 'paused'
 				? 'paused'
-				: historical?.status === 'completed'
-					? 'completed'
-					: historical && isErrorStatus(historical.status)
-						? 'error'
-						: undefined;
+				: historical && isErrorStatus(historical.status)
+					? 'error'
+					: undefined;
 		if (historical && historicalRunEndStatus) {
 			dispatchSession({
 				type: 'session/run-ended',
