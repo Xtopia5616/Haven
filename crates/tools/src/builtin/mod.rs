@@ -898,6 +898,18 @@ const SESSION_OPERATION_VIEWS: &[SplitOperationSpec] = &[
         "session",
         "fileText"
     ),
+    split_spec!(
+        "session.history_search",
+        "history_search",
+        "session",
+        "search"
+    ),
+    split_spec!(
+        "session.history_read",
+        "history_read",
+        "session",
+        "fileText"
+    ),
 ];
 
 const ACTION_OPERATION_VIEWS: &[SplitOperationSpec] =

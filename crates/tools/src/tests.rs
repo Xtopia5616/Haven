@@ -891,18 +891,23 @@ async fn stable_core_tools_are_registered_without_optional_providers() {
 }
 
 #[tokio::test]
-async fn session_notes_operations_are_discoverable_and_loaded_on_demand() {
+async fn session_notes_and_history_operations_are_discoverable_and_loaded_on_demand() {
     let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     let session_id = "ses-0123456789abcdef0123456789abcdef";
-    let operation_names = ["session.read_notes", "session.replace_notes"];
+    let operation_names = [
+        "session.read_notes",
+        "session.replace_notes",
+        "session.history_search",
+        "session.history_read",
+    ];
     let provider_tools = mgr.list_tool_definitions_for_session(session_id).await;
 
     for name in operation_names {
         assert!(mgr.registry().get(name).await.is_none());
         assert!(
             !provider_tools.iter().any(|tool| tool.name == name),
-            "deferred session notes operation {name} must not be provider-visible before loading"
+            "deferred session operation {name} must not be provider-visible before loading"
         );
     }
 
@@ -953,7 +958,7 @@ async fn session_notes_operations_are_discoverable_and_loaded_on_demand() {
     for name in operation_names {
         assert!(
             provider_tools.iter().any(|tool| tool.name == name),
-            "loaded session notes operation {name} must enter the Agent's provider tool list"
+            "loaded session operation {name} must enter the Agent's provider tool list"
         );
     }
 }

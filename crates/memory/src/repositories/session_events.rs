@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 mod branch_events;
 mod event_append;
 mod event_cursors;
+mod event_history;
 mod event_model;
 mod event_replay;
 mod forks;
@@ -41,7 +42,11 @@ use event_model::{
     BoundedByteCounter, MAX_SESSION_EVENT_REPLAY_PAGE_SIZE, SessionEventInputRef,
     session_event_from_row,
 };
-pub use event_model::{SessionEvent, SessionEventInput, SessionEventPage};
+pub use event_model::{
+    MAX_SESSION_HISTORY_QUERY_BYTES, MAX_SESSION_HISTORY_SEARCH_RESULTS, SessionEvent,
+    SessionEventInput, SessionEventPage, SessionTranscriptHistoryMatch,
+    SessionTranscriptHistoryRecord, SessionTranscriptHistorySearch,
+};
 pub use session_history::{
     SessionHistoryFilter, SessionHistoryStatusFilter, SessionMessageText, SessionResumeMedia,
     SessionTitleGenerationContext,

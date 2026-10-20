@@ -154,6 +154,8 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         "session.links" => ("查看关联会话", ToolCatalogGroup::Workflow, true, None),
         "session.read_notes" => ("读取会话笔记", ToolCatalogGroup::Workflow, true, None),
         "session.replace_notes" => ("替换会话笔记", ToolCatalogGroup::Workflow, false, None),
+        "session.history_search" => ("搜索原始会话历史", ToolCatalogGroup::Workflow, true, None),
+        "session.history_read" => ("读取原始会话记录", ToolCatalogGroup::Workflow, true, None),
         "toolrun.start" => ("启动后台工具", ToolCatalogGroup::Workflow, false, None),
         "toolrun.list" => ("后台任务列表", ToolCatalogGroup::Workflow, true, None),
         "toolrun.inspect" => ("查看后台任务", ToolCatalogGroup::Workflow, true, None),
@@ -311,9 +313,12 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         | "haven.mcp.mcp_disconnect"
         | "haven.mcp.mcp_toggle" => OperationIdempotency::Idempotent,
         name if name.starts_with("lsp.") => OperationIdempotency::NonIdempotent,
-        "session.link" | "session.unlink" | "session.read_notes" | "session.replace_notes" => {
-            OperationIdempotency::Idempotent
-        }
+        "session.link"
+        | "session.unlink"
+        | "session.read_notes"
+        | "session.replace_notes"
+        | "session.history_search"
+        | "session.history_read" => OperationIdempotency::Idempotent,
         // Creation and replacement/removal requests must be verified before
         // replay because their first attempt may already have changed state.
         "haven.skills.skill_create"
@@ -401,6 +406,8 @@ mod tests {
         );
 
         assert!(operation_contract("session.read_notes").read_only);
+        assert!(operation_contract("session.history_search").read_only);
+        assert!(operation_contract("session.history_read").read_only);
         let replace_notes = operation_contract("session.replace_notes");
         assert!(!replace_notes.read_only);
         assert_eq!(replace_notes.idempotency, OperationIdempotency::Idempotent);

@@ -21,6 +21,49 @@ pub struct SessionEventPage {
     pub has_more: bool,
 }
 
+/// One bounded transcript event returned by model-facing history search.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SessionTranscriptHistoryMatch {
+    pub sequence: i64,
+    pub created_at: String,
+    pub run_id: Option<u64>,
+    pub step_number: Option<u32>,
+    pub redacted_fields: Vec<String>,
+    pub payload_excerpt: String,
+    pub payload_offset_bytes: usize,
+    pub payload_source_bytes: usize,
+    pub payload_truncated: bool,
+}
+
+/// Bounded search results over the current session's non-rolled-back raw
+/// transcript. `has_more` means older matches exist before the oldest result.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SessionTranscriptHistorySearch {
+    pub matches: Vec<SessionTranscriptHistoryMatch>,
+    pub latest_sequence: i64,
+    pub before_sequence: Option<i64>,
+    pub scanned_events: usize,
+    pub scanned_bytes: usize,
+    pub has_more: bool,
+}
+
+/// One bounded raw transcript event returned by an exact sequence lookup.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SessionTranscriptHistoryRecord {
+    pub sequence: i64,
+    pub created_at: String,
+    pub run_id: Option<u64>,
+    pub step_number: Option<u32>,
+    pub redacted_fields: Vec<String>,
+    pub payload: String,
+    pub payload_source_bytes: usize,
+    pub payload_truncated: bool,
+}
+
+/// Public limits for the model-facing transcript history query contract.
+pub const MAX_SESSION_HISTORY_QUERY_BYTES: usize = 256;
+pub const MAX_SESSION_HISTORY_SEARCH_RESULTS: usize = 5;
+
 /// Maximum number of durable events returned by a single replay page.
 pub(super) const MAX_SESSION_EVENT_REPLAY_PAGE_SIZE: usize = 256;
 
