@@ -108,16 +108,14 @@ pub struct CompactionResult {
 /// retry buffer), it compresses the oldest messages into a single summary
 /// via the configured text/vision summary endpoint.
 ///
-/// `trigger_ratio` defaults to 0.75 — i.e. compact when 75% of the context
-/// window is consumed. The previous behaviour (`context_window -
-/// reserve_tokens`) was too conservative and triggered compaction only when
-/// the model was already close to overflowing, forcing an expensive
-/// retry-and-resummarize cycle.
+/// The default `trigger_ratio` is configured by
+/// `ContextLimitsConfig::default()` (currently 0.65). The effective threshold
+/// is also capped by response headroom, so production compaction adapts to the
+/// actual model window instead of using one provider-specific token count.
 ///
 /// NOTE: production construction goes through
 /// `ReActEngine::context_compactor`, which passes `context_limits` values
-/// from `[context_limits]` in config.toml; the test-only `new` default stays
-/// in sync with `ContextLimitsConfig`.
+/// from `[context_limits]` in config.toml.
 pub(crate) struct ContextCompactor {
     /// Soft limit: total context window in tokens (from model config).
     pub context_window: u32,
@@ -134,7 +132,7 @@ impl ContextCompactor {
         Self {
             context_window,
             reserve_tokens,
-            trigger_ratio: 0.75,
+            trigger_ratio: haven_common::config::ContextLimitsConfig::default().compaction_ratio,
         }
     }
 
