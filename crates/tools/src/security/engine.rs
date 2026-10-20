@@ -1223,7 +1223,9 @@ fn path_sandbox_block(
     params: &Value,
     policy: &OperationPolicy,
 ) -> Option<String> {
-    if matches!(sandbox_mode, SandboxMode::ReadOnly) && !policy.is_read_only() {
+    if matches!(sandbox_mode, SandboxMode::ReadOnly)
+        && matches!(policy.effect, OperationEffect::WorkspaceWrite)
+    {
         return Some(format!(
             "read-only sandbox blocks mutating operation '{tool_name}'"
         ));
@@ -1249,7 +1251,9 @@ fn path_sandbox_block(
             }
         }
     }
-    if matches!(sandbox_mode, SandboxMode::WorkspaceWrite) && !policy.is_read_only() {
+    if matches!(sandbox_mode, SandboxMode::WorkspaceWrite)
+        && matches!(policy.effect, OperationEffect::WorkspaceWrite)
+    {
         let allowed: Vec<PathBuf> = if writable_roots.is_empty() {
             execution_workspace
                 .root()
@@ -2825,15 +2829,19 @@ mod tests {
             .apply_security(&read_only)
             .await
             .expect("valid read-only security applies");
+        let read_only_write_params = json!({"operation": "write", "path": "notes.md"});
+        let mut read_only_write_policy =
+            fixture_policy("files", &read_only_write_params, RiskLevel::Medium);
+        read_only_write_policy.effect = OperationEffect::WorkspaceWrite;
         assert!(matches!(
-            gateway
-                .check(
-                    None,
-                    "files",
-                    &json!({"operation": "write", "path": "notes.md"}),
-                    RiskLevel::Medium
-                )
-                .await,
+            authorize(
+                &gateway,
+                None,
+                "files",
+                &read_only_write_params,
+                &read_only_write_policy,
+            )
+            .await,
             ConfirmationResult::Blocked { .. }
         ));
 
@@ -2880,6 +2888,37 @@ mod tests {
             .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn external_open_requests_confirmation_outside_workspace_roots() {
+        let engine = AuthorizationEngine::new();
+        let writable_root = tempfile::tempdir().unwrap();
+        let target = "https://auth.openai.com/oauth/authorize?client_id=public";
+        let params = json!({"target": target});
+        let policy = OperationPolicy::native(
+            "open_external",
+            CapabilityScope::try_new(permission_key("open_external", &params)).unwrap(),
+            RiskLevel::Low,
+            NetworkAccess::Opaque,
+        );
+
+        for sandbox_mode in [SandboxMode::WorkspaceWrite, SandboxMode::ReadOnly] {
+            engine
+                .set_boundaries(
+                    sandbox_mode,
+                    vec![writable_root.path().to_path_buf()],
+                    NetworkPolicy::Ask,
+                )
+                .await;
+
+            let decision = authorize(&engine, None, "open_external", &params, &policy).await;
+
+            assert!(
+                matches!(decision, AuthorizationDecision::RequiresConfirmation { .. }),
+                "open_external should reach confirmation in {sandbox_mode:?}, got {decision:?}"
+            );
+        }
     }
 
     #[tokio::test]

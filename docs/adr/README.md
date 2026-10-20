@@ -1322,3 +1322,4 @@
 - [1331：重分类内置工具直调面与工作流目录](1331-reclassify-builtin-provider-surface-and-workflow-group.md)
 - [1332：统一工具目录的能力分类](1332-use-a-single-capability-tool-taxonomy.md)
 - [1333：Session 级 Markdown 工作文档](1333-session-working-document.md)
+- [1334：将文件沙箱约束限定到工作区写入操作](1334-limit-filesystem-sandbox-to-workspace-writes.md)
