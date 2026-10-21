@@ -187,9 +187,10 @@ pub struct ContextLimitsConfig {
     /// JPEG quality (0.0-1.0) used when the webview re-encodes an image.
     pub attachment_image_jpeg_quality: f32,
     // —— file tool ——
-    /// Maximum bytes for whole-file operations that load the full content,
-    /// including read, edit, and patch. Also the default byte-mode `limit`.
+    /// Maximum bytes for whole-file reads and the default byte-mode `limit`.
     pub file_max_full_file_bytes: u64,
+    /// Maximum source file size loaded internally by a targeted text patch.
+    pub file_max_patch_bytes: u64,
     /// Default lines to read in line mode when only `start_line` is given.
     pub file_line_span: u64,
     /// Maximum bytes buffered for one line in line-oriented file operations.
@@ -336,6 +337,7 @@ impl Default for ContextLimitsConfig {
             max_attachment_image_dim_px: 1568,
             attachment_image_jpeg_quality: 0.85,
             file_max_full_file_bytes: 128_000,
+            file_max_patch_bytes: 8 * 1024 * 1024,
             file_line_span: 100,
             file_line_max_bytes: 128_000,
             file_summary_input_chars: 60_000,

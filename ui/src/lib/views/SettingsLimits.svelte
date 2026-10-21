@@ -180,12 +180,22 @@
 			hint: 'files 工具读取、写入、总结与搜索的资源上限。',
 			fields: [
 				{
+					key: 'file_max_patch_bytes',
+					label: '定向 patch 文件上限',
+					unit: 'MiB',
+					mb: true,
+					min: RESOURCE_LIMIT_BOUNDS.filePatchBytes.min / 1048576,
+					max: RESOURCE_LIMIT_BOUNDS.filePatchBytes.max / 1048576,
+					danger: true,
+					hint: 'files.patch 可定向载入的文件上限，独立于完整 read 上限；默认 8 MiB，最多 64 MiB。',
+				},
+				{
 					key: 'file_max_full_file_bytes',
-					label: '整文件操作上限',
+					label: '整文件读取上限',
 					unit: 'bytes',
 					max: RESOURCE_LIMIT_BOUNDS.fileOperationBytes.max,
 					danger: true,
-					hint: 'read、edit、patch 整体载入文件时的字节上限，也作为未指定 limit 时的默认分段跨度；最多 64 MiB。',
+					hint: 'files.read 整体载入文件时的字节上限，也作为未指定 limit 时的默认分段跨度；patch 有独立上限。最多 64 MiB。',
 				},
 				{
 					key: 'file_byte_read_max_bytes',

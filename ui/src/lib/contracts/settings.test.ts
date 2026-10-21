@@ -497,6 +497,7 @@ describe('settings command contracts', () => {
 			['session', 'prompt_history_limit', RESOURCE_LIMIT_BOUNDS.promptHistory],
 			['session', 'history_retention_days', RESOURCE_LIMIT_BOUNDS.historyRetentionDays],
 			['context_limits', 'file_max_list_entries', RESOURCE_LIMIT_BOUNDS.fileListEntries],
+			['context_limits', 'file_max_patch_bytes', RESOURCE_LIMIT_BOUNDS.filePatchBytes],
 			['context_limits', 'file_line_max_bytes', RESOURCE_LIMIT_BOUNDS.fileLineBytes],
 			['context_limits', 'file_byte_read_max_bytes', RESOURCE_LIMIT_BOUNDS.fileByteReadBytes],
 			['context_limits', 'max_known_facts', RESOURCE_LIMIT_BOUNDS.maxKnownFacts],

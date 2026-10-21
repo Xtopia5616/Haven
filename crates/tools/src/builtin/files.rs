@@ -41,6 +41,7 @@ const MAX_SUMMARY_FOCUS_CHARS: usize = 2_000;
 const UNTRUSTED_DOCUMENT_START: &str = "[BEGIN DERIVED ATTACHMENT";
 const UNTRUSTED_DOCUMENT_END: &str = "[END DERIVED ATTACHMENT]";
 const MAX_PATCH_EDITS: usize = 64;
+const MAX_PATCH_MATCHES: usize = 100_000;
 const MAX_PATCH_INPUT_BYTES: usize = 256 * 1024;
 const MAX_INSPECT_HASH_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -48,6 +49,7 @@ pub struct FilesTool {
     summarizer: Option<Arc<LlmRouter>>,
     max_output_chars: usize,
     max_full_file_bytes: u64,
+    max_patch_file_bytes: u64,
     line_span: u64,
     max_line_bytes: usize,
     summary_input_chars: usize,
@@ -67,6 +69,7 @@ impl Default for FilesTool {
             summarizer: None,
             max_output_chars: 20_000,
             max_full_file_bytes: 128_000,
+            max_patch_file_bytes: 8 * 1024 * 1024,
             line_span: 100,
             max_line_bytes: 128_000,
             summary_input_chars: 60_000,
@@ -126,6 +129,8 @@ pub struct FilesPatchEdit {
     pub new_string: String,
     #[serde(default)]
     pub expected_matches: Option<usize>,
+    #[serde(default)]
+    pub replace_all: bool,
 }
 
 /// Typed parameters for FilesTool.
@@ -147,6 +152,8 @@ pub struct FilesParams {
     pub dry_run: Option<bool>,
     #[serde(default)]
     pub edits: Option<Vec<FilesPatchEdit>>,
+    #[serde(default)]
+    pub unified_diff: Option<String>,
     #[serde(default)]
     pub offset: Option<u64>,
     #[serde(default)]
@@ -185,6 +192,7 @@ impl FilesTool {
         summarizer: Option<Arc<LlmRouter>>,
         max_output_chars: usize,
         max_full_file_bytes: u64,
+        max_patch_file_bytes: u64,
         line_span: u64,
         max_line_bytes: usize,
         summary_input_chars: usize,
@@ -198,6 +206,7 @@ impl FilesTool {
             summarizer,
             max_output_chars,
             max_full_file_bytes: max_full_file_bytes.min(MAX_FILE_OPERATION_BYTES),
+            max_patch_file_bytes: max_patch_file_bytes.clamp(1, MAX_FILE_OPERATION_BYTES),
             line_span,
             max_line_bytes: max_line_bytes.clamp(1, MAX_FILE_LINE_MAX_BYTES),
             summary_input_chars: summary_input_chars.min(MAX_FILE_SUMMARY_INPUT_CHARS),
@@ -514,11 +523,14 @@ impl FilesTool {
             FilesOperation::Patch => {
                 file_mutations::patch(
                     &path,
-                    params.edits.as_deref(),
-                    params.expected_hash.as_deref(),
-                    self.max_full_file_bytes,
+                    file_mutations::PatchRequest {
+                        edits: params.edits.as_deref(),
+                        unified_diff: params.unified_diff.as_deref(),
+                        expected_hash: params.expected_hash.as_deref(),
+                        dry_run: params.dry_run.unwrap_or(false),
+                    },
+                    self.max_patch_file_bytes,
                     self.max_write_bytes,
-                    params.dry_run.unwrap_or(false),
                     mutation_context,
                 )
                 .await

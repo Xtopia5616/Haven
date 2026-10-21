@@ -43,6 +43,7 @@ haven-input = { path = "../input" }
 futures-util.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 encoding_rs.workspace = true
+diffy = "0.5.2"
 tempfile.workspace = true
 rquickjs = { version = "0.14.0", default-features = false, features = ["std"] }
 

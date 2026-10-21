@@ -189,6 +189,45 @@ use super::*;
         );
         assert!(
             tool.validate_input(&json!({
+                "operation": "write",
+                "path": "output.txt",
+                "content": "contents"
+            }))
+            .is_err(),
+            "full replacements require a compare hash"
+        );
+        assert!(tool
+            .validate_input(&json!({
+                "operation": "write",
+                "path": "output.txt",
+                "content": "contents",
+                "expected_hash": "missing"
+            }))
+            .is_ok());
+        assert!(tool
+            .validate_input(&json!({
+                "operation": "patch",
+                "path": "output.txt",
+                "edits": [{"old_string": "old", "new_string": "new"}]
+            }))
+            .is_ok());
+        assert!(tool
+            .validate_input(&json!({
+                "operation": "patch",
+                "path": "output.txt",
+                "unified_diff": "--- a/output.txt\n+++ b/output.txt\n@@ -1 +1 @@\n-old\n+new\n"
+            }))
+            .is_ok());
+        assert!(tool
+            .validate_input(&json!({
+                "operation": "patch",
+                "path": "output.txt",
+                "edits": [{"old_string": "old", "new_string": "new"}],
+                "unified_diff": "diff"
+            }))
+            .is_err());
+        assert!(
+            tool.validate_input(&json!({
                 "operation": "read",
                 "path": "input.txt",
                 "root": "workspace"

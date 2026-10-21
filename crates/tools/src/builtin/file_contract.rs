@@ -10,7 +10,8 @@ use haven_common::config::{
 
 use super::super::canonical_entity_id_schema;
 use super::{
-    FilesParams, FilesTool, MAX_PATCH_EDITS, MAX_PATCH_INPUT_BYTES, MAX_SUMMARY_FOCUS_CHARS,
+    FilesParams, FilesTool, MAX_PATCH_EDITS, MAX_PATCH_INPUT_BYTES, MAX_PATCH_MATCHES,
+    MAX_SUMMARY_FOCUS_CHARS,
 };
 #[async_trait]
 impl Tool for FilesTool {
@@ -111,10 +112,10 @@ impl Tool for FilesTool {
                         "operation": { "const": "write" },
                         "path": { "type": "string", "minLength": 1, "description": "File path to replace or create" },
                         "content": { "type": "string", "description": format!("Complete file content; maximum {} UTF-8 bytes. An empty string is allowed", self.max_write_bytes) },
-                        "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect; use 'missing' for a new path and reject if the current file differs" },
+                        "expected_hash": { "type": "string", "minLength": 1, "description": "Required SHA-256 from files.inspect for an existing file, or 'missing' if inspect reported that the path does not exist" },
                         "dry_run": { "type": "boolean", "default": false, "description": "Validate and report the proposed write without changing the file; defaults to false" }
                     },
-                    "required": ["operation", "path", "content"]
+                    "required": ["operation", "path", "content", "expected_hash"]
                 },
                 {
                     "type": "object",
@@ -151,17 +152,23 @@ impl Tool for FilesTool {
                                 "type": "object",
                                 "additionalProperties": false,
                                 "properties": {
-                                    "old_string": { "type": "string", "minLength": 1, "description": "Existing text; must match exactly once unless expected_matches is provided" },
+                                    "old_string": { "type": "string", "minLength": 1, "description": "Existing text; must match exactly once by default" },
                                     "new_string": { "type": "string", "description": "Replacement text; an empty string deletes the match" },
-                                    "expected_matches": { "type": "integer", "minimum": 1, "description": "Expected non-overlapping match count; defaults to 1" }
+                                    "expected_matches": { "type": "integer", "minimum": 1, "maximum": MAX_PATCH_MATCHES, "description": "Optional exact match-count assertion" },
+                                    "replace_all": { "type": "boolean", "default": false, "description": format!("Replace every occurrence (up to {MAX_PATCH_MATCHES}); defaults to false. expected_matches, when set, still asserts the exact count") }
                                 },
                                 "required": ["old_string", "new_string"]
                             }
                         },
-                        "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect; reject the patch if the current file differs" },
+                        "unified_diff": { "type": "string", "minLength": 1, "description": "One-file unified diff. The path parameter selects the target; file creation, deletion, rename, copy, binary, and multi-file diffs are rejected. UTF-8 input is limited to 256 KiB" },
+                        "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect; if omitted, patch protects the exact version it read" },
                         "dry_run": { "type": "boolean", "default": false, "description": "Validate and report the proposed patch without changing the file; defaults to false" }
                     },
-                    "required": ["operation", "path", "edits"]
+                    "required": ["operation", "path"],
+                    "oneOf": [
+                        { "required": ["edits"], "not": { "required": ["unified_diff"] } },
+                        { "required": ["unified_diff"], "not": { "required": ["edits"] } }
+                    ]
                 },
                 {
                     "type": "object",

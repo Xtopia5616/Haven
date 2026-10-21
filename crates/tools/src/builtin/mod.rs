@@ -238,6 +238,7 @@ pub(crate) async fn register_builtin_tools(
             router.clone(),
             tool_output_cap(settings, "files", limits.max_observation_chars),
             limits.file_max_full_file_bytes,
+            limits.file_max_patch_bytes,
             limits.file_line_span,
             limits.file_line_max_bytes,
             limits.file_summary_input_chars,

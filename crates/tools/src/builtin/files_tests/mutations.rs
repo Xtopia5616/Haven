@@ -10,7 +10,7 @@ use crate::{Tool, ToolExecutionContext};
 
         let result = FilesTool::default()
             .execute(
-                json!({"operation": "write", "path": path_str, "content": "written content"}),
+                json!({"operation": "write", "path": path_str, "content": "written content", "expected_hash": "missing"}),
                 CancellationToken::new(),
             )
             .await
@@ -30,7 +30,8 @@ use crate::{Tool, ToolExecutionContext};
                 json!({
                     "operation": "write",
                     "path": file.to_string_lossy(),
-                    "content": "created with parents"
+                    "content": "created with parents",
+                    "expected_hash": "missing"
                 }),
                 CancellationToken::new(),
             )
@@ -55,6 +56,7 @@ use crate::{Tool, ToolExecutionContext};
                     "operation": "write",
                     "path": file.to_string_lossy(),
                     "content": "dry run",
+                    "expected_hash": "missing",
                     "dry_run": true
                 }),
                 CancellationToken::new(),
@@ -112,7 +114,8 @@ async fn proof_derived_directory_policy_confines_file_writes() {
             json!({
                 "operation": "write",
                 "path": allowed_file.to_string_lossy(),
-                "content": "inside capability"
+                "content": "inside capability",
+                "expected_hash": "missing"
             }),
             CancellationToken::new(),
             None,
@@ -132,7 +135,8 @@ async fn proof_derived_directory_policy_confines_file_writes() {
             json!({
                 "operation": "write",
                 "path": denied_file.to_string_lossy(),
-                "content": "outside capability"
+                "content": "outside capability",
+                "expected_hash": "missing"
             }),
             CancellationToken::new(),
             None,
@@ -160,7 +164,8 @@ async fn file_mutation_rejects_a_policy_change_after_proof_capture() {
     let input = json!({
         "operation": "write",
         "path": file.to_string_lossy(),
-        "content": "stale authorization must not write"
+        "content": "stale authorization must not write",
+        "expected_hash": "missing"
     });
     let policy = OperationPolicy {
         risk_level: RiskLevel::Low,
@@ -232,7 +237,8 @@ async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_polic
             serde_json::from_value(json!({
                 "operation": "write",
                 "path": file.to_string_lossy(),
-                "content": "missing policy permit"
+                "content": "missing policy permit",
+                "expected_hash": "missing"
             }))
             .unwrap(),
             CancellationToken::new(),
@@ -282,12 +288,14 @@ async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_polic
                 json!({
                     "operation": "patch",
                     "path": path_str,
-                    "edits": [{"old_string": "nope", "new_string": "x"}]
+                    "edits": [{"old_string": "world\nmissing", "new_string": "x"}]
                 }),
                 CancellationToken::new(),
             )
             .await;
-        assert!(result.is_err());
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("candidate context"));
+        assert!(error.contains("line") || error.contains("2: world"));
     }
 
     #[tokio::test]
@@ -374,6 +382,186 @@ async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_polic
             tokio::fs::read_to_string(&file).await.unwrap(),
             "bar\nbar\n"
         );
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_replaces_all_only_when_requested() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-replace-all.txt");
+        tokio::fs::write(&file, "foo\nfoo\nfoo\n").await.unwrap();
+
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [{"old_string": "foo", "new_string": "bar", "replace_all": true}]
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["replacements"][0]["matches"], 3);
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "bar\nbar\nbar\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_bounds_replace_all_match_count() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-too-many-matches.txt");
+        let original = vec![b'a'; MAX_PATCH_MATCHES + 1];
+        tokio::fs::write(&file, &original).await.unwrap();
+
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [{"old_string": "a", "new_string": "b", "replace_all": true}]
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+
+        assert!(result.unwrap_err().to_string().contains("100000 matches"));
+        assert_eq!(tokio::fs::read(&file).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_applies_single_file_unified_diff_with_shifted_hunks() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-unified.txt");
+        let original = (1..=24)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        let mut changed = original.clone();
+        changed = changed.replace("line 2\n", "LINE TWO\nadded\n");
+        changed = changed.replace("line 22\n", "LINE TWENTY TWO\n");
+        let diff = diffy::create_patch(&original, &changed).to_string();
+        let current = format!("header\n{original}");
+        tokio::fs::write(&file, &current).await.unwrap();
+
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "unified_diff": diff
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["format"], "unified_diff");
+        assert!(result.output["hunks"].as_u64().unwrap() >= 2);
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            format!("header\n{changed}")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_rejects_multifile_and_unmatched_unified_diffs() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-unified-reject.txt");
+        let original = "alpha\nbeta\ngamma\n";
+        tokio::fs::write(&file, original).await.unwrap();
+
+        let multi_file = "--- a/one.txt\n+++ b/one.txt\n@@ -1 +1 @@\n-alpha\n+ALPHA\n--- a/two.txt\n+++ b/two.txt\n@@ -1 +1 @@\n-beta\n+BETA\n";
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "unified_diff": multi_file
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("exactly one file patch"));
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+
+        let mismatched = "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n alpha\n-BETA\n+BETTER\n gamma\n";
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "unified_diff": mismatched
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("did not match"));
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_rejects_unified_file_creation_and_patch_file_over_limit() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-bounds.txt");
+        let original = "alpha\nbeta\n";
+        tokio::fs::write(&file, original).await.unwrap();
+
+        let creation = "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+new\n";
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "unified_diff": creation
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("creation"));
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+
+        let limited = FilesTool {
+            max_patch_file_bytes: 4,
+            ..FilesTool::default()
+        };
+        let result = limited
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [{"old_string": "alpha", "new_string": "ALPHA"}]
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("patch limit"));
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_guards_the_version_it_read() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-hash.txt");
+        tokio::fs::write(&file, "before\n").await.unwrap();
+        let stale_hash = "sha256:stale";
+
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [{"old_string": "before", "new_string": "after"}],
+                    "expected_hash": stale_hash
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("expected_hash"));
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "before\n");
     }
 
     #[tokio::test]
@@ -477,22 +665,25 @@ async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_polic
         assert!(result.is_err());
         assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
 
-        let tool = FilesTool {
-            max_full_file_bytes: 2,
-            ..FilesTool::default()
-        };
+        let large_original = format!("{}tail\n", "x".repeat(128_001));
+        tokio::fs::write(&file, &large_original).await.unwrap();
+        let tool = FilesTool::default();
         let result = tool
             .execute(
                 json!({
                     "operation": "patch",
                     "path": file.to_string_lossy(),
-                    "edits": [{"old_string": "a", "new_string": "01234567890"}]
+                    "edits": [{"old_string": "tail", "new_string": "done"}]
                 }),
                 CancellationToken::new(),
             )
-            .await;
-        assert!(result.is_err());
-        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            format!("{}done\n", "x".repeat(128_001))
+        );
     }
 
     #[tokio::test]
@@ -508,7 +699,7 @@ async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_polic
 
         let result = tool
             .execute(
-                json!({"operation": "write", "path": path, "content": "ok"}),
+                json!({"operation": "write", "path": path, "content": "ok", "expected_hash": "missing"}),
                 CancellationToken::new(),
             )
             .await;
@@ -522,7 +713,8 @@ async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_polic
                 json!({
                     "operation": "write",
                     "path": limited_file.to_string_lossy(),
-                    "content": "ok"
+                    "content": "ok",
+                    "expected_hash": "missing"
                 }),
                 CancellationToken::new(),
             )
@@ -554,6 +746,7 @@ async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_polic
             old_string: "你好".into(),
             new_string: "世界".into(),
             expected_matches: None,
+            replace_all: false,
         };
         for encoding in ["utf-8", "utf-8-bom", "utf-16le", "utf-16be", "gbk"] {
             let encoded = encode_patched_text(original, encoding).unwrap();

@@ -674,6 +674,7 @@ mod tests {
         assert_eq!(cfg.context_limits.max_attachment_image_dim_px, 1568);
         assert_eq!(cfg.context_limits.attachment_image_jpeg_quality, 0.85);
         assert_eq!(cfg.context_limits.file_max_full_file_bytes, 128_000);
+        assert_eq!(cfg.context_limits.file_max_patch_bytes, 8 * 1024 * 1024);
         assert_eq!(cfg.context_limits.file_line_max_bytes, 128_000);
         assert_eq!(
             cfg.context_limits.file_byte_read_max_bytes,
@@ -754,10 +755,11 @@ mod tests {
         }
 
         let parsed: AppConfig = toml::from_str(
-            "[context_limits]\nfile_max_full_file_bytes = 65536\nfile_line_max_bytes = 8192\nfile_byte_read_max_bytes = 2097152\nfile_write_max_bytes = 4194304\n",
+            "[context_limits]\nfile_max_full_file_bytes = 65536\nfile_max_patch_bytes = 4194304\nfile_line_max_bytes = 8192\nfile_byte_read_max_bytes = 2097152\nfile_write_max_bytes = 4194304\n",
         )
         .unwrap();
         assert_eq!(parsed.context_limits.file_max_full_file_bytes, 65_536);
+        assert_eq!(parsed.context_limits.file_max_patch_bytes, 4 * 1024 * 1024);
         assert_eq!(parsed.context_limits.file_line_max_bytes, 8_192);
         assert_eq!(
             parsed.context_limits.file_byte_read_max_bytes,
@@ -1377,6 +1379,7 @@ mod tests {
         cfg.media.audio.max_duration_secs = 37;
         cfg.context_limits.response_token_floor = 48_000;
         cfg.context_limits.file_max_full_file_bytes = 256_000;
+        cfg.context_limits.file_max_patch_bytes = 4 * 1024 * 1024;
         cfg.context_limits.file_line_max_bytes = 32_000;
         cfg.context_limits.file_byte_read_max_bytes = 8 * 1024 * 1024;
         cfg.context_limits.file_write_max_bytes = 32 * 1024 * 1024;
@@ -1387,6 +1390,10 @@ mod tests {
         assert_eq!(
             loader.config().context_limits.file_max_full_file_bytes,
             256_000
+        );
+        assert_eq!(
+            loader.config().context_limits.file_max_patch_bytes,
+            4 * 1024 * 1024
         );
         assert_eq!(loader.config().context_limits.file_line_max_bytes, 32_000);
         assert_eq!(

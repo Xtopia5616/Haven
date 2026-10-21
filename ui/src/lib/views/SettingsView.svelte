@@ -195,6 +195,7 @@
 		max_attachment_image_dim_px: 1568,
 		attachment_image_jpeg_quality: 0.85,
 		file_max_full_file_bytes: 128000,
+		file_max_patch_bytes: 8 * 1024 * 1024,
 		file_line_span: 100,
 		file_line_max_bytes: 128000,
 		file_summary_input_chars: 60000,

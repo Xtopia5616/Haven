@@ -1336,3 +1336,4 @@
 - [1345：按需搜索直接关联会话的 transcript](1345-search-transcripts-in-linked-sessions.md)
 - [1346：将按需工具发现入口命名为 discover_tools](1346-rename-tool-catalog-entrypoint.md)
 - [1347：合并文件检查与修改操作](1347-consolidate-file-inspection-and-patch-operations.md)
+- [1348：强化 Agent 文本 patch](1348-improve-agent-text-patching.md)

@@ -580,6 +580,11 @@ fn validate_resource_limits(
             super::MAX_FILE_OPERATION_BYTES,
         ),
         (
+            "context_limits.file_max_patch_bytes",
+            context.file_max_patch_bytes,
+            super::MAX_FILE_OPERATION_BYTES,
+        ),
+        (
             "context_limits.file_write_max_bytes",
             context.file_write_max_bytes,
             super::MAX_FILE_OPERATION_BYTES,
@@ -601,6 +606,9 @@ fn validate_resource_limits(
     }
     if context.file_write_max_bytes == 0 {
         anyhow::bail!("context_limits.file_write_max_bytes must be greater than zero");
+    }
+    if context.file_max_patch_bytes == 0 {
+        anyhow::bail!("context_limits.file_max_patch_bytes must be greater than zero");
     }
     for (path, value, max) in [
         (
@@ -1817,7 +1825,7 @@ mod tests {
 
     #[test]
     fn additional_resource_caps_match_config_and_settings_contracts() {
-        let cases: [NumericConfigContractCase; 22] = [
+        let cases: [NumericConfigContractCase; 23] = [
             (
                 "context_limits.max_observation_chars",
                 0,
@@ -1849,6 +1857,12 @@ mod tests {
                 0,
                 super::super::MAX_FILE_OPERATION_BYTES,
                 |config, value| config.context_limits.file_max_full_file_bytes = value,
+            ),
+            (
+                "context_limits.file_max_patch_bytes",
+                1,
+                super::super::MAX_FILE_OPERATION_BYTES,
+                |config, value| config.context_limits.file_max_patch_bytes = value,
             ),
             (
                 "context_limits.file_write_max_bytes",

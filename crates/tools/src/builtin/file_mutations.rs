@@ -1,10 +1,14 @@
+use diffy::patch_set::{FileOperation, ParseOptions, PatchKind, PatchSet};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 use super::file_paths::{atomic_replace, looks_like_binary, sha256_bytes};
-use super::{FilesPatchEdit, MAX_INSPECT_HASH_BYTES, MAX_PATCH_EDITS, MAX_PATCH_INPUT_BYTES};
+use super::{
+    FilesPatchEdit, MAX_INSPECT_HASH_BYTES, MAX_PATCH_EDITS, MAX_PATCH_INPUT_BYTES,
+    MAX_PATCH_MATCHES,
+};
 use crate::ToolResult;
 use crate::security::FileWritePolicy;
 use haven_platform::filesystem::DirectoryCapability;
@@ -40,12 +44,20 @@ pub(super) struct PatchEditSummary {
 pub(super) struct PatchApplication {
     pub(super) content: String,
     pub(super) edit_summaries: Vec<PatchEditSummary>,
+    pub(super) unified_hunks: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct MutationContext<'a> {
     pub(super) cancel: &'a CancellationToken,
     pub(super) write_policy: Option<&'a FileWritePolicy>,
+}
+
+pub(super) struct PatchRequest<'a> {
+    pub(super) edits: Option<&'a [FilesPatchEdit]>,
+    pub(super) unified_diff: Option<&'a str>,
+    pub(super) expected_hash: Option<&'a str>,
+    pub(super) dry_run: bool,
 }
 
 #[derive(Clone)]
@@ -135,6 +147,10 @@ fn expected_hash_matches(expected: &str, actual: &str) -> bool {
     expected.eq_ignore_ascii_case(actual)
 }
 
+fn patch_write_hash<'a>(explicit: Option<&'a str>, source_hash: &'a str) -> &'a str {
+    explicit.unwrap_or(source_hash)
+}
+
 fn is_not_found(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<io::Error>()
@@ -218,6 +234,11 @@ pub(super) async fn write(
     cancel: CancellationToken,
     policy: Option<&FileWritePolicy>,
 ) -> anyhow::Result<ToolResult> {
+    let expected_hash = expected_hash.ok_or_else(|| {
+        anyhow::anyhow!(
+            "write requires expected_hash from files.inspect, or 'missing' for a new path"
+        )
+    })?;
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
@@ -226,7 +247,7 @@ pub(super) async fn write(
         path,
         target.as_ref(),
         content.as_bytes(),
-        expected_hash,
+        Some(expected_hash),
         max_write_bytes,
         dry_run,
     )
@@ -259,14 +280,11 @@ pub(super) async fn create_dir(
 
 pub(super) async fn patch(
     path: &str,
-    edits: Option<&[FilesPatchEdit]>,
-    expected_hash: Option<&str>,
+    request: PatchRequest<'_>,
     max_read_bytes: u64,
     max_write_bytes: u64,
-    dry_run: bool,
     context: MutationContext<'_>,
 ) -> anyhow::Result<ToolResult> {
-    let edits = edits.ok_or_else(|| anyhow::anyhow!("'edits' is required for patch operation"))?;
     let target = mutation_target(path, context.write_policy).await?;
     let bytes = read_target_bytes(path, target.as_ref(), max_read_bytes)
         .await
@@ -287,16 +305,26 @@ pub(super) async fn patch(
     if context.cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
+    let source_hash = sha256_bytes(&bytes);
     let decoded = haven_common::encoding::decode_with_encoding(&bytes);
     if looks_like_binary(&bytes) && !matches!(decoded.encoding, "utf-16le" | "utf-16be") {
         anyhow::bail!("file encoding is unsupported for patching; patch only supports text files");
     }
-    let patch = apply_patch_edits(
-        &decoded.text,
-        edits,
-        max_write_bytes,
-        context.cancel.clone(),
-    )?;
+    let patch = match (request.edits, request.unified_diff) {
+        (Some(edits), None) => apply_patch_edits(
+            &decoded.text,
+            edits,
+            max_write_bytes,
+            context.cancel.clone(),
+        )?,
+        (None, Some(unified_diff)) => apply_unified_diff(
+            &decoded.text,
+            unified_diff,
+            max_write_bytes,
+            context.cancel.clone(),
+        )?,
+        _ => anyhow::bail!("provide exactly one of 'edits' or 'unified_diff'"),
+    };
     if context.cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
@@ -305,9 +333,9 @@ pub(super) async fn patch(
         path,
         target.as_ref(),
         &encoded,
-        expected_hash,
+        Some(patch_write_hash(request.expected_hash, &source_hash)),
         max_write_bytes,
-        dry_run,
+        request.dry_run,
     )
     .await?;
     Ok(ToolResult::ok(serde_json::json!({
@@ -316,7 +344,9 @@ pub(super) async fn patch(
         "bytes": write.bytes,
         "sha256": write.sha256,
         "path": path,
+        "format": if patch.unified_hunks.is_some() { "unified_diff" } else { "edits" },
         "edits": patch.edit_summaries.len(),
+        "hunks": patch.unified_hunks,
         "replacements": patch.edit_summaries
             .into_iter()
             .enumerate()
@@ -526,8 +556,7 @@ pub(super) fn apply_patch_edits(
         if edit.old_string.is_empty() {
             anyhow::bail!("patch edit {} has an empty old_string", edit_index);
         }
-        let expected_matches = edit.expected_matches.unwrap_or(1);
-        if expected_matches == 0 {
+        if edit.expected_matches == Some(0) {
             anyhow::bail!(
                 "patch edit {} expected_matches must be at least 1",
                 edit_index
@@ -537,20 +566,32 @@ pub(super) fn apply_patch_edits(
         let positions: Vec<usize> = content
             .match_indices(&edit.old_string)
             .map(|(position, _)| position)
+            .take(MAX_PATCH_MATCHES + 1)
             .collect();
-        if positions.len() != expected_matches {
+        if positions.len() > MAX_PATCH_MATCHES {
             anyhow::bail!(
-                "patch edit {} expected {} matches, found {}",
+                "patch edit {} found more than {} matches; add more surrounding context to target a smaller set",
+                edit_index,
+                MAX_PATCH_MATCHES
+            );
+        }
+        let expected_matches = edit.expected_matches.unwrap_or(if edit.replace_all {
+            positions.len().max(1)
+        } else {
+            1
+        });
+        if positions.is_empty() || positions.len() != expected_matches {
+            let candidates = candidate_snippets(content, &edit.old_string, &positions);
+            anyhow::bail!(
+                "patch edit {} expected {} matches, found {}; candidate context:\n{}\nRe-read these lines and include more surrounding text in old_string. Set replace_all=true only when every matching occurrence should change.",
                 edit_index,
                 expected_matches,
-                positions.len()
+                positions.len(),
+                candidates
             );
         }
 
-        let lines = positions
-            .iter()
-            .map(|&position| content[..position].matches('\n').count() + 1)
-            .collect::<Vec<_>>();
+        let lines = line_numbers_for_positions(content, &positions);
         for &position in &positions {
             replacements.push(PatchReplacement {
                 start: position,
@@ -605,7 +646,225 @@ pub(super) fn apply_patch_edits(
     Ok(PatchApplication {
         content: result,
         edit_summaries: summaries,
+        unified_hunks: None,
     })
+}
+
+fn candidate_snippets(content: &str, old_string: &str, exact_positions: &[usize]) -> String {
+    if content.is_empty() {
+        return "The file is empty; the file may have changed since it was inspected.".into();
+    }
+
+    let mut candidates = line_numbers_for_positions(content, exact_positions);
+    if candidates.is_empty() {
+        let anchor = old_string
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.chars().count() >= 3)
+            .max_by_key(|line| line.chars().count());
+        let old_words = old_string
+            .split(|character: char| !character.is_alphanumeric() && character != '_')
+            .filter(|word| word.chars().count() >= 3)
+            .collect::<std::collections::HashSet<_>>();
+        let mut ranked = Vec::<(usize, usize)>::new();
+        for (line_index, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let anchor_score = anchor
+                .filter(|anchor| {
+                    trimmed.contains(*anchor)
+                        || (trimmed.chars().count() >= 8 && anchor.contains(trimmed))
+                })
+                .map(|anchor| anchor.chars().count().min(100));
+            let score = anchor_score.unwrap_or_else(|| {
+                trimmed
+                    .split(|character: char| !character.is_alphanumeric() && character != '_')
+                    .filter(|word| old_words.contains(word))
+                    .count()
+            });
+            if score > 0 && (ranked.len() < 3 || score > ranked[2].0) {
+                ranked.push((score, line_index + 1));
+                ranked.sort_unstable_by(|(left_score, left_line), (right_score, right_line)| {
+                    right_score
+                        .cmp(left_score)
+                        .then_with(|| left_line.cmp(right_line))
+                });
+                ranked.truncate(3);
+            }
+        }
+        candidates = ranked.into_iter().map(|(_, line)| line).collect();
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    candidates.truncate(3);
+
+    if candidates.is_empty() {
+        return "No similar line was found; the file may have changed. Re-read the target before retrying.".into();
+    }
+
+    let mut snippets = vec![Vec::new(); candidates.len()];
+    let mut first_candidate = 0;
+    for (line_index, line) in content.lines().enumerate() {
+        let line_number = line_index + 1;
+        while first_candidate < candidates.len()
+            && candidates[first_candidate].saturating_add(1) < line_number
+        {
+            first_candidate += 1;
+        }
+        for candidate_index in first_candidate..candidates.len() {
+            if candidates[candidate_index] > line_number.saturating_add(1) {
+                break;
+            }
+            let text = line.chars().take(240).collect::<String>();
+            snippets[candidate_index].push(format!("{line_number}: {text}"));
+        }
+    }
+    snippets
+        .into_iter()
+        .filter(|snippet| !snippet.is_empty())
+        .map(|snippet| snippet.join("\n"))
+        .collect::<Vec<_>>()
+        .join("\n---\n")
+}
+
+fn line_numbers_for_positions(content: &str, positions: &[usize]) -> Vec<usize> {
+    let mut line_number = 1usize;
+    let mut cursor = 0usize;
+    positions
+        .iter()
+        .map(|&position| {
+            line_number += content[cursor..position]
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count();
+            cursor = position;
+            line_number
+        })
+        .collect()
+}
+
+pub(super) fn apply_unified_diff(
+    content: &str,
+    unified_diff: &str,
+    max_result_bytes: u64,
+    cancel: CancellationToken,
+) -> anyhow::Result<PatchApplication> {
+    if unified_diff.trim().is_empty() {
+        anyhow::bail!("'unified_diff' must not be empty");
+    }
+    if unified_diff.len() > MAX_PATCH_INPUT_BYTES {
+        anyhow::bail!(
+            "unified diff is {} bytes, above the {} byte patch input limit",
+            unified_diff.len(),
+            MAX_PATCH_INPUT_BYTES
+        );
+    }
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
+
+    let is_git_diff = unified_diff.lines().any(|line| {
+        line.starts_with("diff --git ")
+            || line.starts_with("diff --cc ")
+            || line.starts_with("diff --combined ")
+    });
+    let parse_options = if is_git_diff {
+        ParseOptions::gitdiff()
+    } else {
+        ParseOptions::unidiff()
+    };
+    let mut patches = PatchSet::parse(unified_diff, parse_options)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| anyhow::anyhow!("invalid unified diff: {error}"))?;
+    if patches.len() != 1 {
+        anyhow::bail!(
+            "unified_diff must contain exactly one file patch; found {}",
+            patches.len()
+        );
+    }
+    let parsed = patches
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("unified_diff did not contain a file patch"))?;
+    match parsed.operation() {
+        // The explicit `path` argument is authoritative for the target. Unified
+        // diff headers often use different old/new labels, so do not resolve or
+        // write either header path.
+        FileOperation::Modify { .. } => {}
+        FileOperation::Create(_) => anyhow::bail!("unified diff file creation is not supported"),
+        FileOperation::Delete(_) => anyhow::bail!("unified diff file deletion is not supported"),
+        FileOperation::Rename { .. } => anyhow::bail!("unified diff renames are not supported"),
+        FileOperation::Copy { .. } => anyhow::bail!("unified diff copies are not supported"),
+    }
+    if parsed.old_mode().is_some() || parsed.new_mode().is_some() {
+        anyhow::bail!("unified diff file mode changes are not supported");
+    }
+
+    let text_patch = match parsed.patch() {
+        PatchKind::Text(patch) => patch,
+        PatchKind::Binary(_) => anyhow::bail!("binary unified diffs are not supported"),
+    };
+    let hunk_count = text_patch.hunks().len();
+    if hunk_count == 0 {
+        anyhow::bail!("unified diff must include at least one text hunk");
+    }
+    let result = diffy::apply(content, text_patch).map_err(|_| {
+        anyhow::anyhow!(
+            "unified diff did not match the current file; no changes were made. Re-read the relevant lines and retry with current context."
+        )
+    })?;
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
+    if u64::try_from(result.len()).unwrap_or(u64::MAX) > max_result_bytes {
+        anyhow::bail!(
+            "patched file would be {} bytes, above the {} byte write limit",
+            result.len(),
+            max_result_bytes
+        );
+    }
+    Ok(PatchApplication {
+        content: result,
+        edit_summaries: Vec::new(),
+        unified_hunks: Some(hunk_count),
+    })
+}
+
+#[cfg(test)]
+mod patch_concurrency_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn omitted_expected_hash_guards_the_snapshot_read_by_patch() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("concurrent.txt");
+        tokio::fs::write(&path, b"snapshot").await.unwrap();
+
+        let source = read_target_bytes(path.to_str().unwrap(), None, 1024)
+            .await
+            .unwrap();
+        let source_hash = sha256_bytes(&source);
+        let guard = patch_write_hash(None, &source_hash);
+        tokio::fs::write(&path, b"raced change").await.unwrap();
+
+        let result = replace_target(
+            path.to_str().unwrap(),
+            None,
+            b"patched",
+            Some(guard),
+            1024,
+            false,
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("the concurrent modification should be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("expected_hash"));
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"raced change");
+    }
 }
 
 pub(super) fn encode_patched_text(text: &str, encoding: &str) -> anyhow::Result<Vec<u8>> {

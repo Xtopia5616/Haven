@@ -131,15 +131,15 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
         },
         "files.write" => OperationText {
             description: "Write complete text content to a file.",
-            when_to_use: "Use only when replacing the complete file is intended; inspect existing files and pass expected_hash to guard against concurrent changes.",
+            when_to_use: "Use only when replacing the complete file is intended; inspect first and always pass its SHA-256 as expected_hash, or pass 'missing' only when inspect confirms the path does not exist.",
         },
         "files.create_dir" => OperationText {
             description: "Create a directory and any missing parents.",
             when_to_use: "Use when the destination path is known and a directory is required.",
         },
         "files.patch" => OperationText {
-            description: "Apply one or more exact text replacements in one atomic write.",
-            when_to_use: "Use for a single precise edit or several edits to one file; pass one item for a single replacement, read the file first, and pass expected_hash when guarding concurrent changes.",
+            description: "Apply exact text replacements or one single-file unified diff in one atomic write.",
+            when_to_use: "Use for one or several edits to one file; read the file first. Exact replacements match once by default; set replace_all only when every occurrence should change. Unified diffs may contain multiple hunks but only modify one existing file. Patch automatically rejects a file changed after it was read; pass expected_hash from inspect when you also need to reject changes made before patch began.",
         },
         "files.copy" => OperationText {
             description: "Copy a file to a destination path.",
