@@ -689,22 +689,47 @@ impl SystemPromptBuilder {
                     .then_with(|| a.1.fact_id.cmp(&b.1.fact_id))
             });
 
-            // Select by score, then re-order stably so mid-run M2 patches do
-            // not reshuffle lines when relative scores jitter.
+            // Give every typed memory category a small score-ranked floor so
+            // a large Profile pool cannot crowd out Semantic or Procedural
+            // candidates. Fill remaining slots globally by the same score.
             let mut seen: HashSet<(String, String, String)> = HashSet::new();
             let mut selected_facts: Vec<&haven_memory::Fact> = Vec::new();
-            for (_, fact) in scored {
+            for (memory_kind, minimum) in [
+                (haven_memory::MemoryFactKind::Profile, 2),
+                (haven_memory::MemoryFactKind::Semantic, 2),
+                (haven_memory::MemoryFactKind::Procedural, 2),
+            ] {
+                let mut selected_for_kind = 0;
+                for (_, fact) in &scored {
+                    let fact = *fact;
+                    if fact.memory_kind != memory_kind
+                        || selected_facts.len() >= MAX_FACTS_IN_PROMPT
+                        || selected_for_kind >= minimum
+                    {
+                        continue;
+                    }
+                    if seen.insert((
+                        fact.subject.clone(),
+                        fact.predicate.clone(),
+                        fact.object.clone(),
+                    )) {
+                        selected_facts.push(fact);
+                        selected_for_kind += 1;
+                    }
+                }
+            }
+            for (_, fact) in &scored {
                 if selected_facts.len() >= MAX_FACTS_IN_PROMPT {
                     break;
                 }
-                if !seen.insert((
+                let fact = *fact;
+                if seen.insert((
                     fact.subject.clone(),
                     fact.predicate.clone(),
                     fact.object.clone(),
                 )) {
-                    continue;
+                    selected_facts.push(fact);
                 }
-                selected_facts.push(fact);
             }
             selected_facts.sort_by(|a, b| {
                 let tag_a = a.tags.first().map(|s| s.as_str()).unwrap_or("other");
@@ -2189,6 +2214,53 @@ mod tests {
             !block.contains(&"P".repeat(200)),
             "objects must truncate under FACT_OBJECT_MAX_CHARS; block={block}"
         );
+    }
+
+    #[tokio::test]
+    async fn prompt_fact_budget_reserves_slots_for_each_memory_kind() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        for index in 0..30 {
+            db.insert_fact(
+                "user",
+                "release_preference",
+                &format!("release profile decoy {index}"),
+                "user",
+                1.0,
+                &["release"],
+            )
+            .unwrap();
+            db.insert_fact(
+                "user",
+                "release_reference",
+                &format!("release semantic-sentinel-{index}"),
+                "inferred",
+                0.9,
+                &["release"],
+            )
+            .unwrap();
+        }
+        let memory = Arc::new(MemoryService::new(db, None, 64));
+        memory
+            .memory_fact_store()
+            .set_user_fact_with_kind(
+                "user".into(),
+                "release_workflow".into(),
+                "run checks before tagging procedure-sentinel".into(),
+                vec!["release".into()],
+                haven_memory::MemoryFactKind::Procedural,
+            )
+            .await
+            .unwrap();
+        let builder =
+            SystemPromptBuilder::with_memory_service(Arc::new(ToolsFacade::new()), memory);
+
+        let sections = builder
+            .build_memory_sections("release workflow", None)
+            .await;
+
+        assert!(sections.facts.contains("semantic-sentinel"));
+        assert!(sections.facts.contains("procedure-sentinel"));
+        assert!(sections.facts.contains("release profile decoy"));
     }
 
     #[tokio::test]

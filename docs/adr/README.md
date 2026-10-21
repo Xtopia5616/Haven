@@ -1343,3 +1343,4 @@
 - [1355：统一内置 operation 名称与输入 schema](1355-unify-builtin-operation-names-and-input-schemas.md)
 - [1356：为记忆检索增加 Profile、Semantic 与 Procedural 类型](1356-typed-memory-categories.md)
 - [1357：为记忆召回增加有界图谱邻居扩展](1357-bounded-graph-aware-memory-recall.md)
+- [1358：按记忆类型分路进行 Prompt 召回](1358-route-prompt-memory-by-typed-kind.md)

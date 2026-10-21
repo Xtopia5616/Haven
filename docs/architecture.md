@@ -415,7 +415,9 @@ capability 时工具显式失败（ADR 0918）。`MemoryEntityKind` 是 embeddin
 `all` 是 UI 筛选项，只展开为 fact 与 episode 两次独立查询，不进入后端 domain enum（ADR 0732、1356）。Agent 保留 prompt
 查询归一化、embedding provider 调用、prompt 候选合并与预算；Memory 的 `MemoryRetriever` 在 fact 召回时
 从关键词/向量种子沿 concept 节点扩展一跳，最多 16 个种子与 80 个候选，跳过通用 user 节点并复用类别、subject 和敏感内容过滤（ADR 1357）。`MemoryEmbeddingStore` 负责
-embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路由、provider 校验、
+embedding 生命周期读写和 LSH 维护。Agent `MemoryService` 对 Profile、Semantic、Procedural
+分别使用 8/8/4 候选上限，共享一次 query embedding 并统一经 `MemoryRecallStore.retrieve`；prompt
+最多 15 条 fact 对每类先保留两个候选，再由原有分数补齐（ADR 1358）。`memory_index.rs` 保留模型路由、provider 校验、
 批处理和维护门控（ADR 0021、0303、0304）。组合根 `AppState` 通过 Memory 的
 `MemoryPersistence::open` 打开数据库，并分别取得拥有独立 live-event channel 的 SessionStore、ToolRunStore
 与单一 typed `MemoryStores` bundle。bundle 的 store 字段保持私有，App/Agent 通过具名 getter 获取共享 handle，不能拼接不同数据库 owner 的 store；App 与 `MemoryService` 共用由 `fact_store()` 克隆的能力（ADR 0910）。不再从
