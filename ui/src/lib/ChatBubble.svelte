@@ -113,17 +113,13 @@
 
 	const deliveryStatusLabel = $derived.by(() => {
 		if (!deliveryMode) return null;
-		if (received) return deliveryMode === 'follow_up' ? '开始追加' : '已送达';
+		if (received) return null;
 		if (!deliveryAccepted) return '正在提交';
 		return deliveryMode === 'follow_up' ? '本轮完成后' : '待安全边界';
 	});
 	const deliveryStatusTitle = $derived.by(() => {
 		if (!deliveryMode) return undefined;
-		if (received) {
-			return deliveryMode === 'follow_up'
-				? '当前工作已完成，Agent 已开始处理这条追加消息'
-				: 'Agent 已收到，将从后续模型请求中应用这条调整';
-		}
+		if (received) return 'Agent 已收到';
 		if (!deliveryAccepted) {
 			return deliveryMode === 'follow_up'
 				? '正在提交；提交成功后会等待当前工作自然完成再追加'

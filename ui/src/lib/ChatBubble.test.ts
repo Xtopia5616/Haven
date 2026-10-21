@@ -47,7 +47,7 @@ describe('ChatBubble', () => {
 		expect(assistant.querySelector('.received-tag')).toBeNull();
 	});
 
-	it('shows the queued delivery timing and advances it when the agent receives the message', () => {
+	it('shows queued delivery timing and hides it once the agent receives the message', () => {
 		const { container, rerender } = render(
 			ChatBubble,
 			base({ role: 'user' as const, content: 'later', deliveryMode: 'follow_up' }),
@@ -77,9 +77,9 @@ describe('ChatBubble', () => {
 				received: true,
 			}),
 		);
-		expect(container.querySelector('.delivery-status')?.textContent).toBe('开始追加');
+		expect(container.querySelector('.delivery-status')).toBeNull();
 		expect(container.querySelector('.received-tag')?.getAttribute('aria-label')).toContain(
-			'Agent 已开始处理',
+			'Agent 已收到',
 		);
 	});
 

@@ -36,6 +36,8 @@ actor 与 session facade 的既有大文件继续分别持有队列热状态和�
 
 验证通过：`cargo fmt --all -- --check`、Rust workspace check、严格 Clippy 和 workspace tests；UI check、全量测试（1285 项）与生产构建；IPC 事件/生成契约检查（81 个 handler）及 `git diff --check`。覆盖显式投递、恢复、Ask 阻塞与收尾资格、工具续轮和 submission lane。
 
-2026-10-20 UI 补完：Composer 的共享投递方式选择器覆盖安全边界调整、follow-up 选择和提交；Ask 等待默认提交答案，也可显式排队 follow-up。提示按生成、工具执行、交互等待、暂停和终态展示实际时机；显式投递路由的用户气泡按“正在提交 → 排队等待 → 已送达/开始追加”更新。Ask controller 保留显式 follow-up，提交 lane 分别保留 steering/follow-up 枚举。MaterialSelect 的键盘导航使用统一 combobox/listbox 契约。
+2026-10-20 UI 补完：Composer 的共享投递方式选择器覆盖安全边界调整、follow-up 选择和提交；Ask 等待默认提交答案，也可显式排队 follow-up。提示按生成、工具执行、交互等待、暂停和终态展示实际时机；显式投递路由的用户气泡按“正在提交 → 排队等待 → 已收到”更新。Ask controller 保留显式 follow-up，提交 lane 分别保留 steering/follow-up 枚举。MaterialSelect 的键盘导航使用统一 combobox/listbox 契约。
+
+2026-10-21 UI 调整：消息收到后只保留通用收到勾号，不再展示「已送达」或「开始追加」状态标签；后续对话本身会体现处理已开始。
 
 回滚代码后也须重置 SQLite（v43 与旧二进制不兼容）；无需重置配置或 inbox。
