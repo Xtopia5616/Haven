@@ -47,6 +47,47 @@ pub struct SessionTranscriptHistorySearch {
     pub has_more: bool,
 }
 
+/// One image linked to a transcript event, with a bounded text context.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SessionTranscriptImageAsset {
+    pub asset_id: String,
+    pub media_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_representation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_content_excerpt: Option<String>,
+    pub cached_content_truncated: bool,
+}
+
+/// One user-input or tool-output event associated with one or more images.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SessionTranscriptImageMatch {
+    pub sequence: i64,
+    pub created_at: String,
+    pub run_id: Option<u64>,
+    pub step_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_tool: Option<String>,
+    pub context_excerpt: String,
+    pub assets: Vec<SessionTranscriptImageAsset>,
+}
+
+/// Bounded image/context search over the current non-rolled-back transcript.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SessionTranscriptImageSearch {
+    pub matches: Vec<SessionTranscriptImageMatch>,
+    pub latest_sequence: i64,
+    pub before_sequence: Option<i64>,
+    pub scanned_events: usize,
+    pub scanned_bytes: usize,
+    pub has_more: bool,
+}
+
 /// One bounded raw transcript event returned by an exact sequence lookup.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SessionTranscriptHistoryRecord {
@@ -63,6 +104,7 @@ pub struct SessionTranscriptHistoryRecord {
 /// Public limits for the model-facing transcript history query contract.
 pub const MAX_SESSION_HISTORY_QUERY_BYTES: usize = 256;
 pub const MAX_SESSION_HISTORY_SEARCH_RESULTS: usize = 5;
+pub const MAX_SESSION_IMAGE_SEARCH_RESULTS: usize = 5;
 
 /// Maximum number of durable events returned by a single replay page.
 pub(super) const MAX_SESSION_EVENT_REPLAY_PAGE_SIZE: usize = 256;

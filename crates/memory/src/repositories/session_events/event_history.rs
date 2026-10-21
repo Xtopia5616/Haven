@@ -1,6 +1,8 @@
 use super::*;
 use std::collections::VecDeque;
 
+mod media;
+
 const MAX_SESSION_HISTORY_SCAN_EVENTS: usize = 50_000;
 const MAX_SESSION_HISTORY_SCAN_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SESSION_HISTORY_EXCERPT_BYTES: usize = 2 * 1024;

@@ -1331,3 +1331,4 @@
 - [1340：通过授权的本机 LSP 提供代码智能](1340-authorize-local-language-servers.md)
 - [1341：扩展 LSP 符号导航](1341-expand-lsp-navigation.md)
 - [1342：为压缩后的会话提供原始历史检索工具](1342-session-raw-transcript-history-tool.md)
+- [1343：按需检索会话关联图片](1343-on-demand-session-image-history-search.md)

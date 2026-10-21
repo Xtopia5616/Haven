@@ -900,6 +900,7 @@ async fn session_notes_and_history_operations_are_discoverable_and_loaded_on_dem
         "session.replace_notes",
         "session.history_search",
         "session.history_read",
+        "session.image_search",
     ];
     let provider_tools = mgr.list_tool_definitions_for_session(session_id).await;
 

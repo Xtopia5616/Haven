@@ -910,6 +910,7 @@ const SESSION_OPERATION_VIEWS: &[SplitOperationSpec] = &[
         "session",
         "fileText"
     ),
+    split_spec!("session.image_search", "image_search", "session", "image"),
 ];
 
 const ACTION_OPERATION_VIEWS: &[SplitOperationSpec] =
