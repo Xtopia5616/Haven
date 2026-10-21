@@ -23,8 +23,8 @@ pub use repositories::embedding_store::{
     MemoryEmbeddingVector, PendingMemoryEmbedding,
 };
 pub use repositories::fact_store::{
-    DEFAULT_FACT_PAGE_SIZE, FactPage, FactPageCursor, MAX_FACT_PAGE_SIZE, MemoryFactStore,
-    MemoryFactWrite,
+    DEFAULT_FACT_PAGE_SIZE, FactHistorySnapshot, FactPage, FactPageCursor,
+    MAX_FACT_HISTORY_RESULTS, MAX_FACT_PAGE_SIZE, MemoryFactStore, MemoryFactWrite,
 };
 pub use repositories::facts::{
     CANONICAL_MERGE_TARGETS, ContradictionCandidate, ContradictionKind, Fact, FactSourceRef,

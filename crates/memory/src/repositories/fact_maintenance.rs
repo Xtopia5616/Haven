@@ -10,6 +10,7 @@ use crate::db::Database;
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 
+use super::fact_graph::in_immediate_transaction;
 use super::fact_query::{FACT_COLS, fact_age_days, fact_effective_confidence, fact_from_row};
 use super::fact_security::sensitive_fact_where_sql;
 use super::facts::{
@@ -185,8 +186,17 @@ impl<'db> FactMaintenance<'db> {
     pub(crate) fn delete_sensitive_facts(&self) -> anyhow::Result<u64> {
         let conn = self.db.try_conn()?;
         let sensitive_where = sensitive_fact_where_sql();
-        let deleted =
-            conn.execute(&format!("DELETE FROM facts WHERE {sensitive_where}"), [])? as u64;
+        let deleted = in_immediate_transaction(&conn, |conn| {
+            let deleted =
+                conn.execute(&format!("DELETE FROM facts WHERE {sensitive_where}"), [])? as u64;
+            // The delete trigger archives rows for temporal queries; credential
+            // cleanup is a hard purge and must also erase those new snapshots.
+            conn.execute(
+                &format!("DELETE FROM fact_history WHERE {sensitive_where}"),
+                [],
+            )?;
+            Ok(deleted)
+        })?;
         if deleted > 0 {
             self.db.cache_invalidate_all_facts();
             self.db

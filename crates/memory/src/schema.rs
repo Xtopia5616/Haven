@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 55;
+pub const SCHEMA_VERSION: i32 = 56;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -182,6 +182,74 @@ const SCHEMA_SQL: &[&str] = &[
         provenance_record_id TEXT,
         provenance_snippet TEXT
     )",
+    // Prior system-known fact snapshots. Ordinary recall remains current-only;
+    // explicit history queries select the version active at a recorded time.
+    "CREATE TABLE IF NOT EXISTS fact_history (
+        history_id INTEGER PRIMARY KEY,
+        id TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        subject_id TEXT,
+        predicate TEXT NOT NULL,
+        object TEXT NOT NULL,
+        object_id TEXT,
+        source TEXT NOT NULL CHECK(source IN ('user','inferred')),
+        memory_kind TEXT NOT NULL CHECK(memory_kind IN ('profile','semantic','procedural')),
+        confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
+        created_at TEXT NOT NULL,
+        tags TEXT NOT NULL DEFAULT '[]',
+        durability REAL NOT NULL CHECK(durability >= 0.0 AND durability <= 1.0),
+        mention_count INTEGER NOT NULL DEFAULT 0,
+        last_seen_at TEXT,
+        provenance_item_id TEXT REFERENCES memory_items(id) ON DELETE SET NULL,
+        provenance_record_id TEXT,
+        provenance_snippet TEXT,
+        superseded_at TEXT NOT NULL CHECK(
+            length(superseded_at) = 24 AND
+            superseded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', superseded_at) = superseded_at
+        )
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_fact_history_id_superseded
+        ON fact_history(id, superseded_at)",
+    "CREATE INDEX IF NOT EXISTS idx_fact_history_subject_time
+        ON fact_history(subject, created_at, id)",
+    "CREATE TRIGGER IF NOT EXISTS facts_history_before_update
+        BEFORE UPDATE OF subject, predicate, object, source, memory_kind ON facts
+        WHEN OLD.subject IS NOT NEW.subject
+          OR OLD.predicate IS NOT NEW.predicate
+          OR OLD.object IS NOT NEW.object
+          OR OLD.source IS NOT NEW.source
+          OR OLD.memory_kind IS NOT NEW.memory_kind
+        BEGIN
+            INSERT INTO fact_history (
+                id, subject, subject_id, predicate, object, object_id, source,
+                memory_kind, confidence, created_at, tags, durability, mention_count,
+                last_seen_at, provenance_item_id, provenance_record_id,
+                provenance_snippet, superseded_at
+            ) VALUES (
+                OLD.id, OLD.subject, OLD.subject_id, OLD.predicate, OLD.object, OLD.object_id,
+                OLD.source, OLD.memory_kind, OLD.confidence, OLD.created_at, OLD.tags,
+                OLD.durability, OLD.mention_count, OLD.last_seen_at,
+                OLD.provenance_item_id, OLD.provenance_record_id, OLD.provenance_snippet,
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            );
+        END",
+    "CREATE TRIGGER IF NOT EXISTS facts_history_before_delete
+        BEFORE DELETE ON facts
+        BEGIN
+            INSERT INTO fact_history (
+                id, subject, subject_id, predicate, object, object_id, source,
+                memory_kind, confidence, created_at, tags, durability, mention_count,
+                last_seen_at, provenance_item_id, provenance_record_id,
+                provenance_snippet, superseded_at
+            ) VALUES (
+                OLD.id, OLD.subject, OLD.subject_id, OLD.predicate, OLD.object, OLD.object_id,
+                OLD.source, OLD.memory_kind, OLD.confidence, OLD.created_at, OLD.tags,
+                OLD.durability, OLD.mention_count, OLD.last_seen_at,
+                OLD.provenance_item_id, OLD.provenance_record_id, OLD.provenance_snippet,
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            );
+        END",
     "CREATE TABLE IF NOT EXISTS tool_runs (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL DEFAULT 'background' CHECK(kind = 'background'),
@@ -627,6 +695,8 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("memory_nodes", "kind"),
     ("memory_items", "content"),
     ("facts", "durability"),
+    ("fact_history", "superseded_at"),
+    ("fact_history", "provenance_item_id"),
     ("tool_runs", "kind"),
     ("tool_runs", "tool_name"),
     ("tool_runs", "source_step_id"),
@@ -870,6 +940,7 @@ mod tests {
             "kv_store",
             "llm_usage",
             "facts",
+            "fact_history",
             "memory_embeddings",
             "memory_items",
             "memory_nodes",
@@ -1216,6 +1287,91 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn fact_history_archives_semantic_changes_and_deletions() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        let fact_id = "fact-4239df0ceaf003ef339c54b852a35b0a";
+        conn.execute(
+            "INSERT INTO facts (id, subject, predicate, object, created_at)
+             VALUES (?1, 'user', 'city', 'Old City', '2025-01-01T00:00:00Z')",
+            rusqlite::params![fact_id],
+        )
+        .unwrap();
+
+        conn.execute(
+            "UPDATE facts SET confidence = 0.5 WHERE id = ?1",
+            rusqlite::params![fact_id],
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "reinforcement metadata must not create a historical version"
+        );
+
+        conn.execute(
+            "UPDATE facts SET object = 'New City' WHERE id = ?1",
+            rusqlite::params![fact_id],
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT object FROM fact_history WHERE id = ?1",
+                rusqlite::params![fact_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "Old City"
+        );
+
+        conn.execute(
+            "DELETE FROM facts WHERE id = ?1",
+            rusqlite::params![fact_id],
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM fact_history WHERE id = ?1",
+                rusqlite::params![fact_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT superseded_at FROM fact_history ORDER BY history_id DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+            .len(),
+            24
+        );
+    }
+
+    #[test]
+    fn fact_history_rejects_noncanonical_superseded_at() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        let error = conn
+            .execute(
+                "INSERT INTO fact_history (
+                    id, subject, predicate, object, source, memory_kind, confidence,
+                    created_at, durability, superseded_at
+                ) VALUES (
+                    'fact-4239df0ceaf003ef339c54b852a35b0a', 'user', 'city', 'Oslo',
+                    'user', 'profile', 1.0, '2025-01-01T00:00:00Z', 1.0, '2025-01-01'
+                )",
+                [],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("CHECK constraint failed"));
     }
 
     #[test]

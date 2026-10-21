@@ -38,6 +38,8 @@ fn recall_output(kind: MemoryRecallKind, recall: MemoryRecall) -> Value {
 /// - `recall` — unified retrieval for `kind=fact|episode` (vector when
 ///   embedding_model is configured, else keyword/FTS). Aligns with
 ///   History `recall_memory`.
+/// - `history` — explicitly list the bounded fact snapshot known at an RFC3339
+///   system-recorded instant; ordinary recall remains current-only.
 pub(super) struct MemoryTool {
     facts: Option<MemoryFactStore>,
     /// Prefer this over a local vector path so agent and History stay aligned.
@@ -49,6 +51,7 @@ pub(super) struct MemoryTool {
 pub enum MemoryOperation {
     Search,
     List,
+    History,
     Remember,
     Forget,
     Recall,
@@ -64,8 +67,8 @@ pub struct MemoryParams {
     /// Free-text query for search / recall.
     #[serde(default)]
     pub query: Option<String>,
-    /// Maximum number of results (default 10 for search, 20 for list, 5 for
-    /// recall; recall is capped at 20).
+    /// Maximum number of results (default 10 for search, 20 for list/history,
+    /// 5 for recall; recall is capped at 20).
     #[serde(default)]
     pub limit: Option<i64>,
     /// Short attribute key (required for remember and forget).
@@ -85,6 +88,9 @@ pub struct MemoryParams {
     /// Recall kind: `fact` (default) or `episode`.
     #[serde(default)]
     pub kind: Option<String>,
+    /// RFC3339 system-recorded instant for `history` snapshots.
+    #[serde(default)]
+    pub at: Option<String>,
     /// Optional category for remember; defaults to profile.
     #[serde(default)]
     pub memory_kind: Option<MemoryFactKind>,
@@ -262,6 +268,33 @@ impl MemoryTool {
         Ok(ToolResult::ok(json!({ "deleted": deleted })))
     }
 
+    async fn execute_history(
+        params: &MemoryParams,
+        facts: &MemoryFactStore,
+    ) -> anyhow::Result<ToolResult> {
+        let at = params
+            .at
+            .as_deref()
+            .map(str::trim)
+            .filter(|at| !at.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("at is required for operation=history"))?;
+        let subject = params
+            .subject
+            .as_deref()
+            .map(str::trim)
+            .filter(|subject| !subject.is_empty())
+            .map(str::to_string);
+        let snapshot = facts
+            .list_visible_facts_as_of(at.to_string(), subject, Self::parse_limit(params, 20))
+            .await?;
+        let rows = Self::to_output_rows(&snapshot.facts);
+        Ok(ToolResult::ok(json!({
+            "at": snapshot.at,
+            "facts": rows["facts"],
+            "truncated": snapshot.truncated,
+        })))
+    }
+
     /// Unified recall through the desktop-wired Agent memory capability.
     async fn execute_recall(
         &self,
@@ -316,6 +349,7 @@ impl MemoryTool {
         let mut result = match operation {
             MemoryOperation::Search => Self::execute_search(&params, facts).await,
             MemoryOperation::List => Self::execute_list(&params, facts).await,
+            MemoryOperation::History => Self::execute_history(&params, facts).await,
             MemoryOperation::Remember => Self::execute_remember(&params, facts).await,
             MemoryOperation::Forget => Self::execute_forget(&params, facts).await,
             MemoryOperation::Recall => self.execute_recall(&params, session_id.as_deref()).await,
@@ -327,6 +361,7 @@ impl MemoryTool {
                     match operation {
                         MemoryOperation::Search => "search",
                         MemoryOperation::List => "list",
+                        MemoryOperation::History => "history",
                         MemoryOperation::Remember => "remember",
                         MemoryOperation::Forget => "forget",
                         MemoryOperation::Recall => "recall",
@@ -370,11 +405,12 @@ impl Tool for MemoryTool {
         json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["search", "list", "remember", "forget", "recall"], "description": "Choose fact search/list/edit or cross-session recall" },
+                "operation": { "type": "string", "enum": ["search", "list", "history", "remember", "forget", "recall"], "description": "Choose fact search/list, explicit point-in-time history, edit, or cross-session recall" },
                 "query": { "type": "string", "minLength": 1, "description": "Keywords for search; a natural-language question or topic for recall" },
                 "kind": { "type": "string", "enum": ["fact", "profile", "semantic", "procedural", "episode"], "default": "fact", "description": "Recall any fact, explicit user profile, inferred semantic memory, reusable procedure, or past conversation" },
+                "at": { "type": "string", "format": "date-time", "description": "RFC3339 system-recorded instant for operation=history; ordinary recall always uses current facts" },
                 "memory_kind": { "type": "string", "enum": ["profile", "procedural"], "default": "profile", "description": "Category for remember: user profile or reusable procedure; defaults to profile" },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum results: defaults to 10 for search, 20 for list, and 5 for recall; recall is capped at 20" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum results: defaults to 10 for search, 20 for list/history, and 5 for recall; recall is capped at 20" },
                 "predicate": { "type": "string", "minLength": 1, "description": "Fact attribute to remember or forget, such as preference or project" },
                 "object": { "type": "string", "minLength": 1, "description": "Fact value to remember; for forget, omit only when the user wants every value for this predicate removed" },
                 "tags": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "description": "Optional fact labels, such as identity, preference, workspace, or project"},
@@ -382,6 +418,17 @@ impl Tool for MemoryTool {
             },
             "required": ["operation"],
             "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "history" },
+                        "at": { "type": "string", "format": "date-time", "description": "Return the bounded fact snapshot Haven had recorded at this instant" },
+                        "subject": { "type": "string", "minLength": 1, "description": "Optional exact owner filter" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum facts to return; defaults to 20" }
+                    },
+                    "required": ["operation", "at"]
+                },
                 {
                     "type": "object",
                     "additionalProperties": false,
@@ -573,9 +620,10 @@ mod tests {
         let ops = schema["properties"]["operation"]["enum"]
             .as_array()
             .unwrap();
-        for op in ["search", "list", "remember", "forget", "recall"] {
+        for op in ["search", "list", "history", "remember", "forget", "recall"] {
             assert!(ops.iter().any(|v| v == op));
         }
+        assert!(schema["properties"]["at"].is_object());
         assert!(schema["properties"]["kind"].is_object());
         assert!(schema["properties"]["memory_kind"].is_object());
         for kind in ["profile", "semantic", "procedural"] {
@@ -855,6 +903,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn history_returns_bounded_visible_snapshot_at_requested_time() {
+        let (tool, _db, _dir) = db_with_facts();
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "history",
+                    "at": "2100-01-01T00:00:00Z",
+                    "subject": "user",
+                    "limit": 2
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["at"], "2100-01-01T00:00:00.000Z");
+        assert_eq!(result.output["facts"].as_array().unwrap().len(), 2);
+        assert_eq!(result.output["truncated"], true);
+        assert!(
+            result.output["facts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|fact| fact["subject"] == "user")
+        );
+        assert!(!result.output.to_string().contains("tvly-dev-secret"));
+    }
+
+    #[tokio::test]
+    async fn history_requires_rfc3339_time() {
+        let (tool, _db, _dir) = test_tool();
+        assert!(
+            tool.execute(
+                json!({"operation": "history", "at": "yesterday"}),
+                CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            tool.execute(json!({"operation": "history"}), CancellationToken::new(),)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn test_unknown_operation_errors() {
         let (tool, _db, _dir) = db_with_facts();
         let result = tool
@@ -1126,6 +1220,7 @@ mod tests {
                     tags: None,
                     subject: None,
                     kind: None,
+                    at: None,
                     memory_kind: None,
                 },
                 None,

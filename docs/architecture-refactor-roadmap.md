@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active** | Prompt 记忆召回按 Profile、Semantic、Procedural 分路并复用图谱召回（ADR 1358）；候选预算分路采集、同一 embedding 复用，提示词至少为各类保留有界配额。 |
+| **Active** | 无。ADR 1359 事实历史与按时点查询已完成；下一项人工审核 inferred fact proposals 在独立 ADR 通过后激活。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -154,7 +154,7 @@ Session、ScheduleRun 与 AppCommand 确认均由各自 owner 和稳定 request 
 | 4    | **crate/API 边界**           | 模块 owner 已稳定且存在单向依赖边界、独立消费者或可复核构建/维护收益。                                                                                          | API 清晰、无反向依赖或重复 adapter；否则保留现 crate 边界。              |
 | 5    | **性能与容量**               | 同负载 profile 复现用户相关延迟、资源或容量问题；固定场景记录优化前后指标。                                                                                     | 改善超过噪声并达到目标，否则关闭候选。                                   |
 
-**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。当前 Active 切片为 §5.10 的 Prompt 记忆召回分路（ADR 1358）；§5.9 图谱感知召回已完成（ADR 1357）。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布及 HCS quota 验收仍是独立 Open Gate（§5.1）。
+**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。§5.9 图谱感知召回（ADR 1357）、§5.10 Prompt 记忆召回分路（ADR 1358）与 §5.11 事实历史与按时点查询（ADR 1359）已完成；当前无 Active 切片，下一候选为独立 ADR 审查 inferred fact proposals 的人工审核流程。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布及 HCS quota 验收仍是独立 Open Gate（§5.1）。
 
 ### 5.7 全项目领域术语与架构角色命名收敛（持续覆盖）
 
@@ -198,9 +198,13 @@ CodeMode 与 MCP exposure 的目标契约见 [ADR 1163](adr/1163-tool-exposure-c
 
 当前 facts 以 `memory_nodes` 与 SPO 节点 ID 表达关系；此前召回只匹配事实文本与 embedding。ADR 1356 已完成事实类别过滤，ADR 1357 增加受限的一跳图邻居扩展：使用关键词/向量命中的 facts 作种子，忽略通用 `user` 节点，限制种子与返回行数，并复用事实类别、主体范围和敏感内容过滤。验证覆盖 subject/object 两侧邻接、种子去重、边界限制、空结果和敏感邻居；没有引入多跳遍历或模型查询分解。后续按 §5.5 重新复核下一候选。见 [ADR 1357](adr/1357-bounded-graph-aware-memory-recall.md)。
 
-### 5.10 Prompt 记忆召回的类型分路与上下文预算（Active）
+### 5.10 Prompt 记忆召回的类型分路与上下文预算（已完成）
 
-typed memory categories 与图邻居目前已由显式 recall 查询使用，但 Agent prompt 仍将事实类别合并成一个候选池，且通过 keyword/vector 两条旁路读候选；热门类别可能挤掉 Procedural 等低频类别，Prompt 路径也未经过统一图谱扩展。ADR 1358 为 Profile、Semantic、Procedural 使用共享 query embedding 的分路检索，并让各路经同一 `MemoryRecallStore.retrieve` 进入关键词、向量与一跳图扩展。Prompt 的 15 条事实预算对每类先保留最多两个高分候选，再以原有总分补足；episode 的 5 条上限、同 session 排除和总 token/字符预算不变。路由不使用 LLM 分类器，数据与 IPC 契约不变。验证须覆盖类别候选在高频事实压力下保留、图邻居进入 prompt、类别各自过滤及总预算边界。见 [ADR 1358](adr/1358-route-prompt-memory-by-typed-kind.md)。
+typed memory categories 与图邻居目前已由显式 recall 查询使用，但 Agent prompt 原先将事实类别合并成一个候选池，且通过 keyword/vector 两条旁路读候选。ADR 1358 已为 Profile、Semantic、Procedural 使用共享 query embedding 的分路检索，并让各路经同一 `MemoryRecallStore.retrieve` 进入关键词、向量与一跳图扩展。Prompt 的 15 条事实预算对每类先保留最多两个高分候选，再以原有总分补足；episode 的 5 条上限、同 session 排除和总 token/字符预算不变。路由不使用 LLM 分类器，数据与 IPC 契约不变。见 [ADR 1358](adr/1358-route-prompt-memory-by-typed-kind.md)。
+
+### 5.11 事实历史与按时点查询（已完成）
+
+ADR 1359 定义系统记录时间（knowledge time），不将事实创建时间推断为现实有效时间。替换或语义改写前的 facts 快照由 Memory 保存；MemoryTool `history` 可按 RFC3339 时点查询，默认 search/list/recall、prompt、FTS 与 embedding 继续只读当前 `facts`。显式 forget、clear 和敏感清理在同一事务清除历史副本；维护性低置信度修剪保留快照。schema v56，旧数据库按 §4 完整备份并重置。Memory/Tools 全量测试、workspace 编译、strict Clippy、格式与 ADR 索引通过；workspace 测试在未修改的 Windows `haven-platform` 中有 3 个进程/HCS 用例失败，具体结果见 [ADR 1359](adr/1359-temporal-fact-history.md)。
 
 ## 6. 更新规则
 

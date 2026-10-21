@@ -343,6 +343,50 @@ impl Database {
         Ok(facts)
     }
 
+    /// Read the bounded snapshot the system knew at one recorded instant.
+    /// Current rows whose later semantic revision is already in history are
+    /// omitted, and historical rows are active on `[created_at, superseded_at)`.
+    pub(crate) fn list_facts_as_of(
+        &self,
+        at: &str,
+        subject: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Fact>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let invisible = invisible_fact_where_sql();
+        let sql = format!(
+            "WITH facts_at AS (
+                SELECT {FACT_COLS_ALIASED}
+                FROM facts AS f
+                WHERE julianday(f.created_at) <= julianday(?1)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM fact_history AS h
+                      WHERE h.id = f.id
+                        AND julianday(h.superseded_at) > julianday(?1)
+                  )
+                UNION ALL
+                SELECT h.id, h.subject, h.predicate, h.object, h.source,
+                       h.confidence, h.tags, h.created_at, h.mention_count,
+                       h.last_seen_at, h.provenance_item_id, h.provenance_record_id,
+                       h.provenance_snippet, h.durability, h.memory_kind
+                FROM fact_history AS h
+                WHERE julianday(h.created_at) <= julianday(?1)
+                  AND julianday(h.superseded_at) > julianday(?1)
+            )
+            SELECT {FACT_COLS} FROM facts_at
+            WHERE NOT {invisible}
+              AND (?2 IS NULL OR subject = ?2)
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?3"
+        );
+        let conn = self.try_conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params![at, subject, limit as i64], fact_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     #[cfg(test)]
     pub fn list_facts_by_source(&self, source: &str) -> anyhow::Result<Vec<Fact>> {
         let conn = self.try_conn()?;

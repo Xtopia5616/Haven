@@ -2,7 +2,7 @@ use crate::db::Database;
 use crate::recall::normalize_memory_query;
 use crate::repositories::fact_graph::FactGraph;
 use crate::repositories::facts::{Fact, FactSourceRef, MemoryFactKind};
-use chrono::Utc;
+use chrono::{DateTime, SecondsFormat, Utc};
 use haven_common::types::is_canonical_id;
 use rusqlite::{Connection, OptionalExtension};
 use std::sync::Arc;
@@ -11,6 +11,8 @@ use std::sync::Arc;
 pub const DEFAULT_FACT_PAGE_SIZE: usize = 50;
 /// Hard bound for one long-term fact listing response.
 pub const MAX_FACT_PAGE_SIZE: usize = 100;
+/// Hard bound for an explicit system-time fact snapshot.
+pub const MAX_FACT_HISTORY_RESULTS: usize = 50;
 
 /// Stable keyset position for a fact page. Ordering is `created_at DESC, id
 /// DESC`; both fields come from the last returned row.
@@ -25,6 +27,14 @@ pub struct FactPageCursor {
 pub struct FactPage {
     pub facts: Vec<Fact>,
     pub next_cursor: Option<FactPageCursor>,
+}
+
+/// Bounded set of facts known at a requested system-recorded instant.
+#[derive(Debug, Clone)]
+pub struct FactHistorySnapshot {
+    pub at: String,
+    pub facts: Vec<Fact>,
+    pub truncated: bool,
 }
 
 /// A fact already parsed, normalized, and sanitized by its owning caller,
@@ -233,6 +243,46 @@ impl MemoryFactStore {
             .await
     }
 
+    /// Read facts that were present at a system-recorded RFC3339 instant.
+    /// This is an explicit history path; ordinary search, list and recall keep
+    /// reading only the current facts table.
+    pub async fn list_visible_facts_as_of(
+        &self,
+        at: String,
+        subject: Option<String>,
+        limit: usize,
+    ) -> anyhow::Result<FactHistorySnapshot> {
+        anyhow::ensure!(at.len() <= 64, "history timestamp is too long");
+        let at = DateTime::parse_from_rfc3339(&at)
+            .map_err(|_| anyhow::anyhow!("history timestamp must be RFC3339"))?
+            .with_timezone(&Utc)
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        let limit = limit.min(MAX_FACT_HISTORY_RESULTS);
+        if limit == 0 {
+            return Ok(FactHistorySnapshot {
+                at,
+                facts: Vec::new(),
+                truncated: false,
+            });
+        }
+        let subject = subject
+            .map(|subject| subject.trim().to_string())
+            .filter(|subject| !subject.is_empty());
+        self.db
+            .run_blocking(move |db| {
+                let rows = db.list_facts_as_of(&at, subject.as_deref(), limit + 1)?;
+                let mut facts = crate::repositories::facts::filter_visible_facts(rows);
+                let truncated = facts.len() > limit;
+                facts.truncate(limit);
+                Ok(FactHistorySnapshot {
+                    at,
+                    facts,
+                    truncated,
+                })
+            })
+            .await
+    }
+
     /// Persist a user-stated fact. Input normalization and validation belong
     /// to the IPC adapter; this method owns only the SQLite scheduling and
     /// repository call.
@@ -412,7 +462,7 @@ fn set_kv_on_connection(conn: &Connection, key: &str, value: &str) -> anyhow::Re
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_FACT_PAGE_SIZE, MemoryFactStore, MemoryFactWrite};
+    use super::{MAX_FACT_HISTORY_RESULTS, MAX_FACT_PAGE_SIZE, MemoryFactStore, MemoryFactWrite};
     use crate::Database;
     use crate::repositories::facts::FactSourceRef;
     use haven_common::types::new_id;
@@ -965,6 +1015,188 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("profile or procedural"));
+    }
+
+    #[tokio::test]
+    async fn history_snapshot_restores_replaced_fact_until_explicit_forget() {
+        let (db, store) = store();
+        let old = store
+            .set_user_fact("user".into(), "city".into(), "Oslo".into(), vec![])
+            .await
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE facts SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
+                rusqlite::params![old.fact_id],
+            )
+            .unwrap();
+
+        let before_correction = store
+            .list_visible_facts_as_of("2020-01-02T00:00:00Z".into(), Some("user".into()), 10)
+            .await
+            .unwrap();
+        assert_eq!(before_correction.facts.len(), 1);
+        assert_eq!(before_correction.facts[0].object, "Oslo");
+        assert_eq!(before_correction.at, "2020-01-02T00:00:00.000Z");
+
+        store
+            .set_user_fact("user".into(), "city".into(), "Tokyo".into(), vec![])
+            .await
+            .unwrap();
+
+        let before = store
+            .list_visible_facts_as_of("2020-01-02T00:00:00Z".into(), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            before
+                .facts
+                .iter()
+                .map(|fact| fact.object.as_str())
+                .collect::<Vec<_>>(),
+            ["Oslo"]
+        );
+        let after = store
+            .list_visible_facts_as_of("2100-01-01T00:00:00Z".into(), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            after
+                .facts
+                .iter()
+                .map(|fact| fact.object.as_str())
+                .collect::<Vec<_>>(),
+            ["Tokyo"]
+        );
+
+        let current = store
+            .list_visible_facts_for_subject_limited("user".into(), 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            current
+                .iter()
+                .map(|fact| fact.object.as_str())
+                .collect::<Vec<_>>(),
+            ["Tokyo"]
+        );
+
+        assert_eq!(
+            store
+                .delete_facts_by_triple("user".into(), "city".into(), None)
+                .await
+                .unwrap(),
+            1
+        );
+        let forgotten = store
+            .list_visible_facts_as_of("2020-01-02T00:00:00Z".into(), None, 10)
+            .await
+            .unwrap();
+        assert!(forgotten.facts.is_empty());
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn history_snapshot_validates_time_and_bounds_visible_rows() {
+        let (db, store) = store();
+        assert!(
+            store
+                .list_visible_facts_as_of("not a timestamp".into(), None, 10)
+                .await
+                .is_err()
+        );
+        for index in 0..(MAX_FACT_HISTORY_RESULTS + 3) {
+            db.insert_fact(
+                "alice",
+                "likes",
+                &format!("item-{index}"),
+                "inferred",
+                0.9,
+                &[],
+            )
+            .unwrap();
+        }
+        db.insert_fact("alice", "api_key", "hidden", "inferred", 1.0, &[])
+            .unwrap();
+
+        let snapshot = store
+            .list_visible_facts_as_of(
+                "2100-01-01T00:00:00Z".into(),
+                Some("alice".into()),
+                usize::MAX,
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot.facts.len(), MAX_FACT_HISTORY_RESULTS);
+        assert!(snapshot.truncated);
+        assert!(
+            snapshot
+                .facts
+                .iter()
+                .all(crate::repositories::facts::is_visible_fact)
+        );
+        assert!(snapshot.facts.iter().all(|fact| fact.subject == "alice"));
+    }
+
+    #[tokio::test]
+    async fn deleting_by_id_and_clearing_facts_purge_history() {
+        let (db, store) = store();
+        let old = store
+            .set_user_fact("user".into(), "city".into(), "Oslo".into(), vec![])
+            .await
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE facts SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
+                rusqlite::params![old.fact_id],
+            )
+            .unwrap();
+        let current = store
+            .set_user_fact("user".into(), "city".into(), "Tokyo".into(), vec![])
+            .await
+            .unwrap();
+
+        store.delete_fact(current.fact_id).await.unwrap();
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "deleting a fact by id must erase its historical versions"
+        );
+
+        store
+            .set_user_fact("user".into(), "city".into(), "Oslo".into(), vec![])
+            .await
+            .unwrap();
+        store
+            .set_user_fact("user".into(), "city".into(), "Tokyo".into(), vec![])
+            .await
+            .unwrap();
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+
+        store.clear_facts().await.unwrap();
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "clearing current facts must erase history as well"
+        );
     }
 
     #[tokio::test]

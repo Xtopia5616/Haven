@@ -32,7 +32,7 @@ fn serialize_tags(tags: &[&str]) -> String {
     serde_json::to_string(tags).unwrap_or_else(|_| "[]".into())
 }
 
-fn in_immediate_transaction<T>(
+pub(super) fn in_immediate_transaction<T>(
     conn: &Connection,
     operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
@@ -444,20 +444,37 @@ impl<'db> FactGraph<'db> {
     ) -> anyhow::Result<u64> {
         let predicate = normalize_predicate(predicate);
         let conn = self.db.try_conn()?;
-        let deleted = match object {
-            Some(obj) => conn.execute(
-                "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
-                rusqlite::params![subject, predicate, obj],
-            )?,
-            None => conn.execute(
-                "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
-                rusqlite::params![subject, predicate],
-            )?,
-        };
+        let deleted = in_immediate_transaction(&conn, |conn| {
+            let deleted = match object {
+                Some(obj) => conn.execute(
+                    "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                    rusqlite::params![subject, predicate, obj],
+                )?,
+                None => conn.execute(
+                    "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
+                    rusqlite::params![subject, predicate],
+                )?,
+            };
+            match object {
+                Some(obj) => {
+                    conn.execute(
+                        "DELETE FROM fact_history WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                        rusqlite::params![subject, predicate, obj],
+                    )?;
+                }
+                None => {
+                    conn.execute(
+                        "DELETE FROM fact_history WHERE subject = ?1 AND predicate = ?2",
+                        rusqlite::params![subject, predicate],
+                    )?;
+                }
+            }
+            Ok(deleted as u64)
+        })?;
         self.db.cache_invalidate_facts(subject);
         self.db
             .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
-        Ok(deleted as u64)
+        Ok(deleted)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -758,17 +775,37 @@ impl<'db> FactGraph<'db> {
 
     pub(crate) fn delete_fact_by_id(&self, fact_id: &str) -> anyhow::Result<()> {
         let conn = self.db.try_conn()?;
-        let subject: Option<String> = conn
-            .query_row(
-                "SELECT subject FROM facts WHERE id = ?1",
+        let subject = in_immediate_transaction(&conn, |conn| {
+            let triple: Option<(String, String, String)> = conn
+                .query_row(
+                    "SELECT subject, predicate, object FROM facts WHERE id = ?1",
+                    rusqlite::params![fact_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            conn.execute(
+                "DELETE FROM facts WHERE id = ?1",
                 rusqlite::params![fact_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        conn.execute(
-            "DELETE FROM facts WHERE id = ?1",
-            rusqlite::params![fact_id],
-        )?;
+            )?;
+            conn.execute(
+                "DELETE FROM fact_history WHERE id = ?1",
+                rusqlite::params![fact_id],
+            )?;
+            if let Some((subject, predicate, object)) = triple.as_ref() {
+                if is_single_valued_predicate(predicate) {
+                    conn.execute(
+                        "DELETE FROM fact_history WHERE subject = ?1 AND predicate = ?2",
+                        rusqlite::params![subject, predicate],
+                    )?;
+                } else {
+                    conn.execute(
+                        "DELETE FROM fact_history WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                        rusqlite::params![subject, predicate, object],
+                    )?;
+                }
+            }
+            Ok(triple.map(|(subject, _, _)| subject))
+        })?;
         if let Some(subject) = subject {
             self.db.cache_invalidate_facts(&subject);
         }
@@ -779,7 +816,11 @@ impl<'db> FactGraph<'db> {
 
     pub(crate) fn clear_all(&self) -> anyhow::Result<u64> {
         let conn = self.db.try_conn()?;
-        let deleted = conn.execute("DELETE FROM facts", [])? as u64;
+        let deleted = in_immediate_transaction(&conn, |conn| {
+            let deleted = conn.execute("DELETE FROM facts", [])? as u64;
+            conn.execute("DELETE FROM fact_history", [])?;
+            Ok(deleted)
+        })?;
         self.db.cache_invalidate_all_facts();
         self.db
             .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
