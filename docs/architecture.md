@@ -164,9 +164,9 @@ compact `media` reference 回到工具 observation，后续调用可以复用同
 cache rate（ADR 0124）。原始附件的 MediaPlan 投影同时留下短的 asset→representation
 notice，避免模型重复派生或猜测资产是否已经进入上下文（ADR 0129）。
 
-`builtin/lsp.rs` 为活动执行工作区提供 `lsp.definition`、`lsp.implementation`、
-`lsp.type_definition`、`lsp.references`、`lsp.hover`、`lsp.document_symbols`、
-`lsp.workspace_symbols` 与 `lsp.diagnostics`。语言服务器通过 `config.toml` 的 `lsp_servers`
+`builtin/lsp.rs` 为活动执行工作区提供 `lsp.find_definition`、`lsp.find_implementations`、
+`lsp.find_type_definition`、`lsp.find_references`、`lsp.get_hover`、`lsp.list_document_symbols`、
+`lsp.search_workspace_symbols` 与 `lsp.get_diagnostics`。语言服务器通过 `config.toml` 的 `lsp_servers`
 配置，按最长文件扩展名后缀选择文档服务器；工作区符号搜索按配置名称选择服务器，不要求调用方提供源码坐标。工具只向服务器打开工作区内的 UTF-8 文档，配置更新后需重启 Haven。服务以受管本机子进程
 启动，每次调用创建一次短期 LSP 会话，限制为两个并发服务、单文档 1 MiB、消息 16 MiB、结果
 2 MiB。由于服务器是用户配置的可执行程序且可能自行读取文件或联网，操作属于 High risk，
@@ -180,14 +180,14 @@ sandbox。可执行配置不进入 Settings IPC snapshot（ADR 1340、1341）；
 `media_asset.rs` 负责普通路径资产登记，`media_content.rs` 负责图片/音频/文档派生，
 `media_generation.rs` 负责生成资产，`media_audio.rs` 集中负责统一媒体工具的音频分支和本机
 音频设备适配（ADR 0133、0134、0136）。这些模块共同实现一个 `media` 聚合执行边界；模型
-目录暴露 `media.inspect`、`media.describe`、`media.ocr`、`media.transcribe` 等点号 operation
+目录暴露 `media.inspect`、`media.describe`、`media.run_ocr`、`media.transcribe` 等点号 operation
 view，不把聚合根作为模型入口。
 
-Builtin 的模型目录统一按点号 operation view 暴露：例如 `files.read`、`files.outline`、
-`files.summary`、`files.search`、`system.info`、`system.env.get`、`haven.config.config_get`
+Builtin 的模型目录统一按点号 operation view 暴露：例如 `files.read`、`files.get_outline`、
+`files.summarize`、`files.search`、`system.get_info`、`system.env.get`、`haven.config.get`
 和 `media.inspect`。`files`、`system`、`haven`、`media` 以及其它聚合模块仍作为 native/Tauri
 和内部执行边界；模型只接收对应的窄 schema。provider-facing surface 分层维护：`ask`、`notify`、
-`shell`、`http`、`system.info`、`discover_tools`、`load_skill` 与 `load_mcp` 每轮直接提供；
+`shell`、`http`、`system.get_info`、`discover_tools`、`load_skill` 与 `load_mcp` 每轮直接提供；
 其中 `discover_tools` 按需提供第二层 root 和第三层 operation 的名称、描述与精确 schema。其它未选中的
 builtin operation 保留在 host-owned deferred catalog，由 `discover_tools` 的 `action=load` 按
 operation/root 原子加载到当前 session。提示词索引按 `ToolCatalogGroup` 展示：Agent、Session、
@@ -197,6 +197,13 @@ Network 与 Shell 保持独立能力分类。Skill/MCP 的 `ToolSource` 仍表�
 能力类别（ADR 1331、1332）。目录可见性只影响模型路由，不改变工具名、授权、确认、sandbox 或执行策略。
 记忆操作的稳定模型名与授权 key 仍为 `memory.*`；其 manifest root 合入 `haven`，因此工具设置页将其与
 Haven 管理操作显示在同一根节点下，结果仍使用记忆 renderer（ADR 1349）。
+
+内置 operation 的稳定名使用点号能力路径和动词优先的操作段；父级已表达领域时，操作段不重复领域词。
+当前稳定名同时用于 `ToolDef`、权限 capability、manifest、提示词、调用方与 renderer。面向模型的单操作
+schema 是封闭 object；聚合执行 schema 通过 `oneOf` / `const` 绑定分支。字段缺省、范围、ID 格式与运行时
+校验遵循[命名与输入 schema 规范](naming.md#模型可见内置工具名与输入-schema)；schema 仍由具体能力 owner
+维护，provider dialect 转换只发生在 LLM adapter 边界。
+
 启用 Skill 只进入紧凑索引，由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`，并在成功加载结果中返回完整 `SKILL.md` 正文作为任务指引；若正文超出有效工具观察预算（全局观察上限与单工具输出上限中较小者）则拒绝激活，避免模型收到截断指令；
 MCP 服务器索引保持紧凑，仍由 `load_mcp` 按服务器加载并注册到 `SessionToolOverlay`
 （ADR 0127、0131、0137、0145、0148、0816、1331）。Builtin 的 `toolrun.*` 是后台 ToolRun 操作；
@@ -488,7 +495,7 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryOutboxStore::p
 - **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `tool_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
 - `session/`：`SessionSupervisor` 只负责 registry、并发 admission 和生命周期；其生产构造接收组合根创建的 `SessionStore` 与 `SessionToolPorts`，不暴露 raw `Database` 或 `ToolsFacade`。`AgentLayer::build` 接收 `AgentToolPorts`；`haven-app-binary` composition root 用唯一共享的 `ToolsFacade` 创建 prompt/catalog/execution/authorization/ToolRun/observation/overlay/asset adapters，Agent runtime owners 持有消费端 ports；授权和 ToolRun 生命周期分别经 Agent-owned `ToolAuthorizationPort` 与 `AgentToolRunPort`，adapter 映射到 Tools owner（ADR 0384、0388、0893、0894）。App 的 ToolRun IPC、shutdown 与生命周期事件接线、Skill 子进程执行、live-output sink、MCP runtime 状态和 Skills catalog/config 分别经 App-owned ports；MCP manager 与 SkillRegistry 留在 Tools owner 内部（ADR 0895、0896、0903）。session runner 通过 `ToolExecutionContext` 传递 session、tool、input、cancel 与 step identity；live authorization 仍在执行前判断。`SessionActor` 独占会话级可变状态，并在自己的 loop 中 select 外部 mailbox 命令与 `SessionState::react_run` active future。`SessionState` 持有会话元数据、交互与 ingress/tool-run 队列，以及 Messaging 轮询游标、节拍和标题缓存；active future 独占 run-local `ReActState`，不会跨 session 共享，也不借用整份 `SessionState`。usage 由 `ReActEngine::UsageRuntime` 聚合和写入，stream identity 与 token estimate 由 run-local `ReActState` 持有。跨 session heartbeat 合并仍留在 `MessagingPoller`；`SessionRunEngine` 是 Agent 内部的完整 ReAct run 执行边界；生产 run 唯一经 dispatcher admission 与启动，不暴露直接启动入口（ADR 0917）；ReAct loop 管 run budget、lifecycle 与 EffectBatch 应用，`TurnEngine` 推进单次 turn 并产出 EffectBatch；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。普通新会话、Agent 创建的子 Agent 与 fork 会话共用同一 Session、SessionActor 与 ReAct 流程；`SessionCreation` 按 `creator`、`method` 和 typed `source` 持久记录创建者、方式及来源，Agent 子会话的来源同时表达 parent lineage；SessionStore 另以对称 `session_links` 表达任意两个会话的显式关联。Fork 将有效 transcript 前缀复制到独立 child session，并重映射会话内 `msg-*` / `step-*` 身份；不会改写父会话，也不引入完整事件树。`session.create` 负责模型发起的子会话创建，`agent` 工具负责 peer 发现、消息和协作控制。Messaging registry 仍负责 peer 角色、能力、mailbox 与在线状态（ADR 0442、1157、1324）。
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 恢复；`resume_support` 只提供确定性的候选合并、悬空工具调用修复和运行时工具选择恢复。
-- `session.linked_history_search/read` 只按需查询当前 session 的直接对称关联，并在匹配结果中保留来源 session 身份；跨会话搜索共用总扫描与结果上限，不向每轮 prompt 注入关联历史（ADR 1345）。
+- `session.search_linked_history/read` 只按需查询当前 session 的直接对称关联，并在匹配结果中保留来源 session 身份；跨会话搜索共用总扫描与结果上限，不向每轮 prompt 注入关联历史（ADR 1345）。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
 - `memory_worker.rs` / `memory_service.rs` / `memory_index.rs` / `prompt_context.rs` / `prompt_renderer.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_service` 统一 typed memory/embedding/cache 边界，`prompt_context` 取得 bounded turn snapshot，`prompt_renderer` 纯渲染 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
 - `token_budget.rs`：Agent 的 tokenizer 初始化、provider-visible message/tool/request 估算与前缀/后缀文本 token 截断唯一 owner。`ReActState` 只持有版本作用域的增量 canonical token estimate cache；`compactor.rs` 保留 compaction 专属的区间前缀和、范围选择与 summary 编排，`prompt_renderer.rs` 保留按完整行选择与 MEMORY fence 布局（ADR 0856）。
@@ -534,7 +541,7 @@ Parent session                    Child session(s)
 
 协议约定：同伴消息 ≠ 用户指令；JSONL envelope 与工具消息行使用 `message_id`（稳定的 `msg-{uuid32}`）、`from_session_id`、`to_session_id`、`reply_to_session_id` 和 `in_reply_to_message_id`；registry 使用 `session_id` 与 `parent_session_id`。工具收件人参数使用 `to_session_id`，生命周期目标使用 `target_session_id`；
 `delivery_attempt` 记录 JSONL transport 的 at-least-once 重投次数；批量消息必须走 `send → claim → process → ack`。
-显式 `agent.inbox` 默认只 claim 不 ack，并返回稳定的 `message_ids`；处理完成后由 `agent.ack(message_ids)` 确认，每次最多 100 个 ID。单批最多扫描 100 行且源数据最多 1 MiB；每 recipient 逻辑 pending 上限为 16 MiB。超限 delivery 明确失败，不覆盖旧邮件。旧 `.processing` 优先于旧 mailbox 提升为 immutable backlog，游标和 active batch end 共存于一个原子 sidecar；只有整批 ack 后才推进 cursor。模型可见结果不包含进程内领取身份；文件 transport 的 processing 状态在重启后按相同 `msg-*` 重投。`MessageClaim` 是未确认批次句柄，不是独占 lease；多个 consumer 可观察相同 ID。旧 transcript 中的 `claim_token` 不再有效，应重新读取 inbox 并用 `message_ids` 确认。`agent.history` 为只读恢复入口，最多 100 条。单条历史 JSONL 行超过 1 MiB 时相关读取 fail closed，原 backlog 保留；operator-only `haven-inbox-recovery` 可按 durable cursor 检查并隔离精确的一条超限行，证据文件保留原始 bytes，完整 inbox reset 仍是格式不兼容、损坏状态及超出 quarantine 容量时的恢复方式（ADR 1328）。`agent.status/wait/stop/collect` 只允许当前 session 或其后代，
+显式 `agent.list_inbox` 默认只 claim 不 ack，并返回稳定的 `message_ids`；处理完成后由 `agent.acknowledge(message_ids)` 确认，每次最多 100 个 ID。单批最多扫描 100 行且源数据最多 1 MiB；每 recipient 逻辑 pending 上限为 16 MiB。超限 delivery 明确失败，不覆盖旧邮件。旧 `.processing` 优先于旧 mailbox 提升为 immutable backlog，游标和 active batch end 共存于一个原子 sidecar；只有整批 ack 后才推进 cursor。模型可见结果不包含进程内领取身份；文件 transport 的 processing 状态在重启后按相同 `msg-*` 重投。`MessageClaim` 是未确认批次句柄，不是独占 lease；多个 consumer 可观察相同 ID。旧 transcript 中的 `claim_token` 不再有效，应重新读取 inbox 并用 `message_ids` 确认。`agent.read_history` 为只读恢复入口，最多 100 条。单条历史 JSONL 行超过 1 MiB 时相关读取 fail closed，原 backlog 保留；operator-only `haven-inbox-recovery` 可按 durable cursor 检查并隔离精确的一条超限行，证据文件保留原始 bytes，完整 inbox reset 仍是格式不兼容、损坏状态及超出 quarantine 容量时的恢复方式（ADR 1328）。`agent.get_status/wait/stop/collect` 只允许当前 session 或其后代，
 并通过 `MessagingRuntime` 进入真实 `SessionSupervisor` / `SessionActor` 状态机，`stop` 走正常取消与终端清理路径。
 同进程和跨进程 session 都通过同一个 JSONL transport 读取消息；`SessionActor` 只保存轮询游标、节拍和标题等运行提示，不持有第二份 inbox。投递、claim、ack、历史和回复查询始终访问同一 transport，因此 Actor 创建、移除或重启不会切换消息来源。Claim 时写入的 bounded archive 是 delivery audit tail，不是 ack 状态；JSONL processing 中未确认的消息在应用进程重启后以相同 `msg-*` 重投；文件 flush 不代表断电级持久性。此决定与验证见 ADR 1045。
 
@@ -559,7 +566,7 @@ Temp（全局约束）。
 | `display` | 监视器几何 + DPI/缩放 + 刷新率 | Safe |
 | `clipboard` | 剪贴板 read / write / history | read/history=Low；write=Medium |
 | `input` | 键鼠 type / key / click / move / scroll | move/scroll=Low；其它=Medium |
-| `window` | 窗口 list / foreground / focus / close / screenshot / UI tree / observe / invoke / set_value / toggle / select / wait；截图后由 `media.ocr` 执行 OCR | 读/观察=Low；语义操作/focus=Medium；close=High |
+| `window` | 窗口 list / foreground / focus / close / screenshot / UI tree / observe / invoke / set_value / toggle / select / wait；截图后由 `media.run_ocr` 执行 OCR | 读/观察=Low；语义操作/focus=Medium；close=High |
 
 `ToolRunService`（`haven-tools/src/tool_run_service.rs`）只拥有脱离当前 turn 持续运行的后台 ToolRun；ToolRun 状态从 `running` 进入 `completed | failed | cancelled`，`kind` 固定为 `background`。ToolRun completion outbox 是其终态 transcript 交付的 durable owner。工具入口统一为 `toolrun`，包含后台调用与 list/inspect/cancel 管理；前台调用仍使用正常 ToolCall 路径。
 
@@ -578,7 +585,7 @@ replay active interaction events 并重建 Actor 内状态；该状态不写入�
 ReAct snapshot。交互状态以 `Pending → Resolved | Expired | Cancelled` 表达。
 
 Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具进入；图片/文件读取先复制到受管媒体
-资产并只向模型返回 `asset_id`。`clipboard.history` 是进程内有界文本历史；每次查询会采样当前系统剪贴板的
+资产并只向模型返回 `asset_id`。`clipboard.list_history` 是进程内有界文本历史；每次查询会采样当前系统剪贴板的
 文本（若可读），因此可纳入其它程序刚写入的内容，但不作为后台剪贴板监视器。`media.render` 复用有界文档表示管线按页返回结果，不新增独立的
 `audio`、`file_search` 或 HTTP 搜索根工具。
 
@@ -652,7 +659,7 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
 （ADR 0306）。
 高风险、网络、媒体、文件和跨 session 协作仍保留独立的内部实现边界，以维持各自的确认、
 路径、provider 和生命周期边界；模型看到的名称仍遵循点号 view 契约。
-`haven.mcp.mcp_connect` 每次都会尝试连接，因此其 `Opaque` 网络分类由 `OperationContract` 同时供模型 operation view 与 native typed request 使用；`deny` 与 `restricted` 均在连接执行前拒绝该边界（ADR 0495）。其它 MCP 管理操作不继承该分类，按各自参数或运行状态定义。
+`haven.mcp.connect` 每次都会尝试连接，因此其 `Opaque` 网络分类由 `OperationContract` 同时供模型 operation view 与 native typed request 使用；`deny` 与 `restricted` 均在连接执行前拒绝该边界（ADR 0495）。其它 MCP 管理操作不继承该分类，按各自参数或运行状态定义。
 
 ### 2.6 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 

@@ -1340,3 +1340,4 @@
 - [1349：将 Memory 工具归入 Haven 根节点](1349-group-memory-tool-operations-under-haven.md)
 - [1351：在 Shell 授权前显示当前执行边界](1351-show-active-shell-boundary-before-approval.md)
 - [1353：阻止已取消的排队数据库操作迟到写入](1353-cancel-queued-database-operations.md)
+- [1355：统一内置 operation 名称与输入 schema](1355-unify-builtin-operation-names-and-input-schemas.md)

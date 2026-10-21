@@ -105,7 +105,7 @@ pub(crate) fn media_reference_with_capabilities(
             Some("media.describe")
         }
         (MediaRepresentationKind::ManagedFileRef, DetectedMediaKind::Image) if capabilities.ocr => {
-            Some("media.ocr")
+            Some("media.run_ocr")
         }
         (MediaRepresentationKind::ManagedFileRef, DetectedMediaKind::Audio)
             if capabilities.transcribe =>

@@ -1076,7 +1076,7 @@ fn is_auto_edit_safe(key: &CapabilityScope, policy: &OperationPolicy) -> bool {
     // calls and destructive deletes must never inherit edit auto-approval.
     matches!(
         key.as_str(),
-        "files.write" | "files.patch" | "files.create_dir" | "files.copy" | "files.move"
+        "files.write" | "files.patch" | "files.create_directory" | "files.copy" | "files.move"
     ) && matches!(policy.effect, OperationEffect::WorkspaceWrite)
         && matches!(policy.data_sensitivity, DataSensitivity::None)
         && matches!(policy.network_access, NetworkAccess::None)
@@ -2877,8 +2877,8 @@ mod tests {
             gateway
                 .check(
                     None,
-                    "haven.mcp.mcp_add",
-                    &json!({"operation": "mcp_add"}),
+                    "haven.mcp.add",
+                    &json!({"operation": "add"}),
                     RiskLevel::High
                 )
                 .await,
@@ -3184,7 +3184,7 @@ mod tests {
             "shell",
             json!({"command": "echo safe"}),
             OperationPolicy {
-                capability: capability_scope!("system.info"),
+                capability: capability_scope!("system.get_info"),
                 ..request.policy.clone()
             },
         );
@@ -4216,17 +4216,17 @@ mod tests {
 
         let optional_routes = [
             ("media.describe", "media.describe"),
-            ("media.ocr", "media.ocr"),
+            ("media.run_ocr", "media.run_ocr"),
             ("media.transcribe", "media.transcribe"),
             ("media.generate", "media.generate"),
             ("media.record", "media.record"),
             ("media.speak", "media.speak"),
             ("load_skill", "load"),
             ("load_mcp", "load"),
-            ("agent.children", "agent.children"),
-            ("agent.history", "agent.history"),
-            ("agent.ack", "agent.ack"),
-            ("agent.status", "agent.status"),
+            ("agent.list_children", "agent.list_children"),
+            ("agent.read_history", "agent.read_history"),
+            ("agent.acknowledge", "agent.acknowledge"),
+            ("agent.get_status", "agent.get_status"),
             ("agent.wait", "agent.wait"),
             ("agent.stop", "agent.stop"),
         ];
@@ -4497,7 +4497,7 @@ mod tests {
             seen.len(),
             seen
         );
-        assert!(seen.contains("haven.config.logs_level"));
+        assert!(seen.contains("haven.config.set_log_level"));
         assert!(seen.contains("files.read"));
     }
 
@@ -4543,11 +4543,11 @@ mod tests {
 
         let mut seen = HashSet::new();
         let expected_unknown = [
-            "haven.skills.skill_create",
-            "haven.mcp.mcp_add",
-            "haven.mcp.mcp_update",
-            "haven.mcp.mcp_remove",
-            "haven.mcp.mcp_reload",
+            "haven.skills.create",
+            "haven.mcp.add",
+            "haven.mcp.update",
+            "haven.mcp.remove",
+            "haven.mcp.reload",
         ];
         for tool in tools.iter().filter(|tool| tool.name().contains('.')) {
             let name = tool.name();
@@ -4651,13 +4651,13 @@ mod tests {
             "ask",
             "files.read",
             "shell",
-            "system.info",
+            "system.get_info",
             "http",
             "notify",
             "agent.list",
             "load_mcp",
             "memory.search",
-            "haven.diagnostics.status",
+            "haven.diagnostics.get_status",
         ] {
             assert!(
                 names.contains(expected),

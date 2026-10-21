@@ -776,7 +776,7 @@ impl MessageClaim {
 
     /// Acknowledge only the selected ids from this claim. Unselected messages
     /// remain in the durable processing file and are eligible for redelivery.
-    /// This is the primitive used by the explicit `agent.ack` operation so a
+    /// This is the primitive used by the explicit `agent.acknowledge` operation so a
     /// newly-arrived message cannot be acknowledged accidentally with an old
     /// batch.
     pub fn complete_selected(self, selected_ids: &[String]) -> anyhow::Result<Vec<SendOutcome>> {

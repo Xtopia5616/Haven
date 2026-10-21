@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.192 | 日期: 2026-10-20
+> 版本: v1.193 | 日期: 2026-10-21
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -349,6 +349,18 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 - 目录即模块：`crates/tools/src/builtin/`、`crates/memory/src/repositories/`。
 - crate 统一 `haven-{name}`：`haven-agent`、`haven-common`、`haven-memory`、`haven-tools`、`haven-llm`、`haven-input`、`haven-mcp`、`haven-skills`。
 
+### 模型可见内置工具名与输入 schema
+
+- 独立入口保留简短名称（如 `ask`、`shell`、`http`）；内置操作视图使用点号路径，格式为 `<capability>.<action>`，有子域时为 `<capability>.<subdomain>.<action>`。路径段使用小写 ASCII；路径段内的复合动作使用 snake_case。
+- 操作名优先动词开头，宾语由路径或 snake_case 后缀表达，例如 `system.env.get`、`session.search_history`、`media.get_volume`。操作名不得重复其父级领域词，例如用 `haven.mcp.add`，不用 `haven.mcp.mcp_add`；新操作不得使用倒置的 `object_verb`。
+- 一项能力只保留一个当前稳定名。`ToolDef.name`、权限 capability key、目录 manifest `stable_name`、提示词索引、结果 renderer 与可配置操作引用必须使用同一稳定名。manifest 的展示 `root` 可按 UI 分类与稳定名路径不同，但不得用于重建或改写 stable name。
+- 外部 provider / MCP 工具名是对端身份，原样保留；单名的基础工具入口也不为了点号形式强行包装。重命名 Haven 内置操作时，必须在同一变更中更新执行目录、权限、安全提示、提示词、结果 renderer、所有调用方与测试，并迁移 config、session grants、Schedule 与 ToolRun 中已持久化的引用。仅为旧持久值保留一次性迁移表，不注册旧名执行别名。
+- 每个模型可见内置操作的顶层输入 schema 都是 JSON object，并显式设置 `additionalProperties: false`。可选扩展 payload 必须限定在有名字段内部（如 `toolrun.start.input`），不能让整层参数对象意外开放。
+- 对象字段列出 `properties` 和明确的 `required`；缺省、可选、显式 `null` 是不同语义，schema 与执行器必须一致。`default` 仅在执行器实际采用同一缺省值时声明。字符串、数值、数组和 ID 字段声明可验证的长度、范围、项目数、格式及实体前缀；Haven 实体 ID 复用 `canonical_entity_id_schema`，运行时仍由 `is_canonical_id` 校验。
+- 聚合内部 schema 以 `oneOf` 配合 `operation.const` 把操作、参数、必填字段和禁止额外字段绑定；面向模型的单操作 view 使用窄 schema，操作身份已经由工具名表达时不重复要求模型传 `operation`。
+- Schema 是模型输入契约，不是执行授权或安全校验。原生调用、反序列化与执行入口仍须检查业务不变量、动态上下限和安全边界；provider dialect 差异只在 LLM adapter 边界转换，不得静默削弱运行时限制。
+- schema 由能力 owner 与执行逻辑同处维护；复用稳定的小型 schema helper（如 canonical ID）即可。不要复制整份根 schema 到目录、UI 或 provider，也不要为了让异构工具形状相同而引入泛化 envelope。MCP / Skill 等对端 schema 保留其对端字段契约，只做边界清理与校验。
+
 ### 标识符
 - 类型 / 枚举 / trait / 结构体 → **PascalCase**：`Modality`、`Intent`、`LlmConfig`。
 - 函数 / 方法 / 变量 / 字段 / 模块 → **snake_case**：`fn detect_intent`、`stt_default_base_url`。
@@ -497,5 +509,6 @@ Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalT
 - [ ] 会话恢复用语统一 `resume`，不用 `review`
 - [ ] 运行态会话集合与持久会话历史使用不同名称；全量删除与运行态清理动词明确
 - [ ] 工具调用、Session、ToolRun、ScheduleRun 按本节口径使用
+- [ ] 内置 operation 名称动词优先且不重复父级词；输入 schema 顶层封闭、字段约束与执行器语义一致
 - [ ] 集合用复数、单元素用单数、派生集合不用裸形容词（`selected`→`selectedSessions`）
 - [ ] 文件名与结构体/实体单复数一致（`file.rs`→`files.rs` 对应 `FilesTool`；仓库随表复数）

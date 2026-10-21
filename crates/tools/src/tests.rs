@@ -743,7 +743,7 @@ async fn test_tools_facade_rebuild_catalog_registers_builtins() {
         ("shell", "shell"),
         ("http", "network"),
         ("files.read", "files"),
-        ("clipboard.history", "desktop"),
+        ("clipboard.list_history", "desktop"),
         ("agent.list", "workflow"),
     ] {
         let listed = builtin_tools
@@ -781,10 +781,10 @@ async fn test_tools_facade_rebuild_catalog_registers_builtins() {
     assert!(mgr.get_tool("audio").await.is_none());
     for name in [
         "files.read",
-        "files.outline",
-        "files.summary",
+        "files.get_outline",
+        "files.summarize",
         "files.search",
-        "system.info",
+        "system.get_info",
         "files.write",
         "files.list",
         "clipboard.read",
@@ -876,13 +876,13 @@ async fn stable_core_tools_are_registered_without_optional_providers() {
             .all(|tool| is_core_model_tool(&tool.name())),
         "default rebuild must keep deferred builtins out of the global provider registry"
     );
-    for name in ["files.read", "files.outline", "files.search"] {
+    for name in ["files.read", "files.get_outline", "files.search"] {
         assert!(
             mgr.registry().get(name).await.is_none(),
             "convenience operation {name} must be loaded on demand"
         );
     }
-    for name in ["shell", "http", "system.info"] {
+    for name in ["shell", "http", "system.get_info"] {
         assert!(
             mgr.registry().get(name).await.is_some(),
             "direct builtin {name} must be provider-visible"
@@ -898,11 +898,11 @@ async fn session_notes_and_history_operations_are_discoverable_and_loaded_on_dem
     let operation_names = [
         "session.read_notes",
         "session.replace_notes",
-        "session.history_search",
-        "session.history_read",
-        "session.linked_history_search",
-        "session.linked_history_read",
-        "session.asset_search",
+        "session.search_history",
+        "session.read_history",
+        "session.search_linked_history",
+        "session.read_linked_history",
+        "session.search_assets",
     ];
     let provider_tools = mgr.list_tool_definitions_for_session(session_id).await;
 
@@ -1015,7 +1015,7 @@ async fn test_discover_tools_exposes_three_layers_without_loading_deferred_tools
         mgr.list_tool_definitions_for_session(session_id)
             .await
             .iter()
-            .all(|def| def.name != "window.screenshot")
+            .all(|def| def.name != "window.capture_screenshot")
     );
 
     let window_detail = mgr
@@ -1031,7 +1031,7 @@ async fn test_discover_tools_exposes_three_layers_without_loading_deferred_tools
     assert!(
         operations
             .iter()
-            .any(|item| item["name"] == "window.screenshot")
+            .any(|item| item["name"] == "window.capture_screenshot")
     );
     assert!(
         operations
@@ -1107,7 +1107,7 @@ async fn test_discover_tools_exposes_three_layers_without_loading_deferred_tools
         .execute_tool(
             Some(session_id),
             "discover_tools",
-            json!({"action": "describe", "name": "window.screenshot"}),
+            json!({"action": "describe", "name": "window.capture_screenshot"}),
             CancellationToken::new(),
         )
         .await
@@ -1121,7 +1121,7 @@ async fn test_discover_tools_exposes_three_layers_without_loading_deferred_tools
             Some(session_id),
             "discover_tools",
             {
-                let operations = std::iter::once("window.screenshot".to_string())
+                let operations = std::iter::once("window.capture_screenshot".to_string())
                     .chain((0..64).map(|index| format!("missing.operation_{index}")))
                     .collect::<Vec<_>>();
                 json!({
@@ -1144,7 +1144,7 @@ async fn test_discover_tools_exposes_three_layers_without_loading_deferred_tools
         64
     );
     assert!(
-        mgr.get_tool_for_session(Some(session_id), "window.screenshot")
+        mgr.get_tool_for_session(Some(session_id), "window.capture_screenshot")
             .await
             .is_some()
     );
@@ -1998,7 +1998,7 @@ async fn direct_tools_stay_on_provider_surface_while_deferred_builtins_load_on_d
 
     assert!(mgr.registry().get("shell").await.is_some());
     assert!(mgr.registry().get("http").await.is_some());
-    assert!(mgr.registry().get("system.info").await.is_some());
+    assert!(mgr.registry().get("system.get_info").await.is_some());
     assert!(
         mgr.list_tool_definitions_for_session("ses-334aafdac2a2c6de43c6daf3805f41d5")
             .await
@@ -2027,7 +2027,7 @@ async fn direct_tools_stay_on_provider_surface_while_deferred_builtins_load_on_d
         .list_tool_definitions_for_session("ses-334aafdac2a2c6de43c6daf3805f41d5")
         .await;
     assert!(loaded.iter().any(|def| def.name == "files.read"));
-    assert!(loaded.iter().any(|def| def.name == "system.info"));
+    assert!(loaded.iter().any(|def| def.name == "system.get_info"));
 }
 
 #[tokio::test]
@@ -2182,13 +2182,13 @@ async fn registered_operation_manifest_matches_runtime_policy() {
         "notify",
         "shell",
         "http",
-        "system.info",
+        "system.get_info",
         "discover_tools",
         "load_skill",
         "load_mcp",
         "files.read",
         "files.list",
-        "agent.inbox",
+        "agent.list_inbox",
     ] {
         assert!(find(name).operation_spec().is_some(), "{name} spec");
     }
@@ -2198,7 +2198,10 @@ async fn registered_operation_manifest_matches_runtime_policy() {
         ("notify", haven_common::tools::ToolCatalogGroup::Interaction),
         ("shell", haven_common::tools::ToolCatalogGroup::Shell),
         ("http", haven_common::tools::ToolCatalogGroup::Network),
-        ("system.info", haven_common::tools::ToolCatalogGroup::System),
+        (
+            "system.get_info",
+            haven_common::tools::ToolCatalogGroup::System,
+        ),
         (
             "discover_tools",
             haven_common::tools::ToolCatalogGroup::Extensions,
@@ -2213,7 +2216,7 @@ async fn registered_operation_manifest_matches_runtime_policy() {
         ),
         ("files.read", haven_common::tools::ToolCatalogGroup::Files),
         (
-            "agent.inbox",
+            "agent.list_inbox",
             haven_common::tools::ToolCatalogGroup::Workflow,
         ),
     ] {
@@ -2260,7 +2263,7 @@ async fn registered_operation_manifest_matches_runtime_policy() {
     assert_eq!(files_read.confirmation, ConfirmationRequirement::None);
     assert_eq!(files_read.risk_level, RiskLevel::Low);
 
-    let system_info = find("system.info").operation_policy(&json!({}));
+    let system_info = find("system.get_info").operation_policy(&json!({}));
     assert_eq!(system_info.scope, ToolOperationScope::Global);
     assert_eq!(system_info.effect, OperationEffect::ReadOnly);
 
@@ -2315,7 +2318,9 @@ async fn registered_operation_manifest_matches_runtime_policy() {
     );
 
     assert_eq!(
-        find("agent.inbox").operation_policy(&json!({})).idempotency,
+        find("agent.list_inbox")
+            .operation_policy(&json!({}))
+            .idempotency,
         OperationIdempotency::Idempotent
     );
 
@@ -2323,7 +2328,7 @@ async fn registered_operation_manifest_matches_runtime_policy() {
     // wired. Their frozen concurrency is covered with every capability enabled.
     for name in [
         "media.describe",
-        "media.ocr",
+        "media.run_ocr",
         "media.transcribe",
         "media.generate",
         "media.record",
@@ -2343,10 +2348,10 @@ async fn registered_operation_manifest_matches_runtime_policy() {
     }
     for name in [
         "media.play",
-        "media.volume_get",
-        "media.volume_set",
-        "media.mute_get",
-        "media.mute_set",
+        "media.get_volume",
+        "media.set_volume",
+        "media.get_mute",
+        "media.set_mute",
     ] {
         assert_eq!(
             find(name).operation_policy(&json!({})).concurrency,

@@ -82,7 +82,7 @@ fn normalize_tool_input(input: &serde_json::Value) -> String {
     serde_json::to_string(input).unwrap_or_else(|_| "<invalid-json>".into())
 }
 
-/// `agent.inbox` result is an empty poll (`count: 0`): nothing for the user to
+/// `agent.list_inbox` result is an empty poll (`count: 0`): nothing for the user to
 /// see, so the observation card is suppressed.
 pub(crate) fn empty_inbox_output(result: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(result)
@@ -91,13 +91,13 @@ pub(crate) fn empty_inbox_output(result: &str) -> bool {
         == Some(0)
 }
 
-/// True when this is the dotted `agent.inbox` operation.
+/// True when this is the dotted `agent.list_inbox` operation.
 ///
 /// The input is intentionally ignored: operation selection is part of the
 /// stable tool name now, so old aggregate-tool `operation` fields must not
 /// influence display suppression.
 pub(crate) fn is_agent_inbox_call(tool_name: &str, _tool_input: &serde_json::Value) -> bool {
-    tool_name == "agent.inbox"
+    tool_name == "agent.list_inbox"
 }
 
 /// Only terminal failures with a known, completed outcome may produce an

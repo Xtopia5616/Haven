@@ -744,7 +744,10 @@ mod tests {
 
     #[test]
     fn is_agent_inbox_call_requires_dotted_operation_name() {
-        assert!(is_agent_inbox_call("agent.inbox", &serde_json::json!({})));
+        assert!(is_agent_inbox_call(
+            "agent.list_inbox",
+            &serde_json::json!({})
+        ));
         assert!(!is_agent_inbox_call("agent.list", &serde_json::json!({})));
         assert!(!is_agent_inbox_call(
             "message_inbox",

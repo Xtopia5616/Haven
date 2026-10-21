@@ -672,6 +672,116 @@ fn set_user_version(conn: &rusqlite::Connection, version: i32) -> anyhow::Result
     Ok(())
 }
 
+/// Migrate persisted values that reference renamed builtin operations. This is
+/// deliberately separate from SQLite schema migration: table shapes and
+/// `user_version` do not change. The marker makes the value rewrite one-time.
+fn migrate_builtin_tool_names(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    use rusqlite::OptionalExtension as _;
+
+    const MIGRATION_KEY: &str = "tool_name_migration.builtin_operations_v1";
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| {
+        // Check the marker after acquiring the write lock so concurrent Haven
+        // startups cannot both run the value rewrite.
+        let done = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM kv_store WHERE key = ?1)",
+            [MIGRATION_KEY],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if done {
+            return Ok(());
+        }
+
+        for (old_name, new_name) in haven_common::tools::BUILTIN_TOOL_NAME_RENAMES {
+            let mut statement = conn.prepare(
+                "SELECT session_id, permission_target, effect
+                 FROM session_authorization_grants WHERE capability_key = ?1",
+            )?;
+            let rows = statement.query_map([old_name], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            let mut legacy_grants = Vec::new();
+            for row in rows {
+                legacy_grants.push(row?);
+            }
+            drop(statement);
+
+            for (session_id, old_target, old_effect) in legacy_grants {
+                let current = conn
+                    .query_row(
+                        "SELECT permission_target, effect
+                         FROM session_authorization_grants
+                         WHERE session_id = ?1 AND capability_key = ?2",
+                        rusqlite::params![session_id, new_name],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()?;
+                if let Some((current_target, current_effect)) = current {
+                    let target = narrowest_permission_target(&old_target, &current_target);
+                    let effect = if old_effect == "deny" || current_effect == "deny" {
+                        "deny"
+                    } else {
+                        "allow"
+                    };
+                    conn.execute(
+                        "UPDATE session_authorization_grants
+                         SET permission_target = ?3, effect = ?4
+                         WHERE session_id = ?1 AND capability_key = ?2",
+                        rusqlite::params![session_id, new_name, target, effect],
+                    )?;
+                    conn.execute(
+                        "DELETE FROM session_authorization_grants
+                         WHERE session_id = ?1 AND capability_key = ?2",
+                        rusqlite::params![session_id, old_name],
+                    )?;
+                } else {
+                    conn.execute(
+                        "UPDATE session_authorization_grants SET capability_key = ?2
+                         WHERE session_id = ?1 AND capability_key = ?3",
+                        rusqlite::params![session_id, new_name, old_name],
+                    )?;
+                }
+            }
+
+            conn.execute(
+                "UPDATE schedules SET tool_name = ?1 WHERE tool_name = ?2",
+                rusqlite::params![new_name, old_name],
+            )?;
+            conn.execute(
+                "UPDATE tool_runs SET tool_name = ?1 WHERE tool_name = ?2",
+                rusqlite::params![new_name, old_name],
+            )?;
+        }
+
+        conn.execute(
+            "INSERT INTO kv_store (key, value, updated_at)
+             VALUES (?1, 'complete', datetime('now'))",
+            [MIGRATION_KEY],
+        )?;
+        Ok::<(), anyhow::Error>(())
+    })();
+
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(Into::into),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+fn narrowest_permission_target<'a>(left: &'a str, right: &'a str) -> &'a str {
+    match (left, right) {
+        ("operation", _) | (_, "operation") => "operation",
+        ("group", _) | (_, "group") => "group",
+        _ => "tool",
+    }
+}
+
 /// Create the current schema or reject a database from another contract.
 ///
 /// There is intentionally no in-process migration path. Memory, session
@@ -708,6 +818,7 @@ pub fn init_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     conn.execute_batch(MEMORY_EMBEDDINGS_SCHEMA)?;
     ensure_memory_fts(conn)?;
     ensure_fact_embedding_triggers(conn)?;
+    migrate_builtin_tool_names(conn)?;
     if version == 0 {
         set_user_version(conn, SCHEMA_VERSION)?;
     }
@@ -822,6 +933,93 @@ mod tests {
         let before = user_tables(&conn);
         init_schema(&conn).unwrap();
         assert_eq!(user_tables(&conn), before);
+    }
+
+    #[test]
+    fn init_schema_migrates_persisted_builtin_tool_names_once() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        let session_id = haven_common::types::new_id("ses");
+        let tool_run_id = haven_common::types::new_id("toolrun");
+        let schedule_id = haven_common::types::new_id("sched");
+        conn.execute(
+            "INSERT INTO sessions (id, input_text) VALUES (?1, 'name migration')",
+            [&session_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_authorization_grants
+                (session_id, capability_key, permission_scope, permission_target, effect)
+             VALUES (?1, 'haven.mcp.mcp_add', 'session', 'operation', 'allow')",
+            [&session_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_authorization_grants
+                (session_id, capability_key, permission_scope, permission_target, effect)
+             VALUES (?1, 'haven.mcp.add', 'session', 'operation', 'deny')",
+            [&session_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_runs (id, kind, status, tool_name, created_at)
+             VALUES (?1, 'background', 'running', 'media.volume_get', '2026-10-21T00:00:00.000Z')",
+            [&tool_run_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schedules
+                (id, owner_session_id, schedule_type, title, body, mode, due_at,
+                 tool_name, tool_args, enabled, created_at, updated_at)
+             VALUES (?1, ?2, 'once', 'name migration', 'name migration', 'tool',
+                     '2026-10-22T00:00:00.000Z', 'system.info', '{}', 1,
+                     '2026-10-21T00:00:00.000Z', '2026-10-21T00:00:00.000Z')",
+            rusqlite::params![schedule_id, session_id],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM kv_store WHERE key = 'tool_name_migration.builtin_operations_v1'",
+            [],
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+
+        let grant = conn
+            .query_row(
+                "SELECT permission_target, effect FROM session_authorization_grants
+                 WHERE session_id = ?1 AND capability_key = 'haven.mcp.add'",
+                [&session_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(grant, ("operation".into(), "deny".into()));
+        let old_grant_count = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_authorization_grants
+                 WHERE session_id = ?1 AND capability_key = 'haven.mcp.mcp_add'",
+                [&session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(old_grant_count, 0);
+        let tool_run_name = conn
+            .query_row(
+                "SELECT tool_name FROM tool_runs WHERE id = ?1",
+                [&tool_run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_eq!(tool_run_name, "media.get_volume");
+        let schedule_name = conn
+            .query_row(
+                "SELECT tool_name FROM schedules WHERE id = ?1",
+                [&schedule_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_eq!(schedule_name, "system.get_info");
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]

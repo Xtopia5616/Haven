@@ -110,15 +110,15 @@ impl FilesOperation {
             Self::Read => "files.read",
             Self::Inspect => "files.inspect",
             Self::Write => "files.write",
-            Self::CreateDir => "files.create_dir",
+            Self::CreateDir => "files.create_directory",
             Self::Patch => "files.patch",
             Self::Copy => "files.copy",
             Self::Move => "files.move",
             Self::Delete => "files.delete",
             Self::List => "files.list",
-            Self::Summary => "files.summary",
+            Self::Summary => "files.summarize",
             Self::Search => "files.search",
-            Self::Outline => "files.outline",
+            Self::Outline => "files.get_outline",
         }
     }
 }

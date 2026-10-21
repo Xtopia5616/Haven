@@ -212,7 +212,7 @@ function applySupplement(
 					id: payload.supplementId,
 					presentationKey,
 					stepNumber: payload.stepNumber,
-					toolName: 'agent.inbox',
+					toolName: 'agent.list_inbox',
 					content,
 					time: new Date().toLocaleTimeString(),
 				}),

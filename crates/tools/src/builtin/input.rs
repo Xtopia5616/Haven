@@ -74,7 +74,7 @@ pub struct InputParams {
     /// Stable HWND-derived identity returned by `window.list`/`foreground`.
     #[serde(default)]
     pub window_id: Option<String>,
-    /// Stable UI Automation element token returned by `window.ui_tree`.
+    /// Stable UI Automation element token returned by `window.get_ui_tree`.
     #[serde(default)]
     pub element_token: Option<String>,
     /// UI Automation control name for element operations.

@@ -109,7 +109,7 @@ const CORE_MODEL_TOOLS: &[&str] = &[
     "notify",
     "shell",
     "http",
-    "system.info",
+    "system.get_info",
     "discover_tools",
     "load_skill",
     "load_mcp",

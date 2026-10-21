@@ -688,7 +688,7 @@ impl AgentTool {
             if acknowledge {
                 // Opt-in immediate drain for callers that explicitly accept
                 // the one-shot semantics. The safe default leaves the claim
-                // durable until a later `agent.ack` call.
+                // durable until a later `agent.acknowledge` call.
                 claim.complete()?;
             }
             // Dropping a non-completed claim leaves the transport's durable

@@ -325,6 +325,61 @@ fn invalid_config_entry(config: &AppConfig) -> Option<&'static str> {
     None
 }
 
+/// Rewrite persisted capability and per-operation settings keys after builtin
+/// operation names change. An explicit canonical setting wins a collision;
+/// disabled state and deny decisions are merged conservatively.
+fn migrate_builtin_tool_names(config: &mut AppConfig) -> bool {
+    let mut changed = false;
+
+    let mut permissions = Vec::<StoredPermission>::with_capacity(config.security.permissions.len());
+    let mut permission_indexes = HashMap::<String, usize>::new();
+    for mut permission in config.security.permissions.drain(..) {
+        let canonical_key = crate::tools::canonical_builtin_tool_name(&permission.key);
+        if canonical_key != permission.key {
+            permission.key = canonical_key.to_owned();
+            changed = true;
+        }
+        if let Some(index) = permission_indexes.get(&permission.key).copied() {
+            // A denial always wins if a legacy key and its canonical key both
+            // exist. This prevents a name migration from widening access.
+            if permission.effect == crate::types::PermissionEffect::Deny {
+                permissions[index].effect = crate::types::PermissionEffect::Deny;
+            }
+            changed = true;
+        } else {
+            permission_indexes.insert(permission.key.clone(), permissions.len());
+            permissions.push(permission);
+        }
+    }
+    config.security.permissions = permissions;
+
+    let mut tool_settings = std::mem::take(&mut config.tool_settings)
+        .into_iter()
+        .collect::<Vec<_>>();
+    // Keep an explicitly canonical entry as the source for non-boolean
+    // settings when both spellings are present.
+    tool_settings.sort_by_key(|(name, _)| crate::tools::canonical_builtin_tool_name(name) != name);
+    let mut migrated_settings = HashMap::with_capacity(tool_settings.len());
+    for (name, setting) in tool_settings {
+        let canonical_name = crate::tools::canonical_builtin_tool_name(&name);
+        if canonical_name != name {
+            changed = true;
+        }
+        match migrated_settings.entry(canonical_name.to_owned()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(setting);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().enabled &= setting.enabled;
+                changed = true;
+            }
+        }
+    }
+    config.tool_settings = migrated_settings;
+
+    changed
+}
+
 impl ConfigLoader {
     /// Returns the default config path under the application's data directory.
     pub fn default_path() -> PathBuf {
@@ -414,12 +469,22 @@ impl ConfigLoader {
                 (AppConfig::default(), true)
             }
         };
-        Ok(Self {
+        let mut loader = Self {
             path: path.to_path_buf(),
             config,
             source_fingerprint,
             recovery_required,
-        })
+        };
+        if !loader.recovery_required && migrate_builtin_tool_names(&mut loader.config) {
+            tracing::info!("migrating stored builtin tool names in config.toml");
+            if let Err(error) = loader.persist() {
+                tracing::warn!(
+                    error = %crate::error::sanitize_error_text(&error.to_string()),
+                    "failed to persist builtin tool name migration; canonical names remain active in memory"
+                );
+            }
+        }
+        Ok(loader)
     }
 
     /// Load from the default path.
@@ -1404,6 +1469,50 @@ mod tests {
             loader.config().context_limits.file_write_max_bytes,
             32 * 1024 * 1024
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_migrates_legacy_builtin_permission_and_tool_settings_names() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let mut config = AppConfig::default();
+        config.security.permissions = vec![
+            StoredPermission {
+                key: "haven.mcp.mcp_add".into(),
+                effect: crate::types::PermissionEffect::Allow,
+            },
+            StoredPermission {
+                key: "haven.mcp.add".into(),
+                effect: crate::types::PermissionEffect::Deny,
+            },
+        ];
+        config.tool_settings.insert(
+            "media.volume_get".into(),
+            ToolConfig {
+                enabled: false,
+                ..ToolConfig::default()
+            },
+        );
+        config
+            .tool_settings
+            .insert("media.get_volume".into(), ToolConfig::default());
+        std::fs::write(&path, toml::to_string_pretty(&config).unwrap()).unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(
+            loader.config().security.permissions,
+            [StoredPermission {
+                key: "haven.mcp.add".into(),
+                effect: crate::types::PermissionEffect::Deny,
+            }]
+        );
+        assert!(!loader.config().tool_settings["media.get_volume"].enabled);
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(!persisted.contains("haven.mcp.mcp_add"));
+        assert!(!persisted.contains("media.volume_get"));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

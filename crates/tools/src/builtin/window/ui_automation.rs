@@ -4,7 +4,7 @@ use super::platform;
 pub(super) const UI_TREE_CAP: usize = 100;
 
 /// Canonical UI Automation control type names accepted by element input.
-/// These names intentionally mirror the existing `window.ui_tree` output and
+/// These names intentionally mirror the existing `window.get_ui_tree` output and
 /// are matched case-sensitively so a request cannot silently broaden its
 /// target.
 pub(crate) const UIA_CONTROL_TYPE_NAMES: &[&str] = &[

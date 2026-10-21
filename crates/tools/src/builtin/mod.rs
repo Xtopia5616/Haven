@@ -315,19 +315,19 @@ pub(crate) async fn register_builtin_tools(
     ));
     let contract = operation_specs(limits.search_max_results)
         .into_iter()
-        .find(|contract| contract.name == "system.info")
-        .expect("system.info operation view contract");
+        .find(|contract| contract.name == "system.get_info")
+        .expect("system.get_info operation view contract");
     tools.push(OperationViewTool::new(system_tool.clone(), contract));
     add_system_scope_operation_views(tools, system_tool.clone(), settings);
     let contract = operation_spec(
         &system_tool,
-        "system.display",
-        tool_prompts::operation_text("system.display").description,
+        "system.list_displays",
+        tool_prompts::operation_text("system.list_displays").description,
         vec![("scope".into(), serde_json::json!("display"))],
         system_display_schema(),
         "system",
         "monitor",
-        tool_prompts::operation_text("system.display").when_to_use,
+        tool_prompts::operation_text("system.list_displays").when_to_use,
     );
     tools.push(OperationViewTool::new(system_tool, contract));
     tools.push(Arc::new(http::HttpTool {
@@ -629,15 +629,16 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             identity: None,
         },
         OperationSpec {
-            name: "files.outline".into(),
-            description: tool_prompts::operation_text("files.outline")
+            name: "files.get_outline".into(),
+            description: tool_prompts::operation_text("files.get_outline")
                 .description
                 .into(),
             fixed: vec![("operation".into(), serde_json::json!("outline"))],
             schema: files_outline_schema(),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
-                capability: haven_common::types::CapabilityScope::try_new("files.outline").unwrap(),
+                capability: haven_common::types::CapabilityScope::try_new("files.get_outline")
+                    .unwrap(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
@@ -650,30 +651,31 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             policy_rule: None,
             catalog_group: ToolCatalogGroup::Files,
             presentation: ToolPresentation {
-                label: operation_contract("files.outline").label.into(),
+                label: operation_contract("files.get_outline").label.into(),
                 renderer: "files".into(),
                 icon: "fileSearch".into(),
                 represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
-                when_to_use: tool_prompts::operation_text("files.outline")
+                when_to_use: tool_prompts::operation_text("files.get_outline")
                     .when_to_use
                     .into(),
                 when_not_to_use: String::new(),
-                key_operations: vec!["files.outline".into()],
+                key_operations: vec!["files.get_outline".into()],
             },
             identity: None,
         },
         OperationSpec {
-            name: "files.summary".into(),
-            description: tool_prompts::operation_text("files.summary")
+            name: "files.summarize".into(),
+            description: tool_prompts::operation_text("files.summarize")
                 .description
                 .into(),
             fixed: vec![("operation".into(), serde_json::json!("summary"))],
             schema: files_summary_schema(),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
-                capability: haven_common::types::CapabilityScope::try_new("files.summary").unwrap(),
+                capability: haven_common::types::CapabilityScope::try_new("files.summarize")
+                    .unwrap(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
@@ -686,17 +688,17 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             policy_rule: None,
             catalog_group: ToolCatalogGroup::Files,
             presentation: ToolPresentation {
-                label: operation_contract("files.summary").label.into(),
+                label: operation_contract("files.summarize").label.into(),
                 renderer: "files".into(),
                 icon: "file".into(),
                 represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
-                when_to_use: tool_prompts::operation_text("files.summary")
+                when_to_use: tool_prompts::operation_text("files.summarize")
                     .when_to_use
                     .into(),
                 when_not_to_use: String::new(),
-                key_operations: vec!["files.summary".into()],
+                key_operations: vec!["files.summarize".into()],
             },
             identity: None,
         },
@@ -737,15 +739,16 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             identity: None,
         },
         OperationSpec {
-            name: "system.info".into(),
-            description: tool_prompts::operation_text("system.info")
+            name: "system.get_info".into(),
+            description: tool_prompts::operation_text("system.get_info")
                 .description
                 .into(),
             fixed: vec![("scope".into(), serde_json::json!("info"))],
             schema: system_info_schema(),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Safe,
-                capability: haven_common::types::CapabilityScope::try_new("system.info").unwrap(),
+                capability: haven_common::types::CapabilityScope::try_new("system.get_info")
+                    .unwrap(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Global,
@@ -758,17 +761,17 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             policy_rule: None,
             catalog_group: ToolCatalogGroup::System,
             presentation: ToolPresentation {
-                label: operation_contract("system.info").label.into(),
+                label: operation_contract("system.get_info").label.into(),
                 renderer: "system".into(),
                 icon: "cpu".into(),
                 represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
-                when_to_use: tool_prompts::operation_text("system.info")
+                when_to_use: tool_prompts::operation_text("system.get_info")
                     .when_to_use
                     .into(),
                 when_not_to_use: String::new(),
-                key_operations: vec!["system.info".into()],
+                key_operations: vec!["system.get_info".into()],
             },
             identity: None,
         },
@@ -813,7 +816,7 @@ macro_rules! split_spec_in_root {
 const FILE_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("files.inspect", "inspect", "files", "fileSearch"),
     split_spec!("files.write", "write", "files", "file"),
-    split_spec!("files.create_dir", "create_dir", "files", "folder"),
+    split_spec!("files.create_directory", "create_dir", "files", "folder"),
     split_spec!("files.patch", "patch", "files", "edit"),
     split_spec!("files.copy", "copy", "files", "copy"),
     split_spec!("files.move", "move", "files", "move"),
@@ -824,7 +827,12 @@ const FILE_OPERATION_VIEWS: &[SplitOperationSpec] = &[
 const CLIPBOARD_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("clipboard.read", "read", "clipboard", "clipboard"),
     split_spec!("clipboard.write", "write", "clipboard", "clipboard"),
-    split_spec!("clipboard.history", "history", "clipboard", "clipboard"),
+    split_spec!(
+        "clipboard.list_history",
+        "history",
+        "clipboard",
+        "clipboard"
+    ),
 ];
 
 const INPUT_OPERATION_VIEWS: &[SplitOperationSpec] = &[
@@ -839,11 +847,11 @@ const INPUT_OPERATION_VIEWS: &[SplitOperationSpec] = &[
 
 const WINDOW_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("window.list", "list", "window", "monitor"),
-    split_spec!("window.foreground", "foreground", "window", "monitor"),
+    split_spec!("window.get_foreground", "foreground", "window", "monitor"),
     split_spec!("window.focus", "focus", "window", "monitor"),
     split_spec!("window.close", "close", "window", "monitor"),
-    split_spec!("window.screenshot", "screenshot", "window", "image"),
-    split_spec!("window.ui_tree", "ui_tree", "window", "account_tree"),
+    split_spec!("window.capture_screenshot", "screenshot", "window", "image"),
+    split_spec!("window.get_ui_tree", "ui_tree", "window", "account_tree"),
     split_spec!("window.observe", "observe", "window", "image"),
     split_spec!("window.invoke", "invoke", "window", "play"),
     split_spec!("window.set_value", "set_value", "window", "edit"),
@@ -855,7 +863,7 @@ const WINDOW_OPERATION_VIEWS: &[SplitOperationSpec] = &[
 const MEDIA_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("media.inspect", "inspect", "media", "image"),
     split_spec!("media.describe", "describe", "media", "image"),
-    split_spec!("media.ocr", "ocr", "media", "image"),
+    split_spec!("media.run_ocr", "ocr", "media", "image"),
     split_spec!("media.transcribe", "transcribe", "media", "mic"),
     split_spec!("media.extract", "extract", "media", "fileText"),
     split_spec!("media.render", "render", "media", "fileText"),
@@ -863,10 +871,10 @@ const MEDIA_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("media.record", "record", "media", "mic"),
     split_spec!("media.play", "play", "media", "volumeUp"),
     split_spec!("media.speak", "speak", "media", "volumeUp"),
-    split_spec!("media.volume_get", "volume_get", "media", "volumeUp"),
-    split_spec!("media.volume_set", "volume_set", "media", "volumeUp"),
-    split_spec!("media.mute_get", "mute_get", "media", "volumeOff"),
-    split_spec!("media.mute_set", "mute_set", "media", "volumeOff"),
+    split_spec!("media.get_volume", "volume_get", "media", "volumeUp"),
+    split_spec!("media.set_volume", "volume_set", "media", "volumeUp"),
+    split_spec!("media.get_mute", "mute_get", "media", "volumeOff"),
+    split_spec!("media.set_mute", "mute_set", "media", "volumeOff"),
 ];
 
 const MEMORY_OPERATION_VIEWS: &[SplitOperationSpec] = &[
@@ -879,15 +887,15 @@ const MEMORY_OPERATION_VIEWS: &[SplitOperationSpec] = &[
 
 const AGENT_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("agent.list", "list", "agent", "users"),
-    split_spec!("agent.children", "children", "agent", "users"),
-    split_spec!("agent.history", "history", "agent", "users"),
-    split_spec!("agent.inbox", "inbox", "agent", "users"),
-    split_spec!("agent.ack", "ack", "agent", "users"),
+    split_spec!("agent.list_children", "children", "agent", "users"),
+    split_spec!("agent.read_history", "history", "agent", "users"),
+    split_spec!("agent.list_inbox", "inbox", "agent", "users"),
+    split_spec!("agent.acknowledge", "ack", "agent", "users"),
     split_spec!("agent.send", "send", "agent", "users"),
     split_spec!("agent.reply", "reply", "agent", "users"),
-    split_spec!("agent.profile", "profile", "agent", "users"),
+    split_spec!("agent.get_profile", "profile", "agent", "users"),
     split_spec!("agent.request", "request", "agent", "users"),
-    split_spec!("agent.status", "status", "agent", "users"),
+    split_spec!("agent.get_status", "status", "agent", "users"),
     split_spec!("agent.wait", "wait", "agent", "users"),
     split_spec!("agent.stop", "stop", "agent", "users"),
     split_spec!("agent.collect", "collect", "agent", "fileText"),
@@ -897,7 +905,7 @@ const SESSION_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("session.create", "create", "session", "users"),
     split_spec!("session.link", "link", "session", "link"),
     split_spec!("session.unlink", "unlink", "session", "link"),
-    split_spec!("session.links", "links", "session", "link"),
+    split_spec!("session.list_links", "links", "session", "link"),
     split_spec!(
         "session.read_notes",
         "working_document_read",
@@ -911,30 +919,30 @@ const SESSION_OPERATION_VIEWS: &[SplitOperationSpec] = &[
         "fileText"
     ),
     split_spec!(
-        "session.history_search",
+        "session.search_history",
         "history_search",
         "session",
         "search"
     ),
     split_spec!(
-        "session.history_read",
+        "session.read_history",
         "history_read",
         "session",
         "fileText"
     ),
     split_spec!(
-        "session.linked_history_search",
+        "session.search_linked_history",
         "linked_history_search",
         "session",
         "search"
     ),
     split_spec!(
-        "session.linked_history_read",
+        "session.read_linked_history",
         "linked_history_read",
         "session",
         "fileText"
     ),
-    split_spec!("session.asset_search", "asset_search", "session", "file"),
+    split_spec!("session.search_assets", "asset_search", "session", "file"),
 ];
 
 const ACTION_OPERATION_VIEWS: &[SplitOperationSpec] =
@@ -964,7 +972,7 @@ const SYSTEM_SCOPE_OPERATION_VIEWS: &[(&str, &str, &str, &str, &str)] = &[
         "settings",
     ),
     (
-        "system.power.status",
+        "system.power.get_status",
         "power",
         "status",
         "system",
@@ -983,142 +991,130 @@ const SYSTEM_SCOPE_OPERATION_VIEWS: &[(&str, &str, &str, &str, &str)] = &[
 
 const ADMIN_OPERATION_VIEWS: &[(&str, &str, &str, &str, &str)] = &[
     (
-        "haven.diagnostics.status",
+        "haven.diagnostics.get_status",
         "haven_diagnostics",
-        "status",
+        "get_status",
         "settings",
         "settings",
     ),
     (
-        "haven.diagnostics.logs_tail",
+        "haven.diagnostics.tail_logs",
         "haven_diagnostics",
-        "logs_tail",
+        "tail_logs",
         "settings",
         "settings",
     ),
     (
-        "haven.diagnostics.sessions",
+        "haven.diagnostics.list_sessions",
         "haven_diagnostics",
-        "sessions",
+        "list_sessions",
         "settings",
         "settings",
     ),
     (
-        "haven.diagnostics.errors",
+        "haven.diagnostics.list_errors",
         "haven_diagnostics",
-        "errors",
+        "list_errors",
         "settings",
         "settings",
     ),
     (
-        "haven.config.config_get",
+        "haven.config.get",
         "haven_config",
-        "config_get",
+        "get",
         "settings",
         "settings",
     ),
     (
-        "haven.config.logs_level",
+        "haven.config.set_log_level",
         "haven_config",
-        "logs_level",
+        "set_log_level",
         "settings",
         "settings",
     ),
     (
-        "haven.skills.skills_list",
+        "haven.skills.list",
         "haven_skills",
-        "skills_list",
+        "list",
         "settings",
         "sparkles",
     ),
     (
-        "haven.skills.skill_enable",
+        "haven.skills.enable",
         "haven_skills",
-        "skill_enable",
+        "enable",
         "settings",
         "sparkles",
     ),
     (
-        "haven.skills.skill_disable",
+        "haven.skills.disable",
         "haven_skills",
-        "skill_disable",
+        "disable",
         "settings",
         "sparkles",
     ),
     (
-        "haven.skills.skill_create",
+        "haven.skills.create",
         "haven_skills",
-        "skill_create",
+        "create",
         "settings",
         "sparkles",
     ),
     (
-        "haven.tools.tool_enable",
+        "haven.tools.enable",
         "haven_tools",
-        "tool_enable",
+        "enable",
         "settings",
         "settings",
     ),
     (
-        "haven.tools.tool_disable",
+        "haven.tools.disable",
         "haven_tools",
-        "tool_disable",
+        "disable",
         "settings",
         "settings",
     ),
+    ("haven.mcp.list", "haven_mcp", "list", "settings", "network"),
     (
-        "haven.mcp.mcp_list",
+        "haven.mcp.connect",
         "haven_mcp",
-        "mcp_list",
+        "connect",
         "settings",
         "network",
     ),
     (
-        "haven.mcp.mcp_connect",
+        "haven.mcp.disconnect",
         "haven_mcp",
-        "mcp_connect",
+        "disconnect",
+        "settings",
+        "network",
+    ),
+    ("haven.mcp.add", "haven_mcp", "add", "settings", "network"),
+    (
+        "haven.mcp.update",
+        "haven_mcp",
+        "update",
         "settings",
         "network",
     ),
     (
-        "haven.mcp.mcp_disconnect",
+        "haven.mcp.toggle",
         "haven_mcp",
-        "mcp_disconnect",
+        "toggle",
         "settings",
         "network",
     ),
     (
-        "haven.mcp.mcp_add",
+        "haven.mcp.remove",
         "haven_mcp",
-        "mcp_add",
+        "remove",
         "settings",
         "network",
     ),
     (
-        "haven.mcp.mcp_update",
+        "haven.mcp.reload",
         "haven_mcp",
-        "mcp_update",
-        "settings",
-        "network",
-    ),
-    (
-        "haven.mcp.mcp_toggle",
-        "haven_mcp",
-        "mcp_toggle",
-        "settings",
-        "network",
-    ),
-    (
-        "haven.mcp.mcp_remove",
-        "haven_mcp",
-        "mcp_remove",
-        "settings",
-        "network",
-    ),
-    (
-        "haven.mcp.mcp_reload",
-        "haven_mcp",
-        "mcp_reload",
+        "reload",
         "settings",
         "network",
     ),
@@ -1338,7 +1334,7 @@ mod tests {
         for name in [
             "media.inspect",
             "media.describe",
-            "media.ocr",
+            "media.run_ocr",
             "media.transcribe",
             "media.extract",
             "media.render",
@@ -1354,10 +1350,10 @@ mod tests {
             "media.record",
             "media.play",
             "media.speak",
-            "media.volume_get",
-            "media.volume_set",
-            "media.mute_get",
-            "media.mute_set",
+            "media.get_volume",
+            "media.set_volume",
+            "media.get_mute",
+            "media.set_mute",
         ] {
             assert_eq!(
                 policy(name),
@@ -1497,18 +1493,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "files.read",
-                "files.outline",
-                "files.summary",
+                "files.get_outline",
+                "files.summarize",
                 "files.search",
-                "system.info",
-                "lsp.definition",
-                "lsp.implementation",
-                "lsp.type_definition",
-                "lsp.references",
-                "lsp.hover",
-                "lsp.document_symbols",
-                "lsp.workspace_symbols",
-                "lsp.diagnostics"
+                "system.get_info",
+                "lsp.find_definition",
+                "lsp.find_implementations",
+                "lsp.find_type_definition",
+                "lsp.find_references",
+                "lsp.get_hover",
+                "lsp.list_document_symbols",
+                "lsp.search_workspace_symbols",
+                "lsp.get_diagnostics"
             ]
         );
         for contract in contracts {
@@ -1541,7 +1537,7 @@ mod tests {
 
     #[test]
     fn admin_diagnostics_effect_and_network_policy_are_distinct() {
-        let status = operation_contract("haven.diagnostics.status");
+        let status = operation_contract("haven.diagnostics.get_status");
         let status_attributes = operation_policy_attributes(
             &status,
             ToolConcurrency::SharedResource("haven:diagnostics".into()),
@@ -1552,7 +1548,7 @@ mod tests {
             crate::NetworkAccess::Public
         );
 
-        let errors = operation_contract("haven.diagnostics.errors");
+        let errors = operation_contract("haven.diagnostics.list_errors");
         let errors_attributes = operation_policy_attributes(
             &errors,
             ToolConcurrency::SharedResource("haven:sessions".into()),
@@ -1573,7 +1569,7 @@ mod tests {
         let request_for = |name: &'static str| {
             let contract = operation_contract(name);
             let concurrency = ToolConcurrency::SharedResource(
-                if name == "haven.diagnostics.status" {
+                if name == "haven.diagnostics.get_status" {
                     "haven:diagnostics"
                 } else {
                     "haven:sessions"
@@ -1601,7 +1597,7 @@ mod tests {
 
         assert!(matches!(
             authorization
-                .authorize(&request_for("haven.diagnostics.status"))
+                .authorize(&request_for("haven.diagnostics.get_status"))
                 .await,
             crate::AuthorizationDecision::RequiresConfirmation {
                 reason_code: crate::AuthorizationReasonCode::SensitiveData,
@@ -1610,7 +1606,7 @@ mod tests {
         ));
         assert!(matches!(
             authorization
-                .authorize(&request_for("haven.diagnostics.errors"))
+                .authorize(&request_for("haven.diagnostics.list_errors"))
                 .await,
             crate::AuthorizationDecision::AutoApproved
         ));
@@ -1618,7 +1614,7 @@ mod tests {
 
     #[tokio::test]
     async fn model_mcp_connect_is_blocked_when_network_is_denied() {
-        let name = "haven.mcp.mcp_connect";
+        let name = "haven.mcp.connect";
         let contract = operation_contract(name);
         let concurrency = ToolConcurrency::Exclusive;
         let attributes = operation_policy_attributes(&contract, concurrency.clone());
@@ -1627,7 +1623,7 @@ mod tests {
         let request = crate::AuthorizationRequest::new(
             None,
             name,
-            json!({ "operation": "mcp_connect", "name": "server-a" }),
+            json!({ "operation": "connect", "name": "server-a" }),
             OperationPolicy {
                 risk_level: contract.risk_override.unwrap_or(RiskLevel::Medium),
                 capability: haven_common::types::CapabilityScope::try_new(name).unwrap(),
@@ -1682,9 +1678,9 @@ mod tests {
 
         let cases = [
             (
-                "haven.mcp.mcp_add",
+                "haven.mcp.add",
                 json!({
-                    "operation": "mcp_add",
+                    "operation": "add",
                     "name": "server-a",
                     "transport": "http",
                     "url": "https://example.invalid/mcp",
@@ -1706,9 +1702,9 @@ mod tests {
                 }),
             ),
             (
-                "haven.mcp.mcp_update",
+                "haven.mcp.update",
                 json!({
-                    "operation": "mcp_update",
+                    "operation": "update",
                     "name": "server-a",
                     "transport": "http",
                     "url": "https://example.invalid/mcp",
@@ -1728,9 +1724,9 @@ mod tests {
                 }),
             ),
             (
-                "haven.mcp.mcp_toggle",
+                "haven.mcp.toggle",
                 json!({
-                    "operation": "mcp_toggle",
+                    "operation": "toggle",
                     "name": "server-a",
                     "enabled": true,
                 }),
@@ -1740,8 +1736,8 @@ mod tests {
                 }),
             ),
             (
-                "haven.mcp.mcp_reload",
-                json!({"operation": "mcp_reload"}),
+                "haven.mcp.reload",
+                json!({"operation": "reload"}),
                 AdminRequest::Mcp(McpOperationArgs::McpReload),
             ),
         ];
@@ -1802,17 +1798,17 @@ mod tests {
 
         for (name, native) in [
             (
-                "haven.mcp.mcp_list",
+                "haven.mcp.list",
                 AdminRequest::Mcp(McpOperationArgs::McpList),
             ),
             (
-                "haven.mcp.mcp_disconnect",
+                "haven.mcp.disconnect",
                 AdminRequest::Mcp(McpOperationArgs::McpDisconnect {
                     name: "server-a".into(),
                 }),
             ),
             (
-                "haven.mcp.mcp_remove",
+                "haven.mcp.remove",
                 AdminRequest::Mcp(McpOperationArgs::McpRemove {
                     name: "server-a".into(),
                 }),
@@ -1834,8 +1830,8 @@ mod tests {
         let specs = operation_specs(64);
         for name in [
             "files.read",
-            "files.outline",
-            "files.summary",
+            "files.get_outline",
+            "files.summarize",
             "files.search",
         ] {
             let spec = specs

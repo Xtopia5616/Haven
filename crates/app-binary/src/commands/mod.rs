@@ -168,7 +168,7 @@ mod tests {
     fn receipt() -> ConfirmationReceipt {
         ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
-            capability: CapabilityScope::try_new("haven.mcp.mcp_refresh").unwrap(),
+            capability: CapabilityScope::try_new("haven.mcp.refresh").unwrap(),
             canonical_input_hash: "test-hash".into(),
             effective_risk: RiskLevel::Medium,
             policy_revision: 1,
@@ -265,7 +265,7 @@ mod tests {
             "name": "server",
             "env": ["TOKEN=secret-value", "EMPTY=", "INHERITED"]
         });
-        let redacted = redact_mcp_admin_confirmation_input("haven.mcp.mcp_add", input);
+        let redacted = redact_mcp_admin_confirmation_input("haven.mcp.add", input);
         assert_eq!(
             redacted["env"],
             serde_json::json!(["TOKEN=<redacted>", "EMPTY=<redacted>", "INHERITED"])
@@ -286,7 +286,7 @@ mod tests {
     async fn pending_or_blocked_admin_authorization_never_runs_connection_effects() {
         for decision in [
             AuthorizationDecision::RequiresConfirmation {
-                capability: CapabilityScope::try_new("haven.mcp.mcp_refresh").unwrap(),
+                capability: CapabilityScope::try_new("haven.mcp.refresh").unwrap(),
                 risk_level: RiskLevel::Medium,
                 receipt: receipt(),
                 reason_code: AuthorizationReasonCode::SensitiveData,

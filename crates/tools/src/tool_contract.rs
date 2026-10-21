@@ -272,7 +272,7 @@ pub(crate) fn operation_attributes(
     let effect = match name {
         "files.write"
         | "files.patch"
-        | "files.create_dir"
+        | "files.create_directory"
         | "files.copy"
         | "files.move"
         | "files.promote_sandbox_output" => OperationEffect::WorkspaceWrite,
@@ -284,7 +284,7 @@ pub(crate) fn operation_attributes(
         | "system.registry.list"
         | "system.registry.get"
         | "clipboard.read"
-        | "clipboard.history" => DataSensitivity::Sensitive,
+        | "clipboard.list_history" => DataSensitivity::Sensitive,
         name if name.starts_with("files.")
             || name.starts_with("media.")
             || name.starts_with("window.")
@@ -296,7 +296,7 @@ pub(crate) fn operation_attributes(
         _ => DataSensitivity::None,
     };
     let network = match name {
-        "http" | "web_search_api" | "files.summary" | "media.describe" | "media.ocr"
+        "http" | "web_search_api" | "files.summarize" | "media.describe" | "media.run_ocr"
         | "media.transcribe" | "media.generate" => NetworkAccess::Public,
         "shell" | "load_mcp" => NetworkAccess::Opaque,
         name if name.starts_with("mcp__")

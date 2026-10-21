@@ -313,7 +313,7 @@ impl MediaTool {
     }
 
     /// Same typed envelope for producer operations outside the flat media
-    /// operation enum, such as `window.screenshot`.
+    /// operation enum, such as `window.capture_screenshot`.
     pub(crate) fn media_result_output_named(
         &self,
         operation: impl Into<String>,

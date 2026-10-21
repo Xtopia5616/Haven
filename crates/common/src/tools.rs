@@ -20,6 +20,84 @@ pub const BACKGROUND_WAIT_KEY: &str = "background_wait";
 pub const BACKGROUND_WAIT_KIND: &str = "tool_run_result";
 pub const BACKGROUND_WAIT_DELIVERY: &str = "automatic";
 
+/// One-time renames for Haven-owned builtin tool identities. This is a data
+/// migration table for persisted capability keys and scheduled/background
+/// targets; it does not make old names executable aliases.
+pub const BUILTIN_TOOL_NAME_RENAMES: &[(&str, &str)] = &[
+    ("files.outline", "files.get_outline"),
+    ("files.summary", "files.summarize"),
+    ("files.create_dir", "files.create_directory"),
+    ("lsp.definition", "lsp.find_definition"),
+    ("lsp.implementation", "lsp.find_implementations"),
+    ("lsp.type_definition", "lsp.find_type_definition"),
+    ("lsp.references", "lsp.find_references"),
+    ("lsp.hover", "lsp.get_hover"),
+    ("lsp.document_symbols", "lsp.list_document_symbols"),
+    ("lsp.workspace_symbols", "lsp.search_workspace_symbols"),
+    ("lsp.diagnostics", "lsp.get_diagnostics"),
+    ("clipboard.history", "clipboard.list_history"),
+    ("window.foreground", "window.get_foreground"),
+    ("window.screenshot", "window.capture_screenshot"),
+    ("window.ui_tree", "window.get_ui_tree"),
+    ("media.ocr", "media.run_ocr"),
+    ("media.volume_get", "media.get_volume"),
+    ("media.volume_set", "media.set_volume"),
+    ("media.mute_get", "media.get_mute"),
+    ("media.mute_set", "media.set_mute"),
+    ("agent.children", "agent.list_children"),
+    ("agent.history", "agent.read_history"),
+    ("agent.inbox", "agent.list_inbox"),
+    ("agent.ack", "agent.acknowledge"),
+    ("agent.profile", "agent.get_profile"),
+    ("agent.status", "agent.get_status"),
+    ("session.links", "session.list_links"),
+    ("session.history_search", "session.search_history"),
+    ("session.history_read", "session.read_history"),
+    (
+        "session.linked_history_search",
+        "session.search_linked_history",
+    ),
+    ("session.linked_history_read", "session.read_linked_history"),
+    ("session.asset_search", "session.search_assets"),
+    ("system.info", "system.get_info"),
+    ("system.display", "system.list_displays"),
+    ("system.power.status", "system.power.get_status"),
+    ("haven.diagnostics.status", "haven.diagnostics.get_status"),
+    ("haven.diagnostics.logs_tail", "haven.diagnostics.tail_logs"),
+    (
+        "haven.diagnostics.sessions",
+        "haven.diagnostics.list_sessions",
+    ),
+    ("haven.diagnostics.errors", "haven.diagnostics.list_errors"),
+    ("haven.config.config_get", "haven.config.get"),
+    ("haven.config.logs_level", "haven.config.set_log_level"),
+    ("haven.skills.skills_list", "haven.skills.list"),
+    ("haven.skills.skill_enable", "haven.skills.enable"),
+    ("haven.skills.skill_disable", "haven.skills.disable"),
+    ("haven.skills.skill_create", "haven.skills.create"),
+    ("haven.tools.tool_enable", "haven.tools.enable"),
+    ("haven.tools.tool_disable", "haven.tools.disable"),
+    ("haven.mcp.mcp_list", "haven.mcp.list"),
+    ("haven.mcp.mcp_connect", "haven.mcp.connect"),
+    ("haven.mcp.mcp_disconnect", "haven.mcp.disconnect"),
+    ("haven.mcp.mcp_add", "haven.mcp.add"),
+    ("haven.mcp.mcp_update", "haven.mcp.update"),
+    ("haven.mcp.mcp_toggle", "haven.mcp.toggle"),
+    ("haven.mcp.mcp_remove", "haven.mcp.remove"),
+    ("haven.mcp.mcp_reload", "haven.mcp.reload"),
+    ("haven.mcp.mcp_reconnect", "haven.mcp.reconnect"),
+    ("haven.mcp.mcp_refresh", "haven.mcp.refresh"),
+];
+
+/// Return the current builtin identity for a previously persisted name.
+/// Unknown and already-canonical names pass through unchanged.
+pub fn canonical_builtin_tool_name(name: &str) -> &str {
+    BUILTIN_TOOL_NAME_RENAMES
+        .iter()
+        .find_map(|(old, current)| (*old == name).then_some(*current))
+        .unwrap_or(name)
+}
+
 /// Static retry metadata exposed beside a tool definition. Grouped tools may
 /// still refine this policy per operation at execution time; `unknown` is the
 /// honest value when the default input does not identify one operation.
@@ -605,6 +683,25 @@ impl ToolDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_tool_name_renames_are_unique_and_canonical() {
+        let mut old_names = std::collections::HashSet::new();
+        let mut new_names = std::collections::HashSet::new();
+        for (old, current) in BUILTIN_TOOL_NAME_RENAMES {
+            assert!(old_names.insert(old), "duplicate legacy name {old}");
+            assert!(
+                new_names.insert(current),
+                "duplicate canonical name {current}"
+            );
+            assert_eq!(canonical_builtin_tool_name(old), *current);
+            assert_eq!(canonical_builtin_tool_name(current), *current);
+        }
+        assert_eq!(
+            canonical_builtin_tool_name("mcp__peer__tool"),
+            "mcp__peer__tool"
+        );
+    }
 
     #[test]
     fn tool_catalog_group_summaries_are_compact_and_user_facing() {

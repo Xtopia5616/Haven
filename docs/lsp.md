@@ -24,12 +24,12 @@ enabled = true
 
 LSP 操作通过 `discover_tools` 按需发现和加载。Agent 可以先按 `lsp` 搜索，再查看并加载需要的具体操作；常用名称如下：
 
-- `lsp.workspace_symbols`：按名字在工作区搜索，不需要文件位置。传入配置中的 `server` 名称和 `query`。
-- `lsp.document_symbols`：列出一个文件中的声明及其范围。
-- `lsp.definition`、`lsp.implementation`、`lsp.type_definition`、`lsp.references`、`lsp.hover`：对指定文件和源码位置查询。
-- `lsp.diagnostics`：查询指定文件的语言服务器诊断。
+- `lsp.search_workspace_symbols`：按名字在工作区搜索，不需要文件位置。传入配置中的 `server` 名称和 `query`。
+- `lsp.list_document_symbols`：列出一个文件中的声明及其范围。
+- `lsp.find_definition`、`lsp.find_implementations`、`lsp.find_type_definition`、`lsp.find_references`、`lsp.get_hover`：对指定文件和源码位置查询。
+- `lsp.get_diagnostics`：查询指定文件的语言服务器诊断。
 
-位置操作的 `line` 和 `character` 都从 1 开始；`character` 使用 UTF-16 代码单元计数。若 Agent 不知道符号所在文件或位置，可以先用 `lsp.workspace_symbols` 搜索名字，再用返回的位置继续导航。服务器必须支持工作区符号请求，结果取决于其语言索引能力。
+位置操作的 `line` 和 `character` 都从 1 开始；`character` 使用 UTF-16 代码单元计数。若 Agent 不知道符号所在文件或位置，可以先用 `lsp.search_workspace_symbols` 搜索名字，再用返回的位置继续导航。服务器必须支持工作区符号请求，结果取决于其语言索引能力。
 
 示例请求：
 

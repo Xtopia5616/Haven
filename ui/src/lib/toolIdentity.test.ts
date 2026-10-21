@@ -82,11 +82,11 @@ describe('toolSourceLabel / toolDisplayName', () => {
 		setToolManifests([
 			manifest('files.read', 'files', '读取文件'),
 			manifest('files.search', 'files', '搜索文件'),
-			manifest('system.info', 'system', '系统信息'),
+			manifest('system.get_info', 'system', '系统信息'),
 		]);
 		expect(toolDisplayName('files.read')).toBe('读取文件');
 		expect(toolDisplayName('files.search')).toBe('搜索文件');
-		expect(toolDisplayName('system.info')).toBe('系统信息');
+		expect(toolDisplayName('system.get_info')).toBe('系统信息');
 	});
 });
 

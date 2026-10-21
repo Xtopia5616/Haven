@@ -474,7 +474,8 @@ pub fn permission_key(tool_name: &str, params: &serde_json::Value) -> String {
     if let Some(op) = op {
         parts.push(op.to_string());
     }
-    parts.join(".")
+    let key = parts.join(".");
+    crate::tools::canonical_builtin_tool_name(&key).to_owned()
 }
 
 /// Tool root of a capability identity (`system.power.lock` → `system`).
@@ -1419,8 +1420,16 @@ mod tests {
             "files.delete"
         );
         assert_eq!(
+            permission_key("files", &serde_json::json!({"operation": "outline"})),
+            "files.get_outline"
+        );
+        assert_eq!(
             permission_key("media", &serde_json::json!({"operation": "speak"})),
             "media.speak"
+        );
+        assert_eq!(
+            permission_key("media", &serde_json::json!({"operation": "ocr"})),
+            "media.run_ocr"
         );
         assert_eq!(
             permission_key("schedule", &serde_json::json!({"operation": "set"})),
@@ -1460,11 +1469,11 @@ mod tests {
         );
         assert_eq!(
             permission_key("system", &serde_json::json!({"scope": "power"})),
-            "system.power.status"
+            "system.power.get_status"
         );
         assert_eq!(
             permission_key("system", &serde_json::json!({"scope": "info"})),
-            "system.info"
+            "system.get_info"
         );
         // Non-routing tools ignore operation/scope in args.
         assert_eq!(

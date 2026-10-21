@@ -26,28 +26,36 @@ pub(crate) const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("ask", "ask", Safe),
     security_case!("files.read", "files.read", Low),
     security_case!("files.inspect", "files.inspect", Low),
-    security_case!("files.outline", "files.outline", Low),
-    security_case!("files.summary", "files.summary", Low),
+    security_case!("files.get_outline", "files.get_outline", Low),
+    security_case!("files.summarize", "files.summarize", Low),
     security_case!("files.search", "files.search", Low),
     security_case!("files.search", "search:content", Medium),
     security_case!("files.write", "files.write", Medium),
-    security_case!("files.create_dir", "files.create_dir", Medium),
+    security_case!("files.create_directory", "files.create_directory", Medium),
     security_case!("files.patch", "files.patch", Medium),
     security_case!("files.copy", "files.copy", Medium),
     security_case!("files.move", "files.move", Medium),
     security_case!("files.delete", "files.delete", High),
     security_case!("files.list", "files.list", Low),
-    security_case!("lsp.definition", "lsp.definition", High),
-    security_case!("lsp.implementation", "lsp.implementation", High),
-    security_case!("lsp.type_definition", "lsp.type_definition", High),
-    security_case!("lsp.references", "lsp.references", High),
-    security_case!("lsp.hover", "lsp.hover", High),
-    security_case!("lsp.document_symbols", "lsp.document_symbols", High),
-    security_case!("lsp.workspace_symbols", "lsp.workspace_symbols", High),
-    security_case!("lsp.diagnostics", "lsp.diagnostics", High),
+    security_case!("lsp.find_definition", "lsp.find_definition", High),
+    security_case!("lsp.find_implementations", "lsp.find_implementations", High),
+    security_case!("lsp.find_type_definition", "lsp.find_type_definition", High),
+    security_case!("lsp.find_references", "lsp.find_references", High),
+    security_case!("lsp.get_hover", "lsp.get_hover", High),
+    security_case!(
+        "lsp.list_document_symbols",
+        "lsp.list_document_symbols",
+        High
+    ),
+    security_case!(
+        "lsp.search_workspace_symbols",
+        "lsp.search_workspace_symbols",
+        High
+    ),
+    security_case!("lsp.get_diagnostics", "lsp.get_diagnostics", High),
     security_case!("clipboard.read", "clipboard.read", Low),
     security_case!("clipboard.write", "clipboard.write", Medium),
-    security_case!("clipboard.history", "clipboard.history", Low),
+    security_case!("clipboard.list_history", "clipboard.list_history", Low),
     security_case!("shell", "execute", High),
     security_case!("toolrun.start", "toolrun.start", Safe),
     security_case!("toolrun.list", "toolrun.list", Safe),
@@ -60,13 +68,13 @@ pub(crate) const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("input.click_element", "input.click_element", Medium),
     security_case!("input.move", "input.move", Low),
     security_case!("input.scroll", "input.scroll", Low),
-    security_case!("system.info", "system.info", Safe),
-    security_case!("system.display", "system.display", Safe),
+    security_case!("system.get_info", "system.get_info", Safe),
+    security_case!("system.list_displays", "system.list_displays", Safe),
     security_case!("system.env.list", "system.env.list", High),
     security_case!("system.env.get", "system.env.get", Low),
     security_case!("system.registry.list", "system.registry.list", Medium),
     security_case!("system.registry.get", "system.registry.get", Medium),
-    security_case!("system.power.status", "system.power.status", Safe),
+    security_case!("system.power.get_status", "system.power.get_status", Safe),
     security_case!("system.power.lock", "system.power.lock", High),
     security_case!("system.power.sleep", "system.power.sleep", High),
     security_case!("system.power.hibernate", "system.power.hibernate", Critical),
@@ -74,11 +82,15 @@ pub(crate) const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("schedule.list", "schedule.list", Safe),
     security_case!("schedule.cancel", "schedule.cancel", Safe),
     security_case!("window.list", "window.list", Low),
-    security_case!("window.foreground", "window.foreground", Low),
+    security_case!("window.get_foreground", "window.get_foreground", Low),
     security_case!("window.focus", "window.focus", Medium),
     security_case!("window.close", "window.close", High),
-    security_case!("window.screenshot", "window.screenshot", Low),
-    security_case!("window.ui_tree", "window.ui_tree", Low),
+    security_case!(
+        "window.capture_screenshot",
+        "window.capture_screenshot",
+        Low
+    ),
+    security_case!("window.get_ui_tree", "window.get_ui_tree", Low),
     security_case!("window.observe", "window.observe", Low),
     security_case!("window.invoke", "window.invoke", Medium),
     security_case!("window.set_value", "window.set_value", Medium),
@@ -87,7 +99,7 @@ pub(crate) const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("window.wait", "window.wait", Low),
     security_case!("media.inspect", "media.inspect", Low),
     security_case!("media.describe", "media.describe", Medium),
-    security_case!("media.ocr", "media.ocr", High),
+    security_case!("media.run_ocr", "media.run_ocr", High),
     security_case!("media.transcribe", "media.transcribe", Medium),
     security_case!("media.extract", "media.extract", Low),
     security_case!("media.render", "media.render", Low),
@@ -95,43 +107,43 @@ pub(crate) const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("media.record", "media.record", Medium),
     security_case!("media.play", "media.play", Low),
     security_case!("media.speak", "media.speak", Low),
-    security_case!("media.volume_get", "media.volume_get", Low),
-    security_case!("media.volume_set", "media.volume_set", Medium),
-    security_case!("media.mute_get", "media.mute_get", Low),
-    security_case!("media.mute_set", "media.mute_set", Medium),
+    security_case!("media.get_volume", "media.get_volume", Low),
+    security_case!("media.set_volume", "media.set_volume", Medium),
+    security_case!("media.get_mute", "media.get_mute", Low),
+    security_case!("media.set_mute", "media.set_mute", Medium),
     security_case!("http", "request", Medium),
     security_case!("notify", "notify", Safe),
     security_case!("discover_tools", "discover_tools", Safe),
     security_case!("load_skill", "load", Safe),
     security_case!("agent.list", "agent.list", Safe),
-    security_case!("agent.children", "agent.children", Safe),
-    security_case!("agent.history", "agent.history", Safe),
+    security_case!("agent.list_children", "agent.list_children", Safe),
+    security_case!("agent.read_history", "agent.read_history", Safe),
     security_case!("agent.send", "agent.send", Safe),
-    security_case!("agent.inbox", "agent.inbox", Safe),
-    security_case!("agent.ack", "agent.ack", Safe),
+    security_case!("agent.list_inbox", "agent.list_inbox", Safe),
+    security_case!("agent.acknowledge", "agent.acknowledge", Safe),
     security_case!("agent.reply", "agent.reply", Safe),
-    security_case!("agent.profile", "agent.profile", Safe),
+    security_case!("agent.get_profile", "agent.get_profile", Safe),
     security_case!("agent.request", "agent.request", Safe),
     security_case!("session.create", "session.create", Medium),
     security_case!("session.link", "session.link", Low),
     security_case!("session.unlink", "session.unlink", Low),
-    security_case!("session.links", "session.links", Safe),
+    security_case!("session.list_links", "session.list_links", Safe),
     security_case!("session.read_notes", "session.read_notes", Safe),
     security_case!("session.replace_notes", "session.replace_notes", Safe),
-    security_case!("session.history_search", "session.history_search", Safe),
-    security_case!("session.history_read", "session.history_read", Safe),
+    security_case!("session.search_history", "session.search_history", Safe),
+    security_case!("session.read_history", "session.read_history", Safe),
     security_case!(
-        "session.linked_history_search",
-        "session.linked_history_search",
+        "session.search_linked_history",
+        "session.search_linked_history",
         Safe
     ),
     security_case!(
-        "session.linked_history_read",
-        "session.linked_history_read",
+        "session.read_linked_history",
+        "session.read_linked_history",
         Safe
     ),
-    security_case!("session.asset_search", "session.asset_search", Safe),
-    security_case!("agent.status", "agent.status", Safe),
+    security_case!("session.search_assets", "session.search_assets", Safe),
+    security_case!("agent.get_status", "agent.get_status", Safe),
     security_case!("agent.wait", "agent.wait", Safe),
     security_case!("agent.stop", "agent.stop", High),
     security_case!("agent.collect", "agent.collect", Safe),
@@ -141,54 +153,46 @@ pub(crate) const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("memory.remember", "memory.remember", Medium),
     security_case!("memory.forget", "memory.forget", Medium),
     security_case!("memory.recall", "memory.recall", Safe),
-    security_case!("haven.diagnostics.status", "haven.diagnostics.status", Low),
     security_case!(
-        "haven.diagnostics.logs_tail",
-        "haven.diagnostics.logs_tail",
+        "haven.diagnostics.get_status",
+        "haven.diagnostics.get_status",
         Low
     ),
     security_case!(
-        "haven.diagnostics.sessions",
-        "haven.diagnostics.sessions",
+        "haven.diagnostics.tail_logs",
+        "haven.diagnostics.tail_logs",
         Low
     ),
-    security_case!("haven.diagnostics.errors", "haven.diagnostics.errors", Low),
-    security_case!("haven.config.config_get", "haven.config.config_get", Low),
-    security_case!("haven.config.logs_level", "haven.config.logs_level", Medium),
-    security_case!("haven.skills.skills_list", "haven.skills.skills_list", Low),
     security_case!(
-        "haven.skills.skill_enable",
-        "haven.skills.skill_enable",
+        "haven.diagnostics.list_sessions",
+        "haven.diagnostics.list_sessions",
+        Low
+    ),
+    security_case!(
+        "haven.diagnostics.list_errors",
+        "haven.diagnostics.list_errors",
+        Low
+    ),
+    security_case!("haven.config.get", "haven.config.get", Low),
+    security_case!(
+        "haven.config.set_log_level",
+        "haven.config.set_log_level",
         Medium
     ),
-    security_case!(
-        "haven.skills.skill_disable",
-        "haven.skills.skill_disable",
-        Medium
-    ),
-    security_case!(
-        "haven.skills.skill_create",
-        "haven.skills.skill_create",
-        High
-    ),
-    security_case!("haven.tools.tool_enable", "haven.tools.tool_enable", Medium),
-    security_case!(
-        "haven.tools.tool_disable",
-        "haven.tools.tool_disable",
-        Medium
-    ),
-    security_case!("haven.mcp.mcp_list", "haven.mcp.mcp_list", Low),
-    security_case!("haven.mcp.mcp_connect", "haven.mcp.mcp_connect", Medium),
-    security_case!(
-        "haven.mcp.mcp_disconnect",
-        "haven.mcp.mcp_disconnect",
-        Medium
-    ),
-    security_case!("haven.mcp.mcp_add", "haven.mcp.mcp_add", High),
-    security_case!("haven.mcp.mcp_update", "haven.mcp.mcp_update", High),
-    security_case!("haven.mcp.mcp_toggle", "haven.mcp.mcp_toggle", High),
-    security_case!("haven.mcp.mcp_remove", "haven.mcp.mcp_remove", High),
-    security_case!("haven.mcp.mcp_reload", "haven.mcp.mcp_reload", High),
+    security_case!("haven.skills.list", "haven.skills.list", Low),
+    security_case!("haven.skills.enable", "haven.skills.enable", Medium),
+    security_case!("haven.skills.disable", "haven.skills.disable", Medium),
+    security_case!("haven.skills.create", "haven.skills.create", High),
+    security_case!("haven.tools.enable", "haven.tools.enable", Medium),
+    security_case!("haven.tools.disable", "haven.tools.disable", Medium),
+    security_case!("haven.mcp.list", "haven.mcp.list", Low),
+    security_case!("haven.mcp.connect", "haven.mcp.connect", Medium),
+    security_case!("haven.mcp.disconnect", "haven.mcp.disconnect", Medium),
+    security_case!("haven.mcp.add", "haven.mcp.add", High),
+    security_case!("haven.mcp.update", "haven.mcp.update", High),
+    security_case!("haven.mcp.toggle", "haven.mcp.toggle", High),
+    security_case!("haven.mcp.remove", "haven.mcp.remove", High),
+    security_case!("haven.mcp.reload", "haven.mcp.reload", High),
 ];
 
 /// Build a concise, non-sensitive explanation for a permission prompt.
@@ -237,10 +241,10 @@ pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
             "将审阅结果 {change_index} 创建到：{destination}。目标已存在时会拒绝覆盖。"
         );
     }
-    if tool_name == "haven.mcp.mcp_reconnect" {
+    if tool_name == "haven.mcp.reconnect" {
         return "将重新连接一个当前配置的 MCP 服务器（服务器配置详情已隐藏）".into();
     }
-    if tool_name == "haven.mcp.mcp_refresh" {
+    if tool_name == "haven.mcp.refresh" {
         let mut connect = 0;
         let mut reconnect = 0;
         let mut disconnect = 0;
@@ -390,7 +394,7 @@ mod tests {
     #[test]
     fn native_mcp_refresh_prompt_describes_one_bounded_batch_without_config_values() {
         let summary = permission_prompt_summary(
-            "haven.mcp.mcp_refresh",
+            "haven.mcp.refresh",
             &serde_json::json!({
                 "operation": "mcp_refresh",
                 "plan": {
@@ -416,7 +420,7 @@ mod tests {
     #[test]
     fn native_mcp_reconnect_prompt_names_its_single_server_scope() {
         let summary = permission_prompt_summary(
-            "haven.mcp.mcp_reconnect",
+            "haven.mcp.reconnect",
             &serde_json::json!({"operation": "mcp_reconnect", "name": "private-server"}),
         );
         assert!(summary.contains("一个"));

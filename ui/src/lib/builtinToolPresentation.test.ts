@@ -157,7 +157,7 @@ describe('builtin tool presentation', () => {
 			rootLabel: 'Haven',
 			operation: 'memory.search',
 		});
-		const havenStatus = tool('haven.diagnostics.status', {
+		const havenStatus = tool('haven.diagnostics.get_status', {
 			category: 'haven',
 			root: 'haven',
 			rootLabel: 'Haven',

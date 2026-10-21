@@ -188,10 +188,10 @@ describe('canRenderToolResult', () => {
 	});
 	it('uses the renderer contract instead of inferring a renderer from result shape', () => {
 		const result = JSON.stringify({ operation: 'create_dir', created: true });
-		expect(parseToolResult('files.create_dir', result, 'files')).toMatchObject({
+		expect(parseToolResult('files.create_directory', result, 'files')).toMatchObject({
 			kind: 'custom',
 		});
-		expect(parseToolResult('files.create_dir', result)).toMatchObject({ kind: 'generic' });
+		expect(parseToolResult('files.create_directory', result)).toMatchObject({ kind: 'generic' });
 	});
 	it('rejects empty content', () => {
 		expect(canRenderToolResult('', '')).toBe(false);
@@ -2131,7 +2131,7 @@ describe('ToolResultCard memory', () => {
 describe('ToolResultCard admin capabilities', () => {
 	it('renders tool toggles as a compact status result', async () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'haven.tools.tool_disable',
+			toolName: 'haven.tools.disable',
 			renderer: 'haven_tools',
 			content: JSON.stringify({
 				operation: 'tool_disable',

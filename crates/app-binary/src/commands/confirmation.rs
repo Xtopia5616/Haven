@@ -204,7 +204,7 @@ pub(super) fn redact_mcp_admin_confirmation_input(
     tool_name: &str,
     mut input: serde_json::Value,
 ) -> serde_json::Value {
-    if !matches!(tool_name, "haven.mcp.mcp_add" | "haven.mcp.mcp_update") {
+    if !matches!(tool_name, "haven.mcp.add" | "haven.mcp.update") {
         return input;
     }
     let Some(environment) = input

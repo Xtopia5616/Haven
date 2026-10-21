@@ -210,14 +210,14 @@ describe('manifest-driven result renderers', () => {
 	});
 
 	it('uses the canonical admin renderer while keeping the manifest root', () => {
-		setToolManifests([manifest('haven.diagnostics.status', 'haven', 'haven_diagnostics')]);
+		setToolManifests([manifest('haven.diagnostics.get_status', 'haven', 'haven_diagnostics')]);
 		const data = { status: 'ok', version: '0.1.0' };
 
-		expect(toolRootName('haven.diagnostics.status')).toBe('haven');
-		expect(parseToolResult('haven.diagnostics.status', JSON.stringify(data))).toMatchObject({
+		expect(toolRootName('haven.diagnostics.get_status')).toBe('haven');
+		expect(parseToolResult('haven.diagnostics.get_status', JSON.stringify(data))).toMatchObject({
 			kind: 'custom',
 		});
-		expect(getToolResultRenderer('custom', 'haven.diagnostics.status', data)).toBe(
+		expect(getToolResultRenderer('custom', 'haven.diagnostics.get_status', data)).toBe(
 			ToolAdminResult,
 		);
 	});

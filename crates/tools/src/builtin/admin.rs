@@ -121,15 +121,19 @@ impl AdminCapability {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DiagnosticsOperationArgs {
+    #[serde(rename = "get_status")]
     Status,
+    #[serde(rename = "tail_logs")]
     LogsTail {
         #[serde(default)]
         limit: Option<i64>,
     },
+    #[serde(rename = "list_sessions")]
     Sessions {
         #[serde(default)]
         limit: Option<i64>,
     },
+    #[serde(rename = "list_errors")]
     Errors {
         #[serde(default)]
         limit: Option<i64>,
@@ -139,13 +143,13 @@ pub enum DiagnosticsOperationArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SkillsOperationArgs {
+    #[serde(rename = "list")]
     SkillsList,
-    SkillEnable {
-        name: String,
-    },
-    SkillDisable {
-        name: String,
-    },
+    #[serde(rename = "enable")]
+    SkillEnable { name: String },
+    #[serde(rename = "disable")]
+    SkillDisable { name: String },
+    #[serde(rename = "create")]
     SkillCreate {
         name: String,
         description: String,
@@ -162,20 +166,22 @@ pub enum SkillsOperationArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToolsOperationArgs {
+    #[serde(rename = "enable")]
     ToolEnable { name: String },
+    #[serde(rename = "disable")]
     ToolDisable { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum McpOperationArgs {
+    #[serde(rename = "list")]
     McpList,
-    McpConnect {
-        name: String,
-    },
-    McpDisconnect {
-        name: String,
-    },
+    #[serde(rename = "connect")]
+    McpConnect { name: String },
+    #[serde(rename = "disconnect")]
+    McpDisconnect { name: String },
+    #[serde(rename = "add")]
     McpAdd {
         name: String,
         transport: McpServerTransport,
@@ -198,6 +204,7 @@ pub enum McpOperationArgs {
         #[serde(default = "default_enabled")]
         auto_connect: bool,
     },
+    #[serde(rename = "update")]
     McpUpdate {
         name: String,
         #[serde(default)]
@@ -219,13 +226,11 @@ pub enum McpOperationArgs {
         #[serde(default)]
         enabled: Option<bool>,
     },
-    McpToggle {
-        name: String,
-        enabled: bool,
-    },
-    McpRemove {
-        name: String,
-    },
+    #[serde(rename = "toggle")]
+    McpToggle { name: String, enabled: bool },
+    #[serde(rename = "remove")]
+    McpRemove { name: String },
+    #[serde(rename = "reload")]
     McpReload,
 }
 
@@ -341,13 +346,13 @@ fn default_enabled() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ConfigOperationArgs {
+    #[serde(rename = "get")]
     ConfigGet {
         #[serde(default)]
         path: Option<String>,
     },
-    LogsLevel {
-        level: LogLevel,
-    },
+    #[serde(rename = "set_log_level")]
+    LogsLevel { level: LogLevel },
 }
 
 #[derive(Debug, Clone)]
@@ -394,36 +399,34 @@ pub enum AdminRequest {
 impl AdminRequest {
     pub fn model_operation_name(&self) -> &'static str {
         match self {
-            Self::Diagnostics(DiagnosticsOperationArgs::Status) => "haven.diagnostics.status",
+            Self::Diagnostics(DiagnosticsOperationArgs::Status) => "haven.diagnostics.get_status",
             Self::Diagnostics(DiagnosticsOperationArgs::LogsTail { .. }) => {
-                "haven.diagnostics.logs_tail"
+                "haven.diagnostics.tail_logs"
             }
             Self::Diagnostics(DiagnosticsOperationArgs::Sessions { .. }) => {
-                "haven.diagnostics.sessions"
+                "haven.diagnostics.list_sessions"
             }
             Self::Diagnostics(DiagnosticsOperationArgs::Errors { .. }) => {
-                "haven.diagnostics.errors"
+                "haven.diagnostics.list_errors"
             }
-            Self::Config(ConfigOperationArgs::ConfigGet { .. }) => "haven.config.config_get",
-            Self::Config(ConfigOperationArgs::LogsLevel { .. }) => "haven.config.logs_level",
-            Self::Skills(SkillsOperationArgs::SkillsList) => "haven.skills.skills_list",
-            Self::Skills(SkillsOperationArgs::SkillEnable { .. }) => "haven.skills.skill_enable",
-            Self::Skills(SkillsOperationArgs::SkillDisable { .. }) => "haven.skills.skill_disable",
-            Self::Skills(SkillsOperationArgs::SkillCreate { .. }) => "haven.skills.skill_create",
-            Self::Tools(ToolsOperationArgs::ToolEnable { .. }) => "haven.tools.tool_enable",
-            Self::Tools(ToolsOperationArgs::ToolDisable { .. }) => "haven.tools.tool_disable",
-            Self::Mcp(McpOperationArgs::McpList) => "haven.mcp.mcp_list",
-            Self::Mcp(McpOperationArgs::McpConnect { .. }) => "haven.mcp.mcp_connect",
-            Self::Mcp(McpOperationArgs::McpDisconnect { .. }) => "haven.mcp.mcp_disconnect",
-            Self::Mcp(McpOperationArgs::McpAdd { .. }) => "haven.mcp.mcp_add",
-            Self::Mcp(McpOperationArgs::McpUpdate { .. }) => "haven.mcp.mcp_update",
-            Self::Mcp(McpOperationArgs::McpToggle { .. }) => "haven.mcp.mcp_toggle",
-            Self::Mcp(McpOperationArgs::McpRemove { .. }) => "haven.mcp.mcp_remove",
-            Self::Mcp(McpOperationArgs::McpReload) => "haven.mcp.mcp_reload",
-            Self::NativeMcp(NativeMcpOperationArgs::McpReconnect { .. }) => {
-                "haven.mcp.mcp_reconnect"
-            }
-            Self::NativeMcp(NativeMcpOperationArgs::McpRefresh { .. }) => "haven.mcp.mcp_refresh",
+            Self::Config(ConfigOperationArgs::ConfigGet { .. }) => "haven.config.get",
+            Self::Config(ConfigOperationArgs::LogsLevel { .. }) => "haven.config.set_log_level",
+            Self::Skills(SkillsOperationArgs::SkillsList) => "haven.skills.list",
+            Self::Skills(SkillsOperationArgs::SkillEnable { .. }) => "haven.skills.enable",
+            Self::Skills(SkillsOperationArgs::SkillDisable { .. }) => "haven.skills.disable",
+            Self::Skills(SkillsOperationArgs::SkillCreate { .. }) => "haven.skills.create",
+            Self::Tools(ToolsOperationArgs::ToolEnable { .. }) => "haven.tools.enable",
+            Self::Tools(ToolsOperationArgs::ToolDisable { .. }) => "haven.tools.disable",
+            Self::Mcp(McpOperationArgs::McpList) => "haven.mcp.list",
+            Self::Mcp(McpOperationArgs::McpConnect { .. }) => "haven.mcp.connect",
+            Self::Mcp(McpOperationArgs::McpDisconnect { .. }) => "haven.mcp.disconnect",
+            Self::Mcp(McpOperationArgs::McpAdd { .. }) => "haven.mcp.add",
+            Self::Mcp(McpOperationArgs::McpUpdate { .. }) => "haven.mcp.update",
+            Self::Mcp(McpOperationArgs::McpToggle { .. }) => "haven.mcp.toggle",
+            Self::Mcp(McpOperationArgs::McpRemove { .. }) => "haven.mcp.remove",
+            Self::Mcp(McpOperationArgs::McpReload) => "haven.mcp.reload",
+            Self::NativeMcp(NativeMcpOperationArgs::McpReconnect { .. }) => "haven.mcp.reconnect",
+            Self::NativeMcp(NativeMcpOperationArgs::McpRefresh { .. }) => "haven.mcp.refresh",
         }
     }
 
@@ -739,21 +742,21 @@ impl TypedToolOperation for DiagnosticsAdminOperation {
             DiagnosticsOperationArgs::Status | DiagnosticsOperationArgs::LogsTail { .. } => {
                 model_metadata(
                     if matches!(args, DiagnosticsOperationArgs::Status) {
-                        "haven.diagnostics.status"
+                        "haven.diagnostics.get_status"
                     } else {
-                        "haven.diagnostics.logs_tail"
+                        "haven.diagnostics.tail_logs"
                     },
                     OperationIdempotency::Idempotent,
                     ToolConcurrency::SharedResource("haven:diagnostics".into()),
                 )
             }
             DiagnosticsOperationArgs::Sessions { .. } => model_metadata(
-                "haven.diagnostics.sessions",
+                "haven.diagnostics.list_sessions",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::SharedResource("haven:sessions".into()),
             ),
             DiagnosticsOperationArgs::Errors { .. } => model_metadata(
-                "haven.diagnostics.errors",
+                "haven.diagnostics.list_errors",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::SharedResource("haven:sessions".into()),
             ),
@@ -762,7 +765,7 @@ impl TypedToolOperation for DiagnosticsAdminOperation {
     fn default_metadata(&self) -> ToolOperationMetadata {
         metadata(
             "haven_diagnostics",
-            "status",
+            "get_status",
             RiskLevel::High,
             OperationIdempotency::Unknown,
             ToolConcurrency::Exclusive,
@@ -770,19 +773,19 @@ impl TypedToolOperation for DiagnosticsAdminOperation {
     }
     fn input_schema(&self) -> Value {
         output_schema(vec![
-            branch("status", serde_json::json!({}), &["operation"]),
+            branch("get_status", serde_json::json!({}), &["operation"]),
             branch(
-                "logs_tail",
+                "tail_logs",
                 serde_json::json!({"limit": {"type": "integer", "minimum": 1, "maximum": 500}}),
                 &["operation"],
             ),
             branch(
-                "sessions",
+                "list_sessions",
                 serde_json::json!({"limit": {"type": "integer", "minimum": 1, "maximum": 50}}),
                 &["operation"],
             ),
             branch(
-                "errors",
+                "list_errors",
                 serde_json::json!({"limit": {"type": "integer", "minimum": 1, "maximum": 50}}),
                 &["operation"],
             ),
@@ -846,22 +849,22 @@ impl TypedToolOperation for SkillsAdminOperation {
     fn metadata(&self, args: &Self::Args) -> ToolOperationMetadata {
         match args {
             SkillsOperationArgs::SkillsList => model_metadata(
-                "haven.skills.skills_list",
+                "haven.skills.list",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::SharedResource("skills".into()),
             ),
             SkillsOperationArgs::SkillEnable { .. } => model_metadata(
-                "haven.skills.skill_enable",
+                "haven.skills.enable",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("skills".into()),
             ),
             SkillsOperationArgs::SkillDisable { .. } => model_metadata(
-                "haven.skills.skill_disable",
+                "haven.skills.disable",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("skills".into()),
             ),
             SkillsOperationArgs::SkillCreate { .. } => model_metadata(
-                "haven.skills.skill_create",
+                "haven.skills.create",
                 OperationIdempotency::Unknown,
                 ToolConcurrency::Resource("skills".into()),
             ),
@@ -870,7 +873,7 @@ impl TypedToolOperation for SkillsAdminOperation {
     fn default_metadata(&self) -> ToolOperationMetadata {
         metadata(
             "haven_skills",
-            "skill_create",
+            "create",
             RiskLevel::High,
             OperationIdempotency::Unknown,
             ToolConcurrency::Exclusive,
@@ -878,19 +881,19 @@ impl TypedToolOperation for SkillsAdminOperation {
     }
     fn input_schema(&self) -> Value {
         output_schema(vec![
-            branch("skills_list", serde_json::json!({}), &["operation"]),
+            branch("list", serde_json::json!({}), &["operation"]),
             branch(
-                "skill_enable",
+                "enable",
                 serde_json::json!({"name": {"type": "string", "minLength": 1}}),
                 &["operation", "name"],
             ),
             branch(
-                "skill_disable",
+                "disable",
                 serde_json::json!({"name": {"type": "string", "minLength": 1}}),
                 &["operation", "name"],
             ),
             branch(
-                "skill_create",
+                "create",
                 serde_json::json!({"name": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"}, "description": {"type": "string", "minLength": 1, "maxLength": 1024}, "instructions": {"type": "string", "minLength": 1}, "language": {"type": "string", "enum": ["python"]}, "version": {"type": "string"}, "script": {"type": "string", "minLength": 1, "description": "Optional Python script; omitted values use Haven's JSON-safe starter template."}}),
                 &["operation", "name", "description", "instructions"],
             ),
@@ -967,8 +970,8 @@ impl TypedToolOperation for ToolsAdminOperation {
     type Error = AdminOperationError;
     fn metadata(&self, args: &Self::Args) -> ToolOperationMetadata {
         let operation = match args {
-            ToolsOperationArgs::ToolEnable { .. } => "haven.tools.tool_enable",
-            ToolsOperationArgs::ToolDisable { .. } => "haven.tools.tool_disable",
+            ToolsOperationArgs::ToolEnable { .. } => "haven.tools.enable",
+            ToolsOperationArgs::ToolDisable { .. } => "haven.tools.disable",
         };
         model_metadata(
             operation,
@@ -979,7 +982,7 @@ impl TypedToolOperation for ToolsAdminOperation {
     fn default_metadata(&self) -> ToolOperationMetadata {
         metadata(
             "haven_tools",
-            "tool_enable",
+            "enable",
             RiskLevel::High,
             OperationIdempotency::Unknown,
             ToolConcurrency::Exclusive,
@@ -988,12 +991,12 @@ impl TypedToolOperation for ToolsAdminOperation {
     fn input_schema(&self) -> Value {
         output_schema(vec![
             branch(
-                "tool_enable",
+                "enable",
                 serde_json::json!({"name": {"type": "string", "enum": MODEL_TOGGLEABLE_TOOL_NAMES}}),
                 &["operation", "name"],
             ),
             branch(
-                "tool_disable",
+                "disable",
                 serde_json::json!({"name": {"type": "string", "enum": MODEL_TOGGLEABLE_TOOL_NAMES}}),
                 &["operation", "name"],
             ),
@@ -1087,42 +1090,42 @@ impl TypedToolOperation for McpAdminOperation {
     fn metadata(&self, args: &Self::Args) -> ToolOperationMetadata {
         let (operation, idempotency, concurrency) = match args {
             McpOperationArgs::McpList => (
-                "haven.mcp.mcp_list",
+                "haven.mcp.list",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::SharedResource("mcp".into()),
             ),
             McpOperationArgs::McpConnect { .. } => (
-                "haven.mcp.mcp_connect",
+                "haven.mcp.connect",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("mcp".into()),
             ),
             McpOperationArgs::McpDisconnect { .. } => (
-                "haven.mcp.mcp_disconnect",
+                "haven.mcp.disconnect",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("mcp".into()),
             ),
             McpOperationArgs::McpAdd { .. } => (
-                "haven.mcp.mcp_add",
+                "haven.mcp.add",
                 OperationIdempotency::Unknown,
                 ToolConcurrency::Resource("mcp".into()),
             ),
             McpOperationArgs::McpUpdate { .. } => (
-                "haven.mcp.mcp_update",
+                "haven.mcp.update",
                 OperationIdempotency::Unknown,
                 ToolConcurrency::Resource("mcp".into()),
             ),
             McpOperationArgs::McpToggle { .. } => (
-                "haven.mcp.mcp_toggle",
+                "haven.mcp.toggle",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("mcp".into()),
             ),
             McpOperationArgs::McpRemove { .. } => (
-                "haven.mcp.mcp_remove",
+                "haven.mcp.remove",
                 OperationIdempotency::Unknown,
                 ToolConcurrency::Resource("mcp".into()),
             ),
             McpOperationArgs::McpReload => (
-                "haven.mcp.mcp_reload",
+                "haven.mcp.reload",
                 OperationIdempotency::Unknown,
                 ToolConcurrency::Resource("mcp".into()),
             ),
@@ -1136,7 +1139,7 @@ impl TypedToolOperation for McpAdminOperation {
     fn default_metadata(&self) -> ToolOperationMetadata {
         let mut metadata = metadata(
             "haven_mcp",
-            "mcp_remove",
+            "remove",
             RiskLevel::High,
             OperationIdempotency::Unknown,
             ToolConcurrency::Exclusive,
@@ -1146,43 +1149,43 @@ impl TypedToolOperation for McpAdminOperation {
     }
     fn input_schema(&self) -> Value {
         output_schema(vec![
-            branch("mcp_list", serde_json::json!({}), &["operation"]),
+            branch("list", serde_json::json!({}), &["operation"]),
             branch(
-                "mcp_connect",
+                "connect",
                 serde_json::json!({"name": {"type": "string", "minLength": 1}}),
                 &["operation", "name"],
             ),
             branch(
-                "mcp_disconnect",
+                "disconnect",
                 serde_json::json!({"name": {"type": "string", "minLength": 1}}),
                 &["operation", "name"],
             ),
             branch(
-                "mcp_add",
+                "add",
                 serde_json::json!({"name": {"type": "string", "minLength": 1}, "transport": {"const": "stdio"}, "command": {"type": "string", "minLength": 1}, "args": {"type": "array", "items": {"type": "string"}}, "env": {"type": "array", "items": {"type": "string"}}, "cwd": {"type": "string"}, "enabled": {"type": "boolean"}, "auto_connect": {"type": "boolean"}}),
                 &["operation", "name", "transport", "command"],
             ),
             branch(
-                "mcp_add",
+                "add",
                 serde_json::json!({"name": {"type": "string", "minLength": 1}, "transport": {"const": "http"}, "url": {"type": "string", "minLength": 1}, "enabled": {"type": "boolean"}, "auto_connect": {"type": "boolean"}}),
                 &["operation", "name", "transport", "url"],
             ),
             branch(
-                "mcp_update",
+                "update",
                 serde_json::json!({"name": {"type": "string", "minLength": 1}, "transport": {"enum": ["stdio", "http"]}, "command": {"type": "string"}, "url": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}, "env": {"type": "array", "items": {"type": "string"}}, "cwd": {"type": "string"}, "enabled": {"type": "boolean"}}),
                 &["operation", "name"],
             ),
             branch(
-                "mcp_toggle",
+                "toggle",
                 serde_json::json!({"name": {"type": "string", "minLength": 1}, "enabled": {"type": "boolean"}}),
                 &["operation", "name", "enabled"],
             ),
             branch(
-                "mcp_remove",
+                "remove",
                 serde_json::json!({"name": {"type": "string", "minLength": 1}}),
                 &["operation", "name"],
             ),
-            branch("mcp_reload", serde_json::json!({}), &["operation"]),
+            branch("reload", serde_json::json!({}), &["operation"]),
         ])
     }
     fn error_metadata(&self, error: &Self::Error) -> ToolErrorMetadata {
@@ -1384,12 +1387,12 @@ impl TypedToolOperation for ConfigAdminOperation {
     fn metadata(&self, args: &Self::Args) -> ToolOperationMetadata {
         match args {
             ConfigOperationArgs::ConfigGet { .. } => model_metadata(
-                "haven.config.config_get",
+                "haven.config.get",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::SharedResource("config".into()),
             ),
             ConfigOperationArgs::LogsLevel { .. } => model_metadata(
-                "haven.config.logs_level",
+                "haven.config.set_log_level",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("config".into()),
             ),
@@ -1398,7 +1401,7 @@ impl TypedToolOperation for ConfigAdminOperation {
     fn default_metadata(&self) -> ToolOperationMetadata {
         metadata(
             "haven_config",
-            "logs_level",
+            "set_log_level",
             RiskLevel::High,
             OperationIdempotency::Unknown,
             ToolConcurrency::Exclusive,
@@ -1407,12 +1410,12 @@ impl TypedToolOperation for ConfigAdminOperation {
     fn input_schema(&self) -> Value {
         output_schema(vec![
             branch(
-                "config_get",
+                "get",
                 serde_json::json!({"path": {"type": "string"}}),
                 &["operation"],
             ),
             branch(
-                "logs_level",
+                "set_log_level",
                 serde_json::json!({"level": {"type": "string", "enum": ["trace", "debug", "info", "warn", "error"]}}),
                 &["operation", "level"],
             ),
@@ -1642,72 +1645,72 @@ mod tests {
         vec![
             AdminOperationCase {
                 surface: "haven_diagnostics",
-                operation: "status",
-                input: json!({"operation": "status"}),
+                operation: "get_status",
+                input: json!({"operation": "get_status"}),
                 required: &["operation"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_diagnostics",
-                operation: "logs_tail",
-                input: json!({"operation": "logs_tail", "limit": 2}),
+                operation: "tail_logs",
+                input: json!({"operation": "tail_logs", "limit": 2}),
                 required: &["operation"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_diagnostics",
-                operation: "sessions",
-                input: json!({"operation": "sessions", "limit": 1}),
+                operation: "list_sessions",
+                input: json!({"operation": "list_sessions", "limit": 1}),
                 required: &["operation"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_diagnostics",
-                operation: "errors",
-                input: json!({"operation": "errors", "limit": 1}),
+                operation: "list_errors",
+                input: json!({"operation": "list_errors", "limit": 1}),
                 required: &["operation"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_config",
-                operation: "config_get",
-                input: json!({"operation": "config_get", "path": "log.level"}),
+                operation: "get",
+                input: json!({"operation": "get", "path": "log.level"}),
                 required: &["operation"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_config",
-                operation: "logs_level",
-                input: json!({"operation": "logs_level", "level": "debug"}),
+                operation: "set_log_level",
+                input: json!({"operation": "set_log_level", "level": "debug"}),
                 required: &["operation", "level"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_skills",
-                operation: "skills_list",
-                input: json!({"operation": "skills_list"}),
+                operation: "list",
+                input: json!({"operation": "list"}),
                 required: &["operation"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_skills",
-                operation: "skill_enable",
-                input: json!({"operation": "skill_enable", "name": "demo"}),
+                operation: "enable",
+                input: json!({"operation": "enable", "name": "demo"}),
                 required: &["operation", "name"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_skills",
-                operation: "skill_disable",
-                input: json!({"operation": "skill_disable", "name": "demo"}),
+                operation: "disable",
+                input: json!({"operation": "disable", "name": "demo"}),
                 required: &["operation", "name"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_skills",
-                operation: "skill_create",
+                operation: "create",
                 input: json!({
-                    "operation": "skill_create",
+                    "operation": "create",
                     "name": "demo",
                     "description": "Demo skill",
                     "instructions": "Do the demo",
@@ -1718,44 +1721,44 @@ mod tests {
             },
             AdminOperationCase {
                 surface: "haven_tools",
-                operation: "tool_enable",
-                input: json!({"operation": "tool_enable", "name": "shell"}),
+                operation: "enable",
+                input: json!({"operation": "enable", "name": "shell"}),
                 required: &["operation", "name"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_tools",
-                operation: "tool_disable",
-                input: json!({"operation": "tool_disable", "name": "shell"}),
+                operation: "disable",
+                input: json!({"operation": "disable", "name": "shell"}),
                 required: &["operation", "name"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_mcp",
-                operation: "mcp_list",
-                input: json!({"operation": "mcp_list"}),
+                operation: "list",
+                input: json!({"operation": "list"}),
                 required: &["operation"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_mcp",
-                operation: "mcp_connect",
-                input: json!({"operation": "mcp_connect", "name": "demo"}),
+                operation: "connect",
+                input: json!({"operation": "connect", "name": "demo"}),
                 required: &["operation", "name"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_mcp",
-                operation: "mcp_disconnect",
-                input: json!({"operation": "mcp_disconnect", "name": "demo"}),
+                operation: "disconnect",
+                input: json!({"operation": "disconnect", "name": "demo"}),
                 required: &["operation", "name"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_mcp",
-                operation: "mcp_add_stdio",
+                operation: "add_stdio",
                 input: json!({
-                    "operation": "mcp_add",
+                    "operation": "add",
                     "name": "demo",
                     "transport": "stdio",
                     "command": "demo-mcp",
@@ -1767,9 +1770,9 @@ mod tests {
             },
             AdminOperationCase {
                 surface: "haven_mcp",
-                operation: "mcp_add_http",
+                operation: "add_http",
                 input: json!({
-                    "operation": "mcp_add",
+                    "operation": "add",
                     "name": "demo-http",
                     "transport": "http",
                     "url": "https://example.invalid/mcp",
@@ -1781,29 +1784,29 @@ mod tests {
             },
             AdminOperationCase {
                 surface: "haven_mcp",
-                operation: "mcp_update",
-                input: json!({"operation": "mcp_update", "name": "demo", "enabled": false}),
+                operation: "update",
+                input: json!({"operation": "update", "name": "demo", "enabled": false}),
                 required: &["operation", "name"],
                 idempotency: OperationIdempotency::Unknown,
             },
             AdminOperationCase {
                 surface: "haven_mcp",
-                operation: "mcp_toggle",
-                input: json!({"operation": "mcp_toggle", "name": "demo", "enabled": false}),
+                operation: "toggle",
+                input: json!({"operation": "toggle", "name": "demo", "enabled": false}),
                 required: &["operation", "name", "enabled"],
                 idempotency: OperationIdempotency::Idempotent,
             },
             AdminOperationCase {
                 surface: "haven_mcp",
-                operation: "mcp_remove",
-                input: json!({"operation": "mcp_remove", "name": "demo"}),
+                operation: "remove",
+                input: json!({"operation": "remove", "name": "demo"}),
                 required: &["operation", "name"],
                 idempotency: OperationIdempotency::Unknown,
             },
             AdminOperationCase {
                 surface: "haven_mcp",
-                operation: "mcp_reload",
-                input: json!({"operation": "mcp_reload"}),
+                operation: "reload",
+                input: json!({"operation": "reload"}),
                 required: &["operation"],
                 idempotency: OperationIdempotency::Unknown,
             },
@@ -2108,13 +2111,13 @@ mod tests {
             config_version: 9,
         });
         let reconnect_metadata = surfaces.metadata(&reconnect);
-        assert_eq!(reconnect.model_operation_name(), "haven.mcp.mcp_reconnect");
+        assert_eq!(reconnect.model_operation_name(), "haven.mcp.reconnect");
         assert_eq!(reconnect_metadata.risk_level, RiskLevel::Medium);
         assert_eq!(reconnect.network_access(), crate::NetworkAccess::Opaque);
 
         let refresh = AdminRequest::NativeMcp(NativeMcpOperationArgs::McpRefresh { plan });
         let refresh_metadata = surfaces.metadata(&refresh);
-        assert_eq!(refresh.model_operation_name(), "haven.mcp.mcp_refresh");
+        assert_eq!(refresh.model_operation_name(), "haven.mcp.refresh");
         assert_eq!(refresh_metadata.risk_level, RiskLevel::Medium);
         assert_eq!(refresh.network_access(), crate::NetworkAccess::Opaque);
 
@@ -3330,7 +3333,7 @@ mod tests {
         });
         assert_eq!(
             request.input(),
-            json!({"operation": "tool_disable", "name": "shell"})
+            json!({"operation": "disable", "name": "shell"})
         );
     }
 
@@ -3341,31 +3344,31 @@ mod tests {
         let diagnostics = &tools[0];
         assert!(
             diagnostics
-                .validate_input(&json!({"operation": "status"}))
+                .validate_input(&json!({"operation": "get_status"}))
                 .is_ok()
         );
         assert!(
             diagnostics
-                .validate_input(&json!({"operation": "status", "limit": 2}))
+                .validate_input(&json!({"operation": "get_status", "limit": 2}))
                 .is_err()
         );
 
         let skills = &tools[2];
         assert!(
             skills
-                .validate_input(&json!({"operation": "skill_enable", "name": "demo"}))
+                .validate_input(&json!({"operation": "enable", "name": "demo"}))
                 .is_ok()
         );
         assert!(
             skills
-                .validate_input(&json!({"operation": "skill_enable", "instructions": "x"}))
+                .validate_input(&json!({"operation": "enable", "instructions": "x"}))
                 .is_err()
         );
 
         let mcp = &tools[4];
         assert!(
             mcp.validate_input(&json!({
-                "operation": "mcp_add",
+                "operation": "add",
                 "name": "demo",
                 "transport": "stdio",
                 "command": "demo-mcp"
@@ -3374,7 +3377,7 @@ mod tests {
         );
         assert!(
             mcp.validate_input(&json!({
-                "operation": "mcp_add",
+                "operation": "add",
                 "name": "demo",
                 "transport": "http",
                 "command": "demo-mcp"
@@ -3531,7 +3534,7 @@ mod tests {
     #[test]
     fn typed_config_metadata_carries_operation_policy() {
         let (tool, _service, _dir) = config_tool();
-        let get = json!({"operation": "config_get", "path": "log.level"});
+        let get = json!({"operation": "get", "path": "log.level"});
         assert_eq!(tool.risk_level(&get), RiskLevel::Low);
         assert_eq!(tool.idempotency(&get), OperationIdempotency::Idempotent);
         assert_eq!(
@@ -3540,7 +3543,7 @@ mod tests {
         );
         assert_eq!(tool.timeout_secs_for(&get), 10);
 
-        let set = json!({"operation": "logs_level", "level": "debug"});
+        let set = json!({"operation": "set_log_level", "level": "debug"});
         assert_eq!(tool.risk_level(&set), RiskLevel::Medium);
         assert_eq!(tool.idempotency(&set), OperationIdempotency::Idempotent);
         assert_eq!(
@@ -3554,7 +3557,7 @@ mod tests {
         let (tool, service, _dir) = config_tool();
         let view = tool
             .execute(
-                json!({"operation": "config_get", "path": "log.level"}),
+                json!({"operation": "get", "path": "log.level"}),
                 CancellationToken::new(),
             )
             .await
@@ -3563,7 +3566,7 @@ mod tests {
 
         let changed = tool
             .execute(
-                json!({"operation": "logs_level", "level": "debug"}),
+                json!({"operation": "set_log_level", "level": "debug"}),
                 CancellationToken::new(),
             )
             .await
@@ -3577,7 +3580,7 @@ mod tests {
 
         let repeated = tool
             .execute(
-                json!({"operation": "logs_level", "level": "debug"}),
+                json!({"operation": "set_log_level", "level": "debug"}),
                 CancellationToken::new(),
             )
             .await
@@ -3603,7 +3606,7 @@ mod tests {
 
         let error = tool
             .execute(
-                json!({"operation": "logs_level", "level": "debug"}),
+                json!({"operation": "set_log_level", "level": "debug"}),
                 CancellationToken::new(),
             )
             .await
@@ -3671,7 +3674,7 @@ mod tests {
     async fn typed_config_contract_rejects_unknown_missing_removed_and_cancelled() {
         let (tool, service, _dir) = config_tool();
         let unknown = json!({
-            "operation": "config_get",
+            "operation": "get",
             "path": "log.level",
             "level": "debug"
         });
@@ -3682,7 +3685,7 @@ mod tests {
                 .is_err()
         );
 
-        let missing = json!({"operation": "logs_level"});
+        let missing = json!({"operation": "set_log_level"});
         assert!(tool.validate_input(&missing).is_err());
         let error = tool
             .execute(missing, CancellationToken::new())
@@ -3698,7 +3701,7 @@ mod tests {
         assert!(tool.validate_input(&removed).is_err());
 
         let missing_path = json!({
-            "operation": "config_get",
+            "operation": "get",
             "path": "not.a.real.config.key"
         });
         let error = tool
@@ -3711,7 +3714,10 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let error = tool
-            .execute(json!({"operation": "logs_level", "level": "debug"}), cancel)
+            .execute(
+                json!({"operation": "set_log_level", "level": "debug"}),
+                cancel,
+            )
             .await
             .unwrap_err();
         assert!(error.to_string().contains("cancelled"));
@@ -3760,21 +3766,15 @@ mod tests {
         for (surface, input) in [
             (
                 "haven_diagnostics",
-                json!({"operation": "logs_level", "level": "debug"}),
+                json!({"operation": "set_log_level", "level": "debug"}),
             ),
-            (
-                "haven_config",
-                json!({"operation": "skill_create", "name": "x"}),
-            ),
-            (
-                "haven_skills",
-                json!({"operation": "tool_disable", "name": "shell"}),
-            ),
+            ("haven_config", json!({"operation": "create", "name": "x"})),
+            ("haven_skills", json!({"operation": "add", "name": "shell"})),
             (
                 "haven_tools",
-                json!({"operation": "mcp_remove", "name": "demo"}),
+                json!({"operation": "remove", "name": "demo"}),
             ),
-            ("haven_mcp", json!({"operation": "config_get"})),
+            ("haven_mcp", json!({"operation": "get"})),
         ] {
             assert_validation_rejection(tool_for(&tools, surface), input, surface).await;
         }
@@ -3802,11 +3802,7 @@ mod tests {
             );
             assert_eq!(
                 tool.timeout_secs_for(&case.input),
-                if case.operation == "mcp_reload" {
-                    60
-                } else {
-                    10
-                },
+                if case.operation == "reload" { 60 } else { 10 },
                 "timeout policy drift for {}:{}",
                 case.surface,
                 case.operation
@@ -3859,7 +3855,7 @@ mod tests {
         let (surfaces, service, _dir) = test_surfaces_with_service();
         let tools = surfaces.tools();
 
-        let level = json!({"operation": "logs_level", "level": "debug"});
+        let level = json!({"operation": "set_log_level", "level": "debug"});
         let first = tool_for(&tools, "haven_config")
             .execute(level.clone(), CancellationToken::new())
             .await
@@ -3873,7 +3869,7 @@ mod tests {
         assert_eq!(service.snapshot().unwrap().version, 1);
 
         let add = json!({
-            "operation": "mcp_add",
+            "operation": "add",
             "name": "duplicate-server",
             "transport": "stdio",
             "command": "not-started",

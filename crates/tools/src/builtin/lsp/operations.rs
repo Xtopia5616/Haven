@@ -11,44 +11,49 @@ use serde_json::{Value, json};
 pub(in crate::builtin) fn operation_specs() -> Vec<OperationSpec> {
     [
         (
-            "lsp.definition",
+            "lsp.find_definition",
             "definition",
             position_schema(false),
             "代码定义",
         ),
         (
-            "lsp.implementation",
+            "lsp.find_implementations",
             "implementation",
             position_schema(false),
             "代码实现",
         ),
         (
-            "lsp.type_definition",
+            "lsp.find_type_definition",
             "type_definition",
             position_schema(false),
             "类型定义",
         ),
         (
-            "lsp.references",
+            "lsp.find_references",
             "references",
             position_schema(true),
             "代码引用",
         ),
-        ("lsp.hover", "hover", position_schema(false), "代码悬停信息"),
         (
-            "lsp.document_symbols",
+            "lsp.get_hover",
+            "hover",
+            position_schema(false),
+            "代码悬停信息",
+        ),
+        (
+            "lsp.list_document_symbols",
             "document_symbols",
             document_schema(),
             "文档符号",
         ),
         (
-            "lsp.workspace_symbols",
+            "lsp.search_workspace_symbols",
             "workspace_symbols",
             workspace_symbols_schema(),
             "工作区符号搜索",
         ),
         (
-            "lsp.diagnostics",
+            "lsp.get_diagnostics",
             "diagnostics",
             document_schema(),
             "代码诊断",
