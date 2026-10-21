@@ -3,6 +3,7 @@
  *
  * The geometry intentionally follows the existing Lucide-like outline style:
  * one viewBox, currentColor, round joins and a consistent default stroke.
+ * Some paths are derived from Lucide and Feather; see THIRD_PARTY_LICENSES.md.
  * Keeping the paths here makes size and stroke decisions a single concern.
  */
 

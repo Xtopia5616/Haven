@@ -33,7 +33,11 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "../../ui/build/": "ui"
+      "../../ui/build/": "ui",
+      "../../LICENSE": "licenses/LICENSE",
+      "../../THIRD_PARTY_LICENSES.md": "licenses/THIRD_PARTY_LICENSES.md",
+      "../../docs/dependency-license-inventory.md": "licenses/dependency-license-inventory.md",
+      "../../assets/models/LICENSE-Silero-VAD.txt": "licenses/LICENSE-Silero-VAD.txt"
     },
     "icon": [
       "icons/32x32.png",

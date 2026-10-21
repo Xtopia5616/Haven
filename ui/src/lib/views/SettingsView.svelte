@@ -59,6 +59,7 @@
 	import SettingsBehavior from './SettingsBehavior.svelte';
 	import SettingsAppearance from './SettingsAppearance.svelte';
 	import SettingsDiagnostics from './SettingsDiagnostics.svelte';
+	import SettingsAbout from './SettingsAbout.svelte';
 	import SettingsSecurity from './SettingsSecurity.svelte';
 	import SettingsLimits from './SettingsLimits.svelte';
 	import SettingsSaveBar from './SettingsSaveBar.svelte';
@@ -346,6 +347,12 @@
 			label: '日志与诊断',
 			description: '管理后端日志并导出性能诊断数据。',
 			keys: ['log'],
+		},
+		{
+			id: 'about',
+			label: '关于',
+			description: '查看项目链接、许可证、第三方组件和致谢。',
+			keys: [],
 		},
 	] as const;
 	type SettingsTabId = (typeof SETTINGS_SECTIONS)[number]['id'];
@@ -1527,6 +1534,11 @@
 											(model) => model.context_window,
 										)}
 									/>
+								</div>
+							{/if}
+							{#if visitedSettingsTabs.includes('about')}
+								<div hidden={settingsTab !== 'about'}>
+									<SettingsAbout />
 								</div>
 							{/if}
 						</div>

@@ -2,6 +2,7 @@
 name = "haven-app-binary"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 default-run = "haven-app-binary"
 
 [lib]

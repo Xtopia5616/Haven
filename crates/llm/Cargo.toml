@@ -2,6 +2,7 @@
 name = "haven-llm"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [features]
 # Mock router construction and route mutation for downstream test targets.

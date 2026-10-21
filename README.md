@@ -95,6 +95,14 @@ Rust 测试应使用内存数据库或唯一临时目录，不能读写真实用
 - [发布与数据重置](docs/release-and-reset.md)
 - [架构决策记录](docs/adr/README.md)
 
+## 许可证与致谢
+
+Haven 自有代码采用 MIT License。随包字体、Silero VAD 模型、Lucide/Feather 图标以及 Rust/JavaScript 依赖保留各自的许可证；详见 [第三方许可证与致谢](THIRD_PARTY_LICENSES.md) 和[锁定依赖许可证清单](docs/dependency-license-inventory.md)。
+
+- [Haven MIT License](LICENSE)
+- [第三方许可证与致谢](THIRD_PARTY_LICENSES.md)
+- [完整锁定依赖许可证清单](docs/dependency-license-inventory.md)
+
 记忆与存储边界见[架构文档](docs/architecture.md)；具体实现决策和演进记录见对应 ADR。
 
 ## 故障报告
