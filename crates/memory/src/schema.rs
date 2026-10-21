@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 54;
+pub const SCHEMA_VERSION: i32 = 55;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -381,6 +381,8 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_memory_items_created ON memory_items(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_memory_nodes_label ON memory_nodes(label)",
     "CREATE INDEX IF NOT EXISTS idx_facts_memory_kind ON facts(memory_kind, subject)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_subject_id ON facts(subject_id)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_object_id ON facts(object_id)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_session ON llm_usage(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_session_kind ON llm_usage(session_id, call_kind)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at)",
@@ -898,6 +900,23 @@ mod tests {
         let version = user_version(&conn).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
         assert!(table_exists(&conn, "memory_fts").unwrap());
+        let fact_indexes = conn
+            .prepare("SELECT name FROM pragma_index_list('facts')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            fact_indexes
+                .iter()
+                .any(|name| name == "idx_facts_subject_id")
+        );
+        assert!(
+            fact_indexes
+                .iter()
+                .any(|name| name == "idx_facts_object_id")
+        );
 
         let columns = conn
             .prepare("SELECT name FROM pragma_table_info('messages')")

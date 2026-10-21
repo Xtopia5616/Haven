@@ -176,7 +176,7 @@ pub fn fact_effective_confidence(fact: &Fact) -> f64 {
 
 /// Stable sort for prompt/UI display: effective confidence first, then newest
 /// last-seen first, then creation time.
-fn sort_facts_effective(facts: &mut [Fact]) {
+pub(super) fn sort_facts_effective(facts: &mut [Fact]) {
     let scores: Vec<f64> = facts.iter().map(fact_effective_confidence).collect();
     let mut order: Vec<usize> = (0..facts.len()).collect();
     order.sort_by(|&i, &j| {

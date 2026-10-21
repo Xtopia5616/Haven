@@ -7,6 +7,7 @@
 
 use crate::Database;
 use crate::embeddings::{EmbeddedText, MemoryEmbeddingFilter};
+use crate::repositories::fact_graph_recall::MAX_GRAPH_SEED_FACTS;
 use crate::repositories::facts::{
     Fact, MemoryFactKind, fact_effective_confidence, filter_visible_facts, is_sensitive_text,
     is_visible_fact,
@@ -499,8 +500,52 @@ impl<'db> MemoryRetriever<'db> {
         vector_hits: Option<Vec<MemoryHit>>,
     ) -> anyhow::Result<MemoryRecall> {
         let vector_configured = vector_hits.is_some();
-        let keyword_hits = self.keyword(query)?;
-        let mut recall = self.merge(query, keyword_hits, vector_hits.unwrap_or_default());
+        let mut keyword_hits = self.keyword(query)?;
+        let vector_hits = vector_hits.unwrap_or_default();
+        if query.kind.storage_kind() == MemoryEntityKind::Fact {
+            let mut seed_ids = Vec::new();
+            let mut seen_seeds = std::collections::HashSet::new();
+            for hit in keyword_hits.iter().chain(vector_hits.iter()) {
+                if seen_seeds.insert(hit.entity_id.clone()) {
+                    seed_ids.push(hit.entity_id.clone());
+                }
+                if seed_ids.len() >= MAX_GRAPH_SEED_FACTS {
+                    break;
+                }
+            }
+            if !seed_ids.is_empty() {
+                let memory_kind = query.kind.fact_kind().map(MemoryFactKind::as_str);
+                let related = self.db.related_facts_for_recall(
+                    &seed_ids,
+                    query.limit.saturating_mul(4),
+                    query.fact_subject.as_deref(),
+                    memory_kind,
+                )?;
+                let mut seen_ids: std::collections::HashSet<String> = keyword_hits
+                    .iter()
+                    .chain(vector_hits.iter())
+                    .map(|hit| hit.entity_id.clone())
+                    .collect();
+                keyword_hits.extend(
+                    filter_visible_facts(related)
+                        .into_iter()
+                        .filter(|fact| seen_ids.insert(fact.fact_id.clone()))
+                        .map(|fact| {
+                            let score = fact_effective_confidence(&fact);
+                            MemoryHit {
+                                entity_id: fact.fact_id,
+                                text: format!(
+                                    "{}: {}={}",
+                                    fact.subject, fact.predicate, fact.object
+                                ),
+                                score,
+                                model: String::new(),
+                            }
+                        }),
+                );
+            }
+        }
+        let mut recall = self.merge(query, keyword_hits, vector_hits);
         if recall.hits.is_empty()
             && !vector_configured
             && let Some(diagnostics) = recall.diagnostics.as_mut()
@@ -689,6 +734,72 @@ mod tests {
         assert_eq!(recall.mode, MemoryRecallMode::Keyword);
         assert_eq!(recall.hits[0].entity_id, fact.fact_id);
         assert!(recall.hits[0].model.is_empty());
+    }
+
+    #[test]
+    fn fact_recall_expands_one_hop_and_filters_sensitive_neighbors() {
+        let db = Database::open_in_memory().unwrap();
+        let seed = db
+            .insert_fact("user", "employer", "Acme", "user", 1.0, &["employer"])
+            .unwrap();
+        let headquarters = db
+            .insert_fact("Acme", "headquartered_in", "Seattle", "inferred", 0.9, &[])
+            .unwrap();
+        let acquired = db
+            .insert_fact("Globex", "acquired", "Acme", "inferred", 0.8, &[])
+            .unwrap();
+        let secret = db
+            .insert_fact("Acme", "api_key", "secret-value", "inferred", 1.0, &[])
+            .unwrap();
+
+        let query = MemoryQuery::new("employer", MemoryRecallKind::Fact, 10).unwrap();
+        let recall = MemoryRetriever::new(&db).retrieve(&query, None).unwrap();
+        let ids: Vec<&str> = recall
+            .hits
+            .iter()
+            .map(|hit| hit.entity_id.as_str())
+            .collect();
+
+        assert!(ids.contains(&seed.fact_id.as_str()));
+        assert!(ids.contains(&headquarters.fact_id.as_str()));
+        assert!(ids.contains(&acquired.fact_id.as_str()));
+        assert!(!ids.contains(&secret.fact_id.as_str()));
+        assert_eq!(
+            recall.hits.len(),
+            ids.iter().collect::<std::collections::HashSet<_>>().len()
+        );
+        assert!(recall.hits.iter().any(|hit| {
+            hit.entity_id == headquarters.fact_id && hit.text == "Acme: headquartered_in=Seattle"
+        }));
+        assert_eq!(recall.hits[0].entity_id, seed.fact_id);
+    }
+
+    #[test]
+    fn vector_fact_hits_are_graph_expansion_seeds() {
+        let db = Database::open_in_memory().unwrap();
+        let seed = db
+            .insert_fact("user", "works_at", "Acme", "user", 1.0, &[])
+            .unwrap();
+        let related = db
+            .insert_fact("Acme", "headquartered_in", "Seattle", "inferred", 0.9, &[])
+            .unwrap();
+        let query = MemoryQuery::new("unrelated query", MemoryRecallKind::Fact, 5).unwrap();
+        let vector_seed = MemoryHit {
+            entity_id: seed.fact_id.clone(),
+            text: "works_at=Acme".into(),
+            score: 0.9,
+            model: "model-a".into(),
+        };
+
+        let recall = MemoryRetriever::new(&db)
+            .retrieve(&query, Some(vec![vector_seed]))
+            .unwrap();
+
+        assert_eq!(recall.mode, MemoryRecallMode::Hybrid);
+        assert!(recall.hits.iter().any(|hit| hit.entity_id == seed.fact_id));
+        assert!(recall.hits.iter().any(|hit| {
+            hit.entity_id == related.fact_id && hit.text == "Acme: headquartered_in=Seattle"
+        }));
     }
 
     #[test]

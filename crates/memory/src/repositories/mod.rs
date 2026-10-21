@@ -1,6 +1,7 @@
 pub mod embedding_store;
 pub mod episodes;
 pub(crate) mod fact_graph;
+pub(crate) mod fact_graph_recall;
 pub(crate) mod fact_maintenance;
 pub(crate) mod fact_query;
 pub(crate) mod fact_security;
