@@ -316,8 +316,10 @@
 	}
 	.md-select-container[data-icon-only='true'] .md-select-menu {
 		right: auto;
-		width: min(320px, calc(100vw - 2 * var(--md-sys-space-md)));
-		min-width: min(240px, calc(100vw - 2 * var(--md-sys-space-md)));
+		width: min(
+			var(--md-comp-settings-control-width),
+			calc(100vw - 2 * var(--md-sys-space-md))
+		);
 	}
 	.md-select-group {
 		padding: 10px var(--md-sys-space-lg) 4px;

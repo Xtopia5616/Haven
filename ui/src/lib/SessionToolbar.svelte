@@ -235,7 +235,6 @@
 {/if}
 <div class="token-stats-wrap" bind:this={tokenStatsWrap}>
 	<MaterialIconButton
-		icon="listTodo"
 		size="toolbar"
 		variant="default"
 		className={`token-stats${tokenDetailsOpen ? ' selected' : ''}`}
@@ -245,7 +244,28 @@
 		ariaExpanded={tokenDetailsOpen}
 		disabled={!tokenStats}
 		onclick={toggleTokenDetails}
-	/>
+	>
+		{#snippet children()}
+			<span class="token-stats-content">
+				<Icon name="listTodo" size={18} />
+				{#if tokenStats && tokenUsageDetails?.currentCacheRatePercent != null}
+					{@const cacheRate = tokenUsageDetails.currentCacheRatePercent}
+					<span
+						class="token-budget"
+						data-cache-tone={cacheTone(cacheRate)}
+						role="img"
+						aria-label={`缓存命中 ${percentage(cacheRate)}`}
+					>
+						<span
+							class="token-budget-fill"
+							data-cache-tone={cacheTone(cacheRate)}
+							style="width: {Math.max(0, Math.min(100, cacheRate))}%"
+						></span>
+					</span>
+				{/if}
+			</span>
+		{/snippet}
+	</MaterialIconButton>
 
 	{#if tokenDetailsOpen && tokenStats && tokenUsageDetails}
 		<div
@@ -570,6 +590,42 @@
 	.token-stats-wrap {
 		position: relative;
 		flex-shrink: 0;
+	}
+	.token-stats-content {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 100%;
+		height: 100%;
+		padding-bottom: var(--md-sys-space-xs);
+	}
+	.token-budget {
+		position: absolute;
+		inset-inline: var(--md-sys-space-sm);
+		bottom: var(--md-sys-space-xs);
+		height: 3px;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-surface-variant);
+		overflow: hidden;
+	}
+	.token-budget-fill {
+		display: block;
+		height: 100%;
+		background: var(--md-sys-color-primary);
+		transition:
+			width var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard),
+			background-color var(--md-sys-motion-duration-medium)
+				var(--md-sys-motion-easing-standard);
+	}
+	.token-budget-fill[data-cache-tone='low'] {
+		background: var(--md-sys-color-error);
+	}
+	.token-budget-fill[data-cache-tone='medium'] {
+		background: var(--md-sys-color-warning);
+	}
+	.token-budget-fill[data-cache-tone='high'] {
+		background: var(--md-sys-color-success);
 	}
 	:global(.md-icon-btn.token-stats) {
 		border: 1px solid var(--md-sys-color-outline-variant);
