@@ -2,6 +2,7 @@ pub mod admin;
 mod admin_support;
 pub mod ask;
 pub mod clipboard;
+pub(crate) mod discover_tools;
 mod env;
 mod file_line_reader;
 mod file_outline;
@@ -25,7 +26,6 @@ pub mod schedule;
 pub mod session;
 pub mod shell;
 pub mod system;
-pub(crate) mod tool_catalog;
 pub mod tool_runs;
 mod tool_schema;
 pub mod web_search;
@@ -187,7 +187,7 @@ pub(crate) async fn register_builtin_tools(
             .with_managed_assets(managed_assets.clone()),
     );
     tools.push(Arc::new(ask::typed_adapter()));
-    tools.push(Arc::new(tool_catalog::ToolCatalogTool {
+    tools.push(Arc::new(discover_tools::DiscoverToolsTool {
         deferred_catalog: deferred_catalog.clone(),
         registry: registry.clone(),
         session_tool_overlay: session_tool_overlay.clone(),

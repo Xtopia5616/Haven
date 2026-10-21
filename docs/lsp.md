@@ -22,7 +22,7 @@ enabled = true
 
 ## Agent 如何调用
 
-LSP 操作通过 `tool_catalog` 按需发现和加载。Agent 可以先按 `lsp` 搜索，再查看并加载需要的具体操作；常用名称如下：
+LSP 操作通过 `discover_tools` 按需发现和加载。Agent 可以先按 `lsp` 搜索，再查看并加载需要的具体操作；常用名称如下：
 
 - `lsp.workspace_symbols`：按名字在工作区搜索，不需要文件位置。传入配置中的 `server` 名称和 `query`。
 - `lsp.document_symbols`：列出一个文件中的声明及其范围。

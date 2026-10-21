@@ -1183,7 +1183,7 @@ pub(crate) fn default_tool_label(name: &str) -> String {
         "notify" => "发送通知",
         "load_skill" => "加载 Skill",
         "load_mcp" => "加载 MCP",
-        "tool_catalog" => "工具目录",
+        "discover_tools" => "查找与加载工具",
         "files" => "文件与搜索",
         "media" => "媒体",
         "http" => "HTTP 请求",

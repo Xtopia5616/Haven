@@ -141,7 +141,7 @@ async fn resume_restores_tool_overlay_cleanly_in_round_order_and_best_effort() {
         overlay_restore_tool(
             1,
             2,
-            "tool_catalog",
+            "discover_tools",
             serde_json::json!({
                 "action": "load",
                 "operations": ["files.list"],

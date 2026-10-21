@@ -101,7 +101,7 @@ pub(crate) const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("media.mute_set", "media.mute_set", Medium),
     security_case!("http", "request", Medium),
     security_case!("notify", "notify", Safe),
-    security_case!("tool_catalog", "tool_catalog", Safe),
+    security_case!("discover_tools", "discover_tools", Safe),
     security_case!("load_skill", "load", Safe),
     security_case!("agent.list", "agent.list", Safe),
     security_case!("agent.children", "agent.children", Safe),

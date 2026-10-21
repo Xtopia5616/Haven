@@ -19,7 +19,7 @@ const MAX_PAGE_SIZE: usize = 64;
 /// operation views for the current session. Discovery tool_runs remain read-only;
 /// the explicit `load` action is the only path that changes the session
 /// provider surface.
-pub struct ToolCatalogTool {
+pub struct DiscoverToolsTool {
     pub deferred_catalog: DeferredToolCatalog,
     pub registry: ToolRegistry,
     pub session_tool_overlay: SessionToolOverlay,
@@ -29,7 +29,7 @@ pub struct ToolCatalogTool {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct ToolCatalogParams {
+pub struct DiscoverToolsParams {
     pub action: String,
     #[serde(default)]
     pub level: Option<String>,
@@ -174,10 +174,10 @@ impl CatalogItem {
     }
 }
 
-impl ToolCatalogTool {
+impl DiscoverToolsTool {
     pub async fn run(
         &self,
-        params: ToolCatalogParams,
+        params: DiscoverToolsParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
@@ -478,7 +478,7 @@ impl ToolCatalogTool {
             "action": "describe",
             "name": name,
             "source": source.as_str(),
-            "hint": "Call tool_catalog with action=list to search exact names. For an MCP tool, call load_mcp for its server to discover and load its schema.",
+            "hint": "Call discover_tools with action=list to search exact names. For an MCP tool, call load_mcp for its server to discover and load its schema.",
         })))
     }
 
@@ -733,13 +733,13 @@ impl ToolCatalogTool {
 }
 
 #[async_trait::async_trait]
-impl Tool for ToolCatalogTool {
+impl Tool for DiscoverToolsTool {
     fn name(&self) -> String {
-        "tool_catalog".into()
+        "discover_tools".into()
     }
 
     fn description(&self) -> String {
-        crate::prompts::TOOL_CATALOG_DESCRIPTION.into()
+        crate::prompts::DISCOVER_TOOLS_DESCRIPTION.into()
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {
@@ -752,8 +752,8 @@ impl Tool for ToolCatalogTool {
 
     fn operation_spec(&self) -> Option<crate::operation_view::OperationSpec> {
         Some(crate::operation_view::root_tool_spec(
-            "tool_catalog",
-            crate::prompts::TOOL_CATALOG_DESCRIPTION,
+            "discover_tools",
+            crate::prompts::DISCOVER_TOOLS_DESCRIPTION,
             self.input_schema(),
             RiskLevel::Safe,
             crate::OperationIdempotency::Unknown,
@@ -860,7 +860,7 @@ impl Tool for ToolCatalogTool {
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let params =
-            crate::tool_contract::parse_tool_input::<ToolCatalogParams>(&self.name(), input)?;
+            crate::tool_contract::parse_tool_input::<DiscoverToolsParams>(&self.name(), input)?;
         self.run(params, cancel).await
     }
 }
@@ -974,7 +974,7 @@ fn tool_detail(def: &ToolDef, source: CatalogSource, loaded: bool) -> Value {
                 object.insert(
                     "load".into(),
                     serde_json::json!({
-                        "tool": "tool_catalog",
+                        "tool": "discover_tools",
                         "arguments": {
                             "action": "load",
                             "source": "builtin",
@@ -1107,7 +1107,7 @@ fn root_detail(root: &CatalogItem) -> Value {
     });
     if root.source == CatalogSource::Builtin {
         detail["hint"] = serde_json::json!(
-            "Choose one exact operation from operations, call tool_catalog describe on it for its schema, then call tool_catalog with action=load, source=builtin, and that operation name."
+            "Choose one exact operation from operations, call discover_tools describe on it for its schema, then call discover_tools with action=load, source=builtin, and that operation name."
         );
     } else if root.source == CatalogSource::Mcp {
         detail["hint"] = serde_json::json!(
@@ -1162,11 +1162,11 @@ mod tests {
         };
 
         assert_eq!(
-            ToolCatalogTool::family_source(&[item(CatalogSource::Skill)], CatalogSource::All),
+            DiscoverToolsTool::family_source(&[item(CatalogSource::Skill)], CatalogSource::All),
             CatalogSource::Skill
         );
         assert_eq!(
-            ToolCatalogTool::family_source(
+            DiscoverToolsTool::family_source(
                 &[item(CatalogSource::Builtin), item(CatalogSource::Mcp)],
                 CatalogSource::All
             ),
@@ -1204,7 +1204,7 @@ mod tests {
         let detail = tool_detail(&def, CatalogSource::Builtin, false);
         assert_eq!(detail["name"], "notify");
         assert!(detail["input_schema"].is_object());
-        assert_eq!(detail["load"]["tool"], "tool_catalog");
+        assert_eq!(detail["load"]["tool"], "discover_tools");
         assert_eq!(detail["load"]["arguments"]["action"], "load");
         assert_eq!(detail["load"]["arguments"]["source"], "builtin");
     }

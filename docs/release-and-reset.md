@@ -62,7 +62,7 @@ API 密钥、OCR 密钥与 MCP 环境变量只通过安全凭据存储的 opaque
 
 Provider 的 `media_capabilities` 必须显式包含 `stt`、`tts` 和 `image_gen` 三个布尔值，列出该连接实际提供的媒体 endpoint。设置预设会带入明确值；自定义兼容服务可在对应 wire style 支持范围内启用媒体 endpoint。缺字段的旧配置会按配置解析失败策略备份原文件并进入只读恢复，需从备份补齐三个值，或删除 `config.toml` 后重启以用当前模板重建配置。此变化不影响数据库，无需数据库重置；不要把配置缺字段当作迁移或静默推断。
 
-模型工具使用点号 operation view，例如 `files.*`、`system.*`、`clipboard.*`、`input.*`、`window.*`、`media.*`、`toolrun.*`、`schedule.*` 和 `haven.*`。启用 Skill 由 `load_skill` 按名称加载为当前 session 的 `skill__...`；内置 operation 由 `tool_catalog` 的 `action=load` 加载，MCP 由 `load_mcp` 按服务器加载。配置和未完成会话都没有旧工具名的转换保证。
+模型工具使用点号 operation view，例如 `files.*`、`system.*`、`clipboard.*`、`input.*`、`window.*`、`media.*`、`toolrun.*`、`schedule.*` 和 `haven.*`。启用 Skill 由 `load_skill` 按名称加载为当前 session 的 `skill__...`；内置 operation 由 `discover_tools` 的 `action=load` 加载，MCP 由 `load_mcp` 按服务器加载。旧配置中的 `[tool_settings.tool_catalog]` 不会自动迁移；如需保留设置，请改为 `[tool_settings.discover_tools]`。未完成会话中的旧 `tool_catalog` 调用不会改写或恢复其加载选择；可通过 `discover_tools` 重新加载能力，若 Provider 无法续接旧调用则新建会话。
 
 媒体与搜索设置保持运行时定义的值域：`[media.ocr].provider` 仅接受 `llm`、`baidu`、`azure`、`tencent`、`none`；STT 的 `provider_name=mcp` 必须引用已配置的 `[mcp_servers]` 名称；TTS/image generation 的 provider 名称可用空值或大小写不敏感的 `none` 禁用。LLM provider/model 的 `default_web_search` / `web_search` 接受 `off`、`auto`、`always` 及 `required`、`on`、`1`、`true` 别名（大小写不敏感并忽略外围空格）；`null` 或空白继续回退到 `HAVEN_WEB_SEARCH`，显式 `off` 才关闭。未知 OCR/search 值和悬空 STT MCP 引用会使整份 TOML 备份并在当前进程使用默认值；Settings 更新拒绝错误字段。修正对应配置即可保留其它设置，无需重置数据库。
 

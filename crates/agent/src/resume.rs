@@ -644,7 +644,7 @@ impl AgentLayer {
                     .executor
                     .register_mcp_tool_overlay(session_id, name, tool_names.as_deref())
                     .await;
-            } else if tool_call.tool_name.as_str() == "tool_catalog"
+            } else if tool_call.tool_name.as_str() == "discover_tools"
                 && tool_call.tool_input["action"].as_str() == Some("load")
             {
                 let selection = decode_builtin_tool_selection(&tool_call.tool_input);

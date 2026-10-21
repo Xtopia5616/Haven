@@ -764,7 +764,7 @@ async fn test_tools_facade_rebuild_catalog_registers_builtins() {
         assert!(listed["manifest"]["presentation"]["renderer"].is_string());
     }
 
-    for name in ["tool_catalog", "load_skill", "load_mcp"] {
+    for name in ["discover_tools", "load_skill", "load_mcp"] {
         let listed = builtin_tools
             .iter()
             .find(|tool| tool["name"].as_str() == Some(name))
@@ -852,7 +852,7 @@ async fn test_tools_facade_rebuild_catalog_registers_builtins() {
         );
     }
     assert!(mgr.get_tool("haven").await.is_none());
-    assert!(mgr.get_tool("tool_catalog").await.is_some());
+    assert!(mgr.get_tool("discover_tools").await.is_some());
     assert!(mgr.get_tool("load_skill").await.is_some());
     assert!(mgr.get_tool("load_mcp").await.is_some());
 }
@@ -917,7 +917,7 @@ async fn session_notes_and_history_operations_are_discoverable_and_loaded_on_dem
     let listed = mgr
         .execute_tool(
             Some(session_id),
-            "tool_catalog",
+            "discover_tools",
             json!({
                 "action": "list",
                 "source": "builtin",
@@ -945,7 +945,7 @@ async fn session_notes_and_history_operations_are_discoverable_and_loaded_on_dem
     let loaded = mgr
         .execute_tool(
             Some(session_id),
-            "tool_catalog",
+            "discover_tools",
             json!({
                 "action": "load",
                 "source": "builtin",
@@ -967,7 +967,7 @@ async fn session_notes_and_history_operations_are_discoverable_and_loaded_on_dem
 }
 
 #[tokio::test]
-async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools() {
+async fn test_discover_tools_exposes_three_layers_without_loading_deferred_tools() {
     let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     let session_id = "ses-0123456789abcdef0123456789abcdef";
@@ -975,7 +975,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
     let families = mgr
         .execute_tool(
             Some(session_id),
-            "tool_catalog",
+            "discover_tools",
             json!({"action": "list"}),
             CancellationToken::new(),
         )
@@ -997,7 +997,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
     let roots = mgr
         .execute_tool(
             Some(session_id),
-            "tool_catalog",
+            "discover_tools",
             json!({"action": "list", "level": "tools"}),
             CancellationToken::new(),
         )
@@ -1021,7 +1021,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
     let window_detail = mgr
         .execute_tool(
             Some(session_id),
-            "tool_catalog",
+            "discover_tools",
             json!({"action": "describe", "name": "window"}),
             CancellationToken::new(),
         )
@@ -1042,7 +1042,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
     let operation_page = mgr
         .execute_tool(
             Some(session_id),
-            "tool_catalog",
+            "discover_tools",
             json!({
                 "action": "list",
                 "level": "operations",
@@ -1062,7 +1062,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
     let next_page = mgr
         .execute_tool(
             Some(session_id),
-            "tool_catalog",
+            "discover_tools",
             json!({
                 "action": "list",
                 "level": "operations",
@@ -1088,7 +1088,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
     let stale_page = mgr
         .execute_tool(
             Some(session_id),
-            "tool_catalog",
+            "discover_tools",
             json!({
                 "action": "list",
                 "level": "operations",
@@ -1106,7 +1106,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
     let screenshot_detail = mgr
         .execute_tool(
             Some(session_id),
-            "tool_catalog",
+            "discover_tools",
             json!({"action": "describe", "name": "window.screenshot"}),
             CancellationToken::new(),
         )
@@ -1114,12 +1114,12 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
         .unwrap();
     assert_eq!(screenshot_detail.output["loaded"], false);
     assert!(screenshot_detail.output["input_schema"].is_object());
-    assert_eq!(screenshot_detail.output["load"]["tool"], "tool_catalog");
+    assert_eq!(screenshot_detail.output["load"]["tool"], "discover_tools");
 
     let loaded = mgr
         .execute_tool(
             Some(session_id),
-            "tool_catalog",
+            "discover_tools",
             {
                 let operations = std::iter::once("window.screenshot".to_string())
                     .chain((0..64).map(|index| format!("missing.operation_{index}")))
@@ -1151,7 +1151,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
 }
 
 #[tokio::test]
-async fn tool_catalog_describe_does_not_connect_or_execute_mcp() {
+async fn discover_tools_describe_does_not_connect_or_execute_mcp() {
     let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     mgr.upsert_mcp_server_config(McpServerConfig {
@@ -1165,7 +1165,7 @@ async fn tool_catalog_describe_does_not_connect_or_execute_mcp() {
     let result = mgr
         .execute_tool(
             Some("ses-0123456789abcdef0123456789abcdef"),
-            "tool_catalog",
+            "discover_tools",
             json!({
                 "action": "describe",
                 "name": "unconnected-catalog-server"
@@ -2009,7 +2009,7 @@ async fn direct_tools_stay_on_provider_surface_while_deferred_builtins_load_on_d
     let result = mgr
         .execute_tool(
             Some("ses-334aafdac2a2c6de43c6daf3805f41d5"),
-            "tool_catalog",
+            "discover_tools",
             serde_json::json!({
                 "action": "load",
                 "source": "builtin",
@@ -2018,7 +2018,7 @@ async fn direct_tools_stay_on_provider_surface_while_deferred_builtins_load_on_d
             CancellationToken::new(),
         )
         .await
-        .expect("tool_catalog load should be executable from the core surface");
+        .expect("discover_tools load should be executable from the core surface");
     assert!(result.success, "loader failed: {:?}", result.error);
     assert_eq!(result.output["status"], "loaded");
     assert!(result.output.get("input_schema").is_none());
@@ -2183,7 +2183,7 @@ async fn registered_operation_manifest_matches_runtime_policy() {
         "shell",
         "http",
         "system.info",
-        "tool_catalog",
+        "discover_tools",
         "load_skill",
         "load_mcp",
         "files.read",
@@ -2200,7 +2200,7 @@ async fn registered_operation_manifest_matches_runtime_policy() {
         ("http", haven_common::tools::ToolCatalogGroup::Network),
         ("system.info", haven_common::tools::ToolCatalogGroup::System),
         (
-            "tool_catalog",
+            "discover_tools",
             haven_common::tools::ToolCatalogGroup::Extensions,
         ),
         (

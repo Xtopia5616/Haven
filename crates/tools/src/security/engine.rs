@@ -4040,7 +4040,7 @@ mod tests {
                 "http" => "request".into(),
                 "notify" => "notify".into(),
                 "load_skill" => "load".into(),
-                "tool_catalog" => "tool_catalog".into(),
+                "discover_tools" => "discover_tools".into(),
                 "load_mcp" => "load".into(),
                 other => other.to_string(),
             })
@@ -4055,7 +4055,7 @@ mod tests {
             "ask" | "shell" | "http" | "notify" | "load_skill" | "load_mcp" => {
                 serde_json::json!({})
             }
-            "tool_catalog" => serde_json::json!({"action": "list"}),
+            "discover_tools" => serde_json::json!({"action": "list"}),
             _ => serde_json::json!({"operation": case.operation}),
         }
     }

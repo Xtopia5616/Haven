@@ -1334,4 +1334,5 @@
 - [1343：按需检索会话关联图片](1343-on-demand-session-image-history-search.md)
 - [1344：将会话图片历史检索扩展为通用资产检索](1344-generalize-session-image-history-search-to-assets.md)
 - [1345：按需搜索直接关联会话的 transcript](1345-search-transcripts-in-linked-sessions.md)
+- [1346：将按需工具发现入口命名为 discover_tools](1346-rename-tool-catalog-entrypoint.md)
 - [1347：合并文件检查与修改操作](1347-consolidate-file-inspection-and-patch-operations.md)

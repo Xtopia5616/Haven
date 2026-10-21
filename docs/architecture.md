@@ -187,9 +187,9 @@ Builtin 的模型目录统一按点号 operation view 暴露：例如 `files.rea
 `files.summary`、`files.search`、`system.info`、`system.env.get`、`haven.config.config_get`
 和 `media.inspect`。`files`、`system`、`haven`、`media` 以及其它聚合模块仍作为 native/Tauri
 和内部执行边界；模型只接收对应的窄 schema。provider-facing surface 分层维护：`ask`、`notify`、
-`shell`、`http`、`system.info`、`tool_catalog`、`load_skill` 与 `load_mcp` 每轮直接提供；
-其中 `tool_catalog` 按需提供第二层 root 和第三层 operation 的名称、描述与精确 schema。其它未选中的
-builtin operation 保留在 host-owned deferred catalog，由 `tool_catalog` 的 `action=load` 按
+`shell`、`http`、`system.info`、`discover_tools`、`load_skill` 与 `load_mcp` 每轮直接提供；
+其中 `discover_tools` 按需提供第二层 root 和第三层 operation 的名称、描述与精确 schema。其它未选中的
+builtin operation 保留在 host-owned deferred catalog，由 `discover_tools` 的 `action=load` 按
 operation/root 原子加载到当前 session。提示词索引按 `ToolCatalogGroup` 展示：Agent、Session、
 Schedule 与 ToolRun 管理操作归入 `workflow`；`ask` 与 `notify` 归入 `interaction`；工具目录、
 Skill/MCP 加载器及外部扩展工具归入 `extensions`。Haven、文件系统、Desktop、System、Media、

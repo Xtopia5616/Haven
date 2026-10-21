@@ -110,7 +110,7 @@ const CORE_MODEL_TOOLS: &[&str] = &[
     "shell",
     "http",
     "system.info",
-    "tool_catalog",
+    "discover_tools",
     "load_skill",
     "load_mcp",
 ];

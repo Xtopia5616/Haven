@@ -115,7 +115,7 @@ impl ToolsFacade {
         operations: Option<Vec<String>>,
         roots: Option<Vec<String>>,
     ) -> bool {
-        let catalog = builtin::tool_catalog::ToolCatalogTool {
+        let catalog = builtin::discover_tools::DiscoverToolsTool {
             deferred_catalog: self.coordinator.core.operations.deferred.clone(),
             registry: self.coordinator.core.operations.installed.clone(),
             session_tool_overlay: self
@@ -137,7 +137,7 @@ impl ToolsFacade {
         };
         match catalog
             .run(
-                builtin::tool_catalog::ToolCatalogParams {
+                builtin::discover_tools::DiscoverToolsParams {
                     action: "load".into(),
                     level: None,
                     source: Some("builtin".into()),
