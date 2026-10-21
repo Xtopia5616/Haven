@@ -414,7 +414,7 @@ capability 时工具显式失败（ADR 0918）。`MemoryEntityKind` 是 embeddin
 `semantic` 与 `procedural`。后三类按 facts.memory_kind 筛选，不增加第二套事实存储；renderer 的
 `all` 是 UI 筛选项，只展开为 fact 与 episode 两次独立查询，不进入后端 domain enum（ADR 0732、1356）。Agent 保留 prompt
 查询归一化、embedding provider 调用、prompt 候选合并与预算；Memory 的 `MemoryRetriever` 在 fact 召回时
-从关键词/向量种子沿 concept 节点扩展一跳，最多 16 个种子与 80 个候选，跳过通用 user 节点并复用类别、subject 和敏感内容过滤（ADR 1357）。`MemoryEmbeddingStore` 负责
+从最多 16 个关键词/向量种子沿 concept 节点扩展至两跳，每跳最多 16 个节点、总计最多 80 个候选；跳过通用 user 节点，只从可见的一跳事实继续扩展，并复用类别、subject 和敏感内容过滤（ADR 1357、1362）。`MemoryEmbeddingStore` 负责
 embedding 生命周期读写和 LSH 维护。Agent `MemoryService` 对 Profile、Semantic、Procedural
 分别使用 8/8/4 候选上限，共享一次 query embedding 并统一经 `MemoryRecallStore.retrieve`；prompt
 最多 15 条 fact 对每类先保留两个候选，再由原有分数补齐（ADR 1358）。Memory `fact_history` 按 system time 保存语义更改与维护删除前的事实快照；只有显式 MemoryTool `history` 查询读取它，search/list/recall、Prompt、FTS 与 embedding 仍只使用当前 facts。`forget`、清空和敏感事实清理同步擦除历史副本；时点结果经 `MemoryFactStore` 的有界快照端口返回（ADR 1359）。模型从 transcript 与 compaction summary 抽取的事实进入原子、最多 500 条的 `fact_proposals` 队列；普通 transcript 中经来源身份与原文精确引文核验、明确受用户原话支持的事实可直接由 FactGraph 写入，置信度至少为 0.9。summary、未核验、不确定或矛盾的候选仍待 Memory Center 审核。该核验只判断用户是否这样表达，不代表外部事实查证；置信度是内部强度分，不是校准概率（ADR 1360、1361）。`memory_index.rs` 保留模型路由、provider 校验、

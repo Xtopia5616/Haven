@@ -737,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn fact_recall_expands_one_hop_and_filters_sensitive_neighbors() {
+    fn fact_recall_expands_two_hops_and_filters_sensitive_neighbors() {
         let db = Database::open_in_memory().unwrap();
         let seed = db
             .insert_fact("user", "employer", "Acme", "user", 1.0, &["employer"])
@@ -747,6 +747,9 @@ mod tests {
             .unwrap();
         let acquired = db
             .insert_fact("Globex", "acquired", "Acme", "inferred", 0.8, &[])
+            .unwrap();
+        let in_state = db
+            .insert_fact("Seattle", "in_state", "Washington", "inferred", 0.8, &[])
             .unwrap();
         let secret = db
             .insert_fact("Acme", "api_key", "secret-value", "inferred", 1.0, &[])
@@ -763,6 +766,7 @@ mod tests {
         assert!(ids.contains(&seed.fact_id.as_str()));
         assert!(ids.contains(&headquarters.fact_id.as_str()));
         assert!(ids.contains(&acquired.fact_id.as_str()));
+        assert!(ids.contains(&in_state.fact_id.as_str()));
         assert!(!ids.contains(&secret.fact_id.as_str()));
         assert_eq!(
             recall.hits.len(),
@@ -770,6 +774,9 @@ mod tests {
         );
         assert!(recall.hits.iter().any(|hit| {
             hit.entity_id == headquarters.fact_id && hit.text == "Acme: headquartered_in=Seattle"
+        }));
+        assert!(recall.hits.iter().any(|hit| {
+            hit.entity_id == in_state.fact_id && hit.text == "Seattle: in_state=Washington"
         }));
         assert_eq!(recall.hits[0].entity_id, seed.fact_id);
     }
