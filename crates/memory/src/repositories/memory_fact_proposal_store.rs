@@ -1,6 +1,6 @@
-//! Durable queue for model-inferred facts awaiting an explicit user decision.
+//! Durable queue for model-inferred facts that need user review after evidence validation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::db::Database;
@@ -16,6 +16,54 @@ use rusqlite::{Connection, OptionalExtension, types::Type};
 pub const MAX_PENDING_FACT_PROPOSALS: usize = 500;
 /// Maximum proposals returned by one UI page.
 pub const MAX_FACT_PROPOSAL_PAGE_SIZE: usize = 50;
+/// Minimum stored score for a fact that a source-grounded verifier confirmed against user text.
+pub const VERIFIED_FACT_CONFIDENCE_FLOOR: f64 = 0.9;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FactEvidenceStatus {
+    Supported,
+    Uncertain,
+    Contradicted,
+    Unverified,
+}
+
+impl FactEvidenceStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Supported => "supported",
+            Self::Uncertain => "uncertain",
+            Self::Contradicted => "contradicted",
+            Self::Unverified => "unverified",
+        }
+    }
+
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "supported" => Ok(Self::Supported),
+            "uncertain" => Ok(Self::Uncertain),
+            "contradicted" => Ok(Self::Contradicted),
+            "unverified" => Ok(Self::Unverified),
+            _ => anyhow::bail!("unknown fact evidence status"),
+        }
+    }
+}
+
+/// A validated extraction candidate. Supported candidates can be written directly;
+/// all other statuses remain in the bounded review queue.
+#[derive(Debug, Clone)]
+pub struct MemoryFactProposalWrite {
+    pub write: MemoryFactWrite,
+    pub evidence_status: FactEvidenceStatus,
+    pub evidence_quote: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FactProposalCommitOutcome {
+    pub queued: usize,
+    pub auto_accepted: usize,
+    pub facts_written: usize,
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FactProposal {
@@ -28,6 +76,8 @@ pub struct FactProposal {
     pub durability: f64,
     pub created_at: String,
     pub source_ref: Option<FactSourceRef>,
+    pub evidence_status: FactEvidenceStatus,
+    pub evidence_quote: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +133,27 @@ impl MemoryFactProposalStore {
         session_id: &str,
         last_message_id: &str,
     ) -> anyhow::Result<usize> {
+        let writes = writes
+            .into_iter()
+            .map(|write| MemoryFactProposalWrite {
+                write,
+                evidence_status: FactEvidenceStatus::Unverified,
+                evidence_quote: None,
+            })
+            .collect();
+        Ok(self
+            .commit_validated_ordinary_extraction(writes, session_id, last_message_id)
+            .await?
+            .queued)
+    }
+
+    /// Commit verified facts, pending proposals, and the ordinary extraction cursor atomically.
+    pub async fn commit_validated_ordinary_extraction(
+        &self,
+        writes: Vec<MemoryFactProposalWrite>,
+        session_id: &str,
+        last_message_id: &str,
+    ) -> anyhow::Result<FactProposalCommitOutcome> {
         anyhow::ensure!(
             is_canonical_id(session_id, "ses"),
             "invalid session id for ordinary extraction"
@@ -91,7 +162,7 @@ impl MemoryFactProposalStore {
             is_canonical_id(last_message_id, "msg"),
             "invalid message id for ordinary extraction"
         );
-        let writes = prepare_writes(writes)?;
+        let writes = prepare_proposal_writes(writes)?;
         let session_id = session_id.to_owned();
         let last_message_id = last_message_id.to_owned();
         self.db
@@ -99,10 +170,10 @@ impl MemoryFactProposalStore {
                 db.with_fact_write(|| {
                     let conn = db.try_conn()?;
                     in_immediate_transaction(&conn, |conn| {
-                        let inserted = insert_pending_proposals(conn, &writes)?;
+                        let outcome = apply_validated_proposals(conn, db, &writes, &session_id)?;
                         let cursor_key = format!("fact_extraction.{session_id}");
                         set_kv_on_connection(conn, &cursor_key, &last_message_id)?;
-                        Ok(inserted)
+                        Ok(outcome)
                     })
                 })
             })
@@ -116,6 +187,28 @@ impl MemoryFactProposalStore {
         session_id: &str,
         episode_id: &str,
     ) -> anyhow::Result<usize> {
+        let writes = writes
+            .into_iter()
+            .map(|write| MemoryFactProposalWrite {
+                write,
+                evidence_status: FactEvidenceStatus::Unverified,
+                evidence_quote: None,
+            })
+            .collect();
+        Ok(self
+            .commit_validated_summary_extraction(writes, session_id, episode_id)
+            .await?
+            .queued)
+    }
+
+    /// Commit summary proposals and their completion marker atomically. Summary-derived facts
+    /// should normally remain Unverified because a summary is not primary user evidence.
+    pub async fn commit_validated_summary_extraction(
+        &self,
+        writes: Vec<MemoryFactProposalWrite>,
+        session_id: &str,
+        episode_id: &str,
+    ) -> anyhow::Result<FactProposalCommitOutcome> {
         anyhow::ensure!(
             is_canonical_id(session_id, "ses"),
             "invalid session id for summary extraction"
@@ -124,7 +217,13 @@ impl MemoryFactProposalStore {
             is_canonical_id(episode_id, "msg"),
             "invalid episode id for summary extraction"
         );
-        let writes = prepare_writes(writes)?;
+        anyhow::ensure!(
+            writes
+                .iter()
+                .all(|proposal| proposal.evidence_status != FactEvidenceStatus::Supported),
+            "summary-derived facts cannot be automatically accepted"
+        );
+        let writes = prepare_proposal_writes(writes)?;
         let session_id = session_id.to_owned();
         let episode_id = episode_id.to_owned();
         self.db
@@ -143,11 +242,11 @@ impl MemoryFactProposalStore {
                             .optional()?
                             .is_some()
                         {
-                            return Ok(0);
+                            return Ok(FactProposalCommitOutcome::default());
                         }
-                        let inserted = insert_pending_proposals(conn, &writes)?;
+                        let outcome = apply_validated_proposals(conn, db, &writes, &session_id)?;
                         set_kv_on_connection(conn, &marker_key, &session_id)?;
-                        Ok(inserted)
+                        Ok(outcome)
                     })
                 })
             })
@@ -226,7 +325,8 @@ impl MemoryFactProposalStore {
                     .unwrap_or((None, None));
                 let mut statement = conn.prepare(&format!(
                     "SELECT proposal_id, subject, predicate, object, confidence, tags,
-                            durability, created_at, provenance_record_id, provenance_snippet
+                            durability, created_at, provenance_record_id, provenance_snippet,
+                            evidence_status, evidence_quote
                      FROM fact_proposals
                      WHERE NOT {invisible}
                        AND (?1 IS NULL OR created_at > ?1 OR (created_at = ?1 AND proposal_id > ?2))
@@ -329,20 +429,151 @@ impl MemoryFactProposalStore {
     }
 }
 
-fn prepare_writes(writes: Vec<MemoryFactWrite>) -> anyhow::Result<Vec<MemoryFactWrite>> {
+fn prepare_proposal_writes(
+    writes: Vec<MemoryFactProposalWrite>,
+) -> anyhow::Result<Vec<MemoryFactProposalWrite>> {
     writes
         .iter()
-        .map(FactGraph::validate_inferred_proposal)
+        .map(|proposal| {
+            let mut write = FactGraph::validate_inferred_proposal(&proposal.write)?;
+            if let Some(quote) = proposal.evidence_quote.as_deref() {
+                anyhow::ensure!(
+                    quote.trim() == quote && !quote.is_empty() && quote.chars().count() <= 120,
+                    "fact evidence quote must be non-empty and bounded"
+                );
+                anyhow::ensure!(
+                    !is_sensitive_text(quote),
+                    "sensitive text cannot be persisted as fact evidence"
+                );
+            }
+            if proposal.evidence_status == FactEvidenceStatus::Supported {
+                let quote = proposal.evidence_quote.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("supported fact needs an exact evidence quote")
+                })?;
+                let source_ref = write.source_ref.as_mut().ok_or_else(|| {
+                    anyhow::anyhow!("supported fact needs a user source reference")
+                })?;
+                anyhow::ensure!(
+                    is_canonical_id(&source_ref.message_id, "msg"),
+                    "supported fact source message id must be canonical"
+                );
+                source_ref.snippet = quote.to_owned();
+            }
+            Ok(MemoryFactProposalWrite {
+                write,
+                evidence_status: proposal.evidence_status,
+                evidence_quote: proposal.evidence_quote.clone(),
+            })
+        })
         .collect()
+}
+
+fn apply_validated_proposals(
+    conn: &Connection,
+    db: &Database,
+    proposals: &[MemoryFactProposalWrite],
+    session_id: &str,
+) -> anyhow::Result<FactProposalCommitOutcome> {
+    let mut outcome = FactProposalCommitOutcome::default();
+    let mut pending = Vec::new();
+    let mut unique: Vec<MemoryFactProposalWrite> = Vec::new();
+    let mut positions: HashMap<(String, String, String), usize> = HashMap::new();
+    for proposal in proposals {
+        let key = (
+            proposal.write.subject.clone(),
+            proposal.write.predicate.clone(),
+            proposal.write.object.clone(),
+        );
+        if let Some(index) = positions.get(&key).copied() {
+            if proposal.evidence_status == FactEvidenceStatus::Supported
+                && unique[index].evidence_status != FactEvidenceStatus::Supported
+            {
+                unique[index] = proposal.clone();
+            }
+        } else {
+            positions.insert(key, unique.len());
+            unique.push(proposal.clone());
+        }
+    }
+    for proposal in &unique {
+        if proposal.evidence_status != FactEvidenceStatus::Supported {
+            pending.push(proposal.clone());
+            continue;
+        }
+        validate_supported_evidence(conn, proposal, session_id)?;
+        let mut write = proposal.write.clone();
+        write.confidence = write.confidence.max(VERIFIED_FACT_CONFIDENCE_FLOOR);
+        if let Some(source_ref) = write.source_ref.as_mut()
+            && let Some(quote) = proposal.evidence_quote.as_deref()
+        {
+            source_ref.snippet = quote.to_owned();
+        }
+        // A newly verified direct statement supersedes an older unverified suggestion for the
+        // same triple. The FactGraph upsert remains the sole fact/history writer.
+        conn.execute(
+            "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+            rusqlite::params![write.subject, write.predicate, write.object],
+        )?;
+        if FactGraph::new(db).upsert_inferred_batch_on_connection(conn, &[write], 0.0)? {
+            outcome.facts_written += 1;
+        }
+        outcome.auto_accepted += 1;
+    }
+    outcome.queued = insert_pending_proposals(conn, &pending)?;
+    Ok(outcome)
+}
+
+fn validate_supported_evidence(
+    conn: &Connection,
+    proposal: &MemoryFactProposalWrite,
+    session_id: &str,
+) -> anyhow::Result<()> {
+    let source_ref = proposal
+        .write
+        .source_ref
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("supported fact needs a user source reference"))?;
+    let quote = proposal
+        .evidence_quote
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("supported fact needs an exact evidence quote"))?;
+    let source: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT role, content, session_id FROM messages WHERE id = ?1",
+            rusqlite::params![source_ref.message_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((role, content, source_session_id)) = source else {
+        anyhow::bail!("supported fact source is not a stored user message");
+    };
+    anyhow::ensure!(
+        source_session_id == session_id,
+        "supported fact source must belong to the extraction session"
+    );
+    anyhow::ensure!(
+        role == "user",
+        "supported fact source must be a user message"
+    );
+    anyhow::ensure!(
+        content.contains(quote),
+        "supported fact evidence quote must occur in its source message"
+    );
+    Ok(())
 }
 
 fn insert_pending_proposals(
     conn: &Connection,
-    writes: &[MemoryFactWrite],
+    proposals: &[MemoryFactProposalWrite],
 ) -> anyhow::Result<usize> {
     let mut unique = HashSet::new();
     let mut new_writes = Vec::new();
-    for write in writes {
+    for proposal in proposals {
+        anyhow::ensure!(
+            proposal.evidence_status != FactEvidenceStatus::Supported,
+            "supported facts must be applied before pending proposals are inserted"
+        );
+        let write = &proposal.write;
         let key = (
             write.subject.as_str(),
             write.predicate.as_str(),
@@ -363,7 +594,7 @@ fn insert_pending_proposals(
             .optional()?
             .is_some();
         if !exists {
-            new_writes.push(write);
+            new_writes.push(proposal);
         }
     }
     if new_writes.is_empty() {
@@ -377,7 +608,8 @@ fn insert_pending_proposals(
     );
     let created_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let mut inserted = 0;
-    for write in new_writes {
+    for proposal in new_writes {
+        let write = &proposal.write;
         let proposal_id = new_id("fprop");
         anyhow::ensure!(
             is_canonical_id(&proposal_id, "fprop"),
@@ -397,8 +629,9 @@ fn insert_pending_proposals(
         inserted += conn.execute(
             "INSERT INTO fact_proposals (
                 proposal_id, subject, predicate, object, confidence, tags, durability,
-                created_at, provenance_record_id, provenance_snippet
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                created_at, provenance_record_id, provenance_snippet, evidence_status,
+                evidence_quote
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             rusqlite::params![
                 proposal_id,
                 write.subject,
@@ -410,6 +643,8 @@ fn insert_pending_proposals(
                 created_at,
                 provenance_record_id,
                 provenance_snippet,
+                proposal.evidence_status.as_str(),
+                proposal.evidence_quote,
             ],
         )?;
     }
@@ -477,6 +712,17 @@ fn proposal_from_row(row: &rusqlite::Row) -> rusqlite::Result<FactProposal> {
         }
         _ => None,
     };
+    let evidence_status = row.get::<_, String>(10).and_then(|value| {
+        FactEvidenceStatus::parse(&value).map_err(|_| {
+            rusqlite::Error::FromSqlConversionFailure(
+                10,
+                Type::Text,
+                "fact evidence status is outside the current contract".into(),
+            )
+        })
+    })?;
+    let evidence_quote: Option<String> = row.get(11)?;
+    let evidence_quote = evidence_quote.filter(|quote| !is_sensitive_text(quote));
     Ok(FactProposal {
         proposal_id,
         subject: row.get(1)?,
@@ -487,367 +733,11 @@ fn proposal_from_row(row: &rusqlite::Row) -> rusqlite::Result<FactProposal> {
         durability: row.get(6)?,
         created_at: row.get(7)?,
         source_ref,
+        evidence_status,
+        evidence_quote,
     })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        FactProposalDecision, FactProposalReviewOutcome, MAX_FACT_PROPOSAL_PAGE_SIZE,
-        MAX_PENDING_FACT_PROPOSALS, MemoryFactProposalStore,
-    };
-    use crate::Database;
-    use crate::repositories::fact_store::MemoryFactWrite;
-    use crate::repositories::facts::FactSourceRef;
-    use haven_common::types::new_id;
-    use std::sync::Arc;
-
-    fn write(object: &str) -> MemoryFactWrite {
-        MemoryFactWrite {
-            subject: "user".into(),
-            predicate: "likes".into(),
-            object: object.into(),
-            confidence: 0.8,
-            tags: vec!["preference".into()],
-            source_ref: Some(FactSourceRef::from_message(
-                "msg-0123456789abcdef0123456789abcdef",
-                "I like Rust.",
-            )),
-            durability: 0.8,
-        }
-    }
-
-    fn store() -> (Arc<Database>, MemoryFactProposalStore) {
-        let db = Arc::new(Database::open_in_memory().unwrap());
-        (db.clone(), MemoryFactProposalStore::new(db))
-    }
-
-    #[tokio::test]
-    async fn ordinary_extraction_queues_idempotently_and_accepts_once() {
-        let (db, store) = store();
-        let session_id = db.create_session("proposal extraction").unwrap().session_id;
-        let message_id = new_id("msg");
-
-        assert_eq!(
-            store
-                .commit_ordinary_extraction(vec![write("Rust")], &session_id, &message_id)
-                .await
-                .unwrap(),
-            1
-        );
-        assert!(db.list_facts().unwrap().is_empty());
-        assert_eq!(
-            db.conn()
-                .query_row("SELECT COUNT(*) FROM fact_proposals", [], |row| row
-                    .get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            store
-                .commit_ordinary_extraction(vec![write("Rust")], &session_id, &message_id)
-                .await
-                .unwrap(),
-            0,
-            "same pending SPO must not be duplicated"
-        );
-
-        let page = store.list_pending_page(None, 10).await.unwrap();
-        let proposal_id = page.proposals[0].proposal_id.clone();
-        assert_eq!(
-            page.proposals[0].source_ref.as_ref().unwrap().snippet,
-            "I like Rust."
-        );
-        assert_eq!(
-            store
-                .review(proposal_id.clone(), FactProposalDecision::Accept)
-                .await
-                .unwrap(),
-            FactProposalReviewOutcome::Accepted { fact_written: true }
-        );
-        assert_eq!(db.list_facts().unwrap().len(), 1);
-        assert_eq!(
-            store
-                .review(proposal_id, FactProposalDecision::Accept)
-                .await
-                .unwrap(),
-            FactProposalReviewOutcome::AlreadyReviewed
-        );
-        assert!(
-            store
-                .list_pending_page(None, 10)
-                .await
-                .unwrap()
-                .proposals
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn rejection_removes_only_the_proposal_and_user_fact_stays_authoritative() {
-        let (db, store) = store();
-        let session_id = db.create_session("proposal reject").unwrap().session_id;
-        let message_id = new_id("msg");
-        store
-            .commit_ordinary_extraction(vec![write("Rust")], &session_id, &message_id)
-            .await
-            .unwrap();
-        let proposal_id = store.list_pending_page(None, 10).await.unwrap().proposals[0]
-            .proposal_id
-            .clone();
-        store
-            .review(proposal_id.clone(), FactProposalDecision::Reject)
-            .await
-            .unwrap();
-        assert!(db.list_facts().unwrap().is_empty());
-        assert_eq!(
-            store
-                .review(proposal_id, FactProposalDecision::Reject)
-                .await
-                .unwrap(),
-            FactProposalReviewOutcome::AlreadyReviewed
-        );
-
-        db.set_user_fact("user", "city", "Oslo", &[]).unwrap();
-        store
-            .commit_ordinary_extraction(
-                vec![MemoryFactWrite {
-                    subject: "user".into(),
-                    predicate: "city".into(),
-                    object: "Tokyo".into(),
-                    ..write("Tokyo")
-                }],
-                &session_id,
-                &new_id("msg"),
-            )
-            .await
-            .unwrap();
-        let proposal = store.list_pending_page(None, 10).await.unwrap().proposals[0].clone();
-        assert_eq!(
-            store
-                .review(proposal.proposal_id, FactProposalDecision::Accept)
-                .await
-                .unwrap(),
-            FactProposalReviewOutcome::Accepted {
-                fact_written: false
-            }
-        );
-        assert_eq!(db.list_facts().unwrap()[0].object, "Oslo");
-    }
-
-    #[tokio::test]
-    async fn cursor_and_proposals_roll_back_together_and_queue_is_bounded() {
-        let (db, store) = store();
-        let session_id = db.create_session("proposal rollback").unwrap().session_id;
-        let message_id = new_id("msg");
-        db.conn()
-            .execute_batch(
-                "CREATE TRIGGER reject_cursor BEFORE INSERT ON kv_store
-                 WHEN NEW.key GLOB 'fact_extraction.*'
-                 BEGIN SELECT RAISE(ABORT, 'cursor unavailable'); END;",
-            )
-            .unwrap();
-        assert!(
-            store
-                .commit_ordinary_extraction(vec![write("Rust")], &session_id, &message_id)
-                .await
-                .is_err()
-        );
-        assert!(
-            store
-                .list_pending_page(None, 10)
-                .await
-                .unwrap()
-                .proposals
-                .is_empty()
-        );
-        assert!(
-            db.get_kv(&format!("fact_extraction.{session_id}"))
-                .unwrap()
-                .is_none()
-        );
-        db.conn()
-            .execute_batch("DROP TRIGGER reject_cursor")
-            .unwrap();
-
-        for index in 0..MAX_PENDING_FACT_PROPOSALS {
-            db.conn()
-                .execute(
-                    "INSERT INTO fact_proposals (
-                        proposal_id, subject, predicate, object, confidence, durability, created_at
-                     ) VALUES (?1, 'user', 'likes', ?2, 0.8, 0.8, '2026-10-21T00:00:00.000Z')",
-                    rusqlite::params![new_id("fprop"), format!("item-{index}")],
-                )
-                .unwrap();
-        }
-        assert!(
-            store
-                .commit_ordinary_extraction(vec![write("another")], &session_id, &new_id("msg"))
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            db.conn()
-                .query_row("SELECT COUNT(*) FROM fact_proposals", [], |row| row
-                    .get::<_, i64>(0))
-                .unwrap(),
-            MAX_PENDING_FACT_PROPOSALS as i64
-        );
-        assert!(
-            db.get_kv(&format!("fact_extraction.{session_id}"))
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn proposal_listing_is_keyset_bounded_and_filters_sensitive_values() {
-        let (db, store) = store();
-        for index in 0..(MAX_FACT_PROPOSAL_PAGE_SIZE + 2) {
-            store
-                .commit_ordinary_extraction(
-                    vec![MemoryFactWrite {
-                        subject: "user".into(),
-                        predicate: "likes".into(),
-                        object: format!("item-{index}"),
-                        ..write(&format!("item-{index}"))
-                    }],
-                    &db.create_session("proposal page").unwrap().session_id,
-                    &new_id("msg"),
-                )
-                .await
-                .unwrap();
-        }
-        db.conn()
-            .execute(
-                "INSERT INTO fact_proposals (
-                    proposal_id, subject, predicate, object, confidence, durability, created_at
-                 ) VALUES (?1, 'user', 'api_key', 'hidden', 0.8, 0.8, '2026-10-21T00:00:00.000Z')",
-                rusqlite::params![new_id("fprop")],
-            )
-            .unwrap();
-        let first = store.list_pending_page(None, usize::MAX).await.unwrap();
-        assert_eq!(first.proposals.len(), MAX_FACT_PROPOSAL_PAGE_SIZE);
-        let cursor = first.next_cursor.expect("more proposals should be paged");
-        let second = store
-            .list_pending_page(Some(cursor), MAX_FACT_PROPOSAL_PAGE_SIZE)
-            .await
-            .unwrap();
-        assert_eq!(second.proposals.len(), 2);
-        assert!(
-            first
-                .proposals
-                .iter()
-                .chain(&second.proposals)
-                .all(|proposal| proposal.predicate != "api_key")
-        );
-        assert!(second.next_cursor.is_none());
-    }
-
-    #[tokio::test]
-    async fn summary_extraction_marker_and_proposals_commit_together() {
-        let (db, store) = store();
-        let session = db.create_session("proposal summary").unwrap();
-        let episode_id = new_id("msg");
-        db.add_episode_with_pending_extraction(
-            &session.session_id,
-            "Persisted compaction summary with sufficient detail.",
-            &episode_id,
-            false,
-        )
-        .unwrap();
-        assert_eq!(
-            store
-                .commit_summary_extraction(vec![write("Rust")], &session.session_id, &episode_id)
-                .await
-                .unwrap(),
-            1
-        );
-        assert!(
-            store
-                .summary_extraction_completed(&session.session_id, &episode_id)
-                .await
-                .unwrap()
-        );
-        assert_eq!(
-            store
-                .commit_summary_extraction(vec![write("Rust")], &session.session_id, &episode_id)
-                .await
-                .unwrap(),
-            0
-        );
-        assert_eq!(db.list_facts().unwrap().len(), 0);
-        assert_eq!(
-            store
-                .list_pending_page(None, 10)
-                .await
-                .unwrap()
-                .proposals
-                .len(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn extraction_rejects_invalid_ids_and_summary_owner() {
-        let (db, store) = store();
-        let session = db.create_session("proposal ids").unwrap();
-        let valid_message = new_id("msg");
-        assert!(
-            store
-                .commit_ordinary_extraction(vec![write("Rust")], "bad", &valid_message)
-                .await
-                .is_err()
-        );
-        assert!(
-            store
-                .commit_ordinary_extraction(vec![write("Rust")], &session.session_id, "bad")
-                .await
-                .is_err()
-        );
-        let episode_id = new_id("msg");
-        assert!(
-            store
-                .commit_summary_extraction(vec![write("Rust")], &session.session_id, &episode_id)
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn extraction_rejects_sensitive_subjects_and_sanitizes_tags() {
-        let (db, store) = store();
-        let session_id = db.create_session("proposal privacy").unwrap().session_id;
-        let mut candidate = write("Rust");
-        candidate.subject = "password=not-for-memory".into();
-        assert!(
-            store
-                .commit_ordinary_extraction(vec![candidate], &session_id, &new_id("msg"),)
-                .await
-                .is_err()
-        );
-        assert!(
-            store
-                .list_pending_page(None, 10)
-                .await
-                .unwrap()
-                .proposals
-                .is_empty()
-        );
-
-        let mut candidate = write("Rust");
-        candidate.tags = vec![
-            "Preference".into(),
-            "workspace_path".into(),
-            "unknown".into(),
-        ];
-        store
-            .commit_ordinary_extraction(vec![candidate], &session_id, &new_id("msg"))
-            .await
-            .unwrap();
-        assert_eq!(
-            store.list_pending_page(None, 10).await.unwrap().proposals[0].tags,
-            vec!["preference"]
-        );
-    }
-}
+#[path = "memory_fact_proposal_store_tests.rs"]
+mod tests;

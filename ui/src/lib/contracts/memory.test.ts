@@ -39,6 +39,8 @@ describe('memory fact proposal contract', () => {
 		durability: 0.5,
 		created_at: '2026-10-12T08:00:00.000Z',
 		source_ref: { message_id: messageId, snippet: 'I like tea' },
+		evidence_status: 'uncertain',
+		evidence_quote: null,
 	};
 
 	it('maps proposal and source identities to camelCase', () => {
@@ -65,6 +67,18 @@ describe('memory fact proposal contract', () => {
 		expect(() =>
 			parseFactProposalPageResponse({
 				proposals: [{ ...proposal, confidence: 1.1 }],
+				next_cursor: null,
+			}),
+		).toThrow('Invalid memory fact proposal response value');
+		expect(() =>
+			parseFactProposalPageResponse({
+				proposals: [{ ...proposal, evidence_status: 'supported' }],
+				next_cursor: null,
+			}),
+		).toThrow('Invalid memory fact proposal response value');
+		expect(() =>
+			parseFactProposalPageResponse({
+				proposals: [{ ...proposal, evidence_quote: 'x'.repeat(121) }],
 				next_cursor: null,
 			}),
 		).toThrow('Invalid memory fact proposal response value');

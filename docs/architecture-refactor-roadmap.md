@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | 无。§5.12 已完成；按 §5.5 在重新核对候选证据前不指定下一结构切片。 |
+| **Active / Next** | Active：§5.14 有界多跳事实图召回。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -154,7 +154,7 @@ Session、ScheduleRun 与 AppCommand 确认均由各自 owner 和稳定 request 
 | 4    | **crate/API 边界**           | 模块 owner 已稳定且存在单向依赖边界、独立消费者或可复核构建/维护收益。                                                                                          | API 清晰、无反向依赖或重复 adapter；否则保留现 crate 边界。              |
 | 5    | **性能与容量**               | 同负载 profile 复现用户相关延迟、资源或容量问题；固定场景记录优化前后指标。                                                                                     | 改善超过噪声并达到目标，否则关闭候选。                                   |
 
-**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。§5.9 图谱感知召回（ADR 1357）、§5.10 Prompt 记忆召回分路（ADR 1358）与 §5.11 事实历史与按时点查询（ADR 1359）已完成；§5.12 推断事实先审核再写入（ADR 1360）已完成；当前无 Active 切片，下一候选须按 §5.5 重新核对证据。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布及 HCS quota 验收仍是独立 Open Gate（§5.1）。
+**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。§5.9 图谱感知召回（ADR 1357）、§5.10 Prompt 记忆召回分路（ADR 1358）与 §5.11 事实历史与按时点查询（ADR 1359）已完成；§5.12 推断事实先审核再写入（ADR 1360）与 §5.13 原文证据核验与受控自动接受（ADR 1361）已完成；§5.14 有界多跳事实图召回当前 Active。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布及 HCS quota 验收仍是独立 Open Gate（§5.1）。
 
 ### 5.7 全项目领域术语与架构角色命名收敛（持续覆盖）
 
@@ -209,6 +209,14 @@ ADR 1359 定义系统记录时间（knowledge time），不将事实创建时间
 ### 5.12 推断事实先审核再写入（已完成）
 
 Transcript 与 compaction summary 的模型抽取现写入有界 pending proposal，并与 extraction cursor/summary marker 原子提交；提案不进入普通召回。Memory Center 提供来源、置信度、分页及接受/拒绝；接受在同一事务复用 FactGraph 规则，拒绝不改写现有 facts。fprop-* 待审上限为 500，队列满时整批回滚并保留重试位置。Schema v57，旧数据库按 §4 重置。定向 Memory、Agent 与 UI 测试，以及 strict Clippy、Svelte、格式、IPC 和 ADR index 检查通过；workspace 门禁被未修改的 Windows HCS 用例阻断，全量 UI 有 4 个未修改组件断言失败，详见 [ADR 1360](adr/1360-review-inferred-fact-proposals.md)。本切片完成后暂无 Active/Next 结构目标。
+
+### 5.13 原文证据核验与受控自动接受（已完成）
+
+普通 transcript 候选由单独的 verifier 请求对照原始用户消息；`supported` 必须带精确引文，Agent 校验来源身份和原文子串，Memory 在事务内再核对持久化用户消息和引文。核验错误/失败、摘要来源、不确定与矛盾候选均 fail closed 到提案队列。只有原话明确支持的候选才在 extraction marker 同一事务内经 FactGraph 自动写入，并将置信度设为至少 0.9。置信度不是统计概率；不做额外公开网搜索。schema v58，旧库按 §4 重置。验证覆盖正向、伪引文、缺失/敏感证据、模型异常、事务回滚和 UI 状态；结果见 [ADR 1361](adr/1361-source-grounded-fact-validation.md)。
+
+### 5.14 有界多跳事实图召回（Active）
+
+现有 ADR 1357 只扩展一跳邻居。基于已验证的多跳上下文缺失案例，扩展受限图遍历以恢复跨实体关联；保持现有类别、主体、敏感事实过滤与召回预算，避免通用节点导致图扩散。实现范围和具体上限须由源码/测试证据确定，完成后记录于独立 ADR。
 
 ## 6. 更新规则
 

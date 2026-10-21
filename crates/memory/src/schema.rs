@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 57;
+pub const SCHEMA_VERSION: i32 = 58;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -201,7 +201,10 @@ const SCHEMA_SQL: &[&str] = &[
             strftime('%Y-%m-%dT%H:%M:%fZ', created_at) = created_at
         ),
         provenance_record_id TEXT,
-        provenance_snippet TEXT
+        provenance_snippet TEXT,
+        evidence_status TEXT NOT NULL DEFAULT 'unverified'
+            CHECK(evidence_status IN ('supported','uncertain','contradicted','unverified')),
+        evidence_quote TEXT CHECK(evidence_quote IS NULL OR length(evidence_quote) <= 120)
     )",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_proposals_pending_triple
         ON fact_proposals(subject, predicate, object)",
@@ -722,6 +725,8 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("facts", "durability"),
     ("fact_proposals", "proposal_id"),
     ("fact_proposals", "created_at"),
+    ("fact_proposals", "evidence_status"),
+    ("fact_proposals", "evidence_quote"),
     ("fact_history", "superseded_at"),
     ("fact_history", "provenance_item_id"),
     ("tool_runs", "kind"),

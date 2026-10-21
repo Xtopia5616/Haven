@@ -12,6 +12,8 @@ const proposal: FactProposal = {
 	tags: ['preference'],
 	durability: 0.5,
 	created_at: '2026-10-12T08:00:00.000Z',
+	evidence_status: 'unverified',
+	evidence_quote: null,
 	sourceRef: {
 		messageId: 'msg-00000000000000000000000000000002',
 		snippet: 'I like tea',
@@ -32,6 +34,7 @@ describe('PendingFactProposals', () => {
 		});
 
 		expect(screen.getByText('likes', { selector: 'strong' })).toBeTruthy();
+		expect(screen.getByText('未完成核验')).toBeTruthy();
 		expect(screen.getByText('你 · tea')).toBeTruthy();
 		expect(screen.getByText('“I like tea”')).toBeTruthy();
 		await fireEvent.click(screen.getByRole('button', { name: '接受' }));

@@ -1,5 +1,7 @@
 # ADR 1360：推断事实先审核再写入
 
+> 普通 transcript 中经原文证据核验的直接事实已由 [ADR 1361](1361-source-grounded-fact-validation.md) 改为可自动写入；summary 与未核验事实仍按本 ADR 进入审核队列。
+
 ## 状态
 
 已采纳 — 2026-10-21

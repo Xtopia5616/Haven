@@ -105,6 +105,8 @@ describe('memory command boundary', () => {
 					durability: 0.5,
 					created_at: '2026-10-12T08:00:00.000Z',
 					source_ref: { message_id: messageId, snippet: 'I like tea' },
+					evidence_status: 'uncertain',
+					evidence_quote: null,
 				},
 			],
 			next_cursor: null,

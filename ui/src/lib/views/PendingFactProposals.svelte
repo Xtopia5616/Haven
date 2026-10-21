@@ -33,13 +33,26 @@
 	function confidenceLabel(confidence: number) {
 		return `置信度 ${Math.round(Math.max(0, Math.min(1, confidence)) * 100)}%`;
 	}
+
+	function evidenceLabel(status: FactProposal['evidence_status']) {
+		switch (status) {
+			case 'uncertain':
+				return '证据不明确';
+			case 'contradicted':
+				return '原话存在冲突';
+			case 'unverified':
+				return '未完成核验';
+			case 'supported':
+				return '原话支持';
+		}
+	}
 </script>
 
 <section class="proposal-review" aria-label="待审核的推断事实">
 	<header class="proposal-review__header">
 		<div>
 			<h2>待审核的推断事实</h2>
-			<p>接受后才会加入长期记忆并用于召回。</p>
+			<p>系统会先核对用户原话；证据不明确或存在冲突的事实需要你审核。</p>
 		</div>
 		<MaterialBadge text={`${proposals.length}${hasMore ? '+' : ''} 条待审核`} />
 	</header>
@@ -51,13 +64,14 @@
 					<div class="proposal-card__content">
 						<div class="proposal-card__heading">
 							<strong>{proposal.predicate}</strong>
+							<MaterialBadge text={evidenceLabel(proposal.evidence_status)} />
 							<MaterialBadge text={confidenceLabel(proposal.confidence)} />
 						</div>
 						<p class="proposal-card__fact">
 							{proposal.subject === 'user' ? '你' : proposal.subject} · {proposal.object}
 						</p>
-						{#if proposal.sourceRef?.snippet}
-							<blockquote>“{proposal.sourceRef.snippet}”</blockquote>
+						{#if proposal.evidence_quote || proposal.sourceRef?.snippet}
+							<blockquote>“{proposal.evidence_quote ?? proposal.sourceRef?.snippet}”</blockquote>
 						{/if}
 						<span class="proposal-card__time">抽取于 {formatDate(proposal.created_at)}</span>
 					</div>

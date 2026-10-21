@@ -1,5 +1,9 @@
 mod maintenance;
 use maintenance::MemoryMaintenancePass;
+mod fact_verification;
+use fact_verification::{
+    FactEvidenceSource, PreparedFactWrite, unverified_fact_write, verify_fact_writes,
+};
 mod outbox;
 use outbox::{MemoryExtractionHandler, MemoryOutbox};
 #[cfg(test)]
@@ -551,13 +555,19 @@ impl MemoryWorker {
                     tracing::debug!("LLM found no facts in session {}", session_id);
                 }
                 let fact_count = facts.len();
-                let writes = self.prepare_fact_writes(facts, &window.messages);
+                let writes = self.prepare_fact_writes(facts, &window.messages, true);
+                let writes = verify_fact_writes(
+                    self.inference.as_ref(),
+                    self.inference_semaphore.as_ref(),
+                    writes,
+                )
+                .await;
                 let Some(last_message_id) = window.cursor_last.as_deref() else {
                     return FactInferenceOutcome::Done;
                 };
                 match self
                     .fact_proposal_store
-                    .commit_ordinary_extraction(writes, session_id, last_message_id)
+                    .commit_validated_ordinary_extraction(writes, session_id, last_message_id)
                     .await
                 {
                     Ok(wrote) => wrote,
@@ -581,11 +591,13 @@ impl MemoryWorker {
                 return FactInferenceOutcome::Retryable;
             }
         };
-        if wrote > 0 {
+        if wrote.queued > 0 || wrote.auto_accepted > 0 {
             tracing::info!(
-                proposals = wrote,
+                proposals = wrote.queued,
+                auto_accepted = wrote.auto_accepted,
+                facts_written = wrote.facts_written,
                 session_id,
-                "fact extraction queued proposals for review"
+                "fact extraction verified and committed memory candidates"
             );
         }
         FactInferenceOutcome::Done
@@ -639,59 +651,102 @@ impl MemoryWorker {
         &self,
         facts: Vec<LlmFact>,
         messages: &[haven_memory::Message],
-    ) -> Vec<MemoryFactWrite> {
-        let candidates = facts.into_iter().map(|fact| {
-            let source_ref = fact
-                .message_index
-                .and_then(|message_index| resolve_source_message(messages, message_index))
-                .map(|message| FactSourceRef::from_message(&message.message_id, &message.content));
-            MemoryFactCandidate {
-                subject: fact.subject,
-                predicate: fact.predicate,
-                object: fact.object,
-                confidence: fact.confidence,
-                tags: fact.tags,
-                source_ref,
-                durability: fact.durability.unwrap_or(0.6),
-            }
-        });
-        self.prepare_fact_candidates(candidates)
+        verify_user_evidence: bool,
+    ) -> Vec<PreparedFactWrite> {
+        facts
+            .into_iter()
+            .filter_map(|fact| {
+                let source_message = fact
+                    .message_index
+                    .and_then(|message_index| resolve_source_message(messages, message_index));
+                let source_ref = source_message.map(|message| {
+                    FactSourceRef::from_message(&message.message_id, &message.content)
+                });
+                let evidence = if verify_user_evidence {
+                    source_message.map(|message| {
+                        let assistant_context = messages
+                            .iter()
+                            .position(|candidate| candidate.message_id == message.message_id)
+                            .and_then(|source_index| {
+                                messages[..source_index]
+                                    .iter()
+                                    .rev()
+                                    .take_while(|candidate| {
+                                        candidate.role != haven_common::types::CanonicalRole::User
+                                    })
+                                    .find(|candidate| {
+                                        candidate.role
+                                            == haven_common::types::CanonicalRole::Assistant
+                                            && !matches!(
+                                                candidate.message_type,
+                                                Some(haven_common::types::TranscriptMessageKind::Reasoning)
+                                                    | Some(haven_common::types::TranscriptMessageKind::Thought)
+                                                    | Some(haven_common::types::TranscriptMessageKind::ToolCall)
+                                                    | Some(haven_common::types::TranscriptMessageKind::Observation)
+                                            )
+                                    })
+                                    .map(|candidate| candidate.content.clone())
+                            });
+                        FactEvidenceSource {
+                            message_id: message.message_id.clone(),
+                            user_text: message.content.clone(),
+                            assistant_context,
+                        }
+                    })
+                } else {
+                    None
+                };
+                let candidate = MemoryFactCandidate {
+                    subject: fact.subject,
+                    predicate: fact.predicate,
+                    object: fact.object,
+                    confidence: fact.confidence,
+                    tags: fact.tags,
+                    source_ref,
+                    durability: fact.durability.unwrap_or(0.6),
+                };
+                let write = self.prepare_fact_candidate(candidate)?;
+                Some(PreparedFactWrite { write, evidence })
+            })
+            .collect()
     }
 
+    #[cfg(test)]
     fn prepare_fact_candidates(
         &self,
         facts: impl IntoIterator<Item = MemoryFactCandidate>,
     ) -> Vec<MemoryFactWrite> {
-        let mut writes = Vec::new();
-        for fact in facts {
-            let subject = sanitize_fact_field(&fact.subject, self.sanitize_max_chars);
-            let predicate = normalize_predicate(&fact.predicate);
-            let object = sanitize_fact_field(&fact.object, self.sanitize_max_chars);
-            if predicate.is_empty() || subject.is_empty() || object.is_empty() {
-                tracing::debug!(
-                    "fact inference: dropping degenerate fact (empty subject/predicate/object)"
-                );
-                continue;
-            }
-            if is_sensitive_predicate(&predicate) || is_sensitive_object(&object) {
-                tracing::debug!("fact inference: dropping sensitive fact");
-                continue;
-            }
-            // Clamp to the documented range so an over-eager model
-            // (e.g. 1.2) does not skew decay/ordering.
-            let confidence = fact.confidence.clamp(0.5, 1.0);
-            let tags = sanitize_tags(&fact.tags);
-            writes.push(MemoryFactWrite {
-                subject,
-                predicate,
-                object,
-                confidence,
-                tags,
-                source_ref: fact.source_ref,
-                durability: fact.durability.clamp(0.1, 1.0),
-            });
+        facts
+            .into_iter()
+            .filter_map(|fact| self.prepare_fact_candidate(fact))
+            .collect()
+    }
+
+    fn prepare_fact_candidate(&self, fact: MemoryFactCandidate) -> Option<MemoryFactWrite> {
+        let subject = sanitize_fact_field(&fact.subject, self.sanitize_max_chars);
+        let predicate = normalize_predicate(&fact.predicate);
+        let object = sanitize_fact_field(&fact.object, self.sanitize_max_chars);
+        if predicate.is_empty() || subject.is_empty() || object.is_empty() {
+            tracing::debug!(
+                "fact inference: dropping degenerate fact (empty subject/predicate/object)"
+            );
+            return None;
         }
-        writes
+        if is_sensitive_predicate(&predicate) || is_sensitive_object(&object) {
+            tracing::debug!("fact inference: dropping sensitive fact");
+            return None;
+        }
+        // Clamp to the documented range so an over-eager model (e.g. 1.2)
+        // does not skew decay/ordering.
+        Some(MemoryFactWrite {
+            subject,
+            predicate,
+            object,
+            confidence: fact.confidence.clamp(0.5, 1.0),
+            tags: sanitize_tags(&fact.tags),
+            source_ref: fact.source_ref,
+            durability: fact.durability.clamp(0.1, 1.0),
+        })
     }
 
     #[cfg(test)]
@@ -937,7 +992,10 @@ impl MemoryWorker {
                         session_id
                     );
                 }
-                self.prepare_fact_writes(facts, std::slice::from_ref(&synthetic))
+                self.prepare_fact_writes(facts, std::slice::from_ref(&synthetic), false)
+                    .into_iter()
+                    .map(|prepared| unverified_fact_write(prepared.write))
+                    .collect()
             }
             Err(_) => {
                 tracing::warn!(
@@ -951,16 +1009,18 @@ impl MemoryWorker {
 
         match self
             .fact_proposal_store
-            .commit_summary_extraction(writes, session_id, episode_id)
+            .commit_validated_summary_extraction(writes, session_id, episode_id)
             .await
         {
-            Ok(queued) => {
-                if queued > 0 {
+            Ok(outcome) => {
+                if outcome.queued > 0 || outcome.auto_accepted > 0 {
                     tracing::info!(
-                        proposals = queued,
+                        proposals = outcome.queued,
+                        auto_accepted = outcome.auto_accepted,
+                        facts_written = outcome.facts_written,
                         session_id,
                         episode_id,
-                        "summary extraction queued proposals for review"
+                        "summary extraction committed unverified memory candidates"
                     );
                 }
             }

@@ -6,6 +6,7 @@
  * after validation so Rust field names do not escape the command boundary.
  */
 import {
+	FACT_EVIDENCE_STATUS_VALUES,
 	MEMORY_RECALL_KIND_INPUT_VALUES,
 	MEMORY_FACT_RESPONSE_SHAPE,
 	MEMORY_FACT_SOURCE_INPUT_VALUES,
@@ -15,6 +16,7 @@ import {
 	LIST_FACTS_RESPONSE_SHAPE,
 } from './generatedCommands.ts';
 import type {
+	FactEvidenceStatus as GeneratedFactEvidenceStatus,
 	FactProposalDecisionInput,
 	MemoryFactCursor as GeneratedMemoryFactCursor,
 	MemoryFactPageResponse as GeneratedMemoryFactPageResponse,
@@ -53,6 +55,7 @@ export type FactProposal = Omit<
 	GeneratedMemoryFactProposalResponse,
 	'proposal_id' | 'source_ref'
 > & { proposalId: string; sourceRef: FactProposalSourceRef | null };
+export type FactEvidenceStatus = GeneratedFactEvidenceStatus;
 export type FactProposalCursor = GeneratedMemoryFactProposalCursor;
 export interface FactProposalPage {
 	proposals: FactProposal[];
@@ -183,6 +186,11 @@ function validateFactProposalResponse(
 		proposal.confidence > 1 ||
 		proposal.durability < 0 ||
 		proposal.durability > 1 ||
+		!isOneOf(proposal.evidence_status, FACT_EVIDENCE_STATUS_VALUES) ||
+		proposal.evidence_status === 'supported' ||
+		(proposal.evidence_quote !== null &&
+			(proposal.evidence_quote.trim().length === 0 ||
+				[...proposal.evidence_quote].length > 120)) ||
 		!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(proposal.created_at) ||
 		!Number.isFinite(Date.parse(proposal.created_at))
 	) {

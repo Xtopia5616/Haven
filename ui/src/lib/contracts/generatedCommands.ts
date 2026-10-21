@@ -84,7 +84,7 @@ export interface MemoryFactPageResponse { facts: MemoryFactResponse[]; next_curs
 export interface MemoryFactProposalCursorInput { createdAt: string; proposalId: string }
 export interface MemoryFactProposalCursor { createdAt: string; proposalId: string }
 export interface MemoryFactProposalPageResponse { proposals: MemoryFactProposalResponse[]; next_cursor: MemoryFactProposalCursor | null }
-export interface MemoryFactProposalResponse { proposal_id: string; subject: string; predicate: string; object: string; confidence: number; tags: string[]; durability: number; created_at: string; source_ref: MemoryFactSourceRef | null }
+export interface MemoryFactProposalResponse { proposal_id: string; subject: string; predicate: string; object: string; confidence: number; tags: string[]; durability: number; created_at: string; source_ref: MemoryFactSourceRef | null; evidence_status: FactEvidenceStatus; evidence_quote: string | null }
 export type MemoryFactProposalReviewResponse = { status: 'accepted'; fact_written: boolean } | { status: 'rejected' } | { status: 'already_reviewed' };
 export interface MemoryFactResponse { fact_id: string; subject: string; predicate: string; object: string; source: MemoryFactSource; memory_kind: MemoryFactKind; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
 export const MEMORY_FACT_SOURCE_INPUT_VALUES = ['user', 'inferred'] as const;
@@ -438,6 +438,8 @@ export const MEMORY_RECALL_KIND_INPUT_VALUES = ['fact', 'episode', 'profile', 's
 export type MemoryRecallKindInput = (typeof MEMORY_RECALL_KIND_INPUT_VALUES)[number];
 export const MEMORY_FACT_KIND_VALUES = ['profile', 'semantic', 'procedural'] as const;
 export type MemoryFactKind = (typeof MEMORY_FACT_KIND_VALUES)[number];
+export const FACT_EVIDENCE_STATUS_VALUES = ['supported', 'uncertain', 'contradicted', 'unverified'] as const;
+export type FactEvidenceStatus = (typeof FACT_EVIDENCE_STATUS_VALUES)[number];
 export const FACT_PROPOSAL_DECISION_INPUT_VALUES = ['accept', 'reject'] as const;
 export type FactProposalDecisionInput = (typeof FACT_PROPOSAL_DECISION_INPUT_VALUES)[number];
 export const SCHEDULE_TYPE_VALUES = ['once', 'recurring_session'] as const;
@@ -5733,6 +5735,14 @@ export const LIST_FACT_PROPOSALS_RESPONSE_SHAPE = {
 								}
 							}
 						} },
+					},
+					'evidence_status': {
+						optional: false,
+						shape: { kind: 'enum', values: FACT_EVIDENCE_STATUS_VALUES },
+					},
+					'evidence_quote': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
 					}
 				}
 			} },

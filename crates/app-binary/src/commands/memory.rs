@@ -143,6 +143,8 @@ pub struct MemoryFactProposalResponse {
     pub durability: f64,
     pub created_at: String,
     pub source_ref: Option<MemoryFactSourceRef>,
+    pub evidence_status: haven_memory::FactEvidenceStatus,
+    pub evidence_quote: Option<String>,
 }
 
 impl From<haven_memory::FactProposal> for MemoryFactProposalResponse {
@@ -157,6 +159,8 @@ impl From<haven_memory::FactProposal> for MemoryFactProposalResponse {
             durability: proposal.durability,
             created_at: proposal.created_at,
             source_ref: proposal.source_ref.map(Into::into),
+            evidence_status: proposal.evidence_status,
+            evidence_quote: proposal.evidence_quote,
         }
     }
 }
