@@ -1561,7 +1561,7 @@
 	@media screen and (min-width: 840px) {
 		.chat-page {
 			grid-template-columns: 272px minmax(0, 1fr);
-			--md-sys-chat-max-width: 1080px;
+			--md-sys-chat-max-width: 960px;
 		}
 		.desktop-session-rail {
 			grid-column: 1;

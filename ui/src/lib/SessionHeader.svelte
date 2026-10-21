@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import MaterialSelect from './MaterialSelect.svelte';
 	import { sameExecutionWorkspacePath } from './executionWorkspaceStore.ts';
@@ -85,7 +86,7 @@
 			<div class="session-header__workspace-controls" role="group" aria-label="执行工作区">
 				<MaterialSelect
 					id="session-execution-workspace"
-					ariaLabel={`执行工作区：${selectedWorkspaceValue || '自动检测'}`}
+					ariaLabel="执行工作区"
 					width="compact"
 					value={selectedWorkspaceValue}
 					options={executionWorkspaceOptions}
@@ -124,30 +125,27 @@
 			{@render children?.()}
 		</div>
 		<div class="session-header__lifecycle">
-			<MaterialIconButton
-				size="toolbar"
-				icon="plus"
-				variant="primary"
+			<MaterialButton
+				width="compact"
+				variant="filled"
 				className="session-header__new"
 				label="新建会话"
 				title="新建会话"
 				onclick={() => onNew?.()}
 			/>
 			{#if hasSession}
-				<MaterialIconButton
-					size="toolbar"
-					icon="delete"
-					variant="danger-outline"
+				<MaterialButton
+					width="compact"
+					variant="danger"
 					className="session-header__delete"
 					label="删除会话"
 					title="删除会话"
 					onclick={() => onDelete?.()}
 				/>
 				{#if canEndSession}
-					<MaterialIconButton
-						size="toolbar"
-						icon="check"
-						variant="success-outline"
+					<MaterialButton
+						width="compact"
+						variant="success"
 						className="session-header__end"
 						label="完成会话"
 						title="完成会话"

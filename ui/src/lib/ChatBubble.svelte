@@ -745,6 +745,12 @@
 			var(--md-sys-shape-extra-small);
 		box-shadow: var(--md-sys-elevation-1);
 	}
+	.bubble.assistant:not(.tool):not(.thinking) {
+		width: min(100%, var(--md-sys-chat-reading-width));
+		max-width: min(100%, var(--md-sys-chat-reading-width));
+		font-size: var(--md-sys-typescale-body-large-size);
+		line-height: var(--md-sys-typescale-body-large-line-height);
+	}
 	/* Tool cards have their own structured header, so keep a secondary-color
 	 * edge only on those cards to preserve a lightweight type distinction. */
 	.bubble.tool.assistant {
@@ -939,7 +945,7 @@
 	.md-content :global(p) {
 		margin: 0 0 0.75em;
 		overflow-wrap: anywhere;
-		line-height: var(--md-sys-typescale-body-medium-line-height);
+		line-height: var(--md-sys-typescale-body-large-line-height);
 	}
 	.md-content :global(p:last-child) {
 		margin-bottom: 0;

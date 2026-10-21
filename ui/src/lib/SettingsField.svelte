@@ -41,7 +41,8 @@
 	.settings-field {
 		min-height: var(--md-comp-list-item-one-line-height);
 		padding-block: var(--md-sys-space-xs);
-		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+		border-bottom: 1px solid
+			color-mix(in srgb, var(--md-sys-color-outline-variant) 58%, transparent);
 	}
 
 	.settings-field:last-child {

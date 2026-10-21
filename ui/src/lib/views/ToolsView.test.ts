@@ -152,6 +152,48 @@ describe('ToolsView toolbar actions', () => {
 		expect(registerAppListener).not.toHaveBeenCalled();
 	});
 
+	it('keeps builtin load failures visible and recovers through the in-page retry', async () => {
+		let builtinAttempts = 0;
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'list_builtin_tool_manifests') {
+				builtinAttempts += 1;
+				if (builtinAttempts === 1) throw new Error('temporary failure');
+				return { tools: [manifest('system.test', 'system', '测试工具')] };
+			}
+			if (command === 'list_mcp_servers' || command === 'list_skills') return [];
+			return undefined;
+		});
+
+		render(ToolsView);
+		await screen.findByRole('heading', { name: '内置工具加载失败' });
+		await fireEvent.click(screen.getByRole('button', { name: '重试' }));
+
+		expect(await screen.findByText('系统与设备')).toBeTruthy();
+		expect(screen.queryByRole('heading', { name: '内置工具加载失败' })).toBeNull();
+		expect(builtinAttempts).toBe(2);
+		expect(addNotification).not.toHaveBeenCalled();
+	});
+
+	it('shows MCP and skill load errors separately from unconfigured empty states', async () => {
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'list_builtin_tool_manifests') return { tools: [] };
+			if (command === 'list_mcp_servers' || command === 'list_skills') {
+				throw new Error('temporary failure');
+			}
+			return undefined;
+		});
+
+		render(ToolsView);
+		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
+		await screen.findByRole('heading', { name: 'MCP 服务器加载失败' });
+		expect(screen.queryByRole('heading', { name: '尚未配置 MCP 服务器' })).toBeNull();
+
+		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
+		await screen.findByRole('heading', { name: '技能列表加载失败' });
+		expect(screen.queryByRole('heading', { name: '暂无技能' })).toBeNull();
+		expect(addNotification).not.toHaveBeenCalled();
+	});
+
 	it('disposes a listener handle that resolves after unmount and stops later registrations', async () => {
 		const skillsDispose = vi.fn();
 		const mcpDispose = vi.fn();

@@ -280,6 +280,7 @@
 	/* Shared chat surface width. Every chat surface fills the
 	 * same reading column; the outer chat column still caps the overall width. */
 	--md-sys-chat-max-width: 800px;
+	--md-sys-chat-reading-width: 860px;
 	--md-sys-chat-surface-width: 100%;
 	--md-sys-focus-ring: 0 0 0 3px color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
 	--md-sys-selection-outline-color: var(--md-sys-color-primary);
@@ -1921,10 +1922,10 @@ select.md-select {
 		height: auto;
 		gap: var(--md-sys-space-2xs);
 		margin-bottom: 0;
-		padding: var(--md-sys-space-xs);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-large);
-		background: var(--md-sys-color-surface-container-low);
+		padding: 0;
+		border: 0;
+		border-radius: 0;
+		background: transparent;
 	}
 	.md-tabs.workspace-secondary-tabs--sidebar .md-tab {
 		flex: 0 0 auto;

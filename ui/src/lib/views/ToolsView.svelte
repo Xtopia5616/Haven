@@ -6,6 +6,12 @@
 	let mcpServers = $state<McpServerSnapshotView[]>([]);
 	let skills = $state<SkillInfoView[]>([]);
 	let builtinTools = $state<BuiltinToolEntry[]>([]);
+	let builtinToolsLoading = $state(false);
+	let builtinToolsFailed = $state(false);
+	let mcpLoaded = $state(false);
+	let mcpLoadFailed = $state(false);
+	let skillsLoaded = $state(false);
+	let skillsLoadFailed = $state(false);
 	let activeTab = $state<ToolTabId>('builtin');
 	let searchQuery = $state('');
 	let enabledFilter = $state<'all' | 'enabled' | 'disabled'>('all');
@@ -163,20 +169,8 @@
 	}
 
 	onMount(async () => {
-		try {
-			const result = await listBuiltinToolManifests();
-			if (disposed) return;
-			if (result && result.tools) {
-				const manifests = setToolManifests(result.tools);
-				builtinTools = manifests
-					.map(builtinToolEntryFromManifest)
-					.sort((a, b) => a.name.localeCompare(b.name));
-			}
-		} catch (e) {
-			if (disposed) return;
-			builtinTools = [];
-			reportError(e, { context: 'ToolsView', message: '加载工具列表失败', log: false });
-		}
+		await refreshBuiltinTools();
+		if (disposed) return;
 		await refreshMcpServers();
 		if (disposed) return;
 		await refreshSkillList();
@@ -215,14 +209,16 @@
 		toggleStates.clear();
 	});
 
-	async function refreshMcpServers(notifyOnError = true) {
+	async function refreshMcpServers(notifyOnError = false) {
 		try {
 			const result = await listMcpServers();
 			if (disposed) return false;
 			mcpServers = result || [];
+			mcpLoadFailed = false;
 			return true;
 		} catch (error) {
 			if (disposed) return false;
+			mcpLoadFailed = true;
 			reportError(error, {
 				context: 'ToolsView',
 				message: '加载 MCP 服务器失败',
@@ -230,6 +226,35 @@
 				notify: notifyOnError,
 			});
 			return false;
+		} finally {
+			if (!disposed) mcpLoaded = true;
+		}
+	}
+
+	async function refreshBuiltinTools() {
+		if (builtinToolsLoading) return false;
+		builtinToolsLoading = true;
+		builtinToolsFailed = false;
+		try {
+			const result = await listBuiltinToolManifests();
+			if (disposed) return false;
+			const manifests = setToolManifests(result?.tools || []);
+			builtinTools = manifests
+				.map(builtinToolEntryFromManifest)
+				.sort((a, b) => a.name.localeCompare(b.name));
+			return true;
+		} catch (error) {
+			if (disposed) return false;
+			builtinToolsFailed = true;
+			reportError(error, {
+				context: 'ToolsView',
+				message: '加载内置工具失败',
+				log: false,
+				notify: false,
+			});
+			return false;
+		} finally {
+			if (!disposed) builtinToolsLoading = false;
 		}
 	}
 
@@ -278,20 +303,23 @@
 			}
 		} catch (e) {
 			if (isAuthorizationConfirmationPending(e)) return;
+			mcpLoadFailed = true;
 			reportError(e, { context: 'ToolsView', message: '刷新 MCP 服务器失败', log: false });
 		} finally {
 			mcpRefreshing = false;
 		}
 	}
 
-	async function refreshSkillList(notifyOnError = true) {
+	async function refreshSkillList(notifyOnError = false) {
 		try {
 			const result = await listSkills();
 			if (disposed) return false;
 			skills = result || [];
+			skillsLoadFailed = false;
 			return true;
 		} catch (error) {
 			if (disposed) return false;
+			skillsLoadFailed = true;
 			reportError(error, {
 				context: 'ToolsView',
 				message: '加载技能列表失败',
@@ -299,6 +327,8 @@
 				notify: notifyOnError,
 			});
 			return false;
+		} finally {
+			if (!disposed) skillsLoaded = true;
 		}
 	}
 
@@ -399,6 +429,7 @@
 			if (!(await refreshSkillList())) return;
 			addNotification('技能已刷新', 'success', 2000);
 		} catch (e) {
+			skillsLoadFailed = true;
 			reportError(e, { context: 'ToolsView', message: '刷新技能失败', log: false });
 		} finally {
 			skillsRefreshing = false;
@@ -582,6 +613,12 @@
 						description="Haven 自带的可调用能力；按能力族、根能力和具体操作三级收纳，可展开后分别启停。"
 					>
 						{#snippet children()}
+							<RefreshButton
+								iconOnly
+								loading={builtinToolsLoading}
+								title="刷新内置工具列表"
+								onclick={refreshBuiltinTools}
+							/>
 							<MaterialButton
 								variant="outlined"
 								label="重置熔断"
@@ -590,10 +627,30 @@
 						{/snippet}
 					</WorkspaceSectionHeader>
 					{@render resourceToolbar()}
-					{#if builtinTools.length === 0}
+					{#if builtinToolsFailed && builtinTools.length > 0}
 						<AsyncState
-							title="暂无可用的内置工具"
-							message="工具列表加载后，可在此查看详情与启用状态。"
+							state="error"
+							layout="compact"
+							title="内置工具刷新失败"
+							message="保留了上次加载的工具列表。检查应用连接后重试。"
+							actionLabel="重试"
+							onAction={refreshBuiltinTools}
+						/>
+					{/if}
+					{#if builtinToolsLoading && builtinTools.length === 0}
+						<AsyncState state="loading" title="正在加载内置工具" />
+					{:else if builtinToolsFailed && builtinTools.length === 0}
+						<AsyncState
+							state="error"
+							title="内置工具加载失败"
+							message="检查应用连接后重试。"
+							actionLabel="重试"
+							onAction={refreshBuiltinTools}
+						/>
+					{:else if builtinTools.length === 0}
+						<AsyncState
+							title="没有注册的内置工具"
+							message="当前版本没有可显示的内置工具。"
 						/>
 					{:else if visibleBuiltinTools.length === 0}
 						<AsyncState
@@ -628,8 +685,28 @@
 							/>
 						{/snippet}
 					</WorkspaceSectionHeader>
+					{#if mcpLoadFailed && mcpServers.length > 0}
+						<AsyncState
+							state="error"
+							layout="compact"
+							title="MCP 状态刷新失败"
+							message="保留了上次加载的服务器列表。检查应用连接后重试。"
+							actionLabel="重试"
+							onAction={refreshMcpList}
+						/>
+					{/if}
 					{@render resourceToolbar()}
-					{#if mcpServers.length === 0}
+					{#if !mcpLoaded}
+						<AsyncState state="loading" title="正在加载 MCP 服务器" />
+					{:else if mcpLoadFailed && mcpServers.length === 0}
+						<AsyncState
+							state="error"
+							title="MCP 服务器加载失败"
+							message="检查应用连接后重试。"
+							actionLabel="重试"
+							onAction={refreshMcpList}
+						/>
+					{:else if mcpServers.length === 0}
 						<AsyncState
 							state="unconfigured"
 							title="尚未配置 MCP 服务器"
@@ -678,8 +755,28 @@
 							/>
 						{/snippet}
 					</WorkspaceSectionHeader>
+					{#if skillsLoadFailed && skills.length > 0}
+						<AsyncState
+							state="error"
+							layout="compact"
+							title="技能列表刷新失败"
+							message="保留了上次加载的技能列表。检查应用连接后重试。"
+							actionLabel="重试"
+							onAction={refreshSkills}
+						/>
+					{/if}
 					{@render resourceToolbar()}
-					{#if skills.length === 0}
+					{#if !skillsLoaded}
+						<AsyncState state="loading" title="正在加载技能" />
+					{:else if skillsLoadFailed && skills.length === 0}
+						<AsyncState
+							state="error"
+							title="技能列表加载失败"
+							message="检查应用连接后重试。"
+							actionLabel="重试"
+							onAction={refreshSkills}
+						/>
+					{:else if skills.length === 0}
 						<AsyncState
 							state="unconfigured"
 							title="暂无技能"

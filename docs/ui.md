@@ -63,7 +63,8 @@
 | `--md-sys-typescale-headline-large-size` / `-line-height` | 28px / 1.25 | 页面主标题 |
 | `--md-sys-typescale-headline-medium-size` / `-line-height` | 20px / 1.3 | 区块标题 |
 | `--md-sys-typescale-title-large-size` / `-line-height` | 18px / 1.35 | 会话标题 |
-| `--md-sys-typescale-body-medium-size` / `-line-height` | 14px / 1.55 | 正文、聊天内容 |
+| `--md-sys-typescale-body-medium-size` / `-line-height` | 14px / 1.55 | 默认正文、控件与辅助文本 |
+| `--md-sys-typescale-body-large-size` / `-line-height` | 15px / 1.55 | 聊天回复等连续阅读正文 |
 | `--md-sys-typescale-body-small-size` / `-line-height` | 13px / 1.5 | 辅助正文 |
 | `--md-sys-typescale-label-medium-size` / `-line-height` | 12px / 1.45 | 状态、菜单、次要标签 |
 | `--md-sys-typescale-label-small-size` / `-line-height` | 11px / 1.4 | 极少量元数据 |
@@ -126,7 +127,7 @@
 | `.md-input` | 文本输入框 | - |
 | `.md-textarea` | 多行输入 | - |
 | `.md-card` | 卡片容器 | `--elevated`, `--outlined` |
-| `WorkspaceSurface` | 次级工作区的统一外框、背景、边框和入场动效 | `entering` |
+| `WorkspaceSurface` | 次级工作区的统一背景与入场动效 | `entering` |
 | `.md-chip` | 标签 chip | - |
 | `.md-divider` | 分割线 | - |
 | `.md-tabs` / `.md-tab` | Tab 导航 | `active` |
@@ -212,7 +213,9 @@
 
 领域 view 把动作交给 command adapter；复用组件把动作交给 owner callback。闭合的 Tauri request/response 直接来自 `generatedCommands.ts`，不在组件 props 或 view 内重新声明 wire shape。
 
-`WorkspaceSurface` 是任务、工具、记忆和设置等次级工作区的唯一外框。它只负责容器几何、主题背景、边框、阴影和工作区切换时的入场动效；页面标题、筛选器、列表和详情内容由各工作区自己提供。对话工作区保持全宽布局，不套用此外框。
+`WorkspaceSurface` 为任务、工具、记忆和设置等次级工作区提供统一背景与工作区切换时的入场动效；页面标题、筛选器、列表和详情内容由各工作区自己提供。容器分层优先使用背景色与留白，避免工作区外框、分类导航和内容卡片连续叠加描边。对话工作区保持全宽布局，不套用此外框。
+
+桌面聊天画布最大宽度为 960px，普通助手回复的阅读列最大宽度为 860px，且使用 15px 正文；工具结果和代码/表格可使用完整聊天画布宽度，避免长内容挤压正文阅读节奏。
 
 ### 2.5 已收敛的共享组件
 
@@ -730,7 +733,7 @@ ready + 用户修改 → dirty → saving → saved | error
 |---|---|---|
 | `AppShell` / 工作区壳层 | 顶栏、工作区导航、全局布局、响应式断点 | 会话业务、工具加载、设置保存 |
 | `WorkspaceNav` | 一级入口、当前工作区、窄窗折叠 | 具体页面数据请求 |
-| `WorkspaceSurface` | 次级工作区的统一外框、主题背景、边框和入场动效 | 页面数据、筛选器、列表和详情内容 |
+| `WorkspaceSurface` | 次级工作区的统一主题背景和入场动效 | 页面数据、筛选器、列表和详情内容 |
 | `SessionRail` | 新建、搜索、切换、会话级操作 | 生成循环、消息持久化 |
 | `SessionHeader` | 标题、执行工作区入口、模型、会话状态、停止/结束等会话动作 | 任务列表和全局通知 |
 | `SessionMessageTimeline` | 消息、思考、工具调用、确认、结果的展示编排 | 领域命令调用 |

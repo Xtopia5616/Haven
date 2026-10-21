@@ -1681,7 +1681,8 @@
 		gap: var(--md-sys-space-lg);
 		margin: 0 0 var(--md-sys-space-xl);
 		padding-bottom: var(--md-sys-space-md);
-		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+		border-bottom: 1px solid
+			color-mix(in srgb, var(--md-sys-color-outline-variant) 58%, transparent);
 	}
 	.settings-panel-heading h2 {
 		margin: 0;

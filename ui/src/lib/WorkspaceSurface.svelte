@@ -32,7 +32,6 @@
 		min-width: 0;
 		min-height: 100%;
 		padding: var(--md-sys-space-lg);
-		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
 		background:
 			linear-gradient(
@@ -41,13 +40,9 @@
 				transparent 220px
 			),
 			var(--md-sys-color-surface-container-lowest);
-		box-shadow: var(--md-sys-elevation-1);
 		color: var(--md-sys-color-on-surface);
-		transition:
-			background-color var(--md-sys-motion-duration-medium)
-				var(--md-sys-motion-easing-standard),
-			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+		transition: background-color var(--md-sys-motion-duration-medium)
+			var(--md-sys-motion-easing-standard);
 	}
 	.workspace-surface--entering {
 		animation: haven-workspace-surface-enter var(--md-sys-motion-duration-medium)

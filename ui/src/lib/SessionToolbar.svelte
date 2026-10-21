@@ -1,4 +1,5 @@
 <script lang="ts">
+	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import MenuItem from './MenuItem.svelte';
 	import Icon from './Icon.svelte';
@@ -124,9 +125,8 @@
 
 {#if showSessionMenu}
 	<div class="session-switch">
-		<MaterialIconButton
-			icon="chat"
-			size="toolbar"
+		<MaterialButton
+			width="compact"
 			variant="tonal"
 			className={`session-switch-btn${sessionMenuOpen ? ' is-open' : ''}`}
 			label="切换会话"
@@ -448,7 +448,7 @@
 		position: relative;
 		flex-shrink: 0;
 	}
-	:global(.md-icon-btn.session-switch-btn) {
+	:global(.md-btn.session-switch-btn) {
 		border: 1px solid
 			color-mix(in srgb, var(--md-sys-color-primary) 28%, var(--md-sys-color-outline-variant));
 		background: color-mix(
@@ -463,12 +463,12 @@
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
-	:global(.md-icon-btn.session-switch-btn:hover) {
+	:global(.md-btn.session-switch-btn:hover) {
 		border-color: var(--md-sys-color-primary);
 		box-shadow: var(--md-sys-elevation-2);
 	}
-	:global(.md-icon-btn.session-switch-btn.is-open),
-	:global(.md-icon-btn.session-switch-btn.is-open:hover) {
+	:global(.md-btn.session-switch-btn.is-open),
+	:global(.md-btn.session-switch-btn.is-open:hover) {
 		border-color: var(--md-sys-color-primary);
 		background: var(--md-sys-color-primary);
 		color: var(--md-sys-color-on-primary);
