@@ -1,4 +1,5 @@
 use super::*;
+use super::super::file_mutations::encode_patched_text;
 use crate::security::FileWritePolicy;
 use crate::{Tool, ToolExecutionContext};
 
@@ -433,6 +434,54 @@ async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_polic
     }
 
     #[tokio::test]
+    async fn test_file_execute_patch_bounds_matches_across_all_edits() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-total-match-limit.txt");
+        let original = "a b\n".repeat(MAX_PATCH_MATCHES / 2 + 1);
+        tokio::fs::write(&file, &original).await.unwrap();
+
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [
+                        {"old_string": "a", "new_string": "A", "replace_all": true},
+                        {"old_string": "b", "new_string": "B", "replace_all": true}
+                    ]
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+
+        assert!(result.unwrap_err().to_string().contains("across all edits"));
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_caps_reported_match_lines() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-reported-lines.txt");
+        tokio::fs::write(&file, "x\n".repeat(120)).await.unwrap();
+
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [{"old_string": "x", "new_string": "y", "replace_all": true}]
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.output["replacements"][0]["matches"], 120);
+        assert_eq!(result.output["replacements"][0]["lines"].as_array().unwrap().len(), 100);
+        assert_eq!(result.output["replacements"][0]["lines_truncated"], true);
+    }
+
+    #[tokio::test]
     async fn test_file_execute_patch_applies_single_file_unified_diff_with_shifted_hunks() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("patch-unified.txt");
@@ -762,6 +811,8 @@ async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_polic
             let roundtrip = haven_common::encoding::decode_with_encoding(&written);
             assert_eq!(roundtrip.text, "世界\n", "encoding={encoding}");
         }
+
+        assert!(encode_patched_text("emoji 😀\n", "gbk").is_err());
     }
 
     #[tokio::test]

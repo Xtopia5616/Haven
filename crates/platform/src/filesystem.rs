@@ -11,7 +11,7 @@ pub use tree_diff::{
 use std::ffi::OsString;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -321,12 +321,33 @@ impl DirectoryCapability {
         self.atomic_replace_with(relative, |file| file.write_all(bytes))
     }
 
+    /// Replace an existing file only if its bytes still match the snapshot
+    /// that was used to prepare the replacement. The comparison happens after
+    /// the staging file is flushed, immediately before the directory entry is
+    /// replaced.
+    pub fn atomic_replace_if_contents_match(
+        &self,
+        relative: &Path,
+        expected_contents: &[u8],
+        bytes: &[u8],
+    ) -> io::Result<()> {
+        self.atomic_write_with(relative, true, true, Some(expected_contents), |file| {
+            file.write_all(bytes)
+        })
+    }
+
+    /// Create a file beneath this root, creating parent directories as needed,
+    /// while rejecting a destination that appears before the final rename.
+    pub fn atomic_create_if_missing(&self, relative: &Path, bytes: &[u8]) -> io::Result<()> {
+        self.atomic_write_with(relative, true, false, None, |file| file.write_all(bytes))
+    }
+
     fn atomic_replace_with(
         &self,
         relative: &Path,
         write_contents: impl FnOnce(&mut cap_std::fs::File) -> io::Result<()>,
     ) -> io::Result<()> {
-        self.atomic_write_with(relative, true, true, write_contents)
+        self.atomic_write_with(relative, true, true, None, write_contents)
     }
 
     /// Atomically create a new file below an already existing parent. Existing
@@ -338,7 +359,7 @@ impl DirectoryCapability {
         relative: &Path,
         write_contents: impl FnOnce(&mut cap_std::fs::File) -> io::Result<()>,
     ) -> io::Result<()> {
-        self.atomic_write_with(relative, false, false, write_contents)
+        self.atomic_write_with(relative, false, false, None, write_contents)
     }
 
     fn atomic_write_with(
@@ -346,6 +367,7 @@ impl DirectoryCapability {
         relative: &Path,
         create_parents: bool,
         replace_existing: bool,
+        expected_contents: Option<&[u8]>,
         write_contents: impl FnOnce(&mut cap_std::fs::File) -> io::Result<()>,
     ) -> io::Result<()> {
         let relative = validate_relative_path(relative)?;
@@ -426,6 +448,27 @@ impl DirectoryCapability {
                     format!("could not sync the staging file: {error}"),
                 )
             })?;
+            if let Some(expected_contents) = expected_contents {
+                let mut current = parent.open(filename).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("could not recheck the destination before replacement: {error}"),
+                    )
+                })?;
+                let read_limit = u64::try_from(expected_contents.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(1);
+                let mut current_contents = Vec::with_capacity(expected_contents.len());
+                Read::by_ref(&mut current)
+                    .take(read_limit)
+                    .read_to_end(&mut current_contents)?;
+                if current_contents != expected_contents {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "destination changed while the replacement was being prepared",
+                    ));
+                }
+            }
             #[cfg(windows)]
             {
                 let file = file.into_std();
@@ -872,6 +915,7 @@ fn normalize_windows_extended_path(path: PathBuf) -> Option<PathBuf> {
 #[cfg(test)]
 mod directory_capability_tests {
     use super::{DirectoryCapability, DirectoryEntryKind};
+    use std::io::Write;
     use std::path::Path;
 
     #[cfg(windows)]
@@ -941,6 +985,44 @@ mod directory_capability_tests {
             .atomic_replace(Path::new("notes.md"), b"new content")
             .unwrap();
         assert_eq!(std::fs::read(target).unwrap(), b"new content");
+    }
+
+    #[test]
+    fn guarded_atomic_replace_rejects_changes_during_staging() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("notes.md");
+        std::fs::write(&target, b"snapshot").unwrap();
+        let capability = DirectoryCapability::open(temp.path()).unwrap();
+
+        let result = capability.atomic_write_with(
+            Path::new("notes.md"),
+            true,
+            true,
+            Some(b"snapshot"),
+            |staged| {
+                staged.write_all(b"agent edit")?;
+                std::fs::write(&target, b"external edit")
+            },
+        );
+
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        assert_eq!(std::fs::read(target).unwrap(), b"external edit");
+    }
+
+    #[test]
+    fn atomic_create_does_not_replace_a_destination_created_during_staging() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("notes.md");
+        let capability = DirectoryCapability::open(temp.path()).unwrap();
+
+        let result =
+            capability.atomic_write_with(Path::new("notes.md"), true, false, None, |staged| {
+                staged.write_all(b"agent create")?;
+                std::fs::write(&target, b"external create")
+            });
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(target).unwrap(), b"external create");
     }
 
     #[test]

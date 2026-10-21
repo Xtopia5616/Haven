@@ -31,8 +31,9 @@ pub(super) struct AtomicWriteResult {
 }
 
 /// Write a complete replacement beside the destination and then replace the
-/// destination in one filesystem operation. The optional hash is a compare-
-/// and-swap guard against edits based on stale content.
+/// destination in one filesystem operation. The optional hash is an
+/// optimistic guard against edits based on stale content and is rechecked
+/// after staging, just before the destination is replaced.
 pub(super) async fn atomic_replace(
     path: &Path,
     bytes: &[u8],
@@ -48,31 +49,8 @@ pub(super) async fn atomic_replace(
             max_write_bytes
         );
     }
-    let current_hash = if expected_hash.is_some() {
-        match tokio::fs::metadata(path).await {
-            Ok(metadata) => {
-                if metadata.len() > MAX_INSPECT_HASH_BYTES {
-                    anyhow::bail!(
-                        "cannot verify expected_hash for a file larger than {} bytes",
-                        MAX_INSPECT_HASH_BYTES
-                    );
-                }
-                Some(sha256_bytes(&tokio::fs::read(path).await?))
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        }
-    } else {
-        None
-    };
     if let Some(expected) = expected_hash {
-        let matches = match current_hash.as_deref() {
-            Some(actual) => expected_hash_matches(expected, actual),
-            None => expected.trim().eq_ignore_ascii_case("missing"),
-        };
-        if !matches {
-            anyhow::bail!("write compare failed: expected_hash does not match the current file");
-        }
+        verify_expected_hash(path, expected).await?;
     }
     let sha256 = sha256_bytes(bytes);
     if dry_run {
@@ -98,7 +76,12 @@ pub(super) async fn atomic_replace(
         file.flush().await?;
         file.sync_all().await?;
         drop(file);
-        replace_file(&temporary, path).await
+        if let Some(expected) = expected_hash {
+            verify_expected_hash(path, expected).await?;
+        }
+        let replace_existing =
+            !expected_hash.is_some_and(|expected| expected.trim().eq_ignore_ascii_case("missing"));
+        replace_file(&temporary, path, replace_existing).await
     }
     .await;
     if result.is_err() {
@@ -112,7 +95,46 @@ pub(super) async fn atomic_replace(
     })
 }
 
-async fn replace_file(temporary: &Path, destination: &Path) -> anyhow::Result<()> {
+async fn verify_expected_hash(path: &Path, expected: &str) -> anyhow::Result<()> {
+    let current_hash = match tokio::fs::File::open(path).await {
+        Ok(file) => {
+            let size = file.metadata().await?.len();
+            if size > MAX_INSPECT_HASH_BYTES {
+                anyhow::bail!(
+                    "cannot verify expected_hash for a file larger than {} bytes",
+                    MAX_INSPECT_HASH_BYTES
+                );
+            }
+            let mut bytes = Vec::with_capacity(size as usize);
+            file.take(MAX_INSPECT_HASH_BYTES.saturating_add(1))
+                .read_to_end(&mut bytes)
+                .await?;
+            if bytes.len() as u64 > MAX_INSPECT_HASH_BYTES {
+                anyhow::bail!(
+                    "cannot verify expected_hash for a file larger than {} bytes",
+                    MAX_INSPECT_HASH_BYTES
+                );
+            }
+            Some(sha256_bytes(&bytes))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let matches = match current_hash.as_deref() {
+        Some(actual) => expected_hash_matches(expected, actual),
+        None => expected.trim().eq_ignore_ascii_case("missing"),
+    };
+    if !matches {
+        anyhow::bail!("write compare failed: expected_hash does not match the current file");
+    }
+    Ok(())
+}
+
+async fn replace_file(
+    temporary: &Path,
+    destination: &Path,
+    replace_existing: bool,
+) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
@@ -129,13 +151,13 @@ async fn replace_file(temporary: &Path, destination: &Path) -> anyhow::Result<()
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
-        let ok = unsafe {
-            MoveFileExW(
-                from.as_ptr(),
-                to.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        };
+        let flags = MOVEFILE_WRITE_THROUGH
+            | if replace_existing {
+                MOVEFILE_REPLACE_EXISTING
+            } else {
+                0
+            };
+        let ok = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), flags) };
         if ok == 0 {
             anyhow::bail!(
                 "atomic file replacement failed: {}",
@@ -146,7 +168,12 @@ async fn replace_file(temporary: &Path, destination: &Path) -> anyhow::Result<()
     }
     #[cfg(not(windows))]
     {
-        tokio::fs::rename(temporary, destination).await?;
+        if replace_existing {
+            tokio::fs::rename(temporary, destination).await?;
+        } else {
+            tokio::fs::hard_link(temporary, destination).await?;
+            let _ = tokio::fs::remove_file(temporary).await;
+        }
         Ok(())
     }
 }
@@ -338,4 +365,26 @@ fn prioritize_asset_fields(output: &mut Map<String, Value>) {
         }
     }
     *output = ordered;
+}
+
+#[cfg(test)]
+mod atomic_replace_tests {
+    use super::replace_file;
+
+    #[tokio::test]
+    async fn missing_file_write_does_not_replace_a_destination_created_before_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let staged = temp.path().join("staged.tmp");
+        let destination = temp.path().join("output.txt");
+        tokio::fs::write(&staged, b"agent content").await.unwrap();
+        tokio::fs::write(&destination, b"external content")
+            .await
+            .unwrap();
+
+        assert!(replace_file(&staged, &destination, false).await.is_err());
+        assert_eq!(
+            tokio::fs::read(destination).await.unwrap(),
+            b"external content"
+        );
+    }
 }

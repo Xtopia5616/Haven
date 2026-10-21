@@ -11,10 +11,11 @@ Accepted — 2026-10-21
 ## 决定
 
 - `files.patch` 读取上限独立于完整文件读取上限，新增 `context_limits.file_max_patch_bytes`，默认 8 MiB，范围 1–64 MiB。patch 的输出仍受 `file_write_max_bytes` 限制，模型输入受 256 KiB 限制。
-- 精确替换默认要求唯一命中；`replace_all: true` 显式替换所有命中，最多 100,000 处，`expected_matches` 可继续对确切命中数做断言。失败时返回最多三处候选行与上下文，提示重新读取并收窄匹配。
+- 精确替换默认要求唯一命中；`replace_all: true` 显式替换所有命中，一次 patch 的全部 edits 共用 100,000 处上限，`expected_matches` 可继续对单条 edit 的确切命中数做断言。结果每条 edit 最多列出 100 个受影响行号并标记是否截断。失败时返回最多三处候选行与上下文，提示重新读取并收窄匹配。
 - `files.patch` 接受 `edits` 或单文件 unified diff，要求二选一。可以有多个 hunk，但拒绝多文件、创建、删除、重命名、复制和二进制 diff。输入 `path` 是唯一写入目标，diff header 路径不用于文件访问。使用 `diffy` 解析和应用上下文 hunk，避免自行实现不完整的 diff parser。
-- patch 开始时计算被读取字节的 SHA-256；若调用方提供 `expected_hash`，它作为读取前的额外版本条件，否则写入前使用读取快照的哈希拒绝并发修改。
+- patch 开始时计算被读取字节的 SHA-256；若调用方提供 `expected_hash`，它作为读取前的额外版本条件，否则写入前使用读取快照的哈希拒绝并发修改。暂存文件 flush 后、替换目标前再次校验快照；受管路径比较原始字节，未受管路径重新计算哈希。新文件使用不覆盖已出现目标的原子创建语义。常规文件系统没有跨进程的“按内容比较并替换”原子操作，因此最终比较与替换系统调用之间仍存在极窄的外部写入竞态窗口。
 - `files.write` 必须提供 `expected_hash`：已有文件使用 `files.inspect` 返回的 SHA-256，新文件仅在 inspect 确认不存在时使用 `missing`。运行时再次检查，schema 不作为唯一保护。
+- 对 GBK 文件写回时，若新内容含无法编码的字符则拒绝写入，避免编码器静默替换字符。
 - 新配置由 `ContextLimitsConfig` 默认值承接旧配置，不改变数据库、事件或历史 transcript；不需要数据库重置。
 
 ## 替代方案
@@ -26,7 +27,7 @@ Accepted — 2026-10-21
 
 ## 影响与验证
 
-设置页增加独立 patch 文件上限；Rust 配置、工具 JSON Schema、Agent 提示和前端设置契约同步更新。回归覆盖默认配置、上限校验、`replace_all` 与命中容量上限、候选上下文、单文件多 hunk、偏移应用、多文件/创建拒绝、源文件超出完整读取上限仍能 patch、patch 读取上限和写入并发保护。
+设置页增加独立 patch 文件上限；Rust 配置、工具 JSON Schema、Agent 提示和前端设置契约同步更新。回归覆盖默认配置、上限校验、跨 edits 总命中上限与行号截断、`replace_all`、候选上下文、单文件多 hunk、偏移应用、多文件/创建拒绝、源文件超出完整读取上限仍能 patch、patch 读取上限、暂存期间并发写入拒绝、新文件不覆盖竞态和 GBK 不可编码字符拒绝。
 
 ## 回滚 / 重置
 

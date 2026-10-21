@@ -139,7 +139,7 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
         },
         "files.patch" => OperationText {
             description: "Apply exact text replacements or one single-file unified diff in one atomic write.",
-            when_to_use: "Use for one or several edits to one file; read the file first. Exact replacements match once by default; set replace_all only when every occurrence should change. Unified diffs may contain multiple hunks but only modify one existing file. Patch automatically rejects a file changed after it was read; pass expected_hash from inspect when you also need to reject changes made before patch began.",
+            when_to_use: "Use for one or several edits to one file; read the file first. Exact replacements match once by default; set replace_all only when every occurrence should change. All edits together are limited to 100,000 matches, and results report at most the first 100 affected lines per edit. Unified diffs may contain multiple hunks but only modify one existing file. Patch rechecks the file snapshot after staging and rejects changes detected before replacement; pass expected_hash from inspect to also reject changes made before patch began.",
         },
         "files.copy" => OperationText {
             description: "Copy a file to a destination path.",

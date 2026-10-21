@@ -155,7 +155,7 @@ impl Tool for FilesTool {
                                     "old_string": { "type": "string", "minLength": 1, "description": "Existing text; must match exactly once by default" },
                                     "new_string": { "type": "string", "description": "Replacement text; an empty string deletes the match" },
                                     "expected_matches": { "type": "integer", "minimum": 1, "maximum": MAX_PATCH_MATCHES, "description": "Optional exact match-count assertion" },
-                                    "replace_all": { "type": "boolean", "default": false, "description": format!("Replace every occurrence (up to {MAX_PATCH_MATCHES}); defaults to false. expected_matches, when set, still asserts the exact count") }
+                                    "replace_all": { "type": "boolean", "default": false, "description": format!("Replace every occurrence; all edits combined are limited to {MAX_PATCH_MATCHES} matches. Defaults to false. expected_matches, when set, still asserts the exact count") }
                                 },
                                 "required": ["old_string", "new_string"]
                             }

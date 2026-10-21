@@ -42,6 +42,7 @@ const UNTRUSTED_DOCUMENT_START: &str = "[BEGIN DERIVED ATTACHMENT";
 const UNTRUSTED_DOCUMENT_END: &str = "[END DERIVED ATTACHMENT]";
 const MAX_PATCH_EDITS: usize = 64;
 const MAX_PATCH_MATCHES: usize = 100_000;
+const MAX_PATCH_REPORTED_LINES: usize = 100;
 const MAX_PATCH_INPUT_BYTES: usize = 256 * 1024;
 const MAX_INSPECT_HASH_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -636,7 +637,7 @@ use async_trait::async_trait;
 #[cfg(test)]
 use file_classification::classify_file_by_extension;
 #[cfg(test)]
-use file_mutations::{apply_patch_edits, encode_patched_text};
+use file_mutations::apply_patch_edits;
 #[cfg(test)]
 use file_paths::{binary_result, looks_like_binary, sanitize_path, sha256_bytes};
 #[cfg(test)]

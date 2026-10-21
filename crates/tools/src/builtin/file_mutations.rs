@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use super::file_paths::{atomic_replace, looks_like_binary, sha256_bytes};
 use super::{
     FilesPatchEdit, MAX_INSPECT_HASH_BYTES, MAX_PATCH_EDITS, MAX_PATCH_INPUT_BYTES,
-    MAX_PATCH_MATCHES,
+    MAX_PATCH_MATCHES, MAX_PATCH_REPORTED_LINES,
 };
 use crate::ToolResult;
 use crate::security::FileWritePolicy;
@@ -39,6 +39,7 @@ struct PatchReplacement {
 pub(super) struct PatchEditSummary {
     lines: Vec<usize>,
     matches: usize,
+    lines_truncated: bool,
 }
 
 pub(super) struct PatchApplication {
@@ -173,9 +174,9 @@ async fn replace_target(
             max_write_bytes
         );
     }
-    let current_hash = if expected_hash.is_some() {
+    let current_bytes = if expected_hash.is_some() {
         match read_target_bytes(path, target, MAX_INSPECT_HASH_BYTES).await {
-            Ok(current) => Some(sha256_bytes(&current)),
+            Ok(current) => Some(current),
             Err(error) if is_not_found(&error) => None,
             Err(error) => return Err(error),
         }
@@ -183,8 +184,8 @@ async fn replace_target(
         None
     };
     if let Some(expected) = expected_hash {
-        let matches = match current_hash.as_deref() {
-            Some(actual) => expected_hash_matches(expected, actual),
+        let matches = match current_bytes.as_deref() {
+            Some(actual) => expected_hash_matches(expected, &sha256_bytes(actual)),
             None => expected.trim().eq_ignore_ascii_case("missing"),
         };
         if !matches {
@@ -202,10 +203,25 @@ async fn replace_target(
     if let Some(target) = target {
         let target = target.clone();
         let bytes = bytes.to_vec();
-        blocking_io(move || {
-            target
+        let expected_hash = expected_hash.map(str::to_owned);
+        let expected_contents = current_bytes;
+        blocking_io(move || match expected_hash.as_deref() {
+            Some(expected) if expected.trim().eq_ignore_ascii_case("missing") => target
                 .directory
-                .atomic_replace(&target.relative_path, &bytes)
+                .atomic_create_if_missing(&target.relative_path, &bytes),
+            Some(_) => target.directory.atomic_replace_if_contents_match(
+                &target.relative_path,
+                expected_contents.as_deref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "expected file snapshot disappeared before replacement",
+                    )
+                })?,
+                &bytes,
+            ),
+            None => target
+                .directory
+                .atomic_replace(&target.relative_path, &bytes),
         })
         .await?;
         Ok(super::file_paths::AtomicWriteResult {
@@ -354,6 +370,7 @@ pub(super) async fn patch(
                 "edit": index,
                 "matches": summary.matches,
                 "lines": summary.lines,
+                "lines_truncated": summary.lines_truncated,
             }))
             .collect::<Vec<_>>(),
     })))
@@ -549,6 +566,7 @@ pub(super) fn apply_patch_edits(
 
     let mut replacements = Vec::new();
     let mut summaries = Vec::with_capacity(edits.len());
+    let mut total_matches = 0usize;
     for (edit_index, edit) in edits.iter().enumerate() {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
@@ -563,15 +581,15 @@ pub(super) fn apply_patch_edits(
             );
         }
 
+        let remaining_matches = MAX_PATCH_MATCHES.saturating_sub(total_matches);
         let positions: Vec<usize> = content
             .match_indices(&edit.old_string)
             .map(|(position, _)| position)
-            .take(MAX_PATCH_MATCHES + 1)
+            .take(remaining_matches.saturating_add(1))
             .collect();
-        if positions.len() > MAX_PATCH_MATCHES {
+        if positions.len() > remaining_matches {
             anyhow::bail!(
-                "patch edit {} found more than {} matches; add more surrounding context to target a smaller set",
-                edit_index,
+                "patch request exceeds the limit of {} matches across all edits; add more surrounding context to target a smaller set",
                 MAX_PATCH_MATCHES
             );
         }
@@ -590,8 +608,11 @@ pub(super) fn apply_patch_edits(
                 candidates
             );
         }
+        total_matches += positions.len();
 
-        let lines = line_numbers_for_positions(content, &positions);
+        let mut lines = line_numbers_for_positions(content, &positions);
+        let lines_truncated = lines.len() > MAX_PATCH_REPORTED_LINES;
+        lines.truncate(MAX_PATCH_REPORTED_LINES);
         for &position in &positions {
             replacements.push(PatchReplacement {
                 start: position,
@@ -602,6 +623,7 @@ pub(super) fn apply_patch_edits(
         summaries.push(PatchEditSummary {
             lines,
             matches: positions.len(),
+            lines_truncated,
         });
     }
 
@@ -892,7 +914,15 @@ pub(super) fn encode_patched_text(text: &str, encoding: &str) -> anyhow::Result<
             }
             Ok(bytes)
         }
-        "gbk" => Ok(encoding_rs::GBK.encode(text).0.into_owned()),
+        "gbk" => {
+            let (encoded, _, had_errors) = encoding_rs::GBK.encode(text);
+            if had_errors {
+                anyhow::bail!(
+                    "patched text contains characters that cannot be represented in GBK; convert the file to UTF-8 before applying this change"
+                );
+            }
+            Ok(encoded.into_owned())
+        }
         other => anyhow::bail!("unsupported text encoding for patch: {other}"),
     }
 }
