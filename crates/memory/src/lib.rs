@@ -57,17 +57,17 @@ pub use repositories::session_authorization::{
 pub use repositories::session_events::{
     ActiveBranchPoint, CONFIRMATION_BATCH_PLANNED_EVENT_TYPE, INTERACTION_CLEARED_EVENT_TYPE,
     INTERACTION_REQUESTED_EVENT_TYPE, INTERACTION_RESOLVED_EVENT_TYPE,
-    MAX_SESSION_HISTORY_QUERY_BYTES, MAX_SESSION_HISTORY_SEARCH_RESULTS,
-    MAX_SESSION_IMAGE_SEARCH_RESULTS, MEMORY_TRIGGER_EVENT_TYPE, RecoveryPartialKind,
+    MAX_SESSION_ASSET_SEARCH_RESULTS, MAX_SESSION_HISTORY_QUERY_BYTES,
+    MAX_SESSION_HISTORY_SEARCH_RESULTS, MEMORY_TRIGGER_EVENT_TYPE, RecoveryPartialKind,
     RecoveryPersistenceStatus, RollbackProjectionBoundary, RollbackRequest, RollbackResult,
     SessionCommitResult, SessionCommitted, SessionCursor, SessionEvent, SessionEventInput,
     SessionEventPage, SessionForkBranchPoint, SessionForkSnapshot, SessionHistoryFilter,
     SessionHistoryStatusFilter, SessionMessageText, SessionReplayState, SessionResumeMedia,
-    SessionResumeProjection, SessionStore, SessionTitleGenerationContext,
-    SessionTranscriptHistoryMatch, SessionTranscriptHistoryRecord, SessionTranscriptHistorySearch,
-    SessionTranscriptImageAsset, SessionTranscriptImageMatch, SessionTranscriptImageSearch,
-    SqliteStorageWriteFailure, TIMELINE_ROLLBACK_EVENT_TYPE, TRANSCRIPT_EVENT_TYPE,
-    USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
+    SessionResumeProjection, SessionStore, SessionTitleGenerationContext, SessionTranscriptAsset,
+    SessionTranscriptAssetMatch, SessionTranscriptAssetSearch, SessionTranscriptHistoryMatch,
+    SessionTranscriptHistoryRecord, SessionTranscriptHistorySearch, SqliteStorageWriteFailure,
+    TIMELINE_ROLLBACK_EVENT_TYPE, TRANSCRIPT_EVENT_TYPE, USAGE_DISCARDED_EVENT_TYPE,
+    USAGE_RECORDED_EVENT_TYPE,
 };
 pub use repositories::session_steps::{SessionStep, ToolStepOutcome, ToolStepWrite};
 pub use repositories::sessions::{

@@ -1,60 +1,65 @@
 use super::*;
+use haven_common::media_detection::{
+    DetectedMediaKind, media_kind_from_mime_type, mime_type_from_extension,
+};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-const MAX_SESSION_IMAGE_CONTEXT_BYTES: usize = 768;
-const MAX_SESSION_IMAGE_CONTENT_BYTES: usize = 1024;
-const MAX_SESSION_IMAGE_REFERENCES: usize = 10_000;
-const MAX_SESSION_IMAGE_REFERENCES_PER_EVENT: usize = 8;
-const MAX_TOOL_RESULT_IMAGES: usize = 32;
+const MAX_SESSION_ASSET_CONTEXT_BYTES: usize = 768;
+const MAX_SESSION_ASSET_CONTENT_BYTES: usize = 1024;
+const MAX_SESSION_ASSET_METADATA_BYTES: usize = 256;
+const MAX_SESSION_ASSET_REFERENCES: usize = 10_000;
+const MAX_SESSION_ASSET_REFERENCES_PER_EVENT: usize = 8;
+const MAX_TOOL_RESULT_ASSETS: usize = 32;
 
 #[derive(Debug, Clone)]
-struct CachedImageContent {
+struct CachedAssetContent {
     sequence: i64,
     representation: String,
     content: String,
 }
 
 #[derive(Debug, Clone)]
-struct ImageReference {
+struct AssetReference {
     asset_id: String,
     media_type: String,
+    media_kind: String,
     filename: Option<String>,
     cached_content: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
-struct ImageCandidate {
-    context: SessionTranscriptImageMatch,
+struct AssetCandidate {
+    context: SessionTranscriptAssetMatch,
     full_context: String,
 }
 
 impl SessionStore {
-    /// Find images attached to, or produced during, the current session.
-    /// Results carry only bounded context and opaque asset ids; image bytes
-    /// remain behind the existing `media.describe` / `media.ocr` boundary.
-    pub async fn search_transcript_images_cancellable(
+    /// Find managed assets attached to, or produced during, the current session.
+    /// Results carry only bounded context and opaque asset ids; asset content
+    /// remains behind the existing file, clipboard, and media tool boundaries.
+    pub async fn search_transcript_assets_cancellable(
         &self,
         session_id: &str,
         query: Option<&str>,
         before_sequence: Option<i64>,
         limit: usize,
         cancel: CancellationToken,
-    ) -> anyhow::Result<SessionTranscriptImageSearch> {
+    ) -> anyhow::Result<SessionTranscriptAssetSearch> {
         ensure_session_id(session_id)?;
         let query = query.map(str::trim).filter(|value| !value.is_empty());
         if let Some(query) = query {
             anyhow::ensure!(
                 query.len() <= MAX_SESSION_HISTORY_QUERY_BYTES,
-                "image search query exceeds {MAX_SESSION_HISTORY_QUERY_BYTES} bytes"
+                "asset search query exceeds {MAX_SESSION_HISTORY_QUERY_BYTES} bytes"
             );
         }
         if let Some(before_sequence) = before_sequence {
             anyhow::ensure!(before_sequence >= 1, "before_sequence must be positive");
         }
         anyhow::ensure!(
-            (1..=MAX_SESSION_IMAGE_SEARCH_RESULTS).contains(&limit),
-            "image search limit must be between 1 and {MAX_SESSION_IMAGE_SEARCH_RESULTS}"
+            (1..=MAX_SESSION_ASSET_SEARCH_RESULTS).contains(&limit),
+            "asset search limit must be between 1 and {MAX_SESSION_ASSET_SEARCH_RESULTS}"
         );
 
         let store = self.clone();
@@ -62,7 +67,7 @@ impl SessionStore {
         let query = query.map(str::to_owned);
         self.db
             .run_blocking_cancellable(cancel.clone(), move |_| {
-                store.search_transcript_images_sync(
+                store.search_transcript_assets_sync(
                     &session_id,
                     query.as_deref(),
                     before_sequence,
@@ -73,14 +78,14 @@ impl SessionStore {
             .await
     }
 
-    fn search_transcript_images_sync(
+    fn search_transcript_assets_sync(
         &self,
         session_id: &str,
         query: Option<&str>,
         before_sequence: Option<i64>,
         limit: usize,
         cancel: &CancellationToken,
-    ) -> anyhow::Result<SessionTranscriptImageSearch> {
+    ) -> anyhow::Result<SessionTranscriptAssetSearch> {
         ensure_not_cancelled(cancel)?;
         let conn = self.db.conn();
         conn.execute_batch("BEGIN DEFERRED")?;
@@ -88,7 +93,7 @@ impl SessionStore {
             let latest_sequence = latest_sequence_in_connection(&conn, session_id)?;
             let (active_sequences, scanned_events, scanned_bytes) =
                 active_transcript_sequences(&conn, session_id, latest_sequence, cancel)?;
-            let cached_content = Self::cached_image_content(
+            let cached_content = Self::cached_asset_content(
                 &conn,
                 session_id,
                 latest_sequence,
@@ -98,7 +103,7 @@ impl SessionStore {
             let query_lower = query.map(str::to_lowercase);
             let mut selected = VecDeque::with_capacity(limit);
             let mut matching_count = 0usize;
-            let mut image_reference_count = 0usize;
+            let mut asset_reference_count = 0usize;
             let mut known_tool_assets = HashSet::new();
             let mut statement = conn.prepare(
                 "SELECT session_id, sequence, event_type, payload,
@@ -118,11 +123,11 @@ impl SessionStore {
                 if active_sequences.binary_search(&event.sequence).is_err() {
                     continue;
                 }
-                let Some(candidate) = image_candidate_from_event(
+                let Some(candidate) = asset_candidate_from_event(
                     &event,
                     &cached_content,
                     &mut known_tool_assets,
-                    &mut image_reference_count,
+                    &mut asset_reference_count,
                 )?
                 else {
                     continue;
@@ -141,6 +146,7 @@ impl SessionStore {
                                     .as_deref()
                                     .is_some_and(|value| value.to_lowercase().contains(query))
                                 || asset.media_type.to_lowercase().contains(query)
+                                || asset.media_kind.to_lowercase().contains(query)
                                 || asset.asset_id.to_lowercase().contains(query)
                                 || cached_content.get(&asset.asset_id).is_some_and(|cached| {
                                     cached.content.to_lowercase().contains(query)
@@ -159,7 +165,7 @@ impl SessionStore {
                             let (excerpt, truncated) = content_excerpt(
                                 &cached.content,
                                 query,
-                                MAX_SESSION_IMAGE_CONTENT_BYTES,
+                                MAX_SESSION_ASSET_CONTENT_BYTES,
                             );
                             asset.cached_representation = Some(cached.representation.clone());
                             asset.cached_content_excerpt = Some(excerpt);
@@ -171,7 +177,7 @@ impl SessionStore {
                 matched.context_excerpt = content_excerpt(
                     &candidate.full_context,
                     query,
-                    MAX_SESSION_IMAGE_CONTEXT_BYTES,
+                    MAX_SESSION_ASSET_CONTEXT_BYTES,
                 )
                 .0;
                 selected.push_back(matched);
@@ -179,7 +185,7 @@ impl SessionStore {
                     selected.pop_front();
                 }
             }
-            Ok(SessionTranscriptImageSearch {
+            Ok(SessionTranscriptAssetSearch {
                 has_more: matching_count > limit,
                 matches: selected.into_iter().rev().collect(),
                 latest_sequence,
@@ -191,13 +197,13 @@ impl SessionStore {
         finish_read_transaction(&conn, result)
     }
 
-    fn cached_image_content(
+    fn cached_asset_content(
         conn: &rusqlite::Connection,
         session_id: &str,
         latest_sequence: i64,
         active_sequences: &[i64],
         cancel: &CancellationToken,
-    ) -> anyhow::Result<HashMap<String, CachedImageContent>> {
+    ) -> anyhow::Result<HashMap<String, CachedAssetContent>> {
         let mut cached = HashMap::new();
         let mut statement = conn.prepare(
             "SELECT session_id, sequence, event_type, payload,
@@ -224,11 +230,11 @@ impl SessionStore {
                 Some("user_inject") => {
                     if let Some(inputs) = payload.get("media_inputs").and_then(Value::as_array) {
                         for input in inputs {
-                            for image in image_references_from_media_input(input) {
-                                if let Some((representation, content)) = image.cached_content {
+                            for asset in asset_references_from_media_input(input) {
+                                if let Some((representation, content)) = asset.cached_content {
                                     insert_cached_content(
                                         &mut cached,
-                                        &image.asset_id,
+                                        &asset.asset_id,
                                         event.sequence,
                                         representation,
                                         content,
@@ -239,11 +245,11 @@ impl SessionStore {
                     }
                 }
                 Some("tool_result") => {
-                    for image in image_references_from_tool_result(&payload) {
-                        if let Some((representation, content)) = image.cached_content {
+                    for asset in asset_references_from_tool_result(&payload) {
+                        if let Some((representation, content)) = asset.cached_content {
                             insert_cached_content(
                                 &mut cached,
-                                &image.asset_id,
+                                &asset.asset_id,
                                 event.sequence,
                                 representation,
                                 content,
@@ -258,24 +264,24 @@ impl SessionStore {
     }
 }
 
-fn image_candidate_from_event(
+fn asset_candidate_from_event(
     event: &SessionEvent,
-    cached_content: &HashMap<String, CachedImageContent>,
+    cached_content: &HashMap<String, CachedAssetContent>,
     known_tool_assets: &mut HashSet<String>,
-    image_reference_count: &mut usize,
-) -> anyhow::Result<Option<ImageCandidate>> {
+    asset_reference_count: &mut usize,
+) -> anyhow::Result<Option<AssetCandidate>> {
     let Ok(payload) = serde_json::from_str::<Value>(&event.payload) else {
         return Ok(None);
     };
     let event_type = payload.get("type").and_then(Value::as_str);
-    let (source, source_tool, full_context, message_id, mut images) = match event_type {
+    let (source, source_tool, full_context, message_id, mut assets) = match event_type {
         Some("user_inject") => {
-            let images = payload
+            let assets = payload
                 .get("media_inputs")
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .flat_map(image_references_from_media_input)
+                .flat_map(asset_references_from_media_input)
                 .collect::<Vec<_>>();
             (
                 "user_input".to_owned(),
@@ -290,7 +296,7 @@ fn image_candidate_from_event(
                     .and_then(Value::as_str)
                     .filter(|id| haven_common::types::is_canonical_id(id, "msg"))
                     .map(str::to_owned),
-                images,
+                assets,
             )
         }
         Some("tool_result") => {
@@ -308,13 +314,13 @@ fn image_candidate_from_event(
                         .find_map(|key| input.get(*key).and_then(Value::as_str))
                 })
                 .unwrap_or_default();
-            let source_tool = tool_name;
+            let source_tool = tool_name.map(|name| bounded_metadata(&name));
             let full_context = match (source_tool.as_deref(), context.trim()) {
                 (Some(tool), value) if !value.is_empty() => format!("{tool}: {value}"),
                 (Some(tool), _) => tool.to_owned(),
                 (None, value) => value.to_owned(),
             };
-            let images = image_references_from_tool_result(&payload);
+            let assets = asset_references_from_tool_result(&payload);
             let is_content_operation = payload
                 .get("canonical_observation")
                 .and_then(Value::as_str)
@@ -328,15 +334,15 @@ fn image_candidate_from_event(
                 .is_some_and(|operation| {
                     matches!(
                         operation.as_str(),
-                        "inspect" | "describe" | "ocr" | "extract" | "render"
+                        "inspect" | "describe" | "ocr" | "transcribe" | "extract" | "render"
                     )
                 });
-            let images = if is_content_operation {
+            let assets = if is_content_operation {
                 Vec::new()
             } else {
-                images
+                assets
                     .into_iter()
-                    .filter(|image| known_tool_assets.insert(image.asset_id.clone()))
+                    .filter(|asset| known_tool_assets.insert(asset.asset_id.clone()))
                     .collect()
             };
             (
@@ -344,50 +350,51 @@ fn image_candidate_from_event(
                 source_tool,
                 full_context,
                 None,
-                images,
+                assets,
             )
         }
         _ => return Ok(None),
     };
-    if images.is_empty() {
+    if assets.is_empty() {
         return Ok(None);
     }
     let mut seen = HashSet::new();
-    images.retain(|image| seen.insert(image.asset_id.clone()));
+    assets.retain(|asset| seen.insert(asset.asset_id.clone()));
     anyhow::ensure!(
-        images.len() <= MAX_SESSION_IMAGE_REFERENCES_PER_EVENT,
-        "one transcript event contains more than {MAX_SESSION_IMAGE_REFERENCES_PER_EVENT} image references"
+        assets.len() <= MAX_SESSION_ASSET_REFERENCES_PER_EVENT,
+        "one transcript event contains more than {MAX_SESSION_ASSET_REFERENCES_PER_EVENT} asset references"
     );
-    *image_reference_count = image_reference_count.saturating_add(images.len());
+    *asset_reference_count = asset_reference_count.saturating_add(assets.len());
     anyhow::ensure!(
-        *image_reference_count <= MAX_SESSION_IMAGE_REFERENCES,
-        "session image history exceeds the {MAX_SESSION_IMAGE_REFERENCES}-reference search limit"
+        *asset_reference_count <= MAX_SESSION_ASSET_REFERENCES,
+        "session asset history exceeds the {MAX_SESSION_ASSET_REFERENCES}-reference search limit"
     );
-    let assets = images
+    let assets = assets
         .into_iter()
-        .map(|image| {
+        .map(|asset| {
             let cached = cached_content
-                .get(&image.asset_id)
+                .get(&asset.asset_id)
                 .map(|cached| (cached.representation.clone(), cached.content.clone()))
-                .or(image.cached_content);
+                .or(asset.cached_content);
             let (cached_representation, cached_content_excerpt, cached_content_truncated) = cached
                 .map_or((None, None, false), |(representation, content)| {
                     let (excerpt, truncated) =
-                        content_excerpt(&content, None, MAX_SESSION_IMAGE_CONTENT_BYTES);
+                        content_excerpt(&content, None, MAX_SESSION_ASSET_CONTENT_BYTES);
                     (Some(representation), Some(excerpt), truncated)
                 });
-            SessionTranscriptImageAsset {
-                asset_id: image.asset_id,
-                media_type: image.media_type,
-                filename: image.filename,
+            SessionTranscriptAsset {
+                asset_id: asset.asset_id,
+                media_type: asset.media_type,
+                media_kind: asset.media_kind,
+                filename: asset.filename,
                 cached_representation,
                 cached_content_excerpt,
                 cached_content_truncated,
             }
         })
         .collect::<Vec<_>>();
-    Ok(Some(ImageCandidate {
-        context: SessionTranscriptImageMatch {
+    Ok(Some(AssetCandidate {
+        context: SessionTranscriptAssetMatch {
             sequence: event.sequence,
             created_at: event.created_at.clone(),
             run_id: event.run_id,
@@ -402,7 +409,7 @@ fn image_candidate_from_event(
     }))
 }
 
-fn image_references_from_media_input(value: &Value) -> Vec<ImageReference> {
+fn asset_references_from_media_input(value: &Value) -> Vec<AssetReference> {
     let Some(asset) = value.get("asset") else {
         return Vec::new();
     };
@@ -414,13 +421,10 @@ fn image_references_from_media_input(value: &Value) -> Vec<ImageReference> {
     let filename = asset
         .get("filename")
         .and_then(Value::as_str)
-        .map(str::to_owned);
+        .map(bounded_metadata);
     let Some(asset_id) = asset_id else {
         return Vec::new();
     };
-    if !is_image_reference(media_type, filename.as_deref(), None, None) {
-        return Vec::new();
-    }
     let cached_content = value
         .get("representations")
         .and_then(Value::as_array)
@@ -428,9 +432,12 @@ fn image_references_from_media_input(value: &Value) -> Vec<ImageReference> {
         .flatten()
         .filter_map(text_representation)
         .next_back();
-    vec![ImageReference {
+    vec![AssetReference {
         asset_id: asset_id.to_owned(),
-        media_type: media_type.unwrap_or("image/unknown").to_owned(),
+        media_type: media_type
+            .map(bounded_metadata)
+            .unwrap_or_else(|| "application/octet-stream".to_owned()),
+        media_kind: classify_asset_media_kind(media_type, filename.as_deref(), None),
         filename,
         cached_content,
     }]
@@ -438,7 +445,7 @@ fn image_references_from_media_input(value: &Value) -> Vec<ImageReference> {
 
 fn text_representation(value: &Value) -> Option<(String, String)> {
     let representation = value.get("representation").and_then(Value::as_str)?;
-    if !matches!(representation, "image_description" | "ocr_text")
+    if !is_textual_representation(representation)
         || value
             .get("availability")
             .and_then(|availability| availability.get("state"))
@@ -455,7 +462,19 @@ fn text_representation(value: &Value) -> Option<(String, String)> {
         .map(|content| (representation.to_owned(), content.to_owned()))
 }
 
-fn image_references_from_tool_result(payload: &Value) -> Vec<ImageReference> {
+fn is_textual_representation(representation: &str) -> bool {
+    matches!(
+        representation,
+        "extracted_text"
+            | "transcript"
+            | "ocr_text"
+            | "image_description"
+            | "document_pages"
+            | "table_data"
+    )
+}
+
+fn asset_references_from_tool_result(payload: &Value) -> Vec<AssetReference> {
     let Some(observation) = payload
         .get("canonical_observation")
         .and_then(Value::as_str)
@@ -465,30 +484,37 @@ fn image_references_from_tool_result(payload: &Value) -> Vec<ImageReference> {
     };
     let mut references = Vec::new();
     let mut seen = HashSet::new();
-    collect_tool_image_references(&observation, 0, &mut references, &mut seen);
+    collect_tool_asset_references(&observation, 0, &mut references, &mut seen);
     references
 }
 
-fn collect_tool_image_references(
+fn collect_tool_asset_references(
     value: &Value,
     depth: usize,
-    references: &mut Vec<ImageReference>,
+    references: &mut Vec<AssetReference>,
     seen: &mut HashSet<String>,
 ) {
-    if depth > 8 || references.len() >= MAX_TOOL_RESULT_IMAGES {
+    if depth > 8 || references.len() >= MAX_TOOL_RESULT_ASSETS {
         return;
     }
     let Some(object) = value.as_object() else {
         if let Some(values) = value.as_array() {
             for child in values {
-                collect_tool_image_references(child, depth + 1, references, seen);
-                if references.len() >= MAX_TOOL_RESULT_IMAGES {
+                collect_tool_asset_references(child, depth + 1, references, seen);
+                if references.len() >= MAX_TOOL_RESULT_ASSETS {
                     break;
                 }
             }
         }
         return;
     };
+    // Prefer nested MediaReference/FileReference records over outer result
+    // envelopes that repeat only the asset id.
+    for key in ["media", "asset", "assets", "files", "attachments"] {
+        if let Some(child) = object.get(key) {
+            collect_tool_asset_references(child, depth + 1, references, seen);
+        }
+    }
     let media_type = object
         .get("media_type")
         .or_else(|| object.get("mime_type"))
@@ -496,7 +522,7 @@ fn collect_tool_image_references(
     let filename = object
         .get("filename")
         .and_then(Value::as_str)
-        .map(str::to_owned);
+        .map(bounded_metadata);
     let modality = object
         .get("modality")
         .or_else(|| object.get("file_kind"))
@@ -506,7 +532,6 @@ fn collect_tool_image_references(
         .get("asset_id")
         .and_then(Value::as_str)
         .filter(|id| haven_common::types::is_canonical_id(id, "asset"))
-        && is_image_reference(media_type, filename.as_deref(), modality, representation)
         && seen.insert(asset_id.to_owned())
     {
         let cached_content = object
@@ -515,47 +540,67 @@ fn collect_tool_image_references(
             .filter(|content| !content.is_empty())
             .and_then(|content| {
                 representation
-                    .filter(|kind| matches!(*kind, "image_description" | "ocr_text"))
+                    .filter(|kind| is_textual_representation(kind))
                     .map(|kind| (kind.to_owned(), content.to_owned()))
             });
-        references.push(ImageReference {
+        references.push(AssetReference {
             asset_id: asset_id.to_owned(),
-            media_type: media_type.unwrap_or("image/unknown").to_owned(),
+            media_type: media_type
+                .map(bounded_metadata)
+                .unwrap_or_else(|| "application/octet-stream".to_owned()),
+            media_kind: classify_asset_media_kind(media_type, filename.as_deref(), modality),
             filename,
             cached_content,
         });
     }
-    for key in ["media", "assets", "files"] {
-        if let Some(child) = object.get(key) {
-            collect_tool_image_references(child, depth + 1, references, seen);
-        }
-    }
 }
 
-fn is_image_reference(
+fn classify_asset_media_kind(
     media_type: Option<&str>,
     filename: Option<&str>,
-    modality: Option<&str>,
-    representation: Option<&str>,
-) -> bool {
-    modality.is_some_and(|value| value.eq_ignore_ascii_case("image"))
-        || representation.is_some_and(|value| {
-            matches!(
-                value,
-                "raw_image" | "image_description" | "ocr_text" | "thumbnail"
-            )
-        })
-        || haven_common::media_detection::probe_media_with_hint(
-            &[],
-            filename.unwrap_or_default(),
-            media_type,
-        )
-        .media_kind
-            == haven_common::media_detection::DetectedMediaKind::Image
+    declared_kind: Option<&str>,
+) -> String {
+    if let Some(kind) = declared_kind.and_then(canonical_media_kind) {
+        return kind.to_owned();
+    }
+    let from_mime = media_type
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(media_kind_from_mime_type)
+        .filter(|kind| *kind != DetectedMediaKind::Unknown);
+    let from_extension = filename
+        .and_then(mime_type_from_extension)
+        .map(media_kind_from_mime_type)
+        .filter(|kind| *kind != DetectedMediaKind::Unknown);
+    from_mime
+        .or(from_extension)
+        .unwrap_or(DetectedMediaKind::Unknown)
+        .as_str()
+        .to_owned()
+}
+
+fn canonical_media_kind(value: &str) -> Option<&'static str> {
+    Some(match value.trim().to_ascii_lowercase().as_str() {
+        "text" => "text",
+        "image" => "image",
+        "audio" => "audio",
+        "video" => "video",
+        "document" | "pdf" | "office" => "document",
+        "unknown" | "binary" | "archive" | "executable" => return None,
+        _ => return None,
+    })
+}
+
+fn bounded_metadata(value: &str) -> String {
+    let mut end = value.len().min(MAX_SESSION_ASSET_METADATA_BYTES);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
 }
 
 fn insert_cached_content(
-    cache: &mut HashMap<String, CachedImageContent>,
+    cache: &mut HashMap<String, CachedAssetContent>,
     asset_id: &str,
     sequence: i64,
     representation: String,
@@ -570,12 +615,12 @@ fn insert_cached_content(
         return Ok(());
     }
     anyhow::ensure!(
-        cache.contains_key(asset_id) || cache.len() < MAX_SESSION_IMAGE_REFERENCES,
-        "session image history exceeds the {MAX_SESSION_IMAGE_REFERENCES}-asset index limit"
+        cache.contains_key(asset_id) || cache.len() < MAX_SESSION_ASSET_REFERENCES,
+        "session asset history exceeds the {MAX_SESSION_ASSET_REFERENCES}-asset index limit"
     );
     cache.insert(
         asset_id.to_owned(),
-        CachedImageContent {
+        CachedAssetContent {
             sequence,
             representation,
             content,
