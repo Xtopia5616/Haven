@@ -20,6 +20,7 @@
 		disabled?: boolean;
 		ariaExpanded?: boolean;
 		ariaBusy?: boolean;
+		ariaHaspopup?: 'menu' | 'listbox' | 'tree' | 'grid' | 'dialog' | boolean;
 		title?: string;
 		className?: string;
 		children?: Snippet;
@@ -37,6 +38,7 @@
 		disabled = false,
 		ariaExpanded = undefined,
 		ariaBusy = undefined,
+		ariaHaspopup = undefined,
 		title = '',
 		className = '',
 		children = undefined,
@@ -50,6 +52,7 @@
 	aria-label={label}
 	aria-expanded={ariaExpanded === undefined ? undefined : ariaExpanded}
 	aria-busy={ariaBusy === undefined ? undefined : ariaBusy}
+	aria-haspopup={ariaHaspopup}
 	{title}
 	{disabled}
 	type="button"

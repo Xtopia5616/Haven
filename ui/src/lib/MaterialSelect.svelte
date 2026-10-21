@@ -2,6 +2,7 @@
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import Icon from './Icon.svelte';
+	import type { IconName } from './icons.ts';
 	import type { ControlWidth } from './controlWidth.ts';
 	import type { SelectOption } from './selectOption.ts';
 
@@ -16,6 +17,8 @@
 		id?: string;
 		ariaLabel?: string;
 		title?: string;
+		iconOnly?: boolean;
+		icon?: IconName;
 		width?: ControlWidth;
 		disabled?: boolean;
 	}
@@ -27,6 +30,8 @@
 		id = undefined,
 		ariaLabel = '',
 		title = '',
+		iconOnly = false,
+		icon = 'folder',
 		width = 'fill',
 		disabled = false,
 	}: Props = $props();
@@ -154,12 +159,18 @@
 
 <svelte:window onpointerdown={handleWindowPointerdown} />
 
-<div class="md-select-container" data-width={width} bind:this={dropdownRef}>
+<div
+	class="md-select-container"
+	data-width={width}
+	data-icon-only={iconOnly ? 'true' : undefined}
+	bind:this={dropdownRef}
+>
 	<button
 		id={controlId}
 		class="md-select-trigger"
 		class:open
 		class:disabled
+		data-icon-only={iconOnly ? 'true' : undefined}
 		disabled={disabled}
 		aria-label={ariaLabel || undefined}
 		role="combobox"
@@ -173,7 +184,11 @@
 		aria-expanded={open}
 		{title}
 	>
-		<span class="md-select-value">{selectedLabel}</span>
+		{#if iconOnly}
+			<Icon name={icon} size={16} className="md-select-icon" />
+		{:else}
+			<span class="md-select-value">{selectedLabel}</span>
+		{/if}
 		<Icon name="chevronDown" size={20} className="md-select-arrow" />
 	</button>
 
@@ -238,6 +253,23 @@
 	}
 	.md-select-trigger:hover {
 		border-color: var(--md-sys-color-on-surface);
+	}
+	.md-select-trigger[data-icon-only='true'] {
+		justify-content: center;
+		gap: var(--md-sys-space-xs);
+		width: var(--md-comp-icon-button-size);
+		height: var(--md-comp-icon-button-size);
+		padding: 0;
+		border-radius: var(--md-comp-button-radius);
+	}
+	.md-select-trigger[data-icon-only='true'].open,
+	.md-select-trigger[data-icon-only='true']:focus-visible {
+		padding: 0;
+	}
+	.md-select-trigger[data-icon-only='true'] :global(.md-select-arrow) {
+		width: 12px;
+		height: 12px;
+		margin-left: 0;
 	}
 	.md-select-trigger:disabled {
 		color: var(--md-sys-color-on-surface-variant);

@@ -1,9 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import MaterialSelect from './MaterialSelect.svelte';
-	import Icon from './Icon.svelte';
 	import { sameExecutionWorkspacePath } from './executionWorkspaceStore.ts';
 	import type { SelectOption } from './selectOption.ts';
 
@@ -87,15 +85,18 @@
 			<div class="session-header__workspace-controls" role="group" aria-label="执行工作区">
 				<MaterialSelect
 					id="session-execution-workspace"
-					ariaLabel="执行工作区"
+					ariaLabel={`执行工作区：${selectedWorkspaceValue || '自动检测'}`}
 					width="compact"
 					value={selectedWorkspaceValue}
 					options={executionWorkspaceOptions}
-					title={selectedWorkspaceValue || '自动检测'}
+					iconOnly
+					icon="folder"
+					title={`执行工作区：${selectedWorkspaceValue || '自动检测'}`}
 					disabled={executionWorkspaceSwitching}
 					onChange={(root) => onSelectExecutionWorkspace?.(root || null)}
 				/>
 				<MaterialIconButton
+					size="toolbar"
 					icon="delete"
 					variant="danger-text"
 					label={`从工作区快捷列表移除 ${executionWorkspaceRoot || '当前工作区'}`}
@@ -105,19 +106,16 @@
 						if (executionWorkspaceRoot) onRemoveExecutionWorkspace?.(executionWorkspaceRoot);
 					}}
 				/>
-				<MaterialButton
-					width="compact"
-					variant="outlined"
+				<MaterialIconButton
+					size="toolbar"
+					icon="plus"
 					className="session-header__workspace-add"
-					ariaLabel="选择目录并保存为工作区"
+					label="选择目录并保存为工作区"
 					ariaBusy={executionWorkspaceSwitching}
 					disabled={executionWorkspaceSwitching || !onAddExecutionWorkspace}
 					title="选择目录并保存为工作区"
 					onclick={() => onAddExecutionWorkspace?.()}
-				>
-					<Icon name="folder" size={16} />
-					<span>添加工作区</span>
-				</MaterialButton>
+				/>
 			</div>
 		</div>
 	</div>
@@ -126,27 +124,33 @@
 			{@render children?.()}
 		</div>
 		<div class="session-header__lifecycle">
-			<MaterialButton
-				width="compact"
-				variant="filled"
+			<MaterialIconButton
+				size="toolbar"
+				icon="plus"
+				variant="primary"
 				className="session-header__new"
 				label="新建会话"
+				title="新建会话"
 				onclick={() => onNew?.()}
 			/>
 			{#if hasSession}
-				<MaterialButton
-					width="compact"
-					variant="danger"
+				<MaterialIconButton
+					size="toolbar"
+					icon="delete"
+					variant="danger-outline"
 					className="session-header__delete"
 					label="删除会话"
+					title="删除会话"
 					onclick={() => onDelete?.()}
 				/>
 				{#if canEndSession}
-					<MaterialButton
-						width="compact"
-						variant="success"
+					<MaterialIconButton
+						size="toolbar"
+						icon="checkCircle"
+						variant="success-outline"
 						className="session-header__end"
 						label="完成会话"
+						title="完成会话"
 						onclick={() => onEnd?.()}
 					/>
 				{/if}
@@ -208,12 +212,9 @@
 		gap: var(--md-sys-space-xs);
 		min-width: 0;
 	}
-	:global(.session-header__workspace-controls .md-select-container) {
-		flex: 0 1 220px;
-		min-width: 140px;
-	}
-	:global(.session-header__workspace-add) {
+	:global(.session-header__workspace-controls .md-select-container[data-icon-only='true']) {
 		flex: 0 0 auto;
+		width: auto;
 	}
 	.session-header__actions {
 		display: flex;
@@ -230,11 +231,6 @@
 		min-width: 0;
 	}
 	.session-header__lifecycle {
-		flex-shrink: 0;
-	}
-	:global(.session-header__icon) {
-		width: var(--md-sys-icon-size);
-		height: var(--md-sys-icon-size);
 		flex-shrink: 0;
 	}
 	@media (max-width: 640px) {
@@ -264,14 +260,9 @@
 			flex: 1 1 100%;
 		}
 		.session-header__lifecycle {
-			display: grid;
-			grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
-			width: 100%;
+			display: flex;
+			width: auto;
 			gap: var(--md-sys-space-xs);
-		}
-		:global(.session-header__lifecycle .md-btn) {
-			min-width: 0;
-			padding-inline: var(--md-sys-space-sm);
 		}
 	}
 	@media screen and (min-width: 641px) and (max-width: 1024px),
@@ -292,9 +283,9 @@
 		.session-header__workspace-controls {
 			flex: 0 1 auto;
 		}
-		:global(.session-header__workspace-controls .md-select-container) {
-			flex-basis: 160px;
-			min-width: 112px;
+		:global(.session-header__workspace-controls .md-select-container[data-icon-only='true']) {
+			flex-basis: auto;
+			min-width: 0;
 		}
 		.session-header__actions {
 			flex-wrap: nowrap;

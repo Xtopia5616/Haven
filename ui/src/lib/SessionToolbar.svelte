@@ -1,5 +1,5 @@
 <script lang="ts">
-	import MaterialButton from './MaterialButton.svelte';
+	import MaterialIconButton from './MaterialIconButton.svelte';
 	import MenuItem from './MenuItem.svelte';
 	import Icon from './Icon.svelte';
 	import type { SessionSummary } from '$lib/sessionReducer/types.ts';
@@ -124,19 +124,17 @@
 
 {#if showSessionMenu}
 	<div class="session-switch">
-		<MaterialButton
+		<MaterialIconButton
+			icon="chat"
+			size="toolbar"
 			variant="tonal"
 			className={`session-switch-btn${sessionMenuOpen ? ' is-open' : ''}`}
-			ariaLabel="切换会话"
+			label="切换会话"
 			ariaExpanded={sessionMenuOpen}
 			ariaHaspopup="menu"
 			onclick={() => onToggleSessionMenu()}
 			title="切换会话"
-		>
-			<Icon name="chat" size={20} className="session-switch-icon" />
-			<span class="session-switch-label">会话</span>
-			<Icon name="chevronDown" size={16} className="session-switch-caret" />
-		</MaterialButton>
+		/>
 		{#if sessionMenuOpen}
 			<div class="session-menu" role="menu">
 				<div class="session-menu-heading">
@@ -236,48 +234,18 @@
 	</div>
 {/if}
 <div class="token-stats-wrap" bind:this={tokenStatsWrap}>
-	<MaterialButton
-		variant="text"
+	<MaterialIconButton
+		icon="listTodo"
+		size="toolbar"
+		variant="default"
 		className={`token-stats${tokenDetailsOpen ? ' selected' : ''}`}
 		title={tokenStats ? buildTokenTooltip(tokenStats) : tokenStatsHint}
-		ariaLabel={tokenStats ? '打开 token 使用明细' : tokenStatsHint}
+		label={tokenStats ? '打开 token 使用明细' : tokenStatsHint}
 		ariaHaspopup="dialog"
 		ariaExpanded={tokenDetailsOpen}
 		disabled={!tokenStats}
 		onclick={toggleTokenDetails}
-	>
-		<Icon name="listTodo" size={16} className="token-icon" />
-		{#if tokenStats}
-			<div class="token-text">
-				<span class="token-context"
-					>{formatTokenCount(
-						tokenUsageDetails?.contextTokens ??
-							tokenStats.contextTokens ??
-							tokenStats.promptTokens ??
-							0,
-					)}</span
-				>
-				<span class="token-unit">ctx</span>
-			</div>
-			{#if tokenUsageDetails?.currentCacheRatePercent != null}
-				<div
-					class="token-budget"
-					data-cache-tone={cacheTone(tokenUsageDetails.currentCacheRatePercent)}
-					aria-label={`缓存命中 ${percentage(tokenUsageDetails.currentCacheRatePercent)}`}
-				>
-					<div
-						class="token-budget-fill"
-						style="width: {Math.min(
-							100,
-							tokenUsageDetails.currentCacheRatePercent,
-						).toFixed(1)}%"
-					></div>
-				</div>
-			{/if}
-		{:else}
-			<span class="token-text token-idle">—</span>
-		{/if}
-	</MaterialButton>
+	/>
 
 	{#if tokenDetailsOpen && tokenStats && tokenUsageDetails}
 		<div
@@ -460,11 +428,7 @@
 		position: relative;
 		flex-shrink: 0;
 	}
-	:global(.md-btn.session-switch-btn) {
-		justify-content: flex-start;
-		gap: var(--md-sys-space-xs);
-		width: auto;
-		padding-inline: var(--md-sys-space-sm);
+	:global(.md-icon-btn.session-switch-btn) {
 		border: 1px solid
 			color-mix(in srgb, var(--md-sys-color-primary) 28%, var(--md-sys-color-outline-variant));
 		background: color-mix(
@@ -479,40 +443,16 @@
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
-	:global(.md-btn.session-switch-btn:hover) {
+	:global(.md-icon-btn.session-switch-btn:hover) {
 		border-color: var(--md-sys-color-primary);
 		box-shadow: var(--md-sys-elevation-2);
 	}
-	:global(.md-btn.session-switch-btn.is-open),
-	:global(.md-btn.session-switch-btn.is-open:hover) {
+	:global(.md-icon-btn.session-switch-btn.is-open),
+	:global(.md-icon-btn.session-switch-btn.is-open:hover) {
 		border-color: var(--md-sys-color-primary);
 		background: var(--md-sys-color-primary);
 		color: var(--md-sys-color-on-primary);
 		box-shadow: var(--md-sys-elevation-2);
-	}
-	:global(.md-btn.session-switch-btn > *) {
-		position: relative;
-		z-index: 1;
-	}
-	:global(.session-switch-icon) {
-		color: var(--md-sys-color-primary);
-	}
-	:global(.session-switch-btn.is-open .session-switch-icon) {
-		color: currentColor;
-	}
-	.session-switch-label {
-		font-size: var(--md-sys-typescale-label-medium-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		white-space: nowrap;
-	}
-	:global(.session-switch-caret) {
-		flex-shrink: 0;
-		transition: transform var(--md-sys-motion-duration-short)
-			var(--md-sys-motion-easing-standard);
-	}
-	:global(.session-switch-btn.is-open .session-switch-caret) {
-		transform: rotate(180deg);
 	}
 	.session-menu {
 		position: absolute;
@@ -631,105 +571,18 @@
 		position: relative;
 		flex-shrink: 0;
 	}
-	:global(.md-btn.token-stats) {
-		position: relative;
-		overflow: hidden;
-		display: inline-flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		height: var(--md-comp-toolbar-height);
-		padding: 0 var(--md-sys-space-sm);
-		border-radius: var(--md-comp-button-radius);
+	:global(.md-icon-btn.token-stats) {
 		border: 1px solid var(--md-sys-color-outline-variant);
-		background: var(--md-sys-color-surface-container, transparent);
+		background: var(--md-sys-color-surface-container);
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		flex-shrink: 0;
-		font-family: inherit;
-		cursor: pointer;
 		transition:
 			background-color var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard),
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
-	:global(.md-btn.token-stats)::after {
-		content: '';
-		position: absolute;
-		inset: 0;
-		background: currentColor;
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-	}
-	:global(.md-btn.token-stats:hover)::after {
-		opacity: var(--md-sys-state-hover-opacity);
-	}
-	:global(.md-btn.token-stats:focus-visible)::after {
-		opacity: var(--md-sys-state-focus-opacity);
-	}
-	:global(.md-btn.token-stats:active)::after {
-		opacity: var(--md-sys-state-pressed-opacity);
-	}
-	:global(.md-btn.token-stats > *) {
-		position: relative;
-		z-index: 1;
-	}
-	:global(.md-btn.token-stats:disabled) {
-		cursor: default;
-	}
-	:global(.md-btn.token-stats.selected) {
+	:global(.md-icon-btn.token-stats.selected) {
 		border-color: var(--md-sys-color-primary);
-	}
-	:global(.token-icon) {
-		opacity: 0.75;
-		flex-shrink: 0;
-	}
-	.token-text {
-		display: inline-flex;
-		gap: 4px;
-		align-items: baseline;
-		font-variant-numeric: tabular-nums;
-		white-space: nowrap;
-	}
-	.token-context {
-		font-weight: 600;
-		color: var(--md-sys-color-on-surface);
-	}
-	.token-unit {
-		opacity: 0.6;
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.token-idle {
-		opacity: 0.5;
-	}
-	.token-budget {
-		position: relative;
-		width: 36px;
-		height: 4px;
-		border-radius: 999px;
-		background: var(--md-sys-color-surface-variant, rgba(0, 0, 0, 0.06));
-		overflow: hidden;
-		flex-shrink: 0;
-	}
-	.token-budget-fill {
-		position: absolute;
-		inset: 0 auto 0 0;
-		background: var(--md-sys-color-primary);
-		transition:
-			width var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard),
-			background var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard);
-	}
-	.token-budget[data-cache-tone='low'] .token-budget-fill {
-		background: var(--md-sys-color-error);
-	}
-	.token-budget[data-cache-tone='medium'] .token-budget-fill {
-		background: var(--md-sys-color-warning);
-	}
-	.token-budget[data-cache-tone='high'] .token-budget-fill {
-		background: var(--md-sys-color-success);
 	}
 	.token-details {
 		position: fixed;
