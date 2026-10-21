@@ -200,7 +200,15 @@ export function isToolFileSearchMode(value: unknown): value is ToolFileSearchMod
 	return isOneOf(value, TOOL_FILE_SEARCH_MODES);
 }
 
-export const TOOL_MEMORY_OPERATIONS = ['search', 'list', 'remember', 'forget', 'recall'] as const;
+export const TOOL_MEMORY_OPERATIONS = [
+	'search',
+	'list',
+	'history',
+	'valid_at',
+	'remember',
+	'forget',
+	'recall',
+] as const;
 
 export type ToolMemoryOperation = (typeof TOOL_MEMORY_OPERATIONS)[number];
 

@@ -38,6 +38,8 @@ describe('memory fact proposal contract', () => {
 		tags: ['preference'],
 		durability: 0.5,
 		created_at: '2026-10-12T08:00:00.000Z',
+		valid_from: null,
+		valid_to: null,
 		source_ref: { message_id: messageId, snippet: 'I like tea' },
 		evidence_status: 'uncertain',
 		evidence_quote: null,
@@ -133,6 +135,8 @@ describe('memory renderer DTO contract', () => {
 				snippet: 'tea',
 			},
 			durability: 1,
+			valid_from: '2026-10-01T00:00:00.000Z',
+			valid_to: null,
 		});
 		expect(fact).toHaveProperty('factId', 'fact-00000000000000000000000000000001');
 		expect(fact).not.toHaveProperty('fact_id');

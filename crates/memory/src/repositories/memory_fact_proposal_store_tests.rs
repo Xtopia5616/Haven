@@ -21,6 +21,8 @@ fn write(object: &str) -> MemoryFactWrite {
             "I like Rust.",
         )),
         durability: 0.8,
+        valid_from: None,
+        valid_to: None,
     }
 }
 
@@ -88,6 +90,45 @@ async fn ordinary_extraction_queues_idempotently_and_accepts_once() {
             .proposals
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn proposal_validity_survives_review_and_becomes_fact_validity() {
+    let (db, store) = store();
+    let session_id = db.create_session("proposal valid time").unwrap().session_id;
+    let mut candidate = write("Acme");
+    candidate.predicate = "employer".into();
+    candidate.valid_from = Some("2024-01-01T00:00:00.000Z".into());
+    candidate.valid_to = Some("2025-01-01T00:00:00.000Z".into());
+    store
+        .commit_ordinary_extraction(vec![candidate], &session_id, &new_id("msg"))
+        .await
+        .unwrap();
+
+    let proposal = store
+        .list_pending_page(None, 10)
+        .await
+        .unwrap()
+        .proposals
+        .remove(0);
+    assert_eq!(
+        proposal.valid_from.as_deref(),
+        Some("2024-01-01T00:00:00.000Z")
+    );
+    assert_eq!(
+        proposal.valid_to.as_deref(),
+        Some("2025-01-01T00:00:00.000Z")
+    );
+    assert_eq!(
+        store
+            .review(proposal.proposal_id, FactProposalDecision::Accept)
+            .await
+            .unwrap(),
+        FactProposalReviewOutcome::Accepted { fact_written: true }
+    );
+    let fact = db.list_facts().unwrap().remove(0);
+    assert_eq!(fact.valid_from.as_deref(), Some("2024-01-01T00:00:00.000Z"));
+    assert_eq!(fact.valid_to.as_deref(), Some("2025-01-01T00:00:00.000Z"));
 }
 
 #[tokio::test]

@@ -24,11 +24,11 @@ fn parse_tags(tags_str: &str) -> Vec<String> {
 /// order `fact_from_row` maps. Single source of truth: every facts SELECT is
 /// built from this const so a column add/remove cannot drift a query away from
 /// the row mapper (mirrors `EMBED_COLS` in embeddings.rs).
-pub(crate) const FACT_COLS: &str = "id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, provenance_item_id, provenance_record_id, provenance_snippet, durability, memory_kind";
+pub(crate) const FACT_COLS: &str = "id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, provenance_item_id, provenance_record_id, provenance_snippet, durability, memory_kind, valid_from, valid_to";
 
 /// Aliased variant for queries that prefix columns with a table alias (FTS
 /// join).
-pub(crate) const FACT_COLS_ALIASED: &str = "f.id, f.subject, f.predicate, f.object, f.source, f.confidence, f.tags, f.created_at, f.mention_count, f.last_seen_at, f.provenance_item_id, f.provenance_record_id, f.provenance_snippet, f.durability, f.memory_kind";
+pub(crate) const FACT_COLS_ALIASED: &str = "f.id, f.subject, f.predicate, f.object, f.source, f.confidence, f.tags, f.created_at, f.mention_count, f.last_seen_at, f.provenance_item_id, f.provenance_record_id, f.provenance_snippet, f.durability, f.memory_kind, f.valid_from, f.valid_to";
 
 fn list_facts_page_sql(source_filter: bool) -> String {
     let invisible = invisible_fact_where_sql();
@@ -90,6 +90,8 @@ pub(crate) fn fact_from_row(row: &rusqlite::Row) -> rusqlite::Result<Fact> {
             provenance_snippet,
         ),
         durability: row.get(13)?,
+        valid_from: row.get(15)?,
+        valid_to: row.get(16)?,
     })
 }
 
@@ -358,22 +360,67 @@ impl Database {
         let invisible = invisible_fact_where_sql();
         let sql = format!(
             "WITH facts_at AS (
-                SELECT {FACT_COLS_ALIASED}
+                SELECT {FACT_COLS_ALIASED}, f.recorded_at, NULL AS superseded_at
                 FROM facts AS f
-                WHERE julianday(f.created_at) <= julianday(?1)
-                  AND NOT EXISTS (
-                      SELECT 1 FROM fact_history AS h
-                      WHERE h.id = f.id
-                        AND julianday(h.superseded_at) > julianday(?1)
-                  )
+                WHERE julianday(f.recorded_at) <= julianday(?1)
                 UNION ALL
                 SELECT h.id, h.subject, h.predicate, h.object, h.source,
                        h.confidence, h.tags, h.created_at, h.mention_count,
                        h.last_seen_at, h.provenance_item_id, h.provenance_record_id,
-                       h.provenance_snippet, h.durability, h.memory_kind
+                       h.provenance_snippet, h.durability, h.memory_kind,
+                       h.valid_from, h.valid_to, h.recorded_at, h.superseded_at
                 FROM fact_history AS h
-                WHERE julianday(h.created_at) <= julianday(?1)
+                WHERE julianday(h.recorded_at) <= julianday(?1)
                   AND julianday(h.superseded_at) > julianday(?1)
+            )
+            SELECT {FACT_COLS} FROM facts_at
+            WHERE NOT {invisible}
+              AND (?2 IS NULL OR subject = ?2)
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?3"
+        );
+        let conn = self.try_conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params![at, subject, limit as i64], fact_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Read the latest known version of facts whose explicit real-world
+    /// validity interval contains `at`. Facts with unknown validity are not
+    /// guessed from their system-recorded timestamps.
+    pub(crate) fn list_facts_valid_at(
+        &self,
+        at: &str,
+        subject: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Fact>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let invisible = invisible_fact_where_sql();
+        let sql = format!(
+            "WITH latest_versions AS (
+                SELECT {FACT_COLS_ALIASED}, 1 AS current_version, 0 AS history_id
+                FROM facts AS f
+                UNION ALL
+                SELECT h.id, h.subject, h.predicate, h.object, h.source,
+                       h.confidence, h.tags, h.created_at, h.mention_count,
+                       h.last_seen_at, h.provenance_item_id, h.provenance_record_id,
+                       h.provenance_snippet, h.durability, h.memory_kind,
+                       h.valid_from, h.valid_to, 0 AS current_version, h.history_id
+                FROM fact_history AS h
+                WHERE NOT EXISTS (SELECT 1 FROM facts AS current WHERE current.id = h.id)
+                  AND h.history_id = (
+                      SELECT MAX(latest.history_id) FROM fact_history AS latest
+                      WHERE latest.id = h.id
+                  )
+            ),
+            facts_at AS (
+                SELECT {FACT_COLS}
+                FROM latest_versions
+                WHERE (valid_from IS NOT NULL OR valid_to IS NOT NULL)
+                  AND (valid_from IS NULL OR julianday(valid_from) <= julianday(?1))
+                  AND (valid_to IS NULL OR julianday(?1) < julianday(valid_to))
             )
             SELECT {FACT_COLS} FROM facts_at
             WHERE NOT {invisible}
@@ -725,6 +772,8 @@ mod tests {
             confidence: 0.8,
             tags: Vec::new(),
             created_at: "2026-01-01T00:00:00+00:00".into(),
+            valid_from: None,
+            valid_to: None,
             mention_count: 0,
             last_seen_at: Some(last_seen_at.into()),
             source_ref: None,

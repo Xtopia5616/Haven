@@ -598,6 +598,8 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 								'object',
 								'source_snippet',
 							),
+							valid_from: (value) => value === null || isString(value),
+							valid_to: (value) => value === null || isString(value),
 							confidence: isFiniteNumber,
 							memory_kind: (value) =>
 								value === 'profile' || value === 'semantic' || value === 'procedural',

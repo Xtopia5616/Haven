@@ -26,6 +26,8 @@ const validFactResponse = (overrides: Record<string, unknown> = {}) => ({
 	last_seen_at: null,
 	source_ref: null,
 	durability: 1,
+	valid_from: null,
+	valid_to: null,
 	...overrides,
 });
 
@@ -57,6 +59,8 @@ describe('memory command boundary', () => {
 					last_seen_at: null,
 					source_ref: null,
 					durability: 1,
+					valid_from: null,
+					valid_to: null,
 					future_field: 'retained',
 				},
 			],
@@ -81,6 +85,8 @@ describe('memory command boundary', () => {
 					last_seen_at: null,
 					sourceRef: null,
 					durability: 1,
+					valid_from: null,
+					valid_to: null,
 					future_field: 'retained',
 				},
 			],
@@ -107,6 +113,8 @@ describe('memory command boundary', () => {
 					source_ref: { message_id: messageId, snippet: 'I like tea' },
 					evidence_status: 'uncertain',
 					evidence_quote: null,
+					valid_from: null,
+					valid_to: null,
 				},
 			],
 			next_cursor: null,
@@ -144,6 +152,8 @@ describe('memory command boundary', () => {
 			last_seen_at: null,
 			source_ref: null,
 			durability: 1,
+			valid_from: null,
+			valid_to: null,
 		};
 		invokeMock.mockResolvedValueOnce(addedFact as never);
 		await expect(

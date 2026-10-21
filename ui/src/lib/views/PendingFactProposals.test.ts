@@ -12,6 +12,8 @@ const proposal: FactProposal = {
 	tags: ['preference'],
 	durability: 0.5,
 	created_at: '2026-10-12T08:00:00.000Z',
+	valid_from: null,
+	valid_to: null,
 	evidence_status: 'unverified',
 	evidence_quote: null,
 	sourceRef: {

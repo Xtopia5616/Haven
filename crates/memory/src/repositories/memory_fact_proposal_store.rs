@@ -74,6 +74,8 @@ pub struct FactProposal {
     pub confidence: f64,
     pub tags: Vec<String>,
     pub durability: f64,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
     pub created_at: String,
     pub source_ref: Option<FactSourceRef>,
     pub evidence_status: FactEvidenceStatus,
@@ -326,7 +328,7 @@ impl MemoryFactProposalStore {
                 let mut statement = conn.prepare(&format!(
                     "SELECT proposal_id, subject, predicate, object, confidence, tags,
                             durability, created_at, provenance_record_id, provenance_snippet,
-                            evidence_status, evidence_quote
+                            evidence_status, evidence_quote, valid_from, valid_to
                      FROM fact_proposals
                      WHERE NOT {invisible}
                        AND (?1 IS NULL OR created_at > ?1 OR (created_at = ?1 AND proposal_id > ?2))
@@ -375,7 +377,7 @@ impl MemoryFactProposalStore {
                         let proposal = conn
                             .query_row(
                                 "SELECT subject, predicate, object, confidence, tags, durability,
-                                        provenance_record_id, provenance_snippet
+                                        provenance_record_id, provenance_snippet, valid_from, valid_to
                                  FROM fact_proposals WHERE proposal_id = ?1",
                                 rusqlite::params![proposal_id],
                                 |row| {
@@ -399,6 +401,8 @@ impl MemoryFactProposalStore {
                                             }
                                             _ => None,
                                         },
+                                        valid_from: row.get(8)?,
+                                        valid_to: row.get(9)?,
                                     })
                                 },
                             )
@@ -630,8 +634,8 @@ fn insert_pending_proposals(
             "INSERT INTO fact_proposals (
                 proposal_id, subject, predicate, object, confidence, tags, durability,
                 created_at, provenance_record_id, provenance_snippet, evidence_status,
-                evidence_quote
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                evidence_quote, valid_from, valid_to
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             rusqlite::params![
                 proposal_id,
                 write.subject,
@@ -645,6 +649,8 @@ fn insert_pending_proposals(
                 provenance_snippet,
                 proposal.evidence_status.as_str(),
                 proposal.evidence_quote,
+                write.valid_from,
+                write.valid_to,
             ],
         )?;
     }
@@ -735,6 +741,8 @@ fn proposal_from_row(row: &rusqlite::Row) -> rusqlite::Result<FactProposal> {
         source_ref,
         evidence_status,
         evidence_quote,
+        valid_from: row.get(12)?,
+        valid_to: row.get(13)?,
     })
 }
 

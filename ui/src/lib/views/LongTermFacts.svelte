@@ -87,6 +87,11 @@
 		return Array.isArray(fact.tags) && fact.tags.length > 0 ? fact.tags.join('、') : '无';
 	}
 
+	function validityLabel(fact: Fact) {
+		if (!fact.valid_from && !fact.valid_to) return '时间范围未指定';
+		return `${fact.valid_from ? formatDate(fact.valid_from) : '起始未知'} 至 ${fact.valid_to ? formatDate(fact.valid_to) : '仍有效'}`;
+	}
+
 	function selectFact(fact: Fact) {
 		selectedFactId = fact.factId;
 		detailOpen = true;
@@ -238,6 +243,10 @@
 					<div>
 						<dt>创建时间</dt>
 						<dd>{formatDate(selectedFact.created_at)}</dd>
+					</div>
+					<div>
+						<dt>现实有效时间</dt>
+						<dd>{validityLabel(selectedFact)}</dd>
 					</div>
 					<div>
 						<dt>最近复核</dt>

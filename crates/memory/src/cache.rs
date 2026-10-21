@@ -541,6 +541,8 @@ mod tests {
             confidence: 1.0,
             tags: Vec::new(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
+            valid_from: None,
+            valid_to: None,
             mention_count: 1,
             last_seen_at: None,
             source_ref: None,

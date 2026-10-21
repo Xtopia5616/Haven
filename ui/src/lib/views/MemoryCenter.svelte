@@ -31,7 +31,7 @@
 		busyProposalId?: string | null;
 		factSourceFilter?: MemoryFactSourceFilter;
 		factSourceOptions?: Array<{ value: MemoryFactSourceFilter; label: string }>;
-		newFact?: { predicate: string; object: string; tags: string };
+		newFact?: { predicate: string; object: string; tags: string; validFrom: string; validTo: string };
 		addingFact?: boolean;
 		memoryRecall: MemoryRecallState;
 		onRecallKindChange?: (value: MemoryRecallFilter) => void;
@@ -58,7 +58,7 @@
 		busyProposalId = null,
 		factSourceFilter = '',
 		factSourceOptions = [],
-		newFact = { predicate: '', object: '', tags: '' },
+		newFact = { predicate: '', object: '', tags: '', validFrom: '', validTo: '' },
 		addingFact = false,
 		memoryRecall,
 		onRecallKindChange = () => {},
@@ -230,6 +230,20 @@
 				placeholder="逗号分隔"
 				bind:value={newFact.tags}
 				autocomplete="off"
+			/>
+			<label for="memory-fact-valid-from">生效日期 <span>可选</span></label>
+			<input
+				id="memory-fact-valid-from"
+				type="date"
+				class="md-input"
+				bind:value={newFact.validFrom}
+			/>
+			<label for="memory-fact-valid-to">失效日期 <span>可选，结束日不包含在内</span></label>
+			<input
+				id="memory-fact-valid-to"
+				type="date"
+				class="md-input"
+				bind:value={newFact.validTo}
 			/>
 		</div>
 	{/snippet}

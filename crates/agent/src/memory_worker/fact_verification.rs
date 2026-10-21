@@ -34,6 +34,8 @@ struct VerificationCandidate<'a> {
     subject: &'a str,
     predicate: &'a str,
     object: &'a str,
+    valid_from: &'a Option<String>,
+    valid_to: &'a Option<String>,
     user_message: String,
     assistant_context: Option<String>,
 }
@@ -77,6 +79,8 @@ pub(crate) async fn verify_fact_writes(
             subject: &item.write.subject,
             predicate: &item.write.predicate,
             object: &item.write.object,
+            valid_from: &item.write.valid_from,
+            valid_to: &item.write.valid_to,
             user_message: take_chars(&evidence.user_text, MAX_USER_EVIDENCE_CHARS),
             assistant_context: evidence
                 .assistant_context
@@ -250,6 +254,8 @@ mod tests {
                     "extraction source snippet",
                 )),
                 durability: 0.6,
+                valid_from: None,
+                valid_to: None,
             },
             evidence: user_text.map(|user_text| FactEvidenceSource {
                 message_id,

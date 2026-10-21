@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 58;
+pub const SCHEMA_VERSION: i32 = 59;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -174,13 +174,29 @@ const SCHEMA_SQL: &[&str] = &[
             CHECK(memory_kind IN ('profile','semantic','procedural')),
         confidence REAL NOT NULL DEFAULT 1.0 CHECK(confidence >= 0.0 AND confidence <= 1.0),
         created_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK(
+            length(recorded_at) = 24 AND
+            recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', recorded_at) = recorded_at
+        ),
+        valid_from TEXT CHECK(valid_from IS NULL OR (
+            length(valid_from) = 24 AND
+            valid_from GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', valid_from) = valid_from
+        )),
+        valid_to TEXT CHECK(valid_to IS NULL OR (
+            length(valid_to) = 24 AND
+            valid_to GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', valid_to) = valid_to
+        )),
         tags TEXT NOT NULL DEFAULT '[]',
         durability REAL NOT NULL DEFAULT 1.0 CHECK(durability >= 0.0 AND durability <= 1.0),
         mention_count INTEGER NOT NULL DEFAULT 0,
         last_seen_at TEXT,
         provenance_item_id TEXT REFERENCES memory_items(id) ON DELETE SET NULL,
         provenance_record_id TEXT,
-        provenance_snippet TEXT
+        provenance_snippet TEXT,
+        CHECK(valid_from IS NULL OR valid_to IS NULL OR valid_from < valid_to)
     )",
     // Pending model-inferred facts wait for an explicit UI review before
     // entering the current facts graph and its prompt/recall indexes.
@@ -195,6 +211,16 @@ const SCHEMA_SQL: &[&str] = &[
         confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
         tags TEXT NOT NULL DEFAULT '[]',
         durability REAL NOT NULL CHECK(durability >= 0.0 AND durability <= 1.0),
+        valid_from TEXT CHECK(valid_from IS NULL OR (
+            length(valid_from) = 24 AND
+            valid_from GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', valid_from) = valid_from
+        )),
+        valid_to TEXT CHECK(valid_to IS NULL OR (
+            length(valid_to) = 24 AND
+            valid_to GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', valid_to) = valid_to
+        )),
         created_at TEXT NOT NULL CHECK(
             length(created_at) = 24 AND
             created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
@@ -204,7 +230,8 @@ const SCHEMA_SQL: &[&str] = &[
         provenance_snippet TEXT,
         evidence_status TEXT NOT NULL DEFAULT 'unverified'
             CHECK(evidence_status IN ('supported','uncertain','contradicted','unverified')),
-        evidence_quote TEXT CHECK(evidence_quote IS NULL OR length(evidence_quote) <= 120)
+        evidence_quote TEXT CHECK(evidence_quote IS NULL OR length(evidence_quote) <= 120),
+        CHECK(valid_from IS NULL OR valid_to IS NULL OR valid_from < valid_to)
     )",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_proposals_pending_triple
         ON fact_proposals(subject, predicate, object)",
@@ -224,6 +251,21 @@ const SCHEMA_SQL: &[&str] = &[
         memory_kind TEXT NOT NULL CHECK(memory_kind IN ('profile','semantic','procedural')),
         confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
         created_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL CHECK(
+            length(recorded_at) = 24 AND
+            recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', recorded_at) = recorded_at
+        ),
+        valid_from TEXT CHECK(valid_from IS NULL OR (
+            length(valid_from) = 24 AND
+            valid_from GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', valid_from) = valid_from
+        )),
+        valid_to TEXT CHECK(valid_to IS NULL OR (
+            length(valid_to) = 24 AND
+            valid_to GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', valid_to) = valid_to
+        )),
         tags TEXT NOT NULL DEFAULT '[]',
         durability REAL NOT NULL CHECK(durability >= 0.0 AND durability <= 1.0),
         mention_count INTEGER NOT NULL DEFAULT 0,
@@ -235,47 +277,82 @@ const SCHEMA_SQL: &[&str] = &[
             length(superseded_at) = 24 AND
             superseded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
             strftime('%Y-%m-%dT%H:%M:%fZ', superseded_at) = superseded_at
-        )
+        ),
+        CHECK(valid_from IS NULL OR valid_to IS NULL OR valid_from < valid_to)
     )",
     "CREATE INDEX IF NOT EXISTS idx_fact_history_id_superseded
         ON fact_history(id, superseded_at)",
     "CREATE INDEX IF NOT EXISTS idx_fact_history_subject_time
         ON fact_history(subject, created_at, id)",
+    "CREATE INDEX IF NOT EXISTS idx_fact_history_valid_range
+        ON fact_history(valid_from, valid_to)",
     "CREATE TRIGGER IF NOT EXISTS facts_history_before_update
-        BEFORE UPDATE OF subject, predicate, object, source, memory_kind ON facts
+        BEFORE UPDATE OF subject, predicate, object, source, memory_kind, valid_from, valid_to ON facts
         WHEN OLD.subject IS NOT NEW.subject
           OR OLD.predicate IS NOT NEW.predicate
           OR OLD.object IS NOT NEW.object
           OR OLD.source IS NOT NEW.source
           OR OLD.memory_kind IS NOT NEW.memory_kind
+          OR OLD.valid_from IS NOT NEW.valid_from
+          OR OLD.valid_to IS NOT NEW.valid_to
         BEGIN
             INSERT INTO fact_history (
                 id, subject, subject_id, predicate, object, object_id, source,
-                memory_kind, confidence, created_at, tags, durability, mention_count,
+                memory_kind, confidence, created_at, recorded_at, valid_from, valid_to,
+                tags, durability, mention_count,
                 last_seen_at, provenance_item_id, provenance_record_id,
                 provenance_snippet, superseded_at
             ) VALUES (
                 OLD.id, OLD.subject, OLD.subject_id, OLD.predicate, OLD.object, OLD.object_id,
-                OLD.source, OLD.memory_kind, OLD.confidence, OLD.created_at, OLD.tags,
+                OLD.source, OLD.memory_kind, OLD.confidence, OLD.created_at, OLD.recorded_at,
+                OLD.valid_from, OLD.valid_to, OLD.tags,
                 OLD.durability, OLD.mention_count, OLD.last_seen_at,
                 OLD.provenance_item_id, OLD.provenance_record_id, OLD.provenance_snippet,
-                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                CASE
+                    WHEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') > OLD.recorded_at
+                    THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    ELSE strftime('%Y-%m-%dT%H:%M:%fZ', julianday(OLD.recorded_at) + 1.0 / 86400000.0)
+                END
             );
+        END",
+    "CREATE TRIGGER IF NOT EXISTS facts_recorded_at_after_update
+        AFTER UPDATE OF subject, predicate, object, source, memory_kind, valid_from, valid_to ON facts
+        WHEN OLD.subject IS NOT NEW.subject
+          OR OLD.predicate IS NOT NEW.predicate
+          OR OLD.object IS NOT NEW.object
+          OR OLD.source IS NOT NEW.source
+          OR OLD.memory_kind IS NOT NEW.memory_kind
+          OR OLD.valid_from IS NOT NEW.valid_from
+          OR OLD.valid_to IS NOT NEW.valid_to
+        BEGIN
+            UPDATE facts
+            SET recorded_at = CASE
+                WHEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') > NEW.recorded_at
+                THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                ELSE strftime('%Y-%m-%dT%H:%M:%fZ', julianday(NEW.recorded_at) + 1.0 / 86400000.0)
+            END
+            WHERE id = NEW.id;
         END",
     "CREATE TRIGGER IF NOT EXISTS facts_history_before_delete
         BEFORE DELETE ON facts
         BEGIN
             INSERT INTO fact_history (
                 id, subject, subject_id, predicate, object, object_id, source,
-                memory_kind, confidence, created_at, tags, durability, mention_count,
+                memory_kind, confidence, created_at, recorded_at, valid_from, valid_to,
+                tags, durability, mention_count,
                 last_seen_at, provenance_item_id, provenance_record_id,
                 provenance_snippet, superseded_at
             ) VALUES (
                 OLD.id, OLD.subject, OLD.subject_id, OLD.predicate, OLD.object, OLD.object_id,
-                OLD.source, OLD.memory_kind, OLD.confidence, OLD.created_at, OLD.tags,
+                OLD.source, OLD.memory_kind, OLD.confidence, OLD.created_at, OLD.recorded_at,
+                OLD.valid_from, OLD.valid_to, OLD.tags,
                 OLD.durability, OLD.mention_count, OLD.last_seen_at,
                 OLD.provenance_item_id, OLD.provenance_record_id, OLD.provenance_snippet,
-                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                CASE
+                    WHEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') > OLD.recorded_at
+                    THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    ELSE strftime('%Y-%m-%dT%H:%M:%fZ', julianday(OLD.recorded_at) + 1.0 / 86400000.0)
+                END
             );
         END",
     "CREATE TABLE IF NOT EXISTS tool_runs (
@@ -479,6 +556,9 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_facts_memory_kind ON facts(memory_kind, subject)",
     "CREATE INDEX IF NOT EXISTS idx_facts_subject_id ON facts(subject_id)",
     "CREATE INDEX IF NOT EXISTS idx_facts_object_id ON facts(object_id)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_valid_range ON facts(valid_from, valid_to)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_recorded_at ON facts(recorded_at, id)",
+    "CREATE INDEX IF NOT EXISTS idx_fact_history_recorded_range ON fact_history(recorded_at, superseded_at)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_session ON llm_usage(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_session_kind ON llm_usage(session_id, call_kind)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at)",
@@ -723,11 +803,19 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("memory_nodes", "kind"),
     ("memory_items", "content"),
     ("facts", "durability"),
+    ("facts", "recorded_at"),
+    ("facts", "valid_from"),
+    ("facts", "valid_to"),
     ("fact_proposals", "proposal_id"),
     ("fact_proposals", "created_at"),
     ("fact_proposals", "evidence_status"),
     ("fact_proposals", "evidence_quote"),
+    ("fact_proposals", "valid_from"),
+    ("fact_proposals", "valid_to"),
     ("fact_history", "superseded_at"),
+    ("fact_history", "recorded_at"),
+    ("fact_history", "valid_from"),
+    ("fact_history", "valid_to"),
     ("fact_history", "provenance_item_id"),
     ("tool_runs", "kind"),
     ("tool_runs", "tool_name"),
@@ -1396,10 +1484,11 @@ mod tests {
             .execute(
                 "INSERT INTO fact_history (
                     id, subject, predicate, object, source, memory_kind, confidence,
-                    created_at, durability, superseded_at
+                    created_at, recorded_at, durability, superseded_at
                 ) VALUES (
                     'fact-4239df0ceaf003ef339c54b852a35b0a', 'user', 'city', 'Oslo',
-                    'user', 'profile', 1.0, '2025-01-01T00:00:00Z', 1.0, '2025-01-01'
+                    'user', 'profile', 1.0, '2025-01-01T00:00:00Z',
+                    '2025-01-01T00:00:00.000Z', 1.0, '2025-01-01'
                 )",
                 [],
             )

@@ -99,6 +99,8 @@ pub struct MemoryFactResponse {
     pub last_seen_at: Option<String>,
     pub source_ref: Option<MemoryFactSourceRef>,
     pub durability: f64,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -142,6 +144,8 @@ pub struct MemoryFactProposalResponse {
     pub tags: Vec<String>,
     pub durability: f64,
     pub created_at: String,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
     pub source_ref: Option<MemoryFactSourceRef>,
     pub evidence_status: haven_memory::FactEvidenceStatus,
     pub evidence_quote: Option<String>,
@@ -157,6 +161,8 @@ impl From<haven_memory::FactProposal> for MemoryFactProposalResponse {
             confidence: proposal.confidence,
             tags: proposal.tags,
             durability: proposal.durability,
+            valid_from: proposal.valid_from,
+            valid_to: proposal.valid_to,
             created_at: proposal.created_at,
             source_ref: proposal.source_ref.map(Into::into),
             evidence_status: proposal.evidence_status,
@@ -232,6 +238,8 @@ impl TryFrom<haven_memory::Fact> for MemoryFactResponse {
             confidence: fact.confidence,
             tags: fact.tags,
             created_at: fact.created_at,
+            valid_from: fact.valid_from,
+            valid_to: fact.valid_to,
             mention_count: fact.mention_count,
             last_seen_at: fact.last_seen_at,
             source_ref: fact.source_ref.map(Into::into),
@@ -372,6 +380,8 @@ struct AddFactInput {
     predicate: String,
     object: String,
     tags: Vec<String>,
+    valid_from: Option<String>,
+    valid_to: Option<String>,
 }
 
 fn validate_add_fact_input(
@@ -379,8 +389,10 @@ fn validate_add_fact_input(
     predicate: String,
     object: String,
     tags: Option<Vec<String>>,
+    valid_from: Option<String>,
+    valid_to: Option<String>,
 ) -> Result<AddFactInput, String> {
-    use haven_memory::{is_sensitive_object, is_sensitive_predicate};
+    use haven_memory::{is_sensitive_object, is_sensitive_predicate, normalize_fact_validity};
 
     let subject = subject.trim().to_string();
     let predicate = predicate.trim().to_string();
@@ -400,12 +412,17 @@ fn validate_add_fact_input(
         .map(|tag| tag.trim().to_string())
         .filter(|tag| !tag.is_empty())
         .collect();
+    let (valid_from, valid_to) =
+        normalize_fact_validity(valid_from.as_deref(), valid_to.as_deref())
+            .map_err(|error| error.to_string())?;
 
     Ok(AddFactInput {
         subject,
         predicate,
         object,
         tags,
+        valid_from,
+        valid_to,
     })
 }
 
@@ -416,13 +433,25 @@ pub async fn add_fact(
     predicate: String,
     object: String,
     tags: Option<Vec<String>>,
+    valid_from: Option<String>,
+    valid_to: Option<String>,
 ) -> Result<MemoryFactResponse, String> {
-    let input = validate_add_fact_input(subject, predicate, object, tags)
+    let input = validate_add_fact_input(subject, predicate, object, tags, valid_from, valid_to)
         .map_err(|error| log_err("add_fact", error))?;
     let fact = state
         .runtime
         .memory_fact_store
-        .set_user_fact(input.subject, input.predicate, input.object, input.tags)
+        .set_user_fact_with_kind_and_validity(
+            input.subject,
+            input.predicate,
+            input.object,
+            input.tags,
+            haven_memory::MemoryFactKind::Profile,
+            haven_memory::FactValidity {
+                valid_from: input.valid_from,
+                valid_to: input.valid_to,
+            },
+        )
         .await
         .map_err(|e| log_err("add_fact", e))?;
     MemoryFactResponse::try_from(fact).map_err(|e| log_err("add_fact", e))
@@ -464,6 +493,8 @@ mod tests {
             " likes ".into(),
             " Rust ".into(),
             Some(vec![" preference ".into(), "  ".into(), "workspace".into()]),
+            None,
+            None,
         )
         .unwrap();
 
@@ -474,6 +505,8 @@ mod tests {
                 predicate: "likes".into(),
                 object: "Rust".into(),
                 tags: vec!["preference".into(), "workspace".into()],
+                valid_from: None,
+                valid_to: None,
             }
         );
     }
@@ -481,16 +514,59 @@ mod tests {
     #[test]
     fn add_fact_input_preserves_empty_and_sensitive_rejections() {
         assert_eq!(
-            validate_add_fact_input("user".into(), "  ".into(), "Rust".into(), None),
+            validate_add_fact_input("user".into(), "  ".into(), "Rust".into(), None, None, None),
             Err("subject, predicate, and object are required".into())
         );
         assert_eq!(
-            validate_add_fact_input("user".into(), "api_key".into(), "value".into(), None),
+            validate_add_fact_input(
+                "user".into(),
+                "api_key".into(),
+                "value".into(),
+                None,
+                None,
+                None
+            ),
             Err("refusing to store credential-like facts".into())
         );
         assert_eq!(
-            validate_add_fact_input("user".into(), "likes".into(), "sk-secret".into(), None),
+            validate_add_fact_input(
+                "user".into(),
+                "likes".into(),
+                "sk-secret".into(),
+                None,
+                None,
+                None
+            ),
             Err("refusing to store credential-like facts".into())
+        );
+    }
+
+    #[test]
+    fn add_fact_input_normalizes_and_validates_valid_time_bounds() {
+        let input = validate_add_fact_input(
+            "user".into(),
+            "employer".into(),
+            "Acme".into(),
+            None,
+            Some("2024-01-01".into()),
+            Some("2025-01-01".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            input.valid_from.as_deref(),
+            Some("2024-01-01T00:00:00.000Z")
+        );
+        assert_eq!(input.valid_to.as_deref(), Some("2025-01-01T00:00:00.000Z"));
+        assert!(
+            validate_add_fact_input(
+                "user".into(),
+                "employer".into(),
+                "Acme".into(),
+                None,
+                Some("2025-01-01".into()),
+                Some("2024-01-01".into()),
+            )
+            .is_err()
         );
     }
 
@@ -526,6 +602,8 @@ mod tests {
             confidence: 1.0,
             tags: vec!["language".into()],
             created_at: "2026-10-06T00:00:00Z".into(),
+            valid_from: Some("2026-10-01T00:00:00.000Z".into()),
+            valid_to: None,
             mention_count: 2,
             last_seen_at: Some("2026-10-06T00:00:00Z".into()),
             source_ref: Some(haven_memory::FactSourceRef {
@@ -548,6 +626,8 @@ mod tests {
                 "confidence": 1.0,
                 "tags": ["language"],
                 "created_at": "2026-10-06T00:00:00Z",
+                "valid_from": "2026-10-01T00:00:00.000Z",
+                "valid_to": null,
                 "mention_count": 2,
                 "last_seen_at": "2026-10-06T00:00:00Z",
                 "source_ref": {

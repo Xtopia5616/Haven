@@ -20,7 +20,7 @@ describe('LongTermFacts', () => {
 				},
 			],
 			factsLoaded: true,
-			newFact: { predicate: '', object: '', tags: '' },
+			newFact: { predicate: '', object: '', tags: '', validFrom: '', validTo: '' },
 			onDeleteFact,
 		};
 		render(LongTermFacts, props);

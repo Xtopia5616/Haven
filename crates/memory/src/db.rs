@@ -742,6 +742,8 @@ mod tests {
             confidence: 0.9,
             tags: vec![],
             created_at: "2026-01-01T00:00:00Z".into(),
+            valid_from: None,
+            valid_to: None,
             mention_count: 0,
             last_seen_at: Some("2026-01-01T00:00:00Z".into()),
             source_ref: None,

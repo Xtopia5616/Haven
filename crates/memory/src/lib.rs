@@ -23,14 +23,15 @@ pub use repositories::embedding_store::{
     MemoryEmbeddingVector, PendingMemoryEmbedding,
 };
 pub use repositories::fact_store::{
-    DEFAULT_FACT_PAGE_SIZE, FactHistorySnapshot, FactPage, FactPageCursor,
+    DEFAULT_FACT_PAGE_SIZE, FactHistorySnapshot, FactPage, FactPageCursor, FactValiditySnapshot,
     MAX_FACT_HISTORY_RESULTS, MAX_FACT_PAGE_SIZE, MemoryFactStore, MemoryFactWrite,
 };
 pub use repositories::facts::{
     CANONICAL_MERGE_TARGETS, ContradictionCandidate, ContradictionKind, Fact, FactSourceRef,
-    MemoryFactKind, UpsertOutcome, fact_effective_confidence, fact_within_demote_age,
+    FactValidity, MemoryFactKind, UpsertOutcome, fact_effective_confidence, fact_within_demote_age,
     is_canonical_merge_target, is_identity_predicate, is_sensitive_object, is_sensitive_predicate,
-    is_sensitive_text, is_visible_fact, normalize_predicate, pick_contradiction_keeper,
+    is_sensitive_text, is_visible_fact, normalize_fact_validity, normalize_predicate,
+    pick_contradiction_keeper,
 };
 pub use repositories::kv_store::{
     FactExtractionMarker, FactExtractionMarkerState, SummaryExtractionMarker,

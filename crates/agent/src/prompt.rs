@@ -1885,6 +1885,8 @@ mod tests {
             confidence: 0.87,
             tags: vec!["preference".into()],
             created_at: "2026-01-01T00:00:00Z".into(),
+            valid_from: None,
+            valid_to: None,
             mention_count: 1,
             last_seen_at: None,
             source_ref: None,

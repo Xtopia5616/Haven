@@ -38,8 +38,8 @@ fn recall_output(kind: MemoryRecallKind, recall: MemoryRecall) -> Value {
 /// - `recall` — unified retrieval for `kind=fact|episode` (vector when
 ///   embedding_model is configured, else keyword/FTS). Aligns with
 ///   History `recall_memory`.
-/// - `history` — explicitly list the bounded fact snapshot known at an RFC3339
-///   system-recorded instant; ordinary recall remains current-only.
+/// - `history` — list the bounded fact snapshot Haven had recorded at a system time.
+/// - `valid_at` — list facts explicitly known to be true at a real-world time.
 pub(super) struct MemoryTool {
     facts: Option<MemoryFactStore>,
     /// Prefer this over a local vector path so agent and History stay aligned.
@@ -55,6 +55,7 @@ pub enum MemoryOperation {
     Remember,
     Forget,
     Recall,
+    ValidAt,
 }
 
 /// Typed parameters for `MemoryTool`. Entry ① (native `run`) and entry ②
@@ -91,6 +92,11 @@ pub struct MemoryParams {
     /// RFC3339 system-recorded instant for `history` snapshots.
     #[serde(default)]
     pub at: Option<String>,
+    /// Optional explicit real-world fact interval for remember.
+    #[serde(default)]
+    pub valid_from: Option<String>,
+    #[serde(default)]
+    pub valid_to: Option<String>,
     /// Optional category for remember; defaults to profile.
     #[serde(default)]
     pub memory_kind: Option<MemoryFactKind>,
@@ -128,6 +134,8 @@ impl MemoryTool {
                     "subject": f.subject,
                     "predicate": f.predicate,
                     "object": f.object,
+                    "valid_from": f.valid_from,
+                    "valid_to": f.valid_to,
                     "confidence": (fact_effective_confidence(f) * 100.0).round() / 100.0,
                     "source": f.source,
                     "memory_kind": f.memory_kind,
@@ -224,12 +232,16 @@ impl MemoryTool {
             .collect();
         let subject = Self::write_subject(params);
         let fact = facts
-            .set_user_fact_with_kind(
+            .set_user_fact_with_kind_and_validity(
                 subject,
                 predicate.to_string(),
                 object.to_string(),
                 tags,
                 params.memory_kind.unwrap_or(MemoryFactKind::Profile),
+                haven_memory::FactValidity {
+                    valid_from: params.valid_from.clone(),
+                    valid_to: params.valid_to.clone(),
+                },
             )
             .await?;
         Ok(ToolResult::ok(json!({
@@ -241,6 +253,8 @@ impl MemoryTool {
                 "memory_kind": fact.memory_kind,
                 "confidence": fact.confidence,
                 "tags": fact.tags,
+                "valid_from": fact.valid_from,
+                "valid_to": fact.valid_to,
             }
         })))
     }
@@ -286,6 +300,33 @@ impl MemoryTool {
             .map(str::to_string);
         let snapshot = facts
             .list_visible_facts_as_of(at.to_string(), subject, Self::parse_limit(params, 20))
+            .await?;
+        let rows = Self::to_output_rows(&snapshot.facts);
+        Ok(ToolResult::ok(json!({
+            "at": snapshot.at,
+            "facts": rows["facts"],
+            "truncated": snapshot.truncated,
+        })))
+    }
+
+    async fn execute_valid_at(
+        params: &MemoryParams,
+        facts: &MemoryFactStore,
+    ) -> anyhow::Result<ToolResult> {
+        let at = params
+            .at
+            .as_deref()
+            .map(str::trim)
+            .filter(|at| !at.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("at is required for operation=valid_at"))?;
+        let subject = params
+            .subject
+            .as_deref()
+            .map(str::trim)
+            .filter(|subject| !subject.is_empty())
+            .map(str::to_string);
+        let snapshot = facts
+            .list_visible_facts_valid_at(at.to_string(), subject, Self::parse_limit(params, 20))
             .await?;
         let rows = Self::to_output_rows(&snapshot.facts);
         Ok(ToolResult::ok(json!({
@@ -350,6 +391,7 @@ impl MemoryTool {
             MemoryOperation::Search => Self::execute_search(&params, facts).await,
             MemoryOperation::List => Self::execute_list(&params, facts).await,
             MemoryOperation::History => Self::execute_history(&params, facts).await,
+            MemoryOperation::ValidAt => Self::execute_valid_at(&params, facts).await,
             MemoryOperation::Remember => Self::execute_remember(&params, facts).await,
             MemoryOperation::Forget => Self::execute_forget(&params, facts).await,
             MemoryOperation::Recall => self.execute_recall(&params, session_id.as_deref()).await,
@@ -362,6 +404,7 @@ impl MemoryTool {
                         MemoryOperation::Search => "search",
                         MemoryOperation::List => "list",
                         MemoryOperation::History => "history",
+                        MemoryOperation::ValidAt => "valid_at",
                         MemoryOperation::Remember => "remember",
                         MemoryOperation::Forget => "forget",
                         MemoryOperation::Recall => "recall",
@@ -405,10 +448,12 @@ impl Tool for MemoryTool {
         json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["search", "list", "history", "remember", "forget", "recall"], "description": "Choose fact search/list, explicit point-in-time history, edit, or cross-session recall" },
+                "operation": { "type": "string", "enum": ["search", "list", "history", "valid_at", "remember", "forget", "recall"], "description": "Choose fact search/list, system-time history, real-world valid-time query, edit, or cross-session recall" },
                 "query": { "type": "string", "minLength": 1, "description": "Keywords for search; a natural-language question or topic for recall" },
                 "kind": { "type": "string", "enum": ["fact", "profile", "semantic", "procedural", "episode"], "default": "fact", "description": "Recall any fact, explicit user profile, inferred semantic memory, reusable procedure, or past conversation" },
-                "at": { "type": "string", "format": "date-time", "description": "RFC3339 system-recorded instant for operation=history; ordinary recall always uses current facts" },
+                "at": { "type": "string", "description": "RFC3339 system-recorded instant for history, or YYYY-MM-DD/RFC3339 real-world instant for valid_at" },
+                "valid_from": { "type": "string", "description": "Optional explicit real-world start (YYYY-MM-DD or RFC3339); never inferred from when Haven recorded the fact" },
+                "valid_to": { "type": "string", "description": "Optional exclusive real-world end (YYYY-MM-DD or RFC3339); never inferred from when Haven recorded the fact" },
                 "memory_kind": { "type": "string", "enum": ["profile", "procedural"], "default": "profile", "description": "Category for remember: user profile or reusable procedure; defaults to profile" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum results: defaults to 10 for search, 20 for list/history, and 5 for recall; recall is capped at 20" },
                 "predicate": { "type": "string", "minLength": 1, "description": "Fact attribute to remember or forget, such as preference or project" },
@@ -418,6 +463,17 @@ impl Tool for MemoryTool {
             },
             "required": ["operation"],
             "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "valid_at" },
+                        "at": { "type": "string", "description": "Real-world point-in-time, YYYY-MM-DD or RFC3339; facts with unknown validity are omitted" },
+                        "subject": { "type": "string", "minLength": 1, "description": "Optional exact owner filter" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum facts to return; defaults to 20" }
+                    },
+                    "required": ["operation", "at"]
+                },
                 {
                     "type": "object",
                     "additionalProperties": false,
@@ -459,6 +515,8 @@ impl Tool for MemoryTool {
                         "object": { "type": "string", "minLength": 1, "description": "The durable fact value; credential-like values are rejected" },
                         "tags": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "description": "Optional labels: identity, preference, workspace, or project" },
                         "memory_kind": { "type": "string", "enum": ["profile", "procedural"], "default": "profile", "description": "Store as profile information or a reusable procedure; defaults to profile" },
+                        "valid_from": { "type": "string", "description": "Optional explicit real-world start date/time (YYYY-MM-DD or RFC3339)" },
+                        "valid_to": { "type": "string", "description": "Optional exclusive real-world end date/time (YYYY-MM-DD or RFC3339)" },
                         "subject": { "type": "string", "minLength": 1, "description": "Owner namespace; defaults to user" }
                     },
                     "required": ["operation", "predicate", "object"]
@@ -620,7 +678,9 @@ mod tests {
         let ops = schema["properties"]["operation"]["enum"]
             .as_array()
             .unwrap();
-        for op in ["search", "list", "history", "remember", "forget", "recall"] {
+        for op in [
+            "search", "list", "history", "valid_at", "remember", "forget", "recall",
+        ] {
             assert!(ops.iter().any(|v| v == op));
         }
         assert!(schema["properties"]["at"].is_object());
@@ -949,6 +1009,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn valid_at_returns_only_facts_with_known_world_time_bounds() {
+        let (tool, db, _dir) = test_tool();
+        let facts = MemoryFactStore::new(db.clone());
+        facts
+            .set_user_fact_with_kind_and_validity(
+                "user".into(),
+                "employer".into(),
+                "Acme".into(),
+                vec![],
+                MemoryFactKind::Profile,
+                haven_memory::FactValidity {
+                    valid_from: Some("2024-01-01".into()),
+                    valid_to: Some("2025-01-01".into()),
+                },
+            )
+            .await
+            .unwrap();
+        db.set_user_fact("user", "likes", "tea", &[]).unwrap();
+
+        let result = tool
+            .execute(
+                json!({"operation": "valid_at", "at": "2024-06-01", "subject": "user"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["operation"], "valid_at");
+        assert_eq!(result.output["at"], "2024-06-01T00:00:00.000Z");
+        assert_eq!(result.output["facts"].as_array().unwrap().len(), 1);
+        assert_eq!(result.output["facts"][0]["object"], "Acme");
+
+        assert!(
+            tool.execute(
+                json!({"operation": "valid_at", "at": "yesterday"}),
+                CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn test_unknown_operation_errors() {
         let (tool, _db, _dir) = db_with_facts();
         let result = tool
@@ -1221,6 +1323,8 @@ mod tests {
                     subject: None,
                     kind: None,
                     at: None,
+                    valid_from: None,
+                    valid_to: None,
                     memory_kind: None,
                 },
                 None,

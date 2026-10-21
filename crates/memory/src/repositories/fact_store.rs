@@ -2,7 +2,7 @@ use crate::db::Database;
 use crate::recall::normalize_memory_query;
 #[cfg(any(test, feature = "test-support"))]
 use crate::repositories::fact_graph::FactGraph;
-use crate::repositories::facts::{Fact, FactSourceRef, MemoryFactKind};
+use crate::repositories::facts::{Fact, FactSourceRef, FactValidity, MemoryFactKind};
 use chrono::{DateTime, SecondsFormat, Utc};
 use haven_common::types::is_canonical_id;
 use std::sync::Arc;
@@ -37,6 +37,14 @@ pub struct FactHistorySnapshot {
     pub truncated: bool,
 }
 
+/// Bounded set of facts explicitly valid at a requested real-world instant.
+#[derive(Debug, Clone)]
+pub struct FactValiditySnapshot {
+    pub at: String,
+    pub facts: Vec<Fact>,
+    pub truncated: bool,
+}
+
 /// A fact already parsed, normalized, and sanitized by its owning caller,
 /// ready for inferred-fact persistence.
 #[derive(Debug, Clone)]
@@ -48,6 +56,8 @@ pub struct MemoryFactWrite {
     pub tags: Vec<String>,
     pub source_ref: Option<FactSourceRef>,
     pub durability: f64,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
 }
 
 /// Async application-facing boundary for durable memory-fact operations.
@@ -185,6 +195,43 @@ impl MemoryFactStore {
             .await
     }
 
+    /// Read a bounded snapshot by real-world validity time. Unknown intervals
+    /// are omitted rather than inferred from when Haven first recorded them.
+    pub async fn list_visible_facts_valid_at(
+        &self,
+        at: String,
+        subject: Option<String>,
+        limit: usize,
+    ) -> anyhow::Result<FactValiditySnapshot> {
+        let at = crate::repositories::facts::normalize_fact_validity(Some(&at), None)?
+            .0
+            .ok_or_else(|| anyhow::anyhow!("valid_at is required"))?;
+        let limit = limit.min(MAX_FACT_HISTORY_RESULTS);
+        if limit == 0 {
+            return Ok(FactValiditySnapshot {
+                at,
+                facts: Vec::new(),
+                truncated: false,
+            });
+        }
+        let subject = subject
+            .map(|subject| subject.trim().to_string())
+            .filter(|subject| !subject.is_empty());
+        self.db
+            .run_blocking(move |db| {
+                let rows = db.list_facts_valid_at(&at, subject.as_deref(), limit + 1)?;
+                let mut facts = crate::repositories::facts::filter_visible_facts(rows);
+                let truncated = facts.len() > limit;
+                facts.truncate(limit);
+                Ok(FactValiditySnapshot {
+                    at,
+                    facts,
+                    truncated,
+                })
+            })
+            .await
+    }
+
     /// Persist a user-stated fact. Input normalization and validation belong
     /// to the IPC adapter; this method owns only the SQLite scheduling and
     /// repository call.
@@ -208,6 +255,28 @@ impl MemoryFactStore {
         tags: Vec<String>,
         memory_kind: MemoryFactKind,
     ) -> anyhow::Result<Fact> {
+        self.set_user_fact_with_kind_and_validity(
+            subject,
+            predicate,
+            object,
+            tags,
+            memory_kind,
+            FactValidity::default(),
+        )
+        .await
+    }
+
+    /// Persist an explicitly stated fact with optional real-world validity
+    /// bounds. Missing bounds remain unknown and are never inferred.
+    pub async fn set_user_fact_with_kind_and_validity(
+        &self,
+        subject: String,
+        predicate: String,
+        object: String,
+        tags: Vec<String>,
+        memory_kind: MemoryFactKind,
+        validity: FactValidity,
+    ) -> anyhow::Result<Fact> {
         anyhow::ensure!(
             memory_kind != MemoryFactKind::Semantic,
             "user-maintained memory kind must be profile or procedural"
@@ -215,7 +284,14 @@ impl MemoryFactStore {
         self.db
             .run_blocking(move |db| {
                 let tags: Vec<&str> = tags.iter().map(String::as_str).collect();
-                db.set_user_fact_with_kind(&subject, &predicate, &object, &tags, memory_kind)
+                db.set_user_fact_with_kind_and_validity(
+                    &subject,
+                    &predicate,
+                    &object,
+                    &tags,
+                    memory_kind,
+                    &validity,
+                )
             })
             .await
     }
@@ -339,6 +415,8 @@ mod tests {
             tags: Vec::new(),
             source_ref: None,
             durability: 0.6,
+            valid_from: None,
+            valid_to: None,
         }
     }
 
@@ -708,7 +786,7 @@ mod tests {
             .unwrap();
         db.conn()
             .execute(
-                "UPDATE facts SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
+                "UPDATE facts SET created_at = '2020-01-01T00:00:00Z', recorded_at = '2020-01-01T00:00:00.000Z' WHERE id = ?1",
                 rusqlite::params![old.fact_id],
             )
             .unwrap();
@@ -824,6 +902,160 @@ mod tests {
                 .all(crate::repositories::facts::is_visible_fact)
         );
         assert!(snapshot.facts.iter().all(|fact| fact.subject == "alice"));
+    }
+
+    #[tokio::test]
+    async fn valid_at_uses_explicit_intervals_and_single_value_corrections_close_old_ranges() {
+        let (_db, store) = store();
+        let old = store
+            .set_user_fact_with_kind_and_validity(
+                "user".into(),
+                "employer".into(),
+                "Acme".into(),
+                vec![],
+                crate::MemoryFactKind::Profile,
+                crate::FactValidity {
+                    valid_from: Some("2024-01-01".into()),
+                    valid_to: None,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .set_user_fact_with_kind_and_validity(
+                "user".into(),
+                "employer".into(),
+                "Northwind".into(),
+                vec![],
+                crate::MemoryFactKind::Profile,
+                crate::FactValidity {
+                    valid_from: Some("2025-01-01".into()),
+                    valid_to: None,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .set_user_fact("user".into(), "likes".into(), "tea".into(), vec![])
+            .await
+            .unwrap();
+
+        let before = store
+            .list_visible_facts_valid_at("2024-12-31".into(), Some("user".into()), 10)
+            .await
+            .unwrap();
+        assert_eq!(before.at, "2024-12-31T00:00:00.000Z");
+        assert_eq!(before.facts.len(), 1);
+        assert_eq!(before.facts[0].fact_id, old.fact_id);
+        assert_eq!(before.facts[0].object, "Acme");
+        assert_eq!(
+            before.facts[0].valid_to.as_deref(),
+            Some("2025-01-01T00:00:00.000Z")
+        );
+
+        let boundary = store
+            .list_visible_facts_valid_at("2025-01-01".into(), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            boundary
+                .facts
+                .iter()
+                .map(|fact| fact.object.as_str())
+                .collect::<Vec<_>>(),
+            ["Northwind"],
+            "valid_to is exclusive and the corrected value starts at valid_from"
+        );
+    }
+
+    #[tokio::test]
+    async fn out_of_order_single_value_correction_stops_before_the_known_later_value() {
+        let (_db, store) = store();
+        store
+            .set_user_fact_with_kind_and_validity(
+                "user".into(),
+                "employer".into(),
+                "Northwind".into(),
+                vec![],
+                crate::MemoryFactKind::Profile,
+                crate::FactValidity {
+                    valid_from: Some("2025-01-01".into()),
+                    valid_to: None,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .set_user_fact_with_kind_and_validity(
+                "user".into(),
+                "employer".into(),
+                "Acme".into(),
+                vec![],
+                crate::MemoryFactKind::Profile,
+                crate::FactValidity {
+                    valid_from: Some("2024-01-01".into()),
+                    valid_to: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let before = store
+            .list_visible_facts_valid_at("2024-06-01".into(), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(before.facts.len(), 1);
+        assert_eq!(before.facts[0].object, "Acme");
+        assert_eq!(
+            before.facts[0].valid_to.as_deref(),
+            Some("2025-01-01T00:00:00.000Z")
+        );
+
+        let later = store
+            .list_visible_facts_valid_at("2025-06-01".into(), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(later.facts.len(), 1);
+        assert_eq!(later.facts[0].object, "Northwind");
+    }
+
+    #[tokio::test]
+    async fn explicit_forget_erases_valid_time_history_and_unknown_intervals_are_omitted() {
+        let (_db, store) = store();
+        store
+            .set_user_fact_with_kind_and_validity(
+                "user".into(),
+                "city".into(),
+                "Oslo".into(),
+                vec![],
+                crate::MemoryFactKind::Profile,
+                crate::FactValidity {
+                    valid_from: Some("2020-01-01".into()),
+                    valid_to: None,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .set_user_fact("user".into(), "likes".into(), "tea".into(), vec![])
+            .await
+            .unwrap();
+        let known = store
+            .list_visible_facts_valid_at("2021-01-01".into(), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(known.facts.len(), 1);
+        assert_eq!(known.facts[0].object, "Oslo");
+
+        store
+            .delete_facts_by_triple("user".into(), "city".into(), None)
+            .await
+            .unwrap();
+        let forgotten = store
+            .list_visible_facts_valid_at("2021-01-01".into(), None, 10)
+            .await
+            .unwrap();
+        assert!(forgotten.facts.is_empty());
     }
 
     #[tokio::test]

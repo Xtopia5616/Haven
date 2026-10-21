@@ -1348,3 +1348,4 @@
 - [1360：推断事实先审核再写入](1360-review-inferred-fact-proposals.md)
 - [1361：以原文证据核验推断事实](1361-source-grounded-fact-validation.md)
 - [1362：有界两跳事实图召回](1362-bounded-two-hop-fact-recall.md)
+- [1363：为事实记录现实有效时间](1363-fact-valid-time.md)

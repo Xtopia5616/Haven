@@ -20,7 +20,8 @@ use haven_llm::LlmRouter;
 #[cfg(test)]
 use haven_memory::Database;
 use haven_memory::{
-    FactSourceRef, is_sensitive_object, is_sensitive_predicate, normalize_predicate,
+    FactSourceRef, is_sensitive_object, is_sensitive_predicate, normalize_fact_validity,
+    normalize_predicate,
 };
 use haven_memory::{
     MemoryFactExtractionStore, MemoryFactProposalStore, MemoryFactStore, MemoryFactWrite,
@@ -60,6 +61,8 @@ struct MemoryFactCandidate {
     tags: Vec<String>,
     source_ref: Option<FactSourceRef>,
     durability: f64,
+    valid_from: Option<String>,
+    valid_to: Option<String>,
 }
 
 /// Background memory worker: fact extraction, maintenance, outbox draining,
@@ -704,6 +707,8 @@ impl MemoryWorker {
                     tags: fact.tags,
                     source_ref,
                     durability: fact.durability.unwrap_or(0.6),
+                    valid_from: fact.valid_from,
+                    valid_to: fact.valid_to,
                 };
                 let write = self.prepare_fact_candidate(candidate)?;
                 Some(PreparedFactWrite { write, evidence })
@@ -736,6 +741,16 @@ impl MemoryWorker {
             tracing::debug!("fact inference: dropping sensitive fact");
             return None;
         }
+        let (valid_from, valid_to) = match normalize_fact_validity(
+            fact.valid_from.as_deref(),
+            fact.valid_to.as_deref(),
+        ) {
+            Ok(validity) => validity,
+            Err(error) => {
+                tracing::debug!(error = %error, "fact inference: dropping invalid valid-time interval");
+                return None;
+            }
+        };
         // Clamp to the documented range so an over-eager model (e.g. 1.2)
         // does not skew decay/ordering.
         Some(MemoryFactWrite {
@@ -746,6 +761,8 @@ impl MemoryWorker {
             tags: sanitize_tags(&fact.tags),
             source_ref: fact.source_ref,
             durability: fact.durability.clamp(0.1, 1.0),
+            valid_from,
+            valid_to,
         })
     }
 
@@ -2168,6 +2185,8 @@ mod tests {
             confidence,
             tags: vec![],
             created_at: now.clone(),
+            valid_from: None,
+            valid_to: None,
             mention_count: 0,
             last_seen_at: Some(now),
             source_ref: None,
@@ -3102,6 +3121,8 @@ mod tests {
                         snippet: "I still use Rust.".into(),
                     }),
                     durability: 0.8,
+                    valid_from: None,
+                    valid_to: None,
                 },
                 MemoryFactCandidate {
                     subject: "user".into(),
@@ -3111,6 +3132,8 @@ mod tests {
                     tags: vec![],
                     source_ref: None,
                     durability: 0.6,
+                    valid_from: None,
+                    valid_to: None,
                 },
                 MemoryFactCandidate {
                     subject: "user".into(),
@@ -3120,6 +3143,8 @@ mod tests {
                     tags: vec![],
                     source_ref: None,
                     durability: 0.6,
+                    valid_from: None,
+                    valid_to: None,
                 },
                 MemoryFactCandidate {
                     subject: "user".into(),
@@ -3129,6 +3154,8 @@ mod tests {
                     tags: vec![],
                     source_ref: None,
                     durability: 0.6,
+                    valid_from: None,
+                    valid_to: None,
                 },
             ])
             .await

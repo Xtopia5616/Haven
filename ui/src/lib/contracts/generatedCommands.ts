@@ -84,9 +84,9 @@ export interface MemoryFactPageResponse { facts: MemoryFactResponse[]; next_curs
 export interface MemoryFactProposalCursorInput { createdAt: string; proposalId: string }
 export interface MemoryFactProposalCursor { createdAt: string; proposalId: string }
 export interface MemoryFactProposalPageResponse { proposals: MemoryFactProposalResponse[]; next_cursor: MemoryFactProposalCursor | null }
-export interface MemoryFactProposalResponse { proposal_id: string; subject: string; predicate: string; object: string; confidence: number; tags: string[]; durability: number; created_at: string; source_ref: MemoryFactSourceRef | null; evidence_status: FactEvidenceStatus; evidence_quote: string | null }
+export interface MemoryFactProposalResponse { proposal_id: string; subject: string; predicate: string; object: string; confidence: number; tags: string[]; durability: number; created_at: string; valid_from: string | null; valid_to: string | null; source_ref: MemoryFactSourceRef | null; evidence_status: FactEvidenceStatus; evidence_quote: string | null }
 export type MemoryFactProposalReviewResponse = { status: 'accepted'; fact_written: boolean } | { status: 'rejected' } | { status: 'already_reviewed' };
-export interface MemoryFactResponse { fact_id: string; subject: string; predicate: string; object: string; source: MemoryFactSource; memory_kind: MemoryFactKind; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
+export interface MemoryFactResponse { fact_id: string; subject: string; predicate: string; object: string; source: MemoryFactSource; memory_kind: MemoryFactKind; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number; valid_from: string | null; valid_to: string | null }
 export const MEMORY_FACT_SOURCE_INPUT_VALUES = ['user', 'inferred'] as const;
 export type MemoryFactSourceInput = (typeof MEMORY_FACT_SOURCE_INPUT_VALUES)[number];
 export const MEMORY_FACT_SOURCE_VALUES = ['user', 'inferred'] as const;
@@ -523,6 +523,14 @@ export const ADD_FACT_RESPONSE_SHAPE = {
 		'durability': {
 			optional: false,
 			shape: { kind: 'number' },
+		},
+		'valid_from': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'valid_to': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
 		}
 	}
 } as const;
@@ -5658,6 +5666,14 @@ export const LIST_FACTS_RESPONSE_SHAPE = {
 					'durability': {
 						optional: false,
 						shape: { kind: 'number' },
+					},
+					'valid_from': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'valid_to': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
 					}
 				}
 			} },
@@ -5719,6 +5735,14 @@ export const LIST_FACT_PROPOSALS_RESPONSE_SHAPE = {
 					'created_at': {
 						optional: false,
 						shape: { kind: 'string' },
+					},
+					'valid_from': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					},
+					'valid_to': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
 					},
 					'source_ref': {
 						optional: false,
@@ -6547,6 +6571,14 @@ export const MEMORY_FACT_RESPONSE_SHAPE = {
 		'durability': {
 			optional: false,
 			shape: { kind: 'number' },
+		},
+		'valid_from': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'valid_to': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
 		}
 	}
 } as const;
@@ -10644,7 +10676,7 @@ export const MAX_FACTS_IN_EXTRACTION_PROMPT = 64 as const;
 
 
 export interface TauriCommandMap {
-	add_fact: { request: { subject: string; predicate: string; object: string; tags?: string[] | null }; response: MemoryFactResponse };
+	add_fact: { request: { subject: string; predicate: string; object: string; tags?: string[] | null; validFrom?: string | null; validTo?: string | null }; response: MemoryFactResponse };
 	add_mcp_server: { request: { config: McpServerConfigInput }; response: void };
 	cancel_chatgpt_plan_login: { request: { loginId: string }; response: void };
 	cancel_mcp_feature_input: { request: { name: string; targetBinding: string; requestId: number }; response: boolean };

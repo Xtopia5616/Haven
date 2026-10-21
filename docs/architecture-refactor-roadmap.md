@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | Active：§5.15 事实有效时间（Valid Time）。 |
+| **Active / Next** | 暂无 Active/Next 结构切片。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -154,7 +154,7 @@ Session、ScheduleRun 与 AppCommand 确认均由各自 owner 和稳定 request 
 | 4    | **crate/API 边界**           | 模块 owner 已稳定且存在单向依赖边界、独立消费者或可复核构建/维护收益。                                                                                          | API 清晰、无反向依赖或重复 adapter；否则保留现 crate 边界。              |
 | 5    | **性能与容量**               | 同负载 profile 复现用户相关延迟、资源或容量问题；固定场景记录优化前后指标。                                                                                     | 改善超过噪声并达到目标，否则关闭候选。                                   |
 
-**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。§5.9 图谱感知召回（ADR 1357）、§5.10 Prompt 记忆召回分路（ADR 1358）与 §5.11 事实历史与按时点查询（ADR 1359）已完成；§5.12 推断事实先审核再写入（ADR 1360）、§5.13 原文证据核验与受控自动接受（ADR 1361）与 §5.14 有界两跳事实图召回（ADR 1362）已完成；§5.15 事实有效时间当前 Active。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布及 HCS quota 验收仍是独立 Open Gate（§5.1）。
+**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。§5.9 图谱感知召回（ADR 1357）、§5.10 Prompt 记忆召回分路（ADR 1358）与 §5.11 事实历史与按时点查询（ADR 1359）已完成；§5.12 推断事实先审核再写入（ADR 1360）、§5.13 原文证据核验与受控自动接受（ADR 1361）、§5.14 有界两跳事实图召回（ADR 1362）与 §5.15 事实现实有效时间（ADR 1363）已完成。当前没有 Active/Next 结构切片。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布及 HCS quota 验收仍是独立 Open Gate（§5.1）。
 
 ### 5.7 全项目领域术语与架构角色命名收敛（持续覆盖）
 
@@ -218,9 +218,9 @@ Transcript 与 compaction summary 的模型抽取现写入有界 pending proposa
 
 现有 ADR 1357 只扩展一跳邻居。本切片将事实图遍历上限固定为两跳：最多 16 个种子、每跳最多 16 个概念节点、最多 80 个总候选；第二跳只经过可见的一跳事实，并保持类别、主体与敏感事实过滤。无需 schema、IPC 或旧库重置变化。Memory 全量测试为 496 passed、2 ignored；workspace strict Clippy 与格式检查通过。详见 [ADR 1362](adr/1362-bounded-two-hop-fact-recall.md)。
 
-### 5.15 事实有效时间（Valid Time，Active）
+### 5.15 事实有效时间（Valid Time，已完成）
 
-ADR 1359 保存的是系统何时记录事实变化（knowledge time），没有表示事实在现实世界何时开始或停止成立（valid time）。本切片梳理当前事实写入、单值更正、历史查询和显式遗忘契约，再定义有效时间边界、默认当前召回及按时点查询；必须确保更正可保留历史、用户明确遗忘可彻底清除，且来源与删除行为一致。
+事实区间以可选 `valid_from` / `valid_to` 表示，使用规范 UTC 毫秒时间，按 `[valid_from, valid_to)` 解释；缺失边界保持未知，不从 `created_at` 推断。`recorded_at` 独立维护 system-time 版本，`history` 与 `valid_at` 分别回答“当时记录了什么”和“事实在现实时间是否成立”。单值更正会在新值有明确开始时间时关闭已知的旧开放区间；普通召回仍只读当前 facts。显式忘记、按 ID 删除、清空与敏感清理继续擦除全部历史副本。抽取与验证只保留用户明确说出的日期；来源核验必须支持事实及时间边界，未核验时间继续留在待审提案。schema v59，旧库按 §4 重置。Memory 全量测试通过（501 passed、0 failed、2 ignored）；其余门禁结果记录在 [ADR 1363](adr/1363-fact-valid-time.md)。
 
 ## 6. 更新规则
 

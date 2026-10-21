@@ -154,10 +154,12 @@
 	let factProposalsHasMore = $derived(factProposalCursor !== null);
 	let busyProposalId = $state<string | null>(null);
 	let factSourceFilter = $state<MemoryFactSourceFilter>('');
-	let newFact = $state<{ predicate: string; object: string; tags: string }>({
+	let newFact = $state<{ predicate: string; object: string; tags: string; validFrom: string; validTo: string }>({
 		predicate: '',
 		object: '',
 		tags: '',
+		validFrom: '',
+		validTo: '',
 	});
 	let addingFact = $state(false);
 	const STATUS_OPTIONS: Array<{ value: '' | SessionHistoryStatusFilterInput; label: string }> = [
@@ -703,8 +705,10 @@
 				predicate,
 				object,
 				tags: tags.length ? tags : null,
+				validFrom: newFact.validFrom.trim() || null,
+				validTo: newFact.validTo.trim() || null,
 			});
-			newFact = { predicate: '', object: '', tags: '' };
+			newFact = { predicate: '', object: '', tags: '', validFrom: '', validTo: '' };
 			await loadFacts();
 			addNotification('事实已保存', 'success', 2500);
 			return true;

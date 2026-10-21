@@ -127,6 +127,8 @@ describe('MemoryView recall request lifecycle', () => {
 			last_seen_at: null,
 			sourceRef: null,
 			durability: 1,
+			valid_from: null,
+			valid_to: null,
 		};
 		const secondFact = { ...firstFact, factId: cursor.factId, predicate: 'uses', object: 'coffee' };
 		listFacts

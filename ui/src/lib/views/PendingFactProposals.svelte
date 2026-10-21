@@ -34,6 +34,13 @@
 		return `置信度 ${Math.round(Math.max(0, Math.min(1, confidence)) * 100)}%`;
 	}
 
+	function validityLabel(proposal: FactProposal) {
+		if (!proposal.valid_from && !proposal.valid_to) return '时间范围未指定';
+		const start = proposal.valid_from ? formatDate(proposal.valid_from) : '起始未知';
+		const end = proposal.valid_to ? formatDate(proposal.valid_to) : '仍有效';
+		return `现实有效时间：${start} 至 ${end}`;
+	}
+
 	function evidenceLabel(status: FactProposal['evidence_status']) {
 		switch (status) {
 			case 'uncertain':
@@ -74,6 +81,7 @@
 							<blockquote>“{proposal.evidence_quote ?? proposal.sourceRef?.snippet}”</blockquote>
 						{/if}
 						<span class="proposal-card__time">抽取于 {formatDate(proposal.created_at)}</span>
+						<span class="proposal-card__time">{validityLabel(proposal)}</span>
 					</div>
 					<div class="proposal-card__actions">
 						<MaterialButton

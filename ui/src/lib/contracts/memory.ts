@@ -101,6 +101,16 @@ function hasFactIdentity(value: unknown): boolean {
 	return isCanonicalEntityId(value.source_ref.message_id, 'msg');
 }
 
+function hasValidInterval(validFrom: unknown, validTo: unknown): boolean {
+	const isBoundary = (value: unknown): value is string | null =>
+		value === null ||
+		(typeof value === 'string' &&
+			/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) &&
+			Number.isFinite(Date.parse(value)));
+	if (!isBoundary(validFrom) || !isBoundary(validTo)) return false;
+	return validFrom === null || validTo === null || validFrom < validTo;
+}
+
 function validateFactResponse(value: unknown): asserts value is GeneratedMemoryFactResponse {
 	const mismatch = findGeneratedWireShapeMismatch(value, MEMORY_FACT_RESPONSE_SHAPE);
 	if (mismatch) throw new Error(`Invalid memory fact response shape at ${mismatch}`);
@@ -111,7 +121,8 @@ function validateFactResponse(value: unknown): asserts value is GeneratedMemoryF
 		fact.durability < 0 ||
 		fact.durability > 1 ||
 		!Number.isSafeInteger(fact.mention_count) ||
-		fact.mention_count < 0
+		fact.mention_count < 0 ||
+		!hasValidInterval(fact.valid_from, fact.valid_to)
 	) {
 		throw new Error('Invalid memory fact response value');
 	}
@@ -192,7 +203,8 @@ function validateFactProposalResponse(
 			(proposal.evidence_quote.trim().length === 0 ||
 				[...proposal.evidence_quote].length > 120)) ||
 		!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(proposal.created_at) ||
-		!Number.isFinite(Date.parse(proposal.created_at))
+		!Number.isFinite(Date.parse(proposal.created_at)) ||
+		!hasValidInterval(proposal.valid_from, proposal.valid_to)
 	) {
 		throw new Error('Invalid memory fact proposal response value');
 	}
