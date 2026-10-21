@@ -244,8 +244,6 @@ async fn rejects_noncanonical_asset_id_before_registry_lookup() {
                     content: Some("native content".into()),
                     expected_hash: None,
                     dry_run: None,
-                    old_string: None,
-                    new_string: None,
                     edits: None,
                     offset: None,
                     limit: None,
@@ -345,4 +343,27 @@ async fn rejects_noncanonical_asset_id_before_registry_lookup() {
         assert_eq!(result.output["size"], 5);
         assert_eq!(result.output["hash"], sha256_bytes(b"hello"));
         assert_eq!(result.output["encoding"], "utf-8");
+    }
+
+    #[tokio::test]
+    async fn inspect_returns_metadata_when_hashing_would_exceed_the_limit() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("large-inspect.txt");
+        tokio::fs::write(&file, "hello").await.unwrap();
+        let mut tool = FilesTool::default();
+        tool.max_byte_read_bytes = 4;
+
+        let result = tool
+            .execute(
+                json!({"operation": "inspect", "path": file.to_string_lossy()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["exists"], true);
+        assert_eq!(result.output["size"], 5);
+        assert!(result.output["hash"].is_null());
+        assert!(result.output["encoding"].is_null());
     }

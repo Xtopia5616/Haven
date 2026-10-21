@@ -42,11 +42,6 @@ pub(super) struct PatchApplication {
     pub(super) edit_summaries: Vec<PatchEditSummary>,
 }
 
-pub(super) struct MutationLimits {
-    pub(super) max_read_bytes: u64,
-    pub(super) max_write_bytes: u64,
-}
-
 #[derive(Clone, Copy)]
 pub(super) struct MutationContext<'a> {
     pub(super) cancel: &'a CancellationToken,
@@ -260,101 +255,6 @@ pub(super) async fn create_dir(
         ))
     })
     .await
-}
-
-pub(super) async fn edit(
-    path: &str,
-    old: Option<&str>,
-    new: &str,
-    expected_hash: Option<&str>,
-    limits: MutationLimits,
-    dry_run: bool,
-    context: MutationContext<'_>,
-) -> anyhow::Result<ToolResult> {
-    let old = old.ok_or_else(|| anyhow::anyhow!("'old_string' is required for edit operation"))?;
-    let target = mutation_target(path, context.write_policy).await?;
-    let bytes = read_target_bytes(path, target.as_ref(), limits.max_read_bytes)
-        .await
-        .map_err(|error| {
-            if error
-                .downcast_ref::<io::Error>()
-                .is_some_and(|error| error.kind() == io::ErrorKind::InvalidData)
-                || error.to_string().contains("byte read limit")
-            {
-                anyhow::anyhow!(
-                    "file is above the {} byte edit limit. Locate the text with search(mode=content) and rewrite the file in smaller pieces.",
-                    limits.max_read_bytes
-                )
-            } else {
-                error
-            }
-        })?;
-    let content = haven_common::encoding::decode_lossy(&bytes);
-    let positions: Vec<usize> = content.match_indices(old).map(|(i, _)| i).collect();
-    if positions.is_empty() {
-        anyhow::bail!("old_string not found in the target file");
-    }
-    if positions.len() > 1 {
-        let lines: Vec<usize> = positions
-            .iter()
-            .map(|&p| content[..p].matches('\n').count() + 1)
-            .collect();
-        let snippet = |pos: usize| -> String {
-            let start = pos.saturating_sub(40);
-            let end = (pos + old.len() + 40).min(content.len());
-            let mut s = String::new();
-            if start > 0 {
-                s.push('…');
-            }
-            s.push_str(&content[start..end]);
-            if end < content.len() {
-                s.push('…');
-            }
-            s
-        };
-        let matches: Vec<serde_json::Value> = lines
-            .iter()
-            .zip(positions.iter())
-            .map(|(&l, &p)| serde_json::json!({"line": l, "snippet": snippet(p)}))
-            .collect();
-        return Ok(ToolResult {
-            success: true,
-            output: serde_json::json!({
-                "warning": format!("old_string appears {} times; provide more context in old_string to disambiguate", positions.len()),
-                "matches": matches,
-            }),
-            error: None,
-            error_class: None,
-            retryability: crate::ToolRetryability::Unknown,
-            truncated: false,
-            outcome: crate::ToolExecutionOutcome::Succeeded,
-            attempts: 1,
-            signals: crate::tool_contract::ToolSignals::default(),
-            llm_usage: Vec::new(),
-        });
-    }
-    let result = content.replace(old, new);
-    if context.cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
-    }
-    let write = replace_target(
-        path,
-        target.as_ref(),
-        result.as_bytes(),
-        expected_hash,
-        limits.max_write_bytes,
-        dry_run,
-    )
-    .await?;
-    let line = content[..positions[0]].matches('\n').count() + 1;
-    Ok(ToolResult::ok(serde_json::json!({
-        "edited": !write.dry_run,
-        "dry_run": write.dry_run,
-        "bytes": write.bytes,
-        "sha256": write.sha256,
-        "path": path,
-        "line": line
-    })))
 }
 
 pub(super) async fn patch(

@@ -1062,12 +1062,7 @@ fn is_auto_edit_safe(key: &CapabilityScope, policy: &OperationPolicy) -> bool {
     // calls and destructive deletes must never inherit edit auto-approval.
     matches!(
         key.as_str(),
-        "files.write"
-            | "files.edit"
-            | "files.patch"
-            | "files.create_dir"
-            | "files.copy"
-            | "files.move"
+        "files.write" | "files.patch" | "files.create_dir" | "files.copy" | "files.move"
     ) && matches!(policy.effect, OperationEffect::WorkspaceWrite)
         && matches!(policy.data_sensitivity, DataSensitivity::None)
         && matches!(policy.network_access, NetworkAccess::None)

@@ -28,8 +28,9 @@ impl Tool for FilesTool {
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input["operation"].as_str() {
             Some("delete") => RiskLevel::High,
-            Some("edit") | Some("patch") | Some("copy") | Some("write") | Some("create_dir")
-            | Some("move") => RiskLevel::Medium,
+            Some("patch") | Some("copy") | Some("write") | Some("create_dir") | Some("move") => {
+                RiskLevel::Medium
+            }
             Some("search") if input["mode"].as_str() == Some("content") => RiskLevel::Medium,
             _ => RiskLevel::Low,
         }
@@ -37,12 +38,10 @@ impl Tool for FilesTool {
 
     fn idempotency(&self, input: &Value) -> OperationIdempotency {
         match input["operation"].as_str() {
-            Some("read") | Some("inspect") | Some("stat") | Some("hash") | Some("list")
-            | Some("outline") | Some("summary") | Some("search") => {
-                OperationIdempotency::Idempotent
-            }
-            Some("write") | Some("create_dir") | Some("edit") | Some("patch") | Some("copy")
-            | Some("move") | Some("delete") => OperationIdempotency::NonIdempotent,
+            Some("read") | Some("inspect") | Some("list") | Some("outline") | Some("summary")
+            | Some("search") => OperationIdempotency::Idempotent,
+            Some("write") | Some("create_dir") | Some("patch") | Some("copy") | Some("move")
+            | Some("delete") => OperationIdempotency::NonIdempotent,
             _ => OperationIdempotency::Unknown,
         }
     }
@@ -75,7 +74,7 @@ impl Tool for FilesTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["read", "inspect", "stat", "hash", "write", "create_dir", "edit", "patch", "copy", "move", "delete", "list", "outline", "summary", "search"], "description": crate::prompts::FILES_OPERATION_SELECTOR_DESCRIPTION },
+                "operation": { "type": "string", "enum": ["read", "inspect", "write", "create_dir", "patch", "copy", "move", "delete", "list", "outline", "summary", "search"], "description": crate::prompts::FILES_OPERATION_SELECTOR_DESCRIPTION },
                 "asset_id": canonical_entity_id_schema("asset", Some("Managed attachment id returned by an earlier tool result; use it instead of guessing a local path"))
             },
             "required": ["operation"],
@@ -84,7 +83,7 @@ impl Tool for FilesTool {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "operation": { "enum": ["inspect", "stat", "hash"] },
+                        "operation": { "const": "inspect" },
                         "path": { "type": "string", "minLength": 1, "description": "File or directory path" }
                     },
                     "required": ["operation", "path"]
@@ -112,7 +111,7 @@ impl Tool for FilesTool {
                         "operation": { "const": "write" },
                         "path": { "type": "string", "minLength": 1, "description": "File path to replace or create" },
                         "content": { "type": "string", "description": format!("Complete file content; maximum {} UTF-8 bytes. An empty string is allowed", self.max_write_bytes) },
-                        "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect or files.hash; use 'missing' for a new path and reject if the current file differs" },
+                        "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect; use 'missing' for a new path and reject if the current file differs" },
                         "dry_run": { "type": "boolean", "default": false, "description": "Validate and report the proposed write without changing the file; defaults to false" }
                     },
                     "required": ["operation", "path", "content"]
@@ -141,26 +140,13 @@ impl Tool for FilesTool {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "operation": { "const": "edit" },
-                        "path": { "type": "string", "minLength": 1, "description": "Text file path to edit" },
-                        "old_string": { "type": "string", "description": "Existing text to replace; must match exactly once" },
-                        "new_string": { "type": "string", "description": format!("Replacement text; the resulting file must fit within {} UTF-8 bytes. An empty string deletes the match", self.max_write_bytes) },
-                        "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect or files.hash; reject the edit if the current file differs" },
-                        "dry_run": { "type": "boolean", "default": false, "description": "Validate and report the proposed edit without changing the file; defaults to false" }
-                    },
-                    "required": ["operation", "path", "old_string", "new_string"]
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
                         "operation": { "const": "patch" },
                         "path": { "type": "string", "minLength": 1, "description": "Text file path to patch" },
                         "edits": {
                             "type": "array",
                             "minItems": 1,
                             "maxItems": MAX_PATCH_EDITS,
-                            "description": format!("Exact replacements validated against the original file before one write; combined old/new text is limited to {} UTF-8 bytes", MAX_PATCH_INPUT_BYTES),
+                            "description": format!("One or more exact replacements validated against the original file before one write; use one edit for a single replacement. Combined old/new text is limited to {} UTF-8 bytes", MAX_PATCH_INPUT_BYTES),
                             "items": {
                                 "type": "object",
                                 "additionalProperties": false,
@@ -172,7 +158,7 @@ impl Tool for FilesTool {
                                 "required": ["old_string", "new_string"]
                             }
                         },
-                        "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect or files.hash; reject the patch if the current file differs" },
+                        "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect; reject the patch if the current file differs" },
                         "dry_run": { "type": "boolean", "default": false, "description": "Validate and report the proposed patch without changing the file; defaults to false" }
                     },
                     "required": ["operation", "path", "edits"]

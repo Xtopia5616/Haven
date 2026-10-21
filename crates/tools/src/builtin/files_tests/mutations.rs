@@ -246,35 +246,44 @@ async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_polic
 }
 
     #[tokio::test]
-    async fn test_file_execute_edit() {
+    async fn test_file_execute_patch_applies_single_exact_replacement() {
         let tmp = TempDir::new().unwrap();
-        let file = tmp.path().join("edit.txt");
+        let file = tmp.path().join("patch-single.txt");
         tokio::fs::write(&file, "hello\nworld\nfoo\n")
             .await
             .unwrap();
         let path_str = file.to_string_lossy().to_string();
 
         let result = FilesTool::default().execute(
-                json!({"operation": "edit", "path": path_str, "old_string": "world", "new_string": "there"}),
+                json!({
+                    "operation": "patch",
+                    "path": path_str,
+                    "edits": [{"old_string": "world", "new_string": "there"}]
+                }),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
         assert!(result.success);
-        assert_eq!(result.output["line"].as_u64().unwrap(), 2);
+        assert_eq!(result.output["edits"].as_u64().unwrap(), 1);
+        assert_eq!(result.output["replacements"][0]["lines"], json!([2]));
         let content = tokio::fs::read_to_string(&file).await.unwrap();
         assert_eq!(content, "hello\nthere\nfoo\n");
     }
 
     #[tokio::test]
-    async fn test_file_execute_edit_not_found() {
+    async fn test_file_execute_patch_single_replacement_not_found() {
         let tmp = TempDir::new().unwrap();
-        let file = tmp.path().join("edit.txt");
+        let file = tmp.path().join("patch-not-found.txt");
         tokio::fs::write(&file, "hello\nworld\n").await.unwrap();
         let path_str = file.to_string_lossy().to_string();
 
         let result = FilesTool::default().execute(
-                json!({"operation": "edit", "path": path_str, "old_string": "nope", "new_string": "x"}),
+                json!({
+                    "operation": "patch",
+                    "path": path_str,
+                    "edits": [{"old_string": "nope", "new_string": "x"}]
+                }),
                 CancellationToken::new(),
             )
             .await;
@@ -282,26 +291,23 @@ async fn file_mutation_requires_a_live_policy_permit_even_with_a_directory_polic
     }
 
     #[tokio::test]
-    async fn test_file_execute_edit_multiple_matches() {
+    async fn test_file_execute_patch_single_replacement_rejects_ambiguous_match() {
         let tmp = TempDir::new().unwrap();
-        let file = tmp.path().join("edit.txt");
+        let file = tmp.path().join("patch-ambiguous.txt");
         tokio::fs::write(&file, "foo\nfoo\n").await.unwrap();
         let path_str = file.to_string_lossy().to_string();
 
         let result = FilesTool::default().execute(
-                json!({"operation": "edit", "path": path_str, "old_string": "foo", "new_string": "bar"}),
+                json!({
+                    "operation": "patch",
+                    "path": path_str,
+                    "edits": [{"old_string": "foo", "new_string": "bar"}]
+                }),
                 CancellationToken::new(),
             )
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert!(
-            result.output["warning"]
-                .as_str()
-                .unwrap()
-                .contains("2 times")
-        );
-        assert_eq!(result.output["matches"].as_array().unwrap().len(), 2);
+            .await;
+        assert!(result.is_err());
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "foo\nfoo\n");
     }
 
     #[tokio::test]

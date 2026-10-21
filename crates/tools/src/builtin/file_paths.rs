@@ -154,7 +154,6 @@ async fn replace_file(temporary: &Path, destination: &Path) -> anyhow::Result<()
 pub(super) async fn inspect_open_file(
     path: &str,
     mut file: tokio::fs::File,
-    include_hash: bool,
     max_hash_bytes: u64,
 ) -> anyhow::Result<ToolResult> {
     let metadata = file.metadata().await?;
@@ -165,15 +164,6 @@ pub(super) async fn inspect_open_file(
     } else {
         "other"
     };
-    if include_hash
-        && metadata.is_file()
-        && (metadata.len() > max_hash_bytes || metadata.len() > MAX_INSPECT_HASH_BYTES)
-    {
-        anyhow::bail!(
-            "file is too large to hash safely (limit {} bytes)",
-            max_hash_bytes.min(MAX_INSPECT_HASH_BYTES)
-        );
-    }
     let modified_at = metadata
         .modified()
         .ok()
@@ -187,9 +177,7 @@ pub(super) async fn inspect_open_file(
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
         file.read_to_end(&mut bytes).await?;
         encoding = Some(haven_common::encoding::decode_with_encoding(&bytes).encoding);
-        if include_hash {
-            hash = Some(sha256_bytes(&bytes));
-        }
+        hash = Some(sha256_bytes(&bytes));
     }
     Ok(ToolResult::ok(serde_json::json!({
         "exists": true,

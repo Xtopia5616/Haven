@@ -7,7 +7,7 @@ use super::*;
 
     #[test]
     fn test_file_description() {
-        assert!(FilesTool::default().description().contains("edit"));
+        assert!(FilesTool::default().description().contains("patch"));
     }
 
     #[test]
@@ -71,10 +71,6 @@ use super::*;
             RiskLevel::Medium
         );
         assert_eq!(
-            FilesTool::default().risk_level(&json!({"operation": "edit"})),
-            RiskLevel::Medium
-        );
-        assert_eq!(
             FilesTool::default().risk_level(&json!({"operation": "patch"})),
             RiskLevel::Medium
         );
@@ -106,7 +102,8 @@ use super::*;
 
     #[test]
     fn test_file_input_schema() {
-        let schema = FilesTool::default().input_schema();
+        let tool = FilesTool::default();
+        let schema = tool.input_schema();
         assert_eq!(schema["type"].as_str().unwrap(), "object");
         let required = schema["required"].as_array().unwrap();
         let req: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
@@ -118,7 +115,6 @@ use super::*;
         assert!(ops.contains(&"read"));
         assert!(ops.contains(&"write"));
         assert!(ops.contains(&"create_dir"));
-        assert!(ops.contains(&"edit"));
         assert!(ops.contains(&"patch"));
         assert!(ops.contains(&"copy"));
         assert!(ops.contains(&"move"));
@@ -126,7 +122,14 @@ use super::*;
         assert!(ops.contains(&"list"));
         assert!(ops.contains(&"outline"));
         assert!(ops.contains(&"search"));
-        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 11);
+        for removed_operation in ["stat", "hash", "edit"] {
+            assert!(!ops.contains(&removed_operation));
+            assert!(tool.validate_input(&json!({
+                "operation": removed_operation,
+                "path": "file.txt"
+            })).is_err());
+        }
+        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 10);
 
         let branch = |operation: &str| {
             schema["oneOf"]

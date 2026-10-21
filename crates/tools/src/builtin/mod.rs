@@ -797,11 +797,8 @@ macro_rules! split_spec {
 
 const FILE_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("files.inspect", "inspect", "files", "fileSearch"),
-    split_spec!("files.stat", "stat", "files", "fileSearch"),
-    split_spec!("files.hash", "hash", "files", "fileSearch"),
     split_spec!("files.write", "write", "files", "file"),
     split_spec!("files.create_dir", "create_dir", "files", "folder"),
-    split_spec!("files.edit", "edit", "files", "edit"),
     split_spec!("files.patch", "patch", "files", "edit"),
     split_spec!("files.copy", "copy", "files", "copy"),
     split_spec!("files.move", "move", "files", "move"),

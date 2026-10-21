@@ -88,11 +88,8 @@ impl Default for FilesTool {
 pub enum FilesOperation {
     Read,
     Inspect,
-    Stat,
-    Hash,
     Write,
     CreateDir,
-    Edit,
     Patch,
     Copy,
     Move,
@@ -108,11 +105,8 @@ impl FilesOperation {
         match self {
             Self::Read => "files.read",
             Self::Inspect => "files.inspect",
-            Self::Stat => "files.stat",
-            Self::Hash => "files.hash",
             Self::Write => "files.write",
             Self::CreateDir => "files.create_dir",
-            Self::Edit => "files.edit",
             Self::Patch => "files.patch",
             Self::Copy => "files.copy",
             Self::Move => "files.move",
@@ -151,10 +145,6 @@ pub struct FilesParams {
     pub expected_hash: Option<String>,
     #[serde(default)]
     pub dry_run: Option<bool>,
-    #[serde(default)]
-    pub old_string: Option<String>,
-    #[serde(default)]
-    pub new_string: Option<String>,
     #[serde(default)]
     pub edits: Option<Vec<FilesPatchEdit>>,
     #[serde(default)]
@@ -300,7 +290,6 @@ impl FilesTool {
             op,
             FilesOperation::Write
                 | FilesOperation::CreateDir
-                | FilesOperation::Edit
                 | FilesOperation::Patch
                 | FilesOperation::Copy
                 | FilesOperation::Move
@@ -491,40 +480,10 @@ impl FilesTool {
                 }
             }
             FilesOperation::Inspect => match self.open_path_for_metadata(op, &path).await {
-                Ok(file) => inspect_open_file(&path, file, true, self.max_byte_read_bytes).await,
+                Ok(file) => inspect_open_file(&path, file, self.max_byte_read_bytes).await,
                 Err(error) if is_not_found(&error) => Ok(missing_file(&path)),
                 Err(error) => Err(error),
             },
-            FilesOperation::Stat => match self.open_path_for_metadata(op, &path).await {
-                Ok(file) => inspect_open_file(&path, file, false, self.max_byte_read_bytes).await,
-                Err(error) if is_not_found(&error) => Ok(missing_file(&path)),
-                Err(error) => Err(error),
-            },
-            FilesOperation::Hash => {
-                let result = match self.open_path_for_metadata(op, &path).await {
-                    Ok(file) => {
-                        inspect_open_file(&path, file, true, self.max_byte_read_bytes).await?
-                    }
-                    Err(error) if is_not_found(&error) => missing_file(&path),
-                    Err(error) => return Err(error),
-                };
-                let mut output = result.output;
-                if let Some(object) = output.as_object_mut() {
-                    object.retain(|key, _| {
-                        matches!(
-                            key.as_str(),
-                            "exists"
-                                | "file_type"
-                                | "path"
-                                | "size"
-                                | "mtime"
-                                | "hash"
-                                | "encoding"
-                        )
-                    });
-                }
-                Ok(ToolResult::ok(output))
-            }
             FilesOperation::Outline => {
                 let file = self.open_file_for_read(op, &path, None).await?;
                 let start_line = params.start_line.unwrap_or(1).max(1);
@@ -552,21 +511,6 @@ impl FilesTool {
                 .await
             }
             FilesOperation::CreateDir => file_mutations::create_dir(&path, mutation_context).await,
-            FilesOperation::Edit => {
-                file_mutations::edit(
-                    &path,
-                    params.old_string.as_deref(),
-                    params.new_string.unwrap_or_default().as_str(),
-                    params.expected_hash.as_deref(),
-                    file_mutations::MutationLimits {
-                        max_read_bytes: self.max_full_file_bytes,
-                        max_write_bytes: self.max_write_bytes,
-                    },
-                    params.dry_run.unwrap_or(false),
-                    mutation_context,
-                )
-                .await
-            }
             FilesOperation::Patch => {
                 file_mutations::patch(
                     &path,

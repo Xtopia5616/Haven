@@ -271,7 +271,6 @@ pub(crate) fn operation_attributes(
     };
     let effect = match name {
         "files.write"
-        | "files.edit"
         | "files.patch"
         | "files.create_dir"
         | "files.copy"
@@ -2573,7 +2572,7 @@ pub(crate) mod tests {
             "operation must be named, got: {err}"
         );
         assert!(
-            err.contains("read, inspect, stat"),
+            err.contains("read, inspect, write"),
             "allowed operations should be listed, got: {err}"
         );
     }
