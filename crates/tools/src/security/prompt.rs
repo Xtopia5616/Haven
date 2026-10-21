@@ -123,6 +123,16 @@ pub(crate) const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("session.replace_notes", "session.replace_notes", Safe),
     security_case!("session.history_search", "session.history_search", Safe),
     security_case!("session.history_read", "session.history_read", Safe),
+    security_case!(
+        "session.linked_history_search",
+        "session.linked_history_search",
+        Safe
+    ),
+    security_case!(
+        "session.linked_history_read",
+        "session.linked_history_read",
+        Safe
+    ),
     security_case!("session.asset_search", "session.asset_search", Safe),
     security_case!("agent.status", "agent.status", Safe),
     security_case!("agent.wait", "agent.wait", Safe),

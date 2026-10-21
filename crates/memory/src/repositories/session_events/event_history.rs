@@ -2,6 +2,7 @@ use super::*;
 use std::collections::VecDeque;
 
 mod assets;
+mod linked;
 
 const MAX_SESSION_HISTORY_SCAN_EVENTS: usize = 50_000;
 const MAX_SESSION_HISTORY_SCAN_BYTES: usize = 64 * 1024 * 1024;
@@ -173,52 +174,58 @@ impl SessionStore {
         ensure_not_cancelled(cancel)?;
         let conn = self.db.conn();
         conn.execute_batch("BEGIN DEFERRED")?;
-        let result = (|| {
-            let latest_sequence = latest_sequence_in_connection(&conn, session_id)?;
-            if sequence > latest_sequence {
-                return Ok(None);
-            }
-            let (active_sequences, _, _) =
-                active_transcript_sequences(&conn, session_id, latest_sequence, cancel)?;
-            if active_sequences.binary_search(&sequence).is_err() {
-                return Ok(None);
-            }
-            ensure_not_cancelled(cancel)?;
-            let event = conn
-                .query_row(
-                    "SELECT session_id, sequence, event_type, payload,
-                            created_at, run_id, step_number
-                     FROM session_events
-                     WHERE session_id = ?1 AND sequence = ?2 AND event_type = ?3",
-                    rusqlite::params![session_id, sequence, TRANSCRIPT_EVENT_TYPE],
-                    session_event_from_row,
-                )
-                .optional()?;
-            let Some(event) = event else {
-                return Ok(None);
-            };
-            if is_compaction_root(&event.payload)
-                || !is_retrievable_transcript_event(&event.payload)
-            {
-                return Ok(None);
-            }
-            let (visible_payload, redacted_fields) = model_visible_history_payload(&event.payload);
-            let (payload, payload_truncated) =
-                truncate_utf8(&visible_payload, MAX_SESSION_HISTORY_RECORD_BYTES);
-            Ok(Some(SessionTranscriptHistoryRecord {
-                sequence: event.sequence,
-                created_at: event.created_at,
-                run_id: event.run_id,
-                step_number: event.step_number,
-                redacted_fields,
-                payload,
-                payload_source_bytes: event.payload.len(),
-                payload_truncated,
-            }))
-        })();
+        let result =
+            read_transcript_history_event_in_connection(&conn, session_id, sequence, cancel);
 
         finish_read_transaction(&conn, result)
     }
+}
+
+fn read_transcript_history_event_in_connection(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    sequence: i64,
+    cancel: &CancellationToken,
+) -> anyhow::Result<Option<SessionTranscriptHistoryRecord>> {
+    let latest_sequence = latest_sequence_in_connection(conn, session_id)?;
+    if sequence > latest_sequence {
+        return Ok(None);
+    }
+    let (active_sequences, _, _) =
+        active_transcript_sequences(conn, session_id, latest_sequence, cancel)?;
+    if active_sequences.binary_search(&sequence).is_err() {
+        return Ok(None);
+    }
+    ensure_not_cancelled(cancel)?;
+    let event = conn
+        .query_row(
+            "SELECT session_id, sequence, event_type, payload,
+                    created_at, run_id, step_number
+             FROM session_events
+             WHERE session_id = ?1 AND sequence = ?2 AND event_type = ?3",
+            rusqlite::params![session_id, sequence, TRANSCRIPT_EVENT_TYPE],
+            session_event_from_row,
+        )
+        .optional()?;
+    let Some(event) = event else {
+        return Ok(None);
+    };
+    if is_compaction_root(&event.payload) || !is_retrievable_transcript_event(&event.payload) {
+        return Ok(None);
+    }
+    let (visible_payload, redacted_fields) = model_visible_history_payload(&event.payload);
+    let (payload, payload_truncated) =
+        truncate_utf8(&visible_payload, MAX_SESSION_HISTORY_RECORD_BYTES);
+    Ok(Some(SessionTranscriptHistoryRecord {
+        sequence: event.sequence,
+        created_at: event.created_at,
+        run_id: event.run_id,
+        step_number: event.step_number,
+        redacted_fields,
+        payload,
+        payload_source_bytes: event.payload.len(),
+        payload_truncated,
+    }))
 }
 
 fn latest_sequence_in_connection(

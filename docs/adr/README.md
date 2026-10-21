@@ -1333,3 +1333,4 @@
 - [1342：为压缩后的会话提供原始历史检索工具](1342-session-raw-transcript-history-tool.md)
 - [1343：按需检索会话关联图片](1343-on-demand-session-image-history-search.md)
 - [1344：将会话图片历史检索扩展为通用资产检索](1344-generalize-session-image-history-search-to-assets.md)
+- [1345：按需搜索直接关联会话的 transcript](1345-search-transcripts-in-linked-sessions.md)

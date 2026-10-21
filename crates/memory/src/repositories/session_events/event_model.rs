@@ -47,6 +47,37 @@ pub struct SessionTranscriptHistorySearch {
     pub has_more: bool,
 }
 
+/// Cursor for paging newest-first across the current session's directly
+/// linked sessions. The tuple is ordered by timestamp, then session identity,
+/// then sequence so equal timestamps still have a stable page boundary.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionLinkedTranscriptHistoryCursor {
+    pub created_at: String,
+    pub session_id: String,
+    pub sequence: i64,
+}
+
+/// One transcript match from a directly linked session. Transcript fields are
+/// flattened so the source identity sits beside sequence and excerpt data.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SessionLinkedTranscriptHistoryMatch {
+    pub session_id: String,
+    #[serde(flatten)]
+    pub transcript: SessionTranscriptHistoryMatch,
+}
+
+/// Bounded search results across the current session's direct links.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SessionLinkedTranscriptHistorySearch {
+    pub matches: Vec<SessionLinkedTranscriptHistoryMatch>,
+    pub linked_sessions_searched: usize,
+    pub next_before: Option<SessionLinkedTranscriptHistoryCursor>,
+    pub scanned_events: usize,
+    pub scanned_bytes: usize,
+    pub has_more: bool,
+}
+
 /// One managed asset linked to a transcript event, with bounded text context.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SessionTranscriptAsset {
@@ -106,6 +137,10 @@ pub struct SessionTranscriptHistoryRecord {
 pub const MAX_SESSION_HISTORY_QUERY_BYTES: usize = 256;
 pub const MAX_SESSION_HISTORY_SEARCH_RESULTS: usize = 5;
 pub const MAX_SESSION_ASSET_SEARCH_RESULTS: usize = 5;
+/// Maximum direct links considered by one linked-history search.
+pub const MAX_SESSION_LINKED_HISTORY_SEARCH_SESSIONS: usize = 32;
+/// Maximum timestamp bytes accepted in a linked-history paging cursor.
+pub const MAX_SESSION_LINKED_HISTORY_CURSOR_TIMESTAMP_BYTES: usize = 128;
 
 /// Maximum number of durable events returned by a single replay page.
 pub(super) const MAX_SESSION_EVENT_REPLAY_PAGE_SIZE: usize = 256;

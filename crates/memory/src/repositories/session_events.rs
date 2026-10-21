@@ -44,9 +44,12 @@ use event_model::{
 };
 pub use event_model::{
     MAX_SESSION_ASSET_SEARCH_RESULTS, MAX_SESSION_HISTORY_QUERY_BYTES,
-    MAX_SESSION_HISTORY_SEARCH_RESULTS, SessionEvent, SessionEventInput, SessionEventPage,
-    SessionTranscriptAsset, SessionTranscriptAssetMatch, SessionTranscriptAssetSearch,
-    SessionTranscriptHistoryMatch, SessionTranscriptHistoryRecord, SessionTranscriptHistorySearch,
+    MAX_SESSION_HISTORY_SEARCH_RESULTS, MAX_SESSION_LINKED_HISTORY_CURSOR_TIMESTAMP_BYTES,
+    MAX_SESSION_LINKED_HISTORY_SEARCH_SESSIONS, SessionEvent, SessionEventInput, SessionEventPage,
+    SessionLinkedTranscriptHistoryCursor, SessionLinkedTranscriptHistoryMatch,
+    SessionLinkedTranscriptHistorySearch, SessionTranscriptAsset, SessionTranscriptAssetMatch,
+    SessionTranscriptAssetSearch, SessionTranscriptHistoryMatch, SessionTranscriptHistoryRecord,
+    SessionTranscriptHistorySearch,
 };
 pub use session_history::{
     SessionHistoryFilter, SessionHistoryStatusFilter, SessionMessageText, SessionResumeMedia,

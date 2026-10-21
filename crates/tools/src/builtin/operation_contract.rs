@@ -156,6 +156,12 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         "session.replace_notes" => ("替换会话笔记", ToolCatalogGroup::Workflow, false, None),
         "session.history_search" => ("搜索原始会话历史", ToolCatalogGroup::Workflow, true, None),
         "session.history_read" => ("读取原始会话记录", ToolCatalogGroup::Workflow, true, None),
+        "session.linked_history_search" => {
+            ("搜索关联会话历史", ToolCatalogGroup::Workflow, true, None)
+        }
+        "session.linked_history_read" => {
+            ("读取关联会话记录", ToolCatalogGroup::Workflow, true, None)
+        }
         "session.asset_search" => ("搜索关联资产", ToolCatalogGroup::Workflow, true, None),
         "toolrun.start" => ("启动后台工具", ToolCatalogGroup::Workflow, false, None),
         "toolrun.list" => ("后台任务列表", ToolCatalogGroup::Workflow, true, None),
@@ -320,6 +326,8 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         | "session.replace_notes"
         | "session.history_search"
         | "session.history_read"
+        | "session.linked_history_search"
+        | "session.linked_history_read"
         | "session.asset_search" => OperationIdempotency::Idempotent,
         // Creation and replacement/removal requests must be verified before
         // replay because their first attempt may already have changed state.
@@ -410,6 +418,8 @@ mod tests {
         assert!(operation_contract("session.read_notes").read_only);
         assert!(operation_contract("session.history_search").read_only);
         assert!(operation_contract("session.history_read").read_only);
+        assert!(operation_contract("session.linked_history_search").read_only);
+        assert!(operation_contract("session.linked_history_read").read_only);
         assert!(operation_contract("session.asset_search").read_only);
         let replace_notes = operation_contract("session.replace_notes");
         assert!(!replace_notes.read_only);

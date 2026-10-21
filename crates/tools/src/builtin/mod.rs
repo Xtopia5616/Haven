@@ -910,6 +910,18 @@ const SESSION_OPERATION_VIEWS: &[SplitOperationSpec] = &[
         "session",
         "fileText"
     ),
+    split_spec!(
+        "session.linked_history_search",
+        "linked_history_search",
+        "session",
+        "search"
+    ),
+    split_spec!(
+        "session.linked_history_read",
+        "linked_history_read",
+        "session",
+        "fileText"
+    ),
     split_spec!("session.asset_search", "asset_search", "session", "file"),
 ];
 
