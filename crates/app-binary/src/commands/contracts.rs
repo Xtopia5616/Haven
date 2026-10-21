@@ -449,6 +449,11 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "availability boolean only",
     },
     CommandContract {
+        name: "get_shell_execution_security_status",
+        boundary: CommandBoundary::Read,
+        security: "effective sandbox/network policy and authenticated broker gate only; no paths or diagnostics",
+    },
+    CommandContract {
         name: "enable_autostart",
         boundary: CommandBoundary::Execute,
         security: "release build only",

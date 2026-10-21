@@ -83,6 +83,15 @@ pub struct AuthorizationRequest {
     pub target_binding: Option<String>,
 }
 
+/// The active process security boundaries owned by the authorization engine.
+/// This narrow snapshot supports truthful, renderer-safe security status
+/// without exposing mutable policy internals or workspace paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecurityBoundarySnapshot {
+    pub sandbox_mode: SandboxMode,
+    pub network_policy: NetworkPolicy,
+}
+
 #[derive(Debug)]
 pub(super) struct AuthorizationExecutionBinding {
     pub(super) session_id: Option<String>,
@@ -164,6 +173,8 @@ pub trait AuthorizationPort: Send + Sync {
         writable_roots: Vec<PathBuf>,
         network_policy: NetworkPolicy,
     );
+
+    async fn security_boundary_snapshot(&self) -> SecurityBoundarySnapshot;
 
     async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision;
 

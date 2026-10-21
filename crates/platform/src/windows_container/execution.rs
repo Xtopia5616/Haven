@@ -103,6 +103,32 @@ pub(crate) mod hcs_export_worker;
 #[cfg(windows)]
 pub mod broker_service;
 
+/// Renderer-safe summary of whether the installed Windows broker can run an
+/// isolated Shell attempt. `Attested` reflects only the service's runtime
+/// quota proof; it does not replace target-machine release acceptance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsShellBrokerGateStatus {
+    Attested,
+    QuotaUnattested,
+    ServiceUnavailable,
+    Unknown,
+    UnsupportedPlatform,
+}
+
+/// Query the authenticated broker status channel without starting a service
+/// or creating a guest. Errors are folded into `Unknown` so renderer-facing
+/// callers never expose SCM, pipe, or HCS diagnostics.
+pub fn shell_broker_gate_status() -> WindowsShellBrokerGateStatus {
+    #[cfg(windows)]
+    {
+        broker_service::shell_broker_gate_status()
+    }
+    #[cfg(not(windows))]
+    {
+        WindowsShellBrokerGateStatus::UnsupportedPlatform
+    }
+}
+
 const MAX_COMMAND_BYTES: usize = 256 * 1024;
 const MAX_STORAGE_QUOTA_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Fixed scratch ceiling used by the Windows `WorkspaceWrite` Shell path.

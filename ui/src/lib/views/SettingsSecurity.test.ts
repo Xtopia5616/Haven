@@ -245,4 +245,24 @@ describe('SettingsSecurity', () => {
 		expect(screen.getByText('仍按旧策略运行')).toBeTruthy();
 		expect(screen.getByText(/重启前实际采用该旧策略/)).toBeTruthy();
 	});
+
+	it('shows the active Shell boundary and a closed broker gate separately from the draft', async () => {
+		const onRefreshShellExecutionStatus = vi.fn();
+		render(SettingsSecurity, {
+			security: createSecurity(),
+			securityDirty: true,
+			shellExecutionStatus: {
+				sandboxMode: 'workspace_write',
+				networkPolicy: 'restricted',
+				brokerGateStatus: 'service_unavailable',
+			},
+			onRefreshShellExecutionStatus,
+		});
+
+		expect(screen.getByText('Windows HCS guest · broker 未安装或未运行，Workspace Write Shell 会被拒绝')).toBeTruthy();
+		expect(screen.getByText(/当前 broker 配额 gate 未通过/)).toBeTruthy();
+		expect(screen.getByText(/尚未保存的选项不会改变这条状态/)).toBeTruthy();
+		await fireEvent.click(screen.getByRole('button', { name: '刷新状态' }));
+		expect(onRefreshShellExecutionStatus).toHaveBeenCalledOnce();
+	});
 });

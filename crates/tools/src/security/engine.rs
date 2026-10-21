@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::contract::SecurityBoundarySnapshot;
 use super::contract::{
     AuthorizationCheck, AuthorizationDecision, AuthorizationExecutionBinding,
     AuthorizationExecutionProof, AuthorizationPort, AuthorizationReasonCode, AuthorizationRequest,
@@ -226,6 +228,14 @@ impl AuthorizationEngine {
 
     pub(crate) async fn sandbox_mode(&self) -> SandboxMode {
         self.config.read().await.sandbox_mode
+    }
+
+    pub async fn security_boundary_snapshot(&self) -> super::SecurityBoundarySnapshot {
+        let config = self.config.read().await;
+        super::SecurityBoundarySnapshot {
+            sandbox_mode: config.sandbox_mode,
+            network_policy: config.network_policy,
+        }
     }
 
     pub async fn execution_workspace_snapshot(&self) -> ExecutionWorkspaceSnapshot {
@@ -925,6 +935,10 @@ impl AuthorizationPort for AuthorizationEngine {
             .await;
     }
 
+    async fn security_boundary_snapshot(&self) -> super::SecurityBoundarySnapshot {
+        AuthorizationEngine::security_boundary_snapshot(self).await
+    }
+
     async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision {
         AuthorizationEngine::authorize(self, request).await
     }
@@ -1354,6 +1368,26 @@ mod tests {
     }
 
     type ConfirmationResult = AuthorizationDecision;
+
+    #[tokio::test]
+    async fn security_boundary_snapshot_reports_the_active_policy() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(
+                SandboxMode::FullAccess,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
+            .await;
+
+        assert_eq!(
+            engine.security_boundary_snapshot().await,
+            SecurityBoundarySnapshot {
+                sandbox_mode: SandboxMode::FullAccess,
+                network_policy: NetworkPolicy::Restricted,
+            }
+        );
+    }
 
     fn fixture_policy(tool_name: &str, params: &Value, risk_level: RiskLevel) -> OperationPolicy {
         let capability_key = permission_key(tool_name, params);

@@ -835,6 +835,7 @@ pub(crate) fn run() {
             commands::settings::reset_permissions,
             commands::settings::reset_session_permissions,
             commands::settings::check_shell_available,
+            commands::settings::get_shell_execution_security_status,
             commands::settings::enable_autostart,
             commands::settings::disable_autostart,
             commands::settings::is_autostart_enabled,

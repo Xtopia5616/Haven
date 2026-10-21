@@ -102,6 +102,9 @@ export interface SessionResumeResponse { session: SessionRecordDto; messages: Se
 export interface ChatGptPlanLoginComplete { credentialRef: string; accountEmail: string | null; planUsageEnabled: boolean }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect }
 export interface ShellAvailability { available: boolean }
+export const SHELL_BROKER_GATE_STATUS_VALUES = ['attested', 'quota_unattested', 'service_unavailable', 'unknown', 'unsupported_platform'] as const;
+export type ShellBrokerGateStatus = (typeof SHELL_BROKER_GATE_STATUS_VALUES)[number];
+export interface ShellExecutionSecurityStatus { sandboxMode: SandboxMode; networkPolicy: NetworkPolicy; brokerGateStatus: ShellBrokerGateStatus }
 export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null; stepId: string | null }
 export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
 export interface SandboxOutputReviewChangeDto { changeIndex: number; relativePath: string; change: SandboxOutputReviewChangeKindDto; beforeBytes: number | null; afterBytes: number | null; beforeSha256: string | null; afterSha256: string | null; promoted: boolean }
@@ -5226,6 +5229,23 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const GET_SHELL_EXECUTION_SECURITY_STATUS_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'sandboxMode': {
+			optional: false,
+			shape: { kind: 'enum', values: SANDBOX_MODE_VALUES },
+		},
+		'networkPolicy': {
+			optional: false,
+			shape: { kind: 'enum', values: NETWORK_POLICY_VALUES },
+		},
+		'brokerGateStatus': {
+			optional: false,
+			shape: { kind: 'enum', values: SHELL_BROKER_GATE_STATUS_VALUES },
+		}
+	}
+} as const;
 export const HOTKEY_CONFLICT_EVENT_PAYLOAD_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -10334,6 +10354,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	get_session_for_resume: GET_SESSION_FOR_RESUME_RESPONSE_SHAPE,
 	get_session_lineage: GET_SESSION_LINEAGE_RESPONSE_SHAPE,
 	get_settings: GET_SETTINGS_RESPONSE_SHAPE,
+	get_shell_execution_security_status: GET_SHELL_EXECUTION_SECURITY_STATUS_RESPONSE_SHAPE,
 	interrupt_session: INTERRUPT_SESSION_RESPONSE_SHAPE,
 	is_autostart_enabled: IS_AUTOSTART_ENABLED_RESPONSE_SHAPE,
 	list_builtin_tool_manifests: LIST_BUILTIN_TOOL_MANIFESTS_RESPONSE_SHAPE,
@@ -10517,6 +10538,7 @@ export interface TauriCommandMap {
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
 	get_session_lineage: { request: { sessionId: string }; response: SessionLineageResponse };
 	get_settings: { request: undefined; response: SettingsSnapshot };
+	get_shell_execution_security_status: { request: undefined; response: ShellExecutionSecurityStatus };
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
 	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
@@ -10639,6 +10661,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	get_session_for_resume: { boundary: 'read', security: "session-scoped persisted projection" },
 	get_session_lineage: { boundary: 'read', security: "parent and direct child sessions of the selected session only" },
 	get_settings: { boundary: 'read', security: "config response redacts credentials and MCP environment values" },
+	get_shell_execution_security_status: { boundary: 'read', security: "effective sandbox/network policy and authenticated broker gate only; no paths or diagnostics" },
 	interrupt_session: { boundary: 'mutate', security: "pauses the selected active session without deleting it" },
 	is_autostart_enabled: { boundary: 'read', security: "state boolean only" },
 	list_builtin_tool_manifests: { boundary: 'read', security: "builtin manifest projection; schemas are dynamic extension data" },

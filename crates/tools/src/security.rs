@@ -5,7 +5,7 @@ mod filesystem;
 mod prompt;
 pub use contract::{
     AuthorizationCheck, AuthorizationDecision, AuthorizationExecutionProof, AuthorizationPort,
-    AuthorizationReasonCode, AuthorizationRequest, ConfirmationReceipt,
+    AuthorizationReasonCode, AuthorizationRequest, ConfirmationReceipt, SecurityBoundarySnapshot,
 };
 pub use engine::AuthorizationEngine;
 pub(crate) use execution::{

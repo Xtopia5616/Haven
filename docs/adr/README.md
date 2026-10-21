@@ -1338,3 +1338,4 @@
 - [1347：合并文件检查与修改操作](1347-consolidate-file-inspection-and-patch-operations.md)
 - [1348：强化 Agent 文本 patch](1348-improve-agent-text-patching.md)
 - [1349：将 Memory 工具归入 Haven 根节点](1349-group-memory-tool-operations-under-haven.md)
+- [1351：在 Shell 授权前显示当前执行边界](1351-show-active-shell-boundary-before-approval.md)

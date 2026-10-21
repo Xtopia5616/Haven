@@ -7,6 +7,8 @@
 	import MaterialSplitButton from './MaterialSplitButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import { describePermissionRuleImpact } from './permissionRuleDescription.ts';
+	import { describeShellExecutionStatus } from './shellExecutionPresentation.ts';
+	import type { ShellExecutionSecurityStatus } from './contracts/shellExecution.ts';
 	import type {
 		PermissionEffectInput,
 		PermissionScopeInput,
@@ -26,6 +28,8 @@
 		riskLevel?: RiskLevel;
 		summary?: string;
 		permissionKey?: string;
+		shellExecutionStatus?: ShellExecutionSecurityStatus | null;
+		shellExecutionStatusLoading?: boolean;
 		createdAt: string;
 		deadlineAt: number;
 		onDismiss?: (requestId: string) => void;
@@ -51,6 +55,8 @@
 		riskLevel,
 		summary,
 		permissionKey,
+		shellExecutionStatus = null,
+		shellExecutionStatusLoading = false,
 		createdAt,
 		deadlineAt,
 		onDismiss,
@@ -68,6 +74,9 @@
 	let riskLabel = $derived(RISK_LABELS[normalizedRisk] || '中风险');
 	let timeoutPercent = $derived(
 		Math.min(100, Math.max(0, ((remaining * 1000) / countdownDurationMs) * 100)),
+	);
+	let shellExecutionSummary = $derived(
+		describeShellExecutionStatus(shellExecutionStatus),
 	);
 
 	function buildTargetOptions(
@@ -161,7 +170,13 @@
 		target: PermissionTargetInput = 'operation',
 	) {
 		const activeRequestId = requestId;
-		if (!activeRequestId || submittedRequestId === activeRequestId) return;
+		if (
+			!activeRequestId ||
+			submittedRequestId === activeRequestId ||
+			(effect === 'allow' && toolName === 'shell' && shellExecutionStatusLoading)
+		) {
+			return;
+		}
 		submittedRequestId = activeRequestId;
 		showDenyMenu = false;
 		showAllowMenu = false;
@@ -272,6 +287,22 @@
 				<p>{summary || '此操作需要你的许可。'}</p>
 			</section>
 
+			{#if toolName === 'shell'}
+				<section class="shell-boundary" aria-label="Shell 执行边界">
+					<div class="section-label">当前生效的 Shell 边界</div>
+					{#if shellExecutionStatusLoading}
+						<p>正在读取当前安全模式与 broker 状态…</p>
+					{:else}
+						<strong>{shellExecutionSummary.title}</strong>
+						<p>{shellExecutionSummary.details}</p>
+						<div class="shell-boundary__network">
+							<strong>{shellExecutionSummary.networkTitle}</strong>
+							<p>{shellExecutionSummary.networkDetails}</p>
+						</div>
+					{/if}
+				</section>
+			{/if}
+
 			<div
 				class="timeout"
 				class:warn={remaining <= 15}
@@ -319,6 +350,7 @@
 						variant="danger"
 						label="永久允许"
 						ariaLabel="确认永久允许"
+						disabled={toolName === 'shell' && shellExecutionStatusLoading}
 						onclick={() =>
 							decide('allow', 'always', pendingPersistentTarget || 'operation')}
 					/>
@@ -330,6 +362,7 @@
 						variant="filled"
 						className="btn-once"
 						label="本次允许"
+						disabled={toolName === 'shell' && shellExecutionStatusLoading}
 						onclick={() => decide('allow', 'once', 'operation')}
 					/>
 					{#if allowSessionScope && !onceOnly}
@@ -338,6 +371,7 @@
 							className="btn-session"
 							label="本会话允许"
 							ariaLabel="本会话允许此操作"
+							disabled={toolName === 'shell' && shellExecutionStatusLoading}
 							onclick={() => decide('allow', 'session', 'operation')}
 						/>
 					{/if}
@@ -346,6 +380,7 @@
 								variant="text"
 								className="more-allow-trigger"
 								label="更多允许"
+								disabled={toolName === 'shell' && shellExecutionStatusLoading}
 								ariaExpanded={showAllowMenu}
 								ariaHaspopup="menu"
 								onclick={() => (showAllowMenu = !showAllowMenu)}
@@ -588,6 +623,34 @@
 	.summary {
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
+	}
+
+	.shell-boundary {
+		padding: 16px 18px;
+		border: 1px solid color-mix(in srgb, var(--md-sys-color-outline) 36%, transparent);
+		border-radius: var(--md-sys-shape-large);
+		background: color-mix(in srgb, var(--md-sys-color-secondary-container) 38%, transparent);
+	}
+
+	.shell-boundary > strong,
+	.shell-boundary__network > strong {
+		display: block;
+		margin-top: 7px;
+		color: var(--md-sys-color-on-surface);
+		font-size: 0.94rem;
+	}
+
+	.shell-boundary p {
+		margin: 6px 0 0;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 0.84rem;
+		line-height: 1.5;
+	}
+
+	.shell-boundary__network {
+		margin-top: 12px;
+		padding-top: 10px;
+		border-top: 1px solid color-mix(in srgb, var(--md-sys-color-outline) 24%, transparent);
 	}
 
 	.operation-card {

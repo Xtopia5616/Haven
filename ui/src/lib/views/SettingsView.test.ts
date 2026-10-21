@@ -23,6 +23,12 @@ describe('SettingsView diagnostics export', () => {
 					return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
 				case 'is_autostart_enabled':
 					return false;
+				case 'get_shell_execution_security_status':
+					return {
+						sandboxMode: 'workspace_write',
+						networkPolicy: 'ask',
+						brokerGateStatus: 'attested',
+					};
 				case 'get_performance_metrics':
 					return {
 						phases: Array.from({ length: AGENT_METRICS_PHASE_COUNT }, () => ({
@@ -277,7 +283,7 @@ describe('SettingsView diagnostics export', () => {
 				await screen.findByRole('switch', { name: '会话开始 Windows 通知' }),
 			);
 
-			expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
+			expect(screen.getByRole('button', { name: '保存' })).toHaveProperty('disabled', true);
 			expect(invoke).not.toHaveBeenCalledWith('update_settings', expect.anything());
 		},
 	);
@@ -317,7 +323,7 @@ describe('SettingsView diagnostics export', () => {
 		});
 		await fireEvent.click(inApp);
 		await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeTruthy());
-		expect(container.querySelector('.save-bar--bottom-edge')).toBeTruthy();
+		expect(container.querySelector('.save-bar')).toBeTruthy();
 		expect(container.querySelectorAll('.save-actions .save-action-btn')).toHaveLength(2);
 		expect((windows as HTMLInputElement).checked).toBe(true);
 		await fireEvent.click(windows);
@@ -612,7 +618,11 @@ describe('SettingsView diagnostics export', () => {
 		await fireEvent.input(screen.getByPlaceholderText('sk-...'), {
 			target: { value: 'provider-secret-marker' },
 		});
-		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
+		await fireEvent.click(
+			within(screen.getByRole('dialog', { name: '添加 Provider' })).getByRole('button', {
+				name: '保存',
+			}),
+		);
 		await fireEvent.click(screen.getByRole('tab', { name: /对话与行为/ }));
 		expect(screen.queryByRole('dialog', { name: '未保存的更改' })).toBeNull();
 		await fireEvent.click(screen.getByRole('tab', { name: /模型与连接/ }));

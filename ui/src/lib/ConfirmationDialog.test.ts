@@ -201,6 +201,69 @@ describe('ConfirmationDialog', () => {
 		});
 	});
 
+	it.each([
+		{
+			sandboxMode: 'full_access',
+			brokerGateStatus: 'service_unavailable',
+			execution: /本机 Shell · 当前 Windows 用户权限/,
+			boundary: /执行工作区只决定默认工作目录，不限制命令访问/,
+		},
+		{
+			sandboxMode: 'workspace_write',
+			brokerGateStatus: 'attested',
+			execution: /Windows HCS guest · 配额启动探测已通过/,
+			boundary: /结果进入审阅，需逐项晋升/,
+		},
+	] as const)(
+		'shows the active $sandboxMode boundary before Shell approval',
+		async ({ sandboxMode, brokerGateStatus, execution, boundary }) => {
+			render(ConfirmationDialog as any, {
+				...deadlineProps(),
+				requestId: 'conf-1b534f4e1fbff3d6eea69d2f38d28b18',
+				toolName: 'shell',
+				summary: '执行命令',
+				shellExecutionStatus: {
+					sandboxMode,
+					networkPolicy: 'ask',
+					brokerGateStatus,
+				},
+				onConfirm: vi.fn(),
+			});
+
+			expect(screen.getByRole('region', { name: 'Shell 执行边界' })).toBeTruthy();
+			expect(screen.getByText(execution)).toBeTruthy();
+			expect(screen.getByText(boundary)).toBeTruthy();
+			expect(screen.getByText('网络策略：请求确认')).toBeTruthy();
+			expect(screen.getByRole('button', { name: '本次允许' })).toBeTruthy();
+		},
+	);
+
+	it('shows a missing Shell status as unknown', () => {
+		render(ConfirmationDialog as any, {
+			...deadlineProps(),
+			requestId: 'conf-1b534f4e1fbff3d6eea69d2f38d28b18',
+			toolName: 'shell',
+			shellExecutionStatus: null,
+			onConfirm: vi.fn(),
+		});
+
+		expect(screen.getByText('执行边界状态不可用')).toBeTruthy();
+		expect(screen.getByText(/无法读取的状态不能视为隔离已就绪/)).toBeTruthy();
+	});
+
+	it('waits for the active Shell boundary query before enabling approval', () => {
+		render(ConfirmationDialog as any, {
+			...deadlineProps(),
+			requestId: 'conf-1b534f4e1fbff3d6eea69d2f38d28b18',
+			toolName: 'shell',
+			shellExecutionStatusLoading: true,
+			onConfirm: vi.fn(),
+		});
+
+		expect(screen.getByRole('button', { name: '本次允许' })).toHaveProperty('disabled', true);
+		expect(screen.getByRole('button', { name: '拒绝' })).toHaveProperty('disabled', false);
+	});
+
 	it('keeps a rejected pre-execution confirmation submission retryable', async () => {
 		const onConfirm = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 		render(ConfirmationDialog as any, {

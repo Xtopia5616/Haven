@@ -7,7 +7,9 @@ use crate::config_runtime::{
 };
 use crate::events::{HOTKEY_REBIND_EVENT, HotkeyRebindEvent};
 use crate::runtime::ApplicationRuntime;
-use haven_common::types::{PermissionEffect, PermissionTarget, ShellChoice};
+use haven_common::types::{
+    NetworkPolicy, PermissionEffect, PermissionTarget, SandboxMode, ShellChoice,
+};
 use serde::Serialize;
 use std::future::Future;
 use std::sync::Arc;
@@ -1028,6 +1030,70 @@ pub async fn check_shell_available(shell: ShellChoice) -> Result<ShellAvailabili
 #[derive(Debug, serde::Serialize)]
 pub struct ShellAvailability {
     pub available: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellBrokerGateStatus {
+    Attested,
+    QuotaUnattested,
+    ServiceUnavailable,
+    Unknown,
+    UnsupportedPlatform,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellExecutionSecurityStatus {
+    pub sandbox_mode: SandboxMode,
+    pub network_policy: NetworkPolicy,
+    pub broker_gate_status: ShellBrokerGateStatus,
+}
+
+/// Read the effective runtime boundary and, on Windows, the authenticated
+/// broker's current Shell quota gate. It does not start the service or a guest.
+#[tauri::command]
+pub async fn get_shell_execution_security_status(
+    state: State<'_, Arc<AppState>>,
+) -> Result<ShellExecutionSecurityStatus, String> {
+    let active_boundaries = state
+        .runtime
+        .services
+        .authorization
+        .security_boundary_snapshot()
+        .await;
+    #[cfg(windows)]
+    let platform_status = tokio::task::spawn_blocking(
+        haven_platform::windows_container::execution::shell_broker_gate_status,
+    )
+    .await
+    .map_err(|error| log_err("get_shell_execution_security_status", error))?;
+    #[cfg(windows)]
+    let broker_gate_status = match platform_status {
+        haven_platform::windows_container::execution::WindowsShellBrokerGateStatus::Attested => {
+            ShellBrokerGateStatus::Attested
+        }
+        haven_platform::windows_container::execution::WindowsShellBrokerGateStatus::QuotaUnattested => {
+            ShellBrokerGateStatus::QuotaUnattested
+        }
+        haven_platform::windows_container::execution::WindowsShellBrokerGateStatus::ServiceUnavailable => {
+            ShellBrokerGateStatus::ServiceUnavailable
+        }
+        haven_platform::windows_container::execution::WindowsShellBrokerGateStatus::Unknown => {
+            ShellBrokerGateStatus::Unknown
+        }
+        haven_platform::windows_container::execution::WindowsShellBrokerGateStatus::UnsupportedPlatform => {
+            ShellBrokerGateStatus::UnsupportedPlatform
+        }
+    };
+    #[cfg(not(windows))]
+    let broker_gate_status = ShellBrokerGateStatus::UnsupportedPlatform;
+
+    Ok(ShellExecutionSecurityStatus {
+        sandbox_mode: active_boundaries.sandbox_mode,
+        network_policy: active_boundaries.network_policy,
+        broker_gate_status,
+    })
 }
 
 /// True when `name` resolves to an executable on PATH.

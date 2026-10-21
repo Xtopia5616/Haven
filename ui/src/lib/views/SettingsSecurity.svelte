@@ -13,6 +13,8 @@
 	} from '$lib/permissionRuleDescription.ts';
 	import type { SecurityConfigInput } from '$lib/contracts/generatedCommands.ts';
 	import type { SessionPermissionGrant } from '$lib/contracts/settings.ts';
+	import { describeShellExecutionStatus } from '$lib/shellExecutionPresentation.ts';
+	import type { ShellExecutionSecurityStatus } from '$lib/contracts/shellExecution.ts';
 
 	interface Props {
 		security: SecurityConfigInput & { permissions: Array<{ key: string; effect: string }> };
@@ -20,6 +22,10 @@
 		securityDirty?: boolean;
 		securityRuntimeStatus?: 'current' | 'unchanged' | 'incomplete';
 		securityRuntimeNotice?: string;
+		shellExecutionStatus?: ShellExecutionSecurityStatus | null;
+		shellExecutionStatusLoading?: boolean;
+		shellExecutionStatusError?: boolean;
+		onRefreshShellExecutionStatus?: () => void | Promise<void>;
 		onRevokePermission?: (key: string) => boolean | Promise<boolean>;
 		onRevokeSessionPermission?: (grant: SessionPermissionGrant) => boolean | Promise<boolean>;
 		onResetPermissions?: () => boolean | Promise<boolean>;
@@ -38,6 +44,10 @@
 		securityDirty = false,
 		securityRuntimeStatus = 'current',
 		securityRuntimeNotice = '安全策略已按当前配置完成运行时应用。',
+		shellExecutionStatus = null,
+		shellExecutionStatusLoading = false,
+		shellExecutionStatusError = false,
+		onRefreshShellExecutionStatus = () => {},
 		onRevokePermission = async () => true,
 		onRevokeSessionPermission = async () => true,
 		onResetPermissions = async () => true,
@@ -45,6 +55,9 @@
 		onPickExecutionRoot = async () => null,
 	}: Props = $props();
 	let pickingExecutionRoot = $state(false);
+	let activeShellExecutionSummary = $derived(
+		describeShellExecutionStatus(shellExecutionStatus),
+	);
 
 	async function pickExecutionRoot() {
 		if (pickingExecutionRoot) return;
@@ -285,6 +298,43 @@
 					: securityRuntimeNotice}
 			</p>
 		</div>
+	</div>
+
+	<div class="active-shell-status" aria-label="当前 Shell 执行状态" aria-live="polite">
+		<div class="active-shell-status__heading">
+			<div>
+				<span class="summary-eyebrow">进程当前实际使用的执行边界</span>
+				<strong>
+					{shellExecutionStatusLoading
+						? '正在读取…'
+						: activeShellExecutionSummary.title}
+				</strong>
+			</div>
+			<MaterialButton
+				variant="text"
+				label={shellExecutionStatusLoading ? '正在读取' : '刷新状态'}
+				disabled={shellExecutionStatusLoading}
+				onclick={onRefreshShellExecutionStatus}
+			/>
+		</div>
+		<p>{activeShellExecutionSummary.details}</p>
+		<div class="active-shell-status__network">
+			<strong>{activeShellExecutionSummary.networkTitle}</strong>
+			<p>{activeShellExecutionSummary.networkDetails}</p>
+		</div>
+		{#if securityDirty}
+			<p class="active-shell-status__note">上方是当前进程正在使用的策略；尚未保存的选项不会改变这条状态。</p>
+		{/if}
+		{#if shellExecutionStatusError}
+			<p class="active-shell-status__note active-shell-status__note--warning">
+				读取失败。无法确认隔离状态；Haven 会在执行前再次检查授权和隔离门槛。
+			</p>
+		{:else if shellExecutionStatus?.sandboxMode === 'workspace_write' &&
+			shellExecutionStatus.brokerGateStatus !== 'attested'}
+			<p class="active-shell-status__note active-shell-status__note--warning">
+				当前 broker 配额 gate 未通过；Workspace Write Shell 会被拒绝，不会回退到本机 Shell。
+			</p>
+		{/if}
 	</div>
 
 	<div class="settings-subsection">
@@ -622,6 +672,52 @@
 </MaterialDialog>
 
 <style>
+	.active-shell-status {
+		margin-top: var(--md-sys-space-lg);
+		padding: var(--md-sys-space-lg);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-large);
+		background: var(--md-sys-color-surface-container-low);
+	}
+
+	.active-shell-status__heading {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-md);
+	}
+
+	.active-shell-status__heading > div {
+		display: grid;
+		gap: var(--md-sys-space-xs);
+	}
+
+	.active-shell-status__heading strong,
+	.active-shell-status__network strong {
+		color: var(--md-sys-color-on-surface);
+	}
+
+	.active-shell-status p {
+		margin: var(--md-sys-space-sm) 0 0;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: 1.5;
+	}
+
+	.active-shell-status__network {
+		margin-top: var(--md-sys-space-md);
+		padding-top: var(--md-sys-space-sm);
+		border-top: 1px solid var(--md-sys-color-outline-variant);
+	}
+
+	.active-shell-status__note {
+		font-weight: 600;
+	}
+
+	.active-shell-status__note--warning {
+		color: var(--md-sys-color-error) !important;
+	}
+
 	.security-summary {
 		display: flex;
 		align-items: flex-start;

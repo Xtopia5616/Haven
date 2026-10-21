@@ -243,6 +243,7 @@ $ownedCommands = @{
     'externalCommands.ts' = @('open_external')
     'recordingOverlayController.ts' = @('start_recording', 'stop_recording', 'cancel_recording')
     'scheduleCommands.ts' = @('list_schedules', 'cancel_schedule')
+    'shellExecutionCommands.ts' = @('get_shell_execution_security_status')
     'toolRunCommands.ts' = @('list_tool_runs', 'list_tool_run_history', 'clear_tool_run_history', 'cancel_tool_run')
     'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource', 'subscribe_mcp_resource', 'unsubscribe_mcp_resource', 'respond_mcp_feature_input', 'cancel_mcp_feature_input', 'list_mcp_prompts', 'get_mcp_prompt', 'list_skills', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill', 'get_sandbox_output_review', 'discard_sandbox_output_review', 'pick_sandbox_output_destination', 'promote_sandbox_output')
     'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'clear_facts', 'recall_memory')

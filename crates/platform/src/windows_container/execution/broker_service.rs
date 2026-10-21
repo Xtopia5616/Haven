@@ -271,6 +271,38 @@ pub fn print_status() -> io::Result<()> {
     Ok(())
 }
 
+/// Return only the Shell gate state for read-only application status surfaces.
+/// The status comes from the same authenticated service query used by the CLI;
+/// service liveness alone never implies that quota attestation passed.
+pub fn shell_broker_gate_status() -> super::WindowsShellBrokerGateStatus {
+    match state() {
+        Ok(service_state) => {
+            let gate =
+                (service_state == BrokerServiceState::Running).then(query_execution_gate_status);
+            shell_broker_gate_status_from_state(service_state, gate)
+        }
+        Err(_) => super::WindowsShellBrokerGateStatus::Unknown,
+    }
+}
+
+fn shell_broker_gate_status_from_state(
+    service_state: BrokerServiceState,
+    gate: Option<io::Result<BrokerExecutionGateStatus>>,
+) -> super::WindowsShellBrokerGateStatus {
+    if service_state != BrokerServiceState::Running {
+        return super::WindowsShellBrokerGateStatus::ServiceUnavailable;
+    }
+    match gate {
+        Some(Ok(status)) => match status.quota {
+            BrokerQuotaGateStatus::Attested => super::WindowsShellBrokerGateStatus::Attested,
+            BrokerQuotaGateStatus::Unattested => {
+                super::WindowsShellBrokerGateStatus::QuotaUnattested
+            }
+        },
+        Some(Err(_)) | None => super::WindowsShellBrokerGateStatus::Unknown,
+    }
+}
+
 fn query_execution_gate_status() -> io::Result<BrokerExecutionGateStatus> {
     let policy = BrokerClientPolicy::for_current_process()?;
     let cancellation = BrokerPipeCancellation::new()?;
@@ -1192,6 +1224,43 @@ fn permission_denied(message: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_status_requires_a_running_service_and_attested_quota() {
+        let attested = BrokerExecutionGateStatus {
+            quota: BrokerQuotaGateStatus::Attested,
+            skill_python_runtime: BrokerSkillPythonRuntimeStatus::NotConfigured,
+            mcp_node_runtime: BrokerMcpNodeRuntimeStatus::NotConfigured,
+        };
+        let unattested = BrokerExecutionGateStatus {
+            quota: BrokerQuotaGateStatus::Unattested,
+            ..attested
+        };
+
+        assert_eq!(
+            shell_broker_gate_status_from_state(BrokerServiceState::Running, Some(Ok(attested))),
+            super::super::WindowsShellBrokerGateStatus::Attested
+        );
+        assert_eq!(
+            shell_broker_gate_status_from_state(BrokerServiceState::Running, Some(Ok(unattested))),
+            super::super::WindowsShellBrokerGateStatus::QuotaUnattested
+        );
+        assert_eq!(
+            shell_broker_gate_status_from_state(BrokerServiceState::Running, None),
+            super::super::WindowsShellBrokerGateStatus::Unknown
+        );
+        assert_eq!(
+            shell_broker_gate_status_from_state(
+                BrokerServiceState::Running,
+                Some(Err(io::Error::other("status query failed")))
+            ),
+            super::super::WindowsShellBrokerGateStatus::Unknown
+        );
+        assert_eq!(
+            shell_broker_gate_status_from_state(BrokerServiceState::Stopped, Some(Ok(attested))),
+            super::super::WindowsShellBrokerGateStatus::ServiceUnavailable
+        );
+    }
 
     #[test]
     fn quota_attestation_gate_fails_closed_without_runtime_proof() {

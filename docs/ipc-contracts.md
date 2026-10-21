@@ -51,6 +51,7 @@
 | `get_session_for_resume` | read | session-scoped persisted projection |
 | `get_session_lineage` | read | parent and direct child sessions of the selected session only |
 | `get_settings` | read | config response redacts credentials and MCP environment values |
+| `get_shell_execution_security_status` | read | effective sandbox/network policy and authenticated broker gate only; no paths or diagnostics |
 | `interrupt_session` | mutate | pauses the selected active session without deleting it |
 | `is_autostart_enabled` | read | state boolean only |
 | `list_builtin_tool_manifests` | read | builtin manifest projection; schemas are dynamic extension data |

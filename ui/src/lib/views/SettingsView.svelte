@@ -50,6 +50,8 @@
 		updateSettings as updateSettingsCommand,
 	} from '$lib/settingsCommands.ts';
 	import { checkShellAvailable, readApiKeyStatus } from '$lib/diagnosticsCommands.ts';
+	import { readShellExecutionSecurityStatus } from '$lib/shellExecutionCommands.ts';
+	import type { ShellExecutionSecurityStatus } from '$lib/contracts/shellExecution.ts';
 	import type { ApiKeyStatus } from '$lib/contracts/diagnostics.ts';
 	import { SHELL_CHOICE_INPUT_VALUES } from '$lib/contracts/generatedCommands.ts';
 	import ModelSettings from './ModelSettings.svelte';
@@ -393,7 +395,12 @@
 	let saveError = $state('');
 	let securityRuntimeStatus = $state<'current' | 'unchanged' | 'incomplete'>('current');
 	let securityRuntimeNotice = $state('安全策略已按当前配置完成运行时应用。');
+	let shellExecutionStatus = $state<ShellExecutionSecurityStatus | null>(null);
+	let shellExecutionStatusLoading = $state(false);
+	let shellExecutionStatusError = $state(false);
+	let shellExecutionStatusRequested = $state(false);
 	let mounted = true;
+	let shellExecutionStatusRefreshGeneration = 0;
 	let eventRegistrations: ReturnType<typeof registerListeners> | null = null;
 	let chatModelSyncGen = 0;
 	let skipNextChatModelSync = false;
@@ -412,6 +419,38 @@
 			}
 		}
 	}
+
+	async function refreshShellExecutionStatus() {
+		const generation = ++shellExecutionStatusRefreshGeneration;
+		shellExecutionStatusLoading = true;
+		shellExecutionStatusError = false;
+		try {
+			const status = await readShellExecutionSecurityStatus();
+			if (mounted && generation === shellExecutionStatusRefreshGeneration) {
+				shellExecutionStatus = status;
+			}
+		} catch (error) {
+			if (mounted && generation === shellExecutionStatusRefreshGeneration) {
+				shellExecutionStatus = null;
+				shellExecutionStatusError = true;
+				reportError(error, {
+					context: 'SettingsView',
+					message: '读取 Shell 执行边界失败',
+					log: false,
+				});
+			}
+		} finally {
+			if (mounted && generation === shellExecutionStatusRefreshGeneration) {
+				shellExecutionStatusLoading = false;
+			}
+		}
+	}
+
+	$effect(() => {
+		if (!visitedSettingsTabs.includes('security') || shellExecutionStatusRequested) return;
+		shellExecutionStatusRequested = true;
+		void refreshShellExecutionStatus();
+	});
 
 	function runtimeModelFieldValue(
 		model: Pick<ModelDraft, 'model' | 'reasoning_effort' | 'web_search'>,
@@ -1252,6 +1291,7 @@
 			if (securityChanged) {
 				securityRuntimeStatus = 'current';
 				securityRuntimeNotice = '安全策略已按当前配置完成运行时应用。';
+				void refreshShellExecutionStatus();
 			}
 			publishNotificationSettingsChanged(notification);
 			addNotification('设置已写入配置', 'success');
@@ -1311,6 +1351,7 @@
 					securityRuntimeStatus = 'current';
 					securityRuntimeNotice = `安全策略已在配置版本 ${configVersion || '未知'} 完成运行时应用；其他运行时更新未完成。`;
 				}
+				void refreshShellExecutionStatus();
 			}
 			if (partialApplyFailure && mounted) captureSnapshot();
 			reportError(e, {
@@ -1466,6 +1507,10 @@
 										securityDirty={dirtySettingsSectionIds.includes('security')}
 										{securityRuntimeStatus}
 										{securityRuntimeNotice}
+										shellExecutionStatus={shellExecutionStatus}
+										shellExecutionStatusLoading={shellExecutionStatusLoading}
+										shellExecutionStatusError={shellExecutionStatusError}
+										onRefreshShellExecutionStatus={refreshShellExecutionStatus}
 										onRevokePermission={revokePermission}
 										onRevokeSessionPermission={revokeSessionPermission}
 										onResetPermissions={resetPermissions}
