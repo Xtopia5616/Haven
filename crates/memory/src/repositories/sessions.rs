@@ -451,7 +451,7 @@ impl Database {
         ) = creation.storage_parts();
         let session_id = haven_common::types::new_id("ses");
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let write_result = (|| -> anyhow::Result<()> {
             if let Some(source_session_id) = source_session_id {
@@ -538,7 +538,7 @@ impl Database {
 
     pub fn get_session(&self, session_id: &str) -> anyhow::Result<Option<Session>> {
         validate_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
             creator, creation_method, source_kind, source_session_id,
@@ -558,7 +558,7 @@ impl Database {
     /// existed before its live subscription began without loading session
     /// records or transcript projections into memory.
     pub fn list_session_ids(&self) -> anyhow::Result<Vec<String>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare("SELECT id FROM sessions ORDER BY id ASC")?;
         let rows = stmt.query_map([], session_id_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -566,7 +566,7 @@ impl Database {
 
     pub fn session_id_high_water(&self) -> anyhow::Result<Option<String>> {
         Ok(self
-            .conn()
+            .try_conn()?
             .query_row("SELECT MAX(id) FROM sessions", [], |row| {
                 row.get::<_, Option<String>>(0)?
                     .map(|id| {
@@ -598,7 +598,7 @@ impl Database {
             (1..=MAX_MEMORY_SESSION_ID_PAGE_SIZE).contains(&limit),
             "session ID page limit must be between 1 and {MAX_MEMORY_SESSION_ID_PAGE_SIZE}"
         );
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id FROM sessions
              WHERE (?1 IS NULL OR id > ?1)
@@ -620,7 +620,7 @@ impl Database {
     ) -> anyhow::Result<()> {
         validate_session_id(session_id)?;
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "UPDATE sessions SET status = ?1, updated_at = ?2,
                 run_end_reason = CASE WHEN ?1 IN ('pending', 'running') THEN NULL ELSE run_end_reason END
@@ -641,7 +641,7 @@ impl Database {
             "session run-end reason must not be empty"
         );
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let changed = conn.execute(
             "UPDATE sessions SET run_end_reason = ?1, updated_at = ?2
              WHERE id = ?3 AND status IN ('paused', 'completed', 'error')",
@@ -659,7 +659,7 @@ impl Database {
     pub fn update_session_title(&self, session_id: &str, title: &str) -> anyhow::Result<()> {
         validate_session_id(session_id)?;
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let updated = conn.execute(
             "UPDATE sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
             rusqlite::params![title, now, session_id],
@@ -678,7 +678,7 @@ impl Database {
         }
         let cache_gen =
             (offset == 0 && limit == 50).then(|| self.cache_generation("_session_history_page"));
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     creator, creation_method, source_kind, source_session_id,
@@ -698,7 +698,7 @@ impl Database {
 
     pub fn search_sessions(&self, query: &str) -> anyhow::Result<Vec<Session>> {
         let pattern = format!("%{}%", query);
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     creator, creation_method, source_kind, source_session_id,
@@ -714,14 +714,14 @@ impl Database {
         Ok(sessions)
     }
     pub fn count_sessions(&self) -> anyhow::Result<i64> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
             .map_err(Into::into)
     }
 
     pub fn count_sessions_search(&self, query: &str) -> anyhow::Result<i64> {
         let pattern = format!("%{}%", query);
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.query_row(
             &format!("SELECT COUNT(*) FROM sessions {SEARCH_WHERE}"),
             rusqlite::params![pattern],
@@ -737,7 +737,7 @@ impl Database {
         offset: i64,
     ) -> anyhow::Result<Vec<Session>> {
         let pattern = format!("%{}%", query);
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     creator, creation_method, source_kind, source_session_id,
@@ -764,7 +764,7 @@ impl Database {
         offset: i64,
     ) -> anyhow::Result<Vec<Session>> {
         validate_session_id(parent_session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     creator, creation_method, source_kind, source_session_id,
@@ -797,7 +797,7 @@ impl Database {
         } else {
             (second_session_id, first_session_id)
         };
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<bool> {
             for id in [session_id, related_session_id] {
@@ -850,7 +850,7 @@ impl Database {
         } else {
             (second_session_id, first_session_id)
         };
-        let changed = self.conn().execute(
+        let changed = self.try_conn()?.execute(
             "DELETE FROM session_links WHERE session_id = ?1 AND related_session_id = ?2",
             rusqlite::params![session_id, related_session_id],
         )?;
@@ -861,7 +861,7 @@ impl Database {
     /// remain visible as canonical historical identities after deletion.
     pub fn list_session_links(&self, session_id: &str) -> anyhow::Result<Vec<SessionLink>> {
         validate_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT session_id, related_session_id, created_at FROM session_links
              WHERE session_id = ?1 OR related_session_id = ?1
@@ -884,7 +884,7 @@ impl Database {
 
     pub fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
         validate_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let episode_ids: Vec<String> = {
             let mut stmt = conn.prepare("SELECT id FROM memory_items WHERE session_id = ?1")?;
             let rows = stmt.query_map(rusqlite::params![session_id], |row| row.get(0))?;
@@ -927,7 +927,7 @@ impl Database {
     }
 
     pub fn delete_all_sessions(&self) -> anyhow::Result<usize> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         // Wrap both DELETEs in a transaction so readers don't see
         // orphaned messages between the two operations. A mid-transaction
         // failure rolls back explicitly — with a connection pool the
@@ -987,7 +987,7 @@ impl Database {
     pub fn finalize_orphaned_running_sessions(&self) -> anyhow::Result<usize> {
         let now = Utc::now().to_rfc3339();
         let ids: Vec<String> = {
-            let conn = self.conn();
+            let conn = self.try_conn()?;
             conn.prepare(
                 "SELECT id FROM sessions
                  WHERE status = 'running'
@@ -1033,7 +1033,7 @@ impl Database {
         now: &str,
         cutoff: Option<&str>,
     ) -> anyhow::Result<usize> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let count = match cutoff {
             Some(threshold) => conn.execute(
                 "UPDATE sessions SET status = ?1, updated_at = ?2
@@ -1056,7 +1056,7 @@ impl Database {
         let cutoff = (Utc::now() - chrono::Duration::days(retention_days as i64)).to_rfc3339();
         // Validate IDs before the retention delete can cascade through session-owned data.
         self.list_old_session_ids(retention_days)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let episode_ids: Vec<String> = {
             let mut stmt = conn.prepare(
                 "SELECT i.id FROM memory_items i
@@ -1092,7 +1092,7 @@ impl Database {
     /// process-local grants and asset leases before deleting each row.
     pub fn list_old_session_ids(&self, retention_days: u32) -> anyhow::Result<Vec<String>> {
         let cutoff = (Utc::now() - chrono::Duration::days(retention_days as i64)).to_rfc3339();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut statement =
             conn.prepare("SELECT id FROM sessions WHERE created_at < ?1 ORDER BY created_at, id")?;
         let rows = statement.query_map(rusqlite::params![cutoff], session_id_from_row)?;
@@ -1181,7 +1181,7 @@ impl Database {
              FROM sessions {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
 
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&sql)?;
 
         let mut param_refs: Vec<&dyn rusqlite::types::ToSql> = Vec::new();

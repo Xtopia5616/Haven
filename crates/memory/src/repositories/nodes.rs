@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension};
 impl Database {
     /// Upsert a memory node by `(kind, label)`. Returns the stable `node-*` id.
     pub fn ensure_node(&self, kind: &str, label: &str) -> anyhow::Result<String> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         ensure_node_on_connection(&conn, kind, label)
     }
 }

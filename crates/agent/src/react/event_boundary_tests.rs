@@ -116,6 +116,37 @@ async fn cancelled_run_still_verifies_its_final_event_boundary() {
 }
 
 #[tokio::test]
+async fn cancelled_exit_effect_verifies_its_final_event_boundary() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let session = db.create_session("cancelled exit effect").unwrap();
+    let engine = test_engine(db);
+    let mut state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    cancellation.cancel();
+    state.turn_cancel = Some(cancellation);
+
+    assert!(matches!(
+        engine
+            .exit_at_boundary(
+                &session.session_id,
+                &state,
+                1,
+                crate::react::LoopExit::Cancelled,
+            )
+            .await,
+        crate::react::LoopExit::Cancelled
+    ));
+    assert_eq!(
+        engine
+            .metrics
+            .snapshot()
+            .counters
+            .event_boundary_check_failures,
+        0
+    );
+}
+
+#[tokio::test]
 async fn event_boundary_cursor_read_failure_returns_false_and_records_failure() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let session = db.create_session("event boundary failure").unwrap();

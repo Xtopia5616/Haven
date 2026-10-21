@@ -107,7 +107,7 @@ impl SessionStore {
             snapshot.source_message_id.clone(),
         );
         let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let write_result = (|| -> anyhow::Result<Vec<SessionEvent>> {
             let source = conn

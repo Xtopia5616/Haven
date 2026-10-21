@@ -79,7 +79,7 @@ impl SessionStore {
             ensure_message_id(message_id, "rollback target message_id")?;
         }
         Self::validate_inputs(replacement_transcript)?;
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<RollbackResult> {
             let current_event_sequence: i64 = conn.query_row(
@@ -241,7 +241,7 @@ impl SessionStore {
         session_id: &str,
         step_number: u32,
     ) -> anyhow::Result<()> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result =
             Self::truncate_projection_after_step_in_transaction(&conn, session_id, step_number);
@@ -273,7 +273,7 @@ impl SessionStore {
         session_id: &str,
     ) -> anyhow::Result<()> {
         ensure_session_id(session_id)?;
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Option<Vec<SessionEvent>>> {
             let Some(marker) = Self::latest_recovery_persistence_in_connection(&conn, session_id)?
@@ -383,7 +383,7 @@ impl SessionStore {
         cutoff: &ProjectionCutoff,
     ) -> anyhow::Result<()> {
         ensure_session_id(session_id)?;
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Vec<SessionEvent>> {
             let op = if cutoff.inclusive { ">=" } else { ">" };

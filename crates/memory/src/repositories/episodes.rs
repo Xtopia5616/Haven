@@ -46,7 +46,7 @@ impl Database {
         let now = chrono::Utc::now().to_rfc3339();
         let topics_json = "[]";
         let entities_json = "[]";
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<()> {
             conn.execute(
@@ -113,7 +113,7 @@ impl Database {
         let now = chrono::Utc::now().to_rfc3339();
         let topics_json = serde_json::to_string(topics).unwrap_or_else(|_| "[]".into());
         let entities_json = serde_json::to_string(entities).unwrap_or_else(|_| "[]".into());
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "INSERT INTO memory_items (id, session_id, kind, content, topics, entities, created_at)
              VALUES (?1, ?2, 'episode_summary', ?3, ?4, ?5, ?6)",

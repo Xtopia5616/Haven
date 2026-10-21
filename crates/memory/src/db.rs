@@ -14,8 +14,31 @@ thread_local! {
     /// cancellable blocking operation. SQLite exposes interruption at the
     /// connection boundary, so the registry is scoped to the blocking worker
     /// rather than stored on `Database` globally.
-    static ACTIVE_DB_INTERRUPTS: RefCell<Option<Arc<Mutex<Vec<InterruptHandle>>>>>
+    static ACTIVE_DB_INTERRUPTS: RefCell<Option<Arc<DbCancellation>>>
         = const { RefCell::new(None) };
+}
+
+struct DbCancellation {
+    cancel: CancellationToken,
+    interrupts: Mutex<Vec<InterruptHandle>>,
+}
+
+fn check_cancellation() -> anyhow::Result<()> {
+    ACTIVE_DB_INTERRUPTS.with(|active| {
+        if let Some(active) = active.borrow().as_ref() {
+            anyhow::ensure!(!active.cancel.is_cancelled(), "SQLite operation cancelled");
+        }
+        Ok(())
+    })
+}
+
+// Restore the worker-local scope even when a repository panics.
+struct CancellationScope(Option<Arc<DbCancellation>>);
+
+impl Drop for CancellationScope {
+    fn drop(&mut self) {
+        ACTIVE_DB_INTERRUPTS.with(|active| active.replace(self.0.take()));
+    }
 }
 
 fn register_interrupt_handle(conn: &Connection) {
@@ -28,7 +51,14 @@ fn register_interrupt_handle(conn: &Connection) {
         // observed even on builds where sqlite3_interrupt does not wake a
         // busy-handler sleep immediately.
         let _ = conn.busy_timeout(Duration::from_millis(100));
-        if let Ok(mut handles) = active.lock() {
+        // An interrupt only affects currently running SQLite calls. A progress
+        // handler also rejects later statements (including cached statements,
+        // BEGIN and COMMIT) after cancellation, even if no call was running
+        // when the interrupt was issued. Check every VM instruction so short
+        // writes cannot slip through between cancellation and execution.
+        let cancel = active.cancel.clone();
+        conn.progress_handler(1, Some(move || cancel.is_cancelled()));
+        if let Ok(mut handles) = active.interrupts.lock() {
             handles.push(conn.get_interrupt_handle());
         }
     });
@@ -37,7 +67,7 @@ fn register_interrupt_handle(conn: &Connection) {
 fn unregister_interrupt_handle() {
     ACTIVE_DB_INTERRUPTS.with(|active| {
         if let Some(active) = active.borrow().as_ref().cloned()
-            && let Ok(mut handles) = active.lock()
+            && let Ok(mut handles) = active.interrupts.lock()
         {
             // DB repository methods check out one connection at a time on a
             // blocking worker, so the registry behaves as a small stack.
@@ -110,13 +140,17 @@ impl ConnectionPool {
             .lock()
             .map_err(|_| anyhow::anyhow!("database pool lock poisoned"))?;
         loop {
+            check_cancellation()?;
             if let Some(conn) = st.idle.pop() {
                 st.active += 1;
-                register_interrupt_handle(&conn);
-                return Ok(PooledConnection {
+                drop(st);
+                let pooled = PooledConnection {
                     pool: self,
                     conn: Some(conn),
-                });
+                };
+                register_interrupt_handle(&pooled);
+                check_cancellation()?;
+                return Ok(pooled);
             }
             if st.active < self.max {
                 st.active += 1;
@@ -133,22 +167,29 @@ impl ConnectionPool {
                         return Err(e);
                     }
                 };
-                register_interrupt_handle(&conn);
-                return Ok(PooledConnection {
+                let pooled = PooledConnection {
                     pool: self,
                     conn: Some(conn),
-                });
+                };
+                register_interrupt_handle(&pooled);
+                check_cancellation()?;
+                return Ok(pooled);
             }
-            // All connections are checked out. Some callers reach `conn()`
-            // directly from async runtime threads (tools, commands), so a
-            // long wait here occupies a tokio worker; log once per 30s to
-            // keep the stall observable instead of silently hanging.
+            // All connections are checked out. Poll cancellable waits so they
+            // can exit without a connection being returned. Direct callers on
+            // runtime threads retain the 30s warning for an exhausted pool.
+            let cancellable = ACTIVE_DB_INTERRUPTS.with(|active| active.borrow().is_some());
+            let wait = if cancellable {
+                Duration::from_millis(25)
+            } else {
+                Duration::from_secs(30)
+            };
             let (new_st, timeout) = self
                 .cv
-                .wait_timeout(st, Duration::from_secs(30))
+                .wait_timeout(st, wait)
                 .map_err(|_| anyhow::anyhow!("database pool lock poisoned"))?;
             st = new_st;
-            if timeout.timed_out() {
+            if timeout.timed_out() && !cancellable {
                 tracing::warn!(
                     "database pool exhausted ({} connections in use) for 30s; \
                      the waiting caller is stalled on a runtime thread",
@@ -179,6 +220,9 @@ impl Drop for PooledConnection<'_> {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
             unregister_interrupt_handle();
+            // Cleanup must remain executable after cancellation, and pooled
+            // connections must not retain another operation's token.
+            conn.progress_handler(0, None::<fn() -> bool>);
             // Defensive rollback: a caller whose transaction failed midway
             // (e.g. `delete_all_sessions` propagates errors without ROLLBACK) would
             // otherwise re-pool a connection with a write transaction still
@@ -322,15 +366,19 @@ impl Database {
         self.checkout_connection()
     }
 
-    #[cfg(not(feature = "test-support"))]
+    #[cfg(all(test, not(feature = "test-support")))]
     pub(crate) fn conn(&self) -> PooledConnection<'_> {
         self.checkout_connection()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn checkout_connection(&self) -> PooledConnection<'_> {
-        self.pool
-            .get()
+        self.try_conn()
             .expect("database connection checkout failed")
+    }
+
+    pub(crate) fn try_conn(&self) -> anyhow::Result<PooledConnection<'_>> {
+        self.pool.get()
     }
 
     /// Run one fact-graph mutation while excluding other fact mutations issued
@@ -344,6 +392,7 @@ impl Database {
             .fact_write_gate
             .lock()
             .map_err(|_| anyhow::anyhow!("fact write gate poisoned"))?;
+        check_cancellation()?;
         f()
     }
 
@@ -377,6 +426,9 @@ impl Database {
     ///
     /// Dropping a future cannot stop `spawn_blocking`; registering the
     /// connection interrupt handles closes that gap for busy reads/writes.
+    /// Cancellation is checked before starting the closure, while waiting for
+    /// a connection, after checkout, and by SQLite's progress handler for every
+    /// subsequent statement. Repository checkout errors propagate normally.
     /// The bounded join keeps a broken pool/extension from holding the async
     /// caller forever. In that exceptional case the worker remains detached,
     /// but the caller receives an explicit failure instead of a false success.
@@ -390,21 +442,24 @@ impl Database {
         F: FnOnce(&Database) -> anyhow::Result<T> + Send + 'static,
     {
         let db = self.clone();
-        let interrupts = Arc::new(Mutex::new(Vec::<InterruptHandle>::new()));
+        anyhow::ensure!(!cancel.is_cancelled(), "SQLite operation cancelled");
+        let interrupts = Arc::new(DbCancellation {
+            cancel: cancel.clone(),
+            interrupts: Mutex::new(Vec::new()),
+        });
         let worker_interrupts = interrupts.clone();
         let mut task = tokio::task::spawn_blocking(move || {
-            ACTIVE_DB_INTERRUPTS.with(|active| {
-                let previous = active.replace(Some(worker_interrupts));
-                let result = f(&db);
-                active.replace(previous);
-                result
-            })
+            let _scope = CancellationScope(
+                ACTIVE_DB_INTERRUPTS.with(|active| active.replace(Some(worker_interrupts))),
+            );
+            check_cancellation()?;
+            f(&db)
         });
 
         tokio::select! {
             result = &mut task => result?,
             _ = cancel.cancelled() => {
-                if let Ok(handles) = interrupts.lock() {
+                if let Ok(handles) = interrupts.interrupts.lock() {
                     for handle in handles.iter() {
                         handle.interrupt();
                     }
@@ -735,6 +790,155 @@ mod tests {
         let conn = db.conn();
         let count: i32 = conn.query_row("SELECT 1", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn cancellation_rejects_later_statements_and_rolls_back_transactions() {
+        for phase in 0..3 {
+            let db = Arc::new(Database::open_in_memory().unwrap());
+            let session = db.create_session("input").unwrap();
+            let cancel = CancellationToken::new();
+            let worker_cancel = cancel.clone();
+            let session_id = session.session_id.clone();
+            let result = db
+                .run_blocking_cancellable(cancel, move |db| {
+                    let conn = db.try_conn()?;
+                    // Prepare before cancelling to cover cached SQL as well.
+                    let mut write = conn
+                        .prepare_cached("UPDATE sessions SET input_text = 'late' WHERE id = ?1")?;
+                    if phase == 0 {
+                        worker_cancel.cancel();
+                    }
+                    conn.execute_batch("BEGIN IMMEDIATE")?;
+                    if phase == 1 {
+                        worker_cancel.cancel();
+                    }
+                    write.execute([session_id])?;
+                    if phase == 2 {
+                        worker_cancel.cancel();
+                    }
+                    conn.execute_batch("COMMIT")?;
+                    Ok(())
+                })
+                .await;
+            assert!(result.is_err(), "cancellation phase {phase} must fail");
+            let conn = db.conn();
+            assert!(conn.is_autocommit(), "cancelled transaction must be closed");
+            let input: String = conn
+                .query_row("SELECT input_text FROM sessions", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(input, "input", "phase {phase} must not commit a late write");
+            conn.execute("UPDATE sessions SET input_text = 'reused'", [])
+                .expect("pooled connection must not retain cancellation hooks");
+        }
+    }
+
+    #[test]
+    fn cancellation_while_blocking_worker_is_queued_skips_closure() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            });
+            started_rx.await.unwrap();
+            let db = Arc::new(Database::open_in_memory().unwrap());
+            let cancel = CancellationToken::new();
+            let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker_called = called.clone();
+            let operation = db.run_blocking_cancellable(cancel.clone(), move |_| {
+                worker_called.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+            tokio::pin!(operation);
+            tokio::select! {
+                biased;
+                _ = &mut operation => panic!("worker must be queued"),
+                _ = tokio::task::yield_now() => {}
+            }
+            cancel.cancel();
+            release_tx.send(()).unwrap();
+            assert!(operation.await.is_err());
+            blocker.await.unwrap();
+            assert!(!called.load(Ordering::SeqCst));
+        });
+    }
+
+    #[test]
+    fn cancellation_during_connection_open_returns_capacity_without_checkout() {
+        let cancel = CancellationToken::new();
+        let opener_cancel = cancel.clone();
+        let pool = ConnectionPool::with_initial(
+            1,
+            Box::new(move || {
+                opener_cancel.cancel();
+                Ok(Connection::open_in_memory()?)
+            }),
+            None,
+        );
+        let scope = CancellationScope(ACTIVE_DB_INTERRUPTS.with(|active| {
+            active.replace(Some(Arc::new(DbCancellation {
+                cancel,
+                interrupts: Mutex::new(Vec::new()),
+            })))
+        }));
+        assert!(pool.get().is_err());
+        drop(scope);
+        let conn = pool
+            .get()
+            .expect("cancelled opener must return pool capacity");
+        conn.execute_batch("CREATE TABLE reused (value INTEGER)")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_pool_wait_cannot_write_checkpoint_after_connection_release() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("input").unwrap();
+        let held = db.conn();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, mut finished_rx) = tokio::sync::oneshot::channel();
+        let cancel = CancellationToken::new();
+        let operation = {
+            let db = db.clone();
+            let cancel = cancel.clone();
+            let session_id = session.session_id.clone();
+            tokio::spawn(async move {
+                db.run_blocking_cancellable(cancel, move |db| {
+                    let _ = started_tx.send(());
+                    let result = db.checkpoint_memory_event_cursor(&session_id, 7);
+                    let _ = finished_tx.send(());
+                    result
+                })
+                .await
+            })
+        };
+        started_rx.await.unwrap();
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(3), operation)
+            .await
+            .expect("cancelled checkout must return while the pool is exhausted")
+            .unwrap();
+        assert!(
+            finished_rx.try_recv().is_ok(),
+            "cancelled pool waiter must exit before the connection is released"
+        );
+        drop(held);
+        assert!(result.is_err());
+        assert_eq!(
+            db.memory_event_cursor_optional(&session.session_id)
+                .unwrap(),
+            None,
+            "a cancelled pool waiter must never write a late checkpoint"
+        );
+        db.checkpoint_memory_event_cursor(&session.session_id, 8)
+            .unwrap();
     }
 
     #[tokio::test]

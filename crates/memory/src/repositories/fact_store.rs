@@ -128,7 +128,7 @@ impl MemoryFactStore {
         let episode_id = episode_id.to_owned();
         self.db
             .run_blocking(move |db| {
-                let conn = db.conn();
+                let conn = db.try_conn()?;
                 ensure_episode_summary_owner(&conn, &session_id, &episode_id)?;
                 Ok(conn
                     .query_row(

@@ -38,7 +38,7 @@ impl SessionStore {
                 )
             })
             .collect::<Vec<_>>();
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<(Vec<LlmUsageRecord>, Vec<SessionEvent>)> {
             let mut previous_created_at: Option<String> = None;
@@ -112,7 +112,7 @@ impl SessionStore {
         );
         let payload = serde_json::json!({ "usage_id": usage_id }).to_string();
         let input = SessionEventInput::new(USAGE_DISCARDED_EVENT_TYPE, payload);
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<SessionEvent> {
             let mut events = Self::append_batch_in_transaction(&conn, session_id, &[input])?;

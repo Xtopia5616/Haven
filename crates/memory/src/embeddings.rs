@@ -322,7 +322,7 @@ impl Database {
             return Ok(());
         }
         let stored_model = pending_model.as_deref().unwrap_or(model);
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         // A pending batch is the only production write path. Recheck the
         // owner and its current surface text under the same write transaction
         // that persists the vector: deletion or SPO/content update while the
@@ -433,7 +433,7 @@ impl Database {
         if model.is_empty() {
             return Ok(0);
         }
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let n: i64 = conn.query_row(
             &format!(
                 "SELECT COUNT(*) FROM memory_embeddings
@@ -465,7 +465,7 @@ impl Database {
         model: Option<&str>,
     ) -> anyhow::Result<Option<EmbeddedText>> {
         validate_entity_id(entity_type, entity_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         if let Some(model) = model.filter(|m| !m.is_empty()) {
             let mut stmt = conn.prepare(&format!(
                 "SELECT {EMBED_COLS} FROM memory_embeddings
@@ -502,7 +502,7 @@ impl Database {
         }
         let key = format!("_embeddings_{}", entity_type);
         let cache_gen = self.cache_generation(&key);
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {EMBED_COLS} FROM memory_embeddings WHERE entity_type = ?1
              AND {} ORDER BY updated_at DESC, entity_id ASC, model ASC",
@@ -556,7 +556,7 @@ impl Database {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let ids = match entity_type {
             entity_kind::FACT => {
                 let mut stmt = conn.prepare(
@@ -603,7 +603,7 @@ impl Database {
     /// Embeddable surface text for a fact: `subject predicate object`.
     pub fn fact_text_by_id(&self, fact_id: &str) -> anyhow::Result<Option<String>> {
         validate_entity_id(entity_kind::FACT, fact_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let text = match conn.query_row(
             "SELECT subject || ' ' || predicate || ' ' || object FROM facts WHERE id = ?1",
             rusqlite::params![fact_id],
@@ -622,7 +622,7 @@ impl Database {
             haven_common::types::is_canonical_id(entity_id, "msg"),
             "invalid episode id"
         );
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let content = match conn.query_row(
             "SELECT content FROM memory_items WHERE id = ?1",
             rusqlite::params![entity_id],
@@ -730,7 +730,7 @@ impl Database {
         if model.is_empty() || embed_count < ANN_ACTIVATE_MIN {
             return Ok(false);
         }
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let lsh_count: i64 = conn.query_row(
             &format!(
                 "SELECT COUNT(*) FROM embedding_lsh l
@@ -755,7 +755,7 @@ impl Database {
         if model.is_empty() {
             return Ok(false);
         }
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let embeds: i64 = conn.query_row(
             &format!(
                 "SELECT COUNT(*) FROM memory_embeddings
@@ -846,7 +846,7 @@ impl Database {
         bind.push(Box::new(probe_cap as i64));
 
         let out = {
-            let conn = self.conn();
+            let conn = self.try_conn()?;
             let mut stmt = conn.prepare(&sql)?;
             let params: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
             let rows = stmt.query_map(params.as_slice(), row_to_embedded)?;
@@ -894,7 +894,7 @@ impl Database {
             return Ok(filtered_embeddings.into_iter().take(scan_cap).collect());
         }
 
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         match (entity_type, fact_subject, exclude_session_id) {
             (entity_kind::FACT, Some(subject), _) => {
                 let mut stmt = conn.prepare(
@@ -1094,7 +1094,7 @@ impl Database {
             })
         };
         let item = fts_kind::ITEM;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         if let Some(sid) = exclude_session_id {
             let sql = format!(
                 "SELECT e.id, e.content, e.topics, e.entities, e.created_at
@@ -1130,7 +1130,7 @@ impl Database {
         exclude_session_id: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<EpisodeSearchCandidate>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let map_row = |r: &rusqlite::Row| -> rusqlite::Result<EpisodeSearchCandidate> {
             let id: String = r.get(0)?;
             let content: String = r.get(1)?;
@@ -1165,7 +1165,7 @@ impl Database {
 
     /// Distinct embedding model names currently in the vector index.
     pub fn list_embedding_models(&self) -> anyhow::Result<Vec<String>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT DISTINCT model FROM memory_embeddings e WHERE {}",
             live_owner_filter("e")
@@ -1181,7 +1181,7 @@ impl Database {
         if model.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT DISTINCT length(vector) FROM memory_embeddings e
              WHERE model = ?1 AND {}",
@@ -1205,7 +1205,7 @@ impl Database {
     /// mismatch makes cosine similarity degenerate), so the index is rebuilt
     /// from scratch on the next embedding pass.
     pub fn clear_embeddings(&self) -> anyhow::Result<u64> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<u64> {
             let deleted = conn.execute("DELETE FROM memory_embeddings", [])? as u64;
@@ -1234,7 +1234,7 @@ impl Database {
     /// Remove embeddings whose owning entity no longer exists (facts/items
     /// deleted). Keeps the index from growing unbounded around pruned memory.
     pub fn prune_orphaned_embeddings(&self) -> anyhow::Result<u64> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<(u64, u64)> {
             let deleted = conn.execute(
@@ -1282,7 +1282,7 @@ impl Database {
             return Ok(0);
         }
         let rows: Vec<(String, String, Vec<f32>)> = {
-            let conn = self.conn();
+            let conn = self.try_conn()?;
             let sql = format!(
                 "SELECT entity_type, entity_id, vector FROM memory_embeddings e
                  WHERE model = ?1 AND {}",
@@ -1297,7 +1297,7 @@ impl Database {
             })?;
             mapped.collect::<Result<Vec<_>, _>>()?
         };
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<u64> {
             let mut n = 0u64;

@@ -106,7 +106,7 @@ impl SessionStore {
         ensure_domain_event_types(events)?;
         Self::validate_inputs(events)?;
         let now = Utc::now().to_rfc3339();
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
             let changed = conn.execute(
@@ -158,7 +158,7 @@ impl SessionStore {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = Self::append_batch_in_transaction(&conn, session_id, events);
         match result {
@@ -240,7 +240,7 @@ impl SessionStore {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Option<Vec<SessionEvent>>> {
             let latest_sequence: i64 = conn.query_row(

@@ -171,7 +171,7 @@ impl Database {
     /// events after this operation and then replays durable session events.
     pub fn baseline_missing_memory_event_cursors_to_latest(&self) -> anyhow::Result<usize> {
         let now = Utc::now().to_rfc3339();
-        Ok(self.conn().execute(
+        Ok(self.try_conn()?.execute(
             "INSERT OR IGNORE INTO kv_store (key, value, updated_at)
              SELECT 'memory_event_cursor.' || s.id,
                     CAST(COALESCE(MAX(e.sequence), 0) AS TEXT),
@@ -189,7 +189,7 @@ impl Database {
 
     pub fn set_kv(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "INSERT INTO kv_store (key, value, updated_at)
              VALUES (?1, ?2, ?3)
@@ -200,7 +200,7 @@ impl Database {
     }
 
     pub fn get_kv(&self, key: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare("SELECT value FROM kv_store WHERE key = ?1")?;
         let mut rows = stmt.query(rusqlite::params![key])?;
         match rows.next()? {
@@ -239,7 +239,7 @@ impl Database {
         anyhow::ensure!(sequence >= 0, "memory event cursor cannot be negative");
         let key = memory_event_cursor_key(session_id)?;
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let inserted = conn.execute(
             "INSERT OR IGNORE INTO kv_store (key, value, updated_at) VALUES (?1, ?2, ?3)",
             rusqlite::params![key, sequence.to_string(), now],
@@ -270,7 +270,7 @@ impl Database {
         anyhow::ensure!(sequence >= 0, "memory event cursor cannot be negative");
         let key = memory_event_cursor_key(session_id)?;
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<()> {
             let stored_value: Option<String> = conn
@@ -309,7 +309,7 @@ impl Database {
     #[cfg(test)]
     pub(crate) fn clear_memory_event_cursor(&self, session_id: &str) -> anyhow::Result<()> {
         let key = memory_event_cursor_key(session_id)?;
-        self.conn().execute(
+        self.try_conn()?.execute(
             "DELETE FROM kv_store WHERE key = ?1",
             rusqlite::params![key],
         )?;
@@ -331,7 +331,7 @@ impl Database {
     ) -> anyhow::Result<()> {
         anyhow::ensure!(event_sequence > 0, "event sequence must be positive");
         let key = fact_extraction_pending_key(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<()> {
             let previous_value: Option<String> = conn
@@ -403,7 +403,7 @@ impl Database {
 
     pub fn pending_fact_extraction_high_water(&self) -> anyhow::Result<Option<String>> {
         let prefix = "fact_extraction_pending.";
-        Ok(self.conn().query_row(
+        Ok(self.try_conn()?.query_row(
             "SELECT MAX(key) FROM kv_store WHERE key >= ?1 AND key < ?2",
             rusqlite::params![prefix, "fact_extraction_pending/"],
             |row| row.get(0),
@@ -420,7 +420,7 @@ impl Database {
             (1..=MAX_MEMORY_OUTBOX_PAGE_SIZE).contains(&limit),
             "fact outbox page limit must be between 1 and {MAX_MEMORY_OUTBOX_PAGE_SIZE}"
         );
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT k.key, k.value, substr(k.key, 25)
              FROM kv_store k
@@ -471,7 +471,7 @@ impl Database {
         if clear_bypass_throttle {
             state.bypass_throttle = false;
         }
-        let changed = self.conn().execute(
+        let changed = self.try_conn()?.execute(
             "UPDATE kv_store SET value = ?3, updated_at = ?4
              WHERE key = ?1 AND value = ?2",
             rusqlite::params![
@@ -490,7 +490,7 @@ impl Database {
         expected_value: &str,
     ) -> anyhow::Result<bool> {
         fact_extraction_session_id_from_key(key)?;
-        let changed = self.conn().execute(
+        let changed = self.try_conn()?.execute(
             "DELETE FROM kv_store WHERE key = ?1 AND value = ?2",
             rusqlite::params![key, expected_value],
         )?;
@@ -508,7 +508,7 @@ impl Database {
     ) -> anyhow::Result<bool> {
         anyhow::ensure!(event_sequence >= 0, "event sequence must not be negative");
         let key = fact_extraction_pending_key(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let current: Option<String> = conn
             .query_row("SELECT value FROM kv_store WHERE key = ?1", [&key], |row| {
                 row.get(0)
@@ -528,7 +528,7 @@ impl Database {
     /// Load durable compaction-summary extraction jobs. The episode id is
     /// encoded in the key while the value keeps session cleanup inexpensive.
     pub fn pending_summary_extraction_high_water(&self) -> anyhow::Result<Option<String>> {
-        Ok(self.conn().query_row(
+        Ok(self.try_conn()?.query_row(
             "SELECT MAX(key) FROM kv_store WHERE key >= ?1 AND key < ?2",
             rusqlite::params![
                 "fact_extraction_episode_pending.",
@@ -549,7 +549,7 @@ impl Database {
             "summary outbox page limit must be between 1 and {MAX_MEMORY_OUTBOX_PAGE_SIZE}"
         );
         let prefix = "fact_extraction_episode_pending.";
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT key, value FROM kv_store
              WHERE key >= 'fact_extraction_episode_pending.'
@@ -609,7 +609,7 @@ impl Database {
             marker.session_id == session_id,
             "summary marker key/value identity mismatch"
         );
-        let changed = self.conn().execute(
+        let changed = self.try_conn()?.execute(
             "UPDATE kv_store SET value = ?3, updated_at = ?4
              WHERE key = ?1 AND value = ?2",
             rusqlite::params![
@@ -633,7 +633,7 @@ impl Database {
             marker.session_id == session_id,
             "summary marker key/value identity mismatch"
         );
-        let changed = self.conn().execute(
+        let changed = self.try_conn()?.execute(
             "DELETE FROM kv_store WHERE key = ?1 AND value = ?2",
             rusqlite::params![key, expected_value],
         )?;
@@ -650,7 +650,7 @@ impl Database {
     ) -> anyhow::Result<bool> {
         let (session_id, episode_id) = summary_extraction_identity_from_key(key)?;
 
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<bool> {
             let owner: Option<String> = conn
@@ -708,7 +708,7 @@ impl Database {
         episode_id: &str,
     ) -> anyhow::Result<()> {
         let key = summary_extraction_pending_key(session_id, episode_id)?;
-        self.conn().execute(
+        self.try_conn()?.execute(
             "DELETE FROM kv_store WHERE key = ?1",
             rusqlite::params![key],
         )?;
@@ -724,7 +724,7 @@ impl Database {
     /// Called during memory maintenance so the kv table does not grow without
     /// bound. Session retention uses the same connection-level cleanup rule.
     pub fn cleanup_orphan_extraction_cursors(&self) -> anyhow::Result<u64> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         cleanup_orphan_session_scoped_state_on(&conn)
     }
 }

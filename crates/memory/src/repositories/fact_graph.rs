@@ -156,7 +156,7 @@ impl<'db> FactGraph<'db> {
         source_ref: Option<&FactSourceRef>,
         durability: f64,
     ) -> anyhow::Result<Fact> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         self.insert_with_source_ref_on_connection(
             &conn, subject, predicate, object, source, confidence, tags, source_ref, durability,
         )
@@ -329,7 +329,7 @@ impl<'db> FactGraph<'db> {
         // single-valued fact after the old value was deleted.
         let subject_id = self.db.ensure_node(node_kind_for_label(subject), subject)?;
         let object_id = self.db.ensure_node(node_kind_for_label(object), object)?;
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<(Fact, bool)> {
             let existing: Option<Fact> = conn
@@ -415,7 +415,7 @@ impl<'db> FactGraph<'db> {
         object: Option<&str>,
     ) -> anyhow::Result<u64> {
         let predicate = normalize_predicate(predicate);
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         let deleted = match object {
             Some(obj) => conn.execute(
                 "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
@@ -443,7 +443,7 @@ impl<'db> FactGraph<'db> {
         tags: &[&str],
     ) -> anyhow::Result<Fact> {
         let existing: Option<Fact> = {
-            let conn = self.db.conn();
+            let conn = self.db.try_conn()?;
             conn.query_row(
                 &format!(
                     "SELECT {FACT_COLS} FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3"
@@ -474,7 +474,7 @@ impl<'db> FactGraph<'db> {
         source_ref: Option<&FactSourceRef>,
         durability: f64,
     ) -> anyhow::Result<UpsertOutcome> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         self.upsert_on_connection(
             &conn, subject, predicate, object, source, confidence, tags, source_ref, durability,
         )
@@ -517,7 +517,7 @@ impl<'db> FactGraph<'db> {
             "new fact confidence floor must be finite and between 0 and 1"
         );
 
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         in_immediate_transaction(&conn, |conn| {
             if !should_apply(conn)? {
                 return Ok(false);
@@ -729,7 +729,7 @@ impl<'db> FactGraph<'db> {
     }
 
     pub(crate) fn delete_fact_by_id(&self, fact_id: &str) -> anyhow::Result<()> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         let subject: Option<String> = conn
             .query_row(
                 "SELECT subject FROM facts WHERE id = ?1",
@@ -750,7 +750,7 @@ impl<'db> FactGraph<'db> {
     }
 
     pub(crate) fn clear_all(&self) -> anyhow::Result<u64> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         let deleted = conn.execute("DELETE FROM facts", [])? as u64;
         self.db.cache_invalidate_all_facts();
         self.db

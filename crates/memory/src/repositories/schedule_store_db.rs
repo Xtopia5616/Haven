@@ -43,7 +43,7 @@ impl Database {
         let now = now_rfc3339_millis();
         let schedule_type = input.schedule_type.as_str();
         let mode = input.mode.as_str();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<SchedulePlanRow> {
             let owner_exists: bool = conn.query_row(
@@ -149,7 +149,7 @@ impl Database {
              WHERE owner_session_id = ?1 AND enabled = 1
              ORDER BY COALESCE(next_due_at, due_at), created_at, id"
         );
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut statement = conn.prepare(&sql)?;
         let rows = statement.query_map([owner_session_id], plan_from_row)?;
         let mut plans = Vec::new();
@@ -166,7 +166,7 @@ impl Database {
             "SELECT {PLAN_COLUMNS} FROM schedules WHERE enabled = 1
              ORDER BY COALESCE(next_due_at, due_at), created_at, id"
         );
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut statement = conn.prepare(&sql)?;
         let rows = statement.query_map([], plan_from_row)?;
         let mut plans = Vec::new();
@@ -183,7 +183,7 @@ impl Database {
             "SELECT {RUN_COLUMNS} FROM schedule_runs
              WHERE status IN ('waiting','running') ORDER BY due_at, created_at, id"
         );
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut statement = conn.prepare(&sql)?;
         let rows = statement.query_map([], run_from_row)?;
         let mut runs = Vec::new();
@@ -202,7 +202,7 @@ impl Database {
             "invalid schedule_run_id"
         );
         let sql = format!("SELECT {RUN_COLUMNS} FROM schedule_runs WHERE id = ?1");
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let row = conn
             .query_row(&sql, [schedule_run_id], run_from_row)
             .optional()?;
@@ -222,7 +222,7 @@ impl Database {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit.min(128))?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Vec<ScheduleRunFired>> {
             let due = {
@@ -365,7 +365,7 @@ impl Database {
             "invalid owner_session_id"
         );
         let finished_at = canonical_timestamp(finished_at, "finished_at")?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<bool> {
             let plan: Option<(Option<String>, bool)> = conn
@@ -430,7 +430,7 @@ impl Database {
                 || (claim_id == schedule_run_id && is_canonical_id(claim_id, "schrun")),
             "invalid claim_id: expected canonical conf- ID or the claimed schrun- ID"
         );
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<bool> {
             let running: bool = conn.query_row(
@@ -479,7 +479,7 @@ impl Database {
                 || (claim_id == schedule_run_id && is_canonical_id(claim_id, "schrun")),
             "invalid claim_id"
         );
-        Ok(self.conn().execute(
+        Ok(self.try_conn()?.execute(
             "DELETE FROM schedule_execution_claims WHERE schedule_run_id = ?1 AND claim_id = ?2
              AND EXISTS(SELECT 1 FROM schedule_runs WHERE id = ?1 AND status = 'running')",
             rusqlite::params![schedule_run_id, claim_id],
@@ -503,7 +503,7 @@ impl Database {
             "ScheduleRun terminal status is required"
         );
         let finished_at = canonical_timestamp(finished_at, "finished_at")?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<bool> {
             let meta: Option<(String, String)> = conn

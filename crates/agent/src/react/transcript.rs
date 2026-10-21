@@ -552,12 +552,13 @@ impl ReActEngine {
                 ctx.run_id,
                 ctx.step_number,
             );
+            // Outcome persistence is cleanup independent of the cancelled turn.
+            // If its own future is abandoned (e.g. cleanup grace expires), the
+            // guard cancels queued/running SQL so it cannot write later.
+            let cleanup_cancel = tokio_util::sync::CancellationToken::new();
+            let _cleanup_guard = cleanup_cancel.clone().drop_guard();
             self.event_store
-                .commit_transcript_cancellable(
-                    &ctx.session_id,
-                    committed,
-                    state.turn_cancel.clone(),
-                )
+                .commit_transcript_cancellable(&ctx.session_id, committed, Some(cleanup_cancel))
                 .await?
         };
         self.metrics.observe(

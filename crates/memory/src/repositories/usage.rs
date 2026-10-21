@@ -84,7 +84,7 @@ fn coalesced_total(
 impl Database {
     /// Load the persisted cumulative counters for a session, if any.
     pub fn get_session_usage(&self, session_id: &str) -> anyhow::Result<Option<SessionUsage>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT prompt_tokens, completion_tokens, total_tokens,
                     cached_tokens, cache_creation_tokens, cache_miss_tokens,
@@ -367,7 +367,7 @@ impl Database {
         duration_ms: Option<u64>,
     ) -> anyhow::Result<LlmUsageRecord> {
         let usage_id = haven_common::types::new_id("usage");
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<LlmUsageRecord> {
             let created_at = next_projection_created_at(&conn, session_id, None)?;
@@ -581,7 +581,7 @@ impl Database {
         context_window: Option<u32>,
     ) -> anyhow::Result<LlmUsageRecord> {
         let usage_id = haven_common::types::new_id("usage");
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<LlmUsageRecord> {
             let created_at = next_projection_created_at(&conn, session_id, None)?;
@@ -672,7 +672,7 @@ impl Database {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Vec<LlmUsageRecord>> {
             let mut delta = SessionUsageDelta::default();
@@ -745,7 +745,7 @@ impl Database {
     /// estimate_session_usage.
     #[cfg(any(test, feature = "test-support"))]
     pub fn rebuild_session_usage_from_calls(&self, session_id: &str) -> anyhow::Result<()> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         Self::rebuild_session_usage_from_calls_conn(&conn, session_id)
     }
 
@@ -753,7 +753,7 @@ impl Database {
     /// user-message rollback's `delete_messages_from` cutoff.
     #[cfg(any(test, feature = "test-support"))]
     pub fn delete_llm_usage_from(&self, session_id: &str, created_at: &str) -> anyhow::Result<()> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "DELETE FROM llm_usage WHERE session_id = ?1 AND created_at >= ?2",
             rusqlite::params![session_id, created_at],
@@ -765,7 +765,7 @@ impl Database {
     /// its session epoch was invalidated by rollback).
     #[cfg(any(test, feature = "test-support"))]
     pub fn delete_llm_usage_by_id(&self, usage_id: &str) -> anyhow::Result<()> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "DELETE FROM llm_usage WHERE id = ?1",
             rusqlite::params![usage_id],
@@ -1056,7 +1056,7 @@ impl Database {
             is_canonical_id(session_id, "ses"),
             "invalid session_id: expected canonical ses- ID"
         );
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, session_id, step_number, role, call_kind, model, prompt_tokens, completion_tokens,
                     total_tokens, cached_tokens, cache_creation_tokens, cache_miss_tokens, cache_accounting,

@@ -428,7 +428,7 @@ impl Database {
             is_message_row_identity_valid(&message_id, role),
             "message_id must be a canonical msg-* ID or an assistant step-* ID"
         );
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<(Message, Option<PendingInputDisposition>)> {
             let message = Self::insert_message_row_in_transaction(
@@ -618,7 +618,7 @@ impl Database {
     ) -> anyhow::Result<Option<Message>> {
         ensure_session_id(session_id)?;
         ensure_message_row_id(message_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.query_row(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
                     ui_metadata, voice, ingress_seq, media_inputs
@@ -638,7 +638,7 @@ impl Database {
         // Capture generation before querying DB so cache_put can detect a
         // concurrent invalidation and skip the stale-overwrite.
         let cache_gen = self.cache_generation(session_id);
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
                     ui_metadata, voice, ingress_seq, media_inputs
@@ -658,7 +658,7 @@ impl Database {
     /// long-running sessions keep their files, while assets belonging to
     /// deleted history can be removed from the process-local registry.
     pub fn list_managed_attachment_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut statement = conn.prepare(
             "SELECT ui_metadata FROM messages
              WHERE ui_metadata IS NOT NULL AND ui_metadata != ''",
@@ -706,7 +706,7 @@ impl Database {
         exclude_pending_inputs: bool,
     ) -> anyhow::Result<Vec<Message>> {
         ensure_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let sql = if exclude_pending_inputs {
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
                     ui_metadata, voice, ingress_seq, media_inputs
@@ -752,7 +752,7 @@ impl Database {
             );
         }
 
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.query_row(
             "SELECT EXISTS(
                  SELECT 1 FROM messages m
@@ -777,7 +777,7 @@ impl Database {
         session_id: &str,
     ) -> anyhow::Result<Vec<PendingSessionInput>> {
         ensure_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT m.id, m.session_id, m.role, m.content, m.message_type, m.created_at,
                     m.tool_call_id, m.ui_metadata, m.voice, m.ingress_seq, m.media_inputs,
@@ -811,7 +811,7 @@ impl Database {
     ) -> anyhow::Result<Option<PendingSessionInput>> {
         ensure_session_id(session_id)?;
         ensure_pending_message_id(message_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.query_row(
             "SELECT m.id, m.session_id, m.role, m.content, m.message_type, m.created_at,
                     m.tool_call_id, m.ui_metadata, m.voice, m.ingress_seq, m.media_inputs,
@@ -874,7 +874,7 @@ impl Database {
     pub fn delete_message_by_id(&self, session_id: &str, message_id: &str) -> anyhow::Result<()> {
         ensure_session_id(session_id)?;
         ensure_message_row_id(message_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "DELETE FROM messages WHERE id = ?1 AND session_id = ?2",
             rusqlite::params![message_id, session_id],
@@ -898,7 +898,7 @@ impl Database {
     ) -> anyhow::Result<()> {
         ensure_session_id(session_id)?;
         ensure_message_row_id(message_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "UPDATE messages SET created_at = ?1 WHERE id = ?2 AND session_id = ?3",
             rusqlite::params![created_at, message_id, session_id],
@@ -913,7 +913,7 @@ impl Database {
     #[cfg(any(test, feature = "test-support"))]
     pub fn delete_messages_after(&self, session_id: &str, created_at: &str) -> anyhow::Result<()> {
         ensure_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "DELETE FROM messages WHERE session_id = ?1 AND created_at > ?2",
             rusqlite::params![session_id, created_at],
@@ -928,7 +928,7 @@ impl Database {
     #[cfg(any(test, feature = "test-support"))]
     pub fn delete_messages_from(&self, session_id: &str, created_at: &str) -> anyhow::Result<()> {
         ensure_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "DELETE FROM messages WHERE session_id = ?1 AND created_at >= ?2",
             rusqlite::params![session_id, created_at],
@@ -954,7 +954,7 @@ impl Database {
         inclusive: bool,
     ) -> anyhow::Result<()> {
         ensure_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let op = if inclusive { ">=" } else { ">" };
         let msgs_sql = format!("DELETE FROM messages WHERE session_id = ?1 AND created_at {op} ?2");
         let steps_sql =

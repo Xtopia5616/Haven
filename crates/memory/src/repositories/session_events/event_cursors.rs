@@ -102,7 +102,7 @@ impl SessionStore {
         session_id: &str,
     ) -> anyhow::Result<SessionCursor> {
         ensure_session_id(session_id)?;
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         Self::cursor_in_connection(&conn, session_id)
     }
 }

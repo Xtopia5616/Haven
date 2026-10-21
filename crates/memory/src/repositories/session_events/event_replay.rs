@@ -48,7 +48,7 @@ impl SessionStore {
         session_id: &str,
     ) -> anyhow::Result<(Vec<SessionEvent>, i64)> {
         ensure_session_id(session_id)?;
-        let connection = self.db.conn();
+        let connection = self.db.try_conn()?;
         connection.execute_batch("BEGIN DEFERRED")?;
         let result = (|| {
             let active_events = Self::read_active_in_connection(&connection, session_id)?;
@@ -76,7 +76,7 @@ impl SessionStore {
         session_id: &str,
     ) -> anyhow::Result<Option<SessionReplayState>> {
         ensure_session_id(session_id)?;
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN")?;
         let result = (|| -> anyhow::Result<Option<SessionReplayState>> {
             let latest_sequence: i64 = conn.query_row(
@@ -191,7 +191,7 @@ impl SessionStore {
 
     fn latest_sequence_sync(&self, session_id: &str) -> anyhow::Result<i64> {
         ensure_session_id(session_id)?;
-        Ok(self.db.conn().query_row(
+        Ok(self.db.try_conn()?.query_row(
             "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
             rusqlite::params![session_id],
             |row| row.get(0),
@@ -235,7 +235,7 @@ impl SessionStore {
         session_id: &str,
         after_sequence: i64,
     ) -> anyhow::Result<Vec<SessionEvent>> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         Self::read_from_in_connection(&conn, session_id, after_sequence)
     }
 
@@ -258,7 +258,7 @@ impl SessionStore {
             "event replay page size must be between 1 and {MAX_SESSION_EVENT_REPLAY_PAGE_SIZE}"
         );
 
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT session_id, sequence, event_type, payload,
                     created_at, run_id, step_number
@@ -332,7 +332,7 @@ impl SessionStore {
     /// cursor; the underlying append-only rows remain available for audit and
     /// future branch tooling.
     pub(super) fn read_active(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         Self::read_active_in_connection(&conn, session_id)
     }
 
@@ -486,7 +486,7 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<ActiveBranchPoint>> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         Self::read_active_branch_points_in_connection(&conn, session_id)
     }
 

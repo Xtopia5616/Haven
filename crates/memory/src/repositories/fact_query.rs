@@ -198,7 +198,7 @@ impl Database {
             is_canonical_id(fact_id, "fact"),
             "fact_id must be canonical"
         );
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE id = ?1"))?;
         let mut rows = stmt.query(rusqlite::params![fact_id])?;
         match rows.next()? {
@@ -217,7 +217,7 @@ impl Database {
             fact_ids.iter().all(|id| is_canonical_id(id, "fact")),
             "fact ids must be canonical"
         );
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let placeholders: Vec<String> = (1..=fact_ids.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
             "SELECT {FACT_COLS} FROM facts WHERE id IN ({})",
@@ -239,7 +239,7 @@ impl Database {
         }
         let key = fact_subject_cache_key(subject);
         let cache_gen = self.cache_generation(&key);
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt =
             conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE subject = ?1"))?;
         let rows = stmt.query_map(rusqlite::params![subject], fact_from_row)?;
@@ -262,7 +262,7 @@ impl Database {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {FACT_COLS} FROM facts WHERE subject = ?1
              ORDER BY confidence DESC, COALESCE(last_seen_at, created_at) DESC
@@ -284,7 +284,7 @@ impl Database {
             return Ok(cached);
         }
         let cache_gen = self.cache_generation(ALL_FACTS_CACHE_KEY);
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts"))?;
         let rows = stmt.query_map([], fact_from_row)?;
         let mut facts = Vec::new();
@@ -309,7 +309,7 @@ impl Database {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let (cursor_created_at, cursor_fact_id) = cursor.unzip();
         let facts = if let Some(source) = source {
             let mut stmt = conn.prepare(&list_facts_page_sql(true))?;
@@ -331,7 +331,7 @@ impl Database {
 
     #[cfg(test)]
     pub fn list_facts_by_source(&self, source: &str) -> anyhow::Result<Vec<Fact>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE source = ?1"))?;
         let rows = stmt.query_map(rusqlite::params![source], fact_from_row)?;
         let mut facts = Vec::new();
@@ -393,7 +393,7 @@ impl Database {
         limit: Option<usize>,
         fact_subject: Option<&str>,
     ) -> anyhow::Result<Vec<Fact>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let fact = crate::embeddings::fts_kind::FACT;
         let (fts_sql, bind_limit) = if let Some(lim) = limit {
             (
@@ -447,7 +447,7 @@ impl Database {
         if terms.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut clauses = Vec::with_capacity(terms.len());
         let mut patterns: Vec<String> = Vec::with_capacity(terms.len());
         for (i, term) in terms.iter().enumerate() {
@@ -571,7 +571,7 @@ impl Database {
     /// membership rather than a substring scan.
     #[cfg(any(test, feature = "test-support"))]
     pub fn list_facts_by_tag(&self, tag: &str) -> anyhow::Result<Vec<Fact>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {FACT_COLS} FROM facts
              WHERE EXISTS (SELECT 1 FROM json_each(facts.tags) AS te WHERE te.value = ?1)"

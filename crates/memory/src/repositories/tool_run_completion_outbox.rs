@@ -55,7 +55,7 @@ impl Database {
     /// crash-recovery half of the outbox: a process can die after the ToolRun
     /// row commits but before the completion record is inserted.
     pub(crate) fn reconcile_tool_run_completion_outbox(&self) -> anyhow::Result<()> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, kind, tool_name, session_id, source_step_id, status, output,
                     error, error_reason, log_path, started_at, finished_at
@@ -141,7 +141,7 @@ impl Database {
     /// crashed agent consumer does not strand a durable result forever.
     pub fn claim_tool_run_completion(&self) -> anyhow::Result<Option<ToolRunCompletionOutboxRow>> {
         self.reconcile_tool_run_completion_outbox()?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
             let row = conn
@@ -228,7 +228,7 @@ impl Database {
         &self,
         tool_run_result_id: &str,
     ) -> anyhow::Result<bool> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let changed = conn.execute(
             "UPDATE tool_run_completion_outbox
              SET delivered_at = datetime('now'), claimed_until = NULL
@@ -246,7 +246,7 @@ impl Database {
         &self,
         tool_run_result_id: &str,
     ) -> anyhow::Result<bool> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let changed = conn.execute(
             "UPDATE tool_run_completion_outbox
              SET delivered_at = datetime('now'), claimed_until = NULL

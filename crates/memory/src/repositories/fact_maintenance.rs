@@ -54,7 +54,7 @@ impl<'db> FactMaintenance<'db> {
 
     /// Distinct predicates with row counts, highest count first (M6).
     pub(crate) fn list_predicate_counts(&self) -> anyhow::Result<Vec<PredicateCount>> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT predicate, COUNT(*) AS n FROM facts
              GROUP BY predicate
@@ -78,7 +78,7 @@ impl<'db> FactMaintenance<'db> {
             return Ok(0);
         }
         let updated = {
-            let conn = self.db.conn();
+            let conn = self.db.try_conn()?;
             conn.execute(
                 "UPDATE facts SET predicate = ?1 WHERE predicate = ?2",
                 rusqlite::params![to, from],
@@ -100,7 +100,7 @@ impl<'db> FactMaintenance<'db> {
         // Only load rows that participate in duplicate groups (not the full
         // table), merge tags onto the keeper, then collapse with the same
         // window DELETE used by migrate_v2.
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {FACT_COLS} FROM facts
              WHERE (subject, predicate, object) IN (
@@ -183,7 +183,7 @@ impl<'db> FactMaintenance<'db> {
     /// Remove facts whose predicate or object looks like a credential. This
     /// is a data purge, not merely a prompt filtering operation.
     pub(crate) fn delete_sensitive_facts(&self) -> anyhow::Result<u64> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         let sensitive_where = sensitive_fact_where_sql();
         let deleted =
             conn.execute(&format!("DELETE FROM facts WHERE {sensitive_where}"), [])? as u64;
@@ -201,7 +201,7 @@ impl<'db> FactMaintenance<'db> {
         // RFC3339 strings sort lexicographically, so SQL filters out the grace
         // window before exact effective-confidence calculation in Rust.
         let cutoff = (Utc::now() - chrono::Duration::days(1)).to_rfc3339();
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {FACT_COLS} FROM facts
              WHERE COALESCE(last_seen_at, created_at) <= ?1"
@@ -231,7 +231,7 @@ impl<'db> FactMaintenance<'db> {
     /// Normalize empty provenance_record_id strings. Opaque transcript ids
     /// remain untouched; item provenance is handled by the FK.
     pub(crate) fn cleanup_orphan_source_refs(&self) -> anyhow::Result<u64> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         let n = conn.execute(
             "UPDATE facts
              SET provenance_record_id = NULL
@@ -291,7 +291,7 @@ impl<'db> FactMaintenance<'db> {
             return Ok(0);
         }
         let factor = factor.clamp(0.0, 1.0);
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         let placeholders = vec!["?"; fact_ids.len()].join(",");
         // Params: factor first, then fact ids (all anonymous `?` binders).
         let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(fact_ids.len() + 1);
@@ -319,7 +319,7 @@ impl<'db> FactMaintenance<'db> {
     }
 
     fn scan_polarity_contradictions(&self) -> anyhow::Result<Vec<ContradictionCandidate>> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         // Case-insensitive object match so "Rust" / "rust" still conflict.
         // `a.id < b.id` keeps each pair once; hydrate both ids in one IN query.
         let mut stmt = conn.prepare(
@@ -377,7 +377,7 @@ impl<'db> FactMaintenance<'db> {
 
     fn scan_single_valued_contradictions(&self) -> anyhow::Result<Vec<ContradictionCandidate>> {
         let predicates: Vec<&str> = all_single_valued_predicates().collect();
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         let placeholders = vec!["?"; predicates.len()].join(",");
         // One scan: all live single-valued rows, then group in Rust where
         // distinct objects collide (avoids N+1 prepare per subject/predicate).

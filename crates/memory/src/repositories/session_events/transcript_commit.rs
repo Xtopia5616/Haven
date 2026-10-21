@@ -241,7 +241,7 @@ impl SessionStore {
             return Ok(SessionCommitResult::default());
         }
 
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         let lock_wait_started = Instant::now();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let lock_wait_ms = lock_wait_started.elapsed().as_millis() as u64;

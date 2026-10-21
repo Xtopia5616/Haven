@@ -54,7 +54,7 @@ impl Database {
             grant.scope == PermissionScope::Session,
             "session authorization grant must use session scope"
         );
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "INSERT INTO session_authorization_grants
                 (session_id, capability_key, permission_scope, permission_target, effect)
@@ -81,7 +81,7 @@ impl Database {
         session_id: &str,
     ) -> anyhow::Result<Vec<SessionAuthorizationGrant>> {
         validate_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut statement = conn.prepare(
             "SELECT capability_key, permission_scope, permission_target, effect
              FROM session_authorization_grants
@@ -105,7 +105,7 @@ impl Database {
     pub fn list_session_authorization_grants(
         &self,
     ) -> anyhow::Result<Vec<StoredSessionAuthorizationGrant>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut statement = conn.prepare(
             "SELECT grants.session_id, sessions.title, grants.capability_key,
                     grants.permission_scope, grants.permission_target, grants.effect
@@ -145,7 +145,7 @@ impl Database {
         capability: &CapabilityScope,
     ) -> anyhow::Result<usize> {
         validate_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         Ok(conn.execute(
             "DELETE FROM session_authorization_grants
              WHERE session_id = ?1 AND capability_key = ?2",
@@ -155,7 +155,7 @@ impl Database {
 
     /// Clear every session grant as part of an explicit policy reset.
     pub fn clear_session_authorization_grants(&self) -> anyhow::Result<usize> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         Ok(conn.execute("DELETE FROM session_authorization_grants", [])?)
     }
 }

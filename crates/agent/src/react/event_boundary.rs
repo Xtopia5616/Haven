@@ -464,7 +464,9 @@ impl ReActEngine {
             state,
             step_number,
             exit,
-            state.turn_cancel.clone(),
+            // The exit is already decided. Its final integrity read is cleanup,
+            // including exits emitted as effects after the turn was cancelled.
+            None,
         )
         .await
     }

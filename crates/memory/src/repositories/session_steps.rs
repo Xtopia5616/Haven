@@ -137,7 +137,7 @@ impl Database {
     ) -> anyhow::Result<String> {
         ensure_session_id(fields.session_id)?;
         ensure_step_id(fields.step_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<String> {
             let now = next_projection_created_at(&conn, fields.session_id, None)?;
@@ -228,7 +228,7 @@ impl Database {
         refresh_identity: bool,
     ) -> anyhow::Result<()> {
         self.insert_tool_step(fields, true)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         if refresh_identity {
             conn.execute(
                 "UPDATE session_steps SET tool_index = COALESCE(tool_index, ?1), tool_call_id = COALESCE(tool_call_id, ?2) WHERE id = ?3 AND status = ?4",
@@ -259,7 +259,7 @@ impl Database {
     ) -> anyhow::Result<SessionStep> {
         ensure_session_id(session_id)?;
         ensure_thought_id(thought_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<String> {
             let now = next_projection_created_at(&conn, session_id, None)?;
@@ -384,7 +384,7 @@ impl Database {
     pub fn start_tool_step(&self, step_id: &str) -> anyhow::Result<bool> {
         ensure_step_id(step_id)?;
         let now = now_rfc3339_millis();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let changed = conn.execute(
             "UPDATE session_steps SET status = ?1, started_at = COALESCE(started_at, ?2) \
              WHERE id = ?3 AND status IN (?4, ?1)",
@@ -409,7 +409,7 @@ impl Database {
     ) -> anyhow::Result<bool> {
         ensure_step_id(step_id)?;
         let now = now_rfc3339_millis();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let status = outcome.status();
         let changed = conn.execute(
             "UPDATE session_steps SET status = ?1, observation = ?2, completed_at = ?3 \
@@ -436,7 +436,7 @@ impl Database {
     ) -> anyhow::Result<usize> {
         ensure_session_id(session_id)?;
         let now = now_rfc3339_millis();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let n = conn.execute(
             "UPDATE session_steps SET status = ?1, observation = ?2, completed_at = ?3 \
              WHERE session_id = ?4 AND status IN (?5, ?6)",
@@ -454,7 +454,7 @@ impl Database {
 
     pub fn list_session_steps(&self, session_id: &str) -> anyhow::Result<Vec<SessionStep>> {
         ensure_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, session_id, step_number, tool_index, tool_name, input, output, thought, tool_call_name, tool_call_input, tool_call_id, observation,
                     status, is_high_risk, confirmed, started_at, completed_at, created_at, silent
@@ -528,7 +528,7 @@ impl Database {
         created_at: &str,
     ) -> anyhow::Result<()> {
         ensure_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "DELETE FROM session_steps WHERE session_id = ?1 AND created_at > ?2",
             rusqlite::params![session_id, created_at],

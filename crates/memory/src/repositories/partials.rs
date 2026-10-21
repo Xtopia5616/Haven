@@ -32,7 +32,7 @@ impl Database {
     pub fn upsert_partial_message(&self, session_id: &str, content: &str) -> anyhow::Result<()> {
         ensure_session_id(session_id)?;
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<()> {
             let ingress_seq = last_message_ingress_seq(&conn, session_id)?;
@@ -73,7 +73,7 @@ impl Database {
     /// stream was discarded). No-op when no row exists.
     pub fn delete_partial_message(&self, session_id: &str) -> anyhow::Result<()> {
         ensure_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "DELETE FROM partial_messages WHERE session_id = ?1",
             rusqlite::params![session_id],
@@ -92,7 +92,7 @@ impl Database {
     /// trip; used by ses-end promotion and the startup orphan finalizer.
     pub fn promote_partial_message(&self, session_id: &str) -> anyhow::Result<bool> {
         ensure_session_id(session_id)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<bool> {
             let checkpoint = conn

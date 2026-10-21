@@ -106,7 +106,7 @@ impl SessionStore {
         run_id: Option<u64>,
     ) -> anyhow::Result<(SessionEvent, SessionCursor)> {
         ensure_session_id(session_id)?;
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<(SessionEvent, SessionCursor)> {
             let cursor = Self::cursor_in_connection(&conn, session_id)?;
@@ -189,7 +189,7 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Option<SessionEvent>> {
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         Self::latest_recovery_persistence_in_connection(&conn, session_id)
     }
 

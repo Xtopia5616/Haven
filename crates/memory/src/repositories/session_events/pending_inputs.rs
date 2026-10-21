@@ -29,7 +29,7 @@ impl SessionStore {
         let message_id = message_id.to_owned();
         self.db
             .run_blocking(move |db| {
-                let conn = db.conn();
+                let conn = db.try_conn()?;
                 Database::acknowledge_pending_session_input(&conn, &session_id, &message_id)
             })
             .await

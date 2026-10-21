@@ -87,7 +87,7 @@ impl SessionStore {
         cancel: &CancellationToken,
     ) -> anyhow::Result<SessionTranscriptAssetSearch> {
         ensure_not_cancelled(cancel)?;
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN DEFERRED")?;
         let result = (|| {
             let latest_sequence = latest_sequence_in_connection(&conn, session_id)?;

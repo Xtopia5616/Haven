@@ -98,7 +98,7 @@ impl Database {
             "invalid ToolRun tool_name"
         );
         let started_at = normalize_tool_run_timestamp(started_at, "started_at")?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute(
             "INSERT INTO tool_runs (id, kind, tool_name, session_id, source_step_id, status, started_at, created_at)
              VALUES (?1, 'background', ?2, ?3, ?4, 'running', ?5, ?6)",
@@ -113,7 +113,7 @@ impl Database {
         tool_run_id: &str,
         session_id: &str,
     ) -> anyhow::Result<()> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
             conn.execute(
@@ -157,7 +157,7 @@ impl Database {
             "background ToolRun terminal status must be completed or failed"
         );
         let finished_at = normalize_tool_run_timestamp(finished_at, "finished_at")?;
-        let changed = self.conn().execute(
+        let changed = self.try_conn()?.execute(
             "UPDATE tool_runs SET status = ?2, output = ?3, error = ?4, error_reason = ?5,
                     log_path = ?6, finished_at = ?7
              WHERE id = ?1 AND status = 'running'",
@@ -181,7 +181,7 @@ impl Database {
         finished_at: &str,
     ) -> anyhow::Result<bool> {
         let finished_at = normalize_tool_run_timestamp(finished_at, "finished_at")?;
-        let changed = self.conn().execute(
+        let changed = self.try_conn()?.execute(
             "UPDATE tool_runs SET status = 'cancelled', finished_at = ?2 WHERE id = ?1 AND status = 'running'",
             rusqlite::params![tool_run_id, finished_at],
         )?;
@@ -221,7 +221,7 @@ impl Database {
             .ok_or_else(|| anyhow::anyhow!("terminal ToolRun completion requires finished_at"))?
             .to_owned();
         let payload_json = serde_json::to_string(&payload)?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
             let changed = conn.execute(
@@ -272,7 +272,7 @@ impl Database {
         kind: Option<&str>,
         session_id: Option<&str>,
     ) -> anyhow::Result<Vec<ToolRunRow>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!("SELECT {TOOL_RUN_COLUMNS} FROM tool_runs WHERE (?1 IS NULL OR kind = ?1) AND (?2 IS NULL OR session_id = ?2) ORDER BY started_at DESC, created_at DESC"))?;
         let rows = stmt.query_map([kind, session_id], row_to_tool_run)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -288,14 +288,14 @@ impl Database {
             .map(i64::try_from)
             .transpose()
             .map_err(|_| anyhow::anyhow!("ToolRun history limit exceeds SQLite range"))?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!("SELECT {TOOL_RUN_COLUMNS} FROM tool_runs WHERE status IN ('completed','failed','cancelled') AND (?1 IS NULL OR kind = ?1) AND (?2 IS NULL OR session_id = ?2) ORDER BY started_at DESC, created_at DESC LIMIT COALESCE(?3, -1)"))?;
         let rows = stmt.query_map((kind, session_id, limit), row_to_tool_run)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub(crate) fn list_tool_run_output_log_ids(&self) -> anyhow::Result<Vec<String>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt =
             conn.prepare("SELECT id FROM tool_runs WHERE log_path IS NOT NULL ORDER BY id")?;
         stmt.query_map([], |row| row.get::<_, String>(0))?
@@ -304,7 +304,7 @@ impl Database {
     }
 
     pub fn get_tool_run(&self, tool_run_id: &str) -> anyhow::Result<Option<ToolRunRow>> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {TOOL_RUN_COLUMNS} FROM tool_runs WHERE id = ?1"
         ))?;
@@ -314,7 +314,7 @@ impl Database {
 
     pub fn delete_tool_run(&self, tool_run_id: &str) -> anyhow::Result<bool> {
         self.reconcile_tool_run_completion_outbox()?;
-        let changed = self.conn().execute(
+        let changed = self.try_conn()?.execute(
             "DELETE FROM tool_runs WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM tool_run_completion_outbox WHERE tool_run_id = ?1 AND delivered_at IS NULL)",
             [tool_run_id],
         )?;
@@ -323,7 +323,7 @@ impl Database {
 
     pub fn clear_terminal_tool_runs(&self) -> anyhow::Result<Vec<String>> {
         self.reconcile_tool_run_completion_outbox()?;
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Vec<String>> {
             let ids = {
@@ -352,7 +352,7 @@ impl Database {
     /// Mark ToolRuns left running by a previous process as failed.
     pub fn mark_interrupted_tool_runs(&self) -> anyhow::Result<usize> {
         let finished_at = now_rfc3339_millis();
-        self.conn().execute("UPDATE tool_runs SET status = 'failed', error_reason = 'App restarted while the ToolRun was running', finished_at = ?1 WHERE status = 'running'", [&finished_at]).map_err(Into::into)
+        self.try_conn()?.execute("UPDATE tool_runs SET status = 'failed', error_reason = 'App restarted while the ToolRun was running', finished_at = ?1 WHERE status = 'running'", [&finished_at]).map_err(Into::into)
     }
 }
 

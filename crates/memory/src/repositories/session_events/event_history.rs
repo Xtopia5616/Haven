@@ -84,7 +84,7 @@ impl SessionStore {
         cancel: &CancellationToken,
     ) -> anyhow::Result<SessionTranscriptHistorySearch> {
         ensure_not_cancelled(cancel)?;
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN DEFERRED")?;
         let result = (|| {
             let latest_sequence = latest_sequence_in_connection(&conn, session_id)?;
@@ -172,7 +172,7 @@ impl SessionStore {
         cancel: &CancellationToken,
     ) -> anyhow::Result<Option<SessionTranscriptHistoryRecord>> {
         ensure_not_cancelled(cancel)?;
-        let conn = self.db.conn();
+        let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN DEFERRED")?;
         let result =
             read_transcript_history_event_in_connection(&conn, session_id, sequence, cancel);
