@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use haven_memory::MemoryFactStore;
 use haven_memory::{
-    MAX_RECALL_LIMIT, MemoryEntityKind, MemoryQuery, MemoryRecall, MemoryRecallEmptyReason,
+    MAX_RECALL_LIMIT, MemoryFactKind, MemoryQuery, MemoryRecall, MemoryRecallEmptyReason,
+    MemoryRecallKind,
 };
 use haven_memory::{fact_effective_confidence, is_sensitive_object, is_sensitive_predicate};
 use serde_json::{Value, json};
@@ -10,11 +11,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{MemoryRecallSlot, Tool, ToolConcurrency, ToolResult};
 
-fn recall_output(kind: MemoryEntityKind, recall: MemoryRecall) -> Value {
+fn recall_output(kind: MemoryRecallKind, recall: MemoryRecall) -> Value {
     let is_empty = recall.hits.is_empty();
     let empty_reason = recall.empty_reason;
     let mut output = json!({
-        "kind": kind.entity_type(),
+        "kind": kind.as_str(),
         "hits": recall.hits,
         "mode": recall.mode,
     });
@@ -84,6 +85,9 @@ pub struct MemoryParams {
     /// Recall kind: `fact` (default) or `episode`.
     #[serde(default)]
     pub kind: Option<String>,
+    /// Optional category for remember; defaults to profile.
+    #[serde(default)]
+    pub memory_kind: Option<MemoryFactKind>,
 }
 
 impl MemoryTool {
@@ -120,6 +124,7 @@ impl MemoryTool {
                     "object": f.object,
                     "confidence": (fact_effective_confidence(f) * 100.0).round() / 100.0,
                     "source": f.source,
+                    "memory_kind": f.memory_kind,
                     "tags": f.tags,
                 });
                 if let Some(snippet) = f
@@ -213,7 +218,13 @@ impl MemoryTool {
             .collect();
         let subject = Self::write_subject(params);
         let fact = facts
-            .set_user_fact(subject, predicate.to_string(), object.to_string(), tags)
+            .set_user_fact_with_kind(
+                subject,
+                predicate.to_string(),
+                object.to_string(),
+                tags,
+                params.memory_kind.unwrap_or(MemoryFactKind::Profile),
+            )
             .await?;
         Ok(ToolResult::ok(json!({
             "stored": {
@@ -221,6 +232,7 @@ impl MemoryTool {
                 "predicate": fact.predicate,
                 "object": fact.object,
                 "source": fact.source,
+                "memory_kind": fact.memory_kind,
                 "confidence": fact.confidence,
                 "tags": fact.tags,
             }
@@ -268,7 +280,7 @@ impl MemoryTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("fact");
-        let kind = MemoryEntityKind::parse(kind_raw)?;
+        let kind = MemoryRecallKind::parse(kind_raw)?;
         let limit = params
             .limit
             .map(|l| l.clamp(1, MAX_RECALL_LIMIT as i64) as usize)
@@ -360,7 +372,8 @@ impl Tool for MemoryTool {
             "properties": {
                 "operation": { "type": "string", "enum": ["search", "list", "remember", "forget", "recall"], "description": "Choose fact search/list/edit or cross-session recall" },
                 "query": { "type": "string", "minLength": 1, "description": "Keywords for search; a natural-language question or topic for recall" },
-                "kind": { "type": "string", "enum": ["fact", "episode"], "default": "fact", "description": "Recall structured facts or past conversation excerpts; defaults to fact" },
+                "kind": { "type": "string", "enum": ["fact", "profile", "semantic", "procedural", "episode"], "default": "fact", "description": "Recall any fact, explicit user profile, inferred semantic memory, reusable procedure, or past conversation" },
+                "memory_kind": { "type": "string", "enum": ["profile", "procedural"], "default": "profile", "description": "Category for remember: user profile or reusable procedure; defaults to profile" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum results: defaults to 10 for search, 20 for list, and 5 for recall; recall is capped at 20" },
                 "predicate": { "type": "string", "minLength": 1, "description": "Fact attribute to remember or forget, such as preference or project" },
                 "object": { "type": "string", "minLength": 1, "description": "Fact value to remember; for forget, omit only when the user wants every value for this predicate removed" },
@@ -398,6 +411,7 @@ impl Tool for MemoryTool {
                         "predicate": { "type": "string", "minLength": 1, "description": "Short fact attribute, such as preference or project" },
                         "object": { "type": "string", "minLength": 1, "description": "The durable fact value; credential-like values are rejected" },
                         "tags": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "description": "Optional labels: identity, preference, workspace, or project" },
+                        "memory_kind": { "type": "string", "enum": ["profile", "procedural"], "default": "profile", "description": "Store as profile information or a reusable procedure; defaults to profile" },
                         "subject": { "type": "string", "minLength": 1, "description": "Owner namespace; defaults to user" }
                     },
                     "required": ["operation", "predicate", "object"]
@@ -419,7 +433,7 @@ impl Tool for MemoryTool {
                     "properties": {
                         "operation": { "const": "recall" },
                         "query": { "type": "string", "minLength": 1, "description": "Natural-language question or topic to retrieve relevant history for" },
-                        "kind": { "type": "string", "enum": ["fact", "episode"], "default": "fact", "description": "Return structured facts or past conversation excerpts; defaults to fact" },
+                        "kind": { "type": "string", "enum": ["fact", "profile", "semantic", "procedural", "episode"], "default": "fact", "description": "Return any fact, profile, inferred semantic memory, reusable procedure, or past conversation" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum matches; defaults to 5 and is capped at 20" },
                         "subject": { "type": "string", "minLength": 1, "description": "Optional owner filter for fact recall" }
                     },
@@ -448,7 +462,7 @@ mod tests {
     use super::*;
     use crate::Tool;
     use crate::tool_runtime::new_memory_recall_slot;
-    use haven_memory::{Database, MemoryFactStore, MemoryHit};
+    use haven_memory::{Database, MemoryFactStore, MemoryHit, MemoryRecallKind};
     use std::future::Future;
     use std::sync::Arc;
 
@@ -563,6 +577,41 @@ mod tests {
             assert!(ops.iter().any(|v| v == op));
         }
         assert!(schema["properties"]["kind"].is_object());
+        assert!(schema["properties"]["memory_kind"].is_object());
+        for kind in ["profile", "semantic", "procedural"] {
+            assert!(
+                schema["properties"]["kind"]["enum"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value == kind)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn remember_can_store_a_reusable_procedure() {
+        let (tool, db, _dir) = db_with_facts();
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "remember",
+                    "predicate": "publish_release_steps",
+                    "object": "run checks then tag the release",
+                    "memory_kind": "procedural"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let facts = db.list_facts_by_subject("user").unwrap();
+        let procedure = facts
+            .iter()
+            .find(|fact| fact.predicate == "publish_release_steps")
+            .unwrap();
+        assert_eq!(procedure.memory_kind, MemoryFactKind::Procedural);
+        assert_eq!(result.output["stored"]["memory_kind"], "procedural");
     }
 
     #[tokio::test]
@@ -828,7 +877,7 @@ mod tests {
         let (tool, _db, _dir) = test_tool();
         let slot = tool.recall.clone();
         bind_recall(&slot, |query| async move {
-            assert_eq!(query.kind(), MemoryEntityKind::Episode);
+            assert_eq!(query.kind(), MemoryRecallKind::Episode);
             assert_eq!(query.text(), "release notes");
             assert_eq!(query.limit(), 3);
             assert_eq!(
@@ -922,7 +971,7 @@ mod tests {
         let (tool, _db, _dir) = test_tool();
         let slot = tool.recall.clone();
         bind_recall(&slot, |query| async move {
-            assert_eq!(query.kind(), MemoryEntityKind::Fact);
+            assert_eq!(query.kind(), MemoryRecallKind::Fact);
             assert_eq!(query.fact_subject(), Some("workspace"));
             assert_eq!(
                 query.excluded_session_id(),
@@ -1077,6 +1126,7 @@ mod tests {
                     tags: None,
                     subject: None,
                     kind: None,
+                    memory_kind: None,
                 },
                 None,
                 CancellationToken::new(),
@@ -1093,7 +1143,7 @@ mod tests {
         let (tool, _db, _dir) = db_with_facts();
         let slot = tool.recall.clone();
         bind_recall(&slot, |query| async move {
-            assert_eq!(query.kind(), MemoryEntityKind::Fact);
+            assert_eq!(query.kind(), MemoryRecallKind::Fact);
             assert_eq!(query.text(), "Rust");
             Ok(MemoryRecall {
                 hits: vec![MemoryHit {
@@ -1163,7 +1213,7 @@ mod tests {
         let (tool, _db, _dir) = test_tool();
         let slot = tool.recall.clone();
         bind_recall(&slot, |query| async move {
-            assert_eq!(query.kind(), MemoryEntityKind::Episode);
+            assert_eq!(query.kind(), MemoryRecallKind::Episode);
             assert_eq!(query.text(), "dark theme");
             assert_eq!(query.limit(), 5);
             Ok(MemoryRecall {

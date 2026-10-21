@@ -2087,6 +2087,11 @@ mod tests {
             predicate: predicate.into(),
             object: object.into(),
             source: source.into(),
+            memory_kind: if source == "user" {
+                haven_memory::MemoryFactKind::Profile
+            } else {
+                haven_memory::MemoryFactKind::Semantic
+            },
             confidence,
             tags: vec![],
             created_at: now.clone(),

@@ -1,7 +1,7 @@
 # Haven 架构降复杂度重构路线图
 
 > 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
-> 更新日期：2026-10-19
+> 更新日期：2026-10-21
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
 本文件只记录当前阶段、仍未完成的工作和验收条件。历史实现切片与决定见对应 ADR；提交历史用于追踪实现过程。
@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active** | 无。ADR 1324 的实现与验证已完成；后续结构目标按 §5.5 重新审计后再立项。 |
+| **Active** | 无。ADR 1356 的 typed memory categories 已实现并验证；下一切片为图谱感知检索，完成独立 ADR 后再激活。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）

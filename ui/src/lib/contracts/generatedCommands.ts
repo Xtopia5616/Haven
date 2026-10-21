@@ -81,7 +81,7 @@ export interface McpRefreshResult { added: string[]; removed: string[]; updated:
 export interface MemoryFactCursorInput { createdAt: string; factId: string }
 export interface MemoryFactCursor { createdAt: string; factId: string }
 export interface MemoryFactPageResponse { facts: MemoryFactResponse[]; next_cursor: MemoryFactCursor | null }
-export interface MemoryFactResponse { fact_id: string; subject: string; predicate: string; object: string; source: MemoryFactSource; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
+export interface MemoryFactResponse { fact_id: string; subject: string; predicate: string; object: string; source: MemoryFactSource; memory_kind: MemoryFactKind; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
 export const MEMORY_FACT_SOURCE_INPUT_VALUES = ['user', 'inferred'] as const;
 export type MemoryFactSourceInput = (typeof MEMORY_FACT_SOURCE_INPUT_VALUES)[number];
 export const MEMORY_FACT_SOURCE_VALUES = ['user', 'inferred'] as const;
@@ -429,8 +429,10 @@ export interface McpResourceTemplateList { resourceTemplates: McpResourceTemplat
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };
 export interface McpServerSnapshot { name: string; transport: McpServerTransport; stdio_execution: McpStdioExecution; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; target_binding: string | null; supports_resources: boolean; supports_resource_subscriptions: boolean; supports_prompts: boolean; exposure: McpExposureConfig; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
-export const MEMORY_ENTITY_KIND_INPUT_VALUES = ['fact', 'episode'] as const;
-export type MemoryEntityKindInput = (typeof MEMORY_ENTITY_KIND_INPUT_VALUES)[number];
+export const MEMORY_RECALL_KIND_INPUT_VALUES = ['fact', 'episode', 'profile', 'semantic', 'procedural'] as const;
+export type MemoryRecallKindInput = (typeof MEMORY_RECALL_KIND_INPUT_VALUES)[number];
+export const MEMORY_FACT_KIND_VALUES = ['profile', 'semantic', 'procedural'] as const;
+export type MemoryFactKind = (typeof MEMORY_FACT_KIND_VALUES)[number];
 export const SCHEDULE_TYPE_VALUES = ['once', 'recurring_session'] as const;
 export type ScheduleType = (typeof SCHEDULE_TYPE_VALUES)[number];
 export const SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES = ['pending', 'running', 'paused', 'completed', 'error'] as const;
@@ -468,6 +470,10 @@ export const ADD_FACT_RESPONSE_SHAPE = {
 		'source': {
 			optional: false,
 			shape: { kind: 'enum', values: MEMORY_FACT_SOURCE_VALUES },
+		},
+		'memory_kind': {
+			optional: false,
+			shape: { kind: 'enum', values: MEMORY_FACT_KIND_VALUES },
 		},
 		'confidence': {
 			optional: false,
@@ -5600,6 +5606,10 @@ export const LIST_FACTS_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'enum', values: MEMORY_FACT_SOURCE_VALUES },
 					},
+					'memory_kind': {
+						optional: false,
+						shape: { kind: 'enum', values: MEMORY_FACT_KIND_VALUES },
+					},
 					'confidence': {
 						optional: false,
 						shape: { kind: 'number' },
@@ -6399,6 +6409,10 @@ export const MEMORY_FACT_RESPONSE_SHAPE = {
 		'source': {
 			optional: false,
 			shape: { kind: 'enum', values: MEMORY_FACT_SOURCE_VALUES },
+		},
+		'memory_kind': {
+			optional: false,
+			shape: { kind: 'enum', values: MEMORY_FACT_KIND_VALUES },
 		},
 		'confidence': {
 			optional: false,
@@ -10563,7 +10577,7 @@ export interface TauriCommandMap {
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
 	read_mcp_resource: { request: { name: string; targetBinding: string; uri: string; forceRefresh: boolean }; response: McpFeatureCallOutcome };
 	reassign_staged_chatgpt_plan_credential: { request: { credentialRef: string; providerName: string }; response: void };
-	recall_memory: { request: { query: string; kind?: MemoryEntityKindInput | null; limit?: number | null }; response: MemoryRecallItem[] };
+	recall_memory: { request: { query: string; kind?: MemoryRecallKindInput | null; limit?: number | null }; response: MemoryRecallItem[] };
 	reconnect_mcp_server: { request: { name: string }; response: void };
 	refresh_mcp_servers: { request: undefined; response: McpRefreshResult };
 	refresh_skills: { request: undefined; response: void };

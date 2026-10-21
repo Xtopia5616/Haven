@@ -15,8 +15,8 @@ pub use embeddings::EmbeddedText;
 pub use persistence::{MemoryPersistence, MemoryStores};
 pub use recall::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryEntityKind, MemoryHit, MemoryQuery,
-    MemoryRecall, MemoryRecallDiagnostics, MemoryRecallEmptyReason, MemoryRecallMode,
-    MemoryRecallSourceStatus, MemoryRecallSuggestion, normalize_memory_query,
+    MemoryRecall, MemoryRecallDiagnostics, MemoryRecallEmptyReason, MemoryRecallKind,
+    MemoryRecallMode, MemoryRecallSourceStatus, MemoryRecallSuggestion, normalize_memory_query,
 };
 pub use repositories::embedding_store::{
     MemoryEmbeddingPersistFailure, MemoryEmbeddingPersistReport, MemoryEmbeddingStore,
@@ -28,9 +28,9 @@ pub use repositories::fact_store::{
 };
 pub use repositories::facts::{
     CANONICAL_MERGE_TARGETS, ContradictionCandidate, ContradictionKind, Fact, FactSourceRef,
-    UpsertOutcome, fact_effective_confidence, fact_within_demote_age, is_canonical_merge_target,
-    is_identity_predicate, is_sensitive_object, is_sensitive_predicate, is_sensitive_text,
-    is_visible_fact, normalize_predicate, pick_contradiction_keeper,
+    MemoryFactKind, UpsertOutcome, fact_effective_confidence, fact_within_demote_age,
+    is_canonical_merge_target, is_identity_predicate, is_sensitive_object, is_sensitive_predicate,
+    is_sensitive_text, is_visible_fact, normalize_predicate, pick_contradiction_keeper,
 };
 pub use repositories::kv_store::{
     FactExtractionMarker, FactExtractionMarkerState, SummaryExtractionMarker,

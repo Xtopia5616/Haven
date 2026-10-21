@@ -1856,6 +1856,7 @@ mod tests {
             predicate: "likes".into(),
             object: "rust".into(),
             source: "inferred".into(),
+            memory_kind: haven_memory::MemoryFactKind::Semantic,
             confidence: 0.87,
             tags: vec!["preference".into()],
             created_at: "2026-01-01T00:00:00Z".into(),

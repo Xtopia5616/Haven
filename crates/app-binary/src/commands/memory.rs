@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::commands::{log_err, validate_command_id};
-use haven_memory::{MemoryEntityKind, MemoryQuery};
+use haven_memory::{MemoryQuery, MemoryRecallKind};
 use std::sync::Arc;
 use tauri::State;
 
@@ -91,6 +91,7 @@ pub struct MemoryFactResponse {
     pub predicate: String,
     pub object: String,
     pub source: MemoryFactSource,
+    pub memory_kind: haven_memory::MemoryFactKind,
     pub confidence: f64,
     pub tags: Vec<String>,
     pub created_at: String,
@@ -134,6 +135,7 @@ impl TryFrom<haven_memory::Fact> for MemoryFactResponse {
             predicate: fact.predicate,
             object: fact.object,
             source,
+            memory_kind: fact.memory_kind,
             confidence: fact.confidence,
             tags: fact.tags,
             created_at: fact.created_at,
@@ -179,11 +181,11 @@ pub async fn run_memory_maintenance(state: State<'_, Arc<AppState>>) -> Result<u
 #[tauri::command]
 pub async fn recall_memory(
     query: String,
-    kind: Option<MemoryEntityKind>,
+    kind: Option<MemoryRecallKind>,
     limit: Option<usize>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<MemoryRecallItem>, String> {
-    let kind = kind.unwrap_or(MemoryEntityKind::Fact);
+    let kind = kind.unwrap_or(MemoryRecallKind::Fact);
     let limit = limit.unwrap_or(5);
     let query = MemoryQuery::new(&query, kind, limit).map_err(|e| log_err("recall_memory", e))?;
     state
@@ -385,6 +387,7 @@ mod tests {
             predicate: "likes".into(),
             object: "Rust".into(),
             source: "user".into(),
+            memory_kind: haven_memory::MemoryFactKind::Profile,
             confidence: 1.0,
             tags: vec!["language".into()],
             created_at: "2026-10-06T00:00:00Z".into(),
@@ -406,6 +409,7 @@ mod tests {
                 "predicate": "likes",
                 "object": "Rust",
                 "source": "user",
+                "memory_kind": "profile",
                 "confidence": 1.0,
                 "tags": ["language"],
                 "created_at": "2026-10-06T00:00:00Z",

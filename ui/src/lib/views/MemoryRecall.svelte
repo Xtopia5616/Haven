@@ -6,6 +6,7 @@
 	import { isMemoryRecallFilter } from '$lib/contracts/memory.ts';
 	import type {
 		MemoryRecallFilter,
+		MemoryRecallKind,
 		MemoryRecallState,
 		MemoryRecallResult,
 	} from '$lib/contracts/memory.ts';
@@ -31,6 +32,15 @@
 	let recallResults = $derived<MemoryRecallResult[]>(memoryRecall.results);
 	let factResults = $derived(recallResults.filter((result) => result.kind === 'fact'));
 	let episodeResults = $derived(recallResults.filter((result) => result.kind === 'episode'));
+	function memoryKindLabel(kind: MemoryRecallKind) {
+		return {
+			fact: '长期事实',
+			profile: '用户画像',
+			semantic: '语义记忆',
+			procedural: '可复用流程',
+			episode: '过去的对话',
+		}[kind];
+	}
 </script>
 
 <section class="recall-view" aria-label="记忆结果">
@@ -59,6 +69,9 @@
 					options={[
 						{ value: 'all', label: '全部记忆' },
 						{ value: 'fact', label: '事实' },
+						{ value: 'profile', label: '用户画像' },
+						{ value: 'semantic', label: '语义记忆' },
+						{ value: 'procedural', label: '可复用流程' },
 						{ value: 'episode', label: '过去的对话' },
 					]}
 					onChange={handleKindChange}
@@ -158,9 +171,7 @@
 								>{index + 1}</span
 							>
 							<div class="recall-result-copy">
-								<span class="recall-result-type"
-									>{result.kind === 'fact' ? '长期事实' : '过去的对话'}</span
-								>
+								<span class="recall-result-type">{memoryKindLabel(result.kind)}</span>
 								<p>{result.text}</p>
 							</div>
 							<span class="recall-score" title="相关度"
@@ -175,7 +186,7 @@
 		<div class="recall-empty md-card md-card--outlined" role="status" aria-live="polite">
 			<span class="recall-empty-mark" aria-hidden="true">⌕</span>
 			<h3>没有找到匹配记忆</h3>
-			<p>换一个描述，或切换“事实 / 情景”后再试一次。</p>
+			<p>换一个描述，或切换画像、事实、流程与对话等记忆类别后再试一次。</p>
 		</div>
 	{:else}
 		<div class="recall-empty md-card md-card--outlined">

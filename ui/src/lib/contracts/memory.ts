@@ -6,7 +6,7 @@
  * after validation so Rust field names do not escape the command boundary.
  */
 import {
-	MEMORY_ENTITY_KIND_INPUT_VALUES,
+	MEMORY_RECALL_KIND_INPUT_VALUES,
 	MEMORY_FACT_RESPONSE_SHAPE,
 	MEMORY_FACT_SOURCE_INPUT_VALUES,
 	MEMORY_RECALL_ITEM_RESPONSE_SHAPE,
@@ -17,7 +17,7 @@ import type {
 	MemoryFactPageResponse as GeneratedMemoryFactPageResponse,
 	MemoryFactResponse as GeneratedMemoryFactResponse,
 	MemoryRecallItem as GeneratedMemoryRecallItem,
-	MemoryEntityKindInput,
+	MemoryRecallKindInput,
 	MemoryFactSourceInput,
 } from './generatedCommands.ts';
 import { isRecord } from './objectGuards.ts';
@@ -41,11 +41,11 @@ export interface FactPage {
 export type MemoryRecallItem = Omit<GeneratedMemoryRecallItem, 'entity_id'> & {
 	entityId: string;
 };
-export type MemoryRecallKind = MemoryEntityKindInput;
+export type MemoryRecallKind = MemoryRecallKindInput;
 export type MemoryFactSourceFilter = MemoryFactSourceInput | '';
 export const MEMORY_RECALL_FILTER_VALUES = [
 	'all',
-	...MEMORY_ENTITY_KIND_INPUT_VALUES,
+	...MEMORY_RECALL_KIND_INPUT_VALUES,
 ] as const satisfies readonly ('all' | MemoryRecallKind)[];
 export type MemoryRecallFilter = (typeof MEMORY_RECALL_FILTER_VALUES)[number];
 

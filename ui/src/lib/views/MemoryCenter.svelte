@@ -57,6 +57,9 @@
 	const MEMORY_SCOPE_OPTIONS = [
 		{ value: 'all', label: '全部记忆' },
 		{ value: 'fact', label: '关于你的事实' },
+		{ value: 'profile', label: '用户画像' },
+		{ value: 'semantic', label: '语义记忆' },
+		{ value: 'procedural', label: '可复用流程' },
 		{ value: 'episode', label: '过去的对话' },
 	];
 
@@ -114,7 +117,7 @@
 					options={MEMORY_SCOPE_OPTIONS}
 					onChange={handleScopeChange}
 				/>
-				{#if !memoryRecall.searched && memoryRecall.kind !== 'episode'}
+				{#if !memoryRecall.searched && ['all', 'fact'].includes(memoryRecall.kind)}
 					<MaterialSelect
 						id="memory-center-source"
 						value={factSourceFilter}
@@ -143,7 +146,7 @@
 		</div>
 	</div>
 
-	{#if memoryRecall.searched || memoryRecall.kind === 'episode'}
+	{#if memoryRecall.searched || !['all', 'fact'].includes(memoryRecall.kind)}
 		<MemoryRecall
 			{memoryRecall}
 			showToolbar={false}

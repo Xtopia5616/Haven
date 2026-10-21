@@ -537,6 +537,7 @@ mod tests {
             predicate: "likes".to_string(),
             object: fact_id.to_string(),
             source: "user".to_string(),
+            memory_kind: crate::repositories::facts::MemoryFactKind::Profile,
             confidence: 1.0,
             tags: Vec::new(),
             created_at: "2026-01-01T00:00:00Z".to_string(),

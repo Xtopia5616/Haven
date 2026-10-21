@@ -9,6 +9,30 @@ pub use super::fact_maintenance::{
 pub use super::fact_query::fact_effective_confidence;
 pub use super::fact_security::{is_sensitive_object, is_sensitive_predicate, is_sensitive_text};
 
+/// Bounded semantic role assigned to a durable fact row.
+///
+/// `profile` is explicitly user-maintained information, `semantic` is a
+/// reusable fact inferred from conversation, and `procedural` is a reusable
+/// user-maintained instruction or workflow. Provenance (`source`) remains a
+/// separate axis: it records who supplied the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryFactKind {
+    Profile,
+    Semantic,
+    Procedural,
+}
+
+impl MemoryFactKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Profile => "profile",
+            Self::Semantic => "semantic",
+            Self::Procedural => "procedural",
+        }
+    }
+}
+
 /// Predicate row count used by memory maintenance policy.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PredicateCount {
@@ -23,6 +47,7 @@ pub struct Fact {
     pub predicate: String,
     pub object: String,
     pub source: String,
+    pub memory_kind: MemoryFactKind,
     pub confidence: f64,
     pub tags: Vec<String>,
     pub created_at: String,
@@ -271,6 +296,7 @@ impl Database {
     /// Store a fact explicitly stated by the user. User-stated facts are
     /// authoritative; single-valued predicates replace prior values and
     /// repeated statements reinforce the existing row.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_user_fact(
         &self,
         subject: &str,
@@ -278,8 +304,30 @@ impl Database {
         object: &str,
         tags: &[&str],
     ) -> anyhow::Result<Fact> {
+        self.set_user_fact_with_kind(subject, predicate, object, tags, MemoryFactKind::Profile)
+    }
+
+    /// Store an explicitly maintained profile or procedural memory.
+    pub(crate) fn set_user_fact_with_kind(
+        &self,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        tags: &[&str],
+        memory_kind: MemoryFactKind,
+    ) -> anyhow::Result<Fact> {
+        anyhow::ensure!(
+            memory_kind != MemoryFactKind::Semantic,
+            "user-maintained memory kind must be profile or procedural"
+        );
         self.with_fact_write(|| {
-            FactGraph::new(self).set_user_fact(subject, predicate, object, tags)
+            FactGraph::new(self).set_user_fact_with_kind(
+                subject,
+                predicate,
+                object,
+                tags,
+                memory_kind,
+            )
         })
     }
 

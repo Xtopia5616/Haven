@@ -1,7 +1,7 @@
 use crate::db::Database;
 use crate::recall::normalize_memory_query;
 use crate::repositories::fact_graph::FactGraph;
-use crate::repositories::facts::{Fact, FactSourceRef};
+use crate::repositories::facts::{Fact, FactSourceRef, MemoryFactKind};
 use chrono::Utc;
 use haven_common::types::is_canonical_id;
 use rusqlite::{Connection, OptionalExtension};
@@ -243,10 +243,27 @@ impl MemoryFactStore {
         object: String,
         tags: Vec<String>,
     ) -> anyhow::Result<Fact> {
+        self.set_user_fact_with_kind(subject, predicate, object, tags, MemoryFactKind::Profile)
+            .await
+    }
+
+    /// Persist a user-maintained profile or procedural memory.
+    pub async fn set_user_fact_with_kind(
+        &self,
+        subject: String,
+        predicate: String,
+        object: String,
+        tags: Vec<String>,
+        memory_kind: MemoryFactKind,
+    ) -> anyhow::Result<Fact> {
+        anyhow::ensure!(
+            memory_kind != MemoryFactKind::Semantic,
+            "user-maintained memory kind must be profile or procedural"
+        );
         self.db
             .run_blocking(move |db| {
                 let tags: Vec<&str> = tags.iter().map(String::as_str).collect();
-                db.set_user_fact(&subject, &predicate, &object, &tags)
+                db.set_user_fact_with_kind(&subject, &predicate, &object, &tags, memory_kind)
             })
             .await
     }
@@ -914,6 +931,40 @@ mod tests {
                 .facts
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn user_memory_write_defaults_to_profile_and_supports_procedures() {
+        let (_db, store) = store();
+        let profile = store
+            .set_user_fact("user".into(), "likes".into(), "tea".into(), vec![])
+            .await
+            .unwrap();
+        assert_eq!(profile.memory_kind, crate::MemoryFactKind::Profile);
+
+        let procedure = store
+            .set_user_fact_with_kind(
+                "user".into(),
+                "prepare_tea".into(),
+                "heat water, steep leaves, serve".into(),
+                vec![],
+                crate::MemoryFactKind::Procedural,
+            )
+            .await
+            .unwrap();
+        assert_eq!(procedure.memory_kind, crate::MemoryFactKind::Procedural);
+
+        let error = store
+            .set_user_fact_with_kind(
+                "user".into(),
+                "not_allowed".into(),
+                "semantic writes are inferred".into(),
+                vec![],
+                crate::MemoryFactKind::Semantic,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("profile or procedural"));
     }
 
     #[tokio::test]

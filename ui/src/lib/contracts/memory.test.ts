@@ -7,13 +7,13 @@ import {
 	parseMemoryRecallResponses,
 } from './memory.ts';
 import {
-	MEMORY_ENTITY_KIND_INPUT_VALUES,
+	MEMORY_RECALL_KIND_INPUT_VALUES,
 	MEMORY_FACT_SOURCE_INPUT_VALUES,
 } from './generatedCommands.ts';
 
 describe('memory recall filter contract', () => {
 	it('extends the generated domain kinds with the UI-only all filter', () => {
-		expect(MEMORY_RECALL_FILTER_VALUES).toEqual(['all', ...MEMORY_ENTITY_KIND_INPUT_VALUES]);
+		expect(MEMORY_RECALL_FILTER_VALUES).toEqual(['all', ...MEMORY_RECALL_KIND_INPUT_VALUES]);
 	});
 
 	it('accepts only declared memory recall filters', () => {
@@ -42,6 +42,7 @@ describe('memory renderer DTO contract', () => {
 			predicate: 'likes',
 			object: 'tea',
 			source: 'user',
+			memory_kind: 'profile',
 			confidence: 1,
 			tags: [],
 			created_at: '2026-10-12T08:00:00Z',

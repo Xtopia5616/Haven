@@ -738,6 +738,7 @@ mod tests {
             predicate: "likes".into(),
             object: "rust".into(),
             source: "user".into(),
+            memory_kind: crate::repositories::facts::MemoryFactKind::Profile,
             confidence: 0.9,
             tags: vec![],
             created_at: "2026-01-01T00:00:00Z".into(),

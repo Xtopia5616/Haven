@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 53;
+pub const SCHEMA_VERSION: i32 = 54;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -170,6 +170,8 @@ const SCHEMA_SQL: &[&str] = &[
         object_id TEXT REFERENCES memory_nodes(id) ON DELETE SET NULL,
         source TEXT NOT NULL DEFAULT 'inferred'
             CHECK(source IN ('user','inferred')),
+        memory_kind TEXT NOT NULL DEFAULT 'semantic'
+            CHECK(memory_kind IN ('profile','semantic','procedural')),
         confidence REAL NOT NULL DEFAULT 1.0 CHECK(confidence >= 0.0 AND confidence <= 1.0),
         created_at TEXT NOT NULL,
         tags TEXT NOT NULL DEFAULT '[]',
@@ -378,6 +380,7 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_memory_items_session ON memory_items(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_memory_items_created ON memory_items(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_memory_nodes_label ON memory_nodes(label)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_memory_kind ON facts(memory_kind, subject)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_session ON llm_usage(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_session_kind ON llm_usage(session_id, call_kind)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at)",
@@ -1139,6 +1142,24 @@ mod tests {
             [],
         )
         .unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT memory_kind FROM facts WHERE id = 'fact-4239df0ceaf003ef339c54b852a35b0a'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "semantic"
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO facts
+                    (id, subject, predicate, object, created_at, memory_kind)
+                 VALUES ('fact-67cfb58b793e179d3249941f635c7c46', 'user', 'likes', 'Rust', '2026-01-01', 'unknown')",
+                [],
+            )
+            .is_err()
+        );
 
         assert!(
             conn.execute(

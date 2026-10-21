@@ -8,8 +8,8 @@
 use super::fact_query::{FACT_COLS, fact_from_row};
 use super::fact_store::MemoryFactWrite;
 use super::facts::{
-    Fact, FactSourceRef, UpsertOutcome, is_sensitive_text, is_single_valued_predicate,
-    normalize_predicate, polarity_opposite,
+    Fact, FactSourceRef, MemoryFactKind, UpsertOutcome, is_sensitive_text,
+    is_single_valued_predicate, normalize_predicate, polarity_opposite,
 };
 use crate::db::Database;
 use anyhow::Context as _;
@@ -193,12 +193,18 @@ impl<'db> FactGraph<'db> {
             object,
         )?;
         let provenance = Self::provenance_cols_from_source_ref(conn, source_ref)?;
+        let memory_kind = if source == "user" {
+            "profile"
+        } else {
+            "semantic"
+        };
         conn.execute(
             "INSERT INTO facts (
                 id, subject, subject_id, predicate, object, object_id,
                 source, confidence, created_at, tags, mention_count, last_seen_at,
-                provenance_item_id, provenance_record_id, provenance_snippet, durability
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13, ?14, ?15)",
+                provenance_item_id, provenance_record_id, provenance_snippet, durability,
+                memory_kind
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13, ?14, ?15, ?16)",
             rusqlite::params![
                 id,
                 subject,
@@ -214,7 +220,8 @@ impl<'db> FactGraph<'db> {
                 provenance.provenance_item_id,
                 provenance.provenance_record_id,
                 provenance.provenance_snippet,
-                durability
+                durability,
+                memory_kind
             ],
         )?;
         self.db.cache_invalidate_facts(subject);
@@ -224,6 +231,11 @@ impl<'db> FactGraph<'db> {
             predicate,
             object: object.into(),
             source: source.into(),
+            memory_kind: if memory_kind == "profile" {
+                MemoryFactKind::Profile
+            } else {
+                MemoryFactKind::Semantic
+            },
             confidence,
             tags: tags.iter().map(|s| s.to_string()).collect(),
             created_at: now.clone(),
@@ -277,12 +289,13 @@ impl<'db> FactGraph<'db> {
     fn insert_user_row(
         conn: &rusqlite::Connection,
         subject: &str,
-        subject_id: &str,
+        node_ids: (&str, &str),
         predicate: &str,
         object: &str,
-        object_id: &str,
         tags: &[&str],
+        memory_kind: MemoryFactKind,
     ) -> anyhow::Result<Fact> {
+        let (subject_id, object_id) = node_ids;
         let id = haven_common::types::new_id("fact");
         let now = Utc::now().to_rfc3339();
         let tags_json = serialize_tags(tags);
@@ -290,10 +303,18 @@ impl<'db> FactGraph<'db> {
             "INSERT INTO facts (
                 id, subject, subject_id, predicate, object, object_id,
                 source, confidence, created_at, tags, mention_count, last_seen_at,
-                durability
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'user', 1.0, ?7, ?8, 0, ?7, 1.0)",
+                durability, memory_kind
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'user', 1.0, ?7, ?8, 0, ?7, 1.0, ?9)",
             rusqlite::params![
-                id, subject, subject_id, predicate, object, object_id, now, tags_json
+                id,
+                subject,
+                subject_id,
+                predicate,
+                object,
+                object_id,
+                now,
+                tags_json,
+                memory_kind.as_str()
             ],
         )?;
         Ok(Fact {
@@ -302,6 +323,7 @@ impl<'db> FactGraph<'db> {
             predicate: predicate.into(),
             object: object.into(),
             source: "user".into(),
+            memory_kind,
             confidence: 1.0,
             tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
             created_at: now.clone(),
@@ -314,12 +336,13 @@ impl<'db> FactGraph<'db> {
 
     /// Store a fact explicitly stated by the user. User facts are
     /// authoritative and single-valued predicates replace all prior values.
-    pub(crate) fn set_user_fact(
+    pub(crate) fn set_user_fact_with_kind(
         &self,
         subject: &str,
         predicate: &str,
         object: &str,
         tags: &[&str],
+        memory_kind: MemoryFactKind,
     ) -> anyhow::Result<Fact> {
         let predicate = normalize_predicate(predicate);
         validate_fact_fields(subject, &predicate, object, "user", 1.0, 1.0)?;
@@ -347,31 +370,36 @@ impl<'db> FactGraph<'db> {
                     conn.execute(
                         "UPDATE facts
                          SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = 1.0,
-                             durability = 1.0
-                         WHERE id = ?2",
-                        rusqlite::params![now, existing.fact_id],
+                             durability = 1.0, memory_kind = ?2
+                         WHERE id = ?3",
+                        rusqlite::params![now, memory_kind.as_str(), existing.fact_id],
                     )?;
                     let mut fact = existing;
                     fact.confidence = 1.0;
                     fact.durability = 1.0;
+                    fact.memory_kind = memory_kind;
                     fact.mention_count += 1;
                     fact.last_seen_at = Some(now);
                     return Ok((fact, true));
                 }
                 conn.execute(
                     "UPDATE facts
-                     SET source = 'user', confidence = 1.0, last_seen_at = ?1, durability = 1.0
-                     WHERE id = ?2",
-                    rusqlite::params![now, existing.fact_id],
+                     SET source = 'user', confidence = 1.0, last_seen_at = ?1,
+                         durability = 1.0, memory_kind = ?2
+                     WHERE id = ?3",
+                    rusqlite::params![now, memory_kind.as_str(), existing.fact_id],
                 )?;
                 let mut fact = existing;
                 fact.source = "user".into();
                 fact.confidence = 1.0;
                 fact.durability = 1.0;
+                fact.memory_kind = memory_kind;
                 fact.last_seen_at = Some(now);
                 return Ok((fact, true));
             }
-            let replaced = if is_single_valued_predicate(&predicate) {
+            let replaced = if memory_kind != MemoryFactKind::Procedural
+                && is_single_valued_predicate(&predicate)
+            {
                 conn.execute(
                     "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
                     rusqlite::params![subject, predicate],
@@ -382,11 +410,11 @@ impl<'db> FactGraph<'db> {
             let fact = Self::insert_user_row(
                 &conn,
                 subject,
-                &subject_id,
+                (&subject_id, &object_id),
                 &predicate,
                 object,
-                &object_id,
                 tags,
+                memory_kind,
             )?;
             Ok((fact, replaced))
         })();
@@ -763,7 +791,7 @@ impl<'db> FactGraph<'db> {
 mod tests {
     use super::FactGraph;
     use crate::Database;
-    use crate::repositories::facts::{FactSourceRef, UpsertOutcome};
+    use crate::repositories::facts::{FactSourceRef, MemoryFactKind, UpsertOutcome};
 
     #[test]
     fn insert_links_both_labels_to_graph_nodes() {
@@ -852,7 +880,13 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let graph = FactGraph::new(&db);
         graph
-            .set_user_fact("user", "project_path", "D:/authoritative", &[])
+            .set_user_fact_with_kind(
+                "user",
+                "project_path",
+                "D:/authoritative",
+                &[],
+                MemoryFactKind::Profile,
+            )
             .unwrap();
 
         let outcome = graph

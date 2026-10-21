@@ -24,11 +24,11 @@ fn parse_tags(tags_str: &str) -> Vec<String> {
 /// order `fact_from_row` maps. Single source of truth: every facts SELECT is
 /// built from this const so a column add/remove cannot drift a query away from
 /// the row mapper (mirrors `EMBED_COLS` in embeddings.rs).
-pub(crate) const FACT_COLS: &str = "id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, provenance_item_id, provenance_record_id, provenance_snippet, durability";
+pub(crate) const FACT_COLS: &str = "id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, provenance_item_id, provenance_record_id, provenance_snippet, durability, memory_kind";
 
 /// Aliased variant for queries that prefix columns with a table alias (FTS
 /// join).
-pub(crate) const FACT_COLS_ALIASED: &str = "f.id, f.subject, f.predicate, f.object, f.source, f.confidence, f.tags, f.created_at, f.mention_count, f.last_seen_at, f.provenance_item_id, f.provenance_record_id, f.provenance_snippet, f.durability";
+pub(crate) const FACT_COLS_ALIASED: &str = "f.id, f.subject, f.predicate, f.object, f.source, f.confidence, f.tags, f.created_at, f.mention_count, f.last_seen_at, f.provenance_item_id, f.provenance_record_id, f.provenance_snippet, f.durability, f.memory_kind";
 
 fn list_facts_page_sql(source_filter: bool) -> String {
     let invisible = invisible_fact_where_sql();
@@ -59,12 +59,26 @@ pub(crate) fn fact_from_row(row: &rusqlite::Row) -> rusqlite::Result<Fact> {
     let provenance_item_id = optional_canonical_id_from_row(row, 10, "msg")?;
     let provenance_record_id = optional_canonical_id_from_row(row, 11, "msg")?;
     let provenance_snippet: Option<String> = row.get(12)?;
+    let memory_kind: String = row.get(14)?;
+    let memory_kind = match memory_kind.as_str() {
+        "profile" => super::facts::MemoryFactKind::Profile,
+        "semantic" => super::facts::MemoryFactKind::Semantic,
+        "procedural" => super::facts::MemoryFactKind::Procedural,
+        _ => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                14,
+                Type::Text,
+                "unsupported memory fact kind".into(),
+            ));
+        }
+    };
     Ok(Fact {
         fact_id: id,
         subject: row.get(1)?,
         predicate: row.get(2)?,
         object: row.get(3)?,
         source: row.get(4)?,
+        memory_kind,
         confidence: row.get(5)?,
         tags: parse_tags(&tags_str),
         created_at: row.get(7)?,
@@ -392,6 +406,7 @@ impl Database {
         match_expr: &str,
         limit: Option<usize>,
         fact_subject: Option<&str>,
+        memory_kind: Option<&str>,
     ) -> anyhow::Result<Vec<Fact>> {
         let conn = self.try_conn()?;
         let fact = crate::embeddings::fts_kind::FACT;
@@ -404,8 +419,9 @@ impl Database {
                        AND memory_fts.entity_type = '{fact}'
                      WHERE memory_fts MATCH ?1
                        AND (?2 IS NULL OR f.subject = ?2)
+                       AND (?3 IS NULL OR f.memory_kind = ?3)
                      ORDER BY bm25(memory_fts)
-                     LIMIT ?3"
+                     LIMIT ?4"
                 ),
                 Some(lim as i64),
             )
@@ -418,6 +434,7 @@ impl Database {
                        AND memory_fts.entity_type = '{fact}'
                      WHERE memory_fts MATCH ?1
                        AND (?2 IS NULL OR f.subject = ?2)
+                       AND (?3 IS NULL OR f.memory_kind = ?3)
                      ORDER BY bm25(memory_fts)"
                 ),
                 None,
@@ -425,10 +442,14 @@ impl Database {
         };
         let mut stmt = conn.prepare(&fts_sql)?;
         let subject = fact_subject.map(str::to_string);
+        let kind = memory_kind.map(str::to_string);
         let rows = if let Some(lim) = bind_limit {
-            stmt.query_map(rusqlite::params![match_expr, subject, lim], fact_from_row)
+            stmt.query_map(
+                rusqlite::params![match_expr, subject, kind, lim],
+                fact_from_row,
+            )
         } else {
-            stmt.query_map(rusqlite::params![match_expr, subject], fact_from_row)
+            stmt.query_map(rusqlite::params![match_expr, subject, kind], fact_from_row)
         };
         let rows = rows?;
         let mut facts = Vec::new();
@@ -443,6 +464,7 @@ impl Database {
         terms: &[&str],
         limit: usize,
         fact_subject: Option<&str>,
+        memory_kind: Option<&str>,
     ) -> anyhow::Result<Vec<Fact>> {
         if terms.is_empty() || limit == 0 {
             return Ok(Vec::new());
@@ -459,10 +481,12 @@ impl Database {
             patterns.push(format!("%{}%", Self::escape_like_term(term)));
         }
         let subject_param = terms.len() + 1;
-        let limit_param = terms.len() + 2;
+        let kind_param = terms.len() + 2;
+        let limit_param = terms.len() + 3;
         let sql = format!(
             "SELECT {FACT_COLS} FROM facts
              WHERE ({}) AND (?{subject_param} IS NULL OR subject = ?{subject_param})
+               AND (?{kind_param} IS NULL OR memory_kind = ?{kind_param})
              ORDER BY confidence DESC, COALESCE(last_seen_at, created_at) DESC
              LIMIT ?{limit_param}",
             clauses.join(" OR ")
@@ -474,6 +498,11 @@ impl Database {
             .collect();
         params.push(
             fact_subject
+                .map(str::to_string)
+                .map_or(rusqlite::types::Value::Null, rusqlite::types::Value::Text),
+        );
+        params.push(
+            memory_kind
                 .map(str::to_string)
                 .map_or(rusqlite::types::Value::Null, rusqlite::types::Value::Text),
         );
@@ -527,11 +556,11 @@ impl Database {
         }
         let match_expr = Self::build_fts_query(&terms);
         let short = Self::short_like_terms(&terms);
-        let facts = self.search_facts_fts(&match_expr, None, fact_subject)?;
+        let facts = self.search_facts_fts(&match_expr, None, fact_subject, None)?;
         if short.is_empty() {
             return Ok(facts);
         }
-        let like = self.search_facts_like_any(&short, 50, fact_subject)?;
+        let like = self.search_facts_like_any(&short, 50, fact_subject, None)?;
         Ok(Self::merge_facts_limited(facts, like, 50))
     }
 
@@ -545,11 +574,22 @@ impl Database {
     /// Multi-term recall with an optional exact subject scope applied before
     /// SQL `LIMIT`. Scoping after a global candidate limit can hide the only
     /// matching fact when another subject has many higher-confidence hits.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn search_facts_any_scoped(
         &self,
         terms: &[&str],
         limit: usize,
         fact_subject: Option<&str>,
+    ) -> anyhow::Result<Vec<Fact>> {
+        self.search_facts_any_scoped_by_kind(terms, limit, fact_subject, None)
+    }
+
+    pub(crate) fn search_facts_any_scoped_by_kind(
+        &self,
+        terms: &[&str],
+        limit: usize,
+        fact_subject: Option<&str>,
+        memory_kind: Option<&str>,
     ) -> anyhow::Result<Vec<Fact>> {
         let terms: Vec<&str> = terms.iter().copied().filter(|t| !t.is_empty()).collect();
         if terms.is_empty() || limit == 0 {
@@ -557,12 +597,12 @@ impl Database {
         }
         let match_expr = Self::build_fts_query_or(&terms);
         let short = Self::short_like_terms(&terms);
-        let fts = self.search_facts_fts(&match_expr, Some(limit), fact_subject)?;
+        let fts = self.search_facts_fts(&match_expr, Some(limit), fact_subject, memory_kind)?;
 
         if short.is_empty() {
             Ok(fts)
         } else {
-            let like = self.search_facts_like_any(&short, limit, fact_subject)?;
+            let like = self.search_facts_like_any(&short, limit, fact_subject, memory_kind)?;
             Ok(Self::merge_facts_limited(fts, like, limit))
         }
     }
@@ -637,6 +677,7 @@ mod tests {
             predicate: "likes".into(),
             object: id.into(),
             source: "user".into(),
+            memory_kind: crate::repositories::facts::MemoryFactKind::Profile,
             confidence: 0.8,
             tags: Vec::new(),
             created_at: "2026-01-01T00:00:00+00:00".into(),
