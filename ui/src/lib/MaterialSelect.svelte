@@ -314,6 +314,11 @@
 		box-shadow: var(--md-sys-elevation-3);
 		z-index: 100;
 	}
+	.md-select-container[data-icon-only='true'] .md-select-menu {
+		right: auto;
+		width: min(320px, calc(100vw - 2 * var(--md-sys-space-md)));
+		min-width: min(240px, calc(100vw - 2 * var(--md-sys-space-md)));
+	}
 	.md-select-group {
 		padding: 10px var(--md-sys-space-lg) 4px;
 		font-size: var(--md-sys-typescale-label-small-size);

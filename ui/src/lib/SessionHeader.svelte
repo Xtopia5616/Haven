@@ -146,7 +146,7 @@
 				{#if canEndSession}
 					<MaterialIconButton
 						size="toolbar"
-						icon="checkCircle"
+						icon="check"
 						variant="success-outline"
 						className="session-header__end"
 						label="完成会话"
