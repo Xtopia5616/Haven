@@ -64,11 +64,13 @@ impl CallExecutor {
         let model_config_id = &self.model_config_id;
         let policy = self.policy;
 
-        execute_with_timeout(policy.total_timeout_secs, "router", || async {
+        let execution = execute_with_timeout(policy.total_timeout_secs, "router", || async {
             // Keep validation inside the existing total deadline, and preserve
             // its early-return behavior: validation errors are not provider
             // outcomes and therefore are not projected onto model health.
-            client.validate_content(&messages)?;
+            if let Err(error) = client.validate_content(&messages) {
+                return Ok(Err(error));
+            }
 
             let result = if tools.is_empty() {
                 execute_with_retry(policy.retry, None, || async {
@@ -90,14 +92,31 @@ impl CallExecutor {
                 .await
             };
 
-            project_outcome(
-                model_config_id.to_string(),
-                RequestOutcome::from_result(&result),
-            )
-            .await;
-            result
+            Ok(Ok(result))
         })
-        .await
+        .await;
+
+        match execution {
+            Ok(Ok(result)) => {
+                project_outcome(
+                    model_config_id.to_string(),
+                    RequestOutcome::from_result(&result),
+                )
+                .await;
+                result
+            }
+            Ok(Err(validation_error)) => Err(validation_error),
+            Err(timeout_error) => {
+                project_outcome(
+                    model_config_id.to_string(),
+                    RequestOutcome::Failure {
+                        rate_limit_after: None,
+                    },
+                )
+                .await;
+                Err(timeout_error)
+            }
+        }
     }
 
     /// Execute one non-empty embedding batch through the same captured retry
@@ -122,17 +141,16 @@ impl CallExecutor {
         let model_config_id = &self.model_config_id;
         let policy = self.policy;
 
-        execute_with_timeout(policy.total_timeout_secs, "embedding", || async {
-            let result =
-                execute_with_retry(policy.retry, None, || client.embed(input.clone())).await;
-            project_outcome(
-                model_config_id.to_string(),
-                RequestOutcome::from_result(&result),
-            )
-            .await;
-            result
+        let result = execute_with_timeout(policy.total_timeout_secs, "embedding", || async {
+            execute_with_retry(policy.retry, None, || client.embed(input.clone())).await
         })
-        .await
+        .await;
+        project_outcome(
+            model_config_id.to_string(),
+            RequestOutcome::from_result(&result),
+        )
+        .await;
+        result
     }
 }
 
@@ -173,6 +191,7 @@ mod tests {
         complete_attempts: AtomicUsize,
         fail_first_complete: bool,
         pending_complete: bool,
+        pending_embedding: bool,
         rate_limit_embedding: bool,
     }
 
@@ -183,6 +202,7 @@ mod tests {
                 complete_attempts: AtomicUsize::new(0),
                 fail_first_complete: false,
                 pending_complete: false,
+                pending_embedding: false,
                 rate_limit_embedding: false,
             }
         }
@@ -245,6 +265,9 @@ mod tests {
             self.calls.lock().unwrap().push(ObservedCall::Embedding {
                 input_count: input.len(),
             });
+            if self.pending_embedding {
+                return std::future::pending().await;
+            }
             if self.rate_limit_embedding {
                 return Err(LlmError::RateLimit {
                     retry_after: Some(Duration::from_secs(5)),
@@ -365,7 +388,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete_total_timeout_keeps_router_error_text_and_skips_outcome_projection() {
+    async fn complete_total_timeout_keeps_router_error_text_and_projects_failure() {
         let client = Arc::new(ExecutorProbe {
             pending_complete: true,
             ..ExecutorProbe::new()
@@ -375,13 +398,13 @@ mod tests {
             policy(0, 0),
             haven_common::config::RequestKind::Chat,
         );
-        let projections = Arc::new(AtomicUsize::new(0));
+        let outcomes = Arc::new(Mutex::new(Vec::new()));
 
         let error = executor
             .complete(messages(), Vec::new(), None, {
-                let projections = projections.clone();
-                move |_, _| async move {
-                    projections.fetch_add(1, Ordering::SeqCst);
+                let outcomes = outcomes.clone();
+                move |_, outcome| async move {
+                    outcomes.lock().unwrap().push(outcome);
                 }
             })
             .await
@@ -391,7 +414,47 @@ mod tests {
             error,
             LlmError::Timeout(message) if message == "router total timeout after 0s"
         ));
-        assert_eq!(projections.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            *outcomes.lock().unwrap(),
+            vec![RequestOutcome::Failure {
+                rate_limit_after: None
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn embedding_total_timeout_projects_failure() {
+        let client = Arc::new(ExecutorProbe {
+            pending_embedding: true,
+            ..ExecutorProbe::new()
+        });
+        let executor = executor(
+            client,
+            policy(0, 0),
+            haven_common::config::RequestKind::Embedding,
+        );
+        let outcomes = Arc::new(Mutex::new(Vec::new()));
+
+        let error = executor
+            .embed(vec!["hello".into()], {
+                let outcomes = outcomes.clone();
+                move |_, outcome| async move {
+                    outcomes.lock().unwrap().push(outcome);
+                }
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            LlmError::Timeout(message) if message == "embedding total timeout after 0s"
+        ));
+        assert_eq!(
+            *outcomes.lock().unwrap(),
+            vec![RequestOutcome::Failure {
+                rate_limit_after: None
+            }]
+        );
     }
 
     #[tokio::test]

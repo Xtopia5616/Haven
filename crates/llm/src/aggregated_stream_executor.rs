@@ -126,7 +126,7 @@ impl<'a> AggregatedStreamExecutor<'a> {
         let idle_timeout = self.idle_timeout;
         let stream_rules = self.stream_rules;
 
-        execute_with_timeout(
+        let execution = execute_with_timeout(
             policy.total_timeout_secs,
             "router streaming",
             || async move {
@@ -158,13 +158,19 @@ impl<'a> AggregatedStreamExecutor<'a> {
                 };
 
                 if matches!(result, Err(LlmError::Cancelled)) {
-                    Err(LlmError::Cancelled)
+                    Ok(Err(LlmError::Cancelled))
                 } else {
-                    project_outcome(result).await
+                    Ok(Ok(result))
                 }
             },
         )
-        .await
+        .await;
+
+        match execution {
+            Ok(Ok(result)) => project_outcome(result).await,
+            Ok(Err(cancelled)) => Err(cancelled),
+            Err(timeout_error) => project_outcome(Err(timeout_error)).await,
+        }
     }
 
     async fn retry_stream_with_guidance<I, IFut>(
@@ -723,7 +729,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn total_timeout_text_and_projection_boundary_are_preserved() {
+    async fn total_timeout_is_projected_after_the_deadline() {
         let probe = Arc::new(ExecutorProbe::new(ProbeMode::Pending));
         let rules = RwLock::new(Vec::new());
         let projection_calls = Arc::new(AtomicUsize::new(0));
@@ -756,7 +762,7 @@ mod tests {
                 if message == "router streaming total timeout after 1s"
         ));
         assert_eq!(probe.attempts.load(Ordering::SeqCst), 1);
-        assert_eq!(projection_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(projection_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -89,19 +89,39 @@ impl StreamExecutor {
         let model_config_id = &self.model_config_id;
         let policy = self.policy;
 
-        let result = execute_with_timeout(policy.total_timeout_secs, "router stream", || async {
-            client.validate_content(&messages)?;
-            let result =
-                execute_with_retry(policy.retry, None, || client.chat_stream(messages.clone()))
-                    .await;
-            project_outcome(
-                model_config_id.to_string(),
-                RequestOutcome::from_result(&result),
-            )
+        let execution =
+            execute_with_timeout(policy.total_timeout_secs, "router stream", || async {
+                if let Err(error) = client.validate_content(&messages) {
+                    return Ok(Err(error));
+                }
+                let result =
+                    execute_with_retry(policy.retry, None, || client.chat_stream(messages.clone()))
+                        .await;
+                Ok(Ok(result))
+            })
             .await;
-            result
-        })
-        .await;
+
+        let result = match execution {
+            Ok(Ok(result)) => {
+                project_outcome(
+                    model_config_id.to_string(),
+                    RequestOutcome::from_result(&result),
+                )
+                .await;
+                result
+            }
+            Ok(Err(validation_error)) => Err(validation_error),
+            Err(timeout_error) => {
+                project_outcome(
+                    model_config_id.to_string(),
+                    RequestOutcome::Failure {
+                        rate_limit_after: None,
+                    },
+                )
+                .await;
+                Err(timeout_error)
+            }
+        };
 
         match result {
             Ok(stream) => {
@@ -292,7 +312,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn router_stream_timeout_text_is_preserved_without_provider_outcome_projection() {
+    async fn router_stream_timeout_text_is_preserved_and_projects_failure() {
         let semaphore = permit_source();
         let executor = StreamExecutor::new(
             chat_descriptor(),
@@ -321,7 +341,15 @@ mod tests {
             LlmError::Timeout(message)
                 if message == "router stream total timeout after 1s"
         ));
-        assert!(outcomes.lock().unwrap().is_empty());
+        assert_eq!(
+            *outcomes.lock().unwrap(),
+            vec![(
+                "stream-model".into(),
+                RequestOutcome::Failure {
+                    rate_limit_after: None
+                }
+            )]
+        );
         assert_eq!(semaphore.available_permits(), 1);
     }
 

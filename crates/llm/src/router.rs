@@ -16,7 +16,8 @@ use crate::client::{LlmClient, endpoint_host};
 #[cfg(test)]
 use crate::endpoint_circuit_breaker::EndpointCircuitState;
 use crate::endpoint_circuit_breaker::{
-    EndpointCircuitBreaker, EndpointCircuitBreakerMap, new_endpoint_circuit_breaker_map,
+    EndpointCircuitBreaker, EndpointCircuitBreakerMap, EndpointProbePermit,
+    new_endpoint_circuit_breaker_map,
 };
 #[cfg(any(test, feature = "test-support"))]
 use crate::model_directory::RouteMode;
@@ -439,7 +440,7 @@ impl LlmRouter {
         f: F,
     ) -> Result<T, LlmError>
     where
-        F: FnOnce(String, Arc<dyn LlmClient>) -> Fut,
+        F: FnOnce(String, Arc<dyn LlmClient>, Option<EndpointProbePermit>) -> Fut,
         Fut: std::future::Future<Output = Result<T, LlmError>>,
     {
         let ResolvedModelClient {
@@ -448,8 +449,8 @@ impl LlmRouter {
         } = self.model_directory.resolve_client(descriptor)?;
         let check_model_config_id = model_config_id.clone();
         self.with_model_permit(model_config_id.clone(), || async move {
-            self.check_circuit(&check_model_config_id).await?;
-            f(model_config_id, client).await
+            let probe_permit = self.check_circuit(&check_model_config_id).await?;
+            f(model_config_id, client, probe_permit).await
         })
         .await
     }
@@ -819,20 +820,29 @@ impl LlmRouter {
         let native_result = self
             .with_request_permit(
                 RequestDescriptor::from(RequestKind::Transcription),
-                |model_config_id, client| async move {
+                |model_config_id, client, probe_permit| async move {
                     let cfg = self.config.read().await;
                     let policy = RequestExecutionPolicy::primary(&cfg);
                     drop(cfg);
 
-                    execute_with_timeout(policy.total_timeout_secs, "transcription", || async {
-                        let result = execute_with_retry(policy.retry, None, || async {
-                            client.transcribe(wav_data).await
-                        })
-                        .await;
-                        self.record_request_outcome(&model_config_id, &result).await;
-                        result
-                    })
-                    .await
+                    let result = execute_with_timeout(
+                        policy.total_timeout_secs,
+                        "transcription",
+                        || async {
+                            execute_with_retry(policy.retry, None, || async {
+                                client.transcribe(wav_data).await
+                            })
+                            .await
+                        },
+                    )
+                    .await;
+                    self.project_request_outcome(
+                        model_config_id,
+                        RequestOutcome::from_result(&result),
+                        probe_permit,
+                    )
+                    .await;
+                    result
                 },
             )
             .await;
@@ -861,17 +871,19 @@ impl LlmRouter {
     }
 
     // §2.6: check the selected model's circuit breaker before dispatching.
-    async fn check_circuit(&self, model_config_id: &str) -> Result<(), LlmError> {
+    async fn check_circuit(
+        &self,
+        model_config_id: &str,
+    ) -> Result<Option<EndpointProbePermit>, LlmError> {
         let mut circuits = self.endpoint_circuits.write().await;
         let endpoint = circuits
             .entry(model_config_id.to_string())
             .or_insert_with(EndpointCircuitBreaker::new);
-        if !endpoint.allow_request() {
-            return Err(LlmError::CircuitOpen {
+        endpoint
+            .try_acquire_request()
+            .map_err(|()| LlmError::CircuitOpen {
                 model_config_id: model_config_id.to_string(),
-            });
-        }
-        Ok(())
+            })
     }
 
     /// Clear the selected endpoint's consecutive-failure gate before an
@@ -894,44 +906,61 @@ impl LlmRouter {
             .reset_for_manual_retry();
     }
 
-    async fn record_success(&self, model_config_id: &str) {
+    async fn record_success(
+        &self,
+        model_config_id: &str,
+        probe_permit: Option<&EndpointProbePermit>,
+    ) {
         let mut circuits = self.endpoint_circuits.write().await;
         circuits
             .entry(model_config_id.to_string())
             .or_insert_with(EndpointCircuitBreaker::new)
-            .record_success();
+            .record_success(probe_permit);
     }
 
-    async fn record_failure(&self, model_config_id: &str) {
+    async fn record_failure(
+        &self,
+        model_config_id: &str,
+        probe_permit: Option<&EndpointProbePermit>,
+    ) {
         let mut circuits = self.endpoint_circuits.write().await;
         circuits
             .entry(model_config_id.to_string())
             .or_insert_with(EndpointCircuitBreaker::new)
-            .record_failure();
+            .record_failure(probe_permit);
     }
 
-    /// Project one completed router request onto endpoint circuit and rate-limit
-    /// state. Callers invoke this at the same point they receive the logical
-    /// request result, before returning it to their caller.
+    /// Test helper for projecting an outcome that was admitted while closed.
+    #[cfg(test)]
     async fn record_request_outcome<T>(&self, model_config_id: &str, result: &Result<T, LlmError>) {
         self.project_request_outcome(
             model_config_id.to_string(),
             RequestOutcome::from_result(result),
+            None,
         )
         .await;
     }
 
-    async fn project_request_outcome(&self, model_config_id: String, outcome: RequestOutcome) {
+    async fn project_request_outcome(
+        &self,
+        model_config_id: String,
+        outcome: RequestOutcome,
+        probe_permit: Option<EndpointProbePermit>,
+    ) {
         match outcome {
-            RequestOutcome::Success => self.record_success(&model_config_id).await,
+            RequestOutcome::Success => {
+                self.record_success(&model_config_id, probe_permit.as_ref())
+                    .await
+            }
             RequestOutcome::Failure { rate_limit_after } => {
-                self.record_failure(&model_config_id).await;
+                self.record_failure(&model_config_id, probe_permit.as_ref())
+                    .await;
                 if let Some(retry_after) = rate_limit_after {
                     self.record_rate_limit(&model_config_id, Some(retry_after))
                         .await;
                 }
             }
-            RequestOutcome::Neutral => {}
+            RequestOutcome::Neutral => drop(probe_permit),
         }
     }
 
@@ -947,22 +976,25 @@ impl LlmRouter {
             max_output_tokens,
         } = request;
         let descriptor = RequestDescriptor::from(request);
-        self.with_request_permit(descriptor, |model_config_id, client| async move {
-            let config = self.config.read().await;
-            let policy = RequestExecutionPolicy::primary(&config);
-            drop(config);
+        self.with_request_permit(
+            descriptor,
+            |model_config_id, client, probe_permit| async move {
+                let config = self.config.read().await;
+                let policy = RequestExecutionPolicy::primary(&config);
+                drop(config);
 
-            CallExecutor::new(descriptor, model_config_id, client, policy)
-                .complete(
-                    messages,
-                    tools,
-                    max_output_tokens,
-                    |model_config_id, outcome| {
-                        self.project_request_outcome(model_config_id, outcome)
-                    },
-                )
-                .await
-        })
+                CallExecutor::new(descriptor, model_config_id, client, policy)
+                    .complete(
+                        messages,
+                        tools,
+                        max_output_tokens,
+                        move |model_config_id, outcome| {
+                            self.project_request_outcome(model_config_id, outcome, probe_permit)
+                        },
+                    )
+                    .await
+            },
+        )
         .await
     }
 
@@ -1037,17 +1069,20 @@ impl LlmRouter {
             });
         }
         let descriptor = RequestDescriptor::from(RequestKind::Embedding);
-        self.with_request_permit(descriptor, |model_config_id, client| async move {
-            let cfg = self.config.read().await;
-            let policy = RequestExecutionPolicy::primary(&cfg);
-            drop(cfg);
+        self.with_request_permit(
+            descriptor,
+            |model_config_id, client, probe_permit| async move {
+                let cfg = self.config.read().await;
+                let policy = RequestExecutionPolicy::primary(&cfg);
+                drop(cfg);
 
-            CallExecutor::new(descriptor, model_config_id, client, policy)
-                .embed(input, |model_config_id, outcome| {
-                    self.project_request_outcome(model_config_id, outcome)
-                })
-                .await
-        })
+                CallExecutor::new(descriptor, model_config_id, client, policy)
+                    .embed(input, move |model_config_id, outcome| {
+                        self.project_request_outcome(model_config_id, outcome, probe_permit)
+                    })
+                    .await
+            },
+        )
         .await
     }
 
@@ -1080,7 +1115,7 @@ impl LlmRouter {
         } = self.model_directory.resolve_client(descriptor)?;
         let permit = self.acquire_model_permit(&model_config_id).await?;
         self.wait_rate_limit_cooldown(&model_config_id).await;
-        self.check_circuit(&model_config_id).await?;
+        let probe_permit = self.check_circuit(&model_config_id).await?;
         let cfg = self.config.read().await;
         let primary_policy = RequestExecutionPolicy::primary(&cfg);
         drop(cfg);
@@ -1088,8 +1123,8 @@ impl LlmRouter {
         // later transport error must be handled by the caller without
         // replaying already-consumed deltas.
         StreamExecutor::new(descriptor, model_config_id, client, primary_policy)
-            .chat_stream(messages, permit, |model_config_id, outcome| {
-                self.project_request_outcome(model_config_id, outcome)
+            .chat_stream(messages, permit, move |model_config_id, outcome| {
+                self.project_request_outcome(model_config_id, outcome, probe_permit)
             })
             .await
     }
@@ -1168,19 +1203,21 @@ impl LlmRouter {
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
         let descriptor = RequestDescriptor::from(stream_request.request);
-        let operation = self.with_request_permit(descriptor, |model_config_id, _client| {
-            let cancel = cancel.clone();
-            async move {
-                self.chat_stream_with_tools_aggregated_cancellable_inner(
-                    stream_request,
-                    descriptor,
-                    model_config_id,
-                    hooks,
-                    cancel,
-                )
-                .await
-            }
-        });
+        let operation =
+            self.with_request_permit(descriptor, |model_config_id, _client, probe_permit| {
+                let cancel = cancel.clone();
+                async move {
+                    self.chat_stream_with_tools_aggregated_cancellable_inner(
+                        stream_request,
+                        descriptor,
+                        model_config_id,
+                        probe_permit,
+                        hooks,
+                        cancel,
+                    )
+                    .await
+                }
+            });
         // Cancellation also covers waiting for a concurrency permit or a
         // shared rate-limit cooldown. Dropping the operation releases the
         // permit and prevents a stopped session from starting later.
@@ -1196,6 +1233,7 @@ impl LlmRouter {
         stream_request: StreamRequest<'_>,
         descriptor: RequestDescriptor,
         model_config_id: String,
+        probe_permit: Option<EndpointProbePermit>,
         hooks: StreamAttemptHooks,
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
@@ -1237,9 +1275,13 @@ impl LlmRouter {
             || async {
                 Duration::from_secs(self.config.read().await.stream_idle_timeout_secs.max(1))
             },
-            |result| async move {
-                self.record_request_outcome(&model_config_id_for_projection, &result)
-                    .await;
+            move |result| async move {
+                self.project_request_outcome(
+                    model_config_id_for_projection,
+                    RequestOutcome::from_result(&result),
+                    probe_permit,
+                )
+                .await;
                 result
             },
         )
@@ -1261,17 +1303,23 @@ impl LlmRouter {
     pub async fn health_check(&self, request: HealthCheckRequest) -> Result<(), LlmError> {
         self.with_request_permit(
             RequestDescriptor::from(request.request),
-            |model_config_id, candidate| async move {
+            |model_config_id, candidate, probe_permit| async move {
                 let cfg = self.config.read().await;
                 let policy = RequestExecutionPolicy::primary(&cfg);
                 drop(cfg);
 
-                execute_with_timeout(policy.total_timeout_secs, "health check", || async {
-                    let result = candidate.health_check().await;
-                    self.record_request_outcome(&model_config_id, &result).await;
-                    result
-                })
-                .await
+                let result =
+                    execute_with_timeout(policy.total_timeout_secs, "health check", || {
+                        candidate.health_check()
+                    })
+                    .await;
+                self.project_request_outcome(
+                    model_config_id,
+                    RequestOutcome::from_result(&result),
+                    probe_permit,
+                )
+                .await;
+                result
             },
         )
         .await
@@ -3152,7 +3200,7 @@ mod tests {
     #[test]
     fn circuit_breaker_new_is_closed() {
         let mut cb = EndpointCircuitBreaker::new();
-        assert!(cb.allow_request());
+        assert!(cb.try_acquire_request().is_ok());
     }
 
     #[test]
@@ -3161,7 +3209,7 @@ mod tests {
         cb.consecutive_failures = 5;
         cb.failure_count = 5;
         cb.total_calls = 5;
-        cb.record_success();
+        cb.record_success(None);
         assert_eq!(cb.consecutive_failures, 0);
         assert_eq!(cb.total_calls, 6);
         assert_eq!(cb.state, EndpointCircuitState::Closed);
@@ -3176,7 +3224,7 @@ mod tests {
         cb.state = EndpointCircuitState::Open;
         cb.opened_at = Some(Instant::now());
         cb.consecutive_failures = 3;
-        cb.record_success();
+        cb.record_success(None);
         assert_eq!(
             cb.state,
             EndpointCircuitState::Open,
@@ -3186,16 +3234,16 @@ mod tests {
         assert!(cb.opened_at.is_some());
         // Simulate the cooldown elapsing: probe goes HalfOpen, its success closes.
         cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
-        assert!(cb.allow_request());
+        let probe = cb.try_acquire_request().unwrap().unwrap();
         assert_eq!(cb.state, EndpointCircuitState::HalfOpen);
-        cb.record_success();
+        cb.record_success(Some(&probe));
         assert_eq!(cb.state, EndpointCircuitState::Closed);
     }
 
     #[test]
     fn circuit_breaker_record_failure_increments_counters() {
         let mut cb = EndpointCircuitBreaker::new();
-        cb.record_failure();
+        cb.record_failure(None);
         assert_eq!(cb.consecutive_failures, 1);
         assert_eq!(cb.failure_count, 1);
         assert_eq!(cb.total_calls, 1);
@@ -3204,26 +3252,26 @@ mod tests {
     #[test]
     fn circuit_breaker_opens_at_threshold() {
         let mut cb = EndpointCircuitBreaker::new();
-        cb.record_failure();
-        cb.record_failure();
-        assert!(cb.allow_request());
-        cb.record_failure();
+        cb.record_failure(None);
+        cb.record_failure(None);
+        assert!(cb.try_acquire_request().is_ok());
+        cb.record_failure(None);
         // Three consecutive failures open the breaker regardless of older
         // successes.
-        assert!(!cb.allow_request());
+        assert!(cb.try_acquire_request().is_err());
     }
 
     #[test]
     fn circuit_breaker_ignores_historical_success_rate() {
         let mut cb = EndpointCircuitBreaker::new();
         for _ in 0..100 {
-            cb.record_success();
+            cb.record_success(None);
         }
         for _ in 0..3 {
-            cb.record_failure();
+            cb.record_failure(None);
         }
         assert_eq!(cb.state, EndpointCircuitState::Open);
-        assert!(!cb.allow_request());
+        assert!(cb.try_acquire_request().is_err());
     }
 
     #[test]
@@ -3232,8 +3280,9 @@ mod tests {
         // Force open with a past timestamp
         cb.state = EndpointCircuitState::Open;
         cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
-        assert!(cb.allow_request());
+        let probe = cb.try_acquire_request().unwrap().unwrap();
         assert_eq!(cb.state, EndpointCircuitState::HalfOpen);
+        drop(probe);
     }
 
     #[test]
@@ -3241,13 +3290,14 @@ mod tests {
         let mut cb = EndpointCircuitBreaker::new();
         cb.state = EndpointCircuitState::Open;
         cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
-        assert!(cb.allow_request());
-        assert!(!cb.allow_request());
-        cb.record_failure();
+        let probe = cb.try_acquire_request().unwrap().unwrap();
+        assert!(cb.try_acquire_request().is_err());
+        cb.record_failure(Some(&probe));
         assert_eq!(cb.state, EndpointCircuitState::Open);
+        drop(probe);
         cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
-        assert!(cb.allow_request());
-        cb.record_success();
+        let probe = cb.try_acquire_request().unwrap().unwrap();
+        cb.record_success(Some(&probe));
         assert_eq!(cb.state, EndpointCircuitState::Closed);
     }
 
@@ -3256,7 +3306,7 @@ mod tests {
         let mut cb = EndpointCircuitBreaker::new();
         cb.state = EndpointCircuitState::Open;
         cb.opened_at = Some(Instant::now());
-        assert!(!cb.allow_request());
+        assert!(cb.try_acquire_request().is_err());
     }
 
     #[test]
@@ -3264,17 +3314,32 @@ mod tests {
         let mut cb = EndpointCircuitBreaker::new();
         // Closed → Open
         for _ in 0..3 {
-            cb.record_failure();
+            cb.record_failure(None);
         }
-        assert!(!cb.allow_request());
+        assert!(cb.try_acquire_request().is_err());
         // Open → HalfOpen (simulate cooldown elapsed)
         cb.state = EndpointCircuitState::Open;
         cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
-        assert!(cb.allow_request());
+        let probe = cb.try_acquire_request().unwrap().unwrap();
         assert_eq!(cb.state, EndpointCircuitState::HalfOpen);
         // HalfOpen → Closed (on success)
-        cb.record_success();
+        cb.record_success(Some(&probe));
         assert_eq!(cb.state, EndpointCircuitState::Closed);
+    }
+
+    #[test]
+    fn dropping_half_open_probe_permit_releases_the_slot() {
+        let mut cb = EndpointCircuitBreaker::new();
+        cb.state = EndpointCircuitState::Open;
+        cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
+
+        let probe = cb.try_acquire_request().unwrap().unwrap();
+        assert!(cb.try_acquire_request().is_err());
+        drop(probe);
+
+        assert_eq!(cb.failure_count, 0, "dropping a cancelled probe is neutral");
+        assert_eq!(cb.state, EndpointCircuitState::HalfOpen);
+        assert!(cb.try_acquire_request().unwrap().is_some());
     }
 
     #[test]
