@@ -41,8 +41,8 @@ use self::tool_schema::canonical_entity_id_schema;
 use crate::ToolRegistry;
 use crate::ToolRunService;
 use crate::operation_view::{
-    OperationPolicyRule, OperationSpec, OperationViewTool, split_operation_schema,
-    split_scope_operation_schema,
+    OperationIdentity, OperationPolicyRule, OperationSpec, OperationViewTool,
+    split_operation_schema, split_scope_operation_schema,
 };
 use crate::prompts as tool_prompts;
 use crate::registry::{DeferredToolCatalog, SessionToolOverlay};
@@ -52,7 +52,7 @@ use crate::{
     ToolOperationScope,
 };
 use haven_common::config::{MAX_TOOLS_PER_REQUEST, MIN_MAX_TOOLS_PER_REQUEST};
-use haven_common::tools::{ToolCatalogGroup, ToolPresentation, ToolPrompt};
+use haven_common::tools::{ToolCatalogGroup, ToolPresentation, ToolPrompt, ToolSource};
 use haven_common::types::RiskLevel;
 use haven_mcp::McpManager;
 use haven_skills::SkillRegistry;
@@ -783,6 +783,7 @@ struct SplitOperationSpec {
     operation: &'static str,
     renderer: &'static str,
     icon: &'static str,
+    catalog_root: Option<&'static str>,
 }
 
 macro_rules! split_spec {
@@ -792,6 +793,19 @@ macro_rules! split_spec {
             operation: $operation,
             renderer: $renderer,
             icon: $icon,
+            catalog_root: None,
+        }
+    };
+}
+
+macro_rules! split_spec_in_root {
+    ($root:literal, $name:literal, $operation:literal, $renderer:literal, $icon:literal) => {
+        SplitOperationSpec {
+            name: $name,
+            operation: $operation,
+            renderer: $renderer,
+            icon: $icon,
+            catalog_root: Some($root),
         }
     };
 }
@@ -856,11 +870,11 @@ const MEDIA_OPERATION_VIEWS: &[SplitOperationSpec] = &[
 ];
 
 const MEMORY_OPERATION_VIEWS: &[SplitOperationSpec] = &[
-    split_spec!("memory.search", "search", "memory", "memory"),
-    split_spec!("memory.list", "list", "memory", "memory"),
-    split_spec!("memory.remember", "remember", "memory", "memory"),
-    split_spec!("memory.forget", "forget", "memory", "memory"),
-    split_spec!("memory.recall", "recall", "memory", "memory"),
+    split_spec_in_root!("haven", "memory.search", "search", "memory", "memory"),
+    split_spec_in_root!("haven", "memory.list", "list", "memory", "memory"),
+    split_spec_in_root!("haven", "memory.remember", "remember", "memory", "memory"),
+    split_spec_in_root!("haven", "memory.forget", "forget", "memory", "memory"),
+    split_spec_in_root!("haven", "memory.recall", "recall", "memory", "memory"),
 ];
 
 const AGENT_OPERATION_VIEWS: &[SplitOperationSpec] = &[
@@ -1122,7 +1136,7 @@ fn add_operation_views(
             continue;
         };
         let text = tool_prompts::operation_text(spec.name);
-        let contract = operation_spec(
+        let mut contract = operation_spec(
             &inner,
             spec.name,
             text.description,
@@ -1132,6 +1146,22 @@ fn add_operation_views(
             spec.icon,
             text.when_to_use,
         );
+        if let Some(root) = spec.catalog_root {
+            let operation = spec
+                .name
+                .strip_prefix(&format!("{root}."))
+                .unwrap_or(spec.name);
+            contract.identity = Some(OperationIdentity {
+                source: ToolSource::Builtin,
+                root: root.into(),
+                operation: Some(operation.into()),
+                root_presentation: crate::tool_contract::default_root_presentation(
+                    root,
+                    ToolSource::Builtin,
+                ),
+                availability: Default::default(),
+            });
+        }
         tools.push(OperationViewTool::new(inner.clone(), contract));
     }
 }
@@ -1334,6 +1364,28 @@ mod tests {
                 ToolConcurrency::Resource("media:audio-device".into()),
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn memory_operation_views_are_grouped_under_haven_without_changing_model_or_permission_names() {
+        let memory = Arc::new(memory::MemoryTool::new(
+            None,
+            crate::tool_runtime::new_memory_recall_slot(),
+        ));
+        let mut tools = Vec::new();
+        add_operation_views(&mut tools, memory, &HashMap::new(), MEMORY_OPERATION_VIEWS);
+
+        assert_eq!(tools.len(), MEMORY_OPERATION_VIEWS.len());
+        for tool in tools {
+            let name = tool.name();
+            let manifest = tool.tool_manifest();
+            assert_eq!(manifest.model.name, name);
+            assert_eq!(manifest.identity.stable_name, name);
+            assert_eq!(manifest.identity.root, "haven", "{name}");
+            assert_eq!(manifest.identity.operation.as_deref(), Some(name.as_str()));
+            assert_eq!(manifest.policy.permission_key, name, "{name}");
+            assert_eq!(manifest.presentation.renderer, "memory", "{name}");
         }
     }
 

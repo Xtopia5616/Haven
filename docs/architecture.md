@@ -195,6 +195,8 @@ Schedule 与 ToolRun 管理操作归入 `workflow`；`ask` 与 `notify` 归入 `
 Skill/MCP 加载器及外部扩展工具归入 `extensions`。Haven、文件系统、Desktop、System、Media、
 Network 与 Shell 保持独立能力分类。Skill/MCP 的 `ToolSource` 仍表达执行来源与安全边界，不再作为
 能力类别（ADR 1331、1332）。目录可见性只影响模型路由，不改变工具名、授权、确认、sandbox 或执行策略。
+记忆操作的稳定模型名与授权 key 仍为 `memory.*`；其 manifest root 合入 `haven`，因此工具设置页将其与
+Haven 管理操作显示在同一根节点下，结果仍使用记忆 renderer（ADR 1349）。
 启用 Skill 只进入紧凑索引，由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`，并在成功加载结果中返回完整 `SKILL.md` 正文作为任务指引；若正文超出有效工具观察预算（全局观察上限与单工具输出上限中较小者）则拒绝激活，避免模型收到截断指令；
 MCP 服务器索引保持紧凑，仍由 `load_mcp` 按服务器加载并注册到 `SessionToolOverlay`
 （ADR 0127、0131、0137、0145、0148、0816、1331）。Builtin 的 `toolrun.*` 是后台 ToolRun 操作；

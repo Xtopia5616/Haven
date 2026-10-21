@@ -26,8 +26,8 @@ function tool(name: string, overrides: Partial<BuiltinToolEntry> = {}): BuiltinT
 			identity: {
 				source: 'builtin',
 				catalogGroup: overrides.category ?? 'system',
-				root: name.split('.')[0],
-				operation: null,
+				root: overrides.root ?? name.split('.')[0],
+				operation: overrides.operation ?? null,
 				stableName: name,
 			},
 			model: { name, description: `${name} description`, inputSchema: {} },
@@ -48,7 +48,11 @@ function tool(name: string, overrides: Partial<BuiltinToolEntry> = {}): BuiltinT
 				icon: 'tools',
 				representedSource: 'builtin',
 			},
-			rootPresentation: { label: name.split('.')[0], description: '', icon: 'tools' },
+			rootPresentation: {
+				label: overrides.rootLabel ?? name.split('.')[0],
+				description: '',
+				icon: 'tools',
+			},
 			prompt: { whenToUse: '', whenNotToUse: '', keyOperations: [] },
 			availability: {
 				enabled: true,
@@ -144,6 +148,30 @@ describe('builtin tool presentation', () => {
 
 		expect(group.roots.map((root) => root.name)).toEqual(['files', 'system']);
 		expect(group.roots.find((root) => root.name === 'system')?.operations).toHaveLength(2);
+	});
+
+	it('groups memory operations under the Haven root while retaining their operation names', () => {
+		const memorySearch = tool('memory.search', {
+			category: 'haven',
+			root: 'haven',
+			rootLabel: 'Haven',
+			operation: 'memory.search',
+		});
+		const havenStatus = tool('haven.diagnostics.status', {
+			category: 'haven',
+			root: 'haven',
+			rootLabel: 'Haven',
+			operation: 'diagnostics.status',
+		});
+
+		const [group] = groupBuiltinTools([memorySearch, havenStatus]);
+
+		expect(group.roots).toHaveLength(1);
+		expect(group.roots[0]).toMatchObject({
+			name: 'haven',
+			label: 'Haven',
+			operations: [havenStatus, memorySearch],
+		});
 	});
 
 	it('filters each level of the tree while retaining matching descendants', () => {
