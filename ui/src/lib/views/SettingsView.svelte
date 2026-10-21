@@ -391,8 +391,6 @@
 	let leaveSaving = $state(false);
 	let saveState = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
 	let saveError = $state('');
-	let saveBarHeight = $state(0);
-	let settingsViewElement = $state<HTMLDivElement | null>(null);
 	let securityRuntimeStatus = $state<'current' | 'unchanged' | 'incomplete'>('current');
 	let securityRuntimeNotice = $state('安全策略已按当前配置完成运行时应用。');
 	let mounted = true;
@@ -524,7 +522,6 @@
 		);
 	}
 	const settingsDirty = $derived.by(() => isDirty());
-	const saveBarVisible = $derived(settingsDirty || saveState === 'error');
 
 	function discardAndReset() {
 		discardChanges();
@@ -1338,34 +1335,27 @@
 		await saveSettings();
 	}
 
-	function handleSaveBarHeightChange(height: number) {
-		saveBarHeight = height;
-	}
-
-	$effect(() => {
-		const content = settingsViewElement?.closest<HTMLElement>('.content');
-		if (!content) return;
-		if (saveBarVisible) {
-			content.style.setProperty('--settings-save-bar-clearance', `${saveBarHeight}px`);
-		} else {
-			content.style.removeProperty('--settings-save-bar-clearance');
-		}
-		return () => content.style.removeProperty('--settings-save-bar-clearance');
-	});
 </script>
 
-<div
-	class="settings-view-shell"
-	class:settings-view-shell--save-bar-visible={saveBarVisible}
-	bind:this={settingsViewElement}
->
+<div class="settings-view-shell">
 	<div class="settings-surface-slot">
 		<WorkspaceSurface {entering} {onAnimationEnd}>
 			<div class="settings-page">
 				<WorkspacePageHeader
 					title="设置"
 					description="按用途分组管理 Haven 配置；修改分类后可以继续浏览，离开页面时会提醒保存。"
-				/>
+				>
+					{#snippet children()}
+						<SettingsSaveBar
+							dirty={settingsDirty}
+							dirtySectionLabels={dirtySettingsSectionLabels}
+							{saveState}
+							{saveError}
+							onDiscard={discardAndReset}
+							onSave={handleSaveClick}
+						/>
+					{/snippet}
+				</WorkspacePageHeader>
 				<div
 					class="settings-layout workspace-secondary-layout responsive-layout-transition"
 				>
@@ -1500,18 +1490,6 @@
 			</div>
 		</WorkspaceSurface>
 	</div>
-	<div class="settings-save-bar-slot">
-		<SettingsSaveBar
-			visible={saveBarVisible}
-			dirty={settingsDirty}
-			dirtySectionLabels={dirtySettingsSectionLabels}
-			{saveState}
-			{saveError}
-			onHeightChange={handleSaveBarHeightChange}
-			onDiscard={discardAndReset}
-			onSave={handleSaveClick}
-		/>
-	</div>
 </div>
 
 <MaterialDialog open={leaveDialogOpen} title="未保存的更改" onClose={stayOnSettings}>
@@ -1576,18 +1554,16 @@
 			--workspace-surface-bottom-gap,
 			var(--md-sys-content-gutter)
 		);
-		display: grid;
+		display: flex;
+		flex-direction: column;
 		flex: 1 1 auto;
-		grid-template-columns: minmax(0, 1fr);
-		grid-template-rows: minmax(0, 1fr);
 		width: 100%;
 		min-width: 0;
 		min-height: 100%;
 	}
 	.settings-surface-slot {
-		grid-column: 1;
-		grid-row: 1;
 		display: flex;
+		flex: 1 1 auto;
 		min-width: 0;
 		min-height: 0;
 		margin-bottom: var(--settings-surface-bottom-gap);
@@ -1595,17 +1571,6 @@
 	.settings-surface-slot :global(.workspace-surface) {
 		flex: 1 1 auto;
 		min-height: 0;
-	}
-	.settings-save-bar-slot {
-		position: fixed;
-		inset-inline: 0;
-		bottom: 0;
-		z-index: var(--md-sys-z-drawer);
-		width: 100%;
-		min-width: 0;
-		display: flex;
-		justify-content: center;
-		pointer-events: none;
 	}
 	:global(.content:not(.content--chat) .page-shell:has(.settings-view-shell)) {
 		display: flex;
@@ -1615,14 +1580,6 @@
 	:global(.content:not(.content--chat):has(.tab-panel:not([hidden]) .settings-view-shell)) {
 		padding-bottom: 0;
 	}
-	:global(
-		.content:not(.content--chat):has(
-				.tab-panel:not([hidden]) .settings-view-shell--save-bar-visible
-			)
-	) {
-		padding-bottom: var(--settings-save-bar-clearance, 0px);
-		transition: padding-bottom 0s;
-	}
 	.settings-page {
 		display: flex;
 		flex: 1;
@@ -1631,6 +1588,15 @@
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
 		padding-bottom: 0;
+		container-name: settings-page;
+		container-type: inline-size;
+	}
+	.settings-page :global(.page-heading-actions) {
+		flex: 0 1 auto;
+		width: auto;
+		min-width: 0;
+		margin-left: auto;
+		justify-content: flex-end;
 	}
 	:global(.settings-page .md-btn[data-width='content']:not(.accent-swatch)) {
 		min-width: min(100%, var(--md-comp-control-compact-width));
@@ -1712,6 +1678,36 @@
 	@container settings-content (max-width: 640px) {
 		.settings-panel-heading {
 			flex-direction: column;
+		}
+	}
+	@container settings-page (max-width: 640px) {
+		.settings-page :global(.page-heading-actions) {
+			flex: 1 1 100%;
+			width: 100%;
+		}
+		.settings-page :global(.page-heading-actions .save-bar) {
+			width: 100%;
+		}
+	}
+	@media screen and (orientation: landscape) and (max-height: 560px) {
+		.settings-surface-slot :global(.workspace-surface) {
+			padding: var(--md-sys-space-md);
+		}
+		.settings-page :global(.page-heading) {
+			gap: var(--md-sys-space-sm);
+			margin-bottom: var(--md-sys-space-md);
+		}
+		.settings-panel-heading {
+			gap: var(--md-sys-space-sm);
+			margin-bottom: var(--md-sys-space-md);
+			padding-bottom: var(--md-sys-space-sm);
+		}
+	}
+	@media screen and (orientation: landscape) and (max-height: 560px) and (max-width: 839.99px) {
+		.settings-sidebar :global(.workspace-secondary-tabs--sidebar) {
+			height: 44px;
+			padding-block: var(--md-sys-space-xs);
+			margin-bottom: var(--md-sys-space-sm);
 		}
 	}
 </style>

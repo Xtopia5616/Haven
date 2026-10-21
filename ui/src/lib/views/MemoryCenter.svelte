@@ -104,41 +104,43 @@
 				autocomplete="off"
 			/>
 		</label>
-		<div class="memory-center-scope">
-			<MaterialSelect
-				id="memory-center-scope"
-				value={memoryRecall.kind}
-				ariaLabel="记忆范围"
-				width="compact"
-				options={MEMORY_SCOPE_OPTIONS}
-				onChange={handleScopeChange}
-			/>
-		</div>
-		{#if !memoryRecall.searched && memoryRecall.kind !== 'episode'}
-			<div class="memory-center-source">
+		<div class="memory-center-controls">
+			<div class="memory-center-selects">
 				<MaterialSelect
-					id="memory-center-source"
-					value={factSourceFilter}
-					ariaLabel="事实来源"
+					id="memory-center-scope"
+					value={memoryRecall.kind}
+					ariaLabel="记忆范围"
 					width="compact"
-					options={factSourceOptions}
-					onChange={handleFactSourceFilterInput}
+					options={MEMORY_SCOPE_OPTIONS}
+					onChange={handleScopeChange}
 				/>
+				{#if !memoryRecall.searched && memoryRecall.kind !== 'episode'}
+					<MaterialSelect
+						id="memory-center-source"
+						value={factSourceFilter}
+						ariaLabel="事实来源"
+						width="compact"
+						options={factSourceOptions}
+						onChange={handleFactSourceFilterInput}
+					/>
+				{/if}
 			</div>
-		{/if}
-		{#if memoryRecall.searched}
-			<MaterialButton variant="text" label="清除" onclick={() => onClearRecall()} />
-		{/if}
-		<MaterialButton
-			variant="outlined"
-			label="添加记忆"
-			onclick={() => (addFactDialogOpen = true)}
-		/>
-		{#if memoryRecall.searched && !memoryRecall.loading}
-			<CountChip count={memoryRecall.results.length} label="条结果" />
-		{:else if factsLoaded}
-			<CountChip count={facts.length} label={factsHasMore ? '条已加载' : '条记忆'} />
-		{/if}
+			<div class="memory-center-actions">
+				{#if memoryRecall.searched}
+					<MaterialButton variant="text" label="清除" onclick={() => onClearRecall()} />
+				{/if}
+				<MaterialButton
+					variant="outlined"
+					label="添加记忆"
+					onclick={() => (addFactDialogOpen = true)}
+				/>
+				{#if memoryRecall.searched && !memoryRecall.loading}
+					<CountChip count={memoryRecall.results.length} label="条结果" />
+				{:else if factsLoaded}
+					<CountChip count={facts.length} label={factsHasMore ? '条已加载' : '条记忆'} />
+				{/if}
+			</div>
+		</div>
 	</div>
 
 	{#if memoryRecall.searched || memoryRecall.kind === 'episode'}
@@ -220,20 +222,33 @@
 		flex-direction: column;
 		gap: var(--md-sys-space-lg);
 		min-width: 0;
+		container-type: inline-size;
 	}
 	.memory-center-toolbar {
 		align-items: center;
+		flex-wrap: nowrap;
 		margin-bottom: 0;
 	}
 	.memory-center-search {
 		flex: 1 1 auto;
 		min-width: 0;
 	}
-	.memory-center-scope {
-		flex: 0 1 auto;
+	.memory-center-controls,
+	.memory-center-selects,
+	.memory-center-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--md-comp-toolbar-gap);
+		min-width: 0;
 	}
-	.memory-center-source {
-		flex: 0 1 auto;
+	.memory-center-controls {
+		flex: 0 0 auto;
+	}
+	.memory-center-selects {
+		flex-wrap: wrap;
+	}
+	.memory-center-actions {
+		flex: 0 0 auto;
 	}
 	.memory-fact-form {
 		display: grid;
@@ -252,21 +267,36 @@
 	:global(.memory-add-dialog) {
 		width: min(480px, calc(100vw - var(--md-sys-space-2xl)));
 	}
-	@media (max-width: 760px) {
+	@container (max-width: 760px) {
 		.memory-center-toolbar {
 			align-items: stretch;
+			flex-direction: column;
 		}
 		.memory-center-search {
-			flex-basis: 100%;
-		}
-		.memory-center-scope,
-		.memory-center-source {
-			flex: 1 1 0;
-			width: auto;
-		}
-		.memory-center-scope :global(.md-select-container),
-		.memory-center-source :global(.md-select-container) {
+			flex: 0 1 auto;
 			width: 100%;
+		}
+		.memory-center-controls {
+			align-items: stretch;
+			flex-direction: column;
+			width: 100%;
+		}
+		.memory-center-selects {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+			width: 100%;
+		}
+		.memory-center-selects :global(.md-select-container) {
+			flex: 1 1 140px;
+			min-width: 0;
+			width: 100%;
+		}
+		.memory-center-actions {
+			flex-wrap: wrap;
+			width: 100%;
+		}
+		.memory-center-actions :global(.count-chip) {
+			margin-left: auto;
 		}
 	}
 </style>

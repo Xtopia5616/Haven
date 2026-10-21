@@ -40,12 +40,13 @@
 		display: flex;
 		align-items: baseline;
 		justify-content: space-between;
+		flex-wrap: wrap;
 		gap: var(--md-sys-space-md);
 		min-width: 0;
 		margin-bottom: var(--md-sys-space-md);
 	}
 	.workspace-section-header__content {
-		flex: 1 1 0;
+		flex: 1 1 240px;
 		min-width: 0;
 	}
 	.workspace-section-header h2 {
@@ -65,8 +66,9 @@
 		display: flex;
 		align-items: center;
 		justify-content: flex-end;
-		flex: 0 0 auto;
+		flex: 0 1 auto;
 		flex-wrap: wrap;
+		max-width: 100%;
 		gap: var(--md-sys-space-sm);
 	}
 	@media (max-width: 700px) {

@@ -253,4 +253,18 @@
 	.session-rail__empty span {
 		font-size: var(--md-sys-typescale-label-small-size);
 	}
+	@media screen and (orientation: landscape) and (max-height: 560px) {
+		.session-rail {
+			padding-top: var(--md-sys-space-sm);
+		}
+		.session-rail__heading {
+			margin-bottom: var(--md-sys-space-sm);
+		}
+		.session-rail__list-heading {
+			padding-top: var(--md-sys-space-sm);
+		}
+		.session-rail__item {
+			min-height: 52px;
+		}
+	}
 </style>

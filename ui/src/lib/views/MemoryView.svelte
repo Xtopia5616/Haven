@@ -1044,4 +1044,12 @@
 			flex-direction: column;
 		}
 	}
+	@media screen and (orientation: landscape) and (max-height: 560px) {
+		:global(.workspace-surface) {
+			padding: var(--md-sys-space-sm);
+		}
+		:global(.workspace-secondary-sidebar) {
+			top: var(--md-sys-space-xs);
+		}
+	}
 </style>

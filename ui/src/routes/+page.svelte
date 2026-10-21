@@ -1604,6 +1604,19 @@
 		}
 	}
 
+	@media screen and (orientation: landscape) and (max-height: 560px) and (min-width: 840px) {
+		.chat-page {
+			grid-template-columns: minmax(200px, min(24vw, 240px)) minmax(0, 1fr);
+		}
+		.messages-area {
+			padding-top: var(--md-sys-space-sm);
+			padding-bottom: calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-sm));
+		}
+		.jump-bottom-anchor {
+			bottom: calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-xs));
+		}
+	}
+
 	@keyframes session-rail-exit {
 		from {
 			opacity: 1;

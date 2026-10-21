@@ -1123,4 +1123,43 @@
 			justify-content: flex-end;
 		}
 	}
+
+	@media screen and (orientation: landscape) and (max-height: 560px) and (min-width: 560px) {
+		.input-area {
+			bottom: var(--md-sys-space-xs);
+			gap: var(--md-sys-space-2xs);
+			padding: var(--md-sys-space-xs) var(--md-sys-space-sm) 2px;
+			border-radius: var(--md-sys-shape-medium);
+		}
+		.input-area::before {
+			border-radius: calc(var(--md-sys-shape-medium) - 1px);
+		}
+		.chat-input {
+			min-height: 40px;
+			max-height: 88px;
+			padding-block: var(--md-sys-space-sm);
+		}
+		.toolbar-row {
+			flex-wrap: nowrap;
+			align-items: center;
+			gap: var(--md-sys-space-xs);
+			padding-top: 0;
+			border-top: 0;
+		}
+		.toolbar-left {
+			flex: 0 1 auto;
+			flex-wrap: nowrap;
+		}
+		.toolbar-right {
+			flex: 0 0 auto;
+			gap: var(--md-sys-space-xs);
+			margin-left: auto;
+		}
+		:global(.toolbar-right .md-select-container) {
+			max-width: 120px;
+		}
+		:global(.model-switch) {
+			max-width: 130px;
+		}
+	}
 </style>

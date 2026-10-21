@@ -475,6 +475,9 @@
 			width: 100%;
 			flex: 0 1 auto;
 		}
+		:global(.task-count) {
+			align-self: flex-start;
+		}
 		.task-actions {
 			flex-direction: column;
 			align-items: stretch;
