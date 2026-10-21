@@ -1,10 +1,10 @@
 use crate::db::Database;
 use crate::recall::normalize_memory_query;
+#[cfg(any(test, feature = "test-support"))]
 use crate::repositories::fact_graph::FactGraph;
 use crate::repositories::facts::{Fact, FactSourceRef, MemoryFactKind};
 use chrono::{DateTime, SecondsFormat, Utc};
 use haven_common::types::is_canonical_id;
-use rusqlite::{Connection, OptionalExtension};
 use std::sync::Arc;
 
 /// Default number of facts returned by the paged long-term fact listing.
@@ -86,104 +86,6 @@ impl MemoryFactStore {
             .run_blocking(move |db| {
                 db.with_fact_write(|| {
                     FactGraph::new(db).upsert_inferred_batch(&writes, new_fact_confidence_floor)
-                })
-            })
-            .await
-    }
-
-    /// Commit inferred facts and the ordinary extraction cursor atomically.
-    /// A failed cursor write rolls the fact mutations back with it, so a retry
-    /// cannot reinforce the same observation twice.
-    pub async fn commit_ordinary_extraction(
-        &self,
-        writes: Vec<MemoryFactWrite>,
-        new_fact_confidence_floor: f64,
-        session_id: &str,
-        last_message_id: &str,
-    ) -> anyhow::Result<bool> {
-        anyhow::ensure!(
-            is_canonical_id(session_id, "ses"),
-            "invalid session id for ordinary extraction"
-        );
-        anyhow::ensure!(
-            is_canonical_id(last_message_id, "msg"),
-            "invalid message id for ordinary extraction"
-        );
-        let session_id = session_id.to_owned();
-        let last_message_id = last_message_id.to_owned();
-        self.db
-            .run_blocking(move |db| {
-                let cursor_key = format!("fact_extraction.{session_id}");
-                db.with_fact_write(|| {
-                    FactGraph::new(db).upsert_inferred_batch_with_transaction_hook(
-                        &writes,
-                        new_fact_confidence_floor,
-                        |_| Ok(true),
-                        |conn| set_kv_on_connection(conn, &cursor_key, &last_message_id),
-                    )
-                })
-            })
-            .await
-    }
-
-    /// Read the per-episode completion ledger used to avoid repeating summary
-    /// inference when durable outbox acknowledgement fails.
-    pub async fn summary_extraction_completed(
-        &self,
-        session_id: &str,
-        episode_id: &str,
-    ) -> anyhow::Result<bool> {
-        let key = summary_extraction_done_key(session_id, episode_id)?;
-        let session_id = session_id.to_owned();
-        let episode_id = episode_id.to_owned();
-        self.db
-            .run_blocking(move |db| {
-                let conn = db.try_conn()?;
-                ensure_episode_summary_owner(&conn, &session_id, &episode_id)?;
-                Ok(conn
-                    .query_row(
-                        "SELECT 1 FROM kv_store WHERE key = ?1",
-                        rusqlite::params![key],
-                        |row| row.get::<_, i32>(0),
-                    )
-                    .optional()?
-                    .is_some())
-            })
-            .await
-    }
-
-    /// Commit one summary's facts and its durable completion marker together.
-    /// The marker is keyed by session and episode, so out-of-order retries of
-    /// older episodes remain independently idempotent.
-    pub async fn commit_summary_extraction(
-        &self,
-        writes: Vec<MemoryFactWrite>,
-        new_fact_confidence_floor: f64,
-        session_id: &str,
-        episode_id: &str,
-    ) -> anyhow::Result<bool> {
-        let marker_key = summary_extraction_done_key(session_id, episode_id)?;
-        let session_id = session_id.to_owned();
-        let episode_id = episode_id.to_owned();
-        self.db
-            .run_blocking(move |db| {
-                db.with_fact_write(|| {
-                    FactGraph::new(db).upsert_inferred_batch_with_transaction_hook(
-                        &writes,
-                        new_fact_confidence_floor,
-                        |conn| {
-                            ensure_episode_summary_owner(conn, &session_id, &episode_id)?;
-                            Ok(conn
-                                .query_row(
-                                    "SELECT 1 FROM kv_store WHERE key = ?1",
-                                    rusqlite::params![marker_key],
-                                    |row| row.get::<_, i32>(0),
-                                )
-                                .optional()?
-                                .is_none())
-                        },
-                        |conn| set_kv_on_connection(conn, &marker_key, &session_id),
-                    )
                 })
             })
             .await
@@ -415,57 +317,11 @@ impl MemoryFactStore {
     }
 }
 
-fn ensure_episode_summary_owner(
-    conn: &Connection,
-    session_id: &str,
-    episode_id: &str,
-) -> anyhow::Result<()> {
-    let owner: Option<String> = conn
-        .query_row(
-            "SELECT session_id FROM memory_items
-             WHERE id = ?1 AND kind = 'episode_summary'",
-            rusqlite::params![episode_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    anyhow::ensure!(
-        owner.as_deref() == Some(session_id),
-        "episode_id does not identify an episode_summary owned by session_id"
-    );
-    Ok(())
-}
-
-fn summary_extraction_done_key(session_id: &str, episode_id: &str) -> anyhow::Result<String> {
-    anyhow::ensure!(
-        is_canonical_id(session_id, "ses"),
-        "invalid session id for summary extraction"
-    );
-    anyhow::ensure!(
-        is_canonical_id(episode_id, "msg"),
-        "invalid episode id for summary extraction"
-    );
-    Ok(format!(
-        "fact_extraction_episode_done.{session_id}.{episode_id}"
-    ))
-}
-
-fn set_kv_on_connection(conn: &Connection, key: &str, value: &str) -> anyhow::Result<()> {
-    let now = Utc::now().to_rfc3339();
-    conn.execute(
-        "INSERT INTO kv_store (key, value, updated_at)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
-        rusqlite::params![key, value, now],
-    )?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{MAX_FACT_HISTORY_RESULTS, MAX_FACT_PAGE_SIZE, MemoryFactStore, MemoryFactWrite};
     use crate::Database;
     use crate::repositories::facts::FactSourceRef;
-    use haven_common::types::new_id;
     use std::sync::Arc;
 
     fn store() -> (Arc<Database>, MemoryFactStore) {
@@ -580,180 +436,6 @@ mod tests {
                 .list_facts_page(None, Some(invalid_timestamp), 10)
                 .await
                 .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn ordinary_extraction_rejects_noncanonical_ids_without_writes() {
-        let (db, store) = store();
-        let session = db.create_session("ordinary extraction identity").unwrap();
-        let valid_message_id = new_id("msg");
-        let invalid_session_id = new_id("msg");
-        let invalid_message_id = new_id("ses");
-
-        assert!(
-            store
-                .commit_ordinary_extraction(
-                    vec![inferred_write("user", "likes", "Rust")],
-                    0.55,
-                    &invalid_session_id,
-                    &valid_message_id,
-                )
-                .await
-                .is_err()
-        );
-        assert!(
-            store
-                .commit_ordinary_extraction(
-                    vec![inferred_write("user", "likes", "Rust")],
-                    0.55,
-                    &session.session_id,
-                    &invalid_message_id,
-                )
-                .await
-                .is_err()
-        );
-
-        assert!(db.list_facts().unwrap().is_empty());
-        assert!(
-            db.get_kv(&format!("fact_extraction.{invalid_session_id}"))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            db.get_kv(&format!("fact_extraction.{}", session.session_id))
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn summary_extraction_rejects_noncanonical_ids_without_writes() {
-        let (db, store) = store();
-        let session = db.create_session("summary extraction identity").unwrap();
-        let valid_episode_id = new_id("msg");
-        let invalid_session_id = new_id("msg");
-        let invalid_episode_id = new_id("ses");
-
-        assert!(
-            store
-                .commit_summary_extraction(
-                    vec![inferred_write("user", "likes", "Rust")],
-                    0.55,
-                    &invalid_session_id,
-                    &valid_episode_id,
-                )
-                .await
-                .is_err()
-        );
-        assert!(
-            store
-                .commit_summary_extraction(
-                    vec![inferred_write("user", "likes", "Rust")],
-                    0.55,
-                    &session.session_id,
-                    &invalid_episode_id,
-                )
-                .await
-                .is_err()
-        );
-        assert!(
-            store
-                .summary_extraction_completed(&session.session_id, &invalid_episode_id)
-                .await
-                .is_err()
-        );
-
-        assert!(db.list_facts().unwrap().is_empty());
-        assert!(
-            db.get_kv(&format!(
-                "fact_extraction_episode_done.{invalid_session_id}.{valid_episode_id}"
-            ))
-            .unwrap()
-            .is_none()
-        );
-        assert!(
-            db.get_kv(&format!(
-                "fact_extraction_episode_done.{}.{invalid_episode_id}",
-                session.session_id
-            ))
-            .unwrap()
-            .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn summary_extraction_requires_episode_owner_to_match_session() {
-        let (db, store) = store();
-        let owner_session = db.create_session("summary owner").unwrap();
-        let other_session = db.create_session("different summary owner").unwrap();
-        let episode_id = new_id("msg");
-        db.add_episode_with_pending_extraction(
-            &owner_session.session_id,
-            "A persisted compaction summary with enough context.",
-            &episode_id,
-            false,
-        )
-        .unwrap();
-
-        db.set_kv(
-            &format!(
-                "fact_extraction_episode_done.{}.{}",
-                other_session.session_id, episode_id
-            ),
-            &other_session.session_id,
-        )
-        .unwrap();
-        assert!(
-            store
-                .summary_extraction_completed(&other_session.session_id, &episode_id)
-                .await
-                .is_err()
-        );
-        assert!(
-            !store
-                .summary_extraction_completed(&owner_session.session_id, &episode_id)
-                .await
-                .unwrap()
-        );
-
-        assert!(
-            store
-                .commit_summary_extraction(
-                    vec![inferred_write("user", "likes", "Rust")],
-                    0.55,
-                    &other_session.session_id,
-                    &episode_id,
-                )
-                .await
-                .is_err()
-        );
-        assert!(db.list_facts().unwrap().is_empty());
-        assert!(
-            db.get_kv(&format!(
-                "fact_extraction_episode_done.{}.{}",
-                other_session.session_id, episode_id
-            ))
-            .unwrap()
-            .is_some()
-        );
-
-        assert!(
-            store
-                .commit_summary_extraction(
-                    vec![inferred_write("user", "likes", "Rust")],
-                    0.55,
-                    &owner_session.session_id,
-                    &episode_id,
-                )
-                .await
-                .unwrap()
-        );
-        assert!(
-            store
-                .summary_extraction_completed(&owner_session.session_id, &episode_id)
-                .await
-                .unwrap()
         );
     }
 

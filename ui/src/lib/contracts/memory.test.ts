@@ -4,6 +4,8 @@ import {
 	isMemoryFactSourceInput,
 	isMemoryRecallFilter,
 	parseFactResponse,
+	parseFactProposalPageResponse,
+	parseFactProposalReviewResponse,
 	parseMemoryRecallResponses,
 } from './memory.ts';
 import {
@@ -21,6 +23,70 @@ describe('memory recall filter contract', () => {
 			expect(isMemoryRecallFilter(value)).toBe(true);
 		}
 		expect(isMemoryRecallFilter('unknown')).toBe(false);
+	});
+});
+
+describe('memory fact proposal contract', () => {
+	const proposalId = 'fprop-00000000000000000000000000000001';
+	const messageId = 'msg-00000000000000000000000000000002';
+	const proposal = {
+		proposal_id: proposalId,
+		subject: 'user',
+		predicate: 'likes',
+		object: 'tea',
+		confidence: 0.8,
+		tags: ['preference'],
+		durability: 0.5,
+		created_at: '2026-10-12T08:00:00.000Z',
+		source_ref: { message_id: messageId, snippet: 'I like tea' },
+	};
+
+	it('maps proposal and source identities to camelCase', () => {
+		const page = parseFactProposalPageResponse({
+			proposals: [proposal],
+			next_cursor: { createdAt: '2026-10-12T08:00:00.000Z', proposalId },
+		});
+		expect(page.proposals[0]).toMatchObject({ proposalId, created_at: proposal.created_at });
+		expect(page.proposals[0]).not.toHaveProperty('proposal_id');
+		expect(page.proposals[0].sourceRef).toEqual({ messageId, snippet: 'I like tea' });
+		expect(page.nextCursor).toEqual({ createdAt: proposal.created_at, proposalId });
+	});
+
+	it('rejects non-canonical proposal and source identities and invalid confidence', () => {
+		expect(() => parseFactProposalPageResponse({ proposals: [{ ...proposal, proposal_id: 'bad' }], next_cursor: null })).toThrow(
+			'Invalid memory fact proposal identity',
+		);
+		expect(() =>
+			parseFactProposalPageResponse({
+				proposals: [{ ...proposal, source_ref: { message_id: 'msg-bad', snippet: '' } }],
+				next_cursor: null,
+			}),
+		).toThrow('Invalid memory fact proposal identity');
+		expect(() =>
+			parseFactProposalPageResponse({
+				proposals: [{ ...proposal, confidence: 1.1 }],
+				next_cursor: null,
+			}),
+		).toThrow('Invalid memory fact proposal response value');
+		expect(() =>
+			parseFactProposalPageResponse({
+				proposals: [{ ...proposal, created_at: 'yesterday' }],
+				next_cursor: null,
+			}),
+		).toThrow('Invalid memory fact proposal response value');
+	});
+
+	it('accepts only generated one-shot review results', () => {
+		expect(parseFactProposalReviewResponse({ status: 'accepted', fact_written: true })).toEqual({
+			status: 'accepted',
+			fact_written: true,
+		});
+		expect(parseFactProposalReviewResponse({ status: 'already_reviewed' })).toEqual({
+			status: 'already_reviewed',
+		});
+		expect(() => parseFactProposalReviewResponse({ status: 'accepted' })).toThrow(
+			'Invalid memory fact proposal review response shape',
+		);
 	});
 });
 

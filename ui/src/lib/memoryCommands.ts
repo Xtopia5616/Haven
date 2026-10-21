@@ -4,9 +4,14 @@ import { parseCountResponse } from './contracts/count.ts';
 import {
 	parseFactResponse,
 	parseFactPageResponse,
+	parseFactProposalPageResponse,
+	parseFactProposalReviewResponse,
 	parseMemoryRecallResponses,
 	type Fact,
 	type FactPage,
+	type FactProposalDecision,
+	type FactProposalPage,
+	type FactProposalReviewResult,
 	type MemoryRecallItem,
 } from './contracts/memory.ts';
 
@@ -14,6 +19,24 @@ import {
 export async function listFacts(request: TauriCommandRequest<'list_facts'>): Promise<FactPage> {
 	const value: unknown = await invoke('list_facts', request);
 	return parseFactPageResponse(value);
+}
+
+/** List a bounded page of inferred facts awaiting explicit user review. */
+export async function listFactProposals(
+	request: TauriCommandRequest<'list_fact_proposals'>,
+): Promise<FactProposalPage> {
+	const value: unknown = await invoke('list_fact_proposals', request);
+	return parseFactProposalPageResponse(value);
+}
+
+/** Accept or reject one pending inference exactly once. */
+export async function reviewFactProposal(
+	request: Omit<TauriCommandRequest<'review_fact_proposal'>, 'decision'> & {
+		decision: FactProposalDecision;
+	},
+): Promise<FactProposalReviewResult> {
+	const value: unknown = await invoke('review_fact_proposal', request);
+	return parseFactProposalReviewResponse(value);
 }
 
 /** Store a user-managed fact through the named memory command boundary. */

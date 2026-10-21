@@ -41,6 +41,11 @@ pub use repositories::kv_store::{MAX_MEMORY_OUTBOX_PAGE_SIZE, MAX_MEMORY_SESSION
 pub use repositories::memory_fact_extraction_store::{
     FactExtractionProjection, MemoryFactExtractionStore,
 };
+pub use repositories::memory_fact_proposal_store::{
+    FactProposal, FactProposalCursor, FactProposalDecision, FactProposalPage,
+    FactProposalReviewOutcome, MAX_FACT_PROPOSAL_PAGE_SIZE, MAX_PENDING_FACT_PROPOSALS,
+    MemoryFactProposalStore,
+};
 pub use repositories::memory_maintenance_store::{MemoryMaintenanceStore, PredicateCount};
 pub use repositories::memory_outbox_store::MemoryOutboxStore;
 pub use repositories::memory_recall_store::MemoryRecallStore;

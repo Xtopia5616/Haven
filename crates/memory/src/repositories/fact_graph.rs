@@ -8,8 +8,9 @@
 use super::fact_query::{FACT_COLS, fact_from_row};
 use super::fact_store::MemoryFactWrite;
 use super::facts::{
-    Fact, FactSourceRef, MemoryFactKind, UpsertOutcome, is_sensitive_text,
-    is_single_valued_predicate, normalize_predicate, polarity_opposite,
+    Fact, FactSourceRef, MemoryFactKind, UpsertOutcome, is_sensitive_object,
+    is_sensitive_predicate, is_sensitive_text, is_single_valued_predicate, normalize_predicate,
+    polarity_opposite,
 };
 use crate::db::Database;
 use anyhow::Context as _;
@@ -124,6 +125,44 @@ pub(crate) struct FactGraph<'db> {
 impl<'db> FactGraph<'db> {
     pub(crate) fn new(db: &'db Database) -> Self {
         Self { db }
+    }
+
+    pub(super) fn validate_inferred_proposal(
+        write: &MemoryFactWrite,
+    ) -> anyhow::Result<MemoryFactWrite> {
+        let predicate = normalize_predicate(&write.predicate);
+        validate_fact_fields(
+            &write.subject,
+            &predicate,
+            &write.object,
+            "inferred",
+            write.confidence,
+            write.durability,
+        )?;
+        validate_source_ref(write.source_ref.as_ref())?;
+        anyhow::ensure!(
+            !is_sensitive_text(&write.subject)
+                && !is_sensitive_predicate(&predicate)
+                && !is_sensitive_object(&write.object),
+            "refusing to store credential-like fact proposal"
+        );
+        const ALLOWED_TAGS: &[&str] = &["identity", "preference", "workspace", "project"];
+        let tags = write
+            .tags
+            .iter()
+            .map(|tag| tag.trim().to_ascii_lowercase())
+            .filter(|tag| ALLOWED_TAGS.contains(&tag.as_str()))
+            .take(4)
+            .collect();
+        Ok(MemoryFactWrite {
+            subject: write.subject.trim().to_string(),
+            predicate,
+            object: write.object.trim().to_string(),
+            confidence: write.confidence,
+            tags,
+            source_ref: sanitize_source_ref(write.source_ref.as_ref()),
+            durability: write.durability,
+        })
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -374,6 +413,10 @@ impl<'db> FactGraph<'db> {
                          WHERE id = ?3",
                         rusqlite::params![now, memory_kind.as_str(), existing.fact_id],
                     )?;
+                    conn.execute(
+                        "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                        rusqlite::params![subject, predicate, object],
+                    )?;
                     let mut fact = existing;
                     fact.confidence = 1.0;
                     fact.durability = 1.0;
@@ -388,6 +431,10 @@ impl<'db> FactGraph<'db> {
                          durability = 1.0, memory_kind = ?2
                      WHERE id = ?3",
                     rusqlite::params![now, memory_kind.as_str(), existing.fact_id],
+                )?;
+                conn.execute(
+                    "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                    rusqlite::params![subject, predicate, object],
                 )?;
                 let mut fact = existing;
                 fact.source = "user".into();
@@ -416,6 +463,17 @@ impl<'db> FactGraph<'db> {
                 tags,
                 memory_kind,
             )?;
+            if is_single_valued_predicate(&predicate) && memory_kind != MemoryFactKind::Procedural {
+                conn.execute(
+                    "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2",
+                    rusqlite::params![subject, predicate],
+                )?;
+            } else {
+                conn.execute(
+                    "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                    rusqlite::params![subject, predicate, object],
+                )?;
+            }
             Ok((fact, replaced))
         })();
         let result = match result {
@@ -455,6 +513,20 @@ impl<'db> FactGraph<'db> {
                     rusqlite::params![subject, predicate],
                 )?,
             };
+            match object {
+                Some(obj) => {
+                    conn.execute(
+                        "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                        rusqlite::params![subject, predicate, obj],
+                    )?;
+                }
+                None => {
+                    conn.execute(
+                        "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2",
+                        rusqlite::params![subject, predicate],
+                    )?;
+                }
+            }
             match object {
                 Some(obj) => {
                     conn.execute(
@@ -549,6 +621,7 @@ impl<'db> FactGraph<'db> {
     /// Persist one inferred batch and its caller-owned completion state in the
     /// same transaction. The hooks are deliberately synchronous so they can
     /// inspect/update rows on the transaction's connection.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn upsert_inferred_batch_with_transaction_hook(
         &self,
         writes: &[MemoryFactWrite],
@@ -574,7 +647,7 @@ impl<'db> FactGraph<'db> {
         })
     }
 
-    fn upsert_inferred_batch_on_connection(
+    pub(super) fn upsert_inferred_batch_on_connection(
         &self,
         conn: &Connection,
         writes: &[MemoryFactWrite],
@@ -792,6 +865,10 @@ impl<'db> FactGraph<'db> {
                 rusqlite::params![fact_id],
             )?;
             if let Some((subject, predicate, object)) = triple.as_ref() {
+                conn.execute(
+                    "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                    rusqlite::params![subject, predicate, object],
+                )?;
                 if is_single_valued_predicate(predicate) {
                     conn.execute(
                         "DELETE FROM fact_history WHERE subject = ?1 AND predicate = ?2",
@@ -818,6 +895,7 @@ impl<'db> FactGraph<'db> {
         let conn = self.db.try_conn()?;
         let deleted = in_immediate_transaction(&conn, |conn| {
             let deleted = conn.execute("DELETE FROM facts", [])? as u64;
+            conn.execute("DELETE FROM fact_proposals", [])?;
             conn.execute("DELETE FROM fact_history", [])?;
             Ok(deleted)
         })?;

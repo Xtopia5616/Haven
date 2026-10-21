@@ -19,7 +19,8 @@ use haven_memory::{
     FactSourceRef, is_sensitive_object, is_sensitive_predicate, normalize_predicate,
 };
 use haven_memory::{
-    MemoryFactExtractionStore, MemoryFactStore, MemoryFactWrite, MemoryMaintenanceStore,
+    MemoryFactExtractionStore, MemoryFactProposalStore, MemoryFactStore, MemoryFactWrite,
+    MemoryMaintenanceStore,
 };
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -42,6 +43,7 @@ use crate::memory_service::MemoryService;
 #[cfg(test)]
 use haven_memory::Fact;
 
+#[cfg(test)]
 const PERSIST_CONFIDENCE_FLOOR: f64 = 0.55;
 
 /// Extraction fields after resolving transcript provenance, before the
@@ -62,6 +64,7 @@ pub(crate) struct MemoryWorker {
     memory: Arc<MemoryService>,
     outbox: Arc<MemoryOutbox>,
     fact_store: MemoryFactStore,
+    fact_proposal_store: MemoryFactProposalStore,
     fact_extraction_store: MemoryFactExtractionStore,
     maintenance_store: MemoryMaintenanceStore,
     inference: Arc<dyn MemoryInferencePort>,
@@ -150,11 +153,13 @@ impl MemoryWorker {
             shutdown_token.clone(),
         ));
         let fact_extraction_store = memory.memory_fact_extraction_store();
+        let fact_proposal_store = memory.memory_fact_proposal_store();
         let maintenance_store = memory.memory_maintenance_store();
         Self {
             memory,
             outbox,
             fact_store,
+            fact_proposal_store,
             fact_extraction_store,
             maintenance_store,
             inference,
@@ -506,13 +511,8 @@ impl MemoryWorker {
             // kickoff / cross-session) so extraction does not stall forever.
             if let Some(last) = window.cursor_last
                 && let Err(error) = self
-                    .fact_store
-                    .commit_ordinary_extraction(
-                        Vec::new(),
-                        PERSIST_CONFIDENCE_FLOOR,
-                        session_id,
-                        &last,
-                    )
+                    .fact_proposal_store
+                    .commit_ordinary_extraction(Vec::new(), session_id, &last)
                     .await
             {
                 tracing::warn!(
@@ -556,13 +556,8 @@ impl MemoryWorker {
                     return FactInferenceOutcome::Done;
                 };
                 match self
-                    .fact_store
-                    .commit_ordinary_extraction(
-                        writes,
-                        PERSIST_CONFIDENCE_FLOOR,
-                        session_id,
-                        last_message_id,
-                    )
+                    .fact_proposal_store
+                    .commit_ordinary_extraction(writes, session_id, last_message_id)
                     .await
                 {
                     Ok(wrote) => wrote,
@@ -586,8 +581,12 @@ impl MemoryWorker {
                 return FactInferenceOutcome::Retryable;
             }
         };
-        if wrote {
-            self.mark_memory_dirty(session_id);
+        if wrote > 0 {
+            tracing::info!(
+                proposals = wrote,
+                session_id,
+                "fact extraction queued proposals for review"
+            );
         }
         FactInferenceOutcome::Done
     }
@@ -848,7 +847,7 @@ impl MemoryWorker {
             return SummaryExtractOutcome::Done;
         }
         let already_completed = match self
-            .fact_store
+            .fact_proposal_store
             .summary_extraction_completed(session_id, episode_id)
             .await
         {
@@ -951,13 +950,18 @@ impl MemoryWorker {
         };
 
         match self
-            .fact_store
-            .commit_summary_extraction(writes, PERSIST_CONFIDENCE_FLOOR, session_id, episode_id)
+            .fact_proposal_store
+            .commit_summary_extraction(writes, session_id, episode_id)
             .await
         {
-            Ok(wrote) => {
-                if wrote {
-                    self.mark_memory_dirty(session_id);
+            Ok(queued) => {
+                if queued > 0 {
+                    tracing::info!(
+                        proposals = queued,
+                        session_id,
+                        episode_id,
+                        "summary extraction queued proposals for review"
+                    );
                 }
             }
             Err(error) => {
@@ -1456,6 +1460,15 @@ mod tests {
             256,
             fact_extraction_min_interval_secs,
         )
+    }
+
+    async fn pending_proposals(worker: &MemoryWorker) -> Vec<haven_memory::FactProposal> {
+        worker
+            .fact_proposal_store
+            .list_pending_page(None, haven_memory::MAX_FACT_PROPOSAL_PAGE_SIZE)
+            .await
+            .unwrap()
+            .proposals
     }
 
     fn insert_noncanonical_predicate(db: &Database, predicate: &str, object: &str) -> String {
@@ -2703,8 +2716,6 @@ mod tests {
     async fn failed_summary_marker_ack_keeps_marker_and_requeues_live_job() {
         let db = temp_db();
         let session = db.create_session("outbox summary retry").unwrap();
-        db.insert_fact("user", "likes", "Rust", "inferred", 0.7, &[])
-            .unwrap();
         let episode_id = haven_common::types::new_id("msg");
         db.add_episode_with_pending_extraction(
             &session.session_id,
@@ -2775,9 +2786,8 @@ mod tests {
         .expect("the summary job should retry acknowledgement after inference commit");
 
         assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
-        let facts = db.list_facts_by_subject("user").unwrap();
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].mention_count, 1);
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
+        assert_eq!(pending_proposals(&worker).await.len(), 1);
         worker.shutdown();
     }
 
@@ -2937,21 +2947,20 @@ mod tests {
 
         assert!(worker.infer_facts(&session.session_id).await);
 
-        let facts = db.list_facts_by_subject("user").unwrap();
+        let facts = pending_proposals(&worker).await;
         assert!(
             facts
                 .iter()
-                .any(|fact| { fact.predicate == "likes" && fact.object == "Rust" })
+                .any(|proposal| { proposal.predicate == "likes" && proposal.object == "Rust" })
         );
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
         assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
-    async fn ordinary_fact_writes_roll_back_when_cursor_commit_fails() {
+    async fn ordinary_proposals_roll_back_when_cursor_commit_fails() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("ordinary atomic extraction").unwrap();
-        db.insert_fact("user", "likes", "Rust", "inferred", 0.7, &[])
-            .unwrap();
         let message = db
             .add_message(
                 &session.session_id,
@@ -2980,10 +2989,8 @@ mod tests {
             .unwrap();
 
         assert!(!worker.infer_facts(&session.session_id).await);
-        assert_eq!(
-            db.list_facts_by_subject("user").unwrap()[0].mention_count,
-            0
-        );
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
+        assert!(pending_proposals(&worker).await.is_empty());
         assert_eq!(
             db.get_kv(&format!("fact_extraction.{}", session.session_id))
                 .unwrap(),
@@ -3000,9 +3007,8 @@ mod tests {
                 .as_deref(),
             Some(message.message_id.as_str())
         );
-        let facts = db.list_facts_by_subject("user").unwrap();
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].mention_count, 1);
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
+        assert_eq!(pending_proposals(&worker).await.len(), 1);
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
     }
 
@@ -3140,11 +3146,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn summary_facts_and_completion_marker_commit_atomically() {
+    async fn summary_proposals_and_completion_marker_commit_atomically() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("summary persistence retry").unwrap();
-        db.insert_fact("user", "likes", "Rust", "inferred", 0.7, &[])
-            .unwrap();
         db.conn()
             .execute_batch(
                 "CREATE TRIGGER fail_summary_completion_marker
@@ -3181,10 +3185,8 @@ mod tests {
             None,
             "a failed fact transaction must leave the episode retryable"
         );
-        assert_eq!(
-            db.list_facts_by_subject("user").unwrap()[0].mention_count,
-            0
-        );
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
+        assert!(pending_proposals(&worker).await.is_empty());
 
         db.conn()
             .execute_batch("DROP TRIGGER fail_summary_completion_marker")
@@ -3204,11 +3206,12 @@ mod tests {
             .as_deref(),
             Some(session.session_id.as_str())
         );
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
         assert!(
-            db.list_facts_by_subject("user")
-                .unwrap()
+            pending_proposals(&worker)
+                .await
                 .iter()
-                .any(|fact| fact.predicate == "likes" && fact.object == "Rust")
+                .any(|proposal| proposal.predicate == "likes" && proposal.object == "Rust")
         );
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
 
@@ -3219,10 +3222,7 @@ mod tests {
             SummaryExtractOutcome::Done
         );
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
-        assert_eq!(
-            db.list_facts_by_subject("user").unwrap()[0].mention_count,
-            1
-        );
+        assert_eq!(pending_proposals(&worker).await.len(), 1);
     }
 
     #[tokio::test]
@@ -3257,10 +3257,8 @@ mod tests {
                 .await,
             SummaryExtractOutcome::Done
         );
-        assert_eq!(
-            db.list_facts_by_subject("user").unwrap()[0].mention_count,
-            1
-        );
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
+        assert_eq!(pending_proposals(&worker).await.len(), 1);
 
         assert_eq!(
             worker
@@ -3268,10 +3266,8 @@ mod tests {
                 .await,
             SummaryExtractOutcome::Done
         );
-        assert_eq!(
-            db.list_facts_by_subject("user").unwrap()[0].mention_count,
-            1
-        );
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
+        assert_eq!(pending_proposals(&worker).await.len(), 1);
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
     }
 
@@ -3470,7 +3466,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn infer_facts_partial_invalid_batch_persists_only_valid_fact() {
+    async fn infer_facts_partial_invalid_batch_queues_only_valid_proposal() {
         let db = temp_db();
         let session = db.create_session("partial malformed fact batch").unwrap();
         db.add_message(
@@ -3492,10 +3488,11 @@ mod tests {
 
         engine.infer_facts(&session.session_id).await;
 
-        let facts = db.list_facts_by_subject("user").unwrap();
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].predicate, "uses");
-        assert_eq!(facts[0].object, "TypeScript");
+        let proposals = pending_proposals(&engine).await;
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0].predicate, "uses");
+        assert_eq!(proposals[0].object, "TypeScript");
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
     }
 
     #[tokio::test]

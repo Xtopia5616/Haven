@@ -6,6 +6,7 @@ import type { Fact, FactPage, MemoryFactCursor } from '$lib/contracts/memory.ts'
 const {
 	goto,
 	listFacts,
+	listFactProposals,
 	page,
 	recallMemory,
 	registerSessionLifecycleListener,
@@ -29,6 +30,7 @@ const {
 	return {
 		goto,
 		listFacts: vi.fn(async (): Promise<FactPage> => ({ facts: [], nextCursor: null })),
+		listFactProposals: vi.fn(async () => ({ proposals: [], nextCursor: null })),
 		page,
 		recallMemory: vi.fn(),
 		registerSessionLifecycleListener: vi.fn(async () => ({ dispose: vi.fn() })),
@@ -42,6 +44,7 @@ vi.mock('$app/navigation', () => ({ goto }));
 vi.mock('$lib/memoryCommands.ts', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/memoryCommands.ts')>()),
 	listFacts,
+	listFactProposals,
 	recallMemory,
 }));
 vi.mock('$lib/sessionCommands.ts', async (importOriginal) => ({
@@ -96,6 +99,7 @@ describe('MemoryView recall request lifecycle', () => {
 		page.setUrl('/');
 		goto.mockClear();
 		listFacts.mockReset().mockResolvedValue({ facts: [], nextCursor: null });
+		listFactProposals.mockReset().mockResolvedValue({ proposals: [], nextCursor: null });
 		recallMemory.mockReset();
 		registerSessionLifecycleListener
 			.mockReset()

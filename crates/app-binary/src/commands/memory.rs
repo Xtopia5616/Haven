@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::commands::{log_err, validate_command_id};
-use haven_memory::{MemoryQuery, MemoryRecallKind};
+use haven_memory::{FactProposalDecision, MemoryQuery, MemoryRecallKind};
 use std::sync::Arc;
 use tauri::State;
 
@@ -105,6 +105,95 @@ pub struct MemoryFactResponse {
 pub struct MemoryFactPageResponse {
     pub facts: Vec<MemoryFactResponse>,
     pub next_cursor: Option<MemoryFactCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryFactProposalCursor {
+    pub created_at: String,
+    pub proposal_id: String,
+}
+
+impl From<haven_memory::FactProposalCursor> for MemoryFactProposalCursor {
+    fn from(cursor: haven_memory::FactProposalCursor) -> Self {
+        Self {
+            created_at: cursor.created_at,
+            proposal_id: cursor.proposal_id,
+        }
+    }
+}
+
+impl From<MemoryFactProposalCursor> for haven_memory::FactProposalCursor {
+    fn from(cursor: MemoryFactProposalCursor) -> Self {
+        Self {
+            created_at: cursor.created_at,
+            proposal_id: cursor.proposal_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryFactProposalResponse {
+    pub proposal_id: String,
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub confidence: f64,
+    pub tags: Vec<String>,
+    pub durability: f64,
+    pub created_at: String,
+    pub source_ref: Option<MemoryFactSourceRef>,
+}
+
+impl From<haven_memory::FactProposal> for MemoryFactProposalResponse {
+    fn from(proposal: haven_memory::FactProposal) -> Self {
+        Self {
+            proposal_id: proposal.proposal_id,
+            subject: proposal.subject,
+            predicate: proposal.predicate,
+            object: proposal.object,
+            confidence: proposal.confidence,
+            tags: proposal.tags,
+            durability: proposal.durability,
+            created_at: proposal.created_at,
+            source_ref: proposal.source_ref.map(Into::into),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryFactProposalPageResponse {
+    pub proposals: Vec<MemoryFactProposalResponse>,
+    pub next_cursor: Option<MemoryFactProposalCursor>,
+}
+
+impl From<haven_memory::FactProposalPage> for MemoryFactProposalPageResponse {
+    fn from(page: haven_memory::FactProposalPage) -> Self {
+        Self {
+            proposals: page.proposals.into_iter().map(Into::into).collect(),
+            next_cursor: page.next_cursor.map(Into::into),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum MemoryFactProposalReviewResponse {
+    Accepted { fact_written: bool },
+    Rejected,
+    AlreadyReviewed,
+}
+
+impl From<haven_memory::FactProposalReviewOutcome> for MemoryFactProposalReviewResponse {
+    fn from(outcome: haven_memory::FactProposalReviewOutcome) -> Self {
+        match outcome {
+            haven_memory::FactProposalReviewOutcome::Accepted { fact_written } => {
+                Self::Accepted { fact_written }
+            }
+            haven_memory::FactProposalReviewOutcome::Rejected => Self::Rejected,
+            haven_memory::FactProposalReviewOutcome::AlreadyReviewed => Self::AlreadyReviewed,
+        }
+    }
 }
 
 impl TryFrom<haven_memory::FactPage> for MemoryFactPageResponse {
@@ -229,6 +318,48 @@ pub async fn list_facts(
         .await
         .map_err(|e| log_err("list_facts", e))?;
     MemoryFactPageResponse::try_from(page).map_err(|e| log_err("list_facts", e))
+}
+
+#[tauri::command]
+pub async fn list_fact_proposals(
+    state: State<'_, Arc<AppState>>,
+    cursor: Option<MemoryFactProposalCursor>,
+    limit: Option<u32>,
+) -> Result<MemoryFactProposalPageResponse, String> {
+    let limit = limit.unwrap_or(haven_memory::MAX_FACT_PROPOSAL_PAGE_SIZE as u32);
+    if limit == 0 || limit as usize > haven_memory::MAX_FACT_PROPOSAL_PAGE_SIZE {
+        return Err(log_err(
+            "list_fact_proposals",
+            format!(
+                "limit must be between 1 and {}",
+                haven_memory::MAX_FACT_PROPOSAL_PAGE_SIZE
+            ),
+        ));
+    }
+    state
+        .runtime
+        .memory_fact_proposal_store
+        .list_pending_page(cursor.map(Into::into), limit as usize)
+        .await
+        .map(MemoryFactProposalPageResponse::from)
+        .map_err(|error| log_err("list_fact_proposals", error))
+}
+
+#[tauri::command]
+pub async fn review_fact_proposal(
+    state: State<'_, Arc<AppState>>,
+    proposal_id: String,
+    decision: FactProposalDecision,
+) -> Result<MemoryFactProposalReviewResponse, String> {
+    validate_command_id(&proposal_id, "proposal_id", "fprop")
+        .map_err(|error| log_err("review_fact_proposal", error))?;
+    state
+        .runtime
+        .memory_fact_proposal_store
+        .review(proposal_id, decision)
+        .await
+        .map(MemoryFactProposalReviewResponse::from)
+        .map_err(|error| log_err("review_fact_proposal", error))
 }
 
 #[derive(Debug, PartialEq, Eq)]

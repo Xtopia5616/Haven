@@ -17,8 +17,8 @@ use haven_memory::{
     MAX_MEMORY_QUERY_CHARS, MemoryEntityKind, MemoryQuery, MemoryRecall, MemoryRecallKind,
 };
 use haven_memory::{
-    MemoryFactExtractionStore, MemoryFactStore, MemoryMaintenanceStore, MemoryOutboxStore,
-    MemoryRecallStore, MemoryStores,
+    MemoryFactExtractionStore, MemoryFactProposalStore, MemoryFactStore, MemoryMaintenanceStore,
+    MemoryOutboxStore, MemoryRecallStore, MemoryStores,
 };
 
 use crate::memory_index::MemoryEmbeddingIndex;
@@ -96,6 +96,7 @@ pub struct MemoryService {
     test_database: Option<Arc<Database>>,
     fact_store: MemoryFactStore,
     fact_extraction_store: MemoryFactExtractionStore,
+    fact_proposal_store: MemoryFactProposalStore,
     maintenance_store: MemoryMaintenanceStore,
     outbox_store: MemoryOutboxStore,
     recall_store: MemoryRecallStore,
@@ -116,6 +117,7 @@ impl MemoryService {
         let outbox_store = stores.outbox_store();
         let fact_store = stores.fact_store();
         let fact_extraction_store = stores.fact_extraction_store();
+        let fact_proposal_store = stores.fact_proposal_store();
         let maintenance_store = stores.maintenance_store();
         let recall_store = stores.recall_store();
         let embeddings = stores.embedding_store();
@@ -132,6 +134,7 @@ impl MemoryService {
             test_database,
             fact_store,
             fact_extraction_store,
+            fact_proposal_store,
             maintenance_store,
             outbox_store,
             recall_store,
@@ -165,6 +168,10 @@ impl MemoryService {
     /// projections.
     pub(crate) fn memory_fact_extraction_store(&self) -> MemoryFactExtractionStore {
         self.fact_extraction_store.clone()
+    }
+
+    pub(crate) fn memory_fact_proposal_store(&self) -> MemoryFactProposalStore {
+        self.fact_proposal_store.clone()
     }
 
     /// Return the shared persistence port for deterministic and LLM

@@ -14,7 +14,7 @@ use haven_agent::{AgentLayer, MemoryStartup, PendingSessionRecovery, SessionSupe
 use haven_common::config::ConfigService;
 use haven_common::error::sanitize_error_text;
 use haven_input::InputPipeline;
-use haven_memory::{MemoryFactStore, SessionStore};
+use haven_memory::{MemoryFactProposalStore, MemoryFactStore, SessionStore};
 use haven_tools::{
     AuthorizationPort, LiveOutputSinkPort, ManagedAssetLifecyclePort, McpRuntimePort,
     ScheduleAgentCapability, ScheduleManagementCapability, SkillCatalogPort, SkillExecutionPort,
@@ -39,6 +39,7 @@ use tracing_subscriber::reload;
 pub struct ApplicationRuntime {
     pub(crate) session_store: SessionStore,
     pub(crate) memory_fact_store: MemoryFactStore,
+    pub(crate) memory_fact_proposal_store: MemoryFactProposalStore,
     pub(crate) tools: Arc<ToolsFacade>,
     /// App-facing domain capabilities provided by the Tools composition root.
     pub(crate) services: AppServices,
@@ -65,6 +66,7 @@ const TASK_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 pub(crate) struct RuntimeServices {
     pub(crate) session_store: SessionStore,
     pub(crate) memory_fact_store: MemoryFactStore,
+    pub(crate) memory_fact_proposal_store: MemoryFactProposalStore,
     pub(crate) tools: Arc<ToolsFacade>,
     pub(crate) tool_services: ToolServices,
     pub(crate) executor: Arc<SessionSupervisor>,
@@ -114,6 +116,7 @@ impl ApplicationRuntime {
         Self {
             session_store: runtime_services.session_store,
             memory_fact_store: runtime_services.memory_fact_store,
+            memory_fact_proposal_store: runtime_services.memory_fact_proposal_store,
             tools: runtime_services.tools,
             services,
             executor: runtime_services.executor,

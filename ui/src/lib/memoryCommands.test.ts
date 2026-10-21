@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '$lib/tauri.ts';
-import { addFact, deleteFact, listFacts, recallMemory } from './memoryCommands.ts';
+import {
+	addFact,
+	deleteFact,
+	listFactProposals,
+	listFacts,
+	recallMemory,
+	reviewFactProposal,
+} from './memoryCommands.ts';
 
 vi.mock('$lib/tauri.ts', () => ({ invoke: vi.fn() }));
 
@@ -81,6 +88,43 @@ describe('memory command boundary', () => {
 		});
 		expect(page.facts[0]).not.toHaveProperty('fact_id');
 		expect(invokeMock).toHaveBeenCalledWith('list_facts', { source: null });
+	});
+
+	it('lists and reviews inferred fact proposals through validated command contracts', async () => {
+		const proposalId = 'fprop-00000000000000000000000000000001';
+		const messageId = 'msg-00000000000000000000000000000002';
+		invokeMock.mockResolvedValueOnce({
+			proposals: [
+				{
+					proposal_id: proposalId,
+					subject: 'user',
+					predicate: 'likes',
+					object: 'tea',
+					confidence: 0.8,
+					tags: ['preference'],
+					durability: 0.5,
+					created_at: '2026-10-12T08:00:00.000Z',
+					source_ref: { message_id: messageId, snippet: 'I like tea' },
+				},
+			],
+			next_cursor: null,
+		} as never);
+		const page = await listFactProposals({ cursor: null, limit: 50 });
+		expect(page.proposals[0]).toMatchObject({ proposalId, sourceRef: { messageId } });
+		expect(invokeMock).toHaveBeenNthCalledWith(1, 'list_fact_proposals', {
+			cursor: null,
+			limit: 50,
+		});
+
+		invokeMock.mockResolvedValueOnce({ status: 'accepted', fact_written: true });
+		await expect(reviewFactProposal({ proposalId, decision: 'accept' })).resolves.toEqual({
+			status: 'accepted',
+			fact_written: true,
+		});
+		expect(invokeMock).toHaveBeenNthCalledWith(2, 'review_fact_proposal', {
+			proposalId,
+			decision: 'accept',
+		});
 	});
 
 	it('passes add and delete request fields unchanged', async () => {

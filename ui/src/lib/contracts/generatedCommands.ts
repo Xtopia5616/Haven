@@ -81,6 +81,11 @@ export interface McpRefreshResult { added: string[]; removed: string[]; updated:
 export interface MemoryFactCursorInput { createdAt: string; factId: string }
 export interface MemoryFactCursor { createdAt: string; factId: string }
 export interface MemoryFactPageResponse { facts: MemoryFactResponse[]; next_cursor: MemoryFactCursor | null }
+export interface MemoryFactProposalCursorInput { createdAt: string; proposalId: string }
+export interface MemoryFactProposalCursor { createdAt: string; proposalId: string }
+export interface MemoryFactProposalPageResponse { proposals: MemoryFactProposalResponse[]; next_cursor: MemoryFactProposalCursor | null }
+export interface MemoryFactProposalResponse { proposal_id: string; subject: string; predicate: string; object: string; confidence: number; tags: string[]; durability: number; created_at: string; source_ref: MemoryFactSourceRef | null }
+export type MemoryFactProposalReviewResponse = { status: 'accepted'; fact_written: boolean } | { status: 'rejected' } | { status: 'already_reviewed' };
 export interface MemoryFactResponse { fact_id: string; subject: string; predicate: string; object: string; source: MemoryFactSource; memory_kind: MemoryFactKind; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
 export const MEMORY_FACT_SOURCE_INPUT_VALUES = ['user', 'inferred'] as const;
 export type MemoryFactSourceInput = (typeof MEMORY_FACT_SOURCE_INPUT_VALUES)[number];
@@ -433,6 +438,8 @@ export const MEMORY_RECALL_KIND_INPUT_VALUES = ['fact', 'episode', 'profile', 's
 export type MemoryRecallKindInput = (typeof MEMORY_RECALL_KIND_INPUT_VALUES)[number];
 export const MEMORY_FACT_KIND_VALUES = ['profile', 'semantic', 'procedural'] as const;
 export type MemoryFactKind = (typeof MEMORY_FACT_KIND_VALUES)[number];
+export const FACT_PROPOSAL_DECISION_INPUT_VALUES = ['accept', 'reject'] as const;
+export type FactProposalDecisionInput = (typeof FACT_PROPOSAL_DECISION_INPUT_VALUES)[number];
 export const SCHEDULE_TYPE_VALUES = ['once', 'recurring_session'] as const;
 export type ScheduleType = (typeof SCHEDULE_TYPE_VALUES)[number];
 export const SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES = ['pending', 'running', 'paused', 'completed', 'error'] as const;
@@ -5671,6 +5678,83 @@ export const LIST_FACTS_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const LIST_FACT_PROPOSALS_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'proposals': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'proposal_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'subject': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'predicate': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'object': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'confidence': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'tags': {
+						optional: false,
+						shape: { kind: 'array', items: { kind: 'string' } },
+					},
+					'durability': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'created_at': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'source_ref': {
+						optional: false,
+						shape: { kind: 'nullable', inner: {
+							kind: 'object',
+							fields: {
+								'message_id': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'snippet': {
+									optional: false,
+									shape: { kind: 'string' },
+								}
+							}
+						} },
+					}
+				}
+			} },
+		},
+		'next_cursor': {
+			optional: false,
+			shape: { kind: 'nullable', inner: {
+				kind: 'object',
+				fields: {
+					'createdAt': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'proposalId': {
+						optional: false,
+						shape: { kind: 'string' },
+					}
+				}
+			} },
+		}
+	}
+} as const;
 export const LIST_MCP_PROMPTS_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -7198,6 +7282,39 @@ export const RESPOND_MCP_FEATURE_INPUT_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const REVIEW_FACT_PROPOSAL_RESPONSE_SHAPE = { kind: 'union', anyOf: [
+	{
+		kind: 'object',
+		fields: {
+			'status': {
+				optional: false,
+				shape: { kind: 'literal', value: 'accepted' },
+			},
+			'fact_written': {
+				optional: false,
+				shape: { kind: 'boolean' },
+			}
+		}
+	},
+	{
+		kind: 'object',
+		fields: {
+			'status': {
+				optional: false,
+				shape: { kind: 'literal', value: 'rejected' },
+			}
+		}
+	},
+	{
+		kind: 'object',
+		fields: {
+			'status': {
+				optional: false,
+				shape: { kind: 'literal', value: 'already_reviewed' },
+			}
+		}
+	}
+] } as const;
 export const REVOKE_PERMISSION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const REVOKE_SESSION_PERMISSION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const ROLLBACK_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -10372,6 +10489,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	interrupt_session: INTERRUPT_SESSION_RESPONSE_SHAPE,
 	is_autostart_enabled: IS_AUTOSTART_ENABLED_RESPONSE_SHAPE,
 	list_builtin_tool_manifests: LIST_BUILTIN_TOOL_MANIFESTS_RESPONSE_SHAPE,
+	list_fact_proposals: LIST_FACT_PROPOSALS_RESPONSE_SHAPE,
 	list_facts: LIST_FACTS_RESPONSE_SHAPE,
 	list_mcp_prompts: LIST_MCP_PROMPTS_RESPONSE_SHAPE,
 	list_mcp_resource_templates: LIST_MCP_RESOURCE_TEMPLATES_RESPONSE_SHAPE,
@@ -10404,6 +10522,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	reset_tool_circuits: RESET_TOOL_CIRCUITS_RESPONSE_SHAPE,
 	resolve_confirmation: RESOLVE_CONFIRMATION_RESPONSE_SHAPE,
 	respond_mcp_feature_input: RESPOND_MCP_FEATURE_INPUT_RESPONSE_SHAPE,
+	review_fact_proposal: REVIEW_FACT_PROPOSAL_RESPONSE_SHAPE,
 	revoke_permission: REVOKE_PERMISSION_RESPONSE_SHAPE,
 	revoke_session_permission: REVOKE_SESSION_PERMISSION_RESPONSE_SHAPE,
 	rollback_session: ROLLBACK_SESSION_RESPONSE_SHAPE,
@@ -10556,6 +10675,7 @@ export interface TauriCommandMap {
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
 	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
+	list_fact_proposals: { request: { cursor?: MemoryFactProposalCursorInput | null; limit?: number | null }; response: MemoryFactProposalPageResponse };
 	list_facts: { request: { source?: MemoryFactSourceInput | null; cursor?: MemoryFactCursorInput | null; limit?: number | null }; response: MemoryFactPageResponse };
 	list_mcp_prompts: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpPromptList };
 	list_mcp_resource_templates: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpResourceTemplateList };
@@ -10588,6 +10708,7 @@ export interface TauriCommandMap {
 	reset_tool_circuits: { request: undefined; response: void };
 	resolve_confirmation: { request: { owner: InteractionOwnerInput; requestId: string; effect: PermissionEffectInput; scope: PermissionScopeInput; target: PermissionTargetInput }; response: ConfirmationResolutionResult };
 	respond_mcp_feature_input: { request: { name: string; targetBinding: string; requestId: number; answers: Record<string, McpElicitationAnswerInput> }; response: McpFeatureCallOutcome };
+	review_fact_proposal: { request: { proposalId: string; decision: FactProposalDecisionInput }; response: MemoryFactProposalReviewResponse };
 	revoke_permission: { request: { key: string }; response: void };
 	revoke_session_permission: { request: { sessionId: string; capability: string }; response: void };
 	rollback_session: { request: { sessionId: string; targetStep: number; pause?: boolean | null; targetMessageId?: string | null }; response: void };
@@ -10679,6 +10800,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	interrupt_session: { boundary: 'mutate', security: "pauses the selected active session without deleting it" },
 	is_autostart_enabled: { boundary: 'read', security: "state boolean only" },
 	list_builtin_tool_manifests: { boundary: 'read', security: "builtin manifest projection; schemas are dynamic extension data" },
+	list_fact_proposals: { boundary: 'read', security: "bounded pending-only queue; credential-like values filtered" },
 	list_facts: { boundary: 'read', security: "read-only fact projection" },
 	list_mcp_prompts: { boundary: 'execute', security: "user-driven prompt discovery; enabled live target binding; no model callable surface" },
 	list_mcp_resource_templates: { boundary: 'execute', security: "user-driven template discovery; enabled live target binding; bounded opaque URI templates" },
@@ -10711,6 +10833,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	reset_tool_circuits: { boundary: 'mutate', security: "clears local circuit state only" },
 	resolve_confirmation: { boundary: 'mutate', security: "owner/request id selects one registry; receipt, effect, scope, target and expiry are revalidated; retryable failures keep pending" },
 	respond_mcp_feature_input: { boundary: 'execute', security: "explicit user response to a bounded form request; enabled live target binding; schema-validated answers" },
+	review_fact_proposal: { boundary: 'mutate', security: "canonical fprop ID; one-shot transactional accept/reject" },
 	revoke_permission: { boundary: 'mutate', security: "non-empty exact permanent key; session grants are retained" },
 	revoke_session_permission: { boundary: 'mutate', security: "non-empty session id and capability; removes one session grant" },
 	rollback_session: { boundary: 'mutate', security: "event cursor and projection clock rollback" },

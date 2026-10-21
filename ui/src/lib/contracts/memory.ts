@@ -10,11 +10,18 @@ import {
 	MEMORY_FACT_RESPONSE_SHAPE,
 	MEMORY_FACT_SOURCE_INPUT_VALUES,
 	MEMORY_RECALL_ITEM_RESPONSE_SHAPE,
+	LIST_FACT_PROPOSALS_RESPONSE_SHAPE,
+	REVIEW_FACT_PROPOSAL_RESPONSE_SHAPE,
 	LIST_FACTS_RESPONSE_SHAPE,
 } from './generatedCommands.ts';
 import type {
+	FactProposalDecisionInput,
 	MemoryFactCursor as GeneratedMemoryFactCursor,
 	MemoryFactPageResponse as GeneratedMemoryFactPageResponse,
+	MemoryFactProposalCursor as GeneratedMemoryFactProposalCursor,
+	MemoryFactProposalPageResponse as GeneratedMemoryFactProposalPageResponse,
+	MemoryFactProposalResponse as GeneratedMemoryFactProposalResponse,
+	MemoryFactProposalReviewResponse as GeneratedMemoryFactProposalReviewResponse,
 	MemoryFactResponse as GeneratedMemoryFactResponse,
 	MemoryRecallItem as GeneratedMemoryRecallItem,
 	MemoryRecallKindInput,
@@ -38,6 +45,21 @@ export interface FactPage {
 	facts: Fact[];
 	nextCursor: MemoryFactCursor | null;
 }
+export type FactProposalSourceRef = Omit<
+	NonNullable<GeneratedMemoryFactProposalResponse['source_ref']>,
+	'message_id'
+> & { messageId: string };
+export type FactProposal = Omit<
+	GeneratedMemoryFactProposalResponse,
+	'proposal_id' | 'source_ref'
+> & { proposalId: string; sourceRef: FactProposalSourceRef | null };
+export type FactProposalCursor = GeneratedMemoryFactProposalCursor;
+export interface FactProposalPage {
+	proposals: FactProposal[];
+	nextCursor: FactProposalCursor | null;
+}
+export type FactProposalDecision = FactProposalDecisionInput;
+export type FactProposalReviewResult = GeneratedMemoryFactProposalReviewResponse;
 export type MemoryRecallItem = Omit<GeneratedMemoryRecallItem, 'entity_id'> & {
 	entityId: string;
 };
@@ -140,6 +162,80 @@ function mapFactResponse(value: GeneratedMemoryFactResponse): Fact {
 		factId: fact_id,
 		sourceRef,
 	};
+}
+
+function hasProposalIdentity(value: unknown): boolean {
+	if (!isRecord(value) || !isCanonicalEntityId(value.proposal_id, 'fprop')) return false;
+	if (!Object.prototype.hasOwnProperty.call(value, 'source_ref')) return true;
+	if (value.source_ref === null || !isRecord(value.source_ref)) return true;
+	if (!Object.prototype.hasOwnProperty.call(value.source_ref, 'message_id')) return true;
+	return isCanonicalEntityId(value.source_ref.message_id, 'msg');
+}
+
+function validateFactProposalResponse(
+	value: unknown,
+): asserts value is GeneratedMemoryFactProposalResponse {
+	const mismatch = findGeneratedWireShapeMismatch(value, LIST_FACT_PROPOSALS_RESPONSE_SHAPE.fields.proposals.shape.items);
+	if (mismatch) throw new Error(`Invalid memory fact proposal response shape at ${mismatch}`);
+	const proposal = value as GeneratedMemoryFactProposalResponse;
+	if (
+		proposal.confidence < 0 ||
+		proposal.confidence > 1 ||
+		proposal.durability < 0 ||
+		proposal.durability > 1 ||
+		!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(proposal.created_at) ||
+		!Number.isFinite(Date.parse(proposal.created_at))
+	) {
+		throw new Error('Invalid memory fact proposal response value');
+	}
+}
+
+/** Validate and map one bounded pending-proposal page from the Rust boundary. */
+export function parseFactProposalPageResponse(value: unknown): FactProposalPage {
+	if (!isRecord(value) || !Array.isArray(value.proposals)) {
+		throw new Error('Invalid memory fact proposal page response shape');
+	}
+	if (!value.proposals.every(hasProposalIdentity)) {
+		throw new Error('Invalid memory fact proposal identity');
+	}
+	for (const proposal of value.proposals) validateFactProposalResponse(proposal);
+	const mismatch = findGeneratedWireShapeMismatch(value, LIST_FACT_PROPOSALS_RESPONSE_SHAPE);
+	if (mismatch) throw new Error(`Invalid memory fact proposal page response shape at ${mismatch}`);
+	const page = value as unknown as GeneratedMemoryFactProposalPageResponse;
+	let nextCursor: FactProposalCursor | null = null;
+	if (page.next_cursor !== null) {
+		if (
+			!isCanonicalEntityId(page.next_cursor.proposalId, 'fprop') ||
+			!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(
+				page.next_cursor.createdAt,
+			) ||
+			!Number.isFinite(Date.parse(page.next_cursor.createdAt))
+		) {
+			throw new Error('Invalid memory fact proposal cursor');
+		}
+		nextCursor = page.next_cursor;
+	}
+	return {
+		proposals: page.proposals.map(mapFactProposalResponse),
+		nextCursor,
+	};
+}
+
+function mapFactProposalResponse(value: GeneratedMemoryFactProposalResponse): FactProposal {
+	const { proposal_id, source_ref, ...rest } = value;
+	let sourceRef: FactProposalSourceRef | null = null;
+	if (source_ref) {
+		const { message_id, ...sourceRest } = source_ref;
+		sourceRef = { ...sourceRest, messageId: message_id };
+	}
+	return { ...rest, proposalId: proposal_id, sourceRef };
+}
+
+/** Validate a one-shot review result from the Rust memory boundary. */
+export function parseFactProposalReviewResponse(value: unknown): FactProposalReviewResult {
+	const mismatch = findGeneratedWireShapeMismatch(value, REVIEW_FACT_PROPOSAL_RESPONSE_SHAPE);
+	if (mismatch) throw new Error(`Invalid memory fact proposal review response shape at ${mismatch}`);
+	return value as FactProposalReviewResult;
 }
 
 /** Validate recall entity IDs against the exact kind requested from Rust. */

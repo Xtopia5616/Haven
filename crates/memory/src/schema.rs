@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 56;
+pub const SCHEMA_VERSION: i32 = 57;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -182,6 +182,31 @@ const SCHEMA_SQL: &[&str] = &[
         provenance_record_id TEXT,
         provenance_snippet TEXT
     )",
+    // Pending model-inferred facts wait for an explicit UI review before
+    // entering the current facts graph and its prompt/recall indexes.
+    "CREATE TABLE IF NOT EXISTS fact_proposals (
+        proposal_id TEXT PRIMARY KEY CHECK(
+            length(proposal_id) = 38 AND substr(proposal_id, 1, 6) = 'fprop-' AND
+            substr(proposal_id, 7) NOT GLOB '*[^0-9a-f]*'
+        ),
+        subject TEXT NOT NULL,
+        predicate TEXT NOT NULL,
+        object TEXT NOT NULL,
+        confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
+        tags TEXT NOT NULL DEFAULT '[]',
+        durability REAL NOT NULL CHECK(durability >= 0.0 AND durability <= 1.0),
+        created_at TEXT NOT NULL CHECK(
+            length(created_at) = 24 AND
+            created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', created_at) = created_at
+        ),
+        provenance_record_id TEXT,
+        provenance_snippet TEXT
+    )",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_proposals_pending_triple
+        ON fact_proposals(subject, predicate, object)",
+    "CREATE INDEX IF NOT EXISTS idx_fact_proposals_created_at
+        ON fact_proposals(created_at, proposal_id)",
     // Prior system-known fact snapshots. Ordinary recall remains current-only;
     // explicit history queries select the version active at a recorded time.
     "CREATE TABLE IF NOT EXISTS fact_history (
@@ -695,6 +720,8 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("memory_nodes", "kind"),
     ("memory_items", "content"),
     ("facts", "durability"),
+    ("fact_proposals", "proposal_id"),
+    ("fact_proposals", "created_at"),
     ("fact_history", "superseded_at"),
     ("fact_history", "provenance_item_id"),
     ("tool_runs", "kind"),
@@ -940,6 +967,7 @@ mod tests {
             "kv_store",
             "llm_usage",
             "facts",
+            "fact_proposals",
             "fact_history",
             "memory_embeddings",
             "memory_items",

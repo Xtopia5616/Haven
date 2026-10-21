@@ -18,6 +18,8 @@
 		clearFacts as clearFactsCommand,
 		deleteFact as deleteFactCommand,
 		listFacts,
+		listFactProposals,
+		reviewFactProposal as reviewFactProposalCommand,
 		recallMemory,
 	} from '$lib/memoryCommands.ts';
 	import {
@@ -47,6 +49,9 @@
 	import type { SessionHistoryStatusFilterInput } from '$lib/contracts/generatedCommands.ts';
 	import type {
 		Fact,
+		FactProposal,
+		FactProposalCursor,
+		FactProposalDecision,
 		MemoryFactCursor,
 		MemoryFactSourceFilter,
 		MemoryRecallFilter,
@@ -105,6 +110,7 @@
 	let hasMore = $state(true);
 	let loadSessionsSeq = 0;
 	let loadFactsSeq = 0;
+	let loadFactProposalsSeq = 0;
 	let loadTaskHistorySeq = 0;
 	const PAGE_SIZE = 50;
 	let statusFilter = $state<'' | SessionHistoryStatusFilterInput>('');
@@ -141,6 +147,12 @@
 	let factsLoadingMore = $state(false);
 	let factCursor = $state<MemoryFactCursor | null>(null);
 	let factsHasMore = $derived(factCursor !== null);
+	let factProposals = $state<FactProposal[]>([]);
+	let factProposalsLoaded = $state(false);
+	let factProposalsLoadingMore = $state(false);
+	let factProposalCursor = $state<FactProposalCursor | null>(null);
+	let factProposalsHasMore = $derived(factProposalCursor !== null);
+	let busyProposalId = $state<string | null>(null);
 	let factSourceFilter = $state<MemoryFactSourceFilter>('');
 	let newFact = $state<{ predicate: string; object: string; tags: string }>({
 		predicate: '',
@@ -205,6 +217,10 @@
 		if (activeTab !== 'memory') return;
 		factSourceFilter;
 		loadFacts();
+	});
+	$effect(() => {
+		if (activeTab !== 'memory') return;
+		loadFactProposals();
 	});
 	$effect(() => {
 		if (activeTab !== 'tasks') return;
@@ -483,8 +499,13 @@
 			factsLoaded = true;
 			factsLoadingMore = false;
 			factCursor = null;
+			loadFactProposalsSeq += 1;
+			factProposals = [];
+			factProposalsLoaded = true;
+			factProposalsLoadingMore = false;
+			factProposalCursor = null;
 			clearMemoryRecall();
-			addNotification(`已清空 ${count} 条长期记忆`, 'success', 3000);
+			addNotification(`已清空长期记忆和待审核推断（移除 ${count} 条事实）`, 'success', 3000);
 		} catch (error) {
 			reportError(error, { context: 'MemoryView', message: '清空长期记忆失败', log: false });
 		} finally {
@@ -593,6 +614,66 @@
 			reportError(error, { context: 'MemoryView', message: '加载更多事实失败', log: false });
 		} finally {
 			if (sequence === loadFactsSeq) factsLoadingMore = false;
+		}
+	}
+	async function loadFactProposals() {
+		const sequence = ++loadFactProposalsSeq;
+		factProposalsLoaded = false;
+		factProposalsLoadingMore = false;
+		factProposals = [];
+		factProposalCursor = null;
+		try {
+			const page = await listFactProposals({ cursor: null, limit: PAGE_SIZE });
+			if (sequence !== loadFactProposalsSeq) return;
+			factProposals = page.proposals;
+			factProposalCursor = page.nextCursor;
+			factProposalsLoaded = true;
+		} catch (error) {
+			if (sequence !== loadFactProposalsSeq) return;
+			factProposals = [];
+			factProposalCursor = null;
+			factProposalsLoaded = true;
+			reportError(error, { context: 'MemoryView', message: '加载待审核事实失败', log: false });
+		}
+	}
+	async function loadMoreFactProposals() {
+		if (!factProposalCursor || factProposalsLoadingMore) return;
+		const sequence = loadFactProposalsSeq;
+		const cursor = factProposalCursor;
+		factProposalsLoadingMore = true;
+		try {
+			const page = await listFactProposals({ cursor, limit: PAGE_SIZE });
+			if (sequence !== loadFactProposalsSeq) return;
+			factProposals = [...factProposals, ...page.proposals];
+			factProposalCursor = page.nextCursor;
+		} catch (error) {
+			if (sequence !== loadFactProposalsSeq) return;
+			reportError(error, { context: 'MemoryView', message: '加载更多待审核事实失败', log: false });
+		} finally {
+			if (sequence === loadFactProposalsSeq) factProposalsLoadingMore = false;
+		}
+	}
+	async function reviewFactProposal(proposalId: string, decision: FactProposalDecision) {
+		if (busyProposalId !== null) return;
+		busyProposalId = proposalId;
+		try {
+			const result = await reviewFactProposalCommand({ proposalId, decision });
+			if (result.status === 'accepted') {
+				addNotification(
+					result.fact_written ? '推断事实已加入长期记忆' : '提案已接受，相关事实已存在，未重复添加',
+					'success',
+					3000,
+				);
+			} else if (result.status === 'rejected') {
+				addNotification('已拒绝推断事实', 'success', 2500);
+			} else {
+				addNotification('该提案已处理，审核队列已刷新', 'info', 3000);
+			}
+			await Promise.all([loadFactProposals(), loadFacts()]);
+		} catch (error) {
+			reportError(error, { context: 'MemoryView', message: '审核推断事实失败', log: false });
+		} finally {
+			busyProposalId = null;
 		}
 	}
 	function handleFactSourceFilterChange(value: MemoryFactSourceFilter) {
@@ -808,7 +889,8 @@
 										label="清空记忆"
 										onclick={() => (showClearMemoryDialog = true)}
 										disabled={!factsLoaded ||
-											(factSourceFilter === '' && facts.length === 0)}
+										(!factProposalsLoaded ||
+											factSourceFilter === '' && facts.length === 0 && factProposals.length === 0)}
 									/>
 								{/snippet}
 							</WorkspaceSectionHeader>
@@ -817,6 +899,11 @@
 								{factsLoaded}
 								{factsHasMore}
 								{factsLoadingMore}
+								{factProposals}
+								{factProposalsLoaded}
+								{factProposalsHasMore}
+								{factProposalsLoadingMore}
+								{busyProposalId}
 								{factSourceFilter}
 								factSourceOptions={FACT_SOURCE_OPTIONS}
 								{newFact}
@@ -828,6 +915,8 @@
 								onClearRecall={clearMemoryRecall}
 								onFactSourceFilterChange={handleFactSourceFilterChange}
 								onLoadMoreFacts={loadMoreFacts}
+								onLoadMoreFactProposals={loadMoreFactProposals}
+								onReviewFactProposal={reviewFactProposal}
 								onAddFact={addFact}
 								onDeleteFact={deleteFact}
 							/>

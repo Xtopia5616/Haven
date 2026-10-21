@@ -246,7 +246,7 @@ $ownedCommands = @{
     'shellExecutionCommands.ts' = @('get_shell_execution_security_status')
     'toolRunCommands.ts' = @('list_tool_runs', 'list_tool_run_history', 'clear_tool_run_history', 'cancel_tool_run')
     'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource', 'subscribe_mcp_resource', 'unsubscribe_mcp_resource', 'respond_mcp_feature_input', 'cancel_mcp_feature_input', 'list_mcp_prompts', 'get_mcp_prompt', 'list_skills', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill', 'get_sandbox_output_review', 'discard_sandbox_output_review', 'pick_sandbox_output_destination', 'promote_sandbox_output')
-    'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'clear_facts', 'recall_memory')
+    'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'clear_facts', 'recall_memory', 'list_fact_proposals', 'review_fact_proposal')
     'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'count_session_history', 'count_session_history_search', 'get_session_for_resume', 'get_latest_session_for_resume', 'submit_transcript', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'fork_session_from_message', 'end_session', 'interrupt_session', 'continue_session')
     'modelDiscoveryCommands.ts' = @('discover_models')
     'diagnosticsCommands.ts' = @('get_log_info', 'read_log_tail', 'check_shell_available', 'get_api_key_status', 'get_performance_metrics')
@@ -295,7 +295,7 @@ Assert-Contains $sessionHistoryContract 'isSafeUnsignedInteger\(' 'Rust u64 Sess
 Assert-Contains $sessionHistoryContract "isCanonicalEntityId\(value\.session_id,\s*'ses'\)" 'Session response rows require canonical session identities'
 
 $memoryView = Get-Source 'ui/src/lib/views/MemoryView.svelte'
-Assert-NotContains $memoryView 'invoke\s*\(\s*''(?:list_facts|add_fact|delete_fact|clear_facts|recall_memory)''' 'MemoryView must use memoryCommands.ts'
+Assert-NotContains $memoryView 'invoke\s*\(\s*''(?:list_facts|add_fact|delete_fact|clear_facts|recall_memory|list_fact_proposals|review_fact_proposal)''' 'MemoryView must use memoryCommands.ts'
 $memoryCommands = Get-Source 'crates/app-binary/src/commands/memory.rs'
 $memoryDtos = Get-Source 'crates/app-binary/src/commands/memory.rs'
 $memoryUiContracts = Get-Source 'ui/src/lib/contracts/memory.ts'
@@ -317,6 +317,12 @@ Assert-Contains $memoryUiContracts 'fact\.durability\s*<\s*0|fact\.durability\s*
 Assert-Contains $memoryUiContracts 'Number\.isSafeInteger\(fact\.mention_count\)' 'Memory fact mention counts stay within the JavaScript safe integer domain'
 Assert-NotContains $memoryUiContracts 'MemoryFactSourceRef\s+as\s+GeneratedMemoryFactSourceRef' 'UI does not reintroduce the unused FactSourceRef alias'
 Assert-NotContains $memoryCommands 'Result\s*<\s*Vec\s*<\s*Fact\s*>' 'repository Fact must not be returned as the Tauri list_facts wire type'
+Assert-Contains $memoryCommands 'Result\s*<\s*MemoryFactProposalPageResponse\s*,\s*String\s*>' 'list_fact_proposals returns the bounded App-owned proposal DTO'
+Assert-Contains $memoryCommands 'Result\s*<\s*MemoryFactProposalReviewResponse\s*,\s*String\s*>' 'review_fact_proposal returns an explicit one-shot result DTO'
+Assert-Contains $generated 'export const LIST_FACT_PROPOSALS_RESPONSE_SHAPE\s*=' 'proposal page runtime shape is generated from Rust'
+Assert-Contains $generated 'export const REVIEW_FACT_PROPOSAL_RESPONSE_SHAPE\s*=' 'proposal review result runtime shape is generated from Rust'
+Assert-Contains $memoryUiContracts "isCanonicalEntityId\(value\.proposal_id,\s*'fprop'\)" 'proposal rows require canonical fprop identities'
+Assert-Contains $memoryUiContracts "isCanonicalEntityId\(value\.source_ref\.message_id,\s*'msg'\)" 'proposal source references require canonical message identities'
 
 $toolsView = Get-Source 'ui/src/lib/views/ToolsView.svelte'
 Assert-NotContains $toolsView '\binvoke\s*\(' 'ToolsView must use toolsCommands.ts'

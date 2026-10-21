@@ -9,6 +9,7 @@ pub mod fact_store;
 pub mod facts;
 pub mod kv_store;
 pub mod memory_fact_extraction_store;
+pub mod memory_fact_proposal_store;
 pub mod memory_maintenance_store;
 pub mod memory_outbox_store;
 pub mod memory_recall_store;

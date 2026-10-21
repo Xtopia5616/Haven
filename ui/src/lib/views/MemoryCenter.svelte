@@ -10,13 +10,25 @@
 	import LongTermFacts from './LongTermFacts.svelte';
 	import MemoryRecall from './MemoryRecall.svelte';
 	import CountChip from '$lib/CountChip.svelte';
-	import type { Fact, MemoryRecallFilter, MemoryRecallState } from '$lib/contracts/memory.ts';
+	import PendingFactProposals from './PendingFactProposals.svelte';
+	import type {
+		Fact,
+		FactProposal,
+		FactProposalDecision,
+		MemoryRecallFilter,
+		MemoryRecallState,
+	} from '$lib/contracts/memory.ts';
 
 	interface Props {
 		facts?: Fact[];
 		factsLoaded?: boolean;
 		factsHasMore?: boolean;
 		factsLoadingMore?: boolean;
+		factProposals?: FactProposal[];
+		factProposalsLoaded?: boolean;
+		factProposalsHasMore?: boolean;
+		factProposalsLoadingMore?: boolean;
+		busyProposalId?: string | null;
 		factSourceFilter?: MemoryFactSourceFilter;
 		factSourceOptions?: Array<{ value: MemoryFactSourceFilter; label: string }>;
 		newFact?: { predicate: string; object: string; tags: string };
@@ -28,6 +40,8 @@
 		onClearRecall?: () => void;
 		onFactSourceFilterChange?: (value: MemoryFactSourceFilter) => void;
 		onLoadMoreFacts?: () => void;
+		onLoadMoreFactProposals?: () => void;
+		onReviewFactProposal?: (proposalId: string, decision: FactProposalDecision) => void;
 		onAddFact?: () => boolean | Promise<boolean>;
 		onDeleteFact?: (factId: string) => void;
 	}
@@ -37,6 +51,11 @@
 		factsLoaded = false,
 		factsHasMore = false,
 		factsLoadingMore = false,
+		factProposals = [],
+		factProposalsLoaded = false,
+		factProposalsHasMore = false,
+		factProposalsLoadingMore = false,
+		busyProposalId = null,
 		factSourceFilter = '',
 		factSourceOptions = [],
 		newFact = { predicate: '', object: '', tags: '' },
@@ -48,6 +67,8 @@
 		onClearRecall = () => {},
 		onFactSourceFilterChange = () => {},
 		onLoadMoreFacts = () => {},
+		onLoadMoreFactProposals = () => {},
+		onReviewFactProposal = () => {},
 		onAddFact = () => false,
 		onDeleteFact = () => {},
 	}: Props = $props();
@@ -155,6 +176,15 @@
 			{onRunRecall}
 		/>
 	{:else}
+		<PendingFactProposals
+			proposals={factProposals}
+			loaded={factProposalsLoaded}
+			hasMore={factProposalsHasMore}
+			loadingMore={factProposalsLoadingMore}
+			{busyProposalId}
+			onLoadMore={onLoadMoreFactProposals}
+			onReview={onReviewFactProposal}
+		/>
 		<LongTermFacts
 			{facts}
 			{factsLoaded}

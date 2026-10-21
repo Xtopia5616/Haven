@@ -189,6 +189,10 @@ impl<'db> FactMaintenance<'db> {
         let deleted = in_immediate_transaction(&conn, |conn| {
             let deleted =
                 conn.execute(&format!("DELETE FROM facts WHERE {sensitive_where}"), [])? as u64;
+            conn.execute(
+                &format!("DELETE FROM fact_proposals WHERE {sensitive_where}"),
+                [],
+            )?;
             // The delete trigger archives rows for temporal queries; credential
             // cleanup is a hard purge and must also erase those new snapshots.
             conn.execute(
