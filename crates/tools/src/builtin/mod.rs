@@ -4,6 +4,7 @@ pub mod ask;
 pub mod clipboard;
 pub(crate) mod discover_tools;
 mod env;
+mod everything_search;
 mod file_line_reader;
 mod file_outline;
 pub mod file_search;
@@ -118,6 +119,7 @@ pub(crate) struct BuiltinContext {
     pub mcp_manager: Arc<McpManager>,
     pub mcp_server_config_source: crate::McpServerConfigSource,
     pub lsp_server_config_source: crate::lsp_server_config::LspServerConfigSource,
+    pub everything_config_source: crate::everything_config::EverythingConfigSource,
     pub registry: ToolRegistry,
     pub session_tool_overlay: SessionToolOverlay,
     pub deferred_catalog: DeferredToolCatalog,
@@ -145,6 +147,7 @@ pub(crate) async fn register_builtin_tools(
         mcp_manager,
         mcp_server_config_source,
         lsp_server_config_source,
+        everything_config_source,
         registry,
         session_tool_overlay,
         deferred_catalog,
@@ -251,6 +254,7 @@ pub(crate) async fn register_builtin_tools(
                 limits.search_max_file_size_bytes,
                 limits.search_window_bytes,
             ),
+            everything_config_source.clone(),
             managed_assets.clone(),
         )
         .with_max_write_bytes(limits.file_write_max_bytes)

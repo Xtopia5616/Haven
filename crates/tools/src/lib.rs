@@ -12,6 +12,7 @@ mod codemode;
 mod codemode_tool;
 mod coordinator;
 mod document;
+mod everything_config;
 mod execution;
 mod execution_workspace;
 mod facade;

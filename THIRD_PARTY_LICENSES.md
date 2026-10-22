@@ -15,6 +15,8 @@ The OFL text and both font copyright notices are included in [`ui/static/fonts/O
 
 ## Architecture and design references
 
+- **Everything and Everything CLI (`es.exe`)** — optional user-installed software used by `files.search` when explicitly enabled in local `config.toml`; Haven does not bundle or modify either binary. The [Everything application license](https://www.voidtools.com/License.txt) grants use and redistribution under MIT terms and includes a separate PCRE notice. The [voidtools/ES repository](https://github.com/voidtools/ES) declares MIT and includes its [license text](https://github.com/voidtools/ES/blob/main/LICENSE). Haven's integration calls the documented [ES command-line interface](https://www.voidtools.com/support/everything/command_line_interface/) and does not redistribute either binary.
+
 - **Pi Coding Agent** — acknowledged as an architectural reference for the ReAct agent loop. Haven's agent integration and source implementation are maintained in this repository; the audit did not identify copied Pi source files. See [Pi](https://github.com/badlogic/pi-mono).
 - **Google Material Design 3 Expressive** — visual and interaction design reference for Haven's design tokens and components. Haven's UI implementation is maintained in this repository; Material Design's guidance is not bundled as source code or artwork. See [Material Design 3](https://m3.material.io/).
 - **Agent Skills specification** — Haven parses the public `SKILL.md` manifest format and follows its directory conventions. Haven's parser and runner are maintained here; the specification is not source code. See [Agent Skills](https://agentskills.io/specification).

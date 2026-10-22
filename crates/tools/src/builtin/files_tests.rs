@@ -18,6 +18,7 @@ mod tests {
             0,
             10,
             FileSearchEngine::default(),
+            crate::everything_config::EverythingConfigSource::default(),
             ManagedAssetRegistry::default(),
         );
 

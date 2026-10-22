@@ -98,6 +98,9 @@ impl ToolRuntimeCoordinator {
             .lsp_server_config_source
             .bind_config_service(admin_context.config_service.clone())?;
         self.builtins
+            .everything_config_source
+            .bind_config_service(admin_context.config_service.clone())?;
+        self.builtins
             .mcp_manager
             .set_network_policy(security.network_policy)
             .await;

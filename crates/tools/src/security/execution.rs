@@ -171,29 +171,52 @@ impl ExecutionPolicyAuthorization {
     pub(crate) async fn acquire_lsp_process_start_permit(
         &self,
     ) -> Result<ExecutionPolicyPermit, String> {
+        self.acquire_configured_process_start_permit("configured LSP servers")
+            .await
+    }
+
+    pub(crate) async fn acquire_everything_process_start_permit(
+        &self,
+    ) -> Result<ExecutionPolicyPermit, String> {
+        self.acquire_configured_process_start_permit("Everything CLI")
+            .await
+    }
+
+    async fn acquire_configured_process_start_permit(
+        &self,
+        process_name: &str,
+    ) -> Result<ExecutionPolicyPermit, String> {
         if confirmation_now() >= self.expires_at {
-            return Err("LSP execution proof expired before process start".into());
+            return Err(format!(
+                "{process_name} execution proof expired before process start"
+            ));
         }
         let config = Arc::clone(&self.authorization.config).read_owned().await;
         if confirmation_now() >= self.expires_at {
-            return Err("LSP execution proof expired before process start".into());
+            return Err(format!(
+                "{process_name} execution proof expired before process start"
+            ));
         }
         if config.policy_revision != self.policy_revision {
-            return Err("execution policy changed before LSP process start".into());
+            return Err(format!(
+                "execution policy changed before {process_name} process start"
+            ));
         }
         if config.execution_workspace.generation() != self.execution_workspace_generation {
-            return Err("execution workspace changed before LSP process start".into());
+            return Err(format!(
+                "execution workspace changed before {process_name} process start"
+            ));
         }
         if config.sandbox_mode != SandboxMode::FullAccess {
-            return Err("configured LSP servers require the Full Access sandbox".into());
+            return Err(format!("{process_name} requires the Full Access sandbox"));
         }
         if matches!(
             config.network_policy,
             NetworkPolicy::Deny | NetworkPolicy::Restricted
         ) {
-            return Err(
-                "configured LSP servers require Open or user-approved network access".into(),
-            );
+            return Err(format!(
+                "{process_name} requires Open or user-approved network access"
+            ));
         }
         Ok(ExecutionPolicyPermit { _config: config })
     }

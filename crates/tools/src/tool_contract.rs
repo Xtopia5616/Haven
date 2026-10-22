@@ -1789,6 +1789,17 @@ impl ToolExecutionContext {
         authorization.acquire_lsp_process_start_permit().await
     }
 
+    pub(crate) async fn acquire_everything_process_start_permit(
+        &self,
+    ) -> Result<crate::security::ExecutionPolicyPermit, String> {
+        let authorization = self.execution_authorization.as_ref().ok_or_else(|| {
+            "Everything CLI process requires proof-derived execution authorization".to_string()
+        })?;
+        authorization
+            .acquire_everything_process_start_permit()
+            .await
+    }
+
     pub(crate) fn clone_execution_authorization(
         &self,
     ) -> Option<crate::security::ExecutionPolicyAuthorization> {

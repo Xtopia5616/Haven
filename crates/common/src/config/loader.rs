@@ -79,6 +79,9 @@ config_snapshot_pair! {
         /// This executable configuration is managed in config.toml and is never
         /// exposed through Settings IPC.
         lsp_servers: Vec<LspServerConfig>,
+        /// Optional Everything CLI integration for filename search. The
+        /// executable path is local-only and never exposed through Settings IPC.
+        everything: EverythingConfig,
     } ;
     for p in settings.llm.providers.iter_mut() {
         p.api_key = String::new();
@@ -1279,6 +1282,37 @@ mod tests {
         loader.apply_settings(&SettingsPatch::from(&settings));
         assert_eq!(loader.config().lsp_servers.len(), 1);
         assert_eq!(loader.config().lsp_servers[0].command, "rust-analyzer");
+    }
+
+    #[test]
+    fn everything_cli_config_is_local_only_and_survives_settings_writes() {
+        let config: AppConfig = toml::from_str(
+            r#"
+                [everything]
+                enabled = true
+                command = "C:\\Tools\\es.exe"
+            "#,
+        )
+        .unwrap();
+        let settings = SettingsSnapshot::from(&config);
+        assert!(
+            serde_json::to_value(settings)
+                .unwrap()
+                .get("everything")
+                .is_none()
+        );
+        let mut loader = ConfigLoader {
+            path: PathBuf::from("unused"),
+            config,
+            source_fingerprint: None,
+            recovery_required: false,
+        };
+        loader.apply_settings(&SettingsPatch::default());
+        assert!(loader.config().everything.enabled);
+        assert_eq!(
+            loader.config().everything.command.as_deref(),
+            Some("C:\\Tools\\es.exe")
+        );
     }
 
     #[test]

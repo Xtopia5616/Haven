@@ -127,7 +127,7 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
         },
         "files.search" => OperationText {
             description: "Search file names or contents and return bounded match context.",
-            when_to_use: "Use filename mode to find files and content mode to find text; follow returned paths and line numbers with files.read.",
+            when_to_use: "Use filename mode to find files and content mode to find text; when Everything is enabled, filename patterns use Everything search syntax. Follow returned paths and line numbers with files.read.",
         },
         "files.write" => OperationText {
             description: "Write complete text content to a file.",

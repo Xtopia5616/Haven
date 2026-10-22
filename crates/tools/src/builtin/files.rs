@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use super::everything_search::EverythingSearch;
 use super::file_outline;
 use super::file_search::{FileSearchEngine, FileSearchMode, SearchOptions, SearchRequest};
 use super::media::{MediaParams, MediaTool};
@@ -59,6 +60,7 @@ pub struct FilesTool {
     max_write_bytes: u64,
     summary_timeout_secs: u64,
     search: FileSearchEngine,
+    everything_search: EverythingSearch,
     managed_assets: ManagedAssetRegistry,
     media_tool: Option<Arc<MediaTool>>,
     authorization: Arc<AuthorizationEngine>,
@@ -79,6 +81,7 @@ impl Default for FilesTool {
             max_write_bytes: 16 * 1024 * 1024,
             summary_timeout_secs: 120,
             search: FileSearchEngine::default(),
+            everything_search: EverythingSearch::default(),
             managed_assets: ManagedAssetRegistry::default(),
             media_tool: None,
             authorization: Arc::new(AuthorizationEngine::new()),
@@ -201,6 +204,7 @@ impl FilesTool {
         max_byte_read_bytes: u64,
         summary_timeout_secs: u64,
         search: FileSearchEngine,
+        everything_config_source: crate::everything_config::EverythingConfigSource,
         managed_assets: ManagedAssetRegistry,
     ) -> Self {
         Self {
@@ -216,6 +220,7 @@ impl FilesTool {
             max_write_bytes: 16 * 1024 * 1024,
             summary_timeout_secs: summary_timeout_secs.clamp(1, MAX_FILE_SUMMARY_TIMEOUT_SECS),
             search,
+            everything_search: EverythingSearch::new(everything_config_source),
             managed_assets,
             media_tool: None,
             authorization: Arc::new(AuthorizationEngine::new()),
@@ -594,9 +599,17 @@ impl FilesTool {
                     self.search.max_results_cap,
                     self.search.max_file_size,
                 );
-                self.search
-                    .search_request_with_policy(request, cancel, policy)
-                    .await
+                if request.mode == FileSearchMode::Filename
+                    && self.everything_search.is_enabled()?
+                {
+                    self.everything_search
+                        .search_request(request, cancel, policy, context)
+                        .await
+                } else {
+                    self.search
+                        .search_request_with_policy(request, cancel, policy)
+                        .await
+                }
             }
         };
         let mut result = match operation_result {

@@ -32,6 +32,93 @@ pub const MAX_MCP_TOOL_EXPOSURE_OVERRIDES: usize = 256;
 pub const MAX_MCP_TOOL_EXPOSURE_PATTERN_CHARS: usize = 256;
 pub const MAX_LSP_SERVERS: usize = 32;
 pub const MAX_LSP_SERVER_ARGS: usize = 64;
+pub const MAX_EVERYTHING_COMMAND_PATH_CHARS: usize = 32_767;
+
+/// Executable used by the optional Everything filename search backend.
+/// This executable configuration is local-only and never enters Settings IPC.
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct EverythingConfig {
+    pub enabled: bool,
+    pub command: Option<String>,
+}
+
+impl std::fmt::Debug for EverythingConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EverythingConfig")
+            .field("enabled", &self.enabled)
+            .field("command", &self.command.as_ref().map(|_| "<configured>"))
+            .finish()
+    }
+}
+
+impl EverythingConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let Some(command) = self.command.as_deref() else {
+            anyhow::bail!("everything.command is required when Everything search is enabled");
+        };
+        if command.trim().is_empty()
+            || command.encode_utf16().count() > MAX_EVERYTHING_COMMAND_PATH_CHARS
+            || command.chars().any(char::is_control)
+            || !crate::path::is_absolute_local_path(std::path::Path::new(command))
+        {
+            anyhow::bail!("everything.command must be a valid local executable path");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod everything_config_tests {
+    use super::EverythingConfig;
+
+    #[test]
+    fn disabled_configuration_needs_no_command() {
+        assert!(EverythingConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn enabled_configuration_requires_a_clean_command_path() {
+        assert!(
+            EverythingConfig {
+                enabled: true,
+                command: None,
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            EverythingConfig {
+                enabled: true,
+                command: Some("es.exe\n-inject".into()),
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            EverythingConfig {
+                enabled: true,
+                command: Some("C:\\Tools\\es.exe".into()),
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn debug_redacts_executable_path() {
+        let config = EverythingConfig {
+            enabled: true,
+            command: Some("C:\\private\\es.exe".into()),
+        };
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("private"));
+        assert!(debug.contains("<configured>"));
+    }
+}
 /// A zero background ToolRun limit intentionally disables background launches.
 pub const MAX_RUNNING_BACKGROUND_TOOL_RUNS: usize = 64;
 /// Maximum number of entries returned by one files.list operation.
